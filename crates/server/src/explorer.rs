@@ -22,8 +22,9 @@
 //! `Access`, `Demolish`, `Unlock` and `Research` actions
 //! (`crates/server/tests/agent_walls.rs` holds that to the client).
 
-use crate::agent::build::{queue_wait, queued, Act, Builder, Region, Stations, Way};
+use crate::agent::build::{craft_fits, queue_wait, queued, Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
+use crate::agent::cook::{self, Cook, CookJob, CookStats};
 use crate::agent::cover;
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
@@ -92,6 +93,8 @@ pub const BUILD_GOAL_SECS: u32 = 600;
 pub const STASH_GOAL_SECS: u32 = 120;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
+/// A cook at a fire that has not finished in this long is stuck.
+pub const COOK_GOAL_SECS: u32 = 240;
 /// At a place on the map, how long the eyes look round for its crates.
 pub const LOOK_ROUND_TICKS: u32 = 8 * TICK_HZ;
 /// Swings at one barrel before it is left: three break it.
@@ -216,6 +219,7 @@ pub enum Phase {
     GoingHome,
     Leaving,
     Stashing,
+    Cooking,
     LoggingOff,
 }
 
@@ -249,6 +253,7 @@ impl Phase {
             Phase::GoingHome => "Going home",
             Phase::Leaving => "Leaving the base through its doors",
             Phase::Stashing => "At home: the cupboard and the box",
+            Phase::Cooking => "Cooking at a fire",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -383,6 +388,9 @@ pub struct Memory {
     pub raw_len: u8,
     /// A loot run came to nothing a moment ago (`Loot::held`).
     pub loot_held: bool,
+    /// Raw meat, fuel and a fire to cook on (`agent::cook::can_cook`), and
+    /// no cook came to nothing a moment ago.
+    pub cook: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -578,6 +586,12 @@ pub struct Survivor {
     /// The barrels and crates it knows of, and the loot run in hand.
     loot: Loot,
     loot_job: LootJob,
+    /// A cook at a fire, the fire pit it put down last, what cooking has
+    /// come to, and when a cook last came to nothing.
+    cook_job: CookJob,
+    fire: Option<(u16, u16)>,
+    pub cook_stats: CookStats,
+    cook_failed: Option<u32>,
     /// The session ends this many ticks after the welcome (`set_deadline`),
     /// and the tick that is, once welcomed.
     deadline_after: Option<u32>,
@@ -666,6 +680,10 @@ impl Survivor {
             ledger: Ledger::EMPTY,
             loot: Loot::new(),
             loot_job: LootJob::default(),
+            cook_job: CookJob::default(),
+            fire: None,
+            cook_stats: CookStats::default(),
+            cook_failed: None,
             deadline_after: None,
             deadline: None,
             welcomed: None,
@@ -859,7 +877,10 @@ impl Survivor {
     /// Would switching goals now lose nothing: no op of a long skill
     /// waiting on its answer, no door left open mid-walk.
     fn at_checkpoint(&self) -> bool {
-        self.goal.is_none() || (self.builder.at_checkpoint() && self.stash_job.at_checkpoint())
+        self.goal.is_none()
+            || (self.builder.at_checkpoint()
+                && self.stash_job.at_checkpoint()
+                && self.cook_job.at_checkpoint())
     }
 
     /// The session's end is near and there is a home to sleep in.
@@ -1357,6 +1378,7 @@ impl Survivor {
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.loot_job = LootJob::default();
+        self.cook_job = CookJob::default();
         if goal == Goal::Loot {
             self.loot.stats.runs += 1;
         }
@@ -1437,7 +1459,8 @@ impl Survivor {
             | Goal::Drink
             | Goal::Recover
             | Goal::Bag
-            | Goal::Loot => true,
+            | Goal::Loot
+            | Goal::Cook => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1509,6 +1532,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Stash => self.stash(core, body, tick),
+            Goal::Cook if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
+                self.cook_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Cook => self.cook(core, body, tick),
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -1901,7 +1930,9 @@ impl Survivor {
                 }
                 // A full pack drops what is made at the crafter's feet, and
                 // the inputs are spent either way.
-                if !room_for(core, FoodBook::bit(item)) {
+                if !room_for(core, FoodBook::bit(item))
+                    && !craft_fits(core, recipe, batch(core, recipe))
+                {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
                     return Intent::IDLE;
                 }
@@ -3097,6 +3128,105 @@ impl Survivor {
         intent
     }
 
+    /// A cook at a fire (`agent::cook::CookJob`): its own fire if one
+    /// stands near, else a fire pit put down here (crafted first), wood and
+    /// a piece of meat a slot laid in, lit, each piece taken off done, the
+    /// fire put out and the panel shut.
+    fn cook(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Cooking;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let builder = &self.builder;
+        let step = self.cook_job.step(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            &self.book,
+            self.fire,
+            |cx, cz| builder.near_plot(cx, cz),
+            &mut self.cook_stats,
+            tick,
+        );
+        if let Some(fire) = self.cook_job.placed() {
+            self.fire = Some(fire);
+        }
+        let (sent, intent) = match step {
+            Cook::Go(intent) => return intent,
+            Cook::Craft { recipe } => (
+                self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf)),
+                Intent::IDLE,
+            ),
+            Cook::Belt { from, to, count } => (
+                self.queue(|buf| {
+                    protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+                }),
+                Intent::IDLE,
+            ),
+            Cook::Deploy {
+                row,
+                cx,
+                cz,
+                intent,
+            } => (
+                self.queue(|buf| protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, buf)),
+                intent,
+            ),
+            Cook::Open { key, intent } => (
+                self.queue(|buf| protocol::encode_action_container(CONT_BOX, key, buf)),
+                intent,
+            ),
+            Cook::Move {
+                key,
+                to_fire,
+                from,
+                to,
+                count,
+                intent,
+            } => {
+                let (from_kind, to_kind) = if to_fire {
+                    (CONT_SELF, CONT_BOX)
+                } else {
+                    (CONT_BOX, CONT_SELF)
+                };
+                (
+                    self.queue(|buf| {
+                        protocol::encode_action_move(key, from_kind, from, to_kind, to, count, buf)
+                    }),
+                    intent,
+                )
+            }
+            Cook::Switch { at, intent } => (
+                self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf)),
+                intent,
+            ),
+            Cook::Close(intent) => (
+                self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
+                intent,
+            ),
+            Cook::Done => {
+                // The shut panel may still wait on its pace.
+                if self.outbox.is_none() {
+                    self.end_goal(tick, Outcome::Done);
+                }
+                return Intent::IDLE;
+            }
+            Cook::Fail(why) => {
+                self.cook_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(why));
+                return Intent::IDLE;
+            }
+        };
+        if sent {
+            self.cook_job.sent(tick);
+        }
+        intent
+    }
+
     fn stash_done(&mut self, tick: u32) {
         if self.stash_job.gave_up() {
             self.home.stash_failed(tick);
@@ -3303,6 +3433,11 @@ impl Survivor {
             self.memory.raw = raw;
             self.memory.stations = stations;
             self.memory.loot_held = self.loot.held(tick);
+            let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+            self.memory.cook = cook::can_cook(core, &self.book, self.fire, x, z)
+                && self
+                    .cook_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= cook::COOK_RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
             for spot in self.loot.live(core, tick) {
@@ -3604,12 +3739,14 @@ impl Survivor {
         while let Some((cx, cz, level, loc, deploy)) = core.pop_placed() {
             self.home.on_placed(cx, cz, level, loc, deploy);
             self.builder.on_placed(cx, cz, level, loc, deploy);
+            self.cook_job.on_placed(cx, cz, level, loc, deploy);
         }
         while let Some(reason) = core.pop_deploy_refusal() {
             self.stats.refusals += 1;
             self.home.on_refused(reason);
             self.builder.on_refused(true, reason);
             self.stash_job.on_refused();
+            self.cook_job.on_refused(reason);
         }
         // The reply to a feed of its own cupboard: the stock readout.
         if flags & APPLIED_STOCK != 0 {
@@ -3634,6 +3771,11 @@ impl Survivor {
         if applied2 & APPLIED2_MOVE != 0 {
             self.stash_job.on_moved(core.last_move_refused != 0, tick);
             self.loot_job.on_moved(core.last_move_refused != 0);
+            self.cook_job.on_moved(core.last_move_refused != 0, tick);
+        }
+        // A fire's panel: the cook's open was answered.
+        if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_BOX {
+            self.cook_job.on_panel(core.cont_handle);
         }
         // A crate's panel: the loot run's open was answered.
         if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_WORLD {
@@ -3796,6 +3938,8 @@ impl BotDriver for Survivor {
         self.ledger.clear();
         self.loot.clear();
         self.loot_job = LootJob::default();
+        self.cook_job = CookJob::default();
+        self.fire = None;
         if self.welcomed.is_none() {
             self.welcomed = Some(welcome.tick);
             self.set_deadline(self.deadline_after);
@@ -4015,15 +4159,24 @@ fn inputs_ok(core: &ClientCore, recipe: u16) -> bool {
 }
 
 /// A slot worth eating: one known to restore water (`thirst`), or one known
-/// to feed, else one never tried that the eat verb has not refused.
+/// to feed, else one never tried that the eat verb has not refused; the
+/// most filling first, by what the catalog says each is worth (cooked meat
+/// before mushrooms).
 fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> {
     let slots = || (0..INV_SLOTS).filter(|&i| core.inv[i].count > 0);
     if thirst {
         return slots().find(|&i| book.waters_known(core.inv[i].item));
     }
-    slots()
-        .find(|&i| book.feeds & FoodBook::bit(core.inv[i].item) != 0)
-        .or_else(|| slots().find(|&i| book.may_feed(core.inv[i].item)))
+    let worth = |i: &usize| core.catalog.row(usize::from(core.inv[*i].item)).food;
+    // The first of the most filling, so ties keep the slot order.
+    let best = |it: &mut dyn Iterator<Item = usize>| {
+        it.fold(None, |best: Option<usize>, i| match best {
+            Some(b) if worth(&b) >= worth(&i) => Some(b),
+            _ => Some(i),
+        })
+    };
+    best(&mut slots().filter(|&i| book.feeds & FoodBook::bit(core.inv[i].item) != 0))
+        .or_else(|| best(&mut slots().filter(|&i| book.may_feed(core.inv[i].item))))
 }
 
 /// The sim's own drink test: five taps on the heightfield at the reach.
@@ -4135,7 +4288,7 @@ pub fn observe(
                     || !memory.stations.usable(def.station)
                     || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
                     || !inputs_ok(core, r as u16)
-                    || !room_for(core, FoodBook::bit(def.output))
+                    || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
                 {
                     continue;
                 }
@@ -4310,6 +4463,11 @@ pub fn observe(
         && !memory.loot_held
     {
         s.offer(Goal::Loot);
+    }
+    // A cook, with raw meat, fuel and a fire to cook on, nobody dangerous
+    // about.
+    if memory.cook && !senses.hostile {
+        s.offer(Goal::Cook);
     }
     // A visit home while there is something to see to there.
     if matches!(memory.home.state, HomeState::Built | HomeState::Inside)

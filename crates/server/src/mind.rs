@@ -160,6 +160,9 @@ pub enum Goal {
     /// Go for the barrels, crates and caches it knows of, or the nearest
     /// place on the map that has them: smash, open, take.
     Loot,
+    /// Cook the raw meat in the pack at a fire, putting one down if there
+    /// is none near.
+    Cook,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -187,7 +190,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 18] = [
+    pub const FIXED: [Goal; 19] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -206,6 +209,7 @@ impl Goal {
         Goal::GoHome,
         Goal::Stash,
         Goal::Loot,
+        Goal::Cook,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -230,6 +234,7 @@ impl Goal {
             Goal::GoHome => "go_home",
             Goal::Stash => "stash",
             Goal::Loot => "loot",
+            Goal::Cook => "cook",
         }
     }
 
@@ -274,10 +279,7 @@ impl Goal {
             Goal::Forage => {
                 "Pick one bush for cloth and berries. Berries are food and water.".into()
             }
-            Goal::Craft(name) => format!(
-                "Craft one {} from materials already in the pack.",
-                name.as_str()
-            ),
+            Goal::Craft(name) => format!("Craft one {} from the pack.", name.as_str()),
             Goal::Eat => {
                 "Eat food from the pack until food is mostly full. Much food also restores some water.".into()
             }
@@ -308,6 +310,9 @@ impl Goal {
             }
             Goal::Loot => {
                 "Smash known barrels and empty crates, or go to the nearest loot place on the map.".into()
+            }
+            Goal::Cook => {
+                "Cook the raw meat at a fire, putting one down if none is near; cooked meat is good food.".into()
             }
         }
     }
@@ -1520,6 +1525,9 @@ impl Scripted {
             if s.offers(Goal::Eat) {
                 return (Goal::Eat, "scripted: food is low");
             }
+            if s.offers(Goal::Cook) {
+                return (Goal::Cook, "scripted: food is low, cook the raw meat");
+            }
             if bush {
                 return (Goal::Forage, "scripted: food is low, a bush is in view");
             }
@@ -1563,7 +1571,9 @@ impl Scripted {
                 if let Some(name) = s.craftable().iter().find(|n| n.as_str() == BAG_ITEM) {
                     return (Goal::Craft(*name), "scripted: a sleeping bag is craftable");
                 }
-                if s.offers(Goal::Forage) && s.bushes.count > 0 {
+                // Not craftable for want of cloth, unless it is for want of
+                // room, which a bush does not make.
+                if s.offers(Goal::Forage) && s.bushes.count > 0 && s.free_slots > 1 {
                     return (Goal::Forage, "scripted: cloth for a sleeping bag");
                 }
             }
@@ -1575,6 +1585,10 @@ impl Scripted {
             && (s.take_out || s.feed || s.free_slots <= SCRIPTED_STASH_FREE_SLOTS)
         {
             return (Goal::Stash, "scripted: home to the box and the cupboard");
+        }
+        // Raw meat off a kill is no food until it is cooked.
+        if s.offers(Goal::Cook) {
+            return (Goal::Cook, "scripted: cook the raw meat");
         }
         // Then arms, once stone tools make gathering cheap and home's chores
         // are seen to (the bag's cloth first): a spear, a bow and arrows for
@@ -1663,7 +1677,10 @@ impl Scripted {
         {
             return (Goal::Loot, "scripted: a barrel or crate is near");
         }
-        // Alternate the resources, preferring one that is in view.
+        // Alternate the resources, preferring one that is in view, while
+        // the pack keeps room for what the base and its benches make: a
+        // pack full of everything makes nothing.
+        let room = s.free_slots > SCRIPTED_STASH_FREE_SLOTS;
         let order = [
             Goal::GatherWood,
             Goal::GatherStone,
@@ -1678,12 +1695,13 @@ impl Scripted {
         };
         for step in 0..order.len() {
             let goal = order[(self.rotation as usize + step) % order.len()];
-            if s.offers(goal) && seen(goal) {
+            if room && s.offers(goal) && seen(goal) {
                 self.rotation = self.rotation.wrapping_add(step as u8 + 1);
                 return (goal, "scripted: next resource in the rotation is in view");
             }
         }
-        if s.offers(Goal::Forage) && s.bushes.count > 0 && pct(s.food, s.food_max) < 100 {
+        // Topping up food from a bush, with the same room kept.
+        if room && s.offers(Goal::Forage) && s.bushes.count > 0 && pct(s.food, s.food_max) < 100 {
             return (Goal::Forage, "scripted: a bush is in view");
         }
         (Goal::Explore, "scripted: nothing useful in view")
@@ -1870,9 +1888,14 @@ mod tests {
         s.water_max = 100;
         s.food = 100;
         s.water = 100;
+        s.free_slots = 20;
         assert_eq!(scripted.pick(&s).0, Goal::Explore, "no tree in view");
         s.trees.add(10.0, 0);
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
+        // A pack nearly full keeps its last slots for what it makes.
+        s.free_slots = SCRIPTED_STASH_FREE_SLOTS;
+        assert_eq!(scripted.pick(&s).0, Goal::Explore, "no room to spare");
+        s.free_slots = 20;
         s.water = 10;
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood, "drink not offered");
         s.offer(Goal::Drink);
@@ -1951,6 +1974,7 @@ mod tests {
         let mut scripted = Scripted::default();
         let mut s = Summary::EMPTY;
         (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.free_slots = 20;
         s.offer(Goal::Explore);
         s.offer(Goal::Forage);
         s.bushes.add(10.0, 0);
@@ -1966,6 +1990,10 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::Craft(bag));
         s.craftable_len = 0;
         assert_eq!(scripted.pick(&s).0, Goal::Forage, "cloth for one");
+        // A full pack is not why it was short of cloth: a bush does not help.
+        s.free_slots = 0;
+        assert_ne!(scripted.pick(&s).0, Goal::Forage, "no room for one");
+        s.free_slots = 20;
         s.items[2] = (bag, 1);
         s.items_len = 3;
         s.offer(Goal::Bag);
@@ -1988,6 +2016,7 @@ mod tests {
         let mut scripted = Scripted::default();
         let mut s = Summary::EMPTY;
         (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.free_slots = 20;
         s.items[0] = (name("Stone Hatchet"), 1);
         s.items[1] = (name("Stone Pickaxe"), 1);
         s.items_len = 2;

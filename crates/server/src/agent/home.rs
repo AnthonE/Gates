@@ -564,7 +564,7 @@ fn free_slots(core: &ClientCore) -> u8 {
 
 /// The whole-stack move that puts `item` on the belt from the pack: an
 /// empty belt slot, else the last one (the stacks swap).
-fn belt_move(core: &ClientCore, item: u16) -> Option<(u8, u8, u16)> {
+pub(crate) fn belt_move(core: &ClientCore, item: u16) -> Option<(u8, u8, u16)> {
     let from =
         (HOTBAR_SLOTS..INV_SLOTS).find(|&i| core.inv[i].count > 0 && core.inv[i].item == item)?;
     let to = (0..HOTBAR_SLOTS)

@@ -1994,8 +1994,9 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
 }
 
 /// The starter and its stations stand and the pack holds the fragments for
-/// three locks and two metal doors: code locks go on both doors and the
-/// cupboard, armed with its code, and both doors are swapped for metal.
+/// three locks and metal doors: code locks go on both doors and the
+/// cupboard, armed with its code, and the front door is swapped for metal
+/// (its lock taken off with it and put on again).
 /// A stranger at the front door is refused, the wrong code shocks him and
 /// does not let him in. Somebody who knows the code resets the lock's list
 /// to himself alone: the owner, refused at its own door, enters its code
@@ -2009,8 +2010,11 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
 
     let code = LockCode::derive(b"agent walls", "jev");
     let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
+    // It answers a blow but starts nothing: the stranger at its door below
+    // is unarmed, and an opportunist would not leave him standing.
     let opts = server::explorer::SurvivorOpts {
         lock: Some(LockSecret::Code(code)),
+        temperament: server::agent::combat::Temperament::Defensive,
         ..Default::default()
     };
     let mut h = Harness::with_opts(false, scene(), mind, opts);
@@ -2025,7 +2029,7 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     kit.extend([
         stack("item.cloth", 60),
         stack("item.metal_frags", 1000),
-        stack("item.metal_frags", 500),
+        stack("item.metal_frags", 1000),
         stack("item.lowgrade", 50),
     ]);
     let (hatchet, pickaxe) = (
@@ -2071,10 +2075,10 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
         ]
         .iter()
         .all(|&(x, z, loc)| lock_at(&h, x, z, loc).is_some_and(|l| l.locked));
-        let metal_doors = [LOC_EDGE_XLO, LOC_EDGE_ZLO]
-            .iter()
-            .all(|&loc| door_item(&h, cx + 1, cz + 1, loc) == Some(metal));
-        if armed && metal_doors && h.bot.builder().at_checkpoint() {
+        // The front door in metal at the least: the inner one waits for the
+        // spare once the gear has had its fragments.
+        let metal_door = door_item(&h, cx + 1, cz + 1, LOC_EDGE_XLO) == Some(metal);
+        if armed && metal_door && h.bot.builder().at_checkpoint() {
             done = true;
             break;
         }
@@ -2119,8 +2123,8 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     }
     let stats = h.bot.builder().stats;
     assert!(
-        stats.locks >= 3 && stats.codes >= 3 && stats.swapped >= 2,
-        "{stats:?}"
+        stats.locks >= 4 && stats.codes >= 4 && stats.swapped >= 1,
+        "the front door's lock went on again after its swap: {stats:?}"
     );
     for verb in ["access", "demolish", "deploy"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
@@ -2153,6 +2157,8 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     h.stage_puppet(move |p| p.body = at_door);
     let front = (cx + 1, cz + 1, 0u8, LOC_EDGE_XLO);
     let puppet_does = |h: &mut Harness, act: ActionMsg| {
+        // One action at a time, as the lane takes them.
+        assert!(h.until(5 * TICK_HZ, |_| false) || h.shard.wants_action(1));
         for core in [&mut h.shard, &mut h.replay] {
             core.push_action(1, act);
         }
@@ -2266,4 +2272,201 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
         "the agent's frame loop touched the allocator"
     );
     println!("{:?} {}", h.bot.builder().stats, h.explain());
+}
+
+/// Past the base, the gear: with junk, cloth, rope and fragments staged, it
+/// learns the metal tools and the medkit at its bench's tree (the unlock
+/// verb, paid in junk), makes the metal tools, a crossbow and metal arrows,
+/// burlap and medkits there, wears the burlap (a move into the wear slots
+/// by the catalog's slot) and puts the better arms and the medkits on its
+/// belt between goals.
+#[test]
+fn a_survivor_learns_makes_and_wears_its_gear() {
+    let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let mut kit = vec![stack("item.wood", 1000); 6];
+    kit.extend([stack("item.stone", 1000); 6]);
+    kit.extend([
+        stack("item.cloth", 400),
+        stack("item.metal_frags", 1000),
+        stack("item.metal_frags", 500),
+        stack("item.lowgrade", 100),
+        stack("item.junk", 200),
+        stack("item.rope", 4),
+    ]);
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+    let id = |name: &str| content.item_index(name).unwrap();
+    let (hood, tunic, medkit) = (
+        id("item.armor_burlap_head"),
+        id("item.armor_burlap_body"),
+        id("item.medkit"),
+    );
+    let dressed = h.until(200_000, |b| {
+        let Some(core) = b.core() else {
+            return false;
+        };
+        let worn = |item| core.worn.iter().any(|s| s.count > 0 && s.item == item);
+        let belted = |item| {
+            core.inv[..HOTBAR_SLOTS]
+                .iter()
+                .any(|s| s.count > 0 && s.item == item)
+        };
+        worn(hood) && worn(tunic) && belted(medkit)
+    });
+    assert!(
+        dressed,
+        "never in burlap with a medkit on the belt: {:?} {:?} {:?} {}",
+        h.bot.builder(),
+        h.bot.builder().survey(),
+        h.bot.builder().stats,
+        h.explain()
+    );
+    // Learned at the tree, not found: the blueprints are known.
+    let recipes = server::net::bake_all(&content).unwrap().craft;
+    let recipe_of = |item: u16| {
+        (0..usize::from(recipes.recipe_count))
+            .find(|&r| recipes.recipes[r].output == item)
+            .unwrap() as u16
+    };
+    let me = h.me();
+    for item in ["item.hatchet_metal", "item.pickaxe_metal", "item.medkit"] {
+        assert!(
+            sim_core::research::knows(me.known, recipe_of(id(item))),
+            "{item} not learned"
+        );
+    }
+    // Worn by the wear slots, and what it made is on the body: the metal
+    // tools and the crossbow on the belt, its arrows in the pack.
+    let worn = |item| me.worn.iter().any(|s| s.count > 0 && s.item == item);
+    assert!(worn(hood) && worn(tunic));
+    let belted = |item: &str| {
+        me.inv[..HOTBAR_SLOTS]
+            .iter()
+            .any(|s| s.count > 0 && s.item == id(item))
+    };
+    for item in [
+        "item.hatchet_metal",
+        "item.pickaxe_metal",
+        "item.crossbow",
+        "item.medkit",
+    ] {
+        assert!(belted(item), "{item} not on the belt: {}", h.explain());
+    }
+    assert!(
+        units_of(me, id("item.arrow_metal")) >= 20,
+        "{}",
+        h.explain()
+    );
+    let stats = h.bot.builder().stats;
+    assert!(stats.learned >= 3 && stats.made >= 5, "{stats:?}");
+    assert!(h.bot.stats.dressed >= 2, "{:?}", h.bot.stats);
+    for verb in ["unlock", "craft", "move"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{stats:?} {}", h.explain());
+}
+
+/// Raw meat in the pack is cooked before it is eaten: a fire pit crafted
+/// and put down in front of it, opened (`E` on the fire), wood and a piece
+/// of meat a slot laid in with its panel open, lit (`C` on the same fire),
+/// each piece taken off as soon as it is done, the fire put out. Hungry,
+/// it eats the cooked meat.
+#[test]
+fn a_survivor_cooks_its_meat_and_eats_it() {
+    let mut h = Harness::new(false);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let (meat, wood) = (stack("item.raw_meat", 10), stack("item.wood", 400));
+    h.stage(|p| {
+        p.inv[HOTBAR_SLOTS] = meat;
+        p.inv[HOTBAR_SLOTS + 1] = wood;
+    });
+    let id = |name: &str| content.item_index(name).unwrap();
+    let (raw, cooked, burnt) = (
+        id("item.raw_meat"),
+        id("item.cooked_meat"),
+        id("item.burnt_meat"),
+    );
+    let done = h.until(4 * 60 * TICK_HZ, |b| {
+        b.cook_stats.cooked >= 10 && b.goal() != Some(Goal::Cook)
+    });
+    assert!(
+        done,
+        "the meat was not cooked: {:?} {}",
+        h.bot.cook_stats,
+        h.explain()
+    );
+    let me = h.me();
+    assert_eq!(units_of(me, raw), 0, "all of it went on the fire");
+    assert_eq!(units_of(me, cooked), 10, "every piece taken off cooked");
+    assert_eq!(units_of(me, burnt), 0, "none left on to burn");
+    assert_eq!(h.bot.cook_stats.fires, 1, "{:?}", h.bot.cook_stats);
+    // Its fire stands, put out, and holds no meat.
+    let w = &h.shard.world;
+    let fire_row = w
+        .deploy
+        .defs
+        .iter()
+        .position(|d| d.item == id("item.fire_pit"))
+        .unwrap();
+    let fire = w
+        .deploys
+        .entries()
+        .iter()
+        .find(|d| usize::from(d.row) == fire_row && d.owner == ID)
+        .copied()
+        .expect("its fire pit");
+    let key = sim_core::deploy::box_key(fire.cx, fire.cz, 0);
+    let held = w
+        .deploys
+        .boxes()
+        .iter()
+        .find(|b| sim_core::deploy::box_key(b.cx, b.cz, b.level) == key)
+        .map(|b| b.items)
+        .unwrap();
+    assert!(held
+        .iter()
+        .all(|s| s.count == 0 || (s.item != raw && s.item != cooked)));
+    for verb in ["craft", "deploy", "container", "move", "use"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert!(h.pick_checks >= 1 && h.panel_checks >= 10 && h.use_checks >= 2);
+    // Hungry: the cooked meat is what it eats.
+    h.stage(|p| p.food = 50);
+    let ate = h.until(60 * TICK_HZ, |b| b.stats.eaten > 0);
+    assert!(ate, "never ate: {}", h.explain());
+    assert!(units_of(h.me(), cooked) < 10, "it ate the cooked meat");
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{:?} {}", h.bot.cook_stats, h.explain());
 }

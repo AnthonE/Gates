@@ -699,6 +699,23 @@ fn free_slots(core: &ClientCore) -> usize {
         .count()
 }
 
+/// What `units` crafts of `recipe` make fits the pack: room for it as it
+/// stands, or a slot its inputs, taken at the queue in slot order
+/// (`craft::inv_take`), leave empty.
+pub fn craft_fits(core: &ClientCore, recipe: u16, units: u16) -> bool {
+    let Some(def) = core.recipes.recipes.get(usize::from(recipe)) else {
+        return false;
+    };
+    if room_for(core, def.output) {
+        return true;
+    }
+    let mut inv = core.inv;
+    for &(input, per) in &def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())] {
+        sim_core::craft::inv_take(&mut inv, input, u32::from(per) * u32::from(units));
+    }
+    inv[..INV_SLOTS].iter().any(|s| s.count == 0)
+}
+
 /// One more `item` fits the pack: an empty slot, or a stack of it with room.
 fn room_for(core: &ClientCore, item: u16) -> bool {
     let max = core.catalog.row(usize::from(item)).stack_max;
@@ -1855,6 +1872,18 @@ impl Builder {
         self.waiting.is_none() && self.want.is_none() && !self.passage.busy()
     }
 
+    /// Is this cell on its plot or next to it: somewhere a fire pit put
+    /// down would be in the way of its doors and its yard.
+    pub fn near_plot(&self, cx: u16, cz: u16) -> bool {
+        self.plan.is_some_and(|p| {
+            let (dx, dz) = (
+                i32::from(cx) - i32::from(p.cx),
+                i32::from(cz) - i32::from(p.cz),
+            );
+            (-1..=3).contains(&dx) && (-2..=2).contains(&dz)
+        })
+    }
+
     /// Is this address part of its own base (the furnace's yard cell too)?
     pub fn owns(&self, cx: u16, cz: u16, _level: u8, _loc: u8) -> bool {
         self.plan.is_some_and(|p| on_plot(&p, cx, cz))
@@ -2524,11 +2553,18 @@ impl Builder {
     /// (`Self::craft`).
     fn tool_fits(&self, core: &ClientCore, s: &Spec) -> bool {
         match s.op {
-            Op::Make(name, _) => item_named(core, name).is_some_and(|it| room_for(core, it)),
+            Op::Make(name, _) => item_named(core, name).is_some_and(|it| {
+                room_for(core, it)
+                    || recipe_for(core, it, &self.stations(core))
+                        .is_some_and(|(r, ..)| craft_fits(core, r, 1))
+            }),
             Op::Code | Op::Learn(_) => true,
-            _ => self
-                .tool(core, s)
-                .is_some_and(|t| count(core, t) > 0 || room_for(core, t)),
+            _ => self.tool(core, s).is_some_and(|t| {
+                count(core, t) > 0
+                    || room_for(core, t)
+                    || recipe_for(core, t, &self.stations(core))
+                        .is_some_and(|(r, ..)| craft_fits(core, r, 1))
+            }),
         }
     }
 
@@ -2660,7 +2696,7 @@ impl Builder {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };
-        if !room_for(core, item) {
+        if !craft_fits(core, recipe, units) {
             return Act::Fail(Why::PackFull);
         }
         // A full queue refuses whatever is asked: it drains on its own.
@@ -3791,6 +3827,19 @@ mod tests {
         }
         assert_eq!((b.fails[0], b.given_up), (0, 0));
         assert!(b.want.is_none(), "nothing sent, nothing awaited");
+        // A full pack whose inputs empty a slot when the queue takes them
+        // has the room after all; one whose inputs leave every slot full,
+        // not.
+        core.inv[3] = sim_core::gather::ItemStack {
+            item: 5,
+            count: 150,
+            cond: 0,
+            skin: 0,
+        };
+        assert!(!craft_fits(&core, 0, 1), "50 of 150 left in the slot");
+        core.inv[3].count = 100;
+        assert!(craft_fits(&core, 0, 1), "the slot the inputs leave empty");
+        core.inv[3] = core.inv[4];
         core.inv[INV_SLOTS - 1].count = 0;
         assert!(matches!(
             b.craft(&core, 0, tool, 1),

@@ -153,6 +153,12 @@ pub struct Page {
     pub throw: Throw,
     /// Health one use restores, from the wire catalog.
     pub heal: u16,
+    /// What a fire makes of it, and in how many ticks (`NO_ITEM` for
+    /// nothing): raw meat cooks, cooked meat burns.
+    pub cooks: u16,
+    pub cook_ticks: u16,
+    /// A recycler takes it apart (`content/cooking.toml`'s recycler rows).
+    pub recycles: bool,
 }
 
 impl Page {
@@ -174,6 +180,9 @@ impl Page {
             blast_cm: 0,
         },
         heal: 0,
+        cooks: NO_ITEM,
+        cook_ticks: 0,
+        recycles: false,
     };
 
     pub fn swings(&self) -> bool {
@@ -213,6 +222,8 @@ pub struct Rules {
     /// The pig's and the wolf's rows.
     pig: Beast,
     wolf: Beast,
+    /// What an oven burns, by content index.
+    fuel: u16,
 }
 
 impl Rules {
@@ -233,6 +244,7 @@ impl Rules {
             count: content.items.len().min(MAX_ITEM_DEFS),
             pig: Beast::default(),
             wolf: Beast::default(),
+            fuel: content.item_index(&content.fuel.item).unwrap_or(NO_ITEM),
         });
         for m in &content.mobs {
             let n = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
@@ -303,6 +315,25 @@ impl Rules {
                 blast_cm: t.blast_cm,
             };
         }
+        for c in &content.cooks {
+            let (Some(input), Some(output)) =
+                (content.item_index(&c.input), content.item_index(&c.output))
+            else {
+                continue;
+            };
+            let Some(page) = rules.pages.get_mut(usize::from(input)) else {
+                continue;
+            };
+            match c.station {
+                content::schema::CookStation::Fire => {
+                    page.cooks = output;
+                    let ticks = c.seconds.saturating_mul(sim_core::limits::TICK_HZ);
+                    page.cook_ticks = u16::try_from(ticks).unwrap_or(u16::MAX);
+                }
+                content::schema::CookStation::Recycler => page.recycles = true,
+                content::schema::CookStation::Furnace => {}
+            }
+        }
         for w in &content.weapons {
             let Some(idx) = content.item_index(&w.id).map(usize::from) else {
                 continue;
@@ -347,6 +378,8 @@ pub struct Book {
     wire_of: [u16; MAX_ITEM_DEFS],
     pig: Beast,
     wolf: Beast,
+    /// What an oven burns, by wire id.
+    fuel: u16,
     ready: bool,
     /// Wire items no page was found for, by name.
     pub unknown: u16,
@@ -380,6 +413,7 @@ impl Book {
             radius_cm: 0,
             height_cm: 0,
         },
+        fuel: NO_ITEM,
         ready: false,
         unknown: 0,
         disagreements: 0,
@@ -402,6 +436,11 @@ impl Book {
 
     pub fn pig(&self) -> &Beast {
         &self.pig
+    }
+
+    /// What an oven burns (`NO_ITEM` before the catalog is in).
+    pub fn fuel(&self) -> u16 {
+        self.fuel
     }
 
     pub fn wolf(&self) -> &Beast {
@@ -447,7 +486,13 @@ impl Book {
         for page in &mut self.pages[..count] {
             let round = usize::from(page.ranged.round);
             page.ranged.round = wire_of.get(round).copied().unwrap_or(NO_ITEM);
+            let cooked = usize::from(page.cooks);
+            page.cooks = wire_of.get(cooked).copied().unwrap_or(NO_ITEM);
         }
+        self.fuel = wire_of
+            .get(usize::from(rules.fuel))
+            .copied()
+            .unwrap_or(NO_ITEM);
         self.wire_of = wire_of;
         self.pig = rules.pig;
         self.wolf = rules.wolf;
@@ -549,6 +594,17 @@ mod tests {
         let (wolf, pig) = (book.wolf(), book.pig());
         assert!(wolf.hp > 0 && wolf.bite > 0 && wolf.reach_cm > 0 && wolf.bite_ticks > 0);
         assert!(wolf.radius_cm > 0 && wolf.height_cm > 0 && pig.hp > 0);
+        // What a fire makes of meat, what it burns, what a recycler takes.
+        let wire = |id| book.wire(&rules, id).unwrap();
+        let raw = book.page(wire("item.raw_meat"));
+        assert_eq!(raw.cooks, wire("item.cooked_meat"));
+        assert!(raw.cook_ticks > 0 && raw.class != Class::Food);
+        let cooked = book.page(wire("item.cooked_meat"));
+        assert_eq!(cooked.cooks, wire("item.burnt_meat"));
+        assert_eq!(cooked.class, Class::Food);
+        assert_eq!(book.fuel(), wire("item.wood"));
+        assert!(book.page(wire("item.gears")).recycles);
+        assert_eq!(book.page(wire("item.wood")).cooks, NO_ITEM);
     }
 
     /// Where the wire disagrees, the wire is kept and the difference
