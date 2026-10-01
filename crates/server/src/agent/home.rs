@@ -135,8 +135,9 @@ pub struct HomeStats {
 pub struct Home {
     /// Build cells (and storey) of its own sleeping bags.
     bags: [Option<(u16, u16, u8)>; BAG_CAP],
-    /// The last blow or death near one of them.
+    /// The last blow or death near one of them, and where it was.
     alarm: Option<u32>,
+    alarm_at: Option<[f32; 2]>,
     /// The last blow, break or blast on the base itself: not a bite taken
     /// standing beside it.
     raid: Option<u32>,
@@ -173,6 +174,7 @@ impl Home {
         Self {
             bags: [None; BAG_CAP],
             alarm: None,
+            alarm_at: None,
             raid: None,
             asked: None,
             verdict: None,
@@ -321,14 +323,19 @@ impl Home {
     /// that is home being fought over.
     pub fn on_hurt(&mut self, at: [f32; 2], tick: u32) {
         if self.near_home(at) {
-            self.alarm = Some(tick);
+            self.sound(at, tick);
         }
+    }
+
+    fn sound(&mut self, at: [f32; 2], tick: u32) {
+        self.alarm = Some(tick);
+        self.alarm_at = Some(at);
     }
 
     /// A blast heard here: near home, somebody is blowing their way in.
     pub fn on_blast(&mut self, at: [f32; 2], tick: u32) {
         if self.near_home(at) {
-            self.alarm = Some(tick);
+            self.sound(at, tick);
         }
         if self.near_base(at) {
             self.raid = Some(tick);
@@ -338,6 +345,7 @@ impl Home {
     /// A blow landed on a piece or deployable of its own base.
     pub fn on_struck(&mut self, tick: u32) {
         self.alarm = Some(tick);
+        self.alarm_at = self.base;
         self.raid = Some(tick);
     }
 
@@ -355,6 +363,7 @@ impl Home {
             .is_some_and(|p| p > 0)
         {
             self.alarm = Some(tick);
+            self.alarm_at = self.base;
             self.raid = Some(tick);
         }
     }
@@ -460,15 +469,50 @@ impl Home {
             .filter(|_| self.raid.is_some_and(|at| tick.wrapping_sub(at) < within))
     }
 
+    /// A blow, blast, shot or death at home fresher than `within`.
+    pub fn alarmed(&self, tick: u32, within: u32) -> bool {
+        self.alarm.is_some_and(|at| tick.wrapping_sub(at) < within)
+    }
+
     pub fn under_attack(&self, tick: u32) -> bool {
         self.alarm
             .is_some_and(|at| tick.wrapping_sub(at) < HOME_ALARM_TICKS)
     }
 
+    /// Shots landing here, heard: near home, somebody is fighting over it.
+    pub fn on_shot(&mut self, at: [f32; 2], tick: u32) {
+        if self.near_home(at) {
+            self.sound(at, tick);
+        }
+    }
+
     /// The death screen's choice: a ready bag of its own, unless home is
-    /// where the fight is; otherwise the beach.
-    pub fn wake_on_bag(&self, core: &ClientCore, tick: u32) -> bool {
-        core.any_bag_ready() && !self.under_attack(tick)
+    /// where the fight is; otherwise the beach. The game wakes a body on
+    /// the ready bag nearest where it fell (`fell`), so while home is
+    /// fought over that bag is taken only when it lies away from the base:
+    /// a bag elsewhere is a safe start, the one at home is the fight again.
+    pub fn wake_on_bag(&self, core: &ClientCore, tick: u32, fell: [f32; 2]) -> bool {
+        self.wake_on(core.own_bags(), tick, fell)
+    }
+
+    /// [`Home::wake_on_bag`] over the death screen's list of its bags.
+    pub fn wake_on(&self, bags: &[BagAnchor], tick: u32, fell: [f32; 2]) -> bool {
+        let ready = bags.iter().filter(|b| b.ready);
+        if !self.under_attack(tick) {
+            return ready.count() > 0;
+        }
+        let mut nearest: Option<(f32, [f32; 2])> = None;
+        for b in ready {
+            let (x, z) = cell_center(b.cx, b.cz);
+            let d = (x - fell[0]).hypot(z - fell[1]);
+            if nearest.is_none_or(|(n, _)| d < n) {
+                nearest = Some((d, [x, z]));
+            }
+        }
+        let fought = self.alarm_at;
+        nearest.is_some_and(|(_, [x, z])| {
+            fought.is_some_and(|[fx, fz]| (fx - x).hypot(fz - z) > HOME_ALARM_M)
+        })
     }
 
     /// The answer went out; count which one.
@@ -862,6 +906,41 @@ mod tests {
         home.asked(5, 5, 0, LOC_PLANE);
         home.on_refused(3);
         assert_eq!(home.take_verdict(), Some(Placed::Refused(3)));
+    }
+
+    #[test]
+    fn under_attack_it_wakes_on_a_bag_away_from_the_fight_or_on_the_beach() {
+        let mut home = Home::new();
+        let (hx, hz) = cell_center(100, 100);
+        home.set_base(Some([hx, hz]));
+        let bag = |cx: u16, ready: bool| BagAnchor {
+            cx,
+            cz: 100,
+            level: 0,
+            ready,
+        };
+        let (near, far) = (bag(100, true), bag(140, true));
+        assert!(home.wake_on(&[near], 10, [hx, hz]), "home is safe");
+        assert!(
+            !home.wake_on(&[bag(100, false)], 10, [hx, hz]),
+            "none ready"
+        );
+        home.on_struck(20);
+        // The game wakes it on the ready bag nearest where it fell.
+        assert!(!home.wake_on(&[near], 30, [hx, hz]), "only the home bag");
+        assert!(
+            !home.wake_on(&[near, far], 30, [hx, hz]),
+            "the home bag is nearer"
+        );
+        let (fx, _) = cell_center(140, 100);
+        assert!(
+            home.wake_on(&[near, far], 30, [fx - 20.0, hz]),
+            "the bag elsewhere"
+        );
+        assert!(
+            home.wake_on(&[near], 20 + HOME_ALARM_TICKS, [hx, hz]),
+            "quiet again"
+        );
     }
 
     #[test]

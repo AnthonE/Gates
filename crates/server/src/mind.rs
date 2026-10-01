@@ -70,6 +70,10 @@ pub const SMELTS: [(&str, &str); 2] = [("Metal Ore", "Metal Fragments"), ("Sulfu
 /// The deployable a body wakes on, by catalog name: what the playbook
 /// crafts once it has stone tools.
 pub const BAG_ITEM: &str = "Sleeping Bag";
+
+/// What a raid plants, and how many the playbook keeps in the pack.
+pub const SATCHEL_ITEM: &str = crate::agent::raid::SATCHEL_ITEM;
+pub const SCRIPTED_SATCHELS: u32 = 4;
 /// The scripted policy's "running low" line for food and water, percent of
 /// the meter. Also the default for when a model is told a meter is low.
 pub const SCRIPTED_LOW_METER_PCT: u32 = 40;
@@ -171,6 +175,12 @@ pub enum Goal {
     /// Take gears, rope and tarp apart at its recycler, putting it down if
     /// none stands near: junk, fragments and cloth.
     Recycle,
+    /// Home is under attack or damaged: in through the doors, the fight
+    /// met from inside, then the damage mended and the doors shut.
+    Defend,
+    /// Break into the weakest base it has seen that is worth it, with
+    /// satchels or blows, and take what its boxes hold.
+    Raid,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -198,7 +208,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 20] = [
+    pub const FIXED: [Goal; 22] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -219,6 +229,8 @@ impl Goal {
         Goal::Loot,
         Goal::Cook,
         Goal::Recycle,
+        Goal::Defend,
+        Goal::Raid,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -245,6 +257,8 @@ impl Goal {
             Goal::Loot => "loot",
             Goal::Cook => "cook",
             Goal::Recycle => "recycle",
+            Goal::Defend => "defend",
+            Goal::Raid => "raid",
         }
     }
 
@@ -278,53 +292,31 @@ impl Goal {
     /// What the goal means, in the words a source is given. Worker only.
     pub fn describe(self) -> String {
         match self {
-            Goal::Explore => "Walk somewhere new to find trees, rocks, bushes or water.".into(),
-            Goal::GatherWood => {
-                "Chop one visible tree with the best tool in the belt. Wood makes tools.".into()
-            }
-            Goal::GatherStone => {
-                "Mine one stone node. Stone makes rocks, hatchets and pickaxes.".into()
-            }
-            Goal::GatherOre => "Mine one metal or sulfur ore node.".into(),
-            Goal::Forage => {
-                "Pick one bush for cloth and berries. Berries are food and water.".into()
-            }
-            Goal::Craft(name) => format!("Craft one {} from the pack.", name.as_str()),
-            Goal::Eat => {
-                "Eat food from the pack until food is mostly full. Much food also restores some water.".into()
-            }
-            Goal::Drink => {
-                "Drink until water is mostly full: juicy food from the pack, else the sea, which costs a little health.".into()
-            }
-            Goal::Flee => "Run away from the players or animals in view.".into(),
-            Goal::Wait => "Stand still for a few seconds.".into(),
-            Goal::Fight => {
-                "Fight the nearest player in view with the belt's best weapon; backs off if losing."
-                    .into()
-            }
+            Goal::Explore => "Walk somewhere new.".into(),
+            Goal::GatherWood => "Chop a tree in view; wood makes tools.".into(),
+            Goal::GatherStone => "Mine a stone node in view.".into(),
+            Goal::GatherOre => "Mine a metal or sulfur node in view.".into(),
+            Goal::Forage => "Pick a bush: cloth, and berries for food and water.".into(),
+            Goal::Craft(name) => format!("Craft one {}.", name.as_str()),
+            Goal::Eat => "Eat from the pack until food is mostly full.".into(),
+            Goal::Drink => "Drink until water is mostly full: juicy food, else the sea (costs health).".into(),
+            Goal::Flee => "Run from the players or animals in view.".into(),
+            Goal::Wait => "Stand still a few seconds.".into(),
+            Goal::Fight => "Fight the nearest player in view; backs off if losing.".into(),
             Goal::Hunt => "Kill the nearest animal in view for meat and hide.".into(),
-            Goal::Heal => "Use a bandage or medkit until health is mostly full.".into(),
-            Goal::Bag => {
-                "Put a sleeping bag down near here, to wake beside it after a death.".into()
-            }
-            Goal::Recover => {
-                "Walk back to the backpack dropped at the last death and take what it holds."
-                    .into()
-            }
-            Goal::Build => {
-                "Build the next part of the base or gear from what is in the pack; choose a plot first if there is none.".into()
-            }
-            Goal::GoHome => "Walk home and in through the doors, shutting them behind.".into(),
+            Goal::Heal => "Use bandages or a medkit.".into(),
+            Goal::Bag => "Put a sleeping bag down here, to wake beside after a death.".into(),
+            Goal::Recover => "Walk back to the death backpack and take what it holds.".into(),
+            Goal::Build => "Build the next part of the base from the pack; choose a plot if none.".into(),
+            Goal::GoHome => "Walk home and in, shutting the doors.".into(),
             Goal::Stash => {
-                "Go home: feed the cupboard if it runs low, put what the belt does not need in the box, take out what the base needs.".into()
+                "Go home: feed the cupboard, box what the belt does not need, take out what the base needs.".into()
             }
-            Goal::Loot => {
-                "Smash known barrels and empty crates, or go to the nearest loot place on the map.".into()
-            }
-            Goal::Cook => {
-                "Cook the raw meat at a fire, putting one down if none is near; cooked meat is good food.".into()
-            }
-            Goal::Recycle => "Take gears, rope and tarp apart at a recycler for junk.".into(),
+            Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
+            Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
+            Goal::Recycle => "Recycle gears, rope and tarp for junk.".into(),
+            Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
+            Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
         }
     }
 }
@@ -656,6 +648,8 @@ pub struct HomeSense {
     pub bearing: u8,
     /// Blows, breaks or blasts at home a moment ago.
     pub attacked: bool,
+    /// Something of it is damaged that a repair would mend.
+    pub damaged: bool,
 }
 
 impl HomeSense {
@@ -668,6 +662,7 @@ impl HomeSense {
             "distance": self.distance.word(),
             "bearing": BEARINGS[self.bearing as usize % 8],
             "under_attack": self.attacked,
+            "damaged": self.damaged,
         })
     }
 }
@@ -752,6 +747,9 @@ pub struct Summary {
     pub loot: Sighting,
     /// The nearest place on the map with crates it has not found bare.
     pub loot_place: Option<Place>,
+    /// Bases it has seen that are worth raiding now: how many, and the
+    /// nearest's distance and bearing.
+    pub raid: Sighting,
     /// What its box held when last opened.
     pub stored: [(Name, u32); SUMMARY_STORED],
     pub stored_len: u8,
@@ -839,6 +837,7 @@ impl Summary {
             distance: Distance::Here,
             bearing: 0,
             attacked: false,
+            damaged: false,
         },
         bag_ready: false,
         night: false,
@@ -855,6 +854,11 @@ impl Summary {
             bearing: 0,
         },
         loot_place: None,
+        raid: Sighting {
+            count: 0,
+            nearest_m: 0,
+            bearing: 0,
+        },
         stored: [(Name::EMPTY, 0); SUMMARY_STORED],
         stored_len: 0,
         take_out: false,
@@ -975,6 +979,7 @@ impl Summary {
             "stations": { "workbench": self.bench, "furnace": self.furnace },
             "loot_known": self.loot.json(),
             "loot_place": self.loot_place.map(|p| p.json()),
+            "raid_targets": self.raid.json(),
             "my_box": {
                 "holds": self.stored().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "has_what_the_base_needs": self.take_out,
@@ -1514,6 +1519,11 @@ impl Scripted {
         if hp < SCRIPTED_HEAL_HP_PCT && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: hurt, and nobody about");
         }
+        // Home fought over, or damaged: back inside, the fight met from
+        // there, then the damage mended.
+        if s.offers(Goal::Defend) {
+            return (Goal::Defend, "scripted: home is under attack or damaged");
+        }
         let low = SCRIPTED_LOW_METER_PCT;
         let bush = s.offers(Goal::Forage) && s.bushes.count > 0;
         if pct(s.water, s.water_max) < low {
@@ -1597,6 +1607,11 @@ impl Scripted {
         {
             return (Goal::Stash, "scripted: home to the box and the cupboard");
         }
+        // Night, and a base worth breaking into is known: what it holds is
+        // worth more than another hour of gathering.
+        if s.night && s.offers(Goal::Raid) {
+            return (Goal::Raid, "scripted: night, and a base worth raiding");
+        }
         // Raw meat off a kill is no food until it is cooked.
         if s.offers(Goal::Cook) {
             return (Goal::Cook, "scripted: cook the raw meat");
@@ -1637,6 +1652,12 @@ impl Scripted {
                 if let Some(name) = s.craftable().iter().find(|n| n.as_str() == item) {
                     return (Goal::Craft(*name), "scripted: arming up");
                 }
+            }
+        }
+        // Satchels for the raids, once the bench makes them.
+        if s.count_of(SATCHEL_ITEM) < SCRIPTED_SATCHELS {
+            if let Some(name) = s.craftable().iter().find(|n| n.as_str() == SATCHEL_ITEM) {
+                return (Goal::Craft(*name), "scripted: satchels for a raid");
             }
         }
         // Ore in the pack and its own furnace standing: smelted, a batch at
@@ -2119,6 +2140,40 @@ mod tests {
         let v = s.to_json();
         assert_eq!(v["home"]["state"], "none");
         assert_eq!(v["cupboard_needs_feeding"], false);
+    }
+
+    /// Home under attack or damaged comes before everything but running
+    /// and healing; a raid goes at night, ahead of the base's own work.
+    #[test]
+    fn the_playbook_defends_home_first_and_raids_by_night() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (30, 100, 30, 100);
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.bags = 1;
+        s.free_slots = 20;
+        for g in [Goal::Explore, Goal::Eat, Goal::Build, Goal::Raid] {
+            s.offer(g);
+        }
+        s.milestone = Milestone::Upstairs;
+        assert_eq!(scripted.pick(&s).0, Goal::Eat, "hungry, home is fine");
+        s.offer(Goal::Defend);
+        s.home.attacked = true;
+        assert_eq!(scripted.pick(&s).0, Goal::Defend, "home before food");
+        s.options_len = 0;
+        (s.food, s.water) = (100, 100);
+        for g in [Goal::Explore, Goal::Build, Goal::Raid] {
+            s.offer(g);
+        }
+        assert_eq!(scripted.pick(&s).0, Goal::Build, "by day, the base");
+        s.night = true;
+        assert_eq!(scripted.pick(&s).0, Goal::Raid, "by night, a raid");
+        s.raid.add(80.0, 2);
+        let v = s.to_json();
+        assert_eq!(v["raid_targets"]["count"], 1);
+        assert_eq!(v["raid_targets"]["bearing"], "right");
     }
 
     /// The stations: fragments for the bench come from loot until a

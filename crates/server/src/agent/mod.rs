@@ -9,7 +9,9 @@
 //! would build ([`site`]), the building ([`build`]), living in it
 //! ([`stash`]), the code on its locks ([`lock`]), loot runs to barrels and
 //! crates ([`loot`]), what the next milestone comes down to ([`plan`]), and
-//! cooking its meat and recycling and researching at ovens ([`oven`]).
+//! cooking its meat and recycling and researching at ovens ([`oven`]),
+//! defending home and mending it ([`defend`]), and raiding other people's
+//! bases its eyes found ([`raid`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -22,6 +24,7 @@ pub mod aim;
 pub mod build;
 pub mod combat;
 pub mod cover;
+pub mod defend;
 pub mod hands;
 pub mod home;
 pub mod intent;
@@ -30,6 +33,7 @@ pub mod lock;
 pub mod loot;
 pub mod oven;
 pub mod plan;
+pub mod raid;
 pub mod route;
 pub mod site;
 pub mod stash;

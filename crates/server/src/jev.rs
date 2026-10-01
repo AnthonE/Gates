@@ -227,6 +227,7 @@ mod tests {
             distance: crate::mind::Distance::Far,
             bearing: 5,
             attacked: true,
+            damaged: true,
         };
         for i in 0..crate::mind::SUMMARY_STORED {
             s.stored[i] = (long(300 + i), u32::MAX);
@@ -247,7 +248,7 @@ mod tests {
         }
         s.raw_len = crate::mind::SUMMARY_RAW as u8;
         (s.bench, s.furnace) = (true, true);
-        s.loot = seen;
+        (s.loot, s.raid) = (seen, seen);
         s.loot_place = Some(crate::mind::Place {
             distance: crate::mind::Distance::Far,
             bearing: 5,

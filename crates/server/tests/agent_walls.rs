@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 18] = [
+const EXPECTED_VERBS: [&str; 20] = [
     "craft",
     "consume",
     "drink",
@@ -91,6 +91,8 @@ const EXPECTED_VERBS: [&str; 18] = [
     "demolish",
     "unlock",
     "research",
+    "repair",
+    "throw",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -395,6 +397,7 @@ struct Harness {
     /// the building plan to place, the hammer to upgrade or repair.
     plan: u16,
     hammer: u16,
+    satchel: u16,
     /// Held-item checks passed at send time.
     held_checks: u32,
     /// Door uses that were the human client's `E` pick when sent.
@@ -441,6 +444,7 @@ impl Harness {
         };
         let plan = content.item_index("item.building_plan").unwrap();
         let hammer = content.item_index("item.hammer").unwrap();
+        let satchel = content.item_index("item.satchel_charge").unwrap();
         let mut bot = Survivor::with(mind, opts);
         use server::botclient::BotDriver;
         bot.welcome(&protocol::Welcome {
@@ -469,6 +473,7 @@ impl Harness {
             max_turn: 0,
             plan,
             hammer,
+            satchel,
             held_checks: 0,
             use_checks: 0,
             pick_checks: 0,
@@ -485,6 +490,7 @@ impl Harness {
             }
             ActionMsg::Place { .. } => Some(self.plan),
             ActionMsg::Upgrade { .. } | ActionMsg::Repair { .. } => Some(self.hammer),
+            ActionMsg::Throw { .. } => Some(self.satchel),
             _ => None,
         }
     }
@@ -687,8 +693,23 @@ impl Harness {
                     );
                     self.pick_checks += 1;
                 }
-                // Backspace takes the nearest structure to the feet.
+                // Backspace takes the nearest structure to the feet; so do
+                // `R` (repair) and `X` (plant the charge in hand).
                 ActionMsg::Demolish {
+                    deploy,
+                    cx,
+                    cz,
+                    level,
+                    loc,
+                }
+                | ActionMsg::Repair {
+                    deploy,
+                    cx,
+                    cz,
+                    level,
+                    loc,
+                }
+                | ActionMsg::Throw {
                     deploy,
                     cx,
                     cz,
@@ -699,7 +720,7 @@ impl Harness {
                     assert!(
                         near.is_some_and(|t| t.store.is_deploy() == deploy
                             && (t.cx, t.cz, t.level, t.loc) == (cx, cz, level, loc)),
-                        "the agent took down {cx},{cz},{level},{loc}, not the nearest \
+                        "the agent worked {cx},{cz},{level},{loc}, not the nearest \
                          structure ({near:?}), at tick {}",
                         self.tick
                     );
@@ -2714,4 +2735,502 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         "the agent's frame loop touched the allocator"
     );
     println!("{:?} {}", h.bot.oven_stats, h.explain());
+}
+
+impl Harness {
+    /// The puppet stands at (`x`, `z`) facing `yaw` with `weapon` in hand,
+    /// swinging it this tick if `swing`. Scene staging in both shards.
+    fn puppet_at(
+        &mut self,
+        x: f32,
+        z: f32,
+        yaw: u16,
+        weapon: sim_core::gather::ItemStack,
+        swing: bool,
+    ) {
+        for core in [&mut self.shard, &mut self.replay] {
+            let haven = core.world.haven;
+            let Some(p) = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == self.puppet_id)
+            else {
+                return;
+            };
+            p.body = sim_core::movement::Body::at(SEED, &haven, x, z);
+            p.inv[0] = weapon;
+        }
+        let mut dg = InputDatagram::new(0, 0, sim_core::limits::INTERP_DELAY_TICKS);
+        dg.push(sim_core::input::InputFrame {
+            seq: self.tick as u16,
+            buttons: if swing { BTN_PRIMARY } else { 0 },
+            yaw,
+            pitch: 128,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut bytes = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
+        let len = encode_input(&dg, &mut bytes).unwrap();
+        let decoded = decode_input(&bytes[..len]).unwrap();
+        self.shard.push_input(self.puppet_slot, &decoded);
+        self.replay.push_input(self.puppet_slot, &decoded);
+    }
+
+    /// The puppet sends this action, once its lane takes one; the agent
+    /// plays on meanwhile.
+    fn puppet_act(&mut self, msg: ActionMsg) {
+        for _ in 0..10 * TICK_HZ {
+            if self.shard.wants_action(self.puppet_slot)
+                && self.replay.wants_action(self.puppet_slot)
+            {
+                break;
+            }
+            self.step();
+        }
+        let bytes = {
+            let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+            let len = encode_puppet(&msg, &mut buf);
+            buf[..len].to_vec()
+        };
+        self.shard
+            .push_action(self.puppet_slot, decode_action(&bytes).unwrap());
+        self.replay
+            .push_action(self.puppet_slot, decode_action(&bytes).unwrap());
+        // Its own pace, as a person's hands have one.
+        for _ in 0..8 {
+            self.step();
+        }
+    }
+}
+
+/// The wire bytes of the puppet's building actions.
+fn encode_puppet(msg: &ActionMsg, buf: &mut [u8]) -> usize {
+    match *msg {
+        ActionMsg::Place {
+            row,
+            cx,
+            cz,
+            level,
+            loc,
+            ..
+        } => protocol::encode_action_place(row, cx, cz, level, loc, false, 0, buf),
+        ActionMsg::Deploy {
+            row,
+            cx,
+            cz,
+            level,
+            loc,
+        } => protocol::encode_action_deploy(row, cx, cz, level, loc, buf),
+        ActionMsg::Upgrade {
+            cx,
+            cz,
+            level,
+            loc,
+            material,
+        } => protocol::encode_action_upgrade(cx, cz, level, loc, material, buf),
+        _ => panic!("the puppet builds, and only builds: {msg:?}"),
+    }
+    .unwrap()
+}
+
+/// The defence test's decision source: home when it is called back or
+/// damaged; the base's first two milestones; otherwise off exploring.
+struct HomeGuard;
+
+impl server::mind::DecisionSource for HomeGuard {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use server::mind::Milestone;
+        let goal = if s.offers(Goal::Defend) {
+            Goal::Defend
+        } else if s.milestone <= Milestone::Doors && s.offers(Goal::Build) {
+            Goal::Build
+        } else {
+            Goal::Explore
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+}
+
+/// Its base built to the doors, the body off exploring, a stranger takes a
+/// hatchet to a wall of its core from outside and goes. The alarm calls it
+/// home: in through its doors, a wait for quiet, then a hammer crafted and
+/// in hand and the wall mended from where `R` takes it, and the doors shut
+/// behind it.
+#[test]
+fn a_survivor_comes_home_and_mends_the_wall_a_stranger_struck() {
+    use server::agent::build::{Milestone, Region};
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO};
+
+    let mind = Mind::inline(HomeGuard, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let kit = [
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.cloth", 60),
+    ];
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+
+    // 1. The shell, the doors, the bag and the box.
+    let built = h.until(20_000, |b| {
+        b.builder().survey().milestone > Milestone::Doors
+    });
+    assert!(
+        built,
+        "the base stopped at {:?}: {}",
+        h.bot.builder().survey(),
+        h.explain()
+    );
+    let plan = h.bot.builder().plan().expect("a plot");
+    let stand = h.bot.builder().stand().unwrap();
+    // 2. Off exploring, away from home.
+    let q = sim_core::movement::POS_XZ_Q;
+    let away = |h: &Harness| {
+        let me = h.view.get(ID).copied().unwrap();
+        (me.qx as f32 * q - stand[0]).hypot(me.qz as f32 * q - stand[1])
+    };
+    let mut gone = false;
+    for _ in 0..6_000 {
+        h.step();
+        if away(&h) > 25.0 && h.bot.goal() == Some(Goal::Explore) {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "it never left home: {}", h.explain());
+
+    // 3. The stranger strikes the south wall of the core from outside.
+    h.with_puppet();
+    h.until(2, |_| false);
+    let wall = (plan.cx, plan.cz, 0u8, LOC_EDGE_ZLO);
+    let hp = |h: &Harness| {
+        h.shard
+            .world
+            .pieces
+            .find(wall.0, wall.1, wall.2, wall.3)
+            .map(|r| r.hp)
+    };
+    let full = hp(&h).expect("the wall stands");
+    let (wx, wz) = (
+        f32::from(plan.cx) * BUILD_CELL_M + 1.5,
+        f32::from(plan.cz) * BUILD_CELL_M - 0.8,
+    );
+    for _ in 0..4 * TICK_HZ {
+        h.puppet_at(wx, wz, 0, hatchet, true);
+        h.step();
+    }
+    let struck = hp(&h).expect("the wall stands");
+    assert!(struck < full, "the stranger's blows never landed");
+    // ...and goes.
+    h.puppet_at(wx + 300.0, wz - 300.0, 0, hatchet, false);
+    let repairs = h.bot.defend_stats.repairs;
+
+    // 4. Home, quiet, the wall mended, the doors shut.
+    let called = h.until(60 * TICK_HZ, |b| b.goal() == Some(Goal::Defend));
+    assert!(called, "the alarm never called it home: {}", h.explain());
+    let mended = h.until(DEFEND_TICKS, |b| {
+        b.defend_stats.repairs > repairs && b.goal() != Some(Goal::Defend)
+    });
+    assert!(
+        mended,
+        "the wall was never mended: {:?} {:?} {}",
+        h.bot.defend_stats,
+        hp(&h),
+        h.explain()
+    );
+    assert_eq!(hp(&h), Some(full), "mended whole");
+    assert!(h.verbs.contains("repair") && h.verbs.contains("use"));
+    let w = &h.shard.world;
+    for (x, z, loc) in [
+        (plan.cx + 1, plan.cz + 1, LOC_EDGE_XLO),
+        (plan.cx + 1, plan.cz + 1, LOC_EDGE_ZLO),
+    ] {
+        let door = w.deploys.find(x, z, 0, loc).expect("its doors stand");
+        assert!(!door.open, "a door left open at {x},{z},{loc}");
+    }
+    let me = h.view.get(ID).copied().unwrap();
+    assert_ne!(h.bot.builder().region(&me), Region::Outside, "home, inside");
+    assert!(h.held_checks >= 1 && h.pick_checks >= 1);
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{:?} {}", h.bot.defend_stats, h.explain());
+}
+
+/// How long a defence may take in the lockstep run: the walk home, the
+/// wait for quiet, a hammer, the repair, the doors.
+const DEFEND_TICKS: u32 = 4 * 60 * TICK_HZ;
+
+/// The raid test's decision source: a raid whenever one is on offer, else
+/// stand and look round.
+struct RaidWhenOffered;
+
+impl server::mind::DecisionSource for RaidWhenOffered {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let goal = if s.offers(Goal::Raid) {
+            Goal::Raid
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+}
+
+/// A stranger's base four cells north of `at`: two cells, a wall round
+/// them (in stone if `stone`, else left in twig), a wooden door in the
+/// doorway of the south face, the face towards `at`, a cupboard, and a box
+/// of 300 fragments. Built through the puppet's own actions, the box
+/// filled and the stranger sent far away by scene staging. Returns the
+/// door's cell.
+fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u16) {
+    use server::population::base_rows;
+    use sim_core::build::{build_cell_of, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, MAT_STONE};
+
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    let rows = base_rows(&content).unwrap();
+    let (bx, bz) = (build_cell_of(at.0) as u16, build_cell_of(at.1) as u16 + 4);
+    h.with_puppet();
+    h.until(2, |_| false);
+    let builder_at = (f32::from(bx) * 3.0 + 3.0, f32::from(bz) * 3.0 + 1.5);
+    let pocket = [
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.hearth", 1),
+        stack("item.door_wood", 1),
+        stack("item.box_small", 1),
+    ];
+    for core in [&mut h.shard, &mut h.replay] {
+        let haven = core.world.haven;
+        let p = core
+            .world
+            .players
+            .iter_mut()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap();
+        p.body = sim_core::movement::Body::at(SEED, &haven, builder_at.0, builder_at.1);
+        for (i, s) in pocket.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    }
+    let place = |row: u16, cx: u16, cz: u16, loc: u8| ActionMsg::Place {
+        row,
+        cx,
+        cz,
+        level: 0,
+        loc,
+        freehand: false,
+        plate: 0,
+    };
+    let deploy = |row: u16, cx: u16, cz: u16, loc: u8| ActionMsg::Deploy {
+        row,
+        cx,
+        cz,
+        level: 0,
+        loc,
+    };
+    let walls = [
+        (bx, bz, LOC_EDGE_XLO, rows.wall),
+        (bx + 2, bz, LOC_EDGE_XLO, rows.wall),
+        (bx + 1, bz, LOC_EDGE_ZLO, rows.wall),
+        (bx, bz + 1, LOC_EDGE_ZLO, rows.wall),
+        (bx + 1, bz + 1, LOC_EDGE_ZLO, rows.wall),
+        (bx, bz, LOC_EDGE_ZLO, rows.doorway),
+    ];
+    let mut acts = vec![
+        place(rows.foundation, bx, bz, LOC_PLANE),
+        place(rows.foundation, bx + 1, bz, LOC_PLANE),
+        deploy(rows.hearth, bx, bz, LOC_PLANE),
+    ];
+    for &(cx, cz, loc, row) in &walls {
+        acts.push(place(row, cx, cz, loc));
+    }
+    if stone {
+        for &(cx, cz, loc, _) in &walls {
+            acts.push(ActionMsg::Upgrade {
+                cx,
+                cz,
+                level: 0,
+                loc,
+                material: MAT_STONE,
+            });
+        }
+    }
+    acts.push(deploy(rows.door, bx, bz, LOC_EDGE_ZLO));
+    acts.push(deploy(rows.container, bx + 1, bz, LOC_PLANE));
+    for a in acts {
+        h.puppet_act(a);
+    }
+    let loot = stack("item.metal_frags", 300);
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &mut core.world;
+        for &(cx, cz, loc, _) in &walls {
+            assert!(
+                w.pieces.find(cx, cz, 0, loc).is_some(),
+                "a wall at {cx},{cz},{loc}"
+            );
+        }
+        assert!(
+            w.deploys.find(bx, bz, 0, LOC_EDGE_ZLO).is_some(),
+            "the door"
+        );
+        let key = sim_core::deploy::box_key(bx + 1, bz, 0);
+        let i = w.deploys.box_index(key).expect("the box");
+        w.deploys.set_box_slot(i, 0, loot);
+        // Nobody home.
+        let haven = w.haven;
+        let p = w
+            .players
+            .iter_mut()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap();
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0 + 300.0, at.1 - 300.0);
+    }
+    (bx, bz)
+}
+
+/// A stranger's base in front of it: two cells in stone, a wooden door on
+/// the face towards it, a box of fragments inside, nobody home. With three
+/// satchels in the pack it sees the door is the weak face (two satchels by
+/// its hp), walks up to it, plants them one at a time, each in hand, from
+/// where `X` takes the door, stands clear of each blast, walks in through
+/// the doorway, opens the box with `E` and takes what it holds.
+#[test]
+fn a_raider_blows_the_door_of_a_stranger_s_base_and_empties_its_box() {
+    use sim_core::build::LOC_EDGE_ZLO;
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(RaidWhenOffered, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    let satchels = sim_core::gather::ItemStack {
+        count: 3,
+        ..common::stack(&content, "item.satchel_charge")
+    };
+    h.stage(|p| p.inv[HOTBAR_SLOTS] = satchels);
+    let (bx, bz) = stage_strangers_base(&mut h, at, true);
+    let frags = content.item_index("item.metal_frags").unwrap();
+    assert_eq!(units_of(h.me(), frags), 0);
+
+    // The raid: on offer once the door is seen, then through it.
+    let raided = h.until(3 * 60 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::Raid && r.outcome == Outcome::Done)
+    });
+    assert!(
+        raided,
+        "no raid finished: {:?} {}",
+        h.bot.bases().stats,
+        h.explain()
+    );
+    let w = &h.shard.world;
+    assert!(
+        w.deploys.find(bx, bz, 0, LOC_EDGE_ZLO).is_none(),
+        "the door is down"
+    );
+    assert_eq!(units_of(h.me(), frags), 300, "the box's fragments taken");
+    let stats = h.bot.bases().stats;
+    assert!(
+        stats.charges >= 1 && stats.breached >= 1 && stats.boxes >= 1,
+        "{stats:?}"
+    );
+    for verb in ["move", "throw", "container"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert!(h.held_checks >= 1 && h.pick_checks >= 2 && h.panel_checks >= 1);
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{stats:?} {}", h.explain());
+}
+
+/// The same base left in twig, and nothing in the pack to blow it with:
+/// the numbers say a twig wall comes down to a few blows of a hatchet, even
+/// on its hard face, so it takes the hatchet to the wall, walks in through
+/// the gap and empties the box.
+#[test]
+fn a_raider_hacks_through_a_twig_wall_when_the_numbers_say_so() {
+    let at = common::clearing(3);
+    let mind = Mind::inline(RaidWhenOffered, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    let hatchet = common::stack(&content, "item.hatchet_stone");
+    h.stage(|p| p.inv[1] = hatchet);
+    stage_strangers_base(&mut h, at, false);
+    let frags = content.item_index("item.metal_frags").unwrap();
+    let raided = h.until(3 * 60 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::Raid && r.outcome == Outcome::Done)
+    });
+    assert!(
+        raided,
+        "no raid finished: {:?} {}",
+        h.bot.bases().stats,
+        h.explain()
+    );
+    assert_eq!(units_of(h.me(), frags), 300, "the box's fragments taken");
+    let stats = h.bot.bases().stats;
+    assert!(stats.charges == 0 && stats.breached >= 1, "{stats:?}");
+    assert!(!h.verbs.contains("throw"));
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{stats:?} {}", h.explain());
 }

@@ -25,6 +25,7 @@
 use crate::agent::build::{craft_fits, queue_wait, queued, Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
 use crate::agent::cover;
+use crate::agent::defend::{self, DefendJob, DefendStats, Ward};
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
@@ -33,6 +34,7 @@ use crate::agent::lock::{LockCode, LockSecret};
 use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
 use crate::agent::oven::{self, DeviceJob, Keep, OvenStats, Tend, Work};
 use crate::agent::plan::{raw_needs, RAW_ROWS};
+use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
@@ -46,8 +48,9 @@ use crate::mind::{
 };
 use crate::pace::Pace;
 use client_core::core::{
-    ClientCore, APPLIED2_BAGS, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
-    APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_STOCK, APPLIED_STRUCT_HIT, APPLIED_VITALS,
+    ClientCore, APPLIED2_BAGS, APPLIED2_CHARGE, APPLIED2_CONT, APPLIED2_MOVE,
+    APPLIED2_OWN_STRUCT_HIT, APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_STOCK, APPLIED_STRUCT_HIT,
+    APPLIED_VITALS,
 };
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
@@ -62,7 +65,7 @@ use sim_core::limits::{
 };
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
-use sim_core::ranged::{ARROW_EYE_MM, IMPACT_BLAST, MM_PER_M};
+use sim_core::ranged::{ARROW_EYE_MM, IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, MM_PER_M};
 use sim_core::survival::{DRINK_REACH_M, REFUSE_C_FULL, REFUSE_C_NOT_FOOD};
 use sim_core::terrain::{self, Haven, Occupant, Slot, CELL_SIZE};
 use sim_core::{pitch_dir, yaw_dir};
@@ -101,6 +104,13 @@ pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
 pub const LOOT_GOAL_SECS: u32 = 240;
 /// A cook at a fire that has not finished in this long is stuck.
 pub const COOK_GOAL_SECS: u32 = 240;
+/// A defence (the walk home, the wait, the repairs) or a raid ends by then.
+pub const DEFEND_GOAL_SECS: u32 = 300;
+pub const RAID_GOAL_SECS: u32 = 300;
+/// An arrow or a bullet landing within this of my own shot is my own.
+pub const OWN_SHOT_TICKS: u32 = 2 * TICK_HZ;
+/// A raid that came to nothing is not offered again for this long.
+pub const RAID_HELD_TICKS: u32 = 60 * TICK_HZ;
 /// At a place on the map, how long the eyes look round for its crates.
 pub const LOOK_ROUND_TICKS: u32 = 8 * TICK_HZ;
 /// Swings at one barrel before it is left: three break it.
@@ -227,6 +237,9 @@ pub enum Phase {
     Stashing,
     Cooking,
     Recycling,
+    Defending,
+    Repairing,
+    Raiding,
     LoggingOff,
 }
 
@@ -262,6 +275,9 @@ impl Phase {
             Phase::Stashing => "At home: the cupboard and the box",
             Phase::Cooking => "Cooking at a fire",
             Phase::Recycling => "Recycling salvage",
+            Phase::Defending => "Home under attack: inside, defending it",
+            Phase::Repairing => "Mending the base with the hammer",
+            Phase::Raiding => "Raiding a base",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -350,6 +366,9 @@ pub struct Senses {
     /// place on the map that keeps crates.
     pub loot: Sighting,
     pub loot_place: Option<Place>,
+    /// Other people's bases it has seen that are worth raiding now, by its
+    /// temperament and with what it carries (`Bases::targets`).
+    pub raid: Sighting,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -404,6 +423,16 @@ pub struct Memory {
     /// Salvage the base does not want whole and a recycler to take it
     /// apart at, and no recycle came to nothing a moment ago.
     pub recycle: bool,
+    /// Something of its base is damaged and can be mended
+    /// (`defend::mendable`); a defence came to nothing a moment ago.
+    pub damaged: bool,
+    pub defend_held: bool,
+    /// Its temperament raids; a raid came to nothing a moment ago.
+    pub raids: bool,
+    pub raid_held: bool,
+    /// A blow, blast or shot at home fresh enough to call it back
+    /// (`defend::DEFEND_ALARM_TICKS`).
+    pub alarm: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -610,6 +639,16 @@ pub struct Survivor {
     recycle_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
+    /// A defence of home, and what defences came to.
+    defend_job: DefendJob,
+    pub defend_stats: DefendStats,
+    defend_failed: Option<u32>,
+    /// Other people's bases as its eyes found them, and the raid in hand.
+    bases: Bases,
+    raid_job: RaidJob,
+    raid_failed: Option<u32>,
+    /// When this body last shot: an impact right after is its own.
+    shot_at: Option<u32>,
     /// Salvage a recycle leaves whole (`Builder::kept_whole`), once a
     /// second.
     keep: Keep,
@@ -708,6 +747,13 @@ impl Survivor {
             cook_failed: None,
             recycle_failed: None,
             home_failed: None,
+            defend_job: DefendJob::default(),
+            defend_stats: DefendStats::default(),
+            defend_failed: None,
+            bases: Bases::new(),
+            raid_job: RaidJob::default(),
+            raid_failed: None,
+            shot_at: None,
             keep: Keep::NONE,
             deadline_after: None,
             deadline: None,
@@ -811,6 +857,11 @@ impl Survivor {
         &self.loot
     }
 
+    /// Other people's bases, as its eyes found them.
+    pub fn bases(&self) -> &Bases {
+        &self.bases
+    }
+
     /// The session ends `ticks` server ticks after the welcome (`jev-bot
     /// --seconds`); `None` for no end. From [`LOG_OFF_SECS`] before it the
     /// body goes home, shuts its doors and stands inside. Counted from the
@@ -905,7 +956,9 @@ impl Survivor {
         self.goal.is_none()
             || (self.builder.at_checkpoint()
                 && self.stash_job.at_checkpoint()
-                && self.oven_job.at_checkpoint())
+                && self.oven_job.at_checkpoint()
+                && self.defend_job.at_checkpoint()
+                && self.raid_job.at_checkpoint())
     }
 
     /// The session's end is near and there is a home to sleep in.
@@ -1052,6 +1105,16 @@ impl Survivor {
                 tick,
                 |cx, cz, l, loc| home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc),
             );
+            // Bases worth a raid, and who is about them.
+            self.bases.look(
+                core,
+                &haven,
+                eye_point(&body),
+                body.yaw,
+                tick,
+                |cx, cz, l, loc| home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc),
+            );
+            self.bases.bodies(&self.tracks, tick);
         }
         self.mind.expire(now);
         if body.dead || core.dead {
@@ -1068,7 +1131,8 @@ impl Survivor {
                     }
                     _ => true,
                 };
-            let on_bag = self.home.wake_on_bag(core, tick);
+            let fell = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+            let on_bag = self.home.wake_on_bag(core, tick, fell);
             if due && self.queue(|buf| protocol::encode_action_respawn(on_bag, buf)) {
                 self.awaiting = Some((Pending::Respawn, tick));
                 self.stats.respawn_asks += 1;
@@ -1136,6 +1200,7 @@ impl Survivor {
             lead_ticks: u32::from(self.tracks.playout()) + self.ack_age,
             lane_free: self.outbox.is_none(),
             raided: self.home.raided(tick, combat::ALARM_TICKS),
+            home_ground: self.builder.region(&body) != Region::Outside,
         };
         let assessed = self
             .combat
@@ -1417,6 +1482,11 @@ impl Survivor {
         if goal == Goal::Loot {
             self.loot.stats.runs += 1;
         }
+        self.defend_job = DefendJob::default();
+        self.raid_job = RaidJob::default();
+        if goal == Goal::Defend {
+            self.defend_stats.defences += 1;
+        }
         self.builder.halt();
     }
 
@@ -1499,7 +1569,8 @@ impl Survivor {
             | Goal::Bag
             | Goal::Loot
             | Goal::Cook
-            | Goal::Recycle => true,
+            | Goal::Recycle
+            | Goal::Raid => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1581,6 +1652,17 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Cook | Goal::Recycle => self.tend(core, body, tick),
+            Goal::Defend if elapsed >= DEFEND_GOAL_SECS * TICK_HZ => {
+                self.defend_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Defend => self.defend(core, body, tick),
+            Goal::Raid if elapsed >= RAID_GOAL_SECS * TICK_HZ => {
+                self.raid_over(Outcome::Failed(Why::Stuck), tick);
+                Intent::IDLE
+            }
+            Goal::Raid => self.raid(core, body, tick),
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -3308,6 +3390,176 @@ impl Survivor {
         intent
     }
 
+    /// Home under attack (`agent::defend`): in through its doors, the
+    /// fight answered from inside, then what was damaged mended with the
+    /// hammer in hand and the doors shut behind.
+    fn defend(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let ward = self.defend_job.step(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            &mut self.builder,
+            &self.home,
+            self.senses.hostile,
+            &mut self.defend_stats,
+            tick,
+        );
+        self.stats.phase = match ward {
+            Ward::Repair { .. } | Ward::Belt { .. } | Ward::Craft { .. } => Phase::Repairing,
+            _ => Phase::Defending,
+        };
+        let (sent, intent) = match ward {
+            Ward::Go(intent) => return intent,
+            Ward::Walk(act) => return self.act(act, tick),
+            Ward::Craft { recipe } => (
+                self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf)),
+                Intent::IDLE,
+            ),
+            Ward::Belt { from, to, count } => (
+                self.queue(|buf| {
+                    protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+                }),
+                Intent::IDLE,
+            ),
+            Ward::Repair { deploy, at, intent } => (
+                self.queue(|buf| {
+                    protocol::encode_action_repair(deploy, at.cx, at.cz, at.level, at.loc, buf)
+                }),
+                intent,
+            ),
+            Ward::Done => {
+                if self.outbox.is_none() {
+                    if let Some(a) = self.goal.as_mut() {
+                        a.gained = a.gained.saturating_add(self.defend_job.mended);
+                    }
+                    self.end_goal(tick, Outcome::Done);
+                }
+                return Intent::IDLE;
+            }
+            Ward::Fail(why) => {
+                self.defend_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(why));
+                return Intent::IDLE;
+            }
+        };
+        if sent {
+            self.defend_job.sent(tick, &ward);
+        }
+        intent
+    }
+
+    /// What this body would raid with: the satchels in the pack, and the
+    /// weapon that takes most off a structure per blow.
+    fn means(&self, core: &ClientCore) -> Means {
+        let book = &self.book;
+        let satchel = crate::agent::build::item_named(core, raid::SATCHEL_ITEM)
+            .filter(|&item| book.page(item).throw.structure > 0)
+            .map(|item| (item, book.page(item).throw));
+        let mut melee: Option<(u16, u16, u16)> = None;
+        for st in core.inv[..INV_SLOTS].iter().filter(|st| st.count > 0) {
+            let m = book.page(st.item).melee;
+            if m.damage > 0 && m.structure > 0 && melee.is_none_or(|(_, s, _)| m.structure > s) {
+                melee = Some((st.item, m.structure, m.cadence_ticks));
+            }
+        }
+        Means {
+            satchel,
+            satchels: satchel.map_or(0, |(item, _)| count_item(core, item)),
+            melee,
+        }
+    }
+
+    /// A raid (`agent::raid`): to the weakest face of a base worth it, in
+    /// with satchels or blows, the boxes emptied into the pack.
+    fn raid(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Raiding;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let means = self.means(core);
+        let step = self.raid_job.step(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            &mut self.bases,
+            &means,
+            self.combat.temperament(),
+            tick,
+        );
+        let (sent, intent) = match step {
+            Raid::Go(intent) => return intent,
+            Raid::Belt { from, to, count } => (
+                self.queue(|buf| {
+                    protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+                }),
+                Intent::IDLE,
+            ),
+            Raid::Throw { deploy, at, intent } => (
+                self.queue(|buf| {
+                    protocol::encode_action_throw(deploy, at.cx, at.cz, at.level, at.loc, buf)
+                }),
+                intent,
+            ),
+            Raid::Open { key, intent } => (
+                self.queue(|buf| protocol::encode_action_container(CONT_BOX, key, buf)),
+                intent,
+            ),
+            Raid::Take {
+                key,
+                from,
+                to,
+                count,
+                intent,
+            } => (
+                self.queue(|buf| {
+                    protocol::encode_action_move(key, CONT_BOX, from, CONT_SELF, to, count, buf)
+                }),
+                intent,
+            ),
+            Raid::Close(intent) => (
+                self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
+                intent,
+            ),
+            Raid::Done => {
+                // The shut panel may still wait on its pace.
+                if self.outbox.is_none() {
+                    self.raid_over(Outcome::Done, tick);
+                }
+                return Intent::IDLE;
+            }
+            Raid::Fail(why) => {
+                self.raid_over(Outcome::Failed(why), tick);
+                return Intent::IDLE;
+            }
+        };
+        if sent {
+            self.raid_job.sent(tick, &step);
+        }
+        intent
+    }
+
+    /// The raid is over: what it took is the goal's gain.
+    fn raid_over(&mut self, outcome: Outcome, tick: u32) {
+        if let Some(a) = self.goal.as_mut() {
+            a.gained = a.gained.max(self.raid_job.taken);
+        }
+        if matches!(outcome, Outcome::Failed(_)) {
+            self.raid_failed = Some(tick);
+        }
+        self.end_goal(tick, outcome);
+    }
+
     fn stash_done(&mut self, tick: u32) {
         if self.stash_job.gave_up() {
             self.home.stash_failed(tick);
@@ -3490,6 +3742,7 @@ impl Survivor {
                     distance: Distance::of(d),
                     bearing,
                     attacked: self.home.under_attack(tick),
+                    damaged: self.memory.damaged,
                 }
             }
         };
@@ -3515,6 +3768,29 @@ impl Survivor {
             self.memory.raw = raw;
             self.memory.stations = stations;
             self.memory.loot_held = self.loot.held(tick);
+            // Home's damage, and the alarm that calls it back; bases worth
+            // a raid, by its temperament and what it carries.
+            self.memory.damaged =
+                self.builder.survey().hearth && defend::mendable(core, &self.builder);
+            self.memory.defend_held = self
+                .defend_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < defend::DEFEND_RETRY_TICKS);
+            self.memory.alarm = self.home.alarmed(tick, defend::DEFEND_ALARM_TICKS);
+            let temperament = self.combat.temperament();
+            self.memory.raids = matches!(temperament, Temperament::Opportunist | Temperament::Kos);
+            self.memory.raid_held = self
+                .raid_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < RAID_HELD_TICKS);
+            let means = self.means(core);
+            let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+            let (n, nearest) = self.bases.targets(&means, temperament, here, tick);
+            let mut raid = Sighting::default();
+            if let Some([x, z]) = nearest {
+                let (d, b) = relative(body, x, z);
+                raid.add(d, b);
+                raid.count = n;
+            }
+            self.senses.raid = raid;
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
             self.memory.cook =
@@ -3779,6 +4055,7 @@ impl Survivor {
         while let Some((shooter, ..)) = core.pop_shot() {
             if shooter == core.player_id {
                 self.combat.shot(tick);
+                self.shot_at = Some(tick);
             }
             self.tracks.on_shot(shooter, tick);
         }
@@ -3802,6 +4079,13 @@ impl Survivor {
             self.tracks.on_impact(at, tick);
             if i.kind == IMPACT_BLAST {
                 self.home.on_blast([at[0], at[2]], tick);
+            }
+            // Arrows and bullets landing at home that are not its own.
+            let mine = self
+                .shot_at
+                .is_some_and(|t| tick.wrapping_sub(t) <= OWN_SHOT_TICKS);
+            if matches!(i.kind, IMPACT_ARROW | IMPACT_BULLET) && !mine {
+                self.home.on_shot([at[0], at[2]], tick);
             }
         }
         while let Some(hit) = core.pop_hit() {
@@ -3872,6 +4156,7 @@ impl Survivor {
             }
         }
         if applied2 & APPLIED2_MOVE != 0 {
+            self.raid_job.on_moved(core.last_move_refused != 0);
             self.stash_job.on_moved(core.last_move_refused != 0, tick);
             self.loot_job.on_moved(core.last_move_refused != 0);
             self.oven_job.on_moved(core.last_move_refused != 0, tick);
@@ -3879,6 +4164,14 @@ impl Survivor {
         // A fire's or a recycler's panel: the session's open was answered.
         if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_BOX {
             self.oven_job.on_panel(core.cont_handle);
+            self.raid_job.on_panel(core.cont_handle);
+        }
+        // A charge on a wall somewhere: the raid's plant, if it is at the
+        // face the raid is working.
+        if applied2 & APPLIED2_CHARGE != 0 {
+            let (cx, cz, level, loc, ..) = core.charge_placed;
+            self.raid_job
+                .on_charge(core.charge_deploy, cx, cz, level, loc);
         }
         // A crate's panel: the loot run's open was answered.
         if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_WORLD {
@@ -3886,6 +4179,8 @@ impl Survivor {
         }
         while let Some(reason) = core.pop_build_refusal() {
             self.stats.refusals += 1;
+            self.defend_job.on_refused(reason);
+            self.raid_job.on_refused(reason);
             self.builder.on_refused(false, reason);
         }
         // A lock let it through (its own code, entered at its own door);
@@ -4041,6 +4336,10 @@ impl BotDriver for Survivor {
         self.ledger.clear();
         self.loot.clear();
         self.loot_job = LootJob::default();
+        self.bases.clear();
+        self.defend_job = DefendJob::default();
+        self.raid_job = RaidJob::default();
+        self.shot_at = None;
         self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
         self.recycler = None;
@@ -4098,10 +4397,10 @@ impl BotDriver for Survivor {
     }
 }
 
-/// An answer that cannot wait for a fight to end: running, fighting and
-/// healing are part of it.
+/// An answer that cannot wait for a fight to end: running, fighting,
+/// healing and going home to defend it are part of it.
 fn urgent(goal: Goal) -> bool {
-    matches!(goal, Goal::Flee | Goal::Fight | Goal::Heal)
+    matches!(goal, Goal::Flee | Goal::Fight | Goal::Heal | Goal::Defend)
 }
 
 fn heartbeat_ticks(mind: &Mind) -> u32 {
@@ -4321,8 +4620,10 @@ pub fn observe(
     // must not push its wood, its stone or its tools off the list's end.
     let counted = |name: &Name| {
         let name = name.as_str();
-        matches!(name, "Wood" | "Stone" | crate::mind::BAG_ITEM)
-            || TREE_TOOLS.contains(&name)
+        matches!(
+            name,
+            "Wood" | "Stone" | crate::mind::BAG_ITEM | crate::mind::SATCHEL_ITEM
+        ) || TREE_TOOLS.contains(&name)
             || NODE_TOOLS.contains(&name)
             || crate::mind::LOOTED.contains(&name)
             || crate::mind::SMELTS.iter().any(|&(ore, _)| ore == name)
@@ -4359,8 +4660,10 @@ pub fn observe(
         // there.
         let arm = |item: u16| {
             let page = book.page(item);
-            matches!(page.class, Class::Melee | Class::Ranged | Class::Med)
-                || (0..MAX_ITEM_DEFS as u16).any(|w| book.page(w).ranged.round == item)
+            matches!(
+                page.class,
+                Class::Melee | Class::Ranged | Class::Med | Class::Throw
+            ) || (0..MAX_ITEM_DEFS as u16).any(|w| book.page(w).ranged.round == item)
         };
         let needed = |item: u16, name: &Name| {
             crate::mind::SMELTS
@@ -4399,6 +4702,10 @@ pub fn observe(
                 let Some(name) = Name::new(core.catalog.name(def.output as usize)) else {
                     continue;
                 };
+                // Satchels are for a temperament that raids.
+                if name.as_str() == crate::mind::SATCHEL_ITEM && !memory.raids {
+                    continue;
+                }
                 let n = s.craftable_len as usize;
                 if rank(def.output, &name) == pass
                     && n < SUMMARY_CRAFTS
@@ -4454,6 +4761,7 @@ pub fn observe(
     s.furnace = memory.stations.furnace.is_some();
     s.loot = senses.loot;
     s.loot_place = senses.loot_place;
+    s.raid = senses.raid;
     for &(item, units) in &memory.stored[..usize::from(memory.stored_len)] {
         let n = usize::from(s.stored_len);
         if let (Some(name), true) = (
@@ -4582,6 +4890,25 @@ pub fn observe(
         && (memory.take_out || memory.feed || memory.put_away)
     {
         s.offer(Goal::Stash);
+    }
+    // Home called back to (an alarm while out) or damaged and mendable,
+    // and no defence came to nothing a moment ago.
+    let built = matches!(memory.home.state, HomeState::Built | HomeState::Inside);
+    if built
+        && !memory.defend_held
+        && ((memory.alarm && memory.home.state == HomeState::Built) || memory.damaged)
+    {
+        s.offer(Goal::Defend);
+    }
+    // A raid: a base worth it by its temperament and its means, room for
+    // what it holds, and nobody dangerous in view.
+    if memory.raids
+        && senses.raid.count > 0
+        && !senses.hostile
+        && !memory.raid_held
+        && s.free_slots >= loot::MIN_FREE_SLOTS
+    {
+        s.offer(Goal::Raid);
     }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));

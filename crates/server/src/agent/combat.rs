@@ -359,6 +359,9 @@ pub struct Kit<'a> {
     /// Where its own base stands, while blows, breaks or blasts there are
     /// fresh (`Home::raided`): a player at work beside it is attacking me.
     pub raided: Option<[f32; 2]>,
+    /// Standing inside its own base: its walls are its cover, and running
+    /// out of them is no escape. A fight met here is stood.
+    pub home_ground: bool,
 }
 
 /// A verb the reflex wants sent; the orchestrator owns the action lane.
@@ -1085,9 +1088,12 @@ impl Combat {
         let me = pos(body);
         let odds = odds(&t, kit, crowd(tracks, id, me, tick));
         let d = flat(me, t.pos);
-        // Shot at from past a charge with nothing to shoot back: cover.
+        // Shot at from past a charge with nothing to shoot back: cover. At
+        // home the walls are the cover, and the fight is stood unless it is
+        // all but lost.
         let out_shot = odds.ranged && d > CHARGE_M && kit.ranged.is_none();
-        if self.temperament == Temperament::Passive || odds.losing || out_shot {
+        let stand = kit.home_ground && u32::from(kit.hp) * 3 > u32::from(kit.hp_max);
+        if !stand && (self.temperament == Temperament::Passive || odds.losing || out_shot) {
             self.flee_from(&t, odds.ranged, me, tick);
             return self.back_away(core, body, tracks, route, tick, true);
         }
@@ -2378,6 +2384,7 @@ mod tests {
             lead_ticks: 4,
             lane_free: true,
             raided: None,
+            home_ground: false,
         };
         let with_spear = kit(spear, 100);
         let o = odds(&player(Some(rock)), &with_spear, 0);
@@ -2433,6 +2440,7 @@ mod tests {
             lead_ticks: 4,
             lane_free: true,
             raided,
+            home_ground: false,
         };
         let me = [0.0, 0.0, 30.0];
         let mut combat = Combat::new(Temperament::Opportunist);
@@ -2490,6 +2498,7 @@ mod tests {
             lead_ticks: 4,
             lane_free: true,
             raided: Some([0.0, 0.0]),
+            home_ground: false,
         };
         let mut core = Box::new(ClientCore::new(1, 1, 0));
         let mut route = Route::new();

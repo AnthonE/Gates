@@ -1001,6 +1001,8 @@ const INNER_LEG: usize = 4;
 const FRONT_LEG: usize = 7;
 /// Where a walk that begins in the airlock joins the chain.
 const AIRLOCK_JOIN: usize = 6;
+/// The walk's points that are inside the base ([`Builder::stand_at`]).
+pub const STANDS: usize = CHAIN.len() - 1;
 /// The two doors, as the blueprint addresses them from the plot.
 const FRONT: (i8, i8, u8, u8) = (1, 1, 0, LOC_EDGE_XLO);
 const INNER: (i8, i8, u8, u8) = (1, 1, 0, LOC_EDGE_ZLO);
@@ -1364,6 +1366,36 @@ fn door_across(leg: usize) -> Option<(i8, i8, u8, u8)> {
         FRONT_LEG => Some(FRONT),
         _ => None,
     }
+}
+
+/// What the human client's structure keys (`R` to repair, `X` to plant a
+/// charge, `Backspace`) would take from a body standing at (`x`, `z`): the
+/// structure whose anchor is nearest the feet within the build reach, over
+/// both stores, a tie going to the later record and a deployable over a
+/// piece (`client::ui::structure::nearest`). `true` for a deployable.
+pub(crate) fn nearest_structure(core: &ClientCore, x: f32, z: f32) -> Option<(bool, OpAddr)> {
+    let mut best: Option<(bool, OpAddr)> = None;
+    let mut best_d2 = BUILD_REACH_M * BUILD_REACH_M;
+    let pieces = core
+        .pieces
+        .entries()
+        .iter()
+        .map(|r| (false, r.cx, r.cz, r.level, r.loc));
+    let deploys = core
+        .deploys
+        .entries()
+        .iter()
+        .map(|r| (true, r.cx, r.cz, r.level, r.loc));
+    for (deploy, cx, cz, level, loc) in pieces.chain(deploys) {
+        let (ax, az) = anchor(cx, cz, loc);
+        let d2 = (ax - x) * (ax - x) + (az - z) * (az - z);
+        if d2 > best_d2 {
+            continue;
+        }
+        best_d2 = d2;
+        best = Some((deploy, OpAddr { cx, cz, level, loc }));
+    }
+    best
 }
 
 /// Would a player standing at (`x`, `z`) and facing wire yaw `yaw` press
@@ -1983,6 +2015,73 @@ impl Builder {
     /// A walk out through the doors is under way.
     pub fn leaving(&self) -> bool {
         self.passage.way == Some(Way::Out)
+    }
+
+    /// Where a body may stand in its own base: the points of the walk
+    /// through its doors, the stand spot first, the airlock's last
+    /// ([`STANDS`] of them; the walk's end outside the front door is not
+    /// one).
+    pub fn stand_at(&self, i: usize) -> Option<[f32; 2]> {
+        let plan = self.plan.filter(|_| i < STANDS)?;
+        Some(at_corner(corner(&plan), CHAIN[i]))
+    }
+
+    /// Walk to stand point `stop` ([`Builder::stand_at`]) through whatever
+    /// doors lie between, shutting each behind: in from outside, or along
+    /// the chain from where the body is inside.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pass_to(
+        &mut self,
+        core: &mut ClientCore,
+        seed: u64,
+        haven: &Haven,
+        body: &EntityState,
+        hands: &Hands,
+        route: &mut Route,
+        stop: usize,
+        tick: u32,
+    ) -> Act {
+        let Some(plan) = self.plan.filter(|_| stop < STANDS) else {
+            return Act::Fail(Why::NotFound);
+        };
+        let way = match self.passage.way {
+            Some(way) if self.passage.stop == Some(stop) => way,
+            _ => {
+                let c = corner(&plan);
+                let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                let rel = [x - c[0], z - c[1]];
+                let from = match region_at(rel) {
+                    Region::Outside => usize::MAX,
+                    Region::Airlock => AIRLOCK_JOIN,
+                    Region::Room => (0..=INNER_LEG)
+                        .min_by(|&a, &b| {
+                            let d = |i: usize| (CHAIN[i][0] - rel[0]).hypot(CHAIN[i][1] - rel[1]);
+                            d(a).total_cmp(&d(b))
+                        })
+                        .unwrap_or(0),
+                };
+                if from == usize::MAX || stop < from {
+                    Way::In
+                } else {
+                    Way::Out
+                }
+            }
+        };
+        let pass = self.passage.step(
+            core,
+            seed,
+            haven,
+            &plan,
+            body,
+            hands,
+            route,
+            way,
+            Some(stop),
+            tick,
+        );
+        let act = self.pass_act(pass, Act::Done);
+        self.use_out = matches!(act, Act::Use { .. });
+        act
     }
 
     /// Walk in or out through the doors (`GoHome`, or leaving for work).

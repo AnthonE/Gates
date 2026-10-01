@@ -84,6 +84,9 @@ pub enum Class {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Melee {
     pub damage: u16,
+    /// What one blow takes off a building piece or a deployable (on a
+    /// sided piece's soft face; the hard face pays the game's floor).
+    pub structure: u16,
     pub reach_cm: u16,
     /// Ticks between swings while primary is held; one shared number.
     pub cadence_ticks: u16,
@@ -166,6 +169,7 @@ impl Page {
         class: Class::Other,
         melee: Melee {
             damage: 0,
+            structure: 0,
             reach_cm: 0,
             cadence_ticks: 0,
             headshot_mult: 1,
@@ -281,6 +285,7 @@ impl Rules {
             if m.damage > 0 {
                 page.melee = Melee {
                     damage: m.damage,
+                    structure: m.structure,
                     reach_cm: m.reach_cm,
                     cadence_ticks: SWING_INTERVAL_TICKS as u16,
                     headshot_mult: m.headshot_mult,
