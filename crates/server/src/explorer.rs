@@ -11,37 +11,45 @@
 //! then take the loser's bag; bandage when hurt and nobody is near; keep
 //! a gun loaded.
 //! The only verbs sent are the ones a human client sends: input frames,
-//! and `Respawn`, `Craft`, `Consume`, `Drink`, `Move`, `Reload`, `Loot`
-//! and `Pickup` actions (`crates/server/tests/agent_walls.rs` holds that
-//! to the client).
+//! and `Respawn`, `Craft`, `Consume`, `Drink`, `Move`, `Reload`, `Loot`,
+//! `Pickup`, `Deploy`, `Place`, `Upgrade`, `Use`, `Container` and `Feed`
+//! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
 
+use crate::agent::build::{Act, Builder, Region, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
 use crate::agent::cover;
 use crate::agent::hands::{Hands, Skill};
+use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::loadout::{Loadout, Role};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
+use crate::agent::site::Seen;
+use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
-    Arms, BodyState, Choice, Goal, History, Mind, Name, Outcome, Range, Report, Sighting, Summary,
-    Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS, SUMMARY_THREATS,
+    Arms, BodyState, Choice, Distance, Goal, History, HomeSense, HomeState, Mind, Name, Outcome,
+    Range, Report, Sighting, Summary, Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS,
+    SUMMARY_THREATS,
 };
 use crate::pace::Pace;
 use client_core::core::{
-    ClientCore, APPLIED2_MOVE, APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_VITALS,
+    ClientCore, APPLIED2_BAGS, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
+    APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_STOCK, APPLIED_STRUCT_HIT, APPLIED_VITALS,
 };
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
+use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::STATION_NONE;
+use sim_core::deploy::{box_key, BAG_CAP};
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::inventory::CONT_SELF;
+use sim_core::inventory::{CONT_BOX, CONT_SELF};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
-use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
+use sim_core::ranged::{ARROW_EYE_MM, IMPACT_BLAST, MM_PER_M};
 use sim_core::survival::{DRINK_REACH_M, REFUSE_C_FULL, REFUSE_C_NOT_FOOD};
 use sim_core::terrain::{self, Haven, Occupant, Slot, CELL_SIZE};
 use sim_core::{pitch_dir, yaw_dir};
@@ -63,6 +71,16 @@ pub const SEARCH_GOAL_SECS: u32 = 20;
 pub const EXPLORE_GOAL_SECS: u32 = 20;
 /// A wait goal stands still this long.
 pub const WAIT_GOAL_SECS: u32 = 5;
+/// A build goal that has not finished its milestone in this long is stuck
+/// somewhere the builder's own checks missed; it ends, and the mind chooses
+/// again. A milestone's crafts and ops take a few minutes.
+pub const BUILD_GOAL_SECS: u32 = 600;
+/// A visit home (the walk in, the feed, the box) that has not finished in
+/// this long is stuck.
+pub const STASH_GOAL_SECS: u32 = 120;
+/// From this long before the session's end the body goes home, shuts its
+/// doors and stands inside, so what sleeps there is not free loot.
+pub const LOG_OFF_SECS: u32 = 90;
 /// An action's answer must arrive within this long (after any craft time).
 pub const VERDICT_SECS: u32 = 3;
 /// An exploring walk counts a map cell reached this close to its centre.
@@ -148,6 +166,13 @@ pub enum Phase {
     Drinking,
     SeekingWater,
     Resting,
+    Bagging,
+    Returning,
+    Building,
+    GoingHome,
+    Leaving,
+    Stashing,
+    LoggingOff,
 }
 
 impl Phase {
@@ -174,6 +199,13 @@ impl Phase {
             Phase::Drinking => "Drinking",
             Phase::SeekingWater => "Walking to water",
             Phase::Resting => "Waiting",
+            Phase::Bagging => "Putting a sleeping bag down",
+            Phase::Returning => "Walking back to the death backpack",
+            Phase::Building => "Building the base",
+            Phase::GoingHome => "Going home",
+            Phase::Leaving => "Leaving the base through its doors",
+            Phase::Stashing => "At home: the cupboard and the box",
+            Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
 }
@@ -253,6 +285,10 @@ pub struct Senses {
     /// Bodies in sight that could hurt this one, nearest first.
     pub threats: [Threat; SUMMARY_THREATS],
     pub threats_len: u8,
+    /// The backpack from its last death, while it stands.
+    pub backpack: Sighting,
+    /// A person or a wolf seen within `THREAT_RECALL_SECS`.
+    pub hostile: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -271,6 +307,26 @@ pub struct Memory {
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
     pub yields: [u64; 4],
+    /// Sleeping bags it knows it has down.
+    pub bags: u8,
+    /// A bag failed to go down near here a moment ago (`Home::bag_held`).
+    pub bag_held: bool,
+    /// The death backpack is not worth the walk (`Home::recover_held`).
+    pub recover_held: bool,
+    /// The base's next milestone and what it needs (`Builder::survey`).
+    pub base: crate::agent::build::Survey,
+    /// Where home is from here.
+    pub home: HomeSense,
+    /// Chores at home, once a second: the box holds what the base needs,
+    /// the cupboard wants feeding, the pack has things to put away.
+    pub take_out: bool,
+    pub feed: bool,
+    pub put_away: bool,
+    /// A visit to the box failed a moment ago (`Home::stash_held`).
+    pub stash_held: bool,
+    /// What the box held when it was last open.
+    pub stored: [(u16, u32); stash::STORED_ROWS],
+    pub stored_len: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -443,6 +499,22 @@ pub struct Survivor {
     /// Where a downed body is crawling to, if anywhere, and when that was
     /// looked for: a scan that found nothing waits before the next.
     crawl_to: Option<(Option<[f32; 2]>, u32)>,
+    /// Its bags and death backpack, the skills that use them, and the
+    /// buildings it has seen.
+    home: Home,
+    bag_job: BagJob,
+    recover_job: RecoverJob,
+    seen: Seen,
+    /// The base it is building, and the walk through its doors.
+    builder: Builder,
+    /// A visit home, and what the box held when last open.
+    stash_job: StashJob,
+    ledger: Ledger,
+    /// The session ends this many ticks after the welcome (`set_deadline`),
+    /// and the tick that is, once welcomed.
+    deadline_after: Option<u32>,
+    deadline: Option<u32>,
+    welcomed: Option<u32>,
     /// An answer that arrived mid-fight, and when; judged once the fight
     /// is over.
     deferred: Option<(Choice, Instant)>,
@@ -513,6 +585,16 @@ impl Survivor {
             ack_age: 1,
             reload_at: None,
             crawl_to: None,
+            home: Home::new(),
+            bag_job: BagJob::default(),
+            recover_job: RecoverJob::default(),
+            seen: Seen::new(),
+            builder: Builder::new(),
+            stash_job: StashJob::default(),
+            ledger: Ledger::EMPTY,
+            deadline_after: None,
+            deadline: None,
+            welcomed: None,
             deferred: None,
             glance: None,
             water_at: None,
@@ -585,6 +667,35 @@ impl Survivor {
     /// The fight reflex.
     pub fn combat(&self) -> &Combat {
         &self.combat
+    }
+
+    /// Its bags, and what waking and recovering have come to.
+    pub fn home(&self) -> &Home {
+        &self.home
+    }
+
+    /// Other people's building, as far as its eyes found it.
+    pub fn seen(&self) -> &Seen {
+        &self.seen
+    }
+
+    /// Its own base: the plot, what stands, what the next part needs.
+    pub fn builder(&self) -> &Builder {
+        &self.builder
+    }
+
+    /// What its box held when the panel was last open.
+    pub fn ledger(&self) -> &Ledger {
+        &self.ledger
+    }
+
+    /// The session ends `ticks` server ticks after the welcome (`jev-bot
+    /// --seconds`); `None` for no end. From [`LOG_OFF_SECS`] before it the
+    /// body goes home, shuts its doors and stands inside. Counted from the
+    /// first welcome, so a reconnect does not push it back.
+    pub fn set_deadline(&mut self, ticks: Option<u32>) {
+        self.deadline_after = ticks;
+        self.deadline = ticks.zip(self.welcomed).map(|(t, w)| w.saturating_add(t));
     }
 
     /// Sample other bodies this many ticks behind the newest snapshot: the
@@ -663,11 +774,55 @@ impl Survivor {
         self.recovery = None;
         self.combat.forget();
         self.deferred = None;
+        self.builder.halt();
+    }
+
+    /// Would switching goals now lose nothing: no op of a long skill
+    /// waiting on its answer, no door left open mid-walk.
+    fn at_checkpoint(&self) -> bool {
+        self.goal.is_none() || (self.builder.at_checkpoint() && self.stash_job.at_checkpoint())
+    }
+
+    /// The session's end is near and there is a home to sleep in.
+    fn log_off_due(&self, core: &ClientCore, tick: u32) -> bool {
+        self.deadline
+            .is_some_and(|end| tick.saturating_add(LOG_OFF_SECS * TICK_HZ) >= end)
+            && self.builder.survey().hearth
+            && self.builder.walled(core)
+    }
+
+    /// The log-off: the goal in hand ends at its next checkpoint (a walk
+    /// home already under way carries on), then home and in through the
+    /// doors, shutting them behind, and stand there. The mind is not asked
+    /// meanwhile; a fight is still answered, before this.
+    fn log_off(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        match self.goal {
+            Some(a) if a.goal == Goal::GoHome || !self.at_checkpoint() => {
+                return self.run_goal(core, body, tick);
+            }
+            Some(_) => self.end_goal(tick, Outcome::Interrupted(Why::LogOff)),
+            None => {}
+        }
+        let settled = self.builder.region(body) == Region::Room && !self.builder.passing();
+        if settled && !self.builder.door_open(core) {
+            self.stats.phase = Phase::LoggingOff;
+            return Intent::IDLE;
+        }
+        // A door stands open behind it (somebody else's hand): out through
+        // both and back in, which shuts each behind it.
+        if settled || self.builder.leaving() {
+            if let Some(intent) = self.leave(core, body, tick) {
+                return intent;
+            }
+        }
+        self.begin(Goal::GoHome, tick);
+        self.run_goal(core, body, tick)
     }
 
     /// One frame, with the client state kept the way the human client
     /// keeps it: regrowth measured at the newest tick (the client's own
-    /// `advance` does this, and the agent never calls it), and the frame
+    /// `advance` does this, and the agent never calls it), the body where
+    /// the snapshot has it, and the frame
     /// sent recorded as the live input, which readers such as
     /// `ClientCore::mag` key on. Whatever the skills decided, the hands
     /// turn into the frame.
@@ -686,6 +841,12 @@ impl Survivor {
         // the acks show: part of what an arrow leads a body by.
         self.ack_age = u32::from(seq.wrapping_sub(view.last_executed_seq)).clamp(1, 15);
         self.combat.strides.begin(view.last_executed_seq, seq);
+        // No prediction runs here: the snapshot's body is the body, the way
+        // a spectator's client takes it. Readers keyed on the predicted
+        // body (the own-backpack tag at a death) then see where it stands.
+        if let Some(body) = view.get(player) {
+            core.predict.adopt_authoritative(body);
+        }
         let intent = self.decide(core, view, player, now);
         let body = view.get(player);
         // A skill that names no slot keeps the one in hand.
@@ -749,11 +910,22 @@ impl Survivor {
         // held line of sight, and placed where they were last seen.
         if let Some(haven) = self.haven {
             self.tracks.perceive(core, &haven, tick);
+            let (seed, _) = core.island();
+            let (home, builder) = (&self.home, &self.builder);
+            self.seen.look(
+                core,
+                seed,
+                &haven,
+                eye_point(&body),
+                body.yaw,
+                tick,
+                |cx, cz, l, loc| home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc),
+            );
         }
         self.mind.expire(now);
         if body.dead || core.dead {
-            // The death screen's one answer. A beach, never a bag: this
-            // body places none, and a bag is where it just lost a fight.
+            // The death screen's answer: one of its own ready bags, unless
+            // home is where it was just fought over; else the beach.
             // Asked on the event lane's own fact: a snapshot can still show
             // the corpse for a frame after the wake has landed.
             self.lose(tick, Why::Died);
@@ -765,9 +937,11 @@ impl Survivor {
                     }
                     _ => true,
                 };
-            if due && self.queue(|buf| protocol::encode_action_respawn(false, buf)) {
+            let on_bag = self.home.wake_on_bag(core, tick);
+            if due && self.queue(|buf| protocol::encode_action_respawn(on_bag, buf)) {
                 self.awaiting = Some((Pending::Respawn, tick));
                 self.stats.respawn_asks += 1;
+                self.home.woke(on_bag);
             }
             self.stats.phase = Phase::Dead;
             return Intent::IDLE;
@@ -788,10 +962,19 @@ impl Survivor {
         self.crawl_to = None;
         // Answers are taken only by a body that can act on them; one that
         // arrives while it is down waits in the ring and is judged fresh
-        // or late when it is read. Mid-fight a routine answer waits for
-        // the fight to end; a newer one, held or adopted, supersedes it.
+        // or late when it is read. Mid-fight, or mid-op in a long skill, a
+        // routine answer waits for the fight to end or the checkpoint; a
+        // newer one, held or adopted, supersedes it.
+        let logging_off = self.log_off_due(core, tick);
+        if logging_off {
+            // Home is where this session ends: nothing held is still owed.
+            self.deferred = None;
+        }
         if let Some(choice) = self.mind.poll(now) {
-            if self.combat.engaged() && !urgent(choice.goal) {
+            let busy = self.combat.engaged() || !self.at_checkpoint();
+            if logging_off {
+                self.stats.deferred_dropped += 1;
+            } else if busy && !urgent(choice.goal) {
                 self.deferred = Some((choice, now));
                 self.stats.deferred += 1;
             } else {
@@ -869,10 +1052,15 @@ impl Survivor {
                 self.after_fight(core, view, player, tick, now);
             }
             Assess::Calm => {
-                if self.deferred.is_some() || self.goal.is_some_and(|a| a.paused.is_some()) {
+                let held = self.deferred.is_some() && self.at_checkpoint();
+                if held || self.goal.is_some_and(|a| a.paused.is_some()) {
                     self.after_fight(core, view, player, tick, now);
                 }
             }
+        }
+        if logging_off {
+            let intent = self.log_off(core, &body, tick);
+            return self.overlay(intent, tick);
         }
         let intent = match self.goal {
             None => {
@@ -1057,6 +1245,11 @@ impl Survivor {
             }
             self.end_goal(tick, Outcome::Interrupted(Why::Replaced));
         }
+        self.begin(choice.goal, tick);
+    }
+
+    /// Start a goal from scratch.
+    fn begin(&mut self, goal: Goal, tick: u32) {
         if self.medic {
             // The reflex's bandage still in flight answers to no goal: its
             // toast is not the new goal's to count.
@@ -1066,7 +1259,7 @@ impl Survivor {
             }
         }
         self.goal = Some(Active {
-            goal: choice.goal,
+            goal,
             started: tick,
             asked: tick,
             gained: 0,
@@ -1079,6 +1272,10 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
+        self.bag_job = BagJob::default();
+        self.recover_job = RecoverJob::default();
+        self.stash_job = StashJob::default();
+        self.builder.halt();
     }
 
     fn end_goal(&mut self, tick: u32, outcome: Outcome) {
@@ -1109,6 +1306,7 @@ impl Survivor {
         };
         self.target = None;
         self.recovery = None;
+        self.builder.halt();
         if !matches!(self.awaiting, Some((Pending::Respawn, _))) {
             self.awaiting = None;
             // An action still waiting on its pace was this goal's; the
@@ -1141,6 +1339,24 @@ impl Survivor {
             return Intent::IDLE;
         };
         let elapsed = tick.wrapping_sub(active.started);
+        // A goal that walks the island starts from outside: out through the
+        // doors first, shutting them behind.
+        let walks = matches!(
+            active.goal,
+            Goal::Explore
+                | Goal::GatherWood
+                | Goal::GatherStone
+                | Goal::GatherOre
+                | Goal::Forage
+                | Goal::Drink
+                | Goal::Recover
+                | Goal::Bag
+        );
+        if walks && (self.builder.passing() || self.builder.must_exit(core, body)) {
+            if let Some(intent) = self.leave(core, body, tick) {
+                return intent;
+            }
+        }
         match active.goal {
             Goal::Explore => {
                 if elapsed >= EXPLORE_GOAL_SECS * TICK_HZ {
@@ -1190,6 +1406,20 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Drink => self.drink(core, body, tick),
+            Goal::Bag => self.place_bag(core, body, tick),
+            Goal::Recover => self.recover(core, body, tick),
+            Goal::Build if elapsed >= BUILD_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Build => self.build_home(core, body, tick),
+            Goal::GoHome => self.go_home(core, body, tick),
+            Goal::Stash if elapsed >= STASH_GOAL_SECS * TICK_HZ => {
+                self.home.stash_failed(tick);
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Stash => self.stash(core, body, tick),
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -1993,6 +2223,305 @@ impl Survivor {
         }
     }
 
+    /// Put a sleeping bag down near here (`agent::home::BagJob`): on the
+    /// belt, in hand, eyes on the spot, then the deploy verb.
+    fn place_bag(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Bagging;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let step = self
+            .bag_job
+            .step(core, seed, &haven, body, &self.hands, &mut self.home, tick);
+        match step {
+            Do::Go(intent) => intent,
+            Do::Belt { from, to, count } => {
+                if self.queue(|buf| {
+                    protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+                }) {
+                    self.bag_job.belt_sent(tick);
+                }
+                Intent::IDLE
+            }
+            Do::Deploy {
+                row,
+                cx,
+                cz,
+                intent,
+            } => {
+                if self.queue(|buf| protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, buf))
+                {
+                    self.home.asked(cx, cz, 0, LOC_PLANE);
+                    self.bag_job.deploy_sent(tick);
+                }
+                intent
+            }
+            Do::Done => {
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained += 1;
+                }
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Do::Fail(why) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            Do::Loot(_) => Intent::IDLE,
+        }
+    }
+
+    /// Walk back to the backpack from the last death and loot it
+    /// (`agent::home::RecoverJob`); anyone dangerous in view ends it.
+    fn recover(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Returning;
+        let gained = self.goal.map_or(0, |a| a.gained);
+        let step = self.recover_job.step(
+            core,
+            body,
+            &mut self.route,
+            &self.hands,
+            &mut self.home,
+            self.senses.hostile,
+            gained,
+            tick,
+        );
+        match step {
+            Do::Go(intent) => intent,
+            Do::Loot(intent) => {
+                if self.queue(protocol::encode_action_loot) {
+                    self.recover_job.loot_sent(tick, gained);
+                    self.home.stats.loots += 1;
+                }
+                intent
+            }
+            Do::Done => {
+                self.home.stats.recovered += 1;
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Do::Fail(why) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            Do::Belt { .. } | Do::Deploy { .. } => Intent::IDLE,
+        }
+    }
+
+    /// Work on the base (`agent::build::Builder`): the plot, then the next
+    /// milestone's ops from the stand spot in the core, one verdict each.
+    fn build_home(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Building;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let at = |r: Option<(Target, u32)>| r.map(|(t, _)| [t.slot.x, t.slot.z]);
+        let (wood, stone) = (
+            at(self.recall[Kind::Wood as usize]),
+            at(self.recall[Kind::Stone as usize]),
+        );
+        let act = self.builder.step(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            &self.seen,
+            &self.home,
+            wood,
+            stone,
+            tick,
+        );
+        self.act(act, tick)
+    }
+
+    /// Walk home and in through its doors.
+    fn go_home(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::GoingHome;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let act = self.builder.pass(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            Way::In,
+            tick,
+        );
+        self.act(act, tick)
+    }
+
+    /// A visit home (`agent::stash::StashJob`): in through the doors, the
+    /// cupboard fed if it runs low, the box opened and the pack sorted into
+    /// it under the belt loadout, the panel shut.
+    fn stash(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Stashing;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let chore = self.stash_job.step(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            &mut self.builder,
+            &self.home,
+            &self.book,
+            tick,
+        );
+        let (sent, intent) = match chore {
+            Chore::Walk(act) => return self.act(act, tick),
+            Chore::Go(intent) => return intent,
+            Chore::Feed { at, intent } => (
+                self.queue(|buf| protocol::encode_action_feed(at.cx, at.cz, at.level, buf)),
+                intent,
+            ),
+            Chore::Open { key, intent } => (
+                self.queue(|buf| protocol::encode_action_container(CONT_BOX, key, buf)),
+                intent,
+            ),
+            Chore::Move {
+                key,
+                transfer,
+                intent,
+            } => {
+                let (cont, from_kind, from, to_kind, to, count) = match transfer {
+                    Transfer::Take { from, to, count } => {
+                        (key, CONT_BOX, from, CONT_SELF, to, count)
+                    }
+                    Transfer::Put { from, to, count } => {
+                        (key, CONT_SELF, from, CONT_BOX, to, count)
+                    }
+                    Transfer::Belt { from, to, count } => {
+                        (0, CONT_SELF, from, CONT_SELF, to, count)
+                    }
+                };
+                (
+                    self.queue(|buf| {
+                        protocol::encode_action_move(cont, from_kind, from, to_kind, to, count, buf)
+                    }),
+                    intent,
+                )
+            }
+            Chore::Close(intent) => (
+                self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
+                intent,
+            ),
+            Chore::Done => {
+                // The shut panel (or a last move) may still wait on its
+                // pace; ending the goal now would drop it.
+                if self.outbox.is_none() {
+                    self.stash_done(tick);
+                }
+                return Intent::IDLE;
+            }
+            Chore::Fail(why) => {
+                self.home.stash_failed(tick);
+                self.end_goal(tick, Outcome::Failed(why));
+                return Intent::IDLE;
+            }
+        };
+        if sent {
+            self.stash_job.sent(tick);
+        }
+        intent
+    }
+
+    fn stash_done(&mut self, tick: u32) {
+        if self.stash_job.gave_up() {
+            self.home.stash_failed(tick);
+        }
+        self.end_goal(tick, Outcome::Done);
+    }
+
+    /// Out through its own doors before a walk into the island; `None` once
+    /// outside with the doors shut behind.
+    fn leave(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Option<Intent> {
+        let haven = self.haven?;
+        let (seed, _) = core.island();
+        let act = self.builder.pass(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            Way::Out,
+            tick,
+        );
+        match act {
+            Act::Done => None,
+            act => {
+                self.stats.phase = Phase::Leaving;
+                Some(self.act(act, tick))
+            }
+        }
+    }
+
+    /// Send what the builder asked for; a finished or failed job ends the
+    /// goal.
+    fn act(&mut self, act: Act, tick: u32) -> Intent {
+        let sent = match act {
+            Act::Go(intent) => return intent,
+            Act::Craft { recipe } => {
+                self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf))
+            }
+            Act::Belt { from, to, count } => self.queue(|buf| {
+                protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+            }),
+            Act::Place { row, at, .. } => self.queue(|buf| {
+                protocol::encode_action_place(row, at.cx, at.cz, at.level, at.loc, false, 0, buf)
+            }),
+            Act::Deploy { row, at, bag, .. } => {
+                let sent = self.queue(|buf| {
+                    protocol::encode_action_deploy(row, at.cx, at.cz, at.level, at.loc, buf)
+                });
+                if sent && bag {
+                    // Home keeps the list of its bags.
+                    self.home.asked(at.cx, at.cz, at.level, at.loc);
+                }
+                sent
+            }
+            Act::Upgrade { at, material, .. } => self.queue(|buf| {
+                protocol::encode_action_upgrade(at.cx, at.cz, at.level, at.loc, material, buf)
+            }),
+            Act::Use { at, .. } => {
+                self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf))
+            }
+            Act::Done => {
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained += 1;
+                }
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
+            Act::Fail(why) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                return Intent::IDLE;
+            }
+        };
+        if sent {
+            self.builder.sent(tick);
+        }
+        match act {
+            Act::Place { intent, .. }
+            | Act::Deploy { intent, .. }
+            | Act::Upgrade { intent, .. }
+            | Act::Use { intent, .. } => intent,
+            _ => Intent::IDLE,
+        }
+    }
+
     /// Cells of the sight window, the eyes on other bodies and — once a
     /// second — the water probe. Publishes the census when a sweep
     /// completes.
@@ -2043,11 +2572,56 @@ impl Survivor {
         [self.senses.players, self.senses.animals] = bodies;
         self.senses.threats_len = threats.iter().filter(|(d, _)| d.is_finite()).count() as u8;
         self.senses.threats = threats.map(|(_, t)| t);
+        self.senses.hostile = self
+            .tracks
+            .recent(tick, THREAT_RECALL_SECS * TICK_HZ)
+            .any(|t| t.species != Species::Pig);
+        let mut backpack = Sighting::default();
+        if let Some([x, _, z]) = home::death_bag(core) {
+            let (d, b) = relative(body, x, z);
+            backpack.add(d, b);
+        }
+        self.senses.backpack = backpack;
+        self.memory.bags = self.home.bags_known();
+        let at = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+        self.memory.bag_held = self.home.bag_held(at, tick);
+        self.memory.recover_held = self.home.recover_held(core);
+        let survey = *self.builder.survey();
+        self.memory.base = survey;
+        self.home.set_base(self.builder.stand());
+        self.memory.stash_held = self.home.stash_held(tick);
+        self.memory.home = match self.builder.stand() {
+            None => HomeSense::default(),
+            Some([hx, hz]) => {
+                let (d, bearing) = relative(body, hx, hz);
+                let state = if !survey.hearth {
+                    HomeState::Plot
+                } else if self.builder.region(body) != Region::Outside {
+                    HomeState::Inside
+                } else {
+                    HomeState::Built
+                };
+                HomeSense {
+                    state,
+                    distance: Distance::of(d),
+                    bearing,
+                    attacked: self.home.under_attack(tick),
+                }
+            }
+        };
         if self
             .water_at
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
         {
             self.water_at = Some(tick);
+            // Once a second too: what stands of the base, what the next
+            // part of it needs, and the chores waiting at home.
+            let chest = self.builder.box_addr(core);
+            if chest.is_none() {
+                self.ledger.clear();
+            }
+            self.builder.survey_now(core, &self.ledger);
+            self.chores(core, chest.is_some(), tick);
             let (seed, _) = core.island();
             let x = body.qx as f32 * POS_XZ_Q;
             let z = body.qz as f32 * POS_XZ_Q;
@@ -2077,6 +2651,37 @@ impl Survivor {
                 [x + fx * m, z + fz * m]
             });
         }
+    }
+
+    /// What a visit home would do now: take out what the base needs, feed
+    /// the cupboard, put things away. What the box holds is the ledger's
+    /// word, an empty box until its panel has been seen.
+    fn chores(&mut self, core: &ClientCore, chest: bool, tick: u32) {
+        let survey = self.builder.survey();
+        let grades = self.builder.charged();
+        self.memory.feed = survey.hearth
+            && self.builder.hearth_addr(core).is_some()
+            && stash::feed_due(core, &self.home, &self.ledger, grades, tick);
+        // Only a move the visit would make calls it home: a take the pack
+        // has no room for is no chore.
+        let book = &self.book;
+        let mut bill = [(0, 0); stash::VISIT_ROWS];
+        let n = stash::visit_bill(survey.bill(), &self.home, grades, tick, &mut bill);
+        let next = (chest && book.ready())
+            .then(|| {
+                stash::plan(
+                    core,
+                    |item| stash::loadout(core, book, item),
+                    &bill[..n],
+                    self.ledger.slots(),
+                )
+            })
+            .flatten();
+        self.memory.take_out = survey.take_out && matches!(next, Some(Transfer::Take { .. }));
+        self.memory.put_away = matches!(next, Some(Transfer::Put { .. }));
+        let mut rows = [(0u16, 0u32); stash::STORED_ROWS];
+        self.memory.stored_len = self.ledger.totals(&mut rows) as u8;
+        self.memory.stored = rows;
     }
 
     /// Examine the next cell of the sight window; publish the census when a
@@ -2206,12 +2811,18 @@ impl Survivor {
             }
             self.stats.hurts += 1;
             self.memory.hits = self.memory.hits.saturating_add(1);
+            if let Some(own) = self.tracks.own() {
+                self.home.on_hurt([own.pos[0], own.pos[2]], tick);
+            }
         }
         while let Some(victim) = core.pop_death() {
             self.tracks.on_death(victim, tick);
             if victim == core.player_id {
                 self.stats.deaths += 1;
                 self.memory.deaths = self.memory.deaths.saturating_add(1);
+                if let Some(own) = self.tracks.own() {
+                    self.home.on_hurt([own.pos[0], own.pos[2]], tick);
+                }
             }
         }
         // What the eyes and ears make of the fight around this body: the
@@ -2240,6 +2851,9 @@ impl Survivor {
                 i.qz as f32 * POS_XZ_Q,
             ];
             self.tracks.on_impact(at, tick);
+            if i.kind == IMPACT_BLAST {
+                self.home.on_blast([at[0], at[2]], tick);
+            }
         }
         while let Some(hit) = core.pop_hit() {
             // A blow on a body; a wall's marker is not one.
@@ -2247,6 +2861,74 @@ impl Survivor {
                 self.stats.landed += 1;
             }
             self.tracks.on_hit(hit.victim, hit.damage);
+        }
+        // Its own base struck, or broken (not rotting: `Home::on_removed`
+        // weighs that against the cupboard's stock): home under attack.
+        // A `StructHit` never sets `APPLIED_HIT` (wire v77); a repair
+        // latches the piece at its whole hp, so hp short of it is a blow.
+        if flags & APPLIED_STRUCT_HIT != 0 && applied2 & APPLIED2_OWN_STRUCT_HIT == 0 {
+            let (cx, cz, level, loc, left, max) = core.struct_hit;
+            if left != max && self.builder.owns(cx, cz, level, loc) {
+                self.home.on_struck(tick);
+            }
+        }
+        while let Some(r) = core.pop_removed() {
+            let twig = !r.deploy
+                && u16::from(r.row) < core.piece_defs_have
+                && core.piece_defs.pieces[usize::from(r.row)].material == MAT_TWIG;
+            if !twig && self.builder.owns(r.cx, r.cz, r.level, r.loc) {
+                self.home.on_removed(tick, self.builder.charged());
+            }
+            if r.deploy
+                && self
+                    .builder
+                    .hearth_spot()
+                    .is_some_and(|h| (h.cx, h.cz, h.level, h.loc) == (r.cx, r.cz, r.level, r.loc))
+            {
+                self.home.lost_hearth();
+            }
+        }
+        // Its own deploys' answers, and the bag list each death screen
+        // brings: home takes the facts.
+        while let Some((cx, cz, level, loc, deploy)) = core.pop_placed() {
+            self.home.on_placed(cx, cz, level, loc, deploy);
+            self.builder.on_placed(cx, cz, level, loc, deploy);
+        }
+        while let Some(reason) = core.pop_deploy_refusal() {
+            self.stats.refusals += 1;
+            self.home.on_refused(reason);
+            self.builder.on_refused(true, reason);
+            self.stash_job.on_refused();
+        }
+        // The reply to a feed of its own cupboard: the stock readout.
+        if flags & APPLIED_STOCK != 0 {
+            let (cx, cz, level) = core.stock_addr;
+            if self
+                .builder
+                .hearth_addr(core)
+                .is_some_and(|h| (h.cx, h.cz, h.level) == (cx, cz, level))
+            {
+                self.home.on_stock(core, tick, self.builder.charged());
+                self.stash_job.on_stock();
+            }
+        }
+        // Its own box's panel: what it shows is what the box holds.
+        if applied2 & APPLIED2_CONT != 0 {
+            if let Some(b) = self.builder.box_addr(core) {
+                if self.ledger.on_cont(core, box_key(b.cx, b.cz, b.level)) {
+                    self.stash_job.on_panel();
+                }
+            }
+        }
+        if applied2 & APPLIED2_MOVE != 0 {
+            self.stash_job.on_moved(core.last_move_refused != 0, tick);
+        }
+        while let Some(reason) = core.pop_build_refusal() {
+            self.stats.refusals += 1;
+            self.builder.on_refused(false, reason);
+        }
+        if applied2 & APPLIED2_BAGS != 0 {
+            self.home.on_bags(core.own_bags());
         }
         if flags & APPLIED_RESPAWN != 0 && !core.dead {
             self.stats.respawns += 1;
@@ -2283,6 +2965,7 @@ impl Survivor {
         }
         while core.pop_craft_refusal().is_some() {
             self.stats.refusals += 1;
+            self.builder.on_craft_refused();
             if matches!(self.awaiting, Some((Pending::Craft { .. }, _))) {
                 self.verdict = Some(Verdict::Refused);
             }
@@ -2377,6 +3060,17 @@ impl BotDriver for Survivor {
         self.route.reset();
         self.frontier.clear();
         self.combat.reset(welcome.seed, welcome.player_id);
+        self.home.reset();
+        self.seen.clear();
+        self.builder.reset();
+        self.bag_job = BagJob::default();
+        self.recover_job = RecoverJob::default();
+        self.stash_job = StashJob::default();
+        self.ledger.clear();
+        if self.welcomed.is_none() {
+            self.welcomed = Some(welcome.tick);
+            self.set_deadline(self.deadline_after);
+        }
         self.deferred = None;
         self.glance = None;
         // Off the frame path: parsing the content allocates. A body that
@@ -2593,14 +3287,26 @@ pub fn observe(
     s.free_slots = free;
     if core.recipes_have >= core.recipes.recipe_count {
         let known = core.known();
-        // Tools first, then arms (weapons, their rounds, meds): the list is
-        // bounded, and with a full pack more than `SUMMARY_CRAFTS` recipes
-        // can be craftable at once — the better tool and the first spear
-        // are the ones that must not fall off the end.
+        // Tools first, then arms (weapons, their rounds, meds), then the
+        // sleeping bag: the list is bounded, and with a full pack more than
+        // `SUMMARY_CRAFTS` recipes can be craftable at once — the better
+        // tool, the first spear and what the playbook wants next are the
+        // ones that must not fall off the end.
         let arm = |item: u16| {
             let page = book.page(item);
             matches!(page.class, Class::Melee | Class::Ranged | Class::Med)
                 || (0..MAX_ITEM_DEFS as u16).any(|w| book.page(w).ranged.round == item)
+        };
+        let rank = |item: u16, name: &Name| {
+            if TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str()) {
+                0
+            } else if arm(item) {
+                1
+            } else if name.as_str() == crate::mind::BAG_ITEM {
+                2
+            } else {
+                3
+            }
         };
         for pass in 0..3 {
             for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
@@ -2615,17 +3321,11 @@ pub fn observe(
                 let Some(name) = Name::new(core.catalog.name(def.output as usize)) else {
                     continue;
                 };
-                let tool =
-                    TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
-                let rank = if tool {
-                    0
-                } else if arm(def.output) {
-                    1
-                } else {
-                    2
-                };
                 let n = s.craftable_len as usize;
-                if rank == pass && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
+                if rank(def.output, &name) == pass
+                    && n < SUMMARY_CRAFTS
+                    && !s.craftable[..n].contains(&name)
+                {
                     s.craftable[n] = name;
                     s.craftable_len += 1;
                 }
@@ -2646,6 +3346,33 @@ pub fn observe(
     s.hits = memory.hits;
     s.deaths = memory.deaths;
     s.respawns = memory.respawns;
+    s.bags = memory.bags;
+    s.backpack = senses.backpack;
+    s.home = memory.home;
+    s.bag_ready = core.any_bag_ready();
+    s.night = crate::agent::tracks::night(s.tick, &core.env);
+    s.milestone = memory.base.milestone;
+    for &(item, units) in memory.base.needs() {
+        let n = usize::from(s.needs_len);
+        if let (Some(name), true) = (
+            Name::new(core.catalog.name(usize::from(item))),
+            n < s.needs.len(),
+        ) {
+            s.needs[n] = (name, units);
+            s.needs_len += 1;
+        }
+    }
+    for &(item, units) in &memory.stored[..usize::from(memory.stored_len)] {
+        let n = usize::from(s.stored_len);
+        if let (Some(name), true) = (
+            Name::new(core.catalog.name(usize::from(item))),
+            n < s.stored.len(),
+        ) {
+            s.stored[n] = (name, units);
+            s.stored_len += 1;
+        }
+    }
+    (s.take_out, s.feed) = (memory.take_out, memory.feed);
     s.trigger = memory.trigger;
     if s.body != BodyState::Alive {
         return s;
@@ -2716,6 +3443,37 @@ pub fn observe(
         s.offer(Goal::Heal);
     }
     s.offer(Goal::Wait);
+    // A bag in the pack and room for one more of its own down; the way
+    // back to the last death's backpack while it is near and nobody who
+    // could start the fight again is in view.
+    if usize::from(memory.bags) < BAG_CAP
+        && !memory.bag_held
+        && home::bag_row(core).is_some_and(|(_, item)| count_item(core, item) > 0)
+    {
+        s.offer(Goal::Bag);
+    }
+    if senses.backpack.count > 0
+        && f32::from(senses.backpack.nearest_m) <= home::RECOVER_M
+        && !senses.hostile
+        && !memory.recover_held
+    {
+        s.offer(Goal::Recover);
+    }
+    // The base: the next milestone while some op of it can go now; the way
+    // home once a cupboard stands there and this body is not inside.
+    if memory.base.ready && memory.base.milestone != crate::mind::Milestone::Done {
+        s.offer(Goal::Build);
+    }
+    if memory.home.state == HomeState::Built {
+        s.offer(Goal::GoHome);
+    }
+    // A visit home while there is something to see to there.
+    if matches!(memory.home.state, HomeState::Built | HomeState::Inside)
+        && !memory.stash_held
+        && (memory.take_out || memory.feed || memory.put_away)
+    {
+        s.offer(Goal::Stash);
+    }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));
     }
@@ -3212,6 +3970,125 @@ mod tests {
         }
         assert!(bot.mind.stats.requests > asked, "play resumes");
         assert_ne!(bot.stats.phase, Phase::Dead);
+
+        // The screen lists a ready bag of its own (it comes before the
+        // death on the event lane): the second death wakes there.
+        let body = *view.get(1).unwrap();
+        let cell = |q: i32| sim_core::build::build_cell_of(q as f32 * POS_XZ_Q) as u16;
+        let bag = sim_core::deploy::BagAnchor {
+            cx: cell(body.qx),
+            cz: cell(body.qz),
+            level: 0,
+            ready: true,
+        };
+        let die = |bot: &mut Survivor, view: &mut ClientView, seq: u16| {
+            let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+            let n = protocol::event::encode_event_bags(&[bag], &mut buf).unwrap();
+            event(bot, n, &buf);
+            let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, &mut buf).unwrap();
+            event(bot, n, &buf);
+            view.entities[0].1.dead = true;
+            view.newest_applied = Some(view.newest_applied.unwrap() + 1);
+            bot.frame_at(view, 1, seq, now);
+            let mut out = [0u8; MAX_STREAM_MSG_BYTES];
+            let len = bot.action(&mut out).expect("the respawn verb");
+            let n = protocol::event::encode_event_respawn(false, &mut buf).unwrap();
+            event(bot, n, &buf);
+            view.entities[0].1.dead = false;
+            protocol::decode_action(&out[..len]).unwrap()
+        };
+        assert_eq!(bot.home.bags(), 0, "no bag of its own yet");
+        assert!(matches!(
+            die(&mut bot, &mut view, 6),
+            protocol::ActionMsg::Respawn { on_bag: true }
+        ));
+        assert_eq!(bot.home.bags(), 1, "the screen's list is what it owns");
+        // Hurt beside that bag a moment ago (the blow arrives as a person
+        // feels it, with the eyes on where it stands): home is being
+        // fought over, and the beach is the way back in.
+        let me = *view.get(1).unwrap();
+        let tick = view.newest_applied.unwrap() + 1;
+        keyframe(&mut view, tick, &[me]);
+        bot.frame_at(&view, 1, 7, now);
+        assert!(!bot.home.under_attack(view.newest_applied.unwrap()));
+        let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        assert!(bot.home.under_attack(view.newest_applied.unwrap()));
+        assert!(matches!(
+            die(&mut bot, &mut view, 8),
+            protocol::ActionMsg::Respawn { on_bag: false }
+        ));
+        assert_eq!(
+            (bot.home.stats.wakes_on_bag, bot.home.stats.wakes_on_beach),
+            (1, 3)
+        );
+    }
+
+    #[test]
+    fn a_stranger_striking_its_base_raises_the_alarm_and_a_repair_does_not() {
+        let (mut bot, _, _) = fixture();
+        let plan = sim_core::bots::BasePlan::new(0, 100, 100);
+        bot.builder.set_plan(plan);
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let loc = sim_core::build::LOC_EDGE_XLO;
+        // Mended to its whole hp: nobody struck anything.
+        let n = protocol::event::encode_event_piece_repaired(
+            false, 101, 100, 0, loc, 0, 5, 250, &mut buf,
+        )
+        .unwrap();
+        event(&mut bot, n, &buf);
+        assert!(!bot.home.under_attack(0));
+        // Somebody's wall off the plot.
+        let n =
+            protocol::event::encode_event_struct_hit(false, 90, 90, 0, loc, 0, 10, 240, &mut buf)
+                .unwrap();
+        event(&mut bot, n, &buf);
+        assert!(!bot.home.under_attack(0));
+        // Its own wall, struck by somebody else.
+        let n =
+            protocol::event::encode_event_struct_hit(false, 101, 100, 0, loc, 0, 10, 240, &mut buf)
+                .unwrap();
+        event(&mut bot, n, &buf);
+        assert!(bot.home.under_attack(0), "a blow on its own wall");
+    }
+
+    #[test]
+    fn a_bag_that_failed_is_not_chosen_again_where_it_failed() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let core = bot.core.as_mut().unwrap();
+        core.deploy_defs.defs[0] = sim_core::deploy::DeployDef {
+            arch: sim_core::deploy::ARCH_BAG,
+            hp: 10,
+            item: 7,
+            ..sim_core::deploy::DeployDef::INERT
+        };
+        (core.deploy_defs.def_count, core.deploy_defs_have) = (1, 1);
+        core.inv[HOTBAR_SLOTS + 2] = ItemStack {
+            item: 7,
+            count: 1,
+            ..ItemStack::default()
+        };
+        view.newest_applied = Some(1);
+        bot.frame_at(&view, 1, 1, now);
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Bag));
+        // The move to the belt goes unanswered: the goal fails here...
+        goal(&mut bot, Goal::Bag, 1);
+        bot.frame_at(&view, 1, 2, now);
+        view.newest_applied = Some(2 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 3, now);
+        assert_eq!(
+            bot.memory.last.unwrap().outcome,
+            Outcome::Failed(Why::NoAnswer)
+        );
+        // ...and is not offered again on the same spot, only after a walk.
+        view.newest_applied = Some(3 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 4, now);
+        assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Bag));
+        view.entities[0].1.qx += ((home::BAG_RETRY_M + 2.0) / POS_XZ_Q) as i32;
+        view.newest_applied = Some(4 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 5, now);
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Bag));
     }
 
     #[test]

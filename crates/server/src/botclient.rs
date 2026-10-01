@@ -17,6 +17,7 @@
 //! server cannot tell a raiding bot from a player, which is the whole point:
 //! a refusal counted here was earned on the real path.
 
+use crate::agent::site::{body_cell, cell_mid, foundation_goes, someone_near, CLAIM_KEEP_M};
 use crate::net::{client_handshake, read_event_frame, write_frame, FRAME_PREFIX_BYTES};
 use crate::view::{Applied, ClientView};
 use protocol::{
@@ -30,11 +31,9 @@ use sim_core::bots::{
     base_step, bot_frame, raid_step, BasePlan, RaidPlan, RaidRows, RAID_CYCLE, STARTER,
     STARTER_FOOTPRINT, STARTER_STAND_M,
 };
-use sim_core::build::{build_cell_of, BUILD_CELL_M};
+use sim_core::build::BUILD_CELL_M;
 use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
-use sim_core::limits::{
-    DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_INPUT_FRAMES, TICK_HZ,
-};
+use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_BUILD_LEVELS, MAX_INPUT_FRAMES, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::ranged::{REFUSE_RL_BUSY, REFUSE_RL_EMPTY};
 use sim_core::rng::Pcg32;
@@ -522,53 +521,6 @@ const BASE_HOLD_TICKS: u32 = 5 * TICK_HZ;
 /// against something.
 const WAY_CHECK_TICKS: u64 = 2 * TICK_HZ as u64;
 const WAY_MIN_M: f32 = 1.0;
-
-/// How far from another cupboard an owner settles, metres: its claim reaches
-/// `claim::PRIV_CUSHION_M` past every cell of its building, and a base
-/// spreads a couple of cells from its cupboard on either side.
-const CLAIM_KEEP_M: f32 = sim_core::claim::PRIV_CUSHION_M + 4.0 * BUILD_CELL_M;
-
-/// The middle of a build cell, metres.
-fn cell_mid(cx: u16, cz: u16) -> (f32, f32) {
-    let half = BUILD_CELL_M * 0.5;
-    (
-        cx as f32 * BUILD_CELL_M + half,
-        cz as f32 * BUILD_CELL_M + half,
-    )
-}
-
-/// The build cell a quantized body coordinate stands in.
-///
-/// `build_cell_of` is the sim's own function and the clamp is the one
-/// `ui/place.rs:77` applies to a look-at point, so the bot addresses a cell
-/// on the same grid the server validates against — the quantize-both-sides
-/// law from the trap list, applied to a cell index. The island is
-/// all-positive (`limits::MAX_BUILD_COORD`: a 2,048 m world over ~683 3 m
-/// cells), so the clamp only ever bites on a body outside the playfield.
-fn body_cell(q: i32) -> u16 {
-    build_cell_of(q as f32 * POS_XZ_Q).clamp(0, MAX_BUILD_COORD as i32 - 1) as u16
-}
-
-/// Is another person (not an animal) standing within `r` cells of this one
-/// (`r` = 0: in it), as far as the snapshots say?
-fn someone_near(view: &ClientView, me: u32, cx: u16, cz: u16, r: u16) -> bool {
-    view.entities.iter().any(|(id, e)| {
-        *id != me
-            && sim_core::mob::slot_of_id(*id).is_none()
-            && body_cell(e.qx).abs_diff(cx) <= r
-            && body_cell(e.qz).abs_diff(cz) <= r
-    })
-}
-
-/// Would a foundation go on this cell? `build::place`'s ground rules: the
-/// terrain, the depot's and the landmarks' reserves.
-fn foundation_goes(seed: u64, hv: &Haven, cx: u16, cz: u16) -> bool {
-    let (ax, az) = sim_core::build::anchor(cx, cz, sim_core::build::LOC_PLANE);
-    let pad = sim_core::build::BUILD_CELL_M * 1.5;
-    sim_core::build::foundation_terrain_ok(seed, hv, ax, az)
-        && !sim_core::depot::reserves(hv, ax, az, pad)
-        && !sim_core::landmark::covers(&hv.marks, ax, az, pad)
-}
 
 /// The island's haven, built once for every raider in the process (a bot
 /// fleet dials one shard): `terrain::haven` costs a fraction of a second,

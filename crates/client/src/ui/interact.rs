@@ -538,6 +538,18 @@ pub fn resolve(
         // metric `deploy.rs`'s `box_in_reach` and the door's own gate use.
         let x = rec.cx as f32 * BUILD_CELL_M + half;
         let z = rec.cz as f32 * BUILD_CELL_M + half;
+        // A door is aimed at where it hangs, its edge's middle: two doors
+        // share a cell (an airlock's front and inner door), and scored at
+        // the centre they tie exactly, so the second could never be picked.
+        let (x, z) = if verb == Verb::Door {
+            let (dx, dz) = (x - aim.x, z - aim.z);
+            if dx * dx + dz * dz > aim.reach * aim.reach {
+                continue;
+            }
+            sim_core::build::anchor(rec.cx, rec.cz, rec.loc)
+        } else {
+            (x, z)
+        };
         if !best.wins(&mut out, &aim, f, verb, x, z) {
             continue;
         }
@@ -623,6 +635,49 @@ mod tests {
         let p = resolve(Aim::new(0.0, 0.0, 0.0, 1.0), &far, &defs, have, &[]);
         assert!(p.is_none());
         assert_eq!(p.prompt(&ItemCatalog::EMPTY), "");
+    }
+
+    /// An airlock hangs two doors in one cell, on two of its edges: each is
+    /// picked by looking at it, from inside the cell or from either side.
+    #[test]
+    fn two_doors_in_one_cell_are_each_picked_by_looking_at_them() {
+        use sim_core::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO};
+        let (defs, have) = defs_with(&[ARCH_DOOR]);
+        let front = DeployRec {
+            loc: LOC_EDGE_XLO,
+            ..rec(5, 5, 0)
+        };
+        let inner = DeployRec {
+            loc: LOC_EDGE_ZLO,
+            ..rec(5, 5, 0)
+        };
+        let (x0, z0) = (5.0 * BUILD_CELL_M, 5.0 * BUILD_CELL_M);
+        for recs in [[front, inner], [inner, front]] {
+            // Inside the cell, facing west at the front door, then north
+            // at the inner one.
+            let (x, z) = (x0 + 0.65, z0 + 0.65);
+            let p = resolve(Aim::new(x, z, -1.0, 0.8), &recs, &defs, have, &[]);
+            assert_eq!((p.verb, p.loc), (Verb::Door, LOC_EDGE_XLO));
+            let p = resolve(Aim::new(x, z, 0.8, -1.0), &recs, &defs, have, &[]);
+            assert_eq!((p.verb, p.loc), (Verb::Door, LOC_EDGE_ZLO));
+            // From outside each, facing it.
+            let p = resolve(
+                Aim::new(x0 - 1.0, z0 + 1.5, 1.0, 0.0),
+                &recs,
+                &defs,
+                have,
+                &[],
+            );
+            assert_eq!(p.loc, LOC_EDGE_XLO);
+            let p = resolve(
+                Aim::new(x0 + 1.5, z0 - 0.65, 0.0, 1.0),
+                &recs,
+                &defs,
+                have,
+                &[],
+            );
+            assert_eq!(p.loc, LOC_EDGE_ZLO);
+        }
     }
 
     /// The judge's case, and the whole reason for two ranks: standing between

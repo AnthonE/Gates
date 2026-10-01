@@ -11,9 +11,13 @@
 
 use crate::build::{
     LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, LOC_TRI_XLO_ZLO, MAT_STONE,
-    MAT_WOOD,
+    MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS_L,
+    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
 };
-use crate::deploy::{box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE};
+use crate::deploy::{
+    box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE, ARCH_BOX, ARCH_DOOR, ARCH_HEARTH,
+    ARCH_LOCK,
+};
 use crate::input::{InputFrame, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use crate::inventory::{CONT_BOX, CONT_SELF};
 use crate::lock::CODE_MAX;
@@ -763,6 +767,59 @@ impl BasePlan {
     }
 }
 
+/// Where one blueprint op lands on the grid: the absolute build address
+/// the verb names. A feed names a cell, so its `loc` is the plane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OpAddr {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+}
+
+/// The address `op` names, from `plan`'s plot. Pure data: the scripted owner
+/// ([`base_step`]) and the agent's builder both read a blueprint through it,
+/// so the two cannot come to disagree about where a piece goes.
+pub fn op_addr(plan: &BasePlan, op: BaseOp) -> OpAddr {
+    let (dx, dz, level, loc) = match op {
+        Place(_, dx, dz, level, loc)
+        | Deploy(_, dx, dz, level, loc)
+        | Code(dx, dz, level, loc)
+        | Upgrade(dx, dz, level, loc, _) => (dx, dz, level, loc),
+        Feed(dx, dz, level) => (dx, dz, level, LOC_PLANE),
+    };
+    let (cx, cz) = plan.cell(dx, dz);
+    OpAddr { cx, cz, level, loc }
+}
+
+/// The piece shape (`build::SHAPE_*`) a blueprint part is. With the
+/// material, `build::row_of` turns it into a row of whatever table the
+/// caller baked or was sent, so a blueprint never carries a row number.
+pub const fn part_shape(part: Part) -> u8 {
+    match part {
+        Part::Foundation => SHAPE_FOUNDATION,
+        Part::TriFoundation => SHAPE_TRI_FOUNDATION,
+        Part::Wall => SHAPE_WALL,
+        Part::Doorway => SHAPE_DOORWAY,
+        Part::Floor => SHAPE_FLOOR,
+        Part::Stairs => SHAPE_STAIRS_L,
+        Part::Roof => SHAPE_ROOF,
+        Part::TriRoof => SHAPE_TRI_ROOF,
+    }
+}
+
+/// The deployable archetype (`deploy::ARCH_*`) a blueprint kit is. The two
+/// doors share one; a caller that scans a deploy table by arch tells them
+/// apart by the item each row places.
+pub const fn kit_arch(kit: Kit) -> u8 {
+    match kit {
+        Kit::Hearth => ARCH_HEARTH,
+        Kit::Door | Kit::MetalDoor => ARCH_DOOR,
+        Kit::Lock => ARCH_LOCK,
+        Kit::Box => ARCH_BOX,
+    }
+}
+
 /// The owner's next command from `blueprint`, advancing its place. One per
 /// call, allocation-free; like `raid_step`, every command is a claim and the
 /// sim decides — a piece already standing is refused and costs nothing.
@@ -770,9 +827,9 @@ pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> C
     let op = blueprint[plan.next as usize % blueprint.len()];
     plan.next = ((plan.next as usize + 1) % blueprint.len()) as u16;
     let id = plan.id;
+    let OpAddr { cx, cz, level, loc } = op_addr(plan, op);
     match op {
-        Place(part, dx, dz, level, loc) => {
-            let (cx, cz) = plan.cell(dx, dz);
+        Place(part, ..) => {
             let row = match part {
                 Part::Foundation => rows.foundation,
                 Part::TriFoundation => rows.tri_foundation,
@@ -794,8 +851,7 @@ pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> C
                 plate: 0,
             }
         }
-        Deploy(kit, dx, dz, level, loc) => {
-            let (cx, cz) = plan.cell(dx, dz);
+        Deploy(kit, ..) => {
             let row = match kit {
                 Kit::Hearth => rows.hearth,
                 Kit::Door => rows.door,
@@ -812,32 +868,74 @@ pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> C
                 loc,
             }
         }
-        Code(dx, dz, level, loc) => {
-            let (cx, cz) = plan.cell(dx, dz);
-            Command::Access {
-                id,
-                cx,
-                cz,
-                level,
-                loc,
-                op: ACCESS_OP_SET_CODE,
-                code: rows.code,
-            }
+        Code(..) => Command::Access {
+            id,
+            cx,
+            cz,
+            level,
+            loc,
+            op: ACCESS_OP_SET_CODE,
+            code: rows.code,
+        },
+        Upgrade(.., material) => Command::Upgrade {
+            id,
+            cx,
+            cz,
+            level,
+            loc,
+            material,
+        },
+        Feed(..) => Command::Feed { id, cx, cz, level },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The blueprint read as data answers exactly what the scripted owner
+    /// sends: same address for every op, from any plot.
+    #[test]
+    fn every_starter_op_lands_where_the_owner_sends_it() {
+        let rows = BaseRows {
+            foundation: 1,
+            tri_foundation: 2,
+            wall: 3,
+            doorway: 4,
+            floor: 5,
+            stairs: 6,
+            roof: 7,
+            tri_roof: 8,
+            hearth: 9,
+            door: 10,
+            metal_door: 11,
+            lock: 12,
+            container: 13,
+            code: 1234,
+        };
+        let mut plan = BasePlan::new(7, 40, 90);
+        for &op in STARTER {
+            let at = op_addr(&plan, op);
+            let (cx, cz, level, loc) = match base_step(&mut plan, rows, STARTER) {
+                Command::Place {
+                    cx, cz, level, loc, ..
+                }
+                | Command::PlaceDeploy {
+                    cx, cz, level, loc, ..
+                }
+                | Command::Access {
+                    cx, cz, level, loc, ..
+                }
+                | Command::Upgrade {
+                    cx, cz, level, loc, ..
+                } => (cx, cz, level, loc),
+                Command::Feed { cx, cz, level, .. } => (cx, cz, level, LOC_PLANE),
+                other => panic!("{other:?} is no base verb"),
+            };
+            assert_eq!(at, OpAddr { cx, cz, level, loc }, "{op:?}");
         }
-        Upgrade(dx, dz, level, loc, material) => {
-            let (cx, cz) = plan.cell(dx, dz);
-            Command::Upgrade {
-                id,
-                cx,
-                cz,
-                level,
-                loc,
-                material,
-            }
-        }
-        Feed(dx, dz, level) => {
-            let (cx, cz) = plan.cell(dx, dz);
-            Command::Feed { id, cx, cz, level }
-        }
+        assert_eq!(plan.next, 0, "one pass is the whole blueprint");
+        assert_eq!(part_shape(Part::Stairs), SHAPE_STAIRS_L);
+        assert_eq!(kit_arch(Kit::MetalDoor), kit_arch(Kit::Door));
     }
 }

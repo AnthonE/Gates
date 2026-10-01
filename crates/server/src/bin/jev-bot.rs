@@ -2,6 +2,7 @@
 
 use server::agent_demo::{bot_name, Door, MindArgs, Source, AGENT_NAME, MIND_USAGE};
 use server::explorer::Survivor;
+use sim_core::limits::TICK_HZ;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -180,6 +181,10 @@ async fn run(options: Options) -> Result<(), String> {
         let opts = options.mind.opts();
         fleet.spawn(async move {
             let mut survivor = Survivor::with(mind, opts);
+            // The run's end, so the body is home with its doors shut when
+            // it comes: counted in the shard's ticks from the welcome.
+            let ticks = duration.as_secs().saturating_mul(u64::from(TICK_HZ));
+            survivor.set_deadline(Some(ticks.min(u64::from(u32::MAX)) as u32));
             let result = door.play(&endpoint, name, duration, &mut survivor).await;
             (i, survivor, result)
         });
