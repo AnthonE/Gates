@@ -115,7 +115,7 @@ pub struct DefendJob {
     /// A repair in flight, and when it went.
     sent: Option<u32>,
     refused: Option<u8>,
-    /// A hammer being crafted: the count before, and when it went.
+    /// A hammer being crafted: the count before (none), and when it went.
     craft: Option<(u32, u32)>,
     belt: Option<u32>,
     /// The last straight steps: the nearest come, and when.
@@ -282,11 +282,7 @@ impl DefendJob {
                 self.refused = None;
                 self.held = None;
             }
-            Ward::Craft { .. } => {
-                if let Some(c) = self.craft.as_mut() {
-                    c.1 = tick;
-                }
-            }
+            Ward::Craft { .. } => self.craft = Some((0, tick)),
             Ward::Belt { .. } => self.belt = Some(tick),
             _ => {}
         }
@@ -425,7 +421,6 @@ impl DefendJob {
             let Some((recipe, ..)) = recipe_for(core, hammer, &stations) else {
                 return Ward::Fail(Why::NoTool);
             };
-            self.craft = Some((0, tick));
             return Ward::Craft { recipe };
         }
         // To where the repair key takes it.

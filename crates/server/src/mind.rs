@@ -1524,6 +1524,13 @@ impl Scripted {
         if s.offers(Goal::Defend) {
             return (Goal::Defend, "scripted: home is under attack or damaged");
         }
+        // A raid done: home with what it took, before anyone comes after it.
+        let raided = s
+            .last
+            .is_some_and(|r| r.goal == Goal::Raid && r.outcome == Outcome::Done);
+        if raided && s.offers(Goal::GoHome) {
+            return (Goal::GoHome, "scripted: home with the raid's take");
+        }
         let low = SCRIPTED_LOW_METER_PCT;
         let bush = s.offers(Goal::Forage) && s.bushes.count > 0;
         if pct(s.water, s.water_max) < low {
@@ -2170,6 +2177,14 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::Build, "by day, the base");
         s.night = true;
         assert_eq!(scripted.pick(&s).0, Goal::Raid, "by night, a raid");
+        s.last = Some(Report {
+            goal: Goal::Raid,
+            outcome: Outcome::Done,
+            gained: 300,
+            secs: 40,
+        });
+        s.offer(Goal::GoHome);
+        assert_eq!(scripted.pick(&s).0, Goal::GoHome, "then home with the take");
         s.raid.add(80.0, 2);
         let v = s.to_json();
         assert_eq!(v["raid_targets"]["count"], 1);

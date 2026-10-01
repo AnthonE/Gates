@@ -697,6 +697,8 @@ pub struct RaidJob {
     box_tries: u8,
     moved: Option<bool>,
     done_boxes: [Option<OpAddr>; BOX_ROWS],
+    /// At the face with the weapon since.
+    swinging: Option<u32>,
     /// Looking round inside since.
     looking: Option<(u32, u16)>,
     /// Units taken.
@@ -1067,7 +1069,8 @@ impl RaidJob {
                 // Blows until it is down, for as long as they should take.
                 let cadence = means.melee.map_or(TICK_HZ, |(.., c)| u32::from(c.max(1)));
                 let budget = u32::from(n) * cadence * 2 + 10 * TICK_HZ;
-                if tick.wrapping_sub(self.since) >= budget {
+                let since = *self.swinging.get_or_insert(tick);
+                if tick.wrapping_sub(since) >= budget {
                     return self.give_up(bases, Why::Stuck, tick);
                 }
                 if ready && hands.on_target() {

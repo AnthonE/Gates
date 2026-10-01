@@ -2519,6 +2519,45 @@ mod tests {
         assert_eq!((combat.stats.engages, combat.stats.parted), (1, 0));
     }
 
+    /// Inside its own base even a body that runs from every fight stands
+    /// and meets the raider: its walls are the cover, and out of them is
+    /// no escape. Outside, it runs.
+    #[test]
+    fn a_raid_met_on_home_ground_is_stood() {
+        let book = book();
+        let raider = 7;
+        let mut tracks = Tracks::new();
+        tracks.stand(raider, [0.0, 0.0, 8.0], true);
+        tracks.on_swing(raider, 5);
+        let kit = |home_ground: bool| Kit {
+            book: &book,
+            melee: Some((0, wire("Wooden Spear"))),
+            ranged: None,
+            rounds: 0,
+            loaded: None,
+            hp: 100,
+            hp_max: 100,
+            on_target: false,
+            settled: false,
+            lead_ticks: 4,
+            lane_free: true,
+            raided: Some([0.0, 0.0]),
+            home_ground,
+        };
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let mut route = Route::new();
+        let me = EntityState {
+            qz: (3.0 / POS_XZ_Q) as i32,
+            ..EntityState::default()
+        };
+        let mut combat = Combat::new(Temperament::Passive);
+        combat.assess(&mut core, &me, &tracks, &mut route, &kit(false), 6);
+        assert_eq!((combat.stats.escapes, combat.stats.engages), (1, 0));
+        let mut combat = Combat::new(Temperament::Passive);
+        combat.assess(&mut core, &me, &tracks, &mut route, &kit(true), 6);
+        assert_eq!((combat.stats.escapes, combat.stats.engages), (0, 1));
+    }
+
     /// A swing seen is at me only where it could land: ahead of it, in
     /// its reach, and on its line, not a step off it or a tree away.
     #[test]
