@@ -526,18 +526,18 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 16] = [
     ),
 ];
 
-/// A locked door wears banded iron: the one bit of door state a passer-by
-/// can read off the outside, and the thing they would have to break.
-const DOOR_LOCKED: Color = Color::srgb(0.235, 0.247, 0.267);
-
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
 /// fell, in the sleeping bag's cloth.
-const BAG_SIZE: [f32; 3] = [0.6, 0.35, 0.45];
+pub const BAG_SIZE: [f32; 3] = [0.6, 0.35, 0.45];
+
+/// The death backpack's model (`ci/prop_kit.py`), fitted inside [`BAG_SIZE`]
+/// and centred on all three axes like the cuboid it replaces, so the spawn
+/// transform is unchanged. One primitive, one material.
+pub const BAG_ASSET: &str = "models/prop/death_bag.glb";
 
 /// Fallback pouch envelope for items without a held model. Existing size;
 /// modelled tools share the geometry and scale used by the hand.
 const GITEM_SIZE: [f32; 3] = [0.3, 0.24, 0.3];
-const BAG_COLOR: Color = Color::srgb(0.627, 0.416, 0.235);
 
 /// A loose stack's sack: **lighter and greyer than the bag's canvas**, so
 /// the two objects are told apart by value as well as by size — the read
@@ -639,11 +639,10 @@ pub struct Kit {
     shutters_open: Handle<Mesh>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
-    /// A killed animal's death bag, drawn as its carcass (v84): one mesh
-    /// per species, indexed by `WireBag::species`, in the herd's own hide
-    /// material.
+    /// A killed animal's death bag, drawn as its carcass (v84): one model
+    /// per species, indexed by `WireBag::species` (`mobs::CARCASS_GLB`).
     carcass_mesh: [Handle<Mesh>; sim_core::mob::MOB_KINDS],
-    carcass_mat: Handle<StandardMaterial>,
+    carcass_mat: [Handle<StandardMaterial>; sim_core::mob::MOB_KINDS],
     gitem_mesh: Handle<Mesh>,
     gitem_mat: Handle<StandardMaterial>,
     arrow_mesh: Handle<Mesh>,
@@ -2080,30 +2079,36 @@ pub fn open_shutters_mesh() -> Mesh {
 /// rather than being deleted: the build ghost still reads `deploy_size`, and a
 /// row whose model fails to load falls back to a shape rather than to nothing.
 ///
-/// Generated 2026-08-11 (`DECISIONS.md`, and `assets/models/MANIFEST.md` for
-/// the per-asset prompt and task id). Sized by `ci/import_meshy.py` against
-/// this file's own [`DEPLOY`] row, never by the generator's estimate — the
-/// reasons are in that script's header and the measurements in `DECISIONS.md`.
+/// Rows 0–3 and 5 were generated 2026-08-11 (`DECISIONS.md`, and
+/// `assets/models/MANIFEST.md` for the per-asset prompt and task id) and sized
+/// by `ci/import_meshy.py` against this file's own [`DEPLOY`] row, never by the
+/// generator's estimate. The door and rows 4 and 8–11 are built in Blender by
+/// `ci/prop_kit.py`, which fits them to the same rows.
 pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/bag.glb"),       // 0 bag
     Some("models/deploy/hearth.glb"),    // 1 hearth
     Some("models/deploy/box.glb"),       // 2 box
     Some("models/deploy/fire.glb"),      // 3 fire
-    None,                                // 4 furnace — greybox
+    Some("models/deploy/furnace.glb"),   // 4 furnace
     Some("models/deploy/workbench.glb"), // 5 workbench
-    None,                                // 6 door — a door is a slab, and the
-    // one archetype whose material is state (`door_locked`), so a baked PBR
-    // set would have to be swapped rather than tinted.
-    None, // 7 lock — never drawn
-    None, // 8 recycler — greybox
-    None, // 9 research table — greybox
-    None, // 10 workbench 2 — greybox
-    None, // 11 workbench 3 — greybox
-    None, // 12 window bars — shared insert geometry
-    None, // 13 garage door — shared insert geometry
-    None, // 14 glass — shared insert geometry
-    None, // 15 shutters — shared insert geometry
+    // 6 door — the one archetype whose material is state: locked, it wears
+    // [`DOOR_LOCKED_ASSET`]'s material, baked onto the same unwrap.
+    Some("models/deploy/door.glb"),
+    None,                                     // 7 lock — never drawn
+    Some("models/deploy/recycler.glb"),       // 8 recycler
+    Some("models/deploy/research_table.glb"), // 9 research table
+    Some("models/deploy/workbench2.glb"),     // 10 workbench 2
+    Some("models/deploy/workbench3.glb"),     // 11 workbench 3
+    None,                                     // 12 window bars — shared insert geometry
+    None,                                     // 13 garage door — shared insert geometry
+    None,                                     // 14 glass — shared insert geometry
+    None,                                     // 15 shutters — shared insert geometry
 ];
+
+/// The locked door: `door.glb`'s geometry built under iron surfaces by
+/// `ci/prop_kit.py`, which unwraps identical geometry identically, so its
+/// material lays onto `door.glb`'s mesh. Only the material is loaded.
+pub const DOOR_LOCKED_ASSET: &str = "models/deploy/door_locked.glb";
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
 pub fn build_kit(
@@ -2281,29 +2286,29 @@ pub fn build_kit(
         tier,
         deploy_mesh,
         deploy_mat,
-        door_locked: materials.add(StandardMaterial {
-            base_color: DOOR_LOCKED,
-            perceptual_roughness: 0.45,
-            metallic: 0.8,
-            ..default()
-        }),
-        bag_mesh: meshes.add(Cuboid::new(BAG_SIZE[0], BAG_SIZE[1], BAG_SIZE[2])),
-        carcass_mesh: [
-            meshes.add(super::mobs::carcass_mesh(sim_core::mob::MOB_PIG)),
-            meshes.add(super::mobs::carcass_mesh(sim_core::mob::MOB_WOLF)),
-        ],
-        // `mobs::load`'s material: vertex colours, hide roughness.
-        carcass_mat: materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 0.88,
-            reflectance: super::fresnel::FLESH,
-            ..default()
-        }),
-        bag_mat: materials.add(StandardMaterial {
-            base_color: BAG_COLOR,
-            perceptual_roughness: 0.95,
-            ..default()
-        }),
+        door_locked: assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(DOOR_LOCKED_ASSET),
+        ),
+        bag_mesh: assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(BAG_ASSET),
+        ),
+        carcass_mesh: super::mobs::CARCASS_GLB.map(|p| super::mobs::model(assets, p).0),
+        carcass_mat: super::mobs::CARCASS_GLB.map(|p| super::mobs::model(assets, p).1),
+        bag_mat: assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(BAG_ASSET),
+        ),
         gitem_mesh: meshes.add(super::loot::sack_mesh(GITEM_SIZE)),
         // Its own material rather than the bag's, for one reason that is
         // not taste: `prewarm.rs` specializes a pipeline per material, so
@@ -2584,15 +2589,19 @@ pub fn stream(
         // A killed animal's bag is its carcass, lying where it fell (v84),
         // at a bearing hashed off the bag id: the wire carries no facing,
         // and a field of dead pigs all pointing north reads as a pattern.
-        let carcass = bag.species().and_then(|s| kit.carcass_mesh.get(s as usize));
+        let carcass = bag.species().and_then(|s| {
+            kit.carcass_mesh
+                .get(s as usize)
+                .zip(kit.carcass_mat.get(s as usize))
+        });
         let entity = match carcass {
-            Some(mesh) => {
+            Some((mesh, mat)) => {
                 let turn = (bag.id.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
                 commands
                     .spawn((
                         super::WorldEntity,
                         Mesh3d(mesh.clone()),
-                        MeshMaterial3d(kit.carcass_mat.clone()),
+                        MeshMaterial3d(mat.clone()),
                         Transform::from_translation(feet)
                             .with_rotation(Quat::from_rotation_y(turn * std::f32::consts::TAU)),
                     ))
@@ -2973,6 +2982,19 @@ pub fn deploy_transform(
     }
 }
 
+/// How far a standing deployable sits below [`deploy_transform`]'s box
+/// centre: half the box for a [`DEPLOY_ASSET`] row, whose model is authored
+/// feet-at-zero (`tests/deploy_assets.rs`), and nothing for the centred
+/// cuboid. Without it every model stood half its height off the floor.
+pub fn model_drop(arch: u8) -> f32 {
+    let idx = (arch as usize).min(DEPLOY.len() - 1);
+    if DEPLOY_ASSET[idx].is_some() {
+        DEPLOY[idx].0[1] * 0.5
+    } else {
+        0.0
+    }
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -2988,7 +3010,7 @@ pub fn spawn_deploy(
     plate: i8,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
-    let transform = deploy_transform(
+    let mut transform = deploy_transform(
         seed,
         haven,
         (rec.cx, rec.cz, rec.level, rec.loc),
@@ -2996,6 +3018,8 @@ pub fn spawn_deploy(
         rec.open,
         plate,
     );
+    let drop = model_drop(arch);
+    transform.translation.y -= drop;
 
     let mat = if arch == ARCH_DOOR && rec.locked {
         kit.door_locked.clone()
@@ -3040,7 +3064,7 @@ pub fn spawn_deploy(
                 smoke_dy: if flames {
                     0.45
                 } else {
-                    h * 0.5 - FIRE_LIGHT_LIFT_M + 0.05
+                    h * 0.5 + drop - FIRE_LIGHT_LIFT_M + 0.05
                 },
                 scale: 1.0,
             },
@@ -3131,8 +3155,8 @@ const FIRE_RANGE_M: f32 = 6.0;
 const FIRE_LUMENS: f32 = 900.0;
 
 /// How far above the deployable's own origin the flame sits, metres. The
-/// origin is the centre of the archetype's box, so a light at zero is inside
-/// the fire ring rather than above it.
+/// origin is the model's foot ([`model_drop`]) — the centre of the box for a
+/// cuboid — so a light at zero would be in the ash rather than above it.
 const FIRE_LIGHT_LIFT_M: f32 = 0.35;
 
 /// Drive every fire light off the lit set the sim announces.

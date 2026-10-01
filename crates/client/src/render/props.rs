@@ -176,6 +176,8 @@ pub struct PropAssets {
     node_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     /// Barrel, supply crate, cache box — one apiece, `None` for the massing.
     small_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
+    /// The keycard crates' own models, where they loaded ([`TIER_CRATE_GLB`]).
+    tier_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     /// The ziggurat's green, blue and elite crates: the supply crate's shape
     /// in painted steel, so a tier reads at a glance.
     tier_crates: [Handle<StandardMaterial>; 3],
@@ -1413,6 +1415,42 @@ pub struct PropModels {
     /// is every row on a headless build, so those suites keep drawing
     /// exactly what they drew before this existed.
     pools: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>>,
+    /// The keycard crates' models ([`TIER_CRATE_GLB`]), green, blue, elite.
+    /// Empty on a headless build, which then draws the painted crate.
+    tier: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+}
+
+/// The ziggurat's green, blue and elite crates, built by `ci/prop_kit.py`:
+/// painted steel lockers centred like the crate massing they replace. Kept out
+/// of [`prop_models`] on purpose — that table's gates (`tests/prop_assets.rs`,
+/// the chart-flatness check) are for baked photogrammetry, and a locker is
+/// painted in flat colours by design.
+pub const TIER_CRATE_GLB: [&str; 3] = [
+    "models/prop/crate_green.glb",
+    "models/prop/crate_blue.glb",
+    "models/prop/crate_elite.glb",
+];
+
+fn load_model(
+    server: &AssetServer,
+    path: &'static str,
+) -> (Handle<Mesh>, Handle<StandardMaterial>) {
+    (
+        server.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(path),
+        ),
+        server.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(path),
+        ),
+    )
 }
 
 impl PropModels {
@@ -1431,29 +1469,21 @@ impl PropModels {
             .map(|i| match OCCUPANTS.iter().find(|o| **o as usize == i) {
                 Some(o) => prop_models(*o)
                     .iter()
-                    .map(|path| {
-                        (
-                            server.load(
-                                GltfAssetLabel::Primitive {
-                                    mesh: 0,
-                                    primitive: 0,
-                                }
-                                .from_asset(*path),
-                            ),
-                            server.load(
-                                GltfAssetLabel::Material {
-                                    index: 0,
-                                    is_scale_inverted: false,
-                                }
-                                .from_asset(*path),
-                            ),
-                        )
-                    })
+                    .map(|path| load_model(server, path))
                     .collect(),
                 None => Vec::new(),
             })
             .collect();
-        Self { pools }
+        let tier = TIER_CRATE_GLB
+            .iter()
+            .map(|path| load_model(server, path))
+            .collect();
+        Self { pools, tier }
+    }
+
+    /// Keycard crate `tier`'s model, or `None` for the painted massing.
+    pub fn tier_crate(&self, tier: usize) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        self.tier.get(tier).cloned()
     }
 
     /// This occupant's variants, or an empty slice for the massing.
@@ -1822,6 +1852,7 @@ pub fn assets(
             models.pool(Occupant::CrateSlot).first().cloned(),
             models.pool(Occupant::CacheSlot).first().cloned(),
         ],
+        tier_models: [0, 1, 2].map(|i| models.tier_crate(i)),
         tier_crates: [
             Color::srgb(0.22, 0.55, 0.28),
             Color::srgb(0.20, 0.36, 0.78),
@@ -2368,10 +2399,15 @@ pub fn spawn_slot(
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             let tier = slot.occupant as usize - Occupant::GreenCrate as usize;
-            let mesh = a.small_models[1]
-                .as_ref()
-                .map_or_else(|| a.crate_box.clone(), |(m, _)| m.clone());
-            (mesh, a.tier_crates[tier].clone())
+            match &a.tier_models[tier] {
+                Some(m) => m.clone(),
+                None => {
+                    let mesh = a.small_models[1]
+                        .as_ref()
+                        .map_or_else(|| a.crate_box.clone(), |(m, _)| m.clone());
+                    (mesh, a.tier_crates[tier].clone())
+                }
+            }
         }
         Occupant::None => return,
     };

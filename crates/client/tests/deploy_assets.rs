@@ -24,7 +24,9 @@
 
 #![cfg(feature = "render")]
 
-use client::render::structures::{deploy_size, DEPLOY_ASSET};
+use client::render::structures::{
+    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, DOOR_LOCKED_ASSET,
+};
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
 /// ships and `crates/client/` is what cargo builds. Same hop `tests/ui.rs`
@@ -203,4 +205,61 @@ fn every_model_stands_on_the_ground() {
              with its feet at zero and would sit buried or float"
         );
     }
+}
+
+/// The accessor a primitive's attribute points at.
+fn attr<'a>(g: &'a Glb, name: &str) -> &'a serde_json::Value {
+    let p = g.primitives()[0];
+    &g.json["accessors"][p["attributes"][name].as_u64().unwrap() as usize]
+}
+
+#[test]
+fn the_locked_door_shares_the_doors_unwrap() {
+    // `build_kit` lays `door_locked.glb`'s MATERIAL onto `door.glb`'s MESH,
+    // which is only right while the two are one geometry under one unwrap —
+    // `ci/prop_kit.py` builds both from `_door`, and this notices if one is
+    // regenerated without the other.
+    let door = DEPLOY_ASSET[sim_core::deploy::ARCH_DOOR as usize].expect("the door has a model");
+    let (a, b) = (
+        Glb::open(&asset_path(door)),
+        Glb::open(&asset_path(DOOR_LOCKED_ASSET)),
+    );
+    for name in ["POSITION", "TEXCOORD_0"] {
+        let (x, y) = (attr(&a, name), attr(&b, name));
+        assert_eq!(x["count"], y["count"], "{name} count differs");
+    }
+    let index_count = |g: &Glb| {
+        let i = g.primitives()[0]["indices"].as_u64().unwrap() as usize;
+        g.json["accessors"][i]["count"].clone()
+    };
+    assert_eq!(index_count(&a), index_count(&b), "index count differs");
+    // POSITION is the one accessor glTF requires bounds on.
+    let (x, y) = (attr(&a, "POSITION"), attr(&b, "POSITION"));
+    for k in ["min", "max"] {
+        for i in 0..3 {
+            let (p, q) = (x[k][i].as_f64().unwrap(), y[k][i].as_f64().unwrap());
+            assert!((p - q).abs() < 1e-5, "POSITION {k}[{i}]: {p} vs {q}");
+        }
+    }
+}
+
+#[test]
+fn the_death_bag_is_the_centred_box_it_replaced() {
+    // Spawned at the cuboid's centre (`BAG_SIZE[1] / 2` above the feet), so
+    // the model is centred on all three axes and fits inside the box.
+    let g = Glb::open(&asset_path(BAG_ASSET));
+    assert_eq!(g.primitives().len(), 1, "{BAG_ASSET}: one primitive");
+    let ext = g.extent();
+    for k in 0..3 {
+        assert!(
+            ext[k] <= BAG_SIZE[k] + 1e-4,
+            "{BAG_ASSET} axis {k}: {} > {}",
+            ext[k],
+            BAG_SIZE[k]
+        );
+    }
+    assert!(
+        (g.min_y() + ext[1] * 0.5).abs() < 1e-3,
+        "{BAG_ASSET} is not centred on y"
+    );
 }

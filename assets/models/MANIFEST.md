@@ -840,3 +840,26 @@ door can stand aside (`render/ziggurat.rs`).
 | file | kit | tris | size |
 |---|---|---|---|
 | `site/ziggurat.glb` | `ci/kits/ziggurat.json` | 15,084 | 1.9 MB |
+
+## `ci/prop_kit.py` — props modelled in Blender
+
+**Our own work (CC0).** Each object is a recipe in `ci/prop_recipes.py`
+(boxes, lathes and sweeps in code), joined, unwrapped and Cycles-baked onto
+one material (albedo, ORM, normal), then `ci/ktx_pack.py`'d. The surfaces are
+CC0 photographs: the depot's own (`assets/textures/`) and the sets in
+`prop_kit.TEXSETS`, fetched at bake time and baked in rather than shipped —
+Poly Haven `hessian_230`, `hessian_380`, `cotton_jersey`, `brown_leather`,
+`rust_coarse_01`; ambientCG `Metal009`, `Metal038`, `PaintedMetal004`,
+`Paper001`, `Rope001`. Food, fur and the keycards' plastic stay procedural.
+The bake adds edge wear and crease dirt (`prop_kit.weather`).
+Rebuild one with `ci/prop_kit.py gen <name>` (bpy 4.5, the ktx CLI); look
+with `ci/prop_kit.py sheet <names…>`.
+
+| files | what |
+|---|---|
+| `deploy/furnace`, `recycler`, `research_table`, `workbench2`, `workbench3` | the deployables that were cuboids |
+| `deploy/door`, `deploy/door_locked` | one geometry, two surface sets; `build_kit` lays the locked material on the door's mesh |
+| `held/metal_hatchet`, `metal_pickaxe`, `metal_spear`, `satchel_charge`, `bandage`, `medkit`, `berries`, `mushrooms`, `corn`, `raw_meat`, `cooked_meat`, `burnt_meat`, `green_keycard`, `blue_keycard`, `red_keycard` | held items that drew the stand-in tool |
+| `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
+| `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
+| `mob/pig_body`, `pig_leg`, `wolf_body`, `wolf_leg`, `pig_carcass`, `wolf_carcass` | the animals, authored in `render/mobs.rs`'s frame (+Z forward, a leg's hip at its origin) and exported as-is; the box tables there stay the measured truth |
