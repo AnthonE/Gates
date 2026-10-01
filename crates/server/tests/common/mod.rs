@@ -43,6 +43,41 @@ pub fn scene() -> (f32, f32) {
     panic!("fixture seed has no stone node beside a tree");
 }
 
+/// A level, dry clearing: no tree, rock or node within `radius_cells`
+/// scatter cells of it, and the ground within a few metres of level over
+/// it. Where two bodies meet in the arena with nothing between them.
+pub fn clearing(radius_cells: i32) -> (f32, f32) {
+    use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
+    let haven = terrain::haven(SEED);
+    let table = ScatterTable::alpha_default();
+    let r = radius_cells;
+    for cz in (20 + r..236 - r).step_by(2) {
+        for cx in (20 + r..236 - r).step_by(2) {
+            let (x, z) = ((cx as f32 + 0.5) * CELL_SIZE, (cz as f32 + 0.5) * CELL_SIZE);
+            let h0 = terrain::ground(SEED, &haven, x, z);
+            if h0 < 2.0 {
+                continue;
+            }
+            let clear = (-r..=r).all(|dz| {
+                (-r..=r).all(|dx| {
+                    let s = terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz);
+                    let h = terrain::ground(
+                        SEED,
+                        &haven,
+                        x + dx as f32 * CELL_SIZE,
+                        z + dz as f32 * CELL_SIZE,
+                    );
+                    s.occupant == Occupant::None && h > 1.0 && (h - h0).abs() < 3.0
+                })
+            });
+            if clear {
+                return (x, z);
+            }
+        }
+    }
+    panic!("fixture seed has no clearing {r} cells wide");
+}
+
 /// A shard with the shipped tables, the dev spawn at `at`, and a player
 /// `id` joined on slot 0.
 pub fn shard(
@@ -50,6 +85,18 @@ pub fn shard(
     at: (f32, f32),
     wildlife: bool,
     id: u32,
+) -> Box<ShardCore> {
+    shard_with(content, at, wildlife, &[(0, id)])
+}
+
+/// The same, with these `(slot, id)` joins in this order. The order is the
+/// order the world steps bodies in (the first free row), so two swings on
+/// one tick land in it.
+pub fn shard_with(
+    content: &content::Content,
+    at: (f32, f32),
+    wildlife: bool,
+    joins: &[(usize, u32)],
 ) -> Box<ShardCore> {
     let t = server::net::bake_all(content).unwrap();
     let mut core = Box::new(ShardCore::new(SEED));
@@ -69,7 +116,9 @@ pub fn shard(
     }
     core.catalog = t.catalog;
     core.world.dev_spawn = Some(at);
-    assert!(core.connect(0, id));
+    for &(slot, id) in joins {
+        assert!(core.connect(slot, id));
+    }
     core
 }
 

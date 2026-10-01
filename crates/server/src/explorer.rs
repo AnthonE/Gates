@@ -98,6 +98,8 @@ pub const BYSTANDER_RAY_M: f32 = 3.0;
 /// that moved since the frame drawn, and hands that wobble. Wider than the
 /// margin a watcher calls a seen swing an attack by (`combat::SWING_MISS_M`).
 pub const BYSTANDER_MISS_M: f32 = 0.3;
+/// A player standing this near a node has it.
+pub const NODE_TAKEN_M: f32 = 3.0;
 /// A heal goal uses meds until health reaches this percentage, counting
 /// what the meds already used are still delivering.
 pub const HEAL_TARGET_PCT: u32 = 90;
@@ -683,6 +685,7 @@ impl Survivor {
         // Ticks between this input leaving and the server running it, as
         // the acks show: part of what an arrow leads a body by.
         self.ack_age = u32::from(seq.wrapping_sub(view.last_executed_seq)).clamp(1, 15);
+        self.combat.strides.begin(view.last_executed_seq, seq);
         let intent = self.decide(core, view, player, now);
         let body = view.get(player);
         // A skill that names no slot keeps the one in hand.
@@ -693,8 +696,13 @@ impl Survivor {
             sel: self.sel,
             ..InputFrame::default()
         };
-        let eye = body.map_or([0.0; 3], eye_point);
+        // Aimed from where my body is by the time this input runs.
+        let eye = self
+            .combat
+            .strides
+            .ahead_of(body.map_or([0.0; 3], eye_point));
         let f = self.hands.drive(&intent, &self.tracks, eye, base);
+        self.combat.strides.sent(&f);
         core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
         self.sel = f.sel;
         f
@@ -895,6 +903,16 @@ impl Survivor {
                 }
                 self.run_goal(core, &body, tick)
             }
+        };
+        // A stranger near is kept in view while the goal runs, and no
+        // swing goes where the eyes are not.
+        let intent = match self.combat.watch(&self.tracks, &self.book, me, tick) {
+            Some(look) => Intent {
+                look,
+                buttons: intent.buttons & !BTN_PRIMARY,
+                ..intent
+            },
+            None => intent,
         };
         self.overlay(intent, tick)
     }
@@ -1432,6 +1450,14 @@ impl Survivor {
                 intent.buttons = BTN_PRIMARY;
             }
         } else {
+            // Someone already at it: another node, rather than walking up
+            // to a stranger with a rock in hand.
+            if self.someone_at(body, &target.slot, tick) {
+                self.skipped = Some(target.key());
+                self.target = None;
+                self.stats.gave_way += 1;
+                return intent;
+            }
             self.stats.phase = Phase::Approaching;
             // By a route round what stands between; straight on once the
             // route has nothing better to say.
@@ -1453,6 +1479,19 @@ impl Survivor {
             }
         }
         intent
+    }
+
+    /// A player seen lately standing at this node, nearer it than I am.
+    fn someone_at(&self, body: &EntityState, slot: &Slot, tick: u32) -> bool {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mine = (slot.x - x).hypot(slot.z - z);
+        self.tracks.recent(tick, TICK_HZ).any(|t| {
+            let theirs = (slot.x - t.pos[0]).hypot(slot.z - t.pos[2]);
+            t.species == Species::Player
+                && t.id != body.id
+                && theirs <= NODE_TAKEN_M
+                && theirs < mine
+        })
     }
 
     /// The lowest id among the bodies in view standing across a swing

@@ -20,6 +20,9 @@
 //! craft a tool by name and move it to the belt, drink and eat, die, answer
 //! the death screen in-game, and play on.
 
+mod common;
+
+use common::{root, scene, SEED};
 use protocol::{decode_action, decode_input, encode_input, ActionMsg, InputDatagram};
 use server::core::{Lane, ShardCore};
 use server::explorer::Survivor;
@@ -61,15 +64,10 @@ unsafe impl GlobalAlloc for CountAlloc {
 #[global_allocator]
 static ALLOCATOR: CountAlloc = CountAlloc;
 
-const SEED: u64 = 20260731;
 const ID: u32 = 256;
 /// A second, scripted body the harness can use to deliver a blow — the
 /// test's hazard, never an agent.
 const PUPPET: u32 = 257;
-
-fn root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
 
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
@@ -346,35 +344,6 @@ fn the_observation_encoder_and_the_mind_read_no_world() {
     }
 }
 
-/// A level standing point near a stone node with a tree close by, so one
-/// short walk sees both. Scene placement belongs to the test; the agent
-/// gets the ordinary welcome and nothing else.
-fn scene() -> (f32, f32) {
-    use sim_core::terrain::{self, Occupant, ScatterTable};
-    let haven = terrain::haven(SEED);
-    let table = ScatterTable::alpha_default();
-    for cz in 20..236 {
-        for cx in 20..236 {
-            let stone = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if stone.occupant != Occupant::StoneNode {
-                continue;
-            }
-            let tree = (-3..=3).any(|dz| {
-                (-3..=3).any(|dx| {
-                    terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz).occupant
-                        == Occupant::Tree
-                })
-            });
-            let at = (stone.x, stone.z - 6.0);
-            let floor = terrain::ground(SEED, &haven, at.0, at.1);
-            if tree && floor > 1.0 && (floor - stone.y).abs() < 0.5 {
-                return at;
-            }
-        }
-    }
-    panic!("fixture seed has no stone node beside a tree");
-}
-
 /// A dry standing point with open sea inside the drink reach.
 fn shore() -> (f32, f32) {
     use sim_core::terrain;
@@ -401,29 +370,11 @@ fn shore() -> (f32, f32) {
     panic!("fixture seed has no shore");
 }
 
+/// The shared lockstep shard (`common::shard`), the agent joined as [`ID`].
+/// Wildlife only where a test says so: elsewhere it would make an
+/// acceptance run a test of the animals.
 fn shard(content: &content::Content, at: (f32, f32), wildlife: bool) -> Box<ShardCore> {
-    let t = server::net::bake_all(content).unwrap();
-    let mut core = Box::new(ShardCore::new(SEED));
-    // Every table a real shard installs. Wildlife only where a test says
-    // so: elsewhere it would make an acceptance run a test of the animals.
-    core.world.gather = t.gather;
-    core.world.craft = t.craft;
-    core.world.build = t.build;
-    core.world.deploy = t.deploy;
-    core.world.combat = t.combat;
-    core.world.backpack = t.backpack;
-    core.world.survival = t.survival;
-    core.world.cook = t.cook;
-    core.world.spawn_kit = t.spawn_kit;
-    core.world.loot = t.loot;
-    core.world.research = t.research;
-    if wildlife {
-        core.world.mob = t.mobs;
-    }
-    core.catalog = t.catalog;
-    core.world.dev_spawn = Some(at);
-    assert!(core.connect(0, ID));
-    core
+    common::shard(content, at, wildlife, ID)
 }
 
 struct Harness {

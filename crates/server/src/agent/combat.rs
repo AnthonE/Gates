@@ -37,7 +37,7 @@
 use super::hands::part_height;
 use super::intent::{yaw_toward, Intent, Look};
 use super::route::{into_deeper_water, Route, Step};
-use super::tracks::{Species, Track, Tracks, CLOSING_MPS};
+use super::tracks::{Sound, Species, Track, Tracks, AIM_MISS_M, CLOSING_MPS};
 use super::wiki::{Book, Page};
 use super::{aim, cover};
 use client_core::core::ClientCore;
@@ -45,13 +45,13 @@ use protocol::EntityState;
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::collide::{Part, CAPSULE_RADIUS_M};
 use sim_core::gather::SWING_INTERVAL_TICKS;
-use sim_core::input::{BTN_AIM, BTN_CROUCH, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{InputFrame, BTN_AIM, BTN_CROUCH, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use sim_core::limits::{MAX_ITEM_DEFS, TICK_HZ};
-use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
+use sim_core::movement::{POS_XZ_Q, POS_Y_Q, SPRINT_SPEED, WALK_SPEED};
 use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
 use sim_core::rng::Pcg32;
 use sim_core::wound::WOUNDED_HP;
-use sim_core::yaw_dir;
+use sim_core::{pitch_dir, yaw_dir};
 
 /// A retreat backs away this long after its last renewal.
 pub const FLEE_TICKS: u32 = 6 * TICK_HZ;
@@ -95,6 +95,32 @@ pub const CLOSE_M: f32 = 0.5;
 pub const SHUN_TICKS: u32 = 30 * TICK_HZ;
 /// A wolf closing inside this is already attacking.
 pub const WOLF_ALARM_M: f32 = 10.0;
+/// A player with a swung weapon out, facing me and stepping in on me from
+/// within this past its reach, is already attacking once it has kept at
+/// it this long: about the time it takes to tell someone coming at me
+/// from someone passing on their way to a tree behind me. A person swings
+/// at a charge as it comes into reach, not after its first blow lands.
+pub const MENACE_M: f32 = 2.0;
+pub const MENACE_TICKS: u32 = 6;
+/// ...its eyes no further off my head than this, and with no swing seen
+/// from it this long.
+const FACE_MISS_M: f32 = 0.35;
+pub const GATHERING_TICKS: u32 = 10 * TICK_HZ;
+/// A player with something in hand this near is watched while the goal
+/// runs: for this long after it is first spotted (sized up), and for as
+/// long as it keeps coming my way.
+pub const WARY_M: f32 = 15.0;
+pub const SIZE_UP_TICKS: u32 = 3 * TICK_HZ / 2;
+/// Footsteps heard this recently from where nobody was seen lately (within
+/// [`GLANCE_CONE`] of the sound) turn the eyes that way.
+pub const GLANCE_TICKS: u32 = TICK_HZ / 2;
+pub const GLANCE_KNOWN_TICKS: u32 = 3 * TICK_HZ;
+const GLANCE_CONE: u16 = 0x2000;
+/// A shooter's aim counts as at me off its line by up to this share of the
+/// range (~8°), and over me by up to this share (~14°, the arc of an
+/// arrow at 30 m).
+const LEAD_SPREAD: f32 = 0.15;
+const ARC_RISE: f32 = 0.25;
 /// A shooter further off than this is not charged with a melee weapon.
 pub const CHARGE_M: f32 = 12.0;
 /// Gaps wider than this are closed by route; nearer, straight in.
@@ -103,12 +129,31 @@ pub const ROUTE_M: f32 = 8.0;
 /// theirs to wait.
 pub const HOLD_M: f32 = 0.3;
 pub const SAFE_M: f32 = 0.5;
+/// A spent swing waits this far outside their reach: their screen shows me
+/// a playout ago, a step nearer when I have been backing off from a body
+/// walking in, and the lunge back in needs a start.
+pub const WAIT_M: f32 = 0.9;
 /// The strafe reverses no sooner than this, and at most this much later.
 pub const STRAFE_MIN_TICKS: u32 = 18;
 pub const STRAFE_SPAN_TICKS: u32 = 24;
 /// Their swing leaves time to step in, swing and step out when it is at
 /// least this far from being ready again.
 pub const STEP_IN_TICKS: u32 = 12;
+/// Out of their reach while their swing comes back no more than this after
+/// mine.
+pub const STEP_OUT_TICKS: u32 = 4;
+/// A ready swing is carried in at a run from no further than this past
+/// my reach.
+pub const LUNGE_M: f32 = 3.0;
+/// A swing this near to ready, and ahead of theirs, is already on its way
+/// in: it arrives in reach as it comes back, not a step after, and keeps
+/// its lead. With none (the two come back together) it waits outside
+/// their reach and lunges when ready: whoever moves in is nearer than the
+/// other's screen shows, so the lunge lands first.
+pub const LEAD_IN_TICKS: u32 = 6;
+/// The button goes down this long before my swing is back, held: the
+/// server swings the tick it is ready, and my count of it is an echo late.
+pub const PRESS_EARLY_TICKS: u32 = 2;
 /// The sideways share of a stride while in reach.
 const STRAFE_SHARE: f32 = 0.6;
 /// An escape weaves this far either side of its bearing (~22°).
@@ -133,6 +178,18 @@ pub const DRAW_SLACK_TICKS: u32 = 2;
 /// Prey is stalked, crouched, to this far and shot from there: outside
 /// what a pig hears of a crouched body in front of it.
 pub const HUNT_SHOT_M: f32 = 16.0;
+/// A player is shot at from no further than this, where a lead is short
+/// enough to hold across a strafe; and at the head from inside this.
+pub const DUEL_M: f32 = 14.0;
+pub const HEAD_SHOT_M: f32 = 12.0;
+/// A foe that turned back across my line of sight this recently, crossing
+/// it at least this fast, is weaving, and an arrow waits for its next turn:
+/// no sooner after it than the eyes and the hands take to follow it, and
+/// no later than this.
+pub const WEAVE_TICKS: u32 = 2 * TICK_HZ;
+pub const WEAVE_MPS: f32 = 1.0;
+pub const WEAVE_SETTLE_TICKS: u32 = 7;
+pub const WEAVE_FIRE_TICKS: u32 = 16;
 /// A swung weapon closing inside this is backed away from while shooting.
 pub const KITE_M: f32 = 8.0;
 /// A body aiming something that shoots at me from within this is dodged,
@@ -399,8 +456,95 @@ pub struct Combat {
     dodged: Option<(u32, u32)>,
     spoils: Option<Spoils>,
     verb: Option<Verb>,
+    /// The side a foe was last seen stepping across my line of sight,
+    /// which foe, and when it last turned back.
+    lat: (i8, u32, Option<u32>),
+    /// My own inputs the server has not run yet as of my newest snapshot.
+    pub strides: Strides,
+    /// The body stepping in on me, and since when.
+    menace: Option<(u32, u32)>,
     rng: Pcg32,
     pub stats: CombatStats,
+}
+
+/// Ticks of my own inputs remembered for [`Strides`].
+const STRIDE_RING: usize = 16;
+
+/// Where my own inputs have taken my body that my snapshots do not show
+/// yet: the human client's prediction, on flat ground and without the
+/// walls (`movement::step`'s wish and speed). A trip of input is a step or
+/// two at a run, the difference between a blow that lands and one that
+/// falls short.
+#[derive(Clone, Copy, Debug)]
+pub struct Strides {
+    /// Each sent input's ground displacement, by its sequence.
+    ring: [(u16, [f32; 2]); STRIDE_RING],
+    /// The sequence the server last ran, as my newest snapshot says, and
+    /// the one this frame goes out as.
+    ran: u16,
+    seq: u16,
+}
+
+impl Default for Strides {
+    fn default() -> Self {
+        Self {
+            ring: [(0, [0.0; 2]); STRIDE_RING],
+            ran: 0,
+            seq: 0,
+        }
+    }
+}
+
+impl Strides {
+    /// A frame begins: the snapshot says the server ran `ran`; this one
+    /// goes out as `seq`.
+    pub fn begin(&mut self, ran: u16, seq: u16) {
+        self.ran = ran;
+        self.seq = seq;
+    }
+
+    /// The frame that went out.
+    pub fn sent(&mut self, f: &InputFrame) {
+        let (fx, fz) = yaw_dir(f.yaw);
+        let (rx, rz) = (fz, -fx);
+        let (mf, ms) = (f32::from(f.move_z) / 127.0, f32::from(f.move_x) / 127.0);
+        let (mut wx, mut wz) = (fx * mf + rx * ms, fz * mf + rz * ms);
+        let len2 = wx * wx + wz * wz;
+        if len2 > 1.0 {
+            let inv = 1.0 / len2.sqrt();
+            wx *= inv;
+            wz *= inv;
+        }
+        let speed = if f.buttons & BTN_SPRINT != 0 && f.buttons & BTN_AIM == 0 {
+            SPRINT_SPEED
+        } else {
+            WALK_SPEED
+        };
+        let k = speed / TICK_HZ as f32;
+        self.ring[usize::from(f.seq) % STRIDE_RING] = (f.seq, [wx * k, wz * k]);
+    }
+
+    /// Ticks from my newest snapshot to this frame's input running: the
+    /// inputs still in flight, and this one.
+    pub fn trip(&self) -> u32 {
+        u32::from(self.seq.wrapping_sub(self.ran)).clamp(1, STRIDE_RING as u32)
+    }
+
+    /// `p` (from my newest snapshot) carried on by the inputs sent since
+    /// it, which the server runs before this frame's.
+    pub fn ahead_of(&self, p: [f32; 3]) -> [f32; 3] {
+        let pending = self.seq.wrapping_sub(self.ran).saturating_sub(1);
+        let mut out = p;
+        for k in 1..=pending.min(STRIDE_RING as u16 - 1) {
+            let s = self.ran.wrapping_add(k);
+            let (was, d) = self.ring[usize::from(s) % STRIDE_RING];
+            if was == s {
+                out[0] += d[0];
+                out[2] += d[1];
+            }
+        }
+        out
+    }
 }
 
 impl Default for Combat {
@@ -433,6 +577,9 @@ impl Combat {
             dodged: None,
             spoils: None,
             verb: None,
+            lat: (0, 0, None),
+            strides: Strides::default(),
+            menace: None,
             rng: Pcg32::new(0, 0),
             stats: CombatStats::default(),
         }
@@ -614,10 +761,11 @@ impl Combat {
     ) -> Assess {
         let me = pos(body);
         self.verb = None;
+        self.size_up(tracks, kit.book, me, tick);
         match self.mode {
             Mode::Idle | Mode::Downed | Mode::Heal => {
                 self.mode = Mode::Idle;
-                if let Some(id) = self.attacker(tracks, kit.book, me, tick) {
+                if let Some(id) = self.attacker(tracks, kit, me, tick) {
                     self.dodge = None;
                     return self.answer(core, body, tracks, route, kit, id, tick);
                 }
@@ -629,14 +777,14 @@ impl Combat {
                 self.sidestep(tracks, kit.book, me, tick)
             }
             Mode::Loot => {
-                if let Some(id) = self.attacker(tracks, kit.book, me, tick) {
+                if let Some(id) = self.attacker(tracks, kit, me, tick) {
                     self.spoils = None;
                     return self.answer(core, body, tracks, route, kit, id, tick);
                 }
                 self.loot(core, body, tracks, route, kit, tick)
             }
             Mode::Guard => {
-                if let Some(id) = self.attacker(tracks, kit.book, me, tick) {
+                if let Some(id) = self.attacker(tracks, kit, me, tick) {
                     return self.answer(core, body, tracks, route, kit, id, tick);
                 }
                 self.back_away(core, body, tracks, route, tick, false)
@@ -659,6 +807,76 @@ impl Combat {
         self.draw = None;
     }
 
+    /// A stranger worth keeping an eye on while the goal runs: a player
+    /// with something in hand, near, just spotted (sized up for a moment)
+    /// or coming my way. A person does not turn their back on someone
+    /// walking up to them with a rock; the charge is then seen, and met.
+    pub fn watch(&self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) -> Option<Look> {
+        let mut best: Option<(f32, u32)> = None;
+        for t in tracks.seen() {
+            if !t.active() || t.species != Species::Player || t.wounded {
+                continue;
+            }
+            let (reach, ranged) = their_reach(t, book);
+            let d = flat(me, t.pos);
+            if (reach <= 0.0 && !ranged) || d > WARY_M || best.is_some_and(|(b, _)| d >= b) {
+                continue;
+            }
+            // Glimpsed at the edge of the view and gone: the eyes go back
+            // to where it was.
+            // One facing me is watched back while it does.
+            let fresh = tick.wrapping_sub(t.first_seen) < SIZE_UP_TICKS;
+            let facing = t.aiming_at_me && tick.wrapping_sub(t.last_seen) < TICK_HZ;
+            if fresh || facing || (t.visible && closing(t, me, d)) {
+                best = Some((d, t.id));
+            }
+        }
+        if let Some((_, id)) = best {
+            return Some(Look::Body {
+                id,
+                part: Part::Chest.bits(),
+            });
+        }
+        // Steps behind me, or off to the side, from someone I have not
+        // seen about: a look round.
+        let step = tracks
+            .heard()
+            .filter(|h| h.sound == Sound::Step && tick.wrapping_sub(h.tick) < GLANCE_TICKS)
+            .last()?;
+        let known = tracks.recent(tick, GLANCE_KNOWN_TICKS).any(|t| {
+            let bearing = yaw_toward(t.pos[0] - me[0], t.pos[2] - me[2]);
+            (bearing.wrapping_sub(step.bearing) as i16).unsigned_abs() <= GLANCE_CONE
+        });
+        (!known).then_some(Look::Heading(step.bearing))
+    }
+
+    /// Keep count of the nearest body stepping in on me with something
+    /// swung in hand ([`rushing`]), and since when it has been.
+    fn size_up(&mut self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) {
+        let my_vel = tracks.own().map_or([0.0; 3], |o| o.vel);
+        let mut near: Option<(f32, u32)> = None;
+        for t in tracks.seen() {
+            // Seen swinging lately with none of it at me: busy at the trees
+            // and the rocks, walking to the next, not coming for me. Its
+            // next swing at me is answered as any swing is.
+            let busy = t
+                .last_swing
+                .is_some_and(|at| tick.wrapping_sub(at) < GATHERING_TICKS);
+            if !t.visible || !t.active() || busy {
+                continue;
+            }
+            let d = flat(me, t.pos);
+            let (reach, ranged) = their_reach(t, book);
+            if rushing(t, me, my_vel, d, reach, ranged) && near.is_none_or(|(b, _)| d < b) {
+                near = Some((d, t.id));
+            }
+        }
+        self.menace = near.map(|(_, id)| match self.menace {
+            Some((was, since)) if was == id => (id, since),
+            _ => (id, tick),
+        });
+    }
+
     /// A body aiming something that shoots at me, not yet shooting: step
     /// side to side while it does, eyes on it, and let the goal wait.
     fn sidestep(&mut self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) -> Assess {
@@ -668,7 +886,7 @@ impl Combat {
         }
         let mut aimer: Option<(f32, &Track)> = None;
         for t in tracks.seen() {
-            if !t.visible || !t.active() || t.species != Species::Player || !t.aiming_at_me {
+            if !t.visible || !t.active() || t.species != Species::Player || !aimed(t, me, book) {
                 continue;
             }
             // Dodged its stretch already: a shot from it is an attack
@@ -726,6 +944,35 @@ impl Combat {
         })
     }
 
+    /// The foe has turned back across my line of sight lately: it is
+    /// stepping side to side, not running somewhere. How long ago it last
+    /// turned.
+    fn weaving(&mut self, t: &Track, toward: u16, tick: u32) -> Option<u32> {
+        let (ux, uz) = yaw_dir(toward);
+        let across = t.vel[0] * uz - t.vel[2] * ux;
+        let side: i8 = if across > WEAVE_MPS {
+            1
+        } else if across < -WEAVE_MPS {
+            -1
+        } else {
+            0
+        };
+        let (was, id, _) = self.lat;
+        if id != t.id {
+            self.lat = (side, t.id, None);
+            return None;
+        }
+        if side != 0 && was != 0 && side != was {
+            self.lat = (side, id, Some(tick));
+        } else if side != 0 {
+            self.lat.0 = side;
+        }
+        self.lat
+            .2
+            .map(|at| tick.wrapping_sub(at))
+            .filter(|&since| since < WEAVE_TICKS)
+    }
+
     /// The strafe's side, reversed on a person's uneven rhythm.
     fn rhythm(&mut self, tick: u32) {
         if tick.wrapping_sub(self.strafe.1) < 1 << 31 {
@@ -765,8 +1012,11 @@ impl Combat {
 
     /// The body that is attacking me now, if the eyes have it: one that
     /// swung at me from where the swing could land, or shot at me, just
-    /// now; one standing where a blow came from; or a wolf coming in.
-    fn attacker(&self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) -> Option<u32> {
+    /// now; one standing where a blow came from; or a wolf coming in. A
+    /// bow drawn on me is one too when I can answer it: with a shot of my
+    /// own, or at a run from inside a charge. Otherwise it is sidestepped.
+    fn attacker(&self, tracks: &Tracks, kit: &Kit, me: [f32; 3], tick: u32) -> Option<u32> {
+        let book = kit.book;
         let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
         let blow = self
             .hurt
@@ -779,15 +1029,27 @@ impl Combat {
             let d = flat(me, t.pos);
             let (reach, ranged) = their_reach(t, book);
             let swung = recent(t.last_swing) && swing_reaches(t, me, reach);
-            let shot = recent(t.last_shot) && t.aiming_at_me;
+            let shot = recent(t.last_shot) && aimed(t, me, book);
             let struck = blow.is_some_and(|(_, toward)| {
                 let bearing = yaw_toward(t.pos[0] - me[0], t.pos[2] - me[2]);
                 let off = (bearing.wrapping_sub(toward) as i16).unsigned_abs();
-                (d <= reach.max(1.0) + ATTACKER_SLACK_M || (ranged && t.aiming_at_me))
+                (d <= reach.max(1.0) + ATTACKER_SLACK_M || (ranged && aimed(t, me, book)))
                     && (off <= HURT_CONE || d < 1.0)
             });
             let charging = t.species == Species::Wolf && d < WOLF_ALARM_M && closing(t, me, d);
-            if (swung || shot || struck || charging) && best.is_none_or(|(b, _)| d < b) {
+            // Coming on at me for a moment, not a stride that happens to
+            // point my way on its way past.
+            let rushing = self
+                .menace
+                .is_some_and(|(id, since)| id == t.id && tick.wrapping_sub(since) >= MENACE_TICKS);
+            let drawn = ranged
+                && t.species == Species::Player
+                && d <= EVADE_M
+                && (kit.ranged.is_some() || (kit.melee.is_some() && d <= CHARGE_M))
+                && aimed(t, me, book);
+            if (swung || shot || struck || charging || rushing || drawn)
+                && best.is_none_or(|(b, _)| d < b)
+            {
                 best = Some((d, t.id));
             }
         }
@@ -892,9 +1154,10 @@ impl Combat {
         let d = flat(me, t.pos);
         // Anything aimed at me from this body keeps the fight live.
         let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
-        let (reach, _) = their_reach(&t, kit.book);
+        let (reach, ranged) = their_reach(&t, kit.book);
         if (recent(t.last_swing) && swing_reaches(&t, me, reach))
-            || (recent(t.last_shot) && t.aiming_at_me)
+            || ((recent(t.last_shot) || ranged) && aimed(&t, me, kit.book))
+            || self.menace.is_some_and(|(id, _)| id == t.id)
             || self
                 .hurt
                 .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS && at > foe.threat)
@@ -914,12 +1177,15 @@ impl Combat {
                 return self.over(Some(away), End::Parted);
             }
         }
+        // Where my body is by the time this frame's input runs: my blow
+        // and my shot leave from there, not from my last snapshot.
+        let here = self.strides.ahead_of(me);
         let intent = match self.arm_for(kit, d) {
             Arm::Melee => {
                 self.draw = None;
-                self.melee(core, body, route, &t, &odds, kit, tick)
+                self.melee(core, body, here, route, &t, &odds, kit, tick)
             }
-            Arm::Ranged => self.shoot(core, body, route, &t, &odds, kit, tick),
+            Arm::Ranged => self.shoot(core, body, here, route, &t, &odds, kit, tick),
         };
         if self
             .stuck
@@ -970,6 +1236,7 @@ impl Combat {
         &mut self,
         core: &mut ClientCore,
         body: &EntityState,
+        me: [f32; 3],
         route: &mut Route,
         t: &Track,
         odds: &Odds,
@@ -980,7 +1247,6 @@ impl Combat {
             return Intent::IDLE;
         };
         let r = kit.book.page(item).ranged;
-        let me = pos(body);
         let eye = [me[0], me[1] + EYE_M, me[2]];
         let (dx, dz) = (t.pos[0] - me[0], t.pos[2] - me[2]);
         let d = dx.hypot(dz);
@@ -998,7 +1264,7 @@ impl Combat {
                 .hurt
                 .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS)
             && !closing(t, me, d);
-        let at = [t.pos[0], t.pos[1] + aim_height(t, kit.book), t.pos[2]];
+        let at = [t.pos[0], t.pos[1] + aim_height(t, kit.book, d), t.pos[2]];
         let (look, solved) = if r.hitscan {
             let look = match t.species {
                 Species::Player => Look::Body {
@@ -1028,7 +1294,13 @@ impl Combat {
             sel: Some(slot),
             ..Intent::IDLE
         };
-        let want = if stalking { HUNT_SHOT_M } else { reach * 0.75 };
+        let want = if stalking {
+            HUNT_SHOT_M
+        } else if t.species == Species::Player {
+            (reach * 0.75).min(DUEL_M)
+        } else {
+            reach * 0.75
+        };
         if !t.visible || !solved || d > reach || (stalking && d > want) {
             // Into sight and range first, by a route; the draw waits.
             self.draw = None;
@@ -1085,10 +1357,18 @@ impl Combat {
             Some(n) => n > 0,
             None => kit.rounds > 0 || r.magazine > 0,
         };
+        // A body stepping side to side is shot just after it turns back,
+        // once the aim has caught up with it: it holds a stride for a
+        // moment, and an arrow loosed late in one lands where it turned.
+        let turned = self.weaving(t, toward, tick);
         let steady = if r.hitscan {
             kit.on_target
         } else {
             kit.settled
+                && (t.species != Species::Player
+                    || turned.is_none_or(|since| {
+                        (WEAVE_SETTLE_TICKS..=WEAVE_FIRE_TICKS).contains(&since)
+                    }))
         };
         if drawn && ready && loaded && steady {
             buttons |= BTN_PRIMARY;
@@ -1262,13 +1542,13 @@ impl Combat {
         &mut self,
         core: &mut ClientCore,
         body: &EntityState,
+        me: [f32; 3],
         route: &mut Route,
         t: &Track,
         odds: &Odds,
         kit: &Kit,
         tick: u32,
     ) -> Intent {
-        let me = pos(body);
         let (dx, dz) = (t.pos[0] - me[0], t.pos[2] - me[2]);
         let d = (dx * dx + dz * dz).sqrt();
         let toward = yaw_toward(dx, dz);
@@ -1327,34 +1607,75 @@ impl Combat {
             };
         }
         let safe = odds.their_reach + SAFE_M;
-        let cooling = t.last_swing.is_some_and(|at| {
-            tick.wrapping_sub(at) + STEP_IN_TICKS < odds.their_cadence.max(STEP_IN_TICKS)
+        // My clock and theirs are both in my snapshots' ticks; a press
+        // made now lands a trip later, so mine counts as ready a trip early.
+        let trip = self.strides.trip();
+        let mine_in = if tick.wrapping_sub(self.ready_at) < 1 << 31 {
+            0
+        } else {
+            self.ready_at.wrapping_sub(tick).saturating_sub(trip)
+        };
+        let ready = mine_in == 0;
+        // Their next swing: a cadence on from the last one I saw, or felt.
+        let felt = self
+            .hurt
+            .map(|(at, _)| at)
+            .filter(|_| d <= safe + ATTACKER_SLACK_M);
+        let last = match (t.last_swing, felt) {
+            (Some(a), Some(b)) => Some(if b.wrapping_sub(a) < 1 << 31 { b } else { a }),
+            (a, b) => a.or(b),
+        };
+        let theirs_in = last.map_or(0, |at| {
+            let due = at.wrapping_add(odds.their_cadence.min(u32::from(u16::MAX)));
+            if due.wrapping_sub(tick) < 1 << 31 {
+                due.wrapping_sub(tick)
+            } else {
+                0
+            }
         });
-        let ready = tick.wrapping_sub(self.ready_at) < 1 << 31;
+        let feared = odds.armed && !odds.ranged && !t.wounded;
+        // Where they are by now, not where my screen shows them: a body
+        // walking in is a playout and an input's trip nearer than that, and
+        // their swing is judged on where I am now. Keeping out of reach
+        // goes by this; my own swing by the screen.
+        let lag = kit.lead_ticks as f32 / TICK_HZ as f32;
+        let coming = if d > 0.0 {
+            -(t.vel[0] * dx + t.vel[2] * dz) / d
+        } else {
+            0.0
+        };
+        let d_now = (d - coming.max(0.0) * lag).max(0.0);
         // Distances here are to the pose on my screen, the one the server
-        // judges my swing against: a body walking in is nearer than that,
-        // and one backing off is judged nearer to it. So a ready swing
-        // steps in rather than waiting at the edge.
-        let want = if !odds.armed || odds.ranged || t.wounded {
+        // judges my swing against. Whoever is moving in when two swings
+        // meet has the better of it: the other's picture of them is a
+        // playout behind, further off than they are. So a ready swing is
+        // carried in at a run, straight (a sidestep there only spoils the
+        // aim), and a spent one is taken back out of their reach at a run.
+        let (want, lunge) = if !feared {
             // Nothing to fear up close: in, and swing.
-            odds.my_reach - HOLD_M
+            (odds.my_reach - HOLD_M, true)
         } else if odds.my_reach - HOLD_M > safe {
             // Out-ranged by me, a spear against a rock: hold between the
             // two reaches and let them walk onto the point.
-            odds.my_reach - HOLD_M
-        } else if ready {
-            // Mine is ready: in, and swing, their swing spent or not.
-            odds.my_reach - HOLD_M
-        } else if !cooling {
-            // Mine is spent and theirs is not: out of their reach.
-            safe
+            (odds.my_reach - HOLD_M, false)
+        } else if ready || (mine_in <= LEAD_IN_TICKS && mine_in + trip < theirs_in) {
+            // Mine is ready, or will be as I get there and before theirs:
+            // in, and swing, their swing spent or not.
+            (odds.my_reach - HOLD_M, d <= odds.my_reach + LUNGE_M)
+        } else if theirs_in <= mine_in + STEP_OUT_TICKS {
+            // Theirs comes back first, or near enough: out of their reach
+            // until mine is ready.
+            (odds.their_reach + WAIT_M, false)
         } else {
-            // Both spent: stay where the next swing is short.
-            d
+            // Mine comes back well before theirs: stay where the next
+            // swing is short.
+            (d.max(odds.my_reach), false)
         };
-        let radial: f32 = if d > want + 0.25 {
+        // Coming in is judged on the screen; staying out on where they are.
+        let judged = if want >= safe { d_now } else { d };
+        let radial: f32 = if judged > want + 0.25 {
             1.0
-        } else if d < want - 0.25 {
+        } else if judged < want - 0.25 {
             -1.0
         } else {
             0.0
@@ -1364,13 +1685,14 @@ impl Combat {
         } else {
             self.stuck = None;
         }
-        if tick.wrapping_sub(self.strafe.1) < 1 << 31 {
-            let span = self.rng.next_bounded(STRAFE_SPAN_TICKS + 1);
-            self.strafe = (-self.strafe.0, tick + STRAFE_MIN_TICKS + span);
-        }
+        self.rhythm(tick);
         // Less sideways the closer: circling a body at arm's length turns
         // the bearing to it faster than a person's eyes follow.
-        let side = f32::from(self.strafe.0) * STRAFE_SHARE * ((d - 0.5) / 2.5).clamp(0.2, 1.0);
+        let side = if lunge || radial < 0.0 {
+            0.0
+        } else {
+            f32::from(self.strafe.0) * STRAFE_SHARE * ((d - 0.5) / 2.5).clamp(0.2, 1.0)
+        };
         let (ux, uz) = yaw_dir(toward);
         // World right of the bearing (`yaw_dir` of a quarter turn on).
         let (rx, rz) = (uz, -ux);
@@ -1378,15 +1700,15 @@ impl Combat {
         let mut buttons = 0;
         // Run in to close, and run out: backing off at a walk, a body that
         // walks after me never leaves its reach.
-        if radial < 0.0 || (radial > 0.0 && d > odds.my_reach) {
+        if radial < 0.0 || (radial > 0.0 && (d > odds.my_reach || lunge)) {
             buttons |= BTN_SPRINT;
         }
         let in_reach = d <= odds.my_reach - 0.05;
-        if in_reach && ready && kit.on_target && kit.melee.is_some() {
+        if in_reach && mine_in <= PRESS_EARLY_TICKS && kit.on_target && kit.melee.is_some() {
             buttons |= BTN_PRIMARY;
         }
         Intent {
-            travel: Some(yaw_toward(vx, vz)),
+            travel: (vx != 0.0 || vz != 0.0).then(|| yaw_toward(vx, vz)),
             buttons,
             ..base
         }
@@ -1581,10 +1903,12 @@ fn is_round(book: &Book, item: u16) -> bool {
     (0..MAX_ITEM_DEFS as u16).any(|w| book.page(w).ranged.round == item)
 }
 
-/// Where on a body a shot is aimed, above its feet: a player's chest, an
-/// animal's middle.
-fn aim_height(t: &Track, book: &Book) -> f32 {
+/// Where on a body a shot is aimed, above its feet: a player's head from
+/// near enough that the hands hold it (two arrows kill where three to the
+/// chest would), its chest further off; an animal's middle.
+fn aim_height(t: &Track, book: &Book, d: f32) -> f32 {
     match t.species {
+        Species::Player if d <= HEAD_SHOT_M => part_height(Part::Head.bits()),
         Species::Player => part_height(Part::Chest.bits()),
         Species::Pig => f32::from(book.pig().height_cm) * 0.005,
         Species::Wolf => f32::from(book.wolf().height_cm) * 0.005,
@@ -1621,8 +1945,79 @@ fn swing_reaches(t: &Track, me: [f32; 3], reach: f32) -> bool {
 }
 
 fn closing(t: &Track, me: [f32; 3], d: f32) -> bool {
+    closing_at(t, me, d, CLOSING_MPS)
+}
+
+/// Looking me in the face, not past me at the tree behind: its look ray
+/// passes within a body's width of my head.
+fn eyes_on_me(t: &Track, me: [f32; 3]) -> bool {
+    let (fx, fz) = yaw_dir(t.yaw);
+    let (h, v) = pitch_dir(t.pitch);
+    let dir = [fx * h, v, fz * h];
+    let to = [
+        me[0] - t.pos[0],
+        me[1] + part_height(Part::Head.bits()) - (t.pos[1] + EYE_M),
+        me[2] - t.pos[2],
+    ];
+    let along = to[0] * dir[0] + to[1] * dir[1] + to[2] * dir[2];
+    let len2 = to[0] * to[0] + to[1] * to[1] + to[2] * to[2];
+    along > 0.0 && len2 - along * along <= FACE_MISS_M * FACE_MISS_M
+}
+
+/// Pointed my way: the look ray passes near me ([`Track::aiming_at_me`]),
+/// or, for something that shoots, near enough that a lead and an arc would
+/// put a round on me: off its line by no more than a walker's lead at that
+/// range, and over me by no more than an arrow's arc. A drawn bow is seen
+/// pointing a body's way; the few degrees of its arc are not.
+fn aimed(t: &Track, me: [f32; 3], book: &Book) -> bool {
+    if t.aiming_at_me {
+        return true;
+    }
+    if t.species != Species::Player || !t.held.is_some_and(|h| book.page(h).fires()) {
+        return false;
+    }
+    let (fx, fz) = yaw_dir(t.yaw);
     let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
-    t.vel[0] * dx + t.vel[2] * dz >= CLOSING_MPS * d
+    let along = dx * fx + dz * fz;
+    if along <= 0.0 {
+        return false;
+    }
+    let across = (dx * fz - dz * fx).abs();
+    if across > AIM_MISS_M.max(along * LEAD_SPREAD) {
+        return false;
+    }
+    let (h, v) = pitch_dir(t.pitch);
+    // How far over my chest the look ray passes, where it passes me.
+    let rise =
+        t.pos[1] + EYE_M + v / h.max(0.05) * along - (me[1] + part_height(Part::Chest.bits()));
+    rise >= -AIM_MISS_M && rise <= AIM_MISS_M + along * ARC_RISE
+}
+
+/// A player with a swung weapon out, facing me, stepping in on me from
+/// just past its reach: a charge, answered before it lands.
+/// It is coming at me, and the gap between us is closing: a body running
+/// beside me toward the same tree is not coming at me however fast it
+/// runs, and neither is one I am walking up to.
+fn rushing(t: &Track, me: [f32; 3], my_vel: [f32; 3], d: f32, reach: f32, ranged: bool) -> bool {
+    let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
+    let gap = (t.vel[0] - my_vel[0]) * dx + (t.vel[2] - my_vel[2]) * dz;
+    t.species == Species::Player
+        && !ranged
+        && reach > 0.0
+        && !t.wounded
+        && eyes_on_me(t, me)
+        && d <= reach + MENACE_M
+        && gap > 0.0
+        && gap >= CLOSING_MPS * d
+        && closing_at(t, me, d, CLOSING_MPS)
+}
+
+/// This body is coming at me at `mps` or faster.
+fn closing_at(t: &Track, me: [f32; 3], d: f32, mps: f32) -> bool {
+    let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
+    // Standing still on top of me is not coming at me.
+    let toward = t.vel[0] * dx + t.vel[2] * dz;
+    toward > 0.0 && toward >= mps * d
 }
 
 /// How far a body's blow reaches me, centre to centre, and whether it
@@ -1757,7 +2152,7 @@ pub fn odds(t: &Track, kit: &Kit, others: u32) -> Odds {
             || t.wounded
             || left * 2 <= hp0
             || out_reach
-            || my_time.saturating_mul(2) <= their_time);
+            || my_time.saturating_mul(2) < their_time);
     let losing = my_damage == 0
         || (armed
             && ((theirs <= 1 && mine > 1)
@@ -1893,5 +2288,58 @@ mod tests {
         }
         assert_eq!(Temperament::default(), Temperament::Opportunist);
         assert_eq!(Temperament::parse("berserk"), None);
+    }
+
+    /// My own inputs in flight carry my body on from my last snapshot:
+    /// each at its stride (a run, a walk with a bow drawn), and only those
+    /// the server has not yet run.
+    #[test]
+    fn strides_in_flight_carry_my_body_on() {
+        let mut st = Strides::default();
+        let run = InputFrame {
+            seq: 10,
+            yaw: 0,
+            move_z: 127,
+            buttons: BTN_SPRINT,
+            ..InputFrame::default()
+        };
+        st.sent(&run);
+        st.sent(&InputFrame {
+            seq: 11,
+            buttons: BTN_SPRINT | BTN_AIM,
+            ..run
+        });
+        // The server ran 9: 10 and 11 are in flight, 12 goes out now.
+        st.begin(9, 12);
+        assert_eq!(st.trip(), 3);
+        let p = st.ahead_of([1.0, 2.0, 3.0]);
+        let (fx, fz) = yaw_dir(0);
+        let k = (SPRINT_SPEED + WALK_SPEED) / TICK_HZ as f32;
+        assert!((p[0] - (1.0 + fx * k)).abs() < 1e-4, "{p:?}");
+        assert!((p[2] - (3.0 + fz * k)).abs() < 1e-4, "{p:?}");
+        assert_eq!(p[1], 2.0);
+        // Once the snapshot shows 11 ran, nothing is in flight.
+        st.begin(11, 12);
+        assert_eq!(st.ahead_of([1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+    }
+
+    /// A drawn bow pointed my way counts as aimed at me with the lead and
+    /// the arc an arrow needs; a club held the same way does not, and
+    /// neither does a bow pointed well wide.
+    #[test]
+    fn a_bow_is_aimed_at_me_through_its_lead_and_arc() {
+        let book = book();
+        let (bow, rock) = (wire("Hunting Bow"), wire("Rock"));
+        let me = [0.0, 0.0, 25.0];
+        let mut t = player(Some(bow));
+        // 25 m off, the look 2 m to my side and raised for the arc.
+        t.yaw = yaw_toward(2.0, 25.0);
+        t.pitch = super::super::intent::pitch_toward(3.0, 25.0);
+        assert!(aimed(&t, me, &book));
+        t.held = Some(rock);
+        assert!(!aimed(&t, me, &book), "a rock does not lead");
+        t.held = Some(bow);
+        t.yaw = yaw_toward(10.0, 25.0);
+        assert!(!aimed(&t, me, &book), "wide of me");
     }
 }

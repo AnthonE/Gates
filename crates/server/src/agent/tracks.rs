@@ -67,6 +67,15 @@ pub const HEARD_ROWS: usize = 8;
 pub const SHOT_HEAR_M: f32 = 150.0;
 pub const SWING_HEAR_M: f32 = 20.0;
 pub const DEATH_HEAR_M: f32 = 60.0;
+/// Another player's footsteps, as the human client plays them
+/// (`sound::steps`, `render/audio.rs::remote_steps`): nothing below a
+/// shuffle, full gain at a sprint and never under a floor of it, and gone
+/// at the step cue's radius. Heard at most this often.
+pub const STEP_HEAR_M: f32 = 24.0;
+pub const STEP_MIN_MPS: f32 = 0.4;
+pub const STEP_FULL_MPS: f32 = SPRINT_SPEED;
+pub const STEP_MIN_GAIN: f32 = 0.45;
+pub const STEP_EVERY_TICKS: u32 = 8;
 /// An arrow landing this close is "shot at".
 pub const IMPACT_NEAR_M: f32 = 6.0;
 /// A heard bearing is off by up to this much either way (wire yaw units,
@@ -92,6 +101,8 @@ const ANIMAL_SIGHT_Y_M: f32 = 0.5;
 /// Closer than this, a body is in view across the whole width of the
 /// screen, not only the cone the eyes attend to further out.
 pub const ARMS_LENGTH_M: f32 = 2.0;
+/// Closer than this, two bodies overlap and nothing can stand between.
+const TOUCH_M: f32 = 2.0 * collide::CAPSULE_RADIUS_M;
 /// The cosine of half the screen's width: the client's 75° vertical view
 /// at 16:9 is about 107° across, so a body up to ~54° off the facing.
 pub const SCREEN_HALF_COS: f32 = 0.59;
@@ -189,6 +200,8 @@ pub enum Sound {
     /// A blow landed on me.
     Hurt,
     Death,
+    /// Footsteps from someone out of sight.
+    Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,6 +261,8 @@ pub struct Tracks {
     own: Option<Own>,
     /// When this body last fired, from its own echoed shot.
     own_shot: Option<u32>,
+    /// When footsteps were last heard.
+    stepped: Option<u32>,
     playout: u8,
     rng: Pcg32,
     pub stats: TrackStats,
@@ -270,6 +285,7 @@ impl Tracks {
             me: 0,
             own: None,
             own_shot: None,
+            stepped: None,
             playout: INTERP_DELAY_TICKS,
             rng: Pcg32::new(0, 0),
             stats: TrackStats::default(),
@@ -293,6 +309,7 @@ impl Tracks {
         self.heard = [None; HEARD_ROWS];
         self.own = None;
         self.own_shot = None;
+        self.stepped = None;
     }
 
     /// The playout delay bodies are sampled behind the newest snapshot,
@@ -391,6 +408,8 @@ impl Tracks {
         for row in self.rows.iter_mut().flatten() {
             row.in_view = false;
         }
+        // The loudest footsteps from out of sight this frame.
+        let mut steps: Option<(f32, [f32; 3])> = None;
         for id in self.interp.ids() {
             if id == self.me {
                 continue;
@@ -416,7 +435,24 @@ impl Tracks {
             } else {
                 d * std::f32::consts::FRAC_1_SQRT_2
             };
-            if d * d + dy * dy > range * range || ahead < cone {
+            // A body standing in mine fills the edge of the screen
+            // whichever way I face.
+            if d * d + dy * dy > range * range || (ahead < cone && d >= TOUCH_M) {
+                if species == Species::Player && !s.dead && !s.sleeping {
+                    let mut before = RemoteState::default();
+                    if self.interp.sample(id, at - 1.0, &mut before) {
+                        let v = velocity([s.x, s.y, s.z], [before.x, before.y, before.z], 1);
+                        let speed = (v[0] * v[0] + v[2] * v[2]).sqrt();
+                        let gain = (speed / STEP_FULL_MPS).clamp(STEP_MIN_GAIN, 1.0);
+                        let left = STEP_HEAR_M * gain - d;
+                        if speed >= STEP_MIN_MPS
+                            && left > 0.0
+                            && steps.is_none_or(|(l, _)| left > l)
+                        {
+                            steps = Some((left, [s.x, s.y, s.z]));
+                        }
+                    }
+                }
                 continue;
             }
             let i = match self.slot_of(id) {
@@ -459,6 +495,15 @@ impl Tracks {
             if let Some(row) = self.rows[i].as_mut() {
                 row.in_view = true;
                 row.sample = s;
+            }
+        }
+        if let Some((_, from)) = steps {
+            if self
+                .stepped
+                .is_none_or(|at| tick.wrapping_sub(at) >= STEP_EVERY_TICKS)
+            {
+                self.stepped = Some(tick);
+                self.hear(Sound::Step, from, STEP_HEAR_M, true, tick);
             }
         }
         self.cast_rays(core, haven, eye, tick);
@@ -561,14 +606,17 @@ impl Tracks {
             let to = [s.x, s.y + row.track.species.sight_y(), s.z];
             self.stats.rays += 1;
             // `perceive` has range-checked it; the head sits above that.
-            let clear = match clear_line(core, haven, eye, to, f32::INFINITY) {
-                Sight::Clear => true,
-                Sight::Terrain => {
-                    self.stats.coarse_rejects += 1;
-                    false
-                }
-                Sight::Blocked => false,
-            };
+            // A body standing in mine has nothing between us.
+            let touching = (s.x - eye[0]).hypot(s.z - eye[2]) < TOUCH_M;
+            let clear = touching
+                || match clear_line(core, haven, eye, to, f32::INFINITY) {
+                    Sight::Clear => true,
+                    Sight::Terrain => {
+                        self.stats.coarse_rejects += 1;
+                        false
+                    }
+                    Sight::Blocked => false,
+                };
             row.los_at = Some(tick);
             row.los_ok = clear;
             if !clear {
