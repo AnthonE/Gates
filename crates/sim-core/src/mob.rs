@@ -1206,7 +1206,10 @@ fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
         // §8). A pig standing in the haven's loot pad on every wipe is a
         // free kill on a schedule, which is the opposite of what a
         // destination is for.
-        if terrain::in_haven(haven, x, z) || terrain::in_waystation(haven, x, z) {
+        if terrain::in_haven(haven, x, z)
+            || terrain::in_waystation(haven, x, z)
+            || crate::town::covers(&haven.town, x, z, 20.0)
+        {
             continue;
         }
         return Some((x, z));

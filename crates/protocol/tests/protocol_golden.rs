@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 121] = [
+const GOLDEN: [&[u8]; 125] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -184,6 +184,10 @@ const GOLDEN: [&[u8]; 121] = [
     include_bytes!("golden/action_skins_refresh.bin"),
     include_bytes!("golden/hello_spectate.bin"),
     include_bytes!("golden/watch.bin"),
+    include_bytes!("golden/event_vend_offers.bin"),
+    include_bytes!("golden/event_vend.bin"),
+    include_bytes!("golden/event_vend_refused.bin"),
+    include_bytes!("golden/action_vend.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -391,8 +395,13 @@ fn test_protocol_golden() {
     // Spectators (v79): the watcher's hello and the watch message.
     g!(seen, golden_stream, 119);
     g!(seen, golden_stream, 120);
+    // THE GATE's vendors (v85).
+    g!(seen, golden_event, 121);
+    g!(seen, golden_event, 122);
+    g!(seen, golden_event, 123);
+    g!(seen, golden_action, 124);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 121, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 125, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -478,6 +487,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_reskin(slot, skin, &mut buf).unwrap()
+        }
+        "action_vend.bin" => {
+            let (offer, times) = protocol::goldens::action_vend();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Vend { offer, times },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_vend(offer, times, &mut buf).unwrap()
         }
         "action_skins_refresh.bin" => {
             assert_eq!(
@@ -1771,6 +1789,45 @@ fn golden_event(fixture: &[u8], name: &str) {
                 other => panic!("{name}: wrong variant {other:?}"),
             }
             protocol::encode_event_skins(&cat, 0, &mut buf).unwrap().0
+        }
+        "event_vend_offers.bin" => {
+            let (vc, names) = protocol::goldens::event_vend_offers();
+            match decode_event(fixture).unwrap() {
+                EventMsg::VendOffers {
+                    total,
+                    first,
+                    count,
+                    rows,
+                    lens,
+                    ..
+                } => {
+                    assert_eq!((total, first, count), (3, 0, 3), "{name}");
+                    assert_eq!(&rows[..3], &vc.offers[..3], "{name}");
+                    assert_eq!(&lens[..3], &[7, 0, 4], "{name}");
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            protocol::encode_event_vend_offers(&vc, &names, 0, &mut buf)
+                .unwrap()
+                .0
+        }
+        "event_vend.bin" => {
+            let (offer, times) = protocol::goldens::event_vend();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Vend { offer, times },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_vend(offer, times, &mut buf).unwrap()
+        }
+        "event_vend_refused.bin" => {
+            let (code, offer) = protocol::goldens::event_vend_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::VendRefused { code, offer },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_vend_refused(code, offer, &mut buf).unwrap()
         }
         "event_skins_owned.bin" => {
             let owned = protocol::goldens::event_skins_owned();

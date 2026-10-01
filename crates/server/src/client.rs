@@ -342,6 +342,8 @@ pub struct ClientNetState {
     pub last_env: Option<sim_core::weather::Env>,
     /// Next skin-catalog row the drip sends (skins v0).
     pub skins_cursor: usize,
+    /// Next vendor offer the drip sends (wire v85).
+    pub vend_cursor: usize,
     /// The owned skin set this client last heard (`SUB_SKINS_OWNED`), so the
     /// drip sends it when the sim's copy moves and never otherwise.
     pub last_skins: Option<sim_core::skin::SkinSet>,
@@ -424,6 +426,7 @@ impl ClientNetState {
             last_assist: (0, 0, 0),
             last_env: None,
             skins_cursor: 0,
+            vend_cursor: 0,
             last_skins: None,
             skins_pending: None,
             last_expo: None,
@@ -444,6 +447,7 @@ impl ClientNetState {
         self.sync_reset = true;
         self.catalog_cursor = 0;
         self.skins_cursor = 0;
+        self.vend_cursor = 0;
         self.last_skins = None;
         self.recipes_cursor = 0;
         self.research_cursor = 0;

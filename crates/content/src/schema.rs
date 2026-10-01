@@ -944,3 +944,22 @@ pub struct Balance {
     #[serde(default)]
     pub spawn_kit: Vec<Stack>,
 }
+
+/// One of the town's vendors (`content/sites.toml`, `sim_core::vend`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Vendor {
+    /// What the kiosk's panel is headed with.
+    pub name: String,
+    pub offer: Vec<Offer>,
+}
+
+/// Pay `pay_n` of `pay` for `get_n` of `get`; junk on exactly one side.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Offer {
+    pub pay: String,
+    pub pay_n: u16,
+    pub get: String,
+    pub get_n: u16,
+}

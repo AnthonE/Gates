@@ -367,6 +367,9 @@ pub struct SimTables {
     /// wire's (names, tints, prices), both from `content/skins.toml`.
     pub skins: sim_core::skin::SkinContent,
     pub skin_catalog: Box<protocol::SkinCatalog>,
+    /// The town's vendor offers (`content/sites.toml`) and their names.
+    pub vend: sim_core::vend::VendContent,
+    pub vendor_names: Vec<String>,
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -390,6 +393,8 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         catalog: bake_catalog(content, &combat, &gather, &survival)?,
         skins: content.bake_skins()?,
         skin_catalog: bake_skin_catalog(content)?,
+        vend: content.bake_vend()?,
+        vendor_names: content.bake_vendor_names(),
         combat,
         gather,
         survival,
@@ -2980,6 +2985,8 @@ fn sim_thread(
         catalog,
         skins,
         skin_catalog,
+        vend,
+        vendor_names,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -2996,6 +3003,8 @@ fn sim_thread(
     core.world.skins = skins;
     core.catalog = catalog;
     core.skin_catalog = skin_catalog;
+    core.world.vend = vend;
+    core.vendor_names = vendor_names;
     core.install_admins(admins);
     core.trust = trust;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
@@ -3021,6 +3030,10 @@ fn sim_thread(
         }
     }
     drop(world_blob);
+    // The town's public stations (`World::seed_authored`), after the load and
+    // before the first tick: a saved world already holds them and this is a
+    // no-op there.
+    core.world.seed_authored();
     // `dev_env`: the admin lane's sky/clock verb, queued so it lands on the
     // first tick and in the WAL like any other.
     if let Some((weather, time_pm)) = dev_env {

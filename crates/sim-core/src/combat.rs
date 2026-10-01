@@ -959,6 +959,42 @@ pub fn part_damage(raw: u16, part: Part, head_mult: u16, limb_pct: u16) -> u16 {
     }
 }
 
+/// Two distinct players, both mutable.
+pub fn pair_mut(
+    players: &mut [Player; MAX_PLAYERS],
+    a: usize,
+    b: usize,
+) -> (&mut Player, &mut Player) {
+    debug_assert!(a != b);
+    if a < b {
+        let (lo, hi) = players.split_at_mut(b);
+        (&mut lo[a], &mut hi[0])
+    } else {
+        let (lo, hi) = players.split_at_mut(a);
+        (&mut hi[0], &mut lo[b])
+    }
+}
+
+/// How long an attack on a player leaves the attacker unprotected by the
+/// town's safe zone, in ticks: two minutes (Rust's `sentry.hostileduration`
+/// default), so a fight at the gate cannot be ended by stepping inside.
+pub const HOSTILE_TICKS: u16 = 120 * crate::limits::TICK_HZ as u16;
+
+/// Whether the safe zone protects this body: inside it and not hostile.
+#[inline]
+pub fn protected(v: &Player) -> bool {
+    v.safe && v.hostile == 0
+}
+
+/// The safe zone's rule for one player-on-player attack: nobody hurts from
+/// inside, and nobody inside is hurt unless hostile. Marks the attacker
+/// hostile either way — trying counts (Rust's safe-zone rules).
+#[inline]
+pub fn shielded(attacker: &mut Player, victim: &Player) -> bool {
+    attacker.hostile = HOSTILE_TICKS;
+    attacker.safe || protected(victim)
+}
+
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
     debit(v, reduce(raw, worn_pct(cc, v)))
@@ -1299,6 +1335,12 @@ pub fn strike_body(
     let planar_mm = (ray.s.0 * ray.s.0 + ray.s.2 * ray.s.2).sqrt();
     let range_cm = (planar_mm * hit.t / 10.0) as u16;
 
+    {
+        let (a, v) = pair_mut(players, attacker, hit.slot);
+        if shielded(a, v) {
+            return Strike::Missed;
+        }
+    }
     let v = &mut players[hit.slot];
     let victim_id = v.id;
     // **Live on both ends, and not rewound with the cast.** `range_cm` is a

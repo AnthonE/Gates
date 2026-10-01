@@ -714,6 +714,12 @@ pub const MAX_BOXES: usize = 256;
 /// Proposed default, DECISIONS.md §open (world containers v0).
 pub const MAX_WORLD_CONTS: usize = 64;
 
+/// Vendor offers on the island, all kiosks together (`vend.rs`). Refused
+/// past at bake.
+pub const MAX_VEND_OFFERS: usize = 64;
+/// Vendors: one per town kiosk.
+pub const MAX_VENDORS: usize = crate::town::KIOSKS.len();
+
 /// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
 /// is a place to put things down, not a second inventory, and the whole
 /// store is sized against this (`MAX_BOXES * BOX_SLOTS` stacks). Both

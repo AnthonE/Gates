@@ -539,7 +539,18 @@ pub fn sweep(
                 scratch[s] = ItemStack::default();
             }
             let mut fits = true;
+            // The town's public recyclers pay less than your own: safety has
+            // a price (Rust's safe-zone recyclers pay 40% against 60%).
+            let public = arch == crate::deploy::ARCH_RECYCLER
+                && boxes[i].owner == crate::deploy::WORLD_OWNER;
             for r in cc.rows_for(arch, stack.item) {
+                let mut r = *r;
+                if public {
+                    r.count = (r.count as u32 * crate::town::PUBLIC_RECYCLE_PCT / 100) as _;
+                    if r.count == 0 {
+                        continue;
+                    }
+                }
                 let cap = gather.stack_max_of(r.output);
                 // A converter's output is a mint, so it arrives at its own
                 // ceiling — inert for every shipped row (nothing an oven

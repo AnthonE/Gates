@@ -230,6 +230,16 @@ pub fn research(code: u8) -> String {
     text(&RESEARCH, code as u32)
 }
 
+/// Why a kiosk trade was turned down (`sim_core::vend::REFUSE_V_*`).
+pub fn vend(code: u8) -> String {
+    match code as u32 {
+        sim_core::vend::REFUSE_V_REACH => "step up to the counter to trade".into(),
+        sim_core::vend::REFUSE_V_FUNDS => "you cannot pay for that".into(),
+        sim_core::vend::REFUSE_V_FULL => "no room in your pack for that".into(),
+        _ => "that trade is not on offer".into(),
+    }
+}
+
 /// Why the build, upgrade or repair was turned down.
 pub fn build(code: u8) -> String {
     text(&BUILD, code as u32)

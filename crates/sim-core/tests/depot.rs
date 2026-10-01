@@ -30,7 +30,7 @@ fn complete_compounds_have_opposite_distinct_connections_and_flat_footings() {
         let h = terrain::haven(seed);
         assert!(terrain::sites_complete(&h), "seed {seed}");
         let ws = h.minor.iter().find(|s| depot::is_depot(s)).unwrap();
-        let [a, b] = h.roads;
+        let [a, b] = [h.roads[0], h.roads[1]];
         assert_eq!(a.port.wrapping_add(128), b.port);
         assert_eq!(a.port, ws.phase);
         let junction_distance =

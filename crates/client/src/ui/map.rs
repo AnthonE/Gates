@@ -499,7 +499,7 @@ const _: () = assert!(
 /// assert above's reason: two of the three terms are other crates'
 /// constants.
 const _: () = assert!(
-    1 + MINOR_SITES + sim_core::landmark::LANDMARKS + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    2 + MINOR_SITES + sim_core::landmark::LANDMARKS + 1 + BAG_CAP <= MAP_MARKS_MAX,
     "the own tier outgrew the marker cap — a player's own bed would be dropped"
 );
 
@@ -509,8 +509,11 @@ const _: () = assert!(
 pub enum MarkKind {
     #[default]
     None,
-    /// The haven pad: the island's one authored destination.
+    /// The coastal haven pad, labelled LOOKOUT since the town took the hub
+    /// role.
     Haven,
+    /// The town, THE GATE (`sim_core::town`): the island's safe hub.
+    Town,
     /// A waystation: the lesser tier of the same search.
     Waystation,
     /// The inland freight depot: an industrial destination.
@@ -551,6 +554,8 @@ impl MarkKind {
             // bug that draws it anyway is visible instead of plausible.
             MarkKind::None => [0.0, 0.0, 0.0],
             MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => [232.0, 228.0, 218.0],
+            // Gilt: the ring over the plaza.
+            MarkKind::Town => [236.0, 190.0, 96.0],
             MarkKind::Landmark => [214.0, 206.0, 186.0],
             // A spent bag is the SAME blue as a ready one: the colour says
             // "this is a bed of yours", and the renderer's shape says
@@ -593,9 +598,11 @@ impl MarkKind {
     pub fn icon(self) -> Option<&'static str> {
         match self {
             MarkKind::None => None,
-            MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot | MarkKind::Landmark => {
-                Some("map_site")
-            }
+            MarkKind::Haven
+            | MarkKind::Town
+            | MarkKind::Waystation
+            | MarkKind::Depot
+            | MarkKind::Landmark => Some("map_site"),
             MarkKind::Bed | MarkKind::BedSpent => Some("map_bed"),
             MarkKind::Hearth => Some("map_hearth"),
             MarkKind::Backpack => Some("backpack"),
@@ -617,7 +624,8 @@ impl MarkKind {
     /// yard are a distinct destination from a coastal waystation canopy.
     pub fn site_label(self) -> Option<&'static str> {
         match self {
-            MarkKind::Haven => Some("HAVEN"),
+            MarkKind::Haven => Some("LOOKOUT"),
+            MarkKind::Town => Some("THE GATE"),
             MarkKind::Waystation => Some("WAYSTATION"),
             MarkKind::Depot => Some("DEPOT"),
             // A landmark's name is its own, on the mark (`Mark::name`).
@@ -744,6 +752,9 @@ pub fn resolve_marks(
             MarkKind::Waystation
         };
         out.push(kind, w.x, w.z);
+    }
+    if haven.town.live {
+        out.push(MarkKind::Town, haven.town.x, haven.town.z);
     }
     // The landmarks, behind the sites: named places, fewer than the cap
     // leaves room for (the assert above `MarkKind`).
@@ -1088,7 +1099,7 @@ mod tests {
 
     /// The whole authored tier: the sites, then every live landmark.
     fn authored(haven: &Haven) -> usize {
-        SITES + haven.marks.iter().filter(|m| m.live).count()
+        SITES + usize::from(haven.town.live) + haven.marks.iter().filter(|m| m.live).count()
     }
 
     fn defs_with(arches: &[u8]) -> (DeployContent, u16) {
@@ -1470,6 +1481,7 @@ mod tests {
         let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP, ROAD];
         for kind in [
             MarkKind::Haven,
+            MarkKind::Town,
             MarkKind::Waystation,
             MarkKind::Depot,
             MarkKind::Bed,
@@ -1633,10 +1645,11 @@ mod tests {
 
     /// Every kind. The `match` is what keeps it honest: a kind added without
     /// a row here fails to compile rather than going unchecked.
-    fn all_kinds() -> [MarkKind; 9] {
+    fn all_kinds() -> [MarkKind; 10] {
         let all = [
             MarkKind::None,
             MarkKind::Haven,
+            MarkKind::Town,
             MarkKind::Waystation,
             MarkKind::Depot,
             MarkKind::Landmark,
@@ -1649,6 +1662,7 @@ mod tests {
             match k {
                 MarkKind::None
                 | MarkKind::Haven
+                | MarkKind::Town
                 | MarkKind::Waystation
                 | MarkKind::Depot
                 | MarkKind::Landmark
@@ -1692,7 +1706,10 @@ mod tests {
         for k in all_kinds() {
             assert_eq!(
                 k.site_label().is_some(),
-                matches!(k, MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot),
+                matches!(
+                    k,
+                    MarkKind::Haven | MarkKind::Town | MarkKind::Waystation | MarkKind::Depot
+                ),
                 "{k:?} is the wrong way round about carrying a name"
             );
         }

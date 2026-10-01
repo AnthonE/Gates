@@ -392,6 +392,7 @@ impl Occupants<'_> {
         // is a wall, which `blocks_volume` answers.
         best = best.max(self.rock_ground(seed, x, z, feet_y));
         best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y));
+        best = best.max(crate::town::ground(&self.haven.town, x, z, feet_y));
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
         while dz <= terrain::OCCUPANT_PROBE_CELLS {
             let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
@@ -455,6 +456,9 @@ impl Occupants<'_> {
             return true;
         }
         if crate::landmark::blocks(&self.haven.marks, x, z, feet_y, r, h) {
+            return true;
+        }
+        if crate::town::blocks(&self.haven.town, x, z, feet_y, r, h) {
             return true;
         }
         let pcx = floor_i32(x / CELL_SIZE);
@@ -531,6 +535,7 @@ impl Scratch<Barren> {
                 ore_pm: terrain::ORE_PM_UNIT,
                 marks: crate::landmark::NO_MARKS,
                 trails: [terrain::SideRoad::NONE; crate::landmark::LANDMARKS],
+                town: crate::town::Town::NONE,
             },
             harvested: Barren,
             cache: SlotCache::new(),

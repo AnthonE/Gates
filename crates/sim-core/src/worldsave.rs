@@ -1052,6 +1052,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             chill,
             cold_acc,
             skins,
+            safe: false,
+            hostile: 0,
             dead: save.dead,
             // **A world remembers a crawl** (wounded v0, format 13): the
             // body comes back down with its clock, for `mag`'s reason —

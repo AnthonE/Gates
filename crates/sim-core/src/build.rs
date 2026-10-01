@@ -1330,6 +1330,9 @@ pub fn structure_price(rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -
 pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
     terrain::ground(seed, haven, ax, az) >= FOUNDATION_MIN_H_M
         && terrain::ground_slope(seed, haven, ax, az) < FOUNDATION_MAX_SLOPE
+        // The town's floor is flat and nobody's: it answers here too, so
+        // every scan for buildable ground passes it by.
+        && !crate::town::reserves(&haven.town, ax, az, BUILD_CELL_M * 1.5)
 }
 
 /// Whether `loc` is the kind of slot `shape` occupies.
@@ -1916,9 +1919,7 @@ pub fn place(
     }
     let (ax, az) = anchor(cx, cz, loc);
     // A landmark's ground is its own, like the depot's (`landmark.rs`).
-    if crate::depot::reserves(haven, ax, az, BUILD_CELL_M * 1.5)
-        || crate::landmark::covers(&haven.marks, ax, az, BUILD_CELL_M * 1.5)
-    {
+    if crate::terrain::build_reserved(haven, ax, az, BUILD_CELL_M * 1.5) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
     }

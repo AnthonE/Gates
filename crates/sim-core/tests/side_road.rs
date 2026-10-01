@@ -80,13 +80,13 @@ fn every_inland_site_has_a_road_and_both_ends_are_what_they_claim() {
             .collect();
         assert_eq!(
             sites.len() * 2,
-            terrain::SIDE_ROADS,
+            terrain::DEPOT_ROADS,
             "seed {seed:#x}: {} inland sites against {} roads — the two are \
              two-to-one by construction and `solve_side_roads` indexes on it",
             sites.len(),
-            terrain::SIDE_ROADS
+            terrain::DEPOT_ROADS
         );
-        for (i, r) in h.roads.iter().enumerate() {
+        for (i, r) in h.roads[..terrain::DEPOT_ROADS].iter().enumerate() {
             assert!(
                 r.live,
                 "seed {seed:#x}: side road {i} is dead — no bearing off the \
@@ -805,6 +805,11 @@ fn a_side_road_joins_more_ring_than_it_is() {
             after.largest
         );
         for (i, (mine, ring)) in after.junction.iter().enumerate() {
+            // A town with ground for only one gate leaves its second road
+            // dead; a dead road is no road to walk.
+            if !h.roads[i].live {
+                continue;
+            }
             println!(
                 "seed {seed:#x}: road {i} is {mine} cells and reaches {ring} \
                  cells of ring without leaving the road ({:.1}x)",

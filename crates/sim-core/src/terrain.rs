@@ -1829,6 +1829,9 @@ fn trail_clear(seed: u64, pad: &Haven, road: &SideRoad, lat: &mut Lattice) -> bo
             if k > 1 && crate::landmark::covers(&pad.marks, x, z, 0.0) {
                 return false;
             }
+            if crate::town::covers(&pad.town, x, z, 10.0) {
+                return false;
+            }
         }
         ax = nx;
         az = nz;
@@ -3286,6 +3289,9 @@ pub struct Haven {
     /// A dirt trail from each landmark to the ring (`solve_trails`), slot for
     /// slot with `marks`.
     pub trails: [SideRoad; crate::landmark::LANDMARKS],
+    /// The town, "THE GATE" (`town.rs`): the safe hub in the central plain,
+    /// solved after the lesser sites. Its two roads are `roads[DEPOT_ROADS..]`.
+    pub town: crate::town::Town,
 }
 
 /// The altitude a site's floor is cut to — **the level of lowest error over
@@ -3310,7 +3316,7 @@ pub struct Haven {
 /// centre plus two rings, which is 17 taps — paid once per site at world init,
 /// for the three sites that exist, and never on a candidate. It is cheaper than
 /// the `haven_relief` rosette that runs on every candidate already.
-fn site_floor_y(seed: u64, x: f32, z: f32, stamp_m: f32) -> f32 {
+pub(crate) fn site_floor_y(seed: u64, x: f32, z: f32, stamp_m: f32) -> f32 {
     let h0 = height(seed, x, z);
     let mut lo = h0;
     let mut hi = h0;
@@ -3381,6 +3387,7 @@ fn haven_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
             ore_pm: ORE_PM_UNIT,
             marks: crate::landmark::NO_MARKS,
             trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
+            town: crate::town::Town::NONE,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -3433,6 +3440,7 @@ fn haven_shelter_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) 
         ore_pm: ORE_PM_UNIT,
         marks: crate::landmark::NO_MARKS,
         trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
+        town: crate::town::Town::NONE,
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -3609,6 +3617,7 @@ pub fn haven(seed: u64) -> Haven {
             ore_pm: ORE_PM_UNIT,
             marks: crate::landmark::NO_MARKS,
             trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
+            town: crate::town::Town::NONE,
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -3638,6 +3647,7 @@ pub fn haven(seed: u64) -> Haven {
         ore_pm: ORE_PM_UNIT,
         marks: crate::landmark::NO_MARKS,
         trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
+        town: crate::town::Town::NONE,
     });
     // The pad is resolved before the lesser tier is chosen, and that order is
     // the design: a waystation is defined as "far from the destination", so
@@ -3647,6 +3657,13 @@ pub fn haven(seed: u64) -> Haven {
     let (minor, roads) = pick_minor(seed, &pad, &cand[..n_cand]);
     pad.minor = minor;
     pad.roads = roads;
+    // The town after the lesser sites (which it keeps clear of, and which
+    // therefore stay exactly where they were), before the landmarks (which
+    // keep clear of it).
+    if let Some((town, town_roads)) = solve_town(seed, &pad) {
+        pad.town = town;
+        pad.roads[DEPOT_ROADS..].copy_from_slice(&town_roads);
+    }
     // The landmarks after the sites and roads they keep clear of, and a
     // trail from each to the ring.
     pad.marks = crate::landmark::solve(seed, &pad);
@@ -3829,6 +3846,228 @@ fn solve_side_roads(seed: u64, pad: &mut Haven) -> [SideRoad; SIDE_ROADS] {
         }
     }
     out
+}
+
+/// One approach from the town's gate on world axis `dir` (0 = +Z, 1 = +X,
+/// 2 = -Z, 3 = -X) to the coast ring, as a straight road and its length —
+/// `solve_side_roads`' per-bearing march, from a town port.
+fn town_approach(seed: u64, pad: &Haven, cx: f32, cz: f32, dir: u8) -> Option<(SideRoad, f32)> {
+    let port = dir.wrapping_mul(64);
+    let (dx, dz) = crate::yaw_lut::yaw_dir((port as u16) << 8);
+    let px = cx + dx * crate::town::PORT_R;
+    let pz = cz + dz * crate::town::PORT_R;
+    let mut t = 0.0;
+    while t <= ROAD_R_MAX * 2.0 {
+        let (x, z) = (px + dx * t, pz + dz * t);
+        if height(seed, x, z) < LAND_MIN_H {
+            return None;
+        }
+        if ring_band(&pad.ring, x, z) == RoadBand::Carriageway {
+            if ring_run(&pad.ring, seed, x, z) < SIDE_ROAD_RING_RUN {
+                return None;
+            }
+            let mut road = SideRoad {
+                px,
+                pz,
+                rx: x,
+                rz: z,
+                bx: [0.0; SIDE_ROAD_BENDS],
+                bz: [0.0; SIDE_ROAD_BENDS],
+                port,
+                live: true,
+            };
+            road.straighten();
+            return Some((road, t));
+        }
+        t += SIDE_ROAD_MARCH_M;
+    }
+    None
+}
+
+/// Whether a town road keeps off every inland depot's yard.
+fn town_road_clear_of_depots(pad: &Haven, road: &SideRoad) -> bool {
+    for ws in pad.minor.iter().filter(|w| crate::depot::is_depot(w)) {
+        let r = crate::depot::FOOTPRINT.scatter_m + 8.0;
+        if road.dist2(ws.x, ws.z) < r * r {
+            return false;
+        }
+    }
+    true
+}
+
+/// Place the town (`town.rs`): the flattest carve-able spot in the central
+/// plain on the 24 m lattice, clear of the depot and its roads, with a road
+/// from one gate — two, opposite, when the ground allows — to the ring.
+///
+/// Candidates are scored by footprint relief plus a small pull toward the
+/// centre; the best sixteen are tried in order as complete layouts and the
+/// first whose road reaches the ring wins, so a flat spot with no way out is
+/// passed over rather than shipped as a walled-in town.
+fn solve_town(
+    seed: u64,
+    pad: &Haven,
+) -> Option<(crate::town::Town, [SideRoad; crate::town::TOWN_ROADS])> {
+    use crate::town::{Town, TOWN_FOOTPRINT as FP, TOWN_R_MAX, TOWN_SNAP_M};
+    const SHORT: usize = 64;
+    let c = ISLAND_SIZE * 0.5;
+    let snap = |v: f32| floor_i32(v / TOWN_SNAP_M + 0.5) as f32 * TOWN_SNAP_M;
+    let cut = max_cut(&FP);
+    let mut short = [(0.0f32, 0.0f32, 0.0f32, 0.0f32, f32::MAX); SHORT];
+    let rings = (TOWN_R_MAX / 48.0) as i32;
+    for ri in 0..=rings {
+        let r = ri as f32 * 48.0;
+        let bearings = if ri == 0 { 1 } else { 32 };
+        for b in 0..bearings {
+            let (dx, dz) = crate::yaw_lut::yaw_dir(((b * (256 / 32)) as u16) << 8);
+            let (x, z) = (snap(c + dx * r), snap(c + dz * r));
+            if short.iter().any(|s| s.4 < f32::MAX && s.0 == x && s.1 == z) {
+                continue;
+            }
+            let y = height(seed, x, z);
+            if y < LAND_MIN_H + 1.0 {
+                continue;
+            }
+            // Clear of every lesser site's carve and of the depot's roads.
+            let mut clear = true;
+            for ws in pad.minor.iter().filter(|w| w.live) {
+                let d = FP.blend_m + site_footprint(ws.kind).blend_m + 60.0;
+                let (ex, ez) = (x - ws.x, z - ws.z);
+                if ex * ex + ez * ez < d * d {
+                    clear = false;
+                }
+            }
+            for road in pad.roads[..DEPOT_ROADS].iter().filter(|r| r.live) {
+                let d = FP.blend_m * 0.8;
+                if road.dist2(x, z) < d * d {
+                    clear = false;
+                }
+            }
+            if !clear {
+                continue;
+            }
+            // Cheap first pass: relief on one rim rosette. The full carve fit
+            // runs only on the shortlist, in order, below.
+            let (mut lo, mut hi) = (y, y);
+            for k in 0..8u16 {
+                let (sx, sz) = crate::yaw_lut::yaw_dir((k * 32) << 8);
+                let h = height(seed, x + sx * FP.stamp_m, z + sz * FP.stamp_m);
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+            if hi - lo > 2.0 * cut {
+                continue;
+            }
+            let score = (hi - lo) + 0.01 * r;
+            let Some(pos) = short.iter().position(|s| score < s.4) else {
+                continue;
+            };
+            for i in (pos + 1..SHORT).rev() {
+                short[i] = short[i - 1];
+            }
+            short[pos] = (x, z, y, 0.0, score);
+        }
+    }
+    for s in short.iter_mut() {
+        if s.4 == f32::MAX {
+            break;
+        }
+        let (x, z) = (s.0, s.1);
+        let floor = site_floor_y(seed, x, z, FP.stamp_m);
+        let floor = floor_i32(floor * 2.0 + 0.5) as f32 * 0.5;
+        // The carve must be able to make the whole floor: every sample of two
+        // rings and the compound's own grid within `max_cut`.
+        let mut fits = true;
+        let mut probe = |sx: f32, sz: f32| {
+            let h = height(seed, sx, sz);
+            if h < LAND_MIN_H + 0.5 || fabs(h - floor) > cut {
+                fits = false;
+            }
+        };
+        for k in 0..16u16 {
+            let (sx, sz) = crate::yaw_lut::yaw_dir((k * 16) << 8);
+            probe(x + sx * FP.stamp_m, z + sz * FP.stamp_m);
+            probe(x + sx * FP.stamp_m * 0.5, z + sz * FP.stamp_m * 0.5);
+        }
+        for gx in -3..=3 {
+            for gz in -3..=3 {
+                probe(x + gx as f32 * 14.0, z + gz as f32 * 14.0);
+            }
+        }
+        s.3 = floor;
+        if !fits {
+            s.4 = f32::INFINITY;
+        }
+    }
+    for (x, z, y, floor, score) in short {
+        if score == f32::MAX {
+            break;
+        }
+        if score == f32::INFINITY {
+            continue;
+        }
+        let mut trial = *pad;
+        trial.town = Town {
+            x,
+            z,
+            y,
+            floor_y: floor,
+            relief: 0.0,
+            rot: 0,
+            live: true,
+        };
+        let mut lat = Lattice::new();
+        let mut roads = [None; 4];
+        for dir in 0..4u8 {
+            if let Some((road, len)) = town_approach(seed, &trial, x, z, dir) {
+                if town_road_clear_of_depots(&trial, &road)
+                    && road_corridor_clear(seed, &trial, &road, &mut lat)
+                {
+                    roads[dir as usize] = Some((road, len));
+                }
+            }
+        }
+        // The shortest complete opposite pair; else the shortest single road.
+        let mut best: Option<(u8, bool, f32)> = None;
+        for axis in 0..2u8 {
+            if let (Some((_, a)), Some((_, b))) = (roads[axis as usize], roads[axis as usize + 2]) {
+                let first = if a <= b { axis } else { axis + 2 };
+                if best.is_none_or(|(_, pair, l)| !pair || a + b < l) {
+                    best = Some((first, true, a + b));
+                }
+            }
+        }
+        if best.is_none() {
+            for dir in 0..4u8 {
+                if let Some((_, l)) = roads[dir as usize] {
+                    if best.is_none_or(|(_, _, bl)| l < bl) {
+                        best = Some((dir, false, l));
+                    }
+                }
+            }
+        }
+        let Some((dir, pair, _)) = best else {
+            continue;
+        };
+        trial.town.rot = dir;
+        trial.town.relief = score
+            - 0.01 * {
+                let (ex, ez) = (x - c, z - c);
+                (ex * ex + ez * ez).sqrt()
+            };
+        let mut out = [SideRoad::NONE; crate::town::TOWN_ROADS];
+        let main = roads[dir as usize]
+            .map(|(r, _)| r)
+            .unwrap_or(SideRoad::NONE);
+        out[0] = bend_side_road(seed, &trial, &main, &mut lat);
+        if pair {
+            let back = roads[((dir + 2) & 3) as usize]
+                .map(|(r, _)| r)
+                .unwrap_or(SideRoad::NONE);
+            out[1] = bend_side_road(seed, &trial, &back, &mut lat);
+        }
+        return Some((trial.town, out));
+    }
+    None
 }
 
 /// Five cross-section samples at one-metre longitudinal pitch, including
@@ -4128,7 +4367,10 @@ const _: () = {
 
 /// Side roads on an island — two per inland site, and none for the ring tier
 /// because a site chosen ON the ring is already served by it.
-pub const SIDE_ROADS: usize = INLAND_SITES * 2;
+pub const SIDE_ROADS: usize = DEPOT_ROADS + crate::town::TOWN_ROADS;
+
+/// The inland depots' roads: the first `DEPOT_ROADS` of `Haven::roads`.
+pub const DEPOT_ROADS: usize = INLAND_SITES * 2;
 
 /// Bearings the side-road solve tries, evenly spaced. Half [`INLAND_CANDIDATES`]
 /// for the reason that constant is half [`HAVEN_CANDIDATES`]: this is choosing
@@ -4315,7 +4557,7 @@ const _: () = {
     assert!(SIDE_ROAD_MARCH_M <= ROAD_HALF_W);
     assert!(SIDE_ROAD_SAMPLE_M > 0.0);
     // Two opposite approaches per inland site, indexed by its slot offset.
-    assert!(SIDE_ROADS == INLAND_SITES * 2);
+    assert!(DEPOT_ROADS == INLAND_SITES * 2);
     // A road with no interior node is the chord this slice exists to retire,
     // and `bend_t` divides by `SIDE_ROAD_BENDS + 1`.
     assert!(SIDE_ROAD_BENDS > 0);
@@ -4771,7 +5013,7 @@ fn pick_minor(
         trial.minor = out;
         trial.minor[WAYSTATIONS] = site;
         let roads = solve_side_roads(seed, &mut trial);
-        if roads.iter().all(|road| road.live) {
+        if roads[..DEPOT_ROADS].iter().all(|road| road.live) {
             return (trial.minor, roads);
         }
     }
@@ -4975,7 +5217,12 @@ pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
 /// lane's file: sim-core can say what "complete" means, and only the server
 /// can decide that an incomplete island is a refusal to start.
 pub fn sites_complete(haven: &Haven) -> bool {
-    if haven.roads.iter().any(|road| !road.live) {
+    if haven.roads[..DEPOT_ROADS].iter().any(|road| !road.live) {
+        return false;
+    }
+    // The town needs one road in; the second is a through route when the
+    // ground allows it.
+    if !haven.town.live || !haven.roads[DEPOT_ROADS].live {
         return false;
     }
     for ws in haven.minor.iter() {
@@ -4998,6 +5245,16 @@ pub fn sites_live(haven: &Haven) -> u32 {
         }
     }
     n
+}
+
+/// Whether building or deploying at (`x`, `z`) with `margin` is refused
+/// because an authored structure owns the ground: the depot's yard, a
+/// landmark's disc, the town. One answer for the sim's placement verbs, the
+/// client's ghost and the bots, so the three cannot disagree.
+pub fn build_reserved(haven: &Haven, x: f32, z: f32, margin: f32) -> bool {
+    crate::depot::reserves(haven, x, z, margin)
+        || crate::landmark::covers(&haven.marks, x, z, margin)
+        || crate::town::reserves(&haven.town, x, z, margin)
 }
 
 /// True if (x, z) stands inside the pad's **scatter** mask
@@ -5297,6 +5554,10 @@ pub fn site_sweep(haven: &Haven, x: f32, z: f32) -> f32 {
         }
         s = s.max(sweep_of(site_footprint(ws.kind), ws.x, ws.z, x, z));
     }
+    if haven.town.live {
+        let t = &haven.town;
+        s = s.max(sweep_of(&crate::town::TOWN_FOOTPRINT, t.x, t.z, x, z));
+    }
     s
 }
 
@@ -5414,6 +5675,19 @@ pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -
             ws.floor_y,
             ws.x,
             ws.z,
+            raw,
+            x,
+            z,
+        );
+    }
+    if haven.town.live {
+        let t = &haven.town;
+        s += stamp_of(
+            strength,
+            &crate::town::TOWN_FOOTPRINT,
+            t.floor_y,
+            t.x,
+            t.z,
             raw,
             x,
             z,
@@ -6368,7 +6642,10 @@ fn scatter_in<C: Corners>(
     // The pad clears before the road does, because the pad sits ON the road
     // and the shoulder rule below would otherwise line the destination with
     // the same barrels as the route to it (TERRAIN.md §1 stage 8).
-    if in_haven(haven, x, z) || in_waystation(haven, x, z) {
+    if in_haven(haven, x, z)
+        || in_waystation(haven, x, z)
+        || crate::town::covers(&haven.town, x, z, 0.0)
+    {
         return none;
     }
 
@@ -8619,7 +8896,7 @@ pub fn site_roofed(seed: u64, haven: &Haven, x: f32, z: f32, feet_y: f32) -> boo
             return true;
         }
     }
-    crate::depot::roofed(haven, x, z, head)
+    crate::depot::roofed(haven, x, z, head) || crate::town::roofed(&haven.town, x, z, feet_y)
 }
 
 /// [`site_roofed`] for one authored box list standing at `(sx, sz, yaw)` on

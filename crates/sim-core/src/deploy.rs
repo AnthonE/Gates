@@ -1812,6 +1812,77 @@ fn ground_ok(seed: u64, haven: &terrain::Haven, pieces: &Pieces, cx: u16, cz: u1
     let (x, z) = cell_center(cx, cz);
     terrain::ground(seed, haven, x, z) >= crate::build::FOUNDATION_MIN_H_M
         && terrain::ground_slope(seed, haven, x, z) < crate::build::FOUNDATION_MAX_SLOPE
+        && !crate::town::reserves(&haven.town, x, z, crate::build::BUILD_CELL_M * 1.5)
+}
+
+/// The owner of a deployable no player placed: the town's public stations.
+/// Player ids are `(generation << 8) | slot` with generation ≥ 1, so 0 is
+/// never a player. It cannot be picked up, damaged or taxed by upkeep.
+pub const WORLD_OWNER: u32 = 0;
+
+/// Stand an authored deployable of archetype `arch` at a ground cell, owned
+/// by [`WORLD_OWNER`] — `place_deploy`'s stand-up without a player, a cost or
+/// its placement rules (the town's floor is reserved from players, which is
+/// the point). Idempotent: an address already holding a record is left
+/// alone. Returns whether a record now stands there.
+pub fn stand_authored(
+    dc: &DeployContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    arch: u8,
+    cx: u16,
+    cz: u16,
+    tick: u64,
+) -> bool {
+    if deploys.find(cx, cz, 0, LOC_PLANE).is_some() {
+        return true;
+    }
+    let Some(row) = dc.defs[..dc.def_count as usize]
+        .iter()
+        .position(|d| d.arch == arch)
+    else {
+        return false;
+    };
+    let def = dc.defs[row];
+    if holds_items(arch) && deploys.boxes.len == MAX_BOXES {
+        return false;
+    }
+    let rec = DeployRec {
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        row: row as u8,
+        owner: WORLD_OWNER,
+        hp: def.hp,
+        uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
+        open: false,
+        has_lock: false,
+        locked: false,
+        dmg: 0,
+    };
+    if !deploys.insert(rec, tick) {
+        return false;
+    }
+    if solid_vol(arch).is_some() {
+        pieces.set_solid(cx, cz, 0, Some(arch));
+    }
+    if holds_items(arch) {
+        let n = deploys.boxes.len;
+        deploys.boxes.entries[n] = BoxRec {
+            cx,
+            cz,
+            level: 0,
+            owner: WORLD_OWNER,
+            items: [ItemStack::default(); BOX_SLOTS],
+        };
+        deploys.boxes.ovens[n] = crate::oven::OvenState {
+            arch,
+            ..Default::default()
+        };
+        deploys.boxes.len += 1;
+    }
+    true
 }
 
 /// Apply one deploy-place request (`Command::PlaceDeploy`). Refusals are
@@ -1866,9 +1937,7 @@ pub fn place_deploy(
         return;
     }
     let (ax, az) = cell_center(cx, cz);
-    if crate::depot::reserves(haven, ax, az, crate::build::BUILD_CELL_M * 1.5)
-        || crate::landmark::covers(&haven.marks, ax, az, crate::build::BUILD_CELL_M * 1.5)
-    {
+    if crate::terrain::build_reserved(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;
     }
@@ -2416,6 +2485,10 @@ pub fn pick_up(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;
     };
+    if deploys.entries[i].owner == WORLD_OWNER {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
     let (ax, az) = cell_center(cx, cz);
     let (px, pz) = player_xz(p);
     let (dx, dz) = (ax - px, az - pz);
@@ -2802,6 +2875,9 @@ pub fn damage_deploy(
     events: &mut EventQueue,
 ) -> bool {
     let rec = deploys.entries[di];
+    if rec.owner == WORLD_OWNER {
+        return false; // authored: the town's stations do not break
+    }
     let left = rec.hp.saturating_sub(amount);
     let dealt = rec.hp - left;
     events.push(
@@ -3118,7 +3194,7 @@ pub fn upkeep_sweep(
         let i = (*deploy_cursor as usize) % deploys.len;
         *deploy_cursor = ((i + 1) % deploys.len) as u32;
         let rec = deploys.entries[i];
-        if rec.uh >= h_now {
+        if rec.uh >= h_now || rec.owner == WORLD_OWNER {
             continue;
         }
         let def = dc.defs[rec.row as usize];

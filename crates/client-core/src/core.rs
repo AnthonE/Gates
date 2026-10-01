@@ -1256,6 +1256,15 @@ pub struct ClientCore {
     research_toast_head: usize,
     research_toast_len: usize,
     research_refusals: [u8; REFUSAL_RING],
+    /// The town's vendor offers (wire v85, `SUB_VEND_OFFERS`), offer order.
+    pub vend: sim_core::vend::VendContent,
+    /// Each vendor's name, kiosk order, and its length.
+    pub vendor_names: [[u8; protocol::VENDOR_NAME_BYTES]; sim_core::limits::MAX_VENDORS],
+    pub vendor_name_lens: [u8; sim_core::limits::MAX_VENDORS],
+    /// Trade answers not yet read: `(refused, code, offer, times)`.
+    vend_results: [(bool, u8, u8, u8); REFUSAL_RING],
+    vend_result_head: usize,
+    vend_result_len: usize,
     research_refusal_head: usize,
     research_refusal_len: usize,
     refusals: [u8; REFUSAL_RING],
@@ -1825,6 +1834,12 @@ impl ClientCore {
             research_toast_head: 0,
             research_toast_len: 0,
             research_refusals: [0; REFUSAL_RING],
+            vend: sim_core::vend::VendContent::EMPTY,
+            vendor_names: [[0; protocol::VENDOR_NAME_BYTES]; sim_core::limits::MAX_VENDORS],
+            vendor_name_lens: [0; sim_core::limits::MAX_VENDORS],
+            vend_results: [(false, 0, 0, 0); REFUSAL_RING],
+            vend_result_head: 0,
+            vend_result_len: 0,
             gather_refusals: [(0, 0); REFUSAL_RING],
             reload_refusals: [(0, 0); REFUSAL_RING],
             reload_refusal_head: 0,
@@ -2074,6 +2089,30 @@ impl ClientCore {
             EventMsg::SkinsOwned { owned } => {
                 self.skins_owned = owned;
             }
+            EventMsg::VendOffers {
+                total,
+                first,
+                count,
+                rows,
+                names,
+                lens,
+            } => {
+                self.vend.count = total.min(sim_core::limits::MAX_VEND_OFFERS as u16);
+                for i in 0..count as usize {
+                    let k = first as usize + i;
+                    if k >= sim_core::limits::MAX_VEND_OFFERS {
+                        break;
+                    }
+                    self.vend.offers[k] = rows[i];
+                    let v = rows[i].vendor as usize;
+                    if lens[i] > 0 && v < sim_core::limits::MAX_VENDORS {
+                        self.vendor_names[v] = names[i];
+                        self.vendor_name_lens[v] = lens[i];
+                    }
+                }
+            }
+            EventMsg::Vend { offer, times } => self.push_vend((false, 0, offer, times)),
+            EventMsg::VendRefused { code, offer } => self.push_vend((true, code, offer, 0)),
             EventMsg::CraftQ {
                 jobs,
                 count,
@@ -3438,6 +3477,35 @@ impl ClientCore {
         self.research_toast_head = (self.research_toast_head + 1) % TOAST_RING;
         self.research_toast_len -= 1;
         Some(t)
+    }
+
+    fn push_vend(&mut self, r: (bool, u8, u8, u8)) {
+        if self.vend_result_len == REFUSAL_RING {
+            self.vend_result_head = (self.vend_result_head + 1) % REFUSAL_RING;
+            self.vend_result_len -= 1;
+        }
+        self.vend_results[(self.vend_result_head + self.vend_result_len) % REFUSAL_RING] = r;
+        self.vend_result_len += 1;
+    }
+
+    /// Oldest trade answer: `(refused, refusal code, offer, times)`.
+    pub fn pop_vend(&mut self) -> Option<(bool, u8, u8, u8)> {
+        if self.vend_result_len == 0 {
+            return None;
+        }
+        let r = self.vend_results[self.vend_result_head];
+        self.vend_result_head = (self.vend_result_head + 1) % REFUSAL_RING;
+        self.vend_result_len -= 1;
+        Some(r)
+    }
+
+    /// A vendor's name as the server sent it.
+    pub fn vendor_name(&self, v: usize) -> &[u8] {
+        if v < sim_core::limits::MAX_VENDORS {
+            &self.vendor_names[v][..self.vendor_name_lens[v] as usize]
+        } else {
+            &[]
+        }
     }
 
     /// Oldest buffered research refusal (`sim_core::research::REFUSE_R_*`).

@@ -4404,3 +4404,13 @@ fn a_skin_row_does_not_move_the_hash() {
         "a new skin row moved the save hash — every new look would be a wipe"
     );
 }
+
+/// The shipped vendor table bakes: every offer resolves and none can be
+/// bought and sold back — or recycled — for a profit (`bake_vend`).
+#[test]
+fn the_shipped_vendors_bake_without_arbitrage() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let vc = c.bake_vend().expect("shipped vendors must bake");
+    assert!(vc.count > 0);
+    assert_eq!(c.bake_vendor_names().len(), sim_core::town::KIOSKS.len());
+}

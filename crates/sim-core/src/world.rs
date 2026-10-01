@@ -794,7 +794,15 @@ pub const EV_HOWL: u8 = 47;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_HOWL;
+/// EV_VEND: a = trader id, b = the offer index (`vend::VendContent`), c =
+/// how many times. Own-fact: the trader's toast; the pack arrives on the
+/// inventory lane like any other change.
+pub const EV_VEND: u8 = 48;
+
+/// EV_VEND_REFUSED: a = trader id, b = `vend::REFUSE_V_*`, c = the offer.
+pub const EV_VEND_REFUSED: u8 = 49;
+
+pub const EV_MAX: u8 = EV_VEND_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1225,6 +1233,14 @@ pub struct Player {
     /// belongs to the person and not the body. Hashed and world-saved like
     /// every other field a command writes.
     pub skins: crate::skin::SkinSet,
+    /// Standing in the town's safe zone this tick (`town::safe`), refreshed
+    /// at the top of every tick from the body. Derived, so neither hashed
+    /// nor saved.
+    pub safe: bool,
+    /// Ticks left hostile (`combat::HOSTILE_TICKS`): set by any attack on a
+    /// player, and while it runs the safe zone does not protect this body.
+    /// Hashed when non-zero; not saved — a restart forgives.
+    pub hostile: u16,
 }
 
 impl Player {
@@ -1242,6 +1258,10 @@ impl Player {
             && !self.wounded
     }
 }
+
+/// How long a sleeper may lie in the town's safe zone before it is moved out
+/// of the main gate: 20 minutes, Rust's rule.
+pub const SAFE_SLEEP_TICKS: u64 = 20 * 60 * crate::limits::TICK_HZ as u64;
 
 impl Default for Player {
     fn default() -> Self {
@@ -1293,6 +1313,8 @@ impl Default for Player {
             chill: 0,
             cold_acc: 0,
             skins: crate::skin::SkinSet::EMPTY,
+            safe: false,
+            hostile: 0,
         }
     }
 }
@@ -1741,6 +1763,13 @@ pub enum Command {
         id: u32,
         slot: u8,
     },
+    /// Trade at one of the town's kiosks (`vend.rs`): offer `offer`,
+    /// `times` over. The sim checks reach, funds and room.
+    Vend {
+        id: u32,
+        offer: u8,
+        times: u8,
+    },
     /// Drink from the water under your own feet (survival.rs). No target
     /// and no position: the heightfield is a pure function of the seed,
     /// so the sim asks it where the body already is.
@@ -1805,6 +1834,8 @@ pub struct World {
     /// table; `EMPTY` fits no skin on anything, so every craft that names
     /// one refuses and every item wears its own look.
     pub skins: crate::skin::SkinContent,
+    /// The town's vendor offers (`content/sites.toml`, `vend.rs`).
+    pub vend: crate::vend::VendContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -2004,6 +2035,7 @@ impl World {
             cook: crate::oven::CookContent::EMPTY,
             research: crate::research::ResearchContent::EMPTY,
             skins: crate::skin::SkinContent::EMPTY,
+            vend: crate::vend::VendContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -3467,6 +3499,8 @@ impl World {
                     // owns (`persist.rs`'s header), and the server states
                     // it after this join (`Command::SkinsOwned`).
                     skins: crate::skin::SkinSet::EMPTY,
+                    safe: false,
+                    hostile: 0,
                 };
                 craft::rearm(
                     &self.craft,
@@ -4367,6 +4401,20 @@ impl World {
                     );
                 }
             }
+            Command::Vend { id, offer, times } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let town = self.haven.town;
+                    crate::vend::trade(
+                        &self.vend,
+                        &self.gather,
+                        &town,
+                        &mut self.players[slot],
+                        offer as usize,
+                        times,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     survival::consume(
@@ -4570,9 +4618,73 @@ impl World {
             })
     }
 
+    /// Stand the town's public stations (`town::STATIONS`) as owner-0
+    /// deployables. The shard calls it once at boot, after its content is
+    /// installed and any save loaded, before the first tick — the origin of
+    /// a run, like the load (a replay of the run seeds the same way).
+    /// Idempotent, so a loaded world that already holds them is left alone.
+    pub fn seed_authored(&mut self) {
+        let town = self.haven.town;
+        if !town.live {
+            return;
+        }
+        for k in 0..crate::town::STATIONS.len() {
+            let Some((name, x, z)) = crate::town::station_world(&town, k) else {
+                continue;
+            };
+            let arch = match name {
+                "workbench" => crate::deploy::ARCH_WORKBENCH,
+                "research" => crate::deploy::ARCH_RESEARCH,
+                "recycler" => crate::deploy::ARCH_RECYCLER,
+                _ => continue,
+            };
+            let cx = (x / crate::build::BUILD_CELL_M) as u16;
+            let cz = (z / crate::build::BUILD_CELL_M) as u16;
+            crate::deploy::stand_authored(
+                &self.deploy,
+                &mut self.pieces,
+                &mut self.deploys,
+                arch,
+                cx,
+                cz,
+                self.tick,
+            );
+        }
+    }
+
+    /// The town's safe zone, once a tick before anything acts: who stands in
+    /// it, hostility running down, and a sleeper left inside past
+    /// `SAFE_SLEEP_TICKS` moved out of the main gate (the zone is not a
+    /// vault — Rust removes safe-zone sleepers after 20 minutes).
+    fn safe_zone(&mut self) {
+        let town = self.haven.town;
+        let sweep = self.tick.is_multiple_of(crate::limits::TICK_HZ as u64);
+        for i in 0..MAX_PLAYERS {
+            let p = &mut self.players[i];
+            if !p.active {
+                continue;
+            }
+            p.hostile = p.hostile.saturating_sub(1);
+            let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+            let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+            p.safe = crate::town::safe(&town, x, z);
+            if sweep
+                && p.safe
+                && p.sleeping
+                && self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS
+            {
+                let (ox, oz) =
+                    crate::kit::to_world(&town.placed(), 0.0, crate::town::SAFE_HALF_M + 8.0);
+                p.body = Body::at(self.seed, &self.haven, ox, oz);
+                p.safe = false;
+            }
+        }
+    }
+
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
         self.trust.clear(self.tick);
+        self.safe_zone();
         // The tick's structural removal budget is minted **before** the
         // commands rather than after them, because since demolish v1 a
         // command can take a piece out of the store and seed a cascade —
@@ -5193,6 +5305,10 @@ impl World {
             if !v.active || v.hp == 0 {
                 continue; // died to something else since the roster looked
             }
+            // Animals do not hurt anyone in the town's safe zone.
+            if crate::combat::protected(v) {
+                continue;
+            }
             let sector =
                 crate::combat::bearing_sector(mqx - v.body.qx as i64, mqz - v.body.qz as i64);
             // The funnel, reduced: a bite is a hit.
@@ -5579,6 +5695,9 @@ impl World {
                 xb[4..8].copy_from_slice(&p.cold_acc.to_le_bytes());
                 h.update(&xb);
             }
+            // `hostile` is not hashed and not saved: a restart forgives it,
+            // like `safe` it is a clock over the body rather than a fact
+            // about it, and everything it changes (hp) is hashed already.
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
             // shards that disagree about whether a body is standing

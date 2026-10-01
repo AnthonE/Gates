@@ -263,6 +263,14 @@ pub fn resolve(
             aimed.0 = take;
         }
     }
+    // A town kiosk (THE GATE): last, by nearness — the counter is a place
+    // you walk up to, not a thing you aim at.
+    if aimed.0.is_none() {
+        let trade = interact::resolve_trade(x, z, &core.haven().town);
+        if trade.verb != interact::Verb::None {
+            aimed.0 = trade;
+        }
+    }
     near.0 = structure::nearest(
         (x, z),
         core.pieces.entries(),
@@ -683,6 +691,18 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         // (`panels::tech::clicks`). No `open_panel` — that helper opens
         // the INVENTORY, and this is the one verb that opens something
         // else.
+        // A kiosk opens its stall's offers and sends nothing; the buy
+        // buttons send (`panels::vendor::clicks`).
+        Verb::Trade => {
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Vendor;
+                    ui.vendor = pick.handle as u8;
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
         Verb::TechTree => {
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {

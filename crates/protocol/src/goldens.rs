@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 121] = [
+pub const FIXTURES: [&str; 125] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -225,6 +225,11 @@ pub const FIXTURES: [&str; 121] = [
     // one message only a watcher receives. Appended, positional as ever.
     "hello_spectate.bin",
     "watch.bin",
+    // THE GATE's vendors (v85): the offer drip, the two answers, the verb.
+    "event_vend_offers.bin",
+    "event_vend.bin",
+    "event_vend_refused.bin",
+    "action_vend.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1905,6 +1910,50 @@ pub fn event_skins_owned() -> sim_core::skin::SkinSet {
         s.insert(row);
     }
     s
+}
+
+/// Three offers at two vendors (wire v85): a buy and a sell at vendor 0,
+/// which carries its name on its first row only, and a buy at vendor 5.
+pub fn event_vend_offers() -> (sim_core::vend::VendContent, [&'static [u8]; 6]) {
+    let mut vc = sim_core::vend::VendContent::EMPTY;
+    vc.offers[0] = sim_core::vend::VendOffer {
+        vendor: 0,
+        pay: 17,
+        pay_n: 3,
+        get: 42,
+        get_n: 500,
+    };
+    vc.offers[1] = sim_core::vend::VendOffer {
+        vendor: 0,
+        pay: 8,
+        pay_n: 1000,
+        get: 17,
+        get_n: 4,
+    };
+    vc.offers[2] = sim_core::vend::VendOffer {
+        vendor: 5,
+        pay: 17,
+        pay_n: 200,
+        get: 55,
+        get_n: 1,
+    };
+    vc.count = 3;
+    (vc, [b"RATIONS", b"", b"", b"", b"", b"ARMS"])
+}
+
+/// A trade of offer 9, twenty times over.
+pub fn event_vend() -> (u8, u8) {
+    (9, 20)
+}
+
+/// Offer 41 refused for want of funds.
+pub fn event_vend_refused() -> (u8, u8) {
+    (sim_core::vend::REFUSE_V_FUNDS as u8, 41)
+}
+
+/// Trade offer 37 five times.
+pub fn action_vend() -> (u8, u8) {
+    (37, 5)
 }
 
 /// Put catalog id 0x0B72 on the item in slot 17 (wire v77).

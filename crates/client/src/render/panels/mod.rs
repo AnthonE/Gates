@@ -50,6 +50,7 @@ pub mod craft;
 pub mod inv;
 pub mod ring;
 pub mod tech;
+pub mod vendor;
 pub mod wheel;
 
 /// Which menu is up. One at a time: the wheel is a hold and the inventory
@@ -77,6 +78,8 @@ pub enum Panel {
     /// toggle like the inventory, closed by Escape; Tab swaps to the
     /// inventory rather than stacking on it.
     Tech,
+    /// A town kiosk's offers (`E` at a kiosk, `vendor.rs`).
+    Vendor,
 }
 
 impl Panel {
@@ -94,7 +97,7 @@ impl Panel {
             Panel::None => Page::Closed,
             Panel::Inventory => Page::Inventory,
             Panel::Craft => Page::Crafting,
-            Panel::Wheel | Panel::Hammer | Panel::Tech => Page::Other,
+            Panel::Wheel | Panel::Hammer | Panel::Tech | Panel::Vendor => Page::Other,
         }
     }
 
@@ -182,6 +185,8 @@ pub struct Ui {
     /// The tab on show — one bench tier's tree, `1..=tech_tier`
     /// (`ui::techtree::tabs`). Opens on the bench's own tier.
     pub tech_tab: u8,
+    /// The kiosk (= vendor index) the vendor panel shows.
+    pub vendor: u8,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -265,6 +270,7 @@ impl Default for Ui {
             hover: None,
             tech_sel: None,
             tech_tier: 1,
+            vendor: 0,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -680,6 +686,7 @@ pub fn register(app: &mut App) {
                 craft::scroll,
                 tech::clicks,
                 tech::scroll,
+                vendor::clicks,
                 wheel::track,
                 sync_refusals,
                 inv::table_clock,
@@ -705,7 +712,7 @@ pub fn register(app: &mut App) {
         // rebuild, so the sentence is on the board drawn this frame.
         .add_systems(
             Update,
-            (tech::sync_status, craft::sync_status)
+            (tech::sync_status, craft::sync_status, vendor::sync_status)
                 .after(super::feed::drain)
                 .before(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
@@ -1057,6 +1064,11 @@ pub fn rebuild(
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
             tech::build_screen(&mut commands, &ui, core, icons)
+        }
+        Panel::Vendor => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            vendor::build_screen(&mut commands, &ui, core, icons)
         }
     }
 }

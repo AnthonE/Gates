@@ -563,6 +563,9 @@ fn try_site(
             return None;
         }
     }
+    if pad.town.live && !clear(pad.town.x, pad.town.z, &crate::town::TOWN_FOOTPRINT) {
+        return None;
+    }
     // The kind by where it stands.
     let moist = terrain::moisture_memo(lat, seed, x, z);
     let roll = unit(h, 32);

@@ -193,6 +193,24 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
     hash_f32(&mut h, haven.floor_y);
     hash_f32(&mut h, haven.relief);
     h.update(&[haven.phase, haven.shelter]);
+    // The town (THE GATE): where it stands, its floor and its turn, and a
+    // sample of its kit's collision at each part's centre — so a native and
+    // a wasm client that disagreed about the hub would disagree here.
+    let town = haven.town;
+    hash_f32(&mut h, town.x);
+    hash_f32(&mut h, town.z);
+    hash_f32(&mut h, town.floor_y);
+    h.update(&[town.rot, town.live as u8]);
+    for part in crate::town::PARTS {
+        let b = part.b;
+        let (x, z) = crate::kit::to_world(&town.placed(), (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
+        let y = town.floor_y + (b[1] + b[4]) * 0.5;
+        h.update(&[crate::town::blocks(&town, x, z, y, 0.01, 0.01) as u8]);
+        hash_f32(
+            &mut h,
+            crate::town::ground(&town, x, z, town.floor_y + b[4]),
+        );
+    }
     // The ore budget: it moves every rock-channel cell's draw, and none of
     // those need lie inside the scatter windows `probe_terrain` hashes — on
     // the golden seed none does. Folded here so a budget change moves the

@@ -77,6 +77,20 @@ fn main() {
     write_fixture(goldens::FIXTURES[119], &buf[..len]);
     let len = protocol::encode_watch(&goldens::watch(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[120], &buf[..len]);
+    // THE GATE's vendors (v85).
+    let (vc, names) = goldens::event_vend_offers();
+    let (len, took) = protocol::encode_event_vend_offers(&vc, &names, 0, &mut buf).unwrap();
+    assert_eq!(took, 3);
+    write_fixture(goldens::FIXTURES[121], &buf[..len]);
+    let (offer, times) = goldens::event_vend();
+    let len = protocol::encode_event_vend(offer, times, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[122], &buf[..len]);
+    let (code, offer) = goldens::event_vend_refused();
+    let len = protocol::encode_event_vend_refused(code, offer, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[123], &buf[..len]);
+    let (offer, times) = goldens::action_vend();
+    let len = protocol::encode_action_vend(offer, times, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[124], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

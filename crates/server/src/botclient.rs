@@ -566,8 +566,7 @@ fn foundation_goes(seed: u64, hv: &Haven, cx: u16, cz: u16) -> bool {
     let (ax, az) = sim_core::build::anchor(cx, cz, sim_core::build::LOC_PLANE);
     let pad = sim_core::build::BUILD_CELL_M * 1.5;
     sim_core::build::foundation_terrain_ok(seed, hv, ax, az)
-        && !sim_core::depot::reserves(hv, ax, az, pad)
-        && !sim_core::landmark::covers(&hv.marks, ax, az, pad)
+        && !sim_core::terrain::build_reserved(hv, ax, az, pad)
 }
 
 /// The island's haven, built once for every raider in the process (a bot

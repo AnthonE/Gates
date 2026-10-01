@@ -814,3 +814,17 @@ is not a driving game or a spellcaster, so most go unused — they cost nothing
 but the 3.1 MB, and a later slice that adds swimming or a sword has them
 already. **Do not trim the file to the used set**: re-vendoring is a copy, and a
 trimmed copy is an edited asset that no longer matches its source.
+
+## `site/town.glb` — THE GATE, dressed in Blender
+
+**Our own work (CC0).** `ci/site_kit.py gen --kit ci/kits/town.json --out
+assets/models/site/town.glb --seed 1 --label "THE GATE"` on bpy 4.5.14 LTS,
+from the sim's own boxes (`cargo run -p sim-core --example kit_dump`), so the
+drawn town and the collided town are one layout. No textures: one mesh per
+surface role, metre UVs, Cycles AO baked into vertex colour; the client puts
+its photographed surfaces on it (`render/town.rs`). The sidecar
+`town.glb.json` records the script and kit hashes.
+
+| file | kit | tris | size |
+|---|---|---|---|
+| `site/town.glb` | `ci/kits/town.json` | 60,680 | 5.0 MB |

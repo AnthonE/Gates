@@ -119,6 +119,10 @@ pub enum Verb {
     /// not press.
     TechTree,
     Assist,
+    /// A kiosk in the town (THE GATE, `sim_core::vend`): `handle` is the
+    /// vendor index. Resolved by nearness like `Take`, from the town's own
+    /// layout — there is no record on the wire to aim at.
+    Trade,
 }
 
 impl Verb {
@@ -162,6 +166,7 @@ impl Verb {
             // exists so the order stays total.
             Verb::Take => 10,
             Verb::Assist => 11,
+            Verb::Trade => 12,
         }
     }
 
@@ -185,6 +190,7 @@ impl Verb {
             // ground is the same mesh whatever is in it).
             Verb::Take => "ITEM",
             Verb::Assist => "WOUNDED PLAYER",
+            Verb::Trade => "VENDOR",
         }
     }
 }
@@ -341,6 +347,7 @@ impl Pick {
             // and opens nothing — what `E` does here is show the tree
             // (tech tree v0), so the prompt names the thing you get.
             Verb::TechTree => "[E] TECH TREE".to_string(),
+            Verb::Trade => "[E] TRADE".to_string(),
             // Not "OPEN": a loose stack has nothing to open, and the
             // count is the half of this line a player acts on — a sack
             // holding 4 cloth and a sack holding 300 metal are the same
@@ -361,6 +368,36 @@ impl Pick {
             ),
             v => format!("[E] OPEN {}", v.label()),
         }
+    }
+}
+
+/// The town kiosk `E` would trade at, or a `None` pick: the nearest counter
+/// within the sim's own `VEND_REACH_M`.
+pub fn resolve_trade(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
+    if !town.live {
+        return Pick::default();
+    }
+    let mut best: Option<(usize, f32)> = None;
+    for k in 0..sim_core::town::KIOSKS.len() {
+        let Some((kx, kz)) = sim_core::town::kiosk_world(town, k) else {
+            continue;
+        };
+        let d2 = (kx - x) * (kx - x) + (kz - z) * (kz - z);
+        if d2 > sim_core::vend::VEND_REACH_M * sim_core::vend::VEND_REACH_M {
+            continue;
+        }
+        if best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Trade,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
     }
 }
 
