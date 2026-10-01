@@ -28,8 +28,24 @@ use sim_core::terrain::{
 use super::props::{hash01, linear, Soup};
 use super::{Eye, WorldId};
 
-/// Tiles either side of the player's own — a 5×5 ring, 40 m to an edge.
-pub const CLUTTER_RING: i32 = 2;
+/// Tiles either side of the player's own — a 7×7 ring, 48–64 m to an edge.
+///
+/// **Three, so the grass can fade instead of ending.** At two the ring's
+/// nearest edge was 32 m away and a tile appeared or vanished whole as the
+/// player crossed a boundary — the square, popping edge the reference game
+/// never shows (its grass fades with distance, to 100 m by default). The
+/// foliage shader now sinks each card into the ground between
+/// `foliage::GRASS_FADE_START_M` and `GRASS_FADE_END_M`, and the end sits
+/// inside this ring's nearest edge, so a tile only ever streams where its
+/// grass has already gone.
+pub const CLUTTER_RING: i32 = 3;
+/// Tiles either side of the player's own whose grass casts a shadow. **(knob)**
+///
+/// Only the near ones: the first cascade (`rig::CASCADE_FIRST_M`) is fine
+/// enough to resolve a blade, and past it a blade's shadow is acne rather
+/// than shade. The reference game's "grass shadows" are a near-field effect
+/// for the same reason.
+pub const GRASS_SHADOW_TILES: i32 = 1;
 /// Tiles filled per frame. The fill is 721 hash draws and a few thousand
 /// triangles; one a frame keeps the spike off the frame the player turns on.
 pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
@@ -132,7 +148,12 @@ pub struct ClutterRing {
     /// material could carry both, which would put every pebble through an
     /// alpha test it does not need and tie two unrelated surfaces to one
     /// texture forever. 25 extra draws is the cheaper half of that trade.
-    card_material: Option<Handle<StandardMaterial>>,
+    card_material: Option<Handle<super::foliage::FoliageMaterial>>,
+    /// Each tile's card child, so the near ones can cast shadows
+    /// ([`GRASS_SHADOW_TILES`]) and the rest not.
+    cards: HashMap<(i32, i32), Entity>,
+    /// The tile the shadow casters were last chosen around.
+    shadow_at: Option<(i32, i32)>,
     /// The ring's lattice memo, kept across tiles: a neighbour's quads and the
     /// ranges' layout stay warm from one fill to the next.
     lat: terrain::Lattice,
@@ -345,7 +366,13 @@ pub const CARD_SINK: f32 = 0.04;
 /// used to author is in the scan already.
 fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
     let root = at - Vec3::Y * h * CARD_SINK;
-    let tint = patch_tint(at.x, at.z);
+    // The ground's own macro break-up under the tuft, so a lighter patch of
+    // ground grows lighter grass and the turf does not draw a seam over it
+    // — the reference game tints its grass with the terrain's biome colour
+    // for the same reason (DB54, DB62).
+    let ground =
+        1.0 + super::terrain_mesh::MACRO_AMP * super::terrain_mesh::macro_noise(at.x, at.z);
+    let tint = patch_tint(at.x, at.z).map(|c| c * ground);
     for i in 0..CARDS_PER_TUFT {
         let a = yaw + i as f32 * std::f32::consts::PI / CARDS_PER_TUFT as f32;
         let side = Vec3::new(a.sin(), 0.0, a.cos());
@@ -381,6 +408,7 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
             let t = ((p.y - root_y) / hj).clamp(0.0, 1.0);
             1.0 - (1.0 - BLADE_TIP_BLEND) * t
         };
+        let start = s.len();
         // Both triangles wind the same way — `tests/contact.rs` holds their
         // facets in one hemisphere and that claim is not weakened by the UVs.
         s.tri_uv(
@@ -395,6 +423,11 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
             up_volume,
             ramp,
         );
+        // The foliage shader's handle on this card: how far each corner
+        // stands above the root, and one random per card so neighbours do
+        // not sway, fade or fall over in lockstep (`foliage.wgsl`).
+        let rand = hash01(seed, i + 211);
+        s.tag_uv1(start, move |p| [(p.y - root_y).max(0.0), rand]);
     }
 }
 
@@ -730,11 +763,14 @@ pub fn stream(
     mut ring: ResMut<ClutterRing>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut foliage_mats: ResMut<Assets<super::foliage::FoliageMaterial>>,
+    foliages: Option<Res<super::foliage::Foliages>>,
     mut buf: Local<Vec<ClutterElem>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
     assets: Res<AssetServer>,
 ) {
+    let Some(foliages) = foliages else { return };
     // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
     // is the browser's name for exactly this sum and the two fills are
     // documented as sharing a population, so a single allocation holds both.
@@ -766,7 +802,7 @@ pub fn stream(
     let card_material = ring
         .card_material
         .get_or_insert_with(|| {
-            materials.add(StandardMaterial {
+            let base = StandardMaterial {
                 // WHITE, and the per-card mean-1 grey rides in the vertex
                 // colour: the photograph ships its own colour whole
                 // (`textures::PropMaps` has the law).
@@ -785,7 +821,10 @@ pub fn stream(
                 double_sided: true,
                 cull_mode: None,
                 ..default()
-            })
+            };
+            // Wind, trails, the distance fade and the edge-on cut
+            // (`foliage.rs`).
+            foliage_mats.add(foliages.make(base, super::foliage::Kind::Grass))
         })
         .clone();
 
@@ -803,10 +842,42 @@ pub fn stream(
         commands.entity(*e).despawn();
         false
     });
+    let ClutterRing { built, cards, .. } = &mut *ring;
+    cards.retain(|k, _| built.contains_key(k));
+
+    // The near tiles' grass casts shadows; re-chosen when the player changes
+    // tile. A tile filled later is chosen as it spawns, below.
+    let near = |k: (i32, i32)| {
+        (k.0 - tx).abs() <= GRASS_SHADOW_TILES && (k.1 - tz).abs() <= GRASS_SHADOW_TILES
+    };
+    if ring.shadow_at != Some((tx, tz)) {
+        ring.shadow_at = Some((tx, tz));
+        for (k, e) in ring.cards.iter() {
+            if near(*k) {
+                commands.entity(*e).remove::<NotShadowCaster>();
+            } else {
+                commands.entity(*e).insert(NotShadowCaster);
+            }
+        }
+    }
+
+    // Nearest first: the tile under the player before the ring's corners.
+    let mut order = [(0i32, 0i32); RING_TILES];
+    let mut n_order = 0;
+    for r in 0..=CLUTTER_RING {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dz.abs()) == r {
+                    order[n_order] = (dx, dz);
+                    n_order += 1;
+                }
+            }
+        }
+    }
 
     let mut filled = 0usize;
-    for dz in -CLUTTER_RING..=CLUTTER_RING {
-        for dx in -CLUTTER_RING..=CLUTTER_RING {
+    {
+        for &(dx, dz) in &order[..n_order] {
             if filled >= CLUTTER_FILLS_PER_FRAME {
                 return;
             }
@@ -899,17 +970,24 @@ pub fn stream(
                 ));
             }
             if n_cards > 0 {
-                commands.entity(e).with_child((
-                    Mesh3d(meshes.add(cards.mesh())),
-                    MeshMaterial3d(card_material.clone()),
-                    // `NotShadowCaster` for the same reason as the solids
-                    // above, and one more that is specific to a cutout: a
-                    // masked card in the shadow pass is an alpha test per
-                    // shadow texel, which for hundreds of overlapping quads is
-                    // the most expensive thing on the tile and buys acne.
-                    NotShadowCaster,
-                    Transform::IDENTITY,
-                ));
+                let c = commands
+                    .spawn((
+                        Mesh3d(meshes.add(cards.mesh())),
+                        MeshMaterial3d(card_material.clone()),
+                        Transform::IDENTITY,
+                        ChildOf(e),
+                    ))
+                    .id();
+                // `NotShadowCaster` past the near tiles, for the same reason
+                // as the solids above, and one more that is specific to a
+                // cutout: a masked card in the shadow pass is an alpha test
+                // per shadow texel, which for hundreds of overlapping quads is
+                // the most expensive thing on the tile. The near ones cast:
+                // see [`GRASS_SHADOW_TILES`].
+                if !near(key) {
+                    commands.entity(c).insert(NotShadowCaster);
+                }
+                ring.cards.insert(key, c);
             }
             ring.built.insert(key, e);
             filled += 1;
