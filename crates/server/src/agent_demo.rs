@@ -1,8 +1,11 @@
 //! Shared setup for the headless survivor and its rendered local broadcast.
 
+use crate::agent::combat::Temperament;
+use crate::agent::hands::Preset;
 use crate::botclient::{
     agent_endpoint, run_agent_bot, run_guest_agent, AgentIdentity, BotDriver, BotReport,
 };
+use crate::explorer::SurvivorOpts;
 /// Explicit offline goals (`mind::Scripted`), never a fallback for a
 /// failed model request. Re-exported here for the bins that name it.
 pub use crate::mind::Scripted;
@@ -13,6 +16,45 @@ use std::path::Path;
 use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::Endpoint;
+
+/// The domain an agent's lock-code signature names: never a shard's, so the
+/// signature is no login anywhere, and never sent.
+const LOCK_SIGN_DOMAIN: &str = "lock-code.gates.invalid";
+
+/// Where an agent's lock code comes from (`agent::lock`): a wallet agent's
+/// from what only its key signs, a guest's from its install's secret kept
+/// at `guest_path` (made there the first time). `None` when the secret
+/// cannot be read or made: the body then makes up a code for this run.
+pub fn lock_secret(
+    key: Option<&AgentKey>,
+    name: &str,
+    guest_path: &Path,
+) -> Option<crate::agent::lock::LockSecret> {
+    use crate::agent::lock::{guest_secret, LockCode, LockSecret};
+    if let Some(key) = key {
+        let sig = key.sign_siwe(LOCK_SIGN_DOMAIN, &[0; protocol::NONCE_BYTES], 0);
+        return Some(LockSecret::Code(LockCode::derive(&sig.0, name)));
+    }
+    if let Some(dir) = guest_path.parent() {
+        std::fs::create_dir_all(dir).ok()?;
+    }
+    guest_secret(guest_path)
+        .ok()
+        .map(|install| LockSecret::guest(install, name))
+}
+
+/// Where a guest agent's install keeps its lock secret: `GATES_AGENT_SECRET`
+/// if set, else `~/.gates/agent-guest.secret`, else beside the binary's
+/// temp files.
+pub fn guest_secret_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("GATES_AGENT_SECRET") {
+        return p.into();
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => std::path::Path::new(&home).join(".gates/agent-guest.secret"),
+        None => std::env::temp_dir().join("gates-agent-guest.secret"),
+    }
+}
 
 /// The display name a jev bot declares to its spectators when none is given.
 pub const AGENT_NAME: &str = "jev";
@@ -167,7 +209,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --external PROGRAM [ARG...]] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. Decisions are never more often than once a second.";
+pub const MIND_USAGE: &str = "[--scripted | --external PROGRAM [ARG...]] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -182,6 +224,10 @@ pub enum Source {
 pub struct MindArgs {
     pub source: Source,
     pub cfg: MindConfig,
+    /// How good the survivor's hands are; not the mind's, but chosen with it.
+    pub skill: Preset,
+    /// When the survivor fights, likewise.
+    pub temperament: Temperament,
 }
 
 impl Default for MindArgs {
@@ -189,6 +235,8 @@ impl Default for MindArgs {
         Self {
             source: Source::Jev,
             cfg: MindConfig::default(),
+            skill: Preset::default(),
+            temperament: Temperament::default(),
         }
     }
 }
@@ -217,6 +265,16 @@ impl MindArgs {
             "--max-requests-day" => {
                 self.cfg.per_day = u32::try_from(number(arg)?).map_err(|_| "ceiling too large")?
             }
+            "--skill" => {
+                let name = args.next().ok_or("--skill needs a value")?;
+                self.skill =
+                    Preset::parse(&name).ok_or("--skill is one of novice, average, good, pro")?;
+            }
+            "--temperament" => {
+                let name = args.next().ok_or("--temperament needs a value")?;
+                self.temperament = Temperament::parse(&name)
+                    .ok_or("--temperament is one of passive, defensive, opportunist, kos")?;
+            }
             "--external" => {
                 let program = args.next().ok_or("--external needs a program")?;
                 self.source = Source::External(program, args.collect());
@@ -224,6 +282,15 @@ impl MindArgs {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// The survivor's setup beyond its mind.
+    pub fn opts(&self) -> SurvivorOpts {
+        SurvivorOpts {
+            skill: self.skill.skill(),
+            temperament: self.temperament,
+            lock: None,
+        }
     }
 
     pub fn label(&self) -> String {
@@ -310,5 +377,18 @@ mod tests {
         assert!(parse("--max-requests-day 0").is_err());
         assert!(parse("--heartbeat-s").is_err());
         assert_eq!(parse("--scripted").unwrap().source, Source::Scripted);
+        assert_eq!(parse("--scripted").unwrap().skill, Preset::Good);
+        let pro = parse("--skill pro --scripted").unwrap();
+        assert_eq!(pro.opts().skill, crate::agent::hands::Skill::PRO);
+        assert!(parse("--skill").is_err());
+        assert!(parse("--skill godlike").is_err());
+        assert_eq!(
+            parse("--scripted").unwrap().opts().temperament,
+            Temperament::Opportunist
+        );
+        let kos = parse("--temperament kos --scripted").unwrap();
+        assert_eq!(kos.opts().temperament, Temperament::Kos);
+        assert!(parse("--temperament").is_err());
+        assert!(parse("--temperament berserk").is_err());
     }
 }

@@ -98,6 +98,10 @@ impl Controller {
         self.playing.get_or_insert_with(Instant::now);
         let tick = session.core.clock.client_tick;
         if self.last_tick != Some(tick) {
+            // Other bodies are judged where this session's screen draws
+            // them: behind the newest snapshot by its adaptive playout.
+            self.survivor
+                .set_playout(session.core.playout_ticks().round() as u8);
             self.held =
                 self.survivor
                     .frame(&session.core.view, session.welcome.player_id, tick as u16);
@@ -441,7 +445,7 @@ mod tests {
                 // A second draw at the same client tick must hold the input,
                 // not consume another decision or advance the search scan.
                 assert_eq!(frame, controller.sample(&session, true).unwrap());
-                moved |= frame.move_z != 0;
+                moved |= frame.move_x != 0 || frame.move_z != 0;
                 swung |= frame.buttons & sim_core::input::BTN_PRIMARY != 0;
                 session.core.set_input(
                     frame.buttons,

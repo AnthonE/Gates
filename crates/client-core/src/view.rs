@@ -113,10 +113,17 @@ impl ClientView {
     /// The most recently applied snapshot — the interpolation feed reads
     /// its decoded entities right after `apply` returns `Ok`.
     pub fn newest(&self) -> Option<&Snapshot> {
-        let t = self.newest_applied?;
-        self.ring[ring_index(t)]
+        self.at(self.newest_applied?)
+    }
+
+    /// The applied snapshot for `tick`, while the ring still holds it. A
+    /// reader that samples bodies behind the newest tick (interpolation
+    /// run by something other than `ClientCore`, such as an agent's eyes)
+    /// catches up from here without missing the ticks between its frames.
+    pub fn at(&self, tick: u32) -> Option<&Snapshot> {
+        self.ring[ring_index(tick)]
             .as_ref()
-            .filter(|s| s.header.tick == t)
+            .filter(|s| s.header.tick == tick)
     }
 
     /// The redundant ack header for the next input datagram
@@ -142,5 +149,47 @@ impl ClientView {
 impl Default for ClientView {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::{encode_snapshot, SnapshotHeader};
+    use sim_core::limits::DATAGRAM_BUDGET_BYTES;
+
+    fn keyframe(view: &mut ClientView, tick: u32, qx: i32) {
+        let e = EntityState {
+            id: 7,
+            qx,
+            grounded: true,
+            ..EntityState::default()
+        };
+        let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+        let header = SnapshotHeader {
+            tick,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let n = encode_snapshot(&header, &[], &[e], &[], &mut buf).unwrap();
+        assert_eq!(view.apply(&buf[..n]), Ok(Applied::Ok { delta: false }));
+    }
+
+    #[test]
+    fn at_reads_each_held_tick_until_the_ring_reuses_its_slot() {
+        let mut view = ClientView::new();
+        keyframe(&mut view, 10, 100);
+        keyframe(&mut view, 12, 200);
+        assert_eq!(view.at(10).unwrap().entities()[0].qx, 100);
+        assert_eq!(view.at(12).unwrap().entities()[0].qx, 200);
+        assert!(view.at(11).is_none(), "a tick never applied");
+        assert_eq!(view.newest().unwrap().header.tick, 12);
+        let later = 10 + SENT_SNAPSHOT_RING as u32 * SNAPSHOT_INTERVAL_TICKS as u32;
+        keyframe(&mut view, later, 300);
+        assert!(view.at(10).is_none(), "its slot now holds a newer tick");
+        assert_eq!(view.at(later).unwrap().entities()[0].qx, 300);
     }
 }

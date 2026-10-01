@@ -220,7 +220,39 @@ mod tests {
             bearing: 5,
         };
         (s.trees, s.stone_nodes, s.ore_nodes, s.bushes) = (seen, seen, seen, seen);
-        (s.players, s.animals, s.water_near) = (seen, seen, seen);
+        (s.players, s.animals, s.water_near, s.backpack) = (seen, seen, seen, seen);
+        s.bags = u8::MAX;
+        s.home = crate::mind::HomeSense {
+            state: crate::mind::HomeState::Inside,
+            distance: crate::mind::Distance::Far,
+            bearing: 5,
+            attacked: true,
+            damaged: true,
+        };
+        for i in 0..crate::mind::SUMMARY_STORED {
+            s.stored[i] = (long(300 + i), u32::MAX);
+        }
+        s.stored_len = crate::mind::SUMMARY_STORED as u8;
+        (s.take_out, s.feed) = (true, true);
+        (s.bag_ready, s.night) = (true, true);
+        s.milestone = crate::mind::Milestone::ALL
+            .into_iter()
+            .max_by_key(|m| m.word().len())
+            .unwrap();
+        for i in 0..crate::mind::SUMMARY_NEEDS {
+            s.needs[i] = (long(200 + i), u32::MAX);
+        }
+        s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
+        for i in 0..crate::mind::SUMMARY_RAW {
+            s.raw[i] = (long(400 + i), u32::MAX);
+        }
+        s.raw_len = crate::mind::SUMMARY_RAW as u8;
+        (s.bench, s.furnace) = (true, true);
+        (s.loot, s.raid) = (seen, seen);
+        s.loot_place = Some(crate::mind::Place {
+            distance: crate::mind::Distance::Far,
+            bearing: 5,
+        });
         (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
         s.last = Some(Report {
             goal: Goal::Craft(long(7)),
@@ -229,6 +261,16 @@ mod tests {
             secs: u32::MAX,
         });
         s.trigger = Trigger::Heartbeat;
+        let threat = crate::mind::Threat {
+            arms: crate::mind::Arms::Explosive,
+            range: crate::mind::Range::Close,
+            bearing: 5,
+            wounded: true,
+            aiming_at_me: true,
+        };
+        s.threats = [threat; crate::mind::SUMMARY_THREATS];
+        s.threats_len = crate::mind::SUMMARY_THREATS as u8;
+        s.last_fight = Some(crate::mind::Why::Escaped);
         s.current = Some(Report {
             goal: Goal::Craft(long(9)),
             outcome: crate::mind::Outcome::Running,
