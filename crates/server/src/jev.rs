@@ -234,7 +234,10 @@ mod tests {
         s.stored_len = crate::mind::SUMMARY_STORED as u8;
         (s.take_out, s.feed) = (true, true);
         (s.bag_ready, s.night) = (true, true);
-        s.milestone = crate::mind::Milestone::Upstairs;
+        s.milestone = crate::mind::Milestone::ALL
+            .into_iter()
+            .max_by_key(|m| m.word().len())
+            .unwrap();
         for i in 0..crate::mind::SUMMARY_NEEDS {
             s.needs[i] = (long(200 + i), u32::MAX);
         }

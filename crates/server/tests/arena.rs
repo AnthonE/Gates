@@ -311,7 +311,14 @@ fn a_heal_counts_the_bandages_still_working() {
         u32::from(p.hp) * 100 >= u32::from(p.hp_max) * 90 && p.heal_rem == 0
     };
     assert!(a.until(40 * TICK_HZ, full), "{}", a.explain());
-    let left = a.player(ID).inv[slot].count;
+    // Wherever they are now: meds go on the belt between goals.
+    let left: u16 = a
+        .player(ID)
+        .inv
+        .iter()
+        .filter(|s| s.count > 0 && s.item == bandages.item)
+        .map(|s| s.count)
+        .sum();
     println!(
         "healed to {} with {left} left: {}",
         a.player(ID).hp,

@@ -60,9 +60,70 @@ impl LockCode {
         Self::derive(&secret, name)
     }
 
+    /// A code for an agent with nothing to derive one from (a test, a
+    /// watched bot): made from the OS's randomness, so it is still nobody
+    /// else's, and kept for this process's life.
+    pub fn random() -> Self {
+        let mut secret = [0u8; GUEST_SECRET_BYTES];
+        if getrandom::getrandom(&mut secret).is_err() {
+            // No randomness to be had: the process's own id is at least not
+            // the island's.
+            secret[..4].copy_from_slice(&std::process::id().to_le_bytes());
+        }
+        Self::derive(&secret, "")
+    }
+
     /// The code as the access verb carries it (`0..=CODE_MAX`).
     pub fn wire(self) -> u16 {
         self.0
+    }
+}
+
+/// Bytes of an agent name a [`LockSecret`] keeps.
+pub const LOCK_NAME_BYTES: usize = 32;
+
+/// What an agent's lock code comes from, before the island is known: a
+/// wallet agent's code is known at once (its key's signature is the
+/// secret); a guest's waits for the welcome's seed ([`LockCode::for_guest`]).
+#[derive(Clone, Copy)]
+pub enum LockSecret {
+    Code(LockCode),
+    Guest {
+        install: [u8; GUEST_SECRET_BYTES],
+        name: [u8; LOCK_NAME_BYTES],
+        len: u8,
+    },
+}
+
+impl std::fmt::Debug for LockSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LockSecret(****)")
+    }
+}
+
+impl LockSecret {
+    /// A guest's: its install's secret and its name (cut to
+    /// [`LOCK_NAME_BYTES`]).
+    pub fn guest(install: [u8; GUEST_SECRET_BYTES], name: &str) -> Self {
+        let mut bytes = [0u8; LOCK_NAME_BYTES];
+        let n = name.len().min(LOCK_NAME_BYTES);
+        bytes[..n].copy_from_slice(&name.as_bytes()[..n]);
+        Self::Guest {
+            install,
+            name: bytes,
+            len: n as u8,
+        }
+    }
+
+    /// The code on the island with this seed.
+    pub fn code(&self, seed: u64) -> LockCode {
+        match *self {
+            LockSecret::Code(code) => code,
+            LockSecret::Guest { install, name, len } => {
+                let name = std::str::from_utf8(&name[..usize::from(len)]).unwrap_or("");
+                LockCode::for_guest(&install, seed, name)
+            }
+        }
     }
 }
 

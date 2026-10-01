@@ -15,10 +15,10 @@
 //! box. What it knows of the upkeep is the reply to its last feed (the only
 //! stock readout the game gives, kept in [`Home`]).
 
-use crate::agent::build::{self, Act, Builder, Way};
+use crate::agent::build::{self, aim_point, Act, Builder, Way, PRESS_SLACK_M};
 use crate::agent::hands::Hands;
 use crate::agent::home::{Home, HOLD_TICKS};
-use crate::agent::intent::{yaw_toward, Intent, Look};
+use crate::agent::intent::{Intent, Look};
 use crate::agent::route::Route;
 use crate::agent::wiki::{Book, Class};
 use crate::mind::Why;
@@ -45,13 +45,6 @@ pub const MAX_MOVES: u8 = 32;
 const MAX_TRIES: u8 = 3;
 /// A visit that failed is not offered again for this long.
 pub const STASH_RETRY_TICKS: u32 = 60 * TICK_HZ;
-/// Sideways slides of the eyes off a thing's middle, metres, tried in
-/// turn: within `E`'s metre either way.
-const AIM_OFFSETS_M: [f32; 11] = [0.0, -0.2, 0.2, -0.35, 0.35, -0.5, 0.5, -0.6, 0.6, -0.7, 0.7];
-/// The drift of the view an aim point has to survive...
-const AIM_SLACK_M: f32 = 0.2;
-/// ...and the drift left at the press, once the eyes have settled.
-const PRESS_SLACK_M: f32 = 0.1;
 /// Stacks of each food and med kept on the body.
 pub const PROVISION_STACKS: u32 = 2;
 /// Distinct items the summary reports from the box.
@@ -713,28 +706,6 @@ impl StashJob {
             None => build::look_at(seed, haven, core, at),
         }
     }
-}
-
-/// Where to look to work `at` from (`x`, `z`): its look point, slid
-/// sideways across the line of sight by the least of [`AIM_OFFSETS_M`]
-/// that `E` takes it from with [`AIM_SLACK_M`] to spare. The look point
-/// itself when none does; the press then waits, and misses.
-fn aim_point(core: &ClientCore, seed: u64, haven: &Haven, at: OpAddr, x: f32, z: f32) -> [f32; 3] {
-    let [px, py, pz] = build::look_point(seed, haven, core, at);
-    let (dx, dz) = (px - x, pz - z);
-    let d = (dx * dx + dz * dz).sqrt();
-    if d <= f32::EPSILON {
-        return [px, py, pz];
-    }
-    let (sx, sz) = (-dz / d, dx / d);
-    AIM_OFFSETS_M
-        .iter()
-        .map(|&o| [px + sx * o, py, pz + sz * o])
-        .find(|p| {
-            let yaw = yaw_toward(p[0] - x, p[2] - z);
-            build::e_picks_by(core, x, z, yaw, at, AIM_SLACK_M)
-        })
-        .unwrap_or([px, py, pz])
 }
 
 enum Aim {

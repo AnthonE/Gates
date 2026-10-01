@@ -17,8 +17,15 @@
 //! for what the next one needs ([`Survey::needs`]). Once the starter
 //! stands come its stations: a workbench on the upstairs floor and a
 //! furnace on the ground behind the core, both in reach of the stand spot,
-//! where a station's recipes are crafted. Locks and metal doors are passed
-//! over.
+//! where a station's recipes are crafted. Then code locks on both doors and
+//! the cupboard, armed with its own code ([`LockCode`]), and metal doors in
+//! place of the wooden ones when the fragments are spare.
+//!
+//! After the base comes the gear a player works through at its benches
+//! ([`Milestone::MetalTools`] on): blueprints learned ([`Op::Learn`]: the
+//! tech tree's unlock at a bench, or paper read), then made ([`Op::Make`]),
+//! and the bench itself swapped for the second rung on the way. The same
+//! verdict-at-a-time machinery runs them from the stand spot.
 //!
 //! What it knows is its own: the plot it chose, what it built there (the
 //! client's mirror of its own base, which it stands in), and the game's
@@ -29,6 +36,7 @@
 use crate::agent::hands::Hands;
 use crate::agent::home::{Home, HOLD_TICKS};
 use crate::agent::intent::{yaw_toward, Intent, Look};
+use crate::agent::lock::LockCode;
 use crate::agent::route::{Route, Step};
 use crate::agent::site::{self, Seen};
 use crate::agent::stash::Ledger;
@@ -43,12 +51,17 @@ use sim_core::build::{
     REFUSE_B_COST, REFUSE_B_REACH, REFUSE_B_SPOT, REFUSE_B_SUPPORT, REFUSE_B_TERRAIN,
     REFUSE_B_TIER,
 };
-use sim_core::craft::{STATION_FURNACE, STATION_NONE, STATION_RADIUS_M, STATION_WORKBENCH1};
-use sim_core::deploy::{
-    arch_is_door, REFUSE_D_CLAIM, REFUSE_D_COST, REFUSE_D_OVERLAP, REFUSE_D_REACH, REFUSE_D_SPOT,
-    REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
+use sim_core::craft::{
+    STATION_FURNACE, STATION_NONE, STATION_RADIUS_M, STATION_WORKBENCH1, STATION_WORKBENCH2,
 };
-use sim_core::limits::{CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
+use sim_core::deploy::{
+    arch_is_door, bench_tier, lockable, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, REFUSE_D_CLAIM,
+    REFUSE_D_COST, REFUSE_D_HAS_LOCK, REFUSE_D_OVERLAP, REFUSE_D_OWNER, REFUSE_D_REACH,
+    REFUSE_D_SPOT, REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
+};
+use sim_core::limits::{
+    CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
+};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::terrain::{self, Haven};
 
@@ -71,12 +84,32 @@ pub enum Milestone {
     Bench,
     /// A furnace behind the core, crafted at the bench; ore smelts there.
     Furnace,
-    /// Everything this body builds: the starter and its first stations.
+    /// Code locks on both doors and the cupboard, armed with its code; a
+    /// metal door in place of a wooden one whenever the fragments are spare.
+    Locks,
+    /// Metal hatchet and pickaxe (blueprints, learned at the bench) and a
+    /// metal spear.
+    MetalTools,
+    /// A crossbow and metal arrows for it.
+    Crossbow,
+    /// Burlap hood and tunic, worn.
+    Burlap,
+    /// Medkits (a blueprint), on the belt.
+    Medkits,
+    /// The second bench rung, in the first one's place.
+    Bench2,
+    /// Gunpowder, from charcoal and sulfur smelted at the furnace.
+    Gunpowder,
+    /// The revolver and its rounds (blueprints, at the second rung).
+    Revolver,
+    /// A roadsign vest (a blueprint), worn.
+    Roadsign,
+    /// Everything this body builds and makes for itself.
     Done,
 }
 
 impl Milestone {
-    pub const ALL: [Milestone; 8] = [
+    pub const ALL: [Milestone; 17] = [
         Milestone::Shell,
         Milestone::Doors,
         Milestone::Stone,
@@ -84,6 +117,15 @@ impl Milestone {
         Milestone::Wood,
         Milestone::Bench,
         Milestone::Furnace,
+        Milestone::Locks,
+        Milestone::MetalTools,
+        Milestone::Crossbow,
+        Milestone::Burlap,
+        Milestone::Medkits,
+        Milestone::Bench2,
+        Milestone::Gunpowder,
+        Milestone::Revolver,
+        Milestone::Roadsign,
         Milestone::Done,
     ];
 
@@ -96,8 +138,22 @@ impl Milestone {
             Milestone::Bench => "workbench",
             Milestone::Furnace => "furnace",
             Milestone::Wood => "wood_grades",
+            Milestone::Locks => "code_locks",
+            Milestone::MetalTools => "metal_tools",
+            Milestone::Crossbow => "crossbow",
+            Milestone::Burlap => "burlap_armor",
+            Milestone::Medkits => "medkits",
+            Milestone::Bench2 => "workbench_2",
+            Milestone::Gunpowder => "gunpowder",
+            Milestone::Revolver => "revolver",
+            Milestone::Roadsign => "roadsign_armor",
             Milestone::Done => "done",
         }
+    }
+
+    /// A milestone past the base: gear made at its benches.
+    pub fn gear(self) -> bool {
+        self >= Milestone::MetalTools && self != Milestone::Done
     }
 }
 
@@ -107,7 +163,10 @@ pub const HEARTH_ITEM: &str = "Hearth";
 pub const DOOR_ITEM: &str = "Wooden Door";
 pub const BOX_ITEM: &str = "Small Box";
 pub const BENCH_ITEM: &str = "Workbench";
+pub const BENCH2_ITEM: &str = "Workbench-2";
 pub const FURNACE_ITEM: &str = "Furnace";
+pub const LOCK_ITEM: &str = "Code Lock";
+pub const METAL_DOOR_ITEM: &str = "Metal Door";
 /// What a player holds to place a piece, and to grade one.
 pub const PLAN_ITEM: &str = "Building Plan";
 pub const HAMMER_ITEM: &str = "Hammer";
@@ -131,19 +190,222 @@ const EXTRAS: [(&str, i8, i8, u8, Milestone); 4] = [
 ];
 /// The cell behind the core the furnace stands on, from the plot.
 pub const YARD: (i8, i8) = (0, -1);
-/// The plot's cells: the core's three by two, and the one yard cell behind
-/// it the furnace takes (not the rest of that row, which may be a
-/// neighbour's).
+/// The cell behind the stair cell the second bench's foundation takes.
+pub const ANNEX: (i8, i8) = (1, -1);
+/// The plot's cells: the core's three by two, and the yard and annex cells
+/// behind it (not the rest of that row, which may be a neighbour's).
 fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
-    let yard = (
-        plan.cx.wrapping_add_signed(i16::from(YARD.0)),
-        plan.cz.wrapping_add_signed(i16::from(YARD.1)),
-    );
-    (cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz) <= 1) || (cx, cz) == yard
+    let at = |(dx, dz): (i8, i8)| {
+        (
+            plan.cx.wrapping_add_signed(i16::from(dx)),
+            plan.cz.wrapping_add_signed(i16::from(dz)),
+        )
+    };
+    (cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz) <= 1)
+        || (cx, cz) == at(YARD)
+        || (cx, cz) == at(ANNEX)
 }
 
-/// Every op the builder knows: the blueprint's, then its own.
-pub const OPS: usize = STARTER.len() + EXTRAS.len();
+/// What it does after the starter and its stations, in order, as `(op, dx,
+/// dz, level, loc, milestone, optional)`: the cupboard's lock and code
+/// (the doors' are the blueprint's own), the inner door swapped for metal
+/// like the front one, the second bench rung on a stone foundation of its
+/// own behind the stair cell (`ANNEX`: every plane inside is taken, and
+/// the first rung stays, its recipes made at either); then the gear,
+/// each blueprint learned before it is made, a parent before its child
+/// (pistol rounds before the revolver: the tree's own edge). An optional op
+/// holds no milestone back: it is done when the pack pays for it on top of
+/// what the milestone in hand costs.
+const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 24] = [
+    (Op::Lock, 0, 0, 0, LOC_PLANE, Milestone::Locks, false),
+    (Op::Code, 0, 0, 0, LOC_PLANE, Milestone::Locks, false),
+    (
+        Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM),
+        INNER.0,
+        INNER.1,
+        INNER.2,
+        INNER.3,
+        Milestone::Locks,
+        true,
+    ),
+    (
+        Op::Learn("Metal Hatchet"),
+        0,
+        0,
+        0,
+        0,
+        Milestone::MetalTools,
+        false,
+    ),
+    (
+        Op::Make("Metal Hatchet", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::MetalTools,
+        false,
+    ),
+    (
+        Op::Learn("Metal Pickaxe"),
+        0,
+        0,
+        0,
+        0,
+        Milestone::MetalTools,
+        false,
+    ),
+    (
+        Op::Make("Metal Pickaxe", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::MetalTools,
+        false,
+    ),
+    (
+        Op::Make("Metal Spear", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::MetalTools,
+        false,
+    ),
+    (
+        Op::Make("Crossbow", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Crossbow,
+        false,
+    ),
+    (
+        Op::Make("Metal Arrow", 20),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Crossbow,
+        false,
+    ),
+    (
+        Op::Make("Burlap Hood", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Burlap,
+        false,
+    ),
+    (
+        Op::Make("Burlap Tunic", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Burlap,
+        false,
+    ),
+    (Op::Learn("Medkit"), 0, 0, 0, 0, Milestone::Medkits, false),
+    (Op::Make("Medkit", 2), 0, 0, 0, 0, Milestone::Medkits, false),
+    (
+        Op::Piece(Part::Foundation),
+        ANNEX.0,
+        ANNEX.1,
+        0,
+        LOC_PLANE,
+        Milestone::Bench2,
+        false,
+    ),
+    (
+        Op::Grade(MAT_STONE),
+        ANNEX.0,
+        ANNEX.1,
+        0,
+        LOC_PLANE,
+        Milestone::Bench2,
+        false,
+    ),
+    (
+        Op::Kit(BENCH2_ITEM),
+        ANNEX.0,
+        ANNEX.1,
+        0,
+        LOC_PLANE,
+        Milestone::Bench2,
+        false,
+    ),
+    (
+        Op::Make("Gunpowder", 30),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Gunpowder,
+        false,
+    ),
+    (
+        Op::Learn("Pistol Round"),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Revolver,
+        false,
+    ),
+    (
+        Op::Learn("Revolver"),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Revolver,
+        false,
+    ),
+    (
+        Op::Make("Revolver", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Revolver,
+        false,
+    ),
+    (
+        Op::Make("Pistol Round", 24),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Revolver,
+        false,
+    ),
+    (
+        Op::Learn("Roadsign Vest"),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Roadsign,
+        false,
+    ),
+    (
+        Op::Make("Roadsign Vest", 1),
+        0,
+        0,
+        0,
+        0,
+        Milestone::Roadsign,
+        false,
+    ),
+];
+
+/// Every op the builder knows: the blueprint's, then its own, then what
+/// comes after.
+pub const OPS: usize = STARTER.len() + EXTRAS.len() + LATER.len();
 const _: () = assert!(OPS <= 128, "op sets are u128 masks");
 
 /// An op's answer comes within this long (`explorer::VERDICT_SECS`).
@@ -181,6 +443,20 @@ enum Op {
     Kit(&'static str),
     /// Grade the piece at the address to a material: the hammer in hand.
     Grade(u8),
+    /// Bolt a code lock onto what stands at the address: the lock in hand.
+    Lock,
+    /// Set this body's code on the lock at the address (the keypad), which
+    /// arms it.
+    Code,
+    /// Take the first deployable at the address back up and put the
+    /// second there in its place: a metal door for a wooden one, the
+    /// second bench rung for the first.
+    Swap(&'static str, &'static str),
+    /// Learn the blueprint of the named item: at a bench, for the tree's
+    /// junk, or by reading paper for it.
+    Learn(&'static str),
+    /// Hold this many of the named item, made at its station.
+    Make(&'static str, u32),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -190,12 +466,39 @@ struct Spec {
     dz: i8,
     level: u8,
     loc: u8,
-    /// `None`: not this body's to build yet (locks, metal doors, the feed,
-    /// the blueprint's upstairs box, which the box inside replaces).
+    /// `None`: not this body's to build (the feed, the blueprint's upstairs
+    /// box, which the box inside replaces).
     stage: Option<Milestone>,
+    /// Done when the pack has the spare for it; holds no milestone back.
+    optional: bool,
 }
 
-/// Op `i`: the blueprint's in order, then [`EXTRAS`].
+impl Spec {
+    /// Where the op is worked from, as the chain point the walk through the
+    /// doors goes by and the spot itself, relative to the plot's corner.
+    /// Everything is worked from the stand spot in the core but a door's
+    /// lock and a door's swap: those from beside the door, on the side
+    /// the cupboard is not (from the core `E` takes the cupboard first),
+    /// where that door is the one `E` and the take-down's key take, the
+    /// front from outside, the inner from the room.
+    fn work_spot(&self) -> (usize, [f32; 2]) {
+        let door = matches!(self.op, Op::Lock | Op::Code | Op::Swap(..));
+        let here = (self.dx, self.dz, self.level, self.loc);
+        if door && here == FRONT {
+            (CHAIN.len() - 1, CHAIN[CHAIN.len() - 1])
+        } else if door && here == INNER {
+            (INNER_LEG, INNER_SPOT)
+        } else {
+            (0, CHAIN[0])
+        }
+    }
+}
+
+/// Where the inner door is worked from: in the room, closer to it than to
+/// the box or the stairs, so it is the nearest thing standing there.
+const INNER_SPOT: [f32; 2] = [1.5, -0.45];
+
+/// Op `i`: the blueprint's in order, then [`EXTRAS`], then [`LATER`].
 fn spec(i: usize) -> Spec {
     if let Some(&(name, dx, dz, level, stage)) =
         i.checked_sub(STARTER.len()).and_then(|k| EXTRAS.get(k))
@@ -207,6 +510,21 @@ fn spec(i: usize) -> Spec {
             level,
             loc: LOC_PLANE,
             stage: Some(stage),
+            optional: false,
+        };
+    }
+    if let Some(&(op, dx, dz, level, loc, stage, optional)) = i
+        .checked_sub(STARTER.len() + EXTRAS.len())
+        .and_then(|k| LATER.get(k))
+    {
+        return Spec {
+            op,
+            dx,
+            dz,
+            level,
+            loc,
+            stage: Some(stage),
+            optional,
         };
     }
     let none = |dx, dz, level, loc| Spec {
@@ -216,6 +534,7 @@ fn spec(i: usize) -> Spec {
         level,
         loc,
         stage: None,
+        optional: false,
     };
     match STARTER[i] {
         BaseOp::Place(part, dx, dz, level, loc) => Spec {
@@ -229,21 +548,29 @@ fn spec(i: usize) -> Spec {
             } else {
                 Milestone::Upstairs
             }),
+            optional: false,
         },
         BaseOp::Deploy(kit, dx, dz, level, loc) => {
-            let (name, stage) = match kit {
-                Kit::Hearth => (HEARTH_ITEM, Some(Milestone::Shell)),
-                Kit::Door => (DOOR_ITEM, Some(Milestone::Doors)),
-                Kit::Box => (BOX_ITEM, None),
-                Kit::MetalDoor | Kit::Lock => ("", None),
+            let (op, stage, optional) = match kit {
+                Kit::Hearth => (Op::Kit(HEARTH_ITEM), Some(Milestone::Shell), false),
+                Kit::Door => (Op::Kit(DOOR_ITEM), Some(Milestone::Doors), false),
+                Kit::Box => (Op::Kit(BOX_ITEM), None, false),
+                // The metal front door, when the fragments are spare.
+                Kit::MetalDoor => (
+                    Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM),
+                    Some(Milestone::Locks),
+                    true,
+                ),
+                Kit::Lock => (Op::Lock, Some(Milestone::Locks), false),
             };
             Spec {
-                op: Op::Kit(name),
+                op,
                 dx,
                 dz,
                 level,
                 loc,
                 stage,
+                optional,
             }
         }
         BaseOp::Upgrade(dx, dz, level, loc, material) => Spec {
@@ -259,8 +586,17 @@ fn spec(i: usize) -> Spec {
                     Milestone::Wood
                 },
             ),
+            optional: false,
         },
-        BaseOp::Code(dx, dz, level, loc) => none(dx, dz, level, loc),
+        BaseOp::Code(dx, dz, level, loc) => Spec {
+            op: Op::Code,
+            dx,
+            dz,
+            level,
+            loc,
+            stage: Some(Milestone::Locks),
+            optional: false,
+        },
         BaseOp::Feed(dx, dz, level) => none(dx, dz, level, LOC_PLANE),
     }
 }
@@ -275,23 +611,19 @@ fn addr(plan: &BasePlan, s: &Spec) -> OpAddr {
     }
 }
 
-/// The blueprint's piece shape at an address, for a grade.
+/// The piece shape laid at a grade's address.
 fn shape_at(s: &Spec) -> Option<u8> {
-    STARTER.iter().find_map(|op| match *op {
-        BaseOp::Place(part, dx, dz, level, loc)
-            if (dx, dz, level, loc) == (s.dx, s.dz, s.level, s.loc) =>
-        {
-            Some(part_shape(part))
-        }
+    place_of(s).and_then(|i| match spec(i).op {
+        Op::Piece(part) => Some(part_shape(part)),
         _ => None,
     })
 }
 
-/// The blueprint's Place op at a grade's address.
+/// The op that lays the piece at a grade's address.
 fn place_of(s: &Spec) -> Option<usize> {
-    STARTER.iter().position(|op| {
-        matches!(*op, BaseOp::Place(_, dx, dz, level, loc)
-            if (dx, dz, level, loc) == (s.dx, s.dz, s.level, s.loc))
+    (0..OPS).find(|&i| {
+        let o = spec(i);
+        matches!(o.op, Op::Piece(_)) && (o.dx, o.dz, o.level, o.loc) == (s.dx, s.dz, s.level, s.loc)
     })
 }
 
@@ -317,8 +649,16 @@ impl Bill {
     }
 
     fn add_bill(&mut self, other: &Bill) {
+        self.add_times(other, 1);
+    }
+
+    /// `other`, `times` over.
+    fn add_times(&mut self, other: &Bill, times: u32) {
+        if times == 0 {
+            return;
+        }
         for &(item, units) in &other.rows[..other.n] {
-            self.add(item, units);
+            self.add(item, units.saturating_mul(times));
         }
     }
 
@@ -326,6 +666,19 @@ impl Bill {
         self.rows[..self.n]
             .iter()
             .all(|&(item, units)| count(core, item) >= units)
+    }
+
+    /// The pack pays for this on top of what `reserve` keeps of the same
+    /// items: it has the spare.
+    fn spare_in(&self, core: &ClientCore, reserve: &Bill) -> bool {
+        self.rows[..self.n].iter().all(|&(item, units)| {
+            let kept = reserve.rows[..reserve.n]
+                .iter()
+                .filter(|r| r.0 == item)
+                .map(|r| r.1)
+                .sum::<u32>();
+            count(core, item) >= units.saturating_add(kept)
+        })
     }
 }
 
@@ -336,6 +689,14 @@ fn count(core: &ClientCore, item: u16) -> u32 {
         .filter(|s| s.count > 0 && s.item == item)
         .map(|s| u32::from(s.count))
         .sum()
+}
+
+/// Empty slots in the pack and belt.
+fn free_slots(core: &ClientCore) -> usize {
+    core.inv[..INV_SLOTS]
+        .iter()
+        .filter(|s| s.count == 0)
+        .count()
 }
 
 /// One more `item` fits the pack: an empty slot, or a stack of it with room.
@@ -358,23 +719,31 @@ pub fn item_named(core: &ClientCore, name: &str) -> Option<u16> {
 /// for, a deployable of the station's kind within `STATION_RADIUS_M`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stations {
-    /// Its workbench (the first rung) and its furnace, where they stand.
+    /// Its workbench, its second-rung bench and its furnace, where they
+    /// stand.
     pub bench: Option<[f32; 2]>,
+    pub bench2: Option<[f32; 2]>,
     pub furnace: Option<[f32; 2]>,
+    /// Its best bench's rung (`craft::STATION_WORKBENCH*`), 0 with none: a
+    /// bench crafts its own rung's recipes and every rung below.
+    pub tier: u8,
 }
 
 impl Stations {
     pub const NONE: Self = Self {
         bench: None,
+        bench2: None,
         furnace: None,
+        tier: 0,
     };
 
     /// Where the station a recipe names stands, if this body has one: no
-    /// station needs nothing ([`Self::usable`]); a first-rung recipe takes
-    /// the workbench; a higher rung is not built yet.
+    /// station needs nothing ([`Self::usable`]); a bench recipe takes a
+    /// bench of its rung or higher.
     pub fn spot(&self, station: u8) -> Option<[f32; 2]> {
         match station {
-            STATION_WORKBENCH1 => self.bench,
+            STATION_WORKBENCH1 => self.bench.or(self.bench2),
+            STATION_WORKBENCH2 => self.bench2,
             STATION_FURNACE => self.furnace,
             _ => None,
         }
@@ -451,6 +820,72 @@ fn recipe_bill(core: &ClientCore, item: u16, has: &Stations) -> Option<Bill> {
         bill.add(input, u32::from(need));
     }
     Some(bill)
+}
+
+/// The recipe that makes `item` at any station, known or not, and how
+/// many one craft pays: what the gear is priced by before its blueprint
+/// is learned or its bench stands.
+fn price(core: &ClientCore, item: u16) -> Option<(Bill, u32)> {
+    let r = recipe_any(core, item)?;
+    let def = core.recipes.recipes[usize::from(r)];
+    let mut bill = Bill::default();
+    for &(input, need) in &def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())] {
+        bill.add(input, u32::from(need));
+    }
+    Some((bill, u32::from(def.out_count)))
+}
+
+/// The recipe index that makes `item`, whatever it needs.
+fn recipe_any(core: &ClientCore, item: u16) -> Option<u16> {
+    if core.recipes_have < core.recipes.recipe_count {
+        return None;
+    }
+    (0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()))
+        .find(|&r| {
+            let def = core.recipes.recipes[r];
+            def.out_count > 0 && def.output == item
+        })
+        .map(|r| r as u16)
+}
+
+/// Whether this body may make `item`: its recipe takes no blueprint, or
+/// that blueprint is learned. `None` before the tables are in.
+fn learned(core: &ClientCore, item: u16) -> Option<bool> {
+    let r = recipe_any(core, item)?;
+    let def = core.recipes.recipes[usize::from(r)];
+    Some(!def.blueprint || sim_core::research::knows(core.known(), r))
+}
+
+/// The tech tree's node for `item`'s recipe, as the server sent it: what
+/// it costs (`(coin, units)`), its parent recipe, and the bench rung it is
+/// unlocked at.
+fn tree_row(core: &ClientCore, item: u16) -> Option<(u16, u16, u16, u8)> {
+    let r = recipe_any(core, item)?;
+    let rc = &core.research;
+    if core.research_have < rc.row_count {
+        return None;
+    }
+    let row = rc.row_for_recipe(r)?;
+    let station = core.recipes.recipes[usize::from(r)].station;
+    Some((
+        rc.coin,
+        row.cost,
+        row.requires,
+        sim_core::research::node_tier(station),
+    ))
+}
+
+/// A pack slot holding paper that teaches `item`.
+fn paper_slot(core: &ClientCore, item: u16) -> Option<u8> {
+    (0..INV_SLOTS)
+        .find(|&i| sim_core::research::blueprint_target(&core.research, core.inv[i]) == Some(item))
+        .map(|i| i as u8)
+}
+
+/// Every catalog name has arrived.
+fn catalog_complete(core: &ClientCore) -> bool {
+    let n = usize::from(core.catalog.count).min(MAX_ITEM_DEFS);
+    n > 0 && (0..n).all(|i| core.catalog.lens[i] > 0)
 }
 
 /// The deployable row that places `item`.
@@ -531,6 +966,10 @@ pub enum Pass {
     Go(Intent),
     /// Press use on the door at this address, holding this intent.
     Use(OpAddr, Intent),
+    /// Enter this body's code at the lock on the door at this address: the
+    /// lock did not know it (a new session, say), and its door would not
+    /// swing.
+    Enter(OpAddr, Intent),
     Done,
     Fail(Why),
 }
@@ -552,11 +991,18 @@ pub struct Passage {
     start: usize,
     /// The door just passed, to shut before walking on.
     shut: Option<(i8, i8, u8, u8)>,
-    /// Out: the last point is reached, and the walk ends once it is shut.
+    /// The last point is reached, and the walk ends once it is shut.
     out: bool,
+    /// The chain point the walk ends at, short of its own end (the airlock,
+    /// where the doors' locks are worked).
+    stop: Option<usize>,
     /// A use sent at this door, wanting it open or shut, and when.
     door: Option<(OpAddr, bool, u32)>,
     use_ready: bool,
+    /// Its own lock refused this door's use: the code goes in first...
+    knock: Option<OpAddr>,
+    /// ...and was entered here, at this tick, awaiting the lock's answer.
+    entering: Option<(OpAddr, u32)>,
     held: Option<u32>,
     tries: u8,
     best: Option<(f32, u32)>,
@@ -569,8 +1015,11 @@ impl Passage {
         start: 0,
         shut: None,
         out: false,
+        stop: None,
         door: None,
         use_ready: false,
+        knock: None,
+        entering: None,
         held: None,
         tries: 0,
         best: None,
@@ -587,6 +1036,37 @@ impl Passage {
             d.2 = tick;
         }
         self.use_ready = false;
+    }
+
+    /// A deploy refusal: the use in flight was refused by the door's lock
+    /// (`REFUSE_D_OWNER`), so the code goes in before the next; or the code
+    /// entered was not taken.
+    fn on_refused(&mut self, reason: u8) {
+        if self.entering.is_some() {
+            self.entering = None;
+            self.knock = None;
+            self.tries = self.tries.saturating_add(1);
+            return;
+        }
+        if u32::from(reason) == REFUSE_D_OWNER {
+            if let Some((door, ..)) = self.door.take() {
+                self.knock = Some(door);
+                self.held = None;
+            }
+        }
+    }
+
+    /// A lock let this body through: the code entered at that door was
+    /// right, and its use is pressed again.
+    fn on_auth(&mut self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+        let ours = self
+            .entering
+            .is_some_and(|(d, _)| (d.cx, d.cz, d.level, d.loc) == (cx, cz, level, loc));
+        if ours {
+            self.entering = None;
+            self.knock = None;
+        }
+        ours
     }
 
     /// A door that would not answer, or that `E` would not pick from
@@ -610,13 +1090,15 @@ impl Passage {
         hands: &Hands,
         route: &mut Route,
         way: Way,
+        stop: Option<usize>,
         tick: u32,
     ) -> Pass {
         let corner = corner(plan);
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        if self.way != Some(way) {
+        if self.way != Some(way) || self.stop != stop {
             *self = Passage {
                 way: Some(way),
+                stop,
                 ..Passage::IDLE
             };
             let rel = [x - corner[0], z - corner[1]];
@@ -638,6 +1120,37 @@ impl Passage {
                 }
             };
             self.start = self.at;
+        }
+        // Its own lock did not know it: the code, then the use again.
+        if let Some((door, at)) = self.entering {
+            if tick.wrapping_sub(at) < VERDICT_TICKS {
+                return Pass::Go(look_at(seed, haven, core, door));
+            }
+            self.entering = None;
+            self.knock = None;
+            if let Some(fail) = self.tried() {
+                return fail;
+            }
+        }
+        if let Some(door) = self.knock {
+            let intent = look_at(seed, haven, core, door);
+            let held = *self.held.get_or_insert(tick);
+            if tick.wrapping_sub(held) >= HOLD_TICKS
+                && hands.settled()
+                && e_picks(core, x, z, hands.view().0, door)
+            {
+                self.held = None;
+                self.entering = Some((door, tick));
+                return Pass::Enter(door, intent);
+            }
+            if tick.wrapping_sub(held) >= VERDICT_TICKS {
+                self.held = None;
+                self.knock = None;
+                if let Some(fail) = self.tried() {
+                    return fail;
+                }
+            }
+            return Pass::Go(intent);
         }
         // A use in flight: the mirror's leaf says when it swung.
         if let Some((door, open, at)) = self.door {
@@ -710,6 +1223,12 @@ impl Passage {
             self.best = None;
             // The leg just walked had its door open: shut it from here.
             self.shut = door;
+            if self.stop == Some(self.at) {
+                // Where this walk was for: done once the door behind is
+                // shut.
+                self.out = true;
+                return Pass::Go(Intent::IDLE);
+            }
             match way {
                 Way::In => {
                     if self.at == 0 {
@@ -831,23 +1350,95 @@ pub(crate) fn e_picks_by(
     if !aimed || mine > reach2 {
         return false;
     }
+    let rank = |row: u8| deploy_def(core, row).map_or(u8::MAX, |def| e_rank(def.arch));
+    let own = deploy_rec(core, door).map_or(u8::MAX, |d| rank(d.row));
     let deploys = core.deploys.entries().iter().filter(|d| {
         (d.cx, d.cz, d.level, d.loc) != (door.cx, door.cz, door.level, door.loc)
             && in_reach(d.cx, d.cz)
     });
-    let rivals = deploys.map(|d| anchor(d.cx, d.cz, d.loc)).chain(
-        core.bags
-            .entries()
-            .iter()
-            .map(|b| (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)),
-    );
-    for (px, pz) in rivals {
+    let rivals = deploys
+        .map(|d| {
+            let (x, z) = anchor(d.cx, d.cz, d.loc);
+            (x, z, rank(d.row))
+        })
+        .chain(
+            core.bags
+                .entries()
+                .iter()
+                .map(|b| (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q, E_RANK_BAG)),
+        );
+    for (px, pz, r) in rivals {
+        // A thing `E` does not take is no rival; one scored exactly the
+        // same (a bench on the floor over the cupboard) loses to the
+        // better tiebreak, as the human client's pick has it.
         let (aimed, d2) = score(px, pz, slack);
-        if aimed && d2 <= mine && d2 <= reach2 {
+        let tie_lost = d2 == mine && r > own;
+        if r != u8::MAX && aimed && d2 <= mine && d2 <= reach2 && !tie_lost {
             return false;
         }
     }
     true
+}
+
+/// A bag's place in `E`'s tiebreak.
+const E_RANK_BAG: u8 = 2;
+
+/// `E`'s tiebreak between two things scored the same, as the human
+/// client's pick orders them (`client::ui::interact::Verb::tie`): a door,
+/// a bag, a box, the cupboard, an oven, a recycler, a research table, a
+/// bench. `u8::MAX` for what `E` does not take at all.
+fn e_rank(arch: u8) -> u8 {
+    use sim_core::deploy::{
+        ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER,
+        ARCH_RESEARCH, ARCH_WINDOW_SHUTTER, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
+    };
+    match arch {
+        ARCH_DOOR | ARCH_GARAGE_DOOR | ARCH_WINDOW_SHUTTER => 1,
+        ARCH_BOX => 3,
+        ARCH_HEARTH => 4,
+        ARCH_FIRE | ARCH_FURNACE => 5,
+        ARCH_RECYCLER => 6,
+        ARCH_RESEARCH => 7,
+        ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => 9,
+        _ => u8::MAX,
+    }
+}
+
+/// Sideways slides of the eyes off a thing's middle, metres, tried in
+/// turn: within `E`'s metre either way.
+const AIM_OFFSETS_M: [f32; 11] = [0.0, -0.2, 0.2, -0.35, 0.35, -0.5, 0.5, -0.6, 0.6, -0.7, 0.7];
+/// The drift of the view an aim point has to survive...
+const AIM_SLACK_M: f32 = 0.2;
+/// ...and the drift left at the press, once the eyes have settled.
+pub(crate) const PRESS_SLACK_M: f32 = 0.1;
+
+/// Where to look to work `at` from (`x`, `z`): its look point, slid
+/// sideways across the line of sight by the least of [`AIM_OFFSETS_M`]
+/// that `E` takes it from with [`AIM_SLACK_M`] to spare. The look point
+/// itself when none does; the press then waits, and misses.
+pub(crate) fn aim_point(
+    core: &ClientCore,
+    seed: u64,
+    haven: &Haven,
+    at: OpAddr,
+    x: f32,
+    z: f32,
+) -> [f32; 3] {
+    let [px, py, pz] = look_point(seed, haven, core, at);
+    let (dx, dz) = (px - x, pz - z);
+    let d = (dx * dx + dz * dz).sqrt();
+    if d <= f32::EPSILON {
+        return [px, py, pz];
+    }
+    let (sx, sz) = (-dz / d, dx / d);
+    AIM_OFFSETS_M
+        .iter()
+        .map(|&o| [px + sx * o, py, pz + sz * o])
+        .find(|p| {
+            let yaw = yaw_toward(p[0] - x, p[2] - z);
+            e_picks_by(core, x, z, yaw, at, AIM_SLACK_M)
+        })
+        .unwrap_or([px, py, pz])
 }
 
 /// The plot cell's far corner, where the core, the stair cell and the
@@ -921,9 +1512,11 @@ pub(crate) fn look_at(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Act {
     Go(Intent),
-    /// Craft one of what the next op needs (`encode_action_craft`).
+    /// Craft what the next op needs (`encode_action_craft`): one, or a
+    /// batch of gear.
     Craft {
         recipe: u16,
+        count: u16,
     },
     /// Move a stack to the belt (`encode_action_move`).
     Belt {
@@ -956,17 +1549,69 @@ pub enum Act {
         at: OpAddr,
         intent: Intent,
     },
+    /// A keypad op on the lock at this address (`encode_action_access`):
+    /// set this body's code, or enter it.
+    Access {
+        at: OpAddr,
+        op: u8,
+        code: LockCode,
+        intent: Intent,
+    },
+    /// Take the deployable at this address back up (`encode_action_demolish`).
+    Demolish {
+        at: OpAddr,
+        intent: Intent,
+    },
+    /// Learn a recipe at the bench's tree (`encode_action_unlock`).
+    Unlock {
+        recipe: u16,
+    },
+    /// Read the blueprint in this pack slot (`encode_action_research`).
+    Read {
+        slot: u8,
+    },
     Done,
     Fail(Why),
+}
+
+/// Which of the server's refusal rings answers an op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ring {
+    Build,
+    Deploy,
+    Research,
+}
+
+/// What went out for an op, and so what answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sent {
+    Place,
+    Grade,
+    Deploy,
+    Lock,
+    Code,
+    Demolish,
+    Unlock,
+    Read,
+}
+
+impl Sent {
+    fn ring(self) -> Ring {
+        match self {
+            Sent::Place | Sent::Grade => Ring::Build,
+            Sent::Deploy | Sent::Lock | Sent::Code | Sent::Demolish => Ring::Deploy,
+            Sent::Unlock | Sent::Read => Ring::Research,
+        }
+    }
 }
 
 /// What the server said about the op in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Verdict {
     Yes,
-    /// A refusal, and whether it came from the deploy ring.
+    /// A refusal, and which ring it came from.
     No {
-        deploy: bool,
+        ring: Ring,
         reason: u8,
     },
 }
@@ -989,7 +1634,7 @@ enum Await {
     Op {
         op: usize,
         at: OpAddr,
-        deploy: bool,
+        sent: Sent,
         since: u32,
         intent: Intent,
     },
@@ -1038,6 +1683,15 @@ pub struct BuildStats {
     pub given_up: u64,
     pub crafted: u64,
     pub uses: u64,
+    /// Locks bolted on and codes set; deployables swapped for better ones;
+    /// blueprints learned; gear made (units).
+    pub locks: u64,
+    pub codes: u64,
+    pub swapped: u64,
+    pub learned: u64,
+    pub made: u64,
+    /// Codes entered at its own locks, to be let through.
+    pub entered: u64,
 }
 
 /// The base this body is building, and the op it is on. Outlives goals:
@@ -1070,7 +1724,15 @@ pub struct Builder {
     /// An op that got no answer in time, whose answer may still come: its
     /// kind, address, and when it was given up on. A refusal of that kind
     /// is its, not the next op's.
-    late: Option<(usize, bool, OpAddr, u32)>,
+    late: Option<(usize, Ring, OpAddr, u32)>,
+    /// A swap whose first deployable is down and whose second is not up
+    /// yet: it is finished before anything else, and the op that put the
+    /// first one there counts as standing meanwhile.
+    swapping: Option<usize>,
+    /// This body's lock code, once it has one.
+    code: Option<LockCode>,
+    /// The box as its panel last showed it: gear kept there counts as held.
+    stored: Ledger,
     /// The milestone a build goal began on; it ends when that one does.
     began: Option<Milestone>,
     passage: Passage,
@@ -1103,6 +1765,9 @@ impl Builder {
             restand: false,
             approach: None,
             late: None,
+            swapping: None,
+            code: None,
+            stored: Ledger::EMPTY,
             began: None,
             passage: Passage::IDLE,
             use_out: false,
@@ -1127,6 +1792,12 @@ impl Builder {
                 given_up: 0,
                 crafted: 0,
                 uses: 0,
+                locks: 0,
+                codes: 0,
+                swapped: 0,
+                learned: 0,
+                made: 0,
+                entered: 0,
             },
         }
     }
@@ -1134,9 +1805,15 @@ impl Builder {
     /// A new session: the plot is chosen again (the mirror still shows
     /// what stands, so what was built is not built twice).
     pub fn reset(&mut self) {
-        let stats = self.stats;
+        let (stats, code) = (self.stats, self.code);
         *self = Self::new();
         self.stats = stats;
+        self.code = code;
+    }
+
+    /// The code its locks are set to and opened with. Never printed.
+    pub fn set_code(&mut self, code: LockCode) {
+        self.code = Some(code);
     }
 
     /// Stop whatever op or walk was in hand; the base stays.
@@ -1250,17 +1927,32 @@ impl Builder {
         let Some(plan) = self.plan else {
             return Act::Fail(Why::NotFound);
         };
-        let act = match self
-            .passage
-            .step(core, seed, haven, &plan, body, hands, route, way, tick)
-        {
-            Pass::Go(i) => Act::Go(i),
-            Pass::Use(at, intent) => Act::Use { at, intent },
-            Pass::Done => Act::Done,
-            Pass::Fail(why) => Act::Fail(why),
-        };
+        let pass = self.passage.step(
+            core, seed, haven, &plan, body, hands, route, way, None, tick,
+        );
+        let act = self.pass_act(pass, Act::Done);
         self.use_out = matches!(act, Act::Use { .. });
         act
+    }
+
+    /// What a step of the walk through the doors asks to send; `done` when
+    /// it is over.
+    fn pass_act(&self, pass: Pass, done: Act) -> Act {
+        match pass {
+            Pass::Go(i) => Act::Go(i),
+            Pass::Use(at, intent) => Act::Use { at, intent },
+            Pass::Enter(at, intent) => match self.code {
+                Some(code) => Act::Access {
+                    at,
+                    op: ACCESS_OP_ENTER,
+                    code,
+                    intent,
+                },
+                None => Act::Fail(Why::Refused),
+            },
+            Pass::Done => done,
+            Pass::Fail(why) => Act::Fail(why),
+        }
     }
 
     /// The last `Act` went out on the wire.
@@ -1283,16 +1975,17 @@ impl Builder {
 
     /// A placement broadcast: the answer when it is the address asked.
     pub fn on_placed(&mut self, cx: u16, cz: u16, level: u8, loc: u8, deploy: bool) {
-        if let Some((op, d, at, _)) = self.late {
-            if (at.cx, at.cz, at.level, at.loc) == (cx, cz, level, loc) && d == deploy {
+        let ring = if deploy { Ring::Deploy } else { Ring::Build };
+        if let Some((op, r, at, _)) = self.late {
+            if (at.cx, at.cz, at.level, at.loc) == (cx, cz, level, loc) && r == ring {
                 self.late = None;
                 if deploy {
                     self.mine |= bit(op);
                 }
             }
         }
-        if let Some(Await::Op { at, deploy: d, .. }) = self.waiting {
-            if (at.cx, at.cz, at.level, at.loc) == (cx, cz, level, loc) && d == deploy {
+        if let Some(Await::Op { at, sent, .. }) = self.waiting {
+            if (at.cx, at.cz, at.level, at.loc) == (cx, cz, level, loc) && sent.ring() == ring {
                 self.verdict = Some(Verdict::Yes);
             }
         }
@@ -1301,16 +1994,38 @@ impl Builder {
     /// A build or deploy refusal: the answer when that kind is in flight
     /// (the rings carry only this player's own), unless an op of that kind
     /// timed out and its answer is still owed: a refusal carries no
-    /// address, and this one is most likely the late op's.
+    /// address, and this one is most likely the late op's. A door that
+    /// would not swing for this body (its lock does not know it) is the
+    /// walk's to answer, with the code.
     pub fn on_refused(&mut self, deploy: bool, reason: u8) {
-        if self.late.is_some_and(|(_, d, _, _)| d == deploy) {
+        if deploy {
+            self.passage.on_refused(reason);
+        }
+        self.refusal(if deploy { Ring::Deploy } else { Ring::Build }, reason);
+    }
+
+    /// A research or tree refusal (`research::REFUSE_R_*`).
+    pub fn on_research_refused(&mut self, reason: u8) {
+        self.refusal(Ring::Research, reason);
+    }
+
+    fn refusal(&mut self, ring: Ring, reason: u8) {
+        if self.late.is_some_and(|(_, r, _, _)| r == ring) {
             self.late = None;
             return;
         }
-        if let Some(Await::Op { deploy: d, .. }) = self.waiting {
-            if d == deploy && self.verdict.is_none() {
-                self.verdict = Some(Verdict::No { deploy, reason });
+        if let Some(Await::Op { sent, .. }) = self.waiting {
+            if sent.ring() == ring && self.verdict.is_none() {
+                self.verdict = Some(Verdict::No { ring, reason });
             }
+        }
+    }
+
+    /// A lock let this body through (`EV_AUTH`): the code it entered at its
+    /// own door was right.
+    pub fn on_auth(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        if self.passage.on_auth(cx, cz, level, loc) {
+            self.stats.entered += 1;
         }
     }
 
@@ -1326,6 +2041,7 @@ impl Builder {
     /// box (as `stored` last showed it) are short of between them. Once a
     /// second.
     pub fn survey_now(&mut self, core: &ClientCore, stored: &Ledger) {
+        self.stored = *stored;
         // Before a plot is chosen the work is the whole blueprint, and its
         // price does not depend on where.
         let plan = self.plan.unwrap_or(BasePlan::new(0, 0, 0));
@@ -1335,7 +2051,7 @@ impl Builder {
         let milestone = self.milestone();
         let mut needs = [(0u16, 0u32); NEED_ROWS];
         let mut n = 0;
-        let bill = self.bill(core, milestone, stored);
+        let bill = self.with_spare(core, &plan, milestone, self.bill(core, milestone, stored));
         let mut take_out = false;
         for &(item, units) in &bill.rows[..bill.n] {
             let carried = count(core, item);
@@ -1353,11 +2069,11 @@ impl Builder {
             needs,
             needs_len: n as u8,
             // An op refused for want of support counts: only a build goal
-            // tries it again, once something else stands.
-            ready: milestone != Milestone::Done
-                && self
-                    .pick_among(core, &plan, milestone, 0)
-                    .is_some_and(|i| self.tool_fits(core, &spec(i))),
+            // tries it again, once something else stands. Past the last
+            // milestone, an optional op the pack has the spare for.
+            ready: self
+                .pick_among(core, &plan, milestone, 0)
+                .is_some_and(|i| self.tool_fits(core, &spec(i))),
             hearth,
             bill: bill.rows,
             bill_len: bill.n as u8,
@@ -1391,9 +2107,21 @@ impl Builder {
             let (x, z) = sim_core::deploy::cell_center(a.cx, a.cz);
             [x, z]
         };
+        let rung = |a: Option<OpAddr>| {
+            a.and_then(|b| deploy_rec(core, b))
+                .and_then(|d| deploy_def(core, d.row))
+                .map_or(0, |def| bench_tier(def.arch))
+        };
+        let (bench, bench2) = (
+            self.own_kit(core, BENCH_ITEM),
+            self.own_kit(core, BENCH2_ITEM),
+        );
+        let (one, two) = (rung(bench), rung(bench2));
         Stations {
-            bench: self.own_kit(core, BENCH_ITEM).map(at),
+            bench: bench.filter(|_| one > 0).map(at),
+            bench2: bench2.filter(|_| two > 0).map(at),
             furnace: self.own_kit(core, FURNACE_ITEM).map(at),
+            tier: one.max(two),
         }
     }
 
@@ -1439,20 +2167,25 @@ impl Builder {
         })
     }
 
-    /// The lowest milestone with work left.
+    /// The lowest milestone with work left. An optional op holds none back.
     fn milestone(&self) -> Milestone {
         (0..OPS)
             .filter(|&i| (self.done | self.given_up) & bit(i) == 0)
-            .filter_map(|i| spec(i).stage)
+            .map(spec)
+            .filter(|s| !s.optional)
+            .filter_map(|s| s.stage)
             .min()
             .unwrap_or(Milestone::Done)
     }
 
     /// What stands on the plot is what is done: a piece at its address,
-    /// its own deployable at its, a grade the piece has reached. Worked out
-    /// afresh from the mirror each time, never only added to: twig rots
-    /// within the upkeep hour it went down in, and what rots or is broken
-    /// is built again (with its grades after it).
+    /// its own deployable at its, a grade the piece has reached, a lock on
+    /// its door and the door locked, the better deployable in a swap's
+    /// place. The gear is done when the blueprint is known and the pack,
+    /// the body and the box hold what was wanted. Worked out afresh from
+    /// the mirror each time, never only added to: twig rots within the
+    /// upkeep hour it went down in, and what rots or is broken is built
+    /// again (with its grades after it); gear used up is made again.
     fn reconcile(&mut self, core: &ClientCore, plan: &BasePlan) {
         // One pass over each mirror, keeping what stands on the plot: the
         // mirror is the island's, the plot a few cells of it.
@@ -1475,7 +2208,7 @@ impl Builder {
                 let done = match s.op {
                     Op::Piece(_) => true,
                     Op::Grade(m) => material.is_some_and(|have| have >= m),
-                    Op::Kit(_) => false,
+                    _ => false,
                 };
                 if done {
                     stands |= bit(i);
@@ -1507,9 +2240,49 @@ impl Builder {
                 }
             }
         }
+        // The locks' bits and the swaps are the mirror's to say; the gear,
+        // the known mask's and the pack's.
+        for i in 0..OPS {
+            let s = spec(i);
+            if s.stage.is_none() {
+                continue;
+            }
+            let at = addr(plan, &s);
+            let done = match s.op {
+                Op::Lock => deploy_rec(core, at).is_some_and(|d| d.has_lock),
+                Op::Code => deploy_rec(core, at).is_some_and(|d| d.locked),
+                Op::Swap(_, to) => {
+                    item_named(core, to).is_some_and(|t| item_at(core, at) == Some(t))
+                }
+                Op::Learn(name) => item_named(core, name)
+                    .and_then(|item| learned(core, item))
+                    .unwrap_or(false),
+                Op::Make(name, want) => {
+                    item_named(core, name).is_some_and(|item| self.held(core, item) >= want)
+                }
+                _ => continue,
+            };
+            if done {
+                stands |= bit(i);
+            }
+        }
+        // A swap half done: what it took down still counts as standing, so
+        // the old door is not hung again in the new one's place.
+        if let Some(j) = self.swapping {
+            if let Op::Swap(from, _) = spec(j).op {
+                let at = addr(plan, &spec(j));
+                for i in 0..OPS {
+                    let s = spec(i);
+                    if s.op == Op::Kit(from) && addr(plan, &s) == at {
+                        stands |= bit(i);
+                    }
+                }
+            }
+        }
         self.done = stands;
         // A grade whose piece was given up never comes.
         let open = !(stands | self.given_up);
+        let tables = core.recipes_have >= core.recipes.recipe_count && catalog_complete(core);
         for i in (0..OPS).filter(|&i| open & bit(i) != 0) {
             let s = spec(i);
             if matches!(s.op, Op::Grade(_))
@@ -1517,15 +2290,48 @@ impl Builder {
             {
                 self.given_up |= bit(i);
             }
-            // Nor a station made only at one whose own op was given up (the
-            // furnace, at a bench that never stood).
-            if let Op::Kit(name) = s.op {
-                if item_named(core, name)
-                    .is_some_and(|item| count(core, item) == 0 && self.unmakeable(core, item))
-                {
+            // Nor a station or a piece of gear made only at one whose own
+            // op was given up (the furnace, at a bench that never stood).
+            if let Some(item) = self.made_item(core, &s) {
+                if count(core, item) == 0 && self.unmakeable(core, item) {
                     self.given_up |= bit(i);
                 }
             }
+            // Gear this server has no recipe for never comes; nor what is
+            // made from a blueprint whose learning was given up.
+            if let Op::Learn(name) | Op::Make(name, _) = s.op {
+                let none = item_named(core, name)
+                    .and_then(|item| recipe_any(core, item))
+                    .is_none();
+                let unlearned =
+                    (0..OPS).any(|j| spec(j).op == Op::Learn(name) && self.given_up & bit(j) != 0);
+                if (tables && none) || unlearned {
+                    self.given_up |= bit(i);
+                }
+            }
+        }
+    }
+
+    /// Units of `item` this body holds: the pack and belt, what it wears,
+    /// and the box as its panel last showed it.
+    fn held(&self, core: &ClientCore, item: u16) -> u32 {
+        let worn: u32 = core
+            .worn
+            .iter()
+            .filter(|s| s.count > 0 && s.item == item)
+            .map(|s| u32::from(s.count))
+            .sum();
+        count(core, item)
+            .saturating_add(worn)
+            .saturating_add(self.stored.units(item))
+    }
+
+    /// The item an op makes or puts down, when it has one to make.
+    fn made_item(&self, core: &ClientCore, s: &Spec) -> Option<u16> {
+        match s.op {
+            Op::Kit(name) | Op::Swap(_, name) | Op::Make(name, _) => item_named(core, name),
+            Op::Lock => item_named(core, LOCK_ITEM),
+            _ => None,
         }
     }
 
@@ -1535,13 +2341,12 @@ impl Builder {
         if core.recipes_have < core.recipes.recipe_count {
             return false;
         }
-        let station_lost = |station: u8| {
-            let name = match station {
-                STATION_WORKBENCH1 => BENCH_ITEM,
-                STATION_FURNACE => FURNACE_ITEM,
-                _ => return false,
-            };
-            (0..OPS).any(|j| spec(j).op == Op::Kit(name) && self.given_up & bit(j) != 0)
+        let lost = |op: Op| (0..OPS).any(|j| spec(j).op == op && self.given_up & bit(j) != 0);
+        let station_lost = |station: u8| match station {
+            STATION_WORKBENCH1 => lost(Op::Kit(BENCH_ITEM)),
+            STATION_WORKBENCH2 => lost(Op::Kit(BENCH2_ITEM)),
+            STATION_FURNACE => lost(Op::Kit(FURNACE_ITEM)),
+            _ => false,
         };
         let mut recipes = core.recipes.recipes
             [..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len())]
@@ -1553,17 +2358,25 @@ impl Builder {
 
     /// Everything the rest of `milestone` costs from the pack: pieces and
     /// grades at their price, a deployable itself where the pack or the box
-    /// has one and at its recipe's price where neither does, and the plan
-    /// or hammer if it is missing. A wood grade that a stone grade of the
-    /// same piece would make pointless is not counted.
+    /// has one and at its recipe's price where neither does, the plan or
+    /// hammer if it is missing, the junk a blueprint costs at the tree and
+    /// the inputs of the gear still to make. A wood grade that a stone
+    /// grade of the same piece would make pointless is not counted, nor is
+    /// an optional op.
     fn bill(&self, core: &ClientCore, milestone: Milestone, stored: &Ledger) -> Bill {
-        let has = self.stations(core);
         let mut bill = Bill::default();
-        let mut kits: [(&str, u32); 4] = [("", 0); 4];
+        let mut kits: [(&str, u32); 6] = [("", 0); 6];
         let (mut plan_needed, mut hammer_needed) = (false, false);
+        let mut kit = |name: &'static str| {
+            if let Some(k) = kits.iter_mut().find(|k| k.0 == name || k.0.is_empty()) {
+                k.0 = name;
+                k.1 += 1;
+            }
+        };
         for i in 0..OPS {
             let s = spec(i);
-            if s.stage != Some(milestone) || (self.done | self.given_up) & bit(i) != 0 {
+            if s.stage != Some(milestone) || s.optional || (self.done | self.given_up) & bit(i) != 0
+            {
                 continue;
             }
             match s.op {
@@ -1582,10 +2395,24 @@ impl Builder {
                         bill.add_bill(&piece_bill(core, row));
                     }
                 }
-                Op::Kit(name) => {
-                    if let Some(k) = kits.iter_mut().find(|k| k.0 == name || k.0.is_empty()) {
-                        k.0 = name;
-                        k.1 += 1;
+                Op::Kit(name) | Op::Swap(_, name) => kit(name),
+                Op::Lock => kit(LOCK_ITEM),
+                Op::Code => {}
+                Op::Learn(name) => {
+                    if let Some((coin, cost, ..)) = item_named(core, name)
+                        .filter(|&item| paper_slot(core, item).is_none())
+                        .and_then(|item| tree_row(core, item))
+                    {
+                        bill.add(coin, u32::from(cost));
+                    }
+                }
+                Op::Make(name, want) => {
+                    let Some(item) = item_named(core, name) else {
+                        continue;
+                    };
+                    let short = want.saturating_sub(self.held(core, item));
+                    if let Some((r, out)) = price(core, item) {
+                        bill.add_times(&r, short.div_ceil(out.max(1)));
                     }
                 }
             }
@@ -1599,12 +2426,11 @@ impl Builder {
                 bill.add(item, wanted.min(have));
             }
             let missing = wanted.saturating_sub(have);
-            if let Some(r) = recipe_bill(core, item, &has) {
-                for _ in 0..missing {
-                    bill.add_bill(&r);
-                }
+            if let Some((r, _)) = price(core, item) {
+                bill.add_times(&r, missing);
             }
         }
+        let has = self.stations(core);
         for (needed, name) in [(plan_needed, PLAN_ITEM), (hammer_needed, HAMMER_ITEM)] {
             if let Some(item) = needed.then(|| item_named(core, name)).flatten() {
                 if count(core, item) == 0 {
@@ -1612,6 +2438,51 @@ impl Builder {
                         bill.add_bill(&r);
                     }
                 }
+            }
+        }
+        bill
+    }
+
+    /// `bill`, and the optional ops of this milestone and those before it
+    /// that the pack and the box between them have the spare for (a metal
+    /// door's fragments, say): what a visit to the box takes out for them,
+    /// and never a shortfall.
+    fn with_spare(
+        &self,
+        core: &ClientCore,
+        plan: &BasePlan,
+        milestone: Milestone,
+        mut bill: Bill,
+    ) -> Bill {
+        for i in 0..OPS {
+            let s = spec(i);
+            if !s.optional
+                || s.stage.is_none_or(|m| m > milestone)
+                || (self.done | self.given_up) & bit(i) != 0
+                || !self.can_do(core, plan, &s, i)
+            {
+                continue;
+            }
+            let Some(item) = self.made_item(core, &s) else {
+                continue;
+            };
+            let cost = if self.held(core, item) > 0 {
+                let mut one = Bill::default();
+                one.add(item, 1);
+                one
+            } else {
+                match price(core, item) {
+                    Some((r, _)) => r,
+                    None => continue,
+                }
+            };
+            let mut total = bill;
+            total.add_bill(&cost);
+            let spare = total.rows[..total.n]
+                .iter()
+                .all(|&(it, units)| self.held(core, it) >= units);
+            if spare {
+                bill = total;
             }
         }
         bill
@@ -1631,29 +2502,62 @@ impl Builder {
         })
     }
 
-    /// The item an op is done with in hand.
+    /// The item an op is done with in hand: the plan, the hammer, the
+    /// deployable. The keypad, the tree and the crafts take none.
     fn tool(&self, core: &ClientCore, s: &Spec) -> Option<u16> {
         match s.op {
             Op::Piece(_) => item_named(core, PLAN_ITEM),
             Op::Grade(_) => item_named(core, HAMMER_ITEM),
-            Op::Kit(name) => item_named(core, name),
+            Op::Kit(name) | Op::Swap(_, name) => item_named(core, name),
+            Op::Lock => item_named(core, LOCK_ITEM),
+            Op::Code | Op::Learn(_) | Op::Make(..) => None,
         }
     }
 
-    /// What op `s` is done with is in the pack, or would fit it once made:
-    /// a craft into a full pack is not sent (`Self::craft`).
+    /// An op that is done with something in hand.
+    fn handed(s: &Spec) -> bool {
+        !matches!(s.op, Op::Code | Op::Learn(_) | Op::Make(..))
+    }
+
+    /// What op `s` is done with is in the pack, or would fit it once made;
+    /// what it makes would fit it. A craft into a full pack is not sent
+    /// (`Self::craft`).
     fn tool_fits(&self, core: &ClientCore, s: &Spec) -> bool {
-        self.tool(core, s)
-            .is_some_and(|t| count(core, t) > 0 || room_for(core, t))
+        match s.op {
+            Op::Make(name, _) => item_named(core, name).is_some_and(|it| room_for(core, it)),
+            Op::Code | Op::Learn(_) => true,
+            _ => self
+                .tool(core, s)
+                .is_some_and(|t| count(core, t) > 0 || room_for(core, t)),
+        }
     }
 
     /// What one op costs from the pack, including crafting what it is done
-    /// with if that is not in the pack.
+    /// with if that is not in the pack; `None` when it cannot be done here
+    /// at all yet (no recipe at a station it has, a blueprint's parent not
+    /// learned, no bench of the rung).
     fn op_bill(&self, core: &ClientCore, s: &Spec, has: &Stations) -> Option<Bill> {
         let mut bill = match s.op {
             Op::Piece(part) => piece_bill(core, piece_row(core, part_shape(part), MAT_TWIG)?),
             Op::Grade(material) => piece_bill(core, piece_row(core, shape_at(s)?, material)?),
-            Op::Kit(_) => Bill::default(),
+            Op::Kit(_) | Op::Lock | Op::Swap(..) => Bill::default(),
+            Op::Code => return Some(Bill::default()),
+            Op::Learn(name) => {
+                let item = item_named(core, name)?;
+                if paper_slot(core, item).is_some() {
+                    return Some(Bill::default());
+                }
+                let (coin, cost, parent, tier) = tree_row(core, item)?;
+                let parent_known = parent == sim_core::research::NO_RECIPE
+                    || sim_core::research::knows(core.known(), parent);
+                if !parent_known || has.tier < tier {
+                    return None;
+                }
+                let mut bill = Bill::default();
+                bill.add(coin, u32::from(cost));
+                return Some(bill);
+            }
+            Op::Make(name, _) => return recipe_bill(core, item_named(core, name)?, has),
         };
         let tool = self.tool(core, s)?;
         if count(core, tool) == 0 {
@@ -1662,8 +2566,50 @@ impl Builder {
         Some(bill)
     }
 
+    /// What must stand for op `i` to go, beyond its price: a grade's piece,
+    /// a lock's door (its own, without one), a code's lock, a swap's first
+    /// deployable (or the swap half done).
+    fn can_do(&self, core: &ClientCore, plan: &BasePlan, s: &Spec, i: usize) -> bool {
+        let at = addr(plan, s);
+        match s.op {
+            Op::Grade(_) => !self.superseded(s) && piece_at(core, at).is_some(),
+            Op::Lock => {
+                self.ours_at(plan, at)
+                    && deploy_rec(core, at).is_some_and(|d| {
+                        !d.has_lock && deploy_def(core, d.row).is_some_and(|def| lockable(def.arch))
+                    })
+            }
+            Op::Code => {
+                self.code.is_some()
+                    && self.ours_at(plan, at)
+                    && deploy_rec(core, at).is_some_and(|d| d.has_lock && !d.locked)
+            }
+            // What comes back up (the old door, and its lock) needs the
+            // room: a full pack drops it at the feet.
+            Op::Swap(from, _) => {
+                self.swapping == Some(i)
+                    || (self.ours_at(plan, at)
+                        && item_named(core, from).is_some_and(|f| item_at(core, at) == Some(f))
+                        && free_slots(core)
+                            > usize::from(deploy_rec(core, at).is_some_and(|d| d.has_lock)))
+            }
+            _ => true,
+        }
+    }
+
+    /// Something it put down stands at this address: a lock and a code go
+    /// on its own doors and cupboard only.
+    fn ours_at(&self, plan: &BasePlan, at: OpAddr) -> bool {
+        (0..OPS).any(|j| {
+            let o = spec(j);
+            matches!(o.op, Op::Kit(_)) && self.done & bit(j) != 0 && addr(plan, &o) == at
+        })
+    }
+
     /// The first op of `milestone` not done, not waiting for support, that
-    /// the pack pays for and whose piece stands (a grade).
+    /// can go now and the pack pays for; else an optional op of it or one
+    /// before it that the pack has the spare for, past what the milestone
+    /// still costs.
     fn pick(&self, core: &ClientCore, plan: &BasePlan, milestone: Milestone) -> Option<usize> {
         self.pick_among(core, plan, milestone, self.deferred)
     }
@@ -1678,27 +2624,43 @@ impl Builder {
         skip: u128,
     ) -> Option<usize> {
         let has = self.stations(core);
-        (0..OPS).find(|&i| {
+        let open = |i: usize| (self.done | self.given_up | skip) & bit(i) == 0;
+        let own = (0..OPS).find(|&i| {
             let s = spec(i);
             s.stage == Some(milestone)
-                && (self.done | self.given_up | skip) & bit(i) == 0
-                && (!matches!(s.op, Op::Grade(_))
-                    || (!self.superseded(&s) && piece_at(core, addr(plan, &s)).is_some()))
+                && !s.optional
+                && open(i)
+                && self.can_do(core, plan, &s, i)
                 && self
                     .op_bill(core, &s, &has)
                     .is_some_and(|b| b.paid_by(core))
+        });
+        if own.is_some() {
+            return own;
+        }
+        let reserve = self.bill(core, milestone, &self.stored);
+        (0..OPS).find(|&i| {
+            let s = spec(i);
+            s.optional
+                && s.stage.is_some_and(|m| m <= milestone)
+                && open(i)
+                && self.can_do(core, plan, &s, i)
+                && self
+                    .op_bill(core, &s, &has)
+                    .is_some_and(|b| b.spare_in(core, &reserve))
         })
     }
 
-    /// Craft `tool` for op `i`. A full pack drops what is made at the
-    /// crafter's feet and spends the inputs either way: not sent, and no
-    /// fault of the op's, so the op is not given up over it.
-    fn craft(&mut self, core: &ClientCore, i: usize, tool: u16) -> Act {
-        let Some((recipe, ticks, _)) = recipe_for(core, tool, &self.stations(core)) else {
+    /// Craft `units` of `item` for op `i` (one, or a batch of the gear). A
+    /// full pack drops what is made at the crafter's feet and spends the
+    /// inputs either way: not sent, and no fault of the op's, so the op is
+    /// not given up over it.
+    fn craft(&mut self, core: &ClientCore, i: usize, item: u16, units: u16) -> Act {
+        let Some((recipe, ticks, _)) = recipe_for(core, item, &self.stations(core)) else {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };
-        if !room_for(core, tool) {
+        if !room_for(core, item) {
             return Act::Fail(Why::PackFull);
         }
         // A full queue refuses whatever is asked: it drains on its own.
@@ -1708,12 +2670,15 @@ impl Builder {
         // Behind a smelt batch the unit starts when the queue drains.
         self.want = Some(Await::Craft {
             op: i,
-            item: tool,
+            item,
             recipe,
-            before: 0,
+            before: count(core, item),
             until: queue_wait(core) + ticks + VERDICT_TICKS,
         });
-        Act::Craft { recipe }
+        Act::Craft {
+            recipe,
+            count: units.max(1),
+        }
     }
 
     fn fail(&mut self, i: usize) {
@@ -1722,6 +2687,9 @@ impl Builder {
             self.given_up |= bit(i);
             self.deferred &= !bit(i);
             self.stats.given_up += 1;
+            if self.swapping == Some(i) {
+                self.swapping = None;
+            }
         }
     }
 
@@ -1741,6 +2709,37 @@ impl Builder {
         }
     }
 
+    /// Op `i`'s answer was yes.
+    fn answered(&mut self, i: usize, sent: Sent) {
+        self.fails[i] = 0;
+        match sent {
+            Sent::Place => self.succeed(i, false, false),
+            Sent::Grade => self.succeed(i, false, true),
+            Sent::Deploy => {
+                self.succeed(i, true, false);
+                if self.swapping == Some(i) {
+                    self.swapping = None;
+                    self.stats.swapped += 1;
+                }
+            }
+            Sent::Lock => {
+                self.done |= bit(i);
+                self.stats.locks += 1;
+            }
+            Sent::Code => {
+                self.done |= bit(i);
+                self.stats.codes += 1;
+            }
+            // The first half of a swap: the second goes up before anything
+            // else is done.
+            Sent::Demolish => self.swapping = Some(i),
+            Sent::Unlock | Sent::Read => {
+                self.done |= bit(i);
+                self.stats.learned += 1;
+            }
+        }
+    }
+
     /// Give this plot up: its ground or somebody's claim refused it.
     fn abandon(&mut self) {
         if let Some(p) = self.plan.take() {
@@ -1756,6 +2755,7 @@ impl Builder {
         self.deferred = 0;
         self.given_up = 0;
         self.fails = [0; OPS];
+        self.swapping = None;
         self.stats.abandoned += 1;
     }
 
@@ -1849,6 +2849,9 @@ impl Builder {
                 if count(core, item) > before {
                     self.waiting = None;
                     self.stats.crafted += 1;
+                    if matches!(spec(op).op, Op::Make(..)) {
+                        self.stats.made += u64::from(count(core, item) - before);
+                    }
                 } else if late && until != 0 && queued(core, recipe) {
                     // Still in the queue, behind longer jobs: it is coming,
                     // and no fault of the op's.
@@ -1879,28 +2882,32 @@ impl Builder {
             Some(Await::Op {
                 op,
                 at,
-                deploy,
+                sent,
                 since,
                 intent,
             }) => {
-                let grade = matches!(spec(op).op, Op::Grade(_));
+                // A lock, a code, a take-down and a blueprint are answered
+                // by what the mirror shows (the door's bits, the known
+                // mask), not by a placement.
+                if self.verdict.is_none() && self.mirror_answers(core, op, at, sent) {
+                    self.verdict = Some(Verdict::Yes);
+                }
                 match self.verdict.take() {
                     Some(Verdict::Yes) => {
                         self.waiting = None;
-                        self.fails[op] = 0;
-                        self.succeed(op, deploy, grade);
+                        self.answered(op, sent);
                     }
-                    Some(Verdict::No { deploy, reason }) => {
+                    Some(Verdict::No { ring, reason }) => {
                         self.waiting = None;
                         self.stats.refusals += 1;
-                        if let Some(end) = self.refused(core, op, deploy, u32::from(reason)) {
+                        if let Some(end) = self.refused(core, op, ring, u32::from(reason)) {
                             return end;
                         }
                     }
                     None if tick.wrapping_sub(since) >= VERDICT_TICKS => {
                         self.waiting = None;
                         self.stats.no_answer += 1;
-                        self.late = Some((op, deploy, at, tick));
+                        self.late = Some((op, sent.ring(), at, tick));
                         self.fail(op);
                     }
                     // The answer is on its way; the plan stays in hand.
@@ -1922,119 +2929,96 @@ impl Builder {
         self.reconcile(core, &plan);
         let milestone = self.milestone();
         let began = *self.began.get_or_insert(milestone);
-        if milestone == Milestone::Done || milestone != began {
+        if milestone > began {
             // A milestone done is where a build goal stops: the next one
             // wants another trip for materials. Not offered again until the
-            // next survey says what it needs.
+            // next survey says what it needs. (Back down the list, a raid's
+            // or the rot's work, it builds again what it can.)
             self.survey.milestone = milestone;
             self.survey.ready = false;
             return Act::Done;
         }
-        let Some(i) = self.pick(core, &plan, milestone).or_else(|| {
-            // Everything left was refused for support: once more each, now
-            // that more stands.
-            let deferred = self.deferred;
-            (deferred != 0)
-                .then(|| {
-                    for i in 0..OPS {
-                        if deferred & bit(i) != 0 {
-                            self.fail(i);
+        // A swap half done comes first: a doorway may stand open. One that
+        // can no longer be finished (the new door lost with a death, say)
+        // is let go, and the old door is hung again.
+        let swap = self.swapping.filter(|&j| {
+            let has = self.stations(core);
+            self.op_bill(core, &spec(j), &has)
+                .is_some_and(|b| b.paid_by(core))
+        });
+        if swap.is_none() {
+            self.swapping = None;
+        }
+        let Some(i) = swap
+            .or_else(|| self.pick(core, &plan, milestone))
+            .or_else(|| {
+                // Everything left was refused for support: once more each, now
+                // that more stands.
+                let deferred = self.deferred;
+                (deferred != 0)
+                    .then(|| {
+                        for i in 0..OPS {
+                            if deferred & bit(i) != 0 {
+                                self.fail(i);
+                            }
                         }
-                    }
-                    self.deferred = 0;
-                    self.pick(core, &plan, milestone)
-                })
-                .flatten()
-        }) else {
+                        self.deferred = 0;
+                        self.pick(core, &plan, milestone)
+                    })
+                    .flatten()
+            })
+        else {
+            if milestone == Milestone::Done {
+                self.survey.ready = false;
+                return Act::Done;
+            }
             // The pack is short: the mind sends it for materials.
             return Act::Fail(Why::MissingInputs);
         };
         let s = spec(i);
         let at = addr(&plan, &s);
-        let Some(tool) = self.tool(core, &s) else {
+        let tool = self.tool(core, &s);
+        if Self::handed(&s) && tool.is_none() {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
-        };
+        }
         // What the op is done with, crafted from the pack first; what a
         // station makes, on the stand spot, which its stations are in
         // reach of.
-        let at_station = recipe_for(core, tool, &self.stations(core))
-            .is_some_and(|(.., station)| station != STATION_NONE);
-        if count(core, tool) == 0 && !at_station {
-            return self.craft(core, i, tool);
+        if let Some(t) = tool {
+            let at_station = recipe_for(core, t, &self.stations(core))
+                .is_some_and(|(.., station)| station != STATION_NONE);
+            if count(core, t) == 0 && !at_station {
+                return self.craft(core, i, t, 1);
+            }
         }
-        // Every op is worked from the stand spot in the core.
-        let Some(stand) = self.stand() else {
-            return Act::Fail(Why::NoSpot);
+        // Every op is worked from the stand spot in the core, or for a
+        // door's lock from the airlock.
+        if let Some(act) = self.walk_to(core, seed, haven, &plan, body, hands, route, &s, tick) {
+            return act;
+        }
+        if let Some(t) = tool {
+            if count(core, t) == 0 {
+                return self.craft(core, i, t, 1);
+            }
+        }
+        match s.op {
+            Op::Make(name, want) => return self.make(core, i, name, want),
+            Op::Learn(name) => return self.learn(core, seed, haven, hands, i, name, tick),
+            Op::Code => return self.press(core, seed, haven, body, hands, i, at, Sent::Code, tick),
+            // The first half of a swap: the old one taken back up, the new
+            // one already in the pack.
+            Op::Swap(from, _)
+                if item_named(core, from).is_some_and(|f| item_at(core, at) == Some(f)) =>
+            {
+                return self.press(core, seed, haven, body, hands, i, at, Sent::Demolish, tick);
+            }
+            _ => {}
+        }
+        let Some(tool) = tool else {
+            self.fail(i);
+            return Act::Fail(Why::NoRecipe);
         };
-        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        let far = (stand[0] - x).hypot(stand[1] - z);
-        // After a reach refusal, onto the spot itself rather than near it.
-        let close = if self.restand { WAYPOINT_M } else { STAND_M };
-        if far > close {
-            self.held = None;
-            if far > STAND_M && self.walled(core) {
-                // Through the airlock, or round the cupboard and the box
-                // inside, by the chain.
-                return match self.passage.step(
-                    core,
-                    seed,
-                    haven,
-                    &plan,
-                    body,
-                    hands,
-                    route,
-                    Way::In,
-                    tick,
-                ) {
-                    Pass::Go(intent) => Act::Go(intent),
-                    Pass::Use(at, intent) => Act::Use { at, intent },
-                    Pass::Done => Act::Go(Intent::IDLE),
-                    Pass::Fail(why) => Act::Fail(why),
-                };
-            }
-            // No doorway yet: routed round what stands (a wall between the
-            // body and the spot) to the route's closest, then straight on.
-            if far > ROUTE_STOP_M {
-                match route.to(core, body, stand, ROUTE_STOP_M, true, tick) {
-                    step @ Step::Walk { .. } => {
-                        self.approach = None;
-                        return Act::Go(step.walk().unwrap_or(Intent::IDLE));
-                    }
-                    Step::Blocked => return Act::Fail(Why::Stuck),
-                    Step::Wait => return Act::Go(Intent::IDLE),
-                    Step::Arrived => {}
-                }
-            }
-            match self.approach {
-                Some((best, since)) if far > best - 0.05 => {
-                    if tick.wrapping_sub(since) >= PASSAGE_STALL_TICKS {
-                        self.approach = None;
-                        if !self.restand {
-                            return Act::Fail(Why::Stuck);
-                        }
-                        // Near enough to work from, if not onto it.
-                        self.restand = false;
-                    } else {
-                        return Act::Go(Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)));
-                    }
-                }
-                _ => {
-                    self.approach = Some((far, tick));
-                    return Act::Go(Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)));
-                }
-            }
-        }
-        // On the spot: any walk in has ended here (the chain's last point is
-        // the spot, and the builder stops short of the chain's own radius).
-        self.restand = false;
-        self.approach = None;
-        if self.passage.busy() {
-            self.passage = Passage::IDLE;
-        }
-        if count(core, tool) == 0 {
-            return self.craft(core, i, tool);
-        }
         // In hand, from the belt.
         let Some(slot) = belt_slot(core, tool) else {
             let Some((from, to, count)) = belt_move(core, tool) else {
@@ -2063,39 +3047,351 @@ impl Builder {
             return Act::Go(intent);
         }
         self.held = None;
-        let deploy = matches!(s.op, Op::Kit(_));
-        let act =
-            match s.op {
-                Op::Piece(part) => piece_row(core, part_shape(part), MAT_TWIG)
-                    .map(|row| Act::Place { row, at, intent }),
-                Op::Grade(material) => Some(Act::Upgrade {
+        let act = match s.op {
+            Op::Piece(part) => piece_row(core, part_shape(part), MAT_TWIG)
+                .map(|row| (Act::Place { row, at, intent }, Sent::Place)),
+            Op::Grade(material) => Some((
+                Act::Upgrade {
                     at,
                     material,
                     intent,
-                }),
-                Op::Kit(name) => kit_row(core, tool).map(|row| Act::Deploy {
-                    row,
-                    at,
-                    bag: name == BAG_ITEM,
-                    intent,
-                }),
-            };
-        let Some(act) = act else {
+                },
+                Sent::Grade,
+            )),
+            Op::Kit(name) | Op::Swap(_, name) => kit_row(core, tool).map(|row| {
+                (
+                    Act::Deploy {
+                        row,
+                        at,
+                        bag: name == BAG_ITEM,
+                        intent,
+                    },
+                    Sent::Deploy,
+                )
+            }),
+            Op::Lock => kit_row(core, tool).map(|row| {
+                (
+                    Act::Deploy {
+                        row,
+                        at,
+                        bag: false,
+                        intent,
+                    },
+                    Sent::Lock,
+                )
+            }),
+            Op::Code | Op::Learn(_) | Op::Make(..) => None,
+        };
+        let Some((act, sent)) = act else {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };
         self.want = Some(Await::Op {
             op: i,
             at,
-            deploy,
+            sent,
             since: 0,
             intent,
         });
         act
     }
 
+    /// Onto the spot op `s` is worked from ([`Spec::work_spot`]): through
+    /// the doors by the airlock's chain to the point by it when it is on
+    /// the doors' other side or round the cupboard and the box, then
+    /// straight on. `None` once there.
+    #[allow(clippy::too_many_arguments)]
+    fn walk_to(
+        &mut self,
+        core: &mut ClientCore,
+        seed: u64,
+        haven: &Haven,
+        plan: &BasePlan,
+        body: &EntityState,
+        hands: &Hands,
+        route: &mut Route,
+        s: &Spec,
+        tick: u32,
+    ) -> Option<Act> {
+        let c = corner(plan);
+        let (via, rel) = s.work_spot();
+        let spot = at_corner(c, rel);
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let far = (spot[0] - x).hypot(spot[1] - z);
+        // After a reach refusal, onto the spot itself rather than near it.
+        let close = if self.restand { WAYPOINT_M } else { STAND_M };
+        if far <= close {
+            // On the spot: any walk in has ended here (the chain's points
+            // are the spots, and the builder stops short of the chain's
+            // own radius).
+            self.restand = false;
+            self.approach = None;
+            if self.passage.busy() {
+                self.passage = Passage::IDLE;
+            }
+            return None;
+        }
+        self.held = None;
+        let pointed = at_corner(c, CHAIN[via]);
+        let at_via = (pointed[0] - x).hypot(pointed[1] - z) <= STAND_M;
+        let region = self.region(body);
+        let same_side = region == region_at(rel) && (region == Region::Outside || at_via);
+        if far > STAND_M && self.walled(core) && (!same_side || self.passage.busy()) {
+            // Through the airlock, or round the cupboard and the box
+            // inside, by the chain, to the point by the spot.
+            let last = CHAIN.len() - 1;
+            let way = match region {
+                Region::Outside => Way::In,
+                _ => {
+                    let rel_here = [x - c[0], z - c[1]];
+                    let here = if region == Region::Airlock {
+                        AIRLOCK_JOIN
+                    } else {
+                        (0..=INNER_LEG)
+                            .min_by(|&a, &b| {
+                                let d = |i: usize| {
+                                    (CHAIN[i][0] - rel_here[0]).hypot(CHAIN[i][1] - rel_here[1])
+                                };
+                                d(a).total_cmp(&d(b))
+                            })
+                            .unwrap_or(0)
+                    };
+                    if via > here {
+                        Way::Out
+                    } else {
+                        Way::In
+                    }
+                }
+            };
+            let stop = (via != 0 && via != last).then_some(via);
+            let pass = self
+                .passage
+                .step(core, seed, haven, plan, body, hands, route, way, stop, tick);
+            if pass != Pass::Done {
+                return Some(self.pass_act(pass, Act::Go(Intent::IDLE)));
+            }
+        }
+        // Routed round what stands (a wall between the body and the spot)
+        // to the route's closest, then straight on.
+        if far > ROUTE_STOP_M {
+            match route.to(core, body, spot, ROUTE_STOP_M, true, tick) {
+                step @ Step::Walk { .. } => {
+                    self.approach = None;
+                    return Some(Act::Go(step.walk().unwrap_or(Intent::IDLE)));
+                }
+                Step::Blocked => return Some(Act::Fail(Why::Stuck)),
+                Step::Wait => return Some(Act::Go(Intent::IDLE)),
+                Step::Arrived => {}
+            }
+        }
+        let walk = Act::Go(Intent::walk(yaw_toward(spot[0] - x, spot[1] - z)));
+        match self.approach {
+            Some((best, since)) if far > best - 0.05 => {
+                if tick.wrapping_sub(since) < PASSAGE_STALL_TICKS {
+                    return Some(walk);
+                }
+                self.approach = None;
+                if !self.restand {
+                    return Some(Act::Fail(Why::Stuck));
+                }
+                // Near enough to work from, if not onto it.
+                self.restand = false;
+                None
+            }
+            _ => {
+                self.approach = Some((far, tick));
+                Some(walk)
+            }
+        }
+    }
+
+    /// Eyes on the thing at `at`, then the press once they have settled on
+    /// it and it is what a player's `E` (the keypad's `L`, the take-down's
+    /// key) would take from here: the code set on its lock, or the old
+    /// deployable of a swap taken back up.
+    #[allow(clippy::too_many_arguments)]
+    fn press(
+        &mut self,
+        core: &ClientCore,
+        seed: u64,
+        haven: &Haven,
+        body: &EntityState,
+        hands: &Hands,
+        i: usize,
+        at: OpAddr,
+        sent: Sent,
+        tick: u32,
+    ) -> Act {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let intent = Intent {
+            look: Look::Point(aim_point(core, seed, haven, at, x, z)),
+            ..Intent::IDLE
+        };
+        let held = match self.held {
+            Some((op, since)) if op == i => since,
+            _ => {
+                self.held = Some((i, tick));
+                tick
+            }
+        };
+        let waited = tick.wrapping_sub(held);
+        if waited >= HOLD_TICKS
+            && hands.settled()
+            && e_picks_by(core, x, z, hands.view().0, at, PRESS_SLACK_M)
+        {
+            let act = match (sent, self.code) {
+                (Sent::Code, Some(code)) => Act::Access {
+                    at,
+                    op: ACCESS_OP_SET_CODE,
+                    code,
+                    intent,
+                },
+                (Sent::Demolish, _) => Act::Demolish { at, intent },
+                _ => {
+                    self.fail(i);
+                    return Act::Fail(Why::Refused);
+                }
+            };
+            self.held = None;
+            self.want = Some(Await::Op {
+                op: i,
+                at,
+                sent,
+                since: 0,
+                intent,
+            });
+            return act;
+        }
+        if waited >= VERDICT_TICKS {
+            // Settled on it this long and `E` still takes something else.
+            self.held = None;
+            self.fail(i);
+        }
+        Act::Go(intent)
+    }
+
+    /// Learn a blueprint: read the paper for it when the pack holds some,
+    /// else unlock it at the bench's tree, eyes on the bench as a player's
+    /// are on the tree panel it opens.
+    #[allow(clippy::too_many_arguments)]
+    fn learn(
+        &mut self,
+        core: &ClientCore,
+        seed: u64,
+        haven: &Haven,
+        hands: &Hands,
+        i: usize,
+        name: &'static str,
+        tick: u32,
+    ) -> Act {
+        let Some(item) = item_named(core, name) else {
+            self.fail(i);
+            return Act::Fail(Why::NoRecipe);
+        };
+        let plan = self.plan.unwrap_or(BasePlan::new(0, 0, 0));
+        let at = addr(&plan, &spec(i));
+        if let Some(slot) = paper_slot(core, item) {
+            self.want = Some(Await::Op {
+                op: i,
+                at,
+                sent: Sent::Read,
+                since: 0,
+                intent: Intent::IDLE,
+            });
+            return Act::Read { slot };
+        }
+        let (Some(recipe), Some(bench)) = (recipe_any(core, item), self.own_kit(core, BENCH_ITEM))
+        else {
+            self.fail(i);
+            return Act::Fail(Why::NoRecipe);
+        };
+        let intent = look_at(seed, haven, core, bench);
+        let held = match self.held {
+            Some((op, since)) if op == i => since,
+            _ => {
+                self.held = Some((i, tick));
+                tick
+            }
+        };
+        if tick.wrapping_sub(held) < HOLD_TICKS || !hands.settled() {
+            return Act::Go(intent);
+        }
+        self.held = None;
+        self.want = Some(Await::Op {
+            op: i,
+            at,
+            sent: Sent::Unlock,
+            since: 0,
+            intent,
+        });
+        Act::Unlock { recipe }
+    }
+
+    /// Make gear at its station: as many as are still wanted in one go, as
+    /// far as the pack pays and the queue takes. What the queue holds is
+    /// coming, and waited for.
+    fn make(&mut self, core: &ClientCore, i: usize, name: &'static str, want: u32) -> Act {
+        let Some(item) = item_named(core, name) else {
+            self.fail(i);
+            return Act::Fail(Why::NoRecipe);
+        };
+        let Some((recipe, ..)) = recipe_for(core, item, &self.stations(core)) else {
+            self.fail(i);
+            return Act::Fail(Why::NoRecipe);
+        };
+        if queued(core, recipe) {
+            return Act::Go(Intent::IDLE);
+        }
+        let def = core.recipes.recipes[usize::from(recipe)];
+        let short = want.saturating_sub(self.held(core, item));
+        let crafts = short.div_ceil(u32::from(def.out_count.max(1)));
+        let paid = def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())]
+            .iter()
+            .filter(|&&(_, need)| need > 0)
+            .map(|&(input, need)| count(core, input) / u32::from(need))
+            .min()
+            .unwrap_or(0);
+        let units = crafts.min(paid).min(u32::from(CRAFT_COUNT_MAX)).max(1);
+        self.craft(core, i, item, units as u16)
+    }
+
+    /// What the mirror shows for an op it answers: a lock on the door, the
+    /// door locked, the old deployable gone, the blueprint known.
+    fn mirror_answers(&self, core: &ClientCore, op: usize, at: OpAddr, sent: Sent) -> bool {
+        match sent {
+            Sent::Lock => deploy_rec(core, at).is_some_and(|d| d.has_lock),
+            Sent::Code => deploy_rec(core, at).is_some_and(|d| d.locked),
+            Sent::Demolish => deploy_rec(core, at).is_none(),
+            Sent::Unlock | Sent::Read => match spec(op).op {
+                Op::Learn(name) => item_named(core, name)
+                    .and_then(|item| learned(core, item))
+                    .unwrap_or(false),
+                _ => false,
+            },
+            Sent::Place | Sent::Grade | Sent::Deploy => false,
+        }
+    }
+
     /// What a refusal of op `i` means for the job; `Some` ends the goal.
-    fn refused(&mut self, core: &ClientCore, i: usize, deploy: bool, reason: u32) -> Option<Act> {
+    fn refused(&mut self, core: &ClientCore, i: usize, ring: Ring, reason: u32) -> Option<Act> {
+        use sim_core::research::{REFUSE_R_BENCH, REFUSE_R_COST, REFUSE_R_KNOWN};
+        if ring == Ring::Research {
+            match reason {
+                REFUSE_R_COST => return Some(Act::Fail(Why::MissingInputs)),
+                REFUSE_R_KNOWN => {
+                    if let Some(plan) = self.plan {
+                        self.reconcile(core, &plan);
+                    }
+                }
+                REFUSE_R_BENCH => {
+                    self.restand = true;
+                    self.fail(i);
+                }
+                _ => self.fail(i),
+            }
+            return None;
+        }
+        let deploy = ring == Ring::Deploy;
         let (spot, reach, support, cost, claim, terrain) = if deploy {
             (
                 reason == REFUSE_D_SPOT,
@@ -2116,7 +3412,7 @@ impl Builder {
                 reason == REFUSE_B_TERRAIN,
             )
         };
-        if spot {
+        if spot || (deploy && reason == REFUSE_D_HAS_LOCK) {
             // Taken. Done if what stands there is this body's own (the next
             // reconcile counts it); somebody else's is one more failure.
             if let Some(plan) = self.plan {
@@ -2160,11 +3456,29 @@ fn piece_at(core: &ClientCore, at: OpAddr) -> Option<u8> {
 }
 
 fn deploy_at(core: &ClientCore, at: OpAddr) -> Option<u8> {
+    deploy_rec(core, at).map(|d| d.row)
+}
+
+/// The deployable standing at an address, per the mirror.
+fn deploy_rec(core: &ClientCore, at: OpAddr) -> Option<&sim_core::deploy::DeployRec> {
     core.deploys
         .entries()
         .iter()
         .find(|d| (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc))
-        .map(|d| d.row)
+}
+
+/// A deployable row's definition, once the server has sent it.
+fn deploy_def(core: &ClientCore, row: u8) -> Option<sim_core::deploy::DeployDef> {
+    let defs = &core.deploy_defs;
+    (u16::from(row) < core.deploy_defs_have.min(defs.def_count))
+        .then(|| defs.defs[usize::from(row)])
+}
+
+/// The item the deployable at an address places, per the mirror.
+fn item_at(core: &ClientCore, at: OpAddr) -> Option<u16> {
+    deploy_rec(core, at)
+        .and_then(|d| deploy_def(core, d.row))
+        .map(|def| def.item)
 }
 
 fn belt_slot(core: &ClientCore, item: u16) -> Option<usize> {
@@ -2182,16 +3496,19 @@ fn belt_move(core: &ClientCore, item: u16) -> Option<(u8, u8, u16)> {
     Some((from as u8, to as u8, core.inv[from].count))
 }
 
-/// The ground behind the core takes the furnace: what a deployable on bare
-/// ground asks of it (the foundation's terrain rule), clear of the edge.
+/// The ground behind the core takes the furnace and the second bench's
+/// foundation: the foundation's terrain rule on both cells, clear of the
+/// edge.
 fn yard_goes(seed: u64, haven: &Haven, cx: u16, cz: u16) -> bool {
-    let (Some(x), Some(z)) = (
-        cx.checked_add_signed(i16::from(YARD.0)),
-        cz.checked_add_signed(i16::from(YARD.1)),
-    ) else {
-        return false;
-    };
-    site::foundation_goes(seed, haven, x, z)
+    [YARD, ANNEX].iter().all(|&(dx, dz)| {
+        match (
+            cx.checked_add_signed(i16::from(dx)),
+            cz.checked_add_signed(i16::from(dz)),
+        ) {
+            (Some(x), Some(z)) => site::foundation_goes(seed, haven, x, z),
+            _ => false,
+        }
+    })
 }
 
 /// Does a tree, a rock or a bush stand where the base, or its yard behind
@@ -2237,16 +3554,12 @@ mod tests {
         for i in 0..OPS {
             let s = spec(i);
             let Some(m) = s.stage else {
-                // Only what needs a workbench, the rent and the box the
-                // one inside replaces are passed over.
+                // Only the rent and the box the one inside replaces are
+                // passed over.
                 assert!(
                     matches!(
                         STARTER.get(i),
-                        Some(
-                            BaseOp::Code(..)
-                                | BaseOp::Feed(..)
-                                | BaseOp::Deploy(Kit::Lock | Kit::MetalDoor | Kit::Box, ..)
-                        )
+                        Some(BaseOp::Feed(..) | BaseOp::Deploy(Kit::Box, ..))
                     ),
                     "op {i} {:?} is never built",
                     STARTER.get(i)
@@ -2254,6 +3567,25 @@ mod tests {
                 continue;
             };
             seen[m as usize] += 1;
+            // The blueprint hangs its locks and its metal door right after
+            // the doors; this body does once the bench that makes them
+            // stands.
+            if m >= Milestone::Locks {
+                assert!(
+                    i >= STARTER.len()
+                        || matches!(
+                            STARTER[i],
+                            BaseOp::Code(..) | BaseOp::Deploy(Kit::Lock | Kit::MetalDoor, ..)
+                        ),
+                    "op {i} {:?} waits for {m:?}",
+                    STARTER.get(i)
+                );
+                if i >= STARTER.len() + EXTRAS.len() {
+                    assert!(m >= last, "op {i} goes back to {m:?} after {last:?}");
+                    last = m;
+                }
+                continue;
+            }
             if i < STARTER.len() && m < last && m != Milestone::Stone {
                 // Only the ground floor's stone grades come back down the
                 // list: the blueprint grades before it grows.
@@ -2270,10 +3602,33 @@ mod tests {
         // Its stations, one each, in reach of the stand spot.
         assert_eq!(seen[Milestone::Bench as usize], 1);
         assert_eq!(seen[Milestone::Furnace as usize], 1);
+        // A lock and its code on both doors and the cupboard, and both
+        // doors in metal when the fragments are spare.
+        assert_eq!(seen[Milestone::Locks as usize], 8);
+        let optional: Vec<Op> = (0..OPS)
+            .map(spec)
+            .filter(|s| s.optional)
+            .map(|s| s.op)
+            .collect();
+        assert_eq!(optional, [Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM); 2]);
+        // The second bench, on a stone foundation of its own.
+        assert_eq!(seen[Milestone::Bench2 as usize], 3);
         assert_eq!(seen[Milestone::Done as usize], 0);
+        // Every gear milestone has work, and a blueprint is learned before
+        // what it teaches is made.
+        for m in Milestone::ALL.iter().filter(|m| m.gear()) {
+            assert!(seen[*m as usize] > 0, "{m:?} has nothing to do");
+        }
+        for i in 0..OPS {
+            if let Op::Make(name, _) = spec(i).op {
+                if let Some(j) = (0..OPS).find(|&j| spec(j).op == Op::Learn(name)) {
+                    assert!(j < i, "{name} made before it is learned");
+                }
+            }
+        }
         let plan = BasePlan::new(0, 100, 100);
         let stand = at_corner(corner(&plan), CHAIN[0]);
-        for name in [BENCH_ITEM, FURNACE_ITEM] {
+        for name in [BENCH_ITEM, FURNACE_ITEM, BENCH2_ITEM] {
             let s = (0..OPS).map(spec).find(|s| s.op == Op::Kit(name)).unwrap();
             let at = addr(&plan, &s);
             let (x, z) = sim_core::deploy::cell_center(at.cx, at.cz);
@@ -2429,12 +3784,21 @@ mod tests {
         });
         let mut b = Builder::new();
         for _ in 0..MAX_FAILS + 1 {
-            assert!(matches!(b.craft(&core, 0, tool), Act::Fail(Why::PackFull)));
+            assert!(matches!(
+                b.craft(&core, 0, tool, 1),
+                Act::Fail(Why::PackFull)
+            ));
         }
         assert_eq!((b.fails[0], b.given_up), (0, 0));
         assert!(b.want.is_none(), "nothing sent, nothing awaited");
         core.inv[INV_SLOTS - 1].count = 0;
-        assert!(matches!(b.craft(&core, 0, tool), Act::Craft { recipe: 0 }));
+        assert!(matches!(
+            b.craft(&core, 0, tool, 1),
+            Act::Craft {
+                recipe: 0,
+                count: 1
+            }
+        ));
         assert!(matches!(b.want, Some(Await::Craft { op: 0, .. })));
     }
 
@@ -2489,11 +3853,11 @@ mod tests {
             level: 0,
             loc: LOC_PLANE,
         };
-        b.late = Some((1, true, at, 0));
+        b.late = Some((1, Ring::Deploy, at, 0));
         b.waiting = Some(Await::Op {
             op: 2,
             at,
-            deploy: true,
+            sent: Sent::Deploy,
             since: 10,
             intent: Intent::IDLE,
         });
@@ -2547,6 +3911,46 @@ mod tests {
                 assert!(!e_picks(&core, p[0], p[1], yaw, other));
             }
         }
+    }
+
+    /// The bench on the floor over the cupboard scores exactly where the
+    /// cupboard does: `E` takes the cupboard, as the human client's
+    /// tiebreak has it, and never the bench.
+    #[test]
+    fn the_cupboard_under_the_bench_is_still_e_s_pick() {
+        use sim_core::deploy::{ARCH_HEARTH, ARCH_WORKBENCH};
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        for (row, arch) in [(0usize, ARCH_HEARTH), (1, ARCH_WORKBENCH)] {
+            core.deploy_defs.defs[row].arch = arch;
+            core.deploy_defs.defs[row].hp = 100;
+        }
+        core.deploy_defs.def_count = 2;
+        core.deploy_defs_have = 2;
+        let at = |level: u8| OpAddr {
+            cx: 100,
+            cz: 100,
+            level,
+            loc: LOC_PLANE,
+        };
+        for (level, row) in [(0u8, 0u8), (1, 1)] {
+            let a = at(level);
+            let rec = sim_core::deploy::DeployRec {
+                cx: a.cx,
+                cz: a.cz,
+                level: a.level,
+                loc: a.loc,
+                row,
+                ..Default::default()
+            };
+            stream(&mut core, |buf| {
+                protocol::event::encode_event_deploy_placed(&rec, buf)
+            });
+        }
+        let (x, z) = sim_core::deploy::cell_center(100, 100);
+        let (px, pz) = (x, z - 1.0);
+        let yaw = yaw_toward(x - px, z - pz);
+        assert!(e_picks(&core, px, pz, yaw, at(0)), "the cupboard");
+        assert!(!e_picks(&core, px, pz, yaw, at(1)), "never the bench");
     }
 
     #[test]

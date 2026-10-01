@@ -17,6 +17,45 @@ use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::Endpoint;
 
+/// The domain an agent's lock-code signature names: never a shard's, so the
+/// signature is no login anywhere, and never sent.
+const LOCK_SIGN_DOMAIN: &str = "lock-code.gates.invalid";
+
+/// Where an agent's lock code comes from (`agent::lock`): a wallet agent's
+/// from what only its key signs, a guest's from its install's secret kept
+/// at `guest_path` (made there the first time). `None` when the secret
+/// cannot be read or made: the body then makes up a code for this run.
+pub fn lock_secret(
+    key: Option<&AgentKey>,
+    name: &str,
+    guest_path: &Path,
+) -> Option<crate::agent::lock::LockSecret> {
+    use crate::agent::lock::{guest_secret, LockCode, LockSecret};
+    if let Some(key) = key {
+        let sig = key.sign_siwe(LOCK_SIGN_DOMAIN, &[0; protocol::NONCE_BYTES], 0);
+        return Some(LockSecret::Code(LockCode::derive(&sig.0, name)));
+    }
+    if let Some(dir) = guest_path.parent() {
+        std::fs::create_dir_all(dir).ok()?;
+    }
+    guest_secret(guest_path)
+        .ok()
+        .map(|install| LockSecret::guest(install, name))
+}
+
+/// Where a guest agent's install keeps its lock secret: `GATES_AGENT_SECRET`
+/// if set, else `~/.gates/agent-guest.secret`, else beside the binary's
+/// temp files.
+pub fn guest_secret_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("GATES_AGENT_SECRET") {
+        return p.into();
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => std::path::Path::new(&home).join(".gates/agent-guest.secret"),
+        None => std::env::temp_dir().join("gates-agent-guest.secret"),
+    }
+}
+
 /// The display name a jev bot declares to its spectators when none is given.
 pub const AGENT_NAME: &str = "jev";
 
@@ -250,6 +289,7 @@ impl MindArgs {
         SurvivorOpts {
             skill: self.skill.skill(),
             temperament: self.temperament,
+            lock: None,
         }
     }
 

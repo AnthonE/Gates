@@ -12,11 +12,15 @@
 //! a gun loaded.
 //! Loot runs (`agent::loot`) smash barrels and pick up what falls out, and
 //! empty crates through their panel; a recipe made at a station is crafted
-//! at its own workbench or furnace, walking home to it first.
+//! at its own workbench or furnace, walking home to it first. The base gets
+//! code locks armed with its own code, metal doors and a second bench, and
+//! the gear after it is learned and made there (`agent::build`); better
+//! armour is worn and better arms belted between goals.
 //! The only verbs sent are the ones a human client sends: input frames,
 //! and `Respawn`, `Craft`, `Consume`, `Drink`, `Move`, `Reload`, `Loot`,
-//! `Pickup`, `Deploy`, `Place`, `Upgrade`, `Use`, `Container` and `Feed`
-//! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
+//! `Pickup`, `Deploy`, `Place`, `Upgrade`, `Use`, `Container`, `Feed`,
+//! `Access`, `Demolish`, `Unlock` and `Research` actions
+//! (`crates/server/tests/agent_walls.rs` holds that to the client).
 
 use crate::agent::build::{queue_wait, queued, Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
@@ -24,7 +28,8 @@ use crate::agent::cover;
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
-use crate::agent::loadout::{Loadout, Role};
+use crate::agent::loadout::{Loadout, Role, BELT};
+use crate::agent::lock::{LockCode, LockSecret};
 use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
 use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
@@ -50,7 +55,7 @@ use sim_core::craft::STATION_FURNACE;
 use sim_core::deploy::{box_key, BAG_CAP};
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WORLD};
+use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
     CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
 };
@@ -169,6 +174,9 @@ pub const REFLEX_HEAL_PCT: u32 = 80;
 pub const CRAWL_COVER_M: f32 = 10.0;
 /// A reload is not asked for again sooner than this after the last.
 pub const RELOAD_RETRY_TICKS: u32 = TICK_HZ;
+/// Armour put on or a better weapon belted at most this often: the mirror
+/// shows the last move first.
+pub const DRESS_TICKS: u32 = TICK_HZ;
 
 /// Tool ladders, best first, by catalog name — the player's knowledge of
 /// which tool fells a tree and which breaks rock. Never indices; yields,
@@ -417,6 +425,8 @@ pub struct SurvivorStats {
     /// Meds taken outside a heal goal, and reloads asked for.
     pub reflex_heals: u64,
     pub reloads: u64,
+    /// Armour put on and weapons, meds or tools belted between goals.
+    pub dressed: u64,
     pub actions: u64,
     /// Frames an action waited in the hand for its kind's pace.
     pub paced: u64,
@@ -430,6 +440,9 @@ pub struct SurvivorOpts {
     pub skill: Skill,
     /// How ready it is to start a fight (`--temperament`).
     pub temperament: Temperament,
+    /// Where the code on its locks comes from; `None` makes one up for
+    /// this process alone.
+    pub lock: Option<LockSecret>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -544,6 +557,8 @@ pub struct Survivor {
     ack_age: u32,
     /// When a reload was last asked for.
     reload_at: Option<u32>,
+    /// When armour or the belt was last seen to.
+    dressed_at: Option<u32>,
     /// Where a downed body is crawling to, if anywhere, and when that was
     /// looked for: a scan that found nothing waits before the next.
     crawl_to: Option<(Option<[f32; 2]>, u32)>,
@@ -555,6 +570,8 @@ pub struct Survivor {
     seen: Seen,
     /// The base it is building, and the walk through its doors.
     builder: Builder,
+    /// What the code on its locks is made from (never printed).
+    lock: LockSecret,
     /// A visit home, and what the box held when last open.
     stash_job: StashJob,
     ledger: Ledger,
@@ -635,12 +652,16 @@ impl Survivor {
             sel: 0,
             ack_age: 1,
             reload_at: None,
+            dressed_at: None,
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
             builder: Builder::new(),
+            lock: opts
+                .lock
+                .unwrap_or_else(|| LockSecret::Code(LockCode::random())),
             stash_job: StashJob::default(),
             ledger: Ledger::EMPTY,
             loot: Loot::new(),
@@ -1086,6 +1107,7 @@ impl Survivor {
             self.medic(core, tick, calm);
         }
         self.reload(core, tick, calm && !self.combat.engaged());
+        self.dress(core, tick, calm && !self.combat.engaged());
         match assessed {
             Assess::Fight(intent) => {
                 self.pause_goal(tick);
@@ -2614,6 +2636,63 @@ impl Survivor {
         }
     }
 
+    /// Kit up between everything else, the way a player does when nothing
+    /// presses: wear the best armour the pack holds for each slot (a move
+    /// into the wear container, by the catalog's wear slot), and put a
+    /// better weapon, med or tool on the belt (`agent::loadout`'s belt
+    /// policy). One move a second at most, while the action lane is free,
+    /// nobody is about, and the goal in hand is not one waiting on a move's
+    /// answer of its own.
+    fn dress(&mut self, core: &ClientCore, tick: u32, calm: bool) {
+        let quiet = match self.goal() {
+            None
+            | Some(
+                Goal::Explore
+                | Goal::GatherWood
+                | Goal::GatherStone
+                | Goal::GatherOre
+                | Goal::Forage
+                | Goal::Wait
+                | Goal::GoHome,
+            ) => true,
+            Some(Goal::Build) => self.builder.at_checkpoint(),
+            _ => false,
+        };
+        let due = self
+            .dressed_at
+            .is_none_or(|at| tick.wrapping_sub(at) >= DRESS_TICKS);
+        if !calm
+            || !quiet
+            || !due
+            || self.awaiting.is_some()
+            || self.outbox.is_some()
+            || !self.loadout.ready()
+        {
+            return;
+        }
+        let (from, to_kind, to, count) = match wear_move(core) {
+            Some((from, to)) => (from, CONT_WEAR, to, 1),
+            None => {
+                let belt = BELT.iter().find_map(|&role| {
+                    let (slot, item) = self.loadout.best(core, role)?;
+                    (slot >= HOTBAR_SLOTS)
+                        .then(|| self.loadout.belt_move(core, item))
+                        .flatten()
+                });
+                let Some((from, to, count)) = belt else {
+                    return;
+                };
+                (from, CONT_SELF, to, count)
+            }
+        };
+        if self
+            .queue(|buf| protocol::encode_action_move(0, CONT_SELF, from, to_kind, to, count, buf))
+        {
+            self.dressed_at = Some(tick);
+            self.stats.dressed += 1;
+        }
+    }
+
     /// The shooting weapon for a fight: the best on the belt with rounds
     /// in the pack (or in it, for the gun in hand), how many rounds, and
     /// what is loaded when the readout is for it.
@@ -3054,8 +3133,8 @@ impl Survivor {
     fn act(&mut self, act: Act, tick: u32) -> Intent {
         let sent = match act {
             Act::Go(intent) => return intent,
-            Act::Craft { recipe } => {
-                self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf))
+            Act::Craft { recipe, count } => {
+                self.queue(|buf| protocol::encode_action_craft(recipe, count, 0, buf))
             }
             Act::Belt { from, to, count } => self.queue(|buf| {
                 protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
@@ -3079,6 +3158,16 @@ impl Survivor {
             Act::Use { at, .. } => {
                 self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf))
             }
+            // The code goes straight from the builder's keeping onto the
+            // wire, the keypad's way, and nowhere else.
+            Act::Access { at, op, code, .. } => self.queue(|buf| {
+                protocol::encode_action_access(at.cx, at.cz, at.level, at.loc, op, code.wire(), buf)
+            }),
+            Act::Demolish { at, .. } => self.queue(|buf| {
+                protocol::encode_action_demolish(true, at.cx, at.cz, at.level, at.loc, buf)
+            }),
+            Act::Unlock { recipe } => self.queue(|buf| protocol::encode_action_unlock(recipe, buf)),
+            Act::Read { slot } => self.queue(|buf| protocol::encode_action_research(slot, buf)),
             Act::Done => {
                 if let Some(a) = self.goal.as_mut() {
                     a.gained += 1;
@@ -3098,7 +3187,9 @@ impl Survivor {
             Act::Place { intent, .. }
             | Act::Deploy { intent, .. }
             | Act::Upgrade { intent, .. }
-            | Act::Use { intent, .. } => intent,
+            | Act::Use { intent, .. }
+            | Act::Access { intent, .. }
+            | Act::Demolish { intent, .. } => intent,
             _ => Intent::IDLE,
         }
     }
@@ -3552,6 +3643,16 @@ impl Survivor {
             self.stats.refusals += 1;
             self.builder.on_refused(false, reason);
         }
+        // A lock let it through (its own code, entered at its own door);
+        // a blueprint learned or refused.
+        while let Some((cx, cz, level, loc, _grant)) = core.pop_auth() {
+            self.builder.on_auth(cx, cz, level, loc);
+        }
+        while core.pop_research_toast().is_some() {}
+        while let Some(reason) = core.pop_research_refusal() {
+            self.stats.refusals += 1;
+            self.builder.on_research_refused(reason);
+        }
         if applied2 & APPLIED2_BAGS != 0 {
             self.home.on_bags(core.own_bags());
         }
@@ -3688,6 +3789,7 @@ impl BotDriver for Survivor {
         self.home.reset();
         self.seen.clear();
         self.builder.reset();
+        self.builder.set_code(self.lock.code(welcome.seed));
         self.bag_job = BagJob::default();
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
@@ -3811,6 +3913,35 @@ pub fn best_tool(core: &ClientCore, kind: Kind) -> Option<u8> {
         }
     }
     None
+}
+
+/// The move that puts on better armour than is worn, if the pack holds
+/// some: `(pack slot, wear slot)`, by the catalog's wear slot and armour
+/// share, the best piece for each slot first.
+fn wear_move(core: &ClientCore) -> Option<(u8, u8)> {
+    let mut best: Option<(u8, u8, u8)> = None;
+    for (i, s) in core.inv[..INV_SLOTS].iter().enumerate() {
+        if s.count == 0 {
+            continue;
+        }
+        let row = core.catalog.row(usize::from(s.item));
+        let Some(slot) = usize::from(row.wear_slot).checked_sub(1) else {
+            continue;
+        };
+        let Some(worn) = core.worn.get(slot) else {
+            continue;
+        };
+        let have = if worn.count > 0 {
+            core.catalog.row(usize::from(worn.item)).armor_pct
+        } else {
+            0
+        };
+        let gain = row.armor_pct;
+        if gain > have && best.is_none_or(|(.., g)| gain > g) {
+            best = Some((i as u8, slot as u8, gain));
+        }
+    }
+    best.map(|(from, to, _)| (from, to))
 }
 
 /// Room for a node's yield: an empty slot, or a stack of something this
@@ -4165,7 +4296,7 @@ pub fn observe(
     }
     // The base: the next milestone while some op of it can go now; the way
     // home once a cupboard stands there and this body is not inside.
-    if memory.base.ready && memory.base.milestone != crate::mind::Milestone::Done {
+    if memory.base.ready {
         s.offer(Goal::Build);
     }
     if memory.home.state == HomeState::Built {

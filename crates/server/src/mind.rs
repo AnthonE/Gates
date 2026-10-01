@@ -300,7 +300,7 @@ impl Goal {
                     .into()
             }
             Goal::Build => {
-                "Build the next part of the base from what is in the pack; choose a plot first if there is none.".into()
+                "Build the next part of the base or gear from what is in the pack; choose a plot first if there is none.".into()
             }
             Goal::GoHome => "Walk home and in through the doors, shutting them behind.".into(),
             Goal::Stash => {
@@ -1639,13 +1639,21 @@ impl Scripted {
                 if seen && s.offers(goal) {
                     return (goal, "scripted: materials for the base");
                 }
-                if LOOTED.contains(&name.as_str()) && s.offers(Goal::Loot) {
+                // A loot run is a long way to go: what the pack already
+                // pays for goes up first.
+                if LOOTED.contains(&name.as_str()) && s.offers(Goal::Loot) && !s.offers(Goal::Build)
+                {
                     return (Goal::Loot, "scripted: loot for what the base needs");
                 }
             }
             if s.offers(Goal::Build) {
                 return (Goal::Build, "scripted: build what the pack pays for");
             }
+        }
+        // Everything made: a metal door in a wooden one's place, once the
+        // fragments are spare.
+        if tooled && s.offers(Goal::Build) {
+            return (Goal::Build, "scripted: the spare pays for a better door");
         }
         // A barrel or a crate close by is worth the detour.
         if tooled
@@ -2003,8 +2011,12 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::Build);
         s.needs_len = 0;
         assert_eq!(scripted.pick(&s).0, Goal::Build, "all in the pack");
-        // A finished base is not built again.
+        // Everything made: what the spare pays for (a metal door) goes up
+        // while an op is on offer, and nothing more is built when none is.
         s.milestone = Milestone::Done;
+        assert_eq!(scripted.pick(&s).0, Goal::Build);
+        s.options_len = 3;
+        assert!(!s.offers(Goal::Build));
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         assert_eq!(Goal::GoHome.label().as_str(), "go_home");
         assert_eq!(Goal::Stash.label().as_str(), "stash");

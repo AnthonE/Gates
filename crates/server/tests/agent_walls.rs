@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 14] = [
+const EXPECTED_VERBS: [&str; 18] = [
     "craft",
     "consume",
     "drink",
@@ -87,6 +87,10 @@ const EXPECTED_VERBS: [&str; 14] = [
     "use",
     "container",
     "feed",
+    "access",
+    "demolish",
+    "unlock",
+    "research",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -412,6 +416,20 @@ impl Harness {
     }
 
     fn with_mind(wildlife: bool, at: (f32, f32), mind: Mind) -> Self {
+        Self::with_opts(
+            wildlife,
+            at,
+            mind,
+            server::explorer::SurvivorOpts::default(),
+        )
+    }
+
+    fn with_opts(
+        wildlife: bool,
+        at: (f32, f32),
+        mind: Mind,
+        opts: server::explorer::SurvivorOpts,
+    ) -> Self {
         let content = common::content();
         let spear = content.item_index("item.spear_wood").unwrap();
         let catalog = server::net::bake_all(&content).unwrap().catalog;
@@ -423,7 +441,7 @@ impl Harness {
         };
         let plan = content.item_index("item.building_plan").unwrap();
         let hammer = content.item_index("item.hammer").unwrap();
-        let mut bot = Survivor::new(mind);
+        let mut bot = Survivor::with(mind, opts);
         use server::botclient::BotDriver;
         bot.welcome(&protocol::Welcome {
             seed: SEED,
@@ -622,12 +640,17 @@ impl Harness {
             use client::ui::interact::Verb;
             use sim_core::inventory::{CONT_BOX, CONT_WORLD};
             match msg {
+                // A door swung, or a fire, a recycler or a research table
+                // switched (`C`, on the same pick).
                 ActionMsg::Use { cx, cz, level, loc } => {
                     let pick = self.e_pick(frame.yaw);
-                    assert_eq!(
-                        (pick.verb, pick.cx, pick.cz, pick.level, pick.loc),
-                        (Verb::Door, cx, cz, level, loc),
-                        "the agent used a door `E` would not pick, at tick {}",
+                    let switch = matches!(pick.verb, Verb::Fire | Verb::Recycler | Verb::Research);
+                    assert!(
+                        (pick.verb == Verb::Door || switch)
+                            && (pick.cx, pick.cz, pick.level) == (cx, cz, level)
+                            && (switch || pick.loc == loc),
+                        "the agent used {cx},{cz},{level},{loc}, which `E` would not pick \
+                         ({pick:?}), at tick {}",
                         self.tick
                     );
                     self.use_checks += 1;
@@ -637,10 +660,47 @@ impl Harness {
                     cont,
                 } => {
                     let pick = self.e_pick(frame.yaw);
-                    assert_eq!(
-                        (pick.verb, pick.handle),
-                        (Verb::Box, cont),
-                        "the agent opened a box `E` would not pick, at tick {}",
+                    assert!(
+                        matches!(
+                            pick.verb,
+                            Verb::Box | Verb::Fire | Verb::Recycler | Verb::Research
+                        ) && pick.handle == cont,
+                        "the agent opened {cont:#x}, which `E` would not pick ({pick:?}), at \
+                         tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
+                // The keypad speaks to the lock `L` opened it on: the one
+                // `E` picks, on something a lock bolts to.
+                ActionMsg::Access {
+                    cx, cz, level, loc, ..
+                } => {
+                    let pick = self.e_pick(frame.yaw);
+                    assert!(
+                        sim_core::deploy::lockable(pick.arch)
+                            && pick.has_lock
+                            && (pick.cx, pick.cz, pick.level, pick.loc) == (cx, cz, level, loc),
+                        "the agent spoke to the lock at {cx},{cz},{level},{loc}, not the one `L` \
+                         would open ({pick:?}), at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
+                // Backspace takes the nearest structure to the feet.
+                ActionMsg::Demolish {
+                    deploy,
+                    cx,
+                    cz,
+                    level,
+                    loc,
+                } => {
+                    let near = self.nearest_structure();
+                    assert!(
+                        near.is_some_and(|t| t.store.is_deploy() == deploy
+                            && (t.cx, t.cz, t.level, t.loc) == (cx, cz, level, loc)),
+                        "the agent took down {cx},{cz},{level},{loc}, not the nearest \
+                         structure ({near:?}), at tick {}",
                         self.tick
                     );
                     self.pick_checks += 1;
@@ -745,6 +805,23 @@ impl Harness {
             &core.deploy_defs,
             core.deploy_defs_have,
             core.bags.entries(),
+        )
+    }
+
+    /// What the human client's take-down key (`Backspace`) would take: the
+    /// nearest structure to the bot's feet, over its client's mirror.
+    fn nearest_structure(&self) -> Option<client::ui::structure::Target> {
+        let core = self.bot.core().unwrap();
+        let me = self.view.get(ID).copied().unwrap();
+        let q = sim_core::movement::POS_XZ_Q;
+        client::ui::structure::nearest(
+            (me.qx as f32 * q, me.qz as f32 * q),
+            core.pieces.entries(),
+            &core.piece_defs,
+            core.piece_defs_have,
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
         )
     }
 
@@ -1909,6 +1986,281 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
     for verb in ["craft", "deploy", "place"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
     }
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{:?} {}", h.bot.builder().stats, h.explain());
+}
+
+/// The starter and its stations stand and the pack holds the fragments for
+/// three locks and two metal doors: code locks go on both doors and the
+/// cupboard, armed with its code, and both doors are swapped for metal.
+/// A stranger at the front door is refused, the wrong code shocks him and
+/// does not let him in. Somebody who knows the code resets the lock's list
+/// to himself alone: the owner, refused at its own door, enters its code
+/// and walks in.
+#[test]
+fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
+    use server::agent::build::Region;
+    use server::agent::lock::{LockCode, LockSecret};
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE};
+    use sim_core::deploy::{ACCESS_OP_ENTER, ACCESS_OP_SET_CODE};
+
+    let code = LockCode::derive(b"agent walls", "jev");
+    let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
+    let opts = server::explorer::SurvivorOpts {
+        lock: Some(LockSecret::Code(code)),
+        ..Default::default()
+    };
+    let mut h = Harness::with_opts(false, scene(), mind, opts);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let mut kit = vec![stack("item.wood", 1000); 6];
+    kit.extend([stack("item.stone", 1000); 7]);
+    kit.extend([
+        stack("item.cloth", 60),
+        stack("item.metal_frags", 1000),
+        stack("item.metal_frags", 500),
+        stack("item.lowgrade", 50),
+    ]);
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+
+    // 1. The starter, its stations, the locks armed, the doors in metal.
+    let lock_at = |h: &Harness, x: u16, z: u16, loc: u8| {
+        h.shard
+            .world
+            .deploys
+            .locks()
+            .iter()
+            .find(|l| (l.cx, l.cz, l.level, l.loc) == (x, z, 0, loc))
+            .copied()
+    };
+    let metal = content.item_index("item.door_metal").unwrap();
+    let door_item = |h: &Harness, x: u16, z: u16, loc: u8| {
+        let w = &h.shard.world;
+        w.deploys
+            .find(x, z, 0, loc)
+            .map(|d| w.deploy.defs[usize::from(d.row)].item)
+    };
+    let mut done = false;
+    for _ in 0..120_000 {
+        h.step();
+        let Some(plan) = h.bot.builder().plan() else {
+            continue;
+        };
+        let (cx, cz) = (plan.cx, plan.cz);
+        let armed = [
+            (cx + 1, cz + 1, LOC_EDGE_XLO),
+            (cx + 1, cz + 1, LOC_EDGE_ZLO),
+            (cx, cz, LOC_PLANE),
+        ]
+        .iter()
+        .all(|&(x, z, loc)| lock_at(&h, x, z, loc).is_some_and(|l| l.locked));
+        let metal_doors = [LOC_EDGE_XLO, LOC_EDGE_ZLO]
+            .iter()
+            .all(|&loc| door_item(&h, cx + 1, cz + 1, loc) == Some(metal));
+        if armed && metal_doors && h.bot.builder().at_checkpoint() {
+            done = true;
+            break;
+        }
+    }
+    if !done {
+        if let Some(plan) = h.bot.builder().plan() {
+            let (cx, cz) = (plan.cx, plan.cz);
+            for (x, z, loc) in [
+                (cx + 1, cz + 1, LOC_EDGE_XLO),
+                (cx + 1, cz + 1, LOC_EDGE_ZLO),
+                (cx, cz, LOC_PLANE),
+            ] {
+                eprintln!(
+                    "at {loc}: {:?} item {:?} lock {:?}",
+                    h.shard.world.deploys.find(x, z, 0, loc),
+                    door_item(&h, x, z, loc),
+                    lock_at(&h, x, z, loc).map(|l| (l.locked, l.auth.contains(ID)))
+                );
+            }
+        }
+    }
+    assert!(
+        done,
+        "the locks and metal doors never stood: {:?} {:?} {}",
+        h.bot.builder().survey(),
+        h.bot.builder().stats,
+        h.explain()
+    );
+    let plan = h.bot.builder().plan().unwrap();
+    let (cx, cz) = (plan.cx, plan.cz);
+    for (x, z, loc) in [
+        (cx + 1, cz + 1, LOC_EDGE_XLO),
+        (cx + 1, cz + 1, LOC_EDGE_ZLO),
+        (cx, cz, LOC_PLANE),
+    ] {
+        let l = lock_at(&h, x, z, loc).unwrap();
+        assert_eq!(l.code, code.wire(), "its own code on the lock at {loc}");
+        assert!(
+            l.locked && l.auth.contains(ID),
+            "armed, and it is known there"
+        );
+    }
+    let stats = h.bot.builder().stats;
+    assert!(
+        stats.locks >= 3 && stats.codes >= 3 && stats.swapped >= 2,
+        "{stats:?}"
+    );
+    for verb in ["access", "demolish", "deploy"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert!(
+        h.held_checks as u64 >= stats.deployed,
+        "every lock and door went out with its item in hand"
+    );
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+
+    // 2. A stranger outside the front door: the door does not swing for
+    //    him, and a wrong code shocks him and lets nobody in.
+    let shut = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .find(cx + 1, cz + 1, 0, LOC_EDGE_XLO)
+            .is_some_and(|d| !d.open)
+    };
+    h.with_puppet();
+    h.step();
+    let (fx, fz) = (
+        f32::from(cx + 1) * BUILD_CELL_M,
+        f32::from(cz + 1) * BUILD_CELL_M,
+    );
+    let at_door = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 1.0, fz + 1.5);
+    h.stage_puppet(move |p| p.body = at_door);
+    let front = (cx + 1, cz + 1, 0u8, LOC_EDGE_XLO);
+    let puppet_does = |h: &mut Harness, act: ActionMsg| {
+        for core in [&mut h.shard, &mut h.replay] {
+            core.push_action(1, act);
+        }
+        h.until(TICK_HZ / 2, |_| false);
+    };
+    assert!(shut(&h), "the front door stands shut");
+    puppet_does(
+        &mut h,
+        ActionMsg::Use {
+            cx: front.0,
+            cz: front.1,
+            level: front.2,
+            loc: front.3,
+        },
+    );
+    assert!(shut(&h), "a stranger opened the locked front door");
+    let wrong = (code.wire() + 1) % (sim_core::lock::CODE_MAX + 1);
+    let hp = |h: &Harness| {
+        h.shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == PUPPET)
+            .map(|p| p.hp)
+    };
+    let before = hp(&h);
+    puppet_does(
+        &mut h,
+        ActionMsg::Access {
+            cx: front.0,
+            cz: front.1,
+            level: front.2,
+            loc: front.3,
+            op: ACCESS_OP_ENTER,
+            code: wrong,
+        },
+    );
+    assert!(hp(&h) < before, "a wrong code shocks");
+    assert!(!h
+        .shard
+        .world
+        .deploys
+        .lock_passes(front.0, front.1, front.2, front.3, PUPPET));
+    puppet_does(
+        &mut h,
+        ActionMsg::Use {
+            cx: front.0,
+            cz: front.1,
+            level: front.2,
+            loc: front.3,
+        },
+    );
+    assert!(shut(&h), "the wrong code let a stranger in");
+
+    // 3. Somebody who knows the code sets it again: the lock forgets
+    //    everyone else. The owner, sent home from outside, is refused at its
+    //    own front door, enters its code and is let through.
+    for op in [ACCESS_OP_ENTER, ACCESS_OP_SET_CODE] {
+        puppet_does(
+            &mut h,
+            ActionMsg::Access {
+                cx: front.0,
+                cz: front.1,
+                level: front.2,
+                loc: front.3,
+                op,
+                code: code.wire(),
+            },
+        );
+    }
+    assert!(!h
+        .shard
+        .world
+        .deploys
+        .lock_passes(front.0, front.1, front.2, front.3, ID));
+    let away = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 25.0, fz + 25.0);
+    h.stage_puppet(move |p| p.body = away);
+    let out = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 1.5, fz + 1.5);
+    h.stage(move |p| p.body = out);
+    h.step();
+    h.bot.set_deadline(Some(h.tick + 60 * TICK_HZ));
+    let entered = h.bot.builder().stats.entered;
+    let mut home = false;
+    for _ in 0..50 * TICK_HZ {
+        h.step();
+        let me = h.view.get(ID).copied().unwrap();
+        if h.bot.builder().stats.entered > entered
+            && h.bot.builder().region(&me) == Region::Room
+            && shut(&h)
+        {
+            home = true;
+            break;
+        }
+    }
+    assert!(
+        home,
+        "the owner never got back in through its own locked door: {:?} {}",
+        h.bot.builder().stats,
+        h.explain()
+    );
+    assert!(h
+        .shard
+        .world
+        .deploys
+        .lock_passes(front.0, front.1, front.2, front.3, ID));
+    assert!(u64::from(h.use_checks) >= h.bot.builder().stats.uses);
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
     assert_eq!(
         h.heap_ops, 0,
         "the agent's frame loop touched the allocator"

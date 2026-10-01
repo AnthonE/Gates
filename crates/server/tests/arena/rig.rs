@@ -1000,6 +1000,7 @@ pub fn bout(s: Setup) -> (Arena, Record) {
     let opts = SurvivorOpts {
         skill,
         temperament: s.temperament,
+        ..SurvivorOpts::default()
     };
     let mut a = Arena::seated(opts, mind, false, me, arena_ground(), true);
     a.latency = s.latency;

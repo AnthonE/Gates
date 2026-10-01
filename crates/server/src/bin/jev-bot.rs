@@ -178,7 +178,12 @@ async fn run(options: Options) -> Result<(), String> {
         let door = door.clone();
         let duration = options.duration;
         let name = bot_name(&options.agent_name, i, options.bots)?;
-        let opts = options.mind.opts();
+        let mut opts = options.mind.opts();
+        opts.lock = server::agent_demo::lock_secret(
+            door.key.as_ref(),
+            name.as_str(),
+            &server::agent_demo::guest_secret_path(),
+        );
         fleet.spawn(async move {
             let mut survivor = Survivor::with(mind, opts);
             // The run's end, so the body is home with its doors shut when
