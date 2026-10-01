@@ -61,6 +61,9 @@ pub mod collider_debug;
 // it can.
 pub mod far_trees;
 pub mod fill;
+// Wind, trails, the distance fade and translucency for everything green —
+// one material shared by grass, bushes and the near trees.
+pub mod foliage;
 // This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
 // the client lives in there — see its header for the merge that made that a
 // rule rather than a preference.
@@ -530,6 +533,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         // The far treeline's cards (`far_trees.rs`).
         app.add_plugins(MaterialPlugin::<far_trees::TreeCardMaterial>::default());
+        foliage::plugin(app);
         app.init_resource::<far_trees::FarForest>();
         app.init_resource::<boulders::RockRing>();
         app.add_systems(Startup, far_trees::init);
@@ -1463,6 +1467,19 @@ impl Plugin for GatesRenderPlugin {
             Update,
             far_trees::stream
                 .after(props::stream)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
+        // Foliage: the swap after the streamers that spawn trees, bushes and
+        // grass, so a new plant never draws a frame without its sway; the
+        // wind and trails after the weather they read.
+        .add_systems(
+            Update,
+            (
+                foliage::swap.after(props::stream).after(clutter::stream),
+                foliage::update.after(weather::update),
+            )
                 .in_set(Stream)
                 .run_if(world_placed)
                 .run_if(world_running),

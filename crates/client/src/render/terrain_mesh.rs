@@ -816,7 +816,7 @@ pub const MACRO_AMP: f32 = 0.13;
 /// cannot reach the analytic normal — but a 48 m grid of faint creases in the
 /// ground's brightness is the same defect wearing different clothes, and the
 /// fade costs two multiplies.
-fn macro_noise(x: f32, z: f32) -> f32 {
+pub fn macro_noise(x: f32, z: f32) -> f32 {
     let (fx, fz) = (x / MACRO_M, z / MACRO_M);
     let (x0, z0) = (fx.floor(), fz.floor());
     let (tx, tz) = (fx - x0, fz - z0);

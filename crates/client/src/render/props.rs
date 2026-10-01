@@ -32,7 +32,7 @@
 //! already lists.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::gather::cell_key;
@@ -184,6 +184,10 @@ pub struct PropAssets {
     foliage: [Handle<StandardMaterial>; TINT_POOL],
     /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
     bush_cards: Vec<Handle<Mesh>>,
+    /// The tall bush ([`tall_bush`]): its stretched mass and its leaves, the
+    /// leaves indexed by yaw like `bush_cards`.
+    bush_tall: Handle<Mesh>,
+    bush_tall_cards: Vec<Handle<Mesh>>,
     /// …and their material: alpha-MASKED, wearing the leaf atlas. Separate
     /// from `foliage` for the reason `needle` is separate from `bark` — one
     /// `StandardMaterial` has one `alpha_mode`.
@@ -608,6 +612,10 @@ pub(super) struct Soup {
     nrm: Vec<[f32; 3]>,
     col: Vec<[f32; 4]>,
     uv: Vec<[f32; 2]>,
+    /// `ATTRIBUTE_UV_1`, written only by [`Self::tag_uv1`] — the foliage
+    /// shader's per-vertex (height above root, random). Empty for every soup
+    /// that does not sway, and then the mesh has no second UV at all.
+    uv1: Vec<[f32; 2]>,
     /// Texture tiles per metre of object space. A rock map over ~2 m reads at
     /// the scale `ART.md` rule 1 asks for: near-field grain under 5 cm.
     uv_scale: f32,
@@ -620,6 +628,7 @@ impl Default for Soup {
             nrm: Vec::new(),
             col: Vec::new(),
             uv: Vec::new(),
+            uv1: Vec::new(),
             // One tile per metre unless a builder says otherwise. Never 0.0,
             // which a derived `Default` would have given and which collapses
             // every UV onto one texel — the "texture did not load" failure
@@ -758,7 +767,23 @@ impl Soup {
         }
     }
 
-    pub(super) fn mesh(self) -> Mesh {
+    /// How many vertices the soup holds — the `start` for [`Self::tag_uv1`].
+    pub(super) fn len(&self) -> usize {
+        self.pos.len()
+    }
+
+    /// Write `ATTRIBUTE_UV_1` for every vertex from `start` on, as a function
+    /// of its position (`foliage.wgsl` reads it as height above the root and
+    /// a per-card random). Vertices before `start` that were never tagged
+    /// read `[0, 0]`: rooted, so they do not move.
+    pub(super) fn tag_uv1(&mut self, start: usize, f: impl Fn(Vec3) -> [f32; 2]) {
+        self.uv1.resize(self.pos.len(), [0.0, 0.0]);
+        for i in start..self.pos.len() {
+            self.uv1[i] = f(Vec3::from_array(self.pos[i]));
+        }
+    }
+
+    pub(super) fn mesh(mut self) -> Mesh {
         let n = self.pos.len() as u32;
         let mut m = Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -768,6 +793,10 @@ impl Soup {
         m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm);
         m.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uv);
+        if !self.uv1.is_empty() {
+            self.uv1.resize(n as usize, [0.0, 0.0]);
+            m.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.uv1);
+        }
         m.insert_indices(Indices::U32((0..n).collect()));
         // Tangents, for the same reason `terrain_mesh` generates them: Bevy's
         // PBR shader builds its tangent frame from `ATTRIBUTE_TANGENT`, and
@@ -1075,14 +1104,87 @@ pub const BUSH_CARD_VOLUME: f32 = 0.88;
 pub fn bush_card_mesh(variant: u32) -> Mesh {
     let mut s = Soup::default();
     let seed = 0x8f31_u32 ^ variant.wrapping_mul(2_654_435_761);
-    for i in 0..BUSH_CARDS {
+    bush_cluster(&mut s, seed, Vec3::ZERO, 1.0, BUSH_CARDS, Vec3::ZERO);
+    s.mesh()
+}
+
+/// Share of bushes drawn tall — taller than a standing player, the reference
+/// game's Glaucous Willow and Spicebush: *"taller than the player, which means
+/// you should be able to use them as cover and hide within the canopy"*
+/// (devblog 198). A bush is passable already (`terrain::occupant_volume`), so
+/// height is the whole of what hiding in one needs. **(knob)**
+pub const TALL_BUSH_SHARE: f32 = 0.5;
+/// How much the tall bush's interior mass is stretched upward, narrowed, and
+/// how far its centre rises, in the blob's frame. Narrower than the leaves on
+/// purpose: stretched to the leaves' own size it read as a tall green potato
+/// with leaves stuck on (the first capture).
+pub const TALL_BUSH_STRETCH: f32 = 1.3;
+pub const TALL_BUSH_NARROW: f32 = 0.78;
+pub const TALL_BUSH_RISE: f32 = 0.35;
+/// The tall bush's interior mass is the SHADED inside of a leaf mass, so it
+/// is drawn darker than the blob it is made from.
+pub const TALL_BUSH_SHADE: f32 = 0.55;
+/// The upper tier of leaves above the blob's centre, metres. With the base
+/// tier's `BUSH_CARD_HALF` this puts the crown at ~2.1 m over the ground.
+pub const TALL_BUSH_TIER_M: f32 = 0.95;
+
+/// Whether the bush in the scatter cell `key` is a tall one. Off the cell key
+/// so every client grows the same bush in the same place.
+pub fn tall_bush(key: u32) -> bool {
+    hash01(key, 0x7a11_b05e) < TALL_BUSH_SHARE
+}
+
+/// The tall bush's interior mass: the bush blob, stretched up.
+pub fn tall_bush_mesh() -> Mesh {
+    let mut m = archetype_mesh(Occupant::Bush)
+        .expect("bush mesh")
+        .transformed_by(
+            Transform::from_xyz(0.0, TALL_BUSH_RISE, 0.0).with_scale(Vec3::new(
+                TALL_BUSH_NARROW,
+                TALL_BUSH_STRETCH,
+                TALL_BUSH_NARROW,
+            )),
+        );
+    if let Some(VertexAttributeValues::Float32x4(c)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+        for v in c.iter_mut() {
+            for ch in &mut v[..3] {
+                *ch *= TALL_BUSH_SHADE;
+            }
+        }
+    }
+    m
+}
+
+/// A tall bush's leaves: the ordinary bush's cluster, a smaller one stacked
+/// on it, and two side clusters, all photographed cards in the blob's frame.
+pub fn tall_bush_card_mesh(variant: u32) -> Mesh {
+    let mut s = Soup::default();
+    let seed = 0x5a77_u32 ^ variant.wrapping_mul(2_654_435_761);
+    let dome = Vec3::new(0.0, TALL_BUSH_RISE, 0.0);
+    bush_cluster(&mut s, seed, Vec3::ZERO, 1.0, BUSH_CARDS, dome);
+    let lean = (hash01(seed, 101) - 0.5) * 0.3;
+    let crown = Vec3::new(lean, TALL_BUSH_TIER_M, (hash01(seed, 103) - 0.5) * 0.3);
+    bush_cluster(&mut s, seed ^ 0x51, crown, 0.88, BUSH_CARDS + 1, dome);
+    let a = hash01(seed, 107) * std::f32::consts::TAU;
+    for (k, side) in [(0u32, 1.0f32), (1, -1.0)] {
+        let r = 0.55 + 0.15 * hash01(seed, 109 + k);
+        let at = Vec3::new(a.sin() * r * side, TALL_BUSH_RISE, a.cos() * r * side);
+        bush_cluster(&mut s, seed ^ (0x77 + k), at, 0.78, 2, dome);
+    }
+    s.mesh()
+}
+
+/// `cards` crossed photographed quads of `half_k × BUSH_CARD_HALF`, centred
+/// on `centre`, normals pulled toward a sphere about `dome`.
+fn bush_cluster(s: &mut Soup, seed: u32, centre: Vec3, half_k: f32, cards: u32, dome: Vec3) {
+    for i in 0..cards {
         // Evenly spread, then jittered, so the pool's four variants do not all
         // present a card at the same yaw.
-        let a = i as f32 * std::f32::consts::PI / BUSH_CARDS as f32 + hash01(seed, i) * 0.7;
+        let a = i as f32 * std::f32::consts::PI / cards as f32 + hash01(seed, i) * 0.7;
         let side = Vec3::new(a.sin(), 0.0, a.cos());
         // One jitter for both axes, so a card stays square and the leaves on
         // it stay unstretched — see `BUSH_CARD_HALF`.
-        let half = BUSH_CARD_HALF * (0.86 + 0.28 * hash01(seed, i + 11));
+        let half = half_k * BUSH_CARD_HALF * (0.86 + 0.28 * hash01(seed, i + 11));
         let (hw, hh) = (half, half);
         let cell = (hash01(seed, i + 41) * BUSH_CARD_CELLS as f32) as u32 % BUSH_CARD_CELLS;
         let (du, dv) = (1.0 / BUSH_CARD_COLS as f32, 1.0 / BUSH_CARD_ROWS as f32);
@@ -1091,10 +1193,10 @@ pub fn bush_card_mesh(variant: u32) -> Mesh {
             (cell / BUSH_CARD_COLS) as f32 * dv,
         );
 
-        let b0 = -side * hw - Vec3::Y * hh;
-        let b1 = side * hw - Vec3::Y * hh;
-        let t0 = -side * hw + Vec3::Y * hh;
-        let t1 = side * hw + Vec3::Y * hh;
+        let b0 = centre - side * hw - Vec3::Y * hh;
+        let b1 = centre + side * hw - Vec3::Y * hh;
+        let t0 = centre - side * hw + Vec3::Y * hh;
+        let t1 = centre + side * hw + Vec3::Y * hh;
         // V grows downward in image space: the card's TOP takes the cell's
         // smallest v. `tests/bush_card.rs` asserts it rather than trusting it.
         let (uv_b0, uv_b1) = ([cu, cv + dv], [cu + du, cv + dv]);
@@ -1104,12 +1206,11 @@ pub fn bush_card_mesh(variant: u32) -> Mesh {
         let col = move |_: Vec3| [v, v, v, 1.0];
         // A sphere centred on the bush, so every leaf's normal points out of
         // the mass it belongs to. See `BUSH_CARD_VOLUME`.
-        let dome = Some(Vec3::ZERO);
+        let dome = Some(dome);
         let blend = |_: Vec3| BUSH_CARD_VOLUME;
         s.tri_uv([(b0, uv_b0), (t0, uv_t0), (b1, uv_b1)], col, dome, blend);
         s.tri_uv([(b1, uv_b1), (t0, uv_t0), (t1, uv_t1)], col, dome, blend);
     }
-    s.mesh()
 }
 
 /// A rock, built by subdividing an icosahedron and displacing it.
@@ -1870,6 +1971,10 @@ pub fn assets(
         bush_cards: (0..BUSH_CARD_POOL as u32)
             .map(|v| meshes.add(bush_card_mesh(v)))
             .collect(),
+        bush_tall: meshes.add(tall_bush_mesh()),
+        bush_tall_cards: (0..BUSH_CARD_POOL as u32)
+            .map(|v| meshes.add(tall_bush_card_mesh(v)))
+            .collect(),
         bush_leaf: tint_pool().map(|v| {
             materials.add(StandardMaterial {
                 // The tint is a mean-1 grey over the photograph's own colour,
@@ -1994,7 +2099,9 @@ pub fn stream(
     eye: Res<Eye>,
     lod: Res<tree::TreeLod>,
     cards: Option<Res<super::far_trees::TreeCards>>,
+    foliage: Option<ResMut<super::foliage::Foliages>>,
 ) {
+    let fresh = store.is_none();
     let a = store.get_or_insert_with(|| {
         let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
         let models = PropModels::load(&server);
@@ -2010,6 +2117,24 @@ pub fn stream(
     if a.cards.is_none() {
         if let Some(c) = cards.as_ref() {
             a.cards = Some((c.ring_meshes.clone(), c.ring_materials.clone()));
+        }
+    }
+    // The near trees and the bush leaves sway (`foliage.rs`): their meshes
+    // are spawned wearing these, and swapped to the foliage twin the frame
+    // they land.
+    if fresh {
+        if let Some(mut f) = foliage {
+            use super::foliage::Kind;
+            for (pool, kind) in [
+                (&a.bark, Kind::Bark),
+                (&a.needle, Kind::Needle),
+                (&a.leaf, Kind::Leaf),
+                (&a.bush_leaf, Kind::BushLeaf),
+            ] {
+                for h in pool {
+                    f.register(h, kind);
+                }
+            }
         }
     }
 
@@ -2363,7 +2488,12 @@ pub fn spawn_slot(
             // Indexed exactly as the conifer pool is, so two bushes side by
             // side do not present the same three cards.
             variant = (slot.yaw as usize) % a.bush_cards.len();
-            (a.bush.clone(), a.foliage[tint].clone())
+            let mass = if tall_bush(key) {
+                &a.bush_tall
+            } else {
+                &a.bush
+            };
+            (mass.clone(), a.foliage[tint].clone())
         }
         // **Indexed by species then yaw, exactly as the conifer pool is** —
         // `reference/ROCKS.md` §9.1, "the biome row picks the mesh family,
@@ -2477,9 +2607,14 @@ pub fn spawn_slot(
     // the same `FellPart::Vanish` the blob took, or picking a bush would leave
     // its leaves standing in the air.
     if slot.occupant == Occupant::Bush {
+        let leaves = if tall_bush(key) {
+            &a.bush_tall_cards
+        } else {
+            &a.bush_cards
+        };
         e.with_child((
             fellable(FellPart::Vanish),
-            Mesh3d(a.bush_cards[variant].clone()),
+            Mesh3d(leaves[variant].clone()),
             MeshMaterial3d(a.bush_leaf[tint].clone()),
             transform,
         ));
