@@ -71,7 +71,7 @@ pub enum Milestone {
     Bench,
     /// A furnace behind the core, crafted at the bench; ore smelts there.
     Furnace,
-    /// Everything this body can build without a workbench.
+    /// Everything this body builds: the starter and its first stations.
     Done,
 }
 
