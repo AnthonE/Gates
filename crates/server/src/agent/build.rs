@@ -55,9 +55,9 @@ use sim_core::craft::{
     STATION_FURNACE, STATION_NONE, STATION_RADIUS_M, STATION_WORKBENCH1, STATION_WORKBENCH2,
 };
 use sim_core::deploy::{
-    arch_is_door, bench_tier, lockable, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, REFUSE_D_CLAIM,
-    REFUSE_D_COST, REFUSE_D_HAS_LOCK, REFUSE_D_OVERLAP, REFUSE_D_OWNER, REFUSE_D_REACH,
-    REFUSE_D_SPOT, REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
+    arch_is_door, bench_tier, lockable, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, REFUSE_D_AUTH_FULL,
+    REFUSE_D_CLAIM, REFUSE_D_COST, REFUSE_D_HAS_LOCK, REFUSE_D_LOCKOUT, REFUSE_D_OVERLAP,
+    REFUSE_D_OWNER, REFUSE_D_REACH, REFUSE_D_SPOT, REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
 };
 use sim_core::limits::{
     CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
@@ -1057,12 +1057,17 @@ impl Passage {
 
     /// A deploy refusal: the use in flight was refused by the door's lock
     /// (`REFUSE_D_OWNER`), so the code goes in before the next; or the code
-    /// entered was not taken.
+    /// entered was not taken. A lock that has locked this body out, or
+    /// whose list has no room for it, will not take the code however often
+    /// it goes in: the walk gives up at its next step.
     fn on_refused(&mut self, reason: u8) {
         if self.entering.is_some() {
             self.entering = None;
             self.knock = None;
-            self.tries = self.tries.saturating_add(1);
+            self.tries = match u32::from(reason) {
+                REFUSE_D_LOCKOUT | REFUSE_D_AUTH_FULL => MAX_FAILS,
+                _ => self.tries.saturating_add(1),
+            };
             return;
         }
         if u32::from(reason) == REFUSE_D_OWNER {
@@ -1089,7 +1094,7 @@ impl Passage {
     /// A door that would not answer, or that `E` would not pick from
     /// here: one more try, and the walk fails after `MAX_FAILS`.
     fn tried(&mut self) -> Option<Pass> {
-        self.tries += 1;
+        self.tries = self.tries.saturating_add(1);
         (self.tries >= MAX_FAILS).then(|| {
             self.way = None;
             Pass::Fail(Why::Refused)
@@ -1137,6 +1142,11 @@ impl Passage {
                 }
             };
             self.start = self.at;
+        }
+        // Its own lock would not take the code: no more tries this walk.
+        if self.tries >= MAX_FAILS {
+            self.way = None;
+            return Pass::Fail(Why::Refused);
         }
         // Its own lock did not know it: the code, then the use again.
         if let Some((door, at)) = self.entering {

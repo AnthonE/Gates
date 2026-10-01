@@ -2264,6 +2264,58 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
         .world
         .deploys
         .lock_passes(front.0, front.1, front.2, front.3, ID));
+
+    // 4. The code changed under it: its own code is wrong now. Sent home
+    //    from outside, it tries the code a bounded number of times, gives
+    //    the walk up and does not stand there shocking itself into the
+    //    lockout.
+    let near = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 1.0, fz + 1.5);
+    h.stage_puppet(move |p| p.body = near);
+    h.step();
+    let changed = (code.wire() + 7) % (sim_core::lock::CODE_MAX + 1);
+    for (op, code) in [
+        (ACCESS_OP_ENTER, code.wire()),
+        (ACCESS_OP_SET_CODE, changed),
+    ] {
+        puppet_does(
+            &mut h,
+            ActionMsg::Access {
+                cx: front.0,
+                cz: front.1,
+                level: front.2,
+                loc: front.3,
+                op,
+                code,
+            },
+        );
+    }
+    assert!(!h
+        .shard
+        .world
+        .deploys
+        .lock_passes(front.0, front.1, front.2, front.3, ID));
+    h.stage_puppet(move |p| p.body = away);
+    h.stage(move |p| p.body = out);
+    h.step();
+    let mut gave_up = false;
+    for _ in 0..90 * TICK_HZ {
+        h.step();
+        gave_up |=
+            h.bot.memory().last.is_some_and(|r| {
+                r.goal == Goal::GoHome && r.outcome == Outcome::Failed(Why::Refused)
+            });
+    }
+    // A few codes a walk, and a minute between walks: two walks in the
+    // ninety seconds, and the keypad never shut.
+    let l = lock_at(&h, front.0, front.1, front.3).unwrap();
+    assert!(
+        gave_up && l.misses <= 2 * server::agent::build::MAX_FAILS && l.shut_until == 0,
+        "the walk home at a lock that no longer takes its code never gave up ({} misses): \
+         {:?} {}",
+        l.misses,
+        h.bot.builder().stats,
+        h.explain()
+    );
     assert!(u64::from(h.use_checks) >= h.bot.builder().stats.uses);
     let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
     assert!(h.verbs.is_subset(&expected));

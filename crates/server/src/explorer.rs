@@ -91,6 +91,12 @@ pub const BUILD_GOAL_SECS: u32 = 600;
 /// A visit home (the walk in, the feed, the box) that has not finished in
 /// this long is stuck.
 pub const STASH_GOAL_SECS: u32 = 120;
+/// A walk home through the doors that has not finished in this long is
+/// stuck.
+pub const GO_HOME_GOAL_SECS: u32 = 120;
+/// After a walk home came to nothing (its own lock would not take the
+/// code, say), this long before the next.
+pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
 /// A cook at a fire that has not finished in this long is stuck.
@@ -379,6 +385,8 @@ pub struct Memory {
     pub put_away: bool,
     /// A visit to the box failed a moment ago (`Home::stash_held`).
     pub stash_held: bool,
+    /// A walk home failed a moment ago (`GO_HOME_RETRY_TICKS`).
+    pub home_held: bool,
     /// What the box held when it was last open.
     pub stored: [(u16, u32); stash::STORED_ROWS],
     pub stored_len: u8,
@@ -600,6 +608,8 @@ pub struct Survivor {
     pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
     recycle_failed: Option<u32>,
+    /// When a walk home last came to nothing.
+    home_failed: Option<u32>,
     /// The session ends this many ticks after the welcome (`set_deadline`),
     /// and the tick that is, once welcomed.
     deadline_after: Option<u32>,
@@ -694,6 +704,7 @@ impl Survivor {
             oven_stats: OvenStats::default(),
             cook_failed: None,
             recycle_failed: None,
+            home_failed: None,
             deadline_after: None,
             deadline: None,
             welcomed: None,
@@ -912,6 +923,12 @@ impl Survivor {
             }
             Some(_) => self.end_goal(tick, Outcome::Interrupted(Why::LogOff)),
             None => {}
+        }
+        // The walk home came to nothing a moment ago: the session ends
+        // where it stands rather than at a door that will not open.
+        if self.home_held(tick) && self.builder.region(body) == Region::Outside {
+            self.stats.phase = Phase::LoggingOff;
+            return Intent::IDLE;
         }
         let settled = self.builder.region(body) == Region::Room && !self.builder.passing();
         if settled && !self.builder.door_open(core) {
@@ -1411,6 +1428,9 @@ impl Survivor {
         };
         self.memory.last = Some(report);
         self.history.push(report);
+        if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
+            self.home_failed = Some(tick);
+        }
         self.memory.trigger = match outcome {
             Outcome::Done | Outcome::Running => {
                 self.stats.goals_done += 1;
@@ -1540,6 +1560,10 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Build => self.build_home(core, body, tick),
+            Goal::GoHome if elapsed >= GO_HOME_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
             Goal::GoHome => self.go_home(core, body, tick),
             Goal::Stash if elapsed >= STASH_GOAL_SECS * TICK_HZ => {
                 self.home.stash_failed(tick);
@@ -2690,20 +2714,23 @@ impl Survivor {
     /// nobody is about, and the goal in hand is not one waiting on a move's
     /// answer of its own.
     fn dress(&mut self, core: &ClientCore, tick: u32, calm: bool) {
-        let quiet = match self.goal() {
-            None
-            | Some(
-                Goal::Explore
-                | Goal::GatherWood
-                | Goal::GatherStone
-                | Goal::GatherOre
-                | Goal::Forage
-                | Goal::Wait
-                | Goal::GoHome,
-            ) => true,
-            Some(Goal::Build) => self.builder.at_checkpoint(),
-            _ => false,
-        };
+        // Mid-walk through the doors a use or a code may go out any frame,
+        // and a move in the outbox would take its place.
+        let quiet = !self.builder.passing()
+            && match self.goal() {
+                None
+                | Some(
+                    Goal::Explore
+                    | Goal::GatherWood
+                    | Goal::GatherStone
+                    | Goal::GatherOre
+                    | Goal::Forage
+                    | Goal::Wait
+                    | Goal::GoHome,
+                ) => true,
+                Some(Goal::Build) => self.builder.at_checkpoint(),
+                _ => false,
+            };
         let due = self
             .dressed_at
             .is_none_or(|at| tick.wrapping_sub(at) >= DRESS_TICKS);
@@ -3153,6 +3180,12 @@ impl Survivor {
         oven::nearest(core, work, own.into_iter(), x, z, within)
     }
 
+    /// Is a walk home not worth another try yet?
+    fn home_held(&self, tick: u32) -> bool {
+        self.home_failed
+            .is_some_and(|at| tick.wrapping_sub(at) < GO_HOME_RETRY_TICKS)
+    }
+
     fn oven_failed(&mut self, tick: u32) {
         match self.oven_job.work() {
             Work::Cook => self.cook_failed = Some(tick),
@@ -3435,6 +3468,7 @@ impl Survivor {
         self.memory.base = survey;
         self.home.set_base(self.builder.stand());
         self.memory.stash_held = self.home.stash_held(tick);
+        self.memory.home_held = self.home_held(tick);
         self.memory.home = match self.builder.stand() {
             None => HomeSense::default(),
             Some([hx, hz]) => {
@@ -4510,7 +4544,7 @@ pub fn observe(
     if memory.base.ready {
         s.offer(Goal::Build);
     }
-    if memory.home.state == HomeState::Built {
+    if memory.home.state == HomeState::Built && !memory.home_held {
         s.offer(Goal::GoHome);
     }
     // A loot run: a barrel or crate it knows of, or a place on the map
