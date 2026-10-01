@@ -84,6 +84,9 @@ const NOTICE_TICKS: u32 = TICK_HZ;
 /// A seat swings this far inside the reach the server judges, centre to
 /// centre: a hair short of the edge, as a player's own sense of it is.
 const REACH_MARGIN_M: f32 = 0.1;
+/// An agent's shot loosed from at least this far off counts as a long one
+/// ([`Record::far_shots`]).
+pub const FAR_SHOT_M: f32 = 25.0;
 
 /// Who sits across from the agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +204,12 @@ pub struct Arena {
     /// The other body stands where it is with a bow up, eyes on the
     /// agent's chest; drawing and loosing when `true`.
     pub archer: Option<bool>,
+    /// The other body walks straight at the agent, eyes level, whatever it
+    /// holds out but never raised, and stops this far off.
+    pub walker: Option<f32>,
+    /// The agent's body is put back here every tick: it shoots from where
+    /// it stands, however it tries to walk.
+    pub pin: Option<Body>,
     pub haven: sim_core::terrain::Haven,
     pub latency: Latency,
     uplink: VecDeque<(u32, InputFrame, (u16, u32))>,
@@ -287,6 +296,8 @@ impl Arena {
             keep_off: None,
             chopper: None,
             archer: None,
+            walker: None,
+            pin: None,
             haven: sim_core::terrain::haven(SEED),
             latency: Latency::NONE,
             uplink: VecDeque::new(),
@@ -674,6 +685,19 @@ impl Arena {
             };
             self.push(1, frame, (0, 0));
         }
+        if let Some(stop) = self.walker {
+            let (me, them) = (self.pos(self.foe), self.pos(self.me));
+            let (dx, dz) = (them[0] - me[0], them[2] - me[2]);
+            let frame = InputFrame {
+                seq: self.tick as u16,
+                yaw: yaw_toward(dx, dz),
+                pitch: server::agent::intent::LEVEL_PITCH,
+                move_z: if dx.hypot(dz) > stop { 127 } else { 0 },
+                sel: 0,
+                ..Default::default()
+            };
+            self.push(1, frame, (0, 0));
+        }
         if let Some(mut peer) = self.peer.take() {
             ALLOCS.with(|c| c.set(Some(0)));
             let frame = peer
@@ -722,6 +746,10 @@ impl Arena {
                 p.body.qy as f32 * POS_Y_Q,
                 p.body.qz as f32 * POS_XZ_Q,
             ];
+        }
+        if let Some(body) = self.pin {
+            let me = self.me;
+            self.stage(me, |p| p.body = body);
         }
         if let Some((off, bearing)) = self.keep_off {
             let at = self.player(self.me).body;
@@ -884,6 +912,8 @@ pub struct Setup {
     pub trace: bool,
     /// The seat comes on the moment it is placed: no waiting to be seen.
     pub ambush: bool,
+    /// The agent is held where it stands ([`Arena::pin`]).
+    pub pinned: bool,
 }
 
 impl Setup {
@@ -901,6 +931,7 @@ impl Setup {
             limit_ticks: 60 * TICK_HZ,
             trace: false,
             ambush: false,
+            pinned: false,
         }
     }
 }
@@ -918,6 +949,10 @@ pub struct Record {
     pub hits: u32,
     pub their_attacks: u32,
     pub their_hits: u32,
+    /// The agent's shots loosed from [`FAR_SHOT_M`] or further, and those
+    /// of its hits that came from one.
+    pub far_shots: u32,
+    pub far_hits: u32,
     /// Ticks from the seat first standing on the agent's screen
     /// ([`Arena::in_view`]) to the agent's first blow that landed.
     pub sight_to_hit: Option<u32>,
@@ -1023,6 +1058,17 @@ pub fn bout(s: Setup) -> (Arena, Record) {
         }
     }
     a.sit(s.seat, u64::from(s.seed));
+    if s.pinned {
+        a.pin = Some(a.player(me).body);
+    }
+    let shoots = a
+        .shard
+        .world
+        .combat
+        .held_ranged(sim_core::combat::held_item(a.player(me)))
+        .is_some();
+    // The range the agent's last shot left from.
+    let mut shot_from = 0.0f32;
     let (start, hp0) = (a.tick, a.player(me).hp);
     let mut r = Record {
         react_floor: skill.react_frames,
@@ -1040,6 +1086,10 @@ pub fn bout(s: Setup) -> (Arena, Record) {
         // A cadence paid: a swing or a shot (a relaxed bow creeps by one).
         if p.next_swing > my_swing + 8 {
             r.attacks += 1;
+            if shoots {
+                shot_from = a.gap();
+                r.far_shots += u32::from(shot_from >= FAR_SHOT_M);
+            }
             if s.trace {
                 a.trace_shot(foe_was);
             }
@@ -1049,6 +1099,7 @@ pub fn bout(s: Setup) -> (Arena, Record) {
         }
         if q.hp < their_hp {
             r.hits += 1;
+            r.far_hits += u32::from(shoots && shot_from >= FAR_SHOT_M);
             if r.sight_to_hit.is_none() {
                 // A blow at a body never on screen counts as no reaction at all.
                 r.sight_to_hit = Some(sighted.map_or(0, |at| a.tick - at));
@@ -1128,6 +1179,8 @@ pub struct Tally {
     pub their_attacks: u32,
     pub their_hits: u32,
     pub kill_ticks: u32,
+    pub far_shots: u32,
+    pub far_hits: u32,
 }
 
 impl Tally {
@@ -1139,6 +1192,8 @@ impl Tally {
         self.hits += r.hits;
         self.their_attacks += r.their_attacks;
         self.their_hits += r.their_hits;
+        self.far_shots += r.far_shots;
+        self.far_hits += r.far_hits;
         if r.won {
             self.kill_ticks += r.ticks;
         }
@@ -1150,6 +1205,11 @@ impl Tally {
 
     pub fn hit_pct(&self) -> u32 {
         self.hits * 100 / self.attacks.max(1)
+    }
+
+    /// Of the shots loosed from [`FAR_SHOT_M`] or further.
+    pub fn far_hit_pct(&self) -> u32 {
+        self.far_hits * 100 / self.far_shots.max(1)
     }
 
     pub fn their_hit_pct(&self) -> u32 {
@@ -1184,14 +1244,15 @@ pub fn row(label: &str, t: &Tally) -> String {
 /// The label a bout goes under in the table.
 pub fn label(s: &Setup) -> String {
     format!(
-        "{} v {} {} {:.0}m {} {}ms{}",
+        "{} v {} {} {:.0}m {} {}ms{}{}",
         s.mine.name(),
         s.theirs.name(),
         s.seat.name(),
         s.dist_m,
         s.preset.name(),
         s.latency.ms(),
-        if s.ambush { " ambush" } else { "" }
+        if s.ambush { " ambush" } else { "" },
+        if s.pinned { " pinned" } else { "" }
     )
 }
 
