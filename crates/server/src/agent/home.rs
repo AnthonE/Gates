@@ -138,6 +138,9 @@ pub struct Home {
     /// The last blow or death near one of them, and where it was.
     alarm: Option<u32>,
     alarm_at: Option<[f32; 2]>,
+    /// The last blow, blast, shot or hurt at the base itself (not at a bag
+    /// put down elsewhere): what calls it home to defend it.
+    fought: Option<u32>,
     /// The last blow, break or blast on the base itself: not a bite taken
     /// standing beside it.
     raid: Option<u32>,
@@ -175,6 +178,7 @@ impl Home {
             bags: [None; BAG_CAP],
             alarm: None,
             alarm_at: None,
+            fought: None,
             raid: None,
             asked: None,
             verdict: None,
@@ -330,6 +334,9 @@ impl Home {
     fn sound(&mut self, at: [f32; 2], tick: u32) {
         self.alarm = Some(tick);
         self.alarm_at = Some(at);
+        if self.near_base(at) {
+            self.fought = Some(tick);
+        }
     }
 
     /// A blast heard here: near home, somebody is blowing their way in.
@@ -346,6 +353,7 @@ impl Home {
     pub fn on_struck(&mut self, tick: u32) {
         self.alarm = Some(tick);
         self.alarm_at = self.base;
+        self.fought = Some(tick);
         self.raid = Some(tick);
     }
 
@@ -364,6 +372,7 @@ impl Home {
         {
             self.alarm = Some(tick);
             self.alarm_at = self.base;
+            self.fought = Some(tick);
             self.raid = Some(tick);
         }
     }
@@ -469,9 +478,17 @@ impl Home {
             .filter(|_| self.raid.is_some_and(|at| tick.wrapping_sub(at) < within))
     }
 
-    /// A blow, blast, shot or death at home fresher than `within`.
+    /// A blow, blast, shot or death at the base itself fresher than
+    /// `within`. A fight by a bag put down elsewhere is not one: nothing
+    /// there for a defence to save.
     pub fn alarmed(&self, tick: u32, within: u32) -> bool {
-        self.alarm.is_some_and(|at| tick.wrapping_sub(at) < within)
+        self.fought.is_some_and(|at| tick.wrapping_sub(at) < within)
+    }
+
+    /// A defence saw the base through: the fight that called it home is
+    /// over, and only a new one calls it back.
+    pub fn settle(&mut self) {
+        self.fought = None;
     }
 
     pub fn under_attack(&self, tick: u32) -> bool {
@@ -897,6 +914,15 @@ mod tests {
         home.on_hurt([x + 10.0, z], 20);
         assert!(home.under_attack(20 + HOME_ALARM_TICKS - 1));
         assert!(!home.under_attack(20 + HOME_ALARM_TICKS));
+        // A fight by a bag is no call to defend a base: there is none here.
+        home.on_shot([x + 5.0, z], 30);
+        assert!(home.under_attack(30) && !home.alarmed(30, 10));
+        // Nor by a bag put down away from the base.
+        home.set_base(Some([x + 200.0, z]));
+        home.on_hurt([x + 5.0, z], 40);
+        assert!(home.under_attack(40) && !home.alarmed(40, 10));
+        home.on_shot([x + 205.0, z], 50);
+        assert!(home.alarmed(50, 10), "shots at the base itself");
         // The death screen's list is the truth.
         home.on_bags(&[]);
         assert_eq!(home.bags(), 0);
@@ -994,6 +1020,10 @@ mod tests {
         assert_eq!(home.raided(30, 5), None, "a bite by the base is no raid");
         home.on_struck(31);
         assert_eq!(home.raided(31, 5), Some([300.0, 300.0]), "a blow on it");
+        assert!(home.alarmed(31, 5));
+        home.settle();
+        assert!(!home.alarmed(31, 5), "seen through");
+        assert!(home.under_attack(31), "still no bag to wake on there");
         let mut home = Home::new();
         home.on_struck(5);
         assert!(home.under_attack(5), "a hit on its own wall");

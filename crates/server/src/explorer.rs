@@ -25,7 +25,7 @@
 use crate::agent::build::{craft_fits, queue_wait, queued, Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
 use crate::agent::cover;
-use crate::agent::defend::{self, DefendJob, DefendStats, Ward};
+use crate::agent::defend::{self, DefendJob, DefendStats, LetBe, Ward};
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
@@ -424,13 +424,14 @@ pub struct Memory {
     /// apart at, and no recycle came to nothing a moment ago.
     pub recycle: bool,
     /// Something of its base is damaged and can be mended
-    /// (`defend::mendable`); a defence came to nothing a moment ago.
+    /// (`defend::mendable`), seen from near it (`defend::MEND_SIGHT_M`);
+    /// a defence came to nothing a moment ago.
     pub damaged: bool,
     pub defend_held: bool,
     /// Its temperament raids; a raid came to nothing a moment ago.
     pub raids: bool,
     pub raid_held: bool,
-    /// A blow, blast or shot at home fresh enough to call it back
+    /// A blow, blast or shot at the base fresh enough to call it back
     /// (`defend::DEFEND_ALARM_TICKS`).
     pub alarm: bool,
 }
@@ -643,6 +644,8 @@ pub struct Survivor {
     defend_job: DefendJob,
     pub defend_stats: DefendStats,
     defend_failed: Option<u32>,
+    /// What defences gave up on, let be by the next ones a while.
+    defend_let_be: LetBe,
     /// Other people's bases as its eyes found them, and the raid in hand.
     bases: Bases,
     raid_job: RaidJob,
@@ -750,6 +753,7 @@ impl Survivor {
             defend_job: DefendJob::default(),
             defend_stats: DefendStats::default(),
             defend_failed: None,
+            defend_let_be: LetBe::default(),
             bases: Bases::new(),
             raid_job: RaidJob::default(),
             raid_failed: None,
@@ -1169,7 +1173,7 @@ impl Survivor {
             let busy = self.combat.engaged() || !self.at_checkpoint();
             if logging_off {
                 self.stats.deferred_dropped += 1;
-            } else if busy && !urgent(choice.goal) {
+            } else if busy && !urgent(choice.goal, self.memory.alarm) {
                 self.deferred = Some((choice, now));
                 self.stats.deferred += 1;
             } else {
@@ -1482,10 +1486,17 @@ impl Survivor {
         if goal == Goal::Loot {
             self.loot.stats.runs += 1;
         }
-        self.defend_job = DefendJob::default();
-        self.raid_job = RaidJob::default();
+        // A defence or raid cut short is over all the same: what the one
+        // gave up on is let be, and the other's base is let be a while
+        // rather than priced again from a face already blown.
+        self.defend_let_be.remember(&self.defend_job, tick);
+        self.defend_job = DefendJob::new(self.defend_let_be);
+        self.raid_let_be(tick);
         if goal == Goal::Defend {
             self.defend_stats.defences += 1;
+            if self.memory.alarm {
+                self.defend_stats.alarmed += 1;
+            }
         }
         self.builder.halt();
     }
@@ -3439,6 +3450,12 @@ impl Survivor {
                     if self.defend_job.gave_up() {
                         self.defend_failed = Some(tick);
                     }
+                    // Seen through: only a new fight calls it back, and
+                    // the next offer waits for a fresh look at the walls.
+                    self.home.settle();
+                    self.memory.alarm = false;
+                    self.memory.damaged = false;
+                    self.defend_let_be.remember(&self.defend_job, tick);
                     if let Some(a) = self.goal.as_mut() {
                         a.gained = a.gained.saturating_add(self.defend_job.mended);
                     }
@@ -3448,6 +3465,7 @@ impl Survivor {
             }
             Ward::Fail(why) => {
                 self.defend_failed = Some(tick);
+                self.defend_let_be.remember(&self.defend_job, tick);
                 self.end_goal(tick, Outcome::Failed(why));
                 return Intent::IDLE;
             }
@@ -3547,7 +3565,7 @@ impl Survivor {
             }
         };
         if sent {
-            self.raid_job.sent(tick, &step);
+            self.raid_job.sent(&mut self.bases, tick, &step);
         }
         intent
     }
@@ -3560,7 +3578,16 @@ impl Survivor {
         if matches!(outcome, Outcome::Failed(_)) {
             self.raid_failed = Some(tick);
         }
+        self.raid_let_be(tick);
         self.end_goal(tick, outcome);
+    }
+
+    /// A raid ended, however it ended: its base is let be a while.
+    fn raid_let_be(&mut self, tick: u32) {
+        if let Some((i, ..)) = self.raid_job.target() {
+            self.bases.tried(i, tick);
+        }
+        self.raid_job = RaidJob::default();
     }
 
     fn stash_done(&mut self, tick: u32) {
@@ -3744,7 +3771,7 @@ impl Survivor {
                     state,
                     distance: Distance::of(d),
                     bearing,
-                    attacked: self.home.under_attack(tick),
+                    attacked: self.home.alarmed(tick, home::HOME_ALARM_TICKS),
                     damaged: self.memory.damaged,
                 }
             }
@@ -3773,8 +3800,14 @@ impl Survivor {
             self.memory.loot_held = self.loot.held(tick);
             // Home's damage, and the alarm that calls it back; bases worth
             // a raid, by its temperament and what it carries.
-            self.memory.damaged =
-                self.builder.survey().hearth && defend::mendable(core, &self.builder);
+            let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+            let in_sight = self
+                .builder
+                .stand()
+                .is_some_and(|[x, z]| (x - here[0]).hypot(z - here[1]) <= defend::MEND_SIGHT_M);
+            self.memory.damaged = self.builder.survey().hearth
+                && in_sight
+                && defend::mendable(core, &self.builder, &self.defend_let_be, tick);
             self.memory.defend_held = self
                 .defend_failed
                 .is_some_and(|at| tick.wrapping_sub(at) < defend::DEFEND_RETRY_TICKS);
@@ -3785,7 +3818,6 @@ impl Survivor {
                 .raid_failed
                 .is_some_and(|at| tick.wrapping_sub(at) < RAID_HELD_TICKS);
             let means = self.means(core);
-            let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let (n, nearest) = self.bases.targets(&means, temperament, here, tick);
             let mut raid = Sighting::default();
             if let Some([x, z]) = nearest {
@@ -4341,6 +4373,7 @@ impl BotDriver for Survivor {
         self.loot_job = LootJob::default();
         self.bases.clear();
         self.defend_job = DefendJob::default();
+        self.defend_let_be = LetBe::default();
         self.raid_job = RaidJob::default();
         self.shot_at = None;
         self.oven_job = DeviceJob::new(Work::Cook);
@@ -4401,9 +4434,14 @@ impl BotDriver for Survivor {
 }
 
 /// An answer that cannot wait for a fight to end: running, fighting,
-/// healing and going home to defend it are part of it.
-fn urgent(goal: Goal) -> bool {
-    matches!(goal, Goal::Flee | Goal::Fight | Goal::Heal | Goal::Defend)
+/// healing and going home to defend it while it is fought over (`alarm`)
+/// are part of it. Mending what a quiet base lost can wait.
+fn urgent(goal: Goal, alarm: bool) -> bool {
+    match goal {
+        Goal::Flee | Goal::Fight | Goal::Heal => true,
+        Goal::Defend => alarm,
+        _ => false,
+    }
 }
 
 fn heartbeat_ticks(mind: &Mind) -> u32 {

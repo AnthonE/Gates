@@ -1519,10 +1519,10 @@ impl Scripted {
         if hp < SCRIPTED_HEAL_HP_PCT && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: hurt, and nobody about");
         }
-        // Home fought over, or damaged: back inside, the fight met from
-        // there, then the damage mended.
-        if s.offers(Goal::Defend) {
-            return (Goal::Defend, "scripted: home is under attack or damaged");
+        // Home fought over: back inside, the fight met from there, then
+        // the damage mended.
+        if s.home.attacked && s.offers(Goal::Defend) {
+            return (Goal::Defend, "scripted: home is under attack");
         }
         // A raid done: home with what it took, before anyone comes after it.
         let raided = s
@@ -1567,6 +1567,10 @@ impl Scripted {
                 Goal::Recover,
                 "scripted: my backpack is near and nobody is about",
             );
+        }
+        // Home quiet but damaged: mended once the body is seen to.
+        if s.offers(Goal::Defend) {
+            return (Goal::Defend, "scripted: home is damaged");
         }
         // A heartbeat with no urgent need lets a working goal finish: the
         // rotation below is for choosing a new one, not for abandoning a
@@ -2149,8 +2153,9 @@ mod tests {
         assert_eq!(v["cupboard_needs_feeding"], false);
     }
 
-    /// Home under attack or damaged comes before everything but running
-    /// and healing; a raid goes at night, ahead of the base's own work.
+    /// Home under attack comes before everything but running and healing,
+    /// mending a quiet one after the meters; a raid goes at night, ahead of
+    /// the base's own work.
     #[test]
     fn the_playbook_defends_home_first_and_raids_by_night() {
         let mut scripted = Scripted::default();
@@ -2167,6 +2172,8 @@ mod tests {
         s.milestone = Milestone::Upstairs;
         assert_eq!(scripted.pick(&s).0, Goal::Eat, "hungry, home is fine");
         s.offer(Goal::Defend);
+        s.home.damaged = true;
+        assert_eq!(scripted.pick(&s).0, Goal::Eat, "food before mending");
         s.home.attacked = true;
         assert_eq!(scripted.pick(&s).0, Goal::Defend, "home before food");
         s.options_len = 0;

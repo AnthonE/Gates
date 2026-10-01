@@ -22,7 +22,9 @@
 //! client's `X` aims: the structure nearest the feet), stands clear of the
 //! blast, and once the face is down walks in, opens each box it sees with
 //! the panel (`encode_action_container`) and takes what fits
-//! (`encode_action_move`). Then the goal ends, and home is the mind's.
+//! (`encode_action_move`). Then the goal ends, and home is the mind's. The
+//! hole is remembered ([`Base::open`]): the next raid on that base walks
+//! back in through it until the eyes see the face stand there again.
 
 use crate::agent::build::{aim_point, e_picks_by, look_point, nearest_structure};
 use crate::agent::combat::Temperament;
@@ -87,6 +89,10 @@ pub const VERDICT_TICKS: u32 = 3 * TICK_HZ;
 /// Through the hole: this far past where the face stood, within this long.
 pub const ENTER_M: f32 = 1.0;
 pub const ENTER_TICKS: u32 = 20 * TICK_HZ;
+/// Past the face's line by this much: inside.
+pub const INSIDE_M: f32 = 0.5;
+/// Lined up on the hole from outside, within this of its middle.
+pub const LINED_M: f32 = 0.25;
 /// Inside, it looks round this long for boxes before giving the base up.
 pub const LOOK_TICKS: u32 = 6 * TICK_HZ;
 /// Presses answered by nothing before a box is let be.
@@ -140,6 +146,9 @@ pub struct Base {
     pub boxes: [Option<OpAddr>; BOX_ROWS],
     /// A raid on it began, or came to nothing.
     pub tried: Option<u32>,
+    /// A face it brought down, and down still as far as the eyes know: the
+    /// way back in.
+    pub open: Option<Face>,
 }
 
 impl Base {
@@ -169,6 +178,18 @@ pub struct Means {
 pub enum Breach {
     Satchels(u8),
     Swings(u16),
+    /// A hole it made already: nothing to pay.
+    Open,
+}
+
+/// What a way in costs, to compare: a hole before blows, blows before
+/// satchels, fewer before more.
+fn cost(b: Breach) -> u32 {
+    match b {
+        Breach::Open => 0,
+        Breach::Swings(n) => u32::from(n),
+        Breach::Satchels(n) => 10_000 + u32::from(n),
+    }
 }
 
 /// The cheapest way through this face with these means, from outside it.
@@ -196,16 +217,25 @@ pub fn breach(face: &Face, means: &Means) -> Option<Breach> {
     (n <= u32::from(MAX_CHARGES) && n <= means.satchels).then_some(Breach::Satchels(n as u8))
 }
 
-/// The cheapest face of a base and its way in, cheapest first: blows
-/// before satchels, fewer before more.
+/// The cheapest face of a base and its way in: the hole it made, else
+/// blows before satchels, fewer before more. A doorway with its door seen
+/// standing in it is no face of its own: the door is what `X` takes there.
 fn cheapest(base: &Base, means: &Means) -> Option<(Face, Breach)> {
-    let cost = |b: Breach| match b {
-        Breach::Swings(n) => u32::from(n),
-        Breach::Satchels(n) => 10_000 + u32::from(n),
+    if let Some(open) = base.open {
+        return Some((open, Breach::Open));
+    }
+    let door_in = |f: &Face| {
+        !f.deploy
+            && base
+                .faces
+                .iter()
+                .flatten()
+                .any(|d| d.deploy && d.at == f.at)
     };
     base.faces
         .iter()
         .flatten()
+        .filter(|f| !door_in(f))
         .filter_map(|f| breach(f, means).map(|b| (*f, b)))
         .min_by_key(|&(_, b)| cost(b))
 }
@@ -215,7 +245,7 @@ fn cheapest(base: &Base, means: &Means) -> Option<(Face, Breach)> {
 /// killer-on-sight; none otherwise.
 pub fn worth(temperament: Temperament, breach: Breach, offline: bool) -> bool {
     let weak = match breach {
-        Breach::Swings(_) => true,
+        Breach::Open | Breach::Swings(_) => true,
         Breach::Satchels(n) => u32::from(n) <= WEAK_SATCHELS,
     };
     match temperament {
@@ -456,6 +486,10 @@ impl Bases {
                     };
                     self.stats.faces += 1;
                     let same = |f: &Face| f.deploy == deploy && f.at == at;
+                    if base.open.is_some_and(|f| same(&f)) {
+                        // Stands again: the hole is shut.
+                        base.open = None;
+                    }
                     let slot = base
                         .faces
                         .iter()
@@ -488,8 +522,17 @@ impl Bases {
         }
     }
 
-    /// A face it planted on, or swung at, came down, or is gone from the
-    /// mirror: forgotten.
+    /// A face it planted on, or swung at, came down: the way in, until it
+    /// is seen standing again.
+    pub fn opened(&mut self, i: usize, face: &Face) {
+        self.gone(i, face);
+        if let Some(b) = self.bases.get_mut(i) {
+            b.open = Some(*face);
+        }
+    }
+
+    /// A face that is no way in from outside it (`X` takes something
+    /// else there): forgotten, until the eyes find it again.
     pub fn gone(&mut self, i: usize, face: &Face) {
         if let Some(b) = self.bases.get_mut(i) {
             for f in b.faces.iter_mut() {
@@ -528,10 +571,7 @@ impl Bases {
             if !worth(temperament, way, b.offline(tick)) {
                 continue;
             }
-            let cost = match way {
-                Breach::Swings(n) => u32::from(n),
-                Breach::Satchels(n) => 10_000 + u32::from(n),
-            };
+            let cost = cost(way);
             if best.is_none_or(|(c, bd, ..)| (cost, d) < (c, bd)) {
                 best = Some((cost, d, i, face, way));
             }
@@ -696,6 +736,10 @@ pub struct RaidJob {
     chest: Option<(OpAddr, Lid)>,
     box_tries: u8,
     moved: Option<bool>,
+    /// Units in the move in flight: counted taken once the move lands.
+    moving: u16,
+    /// Lined up outside the hole: the last steps in are walked straight.
+    lined: bool,
     done_boxes: [Option<OpAddr>; BOX_ROWS],
     /// At the face with the weapon since.
     swinging: Option<u32>,
@@ -716,7 +760,7 @@ impl RaidJob {
     }
 
     /// The action asked for went out.
-    pub fn sent(&mut self, tick: u32, what: &Raid) {
+    pub fn sent(&mut self, bases: &mut Bases, tick: u32, what: &Raid) {
         match what {
             Raid::Throw { .. } => {
                 self.planting = Some(tick);
@@ -730,14 +774,16 @@ impl RaidJob {
                     self.chest = Some((at, Lid::Opening(tick)));
                 }
             }
-            Raid::Take { .. } => {
+            Raid::Take { count, .. } => {
                 if let Some((at, _)) = self.chest {
                     self.chest = Some((at, Lid::Moving(tick)));
                     self.moved = None;
+                    self.moving = *count;
                 }
             }
             Raid::Close(_) => {
                 if let Some((at, _)) = self.chest.take() {
+                    bases.stats.boxes += 1;
                     if let Some(s) = self.done_boxes.iter_mut().find(|s| s.is_none()) {
                         *s = Some(at);
                     }
@@ -897,16 +943,24 @@ impl RaidJob {
             self.since = tick;
             bases.stats.raids += 1;
         }
-        let Some((base, face, _)) = self.target else {
+        let Some((base, face, way)) = self.target else {
             return Raid::Fail(Why::NotFound);
         };
         match self.leg {
+            Leg::Breach if way == Breach::Open => {
+                // A hole it made before: straight to it, and in.
+                self.leg = Leg::Enter;
+                self.since = tick;
+                self.lined = false;
+                Raid::Go(Intent::IDLE)
+            }
             Leg::Breach | Leg::Clear if !Self::stands(core, &face) => {
                 // Down: the way in is open.
                 bases.stats.breached += 1;
-                bases.gone(base, &face);
+                bases.opened(base, &face);
                 self.leg = Leg::Enter;
                 self.since = tick;
+                self.lined = false;
                 self.planting = None;
                 Raid::Go(Intent::IDLE)
             }
@@ -942,27 +996,66 @@ impl RaidJob {
                     }
                 }
             }
-            Leg::Enter => {
-                // Just past where the face stood: inside, whatever stands
-                // in the room.
-                let p = face.outside(-ENTER_M);
-                if tick.wrapping_sub(self.since) >= ENTER_TICKS {
-                    return self.give_up(bases, Why::Stuck, tick);
-                }
-                let there = (p[0] - x).hypot(p[1] - z) <= 0.6;
-                match self.walk_to(core, body, route, p, false, there, tick) {
-                    Some(Ok(intent)) => Raid::Go(intent),
-                    Some(Err(why)) => self.give_up(bases, why, tick),
-                    None => {
-                        self.leg = Leg::Loot;
-                        self.since = tick;
-                        self.looking = None;
-                        Raid::Go(Intent::IDLE)
-                    }
-                }
-            }
+            Leg::Enter => self.enter(core, body, route, bases, face, tick),
             Leg::Loot => self.loot(core, seed, haven, body, hands, route, bases, tick),
         }
+    }
+
+    /// Through the hole: by a route to the middle of it outside, then
+    /// straight in, past where the face stood (a doorway's posts leave a
+    /// gap a route does not thread, and what stands in the room may sit
+    /// right behind it).
+    fn enter(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        route: &mut Route,
+        bases: &mut Bases,
+        face: Face,
+        tick: u32,
+    ) -> Raid {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let (ax, az) = anchor(face.at.cx, face.at.cz, face.at.loc);
+        let inside = -((x - ax) * face.out[0] + (z - az) * face.out[1]);
+        let stalled = self
+            .approach
+            .is_some_and(|(_, since)| tick.wrapping_sub(since) >= STALL_TICKS);
+        // In; or past the line and stopped by what stands in the room.
+        if inside >= INSIDE_M || (self.lined && stalled && inside > 0.0) {
+            self.leg = Leg::Loot;
+            self.since = tick;
+            self.looking = None;
+            self.approach = None;
+            return Raid::Go(Intent::IDLE);
+        }
+        if !self.lined {
+            let p = face.outside(STAND_OUT_M);
+            let there = (p[0] - x).hypot(p[1] - z) <= LINED_M;
+            match self.walk_to(core, body, route, p, false, there, tick) {
+                Some(Ok(intent)) => return Raid::Go(intent),
+                Some(Err(why)) => return self.give_up(bases, why, tick),
+                None => {
+                    self.lined = true;
+                    self.since = tick;
+                }
+            }
+        }
+        if tick.wrapping_sub(self.since) >= ENTER_TICKS {
+            return self.give_up(bases, Why::Stuck, tick);
+        }
+        let p = face.outside(-ENTER_M);
+        let left = (p[0] - x).hypot(p[1] - z);
+        match self.approach {
+            Some((best, since)) if left > best - 0.02 => {
+                if tick.wrapping_sub(since) >= STALL_TICKS {
+                    // Shut again, or nothing to get through.
+                    self.approach = None;
+                    return self.give_up(bases, Why::Stuck, tick);
+                }
+            }
+            _ => self.approach = Some((left, tick)),
+        }
+        Raid::Go(Intent::walk(yaw_toward(p[0] - x, p[1] - z)))
     }
 
     /// At the face: to the spot outside it, then a charge planted with the
@@ -980,7 +1073,7 @@ impl RaidJob {
         means: &Means,
         tick: u32,
     ) -> Raid {
-        let Some((_, face, way)) = self.target else {
+        let Some((base, face, way)) = self.target else {
             return Raid::Fail(Why::NotFound);
         };
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
@@ -1013,7 +1106,7 @@ impl RaidJob {
         let picks = nearest_structure(core, x, z) == Some((face.deploy, face.at));
         let there = match way {
             Breach::Satchels(_) => picks,
-            Breach::Swings(_) => false,
+            Breach::Swings(_) | Breach::Open => false,
         };
         match self.walk_to(core, body, route, p, false, there, tick) {
             Some(Ok(intent)) => return Raid::Go(intent),
@@ -1023,6 +1116,7 @@ impl RaidJob {
         let item = match way {
             Breach::Satchels(_) => means.satchel.map(|(item, _)| item),
             Breach::Swings(_) => means.melee.map(|(item, ..)| item),
+            Breach::Open => None,
         };
         let Some(item) = item else {
             return self.give_up(bases, Why::NoTool, tick);
@@ -1053,7 +1147,10 @@ impl RaidJob {
         match way {
             Breach::Satchels(_) => {
                 if !picks {
-                    // Not what `X` takes from where the feet ended up.
+                    // Not what `X` takes from where the feet ended up: no
+                    // way in from outside it, and the next raid prices
+                    // another face.
+                    bases.gone(base, &face);
                     return self.give_up(bases, Why::NoSpot, tick);
                 }
                 if ready {
@@ -1065,6 +1162,7 @@ impl RaidJob {
                 }
                 Raid::Go(intent)
             }
+            Breach::Open => self.give_up(bases, Why::NotFound, tick),
             Breach::Swings(n) => {
                 // Blows until it is down, for as long as they should take.
                 let cadence = means.melee.map_or(TICK_HZ, |(.., c)| u32::from(c.max(1)));
@@ -1165,29 +1263,28 @@ impl RaidJob {
                     Raid::Go(intent)
                 }
                 Lid::Open => {
+                    // The last move's answer: taken once it landed.
+                    let moved = self.moved.take();
+                    if moved == Some(true) {
+                        let n = std::mem::take(&mut self.moving);
+                        self.taken = self.taken.saturating_add(u32::from(n));
+                        bases.stats.taken += u64::from(n);
+                    }
                     if core.cont_kind != CONT_BOX || core.cont_handle != key {
                         // The panel shut under it.
                         self.box_tries += 1;
                         self.chest = Some((at, Lid::Aiming(tick)));
                         return Raid::Go(intent);
                     }
-                    let refused = self.moved.take() == Some(false);
-                    match take_from(core).filter(|_| !refused) {
-                        Some((from, to, count)) => {
-                            self.taken = self.taken.saturating_add(u32::from(count));
-                            bases.stats.taken += u64::from(count);
-                            Raid::Take {
-                                key,
-                                from,
-                                to,
-                                count,
-                                intent,
-                            }
-                        }
-                        None => {
-                            bases.stats.boxes += 1;
-                            Raid::Close(intent)
-                        }
+                    match take_from(core).filter(|_| moved != Some(false)) {
+                        Some((from, to, count)) => Raid::Take {
+                            key,
+                            from,
+                            to,
+                            count,
+                            intent,
+                        },
+                        None => Raid::Close(intent),
                     }
                 }
             }
@@ -1357,5 +1454,44 @@ mod tests {
         // Out of a trip's reach.
         let far = [100.0 + RAID_TRIP_M + 150.0, 100.0];
         assert_eq!(bases.targets(&means, Temperament::Kos, far, later).0, 0);
+    }
+
+    #[test]
+    fn a_doorway_with_its_door_in_it_is_no_face_and_a_hole_made_is_the_way_back() {
+        let mut bases = Bases::new();
+        let a = bases.base_for(100.0, 100.0, 0);
+        // A twig doorway with a wooden door in it: ten hp of doorway, but
+        // `X` takes the door there, so the door is the price.
+        let doorway = face(10, 0, true);
+        let door = face(200, 0, false);
+        let wall = Face {
+            at: OpAddr {
+                loc: LOC_EDGE_XLO,
+                ..doorway.at
+            },
+            ..face(250, 0, true)
+        };
+        bases.bases[a].faces[0] = Some(doorway);
+        bases.bases[a].faces[1] = Some(door);
+        let means = Means {
+            melee: None,
+            ..satchel(3)
+        };
+        let from = [100.0, 90.0];
+        let pick = bases.best(&means, Temperament::Kos, from, 0);
+        assert_eq!(
+            pick.map(|(_, f, w)| (f, w)),
+            Some((door, Breach::Satchels(2)))
+        );
+        // A face `X` turned out not to take is let go: another is priced.
+        bases.bases[a].faces[2] = Some(wall);
+        bases.gone(a, &door);
+        let pick = bases.best(&means, Temperament::Kos, from, 0);
+        assert_eq!(pick.map(|(_, f, _)| f), Some(doorway), "the door unseen");
+        // Down: the hole is the way back in, before any face, for free.
+        bases.opened(a, &wall);
+        assert!(!bases.bases[a].faces.contains(&Some(wall)));
+        let pick = bases.best(&means, Temperament::Opportunist, from, 0);
+        assert_eq!(pick.map(|(_, f, w)| (f, w)), Some((wall, Breach::Open)));
     }
 }

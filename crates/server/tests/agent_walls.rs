@@ -2950,11 +2950,17 @@ fn a_survivor_comes_home_and_mends_the_wall_a_stranger_struck() {
     assert!(struck < full, "the stranger's blows never landed");
     // ...and goes.
     h.puppet_at(wx + 300.0, wz - 300.0, 0, hatchet, false);
-    let repairs = h.bot.defend_stats.repairs;
+    let (repairs, alarmed) = (h.bot.defend_stats.repairs, h.bot.defend_stats.alarmed);
 
-    // 4. Home, quiet, the wall mended, the doors shut.
+    // 4. Home, quiet, the wall mended, the doors shut. Too far off to see
+    // the wall's damage: what calls it home is the alarm.
     let called = h.until(60 * TICK_HZ, |b| b.goal() == Some(Goal::Defend));
     assert!(called, "the alarm never called it home: {}", h.explain());
+    assert!(
+        away(&h) > server::agent::defend::MEND_SIGHT_M,
+        "called home from where it could see the wall"
+    );
+    assert_eq!(h.bot.defend_stats.alarmed, alarmed + 1, "not on the alarm");
     let mended = h.until(DEFEND_TICKS, |b| {
         b.defend_stats.repairs > repairs && b.goal() != Some(Goal::Defend)
     });
@@ -2978,6 +2984,11 @@ fn a_survivor_comes_home_and_mends_the_wall_a_stranger_struck() {
     let me = h.view.get(ID).copied().unwrap();
     assert_ne!(h.bot.builder().region(&me), Region::Outside, "home, inside");
     assert!(h.held_checks >= 1 && h.pick_checks >= 1);
+    // Seen through: the alarm that called it is spent, and it does not
+    // walk out and back in again while that alarm would still be fresh.
+    let defences = h.bot.defend_stats.defences;
+    h.until(server::agent::defend::DEFEND_ALARM_TICKS, |_| false);
+    assert_eq!(h.bot.defend_stats.defences, defences, "{}", h.explain());
     let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
     assert!(h.verbs.is_subset(&expected));
     assert_eq!(
@@ -3017,11 +3028,11 @@ impl server::mind::DecisionSource for RaidWhenOffered {
 }
 
 /// A stranger's base four cells north of `at`: two cells, a wall round
-/// them (in stone if `stone`, else left in twig), a wooden door in the
-/// doorway of the south face, the face towards `at`, a cupboard, and a box
-/// of 300 fragments. Built through the puppet's own actions, the box
-/// filled and the stranger sent far away by scene staging. Returns the
-/// door's cell.
+/// them (floor and walls in stone if `stone`, else left in twig), a wooden
+/// door in the doorway of the south face, the face towards `at`, a
+/// cupboard, and a box of 300 fragments. Built through the puppet's own
+/// actions, the box filled and the stranger sent far away by scene
+/// staging. Returns the door's cell.
 fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u16) {
     use server::population::base_rows;
     use sim_core::build::{build_cell_of, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, MAT_STONE};
@@ -3093,7 +3104,10 @@ fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u
         acts.push(place(row, cx, cz, loc));
     }
     if stone {
-        for &(cx, cz, loc, _) in &walls {
+        // The floor too: a twig foundation falls to the first blast beside
+        // it and takes the doorway and the door down with it.
+        let floor = [(bx, bz, LOC_PLANE, 0), (bx + 1, bz, LOC_PLANE, 0)];
+        for &(cx, cz, loc, _) in floor.iter().chain(&walls) {
             acts.push(ActionMsg::Upgrade {
                 cx,
                 cz,
@@ -3166,6 +3180,7 @@ fn a_raider_blows_the_door_of_a_stranger_s_base_and_empties_its_box() {
             .iter()
             .any(|r| r.goal == Goal::Raid && r.outcome == Outcome::Done)
     });
+
     assert!(
         raided,
         "no raid finished: {:?} {}",
@@ -3178,11 +3193,15 @@ fn a_raider_blows_the_door_of_a_stranger_s_base_and_empties_its_box() {
         "the door is down"
     );
     assert_eq!(units_of(h.me(), frags), 300, "the box's fragments taken");
+    // The door's 200 hp is two satchels of 125: both planted, both
+    // counted, and the third still in the pack.
     let stats = h.bot.bases().stats;
     assert!(
-        stats.charges >= 1 && stats.breached >= 1 && stats.boxes >= 1,
+        stats.charges == 2 && stats.breached == 1 && stats.boxes >= 1,
         "{stats:?}"
     );
+    let satchel = content.item_index("item.satchel_charge").unwrap();
+    assert_eq!(units_of(h.me(), satchel), 1, "one satchel left");
     for verb in ["move", "throw", "container"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
     }
@@ -3225,6 +3244,10 @@ fn a_raider_hacks_through_a_twig_wall_when_the_numbers_say_so() {
     assert_eq!(units_of(h.me(), frags), 300, "the box's fragments taken");
     let stats = h.bot.bases().stats;
     assert!(stats.charges == 0 && stats.breached >= 1, "{stats:?}");
+    assert!(
+        h.bot.bases().iter().any(|b| b.open.is_some()),
+        "the hole is remembered as the way back in"
+    );
     assert!(!h.verbs.contains("throw"));
     let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
     assert!(h.verbs.is_subset(&expected));

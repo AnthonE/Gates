@@ -9,8 +9,9 @@
 //! are shut behind it.
 //!
 //! What it knows is its own: the base it built (the builder's plot), the
-//! damage band the client draws on each of its pieces, and the alarm its
-//! ears raised. The verbs go out from `explorer.rs`.
+//! damage band the client draws on each of its pieces, read while it is
+//! near enough to see them ([`MEND_SIGHT_M`]), and the alarm its ears
+//! raised. The verbs go out from `explorer.rs`.
 
 use crate::agent::build::{
     item_named, look_point, nearest_structure, recipe_for, Act, Builder, Region, Way, HAMMER_ITEM,
@@ -44,6 +45,12 @@ pub const REPAIR_TRIES: u8 = 2;
 pub const CRAFT_TICKS: u32 = 15 * TICK_HZ;
 /// Pieces given up on in one defence.
 pub const SKIP_ROWS: usize = 8;
+/// What a defence gave up on is let be by the defences after it this long:
+/// what would not mend then will not mend on the next call either.
+pub const LET_BE_TICKS: u32 = 30 * 60 * TICK_HZ;
+/// Its own walls' damage is read off them from no further than this from
+/// the base: further off, only the alarm calls it home.
+pub const MEND_SIGHT_M: f32 = 25.0;
 /// Outside a wall, it stands this far from the wall's middle to mend it:
 /// nearer than anything else the repair key could take.
 pub const MEND_STAND_M: f32 = 0.7;
@@ -99,9 +106,49 @@ pub struct Fix {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefendStats {
     pub defences: u64,
+    /// Defences begun on the alarm (a fight at the base heard).
+    pub alarmed: u64,
     pub repairs: u64,
     pub refusals: u64,
     pub hammers: u64,
+}
+
+/// What earlier defences gave up on, and when the last of them did.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LetBe {
+    rows: [Option<(bool, OpAddr)>; SKIP_ROWS],
+    at: Option<u32>,
+}
+
+impl LetBe {
+    /// Keep what this defence gave up on, beside what earlier ones did
+    /// while that is still fresh.
+    pub fn remember(&mut self, job: &DefendJob, tick: u32) {
+        if !job.gave_up() {
+            return;
+        }
+        if self
+            .at
+            .is_none_or(|at| tick.wrapping_sub(at) >= LET_BE_TICKS)
+        {
+            self.rows = [None; SKIP_ROWS];
+        }
+        for row in job.skipped.iter().flatten() {
+            if self.rows.contains(&Some(*row)) {
+                continue;
+            }
+            if let Some(slot) = self.rows.iter_mut().find(|s| s.is_none()) {
+                *slot = Some(*row);
+            }
+        }
+        self.at = Some(tick);
+    }
+
+    /// Is this structure one a defence gave up on a moment ago?
+    pub fn holds(&self, deploy: bool, at: OpAddr, tick: u32) -> bool {
+        self.at.is_some_and(|t| tick.wrapping_sub(t) < LET_BE_TICKS)
+            && self.rows.contains(&Some((deploy, at)))
+    }
 }
 
 /// One defence, from the walk home to the doors shut behind the repairs.
@@ -110,6 +157,8 @@ pub struct DefendJob {
     fix: Option<Fix>,
     tries: u8,
     skipped: [Option<(bool, OpAddr)>; SKIP_ROWS],
+    /// What earlier defences gave up on.
+    let_be: LetBe,
     /// The hammer in hand and eyes on the piece since.
     held: Option<u32>,
     /// A repair in flight, and when it went.
@@ -179,11 +228,22 @@ pub fn stand_for(core: &ClientCore, builder: &Builder, deploy: bool, at: OpAddr)
     })
 }
 
-/// Is there anything of its own base to mend that the pack pays for, and
-/// somewhere to mend it from?
-pub fn mendable(core: &ClientCore, builder: &Builder) -> bool {
-    damaged(core, builder).any(|(deploy, at)| {
-        affordable(core, deploy, at) && stand_for(core, builder, deploy, at).is_some()
+/// Is there anything of its own base to mend that the pack pays for, a
+/// hammer to mend it with (or one to be made), somewhere to mend it from,
+/// and no defence gave up on it a moment ago?
+pub fn mendable(core: &ClientCore, builder: &Builder, let_be: &LetBe, tick: u32) -> bool {
+    hammer_at_hand(core, builder)
+        && damaged(core, builder).any(|(deploy, at)| {
+            !let_be.holds(deploy, at, tick)
+                && affordable(core, deploy, at)
+                && stand_for(core, builder, deploy, at).is_some()
+        })
+}
+
+/// A hammer in the pack, or a recipe for one at its stations.
+fn hammer_at_hand(core: &ClientCore, builder: &Builder) -> bool {
+    item_named(core, HAMMER_ITEM).is_some_and(|hammer| {
+        count(core, hammer) > 0 || recipe_for(core, hammer, &builder.stations(core)).is_some()
     })
 }
 
@@ -268,6 +328,14 @@ fn count(core: &ClientCore, item: u16) -> u32 {
 }
 
 impl DefendJob {
+    /// A defence that lets be what earlier ones gave up on.
+    pub fn new(let_be: LetBe) -> Self {
+        Self {
+            let_be,
+            ..Self::default()
+        }
+    }
+
     /// Between two ops: no repair or craft awaiting its answer, no door
     /// left open mid-walk (the builder says that half).
     pub fn at_checkpoint(&self) -> bool {
@@ -392,7 +460,11 @@ impl DefendJob {
         }
         if self.fix.is_none() {
             self.fix = damaged(core, builder)
-                .filter(|&(deploy, at)| !self.skipped(deploy, at) && affordable(core, deploy, at))
+                .filter(|&(deploy, at)| {
+                    !self.skipped(deploy, at)
+                        && !self.let_be.holds(deploy, at, tick)
+                        && affordable(core, deploy, at)
+                })
                 .find_map(|(deploy, at)| {
                     stand_for(core, builder, deploy, at).map(|from| Fix { deploy, at, from })
                 });
@@ -580,5 +652,39 @@ impl DefendJob {
             Err(None) => Ward::Done,
             Err(Some(why)) => Ward::Fail(why),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_defence_gave_up_on_is_let_be_a_while_by_the_next() {
+        let at = |cx: u16| OpAddr {
+            cx,
+            cz: 10,
+            level: 0,
+            loc: LOC_EDGE_ZLO,
+        };
+        let mut let_be = LetBe::default();
+        // A defence that gave nothing up leaves nothing to let be.
+        let_be.remember(&DefendJob::default(), 100);
+        assert!(!let_be.holds(false, at(1), 100));
+        let mut job = DefendJob::new(let_be);
+        job.skip(false, at(1));
+        assert!(job.gave_up());
+        let_be.remember(&job, 100);
+        assert!(let_be.holds(false, at(1), 101));
+        assert!(!let_be.holds(true, at(1), 101), "the door there is not it");
+        assert!(!let_be.holds(false, at(2), 101));
+        // The next defence carries it, and gives up on another.
+        let mut next = DefendJob::new(let_be);
+        assert!(!next.gave_up(), "carried, not given up on again");
+        next.skip(false, at(2));
+        let_be.remember(&next, 200);
+        assert!(let_be.holds(false, at(1), 201) && let_be.holds(false, at(2), 201));
+        // Long enough after, tried again.
+        assert!(!let_be.holds(false, at(1), 200 + LET_BE_TICKS));
     }
 }
