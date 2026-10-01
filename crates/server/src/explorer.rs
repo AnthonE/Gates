@@ -31,7 +31,7 @@ use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::loadout::{Loadout, Role, BELT};
 use crate::agent::lock::{LockCode, LockSecret};
 use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
-use crate::agent::oven::{self, DeviceJob, OvenStats, Tend, Work};
+use crate::agent::oven::{self, DeviceJob, Keep, OvenStats, Tend, Work};
 use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
@@ -610,6 +610,9 @@ pub struct Survivor {
     recycle_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
+    /// Salvage a recycle leaves whole (`Builder::kept_whole`), once a
+    /// second.
+    keep: Keep,
     /// The session ends this many ticks after the welcome (`set_deadline`),
     /// and the tick that is, once welcomed.
     deadline_after: Option<u32>,
@@ -705,6 +708,7 @@ impl Survivor {
             cook_failed: None,
             recycle_failed: None,
             home_failed: None,
+            keep: Keep::NONE,
             deadline_after: None,
             deadline: None,
             welcomed: None,
@@ -3211,6 +3215,7 @@ impl Survivor {
         let (seed, _) = core.island();
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let go_to = self.device_near(core, work, x, z);
+        self.oven_job.keep(self.keep);
         let builder = &self.builder;
         let step = self.oven_job.step(
             core,
@@ -3512,23 +3517,30 @@ impl Survivor {
             self.memory.loot_held = self.loot.held(tick);
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
-            self.memory.cook = oven::can_tend(core, &self.book, Work::Cook, fire.is_some())
-                && self
-                    .cook_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
-            // Salvage is taken apart unless the base wants it whole.
+            self.memory.cook =
+                oven::can_tend(core, &self.book, Work::Cook, fire.is_some(), &Keep::NONE)
+                    && self
+                        .cook_failed
+                        .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // Salvage is taken apart unless the base wants it whole: what
+            // the rest of the milestone costs, or the gear still to be made
+            // takes.
             let recycler = self.device_near(core, Work::Recycle, x, z);
             let book = &self.book;
-            self.memory.recycle = oven::can_tend(core, book, Work::Recycle, recycler.is_some())
-                && !self
-                    .builder
-                    .survey()
-                    .needs()
-                    .iter()
-                    .any(|&(item, _)| book.page(item).recycles)
-                && self
-                    .recycle_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            let mut keep = self
+                .builder
+                .kept_whole(core, |item| book.page(item).recycles);
+            for &(item, units) in self.builder.survey().bill() {
+                if book.page(item).recycles {
+                    keep.at_least(item, units);
+                }
+            }
+            self.keep = keep;
+            self.memory.recycle =
+                oven::can_tend(core, book, Work::Recycle, recycler.is_some(), &keep)
+                    && self
+                        .recycle_failed
+                        .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
             for spot in self.loot.live(core, tick) {

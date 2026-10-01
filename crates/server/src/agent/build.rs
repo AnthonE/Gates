@@ -15,9 +15,9 @@
 //! the stone core; the storey above; the wood grades. The job pauses when
 //! a milestone is done or the pack runs short, and the mind sends it off
 //! for what the next one needs ([`Survey::needs`]). Once the starter
-//! stands come its stations: a workbench on the upstairs floor and a
-//! furnace on the ground behind the core, both in reach of the stand spot,
-//! where a station's recipes are crafted. Then code locks on both doors and
+//! stands come its stations: a workbench on a foundation behind the core,
+//! where `E` takes it, and a furnace on the upstairs floor, both in reach
+//! of the stand spot, where a station's recipes are crafted. Then code locks on both doors and
 //! the cupboard, armed with its own code ([`LockCode`]), and metal doors in
 //! place of the wooden ones when the fragments are spare.
 //!
@@ -37,6 +37,7 @@ use crate::agent::hands::Hands;
 use crate::agent::home::{Home, HOLD_TICKS};
 use crate::agent::intent::{yaw_toward, Intent, Look};
 use crate::agent::lock::LockCode;
+use crate::agent::oven::Keep;
 use crate::agent::route::{Route, Step};
 use crate::agent::site::{self, Seen};
 use crate::agent::stash::Ledger;
@@ -79,13 +80,15 @@ pub enum Milestone {
     Upstairs,
     /// Whatever stone missed, graded to wood; the upper storey graded.
     Wood,
-    /// A workbench on the floor over the cupboard: its 100 fragments are
-    /// what the first loot runs are for.
+    /// A workbench behind the core, on a stone foundation of its own: its
+    /// 100 fragments are what the first loot runs are for.
     Bench,
-    /// A furnace behind the core, crafted at the bench; ore smelts there.
+    /// A furnace on the floor over the cupboard, crafted at the bench; ore
+    /// smelts there.
     Furnace,
     /// Code locks on both doors and the cupboard, armed with its code; a
-    /// metal door in place of a wooden one whenever the fragments are spare.
+    /// metal front door, and the inner one in metal whenever the fragments
+    /// are spare.
     Locks,
     /// Metal hatchet and pickaxe (blueprints, learned at the bench) and a
     /// metal spear.
@@ -177,18 +180,21 @@ pub const HAMMER_ITEM: &str = "Hammer";
 /// stands in the stair cell, the one plane inside the room the cupboard
 /// does not take (a box is solid, and the airlock's walk passes beside
 /// it); the bag in the airlock, where a walk-over mat blocks nobody. Then
-/// its stations, both within `craft::STATION_RADIUS_M` of the stand spot
-/// (the gate is planar, so the floor above counts): the workbench on the
-/// floor over the cupboard, the blueprint's own box spot, and the furnace
-/// on the bare ground behind the core (`YARD`), which the plot is chosen
-/// to have.
-const EXTRAS: [(&str, i8, i8, u8, Milestone); 4] = [
+/// the furnace, within `craft::STATION_RADIUS_M` of the stand spot (the
+/// gate is planar, so the floor above counts), on the floor over the
+/// cupboard, the blueprint's own box spot: it is worked as a station and
+/// never opened, so that `E` there takes the cupboard costs nothing. A
+/// workbench is opened (`E` shows its tree), so each rung stands where `E`
+/// takes it from the stand spot, on a stone foundation of its own behind
+/// the core (`LATER`): the first on `YARD`, the second on `ANNEX`. The plot
+/// is chosen to take both foundations.
+const EXTRAS: [(&str, i8, i8, u8, Milestone); 3] = [
     (BOX_ITEM, 1, 0, 0, Milestone::Doors),
     (BAG_ITEM, 1, 1, 0, Milestone::Doors),
-    (BENCH_ITEM, 0, 0, 1, Milestone::Bench),
-    (FURNACE_ITEM, YARD.0, YARD.1, 0, Milestone::Furnace),
+    (FURNACE_ITEM, 0, 0, 1, Milestone::Furnace),
 ];
-/// The cell behind the core the furnace stands on, from the plot.
+/// The cell behind the core the first bench's foundation takes, from the
+/// plot.
 pub const YARD: (i8, i8) = (0, -1);
 /// The cell behind the stair cell the second bench's foundation takes.
 pub const ANNEX: (i8, i8) = (1, -1);
@@ -207,7 +213,8 @@ fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
 }
 
 /// What it does after the starter and its stations, in order, as `(op, dx,
-/// dz, level, loc, milestone, optional)`: the cupboard's lock and code
+/// dz, level, loc, milestone, optional)`: the first bench on its stone
+/// foundation behind the core (`YARD`); the cupboard's lock and code
 /// (the doors' are the blueprint's own), the inner door swapped for metal
 /// like the front one, the second bench rung on a stone foundation of its
 /// own behind the stair cell (`ANNEX`: every plane inside is taken, and
@@ -216,7 +223,34 @@ fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
 /// (pistol rounds before the revolver: the tree's own edge). An optional op
 /// holds no milestone back: it is done when the pack pays for it on top of
 /// what the milestone in hand costs.
-const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 24] = [
+const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 27] = [
+    (
+        Op::Piece(Part::Foundation),
+        YARD.0,
+        YARD.1,
+        0,
+        LOC_PLANE,
+        Milestone::Bench,
+        false,
+    ),
+    (
+        Op::Grade(MAT_STONE),
+        YARD.0,
+        YARD.1,
+        0,
+        LOC_PLANE,
+        Milestone::Bench,
+        false,
+    ),
+    (
+        Op::Kit(BENCH_ITEM),
+        YARD.0,
+        YARD.1,
+        0,
+        LOC_PLANE,
+        Milestone::Bench,
+        false,
+    ),
     (Op::Lock, 0, 0, 0, LOC_PLANE, Milestone::Locks, false),
     (Op::Code, 0, 0, 0, LOC_PLANE, Milestone::Locks, false),
     (
@@ -555,11 +589,12 @@ fn spec(i: usize) -> Spec {
                 Kit::Hearth => (Op::Kit(HEARTH_ITEM), Some(Milestone::Shell), false),
                 Kit::Door => (Op::Kit(DOOR_ITEM), Some(Milestone::Doors), false),
                 Kit::Box => (Op::Kit(BOX_ITEM), None, false),
-                // The metal front door, when the fragments are spare.
+                // The metal front door: the one a raid comes through first,
+                // part of the locks milestone.
                 Kit::MetalDoor => (
                     Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM),
                     Some(Milestone::Locks),
-                    true,
+                    false,
                 ),
                 Kit::Lock => (Op::Lock, Some(Milestone::Locks), false),
             };
@@ -2365,6 +2400,32 @@ impl Builder {
             .saturating_add(self.stored.units(item))
     }
 
+    /// What a recycle leaves whole: the units of each `salvage` item the
+    /// gear still to be made takes, this milestone's or a later one's.
+    pub fn kept_whole(&self, core: &ClientCore, salvage: impl Fn(u16) -> bool) -> Keep {
+        let mut keep = Keep::NONE;
+        for i in 0..OPS {
+            let Op::Make(name, want) = spec(i).op else {
+                continue;
+            };
+            if (self.done | self.given_up) & bit(i) != 0 {
+                continue;
+            }
+            let Some(item) = item_named(core, name) else {
+                continue;
+            };
+            let short = want.saturating_sub(self.held(core, item));
+            let Some((r, out)) = price(core, item).filter(|_| short > 0) else {
+                continue;
+            };
+            let times = short.div_ceil(out.max(1));
+            for &(input, units) in r.rows[..r.n].iter().filter(|r| salvage(r.0)) {
+                keep.add(input, units.saturating_mul(times));
+            }
+        }
+        keep
+    }
+
     /// The item an op makes or puts down, when it has one to make.
     fn made_item(&self, core: &ClientCore, s: &Spec) -> Option<u16> {
         match s.op {
@@ -3031,12 +3092,24 @@ impl Builder {
         // What the op is done with, crafted from the pack first; what a
         // station makes, on the stand spot, which its stations are in
         // reach of.
-        if let Some(t) = tool {
+        if let Some(t) = tool.filter(|&t| count(core, t) == 0) {
             let at_station = recipe_for(core, t, &self.stations(core))
                 .is_some_and(|(.., station)| station != STATION_NONE);
-            if count(core, t) == 0 && !at_station {
+            if !at_station {
                 return self.craft(core, i, t, 1);
             }
+            // A door's lock or its metal door is worked from beside the
+            // door, out of a bench's reach: made on the stand spot first.
+            let stand = Spec {
+                op: Op::Grade(0),
+                ..s
+            };
+            if let Some(act) =
+                self.walk_to(core, seed, haven, &plan, body, hands, route, &stand, tick)
+            {
+                return act;
+            }
+            return self.craft(core, i, t, 1);
         }
         // Every op is worked from the stand spot in the core, or for a
         // door's lock from the airlock.
@@ -3050,7 +3123,9 @@ impl Builder {
         }
         match s.op {
             Op::Make(name, want) => return self.make(core, i, name, want),
-            Op::Learn(name) => return self.learn(core, seed, haven, hands, i, name, tick),
+            Op::Learn(name) => {
+                return self.learn(core, seed, haven, body, hands, i, name, tick);
+            }
             Op::Code => return self.press(core, seed, haven, body, hands, i, at, Sent::Code, tick),
             // The first half of a swap: the old one taken back up, the new
             // one already in the pack.
@@ -3317,14 +3392,16 @@ impl Builder {
     }
 
     /// Learn a blueprint: read the paper for it when the pack holds some,
-    /// else unlock it at the bench's tree, eyes on the bench as a player's
-    /// are on the tree panel it opens.
+    /// else unlock it at a bench's tree. The tree is the panel a player's
+    /// `E` on a bench opens, at that bench's rung: so a bench of the node's
+    /// tier, eyes on it until `E` would take it from here.
     #[allow(clippy::too_many_arguments)]
     fn learn(
         &mut self,
         core: &ClientCore,
         seed: u64,
         haven: &Haven,
+        body: &EntityState,
         hands: &Hands,
         i: usize,
         name: &'static str,
@@ -3346,12 +3423,25 @@ impl Builder {
             });
             return Act::Read { slot };
         }
-        let (Some(recipe), Some(bench)) = (recipe_any(core, item), self.own_kit(core, BENCH_ITEM))
-        else {
+        let tier = tree_row(core, item).map_or(1, |(.., tier)| tier.max(1));
+        let rung = |at: OpAddr| {
+            deploy_rec(core, at)
+                .and_then(|d| deploy_def(core, d.row))
+                .map_or(0, |def| bench_tier(def.arch))
+        };
+        let bench = [BENCH_ITEM, BENCH2_ITEM]
+            .iter()
+            .filter_map(|name| self.own_kit(core, name))
+            .find(|&at| rung(at) >= tier);
+        let (Some(recipe), Some(bench)) = (recipe_any(core, item), bench) else {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };
-        let intent = look_at(seed, haven, core, bench);
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let intent = Intent {
+            look: Look::Point(aim_point(core, seed, haven, bench, x, z)),
+            ..Intent::IDLE
+        };
         let held = match self.held {
             Some((op, since)) if op == i => since,
             _ => {
@@ -3359,7 +3449,17 @@ impl Builder {
                 tick
             }
         };
-        if tick.wrapping_sub(held) < HOLD_TICKS || !hands.settled() {
+        let waited = tick.wrapping_sub(held);
+        if waited < HOLD_TICKS
+            || !hands.settled()
+            || !e_picks_by(core, x, z, hands.view().0, bench, PRESS_SLACK_M)
+        {
+            if waited >= VERDICT_TICKS {
+                // Settled on it this long and `E` still takes something
+                // else: no panel to buy the node from.
+                self.held = None;
+                self.fail(i);
+            }
             return Act::Go(intent);
         }
         self.held = None;
@@ -3542,9 +3642,8 @@ fn belt_move(core: &ClientCore, item: u16) -> Option<(u8, u8, u16)> {
     Some((from as u8, to as u8, core.inv[from].count))
 }
 
-/// The ground behind the core takes the furnace and the second bench's
-/// foundation: the foundation's terrain rule on both cells, clear of the
-/// edge.
+/// The ground behind the core takes the benches' foundations: the
+/// foundation's terrain rule on both cells, clear of the edge.
 fn yard_goes(seed: u64, haven: &Haven, cx: u16, cz: u16) -> bool {
     [YARD, ANNEX].iter().all(|&(dx, dz)| {
         match (
@@ -3645,18 +3744,23 @@ mod tests {
         assert_eq!(seen[Milestone::Doors as usize], 4);
         assert_eq!(seen[Milestone::Stone as usize], 11);
         assert!(seen[Milestone::Upstairs as usize] >= 10);
-        // Its stations, one each, in reach of the stand spot.
-        assert_eq!(seen[Milestone::Bench as usize], 1);
+        // Its stations in reach of the stand spot, the bench on a stone
+        // foundation of its own.
+        assert_eq!(seen[Milestone::Bench as usize], 3);
         assert_eq!(seen[Milestone::Furnace as usize], 1);
-        // A lock and its code on both doors and the cupboard, and both
-        // doors in metal when the fragments are spare.
+        // A lock and its code on both doors and the cupboard, the front
+        // door in metal, and the inner one when the fragments are spare.
         assert_eq!(seen[Milestone::Locks as usize], 8);
-        let optional: Vec<Op> = (0..OPS)
+        let optional: Vec<(Op, i8, i8, u8, u8)> = (0..OPS)
             .map(spec)
             .filter(|s| s.optional)
-            .map(|s| s.op)
+            .map(|s| (s.op, s.dx, s.dz, s.level, s.loc))
             .collect();
-        assert_eq!(optional, [Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM); 2]);
+        let (dx, dz, level, loc) = INNER;
+        assert_eq!(
+            optional,
+            [(Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM), dx, dz, level, loc)]
+        );
         // The second bench, on a stone foundation of its own.
         assert_eq!(seen[Milestone::Bench2 as usize], 3);
         assert_eq!(seen[Milestone::Done as usize], 0);

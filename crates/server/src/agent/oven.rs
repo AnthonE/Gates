@@ -81,6 +81,50 @@ pub const RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// The drift left at a press, once the eyes have settled.
 const PRESS_SLACK_M: f32 = 0.1;
 
+/// Rows of [`Keep`].
+pub const KEEP_ROWS: usize = 4;
+
+/// Salvage a recycle leaves whole, and how many units of each: what the
+/// gear its base still has to make takes (`Builder::kept_whole`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Keep {
+    rows: [(u16, u32); KEEP_ROWS],
+    n: u8,
+}
+
+impl Keep {
+    pub const NONE: Keep = Keep {
+        rows: [(0, 0); KEEP_ROWS],
+        n: 0,
+    };
+
+    pub fn add(&mut self, item: u16, units: u32) {
+        let n = usize::from(self.n);
+        if let Some(r) = self.rows[..n].iter_mut().find(|r| r.0 == item) {
+            r.1 = r.1.saturating_add(units);
+        } else if n < KEEP_ROWS {
+            self.rows[n] = (item, units);
+            self.n += 1;
+        }
+    }
+
+    /// Keep at least `units` of `item`.
+    pub fn at_least(&mut self, item: u16, units: u32) {
+        let more = units.saturating_sub(self.units(item));
+        if more > 0 {
+            self.add(item, more);
+        }
+    }
+
+    /// Units of `item` kept whole.
+    pub fn units(&self, item: u16) -> u32 {
+        self.rows[..usize::from(self.n)]
+            .iter()
+            .find(|r| r.0 == item)
+            .map_or(0, |r| r.1)
+    }
+}
+
 /// What a session at a device is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Work {
@@ -206,13 +250,20 @@ fn feeds(work: Work, book: &Book, item: u16) -> bool {
     }
 }
 
-/// Units of what a work feeds a device that the pack holds.
-pub fn held_for(work: Work, core: &ClientCore, book: &Book) -> u32 {
-    core.inv[..INV_SLOTS]
+/// Units of what a work feeds a device that the pack holds, past what
+/// `keep` keeps whole.
+pub fn held_for(work: Work, core: &ClientCore, book: &Book, keep: &Keep) -> u32 {
+    let held: u32 = core.inv[..INV_SLOTS]
         .iter()
         .filter(|s| s.count > 0 && feeds(work, book, s.item))
         .map(|s| u32::from(s.count))
-        .sum()
+        .sum();
+    let kept: u32 = keep.rows[..usize::from(keep.n)]
+        .iter()
+        .filter(|&&(item, _)| feeds(work, book, item))
+        .map(|&(item, units)| units.min(carried(core, item)))
+        .sum();
+    held.saturating_sub(kept)
 }
 
 /// The deployable row a device is, and its item.
@@ -263,8 +314,8 @@ pub fn nearest(
 /// fuel for a fire), and a device to do it at: one in `near` (its own or
 /// one seen, already found standing near), one in the pack, or (a fire
 /// pit) the wood to make one.
-pub fn can_tend(core: &ClientCore, book: &Book, work: Work, near: bool) -> bool {
-    if !book.ready() || held_for(work, core, book) == 0 {
+pub fn can_tend(core: &ClientCore, book: &Book, work: Work, near: bool, keep: &Keep) -> bool {
+    if !book.ready() || held_for(work, core, book, keep) == 0 {
         return false;
     }
     let fuel = book.fuel();
@@ -379,7 +430,7 @@ pub type Shift = (bool, u8, u8, u16);
 ///   it burns; then fuel when it runs low; then a piece of raw food onto
 ///   each free slot, up to [`COOK_SLOTS`].
 /// - Recycle: off whatever it took apart; then each stack of what it
-///   takes apart onto a free slot.
+///   takes apart onto a free slot, short of what `keep` keeps whole.
 /// - Research: off the paper; nothing while it runs (the table is locked);
 ///   the sample, one unit, into the item slot and the coin it costs into
 ///   the coin slot while there is no paper for it yet; the coin left over
@@ -390,6 +441,7 @@ pub fn plan(
     book: &Book,
     slots: &[ItemStack],
     lit: bool,
+    keep: &Keep,
 ) -> Option<Shift> {
     let cap = |item: u16| core.catalog.row(usize::from(item)).stack_max;
     let pack = &core.inv[..INV_SLOTS];
@@ -440,9 +492,11 @@ pub fn plan(
                     }
                 }
             }
-            let from = from_pack(&|item| book.page(item).recycles)?;
+            let spare = |item: u16| carried(core, item).saturating_sub(keep.units(item));
+            let from = from_pack(&|item| book.page(item).recycles && spare(item) > 0)?;
             let to = slots.iter().position(|s| s.count == 0)?;
-            Some((true, from as u8, to as u8, pack[from].count))
+            let count = u32::from(pack[from].count).min(spare(pack[from].item)) as u16;
+            Some((true, from as u8, to as u8, count))
         }
         Work::Research { sample, cost } => {
             let rc = &core.research;
@@ -590,10 +644,13 @@ impl Session {
         hands: &Hands,
         book: &Book,
         work: Work,
+        keep: &Keep,
         stats: &mut OvenStats,
         tick: u32,
     ) -> Tend {
-        let turn = self.next(core, seed, haven, body, hands, book, work, stats, tick);
+        let turn = self.next(
+            core, seed, haven, body, hands, book, work, keep, stats, tick,
+        );
         self.want = match turn {
             Tend::Open { .. } => Some(Wait::Open),
             Tend::Move { .. } => Some(Wait::Move),
@@ -617,6 +674,7 @@ impl Session {
         hands: &Hands,
         book: &Book,
         work: Work,
+        keep: &Keep,
         stats: &mut OvenStats,
         tick: u32,
     ) -> Tend {
@@ -699,7 +757,7 @@ impl Session {
             return Tend::Close(look);
         }
         let slots = &core.cont[..BOX_SLOTS];
-        if let Some((into, from, to, count)) = plan(work, core, book, slots, lit) {
+        if let Some((into, from, to, count)) = plan(work, core, book, slots, lit, keep) {
             if into {
                 match work {
                     Work::Cook if raw(book, core.inv[usize::from(from)].item) => stats.laid += 1,
@@ -802,6 +860,8 @@ pub struct DeviceJob {
     held: Option<u32>,
     deploy_refused: Option<u8>,
     session: Option<Session>,
+    /// What a recycle leaves whole.
+    keep: Keep,
 }
 
 impl DeviceJob {
@@ -819,11 +879,17 @@ impl DeviceJob {
             held: None,
             deploy_refused: None,
             session: None,
+            keep: Keep::NONE,
         }
     }
 
     pub fn work(&self) -> Work {
         self.work
+    }
+
+    /// What a recycle leaves whole, from now on.
+    pub fn keep(&mut self, keep: Keep) {
+        self.keep = keep;
     }
 
     /// Nothing is in flight: switching now leaves at worst a panel open,
@@ -1027,7 +1093,10 @@ impl DeviceJob {
                 }
             };
         }
-        session.step(core, seed, haven, body, hands, book, work, stats, tick)
+        let keep = self.keep;
+        session.step(
+            core, seed, haven, body, hands, book, work, &keep, stats, tick,
+        )
     }
 
     /// Put the device down in front of the body: crafted first from the
@@ -1132,8 +1201,9 @@ mod tests {
         core.inv[HOTBAR_SLOTS + 1] = stack(wood, 100);
         let mut fire = [ItemStack::default(); BOX_SLOTS];
         fire[3] = stack(cooked, 1);
-        let plan =
-            |core: &ClientCore, fire: &[ItemStack]| plan(Work::Cook, core, &book, fire, true);
+        let plan = |core: &ClientCore, fire: &[ItemStack]| {
+            plan(Work::Cook, core, &book, fire, true, &Keep::NONE)
+        };
         // The cooked piece comes off, into the pack.
         let (into, from, _, count) = plan(&core, &fire).unwrap();
         assert_eq!((into, from, count), (false, 3, 1));
@@ -1162,14 +1232,17 @@ mod tests {
     fn a_cook_wants_meat_fuel_and_a_fire() {
         let (mut core, book, id) = shipped();
         let (raw_meat, wood, pit) = (id("item.raw_meat"), id("item.wood"), id("item.fire_pit"));
-        let can = |core: &ClientCore| can_tend(core, &book, Work::Cook, false);
+        let can = |core: &ClientCore| can_tend(core, &book, Work::Cook, false, &Keep::NONE);
         assert!(!can(&core), "nothing to cook");
         core.inv[HOTBAR_SLOTS] = stack(raw_meat, 5);
         assert!(!can(&core), "no wood");
         core.inv[HOTBAR_SLOTS + 1] = stack(wood, FUEL_MIN as u16);
         // The recipe table has not arrived, so wood alone makes no pit.
         assert!(!can(&core), "no fire to cook on");
-        assert!(can_tend(&core, &book, Work::Cook, true), "one near");
+        assert!(
+            can_tend(&core, &book, Work::Cook, true, &Keep::NONE),
+            "one near"
+        );
         core.inv[HOTBAR_SLOTS + 2] = stack(pit, 1);
         // Its deploy row has not arrived either: no fire it knows of.
         assert!(!can(&core));
@@ -1191,20 +1264,50 @@ mod tests {
         core.inv[HOTBAR_SLOTS + 1] = stack(gears, 3);
         let mut rec = [ItemStack::default(); BOX_SLOTS];
         rec[2] = stack(junk, 7);
-        let (into, from, _, count) = plan(Work::Recycle, &core, &book, &rec, true).unwrap();
+        let (into, from, _, count) =
+            plan(Work::Recycle, &core, &book, &rec, true, &Keep::NONE).unwrap();
         assert_eq!((into, from, count), (false, 2, 7));
         rec[2] = ItemStack::default();
         assert!(!should_run(Work::Recycle, &core, &book, &rec));
-        let (into, from, to, count) = plan(Work::Recycle, &core, &book, &rec, false).unwrap();
+        let (into, from, to, count) =
+            plan(Work::Recycle, &core, &book, &rec, false, &Keep::NONE).unwrap();
         assert_eq!(
             (into, usize::from(from), count),
             (true, HOTBAR_SLOTS + 1, 3)
         );
         rec[usize::from(to)] = stack(gears, 3);
         core.inv[HOTBAR_SLOTS + 1] = ItemStack::default();
-        assert_eq!(plan(Work::Recycle, &core, &book, &rec, true), None);
+        assert_eq!(
+            plan(Work::Recycle, &core, &book, &rec, true, &Keep::NONE),
+            None
+        );
         assert!(should_run(Work::Recycle, &core, &book, &rec));
-        assert_eq!(held_for(Work::Recycle, &core, &book), 0);
+        assert_eq!(held_for(Work::Recycle, &core, &book, &Keep::NONE), 0);
+    }
+
+    /// What the gear still to be made takes stays whole: only the units
+    /// past it go in, and with none past it nothing does.
+    #[test]
+    fn a_recycle_leaves_the_kept_salvage_whole() {
+        let (mut core, book, id) = shipped();
+        let (gears, rope) = (id("item.gears"), id("item.rope"));
+        core.inv[HOTBAR_SLOTS] = stack(rope, 2);
+        core.inv[HOTBAR_SLOTS + 1] = stack(gears, 3);
+        let mut keep = Keep::NONE;
+        keep.add(rope, 2);
+        keep.at_least(gears, 2);
+        keep.at_least(gears, 1);
+        assert_eq!((keep.units(rope), keep.units(gears)), (2, 2));
+        assert_eq!(held_for(Work::Recycle, &core, &book, &keep), 1);
+        let rec = [ItemStack::default(); BOX_SLOTS];
+        let (into, from, _, count) = plan(Work::Recycle, &core, &book, &rec, false, &keep).unwrap();
+        assert_eq!(
+            (into, usize::from(from), count),
+            (true, HOTBAR_SLOTS + 1, 1)
+        );
+        core.inv[HOTBAR_SLOTS + 1] = stack(gears, 2);
+        assert_eq!(plan(Work::Recycle, &core, &book, &rec, false, &keep), None);
+        assert!(!can_tend(&core, &book, Work::Recycle, true, &keep));
     }
 
     /// A research puts one unit of the sample in the item slot and its
@@ -1224,26 +1327,26 @@ mod tests {
         core.inv[HOTBAR_SLOTS] = stack(revolver, 1);
         core.inv[HOTBAR_SLOTS + 1] = stack(junk, 100);
         let mut table = [ItemStack::default(); BOX_SLOTS];
-        let (into, from, to, count) = plan(work, &core, &book, &table, false).unwrap();
+        let (into, from, to, count) = plan(work, &core, &book, &table, false, &Keep::NONE).unwrap();
         assert_eq!(
             (into, usize::from(from), usize::from(to), count),
             (true, HOTBAR_SLOTS, TABLE_ITEM_SLOT, 1)
         );
         table[TABLE_ITEM_SLOT] = stack(revolver, 1);
         core.inv[HOTBAR_SLOTS] = ItemStack::default();
-        let (into, from, to, count) = plan(work, &core, &book, &table, false).unwrap();
+        let (into, from, to, count) = plan(work, &core, &book, &table, false, &Keep::NONE).unwrap();
         assert_eq!(
             (into, usize::from(from), usize::from(to), count),
             (true, HOTBAR_SLOTS + 1, TABLE_COIN_SLOT, cost)
         );
         table[TABLE_COIN_SLOT] = stack(junk, cost);
-        assert_eq!(plan(work, &core, &book, &table, false), None);
+        assert_eq!(plan(work, &core, &book, &table, false, &Keep::NONE), None);
         assert!(should_run(work, &core, &book, &table));
         // Running: nothing moves. Landed: the paper comes out.
-        assert_eq!(plan(work, &core, &book, &table, true), None);
+        assert_eq!(plan(work, &core, &book, &table, true, &Keep::NONE), None);
         table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&rc, revolver);
         table[TABLE_COIN_SLOT] = ItemStack::default();
-        let (into, from, ..) = plan(work, &core, &book, &table, false).unwrap();
+        let (into, from, ..) = plan(work, &core, &book, &table, false, &Keep::NONE).unwrap();
         assert_eq!((into, usize::from(from)), (false, TABLE_ITEM_SLOT));
         assert!(!should_run(work, &core, &book, &table));
     }

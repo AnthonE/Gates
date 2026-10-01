@@ -705,6 +705,20 @@ impl Harness {
                     );
                     self.pick_checks += 1;
                 }
+                // The tree is bought from the panel `E` on a bench opens,
+                // at that bench's rung: the node's tier or above.
+                ActionMsg::Unlock { recipe } => {
+                    let pick = self.e_pick(frame.yaw);
+                    let station = self.shard.world.craft.recipes[usize::from(recipe)].station;
+                    let tier = sim_core::research::node_tier(station);
+                    assert!(
+                        pick.verb == Verb::TechTree
+                            && sim_core::deploy::bench_tier(pick.arch) >= tier,
+                        "the agent bought recipe {recipe} (tier {tier}) with no bench of that                          rung under `E` ({pick:?}), at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
                 ActionMsg::Feed { cx, cz, level } => {
                     let pick = self.e_pick(frame.yaw);
                     assert_eq!(
@@ -1861,9 +1875,9 @@ fn a_survivor_empties_a_crate_through_its_panel() {
 }
 
 /// The starter stands, the pack holds what the stations cost: the
-/// workbench goes on the floor over the cupboard, the furnace is crafted at
-/// it and goes behind the core, and ore staged afterwards is smelted there
-/// into fragments, a batch at a time.
+/// workbench goes on a stone foundation behind the core, the furnace is
+/// crafted at it and goes on the floor over the cupboard, and ore staged
+/// afterwards is smelted there into fragments, a batch at a time.
 #[test]
 fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
     use server::agent::build::{Milestone, YARD};
@@ -1929,12 +1943,12 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
                 .filter(|d| d.owner == ID)
                 .map(|d| w.deploy.defs[usize::from(d.row)].arch)
         };
-        assert_eq!(arch(cx, cz, 1), Some(ARCH_WORKBENCH), "the bench upstairs");
+        assert_eq!(arch(cx, cz, 1), Some(ARCH_FURNACE), "the furnace upstairs");
         let (yx, yz) = (
             cx.checked_add_signed(i16::from(YARD.0)).unwrap(),
             cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
         );
-        assert_eq!(arch(yx, yz, 0), Some(ARCH_FURNACE), "the furnace behind");
+        assert_eq!(arch(yx, yz, 0), Some(ARCH_WORKBENCH), "the bench behind");
     }
     assert!(
         h.held_checks as u64 >= h.bot.builder().stats.deployed,
@@ -1996,7 +2010,8 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
 /// The starter and its stations stand and the pack holds the fragments for
 /// three locks and metal doors: code locks go on both doors and the
 /// cupboard, armed with its code, and the front door is swapped for metal
-/// (its lock taken off with it and put on again).
+/// (part of the milestone; a lock already on it comes off with it and goes
+/// on again).
 /// A stranger at the front door is refused, the wrong code shocks him and
 /// does not let him in. Somebody who knows the code resets the lock's list
 /// to himself alone: the owner, refused at its own door, enters its code
@@ -2123,8 +2138,8 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     }
     let stats = h.bot.builder().stats;
     assert!(
-        stats.locks >= 4 && stats.codes >= 4 && stats.swapped >= 1,
-        "the front door's lock went on again after its swap: {stats:?}"
+        stats.locks >= 3 && stats.codes >= 3 && stats.swapped >= 1,
+        "three locks armed and the front door swapped: {stats:?}"
     );
     for verb in ["access", "demolish", "deploy"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
@@ -2139,7 +2154,16 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     );
 
     // 2. A stranger outside the front door: the door does not swing for
-    //    him, and a wrong code shocks him and lets nobody in.
+    //    him, and a wrong code shocks him and lets nobody in. The owner is
+    //    logging off in its room meanwhile, doors shut: none of its walks
+    //    through them.
+    h.bot.set_deadline(Some(0));
+    assert!(
+        h.until(90 * TICK_HZ, |b| b.stats.phase
+            == server::explorer::Phase::LoggingOff),
+        "it never settled in its room: {}",
+        h.explain()
+    );
     let shut = |h: &Harness| {
         h.shard
             .world
@@ -2440,9 +2464,11 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
     println!("{stats:?} {}", h.explain());
 }
 
-/// Gears and rope with a recycler in the pack: it puts the recycler down,
-/// feeds it through its panel, switches it on, and takes off the junk,
-/// fragments and cloth they come apart into.
+/// Gears, rope and tarp with a recycler in the pack: it puts the recycler
+/// down, feeds it through its panel, switches it on, and takes off the
+/// junk, fragments and cloth they come apart into. The gear its base has
+/// still to make (the crossbow's rope, the revolver's gears, the vest's
+/// tarp) is left whole.
 #[test]
 fn a_survivor_recycles_its_salvage() {
     let mut h = Harness::new(false);
@@ -2456,6 +2482,7 @@ fn a_survivor_recycles_its_salvage() {
         stack("item.recycler", 1),
         stack("item.gears", 5),
         stack("item.rope", 3),
+        stack("item.tarp", 3),
     ];
     h.stage(|p| {
         for (i, s) in staged.iter().enumerate() {
@@ -2464,7 +2491,7 @@ fn a_survivor_recycles_its_salvage() {
     });
     let id = |name: &str| content.item_index(name).unwrap();
     let done = h.until(3 * 60 * TICK_HZ, |b| {
-        b.oven_stats.recycled >= 2 && b.goal() != Some(Goal::Recycle)
+        b.oven_stats.recycled >= 3 && b.goal() != Some(Goal::Recycle)
     });
     assert!(
         done,
@@ -2473,11 +2500,15 @@ fn a_survivor_recycles_its_salvage() {
         h.explain()
     );
     let me = h.me();
-    assert_eq!(units_of(me, id("item.gears")), 0);
-    assert_eq!(units_of(me, id("item.rope")), 0);
-    assert_eq!(units_of(me, id("item.junk")), 5 * 12);
-    assert_eq!(units_of(me, id("item.metal_frags")), 5 * 15);
-    assert_eq!(units_of(me, id("item.cloth")), 3 * 18);
+    // Two of each kept for the gear, the rest taken apart.
+    assert_eq!(units_of(me, id("item.gears")), 2);
+    assert_eq!(units_of(me, id("item.rope")), 2);
+    assert_eq!(units_of(me, id("item.tarp")), 2);
+    assert_eq!(units_of(me, id("item.junk")), 3 * 12);
+    assert_eq!(units_of(me, id("item.metal_frags")), 3 * 15);
+    assert_eq!(units_of(me, id("item.cloth")), 18 + 60);
+    // Nothing left to take apart: it is not sent back to the recycler.
+    assert!(!h.until(30 * TICK_HZ, |b| b.goal() == Some(Goal::Recycle)));
     assert_eq!(h.bot.oven_stats.placed, 1, "{:?}", h.bot.oven_stats);
     for verb in ["deploy", "container", "move", "use"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);

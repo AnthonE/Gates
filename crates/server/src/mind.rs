@@ -61,9 +61,10 @@ pub const LOOTED: [&str; 9] = [
     "Sulfur",
 ];
 /// The recycler, by catalog name (`agent::oven`), and the gears held before
-/// one is worth making: two go into it, the rest come apart in it.
+/// one is worth making: two go into it, two are kept whole for the
+/// revolver, the rest come apart in it.
 pub const RECYCLER_ITEM: &str = crate::agent::oven::RECYCLER_ITEM;
-const SCRIPTED_RECYCLER_GEARS: u32 = 4;
+const SCRIPTED_RECYCLER_GEARS: u32 = 5;
 /// Ore, and what its furnace makes of it.
 pub const SMELTS: [(&str, &str); 2] = [("Metal Ore", "Metal Fragments"), ("Sulfur Ore", "Sulfur")];
 /// The deployable a body wakes on, by catalog name: what the playbook

@@ -19,6 +19,7 @@ use crate::agent::build::{self, aim_point, Act, Builder, Way, PRESS_SLACK_M};
 use crate::agent::hands::Hands;
 use crate::agent::home::{Home, HOLD_TICKS};
 use crate::agent::intent::{Intent, Look};
+use crate::agent::oven;
 use crate::agent::route::Route;
 use crate::agent::wiki::{Book, Class};
 use crate::mind::Why;
@@ -132,17 +133,23 @@ pub fn box_open(core: &ClientCore, key: u32) -> bool {
 /// whatever else it puts away. Weapons and tools by what the game's rules
 /// say they are for, armour by the slot it is worn in, the plan and hammer
 /// it builds with, and the rounds a weapon it carries fires: all of them.
-/// Food and meds: [`PROVISION_STACKS`] stacks' worth, not a pack full of
-/// mushrooms. Nothing else.
+/// Salvage and the recycler that takes it apart stay on the body too: the
+/// recycle works from the pack, and nothing takes them out of the box for
+/// it. Food and meds: [`PROVISION_STACKS`] stacks' worth, not a pack full
+/// of mushrooms. Nothing else.
 pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
     let row = core.catalog.row(usize::from(item));
-    match book.page(item).class {
+    let page = book.page(item);
+    match page.class {
         Class::Food | Class::Med => return PROVISION_STACKS * u32::from(row.stack_max.max(1)),
         Class::Other => {}
         _ => return u32::MAX,
     }
     let name = core.catalog.name(usize::from(item));
-    let kit = name == build::PLAN_ITEM.as_bytes() || name == build::HAMMER_ITEM.as_bytes();
+    let kit = name == build::PLAN_ITEM.as_bytes()
+        || name == build::HAMMER_ITEM.as_bytes()
+        || name == oven::RECYCLER_ITEM.as_bytes()
+        || page.recycles;
     let round = core.inv[..INV_SLOTS]
         .iter()
         .any(|s| s.count > 0 && book.page(s.item).ranged.round == item);
