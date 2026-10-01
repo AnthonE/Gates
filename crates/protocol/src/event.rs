@@ -64,7 +64,7 @@ pub const CATALOG_BATCH: usize = 8;
 /// measures it rather than trusting this sum.
 pub const SKIN_BATCH: usize = 8;
 
-/// Vendor offers one message carries (`sim_core::vend`, wire v85). A row is
+/// Vendor offers one message carries (`sim_core::vend`, wire v86). A row is
 /// 3 + 4 × 16 + 5 bits plus the vendor's name on its first row (≤ 16
 /// bytes), so eight are well inside `MAX_EVENT_MSG_BYTES`.
 pub const VEND_BATCH: usize = 8;
@@ -397,19 +397,21 @@ const SUB_SKINS: u32 = 64;
 /// What skins the owner owns (skins v0): a bitset over catalog rows,
 /// `sim_core::skin::SkinSet` exactly, sent whenever the sim's copy moves.
 const SUB_SKINS_OWNED: u32 = 65;
-/// The town's vendor offers (wire v85), dripped at join: rows
+/// Who a player id is: proven address, platform name, picture (v85).
+const SUB_TAG: u32 = 66;
+/// The town's vendor offers (wire v86), dripped at join: rows
 /// `first..first + count` of `total`, each naming its vendor (kiosk), what
 /// it takes and what it gives; a vendor's first row carries its name.
-const SUB_VEND_OFFERS: u32 = 66;
+const SUB_VEND_OFFERS: u32 = 67;
 /// A trade went through (own-fact): the offer and how many times.
-const SUB_VEND: u32 = 67;
+const SUB_VEND: u32 = 68;
 /// A trade was refused (own-fact): why, and which offer.
-const SUB_VEND_REFUSED: u32 = 68;
-/// The ziggurat's card doors that stand open (wire v86), a bit per door:
+const SUB_VEND_REFUSED: u32 = 69;
+/// The ziggurat's card doors that stand open (wire v87), a bit per door:
 /// sent to everyone when the set changes and to a joiner.
-const SUB_CARD_DOORS: u32 = 69;
+const SUB_CARD_DOORS: u32 = 70;
 /// A swipe was refused (own-fact): why, and which door.
-const SUB_SWIPE_REFUSED: u32 = 70;
+const SUB_SWIPE_REFUSED: u32 = 71;
 const SUB_MAX: u32 = SUB_SWIPE_REFUSED;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
@@ -1379,7 +1381,7 @@ pub enum EventMsg {
     /// The skins the owner owns, as the sim holds them: bit `i` is row `i`
     /// of the skin catalog.
     SkinsOwned { owned: sim_core::skin::SkinSet },
-    /// One batch of the vendor offers (wire v85).
+    /// One batch of the vendor offers (wire v86).
     VendOffers {
         total: u16,
         first: u16,
@@ -1418,6 +1420,23 @@ pub enum EventMsg {
         from: u32,
         global: bool,
         text: ChatText,
+    },
+    /// Who player `id` is (v85): the shard's **proven** address and the name
+    /// and picture that wallet set on the platform (`/api/face/{wallet}`).
+    /// `name` may be empty (nothing set, or the read has not landed) and
+    /// `pic` is the first four bytes of the picture's sha256, 0 for none —
+    /// the client builds the picture's url from the address and uses `pic`
+    /// to tell a changed picture from a cached one.
+    ///
+    /// Sent to every connected session when learned, and in full to a late
+    /// joiner, one per tick. The low byte of `id` is the connection slot
+    /// (`server/net.rs`), which is how a client files it. Never a guest's
+    /// and never an animal's: both ends refuse one.
+    Tag {
+        id: u32,
+        address: crate::Address,
+        name: crate::Name,
+        pic: u32,
     },
     /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
     /// The attacker's fact and the attacker's alone — a hitmarker, not a
@@ -3524,6 +3543,25 @@ pub fn encode_event_chat(
     Ok(w.finish())
 }
 
+/// Who player `id` is — see [`EventMsg::Tag`].
+pub fn encode_event_tag(
+    id: u32,
+    address: &crate::Address,
+    name: &crate::Name,
+    pic: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if address.is_guest() || id & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TAG)?;
+    w.write(id, 32)?;
+    crate::write_address(&mut w, address)?;
+    crate::write_name(&mut w, name)?;
+    w.write(pic, 32)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -4406,6 +4444,21 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         // The relay is held to the sender's own rule: `read_text`
         // sanitizes or refuses, so a client never renders a line the
         // server would not have accepted.
+        SUB_TAG => {
+            let id = r.read(32)?;
+            let address = crate::read_address(&mut r)?;
+            let name = crate::read_name(&mut r)?;
+            let pic = r.read(32)?;
+            if address.is_guest() || id & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Tag {
+                id,
+                address,
+                name,
+                pic,
+            }
+        }
         SUB_CHAT => {
             let from = r.read(32)?;
             let global = r.read_bit()?;

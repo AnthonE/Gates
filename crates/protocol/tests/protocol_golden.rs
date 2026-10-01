@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 128] = [
+const GOLDEN: [&[u8]; 129] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -184,6 +184,7 @@ const GOLDEN: [&[u8]; 128] = [
     include_bytes!("golden/action_skins_refresh.bin"),
     include_bytes!("golden/hello_spectate.bin"),
     include_bytes!("golden/watch.bin"),
+    include_bytes!("golden/event_tag.bin"),
     include_bytes!("golden/event_vend_offers.bin"),
     include_bytes!("golden/event_vend.bin"),
     include_bytes!("golden/event_vend_refused.bin"),
@@ -398,17 +399,19 @@ fn test_protocol_golden() {
     // Spectators (v79): the watcher's hello and the watch message.
     g!(seen, golden_stream, 119);
     g!(seen, golden_stream, 120);
-    // THE GATE's vendors (v85).
+    // Who a player id is (v85).
     g!(seen, golden_event, 121);
+    // THE GATE's vendors (v86).
     g!(seen, golden_event, 122);
     g!(seen, golden_event, 123);
-    g!(seen, golden_action, 124);
-    // The ziggurat's card doors (v86).
-    g!(seen, golden_event, 125);
+    g!(seen, golden_event, 124);
+    g!(seen, golden_action, 125);
+    // The ziggurat's card doors (v87).
     g!(seen, golden_event, 126);
-    g!(seen, golden_action, 127);
+    g!(seen, golden_event, 127);
+    g!(seen, golden_action, 128);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 128, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 129, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1871,6 +1874,20 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_skins_owned(&owned, &mut buf).unwrap()
+        }
+        "event_tag.bin" => {
+            let (id, address, label, pic) = protocol::goldens::event_tag();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Tag {
+                    id,
+                    address,
+                    name: label,
+                    pic
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_tag(id, &address, &label, pic, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

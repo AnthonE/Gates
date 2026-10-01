@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 128] = [
+pub const FIXTURES: [&str; 129] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -225,12 +225,14 @@ pub const FIXTURES: [&str; 128] = [
     // one message only a watcher receives. Appended, positional as ever.
     "hello_spectate.bin",
     "watch.bin",
-    // THE GATE's vendors (v85): the offer drip, the two answers, the verb.
+    // Who a player id is (v85). Appended, positional as ever.
+    "event_tag.bin",
+    // THE GATE's vendors (v86): the offer drip, the two answers, the verb.
     "event_vend_offers.bin",
     "event_vend.bin",
     "event_vend_refused.bin",
     "action_vend.bin",
-    // The Black Ziggurat's card doors (v86): the mirror, the refusal, the verb.
+    // The Black Ziggurat's card doors (v87): the mirror, the refusal, the verb.
     "event_card_doors.bin",
     "event_swipe_refused.bin",
     "action_swipe.bin",
@@ -736,6 +738,21 @@ pub fn watch() -> crate::Watch {
             None => crate::Name::EMPTY,
         },
     }
+}
+
+/// Who a player id is (wire v85): a slot/generation id with bits in both
+/// halves, the `watch` address, a name with a space in it, and a `pic`
+/// whose four bytes all differ so a byte-order slip cannot pass.
+pub fn event_tag() -> (u32, crate::Address, crate::Name, u32) {
+    (
+        (0x51 << 8) | 7,
+        watch().address,
+        match crate::Name::new("Ash Walker") {
+            Some(n) => n,
+            None => crate::Name::EMPTY,
+        },
+        0x1a2b_3c4d,
+    )
 }
 
 /// The server's challenge. Every nonce byte is distinct so a transposition
@@ -1916,7 +1933,7 @@ pub fn event_skins_owned() -> sim_core::skin::SkinSet {
     s
 }
 
-/// Three offers at two vendors (wire v85): a buy and a sell at vendor 0,
+/// Three offers at two vendors (wire v86): a buy and a sell at vendor 0,
 /// which carries its name on its first row only, and a buy at vendor 5.
 pub fn event_vend_offers() -> (sim_core::vend::VendContent, [&'static [u8]; 6]) {
     let mut vc = sim_core::vend::VendContent::EMPTY;

@@ -180,6 +180,7 @@ pub fn setup(
             own_id: core.player_id,
         },
         &core.catalog,
+        &crate::ui::names::label(core.tag(core.own_death_killer), core.own_death_killer),
     );
 
     // **The list is what shapes the screen** (bag choice v0). Own-fact,

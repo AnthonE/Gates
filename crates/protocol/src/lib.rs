@@ -68,13 +68,13 @@ pub use event::{
     encode_event_shot, encode_event_skins, encode_event_skins_owned, encode_event_slot_change,
     encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_swipe_refused,
-    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
-    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
-    ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH,
-    CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH,
-    VENDOR_NAME_BYTES, VEND_BATCH,
+    encode_event_tag, encode_event_vend, encode_event_vend_offers, encode_event_vend_refused,
+    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
+    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK,
+    BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
+    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
+    SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -996,13 +996,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// the bag sync) gains `kind:2` after `qz`: a pack, or `1 + species` for
 /// an animal's death bag, which the client draws as the body. Derived from
 /// the bag's owner; nothing new is stored.
-/// v85 — THE GATE, the town's vendors: `ACT_VEND` (25) trades at a kiosk,
-/// `SUB_VEND_OFFERS` (66) drips the offers at join, `SUB_VEND` (67) and
-/// `SUB_VEND_REFUSED` (68) answer the trader.
-/// v86 — the Black Ziggurat's card doors: `ACT_SWIPE` (26) swipes a card or
-/// pulls a lever, `SUB_CARD_DOORS` (69) mirrors which doors stand open,
-/// `SUB_SWIPE_REFUSED` (70) answers the swiper.
-pub const PROTO_VER: u16 = 86;
+/// v85 — `EventMsg::Tag`: who a player id is (proven address, the name and
+/// picture that wallet set on the platform), so chat, the kill feed and
+/// nametags can say a name instead of `#259`.
+/// v86 — THE GATE, the town's vendors: `ACT_VEND` (25) trades at a kiosk,
+/// `SUB_VEND_OFFERS` (67) drips the offers at join, `SUB_VEND` (68) and
+/// `SUB_VEND_REFUSED` (69) answer the trader.
+/// v87 — the Black Ziggurat's card doors: `ACT_SWIPE` (26) swipes a card or
+/// pulls a lever, `SUB_CARD_DOORS` (70) mirrors which doors stand open,
+/// `SUB_SWIPE_REFUSED` (71) answers the swiper.
+pub const PROTO_VER: u16 = 87;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1797,9 +1800,9 @@ const ACT_RESKIN: u32 = 23;
 /// the sim as a server-minted `Command::SkinsOwned`, never as anything a
 /// client said.
 const ACT_SKINS_REFRESH: u32 = 24;
-/// Trade at a town kiosk (wire v85, `sim_core::vend`): offer and times.
+/// Trade at a town kiosk (wire v86, `sim_core::vend`): offer and times.
 const ACT_VEND: u32 = 25;
-/// Swipe a keycard at a ziggurat door, or pull its lever (wire v86,
+/// Swipe a keycard at a ziggurat door, or pull its lever (wire v87,
 /// `sim_core::monument`): the door.
 const ACT_SWIPE: u32 = 26;
 /// The highest live action code, named rather than counted — the event
@@ -2134,11 +2137,11 @@ pub enum ActionMsg {
     /// wood, and a full pair of meters all come back as a consume-refused
     /// event rather than as a wire error.
     Consume { slot: u8 },
-    /// Trade at a town kiosk (wire v85): offer `offer` of the vendor
+    /// Trade at a town kiosk (wire v86): offer `offer` of the vendor
     /// catalog, `times` over (1..=`VEND_TIMES_MAX`). Everything past the
     /// shape is the sim's verdict.
     Vend { offer: u8, times: u8 },
-    /// Swipe at ziggurat door `door` (wire v86); reach and card are the
+    /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
     /// Learn the blueprint for what is in inventory `slot` (research.rs).
@@ -4644,8 +4647,8 @@ mod tests {
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
-        // 24 (re-skin, refresh); the town's vendors (v85) spend 25 and the
-        // ziggurat's doors (v86) 26, leaving five five-bit codes.
+        // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
+        // ziggurat's doors (v87) 26, leaving five five-bit codes.
         assert_eq!(ACT_MAX, ACT_SWIPE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,

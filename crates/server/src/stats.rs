@@ -219,6 +219,12 @@ pub struct ShardStats {
     /// Answers that found the skins ring full and were dropped. The client
     /// can ask again; a count here says it had to.
     pub skins_dropped: AtomicU64,
+    /// Name-and-picture reads (`faces.rs`) whose answer reached the sim, the
+    /// ones that could not be answered (the player stays their address), and
+    /// the ones that found the ring full. Not watched: a label, never a gate.
+    pub faces_read: AtomicU64,
+    pub faces_unknown: AtomicU64,
+    pub faces_dropped: AtomicU64,
     /// Item-store price reads (`skins::prices_of`) whose answer reached the
     /// sim, and the ones that could not be answered. An unanswered read keeps
     /// the prices the store screen already shows.

@@ -228,8 +228,10 @@ pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>) {
         let Ok(s) = std::str::from_utf8(text.as_bytes()) else {
             continue;
         };
+        let name = crate::ui::names::label(net.session.core.tag(speaker), speaker);
         chat.log.push(Line {
             speaker,
+            name,
             global,
             text: s.to_string(),
             own: speaker == own,

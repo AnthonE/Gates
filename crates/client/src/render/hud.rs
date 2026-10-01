@@ -2246,7 +2246,8 @@ pub fn feedback(
     // so the feed says who, and the screen — which does have the cause, the
     // weapon and the range — says how.
     for &(victim, killer) in feed.deaths() {
-        if let Some(line) = kill_line_for(victim, killer, core.player_id) {
+        let name = |id: u32| crate::ui::names::label(core.tag(id), id);
+        if let Some(line) = kill_line_for(victim, killer, core.player_id, name) {
             toast.say(line);
         }
     }
@@ -2982,21 +2983,26 @@ fn charge_readout(secs_left: f32, whereat: &str) -> Option<String> {
 /// `killer == victim` is how the ring reports a death nobody dealt — the
 /// clock, the sea, or a player's own hand — because the wire pair carries no
 /// cause. The feed says who; the death screen says how.
-fn kill_line(victim: u32, killer: u32) -> Option<String> {
+fn kill_line(victim: u32, killer: u32, name: impl Fn(u32) -> String) -> Option<String> {
     Some(if killer == victim {
-        format!("#{victim} died")
+        format!("{} died", name(victim))
     } else {
-        format!("#{killer} killed #{victim}")
+        format!("{} killed {}", name(killer), name(victim))
     })
 }
 
 /// [`kill_line`], but silent for our own death: it is in the same ring, and
 /// `ui::death` already owns that sentence with the cause and the range.
-fn kill_line_for(victim: u32, killer: u32, own: u32) -> Option<String> {
+fn kill_line_for(
+    victim: u32,
+    killer: u32,
+    own: u32,
+    name: impl Fn(u32) -> String,
+) -> Option<String> {
     if victim == own {
         return None;
     }
-    kill_line(victim, killer)
+    kill_line(victim, killer, name)
 }
 
 /// What the crosshair says for a swing pick, or `""` for a whiff.
@@ -4086,13 +4092,20 @@ mod tests {
     #[test]
     fn the_kill_feed_names_who_and_skips_our_own() {
         // A stranger killed by another stranger.
-        assert_eq!(kill_line(9, 4), Some("#4 killed #9".to_string()));
+        let name = |id: u32| {
+            if id == 4 {
+                "Ash".to_string()
+            } else {
+                format!("#{id}")
+            }
+        };
+        assert_eq!(kill_line(9, 4, name), Some("Ash killed #9".to_string()));
         // Self-inflicted, or the world: the ring gives killer == victim.
-        assert_eq!(kill_line(9, 9), Some("#9 died".to_string()));
+        assert_eq!(kill_line(9, 9, name), Some("#9 died".to_string()));
         // Ours never reaches the feed — the death SCREEN owns it, and the
         // same EV_DEATH feeds both.
-        assert_eq!(kill_line_for(9, 4, 9), None);
-        assert_eq!(kill_line_for(9, 9, 9), None);
+        assert_eq!(kill_line_for(9, 4, 9, name), None);
+        assert_eq!(kill_line_for(9, 9, 9, name), None);
     }
 
     #[test]

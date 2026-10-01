@@ -1272,6 +1272,49 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
     best
 }
 
+/// A nametag's target: the player id, the eye the aim leaves from, and
+/// their head.
+pub type NametagHit = (u32, (f32, f32, f32), (f32, f32, f32));
+
+/// The player a nametag belongs to: the nearest one whose capsule the aim
+/// ray enters within `ui::names::NAMETAG_REACH_M` (aim-only, `DECISIONS.md`),
+/// skipping yourself, the dead, animals and anyone the shard has not tagged.
+/// Returns the id, the eye the ray leaves from and the head it reaches —
+/// the two ends a caller checks for a clear line before drawing a name.
+pub fn resolve_nametag(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+    tagged: impl Fn(u32) -> bool,
+) -> Option<NametagHit> {
+    use sim_core::movement::POS_Y_Q;
+    let ray = aim.ray(super::names::NAMETAG_REACH_M);
+    let mut best: Option<(f32, u32, (f32, f32, f32))> = None;
+    for &(id, e) in entities {
+        if id == own || e.dead || id & sim_core::limits::MOB_ID_TAG != 0 || !tagged(id) {
+            continue;
+        }
+        let target = Body {
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            ..Default::default()
+        };
+        let Some(t) = sim_core::assist::aimed(&ray, &target) else {
+            continue;
+        };
+        if best.is_none_or(|(bt, bid, _)| t < bt || (t == bt && id < bid)) {
+            let head = (
+                e.qx as f32 * POS_XZ_Q,
+                e.qy as f32 * POS_Y_Q + sim_core::collide::CAPSULE_HEIGHT_M * 0.9,
+                e.qz as f32 * POS_XZ_Q,
+            );
+            best = Some((t, id, head));
+        }
+    }
+    best.map(|(_, id, head)| (id, ray.at_m(0.0), head))
+}
+
 #[cfg(test)]
 mod assist_tests {
     use super::*;

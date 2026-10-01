@@ -81,6 +81,10 @@ pub fn ring_index(tick: u32) -> usize {
     (tick as u64 / SNAPSHOT_INTERVAL_TICKS) as usize % SENT_SNAPSHOT_RING
 }
 
+/// Every player slot's tag bit (`ClientNetState::tags_owed`).
+pub const TAGS_ALL: u128 = u128::MAX >> (128 - sim_core::limits::MAX_PLAYERS);
+const _: () = assert!(sim_core::limits::MAX_PLAYERS <= 128);
+
 pub struct ClientNetState {
     pub connected: bool,
     pub id: u32,
@@ -350,6 +354,10 @@ pub struct ClientNetState {
     /// The owned skin set this client last heard (`SUB_SKINS_OWNED`), so the
     /// drip sends it when the sim's copy moves and never otherwise.
     pub last_skins: Option<sim_core::skin::SkinSet>,
+    /// Which player slots' tags (`EventMsg::Tag`) this client is owed: bit
+    /// `i` is slot `i`. All set on a fresh connection, so a late joiner
+    /// learns everyone already here; cleared one per tick as each is sent.
+    pub tags_owed: u128,
     /// A set the platform reported for this connection that has not yet
     /// found room in the command queue (`ShardCore::skins_owned`).
     pub skins_pending: Option<sim_core::skin::SkinSet>,
@@ -432,6 +440,7 @@ impl ClientNetState {
             vend_cursor: 0,
             last_doors: None,
             last_skins: None,
+            tags_owed: TAGS_ALL,
             skins_pending: None,
             last_expo: None,
             pending_chat: None,
@@ -454,6 +463,7 @@ impl ClientNetState {
         self.vend_cursor = 0;
         self.last_doors = None;
         self.last_skins = None;
+        self.tags_owed = TAGS_ALL;
         self.recipes_cursor = 0;
         self.research_cursor = 0;
         self.piece_defs_cursor = 0;
