@@ -2845,24 +2845,13 @@ impl ShardCore {
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
                     let sh = Self::world_slot_of(&self.world, ev.a);
-                    // The heli's gun (`heli.rs`) shoots from a roster slot,
-                    // which no world slot names: filtered by the roster's
-                    // interest instead, or a burst would reach the island.
-                    let beast = mob::slot_of_id(ev.a);
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
                                     continue;
                                 }
-                                let seen = match beast {
-                                    Some(m) => {
-                                        !self.interest_settled(slot)
-                                            || self.clients[slot].m_interest[m]
-                                    }
-                                    None => self.body_event_visible(slot, ev.a, sh),
-                                };
-                                if !seen {
+                                if !self.body_event_visible(slot, ev.a, sh) {
                                     ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
@@ -4352,6 +4341,8 @@ impl ShardCore {
     ///   one message per event rather than one per client, and
     ///   `gather_wire.rs`'s `a_swing_reaches_every_client_not_just_the_swinger`
     ///   pins it.
+    /// - **A roster slot** (the heli's gun): the roster's own interest,
+    ///   `m_interest`, under the same unsettled rule below.
     /// - **A subject with no world slot.** Nothing to index; fail open.
     /// - **A recipient whose interest is unsettled** (above). This is the
     ///   one that bites, and it fails open for the same reason
@@ -4362,6 +4353,12 @@ impl ShardCore {
         let c = &self.clients[slot];
         if c.id == subject {
             return true;
+        }
+        // A roster slot's fact — the heli's gun (`heli.rs`), which no world
+        // slot names — is filtered by the roster's own interest, or a burst
+        // would reach the whole island.
+        if let Some(m) = mob::slot_of_id(subject) {
+            return !self.interest_settled(slot) || c.m_interest[m];
         }
         let Some(w) = subject_wslot else {
             return true;

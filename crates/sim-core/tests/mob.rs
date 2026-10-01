@@ -163,10 +163,12 @@ fn armed_content_hatches_the_whole_roster() {
         MAX_MOBS / 4,
         "1-in-4 of {MAX_MOBS} slots is a predator, exactly, on every seed"
     );
+    // Every other slot is a pig but the last, which is the heli's.
     assert_eq!(
         w.mobs.m.iter().filter(|m| m.kind == MOB_PIG).count(),
-        MAX_MOBS - wolves
+        MAX_MOBS - wolves - 1
     );
+    assert_eq!(w.mobs.m[mob::HELI_SLOT].kind, mob::MOB_HELI);
 }
 
 /// Dormancy is the reference game's measure and ours is a hard skip: with

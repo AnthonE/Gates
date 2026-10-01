@@ -230,6 +230,12 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     ("mob.rs", "home_of", "locator: picks where an animal lives."),
     (
+        "heli.rs",
+        "waypoint",
+        "locator: picks a land point for the heli to fly to; its height over \
+         the ground is `terrain::ground`'s, read when it flies.",
+    ),
+    (
         "mob.rs",
         "guard_home_of",
         "locator: picks where a site's guard lives — on the site's apron, chosen \
