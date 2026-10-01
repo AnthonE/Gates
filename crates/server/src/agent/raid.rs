@@ -32,7 +32,7 @@ use crate::agent::hands::Hands;
 use crate::agent::home::{belt_move, HOLD_TICKS};
 use crate::agent::intent::{yaw_toward, Intent, Look};
 use crate::agent::route::{Route, Step};
-use crate::agent::tracks::{clear_line, Sight, Species, Tracks};
+use crate::agent::tracks::{clear_line, eye_m, Sight, Species, Tracks};
 use crate::agent::wiki::Throw;
 use crate::mind::Why;
 use client_core::core::ClientCore;
@@ -43,7 +43,7 @@ use sim_core::deploy::{arch_is_door, box_key, cell_center, ARCH_BOX, ARCH_HEARTH
 use sim_core::input::BTN_PRIMARY;
 use sim_core::inventory::CONT_BOX;
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, TICK_HZ};
-use sim_core::movement::POS_XZ_Q;
+use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::Haven;
 use sim_core::yaw_dir;
 
@@ -371,11 +371,19 @@ impl Bases {
         &mut self,
         core: &mut ClientCore,
         haven: &Haven,
-        eye: [f32; 3],
-        yaw: u16,
+        body: &EntityState,
         tick: u32,
         own: impl Fn(u16, u16, u8, u8) -> bool,
     ) {
+        // The feet, and the eyes over them in the stance the snapshot shows
+        // (v83: a crouched eye is lower).
+        let feet = [
+            body.qx as f32 * POS_XZ_Q,
+            body.qy as f32 * POS_Y_Q,
+            body.qz as f32 * POS_XZ_Q,
+        ];
+        let eye = [feet[0], feet[1] + eye_m(body.crouched), feet[2]];
+        let yaw = body.yaw;
         let mut rays = RAID_RAYS_PER_FRAME;
         let (fx, fz) = yaw_dir(yaw);
         for k in 0..RAID_SCAN_PER_FRAME {
@@ -465,7 +473,7 @@ impl Bases {
             // A line to just short of its near side (or of the box): what
             // stands in front of it, not the thing itself.
             let short = if what == What::Box { 0.7 } else { 0.35 };
-            let floor = eye[1] - 1.6;
+            let floor = feet[1];
             let target = [ax - dx / d * short, floor + 0.9, az - dz / d * short];
             if clear_line(core, haven, eye, target, range) != Sight::Clear {
                 continue;

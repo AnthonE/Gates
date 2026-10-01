@@ -161,6 +161,11 @@ pub struct ShardCore {
     pub skin_catalog: Box<protocol::SkinCatalog>,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
+    /// Who each player slot is (`EventMsg::Tag`): the proven address from
+    /// the join, the platform name and picture when `faces.rs`'s read lands.
+    /// A row outlives its connection, so a sleeper keeps its name for late
+    /// joiners until the slot's next tenant overwrites it. Never in the sim.
+    tags: Box<[TagRow]>,
     /// Autosave sweep cursor: which connection slot [`Self::autosave`] looks
     /// at next. One slot per call, so the work is O(1) per tick and every
     /// connected player is visited once every `MAX_PLAYERS` ticks (3.3 s at
@@ -363,6 +368,16 @@ impl SleeperIndex {
     }
 }
 
+/// One player slot's tag (`ShardCore::tags`). `id == 0` is an empty row —
+/// a guest or a slot nobody has joined — and is never sent.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct TagRow {
+    id: u32,
+    address: protocol::Address,
+    name: protocol::Name,
+    pic: u32,
+}
+
 impl ShardCore {
     pub fn new(seed: u64) -> Self {
         // Every connection slot: players, then spectator seats.
@@ -381,6 +396,7 @@ impl ShardCore {
             catalog: ItemCatalog::EMPTY,
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
+            tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
@@ -395,6 +411,49 @@ impl ShardCore {
     /// `dev_env` (`config.rs`). False ⇒ the command buffer was full.
     pub fn queue_env(&mut self, weather: u8, time_pm: u16) -> bool {
         self.queue(Command::AdminEnv { weather, time_pm })
+    }
+
+    /// Player `id` joined connection `slot` as `key` (the proven wallet, or
+    /// `None` for a guest). Their tag starts as the address alone and is owed
+    /// to everyone; the platform name follows through [`Self::set_face`].
+    pub fn tag_join(&mut self, slot: usize, id: u32, key: Option<&PlayerKey>) {
+        if slot >= MAX_PLAYERS {
+            return;
+        }
+        let address = key.and_then(|k| protocol::Address::from_hex(k.as_bytes()));
+        self.tags[slot] = match address {
+            Some(address) if !address.is_guest() => TagRow {
+                id,
+                address,
+                name: protocol::Name::EMPTY,
+                pic: 0,
+            },
+            _ => TagRow::default(),
+        };
+        self.owe_tag(slot);
+    }
+
+    /// The platform said what player `id` on `slot` is called and looks like
+    /// (`faces.rs`). Dropped if the slot has a new tenant; a no-op if nothing
+    /// moved, so a repeated read costs no bandwidth.
+    pub fn set_face(&mut self, slot: usize, id: u32, name: protocol::Name, pic: u32) {
+        if slot >= MAX_PLAYERS || !self.clients[slot].connected || self.clients[slot].id != id {
+            return;
+        }
+        let row = &mut self.tags[slot];
+        if row.id != id || (row.name == name && row.pic == pic) {
+            return;
+        }
+        row.name = name;
+        row.pic = pic;
+        self.owe_tag(slot);
+    }
+
+    fn owe_tag(&mut self, slot: usize) {
+        let bit = 1u128 << slot;
+        for c in self.clients.iter_mut() {
+            c.tags_owed |= bit;
+        }
     }
 
     /// The platform said what connection `slot`, player `id`, owns
@@ -3370,6 +3429,40 @@ impl ShardCore {
             }
         }
 
+        // Who everyone is (v85): one owed tag per tick, lowest slot first.
+        // The bit clears only when the push is accepted, so a full ring
+        // delays a name and never loses one.
+        let owed = self.clients[slot].tags_owed;
+        if owed != 0 {
+            let i = owed.trailing_zeros() as usize;
+            let bit = 1u128 << i;
+            let row = self.tags.get(i).copied().unwrap_or_default();
+            if row.id == 0 {
+                self.clients[slot].tags_owed &= !bit;
+            } else {
+                match protocol::encode_event_tag(
+                    row.id,
+                    &row.address,
+                    &row.name,
+                    row.pic,
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].tags_owed &= !bit;
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        self.clients[slot].tags_owed &= !bit;
+                        ShardStats::bump(&stats.encode_range_errors);
+                    }
+                }
+            }
+        }
+
         // Recipe rows, same drip shape (the craft menu's data).
         let c = &self.clients[slot];
         let cc = &self.world.craft;
@@ -4437,6 +4530,9 @@ impl ShardCore {
             sleeping: p.sleeping,
             dead: p.dead,
             wounded: p.wounded,
+            // The stance every sim rule reads (v83), so what is drawn is
+            // what a shot is tested against.
+            crouched: p.crouched(),
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
             // A downed body has dropped what it held (wounded v0 — the
@@ -4506,6 +4602,7 @@ impl ShardCore {
             sleeping: m.state == sim_core::brain::AiState::Sleep,
             dead: false,
             wounded: false,
+            crouched: false,
             yaw: m.yaw,
             pitch: 0,
             // Six of twelve now. A pig has no hotbar, so the hand is
@@ -4770,6 +4867,54 @@ mod tests {
         core.world.tick(&[]);
         assert!(core.world.events.is_empty(), "ring quiet after setup");
         core
+    }
+
+    /// Tags (v85): each player learns who every tagged player is, a name
+    /// read for a slot's previous tenant is dropped, and a late joiner is
+    /// caught up one tag per tick.
+    #[test]
+    fn every_player_learns_every_tagged_player_and_a_late_joiner_catches_up() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let key = |n: u8| PlayerKey::new(format!("0x{:040x}", n).as_bytes()).unwrap();
+        for (slot, id, n) in [(0usize, 256u32, 0xa1u8), (1, 257, 0xb2)] {
+            assert!(core.connect_as(slot, id, Some(key(n)), None).is_some());
+            core.tag_join(slot, id, Some(&key(n)));
+        }
+        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 7);
+        core.set_face(1, 999, protocol::Name::new("Nope").unwrap(), 1);
+        let tags = |core: &mut ShardCore| {
+            let mut got = Vec::new();
+            core.tick_bare(&stats, |lane, slot, bytes| {
+                if lane == Lane::Event {
+                    if let Ok(EventMsg::Tag { id, name, pic, .. }) = decode_event(bytes) {
+                        got.push((slot, id, name.as_str().to_string(), pic));
+                    }
+                }
+                true
+            });
+            got
+        };
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.extend(tags(&mut core));
+        }
+        for slot in [0, 1] {
+            assert!(seen.contains(&(slot, 256, "Ash".into(), 7)), "{seen:?}");
+            assert!(seen.contains(&(slot, 257, String::new(), 0)), "{seen:?}");
+        }
+        assert!(!seen.iter().any(|t| t.2 == "Nope"), "a stale id is dropped");
+
+        assert!(core.connect_as(2, 258, Some(key(0xc3)), None).is_some());
+        core.tag_join(2, 258, Some(&key(0xc3)));
+        let first = tags(&mut core);
+        assert_eq!(first.iter().filter(|t| t.0 == 2).count(), 1, "one per tick");
+        let mut late: Vec<u32> = first.iter().filter(|t| t.0 == 2).map(|t| t.1).collect();
+        for _ in 0..3 {
+            late.extend(tags(&mut core).iter().filter(|t| t.0 == 2).map(|t| t.1));
+        }
+        late.sort_unstable();
+        assert_eq!(late, vec![256, 257, 258]);
     }
 
     /// **A client eating every tick eats about once a second** (`pace.rs`).

@@ -23,7 +23,7 @@ use sim_core::limits::{
     ARROW_STEP_MM, DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS, INTERP_DELAY_TICKS, TICK_HZ,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q, SPRINT_SPEED, TERMINAL_VELOCITY, WALK_SPEED};
-use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
+use sim_core::ranged::{eye_mm, MM_PER_M};
 use sim_core::rng::Pcg32;
 use sim_core::terrain::{self, Haven};
 use sim_core::weather::{self, Env};
@@ -97,6 +97,10 @@ pub const MID_M: f32 = 60.0;
 /// Eye heights above the feet the sight line is cast to: a head over a low
 /// wall for a player, the back of an animal.
 const PLAYER_SIGHT_Y_M: f32 = 1.4;
+/// A crouched player's (v83): the bottom of its lowered head band, the
+/// same 0.3 m under the top a standing one's sits.
+const CROUCH_SIGHT_Y_M: f32 =
+    collide::CROUCH_HEIGHT_M - (collide::CAPSULE_HEIGHT_M - PLAYER_SIGHT_Y_M);
 const ANIMAL_SIGHT_Y_M: f32 = 0.5;
 /// Closer than this, a body is in view across the whole width of the
 /// screen, not only the cone the eyes attend to further out.
@@ -106,8 +110,16 @@ const TOUCH_M: f32 = 2.0 * collide::CAPSULE_RADIUS_M;
 /// The cosine of half the screen's width: the client's 75° vertical view
 /// at 16:9 is about 107° across, so a body up to ~54° off the facing.
 pub const SCREEN_HALF_COS: f32 = 0.59;
-/// Where a look ray is tested against this body.
+/// Where a look ray is tested against this body, standing and crouched
+/// (v83: the crouched hit volume is 1.05 m, so its chest sits lower).
 const CHEST_Y_M: f32 = 1.2;
+const CROUCH_CHEST_Y_M: f32 = 0.7;
+
+/// The eye above the feet for a stance, metres: the sim's own
+/// (`ranged::eye_mm`), where a shot or a swing leaves from.
+pub fn eye_m(crouched: bool) -> f32 {
+    eye_mm(crouched) as f32 / MM_PER_M
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Species {
@@ -132,8 +144,9 @@ impl Species {
         }
     }
 
-    fn sight_y(self) -> f32 {
+    fn sight_y(self, crouched: bool) -> f32 {
         match self {
+            Species::Player if crouched => CROUCH_SIGHT_Y_M,
             Species::Player => PLAYER_SIGHT_Y_M,
             Species::Pig | Species::Wolf => ANIMAL_SIGHT_Y_M,
         }
@@ -160,6 +173,8 @@ pub struct Track {
     pub wounded: bool,
     pub dead: bool,
     pub sleeping: bool,
+    /// Crouched (wire v83): a lower eye and a shorter body to hit.
+    pub crouched: bool,
     /// Damage my own blows did it, from my hit markers.
     pub dealt: u32,
     /// When I last saw it swing or shoot.
@@ -240,6 +255,8 @@ pub struct Own {
     pub vel: [f32; 3],
     pub yaw: u16,
     pub pitch: u8,
+    /// The stance the server applied (wire v83): where the eyes were.
+    pub crouched: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -375,6 +392,7 @@ impl Tracks {
                             vel,
                             yaw: e.yaw,
                             pitch: e.pitch,
+                            crouched: e.crouched,
                         });
                     } else {
                         self.interp.push(t, e);
@@ -395,11 +413,7 @@ impl Tracks {
             return;
         };
         let at = f64::from(fed) - f64::from(self.playout);
-        let eye = [
-            own.pos[0],
-            own.pos[1] + ARROW_EYE_MM as f32 / MM_PER_M,
-            own.pos[2],
-        ];
+        let eye = [own.pos[0], own.pos[1] + eye_m(own.crouched), own.pos[2]];
         let (fx, fz) = yaw_dir(own.yaw);
         let (seed, _) = core.island();
         let clarity =
@@ -476,6 +490,7 @@ impl Tracks {
                             wounded: s.wounded,
                             dead: s.dead,
                             sleeping: s.sleeping,
+                            crouched: s.crouched,
                             dealt: 0,
                             last_swing: None,
                             last_shot: None,
@@ -507,7 +522,12 @@ impl Tracks {
             }
         }
         self.cast_rays(core, haven, eye, tick);
-        let chest = [own.pos[0], own.pos[1] + CHEST_Y_M, own.pos[2]];
+        let chest_y = if own.crouched {
+            CROUCH_CHEST_Y_M
+        } else {
+            CHEST_Y_M
+        };
+        let chest = [own.pos[0], own.pos[1] + chest_y, own.pos[2]];
         for slot in self.rows.iter_mut() {
             let Some(row) = slot.as_mut() else {
                 continue;
@@ -541,9 +561,10 @@ impl Tracks {
                 t.wounded = s.wounded;
                 t.dead = s.dead;
                 t.sleeping = s.sleeping;
+                t.crouched = s.crouched;
                 t.aiming_at_me = t.species == Species::Player
                     && t.active()
-                    && aimed_at(t.pos, t.yaw, t.pitch, chest);
+                    && aimed_at(t.pos, t.crouched, t.yaw, t.pitch, chest);
             }
             let stale = if row.seen {
                 !visible && tick.wrapping_sub(row.track.last_seen) >= FORGET_TICKS
@@ -603,7 +624,7 @@ impl Tracks {
                 break;
             };
             let s = row.sample;
-            let to = [s.x, s.y + row.track.species.sight_y(), s.z];
+            let to = [s.x, s.y + row.track.species.sight_y(s.crouched), s.z];
             self.stats.rays += 1;
             // `perceive` has range-checked it; the head sits above that.
             // A body standing in mine has nothing between us.
@@ -874,10 +895,10 @@ pub fn night(tick: u32, env: &Env) -> bool {
     t as f32 / DAY_TICKS as f32 >= DAY_PORTION
 }
 
-/// Does a look ray from a body standing at `feet` pass within
+/// Does a look ray from a body at `feet`, in that stance, pass within
 /// [`AIM_MISS_M`] of `chest`, ahead of it?
-fn aimed_at(feet: [f32; 3], yaw: u16, pitch: u8, chest: [f32; 3]) -> bool {
-    let eye_y = feet[1] + ARROW_EYE_MM as f32 / MM_PER_M;
+fn aimed_at(feet: [f32; 3], crouched: bool, yaw: u16, pitch: u8, chest: [f32; 3]) -> bool {
+    let eye_y = feet[1] + eye_m(crouched);
     let (fx, fz) = yaw_dir(yaw);
     let (h, v) = pitch_dir(pitch);
     let dir = [fx * h, v, fz * h];
@@ -995,6 +1016,7 @@ impl Tracks {
             wounded: false,
             dead: false,
             sleeping: false,
+            crouched: false,
             dealt: 0,
             last_swing: None,
             last_shot: None,
@@ -1024,10 +1046,13 @@ mod tests {
         // Wire yaw 0 faces +Z; level pitch.
         let (fx, fz) = yaw_dir(0);
         assert!(fz > 0.9 && fx.abs() < 0.1);
-        assert!(aimed_at(feet, 0, 128, chest(30.0)));
-        assert!(!aimed_at(feet, 0, 128, chest(-30.0)), "behind it");
-        assert!(!aimed_at(feet, 1 << 13, 128, chest(30.0)), "45° off");
-        assert!(!aimed_at(feet, 0, 128, [3.0, CHEST_Y_M, 30.0]), "3 m wide");
+        assert!(aimed_at(feet, false, 0, 128, chest(30.0)));
+        assert!(!aimed_at(feet, false, 0, 128, chest(-30.0)), "behind it");
+        assert!(!aimed_at(feet, false, 1 << 13, 128, chest(30.0)), "45° off");
+        assert!(
+            !aimed_at(feet, false, 0, 128, [3.0, CHEST_Y_M, 30.0]),
+            "3 m wide"
+        );
     }
 
     /// A seen track standing at `(x, z)`, in sight or not.
@@ -1047,6 +1072,7 @@ mod tests {
                 wounded: false,
                 dead: false,
                 sleeping: false,
+                crouched: false,
                 dealt: 0,
                 last_swing: None,
                 last_shot: None,

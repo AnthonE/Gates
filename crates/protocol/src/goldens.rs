@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 121] = [
+pub const FIXTURES: [&str; 122] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -225,6 +225,8 @@ pub const FIXTURES: [&str; 121] = [
     // one message only a watcher receives. Appended, positional as ever.
     "hello_spectate.bin",
     "watch.bin",
+    // Who a player id is (v85). Appended, positional as ever.
+    "event_tag.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -415,6 +417,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         // Standing, from no `rng` call, for `dead`'s reason one line up
         // (wounded v0, v63): the bit is pinned deliberately or not at all.
         wounded: false,
+        // Upright, from no `rng` call, for the same reason (crouch, v83).
+        crouched: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
         // Empty-handed and unlit, from no `rng` call, for the reason
@@ -535,6 +539,10 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // had, which is exactly why the bit has to be carried rather than
     // inferred from any of the others.
     entities[0].dead = true;
+    // One crouch (v83), so the absolute encoder's `crouched` bit is pinned at
+    // **true** — on the at-rest body, a third entity, so no two state bits
+    // share a record and a swap between any pair cannot pass.
+    entities[1].crouched = true;
     // Two hands on the absolute path, and they are two different pins.
     // id 101 carries an item id with the flame OFF and id 100 an id with
     // the flame ON, so neither the field nor the bit can be read as the
@@ -640,6 +648,13 @@ pub fn snapshot_delta() -> SnapshotCase {
     entities[3].qz -= 600;
     // id 5: entered the interest set this snapshot.
     entities[4] = rng_entity(&mut rng, 5);
+    // id 6: crouched this snapshot — the delta encoder's `crouched` bit at
+    // **true** as a TRANSITION (baseline upright → record crouched), on a
+    // body carrying no other state bit. Drawn after id 5 so no earlier
+    // field reshuffles.
+    baseline[4] = rng_entity(&mut rng, 6);
+    entities[5] = baseline[4];
+    entities[5].crouched = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 3_000,
@@ -652,9 +667,9 @@ pub fn snapshot_delta() -> SnapshotCase {
         },
         removed: &[90, 91],
         baseline,
-        baseline_len: 4,
+        baseline_len: 5,
         entities,
-        entity_len: 5,
+        entity_len: 6,
     }
 }
 
@@ -714,6 +729,21 @@ pub fn watch() -> crate::Watch {
             None => crate::Name::EMPTY,
         },
     }
+}
+
+/// Who a player id is (wire v85): a slot/generation id with bits in both
+/// halves, the `watch` address, a name with a space in it, and a `pic`
+/// whose four bytes all differ so a byte-order slip cannot pass.
+pub fn event_tag() -> (u32, crate::Address, crate::Name, u32) {
+    (
+        (0x51 << 8) | 7,
+        watch().address,
+        match crate::Name::new("Ash Walker") {
+            Some(n) => n,
+            None => crate::Name::EMPTY,
+        },
+        0x1a2b_3c4d,
+    )
 }
 
 /// The server's challenge. Every nonce byte is distinct so a transposition
@@ -1521,6 +1551,9 @@ pub fn event_bag_dropped() -> WireBag {
         qx: 34_133,
         qy: 512,
         qz: 22_050,
+        // A wolf's carcass (v84): nonzero, and not the pig's 1, so a kind
+        // read off by one bit cannot pass.
+        kind: 2,
     }
 }
 
@@ -1536,6 +1569,9 @@ pub fn event_bag_sync() -> (bool, [WireBag; BAG_SYNC_BATCH]) {
             qx: 10_000 + rng.next_bounded(50_000) as i32,
             qy: -1_200 + rng.next_bounded(7_000) as i32,
             qz: 10_000 + rng.next_bounded(50_000) as i32,
+            // Every look in turn, drawn from no `rng` call so no later
+            // field reshuffles: pack, pig, wolf.
+            kind: (i % 3) as u8,
         };
     }
     (true, recs)

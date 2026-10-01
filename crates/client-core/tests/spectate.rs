@@ -34,6 +34,7 @@ fn body(qx: i32, qz: i32, yaw: u16, pitch: u8, dead: bool) -> EntityState {
         sleeping: false,
         dead,
         wounded: false,
+        crouched: false,
         yaw,
         pitch,
         held: None,

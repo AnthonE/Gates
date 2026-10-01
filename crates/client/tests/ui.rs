@@ -1111,6 +1111,7 @@ fn aim_at(px: f32, py: f32, pz: f32, tx: f32, ty: f32, tz: f32) -> SwingAim {
         z: pz,
         yaw: yaw_u16(dx.atan2(dz)),
         pitch: pitch_u8(dy.atan2((dx * dx + dz * dz).sqrt())),
+        crouched: false,
     }
 }
 
@@ -1122,6 +1123,7 @@ fn level(px: f32, py: f32, pz: f32, yaw: u16) -> SwingAim {
         z: pz,
         yaw,
         pitch: LEVEL,
+        crouched: false,
     }
 }
 
@@ -1295,6 +1297,7 @@ fn the_pitch_is_the_aim_too() {
             z: tz,
             yaw: YAW_PLUS_X,
             pitch: 255,
+            crouched: false,
         },
         &mut Island {
             seed,
@@ -3146,6 +3149,7 @@ fn a_shared_cache_picks_the_same() {
             z: sz,
             yaw: YAW_PLUS_X,
             pitch: LEVEL,
+            crouched: false,
         };
         carried.push(resolve_swing(
             aim,
@@ -3199,6 +3203,7 @@ fn standing_still_costs_nothing_after_the_first() {
         z: sz,
         yaw: YAW_PLUS_X,
         pitch: LEVEL,
+        crouched: false,
     };
     let mut cache = SlotCache::new();
     assert_eq!(cache.resolves(), 0);
@@ -3999,7 +4004,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 const BIND_IDENTS: [(&str, &[&str]); 21] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
-    ("CROUCH", &["ControlLeft"]),
+    ("CROUCH", &["ControlLeft", "KeyZ"]),
     ("JUMP", &["Space"]),
     ("FREE LOOK", &["AltLeft"]),
     ("LOOK", &[]),

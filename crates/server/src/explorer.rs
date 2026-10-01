@@ -58,14 +58,14 @@ use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::STATION_FURNACE;
 use sim_core::deploy::{box_key, BAG_CAP};
 use sim_core::gather::{cell_key, REACH_M};
-use sim_core::input::{InputFrame, BTN_PRIMARY};
+use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
 use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
     CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
 };
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
-use sim_core::ranged::{ARROW_EYE_MM, IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, MM_PER_M};
+use sim_core::ranged::{IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, MM_PER_M};
 use sim_core::survival::{DRINK_REACH_M, REFUSE_C_FULL, REFUSE_C_NOT_FOOD};
 use sim_core::terrain::{self, Haven, Occupant, Slot, CELL_SIZE};
 use sim_core::{pitch_dir, yaw_dir};
@@ -1051,11 +1051,12 @@ impl Survivor {
             sel: self.sel,
             ..InputFrame::default()
         };
-        // Aimed from where my body is by the time this input runs.
+        // Aimed from where my body is by the time this input runs, from
+        // the eye of the stance this frame presses.
         let eye = self
             .combat
             .strides
-            .ahead_of(body.map_or([0.0; 3], eye_point));
+            .ahead_of(body.map_or([0.0; 3], |b| pressed_eye(b, intent.buttons)));
         let f = self.hands.drive(&intent, &self.tracks, eye, base);
         self.combat.strides.sent(&f);
         core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
@@ -1116,14 +1117,10 @@ impl Survivor {
                 |cx, cz, l, loc| home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc),
             );
             // Bases worth a raid, and who is about them.
-            self.bases.look(
-                core,
-                &haven,
-                eye_point(&body),
-                body.yaw,
-                tick,
-                |cx, cz, l, loc| home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc),
-            );
+            self.bases
+                .look(core, &haven, &body, tick, |cx, cz, l, loc| {
+                    home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc)
+                });
             self.bases.bodies(&self.tracks, tick);
         }
         self.mind.expire(now);
@@ -4989,12 +4986,39 @@ fn eye_point(body: &EntityState) -> [f32; 3] {
     [x, y, z]
 }
 
+/// Where this body's eyes were in its snapshot: the stance the server
+/// applied (wire v83), which is what the eyes saw from.
 fn eye(body: &EntityState) -> (f32, f32, f32) {
     (
         body.qx as f32 * POS_XZ_Q,
-        body.qy as f32 * POS_Y_Q + ARROW_EYE_MM as f32 / MM_PER_M,
+        body.qy as f32 * POS_Y_Q + tracks::eye_m(body.crouched),
         body.qz as f32 * POS_XZ_Q,
     )
+}
+
+/// The eye a swing or a shot sent with these buttons leaves from: the
+/// sim's `Player::crouched` read off the frame about to go out (crouch
+/// pressed, on the ground, upright), not the snapshot's, which lags it.
+fn pressed_eye(body: &EntityState, buttons: u8) -> [f32; 3] {
+    let crouched = buttons & BTN_CROUCH != 0 && body.grounded && !body.wounded && !body.dead;
+    [
+        body.qx as f32 * POS_XZ_Q,
+        body.qy as f32 * POS_Y_Q + tracks::eye_m(crouched),
+        body.qz as f32 * POS_XZ_Q,
+    ]
+}
+
+/// The stance a gathering swing leaves from. Only a fight presses
+/// `BTN_CROUCH` (the stalk and the hide in `agent::combat`); every skill
+/// that swings at a node, a piece or a door presses none, and the sim
+/// takes the stance off the frame the swing rides in, so the swing is a
+/// standing one even while the snapshot still shows the last fight's
+/// crouch.
+const SWING_CROUCHED: bool = false;
+
+/// A standing-or-crouched eye's height above the feet, for a swing.
+fn swing_eye_m() -> f32 {
+    tracks::eye_m(SWING_CROUCHED)
 }
 
 /// Distance and relative bearing (index into `mind::BEARINGS`, clockwise
@@ -5027,7 +5051,7 @@ fn in_cone(body: &EntityState, x: f32, z: f32) -> bool {
 /// Where on a node a swing aims: its centre line, at eye height where the
 /// trunk or rock reaches it.
 fn aim_point(body: &EntityState, slot: &Slot) -> [f32; 3] {
-    let eye = body.qy as f32 * POS_Y_Q + ARROW_EYE_MM as f32 / MM_PER_M;
+    let eye = body.qy as f32 * POS_Y_Q + swing_eye_m();
     let top = terrain::occupant_volume(slot.occupant).1 * slot.scale;
     let y = eye.clamp(
         slot.y + melee::MELEE_PROBE_M,
@@ -5041,7 +5065,7 @@ fn aim(body: &EntityState, slot: &Slot) -> (u16, u8, f32) {
     let [x, y, z] = aim_point(body, slot);
     let (dx, dz) = (x - body.qx as f32 * POS_XZ_Q, z - body.qz as f32 * POS_XZ_Q);
     let distance = dx.hypot(dz);
-    let eye = body.qy as f32 * POS_Y_Q + ARROW_EYE_MM as f32 / MM_PER_M;
+    let eye = body.qy as f32 * POS_Y_Q + swing_eye_m();
     (
         yaw_toward(dx, dz),
         pitch_toward(y - eye, distance),
@@ -5058,7 +5082,13 @@ fn swing_reaches(
     pitch: u8,
     target: Target,
 ) -> bool {
-    let ray = melee::ray(&as_body(*body), yaw, pitch, REACH_M * MM_PER_M);
+    let ray = melee::ray(
+        &as_body(*body),
+        SWING_CROUCHED,
+        yaw,
+        pitch,
+        REACH_M * MM_PER_M,
+    );
     let (seed, mut island) = core.island();
     melee::node_cast(seed, &mut island, &ray)
         .is_some_and(|hit| hit.cx == target.cx && hit.cz == target.cz)
@@ -5071,7 +5101,7 @@ fn visible(core: &mut ClientCore, haven: &Haven, body: &EntityState, target: Tar
     if distance > SIGHT_M || distance <= 0.0 {
         return false;
     }
-    let eye = body.qy as f32 * POS_Y_Q + ARROW_EYE_MM as f32 / MM_PER_M;
+    let eye = body.qy as f32 * POS_Y_Q + swing_eye_m();
     let radius = terrain::occupant_volume(target.slot.occupant).0 * target.slot.scale;
     let stop = (distance - radius - melee::MELEE_PROBE_M).max(0.0);
     let dx = (target.slot.x - body.qx as f32 * POS_XZ_Q) / distance;

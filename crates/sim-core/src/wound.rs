@@ -24,7 +24,7 @@
 //! random draw is keyed on `(seed, player id, tick)`, so a replay rolls the
 //! same die and lands the same way.
 
-use crate::input::{InputFrame, BTN_AIM, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
+use crate::input::{InputFrame, BTN_AIM, BTN_CROUCH, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use crate::rng::cell_hash;
 use crate::world::{DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_HAND, DEATH_BY_MOB};
 
@@ -126,7 +126,7 @@ pub fn recovers(seed: u64, id: u32, tick: u64, chance_pm: u32) -> bool {
 }
 
 /// The frame a downed body actually moves on: no sprint, no jump, no swing,
-/// no draw, and the movement axes divided by [`CRAWL_DIV`]. Applied by the sim to a
+/// no draw, no crouch (the crawl is its own slow), and the movement axes divided by [`CRAWL_DIV`]. Applied by the sim to a
 /// wounded body's frame at the step, and by the client's predictor to its
 /// own frames while it knows it is down — one function, so the two cannot
 /// disagree about how fast a crawl is. The look and the hotbar selection
@@ -135,7 +135,7 @@ pub fn recovers(seed: u64, id: u32, tick: u64, chance_pm: u32) -> bool {
 pub fn crawl_frame(f: &InputFrame) -> InputFrame {
     InputFrame {
         seq: f.seq,
-        buttons: f.buttons & !(BTN_SPRINT | BTN_JUMP | BTN_PRIMARY | BTN_AIM),
+        buttons: f.buttons & !(BTN_SPRINT | BTN_JUMP | BTN_PRIMARY | BTN_AIM | BTN_CROUCH),
         yaw: f.yaw,
         pitch: f.pitch,
         move_x: f.move_x / CRAWL_DIV,

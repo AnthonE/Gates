@@ -16,7 +16,7 @@
 
 use super::intent::{Intent, Look, LEVEL_PITCH};
 use super::tracks::Tracks;
-use sim_core::collide::{Part, CAPSULE_HEIGHT_M, HEAD_BAND_M, LIMB_BAND_M};
+use sim_core::collide::{hit_height_m, limb_band_m, Part, HEAD_BAND_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::rng::{splitmix64, Pcg32};
 use sim_core::yaw_dir;
@@ -367,7 +367,8 @@ impl Hands {
                     let far = (s.x - eye[0]).hypot(s.z - eye[2]).max(BODY_ON_M);
                     self.cone = self.cone.max(BODY_ON_M.atan2(far).to_degrees());
                 }
-                let seen = pose.map(|s| direction(eye, [s.x, s.y + part_height(part), s.z]));
+                let seen =
+                    pose.map(|s| direction(eye, [s.x, s.y + part_height(part, s.crouched), s.z]));
                 // Out of sight, the view rests on where the body was last.
                 let last = (matches!(self.key, Key::Body(was, _) if was == id) && self.hist_n > 0)
                     .then(|| self.sample(0));
@@ -585,12 +586,14 @@ impl Hands {
     }
 }
 
-/// Height above the feet of a body part's middle (`collide::Part` bits).
-pub fn part_height(part: u8) -> f32 {
+/// Height above the feet of a body part's middle (`collide::Part` bits),
+/// for a stance: a crouched body's bands are the sim's shorter ones (v83).
+pub fn part_height(part: u8, crouched: bool) -> f32 {
+    let (top, limb) = (hit_height_m(crouched), limb_band_m(crouched));
     match Part::from_bits(part) {
-        Some(Part::Head) => CAPSULE_HEIGHT_M - HEAD_BAND_M / 2.0,
-        Some(Part::Limb) => LIMB_BAND_M / 2.0,
-        Some(Part::Chest) | None => (LIMB_BAND_M + CAPSULE_HEIGHT_M - HEAD_BAND_M) / 2.0,
+        Some(Part::Head) => top - HEAD_BAND_M / 2.0,
+        Some(Part::Limb) => limb / 2.0,
+        Some(Part::Chest) | None => (limb + top - HEAD_BAND_M) / 2.0,
     }
 }
 

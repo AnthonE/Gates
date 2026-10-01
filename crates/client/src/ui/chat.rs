@@ -93,6 +93,9 @@ impl Composer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     pub speaker: u32,
+    /// What the speaker is called (`ui::names::label`), settled when the
+    /// line arrived so the scrollback never renames a line under a reader.
+    pub name: String,
     pub global: bool,
     pub text: String,
     /// True for the client's own lines, so they can be drawn differently.
@@ -115,14 +118,14 @@ impl Log {
 
     /// How a line reads on screen.
     ///
-    /// The speaker is an id, not a name: nothing on our wire carries a
-    /// display name, and inventing one client-side would be a name that
-    /// differs between two players watching the same conversation.
+    /// The speaker's name is the one the shard told everyone
+    /// (`EventMsg::Tag`), so two players reading the same conversation read
+    /// the same names.
     pub fn render(line: &Line) -> String {
         let who = if line.own {
             "you".to_string()
         } else {
-            format!("#{}", line.speaker)
+            line.name.clone()
         };
         let tag = if line.global { "[G] " } else { "" };
         format!("{tag}{who}: {}", line.text)
@@ -226,6 +229,7 @@ mod tests {
         for i in 0..LOG_CAP + 5 {
             log.push(Line {
                 speaker: i as u32,
+                name: format!("#{i}"),
                 global: false,
                 text: format!("line {i}"),
                 own: false,
@@ -239,13 +243,15 @@ mod tests {
     fn a_line_names_its_channel_and_its_speaker() {
         let l = Line {
             speaker: 4,
+            name: "Ash".into(),
             global: true,
             text: "hi".into(),
             own: false,
         };
-        assert_eq!(Log::render(&l), "[G] #4: hi");
+        assert_eq!(Log::render(&l), "[G] Ash: hi");
         let l = Line {
             speaker: 4,
+            name: "Ash".into(),
             global: false,
             text: "hi".into(),
             own: true,

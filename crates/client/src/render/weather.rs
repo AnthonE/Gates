@@ -20,7 +20,7 @@ use sim_core::weather::{self, Wx};
 
 use super::feed::Feed;
 use super::rig::{self, DayPin};
-use super::{Eye, Net, WorldId, EYE_HEIGHT};
+use super::{Eye, Net, WorldId};
 
 /// `--weather` on a capture run: the preset the probe shoots under, so a
 /// frame is not a function of which segment the capture shard booted in.
@@ -245,7 +245,7 @@ pub fn update(
             net.session.core.pieces.cols(),
             eye.pos.x,
             eye.pos.z,
-            eye.pos.y - EYE_HEIGHT,
+            eye.pos.y - eye.height,
         )
     });
 }

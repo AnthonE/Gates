@@ -639,6 +639,11 @@ pub struct Kit {
     shutters_open: Handle<Mesh>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
+    /// A killed animal's death bag, drawn as its carcass (v84): one mesh
+    /// per species, indexed by `WireBag::species`, in the herd's own hide
+    /// material.
+    carcass_mesh: [Handle<Mesh>; sim_core::mob::MOB_KINDS],
+    carcass_mat: Handle<StandardMaterial>,
     gitem_mesh: Handle<Mesh>,
     gitem_mat: Handle<StandardMaterial>,
     arrow_mesh: Handle<Mesh>,
@@ -2283,6 +2288,17 @@ pub fn build_kit(
             ..default()
         }),
         bag_mesh: meshes.add(Cuboid::new(BAG_SIZE[0], BAG_SIZE[1], BAG_SIZE[2])),
+        carcass_mesh: [
+            meshes.add(super::mobs::carcass_mesh(sim_core::mob::MOB_PIG)),
+            meshes.add(super::mobs::carcass_mesh(sim_core::mob::MOB_WOLF)),
+        ],
+        // `mobs::load`'s material: vertex colours, hide roughness.
+        carcass_mat: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.88,
+            reflectance: super::fresnel::FLESH,
+            ..default()
+        }),
         bag_mat: materials.add(StandardMaterial {
             base_color: BAG_COLOR,
             perceptual_roughness: 0.95,
@@ -2560,19 +2576,37 @@ pub fn stream(
         }
         // The sim drops it at the body's FEET, so half its height lifts it
         // onto the ground rather than leaving it sunk to the waist.
-        let pos = Vec3::new(
+        let feet = Vec3::new(
             bag.qx as f32 * POS_XZ_Q,
-            bag.qy as f32 * POS_Y_Q + BAG_SIZE[1] * 0.5,
+            bag.qy as f32 * POS_Y_Q,
             bag.qz as f32 * POS_XZ_Q,
         );
-        let entity = commands
-            .spawn((
-                super::WorldEntity,
-                Mesh3d(kit.bag_mesh.clone()),
-                MeshMaterial3d(kit.bag_mat.clone()),
-                Transform::from_translation(pos),
-            ))
-            .id();
+        // A killed animal's bag is its carcass, lying where it fell (v84),
+        // at a bearing hashed off the bag id: the wire carries no facing,
+        // and a field of dead pigs all pointing north reads as a pattern.
+        let carcass = bag.species().and_then(|s| kit.carcass_mesh.get(s as usize));
+        let entity = match carcass {
+            Some(mesh) => {
+                let turn = (bag.id.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
+                commands
+                    .spawn((
+                        super::WorldEntity,
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(kit.carcass_mat.clone()),
+                        Transform::from_translation(feet)
+                            .with_rotation(Quat::from_rotation_y(turn * std::f32::consts::TAU)),
+                    ))
+                    .id()
+            }
+            None => commands
+                .spawn((
+                    super::WorldEntity,
+                    Mesh3d(kit.bag_mesh.clone()),
+                    MeshMaterial3d(kit.bag_mat.clone()),
+                    Transform::from_translation(feet + Vec3::Y * BAG_SIZE[1] * 0.5),
+                ))
+                .id(),
+        };
         ring.bags.insert(
             bag.id,
             Live {

@@ -1173,6 +1173,7 @@ mod tests {
             qx: 40_000,
             qy: 123_456, // y has no map axis; a wild value must not matter
             qz: 20_000,
+            kind: 0,
         }];
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
@@ -1233,6 +1234,7 @@ mod tests {
                 qx: 30_000 + i as i32,
                 qy: 0,
                 qz: 30_000,
+                kind: 0,
             })
             .collect();
         let mut out = Marks::default();
@@ -1267,6 +1269,7 @@ mod tests {
             qx: 40_000,
             qy: 0,
             qz: 20_000,
+            kind: 0,
         }];
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
@@ -1299,6 +1302,7 @@ mod tests {
                 qx: 30_000 + i as i32,
                 qy: 0,
                 qz: 30_000,
+                kind: 0,
             })
             .collect();
         bags.push(WireBag {
@@ -1306,6 +1310,7 @@ mod tests {
             qx: 40_000,
             qy: 0,
             qz: 20_000,
+            kind: 0,
         });
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &[], &defs, 0, &bags, 7, &[]);
@@ -1332,6 +1337,7 @@ mod tests {
                 qx: 30_000 + i as i32,
                 qy: 0,
                 qz: 30_000,
+                kind: 0,
             })
             .collect();
         let mut out = Marks::default();

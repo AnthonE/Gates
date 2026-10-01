@@ -32,7 +32,7 @@ use sim_core::limits::{
 };
 use sim_core::movement::Body;
 use sim_core::rewind::{Rewind, RewindPose, NO_TENANT};
-use sim_core::world::{Command, World};
+use sim_core::world::{Command, Player, World};
 
 const SEED: u64 = 20_260_731;
 /// The id the walker joins under. Deliberately not 1, so a check that reads
@@ -70,7 +70,7 @@ fn walked_world() -> (World, Vec<Body>) {
 
 /// The live pose of slot `s` — what a caller hands `pose_at` as the fallback.
 fn live_of(w: &World, s: usize) -> RewindPose {
-    RewindPose::live(w.players[s].id, &w.players[s].body)
+    RewindPose::live(&w.players[s])
 }
 
 /// The walker has to actually move, or every check below is satisfied by a
@@ -171,6 +171,7 @@ fn a_cold_ring_answers_present_at_every_depth() {
         qx: 11,
         qy: 22,
         qz: 33,
+        crouched: false,
     };
     for back in 0..=REWIND_TICKS as u8 {
         assert_eq!(
@@ -289,6 +290,7 @@ fn an_empty_slot_falls_back_to_present() {
             qx: -5,
             qy: -6,
             qz: -7,
+            crouched: false,
         };
         for back in 1..=REWIND_TICKS as u8 {
             assert_eq!(
@@ -353,6 +355,7 @@ fn an_out_of_range_slot_falls_back_to_present() {
         qx: 1,
         qy: 2,
         qz: 3,
+        crouched: false,
     };
     assert_eq!(w.rewind.pose_at(w.tick, MAX_PLAYERS, 1, live), live);
     assert_eq!(w.rewind.pose_at(w.tick, usize::MAX, 1, live), live);
@@ -423,10 +426,10 @@ fn the_constants_hold_their_stated_relationships() {
 #[test]
 fn the_ring_costs_what_limits_says() {
     // `limits::REWIND_TICKS` states the cost as
-    // `MAX_PLAYERS * REWIND_TICKS * 16 B`. The 16 is the claim that carries
-    // risk: a fifth field, or a `u64` id, silently makes it 24.
-    assert_eq!(size_of::<RewindPose>(), 16);
-    assert_eq!(MAX_PLAYERS * REWIND_TICKS * size_of::<RewindPose>(), 12_800);
+    // `MAX_PLAYERS * REWIND_TICKS * 20 B`. The 20 is the claim that carries
+    // risk: another field, or a `u64` id, silently makes it wider.
+    assert_eq!(size_of::<RewindPose>(), 20);
+    assert_eq!(MAX_PLAYERS * REWIND_TICKS * size_of::<RewindPose>(), 16_000);
 
     // Boxed inside, not outside: the rows are on the heap and `World` pays
     // only a pointer plus the stamps.
@@ -508,5 +511,27 @@ fn the_guns_rewind_rides_the_parity_surface() {
          says. Four things can each close that path silently: the fixture's \
          `ranged` row, `sel` landing on the gun's hotbar slot, the swing \
          cadence it shares with melee, and a round in the pack."
+    );
+}
+
+/// A row remembers the stance (v83): a body crouched `back` ticks ago and
+/// standing now is resolved crouched, so a favoured hit is scored against
+/// the crouch the shooter saw.
+#[test]
+fn a_row_remembers_the_crouch() {
+    use sim_core::input::BTN_CROUCH;
+    let mut players = Box::new([Player::default(); MAX_PLAYERS]);
+    players[0].id = 7;
+    players[0].active = true;
+    players[0].body.grounded = true;
+    players[0].frame.buttons = BTN_CROUCH;
+    let mut ring = Rewind::new();
+    ring.write_row(100, &players);
+    players[0].frame.buttons = 0;
+    let live = RewindPose::live(&players[0]);
+    assert!(!live.crouched, "standing now");
+    assert!(
+        ring.pose_at(101, 0, 1, live).crouched,
+        "crouched one tick back"
     );
 }

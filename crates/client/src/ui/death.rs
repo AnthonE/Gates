@@ -37,7 +37,10 @@ pub struct Death {
 /// fourth cause would have shipped silently, so a client that quietly said
 /// "you ran out" for cause 3 would be hiding exactly the bug that ledger
 /// exists to expose.
-pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
+///
+/// `killer` is what the killer is called (`ui::names::label`) — a player's
+/// name, else their short address, else `#id`.
+pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
     match d.cause {
         DEATH_BY_CLOCK => "you ran out".to_string(),
         DEATH_BY_SALT => "the sea is salt".to_string(),
@@ -49,8 +52,8 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
                 None => String::new(),
             };
             format!(
-                "#{} killed you{} from {:.1} m",
-                d.killer,
+                "{} killed you{} from {:.1} m",
+                killer,
                 weapon,
                 d.range_cm as f32 / 100.0
             )
@@ -86,8 +89,8 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
                 None => String::new(),
             };
             format!(
-                "#{} shot you{} from {:.1} m",
-                d.killer,
+                "{} shot you{} from {:.1} m",
+                killer,
                 weapon,
                 d.range_cm as f32 / 100.0
             )
@@ -108,8 +111,8 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
         // self-inflicted bomb has earned since bombs existed.
         DEATH_BY_CHARGE if d.killer == d.own_id => "you blew yourself up".to_string(),
         DEATH_BY_CHARGE => format!(
-            "#{}'s charge got you from {:.1} m",
-            d.killer,
+            "{}'s charge got you from {:.1} m",
+            killer,
             d.range_cm as f32 / 100.0
         ),
         other => format!("killed by cause {other}"),
@@ -236,12 +239,15 @@ mod tests {
             cause: DEATH_BY_CLOCK,
             ..Death::default()
         };
-        assert_eq!(sentence(&d, &cat), "you ran out");
+        assert_eq!(sentence(&d, &cat, &format!("#{}", d.killer)), "you ran out");
         let d = Death {
             cause: DEATH_BY_SALT,
             ..Death::default()
         };
-        assert_eq!(sentence(&d, &cat), "the sea is salt");
+        assert_eq!(
+            sentence(&d, &cat, &format!("#{}", d.killer)),
+            "the sea is salt"
+        );
     }
 
     #[test]
@@ -255,7 +261,7 @@ mod tests {
             own_id: 7,
         };
         assert_eq!(
-            sentence(&d, &cat),
+            sentence(&d, &cat, &format!("#{}", d.killer)),
             "#12 killed you with STONE HATCHET from 2.5 m"
         );
     }
@@ -273,7 +279,10 @@ mod tests {
             range_cm: 100,
             own_id: 7,
         };
-        assert_eq!(sentence(&d, &cat), "#12 killed you from 1.0 m");
+        assert_eq!(
+            sentence(&d, &cat, &format!("#{}", d.killer)),
+            "#12 killed you from 1.0 m"
+        );
     }
 
     #[test]
@@ -285,7 +294,10 @@ mod tests {
             own_id: 7,
             ..Death::default()
         };
-        assert_eq!(sentence(&d, &cat), "you did it to yourself");
+        assert_eq!(
+            sentence(&d, &cat, &format!("#{}", d.killer)),
+            "you did it to yourself"
+        );
     }
 
     /// **Each species gets its own sentence, off the roster slot.** The
@@ -306,6 +318,7 @@ mod tests {
                     ..Death::default()
                 },
                 &cat,
+                "",
             )
         };
         let wolf = (0..sim_core::limits::MAX_MOBS)
@@ -336,7 +349,10 @@ mod tests {
             cause: unknown,
             ..Death::default()
         };
-        assert_eq!(sentence(&d, &cat), format!("killed by cause {unknown}"));
+        assert_eq!(
+            sentence(&d, &cat, &format!("#{}", d.killer)),
+            format!("killed by cause {unknown}")
+        );
     }
 
     /// The bow's own sentence — the range is the story, so it must survive
@@ -351,7 +367,10 @@ mod tests {
             item: 1,
             range_cm: 4130,
         };
-        assert_eq!(sentence(&d, &cat), "#7 shot you with BOW from 41.3 m");
+        assert_eq!(
+            sentence(&d, &cat, &format!("#{}", d.killer)),
+            "#7 shot you with BOW from 41.3 m"
+        );
     }
 
     /// No sentence may contain a coordinate. Asserted structurally rather
@@ -368,7 +387,7 @@ mod tests {
                 range_cm: 512,
                 own_id: 9,
             };
-            let s = sentence(&d, &cat);
+            let s = sentence(&d, &cat, &format!("#{}", d.killer));
             for bad in ["x=", "z=", "at (", "cell"] {
                 assert!(!s.contains(bad), "cause {cause} leaked a position: {s}");
             }

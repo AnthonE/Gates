@@ -37,11 +37,12 @@
 use super::hands::part_height;
 use super::intent::{yaw_toward, Intent, Look};
 use super::route::{into_deeper_water, Route, Step};
+use super::tracks::{clear_line, eye_m, Sight};
 use super::tracks::{Sound, Species, Track, Tracks, AIM_MISS_M, CLOSING_MPS};
 use super::wiki::{Book, Page};
 use super::{aim, cover};
 use client_core::core::ClientCore;
-use protocol::EntityState;
+use protocol::{EntityState, BAG_KIND_PACK};
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::collide::{Part, CAPSULE_RADIUS_M};
 use sim_core::gather::SWING_INTERVAL_TICKS;
@@ -234,7 +235,9 @@ pub const PICKUPS_MAX: u8 = 12;
 /// While its base is being struck, a player swinging or shooting this near
 /// it is the one doing it: the base's footprint and a reach beyond.
 pub const RAID_M: f32 = 12.0;
-/// Eye height above the feet, metres (where a shot leaves from).
+/// Eye height above the feet standing, metres (where a swing leaves from:
+/// a melee fight never presses crouch). A shot's eye is its stance's
+/// ([`eye_m`]).
 const EYE_M: f32 = ARROW_EYE_MM as f32 / MM_PER_M;
 
 /// How ready this body is to start a fight (`--temperament`).
@@ -393,6 +396,9 @@ struct Spoils {
     /// A stack given up on.
     skip: Option<u32>,
     picks: u8,
+    /// The foe was a player: its bag is a pack, not a carcass (wire v84
+    /// `WireBag::kind`), so a pig killed beside it is not looted for it.
+    pack: bool,
 }
 
 /// The sum a player does before and during a fight.
@@ -931,10 +937,11 @@ impl Combat {
     /// on me ([`drawing`]), and since when each has been.
     fn size_up(&mut self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) {
         let my_vel = tracks.own().map_or([0.0; 3], |o| o.vel);
+        let low = me_low(tracks);
         let mut near: Option<(f32, u32)> = None;
         let mut bow: Option<(f32, u32)> = None;
         for t in tracks.seen() {
-            if t.visible && drawing(t, me, book) {
+            if t.visible && drawing(t, me, low, book) {
                 let d = flat(me, t.pos);
                 if bow.is_none_or(|(b, _)| d < b) {
                     bow = Some((d, t.id));
@@ -951,7 +958,7 @@ impl Combat {
             }
             let d = flat(me, t.pos);
             let (reach, ranged) = their_reach(t, book);
-            if rushing(t, me, my_vel, d, reach, ranged) && near.is_none_or(|(b, _)| d < b) {
+            if rushing(t, me, low, my_vel, d, reach, ranged) && near.is_none_or(|(b, _)| d < b) {
                 near = Some((d, t.id));
             }
         }
@@ -973,8 +980,10 @@ impl Combat {
             self.dodged = None;
         }
         let mut aimer: Option<(f32, &Track)> = None;
+        let low = me_low(tracks);
         for t in tracks.seen() {
-            if !t.visible || !t.active() || t.species != Species::Player || !aimed(t, me, book) {
+            if !t.visible || !t.active() || t.species != Species::Player || !aimed(t, me, low, book)
+            {
                 continue;
             }
             // Dodged its stretch already: a shot from it is an attack
@@ -1115,6 +1124,7 @@ impl Combat {
             .hurt
             .filter(|(at, _)| tick.wrapping_sub(*at) < ALARM_TICKS);
         let mut best: Option<(f32, u32)> = None;
+        let low = me_low(tracks);
         for t in tracks.seen() {
             if !t.visible || !t.active() {
                 continue;
@@ -1122,11 +1132,11 @@ impl Combat {
             let d = flat(me, t.pos);
             let (reach, ranged) = their_reach(t, book);
             let swung = recent(t.last_swing) && swing_reaches(t, me, reach);
-            let shot = recent(t.last_shot) && aimed(t, me, book);
+            let shot = recent(t.last_shot) && aimed(t, me, low, book);
             let struck = blow.is_some_and(|(_, toward)| {
                 let bearing = yaw_toward(t.pos[0] - me[0], t.pos[2] - me[2]);
                 let off = (bearing.wrapping_sub(toward) as i16).unsigned_abs();
-                (d <= reach.max(1.0) + ATTACKER_SLACK_M || (ranged && aimed(t, me, book)))
+                (d <= reach.max(1.0) + ATTACKER_SLACK_M || (ranged && aimed(t, me, low, book)))
                     && (off <= HURT_CONE || d < 1.0)
             });
             let charging = t.species == Species::Wolf && d < WOLF_ALARM_M && closing(t, me, d);
@@ -1237,6 +1247,7 @@ impl Combat {
                 sent: None,
                 skip: None,
                 picks: 0,
+                pack: t.species == Species::Player,
             });
             self.mode = Mode::Loot;
             self.foe = None;
@@ -1262,7 +1273,7 @@ impl Combat {
         let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
         let (reach, _) = their_reach(&t, kit.book);
         if (recent(t.last_swing) && swing_reaches(&t, me, reach))
-            || (recent(t.last_shot) && aimed(&t, me, kit.book))
+            || (recent(t.last_shot) && aimed(&t, me, me_low(tracks), kit.book))
             || self.drawer.is_some_and(|(id, _)| id == t.id)
             || self.menace.is_some_and(|(id, _)| id == t.id)
             || raiding(&t, kit, me, tick)
@@ -1355,7 +1366,6 @@ impl Combat {
             return Intent::IDLE;
         };
         let r = kit.book.page(item).ranged;
-        let eye = [me[0], me[1] + EYE_M, me[2]];
         let (dx, dz) = (t.pos[0] - me[0], t.pos[2] - me[2]);
         let d = dx.hypot(dz);
         let toward = yaw_toward(dx, dz);
@@ -1373,6 +1383,26 @@ impl Combat {
                 .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS)
             && !closing(t, me, d);
         let at = [t.pos[0], t.pos[1] + aim_height(t, kit.book, d), t.pos[2]];
+        let want = if stalking {
+            HUNT_SHOT_M
+        } else if t.species == Species::Player {
+            (reach * 0.75).min(DUEL_M)
+        } else {
+            reach * 0.75
+        };
+        // The stalk is crouched (v83: a lower eye, as the sim fires from),
+        // but not at the shot when the crouch is what hides the prey: a
+        // crouched eye that cannot see the aim point stands up to loose,
+        // and to find it again.
+        let crouch = stalking
+            && (d > want.min(reach) || {
+                let low = [me[0], me[1] + eye_m(true), me[2]];
+                let haven = *core.island().1.haven;
+                clear_line(core, &haven, low, at, f32::INFINITY) == Sight::Clear
+            });
+        // Where the sim will fire this frame's shot from: the stance's eye,
+        // which a crouch held off the ground does not lower.
+        let eye = [me[0], me[1] + eye_m(crouch && body.grounded), me[2]];
         let (look, solved) = if r.hitscan {
             let look = match t.species {
                 Species::Player => Look::Body {
@@ -1402,13 +1432,6 @@ impl Combat {
             sel: Some(slot),
             ..Intent::IDLE
         };
-        let want = if stalking {
-            HUNT_SHOT_M
-        } else if t.species == Species::Player {
-            (reach * 0.75).min(DUEL_M)
-        } else {
-            reach * 0.75
-        };
         if !t.visible || !solved || d > reach || (stalking && d > want) {
             // Into sight and range first, by a route; the draw waits.
             self.draw = None;
@@ -1434,7 +1457,11 @@ impl Combat {
                     (None, false)
                 }
             };
-            let mut buttons = if stalking { BTN_CROUCH } else { BTN_SPRINT };
+            let mut buttons = match (stalking, crouch) {
+                (false, _) => BTN_SPRINT,
+                (true, true) => BTN_CROUCH,
+                (true, false) => 0,
+            };
             if jump {
                 buttons |= BTN_JUMP;
             }
@@ -1446,7 +1473,7 @@ impl Combat {
         }
         self.stuck = None;
         let mut buttons = 0;
-        if stalking {
+        if crouch {
             buttons |= BTN_CROUCH;
         }
         if r.draw_ticks > 0 {
@@ -1548,6 +1575,9 @@ impl Combat {
         if s.bag {
             let mut best: Option<(f32, u32, [f32; 2])> = None;
             for b in core.bags.entries() {
+                if (b.kind == BAG_KIND_PACK) != s.pack {
+                    continue;
+                }
                 let p = [b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q];
                 let d = ground_dist(here, p);
                 if ground_dist(s.at, p) <= BAG_MATCH_M && best.is_none_or(|(bd, ..)| d < bd) {
@@ -2025,8 +2055,8 @@ fn is_round(book: &Book, item: u16) -> bool {
 /// chest would), its chest further off; an animal's middle.
 fn aim_height(t: &Track, book: &Book, d: f32) -> f32 {
     match t.species {
-        Species::Player if d <= HEAD_SHOT_M => part_height(Part::Head.bits()),
-        Species::Player => part_height(Part::Chest.bits()),
+        Species::Player if d <= HEAD_SHOT_M => part_height(Part::Head.bits(), t.crouched),
+        Species::Player => part_height(Part::Chest.bits(), t.crouched),
         Species::Pig => f32::from(book.pig().height_cm) * 0.005,
         Species::Wolf => f32::from(book.wolf().height_cm) * 0.005,
     }
@@ -2055,6 +2085,12 @@ pub fn safe(tracks: &Tracks, me: [f32; 3], tick: u32) -> bool {
         .any(|t| t.visible && t.species != Species::Pig && flat(me, t.pos) <= HEAL_SAFE_M)
 }
 
+/// Am I crouched, as the server last applied it (my own snapshot, v83):
+/// where a foe's look ray finds my head and chest.
+fn me_low(tracks: &Tracks) -> bool {
+    tracks.own().is_some_and(|o| o.crouched)
+}
+
 fn flat(a: [f32; 3], b: [f32; 3]) -> f32 {
     let (dx, dz) = (a[0] - b[0], a[2] - b[2]);
     (dx * dx + dz * dz).sqrt()
@@ -2081,13 +2117,13 @@ fn closing(t: &Track, me: [f32; 3], d: f32) -> bool {
 
 /// Looking me in the face, not past me at the tree behind: its look ray
 /// passes within a body's width of my head.
-fn eyes_on_me(t: &Track, me: [f32; 3]) -> bool {
+fn eyes_on_me(t: &Track, me: [f32; 3], low: bool) -> bool {
     let (fx, fz) = yaw_dir(t.yaw);
     let (h, v) = pitch_dir(t.pitch);
     let dir = [fx * h, v, fz * h];
     let to = [
         me[0] - t.pos[0],
-        me[1] + part_height(Part::Head.bits()) - (t.pos[1] + EYE_M),
+        me[1] + part_height(Part::Head.bits(), low) - (t.pos[1] + eye_m(t.crouched)),
         me[2] - t.pos[2],
     ];
     let along = to[0] * dir[0] + to[1] * dir[1] + to[2] * dir[2];
@@ -2100,7 +2136,7 @@ fn eyes_on_me(t: &Track, me: [f32; 3]) -> bool {
 /// put a round on me: off its line by no more than a walker's lead at that
 /// range, and over me by no more than an arrow's arc. A drawn bow is seen
 /// pointing a body's way; the few degrees of its arc are not.
-fn aimed(t: &Track, me: [f32; 3], book: &Book) -> bool {
+fn aimed(t: &Track, me: [f32; 3], low: bool, book: &Book) -> bool {
     if t.aiming_at_me {
         return true;
     }
@@ -2119,20 +2155,20 @@ fn aimed(t: &Track, me: [f32; 3], book: &Book) -> bool {
     }
     let (h, v) = pitch_dir(t.pitch);
     // How far over my chest the look ray passes, where it passes me.
-    let rise =
-        t.pos[1] + EYE_M + v / h.max(0.05) * along - (me[1] + part_height(Part::Chest.bits()));
+    let rise = t.pos[1] + eye_m(t.crouched) + v / h.max(0.05) * along
+        - (me[1] + part_height(Part::Chest.bits(), low));
     rise >= -AIM_MISS_M && rise <= AIM_MISS_M + along * ARC_RISE
 }
 
 /// A player standing still with something that shoots pointed my way
 /// ([`aimed`]): stopped to draw on me, not walking past or toward me.
-fn drawing(t: &Track, me: [f32; 3], book: &Book) -> bool {
+fn drawing(t: &Track, me: [f32; 3], low: bool, book: &Book) -> bool {
     t.species == Species::Player
         && t.active()
         && !t.wounded
         && t.held.is_some_and(|h| book.page(h).fires())
         && t.vel[0] * t.vel[0] + t.vel[2] * t.vel[2] <= STILL_MPS * STILL_MPS
-        && aimed(t, me, book)
+        && aimed(t, me, low, book)
 }
 
 /// A player with a swung weapon out, facing me, stepping in on me from
@@ -2140,14 +2176,22 @@ fn drawing(t: &Track, me: [f32; 3], book: &Book) -> bool {
 /// It is coming at me, and the gap between us is closing: a body running
 /// beside me toward the same tree is not coming at me however fast it
 /// runs, and neither is one I am walking up to.
-fn rushing(t: &Track, me: [f32; 3], my_vel: [f32; 3], d: f32, reach: f32, ranged: bool) -> bool {
+fn rushing(
+    t: &Track,
+    me: [f32; 3],
+    low: bool,
+    my_vel: [f32; 3],
+    d: f32,
+    reach: f32,
+    ranged: bool,
+) -> bool {
     let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
     let gap = (t.vel[0] - my_vel[0]) * dx + (t.vel[2] - my_vel[2]) * dz;
     t.species == Species::Player
         && !ranged
         && reach > 0.0
         && !t.wounded
-        && eyes_on_me(t, me)
+        && eyes_on_me(t, me, low)
         && d <= reach + MENACE_M
         && gap > 0.0
         && gap >= CLOSING_MPS * d
@@ -2355,6 +2399,7 @@ mod tests {
             wounded: false,
             dead: false,
             sleeping: false,
+            crouched: false,
             dealt: 0,
             last_swing: None,
             last_shot: None,
@@ -2628,11 +2673,11 @@ mod tests {
         // 25 m off, the look 2 m to my side and raised for the arc.
         t.yaw = yaw_toward(2.0, 25.0);
         t.pitch = super::super::intent::pitch_toward(3.0, 25.0);
-        assert!(aimed(&t, me, &book));
+        assert!(aimed(&t, me, false, &book));
         t.held = Some(rock);
-        assert!(!aimed(&t, me, &book), "a rock does not lead");
+        assert!(!aimed(&t, me, false, &book), "a rock does not lead");
         t.held = Some(bow);
         t.yaw = yaw_toward(10.0, 25.0);
-        assert!(!aimed(&t, me, &book), "wide of me");
+        assert!(!aimed(&t, me, false, &book), "wide of me");
     }
 }

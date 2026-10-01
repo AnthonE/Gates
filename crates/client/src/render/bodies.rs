@@ -298,6 +298,7 @@ pub fn stream(
                     // its owner leaves the death screen, so without it a
                     // killed player is drawn standing at idle.
                     anim.airborne = rs.airborne;
+                    anim.crouched = rs.crouched;
                     anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
@@ -357,6 +358,7 @@ pub fn stream(
             None => {
                 let mut anim = BodyAnim {
                     airborne: rs.airborne,
+                    crouched: rs.crouched,
                     ..BodyAnim::default()
                 };
                 anim.observe(pos, 0.0, rs.sleeping, rs.dead, rs.wounded);

@@ -33,7 +33,7 @@ use super::hud::Toast;
 use super::input::{pitch_u8, Look};
 use super::panels::Ui;
 use super::structures::{self, base_transform, deploy_transform};
-use super::{Net, WorldId, EYE_HEIGHT};
+use super::{Net, WorldId, CROUCH_EYE_M, EYE_HEIGHT};
 
 /// Where the ghost aims, and at what: the LOOK ray — eye, yaw AND pitch,
 /// the tracer's own ray convention, so the ghost sits where a shot would
@@ -60,7 +60,17 @@ fn aim_point(
         seed,
         haven,
         core.pieces.cols(),
-        [feet[0], feet[1] + EYE_HEIGHT, feet[2]],
+        // The eye the sim would cast from: a crouched one is lower (v83).
+        [
+            feet[0],
+            feet[1]
+                + if core.crouched() {
+                    CROUCH_EYE_M
+                } else {
+                    EYE_HEIGHT
+                },
+            feet[2],
+        ],
         [fx * ch, sv, fz * ch],
         feet,
     )

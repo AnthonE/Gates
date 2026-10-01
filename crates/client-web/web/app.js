@@ -78,7 +78,13 @@ async function getJSON(path, ms = 12000) {
    is two owners of one WebGL context), so the page notes why and RELOADS,
    and says so on the way back in. */
 const LEFT = "gates.left";
+/* **Ask before a tab closes on a player** (crouch v83). Crouch is Ctrl, and
+   Ctrl+W — crouch and walk forward — closes the tab; no page can swallow it.
+   The browser's own "leave site?" prompt is the only guard there is, armed
+   while a player is in the world and dropped before the page reloads itself. */
+const guardLeave = (e) => { e.preventDefault(); e.returnValue = ""; };
 window.gatesLeft = (why) => {
+  window.removeEventListener("beforeunload", guardLeave);
   try { sessionStorage.setItem(LEFT, String(why || "left the world")); } catch (err) { /* private mode */ }
   location.reload();
 };
@@ -363,18 +369,22 @@ function setAddress(a) {
 
 /* The name and face the platform shows for this wallet — the same read and
    the same face order as its masthead (`store.js` acctIdentity / faceSrc):
-   a seat, then a picture on a media host, then the derived mark. */
+   the name and picture set on the account page, then a seat, then a picture
+   on a media host, then the derived mark. */
 async function readWho(addr) {
   const r = await getJSON("/api/who?handle=" + encodeURIComponent(addr));
   const f = r && r.found;
   if (!f || addr !== address) return;
+  const prof = f.profile || {};
+  const own = typeof prof.picture === "string" && prof.picture.startsWith("/api/face/") ? prof.picture : "";
   const seat = f.seat && typeof f.seat.src === "string" ? f.seat.src : "";
   const pic = f.face && typeof f.face.picture === "string" ? f.face.picture : "";
   const mark = typeof f.avatar === "string" ? f.avatar : "";
   who = {
-    name: f.agent ? String(f.agent) : null,
+    name: prof.name ? String(prof.name) : f.agent ? String(f.agent) : null,
     sworn: !!f.vow_id,
-    face: seat.startsWith("/") && !seat.startsWith("//") ? "/api" + seat
+    face: own ? own
+      : seat.startsWith("/") && !seat.startsWith("//") ? "/api" + seat
       : /^https:\/\/[a-z0-9.-]+\/(media|upload)\//i.test(pic) ? pic
       : mark.startsWith("/") && !mark.startsWith("//") ? "/api" + mark
       : null,
@@ -706,6 +716,7 @@ async function enter(g, audio, row) {
   $("handoff-line").textContent = g.watching ? g.watching : `entering ${row ? row.name : "the island"}…`;
   $("handoff").hidden = false;
   document.body.classList.add("playing");
+  if (!g.watching) window.addEventListener("beforeunload", guardLeave);
   $("gates").hidden = false;
   $("menu").hidden = true;
   $("scene").hidden = true;

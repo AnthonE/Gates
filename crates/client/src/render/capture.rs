@@ -668,7 +668,7 @@ fn clear_of_a_base(
 ) -> bool {
     let Some(net) = net else { return true };
     let core = &net.session.core;
-    let feet = eye.pos.y - super::EYE_HEIGHT;
+    let feet = eye.pos.y - eye.height;
     let inside = sim_core::collide::plane_blocked(
         world.seed,
         &world.haven,
@@ -1057,8 +1057,13 @@ fn scene_pass(
                         }
                         // Eye height, so the shot is one player looking at
                         // another rather than at their boots. `rs` is feet,
-                        // `eye.pos` is already `+ EYE_HEIGHT` (`input.rs`).
-                        let p = Vec3::new(rs.x, rs.y + super::EYE_HEIGHT, rs.z);
+                        // `eye.pos` is already `+ eye.height` (`input.rs`).
+                        let lift = if rs.crouched {
+                            super::CROUCH_EYE_M
+                        } else {
+                            super::EYE_HEIGHT
+                        };
+                        let p = Vec3::new(rs.x, rs.y + lift, rs.z);
                         let d2 = (p.x - eye.pos.x).powi(2) + (p.z - eye.pos.z).powi(2);
                         // Too far to be a picture of anybody. Bounded here
                         // rather than after the scan, so the sight test below

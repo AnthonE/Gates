@@ -44,6 +44,7 @@ pub mod entitle;
 pub mod explorer;
 /// Bring-your-own-agent decisions over a child's stdin/stdout (`JEV.md`).
 pub mod external;
+pub mod faces;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
 pub mod jev;

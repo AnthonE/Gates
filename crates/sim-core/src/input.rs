@@ -8,8 +8,10 @@
 //! strength: it mints [`decay_frame`]'s ramp as ordinary commands, so the
 //! sim rule stays one sentence and the WAL still carries everything.
 
-/// Button bits (ALPHA.md §1 sizes sprint/crouch into the field; crouch moves
-/// nothing, and is the sneak the animal brain listens for — `brain::sense`).
+/// Button bits (ALPHA.md §1 sizes sprint/crouch into the field). Crouch is a
+/// stance since v83: slower (`movement::step`), a lower eye and a shorter hit
+/// volume (`World` `Player::crouched`), and the sneak the animal brain listens
+/// for (`brain::sense`).
 /// PRIMARY is the swing/use button: gather now (M1), attack with M2. A new
 /// bit in an already-sized field — the wire layout does not move.
 ///
@@ -136,7 +138,7 @@ pub const DECAY_STEPS: u32 = 3;
 ///   is a hop on every landing (`movement.rs` — grounded re-arms the
 ///   button), a reused `BTN_PRIMARY` swings an arm nobody is driving.
 /// - **Latches ride through untouched**: `yaw`, `pitch`, `sel`,
-///   `BTN_LIGHT` and `BTN_AIM` — the frame's statements about what *is* rather than
+///   `BTN_LIGHT`, `BTN_AIM` and `BTN_CROUCH` — the frame's statements about what *is* rather than
 ///   what to *do*. A two-tick starve that snuffed a torch for everyone
 ///   watching would be a new defect wearing a fix's clothes.
 ///
@@ -154,7 +156,7 @@ pub fn decay_frame(f: &InputFrame, repeat: u32) -> InputFrame {
         buttons: if repeat == 0 {
             f.buttons
         } else {
-            f.buttons & (BTN_LIGHT | BTN_AIM)
+            f.buttons & (BTN_LIGHT | BTN_AIM | BTN_CROUCH)
         },
         yaw: f.yaw,
         pitch: f.pitch,
@@ -207,14 +209,14 @@ mod tests {
     }
 
     /// Edges and holds clear on the first reuse — the reused-jump hop and
-    /// the driverless swing — while the flame and draw latches ride
+    /// the driverless swing — while the flame, draw and crouch latches ride
     /// through, so a short starve cannot snuff a torch for everyone
-    /// watching or throw away a draw.
+    /// watching, throw away a draw or stand a crouched body up.
     #[test]
     fn buttons_clear_except_the_latches() {
         let f = frame(50, 50, BTN_MASK);
         let d = decay_frame(&f, 1);
-        assert_eq!(d.buttons, BTN_LIGHT | BTN_AIM);
+        assert_eq!(d.buttons, BTN_LIGHT | BTN_AIM | BTN_CROUCH);
         let dark = frame(50, 50, BTN_SPRINT | BTN_JUMP | BTN_PRIMARY);
         assert_eq!(decay_frame(&dark, 1).buttons, 0);
     }

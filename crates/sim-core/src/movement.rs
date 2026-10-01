@@ -13,7 +13,7 @@
 
 use crate::collide::{self, ColIndex};
 use crate::fmath::floor_i32;
-use crate::input::{InputFrame, BTN_AIM, BTN_JUMP, BTN_SPRINT};
+use crate::input::{InputFrame, BTN_AIM, BTN_CROUCH, BTN_JUMP, BTN_SPRINT};
 use crate::occupy::Occupants;
 use crate::terrain::{self, CLIFF_SLOPE_RATIO, ISLAND_SIZE, SEA_LEVEL};
 use crate::yaw_lut::yaw_dir;
@@ -30,6 +30,10 @@ pub const DT: f32 = 1.0 / 30.0;
 
 pub const WALK_SPEED: f32 = 3.0;
 pub const SPRINT_SPEED: f32 = 5.5;
+/// A crouched walk, m/s: the reference's duck speed (walk 2.8, run 5.5,
+/// duck 1.7). Crouch beats sprint and the drawn-bow walk — a body holding
+/// both keys is sneaking, and `brain::sense` agrees.
+pub const CROUCH_SPEED: f32 = 1.7;
 pub const GRAVITY: f32 = 20.0;
 pub const TERMINAL_VELOCITY: f32 = 50.0;
 pub const STEP_UP: f32 = 0.6;
@@ -164,8 +168,11 @@ pub fn step(
         .max(collide::piece_ground(seed, haven, cols, x, z, y))
         .max(occ.ground(seed, x, z, y));
     // A drawn bow walks (`BTN_AIM`, `reference/PROJECTILES.md` §6): the
-    // draw costs the legs as well as the time.
-    let mut speed = if frame.buttons & BTN_SPRINT != 0 && frame.buttons & BTN_AIM == 0 {
+    // draw costs the legs as well as the time. Crouch is read off the frame
+    // alone, like the draw, so the predictor needs nothing else to agree.
+    let mut speed = if frame.buttons & BTN_CROUCH != 0 {
+        CROUCH_SPEED
+    } else if frame.buttons & BTN_SPRINT != 0 && frame.buttons & BTN_AIM == 0 {
         SPRINT_SPEED
     } else {
         WALK_SPEED

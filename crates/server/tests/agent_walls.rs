@@ -874,6 +874,8 @@ impl Harness {
                 z: me.qz as f32 * sim_core::movement::POS_XZ_Q,
                 yaw,
                 pitch,
+                // The human client's own stance read (v83).
+                crouched: self.bot.core().unwrap().crouched(),
             },
             &mut Island {
                 seed: SEED,
