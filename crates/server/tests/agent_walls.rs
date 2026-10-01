@@ -2464,6 +2464,116 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
     println!("{stats:?} {}", h.explain());
 }
 
+/// The gear past the first bench, with what it costs staged: the second
+/// bench on its stone foundation behind the core, gunpowder made at it,
+/// the pistol round, the revolver and the roadsign vest learned at that
+/// bench's tree (tier two: `E` on the second bench, which the harness
+/// checks at every unlock), made, and the vest worn.
+#[test]
+fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
+    use server::agent::build::{Milestone, ANNEX};
+    use sim_core::build::LOC_PLANE;
+    use sim_core::deploy::ARCH_WORKBENCH2;
+
+    let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let mut kit = vec![stack("item.wood", 1000); 6];
+    kit.extend([stack("item.stone", 1000); 6]);
+    kit.extend([
+        stack("item.cloth", 400),
+        stack("item.metal_frags", 1000),
+        stack("item.metal_frags", 1000),
+        stack("item.metal_frags", 1000),
+        stack("item.lowgrade", 100),
+        stack("item.junk", 1000),
+        stack("item.rope", 4),
+        stack("item.gears", 4),
+        stack("item.tarp", 4),
+        stack("item.charcoal", 200),
+        stack("item.sulfur", 150),
+    ]);
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+    let id = |name: &str| content.item_index(name).unwrap();
+    let vest = id("item.armor_roadsign_body");
+    let done = h.until(400_000, |b| {
+        b.builder().survey().milestone == Milestone::Done
+            && b.core()
+                .is_some_and(|c| c.worn.iter().any(|s| s.count > 0 && s.item == vest))
+    });
+    assert!(
+        done,
+        "never past the roadsign vest: {:?} {:?} {}",
+        h.bot.builder().survey(),
+        h.bot.builder().stats,
+        h.explain()
+    );
+    let plan = h.bot.builder().plan().unwrap();
+    let (ax, az) = (
+        plan.cx.checked_add_signed(i16::from(ANNEX.0)).unwrap(),
+        plan.cz.checked_add_signed(i16::from(ANNEX.1)).unwrap(),
+    );
+    {
+        let w = &h.shard.world;
+        let bench2 = w
+            .deploys
+            .find(ax, az, 0, LOC_PLANE)
+            .filter(|d| d.owner == ID)
+            .map(|d| w.deploy.defs[usize::from(d.row)].arch);
+        assert_eq!(bench2, Some(ARCH_WORKBENCH2), "the second bench behind");
+    }
+    let recipes = server::net::bake_all(&content).unwrap().craft;
+    let recipe_of = |item: u16| {
+        (0..usize::from(recipes.recipe_count))
+            .find(|&r| recipes.recipes[r].output == item)
+            .unwrap() as u16
+    };
+    let me = h.me();
+    for item in [
+        "item.pistol_ammo",
+        "item.revolver",
+        "item.armor_roadsign_body",
+    ] {
+        assert!(
+            sim_core::research::knows(me.known, recipe_of(id(item))),
+            "{item} not learned"
+        );
+    }
+    assert!(
+        units_of(me, id("item.revolver")) >= 1 && units_of(me, id("item.pistol_ammo")) >= 1,
+        "{}",
+        h.explain()
+    );
+    let stats = h.bot.builder().stats;
+    assert!(stats.learned >= 6, "{stats:?}");
+    assert!(
+        h.pick_checks as u64 >= stats.learned,
+        "every unlock went out with its bench under `E`"
+    );
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{stats:?} {}", h.explain());
+}
+
 /// Gears, rope and tarp with a recycler in the pack: it puts the recycler
 /// down, feeds it through its panel, switches it on, and takes off the
 /// junk, fragments and cloth they come apart into. The gear its base has
