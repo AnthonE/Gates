@@ -412,7 +412,7 @@ const SUB_VEND_REFUSED: u32 = 69;
 const SUB_CARD_DOORS: u32 = 70;
 /// A swipe was refused (own-fact): why, and which door.
 const SUB_SWIPE_REFUSED: u32 = 71;
-/// Until when you are hostile (own-fact, wire v88): the low 32 bits of the
+/// Until when you are hostile (own-fact, wire v89): the low 32 bits of the
 /// tick town protection returns, 0 when it has. Sent when it moves.
 const SUB_HOSTILE: u32 = 72;
 const SUB_MAX: u32 = SUB_HOSTILE;
@@ -1407,7 +1407,7 @@ pub enum EventMsg {
     Hostile { until: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
-    /// charges in it; one hour's charge until wire v88). The third column
+    /// charges in it; one hour's charge until wire v89). The third column
     /// is upkeep v2's readout: `sim_core::upkeep::lasts` over the second
     /// and third is how many hours the base is protected.
     Stock {
@@ -2534,7 +2534,7 @@ pub fn encode_event_removed(
 /// The feed ack: `rows` are the hearth's live stock rows, aligned to the
 /// baked upkeep-material list, each `(item, units, bill)` — `bill` is what
 /// a day charges in that material for everything the hearth covers
-/// (`sim_core::upkeep::bill`, per day since wire v88). Empty is legal (a hearth with no
+/// (`sim_core::upkeep::bill`, per day since wire v89). Empty is legal (a hearth with no
 /// priced materials cannot exist, but the width allows the message shape).
 pub fn encode_event_stock(
     cx: u16,
@@ -2925,7 +2925,7 @@ pub fn encode_event_card_doors(bits: u8, buf: &mut [u8]) -> Result<usize, WireEr
     Ok(w.finish())
 }
 
-/// Until when you are hostile (wire v88).
+/// Until when you are hostile (wire v89).
 pub fn encode_event_hostile(until: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_HOSTILE)?;
     w.write(until, 32)?;
@@ -6451,6 +6451,10 @@ mod wire_domains {
         Module {
             file: "gather.rs",
             src: include_str!("../../sim-core/src/gather.rs"),
+        },
+        Module {
+            file: "heli.rs",
+            src: include_str!("../../sim-core/src/heli.rs"),
         },
         Module {
             file: "grounditem.rs",

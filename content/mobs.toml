@@ -115,11 +115,18 @@ spook_m = 12
 night_spook_m = 12
 
 # Five minutes. Long enough that clearing the pigs near your base is worth
-# doing and short enough that it is not permanent. The slot hatches at its
-# OWN home, which is where we and the reference part company: theirs
-# re-rolls the population's distribution and the herd migrates over a wipe
-# (reference/SPAWN.md §3.5).
+# doing and short enough that it is not permanent. It comes back somewhere
+# new, drawn from its habitat — the reference's refill (reference/SPAWN.md
+# §3.5): clear a valley and it refills from the rest of the island.
 respawn_seconds = 300
+
+# The reference's population (operator, 2026-10-01: "lets make it just like
+# rust"): `boar.population` defaults to 5 per km², and the island's pigs are
+# that times their habitat-weighted land. Boars there are found in every
+# biome, thickest in fields and woods, so meadow and forest are whole and the
+# granite above the treeline is thin.
+per_km2 = 5.0
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.3 }
 # The hit volume a swing's ray must enter (melee aim v1, 2026-09-05): a
 # cylinder on the animal's feet, centimetres. Read off what the client draws
 # — a pig is 1.5 m long and 0.78 m high (`render/mobs.rs`), so the radius
@@ -270,6 +277,12 @@ night_spook_m = 15
 # your base should be worth the same kind of doing, and no mechanism argues
 # for a rarer respawn — only a wish for one.
 respawn_seconds = 300
+
+# `wolf.population` defaults to 2 per km² in the reference, and its wolves
+# roam rocky ground and woods: forest and highland whole, open meadow thin.
+# The site guards are on top of these (`mob::SITE_GUARDS`).
+per_km2 = 2.0
+habitat = { meadow = 0.4, forest = 1.0, highland = 1.0 }
 # 1.6 m long and 0.85 m high on the client (`render/mobs.rs` WOLF_LEN_M / WOLF_H_M).
 body_r_cm = 60
 body_h_cm = 85
@@ -304,3 +317,36 @@ drops = [
   { item = "item.raw_meat", count = 4 },
   { item = "item.fat", count = 8 },
 ]
+
+# ── The attack helicopter ──────────────────────────────────────────────────
+# Rust's Patrol Heli, cut down to "just fly over and be a threat… just a
+# strong gun" (operator, 2026-10-01). An AI gunship (`sim-core/src/heli.rs`):
+# it comes in from the sea, patrols the island (every other leg goes looking
+# for a player), and when it sees somebody outside the town it circles them
+# and fires bursts. Cover works — it needs line of sight to pick you, circles
+# where it last saw you, and gives up after `lose_seconds`. It cannot be hurt
+# yet, nobody flies it, and it carries no rockets.
+#
+# Proposed defaults, tuned on three seeds against a player standing on the
+# spawn beach: spotted, a two-second beat, then two to four bursts (3–8 s of
+# fire) and an unarmoured player is down. Reaching cover in the gaps works.
+#
+# The schedule (operator, 2026-10-02): a five-minute patrol every thirty
+# minutes, arrival to arrival, the first five minutes after boot.
+[heli]
+first_seconds = 300
+every_seconds = 1800
+patrol_seconds = 300
+speed_mps = 22
+engage_speed_mps = 10
+cruise_m = 45
+engage_m = 26
+orbit_m = 32
+detect_m = 130
+lose_seconds = 8
+range_m = 90
+damage = 18
+burst = 8
+rate_ms = 100
+burst_gap_ms = 1800
+spread_cm_per_10m = 18

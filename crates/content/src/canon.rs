@@ -257,11 +257,18 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.spook_m);
         h.u(m.night_spook_m);
         h.u(m.respawn_seconds);
+        // `per_km2` and `habitat` are not hashed: they decide how many
+        // animals live and where, and no saved record indexes through
+        // either — the heli's reason below.
         h.u(m.sight_deg);
         h.u(m.pack_m);
         h.u(m.fire_fear_m);
         h.stacks(&m.drops);
     }
+
+    // **The heli is not hashed either**, for the skins' reason below: no
+    // saved stack or record indexes through it, so tuning it must not
+    // refuse a save the way a moved item row has to.
 
     // **Skins are not hashed.** This digest is what a save file is refused
     // on (`server::store`, `server::worldfile`), because item and recipe

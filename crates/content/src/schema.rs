@@ -665,9 +665,16 @@ pub struct Mob {
     /// holds the reachability bands at *both* hours and takes no view on
     /// the direction.
     pub night_spook_m: u32,
-    /// Time between a death and the same slot standing up again at the
-    /// same home.
+    /// Time between a death and the slot standing up again — somewhere its
+    /// habitat takes it, not where it fell (the reference's refill).
     pub respawn_seconds: u32,
+    /// How many live per square kilometre of habitat: the reference's
+    /// `boar.population` (5) and `wolf.population` (2). The island's
+    /// roster of this species is this times its habitat-weighted land.
+    pub per_km2: f32,
+    /// Where the species lives — a weight per biome the home draw is
+    /// accepted at (the reference's spawn filter). Beach is never a home.
+    pub habitat: Habitat,
     /// The animal's hit volume — a cylinder standing on its feet, radius
     /// and height in **centimetres** (melee aim v1, 2026-09-05). What a
     /// swing's ray has to enter to land (`sim-core/src/melee.rs`
@@ -696,6 +703,53 @@ pub struct Mob {
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
     pub drops: Vec<Stack>,
+}
+
+/// A species' liking for each biome, 0–1 (`terrain::Biome`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Habitat {
+    pub meadow: f32,
+    pub forest: f32,
+    pub highland: f32,
+}
+
+/// The attack helicopter (`sim-core/src/heli.rs`): an AI gunship that
+/// patrols the island on a schedule and shoots the players it can see.
+/// Optional — a `mobs.toml` without `[heli]` is a shard without one.
+/// Metres, seconds and milliseconds; the bake converts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Heli {
+    /// From boot to the first arrival.
+    pub first_seconds: u32,
+    /// From one arrival to the next: the whole cycle.
+    pub every_seconds: u32,
+    /// How long one visit patrols before heading back out to sea.
+    pub patrol_seconds: u32,
+    pub speed_mps: u32,
+    /// While circling a target.
+    pub engage_speed_mps: u32,
+    /// Height over the ground on patrol, and while circling a target.
+    pub cruise_m: u32,
+    pub engage_m: u32,
+    /// The circle's radius round a target.
+    pub orbit_m: u32,
+    /// How far it spots a player, given line of sight.
+    pub detect_m: u32,
+    /// Unseen this long and it gives up on its target.
+    pub lose_seconds: u32,
+    /// The gun's reach.
+    pub range_m: u32,
+    /// Per round that lands, before armour.
+    pub damage: u32,
+    /// Rounds per burst, between rounds, and between bursts.
+    pub burst: u32,
+    pub rate_ms: u32,
+    pub burst_gap_ms: u32,
+    /// Aim wobble: the aim point lands within this many centimetres per
+    /// 10 m of range, on each axis.
+    pub spread_cm_per_10m: u32,
 }
 
 /// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$ELO`.

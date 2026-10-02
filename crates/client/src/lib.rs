@@ -460,7 +460,7 @@ pub struct Session {
     /// itself would let one hopeful frame un-say it.
     closed: bool,
     /// The reason the shard posted on the event lane before it hung up (a
-    /// kick, a watched player leaving; wire v88). The browser cannot read a
+    /// kick, a watched player leaving; wire v89). The browser cannot read a
     /// QUIC close code, so this is how it learns why.
     refused: Option<u8>,
     event_observer: Option<EventObserver>,
@@ -989,7 +989,7 @@ impl Session {
     }
 
     /// The reason the shard posted on the event lane before hanging up
-    /// (wire v88) — the half of [`Session::close_code`] a browser can read.
+    /// (wire v89) — the half of [`Session::close_code`] a browser can read.
     pub fn posted_refusal(&self) -> Option<u8> {
         self.refused
     }
@@ -1080,7 +1080,7 @@ impl Session {
             if let Some(tap) = tap.as_mut() {
                 tap(film::Lane::Event, bytes);
             }
-            // The shard's last word before a kick: why (wire v88).
+            // The shard's last word before a kick: why (wire v89).
             if let Ok(r) = protocol::decode_refuse(bytes) {
                 *refused = Some(r.code);
                 return;

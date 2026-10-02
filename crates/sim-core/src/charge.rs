@@ -582,7 +582,8 @@ fn detonate(
     // the world (`BlastMobs`). Arrows and bullets always hurt them; a
     // satchel thrown into a wolf pack now does too.
     for (slot, m) in mobs.m.iter().enumerate() {
-        if !m.alive || m.hp == 0 {
+        // The heli cannot be hurt yet (`heli.rs`); a satchel is no exception.
+        if !m.alive || m.hp == 0 || m.kind == crate::mob::MOB_HELI {
             continue;
         }
         let d = dist_cm(

@@ -4110,7 +4110,7 @@ mod tests {
             "an upkeep period stopped being an hour — relabel `periods_label`"
         );
         let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
-        // Bills are a day's charge (wire v88).
+        // Bills are a day's charge (wire v89).
         assert_eq!(
             stock_line(&[(3, 120, 240), (4, 50, 120)], &cat),
             Some("HEARTH: 120 × WOOD, 50 × CLOTH  ·  PROTECTED 10H".to_string()),

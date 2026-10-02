@@ -231,6 +231,18 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ("mob.rs", "home_of", "locator: picks where an animal lives."),
     (
         "mob.rs",
+        "survey",
+        "measure: the island's land per biome, classified exactly as \
+         `home_of` accepts a home; stands nothing on it.",
+    ),
+    (
+        "heli.rs",
+        "waypoint",
+        "locator: picks a land point for the heli to fly to; its height over \
+         the ground is `terrain::ground`'s, read when it flies.",
+    ),
+    (
+        "mob.rs",
         "guard_home_of",
         "locator: picks where a site's guard lives — on the site's apron, chosen \
          against the raw ground for the same reason `home_of` is.",

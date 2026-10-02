@@ -87,6 +87,7 @@ pub fn shots(
     cams: Query<&GlobalTransform, With<EyeCam>>,
     bodies: Query<(&Body, &GlobalTransform)>,
     animals: Query<&GlobalTransform, With<super::super::mobs::Animal>>,
+    helis: Query<&GlobalTransform, With<super::super::heli::HeliBody>>,
     mut contacts: ResMut<Contacts>,
     mut fx: ResMut<Fx>,
     mut cache: Local<Box<SlotCache>>,
@@ -129,9 +130,15 @@ pub fn shots(
         // The muzzle: your own is just ahead of the camera, down and to the
         // right where the held gun is; anyone else's at their drawn body's
         // hands, along their aim.
+        let heli = super::super::heli::is_heli(shooter)
+            .then(|| helis.single().ok())
+            .flatten();
         let muzzle = if own {
             eye_pos + Vec3::from(cam.forward()) * 0.7 + Vec3::from(cam.right()) * 0.12
                 - Vec3::from(cam.up()) * 0.1
+        } else if let Some(gt) = heli {
+            // The attack helicopter's chin gun.
+            gt.transform_point(super::super::heli::MUZZLE)
         } else {
             let drawn = bodies
                 .iter()

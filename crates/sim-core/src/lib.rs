@@ -23,6 +23,7 @@ pub mod exposure;
 pub mod fmath;
 pub mod gather;
 pub mod grounditem;
+pub mod heli;
 pub mod input;
 pub mod inventory;
 pub mod kit;

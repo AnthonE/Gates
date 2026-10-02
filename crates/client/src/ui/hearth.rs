@@ -32,7 +32,7 @@ pub struct Row {
 }
 
 /// The ack's rows as the panel draws them. `bill` is already a day's
-/// charge (wire v88, `sim_core::upkeep::bill`).
+/// charge (wire v89, `sim_core::upkeep::bill`).
 pub fn rows(stock: &[(u16, u32, u32)]) -> Vec<Row> {
     stock
         .iter()

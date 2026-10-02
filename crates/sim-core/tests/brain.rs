@@ -332,6 +332,8 @@ fn a_gunshot_sends_a_pig_running_and_brings_a_wolf_to_look() {
     let w0 = {
         let mut w = World::new(SEED);
         w.mob = MobContent::probe_fixture();
+        // A home is drawn when its animal hatches, on the first armed tick.
+        w.tick(&[]);
         w
     };
     let home = (

@@ -121,6 +121,9 @@ pub mod map;
 // which a page has. In a browser the PAGE is the menu: it owns the shard
 // address, the wallet and the join, and hands the Bevy app a live
 // `Session`. See `render/screen.rs` for the half both targets keep.
+/// The attack helicopter's drawing (`sim-core/src/heli.rs`): the roster's
+/// last slot, taken from `mobs` and drawn as a gunship.
+pub mod heli;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod menu;
 pub mod mobs;
@@ -698,7 +701,7 @@ impl Plugin for GatesRenderPlugin {
                 textures::load,
                 icons::load,
                 anim::load,
-                mobs::load,
+                (mobs::load, heli::load),
                 // The held-item models. Loaded once here rather than per
                 // swap: `AssetServer` dedups, but a `load` still walks and
                 // hashes a path, and `viewmodel::swap` runs every frame.
@@ -1403,7 +1406,9 @@ impl Plugin for GatesRenderPlugin {
                     // drain reads last frame's swings and misses this
                     // frame's — a dropped arc nothing would report.
                     bodies::stream.after(feed::drain),
-                    mobs::stream,
+                    // The heli is the roster's last slot, which
+                    // `mobs::stream` leaves to `heli::stream`.
+                    (mobs::stream, heli::stream),
                     // The legs read the gait `mobs::stream` just advanced.
                     mobs::trot,
                     rig::follow_eye,

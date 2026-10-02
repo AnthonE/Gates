@@ -236,7 +236,7 @@ pub const FIXTURES: [&str; 130] = [
     "event_card_doors.bin",
     "event_swipe_refused.bin",
     "action_swipe.bin",
-    // Until when you are hostile (v88).
+    // Until when you are hostile (v89).
     "event_hostile.bin",
 ];
 

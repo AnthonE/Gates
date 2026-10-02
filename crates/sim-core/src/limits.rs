@@ -1120,22 +1120,17 @@ pub const MAX_HITSCAN_SAMPLES: usize = 320;
 /// Proposed default, DECISIONS.md §open (hitscan v0).
 pub const MAX_HITSCAN_MARK_SAMPLES: usize = 64;
 
-/// Live animals one shard simulates, hard cap and roster length
-/// (`mob.rs`). Not a queue: the roster is a fixed array of slots, each
-/// with a home the seed chose once, so there is no overflow policy to
-/// state — a slot is alive or it is waiting to hatch, and nothing can
-/// ever ask for one pig more.
+/// The roster's length: the hard cap on animals one shard simulates, plus
+/// the heli's slot (`mob.rs`). Not a queue — fixed slots, one species each,
+/// of which each species' density decides how many take part
+/// (`mob::targets`: habitat-weighted land × `content/mobs.toml` `per_km2`,
+/// the reference's `boar.population`). So this is a ceiling, not a count:
+/// the shipped densities on a 4 km island fill about a quarter of it, and a
+/// bigger island or a denser row grows into the rest.
 ///
-/// The number is a density, and it is stated as one: 64 animals over the
-/// ~2 km² of land the 2048 m island put inside the continent falloff was
-/// ≈ 30 / km², and the 4096 m island has four times the land, so 256 keeps
-/// it. That is the same order as the reference game's own boar population
-/// (`reference/ANIMALS.md` §3). It is also sized against the wire rather
-/// than only against the ground: the density is unchanged, so the
-/// expectation inside one client's 176 m AOI disc is still about **1.5
-/// animals** and the tail is nowhere near `MAX_SNAPSHOT_ENTITIES`. A roster ten times this size would still fit
-/// the sim's tick budget and would not fit that. Proposed default,
-/// DECISIONS.md §open ("animals v0").
+/// Sized against the wire as well as the tick: a dormant animal costs one
+/// comparison a tick, and a client is only ever sent the ones inside its
+/// 176 m interest band, which density — not this cap — decides.
 pub const MAX_MOBS: usize = 256;
 // Slots travel as `u8` (`brain.rs` howls, `mob.rs`), so 256 is the ceiling.
 const _: () = assert!(MAX_MOBS <= 256);
@@ -1230,11 +1225,11 @@ pub const DAY_PORTION: f32 = 0.875;
 /// The most bites one tick can land across the whole roster (mob.rs
 /// `Bites`). Derived, generously: only a *thinking* animal can bite, so
 /// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 17 plus
-/// rounding — 32 is that with headroom, not a tuning knob. **Overflow
+/// rounding — 20 is that with headroom, not a tuning knob. **Overflow
 /// drops the bite**: a full buffer is one merciful tick, and the phase
 /// lock retries the same pair two seconds later. Never a queue — a bite
 /// carried across ticks would land on a player who has already left.
-pub const MAX_MOB_BITES_PER_TICK: usize = 32;
+pub const MAX_MOB_BITES_PER_TICK: usize = 20;
 
 /// How close a player must be for an animal to be awake, in centimeters.
 ///
@@ -1347,4 +1342,4 @@ pub const MAX_NOISES: usize = 256;
 /// the true ceiling is the handful thinking on the tick. **Overflow drops
 /// the howl**: the call still happened (the pack answers off the roster, not
 /// the sound), only its sound is lost.
-pub const MAX_HOWLS_PER_TICK: usize = 32;
+pub const MAX_HOWLS_PER_TICK: usize = 20;

@@ -1219,6 +1219,57 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The heli: every number has to be something it can fly. Its gun
+    // reach is bounded by the round's walk (`heli::ROUND_SAMPLES` samples
+    // of `ARROW_STEP_MM`), and its heights by the wire's y window.
+    if let Some(h) = &c.heli {
+        let positive = [
+            (h.first_seconds, "first_seconds"),
+            (h.every_seconds, "every_seconds"),
+            (h.patrol_seconds, "patrol_seconds"),
+            (h.speed_mps, "speed_mps"),
+            (h.engage_speed_mps, "engage_speed_mps"),
+            (h.cruise_m, "cruise_m"),
+            (h.engage_m, "engage_m"),
+            (h.orbit_m, "orbit_m"),
+            (h.detect_m, "detect_m"),
+            (h.lose_seconds, "lose_seconds"),
+            (h.range_m, "range_m"),
+            (h.damage, "damage"),
+            (h.burst, "burst"),
+            (h.rate_ms, "rate_ms"),
+            (h.burst_gap_ms, "burst_gap_ms"),
+        ];
+        if let Some((_, what)) = positive.iter().find(|(v, _)| *v == 0) {
+            return Err(format!("heli: `{what}` is zero"));
+        }
+        if h.every_seconds <= h.patrol_seconds {
+            return Err("heli: every_seconds is the whole cycle, so it outlasts the patrol".into());
+        }
+        if h.speed_mps > 60 || h.engage_speed_mps > h.speed_mps {
+            return Err("heli: speeds are 1–60 m/s, engage no faster than cruise".into());
+        }
+        if h.cruise_m > 100 || h.engage_m > 100 || h.engage_m < 10 {
+            return Err("heli: heights are 10–100 m over the ground".into());
+        }
+        if h.range_m > 100 {
+            return Err("heli: range_m past 100 m outruns the round's walk".into());
+        }
+        if h.detect_m > 170 {
+            return Err(
+                "heli: detect_m past 170 m spots players who cannot see it yet \
+                 (the snapshot interest band is 176 m)"
+                    .into(),
+            );
+        }
+        if h.damage > 100 || h.burst > 60 {
+            return Err("heli: damage is at most 100 a round, a burst at most 60".into());
+        }
+        if h.spread_cm_per_10m > 200 || h.rate_ms > 10_000 || h.burst_gap_ms > 60_000 {
+            return Err("heli: spread at most 200 cm per 10 m, rate 10 s, gap 60 s".into());
+        }
+    }
+
     // Mobs: every band here is a *reachability* check rather than a taste
     // one — an animal that cannot be killed, cannot be caught, or cannot be
     // left behind is content that reads as a bug in the sim.
@@ -1270,6 +1321,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!(
                 "mob `{}`: a zero respawn hatches the slot on the tick it died",
                 m.id
+            ));
+        }
+        // Density and habitat: a number of animals per km² and where they
+        // live. Zero density is legal (a wolf row can arm only the site
+        // guards); a density with nowhere to live is a row that cannot be.
+        let h = &m.habitat;
+        let weights = [h.meadow, h.forest, h.highland];
+        if !(0.0..=50.0).contains(&m.per_km2) || weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
+            return Err(format!(
+                "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",
+                m.id
+            ));
+        }
+        if m.per_km2 > 0.0 && weights.iter().all(|w| *w == 0.0) {
+            return Err(format!(
+                "mob `{}`: {} per km² of no habitat at all",
+                m.id, m.per_km2
             ));
         }
         // The hit volume: an animal nothing can hit is not a species, and

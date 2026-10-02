@@ -129,6 +129,8 @@ struct LootFile {
 struct MobsFile {
     #[serde(default)]
     mob: Vec<Mob>,
+    #[serde(default)]
+    heli: Option<schema::Heli>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -172,6 +174,8 @@ pub struct Content {
     /// shard with no wildlife — the file still has to exist, because a
     /// missing file is a loud failure here and never a defaulted section.
     pub mobs: Vec<Mob>,
+    /// The attack helicopter (`mobs.toml` `[heli]`), or none on this shard.
+    pub heli: Option<schema::Heli>,
     pub skins: Vec<Skin>,
     /// The town's vendors, kiosk order (`sites.toml`).
     pub vendors: Vec<Vendor>,
@@ -263,6 +267,7 @@ impl Content {
             research: research.research,
             loot_tables: loot.loot_table,
             mobs: mobs.mob,
+            heli: mobs.heli,
             skins: skins.skin,
             vendors: sites.vendor,
             balance,

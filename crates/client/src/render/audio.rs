@@ -67,7 +67,21 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 4] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder, Cue::BedRain];
+pub const BEDS: [Cue; 5] = [
+    Cue::BedWind,
+    Cue::BedSurf,
+    Cue::BedUnder,
+    Cue::BedRain,
+    Cue::BedRotor,
+];
+
+// One held engine slot per bed (`engine::HELD_BEDS`); music follows them.
+const _: () = assert!(BEDS.len() == HELD_BEDS);
+
+/// How far the heli's rotor carries, metres: `(1 - d/R)²` to zero at it,
+/// the positional cues' own law. Past the snapshot's interest band (176 m),
+/// so it is already audible on the frame it first arrives.
+pub const ROTOR_R_M: f32 = 260.0;
 
 /// What of the generated bank has reached the engine, and how long each cue
 /// is — the number the live ledger ([`Engine::live`]) predicts a voice's end
@@ -788,6 +802,7 @@ pub fn shots(
         return;
     }
     let core = &net.session.core;
+    let mut rs = client_core::interp::RemoteState::default();
     for &(shooter, _yaw, _pitch, speed_mmpt, _reach) in feed.shots() {
         // The one bit that separates the two weapons, and it is the same
         // bit the tracer reads: a projectile cannot leave a muzzle at rest,
@@ -797,15 +812,20 @@ pub fn shots(
         let at = if shooter == core.player_id {
             let p = core.predict.position();
             [p[0], p[1], p[2]]
-        } else {
-            let Some(t) = bodies
-                .iter()
-                .find(|(b, _)| b.0 == shooter)
-                .map(|(_, t)| t.translation)
-            else {
-                continue;
-            };
+        } else if let Some(t) = bodies
+            .iter()
+            .find(|(b, _)| b.0 == shooter)
+            .map(|(_, t)| t.translation)
+        {
             [t.x, t.y, t.z]
+        } else if super::heli::is_heli(shooter)
+            && core.interp.sample(shooter, core.render_tick(), &mut rs)
+        {
+            // The attack helicopter has no drawn `Body`: its gun is heard
+            // where the interpolator has it.
+            [rs.x, rs.y + 1.6, rs.z]
+        } else {
+            continue;
         };
         let d = eye.pos.distance(Vec3::from(at));
         sound.play(Request::at(far_layer(cue, d), at));
@@ -1172,6 +1192,7 @@ pub fn bed(
     pin: Res<super::rig::DayPin>,
     mut weather: ResMut<super::weather::WeatherNow>,
     mut engine: ResMut<Engine>,
+    helis: Query<&GlobalTransform, With<super::heli::HeliBody>>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
     // inside the radius is "in the woods"; none is "on the beach".
@@ -1267,6 +1288,13 @@ pub fn bed(
     // The rain (weather v0): as hard as it falls, duller under a roof. The
     // snapshot takes it away underwater.
     sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
+    // The heli's rotor, by distance to the drawn hull — none drawn, none
+    // heard. Not panned: a bed has no position, and the whole of what this
+    // owes the player is *it is coming, and it is close*.
+    sound.bed_target[4] = helis.single().map_or(0.0, |gt| {
+        let near = (1.0 - gt.translation().distance(eye.pos) / ROTOR_R_M).clamp(0.0, 1.0);
+        near * near
+    });
 
     // Thunder: each bolt's clap once its sound has crossed the distance
     // (`weather::update` queued it at the bolt's own time plus d / 343).

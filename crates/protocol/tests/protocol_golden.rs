@@ -411,8 +411,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 126);
     g!(seen, golden_event, 127);
     g!(seen, golden_action, 128);
+    // Until when you are hostile (v89).
+    g!(seen, golden_event, 129);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 129, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 130, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
