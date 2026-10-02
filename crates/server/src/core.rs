@@ -4341,6 +4341,8 @@ impl ShardCore {
     ///   one message per event rather than one per client, and
     ///   `gather_wire.rs`'s `a_swing_reaches_every_client_not_just_the_swinger`
     ///   pins it.
+    /// - **A roster slot** (the heli's gun): the roster's own interest,
+    ///   `m_interest`, under the same unsettled rule below.
     /// - **A subject with no world slot.** Nothing to index; fail open.
     /// - **A recipient whose interest is unsettled** (above). This is the
     ///   one that bites, and it fails open for the same reason
@@ -4351,6 +4353,12 @@ impl ShardCore {
         let c = &self.clients[slot];
         if c.id == subject {
             return true;
+        }
+        // A roster slot's fact — the heli's gun (`heli.rs`), which no world
+        // slot names — is filtered by the roster's own interest, or a burst
+        // would reach the whole island.
+        if let Some(m) = mob::slot_of_id(subject) {
+            return !self.interest_settled(slot) || c.m_interest[m];
         }
         let Some(w) = subject_wslot else {
             return true;

@@ -105,7 +105,8 @@ fn body_at(x: f32, feet_y: f32, z: f32) -> Body {
 
 fn no_mobs() -> Box<Mobs> {
     Box::new(Mobs {
-        m: [Mob::default(); MAX_MOBS],
+        m: Box::new([Mob::default(); MAX_MOBS]),
+        survey: Default::default(),
     })
 }
 

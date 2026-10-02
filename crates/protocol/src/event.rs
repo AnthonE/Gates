@@ -6438,6 +6438,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/gather.rs"),
         },
         Module {
+            file: "heli.rs",
+            src: include_str!("../../sim-core/src/heli.rs"),
+        },
+        Module {
             file: "grounditem.rs",
             src: include_str!("../../sim-core/src/grounditem.rs"),
         },

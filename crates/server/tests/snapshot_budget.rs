@@ -826,6 +826,10 @@ fn a_rank_boundary_entity_does_not_flap() {
 ///   the ranking decision actually lands.
 #[test]
 fn a_near_animal_outranks_a_far_player() {
+    // The herd: the roster's first 64 slots, which is the herd this was
+    // written for — the whole 256-slot roster at these spacings would run
+    // past the enter radius it stages inside.
+    const HERD: usize = 64;
     /// Planar distance² in cm², the AOI convention (`core.rs`: 3 cm quanta
     /// widened into centimetres, in i64). Here to prove the scene rather
     /// than to re-check the server's arithmetic — "the far peer is not in
@@ -884,8 +888,8 @@ fn a_near_animal_outranks_a_far_player() {
             };
         }
         for (s, m) in core.world.mobs.m.iter_mut().enumerate() {
-            m.alive = herd;
-            if !herd {
+            m.alive = herd && s < HERD;
+            if !m.alive {
                 continue;
             }
             m.body.qx = q(1030.0 + s as f32);
@@ -981,8 +985,8 @@ fn a_near_animal_outranks_a_far_player() {
             };
         }
         for (s, m) in core.world.mobs.m.iter_mut().enumerate() {
-            m.alive = herd;
-            if !herd {
+            m.alive = herd && s < HERD;
+            if !m.alive {
                 continue;
             }
             // 140–172 m: past every peer in the ranking, inside the enter
@@ -1010,7 +1014,7 @@ fn a_near_animal_outranks_a_far_player() {
     }
     let set = interest_of(&core, 0);
     let own = pos_of(&core, id_of(0));
-    for s in 0..MAX_MOBS {
+    for s in 0..HERD {
         let m = &core.world.mobs.m[s];
         assert!(
             m.alive && d2_cm((m.body.qx, m.body.qz), own) <= AOI_ENTER_CM * AOI_ENTER_CM,

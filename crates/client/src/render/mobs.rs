@@ -419,6 +419,10 @@ pub fn stream(
         let Some(slot) = mob::slot_of_id(id) else {
             continue;
         };
+        // The heli rides the roster's last slot and is `heli.rs`'s to draw.
+        if slot == mob::HELI_SLOT {
+            continue;
+        }
         // Stamped on PRESENCE, not on a successful sample, for the reason
         // `bodies.rs` states at length: `sample` briefly has no bracketing
         // pair when an entity first enters AOI, and despawning across that

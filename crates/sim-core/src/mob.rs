@@ -48,9 +48,10 @@
 //! same `WALK_SPEED` a player sprints away from.
 //!
 //! **Bounded, per wall 4, and in two directions at once.** The roster is
-//! `MAX_MOBS` fixed slots — no spawn path can ask for a sixty-fifth pig.
-//! Decisions are phase-offset across `MOB_THINK_TICKS` (≈ 4 animals think
-//! per tick, not 64), and an animal with no player inside `MOB_WAKE_CM`
+//! `MAX_MOBS` fixed slots, of which each species' density enrols as many as
+//! the island's habitat holds ([`targets`]) — no spawn path can ask for more.
+//! Decisions are phase-offset across `MOB_THINK_TICKS` (a fifteenth of the
+//! roster thinks per tick), and an animal with no player inside `MOB_WAKE_CM`
 //! does not step at all. Both of those are the reference game's own
 //! measures — a fixed think rate and dormancy at distance — and both are
 //! replay-safe here because their predicates are sim state and nothing
@@ -80,11 +81,21 @@ use crate::yaw_lut::yaw_dir;
 /// worldgen and worldgen is shared.
 pub const MOB_PIG: u8 = 0;
 pub const MOB_WOLF: u8 = 1;
+/// The content species — the rows `content/mobs.toml` bakes.
 pub const MOB_KINDS: usize = 2;
+/// The attack helicopter (`heli.rs`), in [`HELI_SLOT`]. **Not a content
+/// species**: past [`MOB_KINDS`], so `MobContent::def` hands back
+/// `MobDef::INERT` for it (no hit volume, no hp, no loot) and nothing here
+/// steps it — the slot is never homed. It rides the roster for the wire's
+/// sake alone.
+pub const MOB_HELI: u8 = 2;
+pub use crate::heli::HELI_SLOT;
 
 /// One roster slot in this many is a predator (`DECISIONS.md` §open,
-/// "predator v0"). 64 slots at 1-in-4 is **16 wolves and 48 pigs**, exactly,
-/// on every seed.
+/// "predator v0"): 256 slots at 1-in-4 is room for 64 wolves (the site
+/// guards first) and 191 pigs, the last slot being the heli's
+/// ([`HELI_SLOT`]). How many of each take part is the density's
+/// ([`targets`]), not this stride's.
 ///
 /// A stride and not a hashed draw, which is the bounded form wall 4 wants:
 /// the predator count is a stated number a gate can count rather than a
@@ -110,7 +121,9 @@ pub(crate) const WOLF_SLOT_EVERY: usize = 4;
 /// variety a world needs.
 #[inline]
 pub const fn kind_of(slot: usize) -> u8 {
-    if slot.is_multiple_of(WOLF_SLOT_EVERY) {
+    if slot == HELI_SLOT {
+        MOB_HELI
+    } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
     } else {
         MOB_PIG
@@ -332,7 +345,7 @@ pub struct MobDef {
     /// this number and by how far away they notice you, and by nothing in
     /// this file.
     pub brave_pct: u8,
-    /// Leash: planar centimetres from the home the seed chose. Past it the
+    /// Leash: planar centimetres from where it last spawned. Past it the
     /// animal heads home instead of wandering — the reference game's own
     /// fix for animals that "ended up at the coast of the island"
     /// (`reference/ANIMALS.md` §2), and the reason nothing here needs to
@@ -370,12 +383,23 @@ pub struct MobDef {
     /// on `flee_ticks` and not on a boundary. That is the desirable shape
     /// and it costs no code: it falls out of refresh-not-recheck.
     pub night_spook_cm: i64,
-    /// Ticks between a death and the same slot hatching again at the same
-    /// home. **The same home**, which is where we and the reference part
-    /// company on purpose: their refill re-samples the distribution and the
-    /// population migrates over a wipe (`reference/SPAWN.md` §3.5). Ours is
-    /// the slot model `TERRAIN.md` §2 already applies to trees.
+    /// Ticks between a death and the slot hatching again — **somewhere
+    /// new**, drawn fresh from the species' habitat ([`home_of`]), the
+    /// reference's refill (`reference/SPAWN.md` §3.5): nothing remembers
+    /// where the dead one stood, so a hunted-out valley refills from the
+    /// rest of the island and the population drifts toward its best ground.
     pub respawn_ticks: u32,
+    /// How many live, per square kilometre of habitat — the reference's
+    /// `boar.population` / `wolf.population`, in thousandths. A species'
+    /// roster is this times the island's habitat-weighted land
+    /// ([`targets`]), so a bigger island carries more animals and a species
+    /// that only lives in forest carries fewer. Site guards are on top.
+    pub per_km2_milli: u32,
+    /// How much this species likes each biome, per mille, indexed by
+    /// `terrain::Biome`: the reference's spawn filter (`reference/SPAWN.md`
+    /// §4), as a weight a home draw is accepted at. Beach is always zero —
+    /// a home is inland, so the leash never centres on the waterline.
+    pub habitat_pm: [u16; 4],
     /// The animal's hit volume, a cylinder standing on its feet: radius and
     /// height in **centimetres** (`mobs.toml` `body_r_cm` / `body_h_cm`).
     /// What `melee::mob_cast` tests the swing's ray against — so a pig is
@@ -417,6 +441,8 @@ impl MobDef {
         spook_cm: 0,
         night_spook_cm: 0,
         respawn_ticks: 0,
+        per_km2_milli: 0,
+        habitat_pm: [0; 4],
         body_r_cm: 0,
         body_h_cm: 0,
         sight_dot_pm: 0,
@@ -493,6 +519,9 @@ impl MobContent {
             // `the_clock_moves_the_hunter_and_not_the_prey` reads it.
             night_spook_cm: 1_200,
             respawn_ticks: 9_000,
+            // The shipped rows' density and habitat (`content/mobs.toml`).
+            per_km2_milli: 5_000,
+            habitat_pm: [0, 1_000, 1_000, 300],
             // The client draws a pig 0.78 m high and 1.5 m long
             // (`render/mobs.rs` PIG_H_M / PIG_LEN_M); a cylinder of this
             // radius covers the body's width and most of its length, and
@@ -526,6 +555,8 @@ impl MobContent {
             spook_cm: 3_000,
             night_spook_cm: 1_500,
             respawn_ticks: 9_000,
+            per_km2_milli: 2_000,
+            habitat_pm: [0, 400, 1_000, 1_000],
             body_r_cm: 60,
             body_h_cm: 85,
             sight_dot_pm: -500,
@@ -550,23 +581,20 @@ impl MobContent {
 }
 
 /// One roster slot. Every field a tick can move is hashed
-/// (`world.rs::state_hash`) — **`home_q*` and `homed` are not**, and this
-/// doc claimed the opposite until 2026-08-14. They are a pure function of
-/// the seed, recomputed identically by every build, so they are worldgen and
-/// `haven` one field over is excluded for the same reason. The consequence
-/// worth knowing: a disagreement about where an animal *lives* is not caught
-/// on the first tick by the hash — it is caught on the first tick the animal
-/// moves, because every position downstream of it is hashed.
+/// (`world.rs::state_hash`) — **`home_q*` and `homed` are not**. `homed` is
+/// the enrolment, a function of the seed and the content; a home is drawn
+/// at each hatch and the body is set to it on the same line, so a
+/// disagreement about where an animal *lives* is caught by the body's hash
+/// on the tick it hatches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mob {
     pub kind: u8,
     /// Standing in the world. False either because it is dead and waiting
-    /// on `respawn_at`, or because this slot never found a home.
+    /// on `respawn_at`, or because this slot does not take part.
     pub alive: bool,
-    /// A slot with no home is permanently empty — the seed had no land at
-    /// any of its `HOME_TRIES` draws. Kept as a flag rather than a
-    /// sentinel position so nothing has to know which coordinate means
-    /// "nowhere".
+    /// The slot takes part: enrolled on the first armed tick because its
+    /// species' density reaches it ([`targets`]), or it guards a site that
+    /// exists. A slot never enrolled never hatches.
     pub homed: bool,
     pub hp: u16,
     pub body: Body,
@@ -634,53 +662,45 @@ pub struct Mob {
     pub respawn_at: u64,
 }
 
-/// The roster: fixed slots, homes chosen once at world construction.
+/// The roster: fixed slots, one species each ([`kind_of`]), of which the
+/// species' density decides how many take part ([`targets`]).
 ///
-/// Built in `World::new` beside `terrain::haven` and for the same reason —
-/// it is a pure function of the seed, it costs a bounded number of terrain
-/// probes, and having it before the first tick means nothing in the tick
-/// has to ask whether the world is ready yet.
+/// Built in `World::new` beside `terrain::haven`, and drawing nothing: a
+/// slot's home is drawn when it hatches (`hatch`), fresh every time, the
+/// reference's refill. Which slots take part is decided once, on the first
+/// tick content is armed, from the island's land survey ([`survey`]) —
+/// `homed` is that enrolment, and a slot never enrolled never hatches.
 #[derive(Clone)]
 pub struct Mobs {
-    pub m: [Mob; MAX_MOBS],
+    /// Boxed: 256 slots is ~50 kB, past what `World`'s stack construction
+    /// and wasm's shadow stack should carry (`crate::boxed_array`).
+    pub m: Box<[Mob; MAX_MOBS]>,
+    /// The island's land per biome, taken once when the roster enrols.
+    /// Worldgen, not state: a pure function of the seed, so it is neither
+    /// hashed nor saved.
+    pub survey: Survey,
 }
 
 impl Mobs {
-    /// Every slot's home, drawn from the seed and rejected against the
-    /// terrain. Allocation-free and bounded: `MAX_MOBS × HOME_TRIES`
-    /// terrain probes, at construction, never in a tick.
-    pub fn new(seed: u64, haven: &Haven) -> Self {
-        let mut mobs = Self {
-            m: [Mob::default(); MAX_MOBS],
-        };
-        // Slot order, so a pack's leader has its home before any member
-        // draws a den around it.
-        for slot in 0..MAX_MOBS {
-            let leader = pack_leader_of(slot).filter(|&l| l != slot && mobs.m[l].homed);
-            let home = match leader {
-                Some(l) => {
-                    den_of(seed, haven, slot, &mobs.m[l]).or_else(|| home_of(seed, haven, slot))
-                }
-                None => home_of(seed, haven, slot),
-            };
-            let mob = &mut mobs.m[slot];
+    /// Every slot's species and facing. Allocation once, at construction;
+    /// no terrain probe — homes are the hatch's business.
+    pub fn new(seed: u64, _haven: &Haven) -> Self {
+        let mut m: Box<[Mob; MAX_MOBS]> = crate::boxed_array(Mob::default());
+        for (slot, mob) in m.iter_mut().enumerate() {
             mob.kind = kind_of(slot);
             mob.target = NO_TARGET;
-            let Some((x, z)) = home else {
-                continue;
-            };
-            mob.homed = true;
-            mob.home_qx = movement::quant_xz(x);
-            mob.home_qz = movement::quant_xz(z);
-            // Facing is drawn with the home so a fresh world is not a
-            // parade of pigs all pointing at +Z.
+            // Facing drawn per slot so a fresh world is not a parade of
+            // pigs all pointing at +Z.
             mob.yaw = ((cell_hash(seed, slot as i32, -1, CH_MOB_HOME) & 0xFF) as u16) << 8;
             mob.want_yaw = mob.yaw;
         }
-        mobs
+        Self {
+            m,
+            survey: Survey::default(),
+        }
     }
 
-    /// How many slots found land. The gate reads this; nothing in the sim
+    /// How many slots take part. The gate reads this; nothing in the sim
     /// does.
     pub fn homed(&self) -> usize {
         self.m.iter().filter(|m| m.homed).count()
@@ -688,6 +708,116 @@ impl Mobs {
 
     pub fn alive(&self) -> usize {
         self.m.iter().filter(|m| m.alive).count()
+    }
+
+    /// Survey the island and enrol each species' first [`targets`] slots,
+    /// once — on the first tick a species is armed.
+    fn enrol(&mut self, seed: u64, haven: &Haven, mc: &MobContent) {
+        self.survey = survey(seed);
+        let want = targets(mc, &self.survey);
+        for (slot, mob) in self.m.iter_mut().enumerate() {
+            mob.homed = takes_part(seed, haven, slot, mc, &want);
+        }
+    }
+}
+
+/// Land per biome, square metres, indexed by `terrain::Biome`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Survey {
+    pub land_m2: [u32; 4],
+    pub done: bool,
+}
+
+/// The survey grid's pitch, metres: 32 × 32 samples over the island.
+const SURVEY_M: f32 = 128.0;
+
+/// The island's land, biome by biome — the reference's "fraction of the
+/// map this population can live on" (`reference/SPAWN.md` §3.1), measured
+/// by asking the terrain on a grid instead of baking a byte field.
+pub fn survey(seed: u64) -> Survey {
+    let n = (terrain::ISLAND_SIZE / SURVEY_M) as i32;
+    let cell = (SURVEY_M * SURVEY_M) as u32;
+    let mut land_m2 = [0u32; 4];
+    for i in 0..n {
+        for j in 0..n {
+            let x = (i as f32 + 0.5) * SURVEY_M;
+            let z = (j as f32 + 0.5) * SURVEY_M;
+            let h = terrain::height(seed, x, z);
+            if h <= terrain::BEACH_MAX_H {
+                continue;
+            }
+            land_m2[terrain::biome(h, terrain::moisture(seed, x, z)) as usize] += cell;
+        }
+    }
+    Survey {
+        land_m2,
+        done: true,
+    }
+}
+
+/// How many of each species live: habitat-weighted land × density, the
+/// reference's `targetCount` (`reference/SPAWN.md` §3.3), capped at the
+/// slots the roster has for it. Wolves count free wolves only; the site
+/// guards are on top.
+pub fn targets(mc: &MobContent, survey: &Survey) -> [usize; MOB_KINDS] {
+    let mut out = [0usize; MOB_KINDS];
+    for (kind, n) in out.iter_mut().enumerate() {
+        let def = mc.def(kind as u8);
+        if def.hp == 0 {
+            continue;
+        }
+        let mut km2 = 0.0f32;
+        for (b, m2) in survey.land_m2.iter().enumerate() {
+            km2 += *m2 as f32 * 1e-6 * def.habitat_pm[b] as f32 * 1e-3;
+        }
+        let want = crate::fmath::floor_i32(km2 * def.per_km2_milli as f32 * 1e-3 + 0.5).max(0);
+        *n = (want as usize).min(capacity(kind as u8));
+    }
+    out
+}
+
+/// Slots the roster has for a species, guards aside.
+pub const fn capacity(kind: u8) -> usize {
+    let wolf_slots = MAX_MOBS.div_ceil(WOLF_SLOT_EVERY);
+    if kind == MOB_WOLF {
+        wolf_slots - SITE_GUARDS
+    } else {
+        // Every other slot, less the heli's.
+        MAX_MOBS - wolf_slots - 1
+    }
+}
+
+/// A slot's place among its species' free slots, in slot order — which is
+/// the order they enrol in. `None` for a guard and the heli.
+pub const fn ordinal(slot: usize) -> Option<usize> {
+    if slot == HELI_SLOT || guard_site_of(slot).is_some() {
+        return None;
+    }
+    if slot.is_multiple_of(WOLF_SLOT_EVERY) {
+        Some(slot / WOLF_SLOT_EVERY - SITE_GUARDS)
+    } else {
+        Some(slot - slot / WOLF_SLOT_EVERY - 1)
+    }
+}
+
+/// Does this slot take part under `mc`? A guard when wolves are armed and
+/// its post exists (an unplaced waystation keeps nobody); a free slot when
+/// its ordinal is under its species' target.
+fn takes_part(
+    seed: u64,
+    haven: &Haven,
+    slot: usize,
+    mc: &MobContent,
+    want: &[usize; MOB_KINDS],
+) -> bool {
+    let kind = kind_of(slot);
+    if kind == MOB_HELI || mc.def(kind).hp == 0 {
+        return false;
+    }
+    match (ordinal(slot), guard_site_of(slot)) {
+        (Some(i), _) => i < want[kind as usize],
+        (None, Some(site)) => guard_home_of(seed, haven, slot, site).is_some(),
+        (None, None) => false,
     }
 }
 
@@ -849,6 +979,9 @@ pub fn step(
     bites.clear();
     howls.clear();
     nav.begin_tick();
+    if !mobs.survey.done && mc.defs.iter().any(|d| d.hp > 0) {
+        mobs.enrol(seed, haven, mc);
+    }
     let mut peers = brain::peers(&mobs.m, tick);
     let mut ground = Ground {
         seed,
@@ -857,6 +990,10 @@ pub fn step(
         occ,
     };
     for slot in 0..MAX_MOBS {
+        // A pack-mate dens round its leader's home, if the leader is up.
+        let leader_home = pack_leader_of(slot)
+            .filter(|&l| l != slot && mobs.m[l].alive)
+            .map(|l| (mobs.m[l].home_qx, mobs.m[l].home_qz));
         let mob = &mut mobs.m[slot];
         if !mob.homed {
             continue;
@@ -868,7 +1005,7 @@ pub fn step(
             // came back when somebody was standing there to watch would be
             // a shard whose population depends on who logged in.
             if def.hp > 0 && tick >= mob.respawn_at {
-                hatch(seed, haven, mob, &def);
+                hatch(seed, haven, tick, slot, mob, &def, leader_home);
             }
             continue;
         }
@@ -939,8 +1076,33 @@ fn drive(mob: &mut Mob, def: &MobDef) -> InputFrame {
     }
 }
 
-/// Stand the animal back up at its own home, with an empty head.
-fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) {
+/// A failed home draw tries again this many ticks later, with fresh draws.
+const HOME_RETRY_TICKS: u64 = 30;
+
+/// Stand the animal up at a fresh home, with an empty head: its post for a
+/// guard, a den round its leader for a pack-mate, and anywhere its habitat
+/// takes it otherwise ([`home_of`]).
+fn hatch(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    tick: u64,
+    slot: usize,
+    mob: &mut Mob,
+    def: &MobDef,
+    leader_home: Option<(i32, i32)>,
+) {
+    let home = match guard_site_of(slot) {
+        Some(site) => guard_home_of(seed, haven, slot, site),
+        None => leader_home
+            .and_then(|l| den_of(seed, haven, slot, tick, l))
+            .or_else(|| home_of(seed, haven, slot, tick, def)),
+    };
+    let Some((x, z)) = home else {
+        mob.respawn_at = tick + HOME_RETRY_TICKS;
+        return;
+    };
+    mob.home_qx = movement::quant_xz(x);
+    mob.home_qz = movement::quant_xz(z);
     // `Body::at` puts the capsule on the heightfield — the same one the
     // home was chosen against at construction, so this lands standing.
     // Re-quantized from the stored quanta rather than kept as floats:
@@ -1152,13 +1314,16 @@ pub const fn pack_of(slot: usize) -> Option<u8> {
 /// A den for a pack-mate: an annulus around the leader's home, rejected
 /// against exactly what `home_of` rejects. `None` sends the slot back to
 /// an ordinary home — a lone wolf is still a wolf.
-fn den_of(seed: u64, haven: &Haven, slot: usize, leader: &Mob) -> Option<(f32, f32)> {
-    let (lx, lz) = (
-        leader.home_qx as f32 * POS_XZ_Q,
-        leader.home_qz as f32 * POS_XZ_Q,
-    );
+fn den_of(
+    seed: u64,
+    haven: &Haven,
+    slot: usize,
+    tick: u64,
+    (lqx, lqz): (i32, i32),
+) -> Option<(f32, f32)> {
+    let (lx, lz) = (lqx as f32 * POS_XZ_Q, lqz as f32 * POS_XZ_Q);
     for attempt in 0..HOME_TRIES {
-        let h = cell_hash(seed, slot as i32, attempt, CH_MOB_DEN);
+        let h = cell_hash(seed, slot as i32, draw_key(tick, attempt), CH_MOB_DEN);
         let r = DEN_MIN_M + ((h & 0xFFFF) as f32 / 65536.0) * DEN_SPAN_M;
         let (fx, fz) = yaw_dir((((h >> 16) & 0xFF) as u16) << 8);
         let (x, z) = (lx + fx * r, lz + fz * r);
@@ -1174,29 +1339,41 @@ fn den_of(seed: u64, haven: &Haven, slot: usize, leader: &Mob) -> Option<(f32, f
     None
 }
 
-/// A home for one roster slot: uniform over the island square, rejected
-/// against the same walkability the spawn ring uses, plus the two authored
-/// sites.
+/// The draws a hatch on `tick` takes are its own: the tick keys them, so a
+/// slot that respawns lands somewhere new and a retry draws afresh.
+#[inline]
+fn draw_key(tick: u64, attempt: i32) -> i32 {
+    (tick as i32).wrapping_mul(HOME_TRIES).wrapping_add(attempt)
+}
+
+/// A home for one free roster slot, drawn from its species' habitat:
+/// uniform over the island square, rejected against the same walkability
+/// the spawn ring uses and the authored sites, then **accepted at the
+/// species' weight for the biome it lands in** (`MobDef::habitat_pm`) —
+/// the reference's spawn filter, a soft weight times hard rejections
+/// (`reference/SPAWN.md` §4).
 ///
 /// Uniform-and-reject rather than the reference game's quadtree importance
 /// sampler (`reference/SPAWN.md` §3.1–3.2). Theirs exists because their
 /// spawn filter is a baked byte field over a map file that has to be
 /// sampled proportionally without scanning; ours can simply *ask the
-/// terrain* at any point, and 24 draws against ~50% land is a home for all
-/// but a handful of slots. What we do steal is the structure they got
+/// terrain* at any point. What we do steal is the structure they got
 /// right: **sample cheaply and approximately, reject exactly.**
-fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
-    // A guard's home is the one place this function otherwise refuses.
-    if let Some(site) = guard_site_of(slot) {
-        return guard_home_of(seed, haven, slot, site);
-    }
+fn home_of(seed: u64, haven: &Haven, slot: usize, tick: u64, def: &MobDef) -> Option<(f32, f32)> {
     for attempt in 0..HOME_TRIES {
-        let h = cell_hash(seed, slot as i32, attempt, CH_MOB_HOME);
+        let h = cell_hash(seed, slot as i32, draw_key(tick, attempt), CH_MOB_HOME);
         let x = ((h & 0xFFFF) as f32 / 65536.0) * terrain::ISLAND_SIZE;
         let z = (((h >> 16) & 0xFFFF) as f32 / 65536.0) * terrain::ISLAND_SIZE;
         // Inland: above the beach band, so the leash's centre is never
         // somewhere the "go home" rule would immediately fire on.
-        if terrain::height(seed, x, z) <= terrain::BEACH_MAX_H {
+        let ht = terrain::height(seed, x, z);
+        if ht <= terrain::BEACH_MAX_H {
+            continue;
+        }
+        // The habitat, before the costlier checks: a draw in ground the
+        // species avoids is refused at its weight.
+        let biome = terrain::biome(ht, terrain::moisture(seed, x, z));
+        if ((h >> 32) % 1000) as u16 >= def.habitat_pm[biome as usize] {
             continue;
         }
         if terrain::slope(seed, x, z) >= HOME_MAX_SLOPE {

@@ -361,6 +361,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::BedSurf => surf(&mut r),
         Cue::BedUnder => under(&mut r),
         Cue::BedRain => rain(&mut r),
+        Cue::BedRotor => rotor(&mut r),
         Cue::Thunder => thunder(&mut r),
 
         // ---- the animals ------------------------------------------------
@@ -1374,6 +1375,39 @@ fn rain(r: &mut Rng) -> Vec<f32> {
             let env = 1.0 - k as f32 / len as f32;
             out[i] += click.run(r.noise()) * amp * env;
         }
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// The attack helicopter's rotor bed: the blade slap, the swish of the
+/// blades, and the turbine's whine over a low rumble.
+///
+/// The slap is [`surge`] at 58 per loop — 5.5 a second, a big two-blade
+/// rotor's beat — so it is locked to the loop and continuous across the
+/// join. It is a swell on a floor rather than a gate, because a bed's level
+/// across any tenth of a second is what `tests/sound.rs` holds steady at the
+/// seam, and a rotor is never silent between two slaps anyway. The whine's
+/// pitch is a whole number of cycles per loop for the same reason.
+fn rotor(r: &mut Rng) -> Vec<f32> {
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    let mut thump = Lp::new(150.0);
+    let mut swish_lp = Lp::new(1_400.0);
+    let mut swish_hp = Lp::new(400.0);
+    let mut rumble = Lp::new(70.0);
+    let mut out = Vec::with_capacity(n);
+    let whine_hz = 12_075.0 / BED_LOOP_SECS;
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let slap = surge(time, 58.0, 0.0, 6);
+        let x = r.noise();
+        let body = thump.run(x) * 2.2 * (0.45 + 0.55 * slap);
+        let swish = {
+            let l = swish_lp.run(x);
+            (l - swish_hp.run(l)) * 0.6 * slap
+        };
+        let whine = 0.035 * (std::f32::consts::TAU * whine_hz * time).sin();
+        out.push(body + swish + whine + rumble.run(x) * 0.8);
     }
     loop_seam(out, samples(BED_FADE_SECS))
 }

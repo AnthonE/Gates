@@ -300,11 +300,16 @@ pub enum Cue {
     Bandage,
     /// You drew a bow: the limbs creaking as the string comes back.
     BowDraw,
+    /// The attack helicopter's rotor (`sim-core/src/heli.rs`): the blade
+    /// slap over a turbine whine. A bed ([`Cue::is_bed`]) that
+    /// `render/audio.rs` turns up as the heli closes, so you hear it coming
+    /// before you see it. Appended, the enum's append-order rule.
+    BedRotor,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 61;
+pub const CUE_COUNT: usize = 62;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -374,6 +379,7 @@ impl Cue {
         Cue::Eat,
         Cue::Bandage,
         Cue::BowDraw,
+        Cue::BedRotor,
     ];
 
     /// Is this cue a piece of music?
@@ -405,7 +411,7 @@ impl Cue {
     pub fn is_bed(self) -> bool {
         matches!(
             self,
-            Cue::BedWind | Cue::BedSurf | Cue::BedUnder | Cue::BedRain
+            Cue::BedWind | Cue::BedSurf | Cue::BedUnder | Cue::BedRain | Cue::BedRotor
         )
     }
 
@@ -509,7 +515,8 @@ impl Cue {
             | Cue::BedWind
             | Cue::BedSurf
             | Cue::BedUnder
-            | Cue::BedRain => 0.0,
+            | Cue::BedRain
+            | Cue::BedRotor => 0.0,
             // **Zero, and it is not the signal-cue argument.** A piece played
             // at 1.03× is a piece in a different key, and the next piece
             // would be in a third — the tail that covers a join would be
@@ -776,6 +783,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // leads to. The cooldown only stops a flutter on the right mouse from
     // stacking creaks.
     row(GAME,  0.0, 0.35, 300, 3, false),  // bow drawn
+    // The heli's rotor: a bed, so radius 0 and no cooldown — its level is
+    // `render/audio.rs`'s distance law. GAME, not AMBIENCE: it is a threat,
+    // and turning the scenery down must not turn it down.
+    row(GAME,  0.0, 0.60,   0, 0, false),  // rotor
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -1006,6 +1017,8 @@ pub struct SnapshotDef {
     pub under: f32,
     /// The rain bed: heard above water, gone below it.
     pub rain: f32,
+    /// The heli's rotor: the game bus's level, because it is a threat.
+    pub rotor: f32,
 }
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
@@ -1027,6 +1040,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         surf: 1.0,
         under: 0.0,
         rain: 1.0,
+        rotor: 1.0,
     },
     // Submerged. The game bus survives at a level a player can still fight on
     // — being underwater must not be a stealth advantage handed out by the
@@ -1039,6 +1053,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         surf: 0.22,
         under: 1.0,
         rain: 0.0,
+        rotor: 0.45,
     },
 ];
 
@@ -1103,6 +1118,7 @@ impl Snapshots {
             surf: mix(a.surf, b.surf),
             under: mix(a.under, b.under),
             rain: mix(a.rain, b.rain),
+            rotor: mix(a.rotor, b.rotor),
         }
     }
 }
@@ -1125,6 +1141,7 @@ impl SnapshotDef {
             Cue::BedSurf => self.surf,
             Cue::BedUnder => self.under,
             Cue::BedRain => self.rain,
+            Cue::BedRotor => self.rotor,
             _ => 0.0,
         }
     }
