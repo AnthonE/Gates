@@ -48,6 +48,9 @@ pub struct Gates {
     /// `CLAUDE.md`'s destructive-read trap — a queue with a single-consumer
     /// contract needs one owner, and here the owner is `pump`.
     last: client::Frame,
+    /// The `host:port` joined, which the disconnect line names (it used to
+    /// name the world seed).
+    server: String,
 }
 
 #[wasm_bindgen]
@@ -119,6 +122,7 @@ impl Gates {
             session,
             aim: client::look::Aim::default(),
             last,
+            server,
         })
     }
 
@@ -164,6 +168,7 @@ impl Gates {
                 tick: 0,
                 snapshots: 0,
             },
+            server,
         })
     }
 
@@ -325,8 +330,9 @@ impl Gates {
         use bevy::window::WindowResolution;
         use client::render::{GatesRenderPlugin, Net, Start, WorldId};
 
-        let Gates { session, .. } = self;
-        let server = session.welcome.seed.to_string();
+        let Gates {
+            session, server, ..
+        } = self;
         let seed = session.welcome.seed;
 
         // The backing store: the viewport in device pixels, scaled down

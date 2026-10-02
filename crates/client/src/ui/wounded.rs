@@ -30,6 +30,16 @@ pub fn down_line(ticks: u16, chance_pm: u16) -> String {
     )
 }
 
+/// What a key does while you are down: the sim refuses every hand verb but
+/// a door's (`World::live_slot_of`), silently, so the client says so.
+pub const HANDS_LINE: &str = "you are down - crawl to cover, or work a door";
+
+/// Whether `E` on `verb` still does anything while you are down. A door is
+/// the one verb a downed body keeps (`World::awake_slot_of`).
+pub fn allows(verb: crate::ui::interact::Verb) -> bool {
+    verb == crate::ui::interact::Verb::Door
+}
+
 /// The toast on the way up.
 pub fn up_line(chance_pm: u16, hp: u16) -> String {
     format!("you got up - beat {}%, {hp} hp", pct(chance_pm))
@@ -61,6 +71,15 @@ mod tests {
         assert_eq!(secs(1_500), 50);
         assert_eq!(secs(1_201), 41, "a tick into the 41st second is 41");
         assert_eq!(secs(1), 1, "never zero while a tick is owed");
+    }
+
+    #[test]
+    fn down_only_a_door_answers() {
+        use crate::ui::interact::Verb;
+        assert!(allows(Verb::Door));
+        for v in [Verb::None, Verb::Bag, Verb::Box, Verb::Hearth, Verb::Fire] {
+            assert!(!allows(v), "{v:?} is hand work");
+        }
     }
 
     #[test]

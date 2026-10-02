@@ -2675,6 +2675,29 @@ impl World {
         if ground == inventory::CONT_BAG {
             self.backpacks.drop_if_empty(ci, &mut self.events);
         }
+        // A crate this move emptied leaves the world until it refills, as
+        // the reference's does — the picture stops promising loot that is
+        // not there. Asked after BOTH writes, so shuffling a crate's last
+        // stack between its own slots never blinks it out.
+        if ground == inventory::CONT_WORLD {
+            self.vanish_if_emptied(ci);
+        }
+    }
+
+    /// Harvest an emptied world container until one tick before its refill
+    /// (`SlotLives::harvest`): the respawn sweep runs after the commands, so
+    /// the open that arrives on `refill_at` finds it standing and rolls it.
+    fn vanish_if_emptied(&mut self, ci: usize) {
+        let c = self.world_conts.entries()[ci];
+        if !c.is_empty() || c.refill_at <= self.tick + 1 {
+            return;
+        }
+        let occ = crate::worldcont::occupant_of(c.table as usize);
+        if occ == crate::terrain::Occupant::None {
+            return;
+        }
+        self.slot_lives
+            .harvest(c.cx, c.cz, occ, c.refill_at - 1, &mut self.events);
     }
 
     /// Lay down the arrows that are due (`spent::settle`): each falls onto
@@ -3857,6 +3880,28 @@ impl World {
         );
     }
 
+    /// Tell the player a give-back (cancel, refund, pick-up, unbolt) spilled
+    /// at their feet: `EV_GATHER` with zero added, the "pack full" line.
+    /// Not inside `drain_spill`: the per-tick gather/craft drain already
+    /// announces, and the death shed has nobody to tell.
+    fn announce_spill(&mut self, slot: usize, spill: &[ItemStack; INV_SLOTS]) {
+        let pid = self.players[slot].id;
+        let mut said = [0u16; crate::limits::SPILL_TOASTS_MAX];
+        let mut n = 0;
+        for s in spill.iter().filter(|s| s.count > 0) {
+            if n == said.len() {
+                break;
+            }
+            if said[..n].contains(&s.item) {
+                continue;
+            }
+            said[n] = s.item;
+            n += 1;
+            // The zero is owed: these units left for the ground (`EV_GATHER`).
+            self.events.push(EV_GATHER, pid, (s.item as u32) << 16, 0);
+        }
+    }
+
     /// One frame's non-wire sanitation — `sel` falls back, unknown button
     /// bits are masked. The wire refuses both at decode/accept; a non-wire
     /// command (bot, test, WAL) is clamped instead, and the stored frame is
@@ -4105,6 +4150,7 @@ impl World {
                         index,
                         &mut spill,
                     );
+                    self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
             }
@@ -4198,23 +4244,27 @@ impl World {
                     // lookup and not a guess about what the player aimed
                     // at. Which asks first is immaterial: at most one of
                     // them answers for any address.
-                    let lit = crate::research::begin(
-                        &self.research,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        &mut self.events,
-                    ) || crate::oven::toggle(
-                        &self.cook,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        &mut self.events,
-                    );
+                    // Down, only the door: research and the oven are hand
+                    // work, which `live_slot_of` refuses everywhere else.
+                    let down = self.players[slot].wounded;
+                    let lit = !down
+                        && (crate::research::begin(
+                            &self.research,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            &mut self.events,
+                        ) || crate::oven::toggle(
+                            &self.cook,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            &mut self.events,
+                        ));
                     if !lit {
                         let owner = deploy::use_door(
                             &self.deploy,
@@ -4283,6 +4333,7 @@ impl World {
                     }
                     // One buffer for both arms: they are two verbs behind
                     // one command and exactly one of them ran.
+                    self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
             }
@@ -4357,6 +4408,7 @@ impl World {
                             &mut self.events,
                             &mut spill,
                         );
+                        self.announce_spill(slot, &spill);
                         self.drain_spill(slot, &mut spill);
                         if let Some(owner) = owner {
                             self.log_trust(seat, id, owner, TRUST_AUTH);
@@ -4526,7 +4578,10 @@ impl World {
                 }
             }
             Command::OpenWorldCont { id, cont } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // An emptied crate is out of the world until it refills.
+                let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
+                let gone = self.slot_lives.is_harvested(cx, cz);
+                if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
                     self.world_conts.open(
                         self.seed,
                         &self.scatter,
@@ -5300,6 +5355,7 @@ impl World {
             }
         }
         let mut blast_kills = crate::charge::BlastKills::new();
+        let mut blast_mobs = crate::charge::BlastMobs::new();
         crate::charge::tick_fuses(
             seed,
             &self.haven,
@@ -5313,6 +5369,8 @@ impl World {
             tick,
             &mut removals,
             &mut blast_kills,
+            &self.mobs,
+            &mut blast_mobs,
             &mut self.events,
         );
         // The blast's dead, laid down after every fuse resolved — the
@@ -5324,6 +5382,27 @@ impl World {
             if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
                 self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
             }
+        }
+        // The blast's animals, on the arrow's path: they run or turn on
+        // the planter, the planter gets the hitmarker, the dead drop meat.
+        for slot in 0..crate::limits::MAX_MOBS {
+            let dmg = blast_mobs.dmg[slot];
+            if dmg == 0 {
+                continue;
+            }
+            let by = self.live_slot_of(blast_mobs.by[slot]);
+            mob::hurt_slot(
+                &self.backpack,
+                &self.mob,
+                tick,
+                by,
+                &self.players,
+                &mut self.mobs,
+                &mut self.backpacks,
+                &mut self.events,
+                slot,
+                dmg,
+            );
         }
 
         // The roster steps after the player loop and before the arrows, and

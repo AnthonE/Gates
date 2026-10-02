@@ -166,6 +166,7 @@ impl crate::Session {
                 .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
                 .collect(),
             closed: false,
+            refused: None,
             event_observer: None,
             observer_failed: false,
             tap: None,

@@ -550,6 +550,10 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
         rec.refill_at >= w.tick + RESPAWN_MIN_TICKS,
         "emptying it armed the refill at least the barrel's minimum out"
     );
+    assert!(
+        w.slot_lives.is_harvested(cx, cz),
+        "an emptied crate leaves the world until it refills"
+    );
 
     // Looking at it early changes nothing.
     open(&mut w, cx, cz);
@@ -561,6 +565,10 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
     // Past the tick, the next open finds it stocked again.
     let due = w.world_conts.entries()[0].refill_at;
     advance_to(&mut w, due);
+    assert!(
+        !w.slot_lives.is_harvested(cx, cz),
+        "and stands again by the tick it may refill"
+    );
     open(&mut w, cx, cz);
     assert_eq!(
         units(&w, 0, 2),

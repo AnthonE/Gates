@@ -344,6 +344,9 @@ pub enum FellPart {
     /// A node that simply stops being there: an ore node, a bush, a boulder,
     /// a barrel. Nothing to animate and nothing left behind.
     Vanish,
+    /// An emptied loot crate: gone until it refills, like [`Vanish`] but
+    /// silent (nothing broke) and not a perch for the forest ambience.
+    Emptied,
     /// The trunk and its limbs. Topples on the slot's own bearing and **stays
     /// down** until the slot respawns.
     Trunk,
@@ -2562,6 +2565,8 @@ pub fn spawn_slot(
             | Occupant::Rock
             | Occupant::BarrelSlot
     );
+    // An emptied crate is harvested too (`World::move_item`), until it refills.
+    let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
     let is_tree = slot.occupant == Occupant::Tree;
     // One constructor for all three parts: every field but `part` is the same
     // for the trunk, the canopy and the stump, and writing them out three
@@ -2591,9 +2596,14 @@ pub fn spawn_slot(
             tree::lod_band(&lod.near),
             transform,
         ));
-    } else if harvestable {
+    } else if harvestable || lootable {
+        let part = if lootable {
+            FellPart::Emptied
+        } else {
+            FellPart::Vanish
+        };
         e.with_child((
-            fellable(FellPart::Vanish),
+            fellable(part),
             Mesh3d(mesh),
             MeshMaterial3d(material),
             transform,
@@ -2992,7 +3002,7 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
         f.felled = felled;
         match f.part {
             // A rock that stops being a rock has nothing to animate.
-            FellPart::Vanish => {
+            FellPart::Vanish | FellPart::Emptied => {
                 *vis = if felled {
                     // Its marks go with it, from about its middle.
                     forget(

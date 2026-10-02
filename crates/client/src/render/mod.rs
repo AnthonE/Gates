@@ -1016,7 +1016,10 @@ impl Plugin for GatesRenderPlugin {
                     // or a material created and warmed on the same frame
                     // would lose a frame of its own life to the counter.
                     prewarm::warm,
-                    prewarm::retire.after(prewarm::warm),
+                    prewarm::warm_models,
+                    prewarm::retire
+                        .after(prewarm::warm)
+                        .after(prewarm::warm_models),
                     // Every photograph out of `assets/textures/` gets the mip
                     // chain Bevy will not build for it. `drain` after
                     // `enqueue`, so an image that finishes loading on this
@@ -1417,8 +1420,8 @@ impl Plugin for GatesRenderPlugin {
                     // Paired into one element on purpose: the tuple below is
                     // at Bevy's twenty-one limit, and these two are the halves
                     // of one fact — `feedback` latches the blow, `hurt_arc`
-                    // draws where it came from.
-                    (hud::feedback, hud::hurt_arc),
+                    // draws where it came from, `hit_number` says how hard.
+                    (hud::feedback, hud::hurt_arc, hud::hit_number),
                     // The pinned readout: `Feed`'s second HUD reader,
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
@@ -1613,6 +1616,7 @@ impl Plugin for GatesRenderPlugin {
                 // The herd's voices, off the animals `mobs::stream` just
                 // moved — a snort, a howl or a growl, by species and range.
                 audio::voices,
+                audio::ui_click,
                 audio::bed,
                 audio::pump,
             )

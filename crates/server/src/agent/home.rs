@@ -102,7 +102,9 @@ impl Reading {
         (0..usize::from(self.rows))
             .filter(move |&i| {
                 self.bill[i] > 0
-                    && (self.stock[i] / self.bill[i]).saturating_sub(gone) < UPKEEP_LOW_PERIODS
+                    && (u64::from(self.stock[i]) * 24 / u64::from(self.bill[i]))
+                        .saturating_sub(u64::from(gone))
+                        < u64::from(UPKEEP_LOW_PERIODS)
             })
             .map(|i| self.items[i])
     }

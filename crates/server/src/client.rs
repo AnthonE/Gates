@@ -364,6 +364,9 @@ pub struct ClientNetState {
     /// The wet/cold readout as last sent, `(wet %, cold %, hurting)`.
     /// `None` owes the client the reading.
     pub last_expo: Option<(u8, u8, bool)>,
+    /// Until when the owner is hostile, as last sent (`EventMsg::Hostile`).
+    /// `None` owes the client the reading.
+    pub last_hostile: Option<u32>,
     /// One decoded C→S chat line awaiting its fan-out. Unlike the action
     /// hand this is never deferred: chat is not a transaction, so a line
     /// that can't be said this tick is dropped rather than held (the
@@ -443,6 +446,7 @@ impl ClientNetState {
             tags_owed: TAGS_ALL,
             skins_pending: None,
             last_expo: None,
+            last_hostile: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,
@@ -500,6 +504,7 @@ impl ClientNetState {
         self.last_done_at = u64::MAX;
         self.last_env = None;
         self.last_expo = None;
+        self.last_hostile = None;
     }
 
     /// Open `handle` of `kind` as this client's container view, or close

@@ -114,6 +114,19 @@ impl WorldContRec {
     }
 }
 
+/// The occupant that rolls `table`, [`table_of`] backwards — what an
+/// emptied container is when it leaves the world (`EV_SLOT_HARVESTED`).
+pub fn occupant_of(table: usize) -> Occupant {
+    match table {
+        LOOT_CRATE => Occupant::CrateSlot,
+        LOOT_CACHE => Occupant::CacheSlot,
+        crate::loot::LOOT_GREEN => Occupant::GreenCrate,
+        crate::loot::LOOT_BLUE => Occupant::BlueCrate,
+        crate::loot::LOOT_ELITE => Occupant::EliteCrate,
+        _ => Occupant::None,
+    }
+}
+
 /// Which loot table an occupant rolls, or `None` for a cell that is not a
 /// world container at all. The whole of the authorization: a cell the
 /// client names that does not answer here cannot be opened.
