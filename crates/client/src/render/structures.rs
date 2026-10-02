@@ -595,6 +595,10 @@ struct Live {
     /// A rotate can change only this bit, keeping address, row and damage.
     facing: u8,
     foot_drop: f32,
+    /// Where a free-placed deployable was drawn standing (its feet's y).
+    /// Redraw state for the reason `plate` is: the floor under it can arrive
+    /// after it does, and the height is read off what is under it now.
+    base_y: f32,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -2492,6 +2496,7 @@ pub fn stream(
                 plate: rec.plate,
                 facing: rec.facing,
                 foot_drop,
+                base_y: 0.0,
             },
         );
     }
@@ -2515,6 +2520,14 @@ pub fn stream(
         // (`protocol::event::write_deploy_rec` says why). An unbuilt column
         // is a ground placement and answers 0, the terrain rule.
         let plate = core.pieces.cols().plate(rec.cx, rec.cz).unwrap_or(0);
+        let arch = core.deploy_defs.defs[rec.row as usize].arch;
+        // Where a free-placed one stands now: the floor under it, or the
+        // ground (`sim_core::deploy::body_base_y`, the collision's height).
+        let base_y = if sim_core::deploy::is_edge_loc(rec.loc) {
+            0.0
+        } else {
+            sim_core::deploy::body_base_y(seed, haven, core.pieces.cols(), rec, arch)
+        };
         if let Some(live) = ring.deploys.get_mut(&key) {
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
@@ -2531,6 +2544,7 @@ pub fn stream(
                 && live.open == rec.open
                 && live.locked == rec.locked
                 && live.plate == plate
+                && live.base_y == base_y
             {
                 continue;
             }
@@ -2546,8 +2560,16 @@ pub fn stream(
             commands.entity(live.entity).despawn();
             ring.deploys.remove(&key);
         }
-        let arch = core.deploy_defs.defs[rec.row as usize].arch;
-        let entity = spawn_deploy(&mut commands, kit, seed, haven, rec, arch, plate);
+        let entity = spawn_deploy(
+            &mut commands,
+            kit,
+            seed,
+            haven,
+            core.pieces.cols(),
+            rec,
+            arch,
+            plate,
+        );
         ring.deploys.insert(
             key,
             Live {
@@ -2561,6 +2583,7 @@ pub fn stream(
                 plate,
                 facing: 0,
                 foot_drop: 0.0,
+                base_y,
             },
         );
     }
@@ -2995,6 +3018,62 @@ pub fn model_drop(arch: u8) -> f32 {
     }
 }
 
+/// Where a free-placed deployable's FEET are and which way it faces: its
+/// pose's centre on the floor under it (`sim_core::deploy::body_base_y` —
+/// the one height the collision walks stand it on, so the box you see is the
+/// box you bump), turned to its yaw by the sim's own convention (the yaw
+/// table's index `k` is `Quat::from_rotation_y(k · τ/256)`).
+///
+/// One a body walks over — the bag, the fire — lying on bare ground is laid
+/// along the slope under it rather than stood level: it has no collision to
+/// disagree with, and a bedroll held level over a hillside is the floating
+/// this replaced. Everything that blocks stands upright on the lowest ground
+/// under its rectangle, exactly where the sim's box stands.
+pub fn body_feet(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    rec: &DeployRec,
+    arch: u8,
+) -> Transform {
+    let (x, z) = rec.xz();
+    let y = sim_core::deploy::body_base_y(seed, haven, cols, rec, arch);
+    let yaw = Quat::from_rotation_y(rec.pose.yaw as f32 * (std::f32::consts::TAU / 256.0));
+    let mut t = Transform::from_xyz(x, y, z).with_rotation(yaw);
+    let on_ground =
+        sim_core::deploy::built_floor(seed, haven, cols, rec.cx, rec.cz, rec.level, x, z).is_none();
+    if on_ground && sim_core::deploy::solid_vol(arch).is_none() {
+        if let Some(r) = rec.rect(arch) {
+            // The ground's slope along the deployable's own two axes.
+            let g = |lx: f32, lz: f32| {
+                let (wx, wz) = r.world(lx, lz);
+                terrain::ground(seed, haven, wx, wz)
+            };
+            let sx = (g(r.hw, 0.0) - g(-r.hw, 0.0)) / (2.0 * r.hw);
+            let sz = (g(0.0, r.hd) - g(0.0, -r.hd)) / (2.0 * r.hd);
+            let up = Vec3::new(-sx, 1.0, -sz).normalize();
+            t.rotation = yaw * Quat::from_rotation_arc(Vec3::Y, up);
+        }
+    }
+    t
+}
+
+/// The transform a free-placed deployable's MESH is drawn with — and the
+/// ghost previews it with, so the preview and the thing it becomes are one
+/// pose: [`body_feet`] for a model (authored feet-at-zero,
+/// `tests/deploy_assets.rs`), lifted half its height for the centred cuboid.
+pub fn body_transform(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    rec: &DeployRec,
+    arch: u8,
+) -> Transform {
+    let idx = (arch as usize).min(DEPLOY.len() - 1);
+    let lift = DEPLOY[idx].0[1] * 0.5 - model_drop(arch);
+    body_feet(seed, haven, cols, rec, arch) * Transform::from_xyz(0.0, lift, 0.0)
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -3005,21 +3084,29 @@ pub fn spawn_deploy(
     kit: &Kit,
     seed: u64,
     haven: &terrain::Haven,
+    cols: &ColIndex,
     rec: &DeployRec,
     arch: u8,
     plate: i8,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
-    let mut transform = deploy_transform(
-        seed,
-        haven,
-        (rec.cx, rec.cz, rec.level, rec.loc),
-        arch,
-        rec.open,
-        plate,
-    );
     let drop = model_drop(arch);
-    transform.translation.y -= drop;
+    // An edge insert hangs in its doorway (`deploy_transform`); anything
+    // else stands where it was placed (free placement).
+    let transform = if sim_core::deploy::is_edge_loc(rec.loc) {
+        let mut t = deploy_transform(
+            seed,
+            haven,
+            (rec.cx, rec.cz, rec.level, rec.loc),
+            arch,
+            rec.open,
+            plate,
+        );
+        t.translation.y -= drop;
+        t
+    } else {
+        body_transform(seed, haven, cols, rec, arch)
+    };
 
     let mat = if arch == ARCH_DOOR && rec.locked {
         kit.door_locked.clone()
@@ -3049,6 +3136,7 @@ pub fn spawn_deploy(
                 cx: rec.cx,
                 cz: rec.cz,
                 level: rec.level,
+                loc: rec.loc,
             },
             PointLight {
                 color: FIRE_COLOR,
@@ -3117,6 +3205,8 @@ pub struct FireLight {
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
+    /// The fire's body slot — two fires can share a cell (free placement).
+    pub loc: u8,
 }
 
 /// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries
@@ -3178,16 +3268,16 @@ pub fn fire_lights(net: NonSend<super::Net>, q: Query<(&FireLight, &mut PointLig
     // the same reason, and `LitOvens` is the authority exactly as
     // `HarvestedSet` is there.
     let ovens = net.session.core.ovens();
-    apply_fire_lights(q, &|cx, cz, level| ovens.is_lit(cx, cz, level));
+    apply_fire_lights(q, &|cx, cz, level, loc| ovens.is_lit(cx, cz, level, loc));
 }
 
 /// [`fire_lights`] with the lit set as a predicate. The half a gate can drive.
 pub fn apply_fire_lights(
     mut q: Query<(&FireLight, &mut PointLight)>,
-    lit: &dyn Fn(u16, u16, u8) -> bool,
+    lit: &dyn Fn(u16, u16, u8, u8) -> bool,
 ) {
     for (fire, mut light) in q.iter_mut() {
-        let want = if lit(fire.cx, fire.cz, fire.level) {
+        let want = if lit(fire.cx, fire.cz, fire.level, fire.loc) {
             FIRE_LUMENS
         } else {
             0.0

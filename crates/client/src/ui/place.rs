@@ -1208,7 +1208,7 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
     // the address empty); the reserved box address is the sim's own key.
     if !loc_fits_placement(def.placement, t.loc)
         || (def.placement != PLACE_DOOR && site.deploy_at(t.cx, t.cz, t.level, t.loc).is_some())
-        || (def.arch == ARCH_BOX && box_key(t.cx, t.cz, t.level) == 0)
+        || (def.arch == ARCH_BOX && box_key(t.cx, t.cz, t.level, 0) == 0)
     {
         return DeployVerdict::No("spot taken");
     }

@@ -137,6 +137,7 @@ fn fire_world() -> (World, u32, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the fixture needs its fire placed");
     assert_eq!(
@@ -148,7 +149,7 @@ fn fire_world() -> (World, u32, u16, u16) {
         w.deploys.oven_states()[0].burns(),
         "and that record's state says oven, not box"
     );
-    (w, box_key(cx, cz, 0), cx, cz)
+    (w, box_key(cx, cz, 0, 0), cx, cz)
 }
 
 /// Put `count` of `item` straight into oven slot `slot`, bypassing the
@@ -522,8 +523,9 @@ fn a_removal_moves_both_halves() {
         cz: bz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
-    let second = box_key(bx, bz, 0);
+    let second = box_key(bx, bz, 0, 0);
     if w.deploys.box_index(second).is_none() {
         // The neighbouring cell's terrain refused it. Nothing about the
         // alignment can be asserted without two records, and inventing a
@@ -694,6 +696,7 @@ fn recycler_world() -> (World, u32, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the fixture needs its recycler placed");
     assert_eq!(
@@ -706,7 +709,7 @@ fn recycler_world() -> (World, u32, u16, u16) {
         st.is_converter() && !st.burns(),
         "and that record's state says converter-that-does-not-burn"
     );
-    (w, box_key(cx, cz, 0), cx, cz)
+    (w, box_key(cx, cz, 0, 0), cx, cz)
 }
 
 /// The first delta. A fire with nothing in it refuses the match

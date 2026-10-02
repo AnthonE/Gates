@@ -690,6 +690,7 @@ mod tests {
             682,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(
@@ -945,6 +946,7 @@ mod tests {
             682,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(
@@ -1029,6 +1031,7 @@ mod tests {
             682,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(
@@ -1054,6 +1057,7 @@ mod tests {
             682,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(
@@ -1094,6 +1098,7 @@ mod tests {
             682,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         enqueue(&cc1, &SK, &dc, &only_wb2, 10, &mut q, 2, 1, 0, &mut ev);
@@ -1230,6 +1235,7 @@ mod tests {
                     682,
                     0,
                     LOC_PLANE,
+                    crate::footprint::Pose::CENTRE,
                     &mut ev,
                 );
                 assert_eq!(
@@ -1288,6 +1294,7 @@ mod tests {
             682,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         enqueue(&cc, &SK, &dc, &nod, 100, &mut p, 1, 3, 0, &mut ev);

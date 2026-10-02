@@ -532,6 +532,7 @@ impl Rig {
             t.cz,
             t.level,
             t.loc,
+            sim_core::footprint::Pose::CENTRE,
             &mut ev,
         );
         match ev.entries().iter().find(|e| e.code == EV_DEPLOY_REFUSED) {

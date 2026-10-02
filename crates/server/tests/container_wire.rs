@@ -507,7 +507,7 @@ fn a_forged_handle_is_answered_with_nothing() {
     for _ in 0..3 {
         pump(&mut core, &stats, &mut clients, &mut seen);
     }
-    ask(&mut core, 0, CONT_BOX, box_key(77, 88, 1));
+    ask(&mut core, 0, CONT_BOX, box_key(77, 88, 1, 0));
     for _ in 0..3 {
         pump(&mut core, &stats, &mut clients, &mut seen);
     }
@@ -764,6 +764,7 @@ fn the_body_is_still_fed_while_a_box_is_open() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     core.world.deploys.set_box_slot(
         0,
@@ -775,7 +776,7 @@ fn the_body_is_still_fed_while_a_box_is_open() {
             skin: 0,
         },
     );
-    let key = box_key(cx, cz, 0);
+    let key = box_key(cx, cz, 0, 0);
 
     // 1 · open the box and let it land.
     let mut seen = Vec::new();
@@ -896,8 +897,9 @@ fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
-    let key = box_key(cx, cz, 0);
+    let key = box_key(cx, cz, 0, 0);
     let helmet = ItemStack {
         item: OTHER,
         count: 1,
@@ -1035,6 +1037,7 @@ fn a_box_opens_by_its_packed_address() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         core.world.deploys.boxes().len(),
@@ -1053,7 +1056,7 @@ fn a_box_opens_by_its_packed_address() {
             skin: 0,
         },
     );
-    let key = box_key(cx, cz, 0);
+    let key = box_key(cx, cz, 0, 0);
 
     let mut seen = Vec::new();
     ask(&mut core, 0, CONT_BOX, key);
@@ -1175,6 +1178,7 @@ fn a_corpse_is_shown_no_container() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(core.world.deploys.boxes().len(), 1, "the box must place");
     core.world.deploys.set_box_slot(
@@ -1187,7 +1191,7 @@ fn a_corpse_is_shown_no_container() {
             skin: 0,
         },
     );
-    let key = box_key(cx, cz, 0);
+    let key = box_key(cx, cz, 0, 0);
 
     // The living open, asserted in full — otherwise the claims below could
     // all be true because the view never worked at this address at all.
@@ -1415,6 +1419,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(core.world.deploys.boxes().len(), 1, "the box must place");
     core.world.deploys.set_box_slot(
@@ -1434,6 +1439,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     core.world.tick(&[Command::Access {
         id: id_of(0),
@@ -1450,7 +1456,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         .find(cx, cz, 0, LOC_PLANE)
         .expect("the box record");
     assert!(d.has_lock && d.locked, "the fixture needs its lock armed");
-    let key = box_key(cx, cz, 0);
+    let key = box_key(cx, cz, 0, 0);
 
     // The stranger subscribes. What comes back is the same close a box
     // that stopped existing yields — and never a slot.

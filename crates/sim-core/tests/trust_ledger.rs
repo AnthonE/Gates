@@ -260,8 +260,9 @@ fn stage(w: &mut World) -> (u32, usize) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
-    let key = box_key(cx, cz, 0);
+    let key = box_key(cx, cz, 0, 0);
     let bi = w
         .deploys
         .box_index(key)

@@ -758,7 +758,7 @@ pub fn container_cols(kind: u8) -> usize {
 /// The deployable item standing at a box handle, if the client is already
 /// drawing one.
 ///
-/// **No new wire.** `CONT_BOX`'s handle is `box_key(cx, cz, level)` — an
+/// **No new wire.** `CONT_BOX`'s handle is `box_key(cx, cz, level, 0)` — an
 /// address, not an id, and deliberately so (`sim_core::inventory`) — and the
 /// deploy sync the client draws every box from carries the same three
 /// numbers plus the baked row. So the panel can name the box it opened out
@@ -783,7 +783,7 @@ pub fn box_item_at(
     defs_have: u16,
 ) -> Option<u16> {
     deploys.iter().find_map(|d| {
-        if box_key(d.cx, d.cz, d.level) != handle || u16::from(d.row) >= defs_have {
+        if box_key(d.cx, d.cz, d.level, d.loc) != handle || u16::from(d.row) >= defs_have {
             return None;
         }
         let def = &defs.defs[d.row as usize];

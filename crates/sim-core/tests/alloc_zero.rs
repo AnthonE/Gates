@@ -461,6 +461,7 @@ fn test_alloc_zero() {
         cz: bag_cell.1,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         world.deploys.len(),

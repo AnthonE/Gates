@@ -340,7 +340,8 @@ pub const EV_PIECE_REPAIRED: u8 = 28;
 pub const EV_CHARGE_PLACED: u8 = 29;
 
 /// An oven's fire went in or out (`oven.rs`). `a` = `cell_key(cx, cz)`,
-/// `b` = `level << 16 | lit`, `c` = the hand that pressed, or **0 when
+/// `b` = `level << 16 | loc << 8 | lit` (the body slot, since a cell may
+/// hold two fires), `c` = the hand that pressed, or **0 when
 /// the oven ran dry and snuffed itself** — a fact with no actor behind
 /// it, the posture `EV_SLOT_RESPAWNED` already takes. **A research table
 /// announces on it too** (research table v1): lit is a research running,
@@ -1591,7 +1592,9 @@ pub enum Command {
         plate: i8,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
-    /// validates and refuses by event, never by panic).
+    /// validates and refuses by event, never by panic). `pose` is where in
+    /// the cell a body deployable stands and which way it faces (free
+    /// placement); an insert or a lock sends the centre.
     PlaceDeploy {
         id: u32,
         row: u16,
@@ -1599,6 +1602,7 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+        pose: crate::footprint::Pose,
     },
     /// Feed the hearth at the address from the feeder's inventory
     /// (deploy.rs).
@@ -2493,10 +2497,7 @@ impl World {
                 // *this lock does not know you* is one sentence whichever
                 // verb it refused.
                 let b = self.deploys.boxes()[i];
-                if !self
-                    .deploys
-                    .lock_passes(b.cx, b.cz, b.level, build::LOC_PLANE, pid)
-                {
+                if !self.deploys.lock_passes(b.cx, b.cz, b.level, b.loc, pid) {
                     self.events
                         .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
                     return;
@@ -3257,9 +3258,7 @@ impl World {
             None
         };
         let woke = match bag {
-            Some((cx, cz, level)) => {
-                deploy::bag_wake_body(self.seed, &self.haven, self.pieces.cols(), cx, cz, level)
-            }
+            Some(rec) => deploy::bag_wake_body(self.seed, &self.haven, self.pieces.cols(), &rec),
             None => {
                 let (x, z) = self.spawn_pos_n(id, deaths as u32);
                 Body::at(self.seed, &self.haven, x, z)
@@ -3747,12 +3746,12 @@ impl World {
                 self.pieces
                     .set_insert(d.cx, d.cz, d.level, d.loc, arch, !d.open);
             }
-            // The solid nibble is the shut bit's twin and derived the same
+            // The solid row is the shut bit's twin and derived the same
             // way (deploy collision v0): `Pieces::restore` cleared the
             // index, so every standing body deploy re-blocks here or a
             // loaded shard's furniture is walk-through until re-placed.
-            if crate::deploy::solid_vol(arch).is_some() {
-                self.pieces.set_solid(d.cx, d.cz, d.level, Some(arch));
+            if let Some(solid) = crate::deploy::solid_pose(self.seed, &self.haven, &d, arch) {
+                self.pieces.add_solid(solid);
             }
             if !crate::deploy::lockable(arch) {
                 continue;
@@ -4119,23 +4118,43 @@ impl World {
                 plate,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    build::place(
-                        self.seed,
-                        &self.haven,
-                        &self.build,
-                        &self.deploys,
-                        &mut self.pieces,
-                        &mut self.players[slot],
-                        self.tick,
-                        row,
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        freehand,
-                        plate,
-                        &mut self.events,
-                    );
+                    // A piece may not be built through a deployable that
+                    // stands where it would go (free placement). Asked here
+                    // because the build verb does not hold the deploy table;
+                    // the refusal is the build verb's own "spot taken".
+                    let blocked = (row < self.build.piece_count)
+                        && deploy::piece_crosses_deploys(
+                            self.pieces.cols(),
+                            self.deploys.entries(),
+                            &self.deploy,
+                            self.build.pieces[row as usize].shape,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                        );
+                    if blocked {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, build::REFUSE_B_SPOT, 0);
+                    } else {
+                        build::place(
+                            self.seed,
+                            &self.haven,
+                            &self.build,
+                            &self.deploys,
+                            &mut self.pieces,
+                            &mut self.players[slot],
+                            self.tick,
+                            row,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            freehand,
+                            plate,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::PlaceDeploy {
@@ -4145,6 +4164,7 @@ impl World {
                 cz,
                 level,
                 loc,
+                pose,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     deploy::place_deploy(
@@ -4161,6 +4181,7 @@ impl World {
                         cz,
                         level,
                         loc,
+                        pose,
                         &mut self.events,
                     );
                 }
@@ -4205,6 +4226,7 @@ impl World {
                         cx,
                         cz,
                         level,
+                        loc,
                         &mut self.events,
                     ) || crate::oven::toggle(
                         &self.cook,
@@ -4213,6 +4235,7 @@ impl World {
                         cx,
                         cz,
                         level,
+                        loc,
                         &mut self.events,
                     );
                     if !lit {
@@ -4658,13 +4681,22 @@ impl World {
                 if !(st.lit && st.burns()) {
                     return false;
                 }
-                let (bx, bz) = crate::deploy::cell_center(b.cx, b.cz);
+                let (bx, bz) = b.xz();
                 let (dx, dz) = (bx - x, bz - z);
                 if dx * dx + dz * dz > r * r {
                     return false;
                 }
-                let y = crate::collide::col_base_y(self.seed, &self.haven, cols, b.cx, b.cz)
-                    + crate::build::level_y(b.level);
+                let y = crate::deploy::built_floor(
+                    self.seed,
+                    &self.haven,
+                    cols,
+                    b.cx,
+                    b.cz,
+                    b.level,
+                    bx,
+                    bz,
+                )
+                .unwrap_or_else(|| crate::terrain::ground(self.seed, &self.haven, bx, bz));
                 let dy = y - feet;
                 dy * dy < 9.0
             })
@@ -4693,6 +4725,8 @@ impl World {
             let cx = (x / crate::build::BUILD_CELL_M) as u16;
             let cz = (z / crate::build::BUILD_CELL_M) as u16;
             crate::deploy::stand_authored(
+                self.seed,
+                &self.haven,
                 &self.deploy,
                 &mut self.pieces,
                 &mut self.deploys,
@@ -5290,7 +5324,7 @@ impl World {
         // noise is recorded off the charge while its address still exists.
         for c in self.charges.entries() {
             if c.fires_at <= tick {
-                let (x, z) = crate::build::anchor(c.cx, c.cz, c.loc);
+                let (x, z) = crate::charge::epicentre(&self.deploys, c);
                 self.noises.push(crate::noise::Noise {
                     qx: crate::movement::quant_xz(x),
                     qz: crate::movement::quant_xz(z),
@@ -5668,14 +5702,7 @@ impl World {
         // that decayed with nothing in it.
         for i in 0..self.deploys.box_spill_len() {
             let bx = self.deploys.box_spill_at(i);
-            let (x, y, z) = deploy::box_drop_pos(
-                seed,
-                &self.haven,
-                self.pieces.cols(),
-                bx.cx,
-                bx.cz,
-                bx.level,
-            );
+            let (x, y, z) = deploy::box_drop_pos(seed, &self.haven, self.pieces.cols(), &bx);
             let mut items = [ItemStack::default(); INV_SLOTS];
             items[..BOX_SLOTS].copy_from_slice(&bx.items);
             self.backpacks.stand_up(
@@ -6103,7 +6130,7 @@ impl World {
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {
-            let mut buf = [0u8; 17];
+            let mut buf = [0u8; 20];
             buf[0..2].copy_from_slice(&d.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&d.cz.to_le_bytes());
             buf[4] = d.level;
@@ -6114,6 +6141,12 @@ impl World {
             buf[11..15].copy_from_slice(&d.owner.to_le_bytes());
             buf[15] = d.open as u8;
             buf[16] = d.locked as u8;
+            // Where it stands (free placement): the pose decides where
+            // its collision is, so two shards that disagree about it
+            // disagree about every step taken beside it.
+            buf[17] = d.pose.ox as u8;
+            buf[18] = d.pose.oz as u8;
+            buf[19] = d.pose.yaw;
             h.update(&buf);
         }
         // The code locks (lock v1). Every byte is state a shard can
@@ -6204,6 +6237,7 @@ impl World {
             buf[2..4].copy_from_slice(&hr.cz.to_le_bytes());
             buf[4] = hr.level;
             buf[5..9].copy_from_slice(&hr.owner.to_le_bytes());
+            buf[9] = hr.loc;
             h.update(&buf);
             for s in hr.stock.iter() {
                 h.update(&s.to_le_bytes());
@@ -6225,11 +6259,15 @@ impl World {
         // removal is a command's consequence, replayed in the same order.
         h.update(&(self.deploys.boxes().len() as u64).to_le_bytes());
         for bx in self.deploys.boxes() {
-            let mut buf = [0u8; 9];
+            let mut buf = [0u8; 13];
             buf[0..2].copy_from_slice(&bx.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&bx.cz.to_le_bytes());
             buf[4] = bx.level;
             buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
+            buf[9] = bx.loc;
+            buf[10] = bx.pose.ox as u8;
+            buf[11] = bx.pose.oz as u8;
+            buf[12] = bx.pose.yaw;
             h.update(&buf);
             for s in bx.items.iter() {
                 h.update(&stack_bytes(s));
@@ -6444,6 +6482,7 @@ mod tests {
                 level: 0,
                 owner: 7,
                 items: [ItemStack::default(); crate::limits::BOX_SLOTS],
+                ..BoxRec::default()
             };
             r.items[1] = stack(cond);
             r

@@ -369,11 +369,19 @@ fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16) -> bo
 /// (research table v1): a running research is "lit" on the wire, so the
 /// client's lit set and the one event it already decodes carry the table's
 /// state with nothing new to learn.
-pub(crate) fn announce(cx: u16, cz: u16, level: u8, lit: bool, by: u32, events: &mut EventQueue) {
+pub(crate) fn announce(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    lit: bool,
+    by: u32,
+    events: &mut EventQueue,
+) {
     events.push(
         EV_OVEN,
         crate::gather::cell_key(cx, cz),
-        ((level as u32) << 16) | lit as u32,
+        ((level as u32) << 16) | ((loc as u32) << 8) | lit as u32,
         by,
     );
 }
@@ -389,6 +397,7 @@ pub use crate::deploy::REFUSE_D_FUEL;
 ///
 /// Returns false when no oven stands there — `world.rs` then routes the
 /// press to the door verb, which owns the same command.
+#[allow(clippy::too_many_arguments)]
 pub fn toggle(
     cc: &CookContent,
     deploys: &mut Deploys,
@@ -396,9 +405,10 @@ pub fn toggle(
     cx: u16,
     cz: u16,
     level: u8,
+    loc: u8,
     events: &mut EventQueue,
 ) -> bool {
-    let Some(i) = deploys.oven_index(crate::deploy::box_key(cx, cz, level)) else {
+    let Some(i) = deploys.oven_index(crate::deploy::box_key(cx, cz, level, loc)) else {
         return false;
     };
     if !deploys.box_in_reach(i, p) {
@@ -414,7 +424,7 @@ pub fn toggle(
     let st = &mut ovens[i];
     if st.lit {
         st.lit = false;
-        announce(cx, cz, level, false, p.id, events);
+        announce(cx, cz, level, loc, false, p.id, events);
         return true;
     }
     // Fuel already inside is the whole condition: a match lights what is
@@ -434,7 +444,7 @@ pub fn toggle(
         return true;
     }
     st.lit = true;
-    announce(cx, cz, level, true, p.id, events);
+    announce(cx, cz, level, loc, true, p.id, events);
     true
 }
 
@@ -476,8 +486,8 @@ pub fn sweep(
                 };
                 if !taken {
                     ovens[i].lit = false;
-                    let (cx, cz, level) = (boxes[i].cx, boxes[i].cz, boxes[i].level);
-                    announce(cx, cz, level, false, 0, events);
+                    let b = boxes[i];
+                    announce(b.cx, b.cz, b.level, b.loc, false, 0, events);
                     continue;
                 }
                 ovens[i].burn = cc.fuel_ticks.min(u16::MAX as u32) as u16;

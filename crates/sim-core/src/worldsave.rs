@@ -193,7 +193,13 @@ use crate::worldcont::WorldContRec;
 /// **18 — an arrow rides the body it is in** (`spent.rs`): a stopped arrow
 /// grew its host and the host's life. Landed arrows are loose stacks now,
 /// so this section only ever holds arrows in bodies.
-pub const WORLD_SAVE_FORMAT: u16 = 18;
+///
+/// **19 — a deployable stands where it was put** (free placement): a deploy
+/// record carries its pose (offset from the cell centre and facing, three
+/// bytes after `loc`), and a hearth and a container carry the body slot
+/// their record is filed under — a container its pose too, because reach
+/// and warmth are measured to where it stands.
+pub const WORLD_SAVE_FORMAT: u16 = 19;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -274,19 +280,23 @@ pub const PIECE_BYTES: usize = 13 + 8;
 /// A deploy record plus its `bag_ready` cooldown, which lives in a parallel
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
-const DEPLOY_BYTES: usize = 17 + 8 + 8;
+///
+/// 17 → 20 at format 19: the pose (free placement).
+const DEPLOY_BYTES: usize = 20 + 8 + 8;
 /// A hearth: address, owner, the stock rows, and the crew — its count
 /// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
 /// roster is hashed, tail included, so a save that dropped the tail would
 /// reload to a different hash).
-const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
+/// One more at format 19: the body slot.
+const HEARTH_BYTES: usize = 10 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
 /// A container record plus its oven state, which lives in a parallel
 /// array for `bag_ready`'s reason and is written inline here for
 /// `DEPLOY_BYTES`'s: a file has no parallel arrays worth having. Every
 /// container carries the state — a storage box's says `ARCH_BOX` and is
 /// six zeroed bytes plus twelve zeroed counters, which is the price of
 /// the two stores staying one store (`deploy::holds_items`).
-const BOX_BYTES: usize = 9 + BOX_SLOTS * STACK_BYTES + 6 + BOX_SLOTS * 2;
+/// Four more at format 19: the body slot and the pose.
+const BOX_BYTES: usize = 13 + BOX_SLOTS * STACK_BYTES + 6 + BOX_SLOTS * 2;
 /// One code lock (lock v1). Address, owner, both codes, the locked bit,
 /// both remembered lists with their counts, and the three brute-force
 /// counters — the whole `LockRec`, because every field of it is hashed
@@ -627,6 +637,9 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(d.cz);
         o.u8(d.level);
         o.u8(d.loc);
+        o.u8(d.pose.ox as u8);
+        o.u8(d.pose.oz as u8);
+        o.u8(d.pose.yaw);
         o.u8(d.row);
         o.u32(d.owner);
         o.u16(d.hp);
@@ -642,6 +655,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(h.cx);
         o.u16(h.cz);
         o.u8(h.level);
+        o.u8(h.loc);
         o.u32(h.owner);
         for s in h.stock.iter() {
             o.u32(*s);
@@ -655,6 +669,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(b.cx);
         o.u16(b.cz);
         o.u8(b.level);
+        o.u8(b.loc);
+        o.u8(b.pose.ox as u8);
+        o.u8(b.pose.oz as u8);
+        o.u8(b.pose.yaw);
         o.u32(b.owner);
         for s in b.items.iter() {
             o.stack(s);
@@ -1163,6 +1181,11 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cz = r.u16()?;
         let level = r.u8()?;
         let loc = r.u8()?;
+        let pose = crate::footprint::Pose {
+            ox: r.u8()? as i8,
+            oz: r.u8()? as i8,
+            yaw: r.u8()?,
+        };
         let row = r.u8()?;
         let owner = r.u32()?;
         let hp = r.u16()?;
@@ -1173,7 +1196,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         // comment below says why.
         let _locked = r.b()?;
         let ready = r.u64()?;
-        if !build_addr_ok(cx, cz, level) {
+        // A slot is four bits, and an edge insert hangs in its doorway at
+        // the centre pose — anything else is a record no verb could write.
+        if !build_addr_ok(cx, cz, level)
+            || loc >= 16
+            || (crate::deploy::is_edge_loc(loc) && pose != crate::footprint::Pose::CENTRE)
+        {
             return Err(WorldSaveError::AddressOutOfRange);
         }
         if row as usize >= deploy_rows {
@@ -1184,6 +1212,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             cz,
             level,
             loc,
+            pose,
             row,
             owner,
             hp,
@@ -1219,6 +1248,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let level = r.u8()?;
+        let loc = r.u8()?;
         let owner = r.u32()?;
         let mut stock = [0u32; HEARTH_STOCK_ROWS];
         for s in stock.iter_mut() {
@@ -1229,7 +1259,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         for id in crew_ids.iter_mut() {
             *id = r.u32()?;
         }
-        if !build_addr_ok(cx, cz, level) {
+        if !build_addr_ok(cx, cz, level) || loc >= 16 {
             return Err(WorldSaveError::AddressOutOfRange);
         }
         let Some(crew) = crate::deploy::CrewList::restore(&crew_ids, n_crew) else {
@@ -1239,6 +1269,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             cx,
             cz,
             level,
+            loc,
             owner,
             stock,
             crew,
@@ -1251,6 +1282,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let level = r.u8()?;
+        let loc = r.u8()?;
+        let pose = crate::footprint::Pose {
+            ox: r.u8()? as i8,
+            oz: r.u8()? as i8,
+            yaw: r.u8()?,
+        };
         let owner = r.u32()?;
         let mut items = [ItemStack::default(); BOX_SLOTS];
         for s in items.iter_mut() {
@@ -1264,7 +1301,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         for c in cook.iter_mut() {
             *c = r.u16()?;
         }
-        if !build_addr_ok(cx, cz, level) {
+        if !build_addr_ok(cx, cz, level) || loc >= 16 {
             return Err(WorldSaveError::AddressOutOfRange);
         }
         // A save is the one non-command path into `World`
@@ -1280,6 +1317,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             cx,
             cz,
             level,
+            loc,
+            pose,
             owner,
             items,
         };
@@ -1778,9 +1817,9 @@ mod tests {
         let by_hand = 90                    // head (format 15: eleven section counts + the 26 B sky/clock)
             + 100 * 485                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
             + 8_192 * 21                    // pieces + plate + placement tick
-            + 1_024 * 33                    // deploys + bag_ready + placed
-            + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
-            + 256 * 135                     // containers: 9 + 12 eight-byte stacks + the oven's 30
+            + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
+            + 256 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
+            + 256 * 139                     // containers: 13 + 12 eight-byte stacks + the oven's 30
             + 512 * 106                     // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 64 * 261                      // world containers: 21 + 30 eight-byte stacks
@@ -1814,16 +1853,16 @@ mod tests {
         // four bytes each + 1 miss counter + 8 + 8 for the two tick
         // deadlines.
         assert_eq!(LOCK_BYTES, 106);
-        // A hearth is 66: 9 address + owner, 16 stock, then the crew's
-        // count and its whole ten-slot backing array.
-        assert_eq!(HEARTH_BYTES, 66);
+        // A hearth is 67: 10 address (the slot at format 19) + owner, 16
+        // stock, then the crew's count and its whole ten-slot backing array.
+        assert_eq!(HEARTH_BYTES, 67);
         // Both stores grew eight bytes a record at demolish v1: the
         // placement tick is a parallel array in the store and inline
         // here, for `DEPLOY_BYTES`' stated reason.
         // 19 → 21: 20 is what the encoder has written since format 6 (the
         // constant was a byte short — see `PIECE_BYTES`), plus the plate.
         assert_eq!(PIECE_BYTES, 21);
-        assert_eq!(DEPLOY_BYTES, 33);
+        assert_eq!(DEPLOY_BYTES, 36);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
         // (damage + blast_cm, satchel blast v0) and there are 64 of them.
@@ -1883,8 +1922,10 @@ mod tests {
         // harvested-slot store, 23 bytes × 98,304 more.
         // 3_481_166 → 3_495_502 at format 18: 12 bytes on each of 512
         // stopped arrows (host + life), and 256 more loose stacks × 32.
+        // 3_495_502 → 3_499_854 at format 19 (free placement): the pose on
+        // 1,024 deploys, the slot on 256 hearths, slot + pose on 256 boxes.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_495_502,
+            WORLD_SAVE_MAX_BYTES, 3_499_854,
             "the world save ceiling moved"
         );
     }

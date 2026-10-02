@@ -2713,12 +2713,12 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         .find(|d| usize::from(d.row) == fire_row && d.owner == ID)
         .copied()
         .expect("its fire pit");
-    let key = sim_core::deploy::box_key(fire.cx, fire.cz, 0);
+    let key = sim_core::deploy::box_key(fire.cx, fire.cz, 0, 0);
     let held = w
         .deploys
         .boxes()
         .iter()
-        .find(|b| sim_core::deploy::box_key(b.cx, b.cz, b.level) == key)
+        .find(|b| sim_core::deploy::box_key(b.cx, b.cz, b.level, 0) == key)
         .map(|b| b.items)
         .unwrap();
     assert!(held
@@ -2826,7 +2826,8 @@ fn encode_puppet(msg: &ActionMsg, buf: &mut [u8]) -> usize {
             cz,
             level,
             loc,
-        } => protocol::encode_action_deploy(row, cx, cz, level, loc, buf),
+            pose,
+        } => protocol::encode_action_deploy(row, cx, cz, level, loc, pose, buf),
         ActionMsg::Upgrade {
             cx,
             cz,
@@ -3091,6 +3092,7 @@ fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u
         cz,
         level: 0,
         loc,
+        pose: sim_core::footprint::Pose::CENTRE,
     };
     let walls = [
         (bx, bz, LOC_EDGE_XLO, rows.wall),
@@ -3140,7 +3142,7 @@ fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u
             w.deploys.find(bx, bz, 0, LOC_EDGE_ZLO).is_some(),
             "the door"
         );
-        let key = sim_core::deploy::box_key(bx + 1, bz, 0);
+        let key = sim_core::deploy::box_key(bx + 1, bz, 0, 0);
         let i = w.deploys.box_index(key).expect("the box");
         w.deploys.set_box_slot(i, 0, loot);
         // Nobody home.

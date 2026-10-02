@@ -150,7 +150,7 @@ struct Table {
 impl Table {
     /// The container handle the table answers to — its packed address.
     fn handle(&self) -> u32 {
-        box_key(self.cx, self.cz, 0)
+        box_key(self.cx, self.cz, 0, 0)
     }
 
     fn slot(&self, s: usize) -> ItemStack {
@@ -194,6 +194,7 @@ fn table_world() -> Table {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the fixture needs its table placed");
     assert_eq!(
@@ -830,6 +831,7 @@ fn bench_world() -> Table {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(t.w.deploys.len(), 2, "the suite needs its bench placed");
     // The bench's carrier item is the fixture's COIN (item 3), so any
@@ -987,6 +989,7 @@ fn a_higher_bench_unlocks_a_lower_tier_node() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(t.w.deploys.len(), 2, "the tier-2 bench has to stand");
     t.w.players[0].inv[2] = ItemStack::default();

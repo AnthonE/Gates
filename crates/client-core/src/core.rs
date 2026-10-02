@@ -623,11 +623,16 @@ impl PieceSet {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
 
-    /// `set_door`'s twin for the solid-deployable nibbles (deploy
-    /// collision v0): the furnace the sim walls off, the predictor walls
-    /// off, through the same index the sim's own lockstep writes.
-    fn set_solid(&mut self, cx: u16, cz: u16, level: u8, arch: Option<u8>) {
-        self.cols.set_solid(cx, cz, level, arch);
+    /// `set_door`'s twin for the blocking deployables (deploy collision
+    /// v0): the furnace the sim walls off, the predictor walls off, through
+    /// the same index rows the sim's own lockstep writes — where it stands,
+    /// since free placement, and not just which cell.
+    fn add_solid(&mut self, solid: sim_core::collide::SolidPose) {
+        self.cols.add_solid(solid);
+    }
+
+    fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        self.cols.del_solid(cx, cz, level, loc);
     }
 
     /// Re-band the piece at an address, if one stands there (wire v44).
@@ -895,14 +900,16 @@ impl DeploySet {
 /// walked once per frame by the renderer at a size the sim has already
 /// bounded.
 pub struct LitOvens {
-    addrs: [(u16, u16, u8); MAX_BOXES],
+    /// `(cx, cz, level, loc)` — the oven's whole address, its body slot
+    /// included, since free placement can put two fires in one cell.
+    addrs: [(u16, u16, u8, u8); MAX_BOXES],
     len: usize,
 }
 
 impl LitOvens {
     fn new() -> Self {
         Self {
-            addrs: [(0, 0, 0); MAX_BOXES],
+            addrs: [(0, 0, 0, 0); MAX_BOXES],
             len: 0,
         }
     }
@@ -910,14 +917,14 @@ impl LitOvens {
     /// Absolute, never a toggle — the event carries the state and this
     /// stores exactly what it carried, so two announcements crossing can
     /// never leave a client inverted (`EV_OVEN`'s own argument).
-    fn set(&mut self, cx: u16, cz: u16, level: u8, lit: bool) {
+    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) {
         let at = self.addrs[..self.len]
             .iter()
-            .position(|a| *a == (cx, cz, level));
+            .position(|a| *a == (cx, cz, level, loc));
         match (lit, at) {
             (true, None) => {
                 if self.len < MAX_BOXES {
-                    self.addrs[self.len] = (cx, cz, level);
+                    self.addrs[self.len] = (cx, cz, level, loc);
                     self.len += 1;
                 }
             }
@@ -929,11 +936,11 @@ impl LitOvens {
         }
     }
 
-    pub fn is_lit(&self, cx: u16, cz: u16, level: u8) -> bool {
-        self.addrs[..self.len].contains(&(cx, cz, level))
+    pub fn is_lit(&self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+        self.addrs[..self.len].contains(&(cx, cz, level, loc))
     }
 
-    pub fn addrs(&self) -> &[(u16, u16, u8)] {
+    pub fn addrs(&self) -> &[(u16, u16, u8, u8)] {
         &self.addrs[..self.len]
     }
 
@@ -2699,7 +2706,7 @@ impl ClientCore {
                         );
                     }
                     if solid_arch(&self.deploy_defs, self.deploy_defs_have, gone.row).is_some() {
-                        self.pieces.set_solid(cx, cz, level, None);
+                        self.pieces.del_solid(cx, cz, level, loc);
                     }
                     self.removed_addr = (cx, cz, level, loc);
                     self.push_removed(Removed {
@@ -2742,6 +2749,7 @@ impl ClientCore {
                 cx,
                 cz,
                 level,
+                loc,
                 lit,
                 by: _,
             } => {
@@ -2749,7 +2757,7 @@ impl ClientCore {
                 // wire and deliberately unread here: what a toast should
                 // say about someone else's fire is a UI question, and the
                 // core's job is the fact.
-                self.ovens.set(cx, cz, level, lit);
+                self.ovens.set(cx, cz, level, loc, lit);
                 flags |= APPLIED_DEPLOYS;
             }
             EventMsg::Vitals {
@@ -3225,7 +3233,11 @@ impl ClientCore {
             );
         }
         if let Some(arch) = solid_arch(&self.deploy_defs, self.deploy_defs_have, rec.row) {
-            self.pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));
+            if let Some(solid) =
+                sim_core::deploy::solid_pose(self.predict.seed(), &self.haven, &rec, arch)
+            {
+                self.pieces.add_solid(solid);
+            }
         }
     }
 
@@ -3240,8 +3252,11 @@ impl ClientCore {
             deploys,
             deploy_defs,
             deploy_defs_have,
+            predict,
+            haven,
             ..
         } = self;
+        let seed = predict.seed();
         for rec in deploys.entries() {
             if is_edge_insert(deploy_defs, *deploy_defs_have, rec.row) {
                 pieces.set_insert(
@@ -3254,7 +3269,9 @@ impl ClientCore {
                 );
             }
             if let Some(arch) = solid_arch(deploy_defs, *deploy_defs_have, rec.row) {
-                pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));
+                if let Some(solid) = sim_core::deploy::solid_pose(seed, haven, rec, arch) {
+                    pieces.add_solid(solid);
+                }
             }
         }
     }

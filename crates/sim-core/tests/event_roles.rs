@@ -1961,6 +1961,7 @@ fn deploy_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     let bad_row = only(&w, EV_DEPLOY_REFUSED);
     refused(
@@ -1981,6 +1982,7 @@ fn deploy_refused_names_the_player_then_why() {
         cz,
         level: u8::MAX,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     let no_spot = only(&w, EV_DEPLOY_REFUSED);
     refused(
@@ -2137,6 +2139,7 @@ fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
         cz,
         level,
         loc,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.locks().len(),
@@ -2156,6 +2159,7 @@ fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         cz,
         level,
         loc,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),
@@ -2233,7 +2237,7 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
     // Fuel goes in through the container the oven IS: one unit of item 0,
     // which `CookContent::probe_fixture` burns. Without it the press is a
     // refusal, not an announcement — which is itself asserted below.
-    let key = box_key(cx, cz, GROUND);
+    let key = box_key(cx, cz, GROUND, 0);
     let i = w.deploys.box_index(key).expect("the fire is a container");
     w.deploys.set_box_slot(
         i,
@@ -2502,6 +2506,7 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
         cz,
         level: UPPER,
         loc: DOOR_EDGE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     let bolted = only(&w, EV_DOOR);
     let (_, _, bolted_state) = unpack(bolted.b);
@@ -3862,6 +3867,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),
@@ -4455,6 +4461,7 @@ fn table_world(w: &mut World) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),
@@ -4497,6 +4504,7 @@ fn research_names_the_player_then_the_recipe_then_the_price() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),
@@ -4555,7 +4563,7 @@ fn a_research_table_names_its_cell_then_its_state_then_who_started_it() {
     let (cx, cz) = buildable_cell(SEED);
     let i = w
         .deploys
-        .table_index(box_key(cx, cz, 0))
+        .table_index(box_key(cx, cz, 0, 0))
         .expect("the table is a container since research table v1");
     w.deploys.set_box_slot(
         i,
@@ -5000,7 +5008,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
         skin: 0,
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
-    let key = box_key(cx, cz, GROUND);
+    let key = box_key(cx, cz, GROUND, 0);
     let bi = w.deploys.box_index(key).expect("the fire is a container");
     w.deploys.set_box_slot(
         bi,

@@ -596,7 +596,7 @@ impl Session {
 
     /// The device's container handle.
     pub fn key(&self) -> u32 {
-        box_key(self.at.cx, self.at.cz, self.at.level)
+        box_key(self.at.cx, self.at.cz, self.at.level, self.at.loc)
     }
 
     /// Nothing is in flight.
@@ -655,7 +655,9 @@ impl Session {
             Tend::Open { .. } => Some(Wait::Open),
             Tend::Move { .. } => Some(Wait::Move),
             Tend::Switch { .. } => {
-                let lit = core.ovens().is_lit(self.at.cx, self.at.cz, self.at.level);
+                let lit = core
+                    .ovens()
+                    .is_lit(self.at.cx, self.at.cz, self.at.level, self.at.loc);
                 Some(Wait::Switch(!lit))
             }
             Tend::Close(_) => Some(Wait::Close),
@@ -686,7 +688,7 @@ impl Session {
             ..Intent::IDLE
         };
         let open = core.cont_kind == CONT_BOX && core.cont_handle == key;
-        let lit = core.ovens().is_lit(at.cx, at.cz, at.level);
+        let lit = core.ovens().is_lit(at.cx, at.cz, at.level, at.loc);
         if let Some((wait, since)) = self.waiting {
             let late = tick.wrapping_sub(since) >= VERDICT_TICKS;
             match wait {

@@ -1635,7 +1635,16 @@ fn a_shot_into_the_dirt_chips_nothing() {
 fn furnace_column(seed: u64) -> (Box<ColIndex>, u16, u16, f32) {
     let (bcx, bcz) = flat_run(seed, 1);
     let mut cols = Box::new(ColIndex::new());
-    cols.set_solid(bcx, bcz, 1, Some(sim_core::deploy::ARCH_FURNACE));
+    let rec = sim_core::deploy::DeployRec {
+        cx: bcx,
+        cz: bcz,
+        level: 1,
+        ..Default::default()
+    };
+    cols.add_solid(
+        sim_core::deploy::solid_pose(seed, hv(seed), &rec, sim_core::deploy::ARCH_FURNACE)
+            .expect("the furnace is a solid archetype"),
+    );
     let base = build::column_floor_y(seed, hv(seed), bcx, bcz, 0);
     (cols, bcx, bcz, base + LEVEL_H_M)
 }

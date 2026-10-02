@@ -543,6 +543,13 @@ pub const MAX_DEPLOY_COSTS: usize = MAX_RECIPE_INPUTS;
 /// (deployables row).
 pub const MAX_DEPLOYS: usize = 1_024;
 
+/// Slots in the collision index's table of blocking deployables
+/// (`collide::SolidPose`): every free-placed solid deployable has its own
+/// row, keyed by its cell, so a cell may hold several. Power of two and
+/// 2 × `MAX_DEPLOYS`, so it never passes half load. Structural, not a knob.
+pub const SOLID_SLOTS: usize = 2 * MAX_DEPLOYS;
+const _: () = assert!(SOLID_SLOTS.is_power_of_two());
+
 /// Hearths per shard, tracked in their own dense list so claim checks
 /// and the upkeep sweep scan hearths, never the whole deploy store.
 /// Overflow policy: **refuse** the hearth placement. Proposed default,

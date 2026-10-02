@@ -48,7 +48,8 @@ use crate::build::{
     SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use crate::fmath::fabs;
-use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
+use crate::footprint::{Pose, Rect, SOLID_REACH_M};
+use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, SOLID_SLOTS};
 use crate::movement::STEP_UP;
 
 /// Foundation top above the cell-center terrain sample. Was render-only
@@ -303,11 +304,19 @@ pub fn tri_frame_solid(loc: u8, x: f32, z: f32, radius: f32) -> bool {
 /// `max(terrain, piece_ground)` needs no branch.
 pub const NO_SURFACE: f32 = -1.0e9;
 
-/// "No solid deployable at any level" — every nibble of [`ColMasks::solid`]
-/// at the sentinel. All-ones rather than zero because zero is a real
-/// archetype (`deploy::ARCH_BAG`), which is also why `Default` below is a
-/// hand impl and not a derive.
-pub const SOLID_NONE: u64 = u64::MAX;
+/// Whether cell-local `(dx, dz)` lies in the triangle half `loc` — the
+/// address definitions themselves (`build::LOC_TRI_*`): boundary-inclusive
+/// on both sides of a diagonal, so a point on the seam of a NW+SE pair
+/// reads the same floor from either.
+#[inline]
+pub fn tri_half_has(loc: u8, dx: f32, dz: f32) -> bool {
+    match loc {
+        LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
+        LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
+        LOC_TRI_XHI_ZLO => dz <= dx,
+        _ => dz >= dx,
+    }
+}
 
 /// Per-column occupancy, one bit per level (MAX_BUILD_SOCKETS = 16 fits u16
 /// exactly). Edge masks live in their canonical column (build.rs: low-x/
@@ -370,13 +379,6 @@ pub struct ColMasks {
     /// Closed window panels seal the aperture; bars leave shooting gaps.
     pub panes_xlo: u16,
     pub panes_zlo: u16,
-    /// The solid deployable standing on each level's plane, one nibble
-    /// per level: the archetype code, or `0xF` for none (deploy collision
-    /// v0 — deploy.rs keeps these in lockstep with the deploy records,
-    /// exactly as it keeps the shut bits). The *volume* the code names is
-    /// `deploy::DEPLOY_VOL`'s row; only archetypes that table gives a
-    /// height ever land here.
-    pub solid: u64,
     /// The column's **plate**: how many `build::BUILD_BASE_Q_M` bands its
     /// level-0 floor stands above the band its own terrain would give it
     /// (build plate v1, `build::plate_for`). Zero is the old rule exactly —
@@ -443,7 +445,6 @@ impl ColMasks {
         shut_zlo: 0,
         panes_xlo: 0,
         panes_zlo: 0,
-        solid: SOLID_NONE,
         plate: 0,
     };
 
@@ -479,22 +480,17 @@ impl ColMasks {
             | self.shut_xlo
             | self.shut_zlo)
             == 0
-            && self.solid == SOLID_NONE
     }
 
     /// Does a PIECE stand in this column — as opposed to a deployable
     /// standing on bare ground?
     ///
     /// The distinction exists for `build::plate_for` (build plate v1) and is
-    /// load-bearing there: `set_solid` opens a column slot for a box dropped
-    /// on open terrain, and a slot is what `ColIndex::plate` answers from. A
-    /// column with a box and no floor has no plate to latch to — and latching
-    /// to it would pin the next foundation to the box's ground instead of its
-    /// own, so a crate left uphill would refuse a base with "the hill is in
-    /// the way" for a reason no player could see.
-    ///
-    /// The shut and solid masks are excluded for that reason; everything else
-    /// here is a piece.
+    /// load-bearing there: a slot is what `ColIndex::plate` answers from, and
+    /// a column with no floor has no plate to latch to. The shut masks are
+    /// excluded for that reason; everything else here is a piece. (Blocking
+    /// deployables used to open a slot too; they live in their own table
+    /// now, [`SolidPose`].)
     #[inline]
     pub fn has_piece(&self) -> bool {
         (self.planes
@@ -528,11 +524,64 @@ impl ColMasks {
             != 0
     }
 
-    /// The solid archetype standing at `level`, or `None`.
-    #[inline]
-    pub fn solid_at(&self, level: usize) -> Option<u8> {
-        let nib = (self.solid >> (level * 4)) & 0xF;
-        (nib != 0xF).then_some(nib as u8)
+    /// Whether a walkable plane at `level` lies under the cell-local point
+    /// `(dx, dz)`: a full plane, or the triangle half the point is in. Frames
+    /// do not count — their middle is a hole — which is the rule a
+    /// deployable's support is read by (`deploy::body_site`).
+    pub fn plane_covers(&self, level: u8, dx: f32, dz: f32) -> bool {
+        if level as usize >= MAX_BUILD_SOCKETS {
+            return false;
+        }
+        let bit = 1u16 << level;
+        if self.planes & bit != 0 {
+            return true;
+        }
+        let half = |mask: u16, loc: u8| {
+            mask & bit != 0 && !self.tri_is_frame(level, loc) && tri_half_has(loc, dx, dz)
+        };
+        half(self.tri_xlo_zlo, LOC_TRI_XLO_ZLO)
+            || half(self.tri_xhi_zlo, LOC_TRI_XHI_ZLO)
+            || half(self.tri_xlo_zhi, LOC_TRI_XLO_ZHI)
+            || half(self.tri_xhi_zhi, LOC_TRI_XHI_ZHI)
+    }
+
+    /// Any stair-class riser at `level` — what a deployable may not share a
+    /// cell with.
+    pub fn riser_at(&self, level: u8) -> bool {
+        (level as usize) < MAX_BUILD_SOCKETS
+            && (self.stairs | self.stairs_xhi | self.stairs_zlo | self.stairs_xlo) & (1 << level)
+                != 0
+    }
+
+    /// Any edge piece on the canonical boundary `loc` at `level` — wall,
+    /// doorway, window, frame, half or low wall.
+    pub fn edge_at(&self, loc: u8, level: u8) -> bool {
+        if level as usize >= MAX_BUILD_SOCKETS {
+            return false;
+        }
+        let bit = 1u16 << level;
+        let mask = match loc {
+            LOC_EDGE_XLO => {
+                self.walls_xlo
+                    | self.doors_xlo
+                    | self.wins_xlo
+                    | self.frames_xlo
+                    | self.half_xlo
+                    | self.low_xlo
+            }
+            LOC_EDGE_ZLO => {
+                self.walls_zlo
+                    | self.doors_zlo
+                    | self.wins_zlo
+                    | self.frames_zlo
+                    | self.half_zlo
+                    | self.low_zlo
+            }
+            LOC_DIAG_A => self.diag_a | self.half_diag_a | self.low_diag_a,
+            LOC_DIAG_B => self.diag_b | self.half_diag_b | self.low_diag_b,
+            _ => 0,
+        };
+        mask & bit != 0
     }
 
     pub fn tri_is_frame(&self, level: u8, loc: u8) -> bool {
@@ -628,9 +677,80 @@ pub struct ColIndex {
     keys: Box<[u32; COL_INDEX_SLOTS]>,
     masks: Box<[ColMasks; COL_INDEX_SLOTS]>,
     len: u32,
+    /// The blocking deployables, one row each, keyed by the cell their
+    /// centre is in — a multimap (several rows may share a key), linear
+    /// probing and backward-shift deletion like the column table. Derived
+    /// state kept in lockstep with the deploy records by the same writers
+    /// that keep the shut bits (deploy.rs on the server, `ClientCore` on
+    /// the client), so the predictor walks into the same furnace the sim
+    /// does.
+    solid_keys: Box<[u32; SOLID_SLOTS]>,
+    solids: Box<[SolidPose; SOLID_SLOTS]>,
+    solid_len: u32,
 }
 
 const OCCUPIED: u32 = 1 << 31;
+
+/// One blocking deployable as the collision walks read it: its address, its
+/// archetype (which names its volume, `deploy::solid_vol`) and its pose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolidPose {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+    pub arch: u8,
+    pub pose: Pose,
+    /// Where it rests when there is no plane under it: the lowest ground
+    /// under its rectangle (`deploy::ground_base`). Terrain never changes,
+    /// so it is computed once, when the row is written, by the same
+    /// function on both sides of the wire.
+    pub ground_y: f32,
+}
+
+impl SolidPose {
+    pub const EMPTY: Self = Self {
+        cx: 0,
+        cz: 0,
+        level: 0,
+        loc: 0,
+        arch: 0,
+        pose: Pose::CENTRE,
+        ground_y: 0.0,
+    };
+
+    /// Its rectangle and height, or `None` for an archetype with no volume.
+    pub fn volume(&self) -> Option<(Rect, f32)> {
+        let (hw, h, hd) = crate::deploy::solid_vol(self.arch)?;
+        let (x, z) = crate::footprint::centre(self.cx, self.cz, self.pose);
+        Some((Rect::new(x, z, hw, hd, self.pose.yaw), h))
+    }
+}
+
+/// The rows of the solid table filed under one cell.
+pub struct SolidsAt<'a> {
+    idx: &'a ColIndex,
+    key: u32,
+    i: usize,
+}
+
+impl<'a> Iterator for SolidsAt<'a> {
+    type Item = &'a SolidPose;
+
+    fn next(&mut self) -> Option<&'a SolidPose> {
+        loop {
+            let k = self.idx.solid_keys[self.i];
+            if k == 0 {
+                return None;
+            }
+            let i = self.i;
+            self.i = (self.i + 1) & (SOLID_SLOTS - 1);
+            if k == self.key {
+                return Some(&self.idx.solids[i]);
+            }
+        }
+    }
+}
 
 impl ColIndex {
     pub fn new() -> Self {
@@ -638,6 +758,9 @@ impl ColIndex {
             keys: crate::boxed_array(0),
             masks: crate::boxed_array(ColMasks::EMPTY),
             len: 0,
+            solid_keys: crate::boxed_array(0),
+            solids: crate::boxed_array(SolidPose::EMPTY),
+            solid_len: 0,
         }
     }
 
@@ -656,6 +779,9 @@ impl ColIndex {
         self.keys.fill(0);
         self.masks.fill(ColMasks::EMPTY);
         self.len = 0;
+        self.solid_keys.fill(0);
+        self.solids.fill(SolidPose::EMPTY);
+        self.solid_len = 0;
     }
 
     #[inline]
@@ -668,6 +794,92 @@ impl ColIndex {
     #[inline]
     fn home(key: u32) -> usize {
         (key.wrapping_mul(0x9E37_79B1) >> 18) as usize & (COL_INDEX_SLOTS - 1)
+    }
+
+    /// The solid table's home slot, the same hash at its own width.
+    #[inline]
+    fn solid_home(key: u32) -> usize {
+        (key.wrapping_mul(0x9E37_79B1) >> (32 - SOLID_SLOTS.trailing_zeros())) as usize
+            & (SOLID_SLOTS - 1)
+    }
+
+    /// Index a blocking deployable. Writing an address that is already
+    /// indexed replaces its row, so a client re-applying a record it holds
+    /// cannot double it. A full table drops the row — unreachable while
+    /// placement enforces `MAX_DEPLOYS` (the table is twice that).
+    pub fn add_solid(&mut self, p: SolidPose) {
+        let key = Self::key(p.cx, p.cz);
+        let mut i = Self::solid_home(key);
+        loop {
+            let k = self.solid_keys[i];
+            if k == 0 {
+                break;
+            }
+            if k == key && self.solids[i].level == p.level && self.solids[i].loc == p.loc {
+                self.solids[i] = p;
+                return;
+            }
+            i = (i + 1) & (SOLID_SLOTS - 1);
+        }
+        if self.solid_len as usize >= SOLID_SLOTS - 1 {
+            return;
+        }
+        self.solid_keys[i] = key;
+        self.solids[i] = p;
+        self.solid_len += 1;
+    }
+
+    /// Drop the blocking deployable at an address, if one is indexed.
+    pub fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        let key = Self::key(cx, cz);
+        let mut i = Self::solid_home(key);
+        loop {
+            let k = self.solid_keys[i];
+            if k == 0 {
+                return;
+            }
+            if k == key && self.solids[i].level == level && self.solids[i].loc == loc {
+                break;
+            }
+            i = (i + 1) & (SOLID_SLOTS - 1);
+        }
+        // Knuth 6.4 R, as `remove_slot`: refill the hole from the chain.
+        self.solid_keys[i] = 0;
+        self.solids[i] = SolidPose::EMPTY;
+        self.solid_len -= 1;
+        let mut j = i;
+        loop {
+            j = (j + 1) & (SOLID_SLOTS - 1);
+            let k = self.solid_keys[j];
+            if k == 0 {
+                return;
+            }
+            let h = Self::solid_home(k);
+            let jh = j.wrapping_sub(h) & (SOLID_SLOTS - 1);
+            let ji = j.wrapping_sub(i) & (SOLID_SLOTS - 1);
+            if jh >= ji {
+                self.solid_keys[i] = k;
+                self.solids[i] = self.solids[j];
+                self.solid_keys[j] = 0;
+                self.solids[j] = SolidPose::EMPTY;
+                i = j;
+            }
+        }
+    }
+
+    /// The blocking deployables whose centres are in this cell.
+    pub fn solids_at(&self, cx: u16, cz: u16) -> SolidsAt<'_> {
+        let key = Self::key(cx, cz);
+        SolidsAt {
+            idx: self,
+            key,
+            i: Self::solid_home(key),
+        }
+    }
+
+    /// How many blocking deployables are indexed.
+    pub fn solid_count(&self) -> usize {
+        self.solid_len as usize
     }
 
     /// The column's masks; EMPTY when nothing is built there. The probe
@@ -890,53 +1102,6 @@ impl ColIndex {
         }
     }
 
-    /// Set or clear the solid-deployable nibble at (column, level) —
-    /// deploy.rs's lockstep write, `set_door`'s shape (deploy collision
-    /// v0). `arch` must already have a volume (`deploy::solid_vol`); the
-    /// writer checks, because this index stores codes and does not know
-    /// the table.
-    pub fn set_solid(&mut self, cx: u16, cz: u16, level: u8, arch: Option<u8>) {
-        let shift = (level as usize & 7) * 4;
-        let Some(a) = arch else {
-            // Clear: absent column already means clear.
-            let key = Self::key(cx, cz);
-            let mut i = Self::home(key);
-            loop {
-                let k = self.keys[i];
-                if k == 0 {
-                    return;
-                }
-                if k == key {
-                    break;
-                }
-                i = (i + 1) & (COL_INDEX_SLOTS - 1);
-            }
-            self.masks[i].solid |= 0xF << shift;
-            if self.masks[i].is_empty() {
-                self.remove_slot(i);
-            }
-            return;
-        };
-        if self.len as usize >= COL_INDEX_SLOTS - 1 {
-            return; // full-table posture matches add(): bounded staleness
-        }
-        let key = Self::key(cx, cz);
-        let mut i = Self::home(key);
-        loop {
-            let k = self.keys[i];
-            if k == key {
-                break;
-            }
-            if k == 0 {
-                self.keys[i] = key;
-                self.len += 1;
-                break;
-            }
-            i = (i + 1) & (COL_INDEX_SLOTS - 1);
-        }
-        self.masks[i].solid = (self.masks[i].solid & !(0xF << shift)) | ((a as u64 & 0xF) << shift);
-    }
-
     /// Knuth 6.4 R: refill the hole from the probe chain behind it.
     fn remove_slot(&mut self, mut i: usize) {
         self.keys[i] = 0;
@@ -1051,39 +1216,35 @@ pub fn piece_ground(
     if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
         return NO_SURFACE;
     }
-    let m = cols.get(bx as u16, bz as u16);
-    let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-    if m.planes | m.floor_frames | m.stairs | m.stairs_xhi | m.stairs_zlo | m.stairs_xlo | tris == 0
-        && m.solid == SOLID_NONE
-    {
-        return NO_SURFACE;
-    }
-    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     let lid = feet_y + STEP_UP;
-    let mut best = NO_SURFACE;
-    // A triangle plane is ground over its own half of the cell and air
-    // over the other (triangles v0). The half tests are the address
-    // definitions themselves (`build::LOC_TRI_*`): boundary-inclusive on
-    // both sides of a diagonal, so a body on the seam of a NW+SE pair
-    // reads the same floor from either.
-    let dx = x - bx as f32 * BUILD_CELL_M;
-    let dz = z - bz as f32 * BUILD_CELL_M;
-    let in_half = |loc: u8| match loc {
-        LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
-        LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
-        LOC_TRI_XHI_ZLO => dz <= dx,
-        _ => dz >= dx,
-    };
     // Solid-deploy tops are standable ground (deploy collision v0): the
     // reference's box-stair. The footprint is the volume's own — not
     // inflated by the capsule — so a body stands on a furnace only with
     // its centre over the furnace, the same rule a cell boundary already
     // applies to a floor slab. The lid keeps a tall top from teleporting
-    // anyone up: a box (0.65) needs the jump, which clears it.
-    let (cxm, czm) = (
-        bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-        bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-    );
+    // anyone up: a box (0.65) needs the jump, which clears it. Since free
+    // placement a box may stand across a cell boundary, so its top is read
+    // from the solid table around the point rather than off this column.
+    let mut best = NO_SURFACE;
+    for_near_solids(seed, haven, cols, x, z, 0.0, |rect, bottom, h, _| {
+        let top = bottom + h;
+        if rect.contains(x, z) && top <= lid && top > best {
+            best = top;
+        }
+        false
+    });
+    let m = cols.get(bx as u16, bz as u16);
+    let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+    if m.planes | m.floor_frames | m.stairs | m.stairs_xhi | m.stairs_zlo | m.stairs_xlo | tris == 0
+    {
+        return best;
+    }
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+    // A triangle plane is ground over its own half of the cell and air
+    // over the other (triangles v0) — [`tri_half_has`].
+    let dx = x - bx as f32 * BUILD_CELL_M;
+    let dz = z - bz as f32 * BUILD_CELL_M;
+    let in_half = |loc: u8| tri_half_has(loc, dx, dz);
     for level in 0..MAX_BUILD_SOCKETS {
         let bit = 1u16 << level;
         let floor = base + crate::build::level_y(level as u8);
@@ -1126,26 +1287,85 @@ pub fn piece_ground(
                 }
             }
         }
-        if let Some(arch) = m.solid_at(level) {
-            if let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) {
-                let top = floor + h;
-                if fabs(x - cxm) <= hw && fabs(z - czm) <= hd && top <= lid && top > best {
-                    best = top;
-                }
-            }
-        }
     }
     best
 }
 
+/// Visit every blocking deployable whose rectangle could come within
+/// `reach` of (x, z), as `(rectangle, bottom y, height, row)`; stops early
+/// when `f` answers true, and answers whether it did.
+///
+/// The rows are filed under the cell their centre is in, and a centre is
+/// never more than [`SOLID_REACH_M`] from any corner of its rectangle, so
+/// the cells within `SOLID_REACH_M + reach` of the point are every cell
+/// that can hold one — at most two a side, `footprint`'s const block
+/// proves.
+///
+/// The bottom is the floor the deployable stands on: its column's floor at
+/// its storey when a plane is under its centre, the ground it was indexed
+/// at otherwise. Read per visit rather than stored, because a column's
+/// floor is the plate its pieces latched (build plate v1) and a client can
+/// hear about a box before it hears about the floor under it.
+pub fn for_near_solids(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    reach: f32,
+    mut f: impl FnMut(&Rect, f32, f32, &SolidPose) -> bool,
+) -> bool {
+    if cols.solid_len == 0 {
+        return false;
+    }
+    let r = SOLID_REACH_M + reach;
+    let max = MAX_BUILD_COORD as i32 - 1;
+    let i0 = crate::build::build_cell_of(x - r).max(0);
+    let i1 = crate::build::build_cell_of(x + r).min(max);
+    let j0 = crate::build::build_cell_of(z - r).max(0);
+    let j1 = crate::build::build_cell_of(z + r).min(max);
+    for i in i0..=i1 {
+        for j in j0..=j1 {
+            for p in cols.solids_at(i as u16, j as u16) {
+                let Some((rect, h)) = p.volume() else {
+                    continue;
+                };
+                let bottom = solid_bottom(seed, haven, cols, p, &rect);
+                if f(&rect, bottom, h, p) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The floor a blocking deployable stands on — [`for_near_solids`]' bottom.
+pub fn solid_bottom(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    p: &SolidPose,
+    rect: &Rect,
+) -> f32 {
+    let m = cols.get(p.cx, p.cz);
+    let dx = rect.x - p.cx as f32 * BUILD_CELL_M;
+    let dz = rect.z - p.cz as f32 * BUILD_CELL_M;
+    if p.level > 0 || m.plane_covers(0, dx, dz) {
+        col_base_y(seed, haven, cols, p.cx, p.cz) + crate::build::level_y(p.level)
+    } else {
+        p.ground_y
+    }
+}
+
 /// Whether a solid deployable stops a capsule standing at (`x`, `z`) with
 /// its feet at `feet_y` (deploy collision v0). A destination test like
-/// `occupy::Occupants::blocks`, and complete over the candidate's own
-/// build cell alone: `deploy::DEPLOY_VOL`'s const block proves no volume,
-/// inflated by the capsule, reaches past the half-cell. The XZ test is
-/// the clamp-to-rectangle circle distance `terrain::boxes_block` uses,
-/// for its reason — growing the rectangle by the radius rounds corners
-/// the wrong way.
+/// `occupy::Occupants::blocks`, over every blocking deployable whose
+/// rectangle could reach the capsule ([`for_near_solids`]) — a free-placed
+/// box may stand across a cell boundary, so the candidate's own cell is no
+/// longer the whole answer. The XZ test is the clamp-to-rectangle circle
+/// distance `terrain::boxes_block` uses, in the box's own frame so a turned
+/// box rounds its corners the right way.
 pub fn deploy_blocked(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -1154,94 +1374,49 @@ pub fn deploy_blocked(
     z: f32,
     feet_y: f32,
 ) -> bool {
-    let bx = crate::build::build_cell_of(x);
-    let bz = crate::build::build_cell_of(z);
-    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-        return false;
-    }
-    let m = cols.get(bx as u16, bz as u16);
-    if m.solid == SOLID_NONE {
-        return false;
-    }
-    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     let head = feet_y + CAPSULE_HEIGHT_M;
-    let (cxm, czm) = (
-        bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-        bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-    );
-    for level in 0..MAX_BUILD_SOCKETS {
-        let Some(arch) = m.solid_at(level) else {
-            continue;
-        };
-        let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) else {
-            continue;
-        };
-        let bottom = base + crate::build::level_y(level as u8);
-        // A top within STEP_UP of the feet is a step, not a wall — the
-        // rule `piece_ground` already applies to every standable surface
-        // (its lid), extended here so the horizontal pass admits the move
-        // the vertical pass would land: the body mounts the top exactly
-        // as it mounts a lifted slab. It read `feet_y >= bottom + h`
-        // (top-or-above only) until 2026-08-16, when the build lattice
-        // exposed the asymmetry: a ground box's top rides up to q/2
-        // higher than it used to, and a 1.20 m top against the jump's
-        // 1.22 m apex left `a_jump_lands_on_the_box_top` a 2 cm window —
-        // the two passes disagreeing about whether the top was reachable.
-        // Walking in from flat ground is still blocked (a box top sits
-        // ≥ 0.7 above the feet, past the step), so the jump stays the
-        // verb that mounts one.
-        if feet_y + STEP_UP >= bottom + h || head <= bottom {
-            continue;
-        }
-        let qx = (x - cxm).clamp(-hw, hw);
-        let qz = (z - czm).clamp(-hd, hd);
-        let ex = x - cxm - qx;
-        let ez = z - czm - qz;
-        if ex * ex + ez * ez < CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
-            return true;
-        }
-    }
-    false
+    for_near_solids(
+        seed,
+        haven,
+        cols,
+        x,
+        z,
+        CAPSULE_RADIUS_M,
+        |rect, bottom, h, _| {
+            // A top within STEP_UP of the feet is a step, not a wall — the
+            // rule `piece_ground` already applies to every standable
+            // surface (its lid), extended here so the horizontal pass admits
+            // the move the vertical pass would land: the body mounts the top
+            // exactly as it mounts a lifted slab. Walking in from flat
+            // ground is still blocked (a box top sits ≥ 0.65 above the feet,
+            // past the step), so the jump stays the verb that mounts one.
+            if feet_y + STEP_UP >= bottom + h || head <= bottom {
+                return false;
+            }
+            rect.dist2(x, z) < CAPSULE_RADIUS_M * CAPSULE_RADIUS_M
+        },
+    )
 }
 
 /// Which solid deployable a **shot** sample at (`x`, `z`) and altitude `y`,
 /// carrying radius `r`, stops on — [`deploy_blocked`]'s walk with a
 /// projectile's profile instead of a body's, and the hole `ranged.rs`'s
-/// module doc has named since ranged structure damage v0. The three walks
-/// [`shot_stop`] runs read edges, diagonals and planes and **no bit of
-/// [`ColMasks::solid`] at all**, so an arrow flew through a furnace, a box
-/// and a bench rather than failing to damage one.
+/// module doc has named since ranged structure damage v0: the walks
+/// [`shot_stop`] runs over edges, diagonals and planes see no deployable,
+/// so without this an arrow flew through a furnace, a box and a bench
+/// rather than failing to damage one.
 ///
-/// Three differences from the body twin, each the same one the piece walks
-/// already make:
+/// Two differences from the body twin: the mover is a **point at `y`**
+/// inflated by the arrowhead, so the vertical test clamps into the box's
+/// own band; and there is **no `STEP_UP` mount rule** — a top low enough
+/// for a body to climb is still a surface an arrow hits. It is a point
+/// sample where the edges are swept, for [`cell_planes_stop_shot`]'s
+/// reason: the thinnest deployable is far thicker than the gap between two
+/// taps.
 ///
-/// - the mover is a **point at `y`** inflated by the arrowhead, not a 1.7 m
-///   capsule standing on `feet_y`, so the vertical test clamps into the
-///   box's own band where the body's overlaps a storey;
-/// - there is **no `STEP_UP` mount rule** — a top low enough for a body to
-///   climb is still a surface an arrow hits, and the whole reason that rule
-///   exists (admitting the move the vertical pass would land) has no
-///   projectile analogue;
-/// - it is a **point sample where the edges are swept**, for
-///   [`cell_planes_stop_shot`]'s reason and with the same arithmetic owed:
-///   the shortest through-thickness in `deploy::DEPLOY_VOL` is the hearth's
-///   0.6 m depth and the shallowest band is the box's 0.65 m height, both
-///   well over the 0.17 m (`ARROW_STEP_MM`) between two taps. A shot that
-///   clips a corner between samples is the cost that constant's own doc
-///   admits to, not a defect of this walk.
-///
-/// **One cell, and that is proved rather than assumed.** `DEPLOY_VOL`'s
-/// const block asserts no row's half-extent plus `CAPSULE_RADIUS_M` reaches
-/// the half-cell; `r` here is the arrowhead, which is smaller, so the
-/// inflated volume cannot cross a boundary either and a neighbour's cell
-/// can hold nothing this sample could be inside.
-///
-/// The address returned is the **deploy store's**, and `loc` is always
-/// [`crate::build::LOC_PLANE`]: every archetype `deploy::solid_vol` gives a
-/// volume places `ground`, `foundation` or `any`, and
-/// `deploy::loc_fits_placement` admits only the plane for all three. That
-/// is a claim about `content/deployables.toml`, so the gate for it is in
-/// the content crate (`content/tests/content.rs`) and not here.
+/// The address returned is the deploy store's, its slot `loc` included —
+/// placement never lets two rectangles overlap, so at most one row can hold
+/// the sample.
 pub fn deploy_stop(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -1251,46 +1426,24 @@ pub fn deploy_stop(
     y: f32,
     r: f32,
 ) -> Option<PieceHit> {
-    let bx = crate::build::build_cell_of(x);
-    let bz = crate::build::build_cell_of(z);
-    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-        return None;
-    }
-    let m = cols.get(bx as u16, bz as u16);
-    if m.solid == SOLID_NONE {
-        return None;
-    }
-    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-    let (cxm, czm) = (
-        bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-        bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-    );
-    for level in 0..MAX_BUILD_SOCKETS {
-        let Some(arch) = m.solid_at(level) else {
-            continue;
-        };
-        let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) else {
-            continue;
-        };
-        let bottom = base + crate::build::level_y(level as u8);
-        // Sphere against the box: [`deploy_blocked`]'s clamp-to-rectangle
-        // circle distance with the third axis added, because a shot has an
-        // altitude where a body has a storey. Growing the box by `r`
-        // instead would round its corners the wrong way — the reason that
-        // function gives for the clamp, unchanged by the extra axis.
-        let ex = x - cxm - (x - cxm).clamp(-hw, hw);
+    let mut hit = None;
+    for_near_solids(seed, haven, cols, x, z, r, |rect, bottom, h, p| {
+        // Sphere against the box: the clamp-to-rectangle distance with the
+        // third axis added, because a shot has an altitude where a body
+        // has a storey.
         let ey = y - y.clamp(bottom, bottom + h);
-        let ez = z - czm - (z - czm).clamp(-hd, hd);
-        if ex * ex + ey * ey + ez * ez < r * r {
-            return Some(PieceHit {
-                cx: bx as u16,
-                cz: bz as u16,
-                level: level as u8,
-                loc: crate::build::LOC_PLANE,
+        if rect.dist2(x, z) + ey * ey < r * r {
+            hit = Some(PieceHit {
+                cx: p.cx,
+                cz: p.cz,
+                level: p.level,
+                loc: p.loc,
             });
+            return true;
         }
-    }
-    None
+        false
+    });
+    hit
 }
 
 /// Whether a PLANE piece's flank stops a capsule standing at (`x`, `z`) with

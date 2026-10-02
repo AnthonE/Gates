@@ -240,7 +240,7 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
 /// The open container's address, if what is open is a **research table**
 /// (research table v1) — `ui::research::table_open`, read off the deploy
 /// sync the client already draws.
-fn open_table(core: &ClientCore) -> Option<(u16, u16, u8)> {
+fn open_table(core: &ClientCore) -> Option<(u16, u16, u8, u8)> {
     research_ui::table_open(
         core.cont_kind,
         core.cont_handle,
@@ -256,7 +256,7 @@ fn open_table(core: &ClientCore) -> Option<(u16, u16, u8)> {
 /// `panels::detect_changes` needs: the table's slots do not move when a
 /// research starts, only this does.
 pub(crate) fn open_table_running(core: &ClientCore) -> bool {
-    open_table(core).is_some_and(|(cx, cz, level)| core.ovens().is_lit(cx, cz, level))
+    open_table(core).is_some_and(|(cx, cz, level, loc)| core.ovens().is_lit(cx, cz, level, loc))
 }
 
 /// The BEGIN button under a research table's slots.
@@ -412,7 +412,7 @@ pub fn table_clicks(
         return;
     }
     let core = &net.session.core;
-    let Some((cx, cz, level)) = open_table(core) else {
+    let Some((cx, cz, level, loc)) = open_table(core) else {
         return;
     };
     let line = research_ui::table_line(&core.research, &core.cont, open_table_running(core));
@@ -422,7 +422,7 @@ pub fn table_clicks(
         return;
     }
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_use(cx, cz, level, sim_core::build::LOC_PLANE, &mut buf) {
+    match protocol::encode_action_use(cx, cz, level, loc, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => ui.status.clear(),
             Err(e) => ui.say(e.to_string()),

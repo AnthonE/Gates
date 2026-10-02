@@ -145,6 +145,7 @@ fn place_bag_on(w: &mut World, cx: u16, cz: u16, level: u8) {
         cz,
         level,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),
@@ -370,7 +371,9 @@ fn the_cooldown_is_hashed_state() {
     let (x, z) = cell_center(cx, cz);
     let before = w.state_hash();
     assert_eq!(
-        w.deploys.claim_bag(&w.deploy, 1, x, z, w.tick),
+        w.deploys
+            .claim_bag(&w.deploy, 1, x, z, w.tick)
+            .map(|d| (d.cx, d.cz, d.level)),
         Some((cx, cz, 0))
     );
     assert!(w.deploys.bag_ready()[0] > 0, "the bag was not stamped");
@@ -537,6 +540,7 @@ fn a_corpse_cannot_act() {
             cz: 682,
             level: 0,
             loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     ]);
     assert!(w.players[0].dead, "a verb woke the corpse");

@@ -475,6 +475,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 cz: own2.1,
                 level: ((t / 64) % 2) as u8,
                 loc: ((t / 16) % 4) as u8,
+                pose: crate::footprint::Pose::CENTRE,
             };
             if t == ticks / 2 {
                 // Leap the clock 30 upkeep periods so charge, decay, and
@@ -870,6 +871,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
                     cz,
                     level: 0,
                     loc: crate::build::LOC_PLANE,
+                    pose: crate::footprint::Pose::CENTRE,
                 },
                 Command::Respawn {
                     id: 1,
