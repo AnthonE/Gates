@@ -127,6 +127,10 @@ pub enum Verb {
     /// (`sim_core::monument`): `handle` is the door, `lit` true for the
     /// lever. Resolved by nearness, like `Trade`.
     Swipe,
+    /// A bush, picked by hand (`sim_core::gather::pick`): `handle` is its
+    /// cell key. Resolved by [`resolve_pick`], beside `Crate`'s
+    /// [`resolve_open`], and folded into the pick the same way.
+    Pick,
 }
 
 impl Verb {
@@ -172,6 +176,7 @@ impl Verb {
             Verb::Assist => 11,
             Verb::Trade => 12,
             Verb::Swipe => 13,
+            Verb::Pick => 14,
         }
     }
 
@@ -197,6 +202,7 @@ impl Verb {
             Verb::Assist => "WOUNDED PLAYER",
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
+            Verb::Pick => "BUSH",
         }
     }
 }
@@ -353,6 +359,7 @@ impl Pick {
             // and opens nothing — what `E` does here is show the tree
             // (tech tree v0), so the prompt names the thing you get.
             Verb::TechTree => "[E] TECH TREE".to_string(),
+            Verb::Pick => "[E] PICK BUSH".to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Swipe if self.lit => "[E] OPEN DOOR".to_string(),
             Verb::Swipe => format!(
@@ -1132,7 +1139,7 @@ pub fn swing_label(occupant: u8) -> &'static str {
         o if o == Occupant::StoneNode as u8 => "MINE STONE",
         o if o == Occupant::MetalNode as u8 => "MINE METAL",
         o if o == Occupant::SulfurNode as u8 => "MINE SULFUR",
-        o if o == Occupant::Bush as u8 => "PICK BUSH",
+        // No bush: it is picked with `E` (`resolve_pick`), never swung at.
         o if o == Occupant::BarrelSlot as u8 => "SMASH BARREL",
         _ => "",
     }
@@ -1310,6 +1317,22 @@ pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
     let ray = at.ray(OPEN_REACH_M);
     let seed = island.seed;
     match melee::occupant_cast(seed, &mut island.occupants(), &ray, openable) {
+        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        None => SwingPick::default(),
+    }
+}
+
+/// What `E` would PICK in the scatter — a standing bush — or
+/// `Occupant::None` for nothing.
+///
+/// `melee::bush_cast` — [`resolve_open`]'s cast, taking the nearest
+/// occupant only if it is a bush — at the reach the sim checks
+/// (`gather::PICK_REACH_M`, measured from the same eye to the same swing
+/// volume), so the prompt never offers a pick `gather::pick` refuses.
+pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+    let ray = at.ray(sim_core::gather::PICK_REACH_M);
+    let seed = island.seed;
+    match melee::bush_cast(seed, &mut island.occupants(), &ray) {
         Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
         None => SwingPick::default(),
     }

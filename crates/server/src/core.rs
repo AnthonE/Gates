@@ -1392,6 +1392,7 @@ impl ShardCore {
                         times,
                     },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
+                    ActionMsg::Pick { cell } => Command::Pick { id: c.id, cell },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },

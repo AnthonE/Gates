@@ -180,6 +180,14 @@ fn stand_still(aim: Aim, seq: u16) -> Command {
     }
 }
 
+/// `E` on the bush at `(cx, cz)`: player 1's pick, the cell as the claim.
+fn pick_bush(cx: i32, cz: i32) -> Command {
+    Command::Pick {
+        id: 1,
+        cell: cell_key(cx as u16, cz as u16),
+    }
+}
+
 /// Build a world with player 1 standing at `pos`, gather fixture armed.
 /// Boxed: a `World` is several hundred KB, and by-value copies through
 /// test frames overflow default test-thread stacks (the same reason the
@@ -264,7 +272,7 @@ fn swing_pays_exhausts_and_replays() {
 /// the tool ladder move the primary and leave it alone.
 #[test]
 fn a_bush_pays_its_side_yield_flat_and_says_so() {
-    let (pos, yaw, _) = find_isolated(SEED, Occupant::Bush);
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::Bush);
     let fixture = GatherContent::probe_fixture();
     let bush = &fixture.nodes[4];
     let (sec_item, sec_pay) = bush.secondary;
@@ -286,7 +294,7 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
         cond: fixture.cond_max[fixture.nodes[0].tools[0].0 as usize],
         skin: 0,
     };
-    w.tick(&[hold_primary(yaw, 0)]);
+    w.tick(&[pick_bush(cx, cz)]);
 
     let mut primary = 0u32;
     let mut side = 0u32;
@@ -304,8 +312,8 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
             }
         }
     }
-    assert_eq!(primary, 1, "one primary payout for one landed swing");
-    assert_eq!(side, 1, "one side payout for one landed swing, announced");
+    assert_eq!(primary, 1, "one primary payout for one pick");
+    assert_eq!(side, 1, "one side payout for one pick, announced");
 
     let held: u16 = w.players[0]
         .inv
@@ -314,6 +322,54 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
         .map(|s| s.count)
         .sum();
     assert_eq!(held, sec_pay, "the side yield reached the inventory");
+}
+
+/// **A bush is picked with `E`, never swung at** (operator, 2026-10-02). A
+/// held swing at it passes through and harvests nothing; a pick spends it,
+/// announces it as a bush, and a second pick of the stump does nothing. A
+/// pick from out of reach does nothing either.
+#[test]
+fn a_swing_passes_through_a_bush_and_a_pick_takes_it() {
+    let (pos, aim, (cx, cz)) = find_isolated(SEED, Occupant::Bush);
+    let mut w = world_at(pos);
+    for t in 0..SWING_INTERVAL_TICKS * 3 {
+        w.tick(&[hold_primary(aim, t as u16)]);
+        for e in w.events.entries() {
+            assert_ne!(e.code, EV_GATHER, "a swing at a bush paid");
+            assert_ne!(e.code, EV_SLOT_HARVESTED, "a swing harvested a bush");
+        }
+    }
+
+    // Out of reach: the same claim from twenty metres off is refused.
+    let mut far = world_at((pos.0 - 20.0, pos.1));
+    far.tick(&[pick_bush(cx, cz)]);
+    assert!(
+        far.events.entries().iter().all(|e| e.code != EV_GATHER),
+        "a bush was picked from twenty metres away"
+    );
+
+    w.tick(&[pick_bush(cx, cz)]);
+    let mut gathers = 0;
+    let mut harvested = 0;
+    for e in w.events.entries() {
+        match e.code {
+            EV_GATHER => gathers += 1,
+            EV_SLOT_HARVESTED => {
+                assert_eq!(e.a, cell_key(cx as u16, cz as u16));
+                assert_eq!(e.b, Occupant::Bush as u32, "the event names a bush");
+                harvested += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(gathers, 2, "the pick pays the output and the berries");
+    assert_eq!(harvested, 1, "one pick exhausts the bush");
+
+    w.tick(&[pick_bush(cx, cz)]);
+    assert!(
+        w.events.entries().iter().all(|e| e.code != EV_GATHER),
+        "a picked bush was picked again"
+    );
 }
 
 /// A node with no `secondary` pays once, which is every other archetype.
@@ -1605,22 +1661,18 @@ fn a_refused_swing_leaves_no_mark() {
     assert_eq!(marks, 0, "a refused swing marks nothing");
 }
 
-/// **The bush is the one swingable thing with no surface to mark.**
-/// `terrain::occupant_volume` gives it `(0.0, 0.0)` — it does not block a
-/// body and it has no skin — so `skin_point` refuses rather than putting a
-/// scuff at its centre, where `decal::facing` would read a zero-length
-/// normal. A gather still happens; only the mark is absent.
-///
-/// Red-proven by dropping `skin_point`'s `r <= 0.0` arm: the bush then
-/// marks its own centre and this goes red on the mark count.
+/// **A picked bush leaves no mark.** It has no skin
+/// (`terrain::occupant_volume` gives it `(0.0, 0.0)`) and a pick is a hand,
+/// not a blow, so `gather::pick` pushes no `EV_IMPACT`. A gather still
+/// happens; only the mark is absent.
 #[test]
 fn a_bush_pays_but_has_no_skin_to_mark() {
-    let (pos, yaw, _) = find_isolated(SEED, Occupant::Bush);
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::Bush);
     let mut w = world_at(pos);
     let mut marks = 0;
     let mut gathers = 0;
-    for t in 0..SWING_INTERVAL_TICKS {
-        w.tick(&[hold_primary(yaw, t as u16)]);
+    for _ in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[pick_bush(cx, cz)]);
         for e in w.events.entries() {
             match e.code {
                 sim_core::world::EV_IMPACT => marks += 1,

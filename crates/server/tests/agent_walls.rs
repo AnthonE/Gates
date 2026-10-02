@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 20] = [
+const EXPECTED_VERBS: [&str; 21] = [
     "craft",
     "consume",
     "drink",
@@ -81,6 +81,7 @@ const EXPECTED_VERBS: [&str; 20] = [
     "reload",
     "loot",
     "pickup",
+    "pick",
     "deploy",
     "place",
     "upgrade",
@@ -252,6 +253,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Upgrade { .. } => "upgrade",
         ActionMsg::Vend { .. } => "vend",
         ActionMsg::Swipe { .. } => "swipe",
+        ActionMsg::Pick { .. } => "pick",
     }
 }
 
@@ -2462,14 +2464,18 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
             .iter()
             .any(|s| s.count > 0 && s.item == id(item))
     };
-    for item in [
-        "item.hatchet_metal",
-        "item.pickaxe_metal",
-        "item.crossbow",
-        "item.medkit",
-    ] {
+    for item in ["item.hatchet_metal", "item.pickaxe_metal", "item.medkit"] {
         assert!(belted(item), "{item} not on the belt: {}", h.explain());
     }
+    // The crossbow is made; the belt's ranged slot holds the best ranged
+    // weapon owned, which is a revolver when the walk turned one up
+    // (`loadout::RANGED`).
+    assert!(units_of(me, id("item.crossbow")) >= 1, "{}", h.explain());
+    assert!(
+        belted("item.crossbow") || belted("item.revolver"),
+        "no ranged weapon on the belt: {}",
+        h.explain()
+    );
     assert!(
         units_of(me, id("item.arrow_metal")) >= 20,
         "{}",

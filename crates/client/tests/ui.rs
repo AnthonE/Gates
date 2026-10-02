@@ -1150,7 +1150,6 @@ fn a_swing_names_what_it_would_hit() {
         Occupant::StoneNode,
         Occupant::MetalNode,
         Occupant::SulfurNode,
-        Occupant::Bush,
     ] {
         let Some((cx, cz, sx, sy, sz)) = find_slot(seed, want) else {
             continue;
@@ -1198,6 +1197,75 @@ fn a_rock_is_not_a_target() {
     assert_eq!(swing_label(Occupant::None as u8), "");
     // 8 is the stump — a consequence of a harvest, never a target.
     assert_eq!(swing_label(8), "");
+    // A bush is picked with `E`, never swung at.
+    assert_eq!(swing_label(Occupant::Bush as u8), "");
+}
+
+/// **A bush is `E`, not the left button** (operator, 2026-10-02). Looking at
+/// one in reach, the swing resolver passes through it and the pick resolver
+/// names it — and the sim, handed the pick's own cell key from where the
+/// prompt stands, takes it.
+#[test]
+fn a_bush_is_picked_with_e_and_never_swung() {
+    use client::ui::interact::resolve_pick;
+    use sim_core::gather::{cell_key, GatherContent};
+    use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
+    use sim_core::world::{Command, World, EV_SLOT_HARVESTED};
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (cx, cz, sx, sy, sz) = find_slot(seed, Occupant::Bush).expect("seed 7 has a bush");
+    let (r, top) = swing_volume(Occupant::Bush);
+
+    let mut w = Box::new(World::new(seed));
+    w.gather = GatherContent::probe_fixture();
+    w.dev_spawn = Some((stance(sx, r), sz));
+    w.tick(&[Command::Join { id: 1 }]);
+    for _ in 0..8 {
+        w.tick(&[]);
+    }
+    let b = w.players[0].body;
+    let (x, y, z) = (
+        b.qx as f32 * POS_XZ_Q,
+        b.qy as f32 * POS_Y_Q,
+        b.qz as f32 * POS_XZ_Q,
+    );
+    let aim = aim_at(x, y, z, sx, sy + top * 0.5, sz);
+    let mut cache = SlotCache::new();
+    let mut island = Island {
+        doors: 0,
+        seed,
+        table: &table,
+        haven: &haven,
+        harvested: &Pristine,
+        cache: &mut cache,
+    };
+    let swing = resolve_swing(aim, &mut island);
+    assert_ne!(
+        swing.occupant,
+        Occupant::Bush as u8,
+        "a swing still lands on a bush"
+    );
+    let pick = resolve_pick(aim, &mut island);
+    assert_eq!(
+        pick.occupant,
+        Occupant::Bush as u8,
+        "E does not name the bush"
+    );
+    assert_eq!((pick.cx, pick.cz), (cx as u16, cz as u16));
+
+    w.tick(&[Command::Pick {
+        id: 1,
+        cell: cell_key(pick.cx, pick.cz),
+    }]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_SLOT_HARVESTED && e.a == cell_key(pick.cx, pick.cz)),
+        "the sim refused the pick its own prompt offered"
+    );
 }
 
 /// Looking away from a node in reach must whiff: the look is the aim, and a

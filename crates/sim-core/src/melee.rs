@@ -99,8 +99,10 @@ use crate::yaw_lut::yaw_dir;
 /// stop on the same plank at the same depth.
 pub const MELEE_PROBE_M: f32 = 0.10;
 
-/// The volume a swing tests a **bush** against, `(radius, top)` metres at
+/// The volume a cast tests a **bush** against, `(radius, top)` metres at
 /// slot scale 1 — because `terrain::occupant_volume` gives the bush none.
+/// Since 2026-10-02 a swing passes through a bush and only the `E` pick
+/// (`gather::pick`, the client's `resolve_pick`) casts at this volume.
 /// **(knob)** `DECISIONS.md` §open, "melee aim v1".
 ///
 /// A bush blocks no body on purpose (you walk through it), so the movement
@@ -351,8 +353,9 @@ pub fn cylinder_span(
     (t_in <= t_out).then_some((t_in, t_out))
 }
 
-/// The nearest swingable occupant the ray enters — a gather node, a bush or
-/// a barrel — over the 3×3 cells around the eye, skipping harvested cells.
+/// The nearest swingable occupant the ray enters — a gather node or a
+/// barrel, never a bush (a bush is picked with `E`, `gather::pick`) — over
+/// the 3×3 cells around the eye, skipping harvested cells.
 /// `None` when the ray enters none.
 ///
 /// [`occupant_cast`] over `gather`'s own target set, so the sim and the
@@ -370,6 +373,15 @@ pub fn node_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<NodeHit> {
         ni: gather::target_index(hit.slot.occupant).unwrap_or(0),
         t: hit.t,
     })
+}
+
+/// The bush a hand reaching along `ray` would pick (`E`, `gather::pick`):
+/// the nearest occupant the ray enters, if that is a bush — a trunk, a node
+/// or a crate in front of it is in the way. The client's `[E] PICK BUSH`
+/// prompt and the server's agent both ask this, so they agree on which bush.
+pub fn bush_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {
+    occupant_cast(seed, occ, ray, |o| o != Occupant::None)
+        .filter(|h| h.slot.occupant == Occupant::Bush)
 }
 
 /// The nearest occupant of a kind `want` accepts that the ray enters, over
@@ -505,7 +517,7 @@ pub enum Reached {
     /// Air, for the whole reach — or something in the way that this hand
     /// cannot reach, which ends the swing the same way.
     Nothing,
-    /// A gather node, a bush or a barrel.
+    /// A gather node or a barrel.
     Node(NodeHit),
     /// Another player. `stop_t` is where the world would have stopped the
     /// ray, for `part_crossed`'s clip: a wall between the chest and the head

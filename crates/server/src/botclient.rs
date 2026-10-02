@@ -22,10 +22,10 @@ use crate::net::{client_handshake, read_event_frame, write_frame, FRAME_PREFIX_B
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_action_access, encode_action_demolish, encode_action_deploy,
-    encode_action_feed, encode_action_loot, encode_action_move, encode_action_pickup,
-    encode_action_place, encode_action_reload, encode_action_repair, encode_action_rotate,
-    encode_action_throw, encode_action_upgrade, encode_input, peek_kind, EventMsg, InputDatagram,
-    Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
+    encode_action_feed, encode_action_loot, encode_action_move, encode_action_pick,
+    encode_action_pickup, encode_action_place, encode_action_reload, encode_action_repair,
+    encode_action_rotate, encode_action_throw, encode_action_upgrade, encode_input, peek_kind,
+    EventMsg, InputDatagram, Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
 };
 use sim_core::bots::{
     base_step, bot_frame, raid_step, BasePlan, RaidPlan, RaidRows, RAID_CYCLE, STARTER,
@@ -486,6 +486,7 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
         } => encode_action_move(cont, from_kind, from_slot, to_kind, to_slot, count, buf),
         Command::Loot { .. } => encode_action_loot(buf),
         Command::Pickup { .. } => encode_action_pickup(buf),
+        Command::Pick { cell, .. } => encode_action_pick(cell, buf),
         // Not a raid step — the reload lane's, and here because this is the
         // one table in this file that turns a `Command` into the bytes a
         // real client writes. Payloadless on the wire on purpose: the sim

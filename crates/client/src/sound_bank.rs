@@ -92,7 +92,8 @@ pub fn synth_takes(cue: Cue) -> u8 {
         | Cue::StepSand
         | Cue::StepLitter
         | Cue::StepWater
-        | Cue::Eat => 3,
+        | Cue::Eat
+        | Cue::BushPick => 3,
         Cue::Blast | Cue::Collapse => 2,
         _ => 1,
     }

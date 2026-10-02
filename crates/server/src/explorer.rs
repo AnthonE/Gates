@@ -1927,7 +1927,22 @@ impl Survivor {
             }
             return intent;
         }
-        if swing_reaches(core, body, yaw, pitch, target) {
+        if kind == Kind::Forage
+            && distance <= REACH_M
+            && pick_reaches(core, body, yaw, pitch, target)
+        {
+            // A bush is picked with `E`, not swung at: the human client's
+            // `[E] PICK BUSH`, sent once the view the hands hold is on it.
+            self.stats.phase = Phase::Harvesting;
+            let (held_yaw, held_pitch) = self.hands.view();
+            let haven = self.haven.expect("connected haven");
+            if visible(core, &haven, body, target)
+                && pick_reaches(core, body, held_yaw, held_pitch, target)
+            {
+                let cell = target.key();
+                self.queue(|buf| protocol::encode_action_pick(cell, buf));
+            }
+        } else if kind != Kind::Forage && swing_reaches(core, body, yaw, pitch, target) {
             // Holding primary is the human harvesting verb. A harvest swing
             // never lands on a body: one standing on the swing's own ray
             // holds it, wherever else bodies stand round the node.
@@ -5131,6 +5146,27 @@ fn swing_reaches(
     );
     let (seed, mut island) = core.island();
     melee::node_cast(seed, &mut island, &ray)
+        .is_some_and(|hit| hit.cx == target.cx && hit.cz == target.cz)
+}
+
+/// A pick along this view from where the body stands reaches the target
+/// bush first: the cast the human client's `[E] PICK BUSH` prompt makes.
+fn pick_reaches(
+    core: &mut ClientCore,
+    body: &EntityState,
+    yaw: u16,
+    pitch: u8,
+    target: Target,
+) -> bool {
+    let ray = melee::ray(
+        &as_body(*body),
+        SWING_CROUCHED,
+        yaw,
+        pitch,
+        sim_core::gather::PICK_REACH_M * MM_PER_M,
+    );
+    let (seed, mut island) = core.island();
+    melee::bush_cast(seed, &mut island, &ray)
         .is_some_and(|hit| hit.cx == target.cx && hit.cz == target.cz)
 }
 

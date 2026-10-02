@@ -150,6 +150,8 @@ pub mod presence;
 pub mod props;
 pub mod rig;
 pub mod settings;
+// Where a blow meets the drawn mesh rather than the sim's cylinder.
+pub mod skin;
 // A spectator seat's label (wire v73): whose view this is. Everything else a
 // watcher sees is the ordinary HUD reading a core that drives nothing.
 pub mod spectate;
@@ -1168,6 +1170,12 @@ impl Plugin for GatesRenderPlugin {
                 fx::gun::shots
                     .after(impact::contacts)
                     .before(impact::strike),
+                // Every world contact moved onto the drawn mesh, before any
+                // layer throws off it.
+                impact::snap
+                    .after(fx::gun::shots)
+                    .before(impact::strike)
+                    .before(decal::mark),
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
                 fx::flash.after(impact::strike),
@@ -1596,7 +1604,10 @@ impl Plugin for GatesRenderPlugin {
                 // systems that fill it: the resolver, and the gun's far-miss
                 // contacts, which otherwise landed after this read on some
                 // frames and made no sound.
-                audio::impacts.after(impact::contacts).after(fx::gun::shots),
+                audio::impacts
+                    .after(impact::contacts)
+                    .after(fx::gun::shots)
+                    .after(impact::snap),
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

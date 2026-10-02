@@ -177,6 +177,7 @@ pub fn built(
                     kind: ContactKind::Impact,
                     weapon: Weapon::Melee,
                     mark: false,
+                    skin: None,
                 };
                 let n = fx.impact(&c, eye.pos);
                 if n > 0 {

@@ -527,6 +527,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Eat => munch(&mut r),
         Cue::Bandage => bandage(&mut r),
         Cue::BowDraw => creak(&mut r),
+        Cue::BushPick => rustle(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1179,6 +1180,66 @@ fn bandage(r: &mut Rng) -> Vec<f32> {
     let from = samples(0.22);
     for (o, v) in out[from..].iter_mut().zip(wrap) {
         *o += v * 0.45;
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A bush picked: several overlapping leaf crackles — band-passed noise
+/// bursts through `impact`'s crackle gate, each a little brighter or duller
+/// than the last — over a soft stem snap a beat in, the whole ~0.45 s.
+fn rustle(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.46);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    // The leaves: five crackled bursts at jittered starts, fading as the
+    // branch settles.
+    for (k, amp) in [1.0f32, 0.85, 0.7, 0.55, 0.4].into_iter().enumerate() {
+        let from = samples(k as f32 * 0.065 + 0.03 * r.unit());
+        let len = samples(0.12 + 0.06 * r.unit());
+        let lp_hz = 5_000.0 + 2_500.0 * r.unit();
+        let (mut lp, mut hp, mut gate) = (Lp::new(lp_hz), Lp::new(900.0), 0.0f32);
+        for j in 0..len {
+            let i = from + j;
+            if i >= n {
+                break;
+            }
+            let t = j as f32 / sr;
+            let u = j as f32 / len as f32;
+            let mut x = r.noise();
+            if r.unit() < 0.03 {
+                gate = 1.0;
+            }
+            gate *= 0.998;
+            x *= 0.25 + 0.75 * gate;
+            let l = lp.run(x);
+            let band = l - hp.run(l);
+            // Swell in and out: leaves brushing, not a struck surface.
+            let env = (PI * u).sin().max(0.0) * attack(t, 0.006);
+            out[i] += band * env * amp;
+        }
+    }
+    // The stem: a short dry snap with a little woody body, a beat in.
+    let snap = impact(
+        r,
+        0.07,
+        Tone {
+            lo_hz: 420.0,
+            lo_amp: 0.35,
+            lo_tau: 0.012,
+            noise_amp: 0.9,
+            noise_tau: 0.010,
+            lp_hz: 7_000.0,
+            hp_hz: 1_200.0,
+            attack_s: 0.0004,
+            crackle: 0.2,
+        },
+    );
+    let at = samples(0.09 + 0.03 * r.unit());
+    for (o, v) in out[at..].iter_mut().zip(snap) {
+        *o += v * 0.6;
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);

@@ -48,3 +48,37 @@ fn every_card_is_a_tree_standing_in_its_own_cell() {
         );
     }
 }
+
+/// The ring mask covers the window the rings stream in around the eye, one
+/// bit per chunk a ring holds — and nothing outside it.
+#[test]
+fn the_ring_mask_marks_exactly_the_chunks_the_rings_hold() {
+    use bevy::math::Vec3;
+    use client::render::far_trees::{ring_mask, MASK_SIDE};
+    use client::render::props::OUTER_RADIUS;
+    use client::render::terrain_mesh::CHUNK_M;
+    let eye = client::render::Eye {
+        pos: Vec3::new(30.5 * CHUNK_M, 0.0, 12.5 * CHUNK_M),
+        ..Default::default()
+    };
+    let held = [(30, 12), (26, 8), (34, 16), (27, 15), (40, 12)];
+    let (window, bits) = ring_mask(&eye, held.iter().copied());
+    assert_eq!(window.x, 30 - OUTER_RADIUS);
+    assert_eq!(window.y, 12 - OUTER_RADIUS);
+    assert_eq!(window.z, MASK_SIDE);
+    let words = bits.to_array();
+    let set = |x: i32, z: i32| {
+        let (lx, lz) = (x - window.x, z - window.y);
+        if lx < 0 || lz < 0 || lx >= MASK_SIDE || lz >= MASK_SIDE {
+            return false;
+        }
+        let i = (lz * MASK_SIDE + lx) as usize;
+        words[i / 32] >> (i % 32) & 1 == 1
+    };
+    for &(x, z) in &held[..4] {
+        assert!(set(x, z), "a held chunk ({x}, {z}) is not masked");
+    }
+    let count: u32 = words.iter().map(|w| w.count_ones()).sum();
+    assert_eq!(count, 4, "the chunk outside the window must not alias in");
+    assert!(!set(31, 12));
+}
