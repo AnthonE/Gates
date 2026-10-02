@@ -688,6 +688,17 @@ impl StructRing {
         map.get(&addr).map(|l| l.entity)
     }
 
+    /// The mesh a deployable of `arch` is drawn with, once its model has a
+    /// handle — so the deploy ghost previews the model it will become rather
+    /// than a box of its size. `None` for an archetype drawn as a cuboid or
+    /// an insert, and before the kit is built.
+    pub fn deploy_mesh(&self, arch: u8) -> Option<Handle<Mesh>> {
+        let kit = self.kit.as_ref()?;
+        let idx = arch as usize;
+        DEPLOY_ASSET.get(idx)?.as_ref()?;
+        kit.deploy_mesh.get(idx).cloned()
+    }
+
     /// Standing counts: pieces, deployables, bags. For the gates and for
     /// nothing on the hot path.
     pub fn counts(&self) -> (usize, usize, usize) {
@@ -2654,6 +2665,7 @@ pub fn stream(
                 plate: 0,
                 facing: 0,
                 foot_drop: 0.0,
+                base_y: 0.0,
             },
         );
     }

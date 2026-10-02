@@ -71,6 +71,7 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
             cx: CX,
             cz: CZ,
             level: LEVEL,
+            loc: 0,
         },
         PointLight {
             intensity: 0.0,
@@ -91,7 +92,7 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
     // Nothing lit anywhere.
     app.world_mut()
         .run_system_once(|q: Query<(&FireLight, &mut PointLight)>| {
-            apply_fire_lights(q, &|_, _, _| false);
+            apply_fire_lights(q, &|_, _, _, _| false);
         })
         .unwrap();
     assert_eq!(
@@ -104,7 +105,9 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
     // This address lit.
     app.world_mut()
         .run_system_once(|q: Query<(&FireLight, &mut PointLight)>| {
-            apply_fire_lights(q, &|cx, cz, level| (cx, cz, level) == (CX, CZ, LEVEL));
+            apply_fire_lights(q, &|cx, cz, level, loc| {
+                (cx, cz, level, loc) == (CX, CZ, LEVEL, 0)
+            });
         })
         .unwrap();
     assert_eq!(
@@ -116,7 +119,9 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
     // A DIFFERENT address lit — the fire must not read someone else's state.
     app.world_mut()
         .run_system_once(|q: Query<(&FireLight, &mut PointLight)>| {
-            apply_fire_lights(q, &|cx, cz, level| (cx, cz, level) == (CX + 1, CZ, LEVEL));
+            apply_fire_lights(q, &|cx, cz, level, loc| {
+                (cx, cz, level, loc) == (CX + 1, CZ, LEVEL, 0)
+            });
         })
         .unwrap();
     assert_eq!(
@@ -152,6 +157,7 @@ fn a_burnable_deployable_spawns_with_a_light_and_a_box_does_not() {
         cz,
         level: LEVEL,
         loc: sim_core::build::LOC_PLANE,
+        pose: Default::default(),
         row: 0,
         owner: 1,
         hp: 100,
@@ -166,7 +172,16 @@ fn a_burnable_deployable_spawns_with_a_light_and_a_box_does_not() {
         let r = rec(cx, CZ);
         let e = {
             let mut commands = app.world_mut().commands();
-            spawn_deploy(&mut commands, &kit, seed, &haven, &r, arch, 0)
+            spawn_deploy(
+                &mut commands,
+                &kit,
+                seed,
+                &haven,
+                &sim_core::collide::ColIndex::new(),
+                &r,
+                arch,
+                0,
+            )
         };
         app.world_mut().flush();
         e

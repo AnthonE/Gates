@@ -790,6 +790,7 @@ mod tests {
             cz,
             level: 0,
             loc: 0,
+            pose: Default::default(),
             row,
             owner: 1,
             hp: 100,

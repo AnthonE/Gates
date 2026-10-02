@@ -1820,7 +1820,7 @@ pub fn update(
                 _ => "",
             };
             if why.is_empty() {
-                format!("PLACE  {name}   (left click)")
+                format!("PLACE  {name}   (left click · [R] turn)")
             } else {
                 format!("PLACE  {name}  — {}", why.to_uppercase())
             }

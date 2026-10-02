@@ -3650,17 +3650,11 @@ impl Survivor {
             Act::Place { row, at, .. } => self.queue(|buf| {
                 protocol::encode_action_place(row, at.cx, at.cz, at.level, at.loc, false, 0, buf)
             }),
-            Act::Deploy { row, at, bag, .. } => {
+            Act::Deploy {
+                row, at, pose, bag, ..
+            } => {
                 let sent = self.queue(|buf| {
-                    protocol::encode_action_deploy(
-                        row,
-                        at.cx,
-                        at.cz,
-                        at.level,
-                        at.loc,
-                        Pose::CENTRE,
-                        buf,
-                    )
+                    protocol::encode_action_deploy(row, at.cx, at.cz, at.level, at.loc, pose, buf)
                 });
                 if sent && bag {
                     // Home keeps the list of its bags.

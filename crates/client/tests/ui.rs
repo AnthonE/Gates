@@ -4322,9 +4322,9 @@ mod loot {
         );
     }
 
-    /// A handle names a cell and a level; a `DeployRec` also carries a `loc`,
-    /// so a hearth and a box can share one key. The arch filter is what makes
-    /// the address mean one of them.
+    /// A hearth and a box share a cell under different slots (free
+    /// placement); the handle names the slot, and the arch filter keeps the
+    /// hearth's slot from naming anything.
     #[test]
     fn the_bar_reads_the_box_at_the_handle_not_the_hearth_beside_it() {
         let mut dc = defs(ARCH_HEARTH, 9);
@@ -4334,16 +4334,15 @@ mod loot {
             ..DeployDef::INERT
         };
         dc.def_count = 2;
+        let both = [rec(0, 0), rec(1, 3)];
         assert_eq!(
-            container_name(
-                CONT_BOX,
-                handle(),
-                &[rec(0, 0), rec(1, 3)],
-                &dc,
-                2,
-                &named()
-            ),
+            container_name(CONT_BOX, box_key(CX, CZ, LEVEL, 3), &both, &dc, 2, &named()),
             "LARGE BOX"
+        );
+        assert_eq!(
+            container_name(CONT_BOX, handle(), &both, &dc, 2, &named()),
+            "BOX",
+            "the hearth's slot named the box beside it"
         );
     }
 
