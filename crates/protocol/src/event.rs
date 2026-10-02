@@ -39,7 +39,7 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 306 B since v82's two draw bytes — 29 header bits and 302 a
+/// batch ≈ 315 B since v89's oven roles — 29 header bits and 311 a
 /// row; `catalog_batches_walk_the_table_within_cap` is the one that
 /// measures rather than remembers — a full slot-sync batch
 /// ≈ 258 B) with headroom; the client-side framer refuses past it.
@@ -733,7 +733,18 @@ pub struct ItemRow {
     /// weapon that draws, 0 on everything else. A draw held through it is
     /// ready when it ends (`ranged::draw`).
     pub nock_ticks: u8,
+    /// What the item is to each converter (v89,
+    /// `oven::CookContent::packed_roles`): fuel, input, output, three bits
+    /// per archetype in `oven::ROLE_ARCHES` order; read one with
+    /// `oven::unpack_roles`. The camp fire's slots each take one section's
+    /// items, and the client needs this to send wood to FUEL and meat to
+    /// INPUT on a right-click.
+    pub oven: u16,
 }
+
+/// Width of [`ItemRow::oven`].
+const OVEN_ROLE_BITS: u32 = sim_core::oven::PACKED_ROLE_BITS;
+const _: () = assert!(OVEN_ROLE_BITS <= 16);
 
 impl ItemRow {
     pub const EMPTY: Self = Self {
@@ -746,6 +757,7 @@ impl ItemRow {
         health: 0,
         draw_ticks: 0,
         nock_ticks: 0,
+        oven: 0,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -781,6 +793,7 @@ impl ItemRow {
             // A nock is the cadence of a weapon that draws; on anything
             // else it is a number nothing reads.
             && (self.nock_ticks == 0 || self.draw_ticks > 0)
+            && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
     }
 }
 
@@ -814,6 +827,9 @@ impl ItemRow {
 /// v82 added the draw (`draw_ticks`, `nock_ticks`), the fifth: the right
 /// mouse draws a bow, and the client has to know which items draw and when
 /// the draw is full.
+///
+/// v89 added `oven`, the sixth: which section of a camp fire an item goes
+/// in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -1886,6 +1902,8 @@ pub fn encode_event_catalog(
         // The draw (v82): bytes, because they are ticks.
         w.write(row.draw_ticks as u32, 8)?;
         w.write(row.nock_ticks as u32, 8)?;
+        // The oven roles (v89).
+        w.write(row.oven as u32, OVEN_ROLE_BITS)?;
     }
     Ok((w.finish(), count))
 }
@@ -3739,6 +3757,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     health: r.read(16)? as u16,
                     draw_ticks: r.read(8)? as u8,
                     nock_ticks: r.read(8)? as u8,
+                    oven: r.read(OVEN_ROLE_BITS)? as u16,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -5301,6 +5320,8 @@ mod tests {
                 // The draw (v82) at its corner, distinct per row.
                 draw_ticks: u8::MAX - i as u8,
                 nock_ticks: u8::MAX - 2 * i as u8,
+                // The oven roles (v89) at the width's corner.
+                oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -7304,6 +7325,11 @@ mod wire_domains {
             // member block to scrape, only a compile-time assert beside the
             // declaration. `ARMOR_PCT_BITS`' shape, classified with it.
             "HURT_SECTOR_BITS",
+            // The oven roles (v89): a bit set whose width IS sim-core's
+            // `oven::PACKED_ROLE_BITS`, read rather than restated, so a
+            // converter added to `ROLE_ARCHES` widens the field with it;
+            // `ItemRow::coherent` refuses a value past it at both ends.
+            "OVEN_ROLE_BITS",
         ];
 
         let mut widths = Vec::new();

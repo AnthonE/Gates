@@ -2544,22 +2544,25 @@ impl World {
 
         // 3. Read both sides as copies.
         let src = self.cont_slot(slot, from_kind, from_slot, ci);
-        // An oven takes fuel, what it cooks, and what it made — nothing
-        // else (`oven.rs`, `inventory::REFUSE_M_OVEN`). Asked here, of
-        // the *source item*, after the address resolves and before
-        // anything is planned: a rule about what may enter a container is
-        // a property of this world's content, which `plan_move` has no
-        // access to and deliberately never will (it decides arithmetic,
-        // and only arithmetic). Rearranging inside the oven is untouched
-        // — the item is already in there.
-        if to_kind == inventory::CONT_BOX && from_kind != inventory::CONT_BOX {
-            let arch = self.deploys.oven_states().get(ci).map(|o| o.arch);
-            if let Some(arch) = arch.filter(|_| self.deploys.oven_index(cont).is_some()) {
-                if !self.cook.accepts(arch, src.item) {
-                    self.events
-                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
-                    return;
-                }
+        // An oven takes, in each slot, what that slot is for (`oven.rs`,
+        // `inventory::REFUSE_M_OVEN`): fuel, what it cooks, what it made,
+        // and on a camp fire each in its own section. Asked here, of the
+        // *source item*, after the address resolves and before anything is
+        // planned: a rule about what may enter a container is a property of
+        // this world's content, which `plan_move` has no access to and
+        // deliberately never will (it decides arithmetic, and only
+        // arithmetic). Rearranging inside the oven is asked too, because a
+        // fire's slots are not interchangeable.
+        let oven_arch = (ground == inventory::CONT_BOX && self.deploys.oven_index(cont).is_some())
+            .then(|| self.deploys.oven_states()[ci].arch);
+        if let Some(arch) = oven_arch {
+            if to_kind == inventory::CONT_BOX
+                && src.count > 0
+                && !self.cook.accepts_at(arch, to_slot as usize, src.item)
+            {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
+                return;
             }
         }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
@@ -2623,6 +2626,19 @@ impl World {
                 return;
             }
         };
+        // The oven's other landing site: a SWAP out of one puts the
+        // destination's old stack into the oven slot the source left, which
+        // was a way to put anything into a fire by taking something out.
+        if let Some(arch) = oven_arch {
+            if plan == inventory::MovePlan::Swap
+                && from_kind == inventory::CONT_BOX
+                && !self.cook.accepts_at(arch, from_slot as usize, dst.item)
+            {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
+                return;
+            }
+        }
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
         // What a research table's slot may hold (`research::table_accepts`)
         // is asked of the RESOLVED writes, on both landing sites: a swap

@@ -69,12 +69,14 @@ use super::{
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
+use crate::ui::oven::{self as oven_ui, Section};
 use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
     looting, move_args, pip_fraction, quick_move, refusal_text, slots_in, takes_deposits,
     wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick,
 };
+use sim_core::oven::OvenLayout;
 
 /// One addressable cell. `kind` is a `CONT_*`, so the same component serves
 /// your inventory and whatever container is open — the drag code never asks
@@ -117,6 +119,8 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             own_grid(row, core, icons, sel as usize);
             if open_table(core).is_some() {
                 table_grid(row, ui, core, icons);
+            } else if let Some((_, l)) = open_fire(core) {
+                fire_grid(row, core, icons, l);
             } else if looting(core.cont_kind) {
                 container_grid(row, core, icons);
             } else {
@@ -125,7 +129,12 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
         });
 
         zone.spawn((
-            Text::new(if open_table(core).is_some() {
+            Text::new(if open_fire(core).is_some() {
+                // Rust's camp fire: each band takes its own, and the
+                // switch is on the panel as well as on `C`.
+                "wood in FUEL, food in INPUT   -   right-click puts it where it goes   \
+                 -   TURN ON or C lights it   -   Tab or Esc closes"
+            } else if open_table(core).is_some() {
                 // The table's own gestures: which slot takes what, and what
                 // starts it — the two things no other container asks a
                 // player to know.
@@ -252,11 +261,295 @@ fn open_table(core: &ClientCore) -> Option<(u16, u16, u8)> {
 }
 
 /// Whether the open research table is running — the lit bit the core heard
-/// for its address (`EV_OVEN`). `false` for anything else, which is what
-/// `panels::detect_changes` needs: the table's slots do not move when a
-/// research starts, only this does.
-pub(crate) fn open_table_running(core: &ClientCore) -> bool {
+/// for its address (`EV_OVEN`). `false` for anything else.
+fn open_table_running(core: &ClientCore) -> bool {
     open_table(core).is_some_and(|(cx, cz, level)| core.ovens().is_lit(cx, cz, level))
+}
+
+/// The open container's archetype and sections, if it is a **camp fire**
+/// (`ui::oven::fire_open`), read off the deploy sync the client already
+/// draws.
+fn open_fire(core: &ClientCore) -> Option<(u8, OvenLayout)> {
+    oven_ui::fire_open(
+        core.cont_kind,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+    )
+}
+
+/// The lit bit the core heard for the open container's address — a fire
+/// burning, a recycler running, a research under way. `false` with nothing
+/// open. `panels::detect_changes` watches it: a fire's slots do not move
+/// the moment it lights, only this does.
+pub(crate) fn open_cont_lit(core: &ClientCore) -> bool {
+    core.cont_kind == CONT_BOX && core.cont_handle != 0 && {
+        let (cx, cz, level) = research_ui::table_address(core.cont_handle);
+        core.ovens().is_lit(cx, cz, level)
+    }
+}
+
+/// The TURN ON / TURN OFF button in a camp fire's CONTROLS bar.
+#[derive(Component)]
+pub struct FireSwitch;
+
+/// Width of the camp fire's bands and its CONTROLS bar: four cells, so the
+/// two-cell output sits centred with room either side, Rust's proportion.
+const FIRE_W_PX: f32 = 4.0 * SLOT_PX + 3.0 * CELL_GAP_PX;
+/// The bands' ground, a step darker than the panel — Rust draws the fire's
+/// three bands in one dark well.
+const FIRE_WELL: Color = Color::srgba(0.125, 0.114, 0.102, 0.96);
+/// The switch: green to light it, red to put it out (Rust's two).
+const SWITCH_ON: Color = Color::srgb(0.36, 0.47, 0.20);
+const SWITCH_ON_HOT: Color = Color::srgb(0.43, 0.56, 0.25);
+const SWITCH_OFF: Color = Color::srgb(0.64, 0.24, 0.19);
+const SWITCH_OFF_HOT: Color = Color::srgb(0.75, 0.30, 0.24);
+const SWITCH_TEXT: Color = Color::srgb(0.96, 0.94, 0.89);
+
+/// The camp fire, in the container's seat — Rust's: FUEL over INPUT over
+/// OUTPUT with an arrow between each, a flame on what is burning and
+/// cooking, and the CONTROLS bar with the switch at the foot.
+///
+/// The cells are `cell()`, unchanged, so the drag path does not know this
+/// container is shaped differently: the slot indices are the sim's
+/// (`oven::FIRE_LAYOUT`), and which band takes what is the sim's too
+/// (`oven::slot_takes`, asked by `drag_pointer`).
+fn fire_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, l: OvenLayout) {
+    let lit = open_cont_lit(core);
+    let name = container_name(
+        CONT_BOX,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        &core.catalog,
+    );
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(10.0)),
+            row_gap: Val::Px(6.0),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_BG),
+        BorderColor::all(LINE),
+    ))
+    .with_children(|col| {
+        // The fire's own name as the head, the research table's reason: a
+        // name bar under it would say FIRE PIT twice.
+        section(col, &name);
+        col.spawn((
+            Node {
+                width: Val::Px(FIRE_W_PX),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(8.0)),
+                row_gap: Val::Px(2.0),
+                ..default()
+            },
+            BackgroundColor(FIRE_WELL),
+        ))
+        .with_children(|well| {
+            for (k, band) in Section::ALL.into_iter().enumerate() {
+                if k > 0 {
+                    arrow(well);
+                }
+                fire_band(well, core, icons, l, band, lit);
+            }
+        });
+        // A fire saved before it had sections can hold stacks past them.
+        // They are drawn so they can be taken out; nothing goes back.
+        let spare = oven_ui::leftovers(l, &core.cont);
+        if !spare.is_empty() {
+            col.spawn((
+                Text::new("TAKE THESE OUT"),
+                font_bold(11.0),
+                TextColor(TEXT_DIM),
+            ));
+            grid(
+                col,
+                core,
+                icons,
+                CONT_BOX,
+                spare.start,
+                spare.end,
+                spare.len().min(4),
+                NO_SEL,
+            );
+        }
+        controls(col, lit);
+    });
+}
+
+/// One band: its name over its cells, the cells centred.
+fn fire_band(
+    parent: &mut ChildSpawnerCommands,
+    core: &ClientCore,
+    icons: &Icons,
+    l: OvenLayout,
+    band: Section,
+    lit: bool,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(3.0),
+            ..default()
+        })
+        .with_children(|b| {
+            b.spawn((
+                Text::new(band.label()),
+                font_bold(11.0),
+                TextColor(TEXT_DIM),
+                Pickable::IGNORE,
+            ));
+            b.spawn(Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(CELL_GAP_PX),
+                ..default()
+            })
+            .with_children(|r| {
+                for slot in band.slots(l) {
+                    let stack = cell_stack(core, CONT_BOX, slot);
+                    cell(
+                        r,
+                        CONT_BOX,
+                        slot,
+                        stack,
+                        core,
+                        icons,
+                        false,
+                        oven_ui::burning(l, slot, stack, lit),
+                    );
+                }
+            });
+        });
+}
+
+/// The arrow between two bands: a shaft and a chevron, drawn, because the
+/// panel's face has no arrow glyph.
+fn arrow(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                padding: UiRect::vertical(Val::Px(1.0)),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|a| {
+            a.spawn((
+                Node {
+                    width: Val::Px(2.0),
+                    height: Val::Px(10.0),
+                    ..default()
+                },
+                BackgroundColor(TEXT_DIM),
+                Pickable::IGNORE,
+            ));
+            // A square with two edges, turned 45°: its corner is the head.
+            a.spawn((
+                Node {
+                    width: Val::Px(8.0),
+                    height: Val::Px(8.0),
+                    margin: UiRect::top(Val::Px(-7.0)),
+                    border: UiRect {
+                        right: Val::Px(2.0),
+                        bottom: Val::Px(2.0),
+                        ..default()
+                    },
+                    ..default()
+                },
+                BorderColor::all(TEXT_DIM),
+                UiTransform::from_rotation(Rot2::degrees(45.0)),
+                Pickable::IGNORE,
+            ));
+        });
+}
+
+/// The CONTROLS bar: the switch, green to light the fire and red to put it
+/// out. It sends what `C` sends (`ACT_USE` at the fire's address), so the
+/// sim's answer — `REFUSE_D_FUEL` with nothing to burn — is the same.
+fn controls(parent: &mut ChildSpawnerCommands, lit: bool) {
+    let (label, rest, hot) = if lit {
+        ("TURN OFF", SWITCH_OFF, SWITCH_OFF_HOT)
+    } else {
+        ("TURN ON", SWITCH_ON, SWITCH_ON_HOT)
+    };
+    parent
+        .spawn((
+            Node {
+                width: Val::Px(FIRE_W_PX),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                ..default()
+            },
+            BackgroundColor(CELL_BG),
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                Text::new("CONTROLS"),
+                font_bold(12.0),
+                TextColor(TEXT),
+                Pickable::IGNORE,
+            ));
+            bar.spawn((
+                Button,
+                FireSwitch,
+                Node {
+                    padding: UiRect::axes(Val::Px(14.0), Val::Px(5.0)),
+                    ..default()
+                },
+                BackgroundColor(rest),
+                super::Hover { rest, hot },
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new(label),
+                    font_bold(13.0),
+                    TextColor(SWITCH_TEXT),
+                    Pickable::IGNORE,
+                ));
+            });
+        });
+}
+
+/// TURN ON / TURN OFF: the fire's switch, `ACT_USE` at its address — the
+/// same action `C` sends at a fire. A fire with nothing in its fuel slot
+/// says so instead of asking for a refusal a round trip later.
+pub fn fire_clicks(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    switch: Query<&Interaction, (Changed<Interaction>, With<FireSwitch>)>,
+) {
+    if ui.panel != Panel::Inventory || !switch.iter().any(|i| *i == Interaction::Pressed) {
+        return;
+    }
+    let core = &net.session.core;
+    let Some((_, l)) = open_fire(core) else {
+        return;
+    };
+    if !open_cont_lit(core) && core.cont[l.fuel_slots()].iter().all(|s| s.count == 0) {
+        ui.say("put wood in FUEL to light the fire");
+        return;
+    }
+    let (cx, cz, level) = research_ui::table_address(core.cont_handle);
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_use(cx, cz, level, sim_core::build::LOC_PLANE, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.status.clear(),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the fire would not switch ({e:?})")),
+    }
 }
 
 /// The BEGIN button under a research table's slots.
@@ -333,6 +626,7 @@ fn table_grid(row: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
                         cell_stack(core, CONT_BOX, slot),
                         core,
                         icons,
+                        false,
                         false,
                     );
                     c.spawn((Text::new(caption), font(10.0), TextColor(TEXT_DIM)));
@@ -547,6 +841,7 @@ fn wear_slot(parent: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons
                 core,
                 icons,
                 false,
+                false,
             );
         });
 }
@@ -713,11 +1008,15 @@ fn grid(
                     core,
                     icons,
                     kind == CONT_SELF && slot == sel,
+                    false,
                 );
             }
         });
 }
 
+/// One slot. `flame` hangs Rust's little fire in its corner: a camp fire's
+/// fuel burning or its grill cooking (`ui::oven::burning`).
+#[allow(clippy::too_many_arguments)]
 fn cell(
     parent: &mut ChildSpawnerCommands,
     kind: u8,
@@ -726,6 +1025,7 @@ fn cell(
     core: &ClientCore,
     icons: &Icons,
     active: bool,
+    flame: bool,
 ) {
     let filled = stack.count > 0;
     parent
@@ -826,8 +1126,32 @@ fn cell(
                 // v42 and its ceiling since v46, and until now every panel
                 // drew both of them nowhere.
                 pip(c, stack, core);
+                if flame {
+                    flame_badge(c, icons);
+                }
             }
         });
+}
+
+/// The flame in a burning cell's top corner — the fire pit's own picture,
+/// small, or a spark of the fire's colour where no icon was baked.
+fn flame_badge(parent: &mut ChildSpawnerCommands, icons: &Icons) {
+    let node = Node {
+        position_type: PositionType::Absolute,
+        right: Val::Px(2.0),
+        top: Val::Px(2.0),
+        width: Val::Px(15.0),
+        height: Val::Px(15.0),
+        ..default()
+    };
+    match icons.glyph("fire_pit") {
+        Some(image) => parent.spawn((node, ImageNode { image, ..default() }, Pickable::IGNORE)),
+        None => parent.spawn((
+            node,
+            BackgroundColor(Color::srgb(0.95, 0.55, 0.15)),
+            Pickable::IGNORE,
+        )),
+    };
 }
 
 /// No slot of this grid is in the player's hand.
@@ -1085,6 +1409,7 @@ pub fn drag_pointer(
     // the cell was last painted, so a cell that empties while the pointer
     // rests on it comes back to `CELL_BG` and not to whatever it was.
     let mut over: Option<SlotCell> = None;
+    let fire = open_fire(core);
     for (cell, interaction, mut border, mut bg) in cells.iter_mut() {
         let hot = !matches!(interaction, Interaction::None);
         if hot {
@@ -1117,6 +1442,11 @@ pub fn drag_pointer(
                 // red only under the pointer — so dragging *across* a
                 // crate on the way to the pack is not a screen of errors.
                 Some(false)
+            } else if let (Some((arch, _)), CONT_BOX) = (fire, cell.kind) {
+                // The third: a camp fire's band takes its own
+                // (`oven::slot_takes`), so the band a stack belongs in
+                // lights the moment it is picked up.
+                oven_ui::takes(&core.catalog, arch, cell.slot, d.stack.item)
             } else {
                 None
             }
@@ -1216,7 +1546,19 @@ pub fn drag_pointer(
     let table = open_table(core).is_some();
     if target.kind == drag.kind && target.slot == drag.slot {
         if drag.grab == Grab::Half {
-            let quick = if table {
+            let quick = if let Some((arch, l)) = fire {
+                oven_ui::fire_quick_move(
+                    core.cont_handle,
+                    arch,
+                    l,
+                    drag.kind,
+                    drag.slot,
+                    &core.catalog,
+                    &core.inv,
+                    &core.cont,
+                    &core.worn,
+                )
+            } else if table {
                 research_ui::table_quick_move(
                     core.cont_handle,
                     open_table_running(core),
@@ -1285,6 +1627,28 @@ pub fn drag_pointer(
         } else if running {
             ui.say(refusal_text(REFUSE_M_BUSY as u8));
             return;
+        }
+    }
+
+    // A camp fire's bands, said before the round trip and in words that
+    // name the band the stack belongs in (`ui::oven::drop_refusal`).
+    if let Some((arch, _)) = fire {
+        if drag.kind == CONT_BOX || target.kind == CONT_BOX {
+            let src = cell_stack(core, drag.kind, drag.slot);
+            if let Some(why) = oven_ui::drop_refusal(
+                &core.catalog,
+                arch,
+                drag.kind,
+                drag.slot,
+                target.kind,
+                target.slot,
+                src,
+                cell_stack(core, target.kind, target.slot),
+                grab.units(src.count),
+            ) {
+                ui.say(why);
+                return;
+            }
         }
     }
 
