@@ -248,7 +248,11 @@ pub fn place(
     // outside the tool cupboard's reach with no way for the owner to
     // answer. Content sets the arm's length; the sim sets the ceiling.
     let reach_m = (def.reach_cm as f32 * 0.01).min(BUILD_REACH_M);
-    let (ax, az) = anchor(cx, cz, loc);
+    let (ax, az) = if deploy {
+        crate::deploy::rec_anchor(&deploys.entries()[i])
+    } else {
+        anchor(cx, cz, loc)
+    };
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
@@ -372,6 +376,31 @@ fn falloff(full: u16, d_cm: i64, blast_cm: u16) -> u16 {
 /// and a tick that has spent it leaves the wall standing at one hp for the
 /// next one. Wall 4 does not get a second allowance because the damage
 /// arrived on a fuse.
+/// Blast damage owed to animals, summed over every fuse this tick and
+/// landed by the world afterwards through `mob::hurt_slot` (the arrow's
+/// path: flight, retarget, hitmarker, carcass), which needs stores the fuse
+/// pass does not hold. Exactly bounded: one cell per roster slot. `by` is
+/// the planter of the first charge that reached the animal.
+pub struct BlastMobs {
+    pub dmg: [u16; crate::limits::MAX_MOBS],
+    pub by: [u32; crate::limits::MAX_MOBS],
+}
+
+impl Default for BlastMobs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BlastMobs {
+    pub const fn new() -> Self {
+        Self {
+            dmg: [0; crate::limits::MAX_MOBS],
+            by: [0; crate::limits::MAX_MOBS],
+        }
+    }
+}
+
 // The arity allow `place` and `build::repair` carry, for their reason: the
 // content tables, the stores, the players, the clock, the budget and the
 // ring are distinct owners, and bundling them into a context struct here
@@ -391,6 +420,8 @@ pub fn tick_fuses(
     tick: u64,
     budget: &mut usize,
     kills: &mut BlastKills,
+    mobs: &crate::mob::Mobs,
+    hit_mobs: &mut BlastMobs,
     events: &mut EventQueue,
 ) {
     let mut i = 0;
@@ -401,12 +432,27 @@ pub fn tick_fuses(
             continue;
         }
         detonate(
-            seed, haven, bc, dc, cc, &c, pieces, deploys, players, budget, kills, events,
+            seed, haven, bc, dc, cc, &c, pieces, deploys, players, budget, kills, mobs, hit_mobs,
+            events,
         );
         // Swap-remove without advancing: the entry now at `i` is the one
         // that was last, and it has not been tested yet.
         charges.remove_at(i);
     }
+}
+
+/// Where a charge's blast centres: the anchor of what it was planted on — a
+/// free-placed deployable's own centre (`deploy::rec_anchor`), read off the
+/// record while it stands, and its cell's centre once an earlier blast took
+/// it. A charge on a piece, or on a door, is at `build::anchor` as before.
+pub fn epicentre(deploys: &Deploys, c: &ChargeRec) -> (f32, f32) {
+    if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
+        return match deploys.find(c.cx, c.cz, c.level, c.loc) {
+            Some(rec) => rec.xz(),
+            None => crate::deploy::cell_center(c.cx, c.cz),
+        };
+    }
+    anchor(c.cx, c.cz, c.loc)
 }
 
 /// The candidate structural targets one blast can touch, collected before
@@ -428,12 +474,14 @@ fn detonate(
     players: &mut [Player; crate::limits::MAX_PLAYERS],
     budget: &mut usize,
     kills: &mut BlastKills,
+    mobs: &crate::mob::Mobs,
+    hit_mobs: &mut BlastMobs,
     events: &mut EventQueue,
 ) {
     use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
     use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
-    let (ax, az) = anchor(c.cx, c.cz, c.loc);
+    let (ax, az) = epicentre(deploys, c);
     let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
         + crate::build::level_y(c.level);
     let blast = c.blast_cm;
@@ -517,9 +565,14 @@ fn detonate(
         if n >= BLAST_TARGET_CAP {
             break;
         }
-        let (tx, tz) = anchor(rec.cx, rec.cz, rec.loc);
-        let ly = crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
-            + crate::build::level_y(rec.level);
+        let (tx, tz) = crate::deploy::rec_anchor(rec);
+        let ly = match dc.defs.get(rec.row as usize) {
+            Some(def) => crate::deploy::body_base_y(seed, haven, pieces.cols(), rec, def.arch),
+            None => {
+                crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
+                    + crate::build::level_y(rec.level)
+            }
+        };
         let d = dist_cm(tx, ly, tz);
         let scaled = falloff(c.structure, d, blast);
         if scaled > 0 {
@@ -544,9 +597,36 @@ fn detonate(
     // the oldest lesson the reference's raiders learn. Sleepers are hit
     // too — a body is a body, and a wall-adjacent sleeper in a raid was
     // always going to be part of the bill.
+    if c.damage == 0 {
+        return; // a wall-only charge
+    }
+
+    // --- animals: the same falloff a body takes, owed now and landed by
+    // the world (`BlastMobs`). Arrows and bullets always hurt them; a
+    // satchel thrown into a wolf pack now does too.
+    for (slot, m) in mobs.m.iter().enumerate() {
+        // The heli cannot be hurt yet (`heli.rs`); a satchel is no exception.
+        if !m.alive || m.hp == 0 || m.kind == crate::mob::MOB_HELI {
+            continue;
+        }
+        let d = dist_cm(
+            m.body.qx as f32 * crate::movement::POS_XZ_Q,
+            m.body.qy as f32 * crate::movement::POS_Y_Q,
+            m.body.qz as f32 * crate::movement::POS_XZ_Q,
+        );
+        let scaled = falloff(c.damage, d, blast);
+        if scaled == 0 {
+            continue;
+        }
+        if hit_mobs.dmg[slot] == 0 {
+            hit_mobs.by[slot] = c.owner;
+        }
+        hit_mobs.dmg[slot] = hit_mobs.dmg[slot].saturating_add(scaled);
+    }
+
     let player_hp = cc.player_hp;
-    if c.damage == 0 || player_hp == 0 {
-        return; // a wall-only charge, or unarmed combat content
+    if player_hp == 0 {
+        return; // unarmed combat content
     }
     for (slot, p) in players.iter_mut().enumerate() {
         if !p.active || p.hp == 0 {

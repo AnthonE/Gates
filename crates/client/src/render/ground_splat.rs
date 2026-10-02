@@ -371,6 +371,8 @@ pub struct GroundSplatParams {
     /// The per-pixel cliff: x/y = [`CLIFF_TAN_LO`]/[`CLIFF_TAN_HI`],
     /// z = [`CLIFF_NOISE`], w = [`CLIFF_NOISE_M`].
     pub cliff: Vec4,
+    /// x = [`WALL_PLANE_BLEND`]. yzw reserved and zero.
+    pub wall_planes: Vec4,
 }
 
 impl GroundSplatParams {
@@ -442,6 +444,7 @@ impl GroundSplatParams {
             ),
             aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
             cliff: Vec4::new(CLIFF_TAN_LO, CLIFF_TAN_HI, CLIFF_NOISE, CLIFF_NOISE_M),
+            wall_planes: Vec4::new(WALL_PLANE_BLEND, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -554,27 +557,33 @@ pub const CLIFF_NOISE: f32 = 0.45;
 /// The noise's wavelength, metres; a second octave rides at 0.37 of it.
 pub const CLIFF_NOISE_M: f32 = 6.0;
 
-/// Where the biplanar wall tap turns on, as `sin(tilt)`.
+/// Where the wall planes turn on, as `sin(tilt)`.
 ///
-/// **Derived, not chosen.** The ground's UV is a planar XZ projection, so on a
-/// face of tilt θ the photograph is stretched by `1/cos θ` along the fall line
-/// — 1.41× at 45°, 2.9× at 70°, unbounded at vertical. A second tap on the
-/// vertical plane containing that fall line is stretched by `1/sin θ` instead,
-/// so the two are exact complements and `sin θ = cos θ` — 45°, `1/√2` — is
-/// precisely where the plane you already have stops being the better one.
-/// Below it the top tap wins and the wall tap is skipped entirely.
+/// The ground's UV is a planar XZ projection, so on a face of tilt θ the
+/// photograph is stretched by `1/cos θ` along the fall line — 1.41× at 45°,
+/// 2.9× at 70°, unbounded at vertical. The wall planes (vertical, at fixed
+/// bearings 45° apart) are stretched by `1/sin θ` down the face instead, so
+/// the two are exact complements and cross over at 45°. Below this gate the
+/// wall taps are skipped entirely.
 ///
-/// **The fall-line plane, not an axis plane, and both halves matter.** An
-/// axis-aligned pair swaps wherever `|n.x| = |n.z|`, which is a hard line of
-/// changed photograph down every diagonal face; a frame built from the face's
-/// own fall line rotates through that locus continuously. This is `DECISIONS.md`
-/// materials v4's design, which the browser client shipped and the native one
-/// never got.
+/// ⚠ **The wall planes are fixed world axes, never a frame built from the
+/// face.** Until 2026-10-02 the wall tap read the vertical plane through the
+/// face's own fall line (`DECISIONS.md` materials v4), `dot(wp.xz, across)`
+/// with `across` from the per-pixel normal, so that the plane would rotate
+/// through `|n.x| = |n.z|` rather than swap there. But a frame that turns with
+/// the surface, multiplied by a world coordinate of ~1500 m, sweeps the UV
+/// 8–77 m of photograph per metre of cliff wherever the face's bearing changes
+/// (p10–p99 on the face north of 1510,640): fine lines along every contour,
+/// the operator's "stretch lines horizontal" on every cliff. Fixed planes
+/// blended by [`WALL_PLANE_BLEND`] rather than swapped have no seam, and four
+/// of them leave no face more than 22.5° off one — 1.08× of stretch across it,
+/// where the X and Z planes alone left √2 on a diagonal face, measured as a
+/// horizontal smear on the face north of 580,2578.
 ///
 /// ⚠ **Gated at 30°, not 45°.** At 45° the two weights are equal, so gating
 /// there switched the wall tap on at a 50% share in one pixel — a hard seam
 /// line along every 45° contour, which read as pencil lines on the hills. At
-/// 30° the sharpened share is ~1%, so the step is invisible.
+/// 30° the sharpened share is ~0.02%, so the step is invisible.
 pub const WALL_ON: f32 = 0.5;
 
 /// The exponent the two plane weights are raised to before blending.
@@ -590,6 +599,12 @@ pub const WALL_ON: f32 = 0.5;
 /// photograph at two stretches, which read as cross-hatching over the whole
 /// rock face. At 16 they share ~42°–48°.
 pub const WALL_SHARPNESS: f32 = 16.0;
+
+/// The share of each 45° step between two wall planes over which a face reads
+/// both: the middle 15°. Everywhere else it reads the one plane within 15° of
+/// its bearing, stretched at most 1.04× across it, so two thirds of a wall
+/// pays for one plane's taps.
+pub const WALL_PLANE_BLEND: f32 = 1.0 / 3.0;
 
 /// Three arrays — albedo, normal, roughness-with-AO — and one sampler.
 ///

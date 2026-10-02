@@ -437,7 +437,7 @@ fn refusals_in_order() {
     )
     .is_some());
 
-    // 5 · a ground end with a zero handle. `box_key(0,0,0) == 0` addresses a
+    // 5 · a ground end with a zero handle. `box_key(0, 0, 0, 0) == 0` addresses a
     //     real box, so sending 0 for "no container known" would move items
     //     in a stranger's box rather than being refused.
     assert!(slots::move_args(
@@ -4321,7 +4321,7 @@ mod loot {
     const LARGE_BOX: u16 = 4;
 
     fn handle() -> u32 {
-        box_key(CX, CZ, LEVEL)
+        box_key(CX, CZ, LEVEL, 0)
     }
 
     /// One def table with `arch`/`item` on row 0 and nothing else live.
@@ -4390,9 +4390,9 @@ mod loot {
         );
     }
 
-    /// A handle names a cell and a level; a `DeployRec` also carries a `loc`,
-    /// so a hearth and a box can share one key. The arch filter is what makes
-    /// the address mean one of them.
+    /// A hearth and a box share a cell under different slots (free
+    /// placement); the handle names the slot, and the arch filter keeps the
+    /// hearth's slot from naming anything.
     #[test]
     fn the_bar_reads_the_box_at_the_handle_not_the_hearth_beside_it() {
         let mut dc = defs(ARCH_HEARTH, 9);
@@ -4402,16 +4402,15 @@ mod loot {
             ..DeployDef::INERT
         };
         dc.def_count = 2;
+        let both = [rec(0, 0), rec(1, 3)];
         assert_eq!(
-            container_name(
-                CONT_BOX,
-                handle(),
-                &[rec(0, 0), rec(1, 3)],
-                &dc,
-                2,
-                &named()
-            ),
+            container_name(CONT_BOX, box_key(CX, CZ, LEVEL, 3), &both, &dc, 2, &named()),
             "LARGE BOX"
+        );
+        assert_eq!(
+            container_name(CONT_BOX, handle(), &both, &dc, 2, &named()),
+            "BOX",
+            "the hearth's slot named the box beside it"
         );
     }
 
@@ -5878,7 +5877,7 @@ mod research_table {
     /// box there is not one, nor is a table whose def row has not dripped.
     #[test]
     fn the_open_container_is_a_table_only_when_a_table_stands_there() {
-        let h = box_key(CX, CZ, 0);
+        let h = box_key(CX, CZ, 0, 0);
         assert!(table_open(CONT_BOX, h, &[rec()], &defs(ARCH_RESEARCH), 1));
         assert!(!table_open(CONT_BOX, h, &[rec()], &defs(ARCH_BOX), 1));
         assert!(
@@ -5886,11 +5885,11 @@ mod research_table {
             "a def past the watermark is zeroes and is not read"
         );
         assert!(!table_open(CONT_SELF, h, &[rec()], &defs(ARCH_RESEARCH), 1));
-        assert_eq!(table_address(h), (CX, CZ, 0), "the handle unpacks");
+        assert_eq!(table_address(h), (CX, CZ, 0, 0), "the handle unpacks");
         assert_eq!(
-            table_address(box_key(1023, 1023, 7)),
-            (1023, 1023, 7),
-            "at the grid's far corner too"
+            table_address(box_key(2047, 2047, 7, 15)),
+            (2047, 2047, 7, 15),
+            "at the grid's far corner and the last slot too"
         );
         assert_eq!(
             container_name(CONT_BOX, h, &[rec()], &defs(ARCH_RESEARCH), 1, &catalog()),
@@ -5965,7 +5964,7 @@ mod research_table {
     #[test]
     fn a_right_click_into_the_table_picks_its_slot() {
         let (rc, cat) = (rc(), catalog());
-        let h = box_key(CX, CZ, 0);
+        let h = box_key(CX, CZ, 0, 0);
         let mut inv = empty();
         inv[6] = stack(SAMPLE, 3);
         inv[7] = stack(COIN, 40);
@@ -6053,7 +6052,7 @@ mod research_table {
     #[test]
     fn the_wait_is_timed_only_from_a_start_this_client_saw() {
         let ticks = 10 * TICK_HZ as u16;
-        let h = box_key(CX, CZ, 0);
+        let h = box_key(CX, CZ, 0, 0);
 
         let mut late = TableClock::default();
         late.observe(h, true, 3.0);
@@ -6079,7 +6078,7 @@ mod research_table {
 
         seen.observe(h, false, 12.0);
         assert_eq!(seen.fraction(12.0, ticks), None, "a finish clears it");
-        seen.observe(box_key(CX + 1, CZ, 0), true, 13.0);
+        seen.observe(box_key(CX + 1, CZ, 0, 0), true, 13.0);
         assert_eq!(
             seen.fraction(13.0, ticks),
             None,

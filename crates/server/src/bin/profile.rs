@@ -158,6 +158,7 @@ fn build_core(a: &Args) -> ShardCore {
         &core.world.combat,
         &core.world.gather,
         &core.world.survival,
+        &core.world.cook,
     ) {
         Ok(c) => c,
         Err(e) => {

@@ -180,6 +180,7 @@ fn locked_box_world(code: u16) -> (World, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the fixture needs its box placed");
 
@@ -187,7 +188,7 @@ fn locked_box_world(code: u16) -> (World, u16, u16) {
     // itself the rule under test working from the other side.
     w.tick(&[Command::Move {
         id: OWNER,
-        cont: box_key(cx, cz, 0),
+        cont: box_key(cx, cz, 0, 0),
         from_kind: CONT_SELF,
         from_slot: 0,
         to_kind: CONT_BOX,
@@ -213,6 +214,7 @@ fn locked_box_world(code: u16) -> (World, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.locks().len(), 1, "the lock bolts onto the box");
     w.tick(&[Command::Access {
@@ -252,7 +254,7 @@ fn join_at(w: &mut World, id: u32, cx: u16, cz: u16) -> usize {
 fn try_withdraw(w: &mut World, id: u32, cx: u16, cz: u16, to_slot: u8) -> (bool, u32, u32) {
     w.tick(&[Command::Move {
         id,
-        cont: box_key(cx, cz, 0),
+        cont: box_key(cx, cz, 0, 0),
         from_kind: CONT_BOX,
         from_slot: 0,
         to_kind: CONT_SELF,
@@ -307,7 +309,7 @@ fn a_locked_box_refuses_a_stranger_and_answers_its_owner() {
     };
     w.tick(&[Command::Move {
         id: STRANGER,
-        cont: box_key(cx, cz, 0),
+        cont: box_key(cx, cz, 0, 0),
         from_kind: CONT_SELF,
         from_slot: 0,
         to_kind: CONT_BOX,

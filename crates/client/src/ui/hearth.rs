@@ -31,15 +31,15 @@ pub struct Row {
     pub per_day: u32,
 }
 
-/// The ack's rows as the panel draws them. `bill` is one period's charge,
-/// so a day is 24 of them.
+/// The ack's rows as the panel draws them. `bill` is already a day's
+/// charge (wire v89, `sim_core::upkeep::bill`).
 pub fn rows(stock: &[(u16, u32, u32)]) -> Vec<Row> {
     stock
         .iter()
         .map(|&(item, units, bill)| Row {
             item,
             units,
-            per_day: bill.saturating_mul(24),
+            per_day: bill,
         })
         .collect()
 }
@@ -52,7 +52,7 @@ pub fn minutes_left(stock: &[(u16, u32, u32)]) -> Option<u64> {
     stock
         .iter()
         .filter(|&&(_, _, bill)| bill > 0)
-        .map(|&(_, units, bill)| units as u64 * PERIOD_MINUTES / bill as u64)
+        .map(|&(_, units, bill)| units as u64 * PERIOD_MINUTES * 24 / bill as u64)
         .min()
 }
 
@@ -78,11 +78,11 @@ pub fn status_line(stock: &[(u16, u32, u32)]) -> String {
     }
 }
 
-/// Is a body at `pos` still in feeding reach of the hearth at `(cx, cz)`?
-/// `deploy::feed`'s own test — planar distance to the cell centre against
-/// `build::BUILD_REACH_M` — so the panel closes where feeding would refuse.
-pub fn in_reach(pos: [f32; 3], cx: u16, cz: u16) -> bool {
-    let (hx, hz) = sim_core::deploy::cell_center(cx, cz);
+/// Is a body at `pos` still in feeding reach of the hearth standing at
+/// `(hx, hz)` (`DeployRec::xz`, where it was freely placed)? `deploy::feed`'s
+/// own test — planar distance against `build::BUILD_REACH_M` — so the panel
+/// closes where feeding would refuse.
+pub fn in_reach(pos: [f32; 3], (hx, hz): (f32, f32)) -> bool {
     let (dx, dz) = (pos[0] - hx, pos[2] - hz);
     let r = sim_core::build::BUILD_REACH_M;
     dx * dx + dz * dz <= r * r
@@ -102,13 +102,13 @@ mod tests {
 
     #[test]
     fn the_first_material_to_run_out_sets_the_clock() {
-        // 100 wood at 10 an hour is 10 h; 30 stone at 4 an hour is 7 h 30 m.
-        let stock = [(3, 100, 10), (4, 30, 4)];
+        // 100 wood at 240 a day is 10 h; 30 stone at 96 a day is 7 h 30 m.
+        let stock = [(3, 100, 240), (4, 30, 96)];
         assert_eq!(minutes_left(&stock), Some(450));
         assert_eq!(status_line(&stock), "PROTECTED FOR 7H 30M");
         assert_eq!(rows(&stock)[1].per_day, 96);
         // It agrees with the sim's whole hours.
-        assert_eq!(sim_core::upkeep::lasts(&[100, 30], &[10, 4]), Some(7));
+        assert_eq!(sim_core::upkeep::lasts(&[100, 30], &[240, 96]), Some(7));
     }
 
     #[test]
@@ -129,9 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn reach_is_the_feed_radius_off_the_cell_centre() {
-        let (hx, hz) = sim_core::deploy::cell_center(100, 100);
-        assert!(in_reach([hx + 4.9, 0.0, hz], 100, 100));
-        assert!(!in_reach([hx + 5.1, 0.0, hz], 100, 100));
+    fn reach_is_the_feed_radius_off_the_hearth() {
+        let (hx, hz) = (301.2, 299.4);
+        assert!(in_reach([hx + 4.9, 0.0, hz], (hx, hz)));
+        assert!(!in_reach([hx + 5.1, 0.0, hz], (hx, hz)));
     }
 }

@@ -459,6 +459,10 @@ pub struct Session {
     /// purpose: a connection does not come back, and a flag that cleared
     /// itself would let one hopeful frame un-say it.
     closed: bool,
+    /// The reason the shard posted on the event lane before it hung up (a
+    /// kick, a watched player leaving; wire v89). The browser cannot read a
+    /// QUIC close code, so this is how it learns why.
+    refused: Option<u8>,
     event_observer: Option<EventObserver>,
     observer_failed: bool,
     /// Sees every inbound datagram and event, raw and before the core does
@@ -707,6 +711,7 @@ impl Session {
                 .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
                 .collect(),
             closed: false,
+            refused: None,
             event_observer: None,
             observer_failed: false,
             tap: None,
@@ -912,6 +917,7 @@ impl Session {
                 .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
                 .collect(),
             closed: false,
+            refused: None,
             event_observer: None,
             observer_failed: false,
             tap: None,
@@ -982,13 +988,24 @@ impl Session {
         self.datagrams.lock().map(|r| r.dropped).unwrap_or(0)
     }
 
+    /// The reason the shard posted on the event lane before hanging up
+    /// (wire v89) — the half of [`Session::close_code`] a browser can read.
+    pub fn posted_refusal(&self) -> Option<u8> {
+        self.refused
+    }
+
     /// The code the shard closed this session with, if it gave one — a
     /// `REFUSE_*` value: `REFUSE_WATCH_ENDED` when a watched player left,
     /// `REFUSE_ADMIN` for a kick, `REFUSE_TICKET` for a sold copy. `None`
     /// while connected, and for a loss that carried no reason. A poisoned
-    /// lock answers `None`, like `datagrams_dropped`'s 0.
+    /// lock answers `None`, like `datagrams_dropped`'s 0. The posted reason
+    /// ([`Session::posted_refusal`]) answers when the close code cannot.
     pub fn close_code(&self) -> Option<u64> {
-        self.datagrams.lock().ok().and_then(|r| r.close_code)
+        self.datagrams
+            .lock()
+            .ok()
+            .and_then(|r| r.close_code)
+            .or(self.refused.map(u64::from))
     }
 
     /// Whether the shard has hung up on this session. `pump` keeps working
@@ -1058,9 +1075,15 @@ impl Session {
         let applied2 = &mut self.applied2;
         let observer = &mut self.event_observer;
         let observer_failed = &mut self.observer_failed;
+        let refused = &mut self.refused;
         let ev_gone = drain_lane(&mut self.events, |bytes| {
             if let Some(tap) = tap.as_mut() {
                 tap(film::Lane::Event, bytes);
+            }
+            // The shard's last word before a kick: why (wire v89).
+            if let Ok(r) = protocol::decode_refuse(bytes) {
+                *refused = Some(r.code);
+                return;
             }
             // A malformed message contributes no flags. The `Err` is dropped
             // here exactly as the retired `let _` dropped it — surfacing a

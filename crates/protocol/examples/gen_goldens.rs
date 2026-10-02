@@ -102,9 +102,12 @@ fn main() {
     write_fixture(goldens::FIXTURES[127], &buf[..len]);
     let len = protocol::encode_action_swipe(goldens::action_swipe(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[128], &buf[..len]);
-    // The bush pick (v89).
-    let len = protocol::encode_action_pick(goldens::action_pick(), &mut buf).unwrap();
+    // Until when you are hostile (v89).
+    let len = protocol::encode_event_hostile(goldens::event_hostile(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[129], &buf[..len]);
+    // The bush pick (v91).
+    let len = protocol::encode_action_pick(goldens::action_pick(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[130], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -181,8 +184,8 @@ fn main() {
     assert_eq!(took, protocol::PIECE_DEFS_BATCH);
     write_fixture(goldens::FIXTURES[25], &buf[..len]);
 
-    let (row, cx, cz, level, loc) = goldens::action_deploy();
-    let len = encode_action_deploy(row, cx, cz, level, loc, &mut buf).unwrap();
+    let (row, cx, cz, level, loc, pose) = goldens::action_deploy();
+    let len = encode_action_deploy(row, cx, cz, level, loc, pose, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[26], &buf[..len]);
 
     let (cx, cz, level) = goldens::action_feed();
@@ -423,11 +426,11 @@ fn main() {
         write_fixture(goldens::FIXTURES[72 + n], &buf[..len]);
     }
 
-    for (n, (cx, cz, level, lit, by)) in [goldens::event_oven_lit(), goldens::event_oven_out()]
+    for (n, (cx, cz, level, loc, lit, by)) in [goldens::event_oven_lit(), goldens::event_oven_out()]
         .into_iter()
         .enumerate()
     {
-        let len = encode_event_oven(cx, cz, level, lit, by, &mut buf).unwrap();
+        let len = encode_event_oven(cx, cz, level, loc, lit, by, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[76 + n], &buf[..len]);
     }
 

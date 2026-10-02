@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 130] = [
+const GOLDEN: [&[u8]; 131] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -192,6 +192,7 @@ const GOLDEN: [&[u8]; 130] = [
     include_bytes!("golden/event_card_doors.bin"),
     include_bytes!("golden/event_swipe_refused.bin"),
     include_bytes!("golden/action_swipe.bin"),
+    include_bytes!("golden/event_hostile.bin"),
     include_bytes!("golden/action_pick.bin"),
 ];
 
@@ -411,10 +412,12 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 126);
     g!(seen, golden_event, 127);
     g!(seen, golden_action, 128);
-    // The bush pick (v89).
-    g!(seen, golden_action, 129);
+    // Until when you are hostile (v89).
+    g!(seen, golden_event, 129);
+    // The bush pick (v91).
+    g!(seen, golden_action, 130);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 130, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 131, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -563,7 +566,7 @@ fn golden_action(fixture: &[u8], name: &str) {
             encode_action_place(row, cx, cz, level, loc, freehand, plate, &mut buf).unwrap()
         }
         "action_deploy.bin" => {
-            let (row, cx, cz, level, loc) = action_deploy();
+            let (row, cx, cz, level, loc, pose) = action_deploy();
             assert_eq!(
                 decode_action(fixture).unwrap(),
                 ActionMsg::Deploy {
@@ -572,10 +575,11 @@ fn golden_action(fixture: &[u8], name: &str) {
                     cz,
                     level,
                     loc,
+                    pose,
                 },
                 "{name}: decode mismatch"
             );
-            encode_action_deploy(row, cx, cz, level, loc, &mut buf).unwrap()
+            encode_action_deploy(row, cx, cz, level, loc, pose, &mut buf).unwrap()
         }
         "action_feed.bin" => {
             let (cx, cz, level) = action_feed();
@@ -1734,7 +1738,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_cont_sync(kind, cont, reset, &[], &mut buf).unwrap()
         }
         "event_oven_lit.bin" | "event_oven_out.bin" => {
-            let (cx, cz, level, lit, by) = if name == "event_oven_lit.bin" {
+            let (cx, cz, level, loc, lit, by) = if name == "event_oven_lit.bin" {
                 event_oven_lit()
             } else {
                 event_oven_out()
@@ -1745,12 +1749,13 @@ fn golden_event(fixture: &[u8], name: &str) {
                     cx,
                     cz,
                     level,
+                    loc,
                     lit,
                     by,
                 },
                 "{name}: decode mismatch"
             );
-            encode_event_oven(cx, cz, level, lit, by, &mut buf).unwrap()
+            encode_event_oven(cx, cz, level, loc, lit, by, &mut buf).unwrap()
         }
         "event_shot.bin" => {
             let (shooter, yaw, pitch, speed_mmpt, drop_mmpt2) = event_shot();
@@ -1841,6 +1846,15 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_vend_offers(&vc, &names, 0, &mut buf)
                 .unwrap()
                 .0
+        }
+        "event_hostile.bin" => {
+            let until = protocol::goldens::event_hostile();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Hostile { until },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_hostile(until, &mut buf).unwrap()
         }
         "event_card_doors.bin" => {
             let bits = protocol::goldens::event_card_doors();
@@ -2535,20 +2549,16 @@ fn the_loc_fuzz_covers_each_stores_whole_domain() {
         }
         other => panic!("the deploy-sync fixture decoded as {other:?}"),
     }
-    for loc in 0..=LOC_EDGE_ZLO {
+    // Since wire v89 the deploy store addresses the whole four bits: the two
+    // straight edges hold inserts and every other value is a body slot
+    // (`sim_core::deploy::BODY_LOCS`), so all sixteen must reach the bytes.
+    for (loc, hit) in seen.iter().enumerate() {
         assert!(
-            seen[loc as usize],
+            *hit,
             "no deployable in the sync golden sits at loc {loc} — the \
-             deploy store addresses 0..={LOC_EDGE_ZLO} and every one of \
-             those values should reach the bytes"
+             deploy store addresses every four-bit loc and each one should \
+             reach the bytes"
         );
     }
-    for (loc, hit) in seen.iter().enumerate().skip(LOC_EDGE_ZLO as usize + 1) {
-        assert!(
-            !*hit,
-            "the deploy-sync golden carries loc {loc}, past the deploy \
-             store's own top ({LOC_EDGE_ZLO}) — the encoder is supposed to \
-             refuse that, so a fixture holding it means the refusal moved"
-        );
-    }
+    assert!(sim_core::deploy::is_edge_loc(LOC_EDGE_ZLO));
 }

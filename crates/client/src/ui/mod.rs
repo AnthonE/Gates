@@ -91,6 +91,7 @@ pub mod map;
 pub mod names;
 pub mod nav;
 pub mod notices;
+pub mod oven;
 pub mod place;
 pub mod pointer;
 pub mod refusals;

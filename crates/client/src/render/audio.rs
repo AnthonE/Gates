@@ -1034,7 +1034,8 @@ pub fn fell(
             // written to end.
             super::props::FellPart::Canopy
             | super::props::FellPart::Stump
-            | super::props::FellPart::Far => continue,
+            | super::props::FellPart::Far
+            | super::props::FellPart::Emptied => continue,
         };
         let p = t.translation();
         sound.play(Request::at(cue, [p.x, p.y, p.z]));
@@ -1049,6 +1050,20 @@ fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
         sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant
             == sim_core::terrain::Occupant::Bush
     })
+}
+
+/// The interface's click (`Cue::UiClick`), on any button the pointer
+/// presses. One system over every screen's buttons rather than a line in
+/// each screen's handler: a screen added later clicks without knowing this
+/// exists. Runs where the mixer does (`world_running`), so the in-world
+/// panels and the Esc menu click; the desktop's title menu does not yet.
+pub fn ui_click(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
+    mut sound: ResMut<Sound>,
+) {
+    if buttons.iter().any(|i| *i == Interaction::Pressed) {
+        sound.play(Request::own(Cue::UiClick));
+    }
 }
 
 /// A placement landing — the second positional cue, at the cell it landed.

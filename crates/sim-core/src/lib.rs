@@ -21,6 +21,7 @@ pub mod deploy;
 pub mod depot;
 pub mod exposure;
 pub mod fmath;
+pub mod footprint;
 pub mod gather;
 pub mod grounditem;
 pub mod heli;

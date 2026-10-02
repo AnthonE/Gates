@@ -40,7 +40,7 @@ hp = 300
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"
-placement = "ground"
+placement = "any"
 hp = 50
 
 [[deployable]]

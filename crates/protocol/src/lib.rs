@@ -58,23 +58,23 @@ pub use event::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
     encode_event_exposure, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_howl,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_skins, encode_event_skins_owned, encode_event_slot_change,
-    encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_swipe_refused,
-    encode_event_tag, encode_event_vend, encode_event_vend_offers, encode_event_vend_refused,
-    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK,
-    BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hostile,
+    encode_event_howl, encode_event_hurt, encode_event_impact, encode_event_inv,
+    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_skins, encode_event_skins_owned,
+    encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
+    encode_event_swipe_refused, encode_event_tag, encode_event_vend, encode_event_vend_offers,
+    encode_event_vend_refused, encode_event_vitals, encode_event_weak_mark, encode_event_wounded,
+    shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag,
+    WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -1010,10 +1010,22 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// layout moves: the heli is the roster's last slot (`mob::HELI_SLOT`,
 /// species `MOB_HELI`), an entity record flying up to 140 m, and its gun is
 /// an `EV_SHOT` from that mob id. A v87 client knows 64 slots and no heli.
-/// v89 — a bush is picked with `E`, not swung at: `ACT_PICK` (27) names the
-/// bush's cell key, and a swing passes through a bush. A v88 client would
+/// v89 — the camp fire is Rust's: one fuel slot, one input, two outputs
+/// (`oven::FIRE_LAYOUT`). Each catalog row grows a 9-bit `oven` column after
+/// `nock_ticks` (`ItemRow::oven`: fuel/input/output per converter), so a
+/// client knows which section of a fire an item goes in.
+/// v89 — `SUB_HOSTILE` (72): until when you are hostile, so the SAFE ZONE
+/// chip stops lying after you attack someone. The `Stock` ack's bill column
+/// is a day's charge rather than an hour's. A kick or a watch ending posts
+/// its `Refuse` on the event lane before the connection closes.
+/// v90 — free placement: a body deployable stands anywhere in its cell. The
+/// deploy record and `ACT_DEPLOY` gain the pose (offset from the cell centre
+/// and facing, three bytes); a deploy `loc` is any four-bit value (body
+/// slots beside the two edges); `SUB_OVEN` gains the oven's `loc`.
+/// v91 — a bush is picked with `E`, not swung at: `ACT_PICK` (27) names the
+/// bush's cell key, and a swing passes through a bush. A v90 client would
 /// still offer `[LMB] PICK BUSH` at a bush its swing can no longer reach.
-pub const PROTO_VER: u16 = 89;
+pub const PROTO_VER: u16 = 91;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1815,7 +1827,7 @@ const ACT_VEND: u32 = 25;
 /// Swipe a keycard at a ziggurat door, or pull its lever (wire v87,
 /// `sim_core::monument`): the door.
 const ACT_SWIPE: u32 = 26;
-/// Pick a bush by hand (wire v89, `sim_core::gather::pick`): the bush's
+/// Pick a bush by hand (wire v91, `sim_core::gather::pick`): the bush's
 /// `gather::cell_key`, a claim the sim re-derives and reaches for itself.
 const ACT_PICK: u32 = 27;
 /// The highest live action code, named rather than counted — the event
@@ -1893,14 +1905,15 @@ pub(crate) const BUILD_LEVEL_BITS: u32 = 4;
 pub(crate) const BUILD_LOC_BITS: u32 = 4;
 
 /// The widest loc each store can address (triangles v0): pieces gained
-/// the halves, diagonals and stair directions; deployables live on the plane and the
-/// straight edges. One function rather than ten scattered comparisons,
-/// because a store-bit message bounds its loc BY the bit and a site that
-/// picked the wrong constant would admit a forged address into the other
-/// store's range.
+/// the halves, diagonals and stair directions; deployables (wire v89, free
+/// placement) use the whole four bits — the two straight edges for inserts
+/// and every other value as a body slot (`sim_core::deploy::BODY_LOCS`).
+/// One function rather than ten scattered comparisons, because a store-bit
+/// message bounds its loc BY the bit and a site that picked the wrong
+/// constant would admit a forged address into the other store's range.
 pub(crate) fn loc_max(deploy: bool) -> u8 {
     if deploy {
-        sim_core::build::LOC_EDGE_ZLO
+        (1 << BUILD_LOC_BITS) - 1
     } else {
         sim_core::build::LOC_RISER_XLO
     }
@@ -2012,13 +2025,16 @@ pub enum ActionMsg {
     },
     /// Place baked deployable row `row` at the grid address. Same
     /// contract: the wire enforces shape, the sim delivers meaning as a
-    /// deploy-refused event.
+    /// deploy-refused event. `pose` (wire v89, free placement) is where in
+    /// the cell a body deployable stands and which way it faces; three
+    /// whole bytes, so every value is one the sim may judge.
     Deploy {
         row: u16,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
+        pose: sim_core::footprint::Pose,
     },
     /// Feed the hearth at the address from the sender's inventory.
     Feed { cx: u16, cz: u16, level: u8 },
@@ -2157,7 +2173,7 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
-    /// Pick the bush at cell key `cell` (wire v89). `Container`'s
+    /// Pick the bush at cell key `cell` (wire v91). `Container`'s
     /// `CONT_WORLD` posture: the cell is a claim, and what stands there and
     /// whether it is in reach are the sim's verdict.
     Pick { cell: u32 },
@@ -2206,7 +2222,7 @@ pub enum ActionMsg {
     ///
     /// `cont` is the **one** ground container this move touches, and what
     /// it holds depends on the kind naming it: a bag id for `CONT_BAG`, a
-    /// packed `box_key(cx, cz, level)` address for `CONT_BOX`. Zero and
+    /// packed `box_key(cx, cz, level, 0)` address for `CONT_BOX`. Zero and
     /// ignored for a move inside your own inventory. One handle for both
     /// sides is why a bag→box move is refused rather than encoded — see
     /// `REFUSE_M_NO_CONTAINER`.
@@ -2239,7 +2255,7 @@ pub enum ActionMsg {
     /// zero check rather than a state machine.
     ///
     /// `cont` is the same handle `Move` carries and means the same thing:
-    /// a bag id for `CONT_BAG`, a packed `box_key(cx, cz, level)` for
+    /// a bag id for `CONT_BAG`, a packed `box_key(cx, cz, level, 0)` for
     /// `CONT_BOX`. Deliberately the same field in the same order, because
     /// a client that can name a container to open must name it *identically*
     /// to open it and to move inside it — a second addressing scheme is
@@ -2532,13 +2548,14 @@ pub fn encode_action_deploy(
     cz: u16,
     level: u8,
     loc: u8,
+    pose: sim_core::footprint::Pose,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if row as usize >= sim_core::limits::MAX_DEPLOY_DEFS
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(true)
     {
         return Err(WireError::Range);
     }
@@ -2550,6 +2567,9 @@ pub fn encode_action_deploy(
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(pose.ox as u8 as u32, 8)?;
+    w.write(pose.oz as u8 as u32, 8)?;
+    w.write(pose.yaw as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -2874,23 +2894,26 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
         }
         ACT_DEPLOY => {
+            // Every field is width-exact: rows are 5 bits = MAX_DEPLOY_DEFS,
+            // every four-bit loc is a deploy address (v89), and a pose is
+            // three whole bytes. What the values MEAN is the sim's verdict.
             let row = r.read(DEPLOY_ROW_BITS)? as u16;
             let cx = r.read(BUILD_CELL_BITS)? as u16;
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
-            // Deploy rows are width-exact (5 bits = MAX_DEPLOY_DEFS); the
-            // loc stopped being so at v40, and a deployable never sits on
-            // a triangle or a diagonal.
-            if loc > loc_max(true) {
-                return Err(WireError::Malformed);
-            }
+            let pose = sim_core::footprint::Pose {
+                ox: r.read(8)? as u8 as i8,
+                oz: r.read(8)? as u8 as i8,
+                yaw: r.read(8)? as u8,
+            };
             ActionMsg::Deploy {
                 row,
                 cx,
                 cz,
                 level,
                 loc,
+                pose,
             }
         }
         ACT_FEED => ActionMsg::Feed {
@@ -4675,7 +4698,7 @@ mod tests {
     fn the_action_lane_has_the_room_it_claims() {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
-        // ziggurat's doors (v87) 26 and the bush pick (v89) 27, leaving four
+        // ziggurat's doors (v87) 26 and the bush pick (v91) 27, leaving four
         // five-bit codes.
         assert_eq!(ACT_MAX, ACT_PICK);
         assert_eq!(

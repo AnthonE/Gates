@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 130] = [
+pub const FIXTURES: [&str; 131] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -236,7 +236,9 @@ pub const FIXTURES: [&str; 130] = [
     "event_card_doors.bin",
     "event_swipe_refused.bin",
     "action_swipe.bin",
-    // The bush pick (v89).
+    // Until when you are hostile (v89).
+    "event_hostile.bin",
+    // The bush pick (v91).
     "action_pick.bin",
 ];
 
@@ -259,7 +261,7 @@ pub fn event_env() -> sim_core::weather::Env {
 }
 
 /// The move action: container handle (a bag id, or a packed
-/// `box_key(cx, cz, level)` — the kinds say which), from (kind, slot), to
+/// `box_key(cx, cz, level, 0)` — the kinds say which), from (kind, slot), to
 /// (kind, slot), count.
 ///
 /// Every part is distinguishable from every other, which on this message
@@ -299,7 +301,7 @@ pub fn event_move_refused() -> (u8, u8, u8, u8, u8) {
 /// bytes that decode as "put it in the box at this address" were checked
 /// by nothing. This is that case.
 ///
-/// The handle is a real `deploy::box_key(291, 744, 5)` — `cx << 16 |
+/// The handle is a real `deploy::box_key(291, 744, 5, 0)` — `cx << 16 |
 /// cz << 4 | level` — and not a round number, because the whole risk on a
 /// packed address is a field sliding within it, and three parts that are
 /// each distinguishable from the other two is what makes a slide move
@@ -318,7 +320,7 @@ pub fn action_move_box() -> (u32, u8, u8, u8, u8, u16) {
 /// purpose: the bag case is the easy one, and an address that loses a
 /// field is the failure this lane actually has.
 ///
-/// A different `box_key` from `action_move_box` — `box_key(88, 1001, 3)`
+/// A different `box_key` from `action_move_box` — `box_key(88, 1001, 3, 0)`
 /// — for the same reason its handle differs from `action_move`'s: two
 /// fixtures that share a constant cannot catch a copy-paste between them.
 pub fn action_container() -> (u8, u32) {
@@ -932,7 +934,16 @@ pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
     let rows: [(&[u8], ItemRow); 11] = [
-        (b"Wood", row(0, 0, WEAR_NONE, 1000)),
+        // The oven column's coverage (v89): wood is fuel at both burners
+        // (the fire's bit and the furnace's), charcoal what both make, and
+        // the last row carries the width's corner.
+        (
+            b"Wood",
+            ItemRow {
+                oven: 0b001_001,
+                ..row(0, 0, WEAR_NONE, 1000)
+            },
+        ),
         // The draw columns' coverage (v82), at the byte's corner.
         (
             b"Hunting Bow",
@@ -952,7 +963,13 @@ pub fn event_catalog() -> ItemCatalog {
         // named with no reduction behind it, which is legal and is the
         // half a fixture full of protective armor would not pin.
         (b"Burlap Headwrap", row(0, 10, WEAR_HEAD, 1)),
-        (b"Charcoal", row(40_000, 0, WEAR_NONE, 1)),
+        (
+            b"Charcoal",
+            ItemRow {
+                oven: 0b100_100,
+                ..row(40_000, 0, WEAR_NONE, 1)
+            },
+        ),
         (
             b"Fixture Name Of Width 24",
             row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1),
@@ -967,7 +984,13 @@ pub fn event_catalog() -> ItemCatalog {
         // width's own corner, here. A 16-bit field carrying 65,535 is
         // what says the ceiling cannot be truncated into a smaller one
         // by a narrower field landing under it later.
-        (b"Low Grade Fuel", row(0, 0, WEAR_NONE, u16::MAX)),
+        (
+            b"Low Grade Fuel",
+            ItemRow {
+                oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
+                ..row(0, 0, WEAR_NONE, u16::MAX)
+            },
+        ),
     ];
     for (i, (n, r)) in rows.iter().enumerate() {
         cat.set(i, n, *r)
@@ -1297,8 +1320,24 @@ pub fn event_piece_defs() -> BuildContent {
 
 /// A deploy-place request: (row, cx, cz, level, loc) — a door into a
 /// doorway on a cell's low-x edge.
-pub fn action_deploy() -> (u16, u16, u16, u8, u8) {
-    (9, 341, 682, 0, sim_core::build::LOC_EDGE_XLO)
+///
+/// The pose (wire v89) is three distinct, lopsided values — a negative
+/// offset, a positive one and a yaw past the half turn — so a decoder that
+/// swapped the offsets or read one at the wrong signedness cannot round-trip
+/// it.
+pub fn action_deploy() -> (u16, u16, u16, u8, u8, sim_core::footprint::Pose) {
+    (
+        9,
+        341,
+        682,
+        0,
+        sim_core::build::LOC_PLANE,
+        sim_core::footprint::Pose {
+            ox: -37,
+            oz: 91,
+            yaw: 201,
+        },
+    )
 }
 
 /// A feed of the hearth at (cx, cz, level).
@@ -1315,7 +1354,12 @@ pub fn event_deploy_placed() -> DeployRec {
         cx: 341,
         cz: 682,
         level: 1,
-        loc: sim_core::build::LOC_PLANE,
+        loc: 6,
+        pose: sim_core::footprint::Pose {
+            ox: -37,
+            oz: 91,
+            yaw: 201,
+        },
         row: 9,
         open: true,
         locked: true,
@@ -1339,16 +1383,30 @@ pub fn event_deploy_placed() -> DeployRec {
 /// `the_loc_fuzz_covers_each_stores_whole_domain` is what says so.
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
-    let recs = core::array::from_fn(|_| DeployRec {
-        cx: rng.next_bounded(1024) as u16,
-        cz: rng.next_bounded(1024) as u16,
-        level: rng.next_bounded(sim_core::limits::MAX_BUILD_SOCKETS as u32) as u8,
-        loc: rng.next_bounded(4) as u8,
-        row: rng.next_bounded(16) as u8,
-        open: rng.next_bounded(2) == 0,
-        locked: rng.next_bounded(2) == 0,
-        has_lock: rng.next_bounded(2) == 0,
-        ..DeployRec::default()
+    // The loc walks the store's whole four-bit domain (wire v89: two edges
+    // and fourteen body slots), so every value reaches the bytes.
+    let recs = core::array::from_fn(|i| {
+        let mut rec = DeployRec {
+            cx: rng.next_bounded(1024) as u16,
+            cz: rng.next_bounded(1024) as u16,
+            level: rng.next_bounded(sim_core::limits::MAX_BUILD_SOCKETS as u32) as u8,
+            loc: (i % 16) as u8,
+            row: rng.next_bounded(16) as u8,
+            open: rng.next_bounded(2) == 0,
+            locked: rng.next_bounded(2) == 0,
+            has_lock: rng.next_bounded(2) == 0,
+            ..DeployRec::default()
+        };
+        // A body slot stands anywhere; an insert hangs at the centre.
+        let pose = sim_core::footprint::Pose {
+            ox: rng.next_bounded(256) as u8 as i8,
+            oz: rng.next_bounded(256) as u8 as i8,
+            yaw: rng.next_bounded(256) as u8,
+        };
+        if !sim_core::deploy::is_edge_loc(rec.loc) {
+            rec.pose = pose;
+        }
+        rec
     });
     (true, recs)
 }
@@ -1816,12 +1874,14 @@ pub fn event_charge_placed_deploy() -> (bool, u16, u16, u8, u8, u8, u16) {
 /// only half of it.
 ///
 /// `(cx, cz, level, lit, by)`.
-pub fn event_oven_lit() -> (u16, u16, u8, bool, u32) {
-    (64, 900, 3, true, 0x0000_1F07)
+/// The slot (wire v89) is 5, distinct from the level beside it so a swap
+/// of the two shows.
+pub fn event_oven_lit() -> (u16, u16, u8, u8, bool, u32) {
+    (64, 900, 3, 5, true, 0x0000_1F07)
 }
 
-pub fn event_oven_out() -> (u16, u16, u8, bool, u32) {
-    (64, 900, 3, false, 0)
+pub fn event_oven_out() -> (u16, u16, u8, u8, bool, u32) {
+    (64, 900, 3, 5, false, 0)
 }
 
 /// An arrow leaving a bow (wire v33): shooter, yaw, pitch, speed, drop.
@@ -1979,6 +2039,11 @@ pub fn action_vend() -> (u8, u8) {
     (37, 5)
 }
 
+/// Hostile until tick 0xDEAD_BEEF.
+pub fn event_hostile() -> u32 {
+    0xDEAD_BEEF
+}
+
 /// The green and red doors open, the blue shut.
 pub fn event_card_doors() -> u8 {
     0b101
@@ -1994,7 +2059,7 @@ pub fn action_swipe() -> u8 {
     1
 }
 
-/// Pick the bush at cell (130, 77) (wire v89).
+/// Pick the bush at cell (130, 77) (wire v91).
 pub fn action_pick() -> u32 {
     sim_core::gather::cell_key(130, 77)
 }

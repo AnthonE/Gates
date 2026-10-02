@@ -47,14 +47,13 @@
 //! the other side (full size, `PREWARM_ALPHA` alpha) because a projected decal
 //! has no meaningful scale to shrink.
 //!
-//! ## The two residuals, both named because neither is covered
+//! ## Models, and the residual
 //!
-//! **Skinned meshes are a different pipeline key** and this warms none of
-//! them: a body's skin is a `SkinnedMesh` component, so the first remote
-//! player to walk into view still specializes on arrival. **And a driver may
-//! finalize a shader on first real use** whatever a queue did — the pipeline
-//! is warm, the driver's copy of it may not be. Neither is measurable on this
-//! box: `PipelineCache::pipelines()` is public, but it lives in the render
+//! **Skinned meshes and glTF models are a different pipeline key**, so
+//! [`warm_models`] draws the real animal and player models once as well.
+//! **And a driver may finalize a shader on first real use** whatever a
+//! queue did — the pipeline is warm, the driver's copy of it may not be.
+//! Neither is measurable on this box: `PipelineCache::pipelines()` is public, but it lives in the render
 //! world and needs a GPU to say anything, and no GPU has ever run this client.
 
 use bevy::prelude::*;
@@ -161,12 +160,76 @@ pub fn warm(
     }
 }
 
+/// Warm the models [`warm`] cannot: the animals' bodies and legs (their
+/// glTF meshes carry no vertex colour, so the shared triangle's layout is
+/// not theirs) and a player's skinned body in both shades. Each was a cold
+/// pipeline until the first wolf or the first other player walked into
+/// view, which in a browser is a frame-long compile mid-fight. Once each,
+/// as soon as the assets are in: a pipeline outlives the world it was
+/// built for, so a second session needs none of this.
+pub fn warm_models(
+    mut commands: Commands,
+    mut done: Local<(bool, bool)>,
+    herd: Option<Res<super::mobs::HerdAssets>>,
+    rig: Option<Res<super::anim::Rig>>,
+    meshes: Res<Assets<Mesh>>,
+    cam: Query<Entity, With<EyeCam>>,
+) {
+    if done.0 && done.1 {
+        return;
+    }
+    let Ok(cam) = cam.single() else {
+        return;
+    };
+    let at = Transform::from_xyz(0.0, 0.0, -WARM_AHEAD_M);
+    if let (false, Some(herd)) = (done.0, herd) {
+        let pairs = [
+            (&herd.pig.body, &herd.pig.material),
+            (&herd.pig.leg, &herd.pig.leg_material),
+            (&herd.wolf.body, &herd.wolf.material),
+            (&herd.wolf.leg, &herd.wolf.leg_material),
+        ];
+        // A draw of a mesh still loading queues nothing; wait for all four.
+        if pairs.iter().all(|(m, _)| meshes.contains(*m)) {
+            for (m, mat) in pairs {
+                commands.entity(cam).with_child((
+                    Warming(WARM_FRAMES),
+                    Mesh3d(m.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    at.with_scale(Vec3::splat(WARM_SIZE_M)),
+                ));
+            }
+            done.0 = true;
+        }
+    }
+    if let (false, Some(rig)) = (done.1, rig) {
+        if let Some(scene) = rig.scene.clone() {
+            // Both shades `reshade` paints a body in. The scene spawns a
+            // frame or two later and `retire` waits for it: the count starts
+            // once `Reshade` has painted it and come off.
+            for sleeping in [false, true] {
+                commands.entity(cam).with_child((
+                    Warming(WARM_FRAMES),
+                    super::anim::Reshade(sleeping),
+                    SceneRoot(scene.clone()),
+                    at.with_scale(Vec3::splat(WARM_SIZE_M * rig.scale * 0.5)),
+                ));
+            }
+            done.1 = true;
+        }
+    }
+}
+
 /// Retire a warm draw once it has been queued enough times.
 ///
 /// **Counted in frames rather than seconds** for the reason `CLAUDE.md` gives
 /// about gates: a wall-clock wait is a race on a loaded box, and what this
 /// actually needs is a number of QUEUED DRAWS. A frame is that unit.
-pub fn retire(mut commands: Commands, mut warming: Query<(Entity, &mut Warming)>) {
+pub fn retire(
+    mut commands: Commands,
+    // A warm body still waiting for its scene to spawn has drawn nothing yet.
+    mut warming: Query<(Entity, &mut Warming), Without<super::anim::Reshade>>,
+) {
     for (e, mut w) in warming.iter_mut() {
         match w.0.checked_sub(1) {
             Some(0) | None => commands.entity(e).despawn(),

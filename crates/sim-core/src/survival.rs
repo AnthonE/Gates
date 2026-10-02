@@ -525,9 +525,9 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
 /// shape being tested: the sea is a half-space with a coastline that wanders
 /// tens of metres per cycle, so a body inside 5 m of it hits the sample on
 /// its seaward side long before the coastline can thread between two of
-/// them. What it deliberately cannot do is find a puddle smaller than the
-/// gap between taps — and there are none, because the only water in this
-/// world is the ocean.
+/// them. What it deliberately cannot do is find a pond smaller than the gap
+/// between taps. The water in this world is the ocean and the lakes
+/// (`terrain` stage 4e); a pond that small is missed, and that is accepted.
 ///
 /// Pure, bounded, allocation-free and float-restricted to the ops wall 1
 /// allows: it is five `terrain::height` calls and five compares, the same

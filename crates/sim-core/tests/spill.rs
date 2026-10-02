@@ -416,6 +416,44 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
     );
 }
 
+/// A stranger's bag at your feet is not yours to fill: a spill next to
+/// somebody's death bag (or a carcass, whose owner is a mob tag) stands its
+/// own bag up instead of merging into theirs.
+#[test]
+fn a_spill_never_merges_into_somebody_else_s_bag() {
+    let bc = BackpackContent::probe_fixture();
+    let gc = GatherContent::probe_fixture();
+    let mut bp = Backpacks::new();
+    let mut ev = EventQueue::default();
+
+    let mut held = [ItemStack::default(); INV_SLOTS];
+    held[0] = ItemStack {
+        item: FILLER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let theirs = bp.stand_up(&bc, 0, 0, 0, 2, &held, 100, &mut ev).unwrap();
+
+    let mut spill = [ItemStack::default(); INV_SLOTS];
+    spill[0] = ItemStack {
+        item: FILLER,
+        count: 3,
+        cond: 0,
+        skin: 0,
+    };
+    let mine = bp
+        .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &mut ev)
+        .unwrap();
+    assert_ne!(mine, theirs, "a bag of my own, not theirs topped up");
+    assert_eq!(bp.len(), 2);
+    assert_eq!(
+        inv_count(&bp.entries()[0].items, FILLER),
+        1,
+        "theirs untouched"
+    );
+}
+
 /// The disarm survives. `base_ticks == 0` is content that never armed the
 /// backpack module, and its stated meaning is "the world before this
 /// slice" — so overflow is destroyed exactly as it used to be, and no bag
@@ -749,6 +787,13 @@ fn a_demolish_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         "at the demolisher's feet, not at the wall"
     );
     assert_eq!(bag.owner, OWNER, "credited to the demolisher");
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_GATHER && e.b == (cost.0 as u32) << 16),
+        "and the demolisher is told it dropped at their feet"
+    );
 }
 
 /// Give-back 2 of 4. Lifting a deployable hands the item back; a full pack
@@ -763,6 +808,7 @@ fn a_picked_up_deployable_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the case needs its oven placed");
 
@@ -818,6 +864,7 @@ fn an_unbolted_lock_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the case needs its box");
     w.tick(&[Command::PlaceDeploy {
@@ -827,6 +874,7 @@ fn an_unbolted_lock_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.locks().len(), 1, "the lock must bolt on");
     w.tick(&[Command::Access {

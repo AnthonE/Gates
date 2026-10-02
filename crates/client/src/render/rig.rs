@@ -164,9 +164,19 @@ pub const CASCADE_FIRST_M: f32 = 12.0;
 /// See [`CASCADE_MIN_M`].
 pub const CASCADE_OVERLAP: f32 = 0.2;
 
-/// The sun, and the only directional light.
+/// The sun. The one other directional light is [`BoltLight`].
 #[derive(Component)]
 pub struct Sun;
+
+/// A lightning flash's light, from the side the bolt struck: dark until a
+/// flash, shadowless, and stepped by [`day_night`] beside the ambient lift
+/// the flash already gave, so a storm lights one side of a hill and not
+/// the whole island evenly.
+#[derive(Component)]
+pub struct BoltLight;
+
+/// A flash's directional share at its peak, lux.
+pub const BOLT_LUX: f32 = 6_000.0;
 
 pub fn setup(
     mut commands: Commands,
@@ -470,6 +480,17 @@ pub fn setup(
             ..SunDisk::EARTH
         },
         Transform::from_rotation(sun_rotation()),
+    ));
+    commands.spawn((
+        super::WorldEntity,
+        BoltLight,
+        DirectionalLight {
+            color: Color::srgb(0.82, 0.86, 1.0),
+            illuminance: 0.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::default(),
     ));
 }
 
@@ -778,6 +799,9 @@ impl DayPin {
 /// What `day_night` drives on the camera: the two fills, the deck and, in a
 /// browser, the haze. Named because four terms is past clippy's
 /// `type_complexity` line.
+/// What [`day_night`] writes on the [`BoltLight`].
+type BoltLit = (&'static mut Transform, &'static mut DirectionalLight);
+
 type CamLight = (
     &'static mut AmbientLight,
     &'static mut EnvironmentMapLight,
@@ -800,6 +824,7 @@ pub fn day_night(
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
+    mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
     mut cam: Query<CamLight, With<EyeCam>>,
 ) {
     let frac = sim_core::world::day_frac(pin.day_tick(feed.server_tick_est, &feed.env));
@@ -834,6 +859,19 @@ pub fn day_night(
             } else {
                 0.0
             };
+        }
+    }
+    // The flash from its side: down from a few degrees above the bolt's
+    // horizon, and only as much as reaches the eye under a roof.
+    if let Ok((mut t, mut d)) = bolt.single_mut() {
+        let flash = w.flash * if w.sheltered { SHELTERED_FLASH } else { 1.0 };
+        let want = BOLT_LUX * flash;
+        if d.illuminance != want {
+            d.illuminance = want;
+        }
+        if flash > 0.0 {
+            let toward = Vec3::new(w.flash_dir.x, 0.35, w.flash_dir.y).normalize_or(Vec3::Y);
+            *t = Transform::default().looking_to(-toward, Vec3::Y);
         }
     }
     if let Ok((mut amb, mut env, sky, fog, exposure)) = cam.single_mut() {

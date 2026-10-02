@@ -1584,7 +1584,9 @@ impl TreeLod {
         match part {
             super::props::FellPart::Far => Some(&self.far),
             super::props::FellPart::Trunk | super::props::FellPart::Canopy => Some(&self.near),
-            super::props::FellPart::Stump | super::props::FellPart::Vanish => None,
+            super::props::FellPart::Stump
+            | super::props::FellPart::Vanish
+            | super::props::FellPart::Emptied => None,
         }
     }
 }
@@ -1703,7 +1705,9 @@ pub fn swap_by_distance(
         let near_part = match f.part {
             super::props::FellPart::Trunk | super::props::FellPart::Canopy => true,
             super::props::FellPart::Far => false,
-            super::props::FellPart::Stump | super::props::FellPart::Vanish => continue,
+            super::props::FellPart::Stump
+            | super::props::FellPart::Vanish
+            | super::props::FellPart::Emptied => continue,
         };
         let is_near = (gt.translation() - eye.pos).length_squared() < swap2;
         // A felled tree's card is the fell system's to hide (`apply_fell`).
