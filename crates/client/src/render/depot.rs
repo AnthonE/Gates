@@ -143,9 +143,11 @@ pub(super) fn kit() -> [Soup; SURFACES.len()] {
     std::array::from_fn(|_| Soup::default())
 }
 
-/// All materials are nonmetallic: oxidation/paint/concrete are dielectrics.
-/// The source's linear greyscale roughness occupies G; B cannot introduce
-/// metal because StandardMaterial multiplies it by the explicit zero below.
+/// All materials but gilt are nonmetallic: oxidation/paint/concrete are
+/// dielectrics. The source's linear greyscale roughness occupies G; B cannot
+/// introduce metal because StandardMaterial multiplies it by the explicit
+/// zero below. Gilt, the one metal, takes no roughness map for that reason:
+/// the grey in B would make it half a metal.
 pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMaterial {
     let maps = MapSet::load(server, surface.role());
     // THE GATE's surfaces: the same photographed maps, with the three things
@@ -153,12 +155,18 @@ pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMateri
     // metal, and that a bulb and a lapis seam give light.
     let (base_color, metallic, roughness, emissive) = match surface {
         Surface::Obsidian => (Color::srgb(0.13, 0.13, 0.15), 0.0, 0.42, LinearRgba::BLACK),
-        Surface::Gilt => (Color::srgb(1.0, 0.8, 0.42), 0.9, 0.38, LinearRgba::BLACK),
+        // Pale, because the Blender dressing tints gilt gold again in its
+        // vertex colour.
+        Surface::Gilt => (Color::srgb(1.0, 0.9, 0.7), 1.0, 0.38, LinearRgba::BLACK),
+        // Emissive is added after exposure (`emissive_exposure_weight` 0), so
+        // it reads the same by day and night; above ~1 TonyMcMapface turns it
+        // a flat near-white blue that looks like a missing texture. Times the
+        // albedo map (`emissive_texture`), this is ~0.5 in blue.
         Surface::Lapis => (
-            Color::srgb(0.2, 0.45, 1.0),
+            Color::srgb(0.15, 0.3, 0.75),
             0.0,
             0.6,
-            LinearRgba::rgb(0.6, 1.4, 4.0),
+            LinearRgba::rgb(0.05, 0.25, 1.4),
         ),
         Surface::Bulb => (
             Color::srgb(1.0, 0.85, 0.55),
@@ -173,9 +181,13 @@ pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMateri
         emissive,
         // Polished black stone wears the stone's relief but not its
         // photograph: the photo's light joints read as stripes up a pylon.
-        base_color_texture: (surface != Surface::Obsidian).then_some(maps.albedo),
+        // Gilt likewise: the grey metal photo (linear mean 0.23) browned it.
+        base_color_texture: (!matches!(surface, Surface::Obsidian | Surface::Gilt))
+            .then(|| maps.albedo.clone()),
+        // A lapis seam glows with its stone's grain, not as a flat block.
+        emissive_texture: (surface == Surface::Lapis).then(|| maps.albedo.clone()),
         normal_map_texture: Some(maps.normal),
-        metallic_roughness_texture: Some(maps.rough),
+        metallic_roughness_texture: (surface != Surface::Gilt).then_some(maps.rough),
         occlusion_texture: maps.ao,
         perceptual_roughness: roughness,
         metallic,
