@@ -969,7 +969,21 @@ pub fn feed(
 /// the player walks a chunk into the ring. Without the `is_added` guard, every
 /// already-felled stump in the forest would crash to the ground again each
 /// time it streamed in.
-pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound: ResMut<Sound>) {
+///
+/// **A bush is picked, not felled** (`E`, `gather::pick`): it plays
+/// [`Cue::BushPick`] and sheds a puff of leaves, once per slot — a bush is
+/// two `Vanish` entities (the blob and its leaf cards), so the key is
+/// remembered for the frame. Which `Vanish` node is a bush is read off the
+/// scatter by its key, on the transition frame only.
+pub fn fell(
+    q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>,
+    world: Option<Res<super::WorldId>>,
+    eye: Res<Eye>,
+    mut fx: ResMut<super::fx::Fx>,
+    mut sound: ResMut<Sound>,
+) {
+    let mut picked = [u32::MAX; 8];
+    let mut n_picked = 0;
     for (f, t) in q.iter() {
         if !f.is_changed() || f.is_added() || !f.felled {
             // A slot respawning is silent: a tree that comes back after 20-45
@@ -990,6 +1004,29 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
         // parts of something that already made a sound.
         let cue = match f.part {
             super::props::FellPart::Trunk => Cue::TreeFall,
+            super::props::FellPart::Vanish if is_bush(world.as_deref(), f.key) => {
+                if picked[..n_picked].contains(&f.key) {
+                    continue;
+                }
+                if n_picked < picked.len() {
+                    picked[n_picked] = f.key;
+                    n_picked += 1;
+                }
+                let at = t.translation()
+                    + Vec3::Y
+                        * super::impact::strike_height(sim_core::terrain::Occupant::Bush as u8);
+                fx.impact(
+                    &super::impact::Contact {
+                        at,
+                        matter: super::impact::Matter::Plant,
+                        weapon: super::impact::Weapon::Melee,
+                        ..Default::default()
+                    },
+                    eye.pos,
+                );
+                sound.play(Request::at(Cue::BushPick, [at.x, at.y, at.z]));
+                continue;
+            }
             super::props::FellPart::Vanish => Cue::ImpactStone,
             // …and `Far` with them: the hull is the trunk at a distance, so
             // a chop that felled both would play `TreeFall` twice on one
@@ -1002,6 +1039,16 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
         let p = t.translation();
         sound.play(Request::at(cue, [p.x, p.y, p.z]));
     }
+}
+
+/// Whether the slot at cell key `key` is a bush — the scatter's answer, cold
+/// (`terrain::scatter`), which is fine on the one frame a slot goes away.
+fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
+    world.is_some_and(|w| {
+        let (cx, cz) = ((key >> 16) as i32, (key & 0xFFFF) as i32);
+        sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant
+            == sim_core::terrain::Occupant::Bush
+    })
 }
 
 /// A placement landing — the second positional cue, at the cell it landed.

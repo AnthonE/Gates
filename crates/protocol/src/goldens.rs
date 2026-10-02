@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 129] = [
+pub const FIXTURES: [&str; 130] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -236,6 +236,8 @@ pub const FIXTURES: [&str; 129] = [
     "event_card_doors.bin",
     "event_swipe_refused.bin",
     "action_swipe.bin",
+    // The bush pick (v89).
+    "action_pick.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1990,6 +1992,11 @@ pub fn event_swipe_refused() -> (u8, u8) {
 /// Swipe at the blue door.
 pub fn action_swipe() -> u8 {
     1
+}
+
+/// Pick the bush at cell (130, 77) (wire v89).
+pub fn action_pick() -> u32 {
+    sim_core::gather::cell_key(130, 77)
 }
 
 /// Put catalog id 0x0B72 on the item in slot 17 (wire v77).

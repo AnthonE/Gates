@@ -422,10 +422,13 @@ pub fn node_index(o: Occupant) -> Option<usize> {
 }
 
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
-/// `None` for Rock and empty cells — the two things a swing passes through.
+/// `None` for Rock, empty cells and the bush — the things a swing passes
+/// through. A bush is picked by hand with `E` ([`pick`], `Command::Pick`),
+/// never swung at (operator, 2026-10-02).
 #[inline]
 pub(crate) fn target_index(o: Occupant) -> Option<usize> {
     match node_index(o) {
+        Some(_) if o == Occupant::Bush => None,
         Some(ni) => Some(ni),
         None if o == Occupant::BarrelSlot => Some(BARREL_TARGET),
         None => None,
@@ -1177,6 +1180,113 @@ pub fn land(
         );
     }
     Swing::Absorbed // the node took it
+}
+
+/// How far a hand reaches a bush to pick it, metres: the container arm
+/// (`backpack::LOOT_REACH_M`), measured from the eye to the nearest point of
+/// the bush's swing volume (`melee::swing_volume`, plus the probe). The
+/// client's `[E] PICK BUSH` prompt casts a ray this long at that same volume,
+/// so whatever it offers is inside what this accepts.
+pub const PICK_REACH_M: f32 = crate::backpack::LOOT_REACH_M;
+
+/// Pick the bush at `(cx, cz)` by hand — `Command::Pick`, the `E` verb.
+///
+/// `slot` is what the world's scatter memo says stands in that cell; the
+/// cell itself came off the wire and is only a **claim**. Anything that is
+/// not a standing bush, or is out of reach of the picker's eye, does nothing
+/// and returns `false`.
+///
+/// The payout is `land`'s for the bush row, in one go: the whole node is
+/// spent (a bush is `hits = 1`, so one pick exhausts it), the respawn timer
+/// is set exactly as `land` sets it, `output` × the hand yield (× hits)
+/// goes into the inventory and the `secondary` beside it, both announced
+/// with `EV_GATHER`, and `EV_SLOT_HARVESTED` says it is gone. No
+/// `EV_IMPACT`, no tool wear, no weak-spot chase: picking is not chopping.
+/// What will not fit lands in `spill` for the caller to drain.
+#[allow(clippy::too_many_arguments)]
+pub fn pick(
+    seed: u64,
+    tick: u64,
+    gc: &GatherContent,
+    lives: &mut SlotLives,
+    events: &mut EventQueue,
+    p: &mut Player,
+    spill: &mut [ItemStack; INV_SLOTS],
+    cx: u16,
+    cz: u16,
+    slot: &crate::terrain::Slot,
+) -> bool {
+    if slot.occupant != Occupant::Bush || lives.standing_pm(cx, cz) == 0 {
+        return false;
+    }
+    // Reach: eye to the nearest point of the bush's (probed) swing volume.
+    let (r, top) = crate::melee::swing_volume(Occupant::Bush);
+    let rr = r * slot.scale + crate::melee::MELEE_PROBE_M;
+    let px = p.body.qx as f32 * POS_XZ_Q;
+    let pz = p.body.qz as f32 * POS_XZ_Q;
+    let eye = p.body.qy as f32 * POS_Y_Q
+        + crate::ranged::eye_mm(p.crouched()) as f32 / crate::ranged::MM_PER_M;
+    let (dx, dz) = (slot.x - px, slot.z - pz);
+    let planar = ((dx * dx + dz * dz).sqrt() - rr).max(0.0);
+    let vertical = (slot.y - eye)
+        .max(eye - (slot.y + top * slot.scale))
+        .max(0.0);
+    if planar * planar + vertical * vertical > PICK_REACH_M * PICK_REACH_M {
+        return false;
+    }
+    let Some(ni) = node_index(Occupant::Bush) else {
+        return false;
+    };
+    let def = &gc.nodes[ni];
+    if def.output == NO_ITEM || def.output as usize >= MAX_ITEM_DEFS || def.hand_yield == 0 {
+        return false; // inert content: nothing to pick
+    }
+    let Some(life) = lives.find_or_insert(cx, cz) else {
+        return false;
+    };
+    let hits = def.hits.max(1);
+    let budget = hits as u32 * HIT_UNIT;
+    life.hits = budget.min(u16::MAX as u32) as u16;
+    let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
+    life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
+    life.grown_at = 0;
+    life.occ = Occupant::Bush as u8;
+
+    let pay = (def.hand_yield as u32 * hits as u32).min(u16::MAX as u32) as u16;
+    let added = inv_add_spilling(
+        &mut p.inv,
+        spill,
+        def.output,
+        pay,
+        gc.stack_max[def.output as usize],
+        gc.cond_max[def.output as usize],
+    );
+    events.push(
+        EV_GATHER,
+        p.id,
+        ((def.output as u32) << 16) | added as u32,
+        0,
+    );
+    let (sec_item, sec_per) = def.secondary;
+    if sec_item != NO_ITEM && (sec_item as usize) < MAX_ITEM_DEFS && sec_per > 0 {
+        let sec_pay = (sec_per as u32 * hits as u32).min(u16::MAX as u32) as u16;
+        let got = inv_add_spilling(
+            &mut p.inv,
+            spill,
+            sec_item,
+            sec_pay,
+            gc.stack_max[sec_item as usize],
+            gc.cond_max[sec_item as usize],
+        );
+        events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
+    }
+    events.push(
+        EV_SLOT_HARVESTED,
+        cell_key(cx, cz),
+        Occupant::Bush as u32,
+        0,
+    );
+    true
 }
 
 /// A swing that landed on a barrel slot.

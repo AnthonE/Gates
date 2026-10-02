@@ -1003,7 +1003,8 @@ pub fn snap(
         .filter(|c| !c.4.is_some_and(|f| f.felled))
         .filter_map(|(e, s, m, tf, _)| meshes.get(&m.0).map(|m| (e, s, m, tf)));
     for c in contacts.iter_mut() {
-        if c.surf != SURF_WORLD || matches!(c.matter, Matter::Water | Matter::Flesh) {
+        if c.surf != SURF_WORLD || matches!(c.matter, Matter::Water | Matter::Flesh | Matter::Plant)
+        {
             continue;
         }
         let eye_ray = (c.kind == ContactKind::Swing).then_some(eye.pos);

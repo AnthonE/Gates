@@ -713,9 +713,11 @@ fn grid_mesh(marks: usize) -> Mesh {
         let base = m * VERTS_PER_MARK as u32;
         for j in 0..g - 1 {
             for i in 0..g - 1 {
+                // Counter-clockwise seen from the normal's side: +u × +v is
+                // the normal (`grid_of`), so the front face is the one shown.
                 let a = base + j * g + i;
                 let (b, c, d) = (a + 1, a + g, a + g + 1);
-                idx.extend_from_slice(&[a, c, b, b, c, d]);
+                idx.extend_from_slice(&[a, b, c, b, d, c]);
             }
         }
     }
@@ -762,7 +764,10 @@ pub fn setup(
         metallic: 0.0,
         reflectance: super::fresnel::DIELECTRIC,
         alpha_mode: AlphaMode::Blend,
-        double_sided: true,
+        // Not `double_sided`: that flips the normal on a back face, and a
+        // patch whose winding a conform bent is still lit by the normal it
+        // was given. Both faces are drawn all the same.
+        double_sided: false,
         cull_mode: None,
         ..default()
     });
@@ -783,7 +788,7 @@ pub fn setup(
         perceptual_roughness: 0.95,
         metallic: 0.0,
         alpha_mode: AlphaMode::Blend,
-        double_sided: true,
+        double_sided: false,
         cull_mode: None,
         ..default()
     });
@@ -1687,6 +1692,31 @@ mod tests {
         );
         assert!(decal_kind(Weapon::Bullet, Matter::Water).is_none());
         assert!(decal_kind(Weapon::Melee, Matter::Plant).is_none());
+    }
+
+    /// Every triangle of a mark winds counter-clockwise seen from its normal,
+    /// flat or bent, whatever its uv turn — the face shown is the front.
+    #[test]
+    fn a_mark_faces_its_normal() {
+        let mesh = mark_mesh();
+        let Some(Indices::U32(idx)) = mesh.indices() else {
+            panic!("u32 indices");
+        };
+        let mut pool = Marks::default();
+        for (n, bend) in [(Vec3::Y, 0.0), (Vec3::new(0.6, 0.0, 0.8), 0.25)] {
+            for _ in 0..8 {
+                let ix = pool.place(Vec3::ONE, n, Kind::GashWood, 0.26, Matter::Wood, bend);
+                let v = pool.vertices(ix);
+                let base = ix * VERTS_PER_MARK;
+                let per = (MARK_GRID - 1) * (MARK_GRID - 1) * 6;
+                for t in idx[ix * per..(ix + 1) * per].chunks_exact(3) {
+                    let p = |k: u32| Vec3::from_array(v[k as usize - base].0);
+                    let face = (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0]));
+                    let nv = Vec3::from_array(v[t[0] as usize - base].1);
+                    assert!(face.dot(nv) > 0.0, "a back face toward the normal");
+                }
+            }
+        }
     }
 
     /// `DECAL_DUMP=<dir> cargo test -p client --lib decal_dump -- --ignored`

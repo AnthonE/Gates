@@ -1010,7 +1010,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// layout moves: the heli is the roster's last slot (`mob::HELI_SLOT`,
 /// species `MOB_HELI`), an entity record flying up to 140 m, and its gun is
 /// an `EV_SHOT` from that mob id. A v87 client knows 64 slots and no heli.
-pub const PROTO_VER: u16 = 88;
+/// v89 — a bush is picked with `E`, not swung at: `ACT_PICK` (27) names the
+/// bush's cell key, and a swing passes through a bush. A v88 client would
+/// still offer `[LMB] PICK BUSH` at a bush its swing can no longer reach.
+pub const PROTO_VER: u16 = 89;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1812,6 +1815,9 @@ const ACT_VEND: u32 = 25;
 /// Swipe a keycard at a ziggurat door, or pull its lever (wire v87,
 /// `sim_core::monument`): the door.
 const ACT_SWIPE: u32 = 26;
+/// Pick a bush by hand (wire v89, `sim_core::gather::pick`): the bush's
+/// `gather::cell_key`, a claim the sim re-derives and reaches for itself.
+const ACT_PICK: u32 = 27;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1821,7 +1827,7 @@ const ACT_SWIPE: u32 = 26;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_SWIPE;
+const ACT_MAX: u32 = ACT_PICK;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2151,6 +2157,10 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
+    /// Pick the bush at cell key `cell` (wire v89). `Container`'s
+    /// `CONT_WORLD` posture: the cell is a claim, and what stands there and
+    /// whether it is in reach are the sim's verdict.
+    Pick { cell: u32 },
     /// Learn the blueprint for what is in inventory `slot` (research.rs).
     /// `Consume`'s shape exactly, and for the same reason: the slot is the
     /// sender's claim and the sim is the verdict, so a forged index is a
@@ -2445,6 +2455,15 @@ pub fn encode_action_swipe(door: u8, buf: &mut [u8]) -> Result<usize, WireError>
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_SWIPE, ACTION_SUB_BITS)?;
     w.write(door as u32, 2)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::Pick` — pick the bush at cell key `cell`.
+pub fn encode_action_pick(cell: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PICK, ACTION_SUB_BITS)?;
+    w.write(cell, 32)?;
     Ok(w.finish())
 }
 
@@ -2821,6 +2840,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             ActionMsg::Swipe { door }
         }
+        ACT_PICK => ActionMsg::Pick { cell: r.read(32)? },
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
             if index as usize >= sim_core::limits::CRAFT_QUEUE {
@@ -4655,11 +4675,12 @@ mod tests {
     fn the_action_lane_has_the_room_it_claims() {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
-        // ziggurat's doors (v87) 26, leaving five five-bit codes.
-        assert_eq!(ACT_MAX, ACT_SWIPE);
+        // ziggurat's doors (v87) 26 and the bush pick (v89) 27, leaving four
+        // five-bit codes.
+        assert_eq!(ACT_MAX, ACT_PICK);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            5,
+            4,
             "the spare action codes moved — say so where the count is written"
         );
     }

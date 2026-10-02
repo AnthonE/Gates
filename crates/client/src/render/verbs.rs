@@ -212,6 +212,33 @@ pub fn resolve(
                     };
                 }
             }
+            // A bush under the crosshair is picked with `E` (it is never
+            // swung at), folded in exactly as the crate is: it loses to
+            // anything a player built or an authored container.
+            if aimed.0.is_none() {
+                let bush = interact::resolve_pick(
+                    SwingAim {
+                        x,
+                        y,
+                        z,
+                        yaw,
+                        pitch,
+                        crouched,
+                    },
+                    &mut island,
+                );
+                if bush.occupant != 0 {
+                    aimed.0 = interact::Pick {
+                        verb: interact::Verb::Pick,
+                        cx: bush.cx,
+                        cz: bush.cz,
+                        handle: sim_core::gather::cell_key(bush.cx, bush.cz),
+                        d2: bush.d2,
+                        aimed: true,
+                        ..Default::default()
+                    };
+                }
+            }
             // The weak sector, but only for the node actually aimed at: the
             // chase is per-node and the server restarts it when the player
             // switches targets, so a mark for the tree behind you says
@@ -698,6 +725,15 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         // rather than this side guessing that the take worked.
         Verb::Take => {
             send(net, toast, "take", protocol::encode_action_pickup);
+        }
+        // A bush: the cell key is the claim, and the sim re-derives the bush
+        // and the reach (`gather::pick`). Nothing is predicted — the bush
+        // goes on `EV_SLOT_HARVESTED` and the berries arrive as `EV_GATHER`.
+        Verb::Pick => {
+            let cell = pick.handle;
+            send(net, toast, "pick", |buf| {
+                protocol::encode_action_pick(cell, buf)
+            });
         }
         // The bench's `E` opens the tree and sends nothing (tech tree
         // v0): the panel is drawn from tables already dripped, and the

@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 20] = [
+const EXPECTED_VERBS: [&str; 21] = [
     "craft",
     "consume",
     "drink",
@@ -81,6 +81,7 @@ const EXPECTED_VERBS: [&str; 20] = [
     "reload",
     "loot",
     "pickup",
+    "pick",
     "deploy",
     "place",
     "upgrade",
@@ -252,6 +253,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Upgrade { .. } => "upgrade",
         ActionMsg::Vend { .. } => "vend",
         ActionMsg::Swipe { .. } => "swipe",
+        ActionMsg::Pick { .. } => "pick",
     }
 }
 

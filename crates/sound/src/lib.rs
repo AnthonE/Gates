@@ -305,11 +305,15 @@ pub enum Cue {
     /// `render/audio.rs` turns up as the heli closes, so you hear it coming
     /// before you see it. Appended, the enum's append-order rule.
     BedRotor,
+    /// A bush picked by hand (`E`, `sim_core::gather::pick`): a short leafy
+    /// rustle and a soft stem snap, heard at the bush — anyone's pick, so it
+    /// is positional. Appended, the enum's append-order rule.
+    BushPick,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 62;
+pub const CUE_COUNT: usize = 63;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -380,6 +384,7 @@ impl Cue {
         Cue::Bandage,
         Cue::BowDraw,
         Cue::BedRotor,
+        Cue::BushPick,
     ];
 
     /// Is this cue a piece of music?
@@ -474,7 +479,8 @@ impl Cue {
             | Cue::Reload
             | Cue::Eat
             | Cue::Bandage
-            | Cue::BowDraw => 0.07,
+            | Cue::BowDraw
+            | Cue::BushPick => 0.07,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -787,6 +793,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // `render/audio.rs`'s distance law. GAME, not AMBIENCE: it is a threat,
     // and turning the scenery down must not turn it down.
     row(GAME,  0.0, 0.60,   0, 0, false),  // rotor
+    // A bush picked, at the bush: a footstep's reach and a little over an
+    // impact's gain, so your own pick reads over your boots and a pick
+    // across a clearing is still heard.
+    row(GAME, 24.0, 0.65,  60, 4, true),   // bush picked
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

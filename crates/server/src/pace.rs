@@ -47,7 +47,8 @@ pub enum Kind {
     Deploy,
     /// Items between slots and containers.
     Move,
-    /// Open a container, loot a bag, pick up a stack or an arrow.
+    /// Open a container, loot a bag, pick up a stack or an arrow, pick a
+    /// bush.
     Take,
     /// Everything the sim already paces itself, or that is harmless at the
     /// lane's speed: craft (a queue of four), research and unlock (one
@@ -88,7 +89,10 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Demolish { .. } => Kind::Demolish,
         ActionMsg::Deploy { .. } => Kind::Deploy,
         ActionMsg::Move { .. } => Kind::Move,
-        ActionMsg::Container { .. } | ActionMsg::Loot | ActionMsg::Pickup => Kind::Take,
+        ActionMsg::Container { .. }
+        | ActionMsg::Loot
+        | ActionMsg::Pickup
+        | ActionMsg::Pick { .. } => Kind::Take,
         ActionMsg::Craft { .. }
         | ActionMsg::CraftCancel { .. }
         | ActionMsg::Reskin { .. }

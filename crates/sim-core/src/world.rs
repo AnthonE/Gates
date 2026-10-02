@@ -1742,6 +1742,14 @@ pub enum Command {
         id: u32,
         cont: u32,
     },
+    /// Pick the bush at cell key `cell` (`gather::cell_key`) by hand — the
+    /// `E` verb (`gather::pick`). `OpenWorldCont`'s shape: the cell is a
+    /// claim, the sim re-derives what stands there through the scatter memo
+    /// and refuses anything that is not a standing bush in reach.
+    Pick {
+        id: u32,
+        cell: u32,
+    },
     /// Move `count` items between two slots (`inventory.rs`). `cont` names
     /// the one ground container this move touches — a bag id for
     /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, a
@@ -4538,6 +4546,32 @@ impl World {
                         (cont & 0xFFFF) as u16,
                         &self.players[slot],
                     );
+                }
+            }
+            Command::Pick { id, cell } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let (cx, cz) = ((cell >> 16) as u16, (cell & 0xFFFF) as u16);
+                    let s = self.slot_cache.slot(
+                        self.seed,
+                        &self.scatter,
+                        &self.haven,
+                        cx as i32,
+                        cz as i32,
+                    );
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    gather::pick(
+                        self.seed,
+                        self.tick,
+                        &self.gather,
+                        &mut self.slot_lives,
+                        &mut self.events,
+                        &mut self.players[slot],
+                        &mut spill,
+                        cx,
+                        cz,
+                        &s,
+                    );
+                    self.drain_spill(slot, &mut spill);
                 }
             }
             Command::Move {
