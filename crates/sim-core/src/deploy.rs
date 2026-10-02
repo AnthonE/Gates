@@ -2523,7 +2523,13 @@ pub fn place_deploy(
     } else {
         loc
     };
-    let (ax, az) = crate::footprint::centre(cx, cz, pose);
+    // A lock bolts onto what already stands there: a box or a hearth placed
+    // freely is measured where it stands, a door's edge at the cell centre
+    // it always was.
+    let (ax, az) = match deploys.find(cx, cz, level, loc) {
+        Some(host) if def.placement == PLACE_DOOR && !is_edge_loc(loc) => host.xz(),
+        _ => crate::footprint::centre(cx, cz, pose),
+    };
     if crate::terrain::build_reserved(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;
@@ -3175,7 +3181,9 @@ pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
     if h.crew.contains(id) {
         return true;
     }
-    match locks.find(h.cx, h.cz, h.level, LOC_PLANE) {
+    // The hearth's own slot: free placement can put a box in slot 0 of
+    // the same cell, and that box's lock is not this hearth's.
+    match locks.find(h.cx, h.cz, h.level, h.loc) {
         Some(l) => l.grant(id) == lock::GRANT_FULL,
         None => h.crew.is_empty(),
     }
@@ -3293,7 +3301,7 @@ pub fn crew_op(
     events.push(
         EV_AUTH,
         crate::gather::cell_key(cx, cz),
-        ((level as u32) << 16) | ((LOC_PLANE as u32) << 8) | grant as u32,
+        ((level as u32) << 16) | ((deploys.hearths[h].loc as u32) << 8) | grant as u32,
         p.id,
     );
     moved.then_some(deploys.hearths[h].owner)

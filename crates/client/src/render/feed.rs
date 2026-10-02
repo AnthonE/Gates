@@ -86,7 +86,7 @@ pub enum Refused {
     /// A reload, or a trigger pulled on an empty magazine (wire v59) —
     /// `sim_core::ranged`'s `REFUSE_RL_*`. Carries the **held item** beside
     /// the code for [`Refused::Gather`]'s reason: its sentence names the
-    /// hand (*a rock takes no magazine*, *no rounds left for your
+    /// hand (*a rock takes no magazine*, *no ammunition left for your
     /// Revolver*).
     Reload,
 }

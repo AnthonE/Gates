@@ -149,24 +149,113 @@ pub fn nearest(
             continue;
         }
         best_d2 = d2;
-        best = Some(Target {
-            store: Store::Deploy,
-            cx: rec.cx,
-            cz: rec.cz,
-            level: rec.level,
-            loc: rec.loc,
-            row: rec.row,
-            dmg: rec.dmg,
-            hp_max: if (rec.row as u16) < deploy_have {
-                deploy_defs.defs[rec.row as usize].hp
-            } else {
-                0
-            },
-            side: None,
-        });
+        best = Some(deploy_target(rec, deploy_defs, deploy_have));
     }
 
     best
+}
+
+/// The free-placed deployable the crosshair is on, within reach of the
+/// feet — what the hammer and the charge mean before [`nearest`] is asked.
+///
+/// Free placement broke the feet metric for the deploy store: a box stands
+/// anywhere in its cell, the foundation under it is nearer from most of the
+/// room, and a box against a wall could not be picked from anywhere a body
+/// can stand. `E` answered the same problem with the eye's ray
+/// ([`super::interact::Sight`]); this is that ray, plus the one thing `E`
+/// never needed: a box behind a wall is not the one a raider at the wall
+/// means, so a piece crossing the ray first hides it.
+#[allow(clippy::too_many_arguments)]
+pub fn seen_deploy(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    at: (f32, f32),
+    sight: &super::interact::Sight<'_>,
+    deploys: &[DeployRec],
+    deploy_defs: &DeployContent,
+    deploy_have: u16,
+) -> Option<Target> {
+    let mut best: Option<(f32, &DeployRec)> = None;
+    for rec in deploys {
+        if sim_core::deploy::is_edge_loc(rec.loc)
+            || (rec.row as u16) >= deploy_have.min(deploy_defs.def_count)
+        {
+            continue;
+        }
+        let arch = deploy_defs.defs[rec.row as usize].arch;
+        let Some(rect) = rec.rect(arch) else {
+            continue;
+        };
+        let (ax, az) = sim_core::deploy::rec_anchor(rec);
+        let (dx, dz) = (ax - at.0, az - at.1);
+        if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+            continue;
+        }
+        let (bottom, top) = (sight.span)(rec, arch);
+        let Some(t) = super::interact::sight_hit(sight, &rect, bottom, top) else {
+            continue;
+        };
+        if best.is_none_or(|(b, _)| t < b) {
+            best = Some((t, rec));
+        }
+    }
+    let (t, rec) = best?;
+    if piece_crosses(seed, haven, cols, sight.eye, sight.dir, t) {
+        return None;
+    }
+    Some(deploy_target(rec, deploy_defs, deploy_have))
+}
+
+/// Whether a built piece stops the look ray before `t` metres — the shot
+/// walk (`collide::shot_blocked`) sampled along it, stopping just short of
+/// `t` so the floor a box stands on never counts against the box.
+fn piece_crosses(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    eye: [f32; 3],
+    dir: [f32; 3],
+    t: f32,
+) -> bool {
+    const STEP_M: f32 = 0.2;
+    let end = t - 0.05;
+    let (mut px, mut pz) = (eye[0], eye[2]);
+    let mut s = STEP_M.min(end);
+    while s > 0.0 {
+        let (x, y, z) = (
+            eye[0] + dir[0] * s,
+            eye[1] + dir[1] * s,
+            eye[2] + dir[2] * s,
+        );
+        if sim_core::collide::shot_blocked(seed, haven, cols, px, pz, x, z, y, 0.0) {
+            return true;
+        }
+        (px, pz) = (x, z);
+        if s >= end {
+            break;
+        }
+        s = (s + STEP_M).min(end);
+    }
+    false
+}
+
+fn deploy_target(rec: &DeployRec, deploy_defs: &DeployContent, deploy_have: u16) -> Target {
+    Target {
+        store: Store::Deploy,
+        cx: rec.cx,
+        cz: rec.cz,
+        level: rec.level,
+        loc: rec.loc,
+        row: rec.row,
+        dmg: rec.dmg,
+        hp_max: if (rec.row as u16) < deploy_have {
+            deploy_defs.defs[rec.row as usize].hp
+        } else {
+            0
+        },
+        side: None,
+    }
 }
 
 /// Which deployable row a held item places, if any.
@@ -270,6 +359,104 @@ mod tests {
             // `deploy_table`'s own 200 — see `piece`.
             dmg: damage_band(hp, 200),
         }
+    }
+
+    /// Free placement: a box near its cell's edge is the hammer's when the
+    /// crosshair is on it, though the foundation under it is nearer the
+    /// feet — and a wall between the eye and the box hides it again.
+    #[test]
+    fn the_crosshair_picks_a_free_box_and_a_wall_hides_it() {
+        use sim_core::build::{BUILD_CELL_M, SHAPE_FOUNDATION, SHAPE_WALL};
+        use sim_core::deploy::{body_base_y, ARCH_BOX};
+        use sim_core::footprint::Pose;
+        let seed = 20260731;
+        let haven = sim_core::terrain::haven(seed);
+        // A land cell clear of the authored sites.
+        let (cx, cz) = (300..600)
+            .step_by(7)
+            .flat_map(|cx| (300..600).step_by(7).map(move |cz| (cx as u16, cz as u16)))
+            .find(|&(cx, cz)| {
+                let (x, z) = (
+                    (cx as f32 + 0.5) * BUILD_CELL_M,
+                    (cz as f32 + 0.5) * BUILD_CELL_M,
+                );
+                sim_core::terrain::height(seed, x, z) > sim_core::terrain::SEA_LEVEL + 3.0
+                    && !sim_core::terrain::build_reserved(&haven, x, z, 3.0 * BUILD_CELL_M)
+            })
+            .expect("a land cell");
+        let mut cols = sim_core::collide::ColIndex::new();
+        cols.add(cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION, 0);
+        let mut defs = DeployContent::EMPTY;
+        defs.defs[0] = DeployDef {
+            arch: ARCH_BOX,
+            hp: 100,
+            ..DeployDef::INERT
+        };
+        defs.def_count = 1;
+        // Half a metre west of the cell's centre, wholly inside its cell.
+        let boxed = DeployRec {
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: Pose {
+                ox: -50,
+                oz: 0,
+                yaw: 0,
+            },
+            row: 0,
+            ..door(cx, cz, LOC_PLANE, 100)
+        };
+        let (bx, bz) = boxed.xz();
+        let floor = body_base_y(seed, &haven, &cols, &boxed, ARCH_BOX);
+        let span = |rec: &DeployRec, arch: u8| {
+            let b = body_base_y(seed, &haven, &cols, rec, arch);
+            (b, b + 0.7)
+        };
+        let look = |from: (f32, f32)| {
+            let eye = [from.0, floor + 1.6, from.1];
+            let d = [bx - eye[0], floor + 0.35 - eye[1], bz - eye[2]];
+            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            (eye, [d[0] / n, d[1] / n, d[2] / n])
+        };
+        let (dd, dh) = (defs, 1);
+        let (pd, ph) = piece_table(&[MAT_WOOD]);
+        let pieces = [piece(cx, cz, LOC_PLANE, 500)];
+
+        // Inside, east of the box: the foundation is nearer the feet.
+        let feet = (bx + 1.8, bz);
+        let (eye, dir) = look(feet);
+        let sight = super::super::interact::Sight {
+            eye,
+            dir,
+            span: &span,
+        };
+        let seen = seen_deploy(seed, &haven, &cols, feet, &sight, &[boxed], &dd, dh)
+            .expect("the box the crosshair is on");
+        assert_eq!((seen.store, seen.loc), (Store::Deploy, LOC_PLANE));
+        let by_feet = nearest(feet, &pieces, &pd, ph, &[boxed], &dd, dh).expect("in reach");
+        assert_eq!(
+            by_feet.store,
+            Store::Piece,
+            "the premise: by the feet, the foundation"
+        );
+
+        // Outside the cell's west wall, looking at the box through it.
+        let mut walled = sim_core::collide::ColIndex::new();
+        walled.add(cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION, 0);
+        walled.add(cx, cz, 0, LOC_EDGE_XLO, SHAPE_WALL, 0);
+        let feet = (cx as f32 * BUILD_CELL_M - 1.5, bz);
+        let (eye, dir) = look(feet);
+        let sight = super::super::interact::Sight {
+            eye,
+            dir,
+            span: &span,
+        };
+        assert_eq!(
+            seen_deploy(seed, &haven, &walled, feet, &sight, &[boxed], &dd, dh),
+            None,
+            "a box behind a wall is not the raider's target"
+        );
     }
 
     #[test]

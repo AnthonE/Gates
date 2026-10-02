@@ -199,7 +199,8 @@ mult_very_rare = 12
 # answer, and the reason a player spawned beside an ocean is no longer
 # looking at scenery. **The sea is salt**: a mouthful restores
 # `drink_water` and costs `drink_hp_cost`, so the ocean is the answer that
-# is always there and never free.
+# is always there and never free. An inland lake is fresh: the same mouthful
+# costs nothing, which is what the walk inland buys.
 #
 # The pair is derived against the answers that already ship, not picked:
 # a bush pays 5 berries at 5 water each = 25 water, which is 10 minutes of

@@ -42,6 +42,40 @@ pub fn fire_open(
     })
 }
 
+/// The open container's archetype, if it converts at all — the fire, the
+/// furnace, the recycler (`OvenState::arch_converts`), sectioned or not.
+pub fn converter_open(
+    kind: u8,
+    handle: u32,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    defs_have: u16,
+) -> Option<u8> {
+    if kind != CONT_BOX || handle == 0 {
+        return None;
+    }
+    deploys.iter().find_map(|d| {
+        if box_key(d.cx, d.cz, d.level, d.loc) != handle || u16::from(d.row) >= defs_have {
+            return None;
+        }
+        let arch = defs.defs[d.row as usize].arch;
+        sim_core::oven::OvenState::arch_converts(arch).then_some(arch)
+    })
+}
+
+/// `REFUSE_M_OVEN` in words, for the converter that said it. A Rust player
+/// drags ore into the furnace first, and smelting here is a recipe made
+/// beside it, so the furnace's sentence points there.
+pub fn oven_refusal(arch: u8) -> &'static str {
+    match arch {
+        sim_core::deploy::ARCH_FURNACE => {
+            "a furnace burns wood - smelt ore in the crafting menu (Q) beside it"
+        }
+        sim_core::deploy::ARCH_RECYCLER => "the recycler only takes what it can break down",
+        _ => refusal_text(REFUSE_M_OVEN as u8),
+    }
+}
+
 /// One band of the fire panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {

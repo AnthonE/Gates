@@ -314,6 +314,50 @@ fn a_full_meter_refuses_rather_than_paying_hp() {
     assert_eq!(refused, 1, "and it must say which refusal it was");
 }
 
+/// A standable point on an inland lake's shore: land above the waterline
+/// with lake water — the carve's share of the column, `height_open` — and
+/// no sea inside reach. Scanned like [`shoreline`], for the same reason.
+fn lakeshore(seed: u64) -> Option<(f32, f32)> {
+    let r = sim_core::survival::DRINK_REACH_M;
+    let mut x = 0.0f32;
+    while x < sim_core::terrain::ISLAND_SIZE {
+        let mut z = 0.0f32;
+        while z < sim_core::terrain::ISLAND_SIZE {
+            let h = sim_core::terrain::height(seed, x, z);
+            if (sim_core::terrain::SEA_LEVEL..sim_core::terrain::BEACH_MAX_H).contains(&h) {
+                let taps = [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)]
+                    .map(|(dx, dz)| sim_core::terrain::height_open(seed, x + dx, z + dz));
+                let wet = |&(h, _): &(f32, f32)| h < sim_core::terrain::SEA_LEVEL;
+                if taps.iter().any(|t| wet(t) && t.1 < 0.5)
+                    && !taps.iter().any(|t| wet(t) && t.1 >= 0.5)
+                {
+                    return Some((x, z));
+                }
+            }
+            z += 4.0;
+        }
+        x += 4.0;
+    }
+    None
+}
+
+/// A lake is fresh: the mouthful the sea charges hp for is free inland.
+#[test]
+fn a_lake_is_fresh_water() {
+    let mut w = lone_world();
+    let (x, z) = lakeshore(SEED).expect("this island has no lake shore to drink at");
+    stand(&mut w, x, z);
+    w.players[0].water = 10;
+    let hp_before = w.players[0].hp;
+    w.tick(&[Command::Drink { id: 1 }]);
+    assert_eq!(count(&w, sim_core::world::EV_DRANK), 1, "a lake is water");
+    assert!(w.players[0].water > 10, "the meter did not move");
+    assert_eq!(
+        w.players[0].hp, hp_before,
+        "a lake is fresh — it costs no hp"
+    );
+}
+
 /// The salt can kill you, and when it does it is a death like any other:
 /// counted, announced, and answered by the spawn ring. This is the reason
 /// `Command::Drink` goes through `World::respawn` at all — a verb that can

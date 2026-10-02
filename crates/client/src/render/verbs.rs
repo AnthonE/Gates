@@ -132,28 +132,24 @@ pub fn resolve(
     // The eye's ray, for the deployables `E` is offered on only when the
     // crosshair is on them (free placement): the eye the sim would cast
     // from and the look it would carry, against the box the renderer draws.
-    let span = |rec: &sim_core::deploy::DeployRec, arch: u8| {
-        let (seed, haven) = match world.as_deref() {
-            Some(w) => (w.seed, &w.haven),
-            None => return (f32::NEG_INFINITY, f32::INFINITY),
-        };
-        let bottom = sim_core::deploy::body_base_y(seed, haven, core.pieces.cols(), rec, arch);
-        (
-            bottom,
-            bottom + super::structures::deploy_size(arch as usize).y,
-        )
-    };
-    let mut aim = Aim::new(x, z, fx, fz);
-    if world.is_some() {
-        let (ch, sv) = sim_core::pitch_dir(pitch);
-        let eye_y = y + if crouched {
+    let span =
+        |rec: &sim_core::deploy::DeployRec, arch: u8| body_span(world.as_deref(), core, rec, arch);
+    let (ch, sv) = sim_core::pitch_dir(pitch);
+    let eye = [
+        x,
+        y + if crouched {
             super::CROUCH_EYE_M
         } else {
             super::EYE_HEIGHT
-        };
+        },
+        z,
+    ];
+    let dir = [fx * ch, sv, fz * ch];
+    let mut aim = Aim::new(x, z, fx, fz);
+    if world.is_some() {
         aim.sight = Some(interact::Sight {
-            eye: [x, eye_y, z],
-            dir: [fx * ch, sv, fz * ch],
+            eye,
+            dir,
             span: &span,
         });
     }
@@ -341,15 +337,55 @@ pub fn resolve(
     if core.wounded && !crate::ui::wounded::allows(aimed.0.verb) {
         aimed.0 = interact::Pick::default();
     }
-    near.0 = structure::nearest(
-        (x, z),
-        core.pieces.entries(),
-        &core.piece_defs,
-        core.piece_defs_have,
-        core.deploys.entries(),
-        &core.deploy_defs,
-        core.deploy_defs_have,
-    );
+    // The hammer's and the charge's target: the free-placed deployable the
+    // crosshair is on, by `E`'s own ray, else the structure nearest the feet.
+    let span =
+        |rec: &sim_core::deploy::DeployRec, arch: u8| body_span(world.as_deref(), core, rec, arch);
+    let seen = world.as_deref().and_then(|w| {
+        structure::seen_deploy(
+            w.seed,
+            &w.haven,
+            core.pieces.cols(),
+            (x, z),
+            &interact::Sight {
+                eye,
+                dir,
+                span: &span,
+            },
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
+        )
+    });
+    near.0 = seen.or_else(|| {
+        structure::nearest(
+            (x, z),
+            core.pieces.entries(),
+            &core.piece_defs,
+            core.piece_defs_have,
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
+        )
+    });
+}
+
+/// `(bottom, top)` of a body deployable as the renderer stands it — its
+/// floor and that plus its drawn height — for [`interact::Sight::span`].
+pub(crate) fn body_span(
+    world: Option<&crate::render::WorldId>,
+    core: &client_core::core::ClientCore,
+    rec: &sim_core::deploy::DeployRec,
+    arch: u8,
+) -> (f32, f32) {
+    let Some(w) = world else {
+        return (f32::NEG_INFINITY, f32::INFINITY);
+    };
+    let bottom = sim_core::deploy::body_base_y(w.seed, &w.haven, core.pieces.cols(), rec, arch);
+    (
+        bottom,
+        bottom + super::structures::deploy_size(arch as usize).y,
+    )
 }
 
 /// `E`, `J`, `H`.
@@ -425,7 +461,11 @@ pub fn keys(
         ];
         if keys.just_pressed(KeyCode::KeyE) && crate::ui::wounded::allows(aimed.0.verb) {
             use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
-        } else if HAND_KEYS.iter().any(|&k| keys.just_pressed(k)) {
+        } else if HAND_KEYS.iter().any(|&k| keys.just_pressed(k))
+            // The left click too: it places, eats, reads and repairs, and
+            // the sim drops every one of those from a downed body unsaid.
+            || mouse.just_pressed(MouseButton::Left)
+        {
             toast.warn(crate::ui::wounded::HANDS_LINE);
         }
         return;
@@ -626,8 +666,16 @@ pub fn keys(
         // hand reaches without leaving `WASD` while it walks the field it
         // just shot across. Payload-free: the sim picks, from the body it
         // already has. `just_pressed` because the action lane takes one
-        // pending action per client per tick.
-        send(&net, &mut toast, "pick up", protocol::encode_action_pickup);
+        // pending action per client per tick. Nothing in the sim's own
+        // reach (`resolve_take`) is said here: the sim answers that press
+        // with no event at all.
+        let core = &net.session.core;
+        let [x, _, z] = core.predict.render_position();
+        if interact::resolve_take(x, z, core.ground_items()).verb == Verb::None {
+            toast.warn("nothing to pick up here");
+        } else {
+            send(&net, &mut toast, "pick up", protocol::encode_action_pickup);
+        }
     }
     if keys.just_pressed(KeyCode::KeyH) {
         // Drink from the water at your feet. `H` because `J` is the eat and
@@ -930,8 +978,13 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, ask: A
         return;
     }
     // `K` at a door is the keypad's own LOCK and is handled there; outside
-    // the pad and away from a hearth it means nothing.
+    // the pad and away from a hearth it means nothing, and says so.
     if ask != Access::Join {
+        toast.warn(if ask == Access::Leave {
+            "no hearth in reach to leave"
+        } else {
+            "no hearth in reach to clear"
+        });
         return;
     }
     match lock_target(pick) {

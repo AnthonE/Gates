@@ -591,7 +591,9 @@ pub fn place_key(
     let holding_plan =
         crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel)
             .places();
-    if busy || !holding_plan || !mouse.just_pressed(MouseButton::Left) {
+    // Down, the hands are gone: `verbs::keys` says so, and a place sent
+    // from here would be dropped by the sim without a word.
+    if busy || !holding_plan || net.session.core.wounded || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Some(row) = ghost.row else {
@@ -797,29 +799,93 @@ pub fn deploy_track(
             [x, y, z],
             place::AIM_STEP_M,
         );
+        // A lock goes on the box or hearth the crosshair is on — the
+        // hammer's own pick (`structure::seen_deploy`) — before the floor
+        // point a ray past a free-placed box lands on.
+        let seen = if arch as u8 == sim_core::deploy::ARCH_LOCK {
+            let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+            let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
+            let eye_y = y + if core.crouched() {
+                CROUCH_EYE_M
+            } else {
+                EYE_HEIGHT
+            };
+            let span = |rec: &sim_core::deploy::DeployRec, a: u8| {
+                super::verbs::body_span(Some(&world), core, rec, a)
+            };
+            crate::ui::structure::seen_deploy(
+                world.seed,
+                &world.haven,
+                core.pieces.cols(),
+                (x, z),
+                &crate::ui::interact::Sight {
+                    eye: [x, eye_y, z],
+                    dir: [fx * ch, sv, fz * ch],
+                    span: &span,
+                },
+                core.deploys.entries(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+            )
+            .filter(|s| sim_core::deploy::lockable(core.deploy_defs.defs[s.row as usize].arch))
+        } else {
+            None
+        };
         // A doorway-class deployable resolves an edge at the storey the aim
         // met — a door aimed at its doorway's frame lands in that doorway,
         // whatever storey it is on (aimed level v0); a lock finds the door
         // or the box it bolts to.
-        let t = place::deploy_target_on(
-            &aim,
-            def.placement,
-            core.deploys.entries(),
-            &core.deploy_defs,
-            core.deploy_defs_have,
-        );
-        // The one pose site (`structures::deploy_transform`, closed): the
-        // ghost and the deployable it becomes are the same box in the same
-        // place — for a door, in the doorway's edge.
-        let transform = deploy_transform(
-            world.seed,
-            &world.haven,
-            (t.cx, t.cz, t.level, t.loc),
-            arch as u8,
-            false,
-            core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
-        )
-        .with_scale(if insert.is_some() { Vec3::ONE } else { size });
+        let t = match seen {
+            Some(s) => Target {
+                cx: s.cx,
+                cz: s.cz,
+                level: s.level,
+                loc: s.loc,
+            },
+            None => place::deploy_target_on(
+                &aim,
+                def.placement,
+                core.deploys.entries(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+            ),
+        };
+        // A lock on a free-placed box or hearth is drawn on its front, half
+        // way up, where it stands — not at its cell's centre.
+        let host = if arch as u8 == sim_core::deploy::ARCH_LOCK
+            && !sim_core::deploy::is_edge_loc(t.loc)
+        {
+            core.deploys
+                .entries()
+                .iter()
+                .find(|r| (r.cx, r.cz, r.level, r.loc) == (t.cx, t.cz, t.level, t.loc))
+                .filter(|r| (r.row as u16) < core.deploy_defs_have.min(core.deploy_defs.def_count))
+        } else {
+            None
+        };
+        let transform = match host {
+            Some(h) => {
+                let ha = core.deploy_defs.defs[h.row as usize].arch;
+                let hs = structures::deploy_size(ha as usize);
+                structures::body_feet(world.seed, &world.haven, core.pieces.cols(), h, ha)
+                    .mul_transform(
+                        Transform::from_xyz(0.0, hs.y * 0.5, (hs.z + size.z) * 0.5)
+                            .with_scale(size),
+                    )
+            }
+            // The one pose site (`structures::deploy_transform`, closed):
+            // the ghost and the deployable it becomes are the same box in
+            // the same place — for a door, in the doorway's edge.
+            None => deploy_transform(
+                world.seed,
+                &world.haven,
+                (t.cx, t.cz, t.level, t.loc),
+                arch as u8,
+                false,
+                core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
+            )
+            .with_scale(if insert.is_some() { Vec3::ONE } else { size }),
+        };
         (t, sim_core::footprint::Pose::CENTRE, transform, mesh)
     };
     let verdict = place::deploy_verdict(t, pose, row, &site);

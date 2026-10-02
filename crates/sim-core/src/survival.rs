@@ -534,17 +534,26 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
 /// function the client draws the ground from and the same one the spawn
 /// ring picks a beach with, so "am I at water" has exactly one answer on
 /// both sides of the wire.
+///
+/// The answer is `None` for no water, else whether it is **salt**: a tap in
+/// water the lake carve dug (`terrain::height_open`'s share under a half)
+/// is fresh, and fresh wins — a body at a lagoon's edge drinks the lake
+/// side. The same call as the height, so the lakes cost nothing extra.
 #[inline]
-fn water_in_reach(seed: u64, x: f32, z: f32) -> bool {
+fn water_in_reach(seed: u64, x: f32, z: f32) -> Option<bool> {
     let r = DRINK_REACH_M;
     let taps = [(0.0, 0.0), (r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)];
-    let mut found = false;
+    let mut wet = false;
+    let mut fresh = false;
     for (dx, dz) in taps {
         // No early return: the loop is the same work every call, which is
         // what keeps this verb off the tick-jitter budget's variable side.
-        found |= crate::terrain::height(seed, x + dx, z + dz) < crate::terrain::SEA_LEVEL;
+        let (h, open) = crate::terrain::height_open(seed, x + dx, z + dz);
+        let here = h < crate::terrain::SEA_LEVEL;
+        wet |= here;
+        fresh |= here && open < 0.5;
     }
-    found
+    wet.then_some(!fresh)
 }
 
 /// Drink from the water at your feet — thirst's real answer, and the first
@@ -555,7 +564,9 @@ fn water_in_reach(seed: u64, x: f32, z: f32) -> bool {
 /// never free. That is what keeps the bush worth walking to after this
 /// lands, and it is the reason this verb can kill — a body drinking on its
 /// last points of health dies of it, and dies through the module's one kill
-/// site, exactly as a starved body does.
+/// site, exactly as a starved body does. **A lake is fresh** and costs
+/// nothing, as the reference's lakes and rivers do: it is the inland water
+/// worth walking to.
 ///
 /// Every input is the sim's own: the position comes off the body, the water
 /// off the heightfield, the numbers off baked content. Nothing here crosses
@@ -569,10 +580,10 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
     }
     let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
-    if !water_in_reach(seed, x, z) {
+    let Some(salt) = water_in_reach(seed, x, z) else {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NO_WATER, 0);
         return Step::Quiet;
-    }
+    };
     if p.water >= sc.max_water {
         // Refuse rather than charge: a full meter would pay hp for
         // nothing, which is `REFUSE_C_FULL`'s exact case on the eat side.
@@ -589,7 +600,7 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
     // The funnel, **unreduced**: the hp *is* the price of the drink, and a
     // helmet is not a desalinator. `dealt` rather than the raw cost, so
     // `EV_DRANK` reports what the body actually paid.
-    let took = crate::combat::hurt_unreduced(p, sc.drink_hp_cost);
+    let took = crate::combat::hurt_unreduced(p, if salt { sc.drink_hp_cost } else { 0 });
     events.push(EV_DRANK, p.id, restored as u32, took.dealt as u32);
     announce(sc, p, events);
     // The "a body already at zero is not killed twice" guard this line

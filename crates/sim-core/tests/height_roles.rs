@@ -263,7 +263,8 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     (
         "survival.rs",
         "water_in_reach",
-        "carve-blind: 'is there water within reach', compared against SEA_LEVEL.",
+        "carve-blind: 'is there water within reach, and is any of it lake', \
+         compared against SEA_LEVEL with the lake's share of the column.",
     ),
     (
         "probe.rs",
