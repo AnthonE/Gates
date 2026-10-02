@@ -330,10 +330,13 @@ drops = [
 # Proposed defaults, tuned on three seeds against a player standing on the
 # spawn beach: spotted, a two-second beat, then two to four bursts (3–8 s of
 # fire) and an unarmoured player is down. Reaching cover in the gaps works.
+#
+# The schedule (operator, 2026-10-02): a five-minute patrol every thirty
+# minutes, arrival to arrival, the first five minutes after boot.
 [heli]
 first_seconds = 300
-every_seconds = 1200
-patrol_seconds = 600
+every_seconds = 1800
+patrol_seconds = 300
 speed_mps = 22
 engage_speed_mps = 10
 cruise_m = 45

@@ -103,7 +103,8 @@ const CH_HELI_ENTRY: u32 = 202;
 pub struct HeliDef {
     /// From the first armed tick to the first arrival.
     pub first_ticks: u64,
-    /// From one departure to the next arrival.
+    /// From one arrival to the next — the cycle, so the flight back out to
+    /// sea does not stretch it.
     pub every_ticks: u64,
     /// How long a visit patrols before heading out.
     pub patrol_ticks: u64,
@@ -405,9 +406,12 @@ fn leave(heli: &mut Heli) {
 }
 
 fn depart(tick: u64, def: &HeliDef, heli: &mut Heli, slot: &mut Mob) {
+    // The cycle runs arrival to arrival: this visit arrived `patrol_ticks`
+    // before its `leave_at`.
+    let arrived = heli.leave_at.saturating_sub(def.patrol_ticks);
     *heli = Heli {
         sortie: heli.sortie,
-        next_at: tick + def.every_ticks.max(1),
+        next_at: (arrived + def.every_ticks).max(tick + 1),
         ..Heli::default()
     };
     slot.alive = false;

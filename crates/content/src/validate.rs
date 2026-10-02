@@ -1243,6 +1243,9 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if let Some((_, what)) = positive.iter().find(|(v, _)| *v == 0) {
             return Err(format!("heli: `{what}` is zero"));
         }
+        if h.every_seconds <= h.patrol_seconds {
+            return Err("heli: every_seconds is the whole cycle, so it outlasts the patrol".into());
+        }
         if h.speed_mps > 60 || h.engage_speed_mps > h.speed_mps {
             return Err("heli: speeds are 1–60 m/s, engage no faster than cruise".into());
         }

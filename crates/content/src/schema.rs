@@ -723,7 +723,7 @@ pub struct Habitat {
 pub struct Heli {
     /// From boot to the first arrival.
     pub first_seconds: u32,
-    /// From one departure to the next arrival.
+    /// From one arrival to the next: the whole cycle.
     pub every_seconds: u32,
     /// How long one visit patrols before heading back out to sea.
     pub patrol_seconds: u32,
