@@ -263,6 +263,7 @@ pub fn shots(
             kind: ContactKind::Impact,
             weapon: Weapon::Bullet,
             mark: !matches!(matter, Matter::Water | Matter::Plant),
+            skin: None,
         });
     }
 }

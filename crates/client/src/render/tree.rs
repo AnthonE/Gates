@@ -1687,9 +1687,9 @@ pub fn cap_swap(
 ///
 /// **Only the three banded parts.** The stump and a vanishing prop are the
 /// fell system's to show and hide (`props::apply_fell`), which never writes
-/// `Visibility` on a trunk, a canopy or a hull — so the two never fight over
-/// one entity. Written only on a change, because a `Visibility` write
-/// re-extracts the entity.
+/// `Visibility` on a trunk or a canopy, and hides a felled tree's card — so
+/// this keeps a felled card hidden rather than fighting it. Written only on a
+/// change, because a `Visibility` write re-extracts the entity.
 ///
 /// Compiled on every target and **gated to wasm32 by its run condition**
 /// (`render/mod.rs`), so `tests/tree_swap.rs` can drive it natively.
@@ -1706,7 +1706,10 @@ pub fn swap_by_distance(
             super::props::FellPart::Stump | super::props::FellPart::Vanish => continue,
         };
         let is_near = (gt.translation() - eye.pos).length_squared() < swap2;
-        let want = if is_near == near_part {
+        // A felled tree's card is the fell system's to hide (`apply_fell`).
+        let want = if f.felled && !near_part {
+            Visibility::Hidden
+        } else if is_near == near_part {
             Visibility::Inherited
         } else {
             Visibility::Hidden

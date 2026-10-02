@@ -12,12 +12,34 @@
     view_transformations::position_world_to_clip,
 }
 
-// x = prop chunk edge (m), y = chunks per island side, z = 1 on a ring card
-// (its entity is the ring's own tree, so it ignores the mask).
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> card: vec4<f32>;
-// One texel per prop chunk: alpha set where a prop ring draws the trees.
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var ring_mask: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var ring_mask_sampler: sampler;
+// `far_trees::CardParams`. params: x = prop chunk edge (m), y = 1 on a ring
+// card (its entity is the ring's own tree, so it ignores the mask). window:
+// the mask's first chunk and its side; bits: one per window chunk, set where
+// a prop ring draws the trees.
+struct CardParams {
+    params: vec4<f32>,
+    window: vec4<i32>,
+    bits: vec4<u32>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> card: CardParams;
+
+fn ring_holds(wp: vec3<f32>) -> bool {
+    let local = vec2<i32>(floor(wp.xz / card.params.x)) - card.window.xy;
+    let side = card.window.z;
+    if local.x < 0 || local.y < 0 || local.x >= side || local.y >= side {
+        return false;
+    }
+    let i = u32(local.y * side + local.x);
+    var word = card.bits.x;
+    if i >= 96u {
+        word = card.bits.w;
+    } else if i >= 64u {
+        word = card.bits.z;
+    } else if i >= 32u {
+        word = card.bits.y;
+    }
+    return ((word >> (i % 32u)) & 1u) != 0u;
+}
 
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
@@ -27,18 +49,14 @@ fn vertex(in: Vertex) -> VertexOutput {
 
     // The prop rings own this chunk: collapse the card to one point off
     // screen, so its two triangles have no area and nothing rasterises.
-    let chunk = vec2<i32>(floor(wp.xz / card.x));
-    let side = i32(card.y);
-    var hidden = false;
-    if card.z < 0.5 && chunk.x >= 0 && chunk.y >= 0 && chunk.x < side && chunk.y < side {
-        hidden = textureLoad(ring_mask, chunk, 0).a > 0.5;
-    }
+    let island = card.params.y < 0.5;
+    var hidden = island && ring_holds(wp);
 
     let to_cam = view.world_position.xyz - wp;
     // Past a couple of kilometres a tree is a few pixels, and the forest's
     // canopy reads as texture: keep a thinning share of the island cards,
     // chosen by a hash of the tree's own position so a card never flickers.
-    if card.z < 0.5 {
+    if island {
         let d = length(to_cam.xz);
         let keep = clamp((1800.0 * 1800.0) / max(d * d, 1.0), 0.3, 1.0);
         let h = fract(sin(dot(floor(wp.xz * 4.0), vec2<f32>(12.9898, 78.233))) * 43758.5453);

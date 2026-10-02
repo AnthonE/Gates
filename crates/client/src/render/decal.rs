@@ -8,7 +8,16 @@
 //! WebGL2 (its 4-byte uniform is refused outright), and drawing marks two ways
 //! meant the two builds looked different; the mesh path the browser proved is
 //! now the only path. A patch is lifted [`MESH_MARK_LIFT_M`] off its surface
-//! along the normal, and bent to the trunk where it lands on one.
+//! along the normal.
+//!
+//! # On the drawn surface, not the sim's
+//!
+//! A world contact arrives already moved onto the mesh it struck
+//! (`impact::snap`), and a mark there is a [`MARK_GRID`]² grid whose every
+//! vertex is projected onto that mesh ([`Marks::conform`]): it follows the
+//! lumps of a rock and the taper of a trunk, and fades out over an edge it
+//! cannot reach rather than hanging in the air past it. Off a mesh (the
+//! ground, a wall) it is flat, or bent about the trunk's axis.
 //!
 //! # What a mark looks like
 //!
@@ -18,7 +27,9 @@
 //! crater), a blade a gash, a blow on metal a dent, a blast a scorch and a
 //! body blood on the floor behind it. Every mark is rotated and scaled at
 //! random, and fades out after its life. The atlas is grey value × alpha; the
-//! matter's [`tint`] colours it, so one crater serves every soil.
+//! matter's [`tint`] colours it, so one crater serves every soil. A second
+//! atlas is each mark's relief as a normal map, so a gash is a groove the sun
+//! lights one side of and a chip a pit, not a sticker.
 //!
 //! # A fixed pool
 //!
@@ -44,6 +55,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use super::impact::{skin_radius, strike_height, Contacts, Matter, Weapon};
 use super::mipmap;
 use super::props::hash01;
+use super::skin::{ray_mesh, Patch, Skin};
 use super::{surface, Eye, WorldId};
 use sim_core::gather::NO_CELL;
 use sim_core::ranged::SURF_WORLD;
@@ -51,7 +63,7 @@ use sim_core::terrain::{self, Slot};
 use sim_core::yaw_dir;
 
 /// Marks drawable at once — a *view* cap: marks are not saved, replicated or
-/// known to the sim. Each costs 18 vertices of one shared mesh.
+/// known to the sim. Each costs [`MARK_GRID`]² vertices of one shared mesh.
 pub const MARKS: usize = 256;
 
 /// How long a mark stays at full strength, seconds.
@@ -76,12 +88,16 @@ pub const MARK_RANGE_M: f32 = 50.0;
 /// separation the depth test is a coin toss per pixel.
 pub const MESH_MARK_LIFT_M: f32 = 0.01;
 
-/// Segments across a mark, so a trunk mark can bend: eight chords over a
-/// 22 cm arc on a 24 cm radius is a sagitta under a millimetre.
+/// Segments across the weak spot's curved patch ([`curved_patch`]): eight
+/// chords over a 30 cm arc on a 24 cm radius is a sagitta under a centimetre.
 pub const MESH_MARK_SEGMENTS: u32 = 8;
 
-/// Vertices per mark: two rows of `MESH_MARK_SEGMENTS + 1`.
-const VERTS_PER_MARK: usize = (MESH_MARK_SEGMENTS as usize + 1) * 2;
+/// Vertices across and up one mark — a grid, so a mark can follow a rock in
+/// both directions.
+pub const MARK_GRID: usize = 5;
+
+/// Vertices per mark.
+const VERTS_PER_MARK: usize = MARK_GRID * MARK_GRID;
 
 /// The weak-spot cross's footprint, metres — a target read from where a swing
 /// is taken, larger than a scuff.
@@ -105,7 +121,7 @@ const ALPHA_STEPS: f32 = 32.0;
 /// The atlas: [`ATLAS_COLS`] × [`ATLAS_ROWS`] cells of [`CELL_TEX`]² texels.
 pub const ATLAS_COLS: u32 = 8;
 pub const ATLAS_ROWS: u32 = 4;
-pub const CELL_TEX: u32 = 128;
+pub const CELL_TEX: u32 = 192;
 
 /// What a mark is — an atlas cell, or a run of variant cells.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -209,8 +225,36 @@ pub fn tint(kind: Kind, matter: Matter) -> Color {
     }
 }
 
-/// One vertex of a mark: position, normal, uv, linear colour.
-pub type MarkVertex = ([f32; 3], [f32; 3], [f32; 2], [f32; 4]);
+/// One vertex of a mark: position, normal, uv, linear colour, tangent.
+pub type MarkVertex = ([f32; 3], [f32; 3], [f32; 2], [f32; 4], [f32; 4]);
+
+/// One grid vertex of a mark, on its surface (the lift is added at write).
+#[derive(Clone, Copy)]
+struct MarkVert {
+    p: Vec3,
+    n: Vec3,
+    /// The world direction of the atlas's +u here.
+    t: Vec3,
+    /// The tangent's handedness, Bevy's `w`.
+    w: f32,
+    /// The cell-local uv, 0..1.
+    uv: Vec2,
+    /// How much of the mark shows here: 0 past an edge it could not reach.
+    a: f32,
+}
+
+impl Default for MarkVert {
+    fn default() -> Self {
+        Self {
+            p: Vec3::ZERO,
+            n: Vec3::Y,
+            t: Vec3::X,
+            w: 1.0,
+            uv: Vec2::ZERO,
+            a: 1.0,
+        }
+    }
+}
 
 /// One pooled mark.
 #[derive(Clone, Copy)]
@@ -219,20 +263,15 @@ struct Mark {
     left: f32,
     /// The alpha step last written, so a fade rewrites only when it moves.
     step: i32,
+    /// The centre, for [`Marks::forget_near`].
     pos: Vec3,
+    /// The mark's own normal and size, which [`Marks::conform`] casts along.
     normal: Vec3,
-    /// The patch's local +u axis on the surface; horizontal on a trunk.
-    tangent: Vec3,
     size: f32,
     cell: u32,
-    /// The trunk's radius for a bent mark, metres; zero is flat.
-    bend_r: f32,
     /// Linear tint.
     tint: [f32; 3],
-    /// A trunk mark cannot be spun (it is aligned to the trunk), so its
-    /// variety is the atlas cell's dihedral turn: bit 0 swaps u/v, bits 1–2
-    /// mirror them.
-    flip: u8,
+    grid: [MarkVert; VERTS_PER_MARK],
 }
 
 impl Default for Mark {
@@ -242,21 +281,110 @@ impl Default for Mark {
             step: -1,
             pos: Vec3::ZERO,
             normal: Vec3::Y,
-            tangent: Vec3::X,
             size: 0.0,
             cell: 0,
-            bend_r: 0.0,
             tint: [1.0; 3],
-            flip: 0,
+            grid: [MarkVert::default(); VERTS_PER_MARK],
         }
     }
 }
 
+/// A mark's grid, laid flat or bent about a trunk of radius `bend_r`: the
+/// patch's +u along `tangent`, its +v up the trunk (bent) or along
+/// `normal × tangent` (flat), and the atlas cell turned by `flip`'s dihedral
+/// bits (bit 0 swaps u/v, bits 1–2 mirror them).
+fn grid_of(
+    at: Vec3,
+    normal: Vec3,
+    tangent: Vec3,
+    size: f32,
+    bend_r: f32,
+    flip: u8,
+) -> [MarkVert; VERTS_PER_MARK] {
+    let mut out = [MarkVert::default(); VERTS_PER_MARK];
+    let b = normal.cross(tangent);
+    let last = (MARK_GRID - 1) as f32;
+    for j in 0..MARK_GRID {
+        for i in 0..MARK_GRID {
+            let (u, v) = (i as f32 / last, j as f32 / last);
+            let (off, n, du) = if bend_r > 0.0 {
+                let theta = (u - 0.5) * size / bend_r;
+                let (s, c) = theta.sin_cos();
+                (
+                    tangent * (bend_r * s) + normal * (bend_r * (c - 1.0)),
+                    tangent * s + normal * c,
+                    tangent * c - normal * s,
+                )
+            } else {
+                (tangent * ((u - 0.5) * size), normal, tangent)
+            };
+            let dv = if bend_r > 0.0 { Vec3::Y } else { b };
+            let p = at + off + dv * ((v - 0.5) * size);
+            let (mut tu, mut tv, mut au, mut av) = (u, v, du, dv);
+            if flip & 1 != 0 {
+                std::mem::swap(&mut tu, &mut tv);
+                std::mem::swap(&mut au, &mut av);
+            }
+            if flip & 2 != 0 {
+                tu = 1.0 - tu;
+                au = -au;
+            }
+            if flip & 4 != 0 {
+                tv = 1.0 - tv;
+                av = -av;
+            }
+            // Bevy's bitangent is `cross(n, t) · w` and points toward −v.
+            let w = if n.cross(au).dot(av) > 0.0 { -1.0 } else { 1.0 };
+            out[j * MARK_GRID + i] = MarkVert {
+                p,
+                n,
+                t: au,
+                w,
+                uv: Vec2::new(tu, tv),
+                a: 1.0,
+            };
+        }
+    }
+    out
+}
+
+/// Project a grid onto the surface `cast` answers — `cast(origin, dir, max)`
+/// is a ray against one drawn mesh — vertex by vertex, along `normal`. A
+/// vertex the surface does not meet within `reach`, or meets turned away,
+/// fades to nothing: the mark ends at an edge rather than hanging past it.
+fn conform_grid(
+    grid: &mut [MarkVert; VERTS_PER_MARK],
+    normal: Vec3,
+    reach: f32,
+    cast: &mut dyn FnMut(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>,
+) {
+    for v in grid.iter_mut() {
+        let o = v.p + normal * reach;
+        match cast(o, -normal, reach * 2.0) {
+            Some((at, n)) => {
+                let facing = n.dot(normal);
+                v.a *= smooth(0.15, 0.45, facing);
+                v.p = at;
+                v.n = n;
+                let t = v.t - n * n.dot(v.t);
+                v.t = t.normalize_or(v.t);
+            }
+            None => v.a = 0.0,
+        }
+    }
+}
+
+/// How far a mark's vertices are searched for its surface, metres: past the
+/// lumps of a rock and the taper of a trunk, not as far as the next face.
+fn conform_reach(size: f32) -> f32 {
+    (size * 0.3).clamp(0.05, 0.25)
+}
+
 /// The pool: every mark's state, and the handles of the one mesh that draws
-/// them. `Default` is written out: `[T; N]` derives it only up to 32.
+/// them. On the heap: [`MARKS`] grids is too big for a browser's stack.
 #[derive(Resource)]
 pub struct Marks {
-    slots: [Mark; MARKS],
+    slots: Vec<Mark>,
     mesh: Handle<Mesh>,
     /// The oldest slot to recycle when every one is busy — a rotating hand.
     hand: usize,
@@ -266,21 +394,22 @@ pub struct Marks {
     /// Marks laid since the world was entered, and live marks recycled.
     pub placed: u64,
     pub stolen: u64,
-    /// The weak-spot cross: its entity, material, the alpha step last
+    /// The weak-spot cross: its entity, mesh, material, the alpha step last
     /// written and the cell and heading it was last placed for.
     weak: Option<Entity>,
+    weak_mesh: Handle<Mesh>,
     weak_material: Handle<StandardMaterial>,
     weak_step: i32,
     weak_cell: u32,
     weak_mark8: u8,
-    weak_at: Vec3,
-    weak_normal: Vec3,
     /// Clears asked for this frame ([`Marks::forget_later`]), applied by
     /// [`fade`] — which runs after [`mark`], so a killing blow's own mark,
     /// laid this same frame, goes with the thing it hit whichever system
     /// ran first.
     pending: [(Vec3, f32); FORGET_QUEUE],
     n_pending: usize,
+    /// The triangles a mark is being fitted to, reused.
+    patch: Patch,
 }
 
 /// Deferred clears one frame can queue: a full collapse's removals
@@ -291,7 +420,7 @@ const FORGET_QUEUE: usize = client_core::core::REMOVED_RING + 32;
 impl Default for Marks {
     fn default() -> Self {
         Self {
-            slots: [Mark::default(); MARKS],
+            slots: vec![Mark::default(); MARKS],
             mesh: Handle::default(),
             hand: 0,
             dirty: false,
@@ -299,14 +428,14 @@ impl Default for Marks {
             placed: 0,
             stolen: 0,
             weak: None,
+            weak_mesh: Handle::default(),
             weak_material: Handle::default(),
             weak_step: -1,
             weak_cell: NO_CELL,
             weak_mark8: 0,
-            weak_at: Vec3::ZERO,
-            weak_normal: Vec3::Y,
             pending: [(Vec3::ZERO, 0.0); FORGET_QUEUE],
             n_pending: 0,
+            patch: Patch::default(),
         }
     }
 }
@@ -356,9 +485,11 @@ impl Marks {
         let cell = first + ((self.roll() * variants as f32) as u32).min(variants - 1);
         let size = size * (0.8 + 0.4 * self.roll());
         let (tangent, flip) = if bend_r > 0.0 {
+            // On a trunk the grain runs up it, so the cell keeps its own
+            // up and only mirrors — a gash across a trunk stays across it.
             (
                 Vec3::Y.cross(n).normalize_or(Vec3::X),
-                (self.roll() * 8.0) as u8,
+                (self.roll() * 4.0) as u8 * 2,
             )
         } else {
             let base = if n.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
@@ -375,16 +506,31 @@ impl Marks {
             step: -1,
             pos: at,
             normal: n,
-            tangent,
             size,
             cell,
-            bend_r,
             tint: [lin.red * j, lin.green * j, lin.blue * j],
-            flip,
+            grid: grid_of(at, n, tangent, size, bend_r, flip),
         };
         self.placed += 1;
         self.dirty = true;
         ix
+    }
+
+    /// Fit slot `ix` to the surface `cast` answers (see `conform_grid`).
+    pub fn conform(
+        &mut self,
+        ix: usize,
+        cast: &mut dyn FnMut(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>,
+    ) {
+        let Some(m) = self.slots.get_mut(ix) else {
+            return;
+        };
+        if m.left <= 0.0 {
+            return;
+        }
+        let (normal, reach) = (m.normal, conform_reach(m.size));
+        conform_grid(&mut m.grid, normal, reach, cast);
+        self.dirty = true;
     }
 
     /// Drop every mark within `r` of `at` — the wall or the trunk it was on
@@ -452,58 +598,44 @@ impl Marks {
 
     /// The vertices of slot `ix` — a collapsed patch for a free slot.
     pub fn vertices(&self, ix: usize) -> [MarkVertex; VERTS_PER_MARK] {
-        let mut out = [([0.0; 3], [0.0, 1.0, 0.0], [0.0; 2], [0.0; 4]); VERTS_PER_MARK];
-        let m = &self.slots[ix];
+        let mut out = [(
+            [0.0; 3],
+            [0.0, 1.0, 0.0],
+            [0.0; 2],
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 1.0],
+        ); VERTS_PER_MARK];
+        let Some(m) = self.slots.get(ix) else {
+            return out;
+        };
         if m.left <= 0.0 {
             return out;
         }
         let a = (alpha_step(m.left) as f32 / ALPHA_STEPS).clamp(0.0, 1.0);
-        let col = [m.tint[0], m.tint[1], m.tint[2], a];
-        let segs = MESH_MARK_SEGMENTS as usize;
-        let b = m.normal.cross(m.tangent);
         let (cu, cv) = (m.cell % ATLAS_COLS, m.cell / ATLAS_COLS);
         // Half a texel in from the cell's edge so a mip never reads the
         // neighbour.
         let inset = 0.5 / CELL_TEX as f32;
-        for c in 0..=segs {
-            let u = c as f32 / segs as f32;
-            let (off, n) = if m.bend_r > 0.0 {
-                let theta = (u - 0.5) * m.size / m.bend_r;
-                let (s, co) = theta.sin_cos();
-                (
-                    m.tangent * (m.bend_r * s) + m.normal * (m.bend_r * (co - 1.0)),
-                    m.tangent * s + m.normal * co,
-                )
-            } else {
-                (m.tangent * ((u - 0.5) * m.size), m.normal)
-            };
-            for r in 0..2 {
-                let v = r as f32;
-                let up = if m.bend_r > 0.0 { Vec3::Y } else { b };
-                let p = m.pos + off + up * ((v - 0.5) * m.size) + n * MESH_MARK_LIFT_M;
-                let (mut tu, mut tv) = (u, v);
-                if m.flip & 1 != 0 {
-                    std::mem::swap(&mut tu, &mut tv);
-                }
-                if m.flip & 2 != 0 {
-                    tu = 1.0 - tu;
-                }
-                if m.flip & 4 != 0 {
-                    tv = 1.0 - tv;
-                }
-                let uv = [
-                    (cu as f32 + inset + tu * (1.0 - 2.0 * inset)) / ATLAS_COLS as f32,
-                    (cv as f32 + inset + tv * (1.0 - 2.0 * inset)) / ATLAS_ROWS as f32,
-                ];
-                out[c * 2 + r] = (p.to_array(), n.to_array(), uv, col);
-            }
+        for (k, g) in m.grid.iter().enumerate() {
+            let p = g.p + g.n * MESH_MARK_LIFT_M;
+            let uv = [
+                (cu as f32 + inset + g.uv.x * (1.0 - 2.0 * inset)) / ATLAS_COLS as f32,
+                (cv as f32 + inset + g.uv.y * (1.0 - 2.0 * inset)) / ATLAS_ROWS as f32,
+            ];
+            out[k] = (
+                p.to_array(),
+                g.n.to_array(),
+                uv,
+                [m.tint[0], m.tint[1], m.tint[2], a * g.a],
+                [g.t.x, g.t.y, g.t.z, g.w],
+            );
         }
         out
     }
 
     /// Copy every slot into the mesh's attributes, in place — no allocation.
     fn write(&self, mesh: &mut Mesh) {
-        let (mut pos, mut nrm, mut uv, mut col) = (None, None, None, None);
+        let (mut pos, mut nrm, mut uv, mut col, mut tan) = (None, None, None, None, None);
         for (attr, values) in mesh.attributes_mut() {
             let id = attr.id;
             match values {
@@ -517,22 +649,28 @@ impl Marks {
                 VertexAttributeValues::Float32x2(v) if id == Mesh::ATTRIBUTE_UV_0.id => {
                     uv = Some(v);
                 }
-                VertexAttributeValues::Float32x4(v) if id == Mesh::ATTRIBUTE_COLOR.id => {
-                    col = Some(v);
+                VertexAttributeValues::Float32x4(v) => {
+                    if id == Mesh::ATTRIBUTE_COLOR.id {
+                        col = Some(v);
+                    } else if id == Mesh::ATTRIBUTE_TANGENT.id {
+                        tan = Some(v);
+                    }
                 }
                 _ => {}
             }
         }
-        let (Some(pos), Some(nrm), Some(uv), Some(col)) = (pos, nrm, uv, col) else {
+        let (Some(pos), Some(nrm), Some(uv), Some(col), Some(tan)) = (pos, nrm, uv, col, tan)
+        else {
             return;
         };
         for ix in 0..MARKS {
-            for (k, (p, n, t, c)) in self.vertices(ix).into_iter().enumerate() {
+            for (k, (p, n, t, c, g)) in self.vertices(ix).into_iter().enumerate() {
                 let i = ix * VERTS_PER_MARK + k;
                 pos[i] = p;
                 nrm[i] = n;
                 uv[i] = t;
                 col[i] = c;
+                tan[i] = g;
             }
         }
     }
@@ -549,7 +687,9 @@ pub fn forget_in(commands: &mut Commands, pool: &mut Marks) {
     if let Some(e) = pool.weak {
         commands.entity(e).insert(Visibility::Hidden);
     }
-    pool.slots = [Mark::default(); MARKS];
+    for m in pool.slots.iter_mut() {
+        *m = Mark::default();
+    }
     pool.hand = 0;
     pool.dirty = true;
     pool.weak_cell = NO_CELL;
@@ -564,17 +704,19 @@ pub struct MarkMesh;
 #[derive(Component)]
 pub struct WeakSpot;
 
-/// The empty mark mesh: [`MARKS`] collapsed patches and their fixed indices.
-pub fn mark_mesh() -> Mesh {
-    let n = MARKS * VERTS_PER_MARK;
-    let segs = MESH_MARK_SEGMENTS;
-    let mut idx = Vec::with_capacity(MARKS * segs as usize * 6);
-    for m in 0..MARKS as u32 {
+/// `marks` collapsed grids and their fixed indices.
+fn grid_mesh(marks: usize) -> Mesh {
+    let n = marks * VERTS_PER_MARK;
+    let g = MARK_GRID as u32;
+    let mut idx = Vec::with_capacity(marks * (MARK_GRID - 1) * (MARK_GRID - 1) * 6);
+    for m in 0..marks as u32 {
         let base = m * VERTS_PER_MARK as u32;
-        for s in 0..segs {
-            let a = base + s * 2;
-            let (b, c, d) = (a + 1, a + 2, a + 3);
-            idx.extend_from_slice(&[a, b, c, b, d, c]);
+        for j in 0..g - 1 {
+            for i in 0..g - 1 {
+                let a = base + j * g + i;
+                let (b, c, d) = (a + 1, a + g, a + g + 1);
+                idx.extend_from_slice(&[a, c, b, b, c, d]);
+            }
         }
     }
     let mut mesh = Mesh::new(
@@ -585,8 +727,14 @@ pub fn mark_mesh() -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n]);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32; 2]; n]);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; n]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, 1.0]; n]);
     mesh.insert_indices(Indices::U32(idx));
     mesh
+}
+
+/// The empty mark mesh: [`MARKS`] collapsed grids and their fixed indices.
+pub fn mark_mesh() -> Mesh {
+    grid_mesh(MARKS)
 }
 
 /// Spawn the mark mesh and the weak-spot cross. The mesh is always drawn —
@@ -599,16 +747,20 @@ pub fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut standard: ResMut<Assets<StandardMaterial>>,
 ) {
-    let atlas = images.add(atlas_image());
+    let (albedo, relief) = atlas_images();
+    let atlas = images.add(albedo);
+    let relief = images.add(relief);
     let cross = images.add(cross_texture());
     pool.mesh = meshes.add(mark_mesh());
     let material = standard.add(StandardMaterial {
         base_color: Color::WHITE,
         base_color_texture: Some(atlas),
+        normal_map_texture: Some(relief),
         // A mark is dirt, splinters and soot — never a highlight the surface
         // under it did not have.
-        perceptual_roughness: 0.95,
+        perceptual_roughness: 0.9,
         metallic: 0.0,
+        reflectance: super::fresnel::DIELECTRIC,
         alpha_mode: AlphaMode::Blend,
         double_sided: true,
         cull_mode: None,
@@ -624,10 +776,7 @@ pub fn setup(
         NotShadowCaster,
     ));
 
-    let curved = meshes.add(curved_patch(
-        terrain::occupant_volume(terrain::Occupant::Tree).0 / WEAK_MARK_SIZE_M,
-        MESH_MARK_SEGMENTS,
-    ));
+    pool.weak_mesh = meshes.add(grid_mesh(1));
     let weak_mat = standard.add(StandardMaterial {
         base_color: WEAK_TINT.with_alpha(0.0),
         base_color_texture: Some(cross),
@@ -643,10 +792,11 @@ pub fn setup(
         commands
             .spawn((
                 WeakSpot,
-                Mesh3d(curved),
+                Mesh3d(pool.weak_mesh.clone()),
                 MeshMaterial3d(weak_mat),
-                Transform::from_scale(Vec3::splat(WEAK_MARK_SIZE_M)),
+                Transform::IDENTITY,
                 Visibility::Hidden,
+                NoFrustumCulling,
                 NotShadowCaster,
             ))
             .id(),
@@ -702,6 +852,14 @@ pub fn mesh_pose(surf: u8, normal: Vec3) -> (bool, Quat) {
     }
 }
 
+/// A ray against one drawn skin, as `conform_grid` asks for it.
+fn skin_cast<'a>(
+    mesh: &'a Mesh,
+    tf: &'a GlobalTransform,
+) -> impl FnMut(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)> + 'a {
+    move |o, d, max| ray_mesh(mesh, tf, o, d, max).map(|h| (h.at, h.normal))
+}
+
 /// Lay a mark for every contact the frame resolved that leaves one.
 ///
 /// Reads `Res<Contacts>` — the one resolution of where and what — so the
@@ -712,6 +870,8 @@ pub fn mark(
     world: Option<Res<WorldId>>,
     net: Option<NonSend<super::Net>>,
     eye: Res<Eye>,
+    meshes: Res<Assets<Mesh>>,
+    skins: Query<(&Skin, &Mesh3d, &GlobalTransform)>,
 ) {
     let (Some(world), Some(net)) = (world, net) else {
         return;
@@ -738,6 +898,26 @@ pub fn mark(
                 continue;
             }
             pool.place(Vec3::new(p.x, y, p.z), Vec3::Y, kind, size, c.matter, 0.0);
+            continue;
+        }
+        // On a drawn skin: bent about a trunk's own axis at the radius it was
+        // struck at, then fitted to the mesh vertex by vertex.
+        let skin = c
+            .skin
+            .and_then(|e| skins.get(e).ok())
+            .and_then(|(s, m, tf)| meshes.get(&m.0).map(|m| (s, m, tf)));
+        if let Some((s, mesh, tf)) = skin {
+            let bend_r = if s.tree && c.normal.y.abs() < 0.5 {
+                let o = tf.translation();
+                Vec2::new(c.at.x - o.x, c.at.z - o.z).length()
+            } else {
+                0.0
+            };
+            let ix = pool.place(c.at, c.normal, kind, size, c.matter, bend_r);
+            let mut patch = std::mem::take(&mut pool.patch);
+            patch.gather(mesh, tf, c.at, size * 0.9 + conform_reach(size) * 2.0);
+            pool.conform(ix, &mut |o, d, max| patch.cast(o, d, max));
+            pool.patch = patch;
             continue;
         }
         // A mark on a standing thing bends to its skin.
@@ -829,13 +1009,15 @@ fn spokes(u: f32, v: f32, n: f32, len: f32, width: f32, grain: f32, seed: u32) -
     smooth(w, w * 0.4, (f - centre).abs() * r.max(0.05) * 6.0)
 }
 
-/// Value (grey, sRGB 0..1) and alpha of cell `cell` at `(u, v) ∈ [-1, 1]²`.
-fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
+/// Value (grey, sRGB 0..1), alpha and relief of cell `cell` at
+/// `(u, v) ∈ [-1, 1]²`. Relief is a height in cell widths — 0.05 on a 26 cm
+/// gash is 1.3 cm deep — and becomes the normal atlas.
+fn texel(cell: u32, u: f32, v: f32) -> (f32, f32, f32) {
     let seed = 0x5EED_0000 ^ cell.wrapping_mul(0x0101_0101);
     let r = (u * u + v * v).sqrt();
     let a = v.atan2(u);
     let n = fbm(u * 5.0, v * 5.0, seed);
-    let (value, alpha) = match cell {
+    let (value, alpha, height) = match cell {
         // A soil crater: a dark pit, the slope lighter, clods thrown out.
         0 | 1 => {
             let rn = r / (0.6 + 0.3 * (around(a, 1.6, seed) - 0.5));
@@ -844,9 +1026,11 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
             let clods = smooth(0.62, 0.74, fbm(u * 9.0 + 3.0, v * 9.0, seed ^ 7))
                 * smooth(0.6, 0.85, rn)
                 * (1.0 - smooth(0.95, 1.35, rn));
+            let rim = smooth(0.3, 0.5, rn) * (1.0 - smooth(0.5, 0.85, rn));
             (
                 (0.7 - 0.55 * pit + 0.25 * (n - 0.5)).clamp(0.05, 1.0),
                 (body * (0.7 + 0.3 * n)).max(clods * 0.9),
+                -0.06 * (1.0 - smooth(0.0, 0.5, rn)) + 0.012 * rim + 0.015 * clods,
             )
         }
         // Wood: a dark bore, a ring of torn pale fibre, splinters along the
@@ -860,6 +1044,7 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
             (
                 fibre * (1.0 - hole) + 0.07 * hole,
                 hole.max(torn * 0.9).max(splinter * 0.95),
+                -0.08 * hole + 0.01 * splinter + 0.006 * torn * (fibre - 0.82) / 0.18,
             )
         }
         // Stone: a dark pit in a pale chipped crater, with cracks running out.
@@ -877,7 +1062,11 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
             } else {
                 base
             };
-            (value, pit.max(chip * 0.95).max(cracks * 0.9).max(dust))
+            (
+                value,
+                pit.max(chip * 0.95).max(cracks * 0.9).max(dust),
+                -0.07 * pit - 0.025 * chip * (1.0 - pit) - 0.006 * cracks,
+            )
         }
         // Metal: a dark centre, a bright ring of bare metal, a scuffed halo.
         6 | 7 => {
@@ -886,36 +1075,124 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
             let scratch = vnoise(a * 9.0, r * 2.0, seed ^ 4);
             let halo = (1.0 - smooth(0.24, 0.58, r)) * (0.35 + 0.65 * scratch);
             let value = if hole > 0.5 { 0.05 } else { 0.8 + 0.2 * rim };
-            (value, hole.max(rim).max(halo * 0.75))
-        }
-        // A blade's gash in wood: a dark cut, torn pale lips, a few chips.
-        8 | 9 => {
-            // The gash narrows to nothing at its ends; past them there is no
-            // cut at all (and a zero width must not reach `smooth`).
-            let w = 0.13 * (1.0 - (u / 0.85).powi(2)).max(0.0) + 1e-4;
-            let d = v - 0.06 * (vnoise(u * 3.0, 0.5, seed) - 0.5);
-            let ends = 1.0 - smooth(0.7, 0.85, u.abs());
-            let cut = smooth(w * 0.55, w * 0.2, d.abs()) * ends;
-            let lip = smooth(w * 1.7, w * 1.1, d.abs()) * ends;
-            let chips = smooth(0.7, 0.8, fbm(u * 8.0, v * 8.0, seed ^ 3))
-                * (1.0 - smooth(0.2, 0.5, d.abs()));
-            let fibre = 0.84 + 0.16 * vnoise(u * 26.0, v * 3.0, seed ^ 9);
             (
-                fibre * (1.0 - cut) + 0.08 * cut,
-                cut.max(lip * 0.9).max(chips * 0.8),
+                value,
+                hole.max(rim).max(halo * 0.75),
+                -0.06 * hole + 0.012 * rim * (1.0 - hole) - 0.02 * (1.0 - smooth(0.0, 0.5, r)),
             )
         }
-        // A pick on stone: a pale chipped scar with darker grit in it.
-        10 | 11 => {
-            let rn = r / (0.55 + 0.35 * (around(a, 2.2, seed) - 0.5));
-            let body = 1.0 - smooth(0.7, 1.0, rn);
-            let grit = smooth(0.5, 0.7, fbm(u * 7.0 + 1.3, v * 7.0, seed ^ 6));
-            let flake = smooth(0.35, 0.8, rn)
-                * (1.0 - smooth(1.0, 1.25, rn))
-                * smooth(0.55, 0.62, fbm(u * 4.0, v * 4.0, seed ^ 8));
+        // A chop across the grain: a notch whose upper face is the steep one,
+        // pale fresh wood shadowed toward the groove, a lip of crushed bark,
+        // and splinters lifting off the lips along the grain (+v is up the
+        // trunk, so the grain runs along v and the cut along u).
+        8 | 9 => {
+            // The bit went in at one end and tore out at the other: blunt
+            // where it entered, tapered where it left, ragged all round.
+            let len = 0.86;
+            let ue = u / len;
+            let lean = 1.0 + 0.35 * ue;
+            let span = ((1.0 - ue * ue) * lean).max(0.0);
+            let rag = 0.75
+                + 0.25 * vnoise(u * 4.0, 1.7, seed)
+                + 0.2 * vnoise(u * 17.0, v * 3.0, seed ^ 0x2b);
+            let w = 0.19 * span.sqrt() * span * rag + 1e-4;
+            let d = v - 0.05 * (vnoise(u * 2.5, 0.5, seed) - 0.5);
+            let ad = d.abs();
+            let ends = 1.0 - smooth(0.8, 0.92, u.abs());
+            let inside = smooth(w, w * 0.8, ad) * ends;
+            let face = (1.0 - ad / w).clamp(0.0, 1.0);
+            let upper = d < 0.0;
+            let depth = 0.075 * span.min(1.0);
+            let h_cut = -depth * face.powf(if upper { 0.6 } else { 1.5 });
+            // Torn bark round the cut: a dark crushed edge, then ragged
+            // flakes of the paler inner bark lifted off it.
+            let tear = fbm(u * 7.0, v * 7.0, seed ^ 0x51);
+            let edge = smooth(w * 1.45, w * 1.05, ad) * (1.0 - inside) * ends;
+            let flakes = smooth(w * (1.6 + 1.6 * tear), w * 1.2, ad)
+                * smooth(0.45, 0.6, tear)
+                * (1.0 - inside)
+                * ends;
+            let mut spl: f32 = 0.0;
+            for k in 0..12u32 {
+                let su = (hash01(k, seed) - 0.5) * 1.4;
+                let se = su / len;
+                let sspan = ((1.0 - se * se) * (1.0 + 0.35 * se)).max(0.0);
+                let sw = 0.19 * sspan.sqrt() * sspan;
+                let side = if hash01(k, seed ^ 0x5) < 0.5 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let l = 0.05 + 0.17 * hash01(k, seed ^ 0x9);
+                let wid = 0.01 + 0.012 * hash01(k, seed ^ 0x13);
+                let tilt = (hash01(k, seed ^ 0x21) - 0.5) * 0.6;
+                let out = (v * side) - sw * 0.85;
+                if out < 0.0 || out > l {
+                    continue;
+                }
+                let taper = 1.0 - out / l;
+                let bow = tilt * out + 0.6 * tilt * out * out / l;
+                spl = spl.max(line(u - su - bow, wid * taper + 1e-4));
+            }
+            let chips = smooth(0.74, 0.8, fbm(u * 10.0, v * 10.0, seed ^ 3))
+                * (1.0 - smooth(0.22, 0.5, ad))
+                * ends
+                * (1.0 - inside);
+            // Fresh wood, fibre along the grain; the overhanging face is in
+            // its own shadow and the groove darkest.
+            let fibre = 0.74 + 0.26 * vnoise(u * 34.0, v * 2.5, seed ^ 9);
+            let shade = if upper { 0.55 } else { 1.0 };
+            let cut_v = fibre * shade * (1.0 - 0.6 * face.powi(4));
+            let mut out_v = 0.2 + 0.1 * tear;
+            out_v += (0.55 - out_v) * flakes;
+            out_v += (0.9 - out_v) * spl.max(chips);
             (
-                0.9 - 0.35 * grit - 0.15 * n,
-                (body * (0.7 + 0.3 * n)).max(flake * 0.8),
+                out_v + (cut_v - out_v) * inside,
+                inside
+                    .max(edge * 0.9)
+                    .max(flakes * 0.85)
+                    .max(spl * 0.95)
+                    .max(chips * 0.75),
+                h_cut * inside + 0.008 * edge + 0.012 * flakes + 0.01 * spl + 0.004 * chips,
+            )
+        }
+        // A pick on stone: a shallow conchoidal scar — rippled, faceted, a
+        // crushed white heart — with cracks running out past it and flakes
+        // thrown round it.
+        10 | 11 => {
+            let rn = r
+                / (0.5
+                    + 0.35 * (around(a, 2.2, seed) - 0.5)
+                    + 0.06 * (around(a, 7.0, seed ^ 0x77) - 0.5));
+            let scar = 1.0 - smooth(0.9, 1.0, rn);
+            let bowl = (1.0 - rn * rn).max(0.0);
+            let ripple = 0.5 + 0.5 * (rn * 14.0 + 3.0 * vnoise(u * 3.0, v * 3.0, seed)).sin();
+            let facet = ((a / std::f32::consts::TAU + 0.5) * 5.0
+                + 0.8 * vnoise(u * 2.0, v * 2.0, seed ^ 4))
+            .floor();
+            let tilt = hash01(facet as i32 as u32, seed ^ 0x3c) - 0.5;
+            let grit = fbm(u * 15.0, v * 15.0, seed ^ 0x6d) - 0.5;
+            let powder = 1.0 - smooth(0.0, 0.4, rn);
+            let cracks = spokes(u, v, 6.0, 1.0, 0.07, 0.0, seed ^ 5) * smooth(0.55, 0.9, rn);
+            let flake = smooth(0.62, 0.7, fbm(u * 6.0, v * 6.0, seed ^ 8))
+                * smooth(0.8, 1.0, rn)
+                * (1.0 - smooth(1.0, 1.35, rn));
+            let inner = 0.74 + 0.26 * powder - 0.14 * (n - 0.5) - 0.07 * ripple;
+            let value = if cracks > scar.max(flake) {
+                0.18
+            } else if flake > scar {
+                0.86
+            } else {
+                inner
+            };
+            (
+                value,
+                (scar * (0.85 + 0.15 * n))
+                    .max(cracks * 0.85)
+                    .max(flake * 0.7),
+                (-0.03 * bowl - 0.016 - 0.002 * ripple + 0.006 * tilt * rn + 0.005 * grit) * scar
+                    - 0.008 * cracks
+                    + 0.004 * flake,
             )
         }
         // A blow on metal: bright scratches across a darker dent.
@@ -931,13 +1208,22 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
             }
             let dent = 1.0 - smooth(0.12, 0.3, (ru * ru * 0.5 + rv * rv * 2.0).sqrt());
             let value = if scratch > dent * 0.8 { 1.0 } else { 0.35 };
-            (value, scratch.max(dent * 0.6))
+            (
+                value,
+                scratch.max(dent * 0.6),
+                -0.03 * dent - 0.003 * scratch,
+            )
         }
         // A blunt or bladed blow on soil: a smear of turned earth.
         14 | 15 => {
             let rn = (u * u * 0.5 + v * v * 2.2).sqrt() / (0.7 + 0.25 * around(a, 1.8, seed));
             let body = 1.0 - smooth(0.6, 1.0, rn);
-            (0.6 - 0.3 * n, body * (0.55 + 0.45 * n))
+            let lumps = fbm(u * 6.0, v * 6.0, seed ^ 2) - 0.5;
+            (
+                0.6 - 0.3 * n,
+                body * (0.55 + 0.45 * n),
+                (0.03 * lumps - 0.012) * body,
+            )
         }
         // An arrow's hole: a small dark bore with a pale bruise and a split.
         16 | 17 => {
@@ -945,13 +1231,17 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
             let ring = 1.0 - smooth(0.16, 0.3, r / (0.85 + 0.3 * around(a, 3.0, seed)));
             let split = line(v, 0.03) * (1.0 - smooth(0.25, 0.45, u.abs()));
             let value = if hole.max(split) > 0.5 { 0.07 } else { 0.85 };
-            (value, hole.max(ring * 0.85).max(split * 0.9))
+            (
+                value,
+                hole.max(ring * 0.85).max(split * 0.9),
+                -0.08 * hole - 0.008 * ring - 0.012 * split,
+            )
         }
         // Scorch: soot, darkest at the centre, ragged at the edge.
         18 | 19 => {
             let rn = r / (0.82 + 0.3 * (around(a, 2.0, seed) - 0.5));
             let body = 1.0 - smooth(0.35, 1.0, rn);
-            (0.25 + 0.5 * rn.min(1.0) * n, body * (0.6 + 0.4 * n))
+            (0.25 + 0.5 * rn.min(1.0) * n, body * (0.6 + 0.4 * n), 0.0)
         }
         // Blood: a splat with satellite drops; the last variant is a spray.
         20..=23 => {
@@ -973,68 +1263,110 @@ fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
                 let d = ((u - cx).powi(2) + (v - cy).powi(2)).sqrt();
                 drops = drops.max(smooth(rad, rad * 0.6, d));
             }
-            (0.75 + 0.25 * n, body.max(drops) * 0.92)
+            let wet = body.max(drops);
+            (0.75 + 0.25 * n, wet * 0.92, 0.004 * wet)
         }
-        _ => (0.0, 0.0),
+        _ => (0.0, 0.0, 0.0),
     };
     // The cell's own transparent border: nothing reaches its edge, so no mip
     // and no bilinear tap bleeds a neighbour in.
     let pad = 1.0 - smooth(0.88, 0.97, u.abs().max(v.abs()));
-    (value.clamp(0.0, 1.0), (alpha * pad).clamp(0.0, 1.0))
+    (
+        value.clamp(0.0, 1.0),
+        (alpha * pad).clamp(0.0, 1.0),
+        height * pad,
+    )
 }
 
-/// The atlas's level 0: RGBA8 sRGB, grey value in RGB, coverage in A.
-pub fn atlas_pixels() -> (Vec<u8>, u32, u32) {
+/// Both atlases' level 0: the value one (RGBA8 sRGB, grey value in RGB,
+/// coverage in A) and the relief one (RGBA8 linear, a tangent-space normal
+/// in Bevy's convention: +x along +u, +y toward −v).
+pub fn atlas_maps() -> (Vec<u8>, Vec<u8>, u32, u32) {
     let (w, h) = (ATLAS_COLS * CELL_TEX, ATLAS_ROWS * CELL_TEX);
-    let mut data = vec![0u8; (w * h * 4) as usize];
+    let mut albedo = vec![0u8; (w * h * 4) as usize];
+    let mut relief = vec![0u8; (w * h * 4) as usize];
+    for px in relief.chunks_exact_mut(4) {
+        px.copy_from_slice(&[128, 128, 255, 255]);
+    }
     let used = Kind::ALL
         .iter()
         .map(|k| k.cells().0 + k.cells().1)
         .max()
         .unwrap_or(0);
+    let n = CELL_TEX as usize;
+    let mut heights = vec![0.0f32; n * n];
     for cell in 0..used {
         let (cx, cy) = (cell % ATLAS_COLS, cell / ATLAS_COLS);
         for y in 0..CELL_TEX {
             for x in 0..CELL_TEX {
                 let u = (x as f32 + 0.5) / CELL_TEX as f32 * 2.0 - 1.0;
                 let v = (y as f32 + 0.5) / CELL_TEX as f32 * 2.0 - 1.0;
-                let (val, a) = texel(cell, u, v);
+                let (val, a, ht) = texel(cell, u, v);
+                heights[y as usize * n + x as usize] = ht;
                 let px = (cx * CELL_TEX + x) as usize;
                 let py = (cy * CELL_TEX + y) as usize;
                 let i = (py * w as usize + px) * 4;
                 let g = (val * 255.0 + 0.5) as u8;
-                data[i] = g;
-                data[i + 1] = g;
-                data[i + 2] = g;
-                data[i + 3] = (a * 255.0 + 0.5) as u8;
+                albedo[i] = g;
+                albedo[i + 1] = g;
+                albedo[i + 2] = g;
+                albedo[i + 3] = (a * 255.0 + 0.5) as u8;
+            }
+        }
+        // Slope per cell width: a central difference spans two texels.
+        let k = CELL_TEX as f32 * 0.5;
+        for y in 0..n {
+            for x in 0..n {
+                let at = |xx: usize, yy: usize| heights[yy.min(n - 1) * n + xx.min(n - 1)];
+                let sx = (at(x + 1, y) - at(x.saturating_sub(1), y)) * k;
+                let sy = (at(x, y + 1) - at(x, y.saturating_sub(1))) * k;
+                let nv = Vec3::new(-sx, sy, 1.0).normalize();
+                let px = cx as usize * n + x;
+                let py = cy as usize * n + y;
+                let i = (py * w as usize + px) * 4;
+                relief[i] = ((nv.x * 0.5 + 0.5) * 255.0 + 0.5) as u8;
+                relief[i + 1] = ((nv.y * 0.5 + 0.5) * 255.0 + 0.5) as u8;
+                relief[i + 2] = ((nv.z * 0.5 + 0.5) * 255.0 + 0.5) as u8;
             }
         }
     }
-    (data, w, h)
+    (albedo, relief, w, h)
 }
 
-/// The atlas image, with its whole mip chain — a mark at 40 m is a few
-/// texels and must not shimmer.
-pub fn atlas_image() -> Image {
-    let (level0, w, h) = atlas_pixels();
-    let mut img = Image::new(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        level0,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    if let Some(l0) = img.data.as_ref() {
-        let chain = mipmap::chain(l0, w, h, mipmap::Filter::Srgb);
-        img.texture_descriptor.mip_level_count = mipmap::levels(w, h);
-        img.data = Some(chain);
-    }
-    img.sampler = ImageSampler::linear();
-    img
+/// The value atlas's level 0 alone — [`atlas_maps`]'s first half.
+pub fn atlas_pixels() -> (Vec<u8>, u32, u32) {
+    let (albedo, _, w, h) = atlas_maps();
+    (albedo, w, h)
+}
+
+/// The two atlas images, value and relief, each with its whole mip chain — a
+/// mark at 40 m is a few texels and must not shimmer.
+pub fn atlas_images() -> (Image, Image) {
+    let (albedo, relief, w, h) = atlas_maps();
+    let image = |level0: Vec<u8>, format: TextureFormat, filter: mipmap::Filter| {
+        let mut img = Image::new(
+            Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            level0,
+            format,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        if let Some(l0) = img.data.as_ref() {
+            let chain = mipmap::chain(l0, w, h, filter);
+            img.texture_descriptor.mip_level_count = mipmap::levels(w, h);
+            img.data = Some(chain);
+        }
+        img.sampler = ImageSampler::linear();
+        img
+    };
+    (
+        image(albedo, TextureFormat::Rgba8UnormSrgb, mipmap::Filter::Srgb),
+        image(relief, TextureFormat::Rgba8Unorm, mipmap::Filter::Normal),
+    )
 }
 
 // ─── The weak spot ───────────────────────────────────────────────────────────
@@ -1108,8 +1440,48 @@ pub fn weak_spot_alpha(t: f32, in_sector: bool) -> f32 {
     WEAK_MARK_ALPHA_LO + (WEAK_MARK_ALPHA_HI - WEAK_MARK_ALPHA_LO) * phase
 }
 
+/// Write one grid into a one-mark mesh (the weak spot's): the cell-local uv,
+/// white, and `g.a` as alpha.
+fn write_grid(mesh: &mut Mesh, grid: &[MarkVert; VERTS_PER_MARK]) {
+    for (attr, values) in mesh.attributes_mut() {
+        let id = attr.id;
+        match values {
+            VertexAttributeValues::Float32x3(v) if id == Mesh::ATTRIBUTE_POSITION.id => {
+                for (o, g) in v.iter_mut().zip(grid) {
+                    *o = (g.p + g.n * MESH_MARK_LIFT_M).to_array();
+                }
+            }
+            VertexAttributeValues::Float32x3(v) if id == Mesh::ATTRIBUTE_NORMAL.id => {
+                for (o, g) in v.iter_mut().zip(grid) {
+                    *o = g.n.to_array();
+                }
+            }
+            VertexAttributeValues::Float32x2(v) if id == Mesh::ATTRIBUTE_UV_0.id => {
+                for (o, g) in v.iter_mut().zip(grid) {
+                    *o = g.uv.to_array();
+                }
+            }
+            VertexAttributeValues::Float32x4(v) if id == Mesh::ATTRIBUTE_COLOR.id => {
+                for (o, g) in v.iter_mut().zip(grid) {
+                    *o = [1.0, 1.0, 1.0, g.a];
+                }
+            }
+            VertexAttributeValues::Float32x4(v) if id == Mesh::ATTRIBUTE_TANGENT.id => {
+                for (o, g) in v.iter_mut().zip(grid) {
+                    *o = [g.t.x, g.t.y, g.t.z, g.w];
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Draw the weak-spot cross on the node the sim marked for this player, or
 /// hide it. Reads the core's latched `mark_cell`/`mark8` — not a ring.
+///
+/// Placed where [`weak_spot_pose`] says on the sim's skin, then moved onto
+/// the drawn mesh there and fitted to it, as a mark is.
+#[allow(clippy::too_many_arguments)]
 pub fn weak_spot(
     mut pool: ResMut<Marks>,
     net: Option<NonSend<super::Net>>,
@@ -1117,10 +1489,12 @@ pub fn weak_spot(
     in_weak: Res<super::verbs::InWeak>,
     time: Res<Time>,
     mut standard: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(&mut Transform, &mut Visibility), With<WeakSpot>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    skins: Query<(Entity, &Skin, &Mesh3d, &GlobalTransform)>,
+    mut q: Query<&mut Visibility, With<WeakSpot>>,
 ) {
     let Some(entity) = pool.weak else { return };
-    let Ok((mut tf, mut vis)) = q.get_mut(entity) else {
+    let Ok(mut vis) = q.get_mut(entity) else {
         return;
     };
     let hide = |vis: &mut Visibility, pool: &mut Marks| {
@@ -1148,17 +1522,46 @@ pub fn weak_spot(
             hide(&mut vis, &mut pool);
             return;
         };
+        let candidates = skins
+            .iter()
+            .filter_map(|(e, s, m, tf)| meshes.get(&m.0).map(|m| (e, s, m, tf)));
+        let snapped = super::skin::snap(at, None, candidates).and_then(|(e, h)| {
+            let (_, s, m, tf) = skins.get(e).ok()?;
+            Some((h, *s, m.0.clone(), *tf))
+        });
+        let tangent = Vec3::Y.cross(n).normalize_or(Vec3::X);
+        let grid = match snapped {
+            Some((h, s, mesh, tf)) => {
+                let bend_r = if s.tree && h.normal.y.abs() < 0.5 {
+                    let o = tf.translation();
+                    Vec2::new(h.at.x - o.x, h.at.z - o.z).length()
+                } else {
+                    0.0
+                };
+                let t = Vec3::Y.cross(h.normal).normalize_or(tangent);
+                let mut grid = grid_of(h.at, h.normal, t, WEAK_MARK_SIZE_M, bend_r, 0);
+                if let Some(m) = meshes.get(&mesh) {
+                    conform_grid(
+                        &mut grid,
+                        h.normal,
+                        conform_reach(WEAK_MARK_SIZE_M),
+                        &mut skin_cast(m, &tf),
+                    );
+                }
+                grid
+            }
+            None => {
+                let bend_r = skin_radius(slot.occupant as u8) * slot.scale;
+                grid_of(at, n, tangent, WEAK_MARK_SIZE_M, bend_r, 0)
+            }
+        };
+        if let Some(m) = meshes.get_mut(&pool.weak_mesh) {
+            write_grid(m, &grid);
+        }
         pool.weak_cell = core.mark_cell;
         pool.weak_mark8 = core.mark8;
-        pool.weak_at = at;
-        pool.weak_normal = n;
         pool.weak_step = -1;
     }
-    let (at, n) = (pool.weak_at, pool.weak_normal);
-    let (_, rot) = mesh_pose(SURF_WORLD, n);
-    tf.translation = at + n * MESH_MARK_LIFT_M;
-    tf.rotation = rot;
-    tf.scale = Vec3::splat(WEAK_MARK_SIZE_M);
     *vis = Visibility::Visible;
     let alpha = weak_spot_alpha(time.elapsed_secs(), in_weak.0);
     let step = (alpha * ALPHA_STEPS) as i32;
@@ -1233,7 +1636,7 @@ mod tests {
         let mut pool = Marks::default();
         let (at, n) = (Vec3::new(10.0, 2.0, 5.0), Vec3::new(1.0, 0.0, 0.0));
         let ix = pool.place(at, n, Kind::HoleStone, 0.2, Matter::Stone, 0.0);
-        for (p, _, _, _) in pool.vertices(ix) {
+        for (p, ..) in pool.vertices(ix) {
             let d = Vec3::from_array(p) - at;
             assert!(
                 (d.dot(n) - MESH_MARK_LIFT_M).abs() < 1e-4,
@@ -1244,7 +1647,7 @@ mod tests {
         let r = 0.3;
         let axis = at - n * r;
         let ix = pool.place(at, n, Kind::GashWood, 0.26, Matter::Wood, r);
-        for (p, _, _, _) in pool.vertices(ix) {
+        for (p, ..) in pool.vertices(ix) {
             let d = (Vec3::from_array(p) - axis).with_y(0.0).length();
             assert!((d - r - MESH_MARK_LIFT_M).abs() < 2e-3, "on the trunk: {d}");
         }
@@ -1284,6 +1687,19 @@ mod tests {
         );
         assert!(decal_kind(Weapon::Bullet, Matter::Water).is_none());
         assert!(decal_kind(Weapon::Melee, Matter::Plant).is_none());
+    }
+
+    /// `DECAL_DUMP=<dir> cargo test -p client --lib decal_dump -- --ignored`
+    /// writes both atlases as raw RGBA, for looking at.
+    #[test]
+    #[ignore]
+    fn decal_dump() {
+        let Ok(dir) = std::env::var("DECAL_DUMP") else {
+            return;
+        };
+        let (albedo, relief, w, h) = atlas_maps();
+        std::fs::write(format!("{dir}/albedo_{w}x{h}.rgba"), albedo).unwrap();
+        std::fs::write(format!("{dir}/relief_{w}x{h}.rgba"), relief).unwrap();
     }
 
     /// Every cell a kind uses is drawn, is transparent at its border (so no

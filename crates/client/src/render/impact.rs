@@ -751,6 +751,9 @@ pub struct Contact {
     pub weapon: Weapon,
     /// Whether the blow leaves a mark (`decal::mark`).
     pub mark: bool,
+    /// The drawn mesh the contact was moved onto ([`snap`]), which the mark
+    /// then conforms to.
+    pub skin: Option<Entity>,
 }
 
 impl Default for Contact {
@@ -764,6 +767,7 @@ impl Default for Contact {
             kind: ContactKind::Impact,
             weapon: Weapon::Bullet,
             mark: false,
+            skin: None,
         }
     }
 }
@@ -810,6 +814,10 @@ impl Contacts {
 
     pub fn iter(&self) -> impl Iterator<Item = &Contact> {
         self.list[..self.n].iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Contact> {
+        self.list[..self.n].iter_mut()
     }
 
     pub fn len(&self) -> usize {
@@ -905,6 +913,7 @@ pub fn contacts(
             },
             weapon,
             mark: !matches!(matter, Matter::Water | Matter::Plant),
+            skin: None,
         });
     }
 
@@ -924,6 +933,7 @@ pub fn contacts(
                 kind: ContactKind::Swing,
                 weapon: Weapon::Melee,
                 mark: false,
+                skin: None,
             });
         }
     }
@@ -964,7 +974,48 @@ pub fn contacts(
                 Weapon::Bullet
             },
             mark: true,
+            skin: None,
         });
+    }
+}
+
+/// Move every world-surface contact onto the mesh drawn there (`skin`): the
+/// sim strikes a cylinder, the player sees a rock. The local player's own
+/// swing goes where their eye ray meets the picture. A contact nothing drawn
+/// is near enough to stays where the sim put it.
+pub fn snap(
+    mut contacts: ResMut<Contacts>,
+    eye: Res<Eye>,
+    meshes: Res<Assets<Mesh>>,
+    skins: Query<(
+        Entity,
+        &super::skin::Skin,
+        &Mesh3d,
+        &GlobalTransform,
+        Option<&super::props::Fellable>,
+    )>,
+) {
+    if contacts.is_empty() {
+        return;
+    }
+    let candidates = skins
+        .iter()
+        .filter(|c| !c.4.is_some_and(|f| f.felled))
+        .filter_map(|(e, s, m, tf, _)| meshes.get(&m.0).map(|m| (e, s, m, tf)));
+    for c in contacts.iter_mut() {
+        if c.surf != SURF_WORLD || matches!(c.matter, Matter::Water | Matter::Flesh) {
+            continue;
+        }
+        let eye_ray = (c.kind == ContactKind::Swing).then_some(eye.pos);
+        let Some((e, hit)) = super::skin::snap(c.at, eye_ray, candidates.clone()) else {
+            continue;
+        };
+        if c.away.dot(c.normal) > 0.99 {
+            c.away = hit.normal;
+        }
+        c.at = hit.at;
+        c.normal = hit.normal;
+        c.skin = Some(e);
     }
 }
 

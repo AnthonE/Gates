@@ -16,17 +16,20 @@
 //!   tree in its 1,024 scatter cells into one buffer, so the whole island is a
 //!   few hundred draws and no per-tree entity. The vertex shader turns each
 //!   card to the camera about the vertical.
-//! - **It steps aside where the rings draw.** A per-chunk mask (one texel per
-//!   64 m prop chunk, like the far ground's) marks every chunk the near or
-//!   outer ring has built, and a card standing in one collapses in the vertex
-//!   shader. So the hand-off follows the rings' own streaming and never
-//!   leaves a gap or draws a tree twice.
+//! - **It steps aside where the rings draw.** One bit per 64 m prop chunk of
+//!   the window the rings stream in marks every chunk the near or outer ring
+//!   has built, and a card standing in one collapses in the vertex shader. So
+//!   the hand-off follows the rings' own streaming and never leaves a gap or
+//!   draws a tree twice. The bits ride in the material's uniform, not in a
+//!   texture: a mask image written after the material was prepared never
+//!   reached the bind group, so every island card stood on top of the real
+//!   tree in front of it, and on the stump of every tree felled.
 //! - **Lit, fogged and hazed like everything else.** The fragment stage is
 //!   `StandardMaterial`'s own; the vertex stage hands it a rounded normal so a
 //!   card is lit like a crown rather than a sheet.
 //!
-//! Felled trees keep their card until a rebuild; at this range they are a few
-//! pixels, and the outer ring owns everything close enough to chop.
+//! Felled trees keep their island card until a rebuild; at this range they
+//! are a few pixels, and the rings own everything close enough to chop.
 
 use bevy::asset::{Asset, RenderAssetUsages};
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
@@ -35,7 +38,9 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, StandardMaterial};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat,
+};
 use bevy::shader::ShaderRef;
 use sim_core::gather::cell_key;
 use sim_core::terrain::{self, Occupant};
@@ -80,17 +85,27 @@ pub struct CardDims {
     pub h: f32,
 }
 
-/// The uniform: x = chunk edge (m), y = chunks per island side, z = 1 on a
-/// ring card (it ignores the mask: its entity IS the ring's tree), w reserved.
+/// Chunks per side of the window the ring mask covers: the outer ring's.
+pub const MASK_SIDE: i32 = 2 * props::OUTER_RADIUS + 1;
+const _: () = assert!(MASK_SIDE * MASK_SIDE <= 128, "the mask is one UVec4");
+
+/// The card's uniform.
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+pub struct CardParams {
+    /// x = chunk edge (m), y = 1 on a ring card (it ignores the mask: its
+    /// entity IS the ring's tree), z and w reserved.
+    pub params: Vec4,
+    /// The mask's window: x, y = its first chunk, z = its side in chunks.
+    pub window: IVec4,
+    /// One bit per window chunk, row-major from the first: set where a ring
+    /// draws that chunk's trees, so an island card there collapses.
+    pub bits: UVec4,
+}
+
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct TreeCard {
     #[uniform(100)]
-    pub params: Vec4,
-    /// One texel per prop chunk; alpha 255 where a ring draws that chunk's
-    /// trees, so the card there collapses.
-    #[texture(101)]
-    #[sampler(102)]
-    pub mask: Handle<Image>,
+    pub card: CardParams,
 }
 
 impl MaterialExtension for TreeCard {
@@ -127,7 +142,6 @@ pub struct TreeCards {
     pub ring_materials: [Handle<TreeCardMaterial>; props::TINT_POOL],
     /// The island tiles' material, which steps aside for the rings.
     pub island_material: Handle<TreeCardMaterial>,
-    pub mask: Handle<Image>,
 }
 
 /// Bake the cards. At startup, once: six trees rasterised on the CPU.
@@ -139,20 +153,6 @@ pub fn init(
 ) {
     let (atlas, dims) = bake_atlas();
     let atlas = images.add(atlas);
-    let side = (terrain::ISLAND_SIZE / CHUNK_M) as u32;
-    let mut mask = Image::new_fill(
-        Extent3d {
-            width: side,
-            height: side,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &[0; 4],
-        TextureFormat::Rgba8Unorm,
-        RenderAssetUsages::default(),
-    );
-    mask.sampler = ImageSampler::nearest();
-    let mask = images.add(mask);
     let mut material = |tint: f32, ring: bool| {
         materials.add(TreeCardMaterial {
             base: StandardMaterial {
@@ -167,8 +167,11 @@ pub fn init(
                 ..default()
             },
             extension: TreeCard {
-                params: Vec4::new(CHUNK_M, side as f32, if ring { 1.0 } else { 0.0 }, 0.0),
-                mask: mask.clone(),
+                card: CardParams {
+                    params: Vec4::new(CHUNK_M, if ring { 1.0 } else { 0.0 }, 0.0, 0.0),
+                    window: IVec4::new(0, 0, MASK_SIDE, 0),
+                    bits: UVec4::ZERO,
+                },
             },
         })
     };
@@ -188,7 +191,6 @@ pub fn init(
         ring_meshes,
         ring_materials,
         island_material,
-        mask,
     });
 }
 
@@ -202,8 +204,8 @@ pub struct FarForest {
     /// The tile being carded and how far into its cells.
     current: Option<TileBuild>,
     tiles: HashMap<(i32, i32), Entity>,
-    /// The chunk set the mask was last written from.
-    masked: Vec<(i32, i32)>,
+    /// The mask's window and bits as last written to the island material.
+    masked: Option<(IVec4, UVec4)>,
 }
 
 impl FarForest {
@@ -258,7 +260,7 @@ pub fn stream(
     mut commands: Commands,
     mut forest: ResMut<FarForest>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<TreeCardMaterial>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
     ring: Res<PropRing>,
@@ -274,7 +276,7 @@ pub fn stream(
         }
         forest.seed = Some(world.seed);
         forest.current = None;
-        forest.masked.clear();
+        forest.masked = None;
         // Nearest last, so `pop` takes the nearest.
         let n = tiles_per_side();
         let (ex, ez) = (eye.pos.x, eye.pos.z);
@@ -287,22 +289,16 @@ pub fn stream(
         q.sort_by(|a, b| d2(b).total_cmp(&d2(a)));
         forest.queue = q;
     }
-    // The mask: every chunk a ring has trees standing in.
-    let mut now: Vec<(i32, i32)> = ring.chunks().collect();
-    now.sort_unstable();
-    if now != forest.masked {
-        if let Some(img) = images.get_mut(&cards.mask) {
-            let side = (terrain::ISLAND_SIZE / CHUNK_M) as i32;
-            if let Some(data) = img.data.as_mut() {
-                data.fill(0);
-                for &(x, z) in &now {
-                    if x >= 0 && z >= 0 && x < side && z < side {
-                        data[((z * side + x) as usize) * 4 + 3] = 255;
-                    }
-                }
-            }
+    // The mask: every chunk a ring has trees standing in, over the window the
+    // rings stream in. Written into the material, so it is re-prepared with
+    // the bits rather than sampling a texture it bound once.
+    let now = ring_mask(&eye, ring.chunks());
+    if forest.masked != Some(now) {
+        if let Some(m) = materials.get_mut(&cards.island_material) {
+            m.extension.card.window = now.0;
+            m.extension.card.bits = now.1;
         }
-        forest.masked = now;
+        forest.masked = Some(now);
     }
 
     // The carding.
@@ -357,6 +353,26 @@ pub fn stream(
         ))
         .id();
     forest.tiles.insert(key, e);
+}
+
+/// The ring mask for an eye: the window of [`MASK_SIDE`]² chunks centred on
+/// the eye's chunk — the one the rings stream around — and a bit for every
+/// chunk in it that a ring holds. A ring chunk outside the window (one still
+/// waiting to be dropped) keeps its island cards for the frame or two it
+/// takes, rather than the window growing.
+pub fn ring_mask(eye: &Eye, chunks: impl Iterator<Item = (i32, i32)>) -> (IVec4, UVec4) {
+    let cx = (eye.pos.x / CHUNK_M).floor() as i32 - props::OUTER_RADIUS;
+    let cz = (eye.pos.z / CHUNK_M).floor() as i32 - props::OUTER_RADIUS;
+    let mut bits = [0u32; 4];
+    for (x, z) in chunks {
+        let (lx, lz) = (x - cx, z - cz);
+        if lx < 0 || lz < 0 || lx >= MASK_SIDE || lz >= MASK_SIDE {
+            continue;
+        }
+        let i = (lz * MASK_SIDE + lx) as usize;
+        bits[i / 32] |= 1 << (i % 32);
+    }
+    (IVec4::new(cx, cz, MASK_SIDE, 0), UVec4::from_array(bits))
 }
 
 /// A new world: drop the tiles and card the next island from scratch. The

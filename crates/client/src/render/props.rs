@@ -2575,6 +2575,14 @@ pub fn spawn_slot(
         part,
         felled: false,
     };
+    // What a mark lands on (`skin`): the trunk (below) and every solid prop,
+    // never the bush (no mark) or the two authored structures (their volume
+    // is their boxes, already exact).
+    let skin = (!matches!(
+        slot.occupant,
+        Occupant::Bush | Occupant::HavenShelter | Occupant::WaystationCanopy
+    ))
+    .then_some(super::skin::Skin { tree: false });
     let mut e = commands.entity(parent);
     // Three spawn shapes, split rather than merged with a conditional
     // component: only a tree topples, so only a tree carries a [`Topple`],
@@ -2590,16 +2598,31 @@ pub fn spawn_slot(
             MeshMaterial3d(material),
             tree::lod_band(&lod.near),
             transform,
+            super::skin::Skin { tree: true },
         ));
     } else if harvestable {
-        e.with_child((
-            fellable(FellPart::Vanish),
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
-            transform,
-        ));
+        let mut c = e.commands();
+        let id = c
+            .spawn((
+                fellable(FellPart::Vanish),
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                transform,
+            ))
+            .id();
+        if let Some(skin) = skin {
+            c.entity(id).insert(skin);
+        }
+        e.add_child(id);
     } else {
-        e.with_child((Mesh3d(mesh), MeshMaterial3d(material), transform));
+        let mut c = e.commands();
+        let id = c
+            .spawn((Mesh3d(mesh), MeshMaterial3d(material), transform))
+            .id();
+        if let Some(skin) = skin {
+            c.entity(id).insert(skin);
+        }
+        e.add_child(id);
     }
     // The bush's leaves, as a second child of the same slot — the blob above
     // is the mass, this is the outline (see [`BUSH_CARD_ATLAS`]). Same
@@ -3014,7 +3037,21 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
                     Visibility::Hidden
                 };
             }
-            FellPart::Trunk | FellPart::Canopy | FellPart::Far => {
+            // The card stands for the whole tree, and a card turned to the
+            // camera cannot lie down: toppled, it was a strip of crown on the
+            // grass. The trunk and canopy carry the fall; the far half goes.
+            FellPart::Far => {
+                *vis = if felled {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                };
+                if let Some(mut top) = top {
+                    top.t = -1.0;
+                    t.rotation = Quat::from_rotation_y(f.yaw);
+                }
+            }
+            FellPart::Trunk | FellPart::Canopy => {
                 // `Option` because only these two parts carry a [`Topple`].
                 // A missing one is a spawn-site bug rather than a state to
                 // handle, so it leaves the pose alone instead of guessing.
