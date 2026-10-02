@@ -36,10 +36,11 @@ use sim_core::build::{
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
-    box_key, cell_center, loc_fits_placement, lockable, socket_shape, DeployContent, DeployRec,
-    ARCH_BOX, ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_FRAME,
-    PLACE_GROUND, PLACE_WINDOW,
+    box_key, holds_items, loc_fits_placement, lockable, socket_shape, DeployContent, DeployRec,
+    ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND,
+    PLACE_WINDOW,
 };
+use sim_core::footprint::Pose;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
@@ -241,10 +242,25 @@ pub fn aim_from_look(
     dir: [f32; 3],
     feet: [f32; 3],
 ) -> Aim {
+    aim_from_look_step(seed, haven, cols, eye, dir, feet, AIM_STEP_M)
+}
+
+/// [`aim_from_look`] at a march step of the caller's choosing — the free
+/// deployable aim marches at [`DEPLOY_AIM_STEP_M`] so the box lands under
+/// the crosshair rather than up to a step past it.
+pub fn aim_from_look_step(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    eye: [f32; 3],
+    dir: [f32; 3],
+    feet: [f32; 3],
+    step: f32,
+) -> Aim {
     let standing = standing_level(seed, haven, cols, feet);
     let planar_feet = (feet[0], feet[2]);
     let mut prev = eye;
-    let mut t = AIM_STEP_M;
+    let mut t = step;
     while t <= AIM_RANGE_M {
         let p = [
             eye[0] + dir[0] * t,
@@ -299,7 +315,7 @@ pub fn aim_from_look(
             };
         }
         prev = p;
-        t += AIM_STEP_M;
+        t += step;
     }
     let planar = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-3);
     Aim {
@@ -1107,12 +1123,13 @@ pub fn deploy_target_on(
         {
             return edge;
         }
-        let cell = target_at(aim.at.0, aim.at.1, SHAPE_FOUNDATION, 0);
+        // A box or a hearth stands anywhere in its cell (free placement):
+        // the lockable body nearest the aim point, within a short reach of
+        // its rectangle, is the one the lock goes on.
+        let mut best: Option<(f32, Target)> = None;
         for rec in deploys {
             if rec.level != level
-                || rec.loc != LOC_PLANE
-                || rec.cx != cell.cx
-                || rec.cz != cell.cz
+                || sim_core::deploy::is_edge_loc(rec.loc)
                 || rec.row as u16 >= have.min(defs.def_count)
             {
                 continue;
@@ -1121,20 +1138,74 @@ pub fn deploy_target_on(
             if !lockable(arch) {
                 continue;
             }
-            return Target {
-                cx: rec.cx,
-                cz: rec.cz,
-                level,
-                loc: rec.loc,
+            let Some(r) = rec.rect(arch) else {
+                continue;
             };
+            let d2 = r.dist2(aim.at.0, aim.at.1);
+            if d2 > LOCK_AIM_SLACK_M * LOCK_AIM_SLACK_M || best.is_some_and(|(b, _)| d2 >= b) {
+                continue;
+            }
+            best = Some((
+                d2,
+                Target {
+                    cx: rec.cx,
+                    cz: rec.cz,
+                    level,
+                    loc: rec.loc,
+                },
+            ));
+        }
+        if let Some((_, t)) = best {
+            return t;
         }
     }
     edge
 }
 
+/// How far from a box's rectangle the aim point may land and still bolt a
+/// held lock onto it, metres — the ray meets the floor just short of a box
+/// it was pointed at.
+pub const LOCK_AIM_SLACK_M: f32 = 0.6;
+
+/// The march step a body deployable's aim runs at, metres. Finer than the
+/// build grid's [`AIM_STEP_M`]: a cell snaps away a quarter metre of slop,
+/// a freely placed box shows it as a box a quarter metre off the crosshair.
+pub const DEPLOY_AIM_STEP_M: f32 = 0.05;
+
+/// Where a body deployable aimed by `aim` would stand (free placement): the
+/// cell and offset the aim point quantizes to (`footprint::quantize`, the
+/// sim's own rounding), the storey the ray met, and a facing that turns its
+/// front toward the feet — the reference's default — plus `turn` quarter
+/// turns from the rotate key. `None` off the grid.
+pub fn body_aim(aim: &Aim, feet: (f32, f32), turn: u8) -> Option<(Target, Pose)> {
+    let (x, z) = aim.at;
+    let (cx, cz, ox, oz) = sim_core::footprint::quantize(x, z)?;
+    let (dx, dz) = (feet.0 - x, feet.1 - z);
+    let face = if dx * dx + dz * dz > 1e-6 {
+        let turns = dx.atan2(dz) / std::f32::consts::TAU;
+        (turns * 256.0).round().rem_euclid(256.0) as u8
+    } else {
+        0
+    };
+    let yaw = face.wrapping_add(turn.wrapping_mul(64));
+    Some((
+        Target {
+            cx,
+            cz,
+            level: aim.level_for_deploy(),
+            loc: LOC_PLANE,
+        },
+        Pose { ox, oz, yaw },
+    ))
+}
+
 /// Everything the deploy pre-check reads — the client's mirror, whole.
 pub struct DeploySite<'a> {
     pub seed: u64,
+    /// The predictor's collision index (`ClientCore::pieces.cols()`) —
+    /// what a body deployable's support and clearance are read off, by the
+    /// sim's own `deploy::body_site`.
+    pub cols: &'a sim_core::collide::ColIndex,
     /// The solved authored sites — see `Site::haven`, same reason.
     pub haven: &'a sim_core::terrain::Haven,
     /// The player's feet, world XZ.
@@ -1188,7 +1259,7 @@ impl DeploySite<'_> {
 /// store lengths — the same "world capacity is the server's alone" the build
 /// verdict declares). A support answer that hangs on an undripped def row is
 /// Unknown too, for the reason `structures::stream` skips those rows.
-pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdict {
+pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> DeployVerdict {
     // KIND. A row past the declared table is refused outright; a declared
     // row that has not dripped in yet is one this client cannot judge.
     if (row as u16) >= site.deploy_defs.def_count {
@@ -1202,20 +1273,28 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
     if def.hp == 0 {
         return DeployVerdict::No("no such deployable");
     }
+    let body = matches!(def.placement, PLACE_GROUND | PLACE_FOUNDATION | PLACE_ANY);
 
-    // SPOT. The loc rule is the sim's own function; occupancy is the same
-    // address comparison its `find` makes (every class but the lock wants
-    // the address empty); the reserved box address is the sim's own key.
+    // SPOT. The loc rule is the sim's own function; an insert or a lock
+    // wants the address it names (empty, or holding its door), and a body
+    // deployable wants a free slot in its cell — `place_deploy`'s order.
     if !loc_fits_placement(def.placement, t.loc)
-        || (def.placement != PLACE_DOOR && site.deploy_at(t.cx, t.cz, t.level, t.loc).is_some())
-        || (def.arch == ARCH_BOX && box_key(t.cx, t.cz, t.level) == 0)
+        || (!body && pose != Pose::CENTRE)
+        || (!body
+            && def.placement != PLACE_DOOR
+            && site.deploy_at(t.cx, t.cz, t.level, t.loc).is_some())
+        || (body
+            && sim_core::deploy::BODY_LOCS.iter().all(|&l| {
+                site.deploy_at(t.cx, t.cz, t.level, l).is_some()
+                    || (holds_items(def.arch) && box_key(t.cx, t.cz, t.level, l) == 0)
+            }))
     {
         return DeployVerdict::No("spot taken");
     }
 
     // REACH, measured to the sim's own point via the sim's own function —
-    // the cell CENTRE for every loc, where build reach uses the anchor.
-    let (ax, az) = cell_center(t.cx, t.cz);
+    // where the deployable's centre will stand.
+    let (ax, az) = sim_core::footprint::centre(t.cx, t.cz, pose);
     if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
         return DeployVerdict::No("spot taken");
     }
@@ -1228,34 +1307,26 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
     // doc) — so every red below is still a true refusal, just possibly not
     // the first sentence the server would say.
 
-    // SUPPORT / TERRAIN, per placement class — the sim's `supported` match,
-    // its store lookups answered by the mirror.
-    let ground_ok = site.piece_at(t.cx, t.cz, 0, LOC_PLANE).is_none()
-        && foundation_terrain_ok(site.seed, site.haven, ax, az);
+    // SUPPORT / TERRAIN / clearance for a body deployable: the sim's own
+    // `body_site`, asked of the mirror's collision index and records.
+    if body {
+        if let Err(code) = sim_core::deploy::body_site(
+            site.seed,
+            site.haven,
+            site.cols,
+            site.deploys,
+            site.deploy_defs,
+            def.placement,
+            def.arch,
+            t.cx,
+            t.cz,
+            t.level,
+            pose,
+        ) {
+            return DeployVerdict::No(super::refusals::DEPLOY[code as usize]);
+        }
+    }
     match def.placement {
-        PLACE_GROUND => {
-            if t.level != 0 {
-                return DeployVerdict::No("needs support");
-            }
-            if !ground_ok {
-                return DeployVerdict::No("bad ground");
-            }
-        }
-        PLACE_FOUNDATION | PLACE_ANY => {
-            let floor = match site.piece_at(t.cx, t.cz, t.level, LOC_PLANE) {
-                None => false,
-                Some(r) => {
-                    if (r.row as u16) >= site.piece_have.min(site.piece_defs.piece_count) {
-                        return DeployVerdict::Unknown;
-                    }
-                    site.piece_defs.pieces[r.row as usize].shape
-                        != sim_core::build::SHAPE_FLOOR_FRAME
-                }
-            };
-            if !floor && !(def.placement == PLACE_ANY && t.level == 0 && ground_ok) {
-                return DeployVerdict::No("needs support");
-            }
-        }
         PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => match site
             .piece_at(t.cx, t.cz, t.level, t.loc)
         {
@@ -1281,6 +1352,7 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
                 }
             }
         },
+        PLACE_GROUND | PLACE_FOUNDATION | PLACE_ANY => {}
         // The sim's `_ => false` arm: an unknown class never stands.
         _ => return DeployVerdict::No("needs support"),
     }
@@ -1317,6 +1389,7 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
 mod tests {
     use super::*;
     use sim_core::build::{PieceDef, PieceRec, BUILD_CELL_M, MAT_WOOD};
+    use sim_core::deploy::{cell_center, ARCH_BOX};
 
     fn empty_inv() -> [ItemStack; INV_SLOTS] {
         [ItemStack::default(); INV_SLOTS]
@@ -1525,6 +1598,7 @@ mod tests {
         let deploy = DeploySite {
             seed,
             haven: &haven,
+            cols: &cols,
             at: (0.0, 0.0),
             pieces: &[],
             piece_defs: &content,
@@ -1535,7 +1609,7 @@ mod tests {
             inv: &inv,
         };
         assert_eq!(
-            deploy_verdict(t, 0, &deploy),
+            deploy_verdict(t, Pose::CENTRE, 0, &deploy),
             DeployVerdict::No("spot taken")
         );
     }
@@ -1837,7 +1911,20 @@ mod tests {
             for cell in cx - 2..=cx {
                 cols.add(cell, cz, level, LOC_PLANE, sim_core::build::SHAPE_FLOOR, 3);
             }
-            cols.set_solid(cx, cz, level, Some(ARCH_BOX));
+            cols.add_solid(
+                sim_core::deploy::solid_pose(
+                    seed,
+                    &haven,
+                    &DeployRec {
+                        cx,
+                        cz,
+                        level,
+                        ..DeployRec::default()
+                    },
+                    ARCH_BOX,
+                )
+                .unwrap(),
+            );
             let floor = column_floor_y(seed, &haven, cx, cz, 3) + sim_core::build::level_y(level);
             let feet = [x - 4.0, floor, z];
             let norm = (1.0f32 + 0.32 * 0.32).sqrt();

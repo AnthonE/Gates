@@ -57,6 +57,7 @@ use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::STATION_FURNACE;
 use sim_core::deploy::{box_key, BAG_CAP};
+use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
 use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
@@ -3093,8 +3094,9 @@ impl Survivor {
                 cz,
                 intent,
             } => {
-                if self.queue(|buf| protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, buf))
-                {
+                if self.queue(|buf| {
+                    protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, Pose::CENTRE, buf)
+                }) {
                     self.home.asked(cx, cz, 0, LOC_PLANE);
                     self.bag_job.deploy_sent(tick);
                 }
@@ -3360,7 +3362,9 @@ impl Survivor {
                 cz,
                 intent,
             } => (
-                self.queue(|buf| protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, buf)),
+                self.queue(|buf| {
+                    protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, Pose::CENTRE, buf)
+                }),
                 intent,
             ),
             Tend::Open { key, intent } => (
@@ -3648,9 +3652,11 @@ impl Survivor {
             Act::Place { row, at, .. } => self.queue(|buf| {
                 protocol::encode_action_place(row, at.cx, at.cz, at.level, at.loc, false, 0, buf)
             }),
-            Act::Deploy { row, at, bag, .. } => {
+            Act::Deploy {
+                row, at, pose, bag, ..
+            } => {
                 let sent = self.queue(|buf| {
-                    protocol::encode_action_deploy(row, at.cx, at.cz, at.level, at.loc, buf)
+                    protocol::encode_action_deploy(row, at.cx, at.cz, at.level, at.loc, pose, buf)
                 });
                 if sent && bag {
                     // Home keeps the list of its bags.
@@ -4212,7 +4218,10 @@ impl Survivor {
         // Its own box's panel: what it shows is what the box holds.
         if applied2 & APPLIED2_CONT != 0 {
             if let Some(b) = self.builder.box_addr(core) {
-                if self.ledger.on_cont(core, box_key(b.cx, b.cz, b.level)) {
+                if self
+                    .ledger
+                    .on_cont(core, box_key(b.cx, b.cz, b.level, b.loc))
+                {
                     self.stash_job.on_panel();
                 }
             }

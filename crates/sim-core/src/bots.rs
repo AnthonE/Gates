@@ -229,7 +229,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
             },
             3 => Command::Move {
                 id,
-                cont: box_key(cx, cz, 0),
+                cont: box_key(cx, cz, 0, crate::build::LOC_PLANE),
                 from_kind: CONT_BOX,
                 from_slot: 0,
                 to_kind: CONT_SELF,
@@ -326,6 +326,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
+                pose: crate::footprint::Pose::CENTRE,
             },
             4 => Command::PlaceDeploy {
                 id,
@@ -334,6 +335,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
+                pose: crate::footprint::Pose::CENTRE,
             },
             5 => Command::Access {
                 id,
@@ -346,7 +348,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
             },
             6 => Command::Move {
                 id,
-                cont: box_key(cx, cz, 0),
+                cont: box_key(cx, cz, 0, crate::build::LOC_PLANE),
                 from_kind: CONT_SELF,
                 from_slot: rows.goods_slot,
                 to_kind: CONT_BOX,
@@ -379,7 +381,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
             // (`CLAUDE.md` trap list), from the authorized side.
             _ => Command::Move {
                 id,
-                cont: box_key(cx, cz, 0),
+                cont: box_key(cx, cz, 0, crate::build::LOC_PLANE),
                 from_kind: CONT_BOX,
                 from_slot: 0,
                 to_kind: CONT_SELF,
@@ -866,6 +868,7 @@ pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> C
                 cz,
                 level,
                 loc,
+                pose: crate::footprint::Pose::CENTRE,
             }
         }
         Code(..) => Command::Access {

@@ -1281,6 +1281,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        pose,
                     } => Command::PlaceDeploy {
                         id: c.id,
                         row,
@@ -1288,6 +1289,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        pose,
                     },
                     ActionMsg::Feed { cx, cz, level } => Command::Feed {
                         id: c.id,
@@ -2288,23 +2290,22 @@ impl ShardCore {
                     // places closed; a door places locked, which is a
                     // world fact the whole shard sees (who it answers to
                     // is not).
-                    let placed_door = self
-                        .world
-                        .deploys
-                        .find(
-                            (ev.a >> 16) as u16,
-                            ev.a as u16,
-                            (ev.b >> 16) as u8,
-                            (ev.b >> 8) as u8,
-                        )
-                        .is_some_and(|d| d.locked);
+                    // The record as it stands, for its pose (free placement:
+                    // where in the cell it went is the sim's to say).
+                    let placed = self.world.deploys.find(
+                        (ev.a >> 16) as u16,
+                        ev.a as u16,
+                        (ev.b >> 16) as u8,
+                        (ev.b >> 8) as u8,
+                    );
                     let rec = DeployRec {
                         cx: (ev.a >> 16) as u16,
                         cz: ev.a as u16,
                         level: (ev.b >> 16) as u8,
                         loc: (ev.b >> 8) as u8,
                         row: ev.b as u8,
-                        locked: placed_door,
+                        locked: placed.is_some_and(|d| d.locked),
+                        pose: placed.map(|d| d.pose).unwrap_or_default(),
                         ..DeployRec::default()
                     };
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
@@ -2798,8 +2799,9 @@ impl ShardCore {
                     // fuel runs out, which is at most one fuel unit away.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
+                    let loc = (ev.b >> 8) as u8;
                     let lit = ev.b & 1 != 0;
-                    match encode_event_oven(cx, cz, level, lit, ev.c, &mut self.ev_buf) {
+                    match encode_event_oven(cx, cz, level, loc, lit, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -4197,6 +4199,7 @@ impl ShardCore {
                                             b.cx,
                                             b.cz,
                                             b.level,
+                                            b.loc,
                                             st.lit,
                                             0,
                                             &mut self.ev_buf,

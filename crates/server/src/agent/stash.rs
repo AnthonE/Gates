@@ -497,7 +497,7 @@ impl StashJob {
         }
         let hearth = builder.hearth_addr(core);
         let chest = builder.box_addr(core);
-        let key = chest.map(|b| box_key(b.cx, b.cz, b.level));
+        let key = chest.map(|b| box_key(b.cx, b.cz, b.level, b.loc));
         // What went out is waiting on its answer.
         if let Some((wait, since)) = self.waiting {
             let late = tick.wrapping_sub(since) >= VERDICT_TICKS;

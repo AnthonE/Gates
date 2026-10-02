@@ -138,7 +138,10 @@ pub fn nearest(
     }
 
     for rec in deploys {
-        let (ax, az) = anchor(rec.cx, rec.cz, rec.loc);
+        // The deploy store's own anchor: a door's doorway middle, a
+        // free-placed deployable's own centre (`deploy::rec_anchor`, what
+        // the sim's repair measures to).
+        let (ax, az) = sim_core::deploy::rec_anchor(rec);
         let (dx, dz) = (ax - at.0, az - at.1);
         let d2 = dx * dx + dz * dz;
         // `<=` rather than `<`: a tie goes to the deployable. See the header.
@@ -256,6 +259,7 @@ mod tests {
             cz,
             level: 0,
             loc,
+            pose: Default::default(),
             row: 0,
             owner: 1,
             hp,

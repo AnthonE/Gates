@@ -808,6 +808,7 @@ fn a_picked_up_deployable_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the case needs its oven placed");
 
@@ -863,6 +864,7 @@ fn an_unbolted_lock_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the case needs its box");
     w.tick(&[Command::PlaceDeploy {
@@ -872,6 +874,7 @@ fn an_unbolted_lock_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.locks().len(), 1, "the lock must bolt on");
     w.tick(&[Command::Access {

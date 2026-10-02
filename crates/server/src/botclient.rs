@@ -436,8 +436,9 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             cz,
             level,
             loc,
+            pose,
             ..
-        } => encode_action_deploy(row, cx, cz, level, loc, buf),
+        } => encode_action_deploy(row, cx, cz, level, loc, pose, buf),
         Command::Throw {
             deploy,
             cx,

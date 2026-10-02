@@ -526,7 +526,7 @@ const TICKS: u64 = 900;
 /// digest folds is eight bytes (its skin joins it), craft jobs hash their
 /// skin and each player its owned set. No command in the script names a
 /// skin, so every one of those fields is zero.
-const GOLDEN_FINAL_HASH: u64 = 0xF04C_1CA2_FD8E_B00C;
+const GOLDEN_FINAL_HASH: u64 = 0xC372_6229_3617_7022;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -616,7 +616,11 @@ const GOLDEN_FINAL_HASH: u64 = 0xF04C_1CA2_FD8E_B00C;
 /// **Moved `0x37FB_4909_FBC2_BD22` → `0xDA0B_802C_0E68_808E` at the heal-rate
 /// cap** (2026-09-25), with the final hash: stacked heals stretch the span
 /// instead of healing faster, so the script's heals land later.
-const GOLDEN_TRACE_HASH: u64 = 0xB88A_09EE_2EDA_57B8;
+/// **Moved at free placement** (2026-10-02), with the final hash: a deploy
+/// record hashes its pose, ground furniture stands on the ground under it
+/// rather than a band above, and a blocking one refuses a slope it would
+/// float over — the script's workbenches land on fewer hillsides.
+const GOLDEN_TRACE_HASH: u64 = 0xC91B_F21B_C8B4_E97B;
 
 /// Fold a stamped trace into one number.
 ///
@@ -951,6 +955,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: 0,
+                    pose: sim_core::footprint::Pose::CENTRE,
                 });
                 cmds.push(Command::PlaceDeploy {
                     id,
@@ -959,6 +964,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: 0,
+                    pose: sim_core::footprint::Pose::CENTRE,
                 });
                 cmds.push(Command::PlaceDeploy {
                     id,
@@ -967,6 +973,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: ((t / 142) % 2) as u8,
                     loc: ((t / 71 + id as u64) % 4) as u8,
+                    pose: sim_core::footprint::Pose::CENTRE,
                 });
                 cmds.push(Command::Feed {
                     id,
@@ -1122,6 +1129,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: 0,
+                    pose: sim_core::footprint::Pose::CENTRE,
                 }),
                 // A doorway on the same cell's low-x edge, a door in it,
                 // then the door verbs' whole arc — placement seals the
@@ -1147,6 +1155,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_XLO,
+                    pose: sim_core::footprint::Pose::CENTRE,
                 }),
                 154 | 157 => cmds.push(Command::Use {
                     id,
@@ -1209,6 +1218,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_XLO,
+                    pose: sim_core::footprint::Pose::CENTRE,
                 }),
                 156 | 158 => cmds.push(Command::Access {
                     id: if t == 156 { world.players[1].id } else { id },

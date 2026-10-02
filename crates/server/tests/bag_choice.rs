@@ -136,6 +136,7 @@ fn place_bag(
             cz,
             level: 0,
             loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     );
     pump(core, stats, clients, &mut Vec::new());

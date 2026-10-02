@@ -236,13 +236,16 @@ pub fn inside(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) 
 /// the next socket up, a door in an edge by what covers a wall. The door's
 /// own doorway is not counted over it — a lintel over a leaf is the
 /// doorway sheltering itself, and every door would be inside by fiat.
+///
+/// A body deployable's `loc` is a slot name (`deploy::BODY_LOCS`), not a
+/// place in the cell — slot 8 is not a diagonal — so everything that is not
+/// an edge is asked as the plane it stands on.
 pub fn deploy_inside(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-    let rise = if loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO {
-        2
+    if loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO {
+        inside_at(cols, cx, cz, level, loc, 2)
     } else {
-        1
-    };
-    inside_at(cols, cx, cz, level, loc, rise)
+        inside_at(cols, cx, cz, level, crate::build::LOC_PLANE, 1)
+    }
 }
 
 fn inside_at(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8, rise: u8) -> bool {

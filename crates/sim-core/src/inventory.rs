@@ -62,7 +62,7 @@ pub const CONT_SELF: u8 = 0;
 pub const CONT_BAG: u8 = 1;
 /// A deployed storage box (`ARCH_BOX`, `deploy.rs`), named by the same
 /// handle field as a bag — but carrying a packed **address**, not an id:
-/// `box_key(cx, cz, level)`. A box is furniture, so it has no identity to
+/// `box_key(cx, cz, level, 0)`. A box is furniture, so it has no identity to
 /// hand out; the client already receives `cx`/`cz`/`level` in the deploy
 /// sync it draws the box from, and can therefore name one without a byte
 /// of new wire.

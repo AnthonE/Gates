@@ -17,7 +17,7 @@
 //!    land in the tail of the record where every reader stops short —
 //!    invisible, unmovable, and in the state hash.
 //! 2. **A box is addressed, not identified.** A bag has an id; a box is
-//!    furniture and has a packed `box_key(cx, cz, level)`. The handle
+//!    furniture and has a packed `box_key(cx, cz, level, 0)`. The handle
 //!    field is one `u32` shared by both sides of the move, which is why a
 //!    bag→box move is refused rather than encoded — the message has no
 //!    room to name the second container.
@@ -171,9 +171,10 @@ fn box_world() -> (World, u32, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the fixture needs its box placed");
-    (w, box_key(cx, cz, 0), cx, cz)
+    (w, box_key(cx, cz, 0, 0), cx, cz)
 }
 
 /// Everything a move is allowed to touch: the player's inventory, every
@@ -409,11 +410,19 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
 
     // Right cell, wrong storey: the level is part of the address, which is
     // the whole reason `box_key` is not `gather::cell_key`.
-    let (code, why, _) = do_move(&mut w, box_key(cx, cz, 1), CONT_SELF, 4, CONT_BOX, 0, 1);
+    let (code, why, _) = do_move(&mut w, box_key(cx, cz, 1, 0), CONT_SELF, 4, CONT_BOX, 0, 1);
     assert_eq!(code, EV_MOVE_REFUSED);
     assert_eq!(why, REFUSE_M_NO_CONTAINER, "no box stands on level 1");
 
-    let (code, why, _) = do_move(&mut w, box_key(cx + 3, cz, 0), CONT_SELF, 4, CONT_BOX, 0, 1);
+    let (code, why, _) = do_move(
+        &mut w,
+        box_key(cx + 3, cz, 0, 0),
+        CONT_SELF,
+        4,
+        CONT_BOX,
+        0,
+        1,
+    );
     assert_eq!(code, EV_MOVE_REFUSED);
     assert_eq!(why, REFUSE_M_NO_CONTAINER, "no box stands three cells over");
 
@@ -729,7 +738,7 @@ fn the_box_address_is_injective_over_every_legal_cell() {
         for cz in 0..MAX_BUILD_COORD as u16 {
             for level in 0..MAX_BUILD_LEVELS as u8 {
                 assert_eq!(
-                    unpack(box_key(cx, cz, level)),
+                    unpack(box_key(cx, cz, level, 0)),
                     (cx, cz, level),
                     "box_key aliased at ({cx}, {cz}, {level})"
                 );
@@ -744,7 +753,7 @@ fn the_box_address_is_injective_over_every_legal_cell() {
 /// fixture that can bypass terrain and this file's boxes go up through
 /// the real build verb.
 ///
-/// `box_key(0, 0, 0)` packs to 0, and 0 is what every other layer already
+/// `box_key(0, 0, 0, 0)` packs to 0, and 0 is what every other layer already
 /// says when it means *no container is open*: `CONT_SELF` zeroes the
 /// handle field, the client bridge answers 0 for "nothing open", and a
 /// server-side close writes 0. One build cell therefore minted an address
@@ -761,7 +770,7 @@ fn the_box_address_is_injective_over_every_legal_cell() {
 fn the_zero_handle_never_resolves_to_a_box() {
     let (w, key, _cx, _cz) = box_world();
 
-    assert_eq!(box_key(0, 0, 0), 0, "the corner this guards has moved");
+    assert_eq!(box_key(0, 0, 0, 0), 0, "the corner this guards has moved");
     assert!(!w.deploys.boxes().is_empty(), "the fixture needs its box");
     assert!(
         w.deploys.box_index(key).is_some(),

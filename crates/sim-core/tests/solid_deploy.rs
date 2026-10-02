@@ -68,6 +68,20 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 }
 
 const SEED: u64 = 0x50_11D0;
+
+/// Index a blocking deployable at a cell's centre, standing on the ground —
+/// the row `place_deploy` would write, without its placement rules.
+fn put_solid(cols: &mut ColIndex, cx: u16, cz: u16, level: u8, arch: u8) {
+    let rec = sim_core::deploy::DeployRec {
+        cx,
+        cz,
+        level,
+        ..Default::default()
+    };
+    cols.add_solid(
+        sim_core::deploy::solid_pose(SEED, hv(SEED), &rec, arch).expect("a solid archetype"),
+    );
+}
 const PLAYER: u32 = 3;
 
 /// Row 4 in the deploy fixture: a furnace (solid). Row 5: a bag (not).
@@ -234,7 +248,7 @@ fn a_solid_nibble_blocks_and_clears() {
     let mut cols = Box::new(ColIndex::new());
     let (cx, cz) = buildable_cell(SEED);
     let (fx, fz) = cell_center(cx, cz);
-    cols.set_solid(cx, cz, 0, Some(ARCH_FURNACE));
+    put_solid(&mut cols, cx, cz, 0, ARCH_FURNACE);
 
     // Start one cell south, walk north (+Z is yaw 0).
     let mut b = Body::at(SEED, hv(SEED), fx, fz - 2.5);
@@ -258,7 +272,7 @@ fn a_solid_nibble_blocks_and_clears() {
     );
     assert!(z > fz - 2.0, "the walk never approached the furnace");
 
-    cols.set_solid(cx, cz, 0, None);
+    cols.del_solid(cx, cz, 0, LOC_PLANE);
     for _ in 0..240 {
         movement::step(
             SEED,
@@ -285,7 +299,7 @@ fn a_body_inside_a_solid_escapes() {
     let (cx, cz) = buildable_cell(SEED);
     let (fx, fz) = cell_center(cx, cz);
     let mut b = Body::at(SEED, hv(SEED), fx, fz);
-    cols.set_solid(cx, cz, 0, Some(ARCH_FURNACE));
+    put_solid(&mut cols, cx, cz, 0, ARCH_FURNACE);
     for _ in 0..240 {
         movement::step(
             SEED,
@@ -311,7 +325,7 @@ fn a_jump_lands_on_the_box_top() {
     let mut cols = Box::new(ColIndex::new());
     let (cx, cz) = buildable_cell(SEED);
     let (fx, fz) = cell_center(cx, cz);
-    cols.set_solid(cx, cz, 0, Some(ARCH_BOX));
+    put_solid(&mut cols, cx, cz, 0, ARCH_BOX);
     let terr = terrain::height(SEED, fx, fz);
     let (_, h, _) = solid_vol(ARCH_BOX).expect("box is solid");
     // With feet at jump height, the best surface in the cell is the box
@@ -431,6 +445,7 @@ fn place_walls_the_cell_and_pickup_frees_it() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the furnace must place");
 
@@ -471,6 +486,7 @@ fn a_bag_does_not_wall_its_cell() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1, "the bag must place");
     drive(&mut w, 240, 0);
@@ -495,6 +511,7 @@ fn the_wall_survives_a_save_and_a_load() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(w.deploys.len(), 1);
 

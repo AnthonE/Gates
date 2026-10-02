@@ -181,8 +181,8 @@ fn main() {
     assert_eq!(took, protocol::PIECE_DEFS_BATCH);
     write_fixture(goldens::FIXTURES[25], &buf[..len]);
 
-    let (row, cx, cz, level, loc) = goldens::action_deploy();
-    let len = encode_action_deploy(row, cx, cz, level, loc, &mut buf).unwrap();
+    let (row, cx, cz, level, loc, pose) = goldens::action_deploy();
+    let len = encode_action_deploy(row, cx, cz, level, loc, pose, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[26], &buf[..len]);
 
     let (cx, cz, level) = goldens::action_feed();
@@ -423,11 +423,11 @@ fn main() {
         write_fixture(goldens::FIXTURES[72 + n], &buf[..len]);
     }
 
-    for (n, (cx, cz, level, lit, by)) in [goldens::event_oven_lit(), goldens::event_oven_out()]
+    for (n, (cx, cz, level, loc, lit, by)) in [goldens::event_oven_lit(), goldens::event_oven_out()]
         .into_iter()
         .enumerate()
     {
-        let len = encode_event_oven(cx, cz, level, lit, by, &mut buf).unwrap();
+        let len = encode_event_oven(cx, cz, level, loc, lit, by, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[76 + n], &buf[..len]);
     }
 

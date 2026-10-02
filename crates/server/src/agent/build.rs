@@ -193,6 +193,23 @@ const EXTRAS: [(&str, i8, i8, u8, Milestone); 3] = [
     (BAG_ITEM, 1, 1, 0, Milestone::Doors),
     (FURNACE_ITEM, 0, 0, 1, Milestone::Furnace),
 ];
+/// Where in its cell a kit item goes (free placement). Everything stands at
+/// its cell's centre but the bag: the airlock is a triangle foundation (the
+/// NW half, `bots::BASE` at (1, 1)) with a diagonal wall on its hypotenuse
+/// through the centre, so the bag lies inside the half, along the wall,
+/// clear of it and of both doorways.
+pub fn kit_pose(name: &str) -> sim_core::footprint::Pose {
+    if name == BAG_ITEM {
+        sim_core::footprint::Pose {
+            ox: -32,
+            oz: -32,
+            yaw: 32,
+        }
+    } else {
+        sim_core::footprint::Pose::CENTRE
+    }
+}
+
 /// The cell behind the core the first bench's foundation takes, from the
 /// plot.
 pub const YARD: (i8, i8) = (0, -1);
@@ -1629,6 +1646,9 @@ pub enum Act {
     Deploy {
         row: u16,
         at: OpAddr,
+        /// Where in the cell it stands and which way it faces (free
+        /// placement) — [`kit_pose`].
+        pose: sim_core::footprint::Pose,
         bag: bool,
         intent: Intent,
     },
@@ -3283,6 +3303,7 @@ impl Builder {
                     Act::Deploy {
                         row,
                         at,
+                        pose: kit_pose(name),
                         bag: name == BAG_ITEM,
                         intent,
                     },
@@ -3294,6 +3315,7 @@ impl Builder {
                     Act::Deploy {
                         row,
                         at,
+                        pose: sim_core::footprint::Pose::CENTRE,
                         bag: false,
                         intent,
                     },

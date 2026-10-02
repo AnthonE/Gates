@@ -249,7 +249,7 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
 /// The open container's address, if what is open is a **research table**
 /// (research table v1) — `ui::research::table_open`, read off the deploy
 /// sync the client already draws.
-fn open_table(core: &ClientCore) -> Option<(u16, u16, u8)> {
+fn open_table(core: &ClientCore) -> Option<(u16, u16, u8, u8)> {
     research_ui::table_open(
         core.cont_kind,
         core.cont_handle,
@@ -263,7 +263,7 @@ fn open_table(core: &ClientCore) -> Option<(u16, u16, u8)> {
 /// Whether the open research table is running — the lit bit the core heard
 /// for its address (`EV_OVEN`). `false` for anything else.
 fn open_table_running(core: &ClientCore) -> bool {
-    open_table(core).is_some_and(|(cx, cz, level)| core.ovens().is_lit(cx, cz, level))
+    open_table(core).is_some_and(|(cx, cz, level, loc)| core.ovens().is_lit(cx, cz, level, loc))
 }
 
 /// The open container's archetype and sections, if it is a **camp fire**
@@ -285,8 +285,8 @@ fn open_fire(core: &ClientCore) -> Option<(u8, OvenLayout)> {
 /// the moment it lights, only this does.
 pub(crate) fn open_cont_lit(core: &ClientCore) -> bool {
     core.cont_kind == CONT_BOX && core.cont_handle != 0 && {
-        let (cx, cz, level) = research_ui::table_address(core.cont_handle);
-        core.ovens().is_lit(cx, cz, level)
+        let (cx, cz, level, loc) = research_ui::table_address(core.cont_handle);
+        core.ovens().is_lit(cx, cz, level, loc)
     }
 }
 
@@ -541,9 +541,9 @@ pub fn fire_clicks(
         ui.say("put wood in FUEL to light the fire");
         return;
     }
-    let (cx, cz, level) = research_ui::table_address(core.cont_handle);
+    let (cx, cz, level, loc) = research_ui::table_address(core.cont_handle);
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_use(cx, cz, level, sim_core::build::LOC_PLANE, &mut buf) {
+    match protocol::encode_action_use(cx, cz, level, loc, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => ui.status.clear(),
             Err(e) => ui.say(e.to_string()),
@@ -706,7 +706,7 @@ pub fn table_clicks(
         return;
     }
     let core = &net.session.core;
-    let Some((cx, cz, level)) = open_table(core) else {
+    let Some((cx, cz, level, loc)) = open_table(core) else {
         return;
     };
     let line = research_ui::table_line(&core.research, &core.cont, open_table_running(core));
@@ -716,7 +716,7 @@ pub fn table_clicks(
         return;
     }
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_use(cx, cz, level, sim_core::build::LOC_PLANE, &mut buf) {
+    match protocol::encode_action_use(cx, cz, level, loc, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => ui.status.clear(),
             Err(e) => ui.say(e.to_string()),

@@ -78,11 +78,11 @@ pub fn status_line(stock: &[(u16, u32, u32)]) -> String {
     }
 }
 
-/// Is a body at `pos` still in feeding reach of the hearth at `(cx, cz)`?
-/// `deploy::feed`'s own test — planar distance to the cell centre against
-/// `build::BUILD_REACH_M` — so the panel closes where feeding would refuse.
-pub fn in_reach(pos: [f32; 3], cx: u16, cz: u16) -> bool {
-    let (hx, hz) = sim_core::deploy::cell_center(cx, cz);
+/// Is a body at `pos` still in feeding reach of the hearth standing at
+/// `(hx, hz)` (`DeployRec::xz`, where it was freely placed)? `deploy::feed`'s
+/// own test — planar distance against `build::BUILD_REACH_M` — so the panel
+/// closes where feeding would refuse.
+pub fn in_reach(pos: [f32; 3], (hx, hz): (f32, f32)) -> bool {
     let (dx, dz) = (pos[0] - hx, pos[2] - hz);
     let r = sim_core::build::BUILD_REACH_M;
     dx * dx + dz * dz <= r * r
@@ -129,9 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn reach_is_the_feed_radius_off_the_cell_centre() {
-        let (hx, hz) = sim_core::deploy::cell_center(100, 100);
-        assert!(in_reach([hx + 4.9, 0.0, hz], 100, 100));
-        assert!(!in_reach([hx + 5.1, 0.0, hz], 100, 100));
+    fn reach_is_the_feed_radius_off_the_hearth() {
+        let (hx, hz) = (301.2, 299.4);
+        assert!(in_reach([hx + 4.9, 0.0, hz], (hx, hz)));
+        assert!(!in_reach([hx + 5.1, 0.0, hz], (hx, hz)));
     }
 }

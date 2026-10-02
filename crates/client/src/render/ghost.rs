@@ -53,10 +53,11 @@ fn aim_point(
     core: &ClientCore,
     look: &Look,
     feet: [f32; 3],
+    step: f32,
 ) -> place::Aim {
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
     let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
-    place::aim_from_look(
+    place::aim_from_look_step(
         seed,
         haven,
         core.pieces.cols(),
@@ -73,6 +74,7 @@ fn aim_point(
         ],
         [fx * ch, sv, fz * ch],
         feet,
+        step,
     )
 }
 
@@ -166,6 +168,13 @@ pub struct Ghost {
     /// neutral, never red, on a frame nobody computed.
     pub deploy_target: Target,
     pub deploy_verdict: DeployVerdict,
+    /// Where in the cell and which way the drawn deployable stands (free
+    /// placement), latched beside its target for the same rule.
+    pub deploy_pose: sim_core::footprint::Pose,
+    /// Quarter turns from the rotate key (`R` with a deployable in hand),
+    /// on top of the facing that turns its front toward you. Latched across
+    /// placements, like the stair turn.
+    pub deploy_turn: u8,
 }
 
 /// `R`/`F` turn a stair preview; on a foundation they raise/lower its height
@@ -194,9 +203,23 @@ pub fn height_keys(
         .as_ref()
         .map(|u| u.panel.grabs_pointer())
         .unwrap_or(false);
-    let holding_plan =
-        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel)
-            .places();
+    let core = &net.session.core;
+    // A deployable in hand turns its ghost a quarter turn on `R` — the
+    // reference's rotate (free placement). `verbs::keys` yields the key to
+    // it, as it yields it to the plan's nudge below.
+    let held = core.inv[(net.sel as usize).min(core.inv.len().saturating_sub(1))];
+    let deploying = crate::ui::hold::click_of(
+        &core.catalog,
+        &core.research,
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        held,
+    ) == crate::ui::hold::Click::Deploy;
+    if !busy && deploying && keys.just_pressed(KeyCode::KeyR) {
+        ghost.deploy_turn = (ghost.deploy_turn + 1) % 4;
+        return;
+    }
+    let holding_plan = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel).places();
     if busy || !holding_plan {
         return;
     }
@@ -301,7 +324,14 @@ pub fn track(
     };
 
     let [x, y, z] = core.predict.render_position();
-    let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
+    let aim = aim_point(
+        world.seed,
+        &world.haven,
+        core,
+        &look,
+        [x, y, z],
+        place::AIM_STEP_M,
+    );
     // The storey is what the ray met (aimed level v0): the wall's face means
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
@@ -328,7 +358,23 @@ pub fn track(
     // nothing else decides the plate; sent always, because the client cannot
     // know which case the server is in.
     let want = place::plate_request(&site, target, aim.at, ghost.nudge);
-    let verdict = place::verdict(target, row, shape, &site, freehand, want);
+    let mut verdict = place::verdict(target, row, shape, &site, freehand, want);
+    // A piece may not be built through a deployable standing where it would
+    // go (free placement) — the sim's own question, asked of the mirror.
+    if verdict.ok()
+        && sim_core::deploy::piece_crosses_deploys(
+            core.pieces.cols(),
+            core.deploys.entries(),
+            &core.deploy_defs,
+            shape,
+            target.cx,
+            target.cz,
+            target.level,
+            target.loc,
+        )
+    {
+        verdict = Verdict::No("spot taken");
+    }
     // The floor this placement would take (build plate v1) — the sim's own
     // rule, so the preview stands where the piece will and a stilt is visible
     // before the key is pressed rather than after.
@@ -620,6 +666,7 @@ pub fn deploy_track(
     look: Res<Look>,
     ui: Option<Res<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
+    ring: Res<structures::StructRing>,
 ) {
     let ghost = &mut *ghost;
     if ghost.deploy_mat.is_none() {
@@ -676,52 +723,110 @@ pub fn deploy_track(
     };
 
     let [x, y, z] = core.predict.render_position();
-    let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
-    // A doorway-class deployable resolves an edge at the storey the aim
-    // met — a door aimed at its doorway's frame lands in that doorway,
-    // whatever storey it is on (aimed level v0); everything else keeps
-    // `deploy_key`'s original plane target at level 0.
-    let t = place::deploy_target_on(
-        &aim,
+    let body = matches!(
         def.placement,
-        core.deploys.entries(),
-        &core.deploy_defs,
-        core.deploy_defs_have,
+        sim_core::deploy::PLACE_GROUND
+            | sim_core::deploy::PLACE_FOUNDATION
+            | sim_core::deploy::PLACE_ANY
     );
-    let verdict = place::deploy_verdict(
-        t,
-        row,
-        &DeploySite {
-            seed: world.seed,
-            haven: &world.haven,
-            at: (x, z),
-            pieces: core.pieces.entries(),
-            piece_defs: &core.piece_defs,
-            piece_have: core.piece_defs_have,
-            deploys: core.deploys.entries(),
-            deploy_defs: &core.deploy_defs,
-            deploy_have: core.deploy_defs_have,
-            inv: &core.inv,
-        },
-    );
+    let site = DeploySite {
+        seed: world.seed,
+        haven: &world.haven,
+        cols: core.pieces.cols(),
+        at: (x, z),
+        pieces: core.pieces.entries(),
+        piece_defs: &core.piece_defs,
+        piece_have: core.piece_defs_have,
+        deploys: core.deploys.entries(),
+        deploy_defs: &core.deploy_defs,
+        deploy_have: core.deploy_defs_have,
+        inv: &core.inv,
+    };
+    let (t, pose, transform, mesh) = if body {
+        // Free placement: wherever the crosshair lands, on whatever storey
+        // it met, facing the player and turned by `R` — and drawn by the
+        // same function the placed deployable will be drawn by, with its
+        // own model, so the preview IS the thing.
+        let aim = aim_point(
+            world.seed,
+            &world.haven,
+            core,
+            &look,
+            [x, y, z],
+            place::DEPLOY_AIM_STEP_M,
+        );
+        let Some((t, pose)) = place::body_aim(&aim, (x, z), ghost.deploy_turn) else {
+            hide_deploy(&mut commands, ghost);
+            return;
+        };
+        let probe = sim_core::deploy::DeployRec {
+            cx: t.cx,
+            cz: t.cz,
+            level: t.level,
+            loc: t.loc,
+            pose,
+            row,
+            ..Default::default()
+        };
+        let model = ring.deploy_mesh(arch as u8);
+        let transform = match model {
+            Some(_) => structures::body_transform(
+                world.seed,
+                &world.haven,
+                core.pieces.cols(),
+                &probe,
+                arch as u8,
+            ),
+            // No model yet: the unit cube, scaled to the deployable's box.
+            None => structures::body_feet(
+                world.seed,
+                &world.haven,
+                core.pieces.cols(),
+                &probe,
+                arch as u8,
+            )
+            .mul_transform(Transform::from_xyz(0.0, size.y * 0.5, 0.0).with_scale(size)),
+        };
+        (t, pose, transform, model.unwrap_or(mesh))
+    } else {
+        let aim = aim_point(
+            world.seed,
+            &world.haven,
+            core,
+            &look,
+            [x, y, z],
+            place::AIM_STEP_M,
+        );
+        // A doorway-class deployable resolves an edge at the storey the aim
+        // met — a door aimed at its doorway's frame lands in that doorway,
+        // whatever storey it is on (aimed level v0); a lock finds the door
+        // or the box it bolts to.
+        let t = place::deploy_target_on(
+            &aim,
+            def.placement,
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
+        );
+        // The one pose site (`structures::deploy_transform`, closed): the
+        // ghost and the deployable it becomes are the same box in the same
+        // place — for a door, in the doorway's edge.
+        let transform = deploy_transform(
+            world.seed,
+            &world.haven,
+            (t.cx, t.cz, t.level, t.loc),
+            arch as u8,
+            false,
+            core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
+        )
+        .with_scale(if insert.is_some() { Vec3::ONE } else { size });
+        (t, sim_core::footprint::Pose::CENTRE, transform, mesh)
+    };
+    let verdict = place::deploy_verdict(t, pose, row, &site);
     ghost.deploy_target = t;
+    ghost.deploy_pose = pose;
     ghost.deploy_verdict = verdict;
 
-    // The one pose site (`structures::deploy_transform`, closed): the ghost
-    // and the deployable it becomes are the same box in the same place —
-    // for a door, in the doorway's edge.
-    let transform = deploy_transform(
-        world.seed,
-        &world.haven,
-        (t.cx, t.cz, t.level, t.loc),
-        arch as u8,
-        false,
-        // A deployable stands on what is already built, so the column's
-        // stored plate is the one to draw at — never a would-be one. A
-        // ground placement has no column and answers 0, the terrain rule.
-        core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
-    )
-    .with_scale(if insert.is_some() { Vec3::ONE } else { size });
     let mat = if verdict.refused() {
         ghost.no_mat.clone()
     } else {
@@ -807,7 +912,15 @@ pub fn deploy_key(
     };
     let t = ghost.deploy_target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_deploy(row as u16, t.cx, t.cz, t.level, t.loc, &mut buf) {
+    match protocol::encode_action_deploy(
+        row as u16,
+        t.cx,
+        t.cz,
+        t.level,
+        t.loc,
+        ghost.deploy_pose,
+        &mut buf,
+    ) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => {
                 if let DeployVerdict::No(why) = ghost.deploy_verdict {

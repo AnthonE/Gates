@@ -248,7 +248,11 @@ pub fn place(
     // outside the tool cupboard's reach with no way for the owner to
     // answer. Content sets the arm's length; the sim sets the ceiling.
     let reach_m = (def.reach_cm as f32 * 0.01).min(BUILD_REACH_M);
-    let (ax, az) = anchor(cx, cz, loc);
+    let (ax, az) = if deploy {
+        crate::deploy::rec_anchor(&deploys.entries()[i])
+    } else {
+        anchor(cx, cz, loc)
+    };
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
@@ -437,6 +441,20 @@ pub fn tick_fuses(
     }
 }
 
+/// Where a charge's blast centres: the anchor of what it was planted on — a
+/// free-placed deployable's own centre (`deploy::rec_anchor`), read off the
+/// record while it stands, and its cell's centre once an earlier blast took
+/// it. A charge on a piece, or on a door, is at `build::anchor` as before.
+pub fn epicentre(deploys: &Deploys, c: &ChargeRec) -> (f32, f32) {
+    if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
+        return match deploys.find(c.cx, c.cz, c.level, c.loc) {
+            Some(rec) => rec.xz(),
+            None => crate::deploy::cell_center(c.cx, c.cz),
+        };
+    }
+    anchor(c.cx, c.cz, c.loc)
+}
+
 /// The candidate structural targets one blast can touch, collected before
 /// any damage lands. 3×3 columns × 8 levels × (1 plane + 1 riser + 2
 /// edges) is the exact ceiling; the array is that size, so there is no
@@ -463,7 +481,7 @@ fn detonate(
     use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
     use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
-    let (ax, az) = anchor(c.cx, c.cz, c.loc);
+    let (ax, az) = epicentre(deploys, c);
     let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
         + crate::build::level_y(c.level);
     let blast = c.blast_cm;
@@ -547,9 +565,14 @@ fn detonate(
         if n >= BLAST_TARGET_CAP {
             break;
         }
-        let (tx, tz) = anchor(rec.cx, rec.cz, rec.loc);
-        let ly = crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
-            + crate::build::level_y(rec.level);
+        let (tx, tz) = crate::deploy::rec_anchor(rec);
+        let ly = match dc.defs.get(rec.row as usize) {
+            Some(def) => crate::deploy::body_base_y(seed, haven, pieces.cols(), rec, def.arch),
+            None => {
+                crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
+                    + crate::build::level_y(rec.level)
+            }
+        };
         let d = dist_cm(tx, ly, tz);
         let scaled = falloff(c.structure, d, blast);
         if scaled > 0 {

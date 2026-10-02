@@ -833,7 +833,7 @@ impl RaidJob {
     /// A box's panel opened.
     pub fn on_panel(&mut self, handle: u32) {
         if let Some((at, Lid::Opening(_))) = self.chest {
-            if box_key(at.cx, at.cz, at.level) == handle {
+            if box_key(at.cx, at.cz, at.level, at.loc) == handle {
                 self.chest = Some((at, Lid::Open));
             }
         }
@@ -1262,7 +1262,7 @@ impl RaidJob {
         };
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         if let Some((at, lid)) = self.chest {
-            let key = box_key(at.cx, at.cz, at.level);
+            let key = box_key(at.cx, at.cz, at.level, at.loc);
             let intent = Intent {
                 look: Look::Point(aim_point(core, seed, haven, at, x, z)),
                 ..Intent::IDLE

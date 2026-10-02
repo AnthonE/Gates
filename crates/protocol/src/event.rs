@@ -98,9 +98,10 @@ pub const PIECE_SYNC_BATCH: usize = 32;
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
 
-/// Placed-deployable records one sync message carries (a record is 31
-/// bits — address, row, open, locked; 24 keep the batch ≈ 94 B, well
-/// under the message cap). The join walk is drip-fed like the piece sync.
+/// Placed-deployable records one sync message carries (a record is 65
+/// bits — address, row, state, damage and the pose; 24 keep the batch
+/// ≈ 200 B, under the 320 B message cap). The join walk is drip-fed like
+/// the piece sync.
 pub const DEPLOY_SYNC_BATCH: usize = 24;
 
 /// Deploy-def rows one defs message carries (a full row is ~5 B).
@@ -1334,6 +1335,7 @@ pub enum EventMsg {
         cx: u16,
         cz: u16,
         level: u8,
+        loc: u8,
         lit: bool,
         by: u32,
     },
@@ -2342,8 +2344,11 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 32 bits, shared by the
-/// placed broadcast and the sync batches. Every width is exact, so only
+/// One placed-deployable record on the wire: 65 bits, shared by the
+/// placed broadcast and the sync batches — the address, the row, the three
+/// state bits, the damage band, and since wire v89 the **pose** (free
+/// placement): the offset from the cell centre and the facing, a byte each,
+/// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
 /// bits are open, locked and has-lock state. Open is the door's alone;
 /// locked and has-lock ride for every lockable archetype — a door or a
@@ -2355,9 +2360,9 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_SOCKETS
-        // Still the straight-edge bound: a deployable never sits on a
-        // triangle or a diagonal (v40 widened the FIELD, not this store).
-        || rec.loc > LOC_EDGE_ZLO
+        // Every four-bit loc is a deploy address since v89: the two
+        // straight edges hold inserts, the rest are body slots.
+        || rec.loc > loc_max(true)
         || rec.row as usize >= MAX_DEPLOY_DEFS
     {
         return Err(WireError::Range);
@@ -2372,6 +2377,11 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.has_lock)?;
     // The damage band (wire v44) — `write_piece_rec`'s note applies here.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
+    // The pose (v89). Three whole bytes, so every value is a legal pose and
+    // the width is the range check.
+    w.write(rec.pose.ox as u8 as u32, 8)?;
+    w.write(rec.pose.oz as u8 as u32, 8)?;
+    w.write(rec.pose.yaw as u32, 8)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -2396,11 +2406,18 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         has_lock: r.read_bit()?,
         // Width is the range check — see `read_piece_rec`.
         dmg: r.read(DMG_BAND_BITS)? as u8,
+        pose: sim_core::footprint::Pose {
+            ox: r.read(8)? as u8 as i8,
+            oz: r.read(8)? as u8 as i8,
+            yaw: r.read(8)? as u8,
+        },
         ..DeployRec::default()
     };
-    // The loc became forgeable when the field widened for the piece
-    // store's triangles (v40); this store never grew.
-    if rec.loc > loc_max(true) {
+    // An insert hangs in its doorway at the centre pose; one that claims
+    // to stand anywhere else is a record no sim wrote.
+    if rec.loc > loc_max(true)
+        || (sim_core::deploy::is_edge_loc(rec.loc) && rec.pose != sim_core::footprint::Pose::CENTRE)
+    {
         return Err(WireError::Malformed);
     }
     Ok(rec)
@@ -2687,13 +2704,14 @@ pub fn encode_event_auth(
 }
 
 /// The oven at the address is now `lit` (broadcast) — see
-/// `EventMsg::Oven`. No `loc`: an oven is a body deployable and stands at
-/// `LOC_PLANE`, so carrying the field would be carrying a constant and
-/// inviting a client to believe a fire could be in a doorway.
+/// `EventMsg::Oven`. The `loc` is the oven's body slot (wire v89, free
+/// placement): one cell can hold two fires, so the cell alone stopped
+/// naming one.
 pub fn encode_event_oven(
     cx: u16,
     cz: u16,
     level: u8,
+    loc: u8,
     lit: bool,
     by: u32,
     buf: &mut [u8],
@@ -2701,6 +2719,7 @@ pub fn encode_event_oven(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_SOCKETS
+        || loc > loc_max(true)
     {
         return Err(WireError::Range);
     }
@@ -2708,6 +2727,7 @@ pub fn encode_event_oven(
     w.write(cx as u32, BUILD_CELL_BITS)?;
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
     w.write_bit(lit)?;
     w.write(by, 32)?;
     Ok(w.finish())
@@ -4437,6 +4457,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,
             level: r.read(BUILD_LEVEL_BITS)? as u8,
+            // Width-exact: every four-bit loc is a deploy slot or an edge.
+            loc: r.read(BUILD_LOC_BITS)? as u8,
             lit: r.read_bit()?,
             by: r.read(32)?,
         },
@@ -5959,7 +5981,9 @@ mod tests {
             Err(WireError::Range),
             "loc past the piece store's ten"
         );
-        assert_eq!(
+        // Every four-bit loc names a deploy since v89 (the body slots),
+        // so the value a piece reads as a triangle half is a slot here.
+        assert!(
             encode_event_struct_hit(
                 true,
                 0,
@@ -5970,9 +5994,9 @@ mod tests {
                 1,
                 1,
                 &mut buf
-            ),
-            Err(WireError::Range),
-            "a deploy hit never lands on a triangle"
+            )
+            .is_ok(),
+            "a deploy hit names any body slot"
         );
         assert_eq!(
             encode_event_struct_hit(true, 0, 0, 0, 0, MAX_DEPLOY_DEFS as u8, 1, 1, &mut buf),
@@ -6468,6 +6492,10 @@ mod wire_domains {
         Module {
             file: "fmath.rs",
             src: include_str!("../../sim-core/src/fmath.rs"),
+        },
+        Module {
+            file: "footprint.rs",
+            src: include_str!("../../sim-core/src/footprint.rs"),
         },
         Module {
             file: "gather.rs",

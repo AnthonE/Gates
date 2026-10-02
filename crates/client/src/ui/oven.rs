@@ -34,7 +34,7 @@ pub fn fire_open(
         return None;
     }
     deploys.iter().find_map(|d| {
-        if box_key(d.cx, d.cz, d.level) != handle || u16::from(d.row) >= defs_have {
+        if box_key(d.cx, d.cz, d.level, d.loc) != handle || u16::from(d.row) >= defs_have {
             return None;
         }
         let arch = defs.defs[d.row as usize].arch;

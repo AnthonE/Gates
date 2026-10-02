@@ -1018,7 +1018,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// chip stops lying after you attack someone. The `Stock` ack's bill column
 /// is a day's charge rather than an hour's. A kick or a watch ending posts
 /// its `Refuse` on the event lane before the connection closes.
-pub const PROTO_VER: u16 = 89;
+/// v90 — free placement: a body deployable stands anywhere in its cell. The
+/// deploy record and `ACT_DEPLOY` gain the pose (offset from the cell centre
+/// and facing, three bytes); a deploy `loc` is any four-bit value (body
+/// slots beside the two edges); `SUB_OVEN` gains the oven's `loc`.
+pub const PROTO_VER: u16 = 90;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1895,14 +1899,15 @@ pub(crate) const BUILD_LEVEL_BITS: u32 = 4;
 pub(crate) const BUILD_LOC_BITS: u32 = 4;
 
 /// The widest loc each store can address (triangles v0): pieces gained
-/// the halves, diagonals and stair directions; deployables live on the plane and the
-/// straight edges. One function rather than ten scattered comparisons,
-/// because a store-bit message bounds its loc BY the bit and a site that
-/// picked the wrong constant would admit a forged address into the other
-/// store's range.
+/// the halves, diagonals and stair directions; deployables (wire v89, free
+/// placement) use the whole four bits — the two straight edges for inserts
+/// and every other value as a body slot (`sim_core::deploy::BODY_LOCS`).
+/// One function rather than ten scattered comparisons, because a store-bit
+/// message bounds its loc BY the bit and a site that picked the wrong
+/// constant would admit a forged address into the other store's range.
 pub(crate) fn loc_max(deploy: bool) -> u8 {
     if deploy {
-        sim_core::build::LOC_EDGE_ZLO
+        (1 << BUILD_LOC_BITS) - 1
     } else {
         sim_core::build::LOC_RISER_XLO
     }
@@ -2014,13 +2019,16 @@ pub enum ActionMsg {
     },
     /// Place baked deployable row `row` at the grid address. Same
     /// contract: the wire enforces shape, the sim delivers meaning as a
-    /// deploy-refused event.
+    /// deploy-refused event. `pose` (wire v89, free placement) is where in
+    /// the cell a body deployable stands and which way it faces; three
+    /// whole bytes, so every value is one the sim may judge.
     Deploy {
         row: u16,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
+        pose: sim_core::footprint::Pose,
     },
     /// Feed the hearth at the address from the sender's inventory.
     Feed { cx: u16, cz: u16, level: u8 },
@@ -2204,7 +2212,7 @@ pub enum ActionMsg {
     ///
     /// `cont` is the **one** ground container this move touches, and what
     /// it holds depends on the kind naming it: a bag id for `CONT_BAG`, a
-    /// packed `box_key(cx, cz, level)` address for `CONT_BOX`. Zero and
+    /// packed `box_key(cx, cz, level, 0)` address for `CONT_BOX`. Zero and
     /// ignored for a move inside your own inventory. One handle for both
     /// sides is why a bag→box move is refused rather than encoded — see
     /// `REFUSE_M_NO_CONTAINER`.
@@ -2237,7 +2245,7 @@ pub enum ActionMsg {
     /// zero check rather than a state machine.
     ///
     /// `cont` is the same handle `Move` carries and means the same thing:
-    /// a bag id for `CONT_BAG`, a packed `box_key(cx, cz, level)` for
+    /// a bag id for `CONT_BAG`, a packed `box_key(cx, cz, level, 0)` for
     /// `CONT_BOX`. Deliberately the same field in the same order, because
     /// a client that can name a container to open must name it *identically*
     /// to open it and to move inside it — a second addressing scheme is
@@ -2521,13 +2529,14 @@ pub fn encode_action_deploy(
     cz: u16,
     level: u8,
     loc: u8,
+    pose: sim_core::footprint::Pose,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if row as usize >= sim_core::limits::MAX_DEPLOY_DEFS
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(true)
     {
         return Err(WireError::Range);
     }
@@ -2539,6 +2548,9 @@ pub fn encode_action_deploy(
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(pose.ox as u8 as u32, 8)?;
+    w.write(pose.oz as u8 as u32, 8)?;
+    w.write(pose.yaw as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -2862,23 +2874,26 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
         }
         ACT_DEPLOY => {
+            // Every field is width-exact: rows are 5 bits = MAX_DEPLOY_DEFS,
+            // every four-bit loc is a deploy address (v89), and a pose is
+            // three whole bytes. What the values MEAN is the sim's verdict.
             let row = r.read(DEPLOY_ROW_BITS)? as u16;
             let cx = r.read(BUILD_CELL_BITS)? as u16;
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
-            // Deploy rows are width-exact (5 bits = MAX_DEPLOY_DEFS); the
-            // loc stopped being so at v40, and a deployable never sits on
-            // a triangle or a diagonal.
-            if loc > loc_max(true) {
-                return Err(WireError::Malformed);
-            }
+            let pose = sim_core::footprint::Pose {
+                ox: r.read(8)? as u8 as i8,
+                oz: r.read(8)? as u8 as i8,
+                yaw: r.read(8)? as u8,
+            };
             ActionMsg::Deploy {
                 row,
                 cx,
                 cz,
                 level,
                 loc,
+                pose,
             }
         }
         ACT_FEED => ActionMsg::Feed {
