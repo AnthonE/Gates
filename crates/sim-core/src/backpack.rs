@@ -45,10 +45,9 @@
 //! owner is named in code because that is what `CLAUDE.md`'s clean-merge
 //! trap costs when it is named in a comment instead.
 //!
-//! So no path in the sim destroys an item because a pack was full. The
-//! two things still open are both about *telling* the player: a spill is
-//! silent (`EV_GATHER` honestly reports the zero that reached the hands)
-//! and the merge ignores ownership. `NOW.md` §0sp2 carries both.
+//! So no path in the sim destroys an item because a pack was full. A spill
+//! merges only into the spiller's own bag, and every give-back announces
+//! what it dropped (`World::announce_spill`).
 
 use crate::gather::{inv_add_skinned, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
@@ -426,6 +425,11 @@ impl Backpacks {
         let pz = qz as f32 * POS_XZ_Q;
         let mut best: Option<(f32, usize)> = None;
         for i in 0..self.len {
+            // Only the spiller's own bags: a stranger's death bag or the
+            // carcass just killed (a mob-tagged owner) is not a dump.
+            if self.entries[i].owner != owner {
+                continue;
+            }
             let dx = self.entries[i].qx as f32 * POS_XZ_Q - px;
             let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
             let d2 = dx * dx + dz * dz;

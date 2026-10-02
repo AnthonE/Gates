@@ -62,7 +62,7 @@ use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
 use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
-    CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
+    BOX_SLOTS, CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
 };
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
@@ -106,8 +106,10 @@ pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
 pub const BUILD_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
-/// A cook at a fire that has not finished in this long is stuck.
-pub const COOK_GOAL_SECS: u32 = 240;
+/// A cook at a fire that has not finished in this long is stuck. A camp
+/// fire's grill is one slot, so a full stack of raw meat (20 × 20 s) cooks
+/// for 400 s on its own.
+pub const COOK_GOAL_SECS: u32 = 480;
 /// A defence (the walk home, the wait, the repairs) or a raid ends by then.
 pub const DEFEND_GOAL_SECS: u32 = 300;
 pub const RAID_GOAL_SECS: u32 = 300;
@@ -3853,11 +3855,17 @@ impl Survivor {
             self.senses.raid = raid;
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
-            self.memory.cook =
-                oven::can_tend(core, &self.book, Work::Cook, fire.is_some(), &Keep::NONE)
-                    && self
-                        .cook_failed
-                        .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // Mid-cook the meat is on the grill rather than in the pack, and a
+            // camp fire's one grill slot cooks it piece by piece: the work is
+            // still on offer until the last piece is done.
+            let cooking = self.goal() == Some(Goal::Cook)
+                && core.cont_kind == CONT_BOX
+                && oven::should_run(Work::Cook, core, &self.book, &core.cont[..BOX_SLOTS]);
+            self.memory.cook = (cooking
+                || oven::can_tend(core, &self.book, Work::Cook, fire.is_some(), &Keep::NONE))
+                && self
+                    .cook_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             // Salvage is taken apart unless the base wants it whole: what
             // the rest of the milestone costs, or the gear still to be made
             // takes.

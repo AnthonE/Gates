@@ -24,7 +24,8 @@
 //!    number nobody can act on.
 //!
 //! Integer arithmetic throughout (wall 1): a rate is a ratio of two `u64`s
-//! and every charge rounds up exactly once, where upkeep/decay v1 did.
+//! and an hour's charge is a difference of floors ([`Tax::due`]), so the
+//! hours sum to the exact daily rent rather than to 24 round-ups.
 
 use crate::build::{
     BuildContent, Pieces, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, MAT_TWIG,
@@ -40,8 +41,8 @@ use crate::limits::{HEARTH_STOCK_ROWS, MAX_BUILD_LEVELS, MAX_BUILD_SOCKETS};
 
 /// A day's rent on one base, as the exact fraction `num / den` of a piece's
 /// build cost. A ratio rather than a rate so the blend across the ladder's
-/// rungs never rounds: the one rounding is [`Tax::charge`]'s ceiling, the
-/// same single ceiling upkeep/decay v1 took.
+/// rungs never rounds: the only rounding is in [`Tax::due`] and
+/// [`Tax::per_day`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tax {
     pub num: u64,
@@ -49,19 +50,32 @@ pub struct Tax {
 }
 
 impl Tax {
-    /// One period's charge for one cost row: `ceil(cost × num / (den × 24))`.
+    /// What a piece owes in hour `k` for one material whose cost rows sum
+    /// to `cost`: the hour's slice of the exact daily rent, `floor(C·k/D) −
+    /// floor(C·(k−1)/D)` with `C = cost × num` and `D = den × 24`. Any 24
+    /// consecutive hours sum to the day's rent within one unit, so a
+    /// 100-wood piece at 10 % pays 10 a day. It paid 24 while every hour
+    /// rounded up on its own.
     ///
-    /// On a base below the ladder's first step this is v1's
-    /// `ceil(cost × pct / 2400)` to the unit — the blend is `n × pct × 10`
-    /// over `n × 1000`, and a ceiling of a fraction does not care that both
-    /// halves were multiplied by `n` — which is what lets a starter base
-    /// pay exactly what it paid before this module existed.
-    pub fn charge(self, cost: u16) -> u32 {
-        let num = cost as u64 * self.num;
-        let den = self.den * PERIODS_PER_DAY as u64;
-        // Bounded: `num / den` ≤ `cost` × the highest rung (≤ 1000 ‰ by
-        // validation) ÷ 24, so the quotient fits a `u32` with room.
-        num.div_ceil(den) as u32
+    /// `k` must be at least 1. In u128, because a phase-shifted `k` times a
+    /// whole base's cost can pass `u64`.
+    pub fn due(self, cost: u32, k: u64) -> u32 {
+        let c = cost as u128 * self.num as u128;
+        let d = self.den as u128 * PERIODS_PER_DAY as u128;
+        if d == 0 || k == 0 {
+            return 0;
+        }
+        let k = k as u128;
+        (c * k / d - c * (k - 1) / d) as u32
+    }
+
+    /// A day's rent on `cost`, rounded up once: the hearth's readout.
+    pub fn per_day(self, cost: u64) -> u32 {
+        let c = cost as u128 * self.num as u128;
+        if self.den == 0 {
+            return 0;
+        }
+        c.div_ceil(self.den as u128).min(u32::MAX as u128) as u32
     }
 }
 
@@ -293,8 +307,9 @@ pub fn scale(dc: &DeployContent, inside: bool) -> u32 {
 // 3 · How long it lasts
 // ---------------------------------------------------------------------------
 
-/// What hearth `hi` charges in one upkeep period for everything it covers,
-/// per stock row (aligned to `dc.mats`) — the sweep's own charge, summed.
+/// What hearth `hi` charges in a **day** for everything it covers, per
+/// stock row (aligned to `dc.mats`): each material's cost over the covered
+/// pieces, priced at the hearth's rent and rounded up once.
 ///
 /// Read off the cached claim volume the sweep reads, so a readout and the
 /// rent cannot disagree about which pieces are this hearth's; like the
@@ -319,6 +334,7 @@ pub fn bill(
     }
     let t = tax(dc, deploys.claim_graded(hi));
     let mats = &dc.mats[..(dc.mat_count as usize).min(HEARTH_STOCK_ROWS)];
+    let mut cost = [0u64; HEARTH_STOCK_ROWS];
     for rec in pieces.entries() {
         let def = bc.pieces[rec.row as usize];
         if def.material == MAT_TWIG {
@@ -328,17 +344,20 @@ pub fn bill(
         if !deploys.hearth_covers(hi, x, z) {
             continue;
         }
-        for &(item, cost) in def.costs.iter().take(def.n_costs as usize) {
+        for &(item, c) in def.costs.iter().take(def.n_costs as usize) {
             if let Some(m) = mats.iter().position(|&mi| mi == item) {
-                out[m] = out[m].saturating_add(t.charge(cost));
+                cost[m] += c as u64;
             }
         }
+    }
+    for (o, &c) in out.iter_mut().zip(&cost) {
+        *o = t.per_day(c);
     }
     out
 }
 
-/// How many whole upkeep periods a stock covers a bill for: the least of
-/// `stock / bill` over the rows that charge anything, or `None` when
+/// How many whole hours a stock covers a **daily** bill for: the least of
+/// `stock × 24 / bill` over the rows that charge anything, or `None` when
 /// nothing is charged at all (a base of twig, or a hearth on bare
 /// foundations it does not pay for) — "protected for ∞" is a claim this
 /// readout declines to make about a base that is not being protected.
@@ -352,7 +371,7 @@ pub fn lasts(stock: &[u32], bill: &[u32]) -> Option<u32> {
         .iter()
         .zip(bill)
         .filter(|&(_, &b)| b > 0)
-        .map(|(&s, &b)| s / b)
+        .map(|(&s, &b)| (s as u64 * PERIODS_PER_DAY as u64 / b as u64).min(u32::MAX as u64) as u32)
         .min()
 }
 
@@ -375,17 +394,24 @@ mod tests {
     }
 
     #[test]
-    fn a_base_below_the_first_step_pays_v1s_bill_to_the_unit() {
-        for n in 0..=15u32 {
+    fn a_day_of_hours_pays_the_days_rent_at_any_phase() {
+        // 100 wood at 10 %/day is 10 a day, not 24 rounded-up hours.
+        for n in [1u32, 15, 20, 200] {
             let t = tax_parts(10, &REF, n);
-            for cost in [0u16, 1, 3, 5, 23, 24, 25, 200, 300, 999, u16::MAX] {
-                assert_eq!(
-                    t.charge(cost),
-                    (cost as u32 * 10).div_ceil(2400),
-                    "{n} pieces, cost {cost}: a starter base's rent moved"
-                );
+            for cost in [1u32, 5, 24, 100, 300, 2400, 65_535, 1_000_000] {
+                let day = (cost as u128 * t.num as u128) / t.den as u128;
+                for phase in [0u64, 1, 7, 23, 1_000, u32::MAX as u64] {
+                    let sum: u128 = (1..=24).map(|h| t.due(cost, phase + h) as u128).sum();
+                    assert!(
+                        sum == day || sum == day + 1,
+                        "{n} pieces, cost {cost}, phase {phase}: {sum} for a {day} day"
+                    );
+                }
             }
         }
+        let t = tax_parts(10, &REF, 1);
+        assert_eq!((1..=24).map(|h| t.due(100, h)).sum::<u32>(), 10);
+        assert_eq!(t.per_day(100), 10);
     }
 
     #[test]
@@ -417,18 +443,19 @@ mod tests {
 
     #[test]
     fn lasts_names_the_first_material_to_run_out() {
+        // Daily bills, answered in hours.
         assert_eq!(
             lasts(&[100, 30], &[10, 5]),
-            Some(6),
+            Some(144),
             "the stone runs out first"
         );
         assert_eq!(
             lasts(&[100, 0], &[10, 0]),
-            Some(10),
+            Some(240),
             "an unbilled row is not a limit"
         );
         assert_eq!(
-            lasts(&[5, 50], &[10, 5]),
+            lasts(&[0, 50], &[10, 5]),
             Some(0),
             "short now is zero, not none"
         );
@@ -591,10 +618,11 @@ mod tests {
             assert_eq!(deploys.claim_graded(0), n as u32);
             bill(&dc, &bc, &pieces, &deploys, 0)[0]
         };
-        // One piece: ceil(3000 × 10 % / 24) = 13. Eight: past both steps,
-        // (3 × 100 + 3 × 150 + 2 × 200) / 8 = 143.75 ‰ → 18 each.
-        assert_eq!(bill_for(1), 13);
-        assert_eq!(bill_for(8), 8 * 18);
+        // A day's bill. One piece: 3000 × 10 % = 300. Eight: past both
+        // steps, (3 × 100 + 3 × 150 + 2 × 200) / 8 = 143.75 ‰ of 24 000 =
+        // 3450.
+        assert_eq!(bill_for(1), 300);
+        assert_eq!(bill_for(8), 3450);
         assert!(bill_for(8) > 8 * bill_for(1));
     }
 }

@@ -126,6 +126,10 @@ const CRAFT_BAR_FILL: Color = Color::srgba(0.122, 0.420, 0.627, 0.92);
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
 
+/// How long a hit's damage number stays beside the crosshair, seconds —
+/// long enough to read, which the marker's quarter second is not.
+pub const HIT_NUMBER_SECS: f32 = 0.8;
+
 // ---- the hurt arc ------------------------------------------------------
 //
 // The mark that says *someone is over there and they just hit you*. Wire
@@ -897,6 +901,25 @@ pub enum ExposureChip {
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
+const HOSTILE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+
+/// The safe-zone chip's words and whether they are a warning, or `None`
+/// outside the town. Attacking a player makes you hittable for two minutes
+/// (`sim_core::combat::HOSTILE_TICKS`) wherever you stand, so inside the
+/// town the chip says so instead of promising a safety you do not have.
+fn safe_chip(in_town: bool, hostile_ticks: u32) -> Option<(String, bool)> {
+    if !in_town {
+        return None;
+    }
+    if hostile_ticks == 0 {
+        return Some(("SAFE ZONE".to_string(), false));
+    }
+    let secs = hostile_ticks.div_ceil(sim_core::limits::TICK_HZ);
+    Some((
+        format!("HOSTILE · NOT PROTECTED {}:{:02}", secs / 60, secs % 60),
+        true,
+    ))
+}
 
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
@@ -921,11 +944,12 @@ pub fn exposure(
             ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
-                (
-                    sim_core::town::safe(&core.haven().town, x, z),
-                    "SAFE ZONE".to_string(),
-                    SAFE_CHIP,
-                )
+                let in_town = sim_core::town::safe(&core.haven().town, x, z);
+                match safe_chip(in_town, core.hostile_left()) {
+                    Some((line, false)) => (true, line, SAFE_CHIP),
+                    Some((line, true)) => (true, line, HOSTILE_CHIP),
+                    None => (false, String::new(), SAFE_CHIP),
+                }
             }
         };
         // Out of the layout, not just invisible: a hidden chip that still
@@ -1013,6 +1037,60 @@ pub struct Crosshair;
 /// when a swing lands.
 #[derive(Component)]
 pub struct HitMark;
+
+/// The damage a hit did, up and right of the crosshair ([`hit_number`]).
+#[derive(Component)]
+pub struct HitNumber;
+
+/// What [`hit_number`] is showing: seconds left, the number, the part.
+#[derive(Default)]
+pub struct HitShown {
+    left: f32,
+    damage: u16,
+    part: Option<Part>,
+}
+
+/// The number a hit did, beside the crosshair: the marker says *that* it
+/// landed, this says how hard. The frame's total (`Feed::damage`), so a
+/// spread of pellets reads as the one blow it was, coloured by the best
+/// part it reached as the marker is. Reads the feed; pops nothing.
+pub fn hit_number(
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    mut shown: Local<HitShown>,
+    mut q: Query<(&mut Text, &mut TextColor, &mut Visibility), With<HitNumber>>,
+) {
+    use std::fmt::Write;
+    let fresh = feed.hits > 0 && feed.damage > 0;
+    if fresh {
+        shown.left = HIT_NUMBER_SECS;
+        shown.part = feed.hit_part;
+    } else {
+        shown.left = (shown.left - time.delta_secs()).max(0.0);
+    }
+    for (mut text, mut colour, mut vis) in &mut q {
+        let want = if shown.left > 0.0 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        // Rewritten only when the number moves: a `String` built per frame
+        // is an allocation per frame on the client's hot path.
+        if fresh && (feed.damage != shown.damage || text.0.is_empty()) {
+            text.0.clear();
+            let _ = write!(text.0, "{}", feed.damage);
+        }
+        // Full for most of its life, fading over the last half.
+        let alpha = (shown.left / HIT_NUMBER_SECS * 2.0).min(1.0);
+        colour.0 = mark_colour(true, shown.part).with_alpha(alpha);
+    }
+    if fresh {
+        shown.damage = feed.damage;
+    }
+}
 
 /// The compass strip. Bearing only — the reference also pins markers to it
 /// (death skull, map pin) and ours carries none, because `ALPHA.md` §1 has a
@@ -1599,6 +1677,23 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Pickable::IGNORE,
                 ));
             }
+            // The damage number, up and right of the ticks, hidden until a
+            // hit lands ([`hit_number`]).
+            c.spawn((
+                HitNumber,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(14.0),
+                    top: Val::Px(-30.0),
+                    ..default()
+                },
+                Text::new(""),
+                super::ui::font(15.0),
+                TextColor(CROSSHAIR_HIT),
+                super::ui::TEXT_SHADOW,
+                Visibility::Hidden,
+                Pickable::IGNORE,
+            ));
             // The hurt arc rides the same centred wrapper — it is measured from
             // the same point, so hanging it anywhere else would be two places
             // that have to agree about where the middle of the screen is.
@@ -3986,6 +4081,27 @@ mod tests {
     /// Upkeep v2's readout: the hours are the least billed material's, an
     /// empty hearth with a bill says it is decaying, and a day reads as one.
     #[test]
+    fn the_safe_zone_chip_owns_up_to_hostility() {
+        assert_eq!(safe_chip(false, 0), None);
+        assert_eq!(
+            safe_chip(false, 900),
+            None,
+            "outside the town it says nothing"
+        );
+        assert_eq!(safe_chip(true, 0), Some(("SAFE ZONE".to_string(), false)));
+        let hz = sim_core::limits::TICK_HZ;
+        assert_eq!(
+            safe_chip(true, 102 * hz),
+            Some(("HOSTILE · NOT PROTECTED 1:42".to_string(), true))
+        );
+        assert_eq!(
+            safe_chip(true, 1),
+            Some(("HOSTILE · NOT PROTECTED 0:01".to_string(), true)),
+            "the last tick still warns"
+        );
+    }
+
+    #[test]
     fn a_hearth_says_how_long_its_base_lasts() {
         // The label's unit is the sim's period, which is one hour.
         assert_eq!(
@@ -3994,17 +4110,18 @@ mod tests {
             "an upkeep period stopped being an hour — relabel `periods_label`"
         );
         let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
+        // Bills are a day's charge (wire v89).
         assert_eq!(
-            stock_line(&[(3, 120, 10), (4, 50, 5)], &cat),
+            stock_line(&[(3, 120, 240), (4, 50, 120)], &cat),
             Some("HEARTH: 120 × WOOD, 50 × CLOTH  ·  PROTECTED 10H".to_string()),
             "the cloth lasts ten periods and it runs out first"
         );
         assert_eq!(
-            stock_line(&[(3, 600, 10)], &cat),
+            stock_line(&[(3, 600, 240)], &cat),
             Some("HEARTH: 600 × WOOD  ·  PROTECTED 2D 12H".to_string())
         );
         assert_eq!(
-            stock_line(&[(3, 120, 10), (4, 0, 5)], &cat),
+            stock_line(&[(3, 120, 240), (4, 0, 120)], &cat),
             Some("HEARTH: 120 × WOOD  ·  NOT PROTECTED — DECAYING".to_string()),
             "one billed material missing is a base already rotting"
         );

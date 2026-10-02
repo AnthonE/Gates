@@ -309,6 +309,11 @@ pub fn resolve(
             aimed.0 = swipe;
         }
     }
+    // Down, the only prompt worth drawing is a door's (wounded v0): every
+    // other `E` would be refused.
+    if core.wounded && !crate::ui::wounded::allows(aimed.0.verb) {
+        aimed.0 = interact::Pick::default();
+    }
     near.0 = structure::nearest(
         (x, z),
         core.pieces.entries(),
@@ -371,6 +376,33 @@ pub fn keys(
         .as_ref()
         .map(|u| u.panel == Panel::Wheel)
         .unwrap_or(false);
+
+    // **Down, the hands are gone** (wounded v0). The sim refuses every verb
+    // but a door's without a word, so the keys answer here instead of
+    // sending into nothing: `E` still works a door, the rest say why.
+    if net.session.core.wounded {
+        pad.0.close();
+        hearth.0 = None;
+        const HAND_KEYS: [KeyCode; 11] = [
+            KeyCode::KeyE,
+            KeyCode::KeyL,
+            KeyCode::KeyK,
+            KeyCode::KeyU,
+            KeyCode::KeyR,
+            KeyCode::KeyX,
+            KeyCode::KeyC,
+            KeyCode::KeyJ,
+            KeyCode::KeyV,
+            KeyCode::KeyH,
+            KeyCode::Backspace,
+        ];
+        if keys.just_pressed(KeyCode::KeyE) && crate::ui::wounded::allows(aimed.0.verb) {
+            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+        } else if HAND_KEYS.iter().any(|&k| keys.just_pressed(k)) {
+            toast.warn(crate::ui::wounded::HANDS_LINE);
+        }
+        return;
+    }
 
     if keys.just_pressed(KeyCode::KeyE) {
         // A second `E` closes the hearth's panel rather than feeding again.
@@ -1206,15 +1238,14 @@ pub fn hearth_close(
         return;
     }
     let core = &net.session.core;
-    let standing = core.deploys.entries().iter().any(|r| {
+    let standing = core.deploys.entries().iter().find(|r| {
         (r.cx, r.cz, r.level) == (cx, cz, level)
             && (r.row as u16) < core.deploy_defs_have
             && core.deploy_defs.defs[r.row as usize].arch == sim_core::deploy::ARCH_HEARTH
     });
-    if !standing
-        || core.wounded
+    if core.wounded
         || core.dead
-        || !crate::ui::hearth::in_reach(core.predict.position(), cx, cz)
+        || !standing.is_some_and(|r| crate::ui::hearth::in_reach(core.predict.position(), r.xz()))
     {
         hearth.0 = None;
     }

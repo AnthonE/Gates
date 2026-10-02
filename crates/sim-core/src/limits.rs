@@ -921,6 +921,11 @@ pub const MAX_HAVEN_CANDIDATES: usize = 256;
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_EVENTS_PER_TICK: usize = 256;
 
+/// "Dropped at your feet" lines one give-back (a craft cancel, a demolish
+/// refund, a pick-up, an unbolt) may announce: one per distinct item, so a
+/// cancelled queue of twenty recipes cannot spend the event ring on toasts.
+pub const SPILL_TOASTS_MAX: usize = 3;
+
 /// Pieces one structural collapse may drop in a single tick (build.rs
 /// `collapse_from`: take a wall's legs out and what rested on it falls).
 /// Sized off `MAX_EVENTS_PER_TICK`, not off the piece store: every
@@ -1134,6 +1139,8 @@ pub const MAX_HITSCAN_MARK_SAMPLES: usize = 64;
 /// comparison a tick, and a client is only ever sent the ones inside its
 /// 176 m interest band, which density — not this cap — decides.
 pub const MAX_MOBS: usize = 256;
+// Slots travel as `u8` (`brain.rs` howls, `mob.rs`), so 256 is the ceiling.
+const _: () = assert!(MAX_MOBS <= 256);
 
 /// The bit that says *this class-D entity is not a player*.
 ///

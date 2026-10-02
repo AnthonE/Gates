@@ -288,7 +288,8 @@ const DETAIL_OCTAVES: u32 = 3;
 /// Multiplicative because `shelf` is 0 exactly at the waterline, so a detail
 /// term *added* to `land` would push land below sea level in the flats and pit
 /// the island with ponds the water pass has no way to draw. Multiplied,
-/// **`land ≥ 0` holds by construction** for any `DETAIL_AMP < AMPLITUDE`, and
+/// **`land ≥ 0` holds by construction** for any `DETAIL_AMP < AMPLITUDE` (the
+/// lakes are dug on purpose, by stage 4e under the remap's floor), and
 /// the disturbance at the shoreline falls off as `shelf²` instead of being
 /// uniform — **1.8 cm** at the LUT's 2.7 m contour. That is why the road ring,
 /// the haven solve, the clutter waterline veto and the beach measurements all
@@ -1368,6 +1369,44 @@ pub fn massif_lift_at(seed: u64, x: f32, z: f32) -> f32 {
     massif_lift(c, seed, x, z, wx, wz)
 }
 
+// ── Stage 4e: the lakes ────────────────────────────────────────────────────
+//
+// **Inland, the relief's lowest basins were dead-flat plains at exactly sea
+// level.** `remap` clamps its input at 0, so wherever the relief falls under
+// that floor `land` is exactly 0.0 — on the shipped seed, 123,000 m² of
+// inland ground in eleven basins, the biggest 55,000 m². The sea is drawn at
+// `SEA_LEVEL`, the same height, so the two surfaces fought for the depth
+// buffer in jagged triangles out to the horizon, and the wade rule slowed a
+// player across the whole plain while it looked dry.
+//
+// The reference had the same seam and its answer is the one taken here:
+// lakes are basins carved into the terrain and filled with water, and the
+// sea is told apart from them (`reference/WATER.md`). So under the floor the
+// curve keeps going down instead of stopping: the carve leaves `n = 0` at the
+// remap's own slope, which makes the lake shore C¹ with the land above it —
+// a clean waterline instead of a crease — and eases out to
+// [`LAKE_DEPTH_M`]. For `n >= 0` it is exactly 0.0, so everywhere outside a
+// basin, the coastline included, is the bits it was.
+
+/// The deepest a lake gets, metres — the carve's asymptote. **(knob)**
+pub const LAKE_DEPTH_M: f32 = 6.0;
+
+/// Metres of land per unit of remap input at its floor: `REMAP_TAN[0]` is per
+/// 1/16 segment, so ×16, then ×[`AMPLITUDE`]. The carve leaves the floor at
+/// exactly this rate, which is what makes the lake shore C¹.
+const LAKE_RATE: f32 = REMAP_TAN[0] * 16.0 * AMPLITUDE;
+
+/// How deep the lake carve is at remap input `n`, metres. 0 for `n >= 0`;
+/// below, a rational ease (`D·s / sqrt(D² + s²)`, slope 1 at the floor) —
+/// wall 1's float set, no `exp`.
+fn lake_carve(n: f32) -> f32 {
+    if n >= 0.0 {
+        return 0.0;
+    }
+    let s = -n * LAKE_RATE;
+    LAKE_DEPTH_M * s / (LAKE_DEPTH_M * LAKE_DEPTH_M + s * s).sqrt()
+}
+
 /// The authoritative height function: TERRAIN.md §1 stages 1–4 composed.
 pub fn height(seed: u64, x: f32, z: f32) -> f32 {
     height_in(&mut Direct, seed, x, z)
@@ -1378,18 +1417,53 @@ pub fn height_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
     height_in(lat, seed, x, z)
 }
 
+/// [`height`], and how much of the water standing over the point is **open
+/// sea rather than lake**, 0..1 — 1 over dry land and the whole sea, 0 in an
+/// inland lake, between in a lagoon where a basin meets the shelf. The
+/// reference's "ocean vs. lake analysis" without a flood fill: the lake's
+/// share of the water column falls out of the same arithmetic as the height.
+///
+/// Presentation reads it (the swell and the surf stay off a lake); the sim's
+/// water rules are all `height < SEA_LEVEL` and do not.
+pub fn height_open(seed: u64, x: f32, z: f32) -> (f32, f32) {
+    open_of(height_parts_in(&mut Direct, seed, x, z))
+}
+
+/// [`height_open`] against a caller-owned [`Lattice`].
+pub fn height_open_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> (f32, f32) {
+    open_of(height_parts_in(lat, seed, x, z))
+}
+
+fn open_of((h, lake): (f32, f32)) -> (f32, f32) {
+    let depth = SEA_LEVEL - h;
+    if depth <= 0.0 || lake <= 0.0 {
+        return (h, 1.0);
+    }
+    (h, (1.0 - lake / depth).clamp(0.0, 1.0))
+}
+
 fn height_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    height_parts_in(c, seed, x, z).0
+}
+
+/// The height, and how many metres of the water over it the lake carve dug.
+fn height_parts_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> (f32, f32) {
     let wx = x + fbm(c, seed, CH_WARP_X, x, z, WARP_FREQ, 2) * WARP_AMP;
     let wz = z + fbm(c, seed, CH_WARP_Z, x, z, WARP_FREQ, 2) * WARP_AMP;
 
     let relief = fbm(c, seed, CH_RELIEF, wx, wz, RELIEF_FREQ, 5);
-    let shelfed = remap(relief * RELIEF_GAIN * 0.5 + 0.5);
+    let n = relief * RELIEF_GAIN * 0.5 + 0.5;
+    let shelfed = remap(n);
 
     // Stage 4b: the detail the curve flattened, added back where it cannot be
     // flattened. `shelfed` is 0 at the waterline, so this cannot dig a pond,
     // and it is strongest on the high ground.
     let detail = fbm(c, seed, CH_DETAIL, wx, wz, DETAIL_FREQ, DETAIL_OCTAVES);
     let mut land = shelfed * (AMPLITUDE + shelfed * detail * DETAIL_AMP);
+
+    // Stage 4e: the lakes — the basins under the remap's floor, carved.
+    let carve = lake_carve(n);
+    land -= carve;
 
     // Stage 4d: the interior ranges. Outside their window the lift is exactly
     // 0.0 and `land` is not touched, so the coast, the ring and the inland
@@ -1421,7 +1495,10 @@ fn height_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     // Stage 4c: the terrace. Applied to the FINISHED height, which is what
     // makes `f(0) = 0` a statement about the coastline rather than about an
     // intermediate — see `shore_terrace`.
-    shore_terrace(m * land - (1.0 - m) * SEA_FLOOR_DEPTH)
+    (
+        shore_terrace(m * land - (1.0 - m) * SEA_FLOOR_DEPTH),
+        m * carve,
+    )
 }
 
 /// Slope as rise/run from central finite differences at 1 m (TERRAIN.md §1
@@ -8742,13 +8819,13 @@ pub const OCCUPANT_R_M: [f32; 16] = [
 /// meter so it reads as embedded rather than dropped — so their tops are 1.5
 /// and not 2.0.
 ///
-/// The tree stops at the trunk's height, not the crown's: you walk *under* a
-/// canopy, and a body is 1.7 m against a 5.7 m trunk, so the distinction
-/// costs nothing today and is the correct shape when something flies or a
-/// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
+/// The tree is solid to 11 m, the broadleaf's drawn apex (the pine is drawn
+/// 14 m; the sim cannot tell the species apart, so the shorter one wins and
+/// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
+/// and arrows and roof-standers went straight through the upper half.
 pub const OCCUPANT_TOP_M: [f32; 16] = [
-    0.0, // None
-    5.7, // Tree — PINE_TRUNK_H
+    0.0,  // None
+    11.0, // Tree — the broadleaf's drawn height
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
     // radius` — the same correction the radii above take, and for the same
     // reason: the blob never reaches its nominal radius in any axis.
@@ -8821,7 +8898,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         // The trunk at its base, measured off the drawn bark by
         // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
         // not the 0.26 a deleted three.js cylinder used to justify.
-        Occupant::Tree => (0.2398, 5.7),
+        Occupant::Tree => (0.2398, 11.0),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),

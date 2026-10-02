@@ -375,3 +375,50 @@ fn a_fuse_survives_a_save_and_still_blasts() {
         "the loaded fuse detonates with the saved numbers"
     );
 }
+
+/// A satchel hurts animals the way an arrow does: the pig beside the wall
+/// takes the blast, and the planter gets the hitmarker (`mob::hurt_slot`).
+#[test]
+fn the_blast_hurts_an_animal_beside_it() {
+    use sim_core::limits::MAX_MOBS;
+    use sim_core::mob::{self, MobContent, MOB_PIG};
+    use sim_core::world::EV_HIT;
+
+    let (mut w, cx, cz) = raid_world();
+    w.mob = MobContent::probe_fixture();
+    w.tick(&[]);
+    let pig = (0..MAX_MOBS)
+        .find(|&s| mob::kind_of(s) == MOB_PIG && w.mobs.m[s].alive)
+        .expect("a live pig");
+    for (i, m) in w.mobs.m.iter_mut().enumerate() {
+        if i != pig {
+            m.alive = false;
+        }
+    }
+    let (x, z) = cell_center(cx, cz);
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
+    // The raider steps well clear, so the hitmarker has somebody to reach.
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 20.0, z);
+    let full = w.mobs.m[pig].hp;
+    let mut marked = false;
+    for _ in 0..80 {
+        if w.charges.is_empty() {
+            break;
+        }
+        // Held at the wall every tick: a pig wanders, and this is about the
+        // blast, not about whether it stayed put for two seconds.
+        let m = &mut w.mobs.m[pig];
+        m.body = Body::at(SEED, hv(SEED), x - 1.4, z);
+        m.path.clear();
+        w.tick(&[]);
+        marked |= w
+            .events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_HIT && e.a == w.players[0].id && e.b == mob::mob_id(pig));
+    }
+    assert_eq!(w.charges.len(), 0, "the fuse must have run out");
+    let m = &w.mobs.m[pig];
+    assert!(!m.alive || m.hp < full, "the pig took the blast");
+    assert!(marked, "and the planter got the hitmarker an arrow would");
+}

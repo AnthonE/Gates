@@ -3586,19 +3586,20 @@ pub fn grieve(
         // The building's bill at its own size — the sweep's arithmetic.
         let graded = pieces.entries().iter().filter(|p| ours(p)).count() as u32;
         let t = crate::upkeep::tax(dc, graded);
-        let mut bill = [0u32; HEARTH_STOCK_ROWS];
+        let mut cost = [0u64; HEARTH_STOCK_ROWS];
         for p in pieces.entries().iter().filter(|p| ours(p)) {
-            for (m, due) in bill.iter_mut().enumerate().take(mats) {
-                *due = due.saturating_add(row_due(&bc.pieces[p.row as usize], dc.mats[m], t));
+            for (m, c) in cost.iter_mut().enumerate().take(mats) {
+                *c += row_cost(&bc.pieces[p.row as usize], dc.mats[m]) as u64;
             }
         }
-        // Periods each material's stock covers, capped.
+        // Hours each material's stock covers at the day's rent, capped.
         let mut periods = [0u32; HEARTH_STOCK_ROWS];
         for m in 0..mats {
             // An unbilled material buys nothing: no piece here costs it.
-            periods[m] = rec.stock[m]
-                .checked_div(bill[m])
-                .map_or(0, |p| p.min(dc.grief_periods as u32));
+            let day = t.per_day(cost[m]) as u64;
+            periods[m] = (rec.stock[m] as u64 * PERIODS_PER_DAY as u64)
+                .checked_div(day)
+                .map_or(0, |p| p.min(dc.grief_periods as u64) as u32);
         }
         for i in 0..pieces.len() {
             let p = pieces.entries()[i];
@@ -3627,16 +3628,24 @@ pub fn grieve(
     }
 }
 
-/// One period's charge for material `item` on a piece at rent `t` — every
-/// cost row of that item, each rounded up on its own, which is how v1
-/// charged and what keeps a starter base's bill unchanged to the unit.
-fn row_due(def: &crate::build::PieceDef, item: u16, t: crate::upkeep::Tax) -> u32 {
+/// A piece's build cost in material `item`, every row of it summed: what
+/// its rent in that material is a fraction of.
+fn row_cost(def: &crate::build::PieceDef, item: u16) -> u32 {
     def.costs
         .iter()
         .take(def.n_costs as usize)
         .filter(|&&(it, _)| it == item)
-        .map(|&(_, cost)| t.charge(cost))
+        .map(|&(_, cost)| cost as u32)
         .sum()
+}
+
+/// Which hour of the rent's cycle a piece is on in its own hour `uh`: a
+/// fixed per-address phase on top, so the pieces of a base pay their
+/// fractional hours spread through the day rather than all in one hour
+/// (`upkeep::Tax::due`).
+fn rent_hour(cx: u16, cz: u16, level: u8, loc: u8, uh: u16) -> u64 {
+    let key = ((cx as u64) << 32) | ((cz as u64) << 16) | ((level as u64) << 8) | loc as u64;
+    (crate::rng::splitmix64(key) & 0xFFFF_FFFF) + uh as u64
 }
 
 /// One tick of the upkeep/decay sweep: advance each store's cursor by
@@ -3760,16 +3769,21 @@ pub fn upkeep_sweep(
                 {
                     continue;
                 }
+                // Most hours a cheap piece owes nothing (`Tax::due` pays
+                // the day's rent in whole units), but the hearth must still
+                // hold some of the material: an empty one protects nothing.
+                let k = rent_hour(rec.cx, rec.cz, rec.level, rec.loc, uh);
+                let cost = row_cost(&def, item);
                 let due = |hi: u16| {
-                    row_due(
-                        &def,
-                        item,
-                        crate::upkeep::tax(dc, deploys.claim_graded(hi as usize)),
-                    )
+                    crate::upkeep::tax(dc, deploys.claim_graded(hi as usize)).due(cost, k)
                 };
                 let payer = cover[..cover_n]
                     .iter()
-                    .find(|&&hi| deploys.hearths[hi as usize].stock[m] >= due(hi))
+                    .find(|&&hi| {
+                        let t = crate::upkeep::tax(dc, deploys.claim_graded(hi as usize));
+                        let need = if t.num == 0 { 0 } else { due(hi).max(1) };
+                        deploys.hearths[hi as usize].stock[m] >= need
+                    })
                     .copied();
                 match payer {
                     Some(hi) => {
@@ -3912,6 +3926,16 @@ mod tests {
     }
     const CX: u16 = 682;
     const CZ: u16 = 682;
+
+    /// The probe fixture at a flat rent of each row's whole cost every hour
+    /// (2400 %/day, no ladder), so a charge test reads in whole units at any
+    /// phase instead of `Tax::due`'s fractional days.
+    fn hourly() -> DeployContent {
+        let mut d = DeployContent::probe_fixture();
+        d.upkeep_pct_per_day = 2400;
+        d.upkeep_step_count = 0;
+        d
+    }
 
     fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
         let mut p = Player {
@@ -4615,7 +4639,7 @@ mod tests {
 
     #[test]
     fn feed_fills_stock_and_upkeep_charges_it() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
@@ -4651,8 +4675,8 @@ mod tests {
         feed(&dc, &mut deploys, &mut p, CX + 3, CZ, 0, &mut ev);
         assert_eq!(last(&ev).2, REFUSE_D_HEARTH);
 
-        // Cross one upkeep period: the foundation (cost 5 × item 0 ⇒
-        // charge ceil(5·10/2400) = 1) pays from stock; nothing decays.
+        // Cross one upkeep period: the foundation (cost 5 × item 0, a whole
+        // cost an hour at `hourly`'s rent) pays from stock; nothing decays.
         let mut pc = 0u32;
         let mut dcur = 0u32;
         let tick = UPKEEP_PERIOD_TICKS + 1;
@@ -4667,7 +4691,7 @@ mod tests {
             &mut tick_budget(),
             &mut ev,
         );
-        assert_eq!(deploys.hearths()[0].stock[0], FEED_CHUNK - 1);
+        assert_eq!(deploys.hearths()[0].stock[0], FEED_CHUNK - 5);
         assert_eq!(pieces.len(), 1);
         assert_eq!(
             pieces.entries()[0].hp,
@@ -4746,7 +4770,7 @@ mod tests {
     /// the coverage.
     #[test]
     fn twig_rots_under_a_full_hearth_and_costs_it_nothing() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
@@ -4815,8 +4839,7 @@ mod tests {
         // so a charge for it would show here.
         let spent = STOCK_MAX - deploys.hearths()[0].stock[0];
         assert_eq!(
-            spent,
-            crate::upkeep::tax(&dc, 1).charge(bc.pieces[GRADED_FOUNDATION].costs[0].1),
+            spent, bc.pieces[GRADED_FOUNDATION].costs[0].1 as u32,
             "the hearth paid for the foundation and nothing else"
         );
     }
@@ -4986,7 +5009,7 @@ mod tests {
     /// verbs.
     #[test]
     fn upkeep_covers_the_far_end_of_a_long_base() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let (mut pieces, mut deploys) = corridor(&bc, 20, 1_000);
         // Pin the fixture's meaning against constant drift: the far cell
@@ -5007,7 +5030,7 @@ mod tests {
         }
         assert_eq!(
             deploys.hearths()[0].stock[0],
-            1_000 - 20,
+            1_000 - 20 * 5,
             "and every cell paid its row rather than being covered free"
         );
     }
@@ -5018,7 +5041,7 @@ mod tests {
     /// side a base does not extend to; the shape does not.
     #[test]
     fn a_detached_neighbor_inside_the_old_circle_is_not_covered() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let (mut pieces, mut deploys) = corridor(&bc, 1, 1_000);
         // Seven cells is 21 m: inside the circle, outside the cushion —
@@ -5065,7 +5088,7 @@ mod tests {
         );
         assert_eq!(
             deploys.hearths()[0].stock[0],
-            1_000 - 1,
+            1_000 - 5,
             "only the piece inside the shape was charged"
         );
     }
@@ -5078,7 +5101,7 @@ mod tests {
     /// by structure that is no longer there, and this test reddens.
     #[test]
     fn the_sweep_sees_a_demolished_base_shrink() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let (mut pieces, mut deploys) = corridor(&bc, 10, 1_000);
         // The far cell is 27 m out: outside the circle AND outside the
@@ -5091,7 +5114,7 @@ mod tests {
             bc.pieces[GRADED_FOUNDATION].hp,
             "before the demolition the far end is covered"
         );
-        assert_eq!(deploys.hearths()[0].stock[0], 1_000 - 10);
+        assert_eq!(deploys.hearths()[0].stock[0], 1_000 - 10 * 5);
         // Demolish the corridor between — the same `remove_at` every
         // removal path funnels through, so the gen bump under test is the
         // one the live verbs exercise.
@@ -6775,7 +6798,7 @@ mod tests {
     /// unpaid piece rots at its own material's rate.
     #[test]
     fn upkeep_is_charged_per_material_and_decay_follows_the_grade() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
@@ -7362,7 +7385,7 @@ mod tests {
     /// nothing for a piece the building does not reach.
     #[test]
     fn a_destroyed_stocked_hearth_buys_its_base_time_per_material() {
-        let dc = DeployContent::probe_fixture();
+        let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
@@ -7391,10 +7414,10 @@ mod tests {
         pieces.insert_for_test(CX + 1, CZ, 0, LOC_PLANE, GRADED_FOUNDATION as u8, &bc);
         pieces.insert_for_test(CX + 2, CZ, 0, LOC_PLANE, 6, &bc);
         pieces.insert_for_test(CX + 10, CZ, 0, LOC_PLANE, GRADED_FOUNDATION as u8, &bc);
-        // Three graded pieces sit below the fixture's first step, so each
-        // row charges 1 a period: item 0's bill is 2, item 1's is 1. Ten of
-        // item 0 covers five periods; one of item 1 covers one.
-        deploys.hearths_mut()[0].stock = [10, 1, 0, 0];
+        // At `hourly`'s rent each row charges its whole cost a period:
+        // item 0's bill is 2 × 5, item 1's is 4. Fifty of item 0 covers five
+        // periods; four of item 1 covers one.
+        deploys.hearths_mut()[0].stock = [50, 4, 0, 0];
 
         let h0: u16 = 3;
         let di = deploys.find_index(CX, CZ, 0, LOC_PLANE).unwrap();

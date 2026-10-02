@@ -112,6 +112,9 @@ struct GroundSplat {
     // The per-pixel cliff (`ground_splat::CLIFF_*`): x/y = rise/run where rock
     // starts / is full, z = how far the noise moves that, w = its wavelength (m).
     cliff: vec4<f32>,
+    // x = `WALL_PLANE_BLEND`: the share of each 45° step between two wall
+    // planes over which both are read. yzw reserved and zero.
+    wall_planes: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -284,6 +287,87 @@ fn value3(p: vec3<f32>) -> f32 {
     return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
 }
 
+// --- The wall planes ----------------------------------------------------------
+
+// `rough_ao_maps`' first AO layer — `textures::AO_LAYER0`, which
+// `tests/ground_tiling.rs` holds this to.
+const AO_LAYER0: i32 = 5;
+
+// The vertical planes a steep face reads its maps off: four, at fixed
+// bearings 45° apart (`wall_axis`), of which a pixel blends the two nearest
+// its face — so no face is more than 22.5° off a plane and its photograph is
+// stretched at most 1.08× across it. Each UV is LINEAR in the world position,
+// so its gradients are exact and nothing turns with the surface. Everything
+// is at the 4 m reference; `wall_tap` applies the tile.
+struct Wall {
+    // Each plane's u axis (`wall_axis`), UV and gradients.
+    axis_a: vec2<f32>,
+    uv_a: vec2<f32>,
+    dx_a: vec2<f32>,
+    dy_a: vec2<f32>,
+    axis_b: vec2<f32>,
+    uv_b: vec2<f32>,
+    dx_b: vec2<f32>,
+    dy_b: vec2<f32>,
+    // Plane b's share of the wall; plane a takes the rest.
+    share_b: f32,
+}
+
+// The u axis of wall plane `k` (0..4): the horizontal across a face whose
+// normal bears `k × 45°` from +X in the XZ plane. A constant per plane, which
+// is what keeps every wall UV linear in `wp`.
+fn wall_axis(k: i32) -> vec2<f32> {
+    var axes = array<vec2<f32>, 4>(
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(-0.70710678, 0.70710678),
+        vec2<f32>(-1.0, 0.0),
+        vec2<f32>(-0.70710678, -0.70710678),
+    );
+    return axes[k];
+}
+
+// One identity's four maps, read off the wall planes.
+struct WallTap {
+    albedo: vec4<f32>,
+    // The photograph's relief as a world-space offset, not yet laid in the
+    // surface: each plane's tangent-space gradient on that plane's own axes.
+    relief: vec3<f32>,
+    rough: f32,
+    ao: f32,
+}
+
+// One plane's four maps, weighted by its share. Explicit-gradient samples
+// only: this runs under the non-uniform wall branch, where an implicit
+// derivative is undefined.
+fn wall_plane(uv0: vec2<f32>, dx0: vec2<f32>, dy0: vec2<f32>, axis: vec2<f32>, layer: i32, tile: f32, k: f32) -> WallTap {
+    let uv = uv0 * tile;
+    let dx = dx0 * tile;
+    let dy = dy0 * tile;
+    var t: WallTap;
+    t.albedo = k * textureSampleGrad(albedo_maps, ground_sampler, uv, layer, dx, dy);
+    let g = to_gradient(unpack_normal(textureSampleGrad(normal_maps, ground_sampler, uv, layer, dx, dy)));
+    // u runs along the plane's axis and the image's up is world up.
+    t.relief = k * vec3<f32>(g.x * axis.x, g.y, g.x * axis.y);
+    t.rough = k * textureSampleGrad(rough_ao_maps, ground_sampler, uv, layer, dx, dy).r;
+    t.ao = k * textureSampleGrad(rough_ao_maps, ground_sampler, uv, layer + AO_LAYER0, dx, dy).r;
+    return t;
+}
+
+fn wall_tap(wall: Wall, layer: i32, tile: f32) -> WallTap {
+    var t: WallTap;
+    if wall.share_b < 1.0 {
+        t = wall_plane(wall.uv_a, wall.dx_a, wall.dy_a, wall.axis_a, layer, tile, 1.0 - wall.share_b);
+    }
+    if wall.share_b > 0.0 {
+        let b = wall_plane(wall.uv_b, wall.dx_b, wall.dy_b, wall.axis_b, layer, tile, wall.share_b);
+        t.albedo = t.albedo + b.albedo;
+        t.relief = t.relief + b.relief;
+        t.rough = t.rough + b.rough;
+        t.ao = t.ao + b.ao;
+    }
+    return t;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Keep the standard view vector, flags and material coverage. The splat
@@ -298,10 +382,10 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // One projection, four densities. `in.uv` is the mesh's shared planar XZ
     // UV at the 4 m reference (`terrain_mesh::UV_PER_M`); `splat.tile` spreads
     // each identity to its own photograph's authored size. Every tap of an
-    // identity's maps — albedo, roughness, normal, AO, and the wall tap below
-    // — must use ITS uv and no other, or the relief stops being registered
+    // identity's maps — albedo, roughness, normal, AO, and the wall taps below
+    // — must use ITS tile and no other, or the relief stops being registered
     // with the colour it came from. Derivatives are implicit here and scale
-    // with the UV, so mip selection follows for free; the wall tap takes its
+    // with the UV, so mip selection follows for free; `wall_tap` takes its
     // gradients explicitly and has to scale them by hand.
     let uv0 = in.uv * splat.tile.x;
     let uv1 = in.uv * splat.tile.y;
@@ -321,104 +405,43 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     var a2 = textureSample(albedo_maps, ground_sampler, uv2, 2);
     var a3 = textureSample(albedo_maps, ground_sampler, uv3, 3);
 
-    // --- Biplanar: the second tap a slope needs -----------------------------
+    // --- Triplanar: the planes a slope needs ---------------------------------
     //
     // `in.uv` is a planar XZ projection, so on a face of tilt θ the photograph
-    // is stretched by `1/cos θ` along the fall line. The second tap lives on
-    // the vertical plane CONTAINING that fall line, whose stretch is `1/sin θ`
-    // — the exact complement, so between the two the worst case anywhere is
-    // 45° at 1.41× and a third tap would buy nothing.
+    // is stretched by `1/cos θ` along the fall line — 2.9× at 70°, unbounded at
+    // vertical. Above `WALL_ON` every map is also read off fixed vertical
+    // planes (`Wall`), stretched `1/sin θ` down the face and at most 1.08×
+    // across it.
     //
-    // ⚠ **Derivatives are taken of the WORLD POSITION and never of the finished
-    // wall UV, and they are taken here — before any branch.** Both halves are
-    // load-bearing and `DECISIONS.md` materials v4 records the browser client
-    // shipping the first one backwards. `gm_across` is per-fragment, so
-    // `dpdx(dot(p.xz, across))` expands by the product rule to
-    // `dot(dpdx(p).xz, across) + dot(p.xz, dpdx(across))` — and the second term
-    // is the FRAME TURNING, multiplied by a world coordinate of order 1500 m.
-    // A frame rotation of 1e-4 rad/px injects ~0.16 m/px against a true
-    // footprint of ~0.002, which selects a mip about seven levels too coarse in
-    // bands that follow the terrain's curvature. Quilez states the rule for the
-    // axis-aligned case — take the gradients of `p` before the projection is
-    // chosen — and holding a rotating frame fixed is that same rule.
-    // Derivatives are also undefined under non-uniform control flow, and the
-    // branch below is non-uniform by construction, which is the second reason
-    // they are up here.
+    // ⚠ **The wall planes are FIXED world axes, and that is load-bearing.** The
+    // wall tap used to read the plane through the face's own fall line,
+    // `dot(wp.xz, across)` with `across` from the per-pixel normal. A frame that
+    // turns with the surface, multiplied by a world coordinate of order 1500 m,
+    // sweeps the UV 8–77 m of photograph per metre of cliff (p10–p99, the face
+    // north of 1510,640) wherever the face's bearing changes; with the mip
+    // picked from the true footprint, the photograph was drawn squeezed
+    // twenty-fold into fine lines along the contours — the "horizontal stretch
+    // lines" on every cliff (operator, 2026-10-02). An axis plane's UV is
+    // linear in `wp`, so its gradients are exact and nothing can sweep it.
+    //
+    // Derivatives are undefined under non-uniform control flow and the wall
+    // branch below is non-uniform by construction, so they are taken here.
     let wp = in.world_position.xyz;
     let dp_dx = dpdx(wp);
     let dp_dy = dpdy(wp);
 
     let wn = normalize(in.world_normal);
-    let horiz = vec2<f32>(wn.x, wn.z);
-    let sin_tilt = length(horiz);
+    let sin_tilt = length(wn.xz);
     let cos_tilt = abs(wn.y);
-    // The contour direction — the horizontal axis ACROSS the fall line. On a
-    // level face `sin_tilt` is 0, the wall tap is off, and this is never read.
-    var across = vec2<f32>(1.0, 0.0);
-    if sin_tilt > 1e-4 {
-        across = vec2<f32>(-horiz.y, horiz.x) / sin_tilt;
-    }
     // `pow(cos, k)` against `pow(sin, k)`: the two foreshortenings are exact
     // complements, so this crosses over at 45° by construction rather than by a
-    // tuned threshold, and `WALL_ON` is that same angle written as `sin`.
+    // tuned threshold.
     let w_top = pow(cos_tilt, splat.wall.y);
     let w_wall = pow(sin_tilt, splat.wall.y);
     var wall_mix = 0.0;
     if sin_tilt > splat.wall.x {
         wall_mix = w_wall / max(w_top + w_wall, 1e-6);
     }
-
-    // Skipped whole below 45°, which is every flat metre of the island — 996 to
-    // 998 land samples in 1000 on the seeds measured, so the four extra
-    // fetches are paid on cliffs and nowhere else. `textureSampleGrad` is what
-    // makes the branch legal: an explicit-gradient sample is defined under
-    // non-uniform control flow where `textureSample` is not.
-    if wall_mix > 0.0 {
-        let s = splat.wall.z;
-        let wall_uv = vec2<f32>(dot(wp.xz, across), wp.y) * s;
-        let wall_ddx = vec2<f32>(dot(dp_dx.xz, across), dp_dx.y) * s;
-        let wall_ddy = vec2<f32>(dot(dp_dy.xz, across), dp_dy.y) * s;
-        // ⚠ **The gradients are scaled by the same factor as the UV.** They
-        // are what picks the mip, so scaling `wall_uv` alone would leave every
-        // identity whose tile is not 4 m sampling a level chosen for a density
-        // it is no longer drawn at — grass one level too coarse, litter closer
-        // to two. That is the same class of defect as the browser shipping
-        // this tap's gradient backwards, which cost ~80× (materials v4); it is
-        // silent, it is a blur rather than an error, and no gate that reads
-        // values can see it. `tests/ground_tiling.rs` scrapes for it instead.
-        a0 = mix(a0, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.x, 0, wall_ddx * splat.tile.x, wall_ddy * splat.tile.x), wall_mix);
-        a1 = mix(a1, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.y, 1, wall_ddx * splat.tile.y, wall_ddy * splat.tile.y), wall_mix);
-        a2 = mix(a2, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.z, 2, wall_ddx * splat.tile.z, wall_ddy * splat.tile.z), wall_mix);
-        a3 = mix(a3, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.w, 3, wall_ddx * splat.tile.w, wall_ddy * splat.tile.w), wall_mix);
-    }
-    // **The relief stays the top tap's alone**, so the wall costs four fetches
-    // and not sixteen. `to_gradient` reads a tangent-space normal as a gradient
-    // over the XZ heightfield, which is what lets the four blend as one
-    // surface; a normal sampled on a VERTICAL plane describes a surface whose
-    // up is world ±X or ±Z, and there is no honest reading of it as a height
-    // over XZ. Roughness and AO are scalars whose stretch is invisible next to
-    // the albedo's, and they stay planar for the same budget reason.
-
-    // Each map's raw linear luminance, in [0, 1]. This is the HEIGHT.
-    let luma = vec4<f32>(
-        dot(a0.rgb, LUMA),
-        dot(a1.rgb, LUMA),
-        dot(a2.rgb, LUMA),
-        dot(a3.rgb, LUMA),
-    );
-    // The same field with its mean placed at 1. This is the GRAIN — what
-    // multiplies the authored colour.
-    //
-    // **These two must not be the same vector.** The gains run 3.7 to 9.7, so a
-    // bright litter texel reaches a grain of ~4 while a weight can only ever
-    // reach 1: feed the grain to the height blend below and it resolves
-    // whichever texture happens to be brightest at that texel, ignoring the
-    // classifier entirely and painting a four-way random mosaic. That is an
-    // arithmetic argument and it is the whole of the reason — the first
-    // before/after capture run for it compared two different parts of the
-    // island (the shard hashes a spawn per player id unless `dev_spawn` pins
-    // it), so it measured a place and not a change.
-    let grain = luma * splat.gain;
 
     // **Height blend, and the classifier stays soft.** A linear blend of four
     // weights reads as a wash where two identities meet; a height blend lets the
@@ -470,6 +493,82 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         let cliff = smoothstep(splat.cliff.x, splat.cliff.y, tan_tilt + cn * splat.cliff.z);
         w = w * (1.0 - cliff) + vec4<f32>(0.0, 0.0, 0.0, cliff);
     }
+
+    // The wall taps, per identity and only where it has weight: on a cliff the
+    // veto above has left rock alone, so a cliff pays one identity's four maps
+    // on one plane, or two where it turns between planes. Skipped whole below `WALL_ON`, which
+    // is nearly every flat metre of the island. `wall_tap` samples with
+    // explicit gradients, which is what makes the branch legal.
+    var wm = vec4<f32>(0.0);
+    var t0: WallTap;
+    var t1: WallTap;
+    var t2: WallTap;
+    var t3: WallTap;
+    if wall_mix > 0.0 {
+        let s = splat.wall.z;
+        // The face's bearing, folded to half a turn (a plane reads both of
+        // its sides) and counted in the 45° steps between planes: plane `ka`
+        // and the next one round share it, over the middle
+        // `WALL_PLANE_BLEND` of each step and nowhere else.
+        var bearing = atan2(wn.z, wn.x);
+        if bearing < 0.0 {
+            bearing = bearing + 3.14159265;
+        }
+        let steps = bearing / 0.78539816;
+        let ka = min(i32(steps), 3);
+        let kb = (ka + 1) % 4;
+        var wall: Wall;
+        wall.share_b = clamp((steps - f32(ka) - 0.5) / splat.wall_planes.x + 0.5, 0.0, 1.0);
+        wall.axis_a = wall_axis(ka);
+        wall.uv_a = vec2<f32>(dot(wp.xz, wall.axis_a), -wp.y) * s;
+        wall.dx_a = vec2<f32>(dot(dp_dx.xz, wall.axis_a), -dp_dx.y) * s;
+        wall.dy_a = vec2<f32>(dot(dp_dy.xz, wall.axis_a), -dp_dy.y) * s;
+        wall.axis_b = wall_axis(kb);
+        wall.uv_b = vec2<f32>(dot(wp.xz, wall.axis_b), -wp.y) * s;
+        wall.dx_b = vec2<f32>(dot(dp_dx.xz, wall.axis_b), -dp_dx.y) * s;
+        wall.dy_b = vec2<f32>(dot(dp_dy.xz, wall.axis_b), -dp_dy.y) * s;
+        if w.x > 0.0 {
+            t0 = wall_tap(wall, 0, splat.tile.x);
+            wm.x = wall_mix;
+        }
+        if w.y > 0.0 {
+            t1 = wall_tap(wall, 1, splat.tile.y);
+            wm.y = wall_mix;
+        }
+        if w.z > 0.0 {
+            t2 = wall_tap(wall, 2, splat.tile.z);
+            wm.z = wall_mix;
+        }
+        if w.w > 0.0 {
+            t3 = wall_tap(wall, 3, splat.tile.w);
+            wm.w = wall_mix;
+        }
+    }
+    a0 = mix(a0, t0.albedo, wm.x);
+    a1 = mix(a1, t1.albedo, wm.y);
+    a2 = mix(a2, t2.albedo, wm.z);
+    a3 = mix(a3, t3.albedo, wm.w);
+
+    // Each map's raw linear luminance, in [0, 1]. This is the HEIGHT.
+    let luma = vec4<f32>(
+        dot(a0.rgb, LUMA),
+        dot(a1.rgb, LUMA),
+        dot(a2.rgb, LUMA),
+        dot(a3.rgb, LUMA),
+    );
+    // The same field with its mean placed at 1. This is the GRAIN — what
+    // multiplies the authored colour.
+    //
+    // **These two must not be the same vector.** The gains run 3.7 to 9.7, so a
+    // bright litter texel reaches a grain of ~4 while a weight can only ever
+    // reach 1: feed the grain to the height blend below and it resolves
+    // whichever texture happens to be brightest at that texel, ignoring the
+    // classifier entirely and painting a four-way random mosaic. That is an
+    // arithmetic argument and it is the whole of the reason — the first
+    // before/after capture run for it compared two different parts of the
+    // island (the shard hashes a spawn per player id unless `dev_spawn` pins
+    // it), so it measured a place and not a change.
+    let grain = luma * splat.gain;
 
     // --- The rock face ------------------------------------------------------
     //
@@ -629,11 +728,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // level for a map to move — the map is the only measurement in the room.
     // `ground_splat::ROUGH_MEAN` records what the four now measure and the gate
     // re-measures it, so a source swap changes the surface loudly.
-    let rough_map = vec4<f32>(
-        textureSample(rough_ao_maps, ground_sampler, uv0, 0).r,
-        textureSample(rough_ao_maps, ground_sampler, uv1, 1).r,
-        textureSample(rough_ao_maps, ground_sampler, uv2, 2).r,
-        textureSample(rough_ao_maps, ground_sampler, uv3, 3).r,
+    // Each identity's wall taps take their share here as they did the albedo's.
+    let rough_map = mix(
+        vec4<f32>(
+            textureSample(rough_ao_maps, ground_sampler, uv0, 0).r,
+            textureSample(rough_ao_maps, ground_sampler, uv1, 1).r,
+            textureSample(rough_ao_maps, ground_sampler, uv2, 2).r,
+            textureSample(rough_ao_maps, ground_sampler, uv3, 3).r,
+        ),
+        vec4<f32>(t0.rough, t1.rough, t2.rough, t3.rough),
+        wm,
     );
     // Wet ground is smoother — `WET_VALUE`'s missing third. `terrain_mesh.rs`
     // states the physics and then states why it could not have it: roughness
@@ -652,23 +756,24 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let wet_keep = 1.0 - wet * (1.0 - splat.blend.z);
     pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_rough) * wet_keep;
 
-    // The relief, blended as gradients and applied on the mesh's own written
-    // tangent frame.
-    // On a wall the planar tap is stretched along the fall line, and a
-    // stretched normal map is streaks, not relief: fade it as the wall tap
-    // takes over. The rock face's own facets carry the relief there.
-    let planar_keep = 1.0 - 0.85 * wall_mix;
-    let g = (to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv0, 0))) * bw.x
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv1, 1))) * bw.y
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv2, 2))) * bw.z
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * bw.w) * planar_keep;
+    // The relief, blended as gradients. The planar taps' share is applied on
+    // the mesh's own written tangent frame; each wall tap's is already a world
+    // offset on its plane's axes, laid in the surface by removing its component
+    // along the normal — so a steep face carries the photograph's relief, and
+    // not a planar tap's streak of it.
+    let g = to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv0, 0))) * (bw.x * (1.0 - wm.x))
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv1, 1))) * (bw.y * (1.0 - wm.y))
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv2, 2))) * (bw.z * (1.0 - wm.z))
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * (bw.w * (1.0 - wm.w));
     // Binder flattens loose aggregate relief. Blend gradients from fixed
     // projections so the verge retains the ground's original relief.
     let road_g = to_gradient(unpack_normal(road_normal));
     let road_relief = paving * splat.wall.w + dirt * splat.blend.w;
-    let nt = normalize(vec3(g + road_g * road_relief, 1.0));
     let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
-    pbr_input.N = normalize(tbn * nt);
+    let wall_relief = t0.relief * (bw.x * wm.x) + t1.relief * (bw.y * wm.y)
+        + t2.relief * (bw.z * wm.z) + t3.relief * (bw.w * wm.w);
+    pbr_input.N = normalize(tbn * vec3(g + road_g * road_relief, 1.0)
+        + wall_relief - dot(wall_relief, wn) * wn);
     // The block's facet, only where the surface is rock and only across the
     // surface: the tilt's component along N is removed so a facet leans and
     // never lifts.
@@ -697,11 +802,15 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // identity, and `tests/ground_tiling.rs` holds these literals to it.
     let ao = dot(
         bw,
-        vec4<f32>(
-            textureSample(rough_ao_maps, ground_sampler, uv0, 5).r,
-            textureSample(rough_ao_maps, ground_sampler, uv1, 6).r,
-            textureSample(rough_ao_maps, ground_sampler, uv2, 7).r,
-            textureSample(rough_ao_maps, ground_sampler, uv3, 8).r,
+        mix(
+            vec4<f32>(
+                textureSample(rough_ao_maps, ground_sampler, uv0, 5).r,
+                textureSample(rough_ao_maps, ground_sampler, uv1, 6).r,
+                textureSample(rough_ao_maps, ground_sampler, uv2, 7).r,
+                textureSample(rough_ao_maps, ground_sampler, uv3, 8).r,
+            ),
+            vec4<f32>(t0.ao, t1.ao, t2.ao, t3.ao),
+            wm,
         ),
     );
     pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ao));

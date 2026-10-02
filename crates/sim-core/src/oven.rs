@@ -71,6 +71,18 @@
 //! arming the economy's first faucet (`ALPHA.md` A2 — an operator act) is
 //! a row in `content/cooking.toml` and not a line in this file.
 //!
+//! **The camp fire's slots are Rust's** (operator, 2026-10-02: *"lets make
+//! the camp fire more like rust"*). Rust's `BaseOven` numbers its slots
+//! `fuelSlots`, then `inputSlots`, then `outputSlots`, and its camp fire is
+//! 1 + 1 + 2: a log in the fire, one thing on the grill, and two slots for
+//! what comes off it. [`layout`] is that table. Fuel burns only from the
+//! fuel slot, only the input slot cooks, and what a cook or a burn makes
+//! lands in the output slots — so cooked meat comes off the grill and stays
+//! cooked, and it burns only if it is put back on (the burnt row is still a
+//! cook row). Each slot takes only what it is for ([`slot_takes`]). An
+//! archetype with no layout (the furnace, the recycler) is the unsectioned
+//! box it always was: every slot takes whatever the converter accepts.
+//!
 //! Not in this slice (documented, not forgotten): no burnt state (the
 //! reference's overcook), because a burnt row is a cook row whose input
 //! is a cooked item and the food to demonstrate it does not exist yet;
@@ -80,10 +92,116 @@
 //! here is a content decision that re-prices the powder chain, not a
 //! code one.
 
+use core::ops::Range;
+
 use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
 use crate::world::{EventQueue, EV_OVEN};
+
+/// What an item is to a converter: which of its sections take it. Bits,
+/// because one item can be two things — cooked meat is what a fire makes
+/// (an output) and what it burns further (an input).
+pub const ROLE_FUEL: u8 = 1;
+pub const ROLE_INPUT: u8 = 2;
+pub const ROLE_OUTPUT: u8 = 4;
+
+/// The converters whose roles the item catalog carries, in the order their
+/// three-bit groups are packed ([`CookContent::packed_roles`]).
+pub const ROLE_ARCHES: [u8; 3] = [ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER];
+/// Bits the packed roles take on the wire.
+pub const PACKED_ROLE_BITS: u32 = 3 * ROLE_ARCHES.len() as u32;
+
+/// One archetype's three bits out of a packed set (`ItemRow::oven`), or 0
+/// for an archetype that is not a converter.
+pub fn unpack_roles(packed: u16, arch: u8) -> u8 {
+    ROLE_ARCHES
+        .iter()
+        .position(|&a| a == arch)
+        .map_or(0, |k| ((packed >> (3 * k)) & 7) as u8)
+}
+
+/// Which slots of a converter's box are for what: `fuel` slots from slot 0,
+/// then `input`, then `output` — Rust's `BaseOven` `fuelSlots`,
+/// `inputSlots` and `outputSlots`, numbered in their order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OvenLayout {
+    pub fuel: u8,
+    pub input: u8,
+    pub output: u8,
+}
+
+impl OvenLayout {
+    pub const fn fuel_slots(self) -> Range<usize> {
+        0..self.fuel as usize
+    }
+
+    pub const fn input_slots(self) -> Range<usize> {
+        self.fuel as usize..self.fuel as usize + self.input as usize
+    }
+
+    pub const fn output_slots(self) -> Range<usize> {
+        self.fuel as usize + self.input as usize..self.slots()
+    }
+
+    /// Slots the layout uses. The box behind it is `BOX_SLOTS` wide; the
+    /// slots past this take nothing.
+    pub const fn slots(self) -> usize {
+        self.fuel as usize + self.input as usize + self.output as usize
+    }
+}
+
+/// Rust's camp fire: one log in the fire, one thing on the grill, and two
+/// slots for what comes off it (the cooked food and the charcoal).
+pub const FIRE_LAYOUT: OvenLayout = OvenLayout {
+    fuel: 1,
+    input: 1,
+    output: 2,
+};
+
+const _: () = assert!(FIRE_LAYOUT.slots() <= BOX_SLOTS);
+
+/// The sections of an archetype's slots, or `None` for a converter that has
+/// none yet: every slot of it takes whatever it accepts, fuel burns from any
+/// of them and what it makes lands in any.
+pub fn layout(arch: u8) -> Option<OvenLayout> {
+    (arch == ARCH_FIRE).then_some(FIRE_LAYOUT)
+}
+
+/// The slots fuel is taken from, those that cook, and those a conversion
+/// pays into. The whole box for an archetype with no [`layout`].
+pub fn fuel_slots(arch: u8) -> Range<usize> {
+    layout(arch).map_or(0..BOX_SLOTS, OvenLayout::fuel_slots)
+}
+
+pub fn input_slots(arch: u8) -> Range<usize> {
+    layout(arch).map_or(0..BOX_SLOTS, OvenLayout::input_slots)
+}
+
+pub fn output_slots(arch: u8) -> Range<usize> {
+    layout(arch).map_or(0..BOX_SLOTS, OvenLayout::output_slots)
+}
+
+/// May an item with these `roles` ([`CookContent::roles`]) sit in `slot` of
+/// a converter of `arch`: the fuel slot takes fuel, the input what it
+/// cooks, the output what it makes, and a slot past the layout nothing.
+/// Asked of a role set rather than of content so the client, which holds
+/// the roles off the item catalog, asks exactly the sim's question.
+pub fn slot_takes(arch: u8, slot: usize, roles: u8) -> bool {
+    let Some(l) = layout(arch) else {
+        return roles != 0 && slot < BOX_SLOTS;
+    };
+    let want = if l.fuel_slots().contains(&slot) {
+        ROLE_FUEL
+    } else if l.input_slots().contains(&slot) {
+        ROLE_INPUT
+    } else if l.output_slots().contains(&slot) {
+        ROLE_OUTPUT
+    } else {
+        0
+    };
+    roles & want != 0
+}
 
 /// Ticks between one oven's steps. Every oven steps on the tick where its
 /// index and the tick agree mod this, so the store is walked in
@@ -230,24 +348,53 @@ impl CookContent {
             .filter(move |r| r.ticks > 0 && r.arch == arch && r.input == item)
     }
 
-    /// May `item` go into a container of this archetype at all — the move
-    /// verb's whole question (`inventory::REFUSE_M_OVEN`).
+    /// What `item` is to a converter of this archetype ([`ROLE_FUEL`],
+    /// [`ROLE_INPUT`], [`ROLE_OUTPUT`]); 0 is nothing it has a use for.
     ///
     /// The fuel and byproduct clauses are asked of BURNERS only. A
     /// recycler that inherited them would accept wood it can never spend
     /// and charcoal it can never make — a second wood chest wearing an
     /// oven's rule, which is the exact thing that rule exists to prevent.
-    pub fn accepts(&self, arch: u8, item: u16) -> bool {
+    pub fn roles(&self, arch: u8, item: u16) -> u8 {
         let burns = OvenState::arch_burns(arch);
-        (burns && self.fuel_ticks > 0 && item == self.fuel_item)
-            || self.row_for(arch, item).is_some()
-            // What the container itself made stays where it landed: an
-            // output that could not be moved back out through its own door
-            // would be trapped by the rule meant to keep junk out.
-            || (burns && self.byproduct_pct > 0 && item == self.byproduct)
+        let mut roles = 0;
+        if burns && self.fuel_ticks > 0 && item == self.fuel_item {
+            roles |= ROLE_FUEL;
+        }
+        if self.row_for(arch, item).is_some() {
+            roles |= ROLE_INPUT;
+        }
+        // What the container itself made stays where it landed: an output
+        // that could not be moved back out through its own door would be
+        // trapped by the rule meant to keep junk out.
+        if (burns && self.byproduct_pct > 0 && item == self.byproduct)
             || self.rows[..self.row_count as usize]
                 .iter()
                 .any(|r| r.ticks > 0 && r.arch == arch && r.output == item)
+        {
+            roles |= ROLE_OUTPUT;
+        }
+        roles
+    }
+
+    /// May `item` go into a container of this archetype at all.
+    pub fn accepts(&self, arch: u8, item: u16) -> bool {
+        self.roles(arch, item) != 0
+    }
+
+    /// May `item` go into `slot` of a container of this archetype — the
+    /// move verb's whole question (`inventory::REFUSE_M_OVEN`).
+    pub fn accepts_at(&self, arch: u8, slot: usize, item: u16) -> bool {
+        slot_takes(arch, slot, self.roles(arch, item))
+    }
+
+    /// `item`'s roles at every converter, three bits each in
+    /// [`ROLE_ARCHES`] order: the item catalog's `oven` column, which is how
+    /// a client that links no content knows where a stack goes.
+    pub fn packed_roles(&self, item: u16) -> u16 {
+        ROLE_ARCHES.iter().enumerate().fold(0, |acc, (k, &arch)| {
+            acc | (u16::from(self.roles(arch, item)) << (3 * k))
+        })
     }
 }
 
@@ -435,8 +582,7 @@ pub fn toggle(
     let has_fuel = !st.burns()
         || st.burn > 0
         || (cc.fuel_ticks > 0
-            && boxes[i]
-                .items
+            && boxes[i].items[fuel_slots(st.arch)]
                 .iter()
                 .any(|s| s.count > 0 && s.item == cc.fuel_item));
     if !has_fuel {
@@ -472,6 +618,8 @@ pub fn sweep(
         }
         let arch = ovens[i].arch;
         let step = period as u16;
+        // The fire's sections (`layout`); the whole box for the rest.
+        let (fuel, input, out) = (fuel_slots(arch), input_slots(arch), output_slots(arch));
 
         // 1. Fuel. The unit burning now, then the next one. Burners only:
         //    a recycler runs on nothing and can never snuff itself, which
@@ -482,7 +630,7 @@ pub fn sweep(
                 let taken = if cc.fuel_ticks == 0 {
                     false
                 } else {
-                    take_one(&mut boxes[i].items, cc.fuel_item)
+                    take_one(&mut boxes[i].items[fuel], cc.fuel_item)
                 };
                 if !taken {
                     ovens[i].lit = false;
@@ -496,9 +644,9 @@ pub fn sweep(
                 let units = ovens[i].bank / 100;
                 if units > 0 {
                     let cap = gather.stack_max_of(cc.byproduct);
-                    if slots_room(&boxes[i].items, cc.byproduct, units, cap) {
+                    if slots_room(&boxes[i].items[out.clone()], cc.byproduct, units, cap) {
                         slots_add(
-                            &mut boxes[i].items,
+                            &mut boxes[i].items[out.clone()],
                             cc.byproduct,
                             units,
                             cap,
@@ -514,10 +662,14 @@ pub fn sweep(
             }
         }
 
-        // 2. Convert. Every slot, because a fire cooks what is on it
-        //    rather than one thing at a time (the reference's four-slot
-        //    grill), and a recycler eats a hopper the same way.
+        // 2. Convert. Every input slot at once — the fire's one grill slot,
+        //    a recycler's whole hopper. Nothing else cooks: what came off
+        //    the grill sits in the output and stays as it came off.
         for s in 0..BOX_SLOTS {
+            if !input.contains(&s) {
+                ovens[i].cook[s] = 0;
+                continue;
+            }
             let stack = boxes[i].items[s];
             let Some(row) = cc.row_for(arch, stack.item).copied() else {
                 ovens[i].cook[s] = 0;
@@ -567,7 +719,7 @@ pub fn sweep(
                 // pays carries condition), and the day a recycler pays a
                 // tool back this is what keeps it from arriving dead.
                 if slots_add(
-                    &mut scratch,
+                    &mut scratch[out.clone()],
                     r.output,
                     r.count,
                     cap,
@@ -702,6 +854,30 @@ mod tests {
             "a fire row is not a furnace row"
         );
         assert!(cc.accepts(ARCH_FURNACE, 0), "fuel burns in both");
+    }
+
+    /// The catalog's roles column unpacks, per archetype, to exactly the
+    /// roles the move verb asks of — the client routes a stack on it.
+    #[test]
+    fn packed_roles_unpack_to_the_move_verbs_roles() {
+        let cc = CookContent::probe_fixture();
+        for item in 0..8 {
+            let packed = cc.packed_roles(item);
+            assert!(u32::from(packed) < 1 << PACKED_ROLE_BITS);
+            for arch in ROLE_ARCHES {
+                assert_eq!(unpack_roles(packed, arch), cc.roles(arch, item));
+            }
+        }
+        assert_eq!(cc.roles(ARCH_FIRE, 0), ROLE_FUEL);
+        assert_eq!(cc.roles(ARCH_FIRE, 1), ROLE_INPUT);
+        assert_eq!(cc.roles(ARCH_FIRE, 6), ROLE_OUTPUT);
+        assert_eq!(cc.roles(ARCH_RECYCLER, 2), ROLE_INPUT);
+        assert_eq!(unpack_roles(u16::MAX, crate::deploy::ARCH_BOX), 0);
+        // The fire's sections, and nothing past them.
+        assert!(slot_takes(ARCH_FIRE, 0, ROLE_FUEL) && !slot_takes(ARCH_FIRE, 1, ROLE_FUEL));
+        assert!(slot_takes(ARCH_FIRE, 3, ROLE_OUTPUT) && !slot_takes(ARCH_FIRE, 4, ROLE_OUTPUT));
+        // An unsectioned converter takes what it accepts anywhere.
+        assert!(slot_takes(ARCH_RECYCLER, 11, ROLE_INPUT));
     }
 
     /// The inert table lights nothing: `fuel_ticks == 0` is the whole

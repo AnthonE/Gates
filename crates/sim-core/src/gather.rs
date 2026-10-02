@@ -774,6 +774,27 @@ impl SlotLives {
         Some(&mut self.entries[at])
     }
 
+    /// Take the slot out of the world until `respawn_at`, as a felled thing
+    /// is, and say so (`EV_SLOT_HARVESTED`): an emptied loot crate goes
+    /// until its refill (`World::move_item`). False only if the store is
+    /// exhausted, which leaves the crate standing.
+    pub fn harvest(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        occ: Occupant,
+        respawn_at: u64,
+        events: &mut EventQueue,
+    ) -> bool {
+        let Some(life) = self.find_or_insert(cx, cz) else {
+            return false;
+        };
+        life.respawn_at = respawn_at;
+        life.occ = occ as u8;
+        events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), occ as u32, 0);
+        true
+    }
+
     /// Release every entry whose respawn tick has arrived, reporting each
     /// via `events` (EV_SLOT_RESPAWNED). Swap-remove keeps the store
     /// dense; the order it produces is deterministic like everything else.

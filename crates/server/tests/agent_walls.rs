@@ -2660,10 +2660,10 @@ fn a_survivor_recycles_its_salvage() {
 }
 
 /// Raw meat in the pack is cooked before it is eaten: a fire pit crafted
-/// and put down in front of it, opened (`E` on the fire), wood and a piece
-/// of meat a slot laid in with its panel open, lit (`C` on the same fire),
-/// each piece taken off as soon as it is done, the fire put out. Hungry,
-/// it eats the cooked meat.
+/// and put down in front of it, opened (`E` on the fire), wood in the fuel
+/// slot and the meat on the grill with its panel open, lit (`C` on the same
+/// fire), each piece taken off as soon as it is done, the fire put out.
+/// Hungry, it eats the cooked meat.
 #[test]
 fn a_survivor_cooks_its_meat_and_eats_it() {
     let mut h = Harness::new(false);
@@ -2684,7 +2684,9 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         id("item.cooked_meat"),
         id("item.burnt_meat"),
     );
-    let done = h.until(4 * 60 * TICK_HZ, |b| {
+    // Rust's camp fire has one grill slot, so ten pieces cook one after
+    // another: 200 s of cooking alone.
+    let done = h.until(6 * 60 * TICK_HZ, |b| {
         b.oven_stats.cooked >= 10 && b.goal() != Some(Goal::Cook)
     });
     assert!(

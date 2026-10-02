@@ -7,10 +7,10 @@
 //! it, switch it off, shut the panel. What goes in and what comes out is
 //! the [`Work`]:
 //!
-//! - **Cook**: raw meat off a kill is no food until a fire has had it, and
-//!   cooked meat left on burns (`content/cooking.toml`). Wood goes in, and a
-//!   piece of meat on each free slot; each piece comes off as soon as it is
-//!   done; the fire is put out when the last is off.
+//! - **Cook**: raw meat off a kill is no food until a fire has had it
+//!   (`content/cooking.toml`). Wood goes in the fuel slot and the meat on the
+//!   grill (Rust's camp fire, `sim_core::oven::FIRE_LAYOUT`); what comes off
+//!   is taken; the fire is put out when the last piece is done.
 //! - **Recycle**: gears, rope and tarp go into a recycler, and junk,
 //!   fragments and cloth come out; it is switched off when the last is
 //!   taken apart.
@@ -36,11 +36,12 @@ use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::bots::OpAddr;
 use sim_core::build::{build_cell_of, LOC_PLANE};
-use sim_core::deploy::{box_key, cell_center, REFUSE_D_COST};
+use sim_core::deploy::{box_key, cell_center, ARCH_FIRE, REFUSE_D_COST};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::inventory::CONT_BOX;
 use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS, MAX_BUILD_COORD, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
+use sim_core::oven::{fuel_slots, input_slots};
 use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 use sim_core::terrain::Haven;
 
@@ -48,8 +49,9 @@ use sim_core::terrain::Haven;
 pub const FIRE_ITEM: &str = "Fire Pit";
 pub const RECYCLER_ITEM: &str = "Recycler";
 pub const TABLE_ITEM: &str = "Research Table";
-/// Pieces of meat on the fire at once, a slot each: they cook side by side.
-pub const COOK_SLOTS: usize = 8;
+/// Pieces of meat laid on the grill at once. A camp fire's grill is one slot
+/// (`sim_core::oven::FIRE_LAYOUT`, Rust's), so they cook one after another.
+pub const COOK_LOAD: u16 = 8;
 /// Fuel laid in at a time, and the least it is topped up from: a unit burns
 /// a few seconds, a piece of meat cooks in twenty.
 pub const FUEL_LOAD: u16 = 20;
@@ -426,9 +428,9 @@ pub type Shift = (bool, u8, u8, u16);
 /// The next move at an open device for its work, or `None` when there is
 /// nothing to move. Whatever the device made comes off first.
 ///
-/// - Cook: off whatever is done (cooked food, burnt food, charcoal), before
-///   it burns; then fuel when it runs low; then a piece of raw food onto
-///   each free slot, up to [`COOK_SLOTS`].
+/// - Cook: off whatever is done (cooked food, burnt food, charcoal) and
+///   anything out of its band; then fuel into the fuel slot when it runs
+///   low; then raw food onto the grill, up to [`COOK_LOAD`] pieces.
 /// - Recycle: off whatever it took apart; then each stack of what it
 ///   takes apart onto a free slot, short of what `keep` keeps whole.
 /// - Research: off the paper; nothing while it runs (the table is locked);
@@ -456,33 +458,41 @@ pub fn plan(
     match work {
         Work::Cook => {
             let fuel = book.fuel();
+            let (fire, grill) = (fuel_slots(ARCH_FIRE), input_slots(ARCH_FIRE));
             for (i, s) in slots.iter().enumerate() {
-                if s.count > 0 && s.item != fuel && !raw(book, s.item) {
+                let home = if s.item == fuel {
+                    fire.contains(&i)
+                } else {
+                    raw(book, s.item) && grill.contains(&i)
+                };
+                if s.count > 0 && !home {
                     if let Some(shift) = take(i, s) {
                         return Some(shift);
                     }
                 }
             }
-            if units(slots, fuel) < FUEL_LOW {
+            let laid = units(&slots[fire.clone()], fuel);
+            if laid < FUEL_LOW {
                 if let Some(from) = from_pack(&|item| item == fuel) {
-                    let want = FUEL_LOAD
-                        .saturating_sub(units(slots, fuel) as u16)
-                        .min(pack[from].count);
-                    if let Some((to, count)) = land(slots, 0..slots.len(), fuel, want, cap(fuel)) {
+                    let want = FUEL_LOAD.saturating_sub(laid as u16).min(pack[from].count);
+                    if let Some((to, count)) = land(slots, fire, fuel, want, cap(fuel)) {
                         return Some((true, from as u8, to, count));
                     }
                 }
             }
-            let cooking = slots
+            let cooking: u32 = slots[grill.clone()]
                 .iter()
                 .filter(|s| s.count > 0 && raw(book, s.item))
-                .count();
-            if cooking >= COOK_SLOTS {
+                .map(|s| u32::from(s.count))
+                .sum();
+            if cooking >= u32::from(COOK_LOAD) {
                 return None;
             }
             let from = from_pack(&|item| raw(book, item))?;
-            let to = slots.iter().position(|s| s.count == 0)?;
-            Some((true, from as u8, to as u8, 1))
+            let item = pack[from].item;
+            let want = (COOK_LOAD - cooking as u16).min(pack[from].count);
+            let (to, count) = land(slots, grill, item, want, cap(item))?;
+            Some((true, from as u8, to, count))
         }
         Work::Recycle => {
             for (i, s) in slots.iter().enumerate() {
@@ -534,7 +544,9 @@ pub fn plan(
 /// research table, paid for).
 pub fn should_run(work: Work, core: &ClientCore, book: &Book, slots: &[ItemStack]) -> bool {
     match work {
-        Work::Cook => slots.iter().any(|s| s.count > 0 && raw(book, s.item)),
+        Work::Cook => slots[input_slots(ARCH_FIRE)]
+            .iter()
+            .any(|s| s.count > 0 && raw(book, s.item)),
         Work::Recycle => slots
             .iter()
             .any(|s| s.count > 0 && book.page(s.item).recycles),
@@ -1191,10 +1203,11 @@ mod tests {
         }
     }
 
-    /// Off the fire first whatever is done, before it burns; then wood when
-    /// it runs low; then a piece of meat a slot; then nothing.
+    /// Off the fire first whatever is done or out of its band; then wood
+    /// into the fuel slot; then meat onto the grill, up to the load; then
+    /// nothing.
     #[test]
-    fn a_cook_takes_off_the_done_then_fuels_then_lays_meat_a_slot_each() {
+    fn a_cook_takes_off_the_done_then_fuels_then_lays_meat_on_the_grill() {
         let (mut core, book, id) = shipped();
         let (raw_meat, cooked, wood) =
             (id("item.raw_meat"), id("item.cooked_meat"), id("item.wood"));
@@ -1203,28 +1216,33 @@ mod tests {
         core.inv[HOTBAR_SLOTS + 1] = stack(wood, 100);
         let mut fire = [ItemStack::default(); BOX_SLOTS];
         fire[3] = stack(cooked, 1);
+        fire[5] = stack(raw_meat, 1);
         let plan = |core: &ClientCore, fire: &[ItemStack]| {
             plan(Work::Cook, core, &book, fire, true, &Keep::NONE)
         };
-        // The cooked piece comes off, into the pack.
+        // The cooked piece comes off, into the pack, and so does meat left
+        // where the grill is not.
         let (into, from, _, count) = plan(&core, &fire).unwrap();
         assert_eq!((into, from, count), (false, 3, 1));
         fire[3] = ItemStack::default();
-        // No wood on: a load of it.
+        let (into, from, _, count) = plan(&core, &fire).unwrap();
+        assert_eq!((into, from, count), (false, 5, 1));
+        fire[5] = ItemStack::default();
+        // No wood on: a load of it, into the fuel slot.
         let (into, from, to, count) = plan(&core, &fire).unwrap();
         assert_eq!(
-            (into, usize::from(from), count),
-            (true, HOTBAR_SLOTS + 1, FUEL_LOAD)
+            (into, usize::from(from), usize::from(to), count),
+            (true, HOTBAR_SLOTS + 1, 0, FUEL_LOAD)
         );
-        fire[usize::from(to)] = stack(wood, count);
-        // Then a piece of meat on each free slot, up to the cap.
-        for laid in 0..COOK_SLOTS {
-            let (into, from, to, count) = plan(&core, &fire).unwrap();
-            assert_eq!((into, usize::from(from), count), (true, HOTBAR_SLOTS, 1));
-            assert_eq!(fire[usize::from(to)].count, 0, "a free slot, piece {laid}");
-            fire[usize::from(to)] = stack(raw_meat, 1);
-        }
-        assert_eq!(plan(&core, &fire), None, "the fire is full");
+        fire[0] = stack(wood, count);
+        // Then the meat, onto the grill, a load of it.
+        let (into, from, to, count) = plan(&core, &fire).unwrap();
+        assert_eq!(
+            (into, usize::from(from), usize::from(to), count),
+            (true, HOTBAR_SLOTS, 1, COOK_LOAD)
+        );
+        fire[1] = stack(raw_meat, count);
+        assert_eq!(plan(&core, &fire), None, "the grill is loaded");
         assert!(should_run(Work::Cook, &core, &book, &fire));
     }
 

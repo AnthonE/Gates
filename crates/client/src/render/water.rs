@@ -775,7 +775,8 @@ pub struct Sea {
     /// function of where the vertex is, the wash is a function of where the
     /// vertex is AND when it is being asked.
     shore: Vec<f32>,
-    /// How much swell each vertex may carry: the shoaling fade, cached.
+    /// How much swell each vertex may carry: the shoaling fade times the
+    /// open-sea share (`terrain::height_open` — a lake carries none), cached.
     shoal: Vec<f32>,
     /// Peak displacement available at each vertex — what `crest_foam` measures
     /// a crest against, so a whitecap is relative to the local sea state and
@@ -1179,19 +1180,24 @@ pub fn stream(
             let x = ox + coords[ix];
             let z = oz + coords[iz];
             let far = coords[ix].abs().max(coords[iz].abs()) > DEPTH_R_M;
-            let d = if far {
+            let (d, open) = if far {
                 // Deep by fiat past the sampling radius — see `DEPTH_R_M`. A
                 // finite sentinel rather than a huge one: it is five times the
                 // sea floor's own `SEA_FLOOR_DEPTH`, so it saturates every
-                // curve here while keeping the arithmetic ordinary.
-                DEEP_SENTINEL_M
+                // curve here while keeping the arithmetic ordinary. Open sea
+                // too, which costs a far lake nothing: the swell is retired
+                // on the skirt's spacing long before this radius.
+                (DEEP_SENTINEL_M, 1.0)
             } else {
-                SEA_LEVEL - terrain::height_memo(&mut lat, seed, x, z)
+                let (h, open) = terrain::height_open_memo(&mut lat, seed, x, z);
+                (SEA_LEVEL - h, open)
             };
             depth[i] = d;
 
             let sp = spacing[ix].max(spacing[iz]);
-            let sh = shoal(d);
+            // A lake is calm: the swell and its surf are the open sea's, so
+            // both scale by how much of this water is sea (`terrain::height_open`).
+            let sh = shoal(d) * open;
             shoal_cache[i] = sh;
             // What a crest could reach here, for `crest_foam` to measure
             // against: every wave that survives this spacing, at this shoaling.
@@ -1207,8 +1213,8 @@ pub fn stream(
             // not the ocean. The window is widened by the jitter, because a
             // vertex outside the plain band can still be inside the displaced
             // one.
-            shore[i] = if d > -FOAM_JITTER_M && d < FOAM_DEPTH_M + FOAM_JITTER_M {
-                shore_foam(
+            shore[i] = if open > 0.0 && d > -FOAM_JITTER_M && d < FOAM_DEPTH_M + FOAM_JITTER_M {
+                open * shore_foam(
                     d,
                     terrain::slope_memo(&mut lat, seed, x, z),
                     foam_noise(x, z),
