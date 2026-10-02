@@ -4145,8 +4145,7 @@ mod tests {
         // so a charge for it would show here.
         let spent = STOCK_MAX - deploys.hearths()[0].stock[0];
         assert_eq!(
-            spent,
-            bc.pieces[GRADED_FOUNDATION].costs[0].1 as u32,
+            spent, bc.pieces[GRADED_FOUNDATION].costs[0].1 as u32,
             "the hearth paid for the foundation and nothing else"
         );
     }

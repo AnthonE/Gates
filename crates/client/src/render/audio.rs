@@ -985,6 +985,20 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
     }
 }
 
+/// The interface's click (`Cue::UiClick`), on any button the pointer
+/// presses. One system over every screen's buttons rather than a line in
+/// each screen's handler: a screen added later clicks without knowing this
+/// exists. Runs where the mixer does (`world_running`), so the in-world
+/// panels and the Esc menu click; the desktop's title menu does not yet.
+pub fn ui_click(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
+    mut sound: ResMut<Sound>,
+) {
+    if buttons.iter().any(|i| *i == Interaction::Pressed) {
+        sound.play(Request::own(Cue::UiClick));
+    }
+}
+
 /// A placement landing — the second positional cue, at the cell it landed.
 ///
 /// **Reads [`super::feed::Feed`]; pops nothing** (`feed::drain` is the one

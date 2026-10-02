@@ -126,6 +126,10 @@ const CRAFT_BAR_FILL: Color = Color::srgba(0.122, 0.420, 0.627, 0.92);
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
 
+/// How long a hit's damage number stays beside the crosshair, seconds —
+/// long enough to read, which the marker's quarter second is not.
+pub const HIT_NUMBER_SECS: f32 = 0.8;
+
 // ---- the hurt arc ------------------------------------------------------
 //
 // The mark that says *someone is over there and they just hit you*. Wire
@@ -1034,6 +1038,60 @@ pub struct Crosshair;
 #[derive(Component)]
 pub struct HitMark;
 
+/// The damage a hit did, up and right of the crosshair ([`hit_number`]).
+#[derive(Component)]
+pub struct HitNumber;
+
+/// What [`hit_number`] is showing: seconds left, the number, the part.
+#[derive(Default)]
+pub struct HitShown {
+    left: f32,
+    damage: u16,
+    part: Option<Part>,
+}
+
+/// The number a hit did, beside the crosshair: the marker says *that* it
+/// landed, this says how hard. The frame's total (`Feed::damage`), so a
+/// spread of pellets reads as the one blow it was, coloured by the best
+/// part it reached as the marker is. Reads the feed; pops nothing.
+pub fn hit_number(
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    mut shown: Local<HitShown>,
+    mut q: Query<(&mut Text, &mut TextColor, &mut Visibility), With<HitNumber>>,
+) {
+    use std::fmt::Write;
+    let fresh = feed.hits > 0 && feed.damage > 0;
+    if fresh {
+        shown.left = HIT_NUMBER_SECS;
+        shown.part = feed.hit_part;
+    } else {
+        shown.left = (shown.left - time.delta_secs()).max(0.0);
+    }
+    for (mut text, mut colour, mut vis) in &mut q {
+        let want = if shown.left > 0.0 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        // Rewritten only when the number moves: a `String` built per frame
+        // is an allocation per frame on the client's hot path.
+        if fresh && (feed.damage != shown.damage || text.0.is_empty()) {
+            text.0.clear();
+            let _ = write!(text.0, "{}", feed.damage);
+        }
+        // Full for most of its life, fading over the last half.
+        let alpha = (shown.left / HIT_NUMBER_SECS * 2.0).min(1.0);
+        colour.0 = mark_colour(true, shown.part).with_alpha(alpha);
+    }
+    if fresh {
+        shown.damage = feed.damage;
+    }
+}
+
 /// The compass strip. Bearing only — the reference also pins markers to it
 /// (death skull, map pin) and ours carries none, because `ALPHA.md` §1 has a
 /// rule about position an operator should read before we pin anything.
@@ -1619,6 +1677,23 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Pickable::IGNORE,
                 ));
             }
+            // The damage number, up and right of the ticks, hidden until a
+            // hit lands ([`hit_number`]).
+            c.spawn((
+                HitNumber,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(14.0),
+                    top: Val::Px(-30.0),
+                    ..default()
+                },
+                Text::new(""),
+                super::ui::font(15.0),
+                TextColor(CROSSHAIR_HIT),
+                super::ui::TEXT_SHADOW,
+                Visibility::Hidden,
+                Pickable::IGNORE,
+            ));
             // The hurt arc rides the same centred wrapper — it is measured from
             // the same point, so hanging it anywhere else would be two places
             // that have to agree about where the middle of the screen is.

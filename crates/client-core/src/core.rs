@@ -429,24 +429,51 @@ impl GItemSet {
 /// insert past capacity is dropped (the node ghosts until its respawn
 /// event, the same bounded staleness the sync walk already accepts).
 pub struct HarvestedSet {
-    cells: Box<[u32]>,
+    /// One bit per scatter cell (`terrain::CELLS_PER_SIDE`²), indexed
+    /// `cx * side + cz`. A bitset rather than a list because every harvest
+    /// on the shard re-asks this for every fellable prop in the ring, and a
+    /// linear `contains` over up to `MAX_SLOT_LIVES` keys was a 2.34 ms
+    /// frame spike per harvest.
+    cells: Box<[u64]>,
     len: usize,
     /// Regrowing trees (tree growth v0): `(key, grown_at)`, the tick — low
     /// 32 bits — each is full-grown by. Bounded like `cells`.
     grow: Box<[(u32, u32)]>,
     grow_len: usize,
+    /// One bit per cell that has an entry in `grow`, so the common answer
+    /// (not regrowing) skips the scan.
+    growing_bits: Box<[u64]>,
     /// The tick growth is measured at: the predictor's, stamped before each
     /// step so a sapling collides here exactly as the server sizes it.
     now: u32,
 }
 
+/// Cells per side of the scatter grid, as the bit index wants it.
+const SIDE: u32 = sim_core::terrain::CELLS_PER_SIDE as u32;
+const WORDS: usize = (SIDE as usize * SIDE as usize).div_ceil(64);
+
+/// A cell key's bit: `(word, mask)`, or `None` off the grid.
+fn bit(key: u32) -> Option<(usize, u64)> {
+    let (cx, cz) = (key >> 16, key & 0xFFFF);
+    if cx >= SIDE || cz >= SIDE {
+        return None;
+    }
+    let i = (cx * SIDE + cz) as usize;
+    Some((i / 64, 1u64 << (i % 64)))
+}
+
+fn test_bit(bits: &[u64], key: u32) -> bool {
+    bit(key).is_some_and(|(w, m)| bits[w] & m != 0)
+}
+
 impl HarvestedSet {
     fn new() -> Self {
         Self {
-            cells: vec![0; MAX_SLOT_LIVES].into_boxed_slice(),
+            cells: vec![0; WORDS].into_boxed_slice(),
             len: 0,
             grow: vec![(0, 0); MAX_SLOT_LIVES].into_boxed_slice(),
             grow_len: 0,
+            growing_bits: vec![0; WORDS].into_boxed_slice(),
             now: 0,
         }
     }
@@ -458,6 +485,9 @@ impl HarvestedSet {
         let mut i = 0;
         while i < self.grow_len {
             if self.grow[i].1.wrapping_sub(tick) as i32 <= 0 {
+                if let Some((w, m)) = bit(self.grow[i].0) {
+                    self.growing_bits[w] &= !m;
+                }
                 self.grow_len -= 1;
                 self.grow[i] = self.grow[self.grow_len];
             } else {
@@ -468,6 +498,9 @@ impl HarvestedSet {
 
     /// The tick a regrowing tree is full-grown by, if this cell holds one.
     pub fn growth(&self, key: u32) -> Option<u32> {
+        if !test_bit(&self.growing_bits, key) {
+            return None;
+        }
         self.grow[..self.grow_len]
             .iter()
             .find(|g| g.0 == key)
@@ -480,18 +513,28 @@ impl HarvestedSet {
     }
 
     fn set_grow(&mut self, key: u32, grown_at: u32) {
+        let Some((w, m)) = bit(key) else {
+            return;
+        };
         if let Some(g) = self.grow[..self.grow_len].iter_mut().find(|g| g.0 == key) {
             g.1 = grown_at;
         } else if self.grow_len < self.grow.len() {
             self.grow[self.grow_len] = (key, grown_at);
             self.grow_len += 1;
+            self.growing_bits[w] |= m;
         }
     }
 
     fn unset_grow(&mut self, key: u32) {
+        if !test_bit(&self.growing_bits, key) {
+            return;
+        }
         if let Some(i) = self.grow[..self.grow_len].iter().position(|g| g.0 == key) {
             self.grow_len -= 1;
             self.grow[i] = self.grow[self.grow_len];
+        }
+        if let Some((w, m)) = bit(key) {
+            self.growing_bits[w] &= !m;
         }
     }
 
@@ -504,25 +547,32 @@ impl HarvestedSet {
     }
 
     pub fn contains(&self, key: u32) -> bool {
-        self.cells[..self.len].contains(&key)
+        test_bit(&self.cells, key)
     }
 
     fn insert(&mut self, key: u32) {
-        if self.contains(key) || self.len == self.cells.len() {
+        let Some((w, m)) = bit(key) else {
             return;
+        };
+        if self.cells[w] & m == 0 {
+            self.cells[w] |= m;
+            self.len += 1;
         }
-        self.cells[self.len] = key;
-        self.len += 1;
     }
 
     fn remove(&mut self, key: u32) {
-        if let Some(i) = self.cells[..self.len].iter().position(|&c| c == key) {
+        let Some((w, m)) = bit(key) else {
+            return;
+        };
+        if self.cells[w] & m != 0 {
+            self.cells[w] &= !m;
             self.len -= 1;
-            self.cells[i] = self.cells[self.len];
         }
     }
 
     fn clear(&mut self) {
+        self.cells.fill(0);
+        self.growing_bits.fill(0);
         self.len = 0;
         self.grow_len = 0;
     }
