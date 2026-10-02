@@ -66,6 +66,9 @@ const RINGS: [(f32, f32); 3] = [(0.25, 0.5625), (0.5, 0.25), (0.75, 0.0625)];
 /// nearest-point measure cannot tell those apart. It is also why the probe is
 /// a fixed pattern rather than a search — it has to be the same 24 taps every
 /// frame or the level flickers as the search finds different water.
+///
+/// A lake is not surf: each wet tap counts by how much of its water is open
+/// sea (`terrain::height_open`), the share the drawn swell is scaled by too.
 pub fn shore_exposure(seed: u64, x: f32, z: f32) -> f32 {
     let mut hit = 0.0f32;
     let mut total = 0.0f32;
@@ -73,8 +76,9 @@ pub fn shore_exposure(seed: u64, x: f32, z: f32) -> f32 {
         let r = SURF_R_M * frac;
         for b in BEARINGS {
             total += weight;
-            if terrain::height(seed, x + b[0] * r, z + b[1] * r) < SEA_LEVEL {
-                hit += weight;
+            let (h, open) = terrain::height_open(seed, x + b[0] * r, z + b[1] * r);
+            if h < SEA_LEVEL {
+                hit += weight * open;
             }
         }
     }

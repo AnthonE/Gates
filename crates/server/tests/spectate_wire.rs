@@ -577,6 +577,12 @@ async fn the_target_leaving_ends_the_seat_with_its_reason() {
         Some(protocol::REFUSE_WATCH_ENDED as u64),
         "the client lost the reason the seat ended"
     );
+    assert_eq!(
+        watcher.posted_refusal(),
+        Some(protocol::REFUSE_WATCH_ENDED),
+        "the reason must also arrive on the event lane: a browser cannot \
+         read the connection's close code"
+    );
     let why = tokio::time::timeout(Duration::from_secs(20), conn.closed())
         .await
         .expect("the seat is closed when its target leaves");

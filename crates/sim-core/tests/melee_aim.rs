@@ -690,6 +690,7 @@ fn a_door_in_its_doorway_takes_the_swing_and_the_frame_does_not() {
         cz,
         level: GROUND,
         loc: LOC_EDGE_XLO,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     arm(&mut w);
     let i = w

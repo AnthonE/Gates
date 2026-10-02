@@ -587,28 +587,36 @@ fn the_uniform_declares_the_same_fields_on_both_sides() {
     );
 }
 
-/// **The biplanar wall tap samples with explicit gradients, and its
-/// derivatives are taken outside every branch.**
+/// **The wall planes are fixed world axes, sampled with their own exact
+/// gradients, and every derivative is taken outside every branch.**
 ///
-/// Two ways to write this wrong, and `DECISIONS.md` materials v4 records the
-/// browser client shipping the first:
+/// Three ways to write this wrong, and the first two shipped:
 ///
-/// - `dpdx` of the finished wall UV instead of of the world position. The
-///   frame is per-fragment, so the product rule adds a term that is the frame
-///   *turning* multiplied by a world coordinate of order 1500 m — an error of
-///   about eighty times, which selects a mip seven levels too coarse in bands
-///   following the terrain's curvature.
-/// - `textureSample` inside the wall branch. Implicit-gradient sampling is
-///   undefined under non-uniform control flow, and this branch is non-uniform
-///   by construction.
-///
-/// Neither shows up as a compile error or a wrong value in any test — they show
-/// up as a smear on a cliff — so the gate is a scrape, the same shape as
-/// `sim-core/tests/height_roles.rs`.
+/// - A UV that turns with the surface. The wall tap used to read
+///   `dot(wp.xz, across)` with `across` from the per-pixel normal, and a
+///   turning frame times a world coordinate of ~1500 m sweeps 8–77 m of
+///   photograph past every metre of cliff — drawn as fine lines along every
+///   contour, the operator's "stretch lines" (2026-10-02). Held here by
+///   requiring each wall UV to read nothing per-fragment but `wp` and its
+///   plane's axis, which is a constant of an integer plane index.
+/// - A gradient that is not the UV's own derivative. `DECISIONS.md` materials
+///   v4 records the browser client differentiating the finished UV of that
+///   turning frame, ~80× too coarse. Held by requiring each gradient to be its
+///   UV with `wp` replaced by `dp_dx` / `dp_dy`, which is exact for a UV linear
+///   in `wp`.
+/// - `textureSample` (implicit gradients) or a `dpdx` under the wall branch,
+///   which is non-uniform by construction. Neither is a compile error — naga
+///   switches its fragment-stage uniformity check off — so they show up as a
+///   smear on a cliff and nowhere else.
 #[test]
-fn the_wall_tap_is_gradient_sampled_and_its_derivatives_are_not_in_a_branch() {
+fn the_wall_planes_are_fixed_axes_with_exact_gradients_outside_any_branch() {
     let src = std::fs::read_to_string(SHADER).expect("shader");
-    let frag = src
+    let code: String = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let frag = code
         .split_once("fn fragment(")
         .expect("no fragment entry point")
         .1;
@@ -617,8 +625,7 @@ fn the_wall_tap_is_gradient_sampled_and_its_derivatives_are_not_in_a_branch() {
     let mut depth = 0i32;
     let mut deriv_lines = 0;
     for line in frag.lines() {
-        let code = line.split("//").next().unwrap_or("");
-        if code.contains("dpdx(") || code.contains("dpdy(") {
+        if line.contains("dpdx(") || line.contains("dpdy(") {
             deriv_lines += 1;
             assert_eq!(
                 depth,
@@ -629,7 +636,7 @@ fn the_wall_tap_is_gradient_sampled_and_its_derivatives_are_not_in_a_branch() {
                 line.trim()
             );
         }
-        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
     }
     assert!(
         deriv_lines >= 2,
@@ -637,31 +644,135 @@ fn the_wall_tap_is_gradient_sampled_and_its_derivatives_are_not_in_a_branch() {
          broke, and a gate that matches nothing passes for free"
     );
 
-    // The wall block samples with explicit gradients, four times, and never
-    // implicitly.
+    // The wall branch samples nothing itself: `wall_tap` does, once per
+    // identity, through `wall_plane`, and only with explicit gradients.
     let block = frag
         .split_once("if wall_mix > 0.0 {")
-        .expect("no wall branch — the biplanar tap is gone")
+        .expect("no wall branch — the wall planes are gone")
         .1
         .split_once("\n    }")
         .expect("unterminated wall branch")
         .0;
+    assert!(
+        !block.contains("textureSample"),
+        "the wall branch samples a texture itself; its taps belong in \
+         `wall_plane`: {block}"
+    );
     assert_eq!(
-        block.matches("textureSampleGrad(").count(),
+        block.matches("wall_tap(").count(),
         4,
-        "the wall branch does not take exactly four explicit-gradient samples: \
-         {block}"
+        "the wall branch does not call `wall_tap` once per identity: {block}"
+    );
+    let body = |name: &str| -> &str {
+        code.split_once(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("no `fn {name}`"))
+            .1
+            .split_once("\n}")
+            .unwrap_or_else(|| panic!("unterminated `fn {name}`"))
+            .0
+    };
+    let tap_fn = body("wall_tap");
+    assert!(
+        !tap_fn.contains("textureSample") && tap_fn.matches("wall_plane(").count() == 2,
+        "`wall_tap` must read its two planes through `wall_plane` and sample \
+         nothing itself: {tap_fn}"
+    );
+    let plane_fn = body("wall_plane");
+    assert_eq!(
+        plane_fn.matches("textureSampleGrad(").count(),
+        4,
+        "`wall_plane` does not take each of the four maps once: {plane_fn}"
     );
     assert!(
-        !block.contains("textureSample("),
-        "the wall branch uses implicit-gradient `textureSample`, which is \
-         undefined in non-uniform control flow: {block}"
+        !plane_fn.contains("textureSample("),
+        "`wall_plane` uses implicit-gradient `textureSample`, which is \
+         undefined in the non-uniform wall branch: {plane_fn}"
     );
+
+    // A plane's axis is a constant per plane: `wall_axis` reads its integer
+    // index and literals, and each plane takes it from an integer index.
+    let axis_fn = body("wall_axis");
+    for t in axis_fn
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()))
+    {
+        assert!(
+            ["var", "axes", "array", "vec2", "f32", "i32", "return", "k"].contains(&t),
+            "`wall_axis` reads `{t}` — a plane's axis must be a constant of its \
+             index, or the UV it builds turns with the surface: {axis_fn}"
+        );
+    }
     assert!(
-        block.contains("dot(dp_dx.xz, across)") && block.contains("dot(dp_dy.xz, across)"),
-        "the wall gradients are not the world position's projected onto the \
-         frame — see this test's docs for what that costs: {block}"
+        code.contains("fn wall_axis(k: i32)"),
+        "`wall_axis` no longer takes an integer plane index"
     );
+
+    // Each plane's UV reads the world position, the uniform scale and its
+    // constant axis, nothing else that varies per fragment, and its gradients
+    // are that UV's own derivatives.
+    assert!(
+        block.contains("let s = splat.wall.z;"),
+        "the wall scale `s` is no longer the uniform `splat.wall.z`, so a UV \
+         that reads it is not known to be linear in `wp`"
+    );
+    for (plane, index) in [("a", "ka"), ("b", "kb")] {
+        let rhs = |field: &str| -> String {
+            let needle = format!("wall.{field}_{plane} = ");
+            let line = block
+                .lines()
+                .find(|l| l.trim_start().starts_with(&needle))
+                .unwrap_or_else(|| panic!("no `{needle}` in the wall branch: {block}"));
+            line.trim()
+                .trim_start_matches(&needle)
+                .trim_end_matches(';')
+                .trim()
+                .to_string()
+        };
+        assert_eq!(
+            rhs("axis"),
+            format!("wall_axis({index})"),
+            "plane {plane}'s axis is not `wall_axis` of its index"
+        );
+        assert!(
+            block.contains(&format!("let {index} = ")) && {
+                let decl = block
+                    .lines()
+                    .find(|l| l.trim_start().starts_with(&format!("let {index} = ")))
+                    .unwrap();
+                decl.contains("i32(") || decl.contains("% 4")
+            },
+            "plane {plane}'s index `{index}` is not an integer"
+        );
+        let uv = rhs("uv");
+        let axis = format!("wall.axis_{plane}");
+        for t in uv
+            .replace(&axis, "")
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|t| !t.is_empty() && !t.chars().all(|c| c.is_ascii_digit()))
+        {
+            assert!(
+                ["vec2", "f32", "dot", "wp", "xz", "y", "s"].contains(&t),
+                "plane {plane}'s UV `{uv}` reads `{t}`. A wall UV may read the \
+                 world position, the uniform scale and its plane's constant \
+                 axis and nothing else: anything that turns with the surface \
+                 sweeps the photograph across the face. See this test's docs."
+            );
+        }
+        assert!(
+            uv.contains(&axis) && uv.contains("wp.xz") && uv.contains("wp.y"),
+            "plane {plane}'s UV `{uv}` is not its axis and the vertical"
+        );
+        assert_eq!(
+            rhs("dx"),
+            uv.replace("wp", "dp_dx"),
+            "plane {plane}'s x gradient is not its UV's own derivative"
+        );
+        assert_eq!(
+            rhs("dy"),
+            uv.replace("wp", "dp_dy"),
+            "plane {plane}'s y gradient is not its UV's own derivative"
+        );
+    }
 }
 
 /// **No ground identity may be a photograph of a wall.**

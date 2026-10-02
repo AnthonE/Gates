@@ -49,21 +49,18 @@ pub fn table_open(
     kind == CONT_BOX
         && handle != 0
         && deploys.iter().any(|d| {
-            box_key(d.cx, d.cz, d.level) == handle
+            box_key(d.cx, d.cz, d.level, d.loc) == handle
                 && u16::from(d.row) < defs_have
                 && defs.defs[d.row as usize].arch == ARCH_RESEARCH
         })
 }
 
-/// The address a box handle packs (`deploy::box_key`'s inverse), for the
-/// verbs that name a place rather than a container — the table's switch is
-/// `ACT_USE`, which carries an address.
-pub fn table_address(handle: u32) -> (u16, u16, u8) {
-    (
-        (handle >> 16) as u16,
-        ((handle >> 4) & 0x0FFF) as u16,
-        (handle & 0xF) as u8,
-    )
+/// The address a box handle packs (`deploy::box_addr`, `box_key`'s
+/// inverse), for the verbs that name a place rather than a container — the
+/// table's switch is `ACT_USE`, which carries an address, its body slot
+/// included.
+pub fn table_address(handle: u32) -> (u16, u16, u8, u8) {
+    sim_core::deploy::box_addr(handle)
 }
 
 /// Is this stack a sheet of paper? True for a blank as well — it is still

@@ -20,6 +20,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
+/// Regenerated from `0x84F6_8634_EF76_C694` for **the lakes** (2026-10-02,
+/// `terrain` stage 4e): the inland basins that sat dead flat at sea level are
+/// carved into lakes. Only ground under the remap's floor moved.
+///
 /// Regenerated here from `0x17FA_A7E3_3CAE_FB50` for **the side road**
 /// (2026-09-16, `reference/ROADS.md` §9.2.2–3): the inland site now has a
 /// road to it, and `road_band` stopped being a pure function of
@@ -185,7 +189,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
 /// height moved; the golden seed's windows hold no rock-channel cell, which
 /// is why the budget had to be hashed rather than seen.
-const GOLDEN_TERRAIN_HASH: u64 = 0x84F6_8634_EF76_C694;
+const GOLDEN_TERRAIN_HASH: u64 = 0xE2A6_201F_1CA7_960E;
 
 #[test]
 fn test_terrain_golden() {

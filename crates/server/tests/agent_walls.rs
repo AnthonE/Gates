@@ -2660,10 +2660,10 @@ fn a_survivor_recycles_its_salvage() {
 }
 
 /// Raw meat in the pack is cooked before it is eaten: a fire pit crafted
-/// and put down in front of it, opened (`E` on the fire), wood and a piece
-/// of meat a slot laid in with its panel open, lit (`C` on the same fire),
-/// each piece taken off as soon as it is done, the fire put out. Hungry,
-/// it eats the cooked meat.
+/// and put down in front of it, opened (`E` on the fire), wood in the fuel
+/// slot and the meat on the grill with its panel open, lit (`C` on the same
+/// fire), each piece taken off as soon as it is done, the fire put out.
+/// Hungry, it eats the cooked meat.
 #[test]
 fn a_survivor_cooks_its_meat_and_eats_it() {
     let mut h = Harness::new(false);
@@ -2684,7 +2684,9 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         id("item.cooked_meat"),
         id("item.burnt_meat"),
     );
-    let done = h.until(4 * 60 * TICK_HZ, |b| {
+    // Rust's camp fire has one grill slot, so ten pieces cook one after
+    // another: 200 s of cooking alone.
+    let done = h.until(6 * 60 * TICK_HZ, |b| {
         b.oven_stats.cooked >= 10 && b.goal() != Some(Goal::Cook)
     });
     assert!(
@@ -2713,12 +2715,12 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         .find(|d| usize::from(d.row) == fire_row && d.owner == ID)
         .copied()
         .expect("its fire pit");
-    let key = sim_core::deploy::box_key(fire.cx, fire.cz, 0);
+    let key = sim_core::deploy::box_key(fire.cx, fire.cz, 0, 0);
     let held = w
         .deploys
         .boxes()
         .iter()
-        .find(|b| sim_core::deploy::box_key(b.cx, b.cz, b.level) == key)
+        .find(|b| sim_core::deploy::box_key(b.cx, b.cz, b.level, 0) == key)
         .map(|b| b.items)
         .unwrap();
     assert!(held
@@ -2826,7 +2828,8 @@ fn encode_puppet(msg: &ActionMsg, buf: &mut [u8]) -> usize {
             cz,
             level,
             loc,
-        } => protocol::encode_action_deploy(row, cx, cz, level, loc, buf),
+            pose,
+        } => protocol::encode_action_deploy(row, cx, cz, level, loc, pose, buf),
         ActionMsg::Upgrade {
             cx,
             cz,
@@ -3091,6 +3094,7 @@ fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u
         cz,
         level: 0,
         loc,
+        pose: sim_core::footprint::Pose::CENTRE,
     };
     let walls = [
         (bx, bz, LOC_EDGE_XLO, rows.wall),
@@ -3140,7 +3144,7 @@ fn stage_strangers_base(h: &mut Harness, at: (f32, f32), stone: bool) -> (u16, u
             w.deploys.find(bx, bz, 0, LOC_EDGE_ZLO).is_some(),
             "the door"
         );
-        let key = sim_core::deploy::box_key(bx + 1, bz, 0);
+        let key = sim_core::deploy::box_key(bx + 1, bz, 0, 0);
         let i = w.deploys.box_index(key).expect("the box");
         w.deploys.set_box_slot(i, 0, loot);
         // Nobody home.

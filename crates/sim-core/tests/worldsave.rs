@@ -208,6 +208,7 @@ fn a_lived_in_world() -> Box<World> {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     w.tick(&[Command::PlaceDeploy {
         id: 1,
@@ -216,6 +217,7 @@ fn a_lived_in_world() -> Box<World> {
         cz,
         level: 0,
         loc: LOC_EDGE_XLO,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     // Feed the hearth so a stock row is nonzero — an all-zero stock would
     // round-trip through a codec that dropped the array entirely.
@@ -701,8 +703,8 @@ fn forged_lock_bits_load_cleared_never_trusted() {
 
     // Walk to the deploy section the way the corruption test above does:
     // head + counts, players at `PLAYER_BYTES` each, pieces at `PIECE_BYTES`,
-    // then 25 per deploy record (17 + bag_ready) with `locked` at offset 16
-    // of each.
+    // then 28 per deploy record (20 + bag_ready) with `locked` at offset 19
+    // of each — the pose's three bytes (format 19) ride after `loc`.
     //
     // **The piece stride was a literal 20 here until 2026-08-21**, beside a
     // comment deriving it as "12 + the placement tick" — and `PIECE_BYTES`
@@ -714,7 +716,7 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * PIECE_BYTES;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
-        let at = deploy0 + i * 25;
+        let at = deploy0 + i * 28;
         // Anchor the offset math on the record's own address bytes
         // before bending anything — a wrong stride would forge noise.
         assert_eq!(
@@ -722,7 +724,7 @@ fn forged_lock_bits_load_cleared_never_trusted() {
             rec.cx,
             "the deploy stride drifted under this test"
         );
-        blob[at + 16] = 1; // locked := true, hearth and door alike
+        blob[at + 19] = 1; // locked := true, hearth and door alike
         match w.deploy.defs[rec.row as usize].arch {
             ARCH_WORKBENCH => saw.0 = true,
             ARCH_DOOR | ARCH_HEARTH => saw.1 = true,
@@ -783,6 +785,7 @@ fn with_a_bench(w: &mut World) {
             cz,
             level: 0,
             loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
         }]);
         if w.deploys
             .entries()

@@ -136,6 +136,7 @@ fn put(w: &mut World, p: &mut Player, row: u16, loc: u8, level: u8) -> EventQueu
         CZ,
         level,
         loc,
+        sim_core::footprint::Pose::CENTRE,
         &mut ev,
     );
     ev

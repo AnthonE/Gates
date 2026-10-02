@@ -349,6 +349,7 @@ fn loaded_row(rc: &ResearchContent, items: &[ItemStack]) -> Result<ResearchRow, 
 /// slot (`REFUSE_R_COST`). **Knowing the recipe already is not a
 /// refusal**: the reference's table exists to make paper, and paper for a
 /// recipe you know is the paper you hand a teammate.
+#[allow(clippy::too_many_arguments)]
 pub fn begin(
     rc: &ResearchContent,
     deploys: &mut Deploys,
@@ -356,9 +357,10 @@ pub fn begin(
     cx: u16,
     cz: u16,
     level: u8,
+    loc: u8,
     events: &mut EventQueue,
 ) -> bool {
-    let Some(i) = deploys.table_index(box_key(cx, cz, level)) else {
+    let Some(i) = deploys.table_index(box_key(cx, cz, level, loc)) else {
         return false;
     };
     if !deploys.box_in_reach(i, p) {
@@ -376,7 +378,8 @@ pub fn begin(
     }
     states[i].lit = true;
     states[i].cook[TABLE_ITEM_SLOT] = 0;
-    crate::oven::announce(boxes[i].cx, boxes[i].cz, boxes[i].level, true, p.id, events);
+    let b = boxes[i];
+    crate::oven::announce(b.cx, b.cz, b.level, b.loc, true, p.id, events);
     true
 }
 
@@ -428,7 +431,8 @@ pub fn table_sweep(
         }
         states[i].lit = false;
         states[i].cook[TABLE_ITEM_SLOT] = 0;
-        crate::oven::announce(boxes[i].cx, boxes[i].cz, boxes[i].level, false, 0, events);
+        let b = boxes[i];
+        crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, 0, events);
     }
 }
 

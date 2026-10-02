@@ -166,7 +166,8 @@ pub const PARTS: &[KitPart] = &[
     part([-25.15, 0.0, -18.3, -24.85, 3.5, -18.0], M::Steel),
     part([-33.0, 0.0, -30.0, -18.0, 0.5, -27.0], M::Concrete),
     part([-30.0, 0.0, -24.0, -21.0, 0.5, -21.0], M::Concrete),
-    // Canteen (SE): a container bar, tables, a tarp.
+    // Canteen (SE): a container bar, tables, and a tarp over the tables on
+    // poles through them (`POLES`).
     part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Cargo),
     part([28.0, 0.0, -34.0, 34.1, 2.6, -31.56], M::Cargo),
     part([20.0, 0.0, -25.0, 22.0, 0.8, -23.0], M::Timber),
@@ -174,7 +175,7 @@ pub const PARTS: &[KitPart] = &[
     part([20.0, 0.0, -20.0, 22.0, 0.8, -18.0], M::Timber),
     part([26.0, 0.0, -20.0, 28.0, 0.8, -18.0], M::Timber),
     part_f(
-        [16.0, 3.2, -30.0, 34.0, 3.4, -16.0],
+        [18.0, 3.2, -27.0, 30.0, 3.4, -16.0],
         M::Canvas,
         DECOR | ROOF,
     ),
@@ -245,8 +246,12 @@ pub const LAMPS: [(f32, f32, f32); 12] = [
     (35.0, 9.2, 35.0),
     (9.5, 31.8, 0.0),
     (-25.0, 3.3, -26.0),
-    (25.0, 3.1, -22.0),
+    (25.0, 3.0, -22.0),
 ];
+
+/// The canteen tarp's poles, local (x, z) — drawn, never simulated. Each
+/// stands through a table, so the table stops a body before the pole would.
+pub const POLES: [(f32, f32); 4] = [(21.0, -24.0), (27.0, -24.0), (21.0, -19.0), (27.0, -19.0)];
 
 const _: () = {
     assert!(kit::well_formed(PARTS));
@@ -264,6 +269,29 @@ const _: () = {
         let cx = (x - 1.5) / 3.0;
         let cz = (z - 1.5) / 3.0;
         assert!(cx == (cx as i32) as f32 && cz == (cz as i32) as f32);
+        i += 1;
+    }
+    // Every pole stands through a part that stops a body short of it.
+    let mut i = 0;
+    while i < POLES.len() {
+        let (x, z) = POLES[i];
+        let mut held = false;
+        let mut k = 0;
+        while k < PARTS.len() {
+            let (b, flags) = (PARTS[k].b, PARTS[k].flags);
+            if flags & DECOR == 0
+                && b[1] <= 0.0
+                && b[4] > crate::movement::STEP_UP
+                && b[0] + 0.5 < x
+                && x < b[3] - 0.5
+                && b[2] + 0.5 < z
+                && z < b[5] - 0.5
+            {
+                held = true;
+            }
+            k += 1;
+        }
+        assert!(held);
         i += 1;
     }
     // The lattice is a multiple of the build cell and the scatter cell.
@@ -341,8 +369,8 @@ pub fn station_world(t: &Town, k: usize) -> Option<(&'static str, f32, f32)> {
 
 /// The kit as JSON for `ci/site_kit.py` (`examples/kit_dump.rs`).
 pub fn dump(w: &mut impl core::fmt::Write) -> core::fmt::Result {
-    let mut anchors: [(&str, f32, f32, f32); STATIONS.len() + KIOSKS.len() + LAMPS.len()] =
-        [("", 0.0, 0.0, 0.0); STATIONS.len() + KIOSKS.len() + LAMPS.len()];
+    const N: usize = STATIONS.len() + KIOSKS.len() + LAMPS.len() + POLES.len();
+    let mut anchors: [(&str, f32, f32, f32); N] = [("", 0.0, 0.0, 0.0); N];
     let mut n = 0;
     for (arch, x, z) in STATIONS {
         anchors[n] = (arch, x, 0.5, z);
@@ -354,6 +382,10 @@ pub fn dump(w: &mut impl core::fmt::Write) -> core::fmt::Result {
     }
     for (x, y, z) in LAMPS {
         anchors[n] = ("lamp", x, y, z);
+        n += 1;
+    }
+    for (x, z) in POLES {
+        anchors[n] = ("pole", x, 0.0, z);
         n += 1;
     }
     kit::dump("town", PARTS, &anchors, w)

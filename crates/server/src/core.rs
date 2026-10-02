@@ -1281,6 +1281,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        pose,
                     } => Command::PlaceDeploy {
                         id: c.id,
                         row,
@@ -1288,6 +1289,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        pose,
                     },
                     ActionMsg::Feed { cx, cz, level } => Command::Feed {
                         id: c.id,
@@ -2288,23 +2290,22 @@ impl ShardCore {
                     // places closed; a door places locked, which is a
                     // world fact the whole shard sees (who it answers to
                     // is not).
-                    let placed_door = self
-                        .world
-                        .deploys
-                        .find(
-                            (ev.a >> 16) as u16,
-                            ev.a as u16,
-                            (ev.b >> 16) as u8,
-                            (ev.b >> 8) as u8,
-                        )
-                        .is_some_and(|d| d.locked);
+                    // The record as it stands, for its pose (free placement:
+                    // where in the cell it went is the sim's to say).
+                    let placed = self.world.deploys.find(
+                        (ev.a >> 16) as u16,
+                        ev.a as u16,
+                        (ev.b >> 16) as u8,
+                        (ev.b >> 8) as u8,
+                    );
                     let rec = DeployRec {
                         cx: (ev.a >> 16) as u16,
                         cz: ev.a as u16,
                         level: (ev.b >> 16) as u8,
                         loc: (ev.b >> 8) as u8,
                         row: ev.b as u8,
-                        locked: placed_door,
+                        locked: placed.is_some_and(|d| d.locked),
+                        pose: placed.map(|d| d.pose).unwrap_or_default(),
                         ..DeployRec::default()
                     };
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
@@ -2798,8 +2799,9 @@ impl ShardCore {
                     // fuel runs out, which is at most one fuel unit away.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
+                    let loc = (ev.b >> 8) as u8;
                     let lit = ev.b & 1 != 0;
-                    match encode_event_oven(cx, cz, level, lit, ev.c, &mut self.ev_buf) {
+                    match encode_event_oven(cx, cz, level, loc, lit, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -3249,7 +3251,7 @@ impl ShardCore {
                     if !hr.crew.contains(ev.a) {
                         continue;
                     }
-                    // What one upkeep period charges this hearth, per row —
+                    // What a day charges this hearth, per row (wire v89) —
                     // the sweep's own arithmetic over the claim cache the
                     // tick just refreshed (upkeep v2's readout). A walk of
                     // the piece store, asked per feed press and never per
@@ -3400,6 +3402,32 @@ impl ShardCore {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].last_expo = Some(expo);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
+        // Until when the owner is hostile (wire v89): the SAFE ZONE chip's
+        // other half. `tick + hostile` holds still while the timer runs
+        // down, so this sends on an attack (or the timer's end), not per
+        // tick.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let left = self.world.players[wslot].hostile as u32;
+            let until = if left == 0 {
+                0
+            } else {
+                (self.world.tick as u32).wrapping_add(left)
+            };
+            if self.clients[slot].last_hostile != Some(until) {
+                match protocol::encode_event_hostile(until, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_hostile = Some(until);
                             ShardStats::bump(&stats.ev_sent);
                         } else {
                             return;
@@ -4145,8 +4173,42 @@ impl ShardCore {
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                     let c = &mut self.clients[slot];
+                                    let opened = c.open_cont_reset;
                                     c.open_cont_reset = false;
                                     c.last_cont = now;
+                                    // Whether what was opened is burning,
+                                    // told to the hand that opened it: the
+                                    // lit bit is broadcast only when it
+                                    // changes (`EV_OVEN`), so a fire lit
+                                    // before this client arrived would
+                                    // otherwise offer TURN ON while it
+                                    // burns. Absolute, so a repeat is free.
+                                    // `i` indexes the box store only for
+                                    // a box: a bag's or a crate's index is
+                                    // into its own store.
+                                    let st = (opened && kind == CONT_BOX)
+                                        .then(|| self.world.deploys.oven_states().get(i).copied())
+                                        .flatten()
+                                        .filter(|st| {
+                                            st.is_converter()
+                                                || st.arch == sim_core::deploy::ARCH_RESEARCH
+                                        });
+                                    if let Some(st) = st {
+                                        let b = self.world.deploys.boxes()[i];
+                                        if let Ok(len) = encode_event_oven(
+                                            b.cx,
+                                            b.cz,
+                                            b.level,
+                                            b.loc,
+                                            st.lit,
+                                            0,
+                                            &mut self.ev_buf,
+                                        ) {
+                                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                                ShardStats::bump(&stats.ev_sent);
+                                            }
+                                        }
+                                    }
                                 } else {
                                     return;
                                 }

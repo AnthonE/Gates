@@ -818,6 +818,7 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),
@@ -1149,6 +1150,7 @@ fn a_shot_from_above_charges_the_upper_bench_not_the_lower() {
         cz,
         level: 1,
         loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
     }]);
     assert_eq!(
         w.deploys.len(),

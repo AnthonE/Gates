@@ -129,8 +129,36 @@ pub fn resolve(
     // crouched eye when the swing will (v83).
     let crouched = core.crouched();
     let (fx, fz) = sim_core::yaw_dir(yaw);
+    // The eye's ray, for the deployables `E` is offered on only when the
+    // crosshair is on them (free placement): the eye the sim would cast
+    // from and the look it would carry, against the box the renderer draws.
+    let span = |rec: &sim_core::deploy::DeployRec, arch: u8| {
+        let (seed, haven) = match world.as_deref() {
+            Some(w) => (w.seed, &w.haven),
+            None => return (f32::NEG_INFINITY, f32::INFINITY),
+        };
+        let bottom = sim_core::deploy::body_base_y(seed, haven, core.pieces.cols(), rec, arch);
+        (
+            bottom,
+            bottom + super::structures::deploy_size(arch as usize).y,
+        )
+    };
+    let mut aim = Aim::new(x, z, fx, fz);
+    if world.is_some() {
+        let (ch, sv) = sim_core::pitch_dir(pitch);
+        let eye_y = y + if crouched {
+            super::CROUCH_EYE_M
+        } else {
+            super::EYE_HEIGHT
+        };
+        aim.sight = Some(interact::Sight {
+            eye: [x, eye_y, z],
+            dir: [fx * ch, sv, fz * ch],
+            span: &span,
+        });
+    }
     aimed.0 = interact::resolve(
-        Aim::new(x, z, fx, fz),
+        aim,
         core.deploys.entries(),
         &core.deploy_defs,
         core.deploy_defs_have,
@@ -142,7 +170,9 @@ pub fn resolve(
     aimed.0.lit = matches!(
         aimed.0.verb,
         interact::Verb::Fire | interact::Verb::Recycler | interact::Verb::Research
-    ) && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
+    ) && core
+        .ovens()
+        .is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level, aimed.0.loc);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);
@@ -279,6 +309,11 @@ pub fn resolve(
             aimed.0 = swipe;
         }
     }
+    // Down, the only prompt worth drawing is a door's (wounded v0): every
+    // other `E` would be refused.
+    if core.wounded && !crate::ui::wounded::allows(aimed.0.verb) {
+        aimed.0 = interact::Pick::default();
+    }
     near.0 = structure::nearest(
         (x, z),
         core.pieces.entries(),
@@ -341,6 +376,33 @@ pub fn keys(
         .as_ref()
         .map(|u| u.panel == Panel::Wheel)
         .unwrap_or(false);
+
+    // **Down, the hands are gone** (wounded v0). The sim refuses every verb
+    // but a door's without a word, so the keys answer here instead of
+    // sending into nothing: `E` still works a door, the rest say why.
+    if net.session.core.wounded {
+        pad.0.close();
+        hearth.0 = None;
+        const HAND_KEYS: [KeyCode; 11] = [
+            KeyCode::KeyE,
+            KeyCode::KeyL,
+            KeyCode::KeyK,
+            KeyCode::KeyU,
+            KeyCode::KeyR,
+            KeyCode::KeyX,
+            KeyCode::KeyC,
+            KeyCode::KeyJ,
+            KeyCode::KeyV,
+            KeyCode::KeyH,
+            KeyCode::Backspace,
+        ];
+        if keys.just_pressed(KeyCode::KeyE) && crate::ui::wounded::allows(aimed.0.verb) {
+            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+        } else if HAND_KEYS.iter().any(|&k| keys.just_pressed(k)) {
+            toast.warn(crate::ui::wounded::HANDS_LINE);
+        }
+        return;
+    }
 
     if keys.just_pressed(KeyCode::KeyE) {
         // A second `E` closes the hearth's panel rather than feeding again.
@@ -420,8 +482,21 @@ pub fn keys(
         crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
     // ...and the building plan takes `R` (and `F`) for the foundation
     // height nudge (`ghost::height_keys`, foundation height v0) — the same
-    // modal rule, one hand further along: a plan has nothing to reload.
-    if !wheel_up && !hand.places() && keys.just_pressed(KeyCode::KeyR) {
+    // modal rule, one hand further along: a plan has nothing to reload. A
+    // deployable in hand takes it too, to turn its ghost (`ghost::turn_key`,
+    // the reference's rotate): a box has nothing to reload either.
+    let deploying = {
+        let core = &net.session.core;
+        let held = core.inv[(net.sel as usize).min(core.inv.len().saturating_sub(1))];
+        crate::ui::hold::click_of(
+            &core.catalog,
+            &core.research,
+            &core.deploy_defs,
+            core.deploy_defs_have,
+            held,
+        ) == crate::ui::hold::Click::Deploy
+    };
+    if !wheel_up && !hand.places() && !deploying && keys.just_pressed(KeyCode::KeyR) {
         if hand.repairs() {
             if repair_near(&net, &near.0, &mut toast) {
                 motion.strike();
@@ -807,22 +882,14 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, ask: A
     // crew's leave and clear on every hearth, locked or bare — neither is
     // ever a question for a pad.
     if pick.verb == Verb::Hearth && (ask != Access::Join || !pick.has_lock) {
-        let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
+        let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
         let op = match ask {
             Access::Join => sim_core::deploy::ACCESS_OP_CREW_JOIN,
             Access::Leave => sim_core::deploy::ACCESS_OP_CREW_LEAVE,
             Access::Clear => sim_core::deploy::ACCESS_OP_CREW_CLEAR,
         };
         send(net, toast, "crew", |buf| {
-            protocol::encode_action_access(
-                cx,
-                cz,
-                level,
-                sim_core::build::LOC_PLANE,
-                op,
-                sim_core::lock::CODE_NONE,
-                buf,
-            )
+            protocol::encode_action_access(cx, cz, level, loc, op, sim_core::lock::CODE_NONE, buf)
         });
         return;
     }
@@ -1171,15 +1238,14 @@ pub fn hearth_close(
         return;
     }
     let core = &net.session.core;
-    let standing = core.deploys.entries().iter().any(|r| {
+    let standing = core.deploys.entries().iter().find(|r| {
         (r.cx, r.cz, r.level) == (cx, cz, level)
             && (r.row as u16) < core.deploy_defs_have
             && core.deploy_defs.defs[r.row as usize].arch == sim_core::deploy::ARCH_HEARTH
     });
-    if !standing
-        || core.wounded
+    if core.wounded
         || core.dead
-        || !crate::ui::hearth::in_reach(core.predict.position(), cx, cz)
+        || !standing.is_some_and(|r| crate::ui::hearth::in_reach(core.predict.position(), r.xz()))
     {
         hearth.0 = None;
     }

@@ -359,6 +359,11 @@ impl GroundItems {
             ((rec.stack.item as u32) << 16) | took as u32,
             0,
         );
+        // Part fit and the rest went to the feet: say so too. (Nothing fit
+        // is already the zero above.)
+        if took > 0 && spill.iter().any(|s| s.count > 0) {
+            events.push(EV_GATHER, p.id, (rec.stack.item as u32) << 16, 0);
+        }
         self.remove(i);
         Some(rec.id)
     }

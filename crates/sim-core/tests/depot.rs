@@ -267,6 +267,7 @@ fn construction_and_ground_deploys_refuse_the_reserved_yard_without_payment() {
             cz,
             0,
             LOC_PLANE,
+            sim_core::footprint::Pose::CENTRE,
             &mut events,
         );
         assert_eq!(events.entries()[0].a, deploy::REFUSE_D_SPOT);

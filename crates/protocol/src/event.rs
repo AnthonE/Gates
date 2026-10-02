@@ -39,7 +39,7 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 306 B since v82's two draw bytes — 29 header bits and 302 a
+/// batch ≈ 315 B since v89's oven roles — 29 header bits and 311 a
 /// row; `catalog_batches_walk_the_table_within_cap` is the one that
 /// measures rather than remembers — a full slot-sync batch
 /// ≈ 258 B) with headroom; the client-side framer refuses past it.
@@ -98,9 +98,10 @@ pub const PIECE_SYNC_BATCH: usize = 32;
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
 
-/// Placed-deployable records one sync message carries (a record is 31
-/// bits — address, row, open, locked; 24 keep the batch ≈ 94 B, well
-/// under the message cap). The join walk is drip-fed like the piece sync.
+/// Placed-deployable records one sync message carries (a record is 65
+/// bits — address, row, state, damage and the pose; 24 keep the batch
+/// ≈ 200 B, under the 320 B message cap). The join walk is drip-fed like
+/// the piece sync.
 pub const DEPLOY_SYNC_BATCH: usize = 24;
 
 /// Deploy-def rows one defs message carries (a full row is ~5 B).
@@ -412,7 +413,10 @@ const SUB_VEND_REFUSED: u32 = 69;
 const SUB_CARD_DOORS: u32 = 70;
 /// A swipe was refused (own-fact): why, and which door.
 const SUB_SWIPE_REFUSED: u32 = 71;
-const SUB_MAX: u32 = SUB_SWIPE_REFUSED;
+/// Until when you are hostile (own-fact, wire v89): the low 32 bits of the
+/// tick town protection returns, 0 when it has. Sent when it moves.
+const SUB_HOSTILE: u32 = 72;
+const SUB_MAX: u32 = SUB_HOSTILE;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -730,7 +734,18 @@ pub struct ItemRow {
     /// weapon that draws, 0 on everything else. A draw held through it is
     /// ready when it ends (`ranged::draw`).
     pub nock_ticks: u8,
+    /// What the item is to each converter (v89,
+    /// `oven::CookContent::packed_roles`): fuel, input, output, three bits
+    /// per archetype in `oven::ROLE_ARCHES` order; read one with
+    /// `oven::unpack_roles`. The camp fire's slots each take one section's
+    /// items, and the client needs this to send wood to FUEL and meat to
+    /// INPUT on a right-click.
+    pub oven: u16,
 }
+
+/// Width of [`ItemRow::oven`].
+const OVEN_ROLE_BITS: u32 = sim_core::oven::PACKED_ROLE_BITS;
+const _: () = assert!(OVEN_ROLE_BITS <= 16);
 
 impl ItemRow {
     pub const EMPTY: Self = Self {
@@ -743,6 +758,7 @@ impl ItemRow {
         health: 0,
         draw_ticks: 0,
         nock_ticks: 0,
+        oven: 0,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -778,6 +794,7 @@ impl ItemRow {
             // A nock is the cadence of a weapon that draws; on anything
             // else it is a number nothing reads.
             && (self.nock_ticks == 0 || self.draw_ticks > 0)
+            && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
     }
 }
 
@@ -811,6 +828,9 @@ impl ItemRow {
 /// v82 added the draw (`draw_ticks`, `nock_ticks`), the fifth: the right
 /// mouse draws a bow, and the client has to know which items draw and when
 /// the draw is full.
+///
+/// v89 added `oven`, the sixth: which section of a camp fire an item goes
+/// in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -1315,6 +1335,7 @@ pub enum EventMsg {
         cx: u16,
         cz: u16,
         level: u8,
+        loc: u8,
         lit: bool,
         by: u32,
     },
@@ -1398,11 +1419,15 @@ pub enum EventMsg {
     CardDoors { bits: u8 },
     /// Your swipe was refused (`sim_core::monument::REFUSE_S_*`).
     SwipeRefused { code: u8, door: u8 },
+    /// Until when you are hostile: the low 32 bits of the tick the town's
+    /// protection returns (`sim_core::combat::HOSTILE_TICKS` after your last
+    /// attack on a player), or 0 when you are not.
+    Hostile { until: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
-    /// to the baked upkeep-material list — (item index, units, what one
-    /// upkeep period charges in it). The third column is upkeep v2's
-    /// readout (wire v74): `sim_core::upkeep::lasts` over the second and
-    /// third is how long the base is protected.
+    /// to the baked upkeep-material list — (item index, units, what a day
+    /// charges in it; one hour's charge until wire v89). The third column
+    /// is upkeep v2's readout: `sim_core::upkeep::lasts` over the second
+    /// and third is how many hours the base is protected.
     Stock {
         cx: u16,
         cz: u16,
@@ -1879,6 +1904,8 @@ pub fn encode_event_catalog(
         // The draw (v82): bytes, because they are ticks.
         w.write(row.draw_ticks as u32, 8)?;
         w.write(row.nock_ticks as u32, 8)?;
+        // The oven roles (v89).
+        w.write(row.oven as u32, OVEN_ROLE_BITS)?;
     }
     Ok((w.finish(), count))
 }
@@ -2317,8 +2344,11 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 32 bits, shared by the
-/// placed broadcast and the sync batches. Every width is exact, so only
+/// One placed-deployable record on the wire: 65 bits, shared by the
+/// placed broadcast and the sync batches — the address, the row, the three
+/// state bits, the damage band, and since wire v89 the **pose** (free
+/// placement): the offset from the cell centre and the facing, a byte each,
+/// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
 /// bits are open, locked and has-lock state. Open is the door's alone;
 /// locked and has-lock ride for every lockable archetype — a door or a
@@ -2330,9 +2360,9 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_SOCKETS
-        // Still the straight-edge bound: a deployable never sits on a
-        // triangle or a diagonal (v40 widened the FIELD, not this store).
-        || rec.loc > LOC_EDGE_ZLO
+        // Every four-bit loc is a deploy address since v89: the two
+        // straight edges hold inserts, the rest are body slots.
+        || rec.loc > loc_max(true)
         || rec.row as usize >= MAX_DEPLOY_DEFS
     {
         return Err(WireError::Range);
@@ -2347,6 +2377,11 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.has_lock)?;
     // The damage band (wire v44) — `write_piece_rec`'s note applies here.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
+    // The pose (v89). Three whole bytes, so every value is a legal pose and
+    // the width is the range check.
+    w.write(rec.pose.ox as u8 as u32, 8)?;
+    w.write(rec.pose.oz as u8 as u32, 8)?;
+    w.write(rec.pose.yaw as u32, 8)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -2371,11 +2406,18 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         has_lock: r.read_bit()?,
         // Width is the range check — see `read_piece_rec`.
         dmg: r.read(DMG_BAND_BITS)? as u8,
+        pose: sim_core::footprint::Pose {
+            ox: r.read(8)? as u8 as i8,
+            oz: r.read(8)? as u8 as i8,
+            yaw: r.read(8)? as u8,
+        },
         ..DeployRec::default()
     };
-    // The loc became forgeable when the field widened for the piece
-    // store's triangles (v40); this store never grew.
-    if rec.loc > loc_max(true) {
+    // An insert hangs in its doorway at the centre pose; one that claims
+    // to stand anywhere else is a record no sim wrote.
+    if rec.loc > loc_max(true)
+        || (sim_core::deploy::is_edge_loc(rec.loc) && rec.pose != sim_core::footprint::Pose::CENTRE)
+    {
         return Err(WireError::Malformed);
     }
     Ok(rec)
@@ -2526,8 +2568,8 @@ pub fn encode_event_removed(
 
 /// The feed ack: `rows` are the hearth's live stock rows, aligned to the
 /// baked upkeep-material list, each `(item, units, bill)` — `bill` is what
-/// one upkeep period charges in that material for everything the hearth
-/// covers (`sim_core::upkeep::bill`). Empty is legal (a hearth with no
+/// a day charges in that material for everything the hearth covers
+/// (`sim_core::upkeep::bill`, per day since wire v89). Empty is legal (a hearth with no
 /// priced materials cannot exist, but the width allows the message shape).
 pub fn encode_event_stock(
     cx: u16,
@@ -2662,13 +2704,14 @@ pub fn encode_event_auth(
 }
 
 /// The oven at the address is now `lit` (broadcast) — see
-/// `EventMsg::Oven`. No `loc`: an oven is a body deployable and stands at
-/// `LOC_PLANE`, so carrying the field would be carrying a constant and
-/// inviting a client to believe a fire could be in a doorway.
+/// `EventMsg::Oven`. The `loc` is the oven's body slot (wire v89, free
+/// placement): one cell can hold two fires, so the cell alone stopped
+/// naming one.
 pub fn encode_event_oven(
     cx: u16,
     cz: u16,
     level: u8,
+    loc: u8,
     lit: bool,
     by: u32,
     buf: &mut [u8],
@@ -2676,6 +2719,7 @@ pub fn encode_event_oven(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_SOCKETS
+        || loc > loc_max(true)
     {
         return Err(WireError::Range);
     }
@@ -2683,6 +2727,7 @@ pub fn encode_event_oven(
     w.write(cx as u32, BUILD_CELL_BITS)?;
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
     w.write_bit(lit)?;
     w.write(by, 32)?;
     Ok(w.finish())
@@ -2915,6 +2960,13 @@ pub fn encode_event_card_doors(bits: u8, buf: &mut [u8]) -> Result<usize, WireEr
     }
     let mut w = begin(buf, SUB_CARD_DOORS)?;
     w.write(bits as u32, sim_core::monument::CARD_DOORS as u32)?;
+    Ok(w.finish())
+}
+
+/// Until when you are hostile (wire v89).
+pub fn encode_event_hostile(until: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_HOSTILE)?;
+    w.write(until, 32)?;
     Ok(w.finish())
 }
 
@@ -3725,6 +3777,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     health: r.read(16)? as u16,
                     draw_ticks: r.read(8)? as u8,
                     nock_ticks: r.read(8)? as u8,
+                    oven: r.read(OVEN_ROLE_BITS)? as u16,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -4346,6 +4399,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_CARD_DOORS => EventMsg::CardDoors {
             bits: r.read(sim_core::monument::CARD_DOORS as u32)? as u8,
         },
+        SUB_HOSTILE => EventMsg::Hostile { until: r.read(32)? },
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
             let door = r.read(2)? as u8;
@@ -4403,6 +4457,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,
             level: r.read(BUILD_LEVEL_BITS)? as u8,
+            // Width-exact: every four-bit loc is a deploy slot or an edge.
+            loc: r.read(BUILD_LOC_BITS)? as u8,
             lit: r.read_bit()?,
             by: r.read(32)?,
         },
@@ -5286,6 +5342,8 @@ mod tests {
                 // The draw (v82) at its corner, distinct per row.
                 draw_ticks: u8::MAX - i as u8,
                 nock_ticks: u8::MAX - 2 * i as u8,
+                // The oven roles (v89) at the width's corner.
+                oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -5923,7 +5981,9 @@ mod tests {
             Err(WireError::Range),
             "loc past the piece store's ten"
         );
-        assert_eq!(
+        // Every four-bit loc names a deploy since v89 (the body slots),
+        // so the value a piece reads as a triangle half is a slot here.
+        assert!(
             encode_event_struct_hit(
                 true,
                 0,
@@ -5934,9 +5994,9 @@ mod tests {
                 1,
                 1,
                 &mut buf
-            ),
-            Err(WireError::Range),
-            "a deploy hit never lands on a triangle"
+            )
+            .is_ok(),
+            "a deploy hit names any body slot"
         );
         assert_eq!(
             encode_event_struct_hit(true, 0, 0, 0, 0, MAX_DEPLOY_DEFS as u8, 1, 1, &mut buf),
@@ -6432,6 +6492,10 @@ mod wire_domains {
         Module {
             file: "fmath.rs",
             src: include_str!("../../sim-core/src/fmath.rs"),
+        },
+        Module {
+            file: "footprint.rs",
+            src: include_str!("../../sim-core/src/footprint.rs"),
         },
         Module {
             file: "gather.rs",
@@ -7289,6 +7353,11 @@ mod wire_domains {
             // member block to scrape, only a compile-time assert beside the
             // declaration. `ARMOR_PCT_BITS`' shape, classified with it.
             "HURT_SECTOR_BITS",
+            // The oven roles (v89): a bit set whose width IS sim-core's
+            // `oven::PACKED_ROLE_BITS`, read rather than restated, so a
+            // converter added to `ROLE_ARCHES` widens the field with it;
+            // `ItemRow::coherent` refuses a value past it at both ends.
+            "OVEN_ROLE_BITS",
         ];
 
         let mut widths = Vec::new();

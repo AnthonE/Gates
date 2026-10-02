@@ -255,9 +255,10 @@ fn stand_a_box(
             cz,
             level: 0,
             loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     );
-    let k = box_key(cx, cz, 0);
+    let k = box_key(cx, cz, 0, 0);
     let bi = core.world.deploys.box_index(k).expect("the box stood up");
     assert_eq!(core.world.deploys.boxes()[bi].owner, owner);
     core.world.deploys.set_box_slot(

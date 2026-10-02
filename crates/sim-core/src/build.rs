@@ -1070,11 +1070,15 @@ impl Pieces {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
 
-    /// Set or clear the solid-deployable nibble at (column, level) —
-    /// `set_door`'s twin (deploy collision v0; deploy.rs owns when:
-    /// placement, removal, and the load path's `World::rebuild_doors`).
-    pub(crate) fn set_solid(&mut self, cx: u16, cz: u16, level: u8, arch: Option<u8>) {
-        self.cols.set_solid(cx, cz, level, arch);
+    /// Index or drop a blocking deployable — `set_door`'s twin (deploy
+    /// collision v0; deploy.rs owns when: placement, removal, and the load
+    /// path's `World::rebuild_doors`).
+    pub(crate) fn add_solid(&mut self, solid: crate::collide::SolidPose) {
+        self.cols.add_solid(solid);
+    }
+
+    pub(crate) fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        self.cols.del_solid(cx, cz, level, loc);
     }
 
     /// Replace the store from a decoded world save, rebuilding the column
@@ -2443,7 +2447,13 @@ pub fn repair(
         costs[..def.costs.len()].copy_from_slice(&def.costs);
         (rec.row, rec.hp, def.hp, def.n_costs)
     };
-    let (ax, az) = anchor(cx, cz, loc);
+    // A free-placed deployable is reached where it stands, not at the
+    // corner a body slot's `loc` would name as a piece.
+    let (ax, az) = if deploy {
+        crate::deploy::rec_anchor(&deploys.entries()[i])
+    } else {
+        anchor(cx, cz, loc)
+    };
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
@@ -4028,6 +4038,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(deploys.len(), 1);
@@ -4315,6 +4326,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         let mut stranger = player_at_cell_center(&[]);
@@ -4388,6 +4400,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "hearth stands");
@@ -4787,6 +4800,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "hearth stands");
@@ -5495,11 +5509,13 @@ mod tests {
     /// The minting half of the pair `deploy::box_index` guards on decode;
     /// `tests/box_container.rs` owns the decode half.
     ///
-    /// `box_key(0, 0, 0)` is 0, and 0 is the reserved "no container open"
+    /// `box_key(0, 0, 0, 0)` is 0, and 0 is the reserved "no container open"
     /// handle on every layer that carries one. A box there could be opened
-    /// by nobody, so the address is refused as a spot rather than left to
-    /// swallow a player's items — the same posture `Backpacks` takes by
-    /// starting its ids at 1.
+    /// by nobody, so a container placed in that cell is filed under the next
+    /// body slot rather than left to swallow a player's items — the same
+    /// posture `Backpacks` takes by starting its ids at 1. (It was refused
+    /// outright while a cell held one deployable; free placement gave the
+    /// cell slots to choose from.)
     ///
     /// It lives here rather than beside the other box tests because the
     /// address is at the world's origin corner, which is water under every
@@ -5512,7 +5528,7 @@ mod tests {
         use crate::deploy::{box_key, place_deploy, DeployDef, ARCH_BOX, ARCH_HEARTH};
         use crate::world::EV_DEPLOY_REFUSED;
 
-        assert_eq!(box_key(0, 0, 0), 0, "the corner this guards has moved");
+        assert_eq!(box_key(0, 0, 0, 0), 0, "the corner this guards has moved");
 
         let mut dc = DeployContent::EMPTY;
         dc.def_count = 2;
@@ -5567,18 +5583,18 @@ mod tests {
             0,
             0,
             LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
             &mut ev,
         );
-        assert_eq!(deploys.len(), 0, "a box took the handle-0 address");
-        assert_eq!(
-            last(&ev),
-            (EV_DEPLOY_REFUSED, p.id, crate::deploy::REFUSE_D_SPOT),
-            "refused, but not as a spot — the placer has to hear why"
-        );
+        assert_eq!(deploys.len(), 1, "the box was refused the cell");
+        let b = deploys.entries()[0];
+        assert_ne!(b.loc, LOC_PLANE, "a box took the handle-0 address");
+        assert_ne!(box_key(b.cx, b.cz, b.level, b.loc), 0);
+        assert!(deploys.box_index(box_key(0, 0, 0, b.loc)).is_some());
+        let _ = EV_DEPLOY_REFUSED;
 
-        // The same cell, the same footing, a deployable with no container
-        // handle: allowed. The refusal is one address of one arch, not a
-        // dead cell.
+        // A deployable with no container handle may take slot 0 of the same
+        // cell — away from the box, which stands at the centre.
         ev.clear();
         place_deploy(
             SEED,
@@ -5594,12 +5610,18 @@ mod tests {
             0,
             0,
             LOC_PLANE,
+            crate::footprint::Pose {
+                ox: 0,
+                oz: 60,
+                yaw: 0,
+            },
             &mut ev,
         );
-        assert_eq!(deploys.len(), 1, "a hearth was refused the same cell");
+        assert_eq!(deploys.len(), 2, "a hearth was refused the same cell");
+        assert_eq!(deploys.entries()[1].loc, LOC_PLANE);
 
         // And a box one storey up is fine, because that address is not 0.
-        assert_ne!(box_key(0, 0, 1), 0);
+        assert_ne!(box_key(0, 0, 1, 0), 0);
     }
 
     /// The other half of the composition, and the one with no bound of its

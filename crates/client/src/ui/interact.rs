@@ -34,12 +34,12 @@
 
 use protocol::event::{ItemCatalog, WireBag};
 use sim_core::backpack::LOOT_REACH_M;
-use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
     ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2,
     ARCH_WORKBENCH3,
 };
+use sim_core::footprint::Rect;
 use sim_core::movement::POS_XZ_Q;
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -487,16 +487,19 @@ pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pic
 
 /// Where the player is and where they are looking, in world XZ.
 #[derive(Clone, Copy, Debug)]
-pub struct Aim {
+pub struct Aim<'a> {
     pub x: f32,
     pub z: f32,
     pub fx: f32,
     pub fz: f32,
     pub reach: f32,
     pub radius: f32,
+    /// The eye's own ray, when the caller has one: a deployable placed
+    /// freely is then picked only when the crosshair is ON it ([`Sight`]).
+    pub sight: Option<Sight<'a>>,
 }
 
-impl Aim {
+impl Aim<'_> {
     /// The ordinary aim: feet position, facing, and both defaults.
     pub fn new(x: f32, z: f32, fx: f32, fz: f32) -> Self {
         Self {
@@ -506,8 +509,72 @@ impl Aim {
             fz,
             reach: REACH_M,
             radius: AIM_RADIUS_M,
+            sight: None,
         }
     }
+}
+
+/// What the eye looks along, for the deployables `E` has to be LOOKED AT
+/// rather than merely stood near — every body deployable, since free
+/// placement put them anywhere in a cell. The reference genre's prompt is a
+/// raycast: the crosshair on the box opens the box, and the crosshair on the
+/// ground beside a fire does not offer the fire (the 2026-10-02 playtest
+/// read that as the fire being somewhere other than where it was drawn).
+#[derive(Clone, Copy)]
+pub struct Sight<'a> {
+    pub eye: [f32; 3],
+    /// Unit look direction.
+    pub dir: [f32; 3],
+    /// `(bottom, top)` of a body deployable as the renderer stands it — its
+    /// floor (`sim_core::deploy::body_base_y`) and that plus its drawn
+    /// height. The ui tier holds no render table, so the caller lends it.
+    pub span: &'a dyn Fn(&DeployRec, u8) -> (f32, f32),
+}
+
+impl core::fmt::Debug for Sight<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sight")
+            .field("eye", &self.eye)
+            .field("dir", &self.dir)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How far past a deployable's own box the look ray still counts as on it,
+/// metres — a little forgiveness on a bedroll a third of a metre tall.
+pub const SIGHT_SLACK_M: f32 = 0.1;
+
+/// Where along the look ray the eye first meets the box `rect × [bottom,
+/// top]` (grown by [`SIGHT_SLACK_M`]), or `None`. The ray goes into the
+/// rectangle's own frame and meets three slabs — the turned box tested as a
+/// box, the way the sim's collision walks test it.
+pub fn sight_hit(s: &Sight<'_>, rect: &Rect, bottom: f32, top: f32) -> Option<f32> {
+    let m = SIGHT_SLACK_M;
+    let (ox, oz) = rect.local(s.eye[0], s.eye[2]);
+    let dx = s.dir[0] * rect.c - s.dir[2] * rect.s;
+    let dz = s.dir[0] * rect.s + s.dir[2] * rect.c;
+    let mut t0 = 0.0f32;
+    let mut t1 = f32::INFINITY;
+    for (o, d, lo, hi) in [
+        (ox, dx, -rect.hw - m, rect.hw + m),
+        (s.eye[1], s.dir[1], bottom - m, top + m),
+        (oz, dz, -rect.hd - m, rect.hd + m),
+    ] {
+        if d.abs() < 1e-9 {
+            if o < lo || o > hi {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((lo - o) / d, (hi - o) / d);
+        let (a, b) = if a < b { (a, b) } else { (b, a) };
+        t0 = t0.max(a);
+        t1 = t1.min(b);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some(t0)
 }
 
 /// Best-so-far, as scalars rather than a candidate struct, so the sweep
@@ -521,14 +588,16 @@ struct Best {
 impl Best {
     /// Score one candidate at world XZ; answer whether it takes the lead,
     /// filling the shared fields of `out` if it does.
+    #[allow(clippy::too_many_arguments)]
     fn wins(
         &mut self,
         out: &mut Pick,
-        aim: &Aim,
+        aim: &Aim<'_>,
         f: (f32, f32),
         verb: Verb,
         x: f32,
         z: f32,
+        seen: bool,
     ) -> bool {
         let (dx, dz) = (x - aim.x, z - aim.z);
         let d2 = dx * dx + dz * dz;
@@ -537,11 +606,12 @@ impl Best {
         }
         // Projection onto the look direction. Positive means in front; the
         // perpendicular offset is only meaningful there, which is why `aimed`
-        // requires it.
+        // requires it. A deployable the eye's ray actually meets (`seen`) is
+        // aimed at by definition.
         let t = dx * f.0 + dz * f.1;
         let (px, pz) = (dx - t * f.0, dz - t * f.1);
         let perp2 = px * px + pz * pz;
-        let aimed = t > 0.0 && perp2 <= aim.radius * aim.radius;
+        let aimed = seen || (t > 0.0 && perp2 <= aim.radius * aim.radius);
         let tie = verb.tie();
         // Rank first, then distance inside the rank, then the old order.
         if self.aimed && !aimed {
@@ -575,7 +645,7 @@ impl Best {
 /// `DeployDef::INERT`'s bag — offering a verb on a guess is how a prompt ends
 /// up naming a thing that is not there.
 pub fn resolve(
-    aim: Aim,
+    aim: Aim<'_>,
     deploys: &[DeployRec],
     defs: &DeployContent,
     have: u16,
@@ -596,8 +666,6 @@ pub fn resolve(
     } else {
         (0.0, 0.0)
     };
-    let half = BUILD_CELL_M * 0.5;
-
     for rec in deploys {
         if (rec.row as u16) >= have {
             continue;
@@ -613,7 +681,7 @@ pub fn resolve(
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
             _ => continue,
         };
-        // A box is addressed by its packed cell. `box_key(0, 0, 0)` is 0 and
+        // A box is addressed by its packed cell. `box_key(0, 0, 0, 0)` is 0 and
         // 0 is the reserved "no container" handle, which is why the SIM
         // refuses to place a box there (`deploy.rs`). A record carrying it is
         // one this client should not have, so it is not offered at all —
@@ -624,15 +692,16 @@ pub fn resolve(
             || verb == Verb::Recycler
             || verb == Verb::Research
         {
-            handle = box_key(rec.cx, rec.cz, rec.level);
+            handle = box_key(rec.cx, rec.cz, rec.level, rec.loc);
             if handle == 0 {
                 continue;
             }
         }
-        // Reach is measured to the cell CENTRE for all three, which is the
-        // metric `deploy.rs`'s `box_in_reach` and the door's own gate use.
-        let x = rec.cx as f32 * BUILD_CELL_M + half;
-        let z = rec.cz as f32 * BUILD_CELL_M + half;
+        // Reach is measured to where the thing stands — its own centre for
+        // a deployable placed freely, the cell centre for a door (its pose
+        // is the centre) — which is the metric `deploy.rs`'s
+        // `box_in_reach` and the door's own gate use.
+        let (x, z) = rec.xz();
         // A door is aimed at where it hangs, its edge's middle: two doors
         // share a cell (an airlock's front and inner door), and scored at
         // the centre they tie exactly, so the second could never be picked.
@@ -645,7 +714,22 @@ pub fn resolve(
         } else {
             (x, z)
         };
-        if !best.wins(&mut out, &aim, f, verb, x, z) {
+        // Anything placed freely is picked by looking at it, when there is
+        // an eye to look with: the box the ray meets, not the nearest box.
+        let mut seen = false;
+        if verb != Verb::Door {
+            if let Some(s) = aim.sight.as_ref() {
+                let Some(rect) = rec.rect(arch) else {
+                    continue;
+                };
+                let (bottom, top) = (s.span)(rec, arch);
+                if sight_hit(s, &rect, bottom, top).is_none() {
+                    continue;
+                }
+                seen = true;
+            }
+        }
+        if !best.wins(&mut out, &aim, f, verb, x, z, seen) {
             continue;
         }
         out.arch = arch;
@@ -664,7 +748,7 @@ pub fn resolve(
         // where its owner died.
         let x = bag.qx as f32 * sim_core::movement::POS_XZ_Q;
         let z = bag.qz as f32 * sim_core::movement::POS_XZ_Q;
-        if !best.wins(&mut out, &aim, f, Verb::Bag, x, z) {
+        if !best.wins(&mut out, &aim, f, Verb::Bag, x, z, false) {
             continue;
         }
         out.arch = ARCH_BAG;
@@ -685,6 +769,7 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_core::build::BUILD_CELL_M;
     use sim_core::deploy::{DeployDef, ARCH_BAG};
 
     fn defs_with(arches: &[u8]) -> (DeployContent, u16) {
@@ -705,6 +790,7 @@ mod tests {
             cz,
             level: 0,
             loc: 0,
+            pose: Default::default(),
             row,
             owner: 1,
             hp: 100,
@@ -883,13 +969,13 @@ mod tests {
         assert!(p.is_none());
     }
 
-    /// `box_key(0, 0, 0)` is the reserved no-container handle and the sim
+    /// `box_key(0, 0, 0, 0)` is the reserved no-container handle and the sim
     /// refuses to place there. The pick must not offer one either.
     #[test]
     fn the_reserved_box_handle_is_never_offered() {
         let (defs, have) = defs_with(&[ARCH_BOX]);
         let recs = [rec(0, 0, 0)];
-        assert_eq!(box_key(0, 0, 0), 0);
+        assert_eq!(box_key(0, 0, 0, 0), 0);
         let (cx, cz) = centre(0, 0);
         let p = resolve(Aim::new(cx, cz - 1.0, 0.0, 1.0), &recs, &defs, have, &[]);
         assert!(p.is_none());
@@ -1197,7 +1283,7 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
 /// barrel and `worldcont::table_of` claims these two — and this is those
 /// two predicates read from the client side, never a third opinion.
 fn openable(o: Occupant) -> bool {
-    matches!(o, Occupant::CrateSlot | Occupant::CacheSlot)
+    sim_core::worldcont::table_of(o).is_some()
 }
 
 /// What `E` would OPEN in the scatter, or `Occupant::None` for nothing.

@@ -340,7 +340,8 @@ pub const EV_PIECE_REPAIRED: u8 = 28;
 pub const EV_CHARGE_PLACED: u8 = 29;
 
 /// An oven's fire went in or out (`oven.rs`). `a` = `cell_key(cx, cz)`,
-/// `b` = `level << 16 | lit`, `c` = the hand that pressed, or **0 when
+/// `b` = `level << 16 | loc << 8 | lit` (the body slot, since a cell may
+/// hold two fires), `c` = the hand that pressed, or **0 when
 /// the oven ran dry and snuffed itself** — a fact with no actor behind
 /// it, the posture `EV_SLOT_RESPAWNED` already takes. **A research table
 /// announces on it too** (research table v1): lit is a research running,
@@ -1591,7 +1592,9 @@ pub enum Command {
         plate: i8,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
-    /// validates and refuses by event, never by panic).
+    /// validates and refuses by event, never by panic). `pose` is where in
+    /// the cell a body deployable stands and which way it faces (free
+    /// placement); an insert or a lock sends the centre.
     PlaceDeploy {
         id: u32,
         row: u16,
@@ -1599,6 +1602,7 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+        pose: crate::footprint::Pose,
     },
     /// Feed the hearth at the address from the feeder's inventory
     /// (deploy.rs).
@@ -2493,10 +2497,7 @@ impl World {
                 // *this lock does not know you* is one sentence whichever
                 // verb it refused.
                 let b = self.deploys.boxes()[i];
-                if !self
-                    .deploys
-                    .lock_passes(b.cx, b.cz, b.level, build::LOC_PLANE, pid)
-                {
+                if !self.deploys.lock_passes(b.cx, b.cz, b.level, b.loc, pid) {
                     self.events
                         .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
                     return;
@@ -2544,22 +2545,25 @@ impl World {
 
         // 3. Read both sides as copies.
         let src = self.cont_slot(slot, from_kind, from_slot, ci);
-        // An oven takes fuel, what it cooks, and what it made — nothing
-        // else (`oven.rs`, `inventory::REFUSE_M_OVEN`). Asked here, of
-        // the *source item*, after the address resolves and before
-        // anything is planned: a rule about what may enter a container is
-        // a property of this world's content, which `plan_move` has no
-        // access to and deliberately never will (it decides arithmetic,
-        // and only arithmetic). Rearranging inside the oven is untouched
-        // — the item is already in there.
-        if to_kind == inventory::CONT_BOX && from_kind != inventory::CONT_BOX {
-            let arch = self.deploys.oven_states().get(ci).map(|o| o.arch);
-            if let Some(arch) = arch.filter(|_| self.deploys.oven_index(cont).is_some()) {
-                if !self.cook.accepts(arch, src.item) {
-                    self.events
-                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
-                    return;
-                }
+        // An oven takes, in each slot, what that slot is for (`oven.rs`,
+        // `inventory::REFUSE_M_OVEN`): fuel, what it cooks, what it made,
+        // and on a camp fire each in its own section. Asked here, of the
+        // *source item*, after the address resolves and before anything is
+        // planned: a rule about what may enter a container is a property of
+        // this world's content, which `plan_move` has no access to and
+        // deliberately never will (it decides arithmetic, and only
+        // arithmetic). Rearranging inside the oven is asked too, because a
+        // fire's slots are not interchangeable.
+        let oven_arch = (ground == inventory::CONT_BOX && self.deploys.oven_index(cont).is_some())
+            .then(|| self.deploys.oven_states()[ci].arch);
+        if let Some(arch) = oven_arch {
+            if to_kind == inventory::CONT_BOX
+                && src.count > 0
+                && !self.cook.accepts_at(arch, to_slot as usize, src.item)
+            {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
+                return;
             }
         }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
@@ -2623,6 +2627,19 @@ impl World {
                 return;
             }
         };
+        // The oven's other landing site: a SWAP out of one puts the
+        // destination's old stack into the oven slot the source left, which
+        // was a way to put anything into a fire by taking something out.
+        if let Some(arch) = oven_arch {
+            if plan == inventory::MovePlan::Swap
+                && from_kind == inventory::CONT_BOX
+                && !self.cook.accepts_at(arch, from_slot as usize, dst.item)
+            {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
+                return;
+            }
+        }
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
         // What a research table's slot may hold (`research::table_accepts`)
         // is asked of the RESOLVED writes, on both landing sites: a swap
@@ -2675,6 +2692,29 @@ impl World {
         if ground == inventory::CONT_BAG {
             self.backpacks.drop_if_empty(ci, &mut self.events);
         }
+        // A crate this move emptied leaves the world until it refills, as
+        // the reference's does — the picture stops promising loot that is
+        // not there. Asked after BOTH writes, so shuffling a crate's last
+        // stack between its own slots never blinks it out.
+        if ground == inventory::CONT_WORLD {
+            self.vanish_if_emptied(ci);
+        }
+    }
+
+    /// Harvest an emptied world container until one tick before its refill
+    /// (`SlotLives::harvest`): the respawn sweep runs after the commands, so
+    /// the open that arrives on `refill_at` finds it standing and rolls it.
+    fn vanish_if_emptied(&mut self, ci: usize) {
+        let c = self.world_conts.entries()[ci];
+        if !c.is_empty() || c.refill_at <= self.tick + 1 {
+            return;
+        }
+        let occ = crate::worldcont::occupant_of(c.table as usize);
+        if occ == crate::terrain::Occupant::None {
+            return;
+        }
+        self.slot_lives
+            .harvest(c.cx, c.cz, occ, c.refill_at - 1, &mut self.events);
     }
 
     /// Lay down the arrows that are due (`spent::settle`): each falls onto
@@ -3257,9 +3297,7 @@ impl World {
             None
         };
         let woke = match bag {
-            Some((cx, cz, level)) => {
-                deploy::bag_wake_body(self.seed, &self.haven, self.pieces.cols(), cx, cz, level)
-            }
+            Some(rec) => deploy::bag_wake_body(self.seed, &self.haven, self.pieces.cols(), &rec),
             None => {
                 let (x, z) = self.spawn_pos_n(id, deaths as u32);
                 Body::at(self.seed, &self.haven, x, z)
@@ -3747,12 +3785,12 @@ impl World {
                 self.pieces
                     .set_insert(d.cx, d.cz, d.level, d.loc, arch, !d.open);
             }
-            // The solid nibble is the shut bit's twin and derived the same
+            // The solid row is the shut bit's twin and derived the same
             // way (deploy collision v0): `Pieces::restore` cleared the
             // index, so every standing body deploy re-blocks here or a
             // loaded shard's furniture is walk-through until re-placed.
-            if crate::deploy::solid_vol(arch).is_some() {
-                self.pieces.set_solid(d.cx, d.cz, d.level, Some(arch));
+            if let Some(solid) = crate::deploy::solid_pose(self.seed, &self.haven, &d, arch) {
+                self.pieces.add_solid(solid);
             }
             if !crate::deploy::lockable(arch) {
                 continue;
@@ -3855,6 +3893,28 @@ impl World {
             tick,
             &mut self.events,
         );
+    }
+
+    /// Tell the player a give-back (cancel, refund, pick-up, unbolt) spilled
+    /// at their feet: `EV_GATHER` with zero added, the "pack full" line.
+    /// Not inside `drain_spill`: the per-tick gather/craft drain already
+    /// announces, and the death shed has nobody to tell.
+    fn announce_spill(&mut self, slot: usize, spill: &[ItemStack; INV_SLOTS]) {
+        let pid = self.players[slot].id;
+        let mut said = [0u16; crate::limits::SPILL_TOASTS_MAX];
+        let mut n = 0;
+        for s in spill.iter().filter(|s| s.count > 0) {
+            if n == said.len() {
+                break;
+            }
+            if said[..n].contains(&s.item) {
+                continue;
+            }
+            said[n] = s.item;
+            n += 1;
+            // The zero is owed: these units left for the ground (`EV_GATHER`).
+            self.events.push(EV_GATHER, pid, (s.item as u32) << 16, 0);
+        }
     }
 
     /// One frame's non-wire sanitation — `sel` falls back, unknown button
@@ -4105,6 +4165,7 @@ impl World {
                         index,
                         &mut spill,
                     );
+                    self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
             }
@@ -4119,23 +4180,43 @@ impl World {
                 plate,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    build::place(
-                        self.seed,
-                        &self.haven,
-                        &self.build,
-                        &self.deploys,
-                        &mut self.pieces,
-                        &mut self.players[slot],
-                        self.tick,
-                        row,
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        freehand,
-                        plate,
-                        &mut self.events,
-                    );
+                    // A piece may not be built through a deployable that
+                    // stands where it would go (free placement). Asked here
+                    // because the build verb does not hold the deploy table;
+                    // the refusal is the build verb's own "spot taken".
+                    let blocked = (row < self.build.piece_count)
+                        && deploy::piece_crosses_deploys(
+                            self.pieces.cols(),
+                            self.deploys.entries(),
+                            &self.deploy,
+                            self.build.pieces[row as usize].shape,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                        );
+                    if blocked {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, build::REFUSE_B_SPOT, 0);
+                    } else {
+                        build::place(
+                            self.seed,
+                            &self.haven,
+                            &self.build,
+                            &self.deploys,
+                            &mut self.pieces,
+                            &mut self.players[slot],
+                            self.tick,
+                            row,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            freehand,
+                            plate,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::PlaceDeploy {
@@ -4145,6 +4226,7 @@ impl World {
                 cz,
                 level,
                 loc,
+                pose,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     deploy::place_deploy(
@@ -4161,6 +4243,7 @@ impl World {
                         cz,
                         level,
                         loc,
+                        pose,
                         &mut self.events,
                     );
                 }
@@ -4198,23 +4281,29 @@ impl World {
                     // lookup and not a guess about what the player aimed
                     // at. Which asks first is immaterial: at most one of
                     // them answers for any address.
-                    let lit = crate::research::begin(
-                        &self.research,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        &mut self.events,
-                    ) || crate::oven::toggle(
-                        &self.cook,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        &mut self.events,
-                    );
+                    // Down, only the door: research and the oven are hand
+                    // work, which `live_slot_of` refuses everywhere else.
+                    let down = self.players[slot].wounded;
+                    let lit = !down
+                        && (crate::research::begin(
+                            &self.research,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        ) || crate::oven::toggle(
+                            &self.cook,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        ));
                     if !lit {
                         let owner = deploy::use_door(
                             &self.deploy,
@@ -4283,6 +4372,7 @@ impl World {
                     }
                     // One buffer for both arms: they are two verbs behind
                     // one command and exactly one of them ran.
+                    self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
             }
@@ -4357,6 +4447,7 @@ impl World {
                             &mut self.events,
                             &mut spill,
                         );
+                        self.announce_spill(slot, &spill);
                         self.drain_spill(slot, &mut spill);
                         if let Some(owner) = owner {
                             self.log_trust(seat, id, owner, TRUST_AUTH);
@@ -4526,7 +4617,10 @@ impl World {
                 }
             }
             Command::OpenWorldCont { id, cont } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // An emptied crate is out of the world until it refills.
+                let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
+                let gone = self.slot_lives.is_harvested(cx, cz);
+                if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
                     self.world_conts.open(
                         self.seed,
                         &self.scatter,
@@ -4658,13 +4752,22 @@ impl World {
                 if !(st.lit && st.burns()) {
                     return false;
                 }
-                let (bx, bz) = crate::deploy::cell_center(b.cx, b.cz);
+                let (bx, bz) = b.xz();
                 let (dx, dz) = (bx - x, bz - z);
                 if dx * dx + dz * dz > r * r {
                     return false;
                 }
-                let y = crate::collide::col_base_y(self.seed, &self.haven, cols, b.cx, b.cz)
-                    + crate::build::level_y(b.level);
+                let y = crate::deploy::built_floor(
+                    self.seed,
+                    &self.haven,
+                    cols,
+                    b.cx,
+                    b.cz,
+                    b.level,
+                    bx,
+                    bz,
+                )
+                .unwrap_or_else(|| crate::terrain::ground(self.seed, &self.haven, bx, bz));
                 let dy = y - feet;
                 dy * dy < 9.0
             })
@@ -4693,6 +4796,8 @@ impl World {
             let cx = (x / crate::build::BUILD_CELL_M) as u16;
             let cz = (z / crate::build::BUILD_CELL_M) as u16;
             crate::deploy::stand_authored(
+                self.seed,
+                &self.haven,
                 &self.deploy,
                 &mut self.pieces,
                 &mut self.deploys,
@@ -5290,7 +5395,7 @@ impl World {
         // noise is recorded off the charge while its address still exists.
         for c in self.charges.entries() {
             if c.fires_at <= tick {
-                let (x, z) = crate::build::anchor(c.cx, c.cz, c.loc);
+                let (x, z) = crate::charge::epicentre(&self.deploys, c);
                 self.noises.push(crate::noise::Noise {
                     qx: crate::movement::quant_xz(x),
                     qz: crate::movement::quant_xz(z),
@@ -5300,6 +5405,7 @@ impl World {
             }
         }
         let mut blast_kills = crate::charge::BlastKills::new();
+        let mut blast_mobs = crate::charge::BlastMobs::new();
         crate::charge::tick_fuses(
             seed,
             &self.haven,
@@ -5313,6 +5419,8 @@ impl World {
             tick,
             &mut removals,
             &mut blast_kills,
+            &self.mobs,
+            &mut blast_mobs,
             &mut self.events,
         );
         // The blast's dead, laid down after every fuse resolved — the
@@ -5324,6 +5432,27 @@ impl World {
             if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
                 self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
             }
+        }
+        // The blast's animals, on the arrow's path: they run or turn on
+        // the planter, the planter gets the hitmarker, the dead drop meat.
+        for slot in 0..crate::limits::MAX_MOBS {
+            let dmg = blast_mobs.dmg[slot];
+            if dmg == 0 {
+                continue;
+            }
+            let by = self.live_slot_of(blast_mobs.by[slot]);
+            mob::hurt_slot(
+                &self.backpack,
+                &self.mob,
+                tick,
+                by,
+                &self.players,
+                &mut self.mobs,
+                &mut self.backpacks,
+                &mut self.events,
+                slot,
+                dmg,
+            );
         }
 
         // The roster steps after the player loop and before the arrows, and
@@ -5668,14 +5797,7 @@ impl World {
         // that decayed with nothing in it.
         for i in 0..self.deploys.box_spill_len() {
             let bx = self.deploys.box_spill_at(i);
-            let (x, y, z) = deploy::box_drop_pos(
-                seed,
-                &self.haven,
-                self.pieces.cols(),
-                bx.cx,
-                bx.cz,
-                bx.level,
-            );
+            let (x, y, z) = deploy::box_drop_pos(seed, &self.haven, self.pieces.cols(), &bx);
             let mut items = [ItemStack::default(); INV_SLOTS];
             items[..BOX_SLOTS].copy_from_slice(&bx.items);
             self.backpacks.stand_up(
@@ -6103,7 +6225,7 @@ impl World {
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {
-            let mut buf = [0u8; 17];
+            let mut buf = [0u8; 20];
             buf[0..2].copy_from_slice(&d.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&d.cz.to_le_bytes());
             buf[4] = d.level;
@@ -6114,6 +6236,12 @@ impl World {
             buf[11..15].copy_from_slice(&d.owner.to_le_bytes());
             buf[15] = d.open as u8;
             buf[16] = d.locked as u8;
+            // Where it stands (free placement): the pose decides where
+            // its collision is, so two shards that disagree about it
+            // disagree about every step taken beside it.
+            buf[17] = d.pose.ox as u8;
+            buf[18] = d.pose.oz as u8;
+            buf[19] = d.pose.yaw;
             h.update(&buf);
         }
         // The code locks (lock v1). Every byte is state a shard can
@@ -6204,6 +6332,7 @@ impl World {
             buf[2..4].copy_from_slice(&hr.cz.to_le_bytes());
             buf[4] = hr.level;
             buf[5..9].copy_from_slice(&hr.owner.to_le_bytes());
+            buf[9] = hr.loc;
             h.update(&buf);
             for s in hr.stock.iter() {
                 h.update(&s.to_le_bytes());
@@ -6225,11 +6354,15 @@ impl World {
         // removal is a command's consequence, replayed in the same order.
         h.update(&(self.deploys.boxes().len() as u64).to_le_bytes());
         for bx in self.deploys.boxes() {
-            let mut buf = [0u8; 9];
+            let mut buf = [0u8; 13];
             buf[0..2].copy_from_slice(&bx.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&bx.cz.to_le_bytes());
             buf[4] = bx.level;
             buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
+            buf[9] = bx.loc;
+            buf[10] = bx.pose.ox as u8;
+            buf[11] = bx.pose.oz as u8;
+            buf[12] = bx.pose.yaw;
             h.update(&buf);
             for s in bx.items.iter() {
                 h.update(&stack_bytes(s));
@@ -6444,6 +6577,7 @@ mod tests {
                 level: 0,
                 owner: 7,
                 items: [ItemStack::default(); crate::limits::BOX_SLOTS],
+                ..BoxRec::default()
             };
             r.items[1] = stack(cond);
             r

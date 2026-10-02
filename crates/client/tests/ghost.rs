@@ -532,6 +532,7 @@ impl Rig {
             t.cz,
             t.level,
             t.loc,
+            sim_core::footprint::Pose::CENTRE,
             &mut ev,
         );
         match ev.entries().iter().find(|e| e.code == EV_DEPLOY_REFUSED) {
@@ -544,10 +545,12 @@ impl Rig {
     fn client(&self, p: &Player, row: u16, t: Target) -> DeployVerdict {
         deploy_verdict(
             t,
+            sim_core::footprint::Pose::CENTRE,
             row as u8,
             &DeploySite {
                 seed: SEED,
                 haven: hv(SEED),
+                cols: self.pieces.cols(),
                 at: (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q),
                 pieces: self.pieces.entries(),
                 piece_defs: &self.bc,

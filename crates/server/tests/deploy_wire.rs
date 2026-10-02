@@ -259,6 +259,7 @@ fn deployables_ride_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -320,6 +321,7 @@ fn deployables_ride_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -598,6 +600,7 @@ fn doors_toggle_across_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_XLO,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     );
     let mut seen = Vec::new();
@@ -698,6 +701,7 @@ fn doors_toggle_across_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_XLO,
+            pose: sim_core::footprint::Pose::CENTRE,
         },
     );
     let deploys_before = core.world.deploys.len();

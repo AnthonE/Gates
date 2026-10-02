@@ -252,19 +252,22 @@ fn the_multiplier_puts_each_identity_at_its_own_tile() {
 
 /// Leg 4. Every tap of an identity's maps uses that identity's UV.
 ///
-/// **Including the wall tap's gradients.** They are what selects the mip, so
-/// scaling `wall_uv` and leaving `wall_ddx`/`wall_ddy` alone would have grass
-/// sampling a level chosen for a density it is no longer drawn at — a blur,
-/// not an error, and invisible to every gate that reads a value. It is the
-/// same class as the browser shipping this tap's gradient backwards at ~80×
+/// **Including the wall taps' gradients.** They are what selects the mip, so
+/// scaling a wall UV and leaving its gradients alone would have grass sampling
+/// a level chosen for a density it is no longer drawn at — a blur, not an
+/// error, and invisible to every gate that reads a value. It is the same class
+/// as the browser shipping the old wall tap's gradient backwards at ~80×
 /// (`DECISIONS.md`, materials v4).
 ///
 /// **The identity is a LAYER now, not a texture name** (2026-09-12): every
-/// tap is `textureSample(<family>_maps, ground_sampler, uvK, K)`, so the
+/// planar tap is `textureSample(<family>_maps, ground_sampler, uvK, K)`, so the
 /// thing to hold is that the layer literal and the UV agree — and, for the
 /// rough/AO array, that AO sits at `AO_LAYER0 + K` and never at `K`, because
 /// an AO tap at layer 0–3 reads ROUGHNESS and the island goes dark only where
-/// a surface is smooth, which does not look like a wrong layer.
+/// a surface is smooth, which does not look like a wrong layer. The wall taps
+/// live in `wall_plane`, which takes the layer and the tile as arguments, so
+/// there the thing to hold is that each call hands identity K its own tile,
+/// and that every tap inside reads the tiled UV and both tiled gradients.
 ///
 /// A tap the scrape cannot classify fails loudly rather than being skipped.
 #[test]
@@ -277,14 +280,14 @@ fn every_tap_uses_its_identitys_uv() {
         "splat.tile.z",
         "splat.tile.w",
     ];
+    let (planar_src, wall_fn) = split_wall_tap(&wgsl);
 
     // `(family, identity)` → planar taps seen; every family × identity must
-    // be sampled exactly once, and the albedo wall tap once more.
+    // be sampled exactly once.
     let mut planar = [[0u32; 4]; 4];
-    let mut wall = [0u32; 4];
     let mut checked = 0;
     let mut road = [0u32; 4];
-    for tap in taps(&wgsl) {
+    for tap in taps(&planar_src) {
         let (family, layer, args) = classify(&tap);
         // The slot within its family: AO counts from `AO_LAYER0`, and slot 4
         // of every family is the road's aggregate, which is no identity.
@@ -314,31 +317,10 @@ fn every_tap_uses_its_identitys_uv() {
                     planar[family][k] += 1;
                 }
             }
-            // textureSampleGrad(maps, sampler, uv, layer, ddx, ddy)
-            [_, sampler, uv, _, ddx, ddy] => {
-                assert_eq!(*sampler, "ground_sampler", "{tap}");
-                assert_eq!(family, 0, "only the albedo has a wall tap\n  {tap}");
-                for (what, expr) in [("uv", uv), ("ddx", ddx), ("ddy", ddy)] {
-                    assert_eq!(
-                        expr.matches(comp[k]).count(),
-                        1,
-                        "{role}: its wall tap's {what} is `{expr}`, which must \
-                         scale by {} exactly once — the UV and both gradients \
-                         pick the mip together.\n  {tap}",
-                        comp[k]
-                    );
-                    for (j, other) in comp.iter().enumerate().filter(|(j, _)| *j != k) {
-                        assert!(
-                            !expr.contains(other),
-                            "{role}: its wall tap's {what} mentions {other}, \
-                             which belongs to {}.\n  {tap}",
-                            ROLES[j]
-                        );
-                    }
-                }
-                wall[k] += 1;
-            }
-            _ => panic!("a texture tap this scrape cannot classify: {tap}"),
+            _ => panic!(
+                "a tap outside `wall_tap` that is not a planar `textureSample`: \
+                 {tap}"
+            ),
         }
         checked += 1;
     }
@@ -353,10 +335,6 @@ fn every_tap_uses_its_identitys_uv() {
         }
     }
     assert_eq!(
-        wall, [1; 4],
-        "each albedo layer gets exactly one wall tap: {wall:?}"
-    );
-    assert_eq!(
         road, [1; 4],
         "road aggregate needs every channel registered: {road:?}"
     );
@@ -364,14 +342,110 @@ fn every_tap_uses_its_identitys_uv() {
         wgsl.contains("let uv_road = in.uv * splat.tile.w * splat.pavement.w;"),
         "road projection must have fixed world scale, independent of coverage"
     );
-    assert_eq!(checked, 24, "16 terrain + 4 wall + 4 road taps");
     // 4 identities × (albedo + normal + rough + ao) = 16 planar taps, plus the
-    // 4 albedo wall taps. A drop below this is the scrape going blind.
-    assert!(
-        checked >= 20,
-        "only {checked} taps classified — expected at least 20 (16 planar + 4 \
-         wall). The scrape has gone blind rather than the shader being right."
+    // road's 4. A drop below this is the scrape going blind.
+    assert_eq!(checked, 20, "16 terrain + 4 road taps");
+
+    // The wall: each identity hands `wall_tap` its own layer and tile, once.
+    for (k, c) in comp.iter().enumerate() {
+        let call = format!("wall_tap(wall, {k}, {c})");
+        assert_eq!(
+            planar_src.matches(&call).count(),
+            1,
+            "{}: no single `{call}` — its wall taps would be drawn at another \
+             identity's density, or not at all",
+            ROLES[k]
+        );
+    }
+    assert_eq!(
+        planar_src.matches("wall_tap(").count(),
+        4,
+        "`wall_tap` is called other than once per identity"
     );
+    // …and `wall_plane` tiles the UV and both gradients together, and
+    // `wall_tap` hands it each plane's own UV and gradients.
+    for line in [
+        "let uv = uv0 * tile;",
+        "let dx = dx0 * tile;",
+        "let dy = dy0 * tile;",
+    ] {
+        assert_eq!(
+            wall_fn.matches(line).count(),
+            1,
+            "`wall_plane` does not tile exactly once with `{line}` — the UV \
+             and both gradients pick the mip together"
+        );
+    }
+    for plane in ["a", "b"] {
+        let args = format!(
+            "wall_plane(wall.uv_{plane}, wall.dx_{plane}, wall.dy_{plane}, wall.axis_{plane}, layer, tile,"
+        );
+        assert_eq!(
+            wall_fn.matches(&args).count(),
+            1,
+            "`wall_tap` does not read plane {plane} with its own UV and \
+             gradients (`{args}`)"
+        );
+    }
+    let ao0 = wgsl
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("const AO_LAYER0: i32 = "))
+        .and_then(|v| v.trim_end_matches(';').parse::<u32>().ok())
+        .expect("no `const AO_LAYER0: i32 = <literal>;` in the shader");
+    assert_eq!(
+        ao0, AO_LAYER0,
+        "the shader's AO_LAYER0 is {ao0}, `textures::AO_LAYER0` is {AO_LAYER0}: \
+         the wall's AO taps would read another layer"
+    );
+    let mut wall = [0u32; 4];
+    for tap in taps(&wall_fn) {
+        match args_of(&tap).as_slice() {
+            // textureSampleGrad(maps, sampler, uv, layer, ddx, ddy)
+            [maps, sampler, uv, layer, ddx, ddy] => {
+                assert!(tap.starts_with("textureSampleGrad("), "{tap}");
+                assert_eq!(*sampler, "ground_sampler", "{tap}");
+                assert_eq!(
+                    (*uv, *ddx, *ddy),
+                    ("uv", "dx", "dy"),
+                    "a wall tap that does not read its plane's tiled UV and \
+                     gradients: {tap}"
+                );
+                let family = match (*maps, *layer) {
+                    ("albedo_maps", "layer") => 0,
+                    ("normal_maps", "layer") => 1,
+                    ("rough_ao_maps", "layer") => 2,
+                    ("rough_ao_maps", "layer + AO_LAYER0") => 3,
+                    _ => panic!("a wall tap this scrape cannot classify: {tap}"),
+                };
+                wall[family] += 1;
+            }
+            _ => panic!("a wall tap this scrape cannot classify: {tap}"),
+        }
+    }
+    assert_eq!(
+        wall, [1; 4],
+        "`wall_plane` must read every family exactly once: {wall:?}"
+    );
+}
+
+/// The shader with the wall functions (`wall_plane`, `wall_tap`) cut out,
+/// and those functions' source.
+fn split_wall_tap(wgsl: &str) -> (String, String) {
+    let mut rest = wgsl.to_string();
+    let mut fns = String::new();
+    for name in ["fn wall_plane(", "fn wall_tap("] {
+        let at = rest
+            .find(name)
+            .unwrap_or_else(|| panic!("no `{name}` in the shader"));
+        let len = rest[at..]
+            .find("\n}")
+            .unwrap_or_else(|| panic!("unterminated `{name}`"))
+            + 2;
+        fns.push_str(&rest[at..at + len]);
+        fns.push('\n');
+        rest.replace_range(at..at + len, "");
+    }
+    (rest, fns)
 }
 
 /// The families in the order [`classify`] numbers them.
@@ -413,11 +487,8 @@ fn taps(wgsl: &str) -> Vec<String> {
     out
 }
 
-/// One tap as `(family index, layer, args)`: the family from the array the
-/// tap names, the layer from its literal, and the arguments split at the
-/// call's own depth. Roughness and AO share `rough_ao_maps` and are told
-/// apart by the layer against `AO_LAYER0`.
-fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
+/// A call's arguments, split at the call's own depth.
+fn args_of(tap: &str) -> Vec<&str> {
     let open = tap.find('(').unwrap();
     let inner = &tap[open + 1..tap.len() - 1];
     let mut args = Vec::new();
@@ -435,6 +506,15 @@ fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
         }
     }
     args.push(inner[start..].trim());
+    args
+}
+
+/// One tap as `(family index, layer, args)`: the family from the array the
+/// tap names, the layer from its literal, and the arguments split at the
+/// call's own depth. Roughness and AO share `rough_ao_maps` and are told
+/// apart by the layer against `AO_LAYER0`.
+fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
+    let args = args_of(tap);
     let layer: u32 = args
         .get(3)
         .unwrap_or_else(|| panic!("no layer argument in {tap}"))
