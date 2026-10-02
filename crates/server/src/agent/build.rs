@@ -2779,6 +2779,11 @@ impl Builder {
         let at = addr(plan, s);
         match s.op {
             Op::Grade(_) => !self.superseded(s) && piece_at(core, at).is_some(),
+            // A kit that stands on a piece of the plan waits for it: with the
+            // wood in the box, the foundation's bill went unpaid while the
+            // bench in hand was "ready", and three deploys onto bare ground
+            // gave the bench up for good.
+            Op::Kit(_) => place_of(s).is_none() || piece_at(core, at).is_some(),
             Op::Lock => {
                 self.ours_at(plan, at)
                     && deploy_rec(core, at).is_some_and(|d| {

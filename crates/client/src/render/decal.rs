@@ -1719,19 +1719,6 @@ mod tests {
         }
     }
 
-    /// `DECAL_DUMP=<dir> cargo test -p client --lib decal_dump -- --ignored`
-    /// writes both atlases as raw RGBA, for looking at.
-    #[test]
-    #[ignore]
-    fn decal_dump() {
-        let Ok(dir) = std::env::var("DECAL_DUMP") else {
-            return;
-        };
-        let (albedo, relief, w, h) = atlas_maps();
-        std::fs::write(format!("{dir}/albedo_{w}x{h}.rgba"), albedo).unwrap();
-        std::fs::write(format!("{dir}/relief_{w}x{h}.rgba"), relief).unwrap();
-    }
-
     /// Every cell a kind uses is drawn, is transparent at its border (so no
     /// mip bleeds a neighbour in) and has a solid body somewhere.
     #[test]
