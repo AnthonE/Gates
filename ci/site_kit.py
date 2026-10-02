@@ -12,8 +12,10 @@ boxes.
 script only *dresses* them: a container wall becomes stacked, ribbed
 containers with corner castings; a pylon becomes courses of dark ashlar with
 gilt bands; the ring of gilt decor boxes becomes a broken torus; awnings sag;
-lamps and string lights hang. Anything it adds below head height stays inside
-its part's box (±5 cm), so what you see is what stops you.
+a post is carried up to the roof it holds; tarp poles stand through their
+tables; lamps hang on rods and string lights between them. Anything it adds
+below head height stays over its part's footprint (±5 cm), so what you see is
+what stops you.
 
 **No textures.** Each mesh is named by its material role (`yard`, `cargo`,
 `obsidian`, …) and the client binds the game's own photographed surfaces to
@@ -39,6 +41,10 @@ ROLES = ("yard", "concrete", "sheet", "cargo", "timber", "steel", "obsidian",
          "gilt", "canvas", "lapis", "bulb")
 ROOF, DECOR, STACK = 1, 2, 4
 CONTAINER_L, CONTAINER_H = 6.06, 2.6
+# Above this nobody's head reaches, so a drawn-only piece cannot be walked into.
+HEAD_M = 2.0
+# The furthest a post is carried up to its roof, or a lamp's rod reaches.
+REACH_M = 3.0
 
 GLYPHS = {
     "T": [31, 4, 4, 4, 4, 4, 4],
@@ -106,6 +112,53 @@ def glyph_cells(text):
     return cells
 
 
+def awning_uv(b, u, v):
+    """Height of awning `b`'s canvas at fractions (u, v) across its x and z:
+    0.5 m lower at the edge it overhangs (the lower |x| edge faces the
+    street) and sagging between its z ends."""
+    edge = u if abs(b[0]) < abs(b[3]) else 1 - u  # 0 at the street edge
+    return b[4] - 0.5 * (1 - edge) - 0.12 * math.sin(math.pi * v)
+
+
+def underside(p, x, z):
+    """What part `p` offers from below at (x, z): an awning its own canvas,
+    anything else its bottom face."""
+    b = p["b"]
+    if p["mat"] == "canvas" and p["flags"] & DECOR:
+        return awning_uv(b, (x - b[0]) / (b[3] - b[0]), (z - b[2]) / (b[5] - b[2]))
+    return b[1]
+
+
+def over(b, x, z):
+    return b[0] <= x <= b[3] and b[2] <= z <= b[5]
+
+
+def above(parts, x, z, y):
+    """The lowest underside at or above height `y` over (x, z), or None."""
+    hits = [h for h in (underside(p, x, z) for p in parts if over(p["b"], x, z)) if h >= y - 1e-6]
+    return min(hits) if hits else None
+
+
+def below(parts, x, z, y):
+    """The highest top at or below height `y` under (x, z), or None."""
+    tops = [p["b"][4] for p in parts if over(p["b"], x, z) and p["b"][4] <= y + 1e-6]
+    return max(tops) if tops else None
+
+
+def reach(p, parts):
+    """Part `p`'s box as drawn: a post whose top is out of reach and stops
+    short of the roof over it is carried up to that roof (the watchtowers'
+    legs collide to 8 m and their roofs sit at 9.6)."""
+    b = p["b"]
+    dx, dy, dz = b[3] - b[0], b[4] - b[1], b[5] - b[2]
+    if p["mat"] not in ("timber", "steel") or dy <= max(dx, dz) * 2 or b[4] < HEAD_M:
+        return b
+    top = above(parts, (b[0] + b[3]) / 2, (b[2] + b[5]) / 2, b[4])
+    if top is None or top - b[4] > REACH_M:
+        return b
+    return [b[0], b[1], b[2], b[3], top, b[5]]
+
+
 def self_test():
     assert kit_to_blender((1, 2, 3)) == (1, -3, 2)
     pts = [(7.6 * math.cos(math.radians(a)), 18 + 7.6 * math.sin(math.radians(a)))
@@ -120,6 +173,19 @@ def self_test():
     kit = {"name": "t", "parts": [{"b": [0, 0, 0, 1, 1, 1], "mat": "cargo", "flags": 0, "door": 0}],
            "anchors": []}
     assert parse(json.dumps(kit))["parts"][0]["mat"] == "cargo"
+    # An awning drops 0.5 m to its street edge and sags midway along z.
+    aw = {"b": [4.2, 2.7, 0, 8.6, 2.9, 6], "mat": "canvas", "flags": ROOF | DECOR, "door": 0}
+    assert abs(underside(aw, 4.2, 0) - 2.4) < 1e-9 and abs(underside(aw, 8.6, 6) - 2.9) < 1e-9
+    assert abs(underside(aw, 8.6, 3) - 2.78) < 1e-9
+    # A leg is carried up to the roof over it; a short post or a bare one is not.
+    leg = {"b": [0, 0, 0, 0.4, 8, 0.4], "mat": "timber", "flags": 0, "door": 0}
+    deck = {"b": [-1, 7, -1, 2, 7.3, 2], "mat": "timber", "flags": DECOR, "door": 0}
+    roof = {"b": [-1, 9.6, -1, 2, 9.9, 2], "mat": "sheet", "flags": DECOR, "door": 0}
+    assert reach(leg, [leg, deck, roof])[4] == 9.6
+    assert reach(leg, [leg, deck])[4] == 8
+    stub = {"b": [0, 0, 0, 0.2, 1.5, 0.2], "mat": "steel", "flags": 0, "door": 0}
+    assert reach(stub, [stub, roof])[4] == 1.5
+    assert above([deck, roof], 0.5, 0.5, 9.25) == 9.6 and below([deck, roof], 0.5, 0.5, 9.0) == 7.3
     print("site_kit self-test: OK")
 
 
@@ -373,16 +439,11 @@ def awning(s, b, rng):
     """A sagging striped awning filling decor box `b`, sloping toward the
     side it overhangs (the lower |x| edge faces the street)."""
     x0, y0, z0, x1, y1, z1 = b
-    street_low = abs(x0) < abs(x1)
     stripes = [(0.78, 0.66, 0.48), (0.62, 0.22, 0.18)] if rng.random() < 0.5 else [(0.78, 0.66, 0.48), (0.2, 0.33, 0.52)]
     nx, nz = 6, 12
     def pt(i, k):
         u, v = i / nx, k / nz
-        x = x0 + (x1 - x0) * u
-        z = z0 + (z1 - z0) * v
-        edge = u if street_low else 1 - u  # 0 at the street edge
-        y = y1 - 0.5 * (1 - edge) - 0.12 * math.sin(math.pi * v)
-        return (x, y, z)
+        return (x0 + (x1 - x0) * u, awning_uv(b, u, v), z0 + (z1 - z0) * v)
     for i in range(nx):
         for k in range(nz):
             t = stripes[k % 2]
@@ -470,13 +531,21 @@ def catenary(a, b, sag, n=12):
     return out
 
 
-def lights(s, anchors, rng):
+def lights(s, parts, anchors):
     lamps = [a["at"] for a in anchors if a["kind"] == "lamp"]
     steel = (0.3, 0.32, 0.33)
     for (x, y, z) in lamps:
-        # A hooded head and its bulb.
+        # A hooded head and its bulb, on a rod up to whatever is over it or
+        # else down to whatever is under it (a street lamp's head already
+        # sits on its post).
         s.box("steel", (x - 0.35, y - 0.12, z - 0.2, x + 0.35, y + 0.05, z + 0.2), steel, bevel=0.02)
         s.box("bulb", (x - 0.14, y - 0.24, z - 0.1, x + 0.14, y - 0.12, z + 0.1))
+        up = above(parts, x, z, y + 0.05)
+        down = below(parts, x, z, y - 0.12)
+        if up is not None and up - (y + 0.05) <= REACH_M:
+            s.prism("steel", (x, y + 0.05, z), (x, up + 0.02, z), 0.025, 6, steel)
+        elif down is not None and (y - 0.12) - down <= REACH_M:
+            s.prism("steel", (x, down, z), (x, y - 0.12, z), 0.03, 6, steel)
     # String lights along the market street: between consecutive lamps on
     # the street (|x| < 7), zig-zag across.
     street = sorted([l for l in lamps if abs(l[0]) < 7 and l[1] < 6], key=lambda l: l[2])
@@ -489,6 +558,18 @@ def lights(s, anchors, rng):
         for k, p in enumerate(pts[1:-1]):
             if k % 2 == 0:
                 s.box("bulb", (p[0] - 0.05, p[1] - 0.12, p[2] - 0.05, p[0] + 0.05, p[1] - 0.02, p[2] + 0.05))
+
+
+def poles(s, parts, anchors):
+    """Tarp poles (`town.rs` `POLES`): up from the floor, through the table
+    each stands in, to the canvas over it."""
+    for a in anchors:
+        if a["kind"] != "pole":
+            continue
+        x, y, z = a["at"]
+        top = above(parts, x, z, HEAD_M)
+        if top is not None:
+            s.box("timber", (x - 0.07, y, z - 0.07, x + 0.07, top + 0.02, z + 0.07), (0.92, 0.92, 0.92), bevel=0.02)
 
 
 def sign(s, text, beam, outward):
@@ -559,7 +640,7 @@ def dress(s, kit, rng, label):
     ring_parts = [p for p in parts if p["mat"] == "gilt" and p["flags"] & DECOR
                   and kit["name"] == "town"]
     for p in parts:
-        b = p["b"]
+        b = reach(p, parts)
         mat, flags = p["mat"], p["flags"]
         if p.get("door", 0):
             continue  # doors are drawn by the client, which animates them
@@ -605,7 +686,8 @@ def dress(s, kit, rng, label):
             sign(s, label, b, "z+" if b[5] > 0 else "z-")
         elif dz >= 10 and dx < 2:
             sign(s, label, b, "x+" if b[3] > 0 else "x-")
-    lights(s, kit["anchors"], rng)
+    lights(s, parts, kit["anchors"])
+    poles(s, parts, kit["anchors"])
     if kit["name"] == "ziggurat":
         terraces(s, rng)
 

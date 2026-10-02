@@ -102,6 +102,9 @@ fn main() {
     write_fixture(goldens::FIXTURES[127], &buf[..len]);
     let len = protocol::encode_action_swipe(goldens::action_swipe(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[128], &buf[..len]);
+    // Until when you are hostile (v89).
+    let len = protocol::encode_event_hostile(goldens::event_hostile(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[129], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

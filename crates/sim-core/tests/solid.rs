@@ -170,11 +170,10 @@ fn the_radii_keep_the_order_the_meshes_have() {
     assert_eq!(r(Occupant::StoneNode), r(Occupant::MetalNode));
     assert_eq!(r(Occupant::StoneNode), r(Occupant::SulfurNode));
 
-    // A trunk you stop at is 5.7 m of trunk, not 6.6 m of tree: you walk
-    // UNDER a canopy. The distinction is free at a 1.7 m body and correct
-    // the moment anything leaves the ground.
+    // A tree is solid as high as it is drawn (the broadleaf's 11 m), so an
+    // arrow or a roof-stander cannot pass through the upper half.
     assert!(
-        OCCUPANT_TOP_M[Occupant::Tree as usize] > 5.0,
+        OCCUPANT_TOP_M[Occupant::Tree as usize] >= 11.0,
         "the tree's blocking height collapsed to {}",
         OCCUPANT_TOP_M[Occupant::Tree as usize]
     );

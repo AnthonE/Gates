@@ -72,6 +72,8 @@ pub struct Crawl {
     /// and not once a frame (a `format!` per frame is an allocation per
     /// frame, and the client is held to the sim thread's discipline).
     shown: u32,
+    /// The odds last drawn, for the same reason.
+    shown_pm: u16,
 }
 
 /// One system: spawn the screen when the body goes down, count while it is
@@ -108,10 +110,27 @@ pub fn overlay(
             if !helping {
                 crawl.secs_left = (crawl.secs_left - time.delta_secs()).max(0.0);
             }
+            // The roll reads the meters when it lands, not as you fell, so
+            // the odds follow what you eat and drink while down. A stated
+            // 1000 is a recovery kit on the belt, which the meters cannot
+            // see and a downed body cannot move.
+            let core = &net.session.core;
+            let chance = if crawl.chance_pm >= 1000 || core.max_food == 0 || core.max_water == 0 {
+                crawl.chance_pm
+            } else {
+                sim_core::wound::recover_chance_pm(
+                    core.food,
+                    core.water,
+                    core.max_food,
+                    core.max_water,
+                )
+                .min(1000) as u16
+            };
             let whole = crawl.secs_left.ceil() as u32;
-            if whole != crawl.shown {
+            if whole != crawl.shown || chance != crawl.shown_pm {
                 crawl.shown = whole;
-                let want = crate::ui::wounded::readout(crawl.secs_left, crawl.chance_pm);
+                crawl.shown_pm = chance;
+                let want = crate::ui::wounded::readout(crawl.secs_left, chance);
                 for mut t in &mut lines {
                     t.0 = want.clone();
                 }

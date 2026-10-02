@@ -791,8 +791,33 @@ pub fn keys(
     // (neither item has an attack: the hammer's damage total is 0).
     let core = &net.session.core;
     let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
-    let holding_wheel = hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
+    // Down, no panel: the hands are gone (wounded v0) and an open panel
+    // zeroes movement, which would also stop the crawl to the door.
+    let down = core.wounded;
+    let holding_wheel = !down && hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
+    if down {
+        if keyboard.just_pressed(KeyCode::Tab)
+            || keyboard.just_pressed(KeyCode::KeyI)
+            || keyboard.just_pressed(KeyCode::KeyQ)
+        {
+            toast.warn(crate::ui::wounded::HANDS_LINE);
+        }
+        if ui.panel != Panel::None {
+            // Not `Hammer -> None` through the wheel arm below, which would
+            // fire whatever the wheel was over.
+            ui.panel = Panel::None;
+            ui.drag = None;
+            ui.hover = None;
+            ui.search_focus = false;
+            ui.dirty = true;
+        }
+        if was_inventory {
+            super::verbs::close_container(&net, &mut toast);
+        }
+        chars.clear();
+        return;
+    }
 
     // **Two pages, Rust's two keys.** `Tab` is the inventory and `Q` is the
     // crafting menu; each key shuts its own page and switches from the

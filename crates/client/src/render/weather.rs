@@ -53,6 +53,10 @@ pub struct WeatherNow {
     pub wind_dir: Vec2,
     /// The lightning flash this frame, `0..=1`.
     pub flash: f32,
+    /// Toward the bolt making this frame's flash, world XZ, unit — the
+    /// bolt's `bearing` (`sim_core::weather::Bolt`), so the flash lights the
+    /// island from the side it struck (`rig::BoltLight`).
+    pub flash_dir: Vec2,
     /// A roof over the eye (`collide::roofed`).
     pub sheltered: bool,
     /// The eye is under the sea.
@@ -219,7 +223,11 @@ pub fn update(
             let since = now_s - struck;
             // Far bolts light the sky less.
             let near = (1.0 - b.dist_m as f32 / 5000.0).clamp(0.2, 1.0);
-            flash = flash.max(flash_at(since) * near);
+            let f = flash_at(since) * near;
+            if f > flash {
+                flash = f;
+                now.flash_dir = wind_vec(b.bearing);
+            }
             if since >= 0.0 && s > now.last_bolt {
                 now.last_bolt = s;
                 let delay = b.dist_m as f64 / 343.0;

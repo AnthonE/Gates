@@ -25,7 +25,7 @@ use protocol::{ActionMsg, ChatMsg, InputDatagram, MAX_EVENT_MSG_BYTES};
 use rtrb::{Consumer, Producer};
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::persist::PlayerSave;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Slot lifecycle, 2 bits of the packed word. Claims bump the generation
 /// (the other 30 bits) so a task from a dead connection can never act on a
@@ -56,14 +56,21 @@ pub fn generation_of(word: u32) -> u32 {
 /// the sim thread.
 pub struct SlotTable {
     words: Box<[AtomicU32]>,
+    /// Why a slot was sent away: `generation << 9 | 0x100 | refuse code`,
+    /// written before the leave (`mark_leaving_why`) and read by the event
+    /// writer, which posts it as the session's last message.
+    why: Box<[AtomicU64]>,
 }
 
 impl SlotTable {
     pub fn new(slots: usize) -> Self {
         let mut v = Vec::with_capacity(slots);
         v.resize_with(slots, || AtomicU32::new(pack(SLOT_EMPTY, 0)));
+        let mut why = Vec::with_capacity(slots);
+        why.resize_with(slots, || AtomicU64::new(0));
         Self {
             words: v.into_boxed_slice(),
+            why: why.into_boxed_slice(),
         }
     }
 
@@ -105,6 +112,22 @@ impl SlotTable {
             Ordering::AcqRel,
             Ordering::Acquire,
         );
+    }
+
+    /// [`Self::mark_leaving`] with a reason the client is told before the
+    /// connection closes (a kick, a watched player leaving).
+    pub fn mark_leaving_why(&self, slot: usize, generation: u32, code: u8) {
+        self.why[slot].store(
+            ((generation as u64) << 9) | 0x100 | code as u64,
+            Ordering::Release,
+        );
+        self.mark_leaving(slot, generation);
+    }
+
+    /// The reason recorded for `generation` leaving `slot`, if one was.
+    pub fn why(&self, slot: usize, generation: u32) -> Option<u8> {
+        let w = self.why[slot].load(Ordering::Acquire);
+        (w >> 9 == generation as u64 && w & 0x100 != 0).then_some(w as u8)
     }
 
     /// Sim thread only: release a cleaned slot.

@@ -839,8 +839,9 @@ mod tests {
     fn the_box_gives_up_what_the_cupboard_eats_and_a_visit_that_did_nothing_waits() {
         use sim_core::deploy::FEED_CHUNK;
         let mut core = core();
-        // The last feed read 5 periods of stone: running low.
-        core.stock[0] = (STONE, 50, 10);
+        // The last feed read 5 periods of stone (50 against 240 a day):
+        // running low.
+        core.stock[0] = (STONE, 50, 240);
         core.stock_count = 1;
         let mut home = Home::new();
         home.on_stock(&core, 0, 3);

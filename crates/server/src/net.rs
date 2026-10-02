@@ -1177,19 +1177,14 @@ async fn accept_loop(
                         continue;
                     }
                     ShardStats::bump(&stats.entitle_kicked);
-                    slots.mark_leaving(slot, gen);
+                    slots.mark_leaving_why(slot, gen, protocol::REFUSE_TICKET);
                     if let Some(conn) = keys[slot].conn.take() {
                         // Closed with the refusal code rather than dropped,
                         // so the player is told WHY by the same table a join
                         // refusal uses. A silent close reads as a network
                         // fault, and "my internet is broken" is the wrong
                         // thing to believe when the fix is to buy a copy.
-                        conn.close(
-                            wtransport::VarInt::from_u32(protocol::REFUSE_TICKET as u32),
-                            protocol::refuse_text(protocol::REFUSE_TICKET)
-                                .unwrap_or("no copy")
-                                .as_bytes(),
-                        );
+                        close_with_reason(conn, protocol::REFUSE_TICKET);
                     }
                 }
             }
@@ -1216,14 +1211,13 @@ async fn accept_loop(
                         continue;
                     }
                     ShardStats::bump(&stats.spectate_ended);
-                    slots.mark_leaving(MAX_PLAYERS + i, seat.generation);
+                    slots.mark_leaving_why(
+                        MAX_PLAYERS + i,
+                        seat.generation,
+                        protocol::REFUSE_WATCH_ENDED,
+                    );
                     if let Some(conn) = seat.conn.take() {
-                        conn.close(
-                            wtransport::VarInt::from_u32(protocol::REFUSE_WATCH_ENDED as u32),
-                            protocol::refuse_text(protocol::REFUSE_WATCH_ENDED)
-                                .unwrap_or("ended")
-                                .as_bytes(),
-                        );
+                        close_with_reason(conn, protocol::REFUSE_WATCH_ENDED);
                     }
                     *seat = SeatSlot::default();
                 }
@@ -1258,18 +1252,17 @@ async fn accept_loop(
                         continue;
                     }
                     ShardStats::bump(&stats.admin_kicked);
-                    slots.mark_leaving(slot, crate::slot::generation_of(word));
+                    slots.mark_leaving_why(
+                        slot,
+                        crate::slot::generation_of(word),
+                        protocol::REFUSE_ADMIN,
+                    );
                     if let Some(conn) = keys[slot].conn.take() {
                         // Closed with a posted reason, the entitle kick's
                         // rule: a silent close reads as a network fault,
                         // and "my internet broke" is the wrong thing for a
                         // kicked player to believe.
-                        conn.close(
-                            wtransport::VarInt::from_u32(protocol::REFUSE_ADMIN as u32),
-                            protocol::refuse_text(protocol::REFUSE_ADMIN)
-                                .unwrap_or("kicked")
-                                .as_bytes(),
-                        );
+                        close_with_reason(conn, protocol::REFUSE_ADMIN);
                     }
                 }
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
@@ -2751,6 +2744,18 @@ async fn event_writer_task(
         poll.tick().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
+            // Sent away with a reason: post it as the session's last word,
+            // inside the grace `close_with_reason` waits out. A browser
+            // cannot read the QUIC close code, so this is how it learns why.
+            if generation_of(word) == generation {
+                if let Some(code) = slots.why(slot, generation) {
+                    let _ = tokio::time::timeout(REFUSE_POST_TIMEOUT, async {
+                        write_refuse(&mut send, code).await?;
+                        send.finish().await.map_err(|_| ())
+                    })
+                    .await;
+                }
+            }
             return; // slot moved on; sim (or reader) already knows
         }
         while let Ok(msg) = ev_rx.pop() {
@@ -2808,6 +2813,27 @@ pub async fn read_event_frame(recv: &mut RecvStream) -> Option<([u8; MAX_EVENT_M
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     recv.read_exact(&mut buf[..len]).await.ok()?;
     Some((buf, len))
+}
+
+/// How long a kicked session stays open so its event writer can post the
+/// reason (`SlotTable::why`) before the close. Longer than
+/// [`REFUSE_POST_TIMEOUT`], so the post finishes or gives up first.
+const KICK_GRACE: Duration = Duration::from_millis(400);
+/// The most the event writer spends posting a leave reason.
+const REFUSE_POST_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// Close a connection the shard is sending away, with the refusal code (the
+/// desktop reads it off the close), after [`KICK_GRACE`] so the reason
+/// posted on the event lane arrives first. Detached: it never holds up the
+/// accept loop.
+fn close_with_reason(conn: Connection, code: u8) {
+    tokio::spawn(async move {
+        tokio::time::sleep(KICK_GRACE).await;
+        conn.close(
+            wtransport::VarInt::from_u32(code as u32),
+            protocol::refuse_text(code).unwrap_or("closed").as_bytes(),
+        );
+    });
 }
 
 async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
