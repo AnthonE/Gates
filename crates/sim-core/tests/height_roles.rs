@@ -373,6 +373,13 @@ fn is_raw_read(line: &str) -> bool {
         "terrain::height_memo(",
         "crate::terrain::height_memo(",
         "sim_core::terrain::height_memo(",
+        // The lakes' open-sea share rides on the same raw height.
+        "terrain::height_open(",
+        "crate::terrain::height_open(",
+        "sim_core::terrain::height_open(",
+        "terrain::height_open_memo(",
+        "crate::terrain::height_open_memo(",
+        "sim_core::terrain::height_open_memo(",
         "terrain::slope(",
         "crate::terrain::slope(",
         "sim_core::terrain::slope(",
