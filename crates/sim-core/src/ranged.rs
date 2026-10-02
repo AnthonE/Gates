@@ -671,6 +671,15 @@ pub fn draw(
         .filter(|&a| inv_count(&p.inv, a) > 0)
         .find_map(|a| cc.ammo_def(a).map(|b| (a, b)))
     else {
+        // An empty quiver says so, as the gun's dry click does: a loose
+        // that went quiet read as a dropped input. Bounded by the cadence
+        // paid above; `c` is 0, a bow having no magazine to state.
+        events.push(
+            EV_RELOAD_REFUSED,
+            p.id,
+            (held_item(p) as u32) << 16 | REFUSE_RL_DRY,
+            0,
+        );
         return true;
     };
     // Space before ammo, always. A full store must cost the shooter

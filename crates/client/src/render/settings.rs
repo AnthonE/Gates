@@ -945,7 +945,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is a stance** (v83): slower, lower, quieter, smaller to hit, and
 /// the sneak the animal brain listens for (`sim-core/src/brain.rs`). `Z` is
 /// named beside Ctrl because the browser closes a tab on Ctrl+W.
-pub const BINDS: [(&str, &str); 21] = [
+pub const BINDS: [(&str, &str); 23] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -980,6 +980,14 @@ pub const BINDS: [(&str, &str); 21] = [
         "Right Mouse with a torch in hand (it burns while it is lit)",
     ),
     ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
+    (
+        "TURN WHILE PLACING",
+        "R with a box, a fire or a bench in hand (a quarter turn each press)",
+    ),
+    (
+        "LIGHT / SWITCH ON",
+        "C at a fire, furnace, recycler or research table, or the switch in its panel",
+    ),
     (
         "CHANGE SKIN",
         "P over an item in the inventory, at a workbench (cycles the skins you own)",

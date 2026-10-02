@@ -197,7 +197,8 @@ pub fn build_screen(
                     ));
                 }
                 p.spawn((
-                    Text::new("[E] / [ESC] CLOSE"),
+                    // Esc only: with a panel up `verbs::keys` never sees `E`.
+                    Text::new("[ESC] CLOSE"),
                     font(11.0),
                     TextColor(TEXT_DIM),
                 ));

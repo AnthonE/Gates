@@ -1914,10 +1914,27 @@ pub fn update(
                 Some(crate::ui::place::DeployVerdict::No(w)) if !w.is_empty() => w,
                 _ => "",
             };
-            if why.is_empty() {
-                format!("PLACE  {name}   (left click · [R] turn)")
-            } else {
-                format!("PLACE  {name}  — {}", why.to_uppercase())
+            // `R` turns only what stands freely; a door, a lock or an
+            // insert goes where its doorway or box says. Kept while red,
+            // when a turn is often what makes it fit.
+            let turns = crate::ui::structure::row_for_item(
+                &core.deploy_defs,
+                core.deploy_defs_have,
+                held.item,
+            )
+            .is_some_and(|row| {
+                matches!(
+                    core.deploy_defs.defs[row as usize].placement,
+                    sim_core::deploy::PLACE_GROUND
+                        | sim_core::deploy::PLACE_FOUNDATION
+                        | sim_core::deploy::PLACE_ANY
+                )
+            });
+            match (why.is_empty(), turns) {
+                (true, true) => format!("PLACE  {name}   (left click · [R] turn)"),
+                (true, false) => format!("PLACE  {name}   (left click)"),
+                (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
+                (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
             }
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
@@ -2135,16 +2152,25 @@ pub fn update(
 /// A ring is drained to EMPTY each frame rather than one entry per frame:
 /// they are small (`TOAST_RING`) and a backlog drip-fed at frame rate would
 /// still be showing the first refusal after the tenth.
+#[allow(clippy::too_many_arguments)]
 pub fn feedback(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
     mut toast: ResMut<Toast>,
     hearth_view: Res<super::verbs::HearthView>,
     time: Res<Time>,
+    ghost: Option<Res<super::ghost::Ghost>>,
     mut marks: Query<&mut BackgroundColor, With<HitMark>>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
 ) {
     let core = &net.session.core;
+    // The sim refuses ground the world keeps for itself with the occupied
+    // spot's code; the ghost aimed there knows which of the two it was.
+    let reserved = ghost.as_ref().is_some_and(|g| {
+        g.verdict == crate::ui::place::Verdict::No(crate::ui::place::RESERVED_LINE)
+            || g.deploy_verdict
+                == crate::ui::place::DeployVerdict::No(crate::ui::place::RESERVED_LINE)
+    });
 
     // **Read, never popped.** `render::feed::drain` is the one caller of
     // `pop_*` in the client; this used to pop the rings itself, and the audio
@@ -2178,6 +2204,16 @@ pub fn feedback(
     for (which, code, item) in feed.refusals() {
         toast.warn(match which {
             super::feed::Refused::Craft => crate::ui::refusals::craft(code),
+            super::feed::Refused::Build
+                if reserved && code as u32 == sim_core::build::REFUSE_B_SPOT =>
+            {
+                crate::ui::place::RESERVED_LINE.to_string()
+            }
+            super::feed::Refused::Deploy
+                if reserved && code as u32 == sim_core::deploy::REFUSE_D_SPOT =>
+            {
+                crate::ui::place::RESERVED_LINE.to_string()
+            }
             super::feed::Refused::Build => crate::ui::refusals::build(code),
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
@@ -2195,7 +2231,7 @@ pub fn feedback(
                 crate::ui::refusals::gather(code, &held)
             }
             // The second, on the same terms: *a rock takes no magazine*,
-            // *no rounds left for your Revolver*. `NO_ITEM` is reachable
+            // *no ammunition left for your Revolver*. `NO_ITEM` is reachable
             // here where it is not on a gather — `REFUSE_RL_HAND` fires
             // from an empty hand — so the bare-hands phrase is not a
             // fallback but a real case.

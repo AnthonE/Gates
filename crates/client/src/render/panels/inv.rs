@@ -131,9 +131,15 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
         zone.spawn((
             Text::new(if open_fire(core).is_some() {
                 // Rust's camp fire: each band takes its own, and the
-                // switch is on the panel as well as on `C`.
+                // switch is on the panel (`C` is the key from outside it;
+                // with a panel up the verbs never see it).
                 "wood in FUEL, food in INPUT   -   right-click puts it where it goes   \
-                 -   TURN ON or C lights it   -   Tab or Esc closes"
+                 -   TURN ON lights it   -   Tab or Esc closes"
+            } else if open_converter(core).is_some() {
+                // The furnace and the recycler: one grid, and the switch
+                // under it that `C` throws from outside.
+                "drag to move   -   right-click moves it across   \
+                 -   TURN ON starts it   -   Tab or Esc closes"
             } else if open_table(core).is_some() {
                 // The table's own gestures: which slot takes what, and what
                 // starts it — the two things no other container asks a
@@ -238,12 +244,36 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         BorderColor::all(LINE),
     ))
     .with_children(|col| {
-        section(col, container_title(kind));
-        if let Some(bar) = container_bar(kind, &name) {
-            name_bar(col, bar);
+        let converter = open_converter(core).is_some();
+        if converter {
+            // A converter is headed by what it is, as the table is: BOX
+            // over RECYCLER said the wrong word first.
+            section(col, &name);
+        } else {
+            section(col, container_title(kind));
+            if let Some(bar) = container_bar(kind, &name) {
+                name_bar(col, bar);
+            }
         }
         grid(col, core, icons, kind, 0, n, container_cols(kind), NO_SEL);
+        if converter {
+            controls(col, open_cont_lit(core), Val::Auto);
+        }
     });
+}
+
+/// The open container's archetype, if it is a furnace or a recycler — a
+/// converter with no sections (`ui::oven::converter_open`). The fire has
+/// its own panel ([`open_fire`]).
+fn open_converter(core: &ClientCore) -> Option<u8> {
+    oven_ui::converter_open(
+        core.cont_kind,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+    )
+    .filter(|&arch| sim_core::oven::layout(arch).is_none())
 }
 
 /// The open container's address, if what is open is a **research table**
@@ -378,7 +408,7 @@ fn fire_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, l
                 NO_SEL,
             );
         }
-        controls(col, lit);
+        controls(col, lit, Val::Px(FIRE_W_PX));
     });
 }
 
@@ -476,7 +506,7 @@ fn arrow(parent: &mut ChildSpawnerCommands) {
 /// The CONTROLS bar: the switch, green to light the fire and red to put it
 /// out. It sends what `C` sends (`ACT_USE` at the fire's address), so the
 /// sim's answer — `REFUSE_D_FUEL` with nothing to burn — is the same.
-fn controls(parent: &mut ChildSpawnerCommands, lit: bool) {
+fn controls(parent: &mut ChildSpawnerCommands, lit: bool, width: Val) {
     let (label, rest, hot) = if lit {
         ("TURN OFF", SWITCH_OFF, SWITCH_OFF_HOT)
     } else {
@@ -485,7 +515,7 @@ fn controls(parent: &mut ChildSpawnerCommands, lit: bool) {
     parent
         .spawn((
             Node {
-                width: Val::Px(FIRE_W_PX),
+                width,
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::SpaceBetween,
@@ -522,9 +552,11 @@ fn controls(parent: &mut ChildSpawnerCommands, lit: bool) {
         });
 }
 
-/// TURN ON / TURN OFF: the fire's switch, `ACT_USE` at its address — the
-/// same action `C` sends at a fire. A fire with nothing in its fuel slot
-/// says so instead of asking for a refusal a round trip later.
+/// TURN ON / TURN OFF: a converter's switch, `ACT_USE` at its address —
+/// the same action `C` sends at one. A fire with nothing in its fuel slot
+/// says so instead of asking for a refusal a round trip later; a furnace's
+/// fuel can sit in any slot, so the sim says it (`REFUSE_D_FUEL`), and a
+/// recycler burns nothing.
 pub fn fire_clicks(
     mut ui: ResMut<Ui>,
     net: NonSend<super::super::Net>,
@@ -534,11 +566,12 @@ pub fn fire_clicks(
         return;
     }
     let core = &net.session.core;
-    let Some((_, l)) = open_fire(core) else {
-        return;
-    };
-    if !open_cont_lit(core) && core.cont[l.fuel_slots()].iter().all(|s| s.count == 0) {
-        ui.say("put wood in FUEL to light the fire");
+    if let Some((_, l)) = open_fire(core) {
+        if !open_cont_lit(core) && core.cont[l.fuel_slots()].iter().all(|s| s.count == 0) {
+            ui.say("put wood in FUEL to light the fire");
+            return;
+        }
+    } else if open_converter(core).is_none() {
         return;
     }
     let (cx, cz, level, loc) = research_ui::table_address(core.cont_handle);
@@ -548,7 +581,7 @@ pub fn fire_clicks(
             Ok(()) => ui.status.clear(),
             Err(e) => ui.say(e.to_string()),
         },
-        Err(e) => ui.say(format!("the fire would not switch ({e:?})")),
+        Err(e) => ui.say(format!("that would not switch ({e:?})")),
     }
 }
 
@@ -1863,9 +1896,16 @@ pub fn ghost_follow(
 }
 
 /// Turn the sim's last move refusal into the status line. Read once per
-/// change: `last_move_refused` is a latch, not a queue.
-pub fn note_refusal(ui: &mut Ui, reason: u8) {
+/// change: `last_move_refused` is a latch, not a queue. `open` is the open
+/// converter's archetype: every converter refuses with `REFUSE_M_OVEN`, and
+/// the fire's sentence on a recycler names the wrong machine.
+pub fn note_refusal(ui: &mut Ui, reason: u8, open: Option<u8>) {
     if reason > 0 && reason as u32 <= REFUSE_M_MAX {
-        ui.say(refusal_text(reason));
+        match open {
+            Some(arch) if reason as u32 == sim_core::inventory::REFUSE_M_OVEN => {
+                ui.say(oven_ui::oven_refusal(arch))
+            }
+            _ => ui.say(refusal_text(reason)),
+        }
     }
 }

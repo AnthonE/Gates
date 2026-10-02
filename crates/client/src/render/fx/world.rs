@@ -25,6 +25,17 @@ pub fn is_wall(loc: u8) -> bool {
     matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO | LOC_DIAG_A | LOC_DIAG_B)
 }
 
+/// A free-placed deployable's half footprint `(hw, hd)`, or `None` for an
+/// edge insert or a row whose archetype has not dripped in.
+fn body_half_foot(core: &client_core::core::ClientCore, loc: u8, row: u8) -> Option<(f32, f32)> {
+    if sim_core::deploy::is_edge_loc(loc)
+        || (row as u16) >= core.deploy_defs_have.min(core.deploy_defs.def_count)
+    {
+        return None;
+    }
+    sim_core::footprint::half_foot(core.deploy_defs.defs[row as usize].arch)
+}
+
 /// Where a coming-down piece breaks, as offsets from its base in its own
 /// frame (x across, y up, z along): a wall across its face, anything else
 /// across its footprint.
@@ -100,17 +111,35 @@ pub fn built(
     let core = &net.session.core;
     for &(cx, cz, level, loc, deploy) in feed.placed() {
         let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
-        let tf = structures::base_transform(world.seed, &world.haven, (cx, cz, level, loc), plate);
+        // A deployable puffs where it stands (free placement), along its
+        // own depth; a piece, and anything the mirror lost, at its address.
+        let rec = if deploy {
+            core.deploys
+                .entries()
+                .iter()
+                .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+        } else {
+            None
+        };
+        let tf = match rec {
+            Some(r) => structures::deploy_fx_feet(
+                world.seed,
+                &world.haven,
+                core.pieces.cols(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+                r,
+            ),
+            None => {
+                structures::base_transform(world.seed, &world.haven, (cx, cz, level, loc), plate)
+            }
+        };
         let k = lod(tf.translation.distance(eye.pos));
         if k <= 0.0 {
             continue;
         }
         let matter = if deploy {
-            core.deploys
-                .entries()
-                .iter()
-                .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
-                .map_or(Matter::Wood, |r| deploy_matter(core, r.row))
+            rec.map_or(Matter::Wood, |r| deploy_matter(core, r.row))
         } else {
             core.pieces
                 .entries()
@@ -118,7 +147,12 @@ pub fn built(
                 .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
                 .map_or(Matter::Wood, |r| piece_matter(core, r.row))
         };
-        let foot = if deploy || is_wall(loc) {
+        let depth = rec
+            .and_then(|r| body_half_foot(core, r.loc, r.row))
+            .map(|(_, hd)| hd);
+        let foot = if let Some(hd) = depth {
+            [Vec3::new(0.0, 0.05, -hd), Vec3::new(0.0, 0.05, hd)]
+        } else if deploy || is_wall(loc) {
             [Vec3::new(0.0, 0.05, -1.1), Vec3::new(0.0, 0.05, 1.1)]
         } else {
             [Vec3::new(-1.3, 0.05, 0.0), Vec3::new(1.3, 0.05, 0.0)]
@@ -130,15 +164,40 @@ pub fn built(
         }
     }
     for r in feed.removed() {
-        let tf = structures::base_transform(
-            world.seed,
-            &world.haven,
-            (r.cx, r.cz, r.level, r.loc),
-            r.plate,
-        );
+        // A free-placed deployable went from where it stood, and only its
+        // own marks go with it — not every wall mark within a cell's reach.
+        let body = if r.deploy {
+            body_half_foot(core, r.loc, r.row)
+        } else {
+            None
+        };
+        let tf = match body {
+            Some(_) => structures::body_feet(
+                world.seed,
+                &world.haven,
+                core.pieces.cols(),
+                &sim_core::deploy::DeployRec {
+                    cx: r.cx,
+                    cz: r.cz,
+                    level: r.level,
+                    loc: r.loc,
+                    pose: r.pose,
+                    row: r.row,
+                    ..Default::default()
+                },
+                core.deploy_defs.defs[r.row as usize].arch,
+            ),
+            None => structures::base_transform(
+                world.seed,
+                &world.haven,
+                (r.cx, r.cz, r.level, r.loc),
+                r.plate,
+            ),
+        };
         let wall = !r.deploy && is_wall(r.loc);
         let middle = tf.translation + Vec3::Y * if wall { LEVEL_H_M * 0.5 } else { 0.3 };
-        marks.forget_later(middle, FORGET_R_M);
+        let forget = body.map_or(FORGET_R_M, |(hw, hd)| hw.max(hd) + 0.3);
+        marks.forget_later(middle, forget);
         // A piece crashes down; a deployable going (picked up, decayed) is
         // dust and no more — a charge on a door already has its blast.
         if !r.deploy {

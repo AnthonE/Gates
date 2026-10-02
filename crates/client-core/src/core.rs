@@ -94,6 +94,9 @@ pub struct Removed {
     pub deploy: bool,
     pub row: u8,
     pub plate: i8,
+    /// Where in its cell a deployable stood (free placement); the centre
+    /// for a piece.
+    pub pose: sim_core::footprint::Pose,
 }
 
 /// Buffered swings — one entry is one body's arm starting to move
@@ -275,7 +278,7 @@ pub const STREAM_ERR: u32 = 1 << 31;
 /// say which it was. (`client_move_readout`, named here until 2026-08-15,
 /// was the deleted C-ABI bridge; the real reader is
 /// `render/panels/mod.rs::sync_refusals`, which keys freshness on the
-/// `last_move` counter rather than on this flag.)
+/// `move_seq` counter rather than on this flag.)
 pub const APPLIED2_MOVE: u32 = 1 << 0;
 /// The open container's view changed (`EventMsg::ContSync`) — contents
 /// arrived, or the server shut the panel. One flag for both, and for
@@ -1487,6 +1490,10 @@ pub struct ClientCore {
     /// inventory diff cannot say: whether the drag it drew was accepted,
     /// and if not, which drag to roll back.
     pub last_move: u32,
+    /// Bumped on every answered move, accepted or refused: the address
+    /// above repeats when the same drag is refused twice, and a panel keyed
+    /// on it showed the second refusal as nothing happening.
+    pub move_seq: u32,
     pub last_move_refused: u8,
     /// The accepted move's payload: count << 16 | the item that left the
     /// source slot. Zero on a refusal. The item is the panel's reconcile
@@ -1855,6 +1862,7 @@ impl ClientCore {
             consume_refusal_len: 0,
             last_drink: 0,
             last_move: 0,
+            move_seq: 0,
             last_move_refused: 0,
             last_move_count: 0,
             hits: [HitFact {
@@ -2741,6 +2749,7 @@ impl ClientCore {
                         deploy: false,
                         row,
                         plate,
+                        pose: sim_core::footprint::Pose::CENTRE,
                     });
                     flags |= APPLIED_PIECE_REMOVED;
                 }
@@ -2772,6 +2781,7 @@ impl ClientCore {
                         deploy: true,
                         row: gone.row,
                         plate: self.pieces.cols().plate(cx, cz).unwrap_or(0),
+                        pose: gone.pose,
                     });
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
@@ -2861,6 +2871,7 @@ impl ClientCore {
                 item,
             } => {
                 self.last_move = sim_core::inventory::addr(from_kind, from_slot, to_kind, to_slot);
+                self.move_seq = self.move_seq.wrapping_add(1);
                 self.last_move_refused = 0;
                 self.last_move_count = ((count as u32) << 16) | item as u32;
                 self.applied2 |= APPLIED2_MOVE;
@@ -2873,6 +2884,7 @@ impl ClientCore {
                 to_slot,
             } => {
                 self.last_move = sim_core::inventory::addr(from_kind, from_slot, to_kind, to_slot);
+                self.move_seq = self.move_seq.wrapping_add(1);
                 self.last_move_refused = reason;
                 self.last_move_count = 0;
                 self.applied2 |= APPLIED2_MOVE;

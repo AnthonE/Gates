@@ -191,7 +191,7 @@ pub const RELOAD: [&str; 6] = [
     // The dry click, and the sentence names the fix rather than the state:
     // `GATHER[2]`'s rule — a refusal a player cannot act on reads as a bug.
     "empty — press R to reload",
-    "no rounds left for {}",
+    "no ammunition left for {}",
 ];
 
 /// The sentence, or the bare code when the sim is ahead of the client.

@@ -1698,6 +1698,7 @@ fn a_removal_rings_with_what_stood_there_and_a_resync_does_not() {
             deploy: false,
             row: 2,
             plate: 1,
+            pose: Default::default(),
         })
     );
     assert!(core.pop_removed().is_none(), "one removal rang twice");

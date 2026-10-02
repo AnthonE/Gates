@@ -334,8 +334,14 @@ impl Pick {
             // the wood goes and `C` is the match. The state is stated the
             // way a door's is, because it is the same question — which
             // way the second key will move it.
+            // A furnace shares the verb and is named for what it is.
             Verb::Fire => format!(
-                "[E] OPEN FIRE  ·  [C] {}",
+                "[E] OPEN {}  ·  [C] {}",
+                if self.arch == ARCH_FURNACE {
+                    "FURNACE"
+                } else {
+                    "FIRE"
+                },
                 if self.lit { "PUT OUT" } else { "LIGHT" }
             ),
             // The same two keys and a different pair of words, because a

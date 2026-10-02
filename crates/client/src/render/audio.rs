@@ -1094,14 +1094,34 @@ pub fn place(
     net: NonSend<super::Net>,
     mut sound: ResMut<Sound>,
 ) {
-    for &(cx, cz, level, loc, _deploy) in feed.placed() {
-        let plate = net.session.core.pieces.cols().plate(cx, cz).unwrap_or(0);
-        let p = super::structures::base_transform(
-            world.seed,
-            &world.haven,
-            (cx, cz, level, loc),
-            plate,
-        )
+    let core = &net.session.core;
+    for &(cx, cz, level, loc, deploy) in feed.placed() {
+        let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+        // A deployable sounds where it stands (free placement).
+        let rec = if deploy {
+            core.deploys
+                .entries()
+                .iter()
+                .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+        } else {
+            None
+        };
+        let p = match rec {
+            Some(r) => super::structures::deploy_fx_feet(
+                world.seed,
+                &world.haven,
+                core.pieces.cols(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+                r,
+            ),
+            None => super::structures::base_transform(
+                world.seed,
+                &world.haven,
+                (cx, cz, level, loc),
+                plate,
+            ),
+        }
         .translation;
         sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
     }

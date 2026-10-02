@@ -3030,6 +3030,30 @@ pub fn model_drop(arch: u8) -> f32 {
     }
 }
 
+/// Where an effect on a deployable starts — a dust puff, the place sound, the
+/// marks its removal clears: a free-placed one's own feet, turned its way
+/// ([`body_feet`]); an edge insert, or a row whose archetype has not dripped
+/// in, [`base_transform`]'s anchor at its address. A body slot's `loc` read
+/// as a piece location turned and stretched the cell centre instead.
+pub fn deploy_fx_feet(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    defs: &sim_core::deploy::DeployContent,
+    have: u16,
+    rec: &DeployRec,
+) -> Transform {
+    if !sim_core::deploy::is_edge_loc(rec.loc) && (rec.row as u16) < have.min(defs.def_count) {
+        return body_feet(seed, haven, cols, rec, defs.defs[rec.row as usize].arch);
+    }
+    base_transform(
+        seed,
+        haven,
+        (rec.cx, rec.cz, rec.level, rec.loc),
+        cols.plate(rec.cx, rec.cz).unwrap_or(0),
+    )
+}
+
 /// Where a free-placed deployable's FEET are and which way it faces: its
 /// pose's centre on the floor under it (`sim_core::deploy::body_base_y` —
 /// the one height the collision walks stand it on, so the box you see is the

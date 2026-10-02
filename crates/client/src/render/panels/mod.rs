@@ -913,10 +913,15 @@ pub fn keys(
     // screen rather than as a panel of their own, so there is still no
     // key to bind and none is invented.
 
-    // The wheel wins over nothing and loses to the two toggle screens: a
-    // player with the inventory (or the tree) open who brushes the button
-    // is not asking for a wheel on top of it.
-    if !matches!(ui.panel, Panel::Inventory | Panel::Craft | Panel::Tech) {
+    // The wheel wins over nothing and loses to the screens a key or an `E`
+    // opened: a player with the inventory, the tree or a kiosk open who
+    // brushes the button is not asking for a wheel on top of it. A screen
+    // missing from this list is shut by the arm below the frame after it
+    // opens, which is how every kiosk in THE GATE stayed shut.
+    if !matches!(
+        ui.panel,
+        Panel::Inventory | Panel::Craft | Panel::Tech | Panel::Vendor
+    ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
             // OTHER item's wheel would place with the wrong verb, which is
@@ -1019,19 +1024,27 @@ pub fn keys(
 
 /// Put the sim's own refusals on the status line.
 ///
-/// `last_move` is a counter the core bumps on every answered move and
+/// `move_seq` is a counter the core bumps on every answered move and
 /// `last_move_refused` is the reason latched beside it, so the counter is
 /// what makes a repeated identical refusal visible — two failed drags onto a
-/// full box are two events, and a panel that compared only the reason would
-/// show the second one as nothing happening.
+/// full box are two events, and a panel that compared only the reason (or
+/// the move's address, which repeats with the drag) would show the second
+/// one as nothing happening.
 pub fn sync_refusals(mut ui: ResMut<Ui>, net: NonSend<super::Net>, mut seen: Local<u32>) {
     let core = &net.session.core;
-    if core.last_move == *seen {
+    if core.move_seq == *seen {
         return;
     }
-    *seen = core.last_move;
+    *seen = core.move_seq;
     if core.last_move_refused > 0 {
-        inv::note_refusal(&mut ui, core.last_move_refused);
+        let open = crate::ui::oven::converter_open(
+            core.cont_kind,
+            core.cont_handle,
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
+        );
+        inv::note_refusal(&mut ui, core.last_move_refused, open);
     }
 }
 

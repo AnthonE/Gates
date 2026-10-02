@@ -31,7 +31,7 @@ use protocol::{
     MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
-use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
+use sim_core::build::{damage_band, BuildContent, PieceRec};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
@@ -4034,6 +4034,9 @@ impl ShardCore {
             // exactly the see-but-cannot-move split this view exists to
             // forbid. Dying next to your own loot must not buy you a
             // camera on the raider emptying it.
+            // A box shut by its lock, rather than gone or out of reach —
+            // the one close the player is owed a reason for.
+            let mut lock_refused = false;
             let live = if p.dead {
                 None
             } else {
@@ -4049,15 +4052,18 @@ impl ShardCore {
                         .box_index(handle)
                         .filter(|&i| self.world.deploys.box_in_reach(i, p))
                         .filter(|&i| {
-                            // The box stands on the plane, so its lock
-                            // shares `box_key`'s triple plus `LOC_PLANE` —
-                            // the move path's address, byte for byte. An
-                            // oven at the same shape of address carries no
-                            // lock (`lockable`) and passes as bare.
+                            // The box's own slot, the move path's address
+                            // byte for byte: free placement puts several
+                            // bodies in one cell, and slot 0's lock is not
+                            // this box's. An oven carries no lock
+                            // (`lockable`) and passes as bare.
                             let b = self.world.deploys.boxes()[i];
-                            self.world
+                            let ok = self
+                                .world
                                 .deploys
-                                .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
+                                .lock_passes(b.cx, b.cz, b.level, b.loc, p.id);
+                            lock_refused = !ok;
+                            ok
                         }),
                     // A world container resolves against the store, never
                     // against terrain: `worldcont::open` already paid the
@@ -4099,17 +4105,32 @@ impl ShardCore {
                 // server has stopped feeding — a stale panel is where a
                 // player drags into a container that is not there and
                 // reads the refusal as the game breaking.
-                None => match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
-                    Ok(len) => {
-                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                            ShardStats::bump(&stats.ev_sent);
-                            self.clients[slot].close_container();
-                        } else {
-                            return;
+                None => {
+                    // The lock says why, ahead of the close: `E` on a box
+                    // that does not know you was a panel that shut with no
+                    // word, where a drag into it already said this.
+                    if lock_refused {
+                        if let Ok(len) = encode_event_deploy_refused(
+                            sim_core::deploy::REFUSE_D_OWNER as u8,
+                            &mut self.ev_buf,
+                        ) {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
                         }
                     }
-                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
-                },
+                    match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                                self.clients[slot].close_container();
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 Some(i) => {
                     let width = slots_in(kind);
                     let mut now = [ItemStack::default(); INV_SLOTS];
@@ -5001,6 +5022,7 @@ mod tests {
     use super::*;
     use protocol::{decode_event, EventMsg};
     use sim_core::backpack::BackpackContent;
+    use sim_core::build::LOC_PLANE;
 
     const SEED: u64 = 0x5B_F06E;
     const PLAYER: u32 = 7;

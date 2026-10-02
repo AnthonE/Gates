@@ -46,6 +46,12 @@ use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
 use super::build::affordable;
 
+/// The ghost's word for ground the world keeps for itself — THE GATE, the
+/// depot, a landmark, the ziggurat (`terrain::build_reserved`). The sim
+/// answers it with the occupied spot's code, and "spot taken" over an empty
+/// plaza read as a bug.
+pub const RESERVED_LINE: &str = "no building here";
+
 /// How far ahead of the feet the ghost is aimed when the LOOK ray finds
 /// nothing to land on (sky, sea, past range), metres.
 ///
@@ -641,12 +647,17 @@ fn socket_crossed(
 /// never parks past what the sim could accept; at the rim the verdict
 /// still speaks (an anchor can sit past the point that resolved it).
 fn clamp_to_reach(feet: (f32, f32), p: (f32, f32)) -> (f32, f32) {
+    clamp_within(feet, p, BUILD_REACH_M)
+}
+
+/// [`clamp_to_reach`] at any radius.
+fn clamp_within(feet: (f32, f32), p: (f32, f32), r: f32) -> (f32, f32) {
     let (dx, dz) = (p.0 - feet.0, p.1 - feet.1);
     let d2 = dx * dx + dz * dz;
-    if d2 <= BUILD_REACH_M * BUILD_REACH_M {
+    if d2 <= r * r {
         return p;
     }
-    let s = BUILD_REACH_M / d2.sqrt();
+    let s = r / d2.sqrt();
     (feet.0 + dx * s, feet.1 + dz * s)
 }
 
@@ -848,7 +859,7 @@ pub fn verdict(
     // function. See the header.
     let (ax, az) = anchor(t.cx, t.cz, t.loc);
     if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
-        return Verdict::No("spot taken");
+        return Verdict::No(RESERVED_LINE);
     }
     let (dx, dz) = (ax - site.at.0, az - site.at.1);
     if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
@@ -1172,13 +1183,20 @@ pub const LOCK_AIM_SLACK_M: f32 = 0.6;
 /// a freely placed box shows it as a box a quarter metre off the crosshair.
 pub const DEPLOY_AIM_STEP_M: f32 = 0.05;
 
+/// How far inside build reach a body deployable's aim is held, metres. The
+/// pose quantizes the point by up to half a step per axis, so a ghost held
+/// at the rim itself rounded past it about half the time and drew red
+/// "out of reach" while the crosshair rested on ground the sim would take;
+/// a tenth also covers the drawn feet trailing the sim's.
+pub const DEPLOY_REACH_SLACK_M: f32 = 0.1;
+
 /// Where a body deployable aimed by `aim` would stand (free placement): the
 /// cell and offset the aim point quantizes to (`footprint::quantize`, the
 /// sim's own rounding), the storey the ray met, and a facing that turns its
 /// front toward the feet — the reference's default — plus `turn` quarter
 /// turns from the rotate key. `None` off the grid.
 pub fn body_aim(aim: &Aim, feet: (f32, f32), turn: u8) -> Option<(Target, Pose)> {
-    let (x, z) = aim.at;
+    let (x, z) = clamp_within(feet, aim.at, BUILD_REACH_M - DEPLOY_REACH_SLACK_M);
     let (cx, cz, ox, oz) = sim_core::footprint::quantize(x, z)?;
     let (dx, dz) = (feet.0 - x, feet.1 - z);
     let face = if dx * dx + dz * dz > 1e-6 {
@@ -1293,10 +1311,16 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
     }
 
     // REACH, measured to the sim's own point via the sim's own function —
-    // where the deployable's centre will stand.
-    let (ax, az) = sim_core::footprint::centre(t.cx, t.cz, pose);
+    // where the deployable's centre will stand, or for a lock on a box or a
+    // hearth, where that stands (`place_deploy`'s own rule).
+    let (ax, az) = match site.deploy_at(t.cx, t.cz, t.level, t.loc) {
+        Some(host) if def.placement == PLACE_DOOR && !sim_core::deploy::is_edge_loc(t.loc) => {
+            host.xz()
+        }
+        _ => sim_core::footprint::centre(t.cx, t.cz, pose),
+    };
     if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
-        return DeployVerdict::No("spot taken");
+        return DeployVerdict::No(RESERVED_LINE);
     }
     let (dx, dz) = (ax - site.at.0, az - site.at.1);
     if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
@@ -1589,7 +1613,7 @@ mod tests {
         };
         assert_eq!(
             verdict(t, 0, SHAPE_FOUNDATION, &site, false, 0),
-            Verdict::No("spot taken")
+            Verdict::No(RESERVED_LINE)
         );
         let mut defs = DeployContent::EMPTY;
         defs.def_count = 1;
@@ -1610,7 +1634,7 @@ mod tests {
         };
         assert_eq!(
             deploy_verdict(t, Pose::CENTRE, 0, &deploy),
-            DeployVerdict::No("spot taken")
+            DeployVerdict::No(RESERVED_LINE)
         );
     }
 
