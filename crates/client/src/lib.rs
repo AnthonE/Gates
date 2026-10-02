@@ -988,11 +988,18 @@ impl Session {
         self.datagrams.lock().map(|r| r.dropped).unwrap_or(0)
     }
 
+    /// The reason the shard posted on the event lane before hanging up
+    /// (wire v88) — the half of [`Session::close_code`] a browser can read.
+    pub fn posted_refusal(&self) -> Option<u8> {
+        self.refused
+    }
+
     /// The code the shard closed this session with, if it gave one — a
     /// `REFUSE_*` value: `REFUSE_WATCH_ENDED` when a watched player left,
     /// `REFUSE_ADMIN` for a kick, `REFUSE_TICKET` for a sold copy. `None`
     /// while connected, and for a loss that carried no reason. A poisoned
-    /// lock answers `None`, like `datagrams_dropped`'s 0.
+    /// lock answers `None`, like `datagrams_dropped`'s 0. The posted reason
+    /// ([`Session::posted_refusal`]) answers when the close code cannot.
     pub fn close_code(&self) -> Option<u64> {
         self.datagrams
             .lock()
