@@ -3821,6 +3821,28 @@ impl World {
     /// field mid-tick — so this reads identically from `apply` and from the
     /// player loop. A bag's expiry would otherwise depend on which caller
     /// stood it up, which the state hash would see.
+    /// Tell the player a give-back (cancel, refund, pick-up, unbolt) spilled
+    /// at their feet: `EV_GATHER` with zero added, the "pack full" line.
+    /// Not inside `drain_spill`: the per-tick gather/craft drain already
+    /// announces, and the death shed has nobody to tell.
+    fn announce_spill(&mut self, slot: usize, spill: &[ItemStack; INV_SLOTS]) {
+        let pid = self.players[slot].id;
+        let mut said = [0u16; crate::limits::SPILL_TOASTS_MAX];
+        let mut n = 0;
+        for s in spill.iter().filter(|s| s.count > 0) {
+            if n == said.len() {
+                break;
+            }
+            if said[..n].contains(&s.item) {
+                continue;
+            }
+            said[n] = s.item;
+            n += 1;
+            // The zero is owed: these units left for the ground (`EV_GATHER`).
+            self.events.push(EV_GATHER, pid, (s.item as u32) << 16, 0);
+        }
+    }
+
     fn drain_spill(&mut self, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) {
         if spill.iter().all(|s| s.count == 0) {
             return;
@@ -4096,6 +4118,7 @@ impl World {
                         index,
                         &mut spill,
                     );
+                    self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
             }
@@ -4189,23 +4212,27 @@ impl World {
                     // lookup and not a guess about what the player aimed
                     // at. Which asks first is immaterial: at most one of
                     // them answers for any address.
-                    let lit = crate::research::begin(
-                        &self.research,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        &mut self.events,
-                    ) || crate::oven::toggle(
-                        &self.cook,
-                        &mut self.deploys,
-                        &self.players[slot],
-                        cx,
-                        cz,
-                        level,
-                        &mut self.events,
-                    );
+                    // Down, only the door: research and the oven are hand
+                    // work, which `live_slot_of` refuses everywhere else.
+                    let down = self.players[slot].wounded;
+                    let lit = !down
+                        && (crate::research::begin(
+                            &self.research,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            &mut self.events,
+                        ) || crate::oven::toggle(
+                            &self.cook,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            &mut self.events,
+                        ));
                     if !lit {
                         let owner = deploy::use_door(
                             &self.deploy,
@@ -4274,6 +4301,7 @@ impl World {
                     }
                     // One buffer for both arms: they are two verbs behind
                     // one command and exactly one of them ran.
+                    self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
             }
@@ -4348,6 +4376,7 @@ impl World {
                             &mut self.events,
                             &mut spill,
                         );
+                        self.announce_spill(slot, &spill);
                         self.drain_spill(slot, &mut spill);
                         if let Some(owner) = owner {
                             self.log_trust(seat, id, owner, TRUST_AUTH);

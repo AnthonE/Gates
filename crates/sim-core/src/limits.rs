@@ -914,6 +914,11 @@ pub const MAX_HAVEN_CANDIDATES: usize = 256;
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_EVENTS_PER_TICK: usize = 256;
 
+/// "Dropped at your feet" lines one give-back (a craft cancel, a demolish
+/// refund, a pick-up, an unbolt) may announce: one per distinct item, so a
+/// cancelled queue of twenty recipes cannot spend the event ring on toasts.
+pub const SPILL_TOASTS_MAX: usize = 3;
+
 /// Pieces one structural collapse may drop in a single tick (build.rs
 /// `collapse_from`: take a wall's legs out and what rested on it falls).
 /// Sized off `MAX_EVENTS_PER_TICK`, not off the piece store: every
