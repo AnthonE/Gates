@@ -58,23 +58,23 @@ pub use event::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
     encode_event_exposure, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_howl,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_skins, encode_event_skins_owned, encode_event_slot_change,
-    encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_swipe_refused,
-    encode_event_tag, encode_event_vend, encode_event_vend_offers, encode_event_vend_refused,
-    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK,
-    BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hostile,
+    encode_event_howl, encode_event_hurt, encode_event_impact, encode_event_inv,
+    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_skins, encode_event_skins_owned,
+    encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
+    encode_event_swipe_refused, encode_event_tag, encode_event_vend, encode_event_vend_offers,
+    encode_event_vend_refused, encode_event_vitals, encode_event_weak_mark, encode_event_wounded,
+    shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag,
+    WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -1005,7 +1005,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v87 — the Black Ziggurat's card doors: `ACT_SWIPE` (26) swipes a card or
 /// pulls a lever, `SUB_CARD_DOORS` (70) mirrors which doors stand open,
 /// `SUB_SWIPE_REFUSED` (71) answers the swiper.
-pub const PROTO_VER: u16 = 87;
+/// v88 — `SUB_HOSTILE` (72): until when you are hostile, so the SAFE ZONE
+/// chip stops lying after you attack someone. The `Stock` ack's bill column
+/// is a day's charge rather than an hour's. A kick or a watch ending posts
+/// its `Refuse` on the event lane before the connection closes.
+pub const PROTO_VER: u16 = 88;
 
 /// This game's slug in the elo catalog.
 ///

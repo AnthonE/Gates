@@ -3249,7 +3249,7 @@ impl ShardCore {
                     if !hr.crew.contains(ev.a) {
                         continue;
                     }
-                    // What one upkeep period charges this hearth, per row —
+                    // What a day charges this hearth, per row (wire v88) —
                     // the sweep's own arithmetic over the claim cache the
                     // tick just refreshed (upkeep v2's readout). A walk of
                     // the piece store, asked per feed press and never per
@@ -3400,6 +3400,32 @@ impl ShardCore {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].last_expo = Some(expo);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
+        // Until when the owner is hostile (wire v88): the SAFE ZONE chip's
+        // other half. `tick + hostile` holds still while the timer runs
+        // down, so this sends on an attack (or the timer's end), not per
+        // tick.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let left = self.world.players[wslot].hostile as u32;
+            let until = if left == 0 {
+                0
+            } else {
+                (self.world.tick as u32).wrapping_add(left)
+            };
+            if self.clients[slot].last_hostile != Some(until) {
+                match protocol::encode_event_hostile(until, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_hostile = Some(until);
                             ShardStats::bump(&stats.ev_sent);
                         } else {
                             return;

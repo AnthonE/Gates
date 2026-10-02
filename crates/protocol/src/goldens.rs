@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 129] = [
+pub const FIXTURES: [&str; 130] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -236,6 +236,8 @@ pub const FIXTURES: [&str; 129] = [
     "event_card_doors.bin",
     "event_swipe_refused.bin",
     "action_swipe.bin",
+    // Until when you are hostile (v88).
+    "event_hostile.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1975,6 +1977,11 @@ pub fn event_vend_refused() -> (u8, u8) {
 /// Trade offer 37 five times.
 pub fn action_vend() -> (u8, u8) {
     (37, 5)
+}
+
+/// Hostile until tick 0xDEAD_BEEF.
+pub fn event_hostile() -> u32 {
+    0xDEAD_BEEF
 }
 
 /// The green and red doors open, the blue shut.

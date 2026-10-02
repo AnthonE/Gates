@@ -897,6 +897,25 @@ pub enum ExposureChip {
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
+const HOSTILE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+
+/// The safe-zone chip's words and whether they are a warning, or `None`
+/// outside the town. Attacking a player makes you hittable for two minutes
+/// (`sim_core::combat::HOSTILE_TICKS`) wherever you stand, so inside the
+/// town the chip says so instead of promising a safety you do not have.
+fn safe_chip(in_town: bool, hostile_ticks: u32) -> Option<(String, bool)> {
+    if !in_town {
+        return None;
+    }
+    if hostile_ticks == 0 {
+        return Some(("SAFE ZONE".to_string(), false));
+    }
+    let secs = hostile_ticks.div_ceil(sim_core::limits::TICK_HZ);
+    Some((
+        format!("HOSTILE · NOT PROTECTED {}:{:02}", secs / 60, secs % 60),
+        true,
+    ))
+}
 
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
@@ -921,11 +940,12 @@ pub fn exposure(
             ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
-                (
-                    sim_core::town::safe(&core.haven().town, x, z),
-                    "SAFE ZONE".to_string(),
-                    SAFE_CHIP,
-                )
+                let in_town = sim_core::town::safe(&core.haven().town, x, z);
+                match safe_chip(in_town, core.hostile_left()) {
+                    Some((line, false)) => (true, line, SAFE_CHIP),
+                    Some((line, true)) => (true, line, HOSTILE_CHIP),
+                    None => (false, String::new(), SAFE_CHIP),
+                }
             }
         };
         // Out of the layout, not just invisible: a hidden chip that still
@@ -3986,6 +4006,27 @@ mod tests {
     /// Upkeep v2's readout: the hours are the least billed material's, an
     /// empty hearth with a bill says it is decaying, and a day reads as one.
     #[test]
+    fn the_safe_zone_chip_owns_up_to_hostility() {
+        assert_eq!(safe_chip(false, 0), None);
+        assert_eq!(
+            safe_chip(false, 900),
+            None,
+            "outside the town it says nothing"
+        );
+        assert_eq!(safe_chip(true, 0), Some(("SAFE ZONE".to_string(), false)));
+        let hz = sim_core::limits::TICK_HZ;
+        assert_eq!(
+            safe_chip(true, 102 * hz),
+            Some(("HOSTILE · NOT PROTECTED 1:42".to_string(), true))
+        );
+        assert_eq!(
+            safe_chip(true, 1),
+            Some(("HOSTILE · NOT PROTECTED 0:01".to_string(), true)),
+            "the last tick still warns"
+        );
+    }
+
+    #[test]
     fn a_hearth_says_how_long_its_base_lasts() {
         // The label's unit is the sim's period, which is one hour.
         assert_eq!(
@@ -3994,17 +4035,18 @@ mod tests {
             "an upkeep period stopped being an hour — relabel `periods_label`"
         );
         let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
+        // Bills are a day's charge (wire v88).
         assert_eq!(
-            stock_line(&[(3, 120, 10), (4, 50, 5)], &cat),
+            stock_line(&[(3, 120, 240), (4, 50, 120)], &cat),
             Some("HEARTH: 120 × WOOD, 50 × CLOTH  ·  PROTECTED 10H".to_string()),
             "the cloth lasts ten periods and it runs out first"
         );
         assert_eq!(
-            stock_line(&[(3, 600, 10)], &cat),
+            stock_line(&[(3, 600, 240)], &cat),
             Some("HEARTH: 600 × WOOD  ·  PROTECTED 2D 12H".to_string())
         );
         assert_eq!(
-            stock_line(&[(3, 120, 10), (4, 0, 5)], &cat),
+            stock_line(&[(3, 120, 240), (4, 0, 120)], &cat),
             Some("HEARTH: 120 × WOOD  ·  NOT PROTECTED — DECAYING".to_string()),
             "one billed material missing is a base already rotting"
         );

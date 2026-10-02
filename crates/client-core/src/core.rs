@@ -1512,6 +1512,9 @@ pub struct ClientCore {
     pub wet_pct: u8,
     pub cold_pct: u8,
     pub cold_hurting: bool,
+    /// Until when you are hostile, the low 32 bits of the server tick
+    /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
+    pub hostile_until: u32,
     /// The frame's facts for the two destructive readers below — one slot
     /// each, not a ring, because a body cannot go down twice or get up
     /// twice between two drains, and a second `Wounded` before the first
@@ -1825,6 +1828,7 @@ impl ClientCore {
             wet_pct: 0,
             cold_pct: 0,
             cold_hurting: false,
+            hostile_until: 0,
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
@@ -2176,6 +2180,7 @@ impl ClientCore {
             EventMsg::Vend { offer, times } => self.push_vend((false, 0, offer, times)),
             EventMsg::VendRefused { code, offer } => self.push_vend((true, code, offer, 0)),
             EventMsg::CardDoors { bits } => self.card_doors = bits as u32,
+            EventMsg::Hostile { until } => self.hostile_until = until,
             EventMsg::SwipeRefused { code, door } => {
                 if self.swipe_refusal_len == REFUSAL_RING {
                     self.swipe_refusal_head = (self.swipe_refusal_head + 1) % REFUSAL_RING;
@@ -4081,6 +4086,16 @@ impl ClientCore {
     /// rails with measured jitter.
     pub fn render_tick(&self) -> f64 {
         self.clock.server_est - self.playout_ticks
+    }
+
+    /// Ticks until the town protects you again after you attacked someone
+    /// (`sim_core::combat::HOSTILE_TICKS`), 0 when it already does.
+    pub fn hostile_left(&self) -> u32 {
+        if self.hostile_until == 0 {
+            return 0;
+        }
+        let now = self.clock.server_est.max(0.0) as u64 as u32;
+        (self.hostile_until.wrapping_sub(now) as i32).max(0) as u32
     }
 
     /// The current playout delay in ticks (HUD, and S5b reports it to the
