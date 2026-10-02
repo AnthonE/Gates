@@ -9035,10 +9035,12 @@ pub fn slot_blocks(
 /// "May stand on" is `piece_ground`'s lid rule — a top more than
 /// `STEP_UP` above the feet is a wall face, not a floor — which is what
 /// keeps a pine's 10 m crown from ever being ground while letting a jump
-/// arc land on a barrel. The footprint is the occupant's own (NOT
-/// inflated by the capsule): a body stands on a crate with its centre
-/// over the crate, the same rule a floor slab applies at its cell edge.
-pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32) -> f32 {
+/// arc land on a barrel. The footprint is the occupant's own grown by
+/// `capsule_r`: 0 for a point (a dropped item), the capsule radius for a
+/// body — the footprint `slot_blocks` stops that body with, so a body that
+/// walks off a crate's edge stays on it until it is clear of it rather than
+/// falling down its side half inside it (`kit::ground_local`'s defect).
+pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32, capsule_r: f32) -> f32 {
     let (r, top) = occupant_volume(slot.occupant);
     if r <= 0.0 {
         return crate::collide::NO_SURFACE;
@@ -9047,10 +9049,12 @@ pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32) -> f32 {
     let dx = x - slot.x;
     let dz = z - slot.z;
     match slot.occupant {
-        Occupant::HavenShelter => boxes_ground(slot, &SHELTER_BOXES, dx, dz, lid),
-        Occupant::WaystationCanopy => boxes_ground(slot, &WAYSTATION_CANOPY_BOXES, dx, dz, lid),
+        Occupant::HavenShelter => boxes_ground(slot, &SHELTER_BOXES, dx, dz, lid, capsule_r),
+        Occupant::WaystationCanopy => {
+            boxes_ground(slot, &WAYSTATION_CANOPY_BOXES, dx, dz, lid, capsule_r)
+        }
         _ => {
-            let reach = r * slot.scale;
+            let reach = r * slot.scale + capsule_r;
             if dx * dx + dz * dz >= reach * reach {
                 return crate::collide::NO_SURFACE;
             }
@@ -9145,10 +9149,20 @@ fn boxes_over(
     })
 }
 
-/// The box-list half of [`slot_ground`]: the highest box top under the
-/// point, floor box included — that row is exactly the plinth/deck the
-/// blocking loop skips, and standing on it is this function's whole job.
-fn boxes_ground(slot: &Slot, boxes: &[[f32; 6]], dx: f32, dz: f32, lid: f32) -> f32 {
+/// The box-list half of [`slot_ground`]: the highest box top under a disc of
+/// radius `capsule_r` at the point, floor box included — that row is exactly
+/// the plinth/deck the blocking loop skips, and standing on it is this
+/// function's whole job. The disc is `boxes_block`'s clamp-to-rectangle
+/// distance, closed where that one is open, so a body is held up by every
+/// box that could stop it.
+fn boxes_ground(
+    slot: &Slot,
+    boxes: &[[f32; 6]],
+    dx: f32,
+    dz: f32,
+    lid: f32,
+    capsule_r: f32,
+) -> f32 {
     // World → local, `boxes_block`'s inverse basis.
     let (s, c) = crate::yaw_lut::yaw_dir((slot.yaw as u16) << 8);
     let lx = dx * c - dz * s;
@@ -9162,7 +9176,9 @@ fn boxes_ground(slot: &Slot, boxes: &[[f32; 6]], dx: f32, dz: f32, lid: f32) -> 
         let hz = b[5] * 0.5 * slot.scale;
         let cx = b[0] * slot.scale;
         let cz = b[2] * slot.scale;
-        if fabs(lx - cx) > hx || fabs(lz - cz) > hz {
+        let ex = (fabs(lx - cx) - hx).max(0.0);
+        let ez = (fabs(lz - cz) - hz).max(0.0);
+        if ex * ex + ez * ez > capsule_r * capsule_r {
             continue;
         }
         let t = slot.y + (b[1] + b[4] * 0.5) * slot.scale;

@@ -287,13 +287,14 @@ pub fn blocks(t: &Town, x: f32, z: f32, feet: f32, r: f32, h: f32) -> bool {
     kit::blocks_local(PARTS, t.floor_y, 0, lx, lz, feet, r, h)
 }
 
-/// The highest town surface under (`x`, `z`) within a step of `feet`.
-pub fn ground(t: &Town, x: f32, z: f32, feet: f32) -> f32 {
-    if !near(t, x, z, 43.0) {
+/// The highest town surface within a step of `feet` under a disc of radius
+/// `r` at (`x`, `z`) — `kit::ground_local`'s footprint.
+pub fn ground(t: &Town, x: f32, z: f32, feet: f32, r: f32) -> f32 {
+    if !near(t, x, z, 43.0 + r) {
         return crate::collide::NO_SURFACE;
     }
     let (lx, lz) = kit::to_local(&t.placed(), x, z);
-    kit::ground_local(PARTS, t.floor_y, 0, lx, lz, feet)
+    kit::ground_local(PARTS, t.floor_y, 0, lx, lz, feet, r)
 }
 
 /// Whether a roof keeps the rain off a body here.

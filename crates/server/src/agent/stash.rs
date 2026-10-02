@@ -160,6 +160,22 @@ pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
     }
 }
 
+/// What a visit leaves in the pack: the [`loadout`], and while its own
+/// furnace stands, the ore it smelts. The mind's "smelt the ore at my
+/// furnace" works from the pack and nothing takes ore back out of the box,
+/// so a visit home that boxed it left the smelt nothing to smelt.
+pub fn keeps(core: &ClientCore, book: &Book, furnace: bool, item: u16) -> u32 {
+    let name = core.catalog.name(usize::from(item));
+    if furnace
+        && crate::mind::SMELTS
+            .iter()
+            .any(|&(ore, _)| name == ore.as_bytes())
+    {
+        return u32::MAX;
+    }
+    loadout(core, book, item)
+}
+
 /// One stack's move, by slot: the only moves a visit makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transfer {
@@ -636,9 +652,10 @@ impl StashJob {
         } else {
             let mut bill = [(0, 0); VISIT_ROWS];
             let n = visit_bill(builder.survey().bill(), home, grades, tick, &mut bill);
+            let furnace = builder.stations(core).furnace.is_some();
             plan(
                 core,
-                |item| loadout(core, book, item),
+                |item| keeps(core, book, furnace, item),
                 &bill[..n],
                 &core.cont[..BOX_SLOTS],
             )

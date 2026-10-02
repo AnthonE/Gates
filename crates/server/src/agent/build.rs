@@ -1466,6 +1466,13 @@ pub(crate) fn e_picks_by(
         // same (a bench on the floor over the cupboard) loses to the
         // better tiebreak, as the human client's pick has it.
         let (aimed, d2) = score(px, pz, slack);
+        // Nor is one under the feet: the client's aim wants it in front
+        // (`t > 0`), which nothing at the eye's own point is at any yaw. A
+        // full pack's craft lands in a bag exactly there, at the stand spot,
+        // and the slack's widening made that bag win every press after it.
+        if d2 <= 0.0 {
+            continue;
+        }
         let tie_lost = d2 == mine && r > own;
         if r != u8::MAX && aimed && d2 <= mine && d2 <= reach2 && !tie_lost {
             return false;

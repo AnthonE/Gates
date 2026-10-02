@@ -616,7 +616,13 @@ const GOLDEN_FINAL_HASH: u64 = 0xF04C_1CA2_FD8E_B00C;
 /// **Moved `0x37FB_4909_FBC2_BD22` → `0xDA0B_802C_0E68_808E` at the heal-rate
 /// cap** (2026-09-25), with the final hash: stacked heals stretch the span
 /// instead of healing faster, so the script's heals land later.
-const GOLDEN_TRACE_HASH: u64 = 0xB88A_09EE_2EDA_57B8;
+/// **Moved `0xB88A_09EE_2EDA_57B8` → `0xE58A_8058_ECE3_6CB3` at body ground**
+/// (2026-10-02), and alone: a body now stands on every top its capsule disc
+/// overlaps, not the point under its centre, so the script's walkers mount
+/// and leave its foundations a few ticks differently (5 of 28 stamps). The
+/// end state holds, and the wall-plane rule that landed with it moves
+/// nothing here.
+const GOLDEN_TRACE_HASH: u64 = 0xE58A_8058_ECE3_6CB3;
 
 /// Fold a stamped trace into one number.
 ///

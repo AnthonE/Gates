@@ -144,22 +144,22 @@ pub fn blocks(haven: &Haven, x: f32, z: f32, feet: f32, r: f32, h: f32) -> bool 
     false
 }
 
-pub fn ground(haven: &Haven, x: f32, z: f32, feet: f32) -> f32 {
+/// The highest depot surface within a step of `feet` under a disc of radius
+/// `r` at (`x`, `z`) — `r` 0 is the point; a body passes the capsule radius
+/// (`kit::ground_local`'s reason).
+pub fn ground(haven: &Haven, x: f32, z: f32, feet: f32, r: f32) -> f32 {
     let mut best = crate::collide::NO_SURFACE;
     for site in &haven.minor {
-        if !is_depot(site) || !near(site, x, z, 0.0) {
+        if !is_depot(site) || !near(site, x, z, r) {
             continue;
         }
         let (lx, lz) = to_local(site, x, z);
         for part in &DEPOT_PARTS {
             let b = part.bounds;
             let top = site.floor_y + b[4];
-            if lx >= b[0]
-                && lx <= b[3]
-                && lz >= b[2]
-                && lz <= b[5]
-                && top <= feet + crate::movement::STEP_UP
-            {
+            let dx = lx - lx.clamp(b[0], b[3]);
+            let dz = lz - lz.clamp(b[2], b[5]);
+            if dx * dx + dz * dz <= r * r && top <= feet + crate::movement::STEP_UP {
                 best = best.max(top);
             }
         }

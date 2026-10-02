@@ -777,8 +777,11 @@ fn probe(gr: &mut Ground, cx: i32, cz: i32) -> (u8, f32) {
         return (F_PROBED | F_BLOCKED, 0.0);
     }
     let gy = terrain::ground(gr.seed, gr.haven, x, z);
-    let hard = collide::piece_ground(gr.seed, gr.haven, gr.cols, x, z, gy)
-        .max(gr.occ.ground(gr.seed, x, z, gy));
+    // The body's footprint, as `movement::step` reads it (`body_ground`):
+    // the point would plan a cell beside a foundation at the dirt the
+    // capsule never stands on there.
+    let hard = collide::body_ground(gr.seed, gr.haven, gr.cols, x, z, gy)
+        .max(gr.occ.body_ground(gr.seed, x, z, gy));
     let (y, mut f) = if hard > gy {
         (hard, F_PROBED | F_HARD)
     } else {

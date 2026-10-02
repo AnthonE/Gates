@@ -309,13 +309,14 @@ pub fn blocks(z: &Ziggurat, doors: u32, x: f32, wz: f32, feet: f32, r: f32, h: f
     kit::blocks_local(&PARTS, z.floor_y, doors, lx, lz, feet, r, h)
 }
 
-/// The highest ziggurat surface under (`x`, `wz`) within a step of `feet`.
-pub fn ground(z: &Ziggurat, doors: u32, x: f32, wz: f32, feet: f32) -> f32 {
-    if !near(z, x, wz, 39.0) {
+/// The highest ziggurat surface within a step of `feet` under a disc of
+/// radius `r` at (`x`, `wz`) — `kit::ground_local`'s footprint.
+pub fn ground(z: &Ziggurat, doors: u32, x: f32, wz: f32, feet: f32, r: f32) -> f32 {
+    if !near(z, x, wz, 39.0 + r) {
         return crate::collide::NO_SURFACE;
     }
     let (lx, lz) = kit::to_local(&z.placed(), x, wz);
-    kit::ground_local(&PARTS, z.floor_y, doors, lx, lz, feet)
+    kit::ground_local(&PARTS, z.floor_y, doors, lx, lz, feet, r)
 }
 
 /// Whether stone overhead keeps the rain off a body here.

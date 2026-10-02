@@ -159,14 +159,21 @@ pub fn step(
     }
 
     // Wade on the effective ground (a floor over shallows stays dry).
-    // `piece_ground` covers built planes, ramps and solid-deploy tops;
-    // `occ.ground` covers scattered tops — the crate, the boulder, the
-    // shelter plinth (deploy collision v0 / `slot_ground`). Without the
-    // occupant term here, a body standing on one would read the terrain
-    // under it as ground and fall inside on the next vertical pass.
+    // `body_ground` covers built planes, ramps and solid-deploy tops;
+    // `occ.body_ground` covers scattered tops — the crate, the boulder, the
+    // shelter plinth, the town's and the ziggurat's stone (deploy collision
+    // v0 / `slot_ground`). Without the occupant term here, a body standing
+    // on one would read the terrain under it as ground and fall inside on
+    // the next vertical pass.
+    //
+    // Both are the BODY's footprint — every top its disc overlaps — not the
+    // point under its centre, because that disc is what every veto below
+    // stops it with. A point here let a body stand past a ledge with its
+    // centre over air and fall down the face half inside it, which the
+    // veto lifts then treated as "already inside" (`body_ground`'s doc).
     let ground_here = terrain::ground(seed, haven, x, z)
-        .max(collide::piece_ground(seed, haven, cols, x, z, y))
-        .max(occ.ground(seed, x, z, y));
+        .max(collide::body_ground(seed, haven, cols, x, z, y))
+        .max(occ.body_ground(seed, x, z, y));
     // A drawn bow walks (`BTN_AIM`, `reference/PROJECTILES.md` §6): the
     // draw costs the legs as well as the time. Crouch is read off the frame
     // alone, like the draw, so the predictor needs nothing else to agree.
@@ -293,8 +300,8 @@ pub fn step(
                 }
             }
             let g = terrain::ground(seed, haven, cx, cz);
-            let pg = collide::piece_ground(seed, haven, cols, cx, cz, y);
-            let og = occ.ground(seed, cx, cz, y);
+            let pg = collide::body_ground(seed, haven, cols, cx, cz, y);
+            let og = occ.body_ground(seed, cx, cz, y);
             // A built or hard surface accepts on the step rule alone; bare
             // terrain keeps the cliff ratio. Occupant tops count as hard
             // for the reason piece tops do — the rise onto a plinth is

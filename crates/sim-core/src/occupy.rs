@@ -309,14 +309,17 @@ pub struct Occupants<'a> {
 }
 
 impl Occupants<'_> {
-    /// The highest rock crown under (`x`, `z`) within a step of `feet_y`.
-    fn rock_ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+    /// The highest rock crown under (`x`, `z`) within a step of `feet_y`, the
+    /// rock grown by `r` — `rock_blocks`' own dilation for the same `r`, so a
+    /// body is held up by exactly the rock that would stop it.
+    fn rock_ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32) -> f32 {
         let mut best = crate::collide::NO_SURFACE;
         let (cache, haven) = (&mut *self.cache, self.haven);
-        crate::boulder::cells_near(x, z, ROCK_SKIN_M, |bx, bz| {
+        let dil = ROCK_SKIN_M.max(r);
+        crate::boulder::cells_near(x, z, dil, |bx, bz| {
             let f = cache.formation(seed, haven, bx, bz);
             for b in f.iter() {
-                if let Some((s, _, _)) = crate::boulder::surface(b, x, z, ROCK_SKIN_M) {
+                if let Some((s, _, _)) = crate::boulder::surface(b, x, z, dil) {
                     if s <= feet_y + crate::movement::STEP_UP && s > best {
                         best = s;
                     }
@@ -375,33 +378,64 @@ impl Occupants<'_> {
         self.blocks_volume(seed, x, z, feet_y, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M)
     }
 
-    /// The highest scattered surface a capsule at `feet_y` may stand on
-    /// under (`x`, `z`), or `collide::NO_SURFACE` — `blocks`'s twin over
-    /// [`terrain::slot_ground`], and the query that makes a crate top, a
+    /// The highest scattered surface under the POINT (`x`, `z`) within a
+    /// step of `feet_y` — where a dropped item comes to rest. A body asks
+    /// [`Occupants::body_ground`].
+    pub fn ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+        self.ground_volume(seed, x, z, feet_y, 0.0)
+    }
+
+    /// The highest scattered surface a capsule at `feet_y` may stand on at
+    /// (`x`, `z`) — every top within a step that the capsule's own disc
+    /// overlaps, which is the footprint [`Occupants::blocks`] stops it with.
+    ///
+    /// **One footprint for both questions, or a body falls into things.** It
+    /// was the point under the centre until 2026-10-02 while `blocks` used
+    /// the disc, so a body walking off a ledge left it with its centre past
+    /// the edge and 0.4 m of itself still over the stone. It fell down the
+    /// face overlapping it; once the face was more than a step above the
+    /// feet `blocks` called the body *inside* it, the veto lift in
+    /// `movement::step` let it walk anywhere, and pressing back toward the
+    /// face walked it into a Black Ziggurat terrace — out again freely, back
+    /// in never. With the disc a body stays on a top until it is clear of
+    /// it, so it can only fall where nothing overlaps it.
+    pub fn body_ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+        self.ground_volume(seed, x, z, feet_y, CAPSULE_RADIUS_M)
+    }
+
+    /// The highest scattered surface within a step of `feet_y` under a disc
+    /// of radius `r` at (`x`, `z`), or `collide::NO_SURFACE` — `blocks`'s twin
+    /// over [`terrain::slot_ground`], and the query that makes a crate top, a
     /// boulder top and the shelter's plinth ground instead of geometry a
     /// body sinks through (`NOW.md` §0q item 3).
     ///
-    /// The same 3×3 scan, complete for the same reason with margin: a
-    /// ground footprint is the occupant's own, which reaches strictly
-    /// less far than the capsule-inflated blocking footprint the probe
-    /// bound was proved against. Harvested is asked last and only for a
-    /// slot that would otherwise answer, `blocks`'s own cost argument.
-    pub fn ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+    /// The same 3×3 scan, complete for the same reason: a ground footprint
+    /// is the occupant's own grown by `r`, which reaches no further than
+    /// the capsule-inflated blocking footprint the probe bound was proved
+    /// against while `r` is at most the capsule's. Harvested is asked last
+    /// and only for a slot that would otherwise answer, `blocks`'s own cost
+    /// argument.
+    fn ground_volume(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32) -> f32 {
+        debug_assert!(
+            r <= CAPSULE_RADIUS_M,
+            "the 3x3 probe is proved complete against the capsule radius"
+        );
         let pcx = floor_i32(x / CELL_SIZE);
         let pcz = floor_i32(z / CELL_SIZE);
-        let mut best = crate::depot::ground(self.haven, x, z, feet_y);
+        let mut best = crate::depot::ground(self.haven, x, z, feet_y, r);
         // The rock formations' tops (`boulder.rs`): a block's top is ground
         // within a step of the feet, like any other occupant's lid. Its side
         // is a wall, which `blocks_volume` answers.
-        best = best.max(self.rock_ground(seed, x, z, feet_y));
-        best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y));
-        best = best.max(crate::town::ground(&self.haven.town, x, z, feet_y));
+        best = best.max(self.rock_ground(seed, x, z, feet_y, r));
+        best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y, r));
+        best = best.max(crate::town::ground(&self.haven.town, x, z, feet_y, r));
         best = best.max(crate::monument::ground(
             &self.haven.ziggurat,
             self.doors,
             x,
             z,
             feet_y,
+            r,
         ));
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
         while dz <= terrain::OCCUPANT_PROBE_CELLS {
@@ -413,7 +447,7 @@ impl Occupants<'_> {
                 if slot.occupant == Occupant::None {
                     continue;
                 }
-                let g = terrain::slot_ground(&slot, x, z, feet_y);
+                let g = terrain::slot_ground(&slot, x, z, feet_y, r);
                 if g <= best {
                     continue;
                 }
@@ -423,7 +457,7 @@ impl Occupants<'_> {
                 let g = match self.harvested.standing_pm(cx as u16, cz as u16) {
                     0 => continue,
                     1000 => g,
-                    pm => terrain::slot_ground(&grown(&slot, pm), x, z, feet_y),
+                    pm => terrain::slot_ground(&grown(&slot, pm), x, z, feet_y, r),
                 };
                 if g <= best {
                     continue;
