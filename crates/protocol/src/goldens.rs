@@ -930,7 +930,16 @@ pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
     let rows: [(&[u8], ItemRow); 11] = [
-        (b"Wood", row(0, 0, WEAR_NONE, 1000)),
+        // The oven column's coverage (v89): wood is fuel at both burners
+        // (the fire's bit and the furnace's), charcoal what both make, and
+        // the last row carries the width's corner.
+        (
+            b"Wood",
+            ItemRow {
+                oven: 0b001_001,
+                ..row(0, 0, WEAR_NONE, 1000)
+            },
+        ),
         // The draw columns' coverage (v82), at the byte's corner.
         (
             b"Hunting Bow",
@@ -950,7 +959,13 @@ pub fn event_catalog() -> ItemCatalog {
         // named with no reduction behind it, which is legal and is the
         // half a fixture full of protective armor would not pin.
         (b"Burlap Headwrap", row(0, 10, WEAR_HEAD, 1)),
-        (b"Charcoal", row(40_000, 0, WEAR_NONE, 1)),
+        (
+            b"Charcoal",
+            ItemRow {
+                oven: 0b100_100,
+                ..row(40_000, 0, WEAR_NONE, 1)
+            },
+        ),
         (
             b"Fixture Name Of Width 24",
             row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1),
@@ -965,7 +980,13 @@ pub fn event_catalog() -> ItemCatalog {
         // width's own corner, here. A 16-bit field carrying 65,535 is
         // what says the ceiling cannot be truncated into a smaller one
         // by a narrower field landing under it later.
-        (b"Low Grade Fuel", row(0, 0, WEAR_NONE, u16::MAX)),
+        (
+            b"Low Grade Fuel",
+            ItemRow {
+                oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
+                ..row(0, 0, WEAR_NONE, u16::MAX)
+            },
+        ),
     ];
     for (i, (n, r)) in rows.iter().enumerate() {
         cat.set(i, n, *r)

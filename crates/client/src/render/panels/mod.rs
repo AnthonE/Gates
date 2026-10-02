@@ -244,11 +244,12 @@ pub(crate) struct Seen {
     pub known: u64,
     /// The research drip's watermark, `recipes_have`'s reason exactly.
     pub research_have: u16,
-    /// Whether the open research table is running (research table v1).
-    /// Its slots do not change when a research STARTS — only the lit bit
-    /// does — so without this the line under them would keep saying PRESS
-    /// BEGIN over a table that had begun.
-    pub table_lit: bool,
+    /// Whether the open container is lit — a research table running
+    /// (research table v1), a camp fire burning. Its slots do not change
+    /// when it starts, only the lit bit does, so without this the table's
+    /// line would keep saying PRESS BEGIN over a table that had begun and
+    /// a fire's switch would keep saying TURN ON over a fire that burns.
+    pub cont_lit: bool,
 }
 
 impl Default for Ui {
@@ -682,6 +683,7 @@ pub fn register(app: &mut App) {
                 inv::drag_pointer,
                 inv::skin_keys,
                 inv::table_clicks,
+                inv::fire_clicks,
                 craft::clicks,
                 craft::scroll,
                 tech::clicks,
@@ -1084,7 +1086,7 @@ fn detect_changes(
         let inv = core.inv;
         let cont = core.cont;
         let worn = core.worn;
-        let table_lit = inv::open_table_running(core);
+        let cont_lit = inv::open_cont_lit(core);
         if inv != ui.seen.inv
             || cont != ui.seen.cont
             || worn != ui.seen.worn
@@ -1098,7 +1100,7 @@ fn detect_changes(
             || (ui.panel == Panel::Hammer && near != ui.seen.hammer_target)
             || core.known() != ui.seen.known
             || core.research_have != ui.seen.research_have
-            || table_lit != ui.seen.table_lit
+            || cont_lit != ui.seen.cont_lit
             || core.skins_owned != ui.seen.skins_owned
             || core.skins_gen != ui.seen.skins_have
         {
@@ -1120,7 +1122,7 @@ fn detect_changes(
             ui.seen.hammer_target = near;
             ui.seen.known = core.known();
             ui.seen.research_have = core.research_have;
-            ui.seen.table_lit = table_lit;
+            ui.seen.cont_lit = cont_lit;
             ui.seen.skins_owned = core.skins_owned;
             ui.seen.skins_have = core.skins_gen;
             ui.dirty = true;

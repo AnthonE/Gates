@@ -28,7 +28,7 @@ use sim_core::deploy::{box_key, DeployContent, ARCH_FIRE, REFUSE_D_FUEL};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::{CONT_BOX, CONT_SELF, REFUSE_M_OVEN};
 use sim_core::limits::{BOX_SLOTS, TICK_HZ};
-use sim_core::oven::{CookContent, OVEN_PERIOD_TICKS};
+use sim_core::oven::{CookContent, FIRE_LAYOUT, OVEN_PERIOD_TICKS};
 use sim_core::world::{Command, World, EV_DEPLOY_REFUSED, EV_MOVE_REFUSED, EV_OVEN};
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
@@ -447,25 +447,25 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
         skin: 0,
     };
 
-    let mv = |w: &mut World, from_slot: u8, count: u16| {
+    let mv = |w: &mut World, from_slot: u8, to_slot: u8, count: u16| {
         w.tick(&[Command::Move {
             id: PLAYER,
             cont: key,
             from_kind: CONT_SELF,
             from_slot,
             to_kind: CONT_BOX,
-            to_slot: 0,
+            to_slot,
             count,
         }]);
     };
 
-    mv(&mut w, 1, 10); // fuel
+    mv(&mut w, 1, 0, 10); // fuel, into the fuel slot
     assert_eq!(total(&w, key, FUEL), 10, "fuel goes in");
 
-    mv(&mut w, 2, 4); // a cook input
+    mv(&mut w, 2, 1, 4); // a cook input, onto the grill
     assert_eq!(total(&w, key, RAW), 4, "so does what it cooks");
 
-    mv(&mut w, 3, 5); // junk
+    mv(&mut w, 3, 2, 5); // junk
     assert_eq!(
         refusal(&w, EV_MOVE_REFUSED),
         Some(REFUSE_M_OVEN),
@@ -474,12 +474,12 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
     assert_eq!(total(&w, key, 2), 0, "nothing of it landed");
 
     // What the fire made comes back out through the same door it went in.
-    load(&mut w, key, 5, CHAR, 3);
+    load(&mut w, key, 2, CHAR, 3);
     w.tick(&[Command::Move {
         id: PLAYER,
         cont: key,
         from_kind: CONT_BOX,
-        from_slot: 5,
+        from_slot: 2,
         to_kind: CONT_SELF,
         to_slot: 10,
         count: 3,
@@ -865,35 +865,223 @@ fn a_recycler_refuses_the_fuel_a_fire_admits() {
 /// The old room check ran before the input was consumed, so it could not
 /// see the slot the conversion itself was about to free. An oven with one
 /// unit left in its last non-full slot therefore asked for room that only
-/// existed after the step it was blocking: it held at the line forever,
-/// with a player watching a fire that would never finish. Consuming into a
-/// scratch copy and asking whether the result fits asks the honest
-/// question instead.
+/// existed after the step it was blocking: it held at the line forever.
+/// Consuming into a scratch copy and asking whether the result fits asks
+/// the honest question instead.
+///
+/// Asked of the recycler, whose slots are unsectioned: a camp fire's
+/// output never lands back on its grill (`the_fire_has_rusts_slots`).
 #[test]
-fn the_last_unit_cooks_into_the_slot_it_frees() {
+fn the_last_unit_pays_into_the_slot_it_frees() {
+    let (mut w, key, cx, cz) = recycler_world();
+    let cap = GatherContent::probe_fixture().stack_max_of(CHAR);
+    // ONE salvage unit, a `YIELD_B` stack with room for the second row's
+    // pay, and every other slot full of something neither output can join
+    // or displace. The only empty room is the salvage's own slot.
+    load(&mut w, key, 0, SALVAGE, 1);
+    load(&mut w, key, 1, YIELD_B, 1);
+    for s in 2..BOX_SLOTS {
+        load(&mut w, key, s, CHAR, cap);
+    }
+    press(&mut w, cx, cz);
+    idle(&mut w, RECYCLE_TICKS * 2 + OVEN_PERIOD_TICKS * 2);
+
+    assert_eq!(total(&w, key, SALVAGE), 0, "the last unit went in");
+    assert_eq!(
+        slot(&w, key, 0),
+        ItemStack {
+            item: YIELD_A,
+            count: 2,
+            cond: 0,
+            skin: 0,
+        },
+        "and came out into the slot it vacated — the old check could not \
+         see that room and held here forever"
+    );
+    assert_eq!(total(&w, key, YIELD_B), 2, "the second row topped up");
+}
+
+// ---------------------------------------------------------------------------
+// The camp fire's sections (operator, 2026-10-02: "lets make the camp fire
+// more like rust"): one fuel slot, one on the grill, two for what comes off.
+
+/// The fixture's fire with a burnt row: cooked (item 6) burns into item 7,
+/// so what does and does not keep cooking can be seen. No charcoal, so the
+/// second output slot is free for what burns.
+fn burnt_fixture(w: &mut World) {
+    let mut cc = CookContent::probe_fixture();
+    cc.byproduct_pct = 0;
+    cc.rows[cc.row_count as usize] = sim_core::oven::CookRow {
+        input: COOKED,
+        output: BURNT,
+        count: 1,
+        ticks: 60,
+        arch: ARCH_FIRE,
+    };
+    cc.row_count += 1;
+    w.cook = cc;
+}
+const BURNT: u16 = 7;
+
+/// Fuel burns from the fuel slot, the grill cooks, and the cooked food and
+/// the charcoal both come off into the output — Rust's camp fire.
+#[test]
+fn the_fire_has_rusts_slots() {
+    let fire = FIRE_LAYOUT;
+    assert_eq!(
+        (fire.fuel_slots(), fire.input_slots(), fire.output_slots()),
+        (0..1, 1..2, 2..4),
+        "one log, one on the grill, two off it"
+    );
     let (mut w, key, cx, cz) = fire_world();
     let cc = CookContent::probe_fixture();
     let row = cc
         .row_for(ARCH_FIRE, RAW)
         .copied()
         .expect("the fixture cooks");
-    let cap = GatherContent::probe_fixture().stack_max_of(COOKED);
-    // Fuel, then ONE raw unit, then every remaining slot full of something
-    // the output can neither join nor displace. The only room in the whole
-    // container is the raw unit's own slot.
     load(&mut w, key, 0, FUEL, 20);
-    load(&mut w, key, 1, RAW, 1);
-    for s in 2..BOX_SLOTS {
-        load(&mut w, key, s, CHAR, cap);
-    }
+    load(&mut w, key, 1, RAW, 2);
     press(&mut w, cx, cz);
-    idle(&mut w, row.ticks as u64 * 2);
+    idle(&mut w, row.ticks as u64 * 2 + OVEN_PERIOD_TICKS * 2);
 
-    assert_eq!(total(&w, key, RAW), 0, "the last unit went in");
-    assert_eq!(
-        total(&w, key, COOKED),
-        1,
-        "and came out into the slot it vacated — the old check could not \
-         see that room and held here forever"
+    assert_eq!(total(&w, key, RAW), 0, "both pieces came off the grill");
+    assert_eq!(slot(&w, key, 1), ItemStack::default(), "and left it bare");
+    assert_eq!(slot(&w, key, 0).item, FUEL, "the log stays in the fire");
+    let out: Vec<u16> = (2..4).map(|s| slot(&w, key, s).item).collect();
+    assert!(
+        out.contains(&COOKED) && out.contains(&CHAR),
+        "the meal and the charcoal are both in the output, got {out:?}"
     );
+    assert_eq!(total(&w, key, COOKED), 2);
+    for s in 4..BOX_SLOTS {
+        assert_eq!(
+            slot(&w, key, s),
+            ItemStack::default(),
+            "slot {s} is not the fire's"
+        );
+    }
+}
+
+/// Only the grill cooks. What came off it stays as it came off however long
+/// the fire burns; the same food put back ON the grill burns.
+#[test]
+fn cooked_food_off_the_grill_does_not_burn() {
+    let (mut w, key, cx, cz) = fire_world();
+    burnt_fixture(&mut w);
+    load(&mut w, key, 0, FUEL, 60);
+    load(&mut w, key, 2, COOKED, 3);
+    press(&mut w, cx, cz);
+    idle(&mut w, 60 * 5);
+    assert!(lit(&w, key));
+    assert_eq!(total(&w, key, COOKED), 3, "the output does not cook");
+    assert_eq!(total(&w, key, BURNT), 0);
+
+    load(&mut w, key, 1, COOKED, 1);
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, BURNT), 1, "on the grill it burns");
+    assert_eq!(total(&w, key, COOKED), 3, "and only that piece");
+}
+
+/// A match lights the log in the fire, not wood lying in the output.
+#[test]
+fn a_fire_lights_on_its_fuel_slot_only() {
+    let (mut w, key, cx, cz) = fire_world();
+    load(&mut w, key, 3, FUEL, 10);
+    press(&mut w, cx, cz);
+    assert!(!lit(&w, key), "wood outside the fuel slot is not laid");
+    assert_eq!(refusal(&w, EV_DEPLOY_REFUSED), Some(REFUSE_D_FUEL));
+}
+
+/// Each slot takes what it is for, through the move verb — from the pack,
+/// rearranged inside the fire, and on the swap a take-out makes.
+#[test]
+fn each_fire_slot_takes_only_its_own() {
+    let (mut w, key, _, _) = fire_world();
+    let mv = |w: &mut World, from_kind: u8, from_slot: u8, to_kind: u8, to_slot: u8, count: u16| {
+        w.tick(&[Command::Move {
+            id: PLAYER,
+            cont: key,
+            from_kind,
+            from_slot,
+            to_kind,
+            to_slot,
+            count,
+        }]);
+        refusal(w, EV_MOVE_REFUSED)
+    };
+    // The pack: inv 1 is fuel, inv 2 raw (`fire_world`).
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 1, CONT_BOX, 1, 1),
+        Some(REFUSE_M_OVEN),
+        "wood on the grill"
+    );
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 1, CONT_BOX, 2, 1),
+        Some(REFUSE_M_OVEN),
+        "wood in the output"
+    );
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 2, CONT_BOX, 0, 1),
+        Some(REFUSE_M_OVEN),
+        "meat in the fire"
+    );
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 2, CONT_BOX, 3, 1),
+        Some(REFUSE_M_OVEN),
+        "raw in the output"
+    );
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 2, CONT_BOX, 5, 1),
+        Some(REFUSE_M_OVEN),
+        "past the layout"
+    );
+    assert_eq!(
+        total(&w, key, FUEL) + total(&w, key, RAW),
+        0,
+        "none of it landed"
+    );
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 1, CONT_BOX, 0, 10),
+        None,
+        "wood in the fire"
+    );
+    assert_eq!(
+        mv(&mut w, CONT_SELF, 2, CONT_BOX, 1, 2),
+        None,
+        "meat on the grill"
+    );
+
+    // Rearranging inside it is asked too.
+    assert_eq!(
+        mv(&mut w, CONT_BOX, 0, CONT_BOX, 2, 1),
+        Some(REFUSE_M_OVEN),
+        "wood to the output"
+    );
+    load(&mut w, key, 2, COOKED, 1);
+    assert_eq!(
+        mv(&mut w, CONT_BOX, 2, CONT_BOX, 3, 1),
+        None,
+        "output to output"
+    );
+
+    // A take-out onto a pack slot holding something else is a SWAP, and
+    // the swap would put that something into the fire's output.
+    w.players[0].inv[12] = ItemStack {
+        item: 2,
+        count: 5,
+        cond: 0,
+        skin: 0,
+    };
+    assert_eq!(
+        mv(&mut w, CONT_BOX, 3, CONT_SELF, 12, 1),
+        Some(REFUSE_M_OVEN),
+        "junk via a swap"
+    );
+    assert_eq!(total(&w, key, 2), 0);
+    assert_eq!(
+        mv(&mut w, CONT_BOX, 3, CONT_SELF, 13, 1),
+        None,
+        "an empty slot takes it"
+    );
+    assert_eq!(w.players[0].inv[13].item, COOKED);
 }

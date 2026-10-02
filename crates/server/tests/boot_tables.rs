@@ -499,3 +499,27 @@ fn the_shipped_catalog_carries_every_draw() {
         "no shipped weapon draws — this gate passes for free"
     );
 }
+
+/// (7) The oven roles (wire v89): the client sends wood to a camp fire's
+/// FUEL and meat to its INPUT off this column alone, so the shipped catalog
+/// must carry the roles the move verb refuses against.
+#[test]
+fn the_shipped_catalog_carries_the_fires_roles() {
+    use sim_core::deploy::ARCH_FIRE;
+    use sim_core::oven::{unpack_roles, ROLE_FUEL, ROLE_INPUT, ROLE_OUTPUT};
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+    let at_fire = |id: &str| {
+        let idx = content.item_index(id).expect("a shipped item") as usize;
+        unpack_roles(tables.catalog.row(idx).oven, ARCH_FIRE)
+    };
+    assert_eq!(at_fire("item.wood"), ROLE_FUEL);
+    assert_eq!(at_fire("item.raw_meat"), ROLE_INPUT);
+    assert_eq!(
+        at_fire("item.cooked_meat"),
+        ROLE_INPUT | ROLE_OUTPUT,
+        "made on the grill, and burnt if put back on it"
+    );
+    assert_eq!(at_fire("item.charcoal"), ROLE_OUTPUT);
+    assert_eq!(at_fire("item.stone"), 0);
+}

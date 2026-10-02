@@ -4145,8 +4145,41 @@ impl ShardCore {
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                     let c = &mut self.clients[slot];
+                                    let opened = c.open_cont_reset;
                                     c.open_cont_reset = false;
                                     c.last_cont = now;
+                                    // Whether what was opened is burning,
+                                    // told to the hand that opened it: the
+                                    // lit bit is broadcast only when it
+                                    // changes (`EV_OVEN`), so a fire lit
+                                    // before this client arrived would
+                                    // otherwise offer TURN ON while it
+                                    // burns. Absolute, so a repeat is free.
+                                    // `i` indexes the box store only for
+                                    // a box: a bag's or a crate's index is
+                                    // into its own store.
+                                    let st = (opened && kind == CONT_BOX)
+                                        .then(|| self.world.deploys.oven_states().get(i).copied())
+                                        .flatten()
+                                        .filter(|st| {
+                                            st.is_converter()
+                                                || st.arch == sim_core::deploy::ARCH_RESEARCH
+                                        });
+                                    if let Some(st) = st {
+                                        let b = self.world.deploys.boxes()[i];
+                                        if let Ok(len) = encode_event_oven(
+                                            b.cx,
+                                            b.cz,
+                                            b.level,
+                                            st.lit,
+                                            0,
+                                            &mut self.ev_buf,
+                                        ) {
+                                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                                ShardStats::bump(&stats.ev_sent);
+                                            }
+                                        }
+                                    }
                                 } else {
                                     return;
                                 }

@@ -263,11 +263,16 @@ pub struct ShardHandle {
 /// `survival` (wire v81) is the third baked table read here, for the eat
 /// columns: the client makes a left click with food in hand a meal off
 /// them, so they are the rows `survival::consume` will charge.
+///
+/// `cook` (wire v89) is the fourth, for the oven roles: which section of a
+/// camp fire each item goes in, the same `CookContent::roles` the move verb
+/// refuses against.
 pub fn bake_catalog(
     content: &content::Content,
     combat: &sim_core::combat::CombatContent,
     gather: &sim_core::gather::GatherContent,
     survival: &sim_core::survival::SurvivalContent,
+    cook: &sim_core::oven::CookContent,
 ) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
@@ -312,6 +317,7 @@ pub fn bake_catalog(
                 health: eat.health,
                 draw_ticks,
                 nock_ticks,
+                oven: cook.packed_roles(idx as u16),
             },
         )
         .map_err(|_| {
@@ -385,18 +391,18 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
     let combat = content.bake_combat()?;
     let gather = content.bake_gather()?;
     let survival = content.bake_survival()?;
+    let cook = content.bake_cooking()?;
     Ok(SimTables {
         craft: content.bake_craft()?,
         build: content.bake_building()?,
         deploy: content.bake_deployables()?,
         backpack: content.bake_backpack()?,
-        cook: content.bake_cooking()?,
         spawn_kit: content.bake_spawn_kit()?,
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
         heli: content.bake_heli()?,
         research: content.bake_research()?,
-        catalog: bake_catalog(content, &combat, &gather, &survival)?,
+        catalog: bake_catalog(content, &combat, &gather, &survival, &cook)?,
         skins: content.bake_skins()?,
         skin_catalog: bake_skin_catalog(content)?,
         vend: content.bake_vend()?,
@@ -405,6 +411,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         combat,
         gather,
         survival,
+        cook,
     })
 }
 

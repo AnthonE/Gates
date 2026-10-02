@@ -1010,7 +1010,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// layout moves: the heli is the roster's last slot (`mob::HELI_SLOT`,
 /// species `MOB_HELI`), an entity record flying up to 140 m, and its gun is
 /// an `EV_SHOT` from that mob id. A v87 client knows 64 slots and no heli.
-pub const PROTO_VER: u16 = 88;
+/// v89 — the camp fire is Rust's: one fuel slot, one input, two outputs
+/// (`oven::FIRE_LAYOUT`). Each catalog row grows a 9-bit `oven` column after
+/// `nock_ticks` (`ItemRow::oven`: fuel/input/output per converter), so a
+/// client knows which section of a fire an item goes in.
+pub const PROTO_VER: u16 = 89;
 
 /// This game's slug in the elo catalog.
 ///
