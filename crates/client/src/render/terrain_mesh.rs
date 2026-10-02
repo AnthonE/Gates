@@ -690,7 +690,7 @@ pub fn vertex_splat(w: [u8; 4]) -> [f32; 4] {
 /// land at exactly 4 m, so their multiplier is 1.0 and their UV is unmoved.
 ///
 /// It was a bare `0.25` at the one call site until 2026-08-27; it is named
-/// because `ground_splat.wgsl`'s biplanar wall tap has to build its own UV at
+/// because `ground_splat.wgsl`'s wall planes have to build their own UVs at
 /// exactly this scale, and two copies of a projection constant in two
 /// languages is the drift `CLAUDE.md` warns about. The shader reads it from
 /// the uniform (`GroundSplatParams::wall.z`) rather than repeating it.
