@@ -1037,7 +1037,8 @@ mod tests {
         home.on_removed(5, 3);
         assert!(!home.under_attack(5));
         let mut core = Box::new(ClientCore::new(1, 1, 0));
-        core.stock[0] = (50, 500, 10);
+        // 500 held against a day's bill of 240: 50 hours.
+        core.stock[0] = (50, 500, 240);
         core.stock[1] = (58, 0, 0);
         core.stock_count = 2;
         home.on_stock(&core, 100, 3);
