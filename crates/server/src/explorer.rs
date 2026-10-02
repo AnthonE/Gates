@@ -3944,11 +3944,12 @@ impl Survivor {
         let book = &self.book;
         let mut bill = [(0, 0); stash::VISIT_ROWS];
         let n = stash::visit_bill(survey.bill(), &self.home, grades, tick, &mut bill);
+        let furnace = self.builder.stations(core).furnace.is_some();
         let next = (chest && book.ready())
             .then(|| {
                 stash::plan(
                     core,
-                    |item| stash::loadout(core, book, item),
+                    |item| stash::keeps(core, book, furnace, item),
                     &bill[..n],
                     self.ledger.slots(),
                 )

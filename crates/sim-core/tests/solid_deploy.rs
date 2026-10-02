@@ -187,7 +187,7 @@ fn occupant_tops_obey_the_lid() {
     let rock_top = OCCUPANT_TOP_M[Occupant::Rock as usize];
     let rock_r = OCCUPANT_R_M[Occupant::Rock as usize];
     // Feet just under the top (a landing jump arc): standable.
-    let g = terrain::slot_ground(&rock, 0.0, 0.0, rock_top - 0.1);
+    let g = terrain::slot_ground(&rock, 0.0, 0.0, rock_top - 0.1, 0.0);
     assert!(
         mag(g - rock_top) <= 1e-6,
         "rock top {rock_top} should be ground for feet at {}, got {g}",
@@ -195,19 +195,19 @@ fn occupant_tops_obey_the_lid() {
     );
     // Feet on the floor: the top is more than STEP_UP up — a wall face.
     if rock_top > STEP_UP {
-        let g = terrain::slot_ground(&rock, 0.0, 0.0, 0.0);
+        let g = terrain::slot_ground(&rock, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(
             g, NO_SURFACE,
             "a {rock_top} m top is not ground from the floor"
         );
     }
     // Outside the footprint: nothing.
-    let g = terrain::slot_ground(&rock, rock_r + 0.05, 0.0, rock_top - 0.1);
+    let g = terrain::slot_ground(&rock, rock_r + 0.05, 0.0, rock_top - 0.1, 0.0);
     assert_eq!(g, NO_SURFACE, "ground past the footprint edge");
 
     // The tree: its crown top is never reachable from its own floor.
     let tree = slot_at_origin(Occupant::Tree);
-    let g = terrain::slot_ground(&tree, 0.0, 0.0, 0.0);
+    let g = terrain::slot_ground(&tree, 0.0, 0.0, 0.0, 0.0);
     assert_eq!(
         g, NO_SURFACE,
         "a tree top must never be ground from the floor"
@@ -225,7 +225,7 @@ fn the_plinth_is_ground_and_the_roof_is_not() {
         mag(plinth_top - 0.2) < 1e-6,
         "the plinth top moved: {plinth_top}"
     );
-    let g = terrain::slot_ground(&s, 0.0, 0.0, 0.0);
+    let g = terrain::slot_ground(&s, 0.0, 0.0, 0.0, 0.0);
     assert!(
         mag(g - plinth_top) <= 1e-6,
         "standing in the shelter, ground should be the plinth top {plinth_top}, got {g}"

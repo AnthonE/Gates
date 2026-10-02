@@ -620,7 +620,13 @@ const GOLDEN_FINAL_HASH: u64 = 0xC372_6229_3617_7022;
 /// record hashes its pose, ground furniture stands on the ground under it
 /// rather than a band above, and a blocking one refuses a slope it would
 /// float over — the script's workbenches land on fewer hillsides.
-const GOLDEN_TRACE_HASH: u64 = 0xC91B_F21B_C8B4_E97B;
+/// **Moved `0xC91B_F21B_C8B4_E97B` → `0x1F3C_1ADE_AB0B_E32A` at body ground**
+/// (2026-10-02, merged onto free placement), and alone: a body now stands on
+/// every top its capsule disc overlaps, not the point under its centre, so
+/// the script's walkers mount and leave its foundations a few ticks
+/// differently. The end state holds, and the wall-plane rule that landed
+/// with it moves nothing here.
+const GOLDEN_TRACE_HASH: u64 = 0x1F3C_1ADE_AB0B_E32A;
 
 /// Fold a stamped trace into one number.
 ///

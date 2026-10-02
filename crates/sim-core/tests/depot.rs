@@ -66,7 +66,7 @@ fn complete_compounds_have_opposite_distinct_connections_and_flat_footings() {
             let (x, z) = depot::to_world(ws, (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
             let y = ws.floor_y + (b[1] + b[4]) * 0.5;
             assert!(depot::blocks(&h, x, z, y, 0.01, 0.01), "{part:?}");
-            let support = depot::ground(&h, x, z, ws.floor_y + b[4]);
+            let support = depot::ground(&h, x, z, ws.floor_y + b[4], 0.0);
             assert!(support >= ws.floor_y + b[4] - 0.001);
             assert!(support <= ws.floor_y + b[4] + movement::STEP_UP);
         }

@@ -163,7 +163,14 @@ pub fn blocks_local(
     false
 }
 
-/// The highest kit top under local (`lx`, `lz`) within a step of `feet`.
+/// The highest kit top within a step of `feet` under a disc of radius `r`
+/// at local (`lx`, `lz`) — `r` 0 is the point under it.
+///
+/// A body passes the capsule radius, the footprint `blocks_local` stops it
+/// with. A point footprint let a body step off a ledge with its centre past
+/// the edge and the rest of it still over the stone: it fell beside the
+/// face overlapping it, the "already inside" lift in `movement::step` let it
+/// walk on into the solid, and it came out inside a ziggurat terrace.
 pub fn ground_local(
     parts: &[KitPart],
     floor_y: f32,
@@ -171,6 +178,7 @@ pub fn ground_local(
     lx: f32,
     lz: f32,
     feet: f32,
+    r: f32,
 ) -> f32 {
     let mut best = crate::collide::NO_SURFACE;
     for part in parts {
@@ -179,7 +187,9 @@ pub fn ground_local(
         }
         let b = part.b;
         let top = floor_y + b[4];
-        if lx >= b[0] && lx <= b[3] && lz >= b[2] && lz <= b[5] && top <= feet + STEP_UP {
+        let dx = lx - lx.clamp(b[0], b[3]);
+        let dz = lz - lz.clamp(b[2], b[5]);
+        if dx * dx + dz * dz <= r * r && top <= feet + STEP_UP {
             best = best.max(top);
         }
     }

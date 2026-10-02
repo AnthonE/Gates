@@ -1198,11 +1198,13 @@ pub fn edge_foot_drop(
     (here - col_base_y(seed, haven, cols, ox, oz)).max(0.0)
 }
 
-/// The highest built surface under (x, z) the capsule at `feet_y` may
-/// stand on — a plane's top, or the stair ramp's height at this z —
-/// `NO_SURFACE` when none. "May stand on" is the step rule: a surface
-/// more than STEP_UP above the feet is a ceiling, not a floor (walking
-/// under a level-2 floor must not teleport anyone up).
+/// The highest built surface under the POINT (x, z) that something with its
+/// bottom at `feet_y` may stand on — a plane's top, or the stair ramp's
+/// height at this z — `NO_SURFACE` when none. "May stand on" is the step
+/// rule: a surface more than STEP_UP above the feet is a ceiling, not a floor
+/// (walking under a level-2 floor must not teleport anyone up). A dropped
+/// item, a placement preview and the render gates ask this; a body asks
+/// [`body_ground`], which is this over the capsule's disc.
 pub fn piece_ground(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -1288,6 +1290,63 @@ pub fn piece_ground(
             }
         }
     }
+    best
+}
+
+/// [`piece_ground`] for a **body**: the highest built top within a step of
+/// `feet_y` that the capsule's own disc overlaps — the footprint
+/// [`plane_blocked`] and [`deploy_blocked`] stop that body with — rather than
+/// the point under its centre. `movement::step` asks this; a dropped item, a
+/// placement preview and the render gates still ask the point.
+///
+/// **One footprint for standing and for stopping, or a body falls into the
+/// base.** With the point a body walked off a roof with its centre a hair
+/// past the cell and most of itself still over the slab, and fell down the
+/// side: down a slab's flank its own disc overlapped, which
+/// `movement::step`'s "already inside" lift then let it walk on into (a
+/// foundation's skirt), and on a roof's high-side edge the first quantum
+/// past the cell is exactly the wall plane below, where [`edge_meet`] used to
+/// let a body through to either side. With the disc it stays on the roof
+/// until it is clear of the slab, and only ever falls where nothing it
+/// overlaps could stop it — `occupy::Occupants::body_ground` is the same
+/// rule for the scattered world.
+pub fn body_ground(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> f32 {
+    let lid = feet_y + STEP_UP;
+    let mut best = NO_SURFACE;
+    // Planes, frames, triangles and stair ramps: the walk `plane_blocked` and
+    // `piece_ceiling` take, so a top is ground exactly where its flank and
+    // its underside would be solid.
+    any_body_plane(seed, haven, cols, x, z, |_, top| {
+        if top <= lid && top > best {
+            best = top;
+        }
+        false
+    });
+    // Solid-deploy tops at `deploy_blocked`'s footprint, closed where that
+    // one is open, over the same walk.
+    let r2 = CAPSULE_RADIUS_M * CAPSULE_RADIUS_M;
+    for_near_solids(
+        seed,
+        haven,
+        cols,
+        x,
+        z,
+        CAPSULE_RADIUS_M,
+        |rect, bottom, h, _| {
+            let top = bottom + h;
+            if top <= lid && top > best && rect.dist2(x, z) <= r2 {
+                best = top;
+            }
+            false
+        },
+    );
     best
 }
 
@@ -1861,11 +1920,19 @@ fn cell_planes_stop_shot(
 /// ([`shot_blocked`]), which is the radius parameter `ranged.rs`'s module
 /// doc spent a paragraph owing. What is solid at the returned metre is the
 /// caller's per-shape question ([`doorway_solid_at`] and family).
+///
+/// **The plane belongs to the high side**, `build::build_cell_of`'s floor:
+/// a mover exactly on it is in the cell above it, so leaving it downward is a
+/// crossing. Both sides were open until 2026-10-02 and the plane itself was
+/// neither, so a body standing ON a wall's plane — and creeping off a roof's
+/// high edge one quantum puts it exactly there, falling down the wall below —
+/// walked through that wall to either side: into a sealed room under the
+/// roof it had just been standing on.
 fn edge_meet(px: f32, s0: f32, a0: f32, a1: f32, along: f32, r_extra: f32) -> Option<f32> {
     let r = WALL_THICKNESS_M * 0.5 + r_extra;
     let d0 = a0 - px;
     let d1 = a1 - px;
-    let crosses = (d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0);
+    let crosses = (d0 < 0.0) != (d1 < 0.0);
     let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
     if !crosses && !pushes_in {
         return None;
@@ -2066,7 +2133,8 @@ fn diag_meet(
         (d(x, z), d(nx, nz), s)
     };
     let r = WALL_THICKNESS_M * 0.5 + r_extra;
-    let crosses = (d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0);
+    // Half-open, [`edge_meet`]'s rule and reason: on the line is one side.
+    let crosses = (d0 < 0.0) != (d1 < 0.0);
     let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
     if !crosses && !pushes_in {
         return None;

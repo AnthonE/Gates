@@ -208,7 +208,7 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         h.update(&[crate::town::blocks(&town, x, z, y, 0.01, 0.01) as u8]);
         hash_f32(
             &mut h,
-            crate::town::ground(&town, x, z, town.floor_y + b[4]),
+            crate::town::ground(&town, x, z, town.floor_y + b[4], 0.0),
         );
     }
     // The Black Ziggurat, the same way, its doors shut.
@@ -224,7 +224,7 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         h.update(&[crate::monument::blocks(&zig, 0, x, z, y, 0.01, 0.01) as u8]);
         hash_f32(
             &mut h,
-            crate::monument::ground(&zig, 0, x, z, zig.floor_y + b[4]),
+            crate::monument::ground(&zig, 0, x, z, zig.floor_y + b[4], 0.0),
         );
     }
     // The ore budget: it moves every rock-channel cell's draw, and none of
@@ -269,7 +269,7 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
                 h.update(&[crate::depot::blocks(&haven, x, z, y, 0.01, 0.01) as u8]);
                 hash_f32(
                     &mut h,
-                    crate::depot::ground(&haven, x, z, ws.floor_y + b[4]),
+                    crate::depot::ground(&haven, x, z, ws.floor_y + b[4], 0.0),
                 );
             }
         }
