@@ -1320,6 +1320,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 m.id
             ));
         }
+        // Density and habitat: a number of animals per km² and where they
+        // live. Zero density is legal (a wolf row can arm only the site
+        // guards); a density with nowhere to live is a row that cannot be.
+        let h = &m.habitat;
+        let weights = [h.meadow, h.forest, h.highland];
+        if !(0.0..=50.0).contains(&m.per_km2) || weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
+            return Err(format!(
+                "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",
+                m.id
+            ));
+        }
+        if m.per_km2 > 0.0 && weights.iter().all(|w| *w == 0.0) {
+            return Err(format!(
+                "mob `{}`: {} per km² of no habitat at all",
+                m.id, m.per_km2
+            ));
+        }
         // The hit volume: an animal nothing can hit is not a species, and
         // one wider than a cell or taller than a house is a typo. The
         // bands are generous on purpose — a moose is a content row, not a

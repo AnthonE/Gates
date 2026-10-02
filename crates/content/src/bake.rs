@@ -1790,6 +1790,16 @@ impl Content {
                     .respawn_seconds
                     .checked_mul(TICK_HZ)
                     .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
+                // Thousandths per km², and per mille per biome in
+                // `terrain::Biome` order (beach, meadow, forest, highland).
+                // Validate bounded every value, so the casts cannot wrap.
+                per_km2_milli: (m.per_km2 * 1000.0).round() as u32,
+                habitat_pm: [
+                    0,
+                    (m.habitat.meadow * 1000.0).round() as u16,
+                    (m.habitat.forest * 1000.0).round() as u16,
+                    (m.habitat.highland * 1000.0).round() as u16,
+                ],
                 // Centimetres straight through: the hit volume a swing's ray
                 // is tested against (`melee::mob_cast`). Validate bounded
                 // both, so `small` cannot refuse a row it accepted.

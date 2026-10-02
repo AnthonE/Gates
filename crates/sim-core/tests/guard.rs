@@ -40,6 +40,15 @@ use sim_core::world::{Command, World};
 /// the first draft of this helper resolved it per call and took the workspace
 /// test run past five minutes. It is a pure function of the seed, so caching
 /// cannot change a result.
+/// A world whose roster has enrolled and hatched: homes are drawn when an
+/// animal hatches, on the first armed tick.
+fn hatched(seed: u64) -> World {
+    let mut w = World::new(seed);
+    w.mob = MobContent::probe_fixture();
+    w.tick(&[]);
+    w
+}
+
 fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
     use std::cell::RefCell;
     // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
@@ -185,7 +194,7 @@ fn every_guard_slot_is_a_predator_slot() {
 #[test]
 fn a_guard_homes_on_its_sites_swept_apron() {
     for seed in SEEDS {
-        let w = World::new(seed);
+        let w = hatched(seed);
         for slot in 0..MAX_MOBS {
             let Some(site) = mob::guard_site_of(slot) else {
                 continue;
@@ -236,7 +245,7 @@ fn a_guard_homes_on_its_sites_swept_apron() {
 #[test]
 fn the_haven_pad_is_guarded_on_every_seed() {
     for seed in SEEDS {
-        let w = World::new(seed);
+        let w = hatched(seed);
         let kept = (0..MAX_MOBS)
             .filter(|&s| mob::guard_site_of(s) == Some(0) && w.mobs.m[s].homed)
             .count();
@@ -253,7 +262,7 @@ fn the_haven_pad_is_guarded_on_every_seed() {
 #[test]
 fn only_a_guard_stands_in_a_site() {
     for seed in SEEDS {
-        let w = World::new(seed);
+        let w = hatched(seed);
         for slot in 0..MAX_MOBS {
             if !w.mobs.m[slot].homed || mob::guard_site_of(slot).is_some() {
                 continue;
@@ -317,7 +326,7 @@ fn a_guards_leash_is_its_site_and_not_its_species() {
 #[test]
 fn the_leash_keeps_a_guard_within_reach_of_the_ring_it_keeps() {
     for seed in SEEDS {
-        let w = World::new(seed);
+        let w = hatched(seed);
         for slot in 0..MAX_MOBS {
             let Some(site) = mob::guard_site_of(slot) else {
                 continue;
@@ -479,7 +488,7 @@ fn a_guard_hatches_at_its_post() {
 #[test]
 fn an_unfilled_waystation_keeps_no_guard() {
     for seed in SEEDS {
-        let w = World::new(seed);
+        let w = hatched(seed);
         for site in 1..=terrain::WAYSTATIONS {
             if w.haven.minor[site - 1].live {
                 continue;
@@ -526,24 +535,25 @@ fn a_guard_pays_what_a_wolf_pays() {
     }
 }
 
-/// Guards do not change what the roster costs. The store is fixed at
-/// `MAX_MOBS` and a guard is a slot out of it, never an addition — the
-/// thing wall 4 wants said out loud at the one site that could have grown.
+/// Guards are on top of the density, not out of it, and the store is still
+/// fixed at `MAX_MOBS` — the thing wall 4 wants said out loud at the one
+/// site that could have grown.
 #[test]
-fn guards_are_taken_out_of_the_roster_and_not_added_to_it() {
+fn guards_are_on_top_of_the_density() {
     for seed in SEEDS {
-        let w = World::new(seed);
+        let w = hatched(seed);
         assert_eq!(w.mobs.m.len(), MAX_MOBS);
-        assert!(w.mobs.homed() <= MAX_MOBS);
-        // Nothing here should have cost the free roster its population: the
-        // guards were already wolf slots, so the island's animal count is
-        // unchanged and only six homes moved.
-        assert!(
-            w.mobs.homed() >= MAX_MOBS - SITE_GUARDS - 2,
-            "seed {seed}: {} of {MAX_MOBS} slots found a home — guards \
-             should have moved homes, not lost them",
-            w.mobs.homed()
+        let want = mob::targets(&w.mob, &w.mobs.survey);
+        let guards = (0..MAX_MOBS)
+            .filter(|&s| mob::guard_site_of(s).is_some() && w.mobs.m[s].homed)
+            .count();
+        assert!(guards <= SITE_GUARDS);
+        assert_eq!(
+            w.mobs.homed(),
+            want.iter().sum::<usize>() + guards,
+            "seed {seed}: the roster is the density's count plus the guards"
         );
+        assert_eq!(w.mobs.alive(), w.mobs.homed(), "seed {seed}: one hatched");
     }
 }
 

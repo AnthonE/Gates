@@ -665,9 +665,16 @@ pub struct Mob {
     /// holds the reachability bands at *both* hours and takes no view on
     /// the direction.
     pub night_spook_m: u32,
-    /// Time between a death and the same slot standing up again at the
-    /// same home.
+    /// Time between a death and the slot standing up again — somewhere its
+    /// habitat takes it, not where it fell (the reference's refill).
     pub respawn_seconds: u32,
+    /// How many live per square kilometre of habitat: the reference's
+    /// `boar.population` (5) and `wolf.population` (2). The island's
+    /// roster of this species is this times its habitat-weighted land.
+    pub per_km2: f32,
+    /// Where the species lives — a weight per biome the home draw is
+    /// accepted at (the reference's spawn filter). Beach is never a home.
+    pub habitat: Habitat,
     /// The animal's hit volume — a cylinder standing on its feet, radius
     /// and height in **centimetres** (melee aim v1, 2026-09-05). What a
     /// swing's ray has to enter to land (`sim-core/src/melee.rs`
@@ -696,6 +703,15 @@ pub struct Mob {
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
     pub drops: Vec<Stack>,
+}
+
+/// A species' liking for each biome, 0–1 (`terrain::Biome`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Habitat {
+    pub meadow: f32,
+    pub forest: f32,
+    pub highland: f32,
 }
 
 /// The attack helicopter (`sim-core/src/heli.rs`): an AI gunship that

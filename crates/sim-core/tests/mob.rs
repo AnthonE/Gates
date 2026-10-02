@@ -71,21 +71,21 @@ fn first_alive(w: &World, kind: u8) -> usize {
         .unwrap_or_else(|| panic!("the roster hatched no live animal of kind {kind}"))
 }
 
-/// A seed's roster finds land for effectively all of its slots, and every
-/// home is somewhere a player could stand: inland, walkable, and outside
-/// the two authored sites.
+/// Every enrolled slot finds a home on the first armed tick, and every
+/// home is somewhere a player could stand — inland, walkable, outside the
+/// authored sites — **in ground its species lives in**.
 #[test]
 fn every_home_is_on_walkable_inland_ground() {
     for seed in [1u64, 7, 99, 2026] {
-        let w = World::new(seed);
-        let homed = w.mobs.homed();
-        assert!(
-            homed >= MAX_MOBS - 2,
-            "seed {seed}: only {homed}/{MAX_MOBS} roster slots found a home — \
-             24 draws against a continent should not miss this often"
+        let mut w = armed(seed);
+        w.tick(&[]);
+        assert_eq!(
+            w.mobs.alive(),
+            w.mobs.homed(),
+            "seed {seed}: an enrolled slot found nowhere to hatch"
         );
         for (slot, m) in w.mobs.m.iter().enumerate() {
-            if !m.homed {
+            if !m.alive {
                 continue;
             }
             // A site guard is the deliberate exception to every rule below
@@ -108,6 +108,11 @@ fn every_home_is_on_walkable_inland_ground() {
             assert!(terrain::slope(seed, x, z) < 1.0);
             assert!(!terrain::in_haven(&w.haven, x, z));
             assert!(!terrain::in_waystation(&w.haven, x, z));
+            let biome = terrain::biome(terrain::height(seed, x, z), terrain::moisture(seed, x, z));
+            assert!(
+                w.mob.def(m.kind).habitat_pm[biome as usize] > 0,
+                "seed {seed}: slot {slot} lives in {biome:?}, which its species avoids"
+            );
         }
     }
 }
@@ -153,22 +158,65 @@ fn armed_content_hatches_the_whole_roster() {
         assert_eq!(m.body.qz, m.home_qz);
         assert!(m.body.grounded);
     }
-    // Both species are actually present. Without this the assertions above
-    // are satisfied by a roster of 64 pigs — the state the tree was in
-    // before the wolf, and the thing a `kind_of`-shaped assertion cannot
-    // notice on its own.
-    let wolves = w.mobs.m.iter().filter(|m| m.kind == MOB_WOLF).count();
-    assert_eq!(
-        wolves,
-        MAX_MOBS / 4,
-        "1-in-4 of {MAX_MOBS} slots is a predator, exactly, on every seed"
+    // Both species are present, in the numbers their density asks for:
+    // habitat-weighted land × per km² (the reference's population), the
+    // wolves' site guards on top.
+    let want = mob::targets(&fixture, &w.mobs.survey);
+    let live = |kind| {
+        w.mobs
+            .m
+            .iter()
+            .filter(|m| m.alive && m.kind == kind)
+            .count()
+    };
+    assert!(
+        want[MOB_PIG as usize] > 20 && want[MOB_WOLF as usize] > 5,
+        "{want:?}"
     );
-    // Every other slot is a pig but the last, which is the heli's.
+    assert_eq!(live(MOB_PIG), want[MOB_PIG as usize]);
+    assert_eq!(live(MOB_WOLF), want[MOB_WOLF as usize] + mob::SITE_GUARDS);
+    assert!(!w.mobs.m[mob::HELI_SLOT].homed);
+}
+
+/// The roster scales with density, the reference's `population` convar: a
+/// row asking for twice the animals per km² gets twice the animals on the
+/// same island, and none past the roster's own cap.
+#[test]
+fn the_roster_is_density_times_habitat() {
+    let survey = mob::survey(11);
+    let mut mc = MobContent::probe_fixture();
+    let base = mob::targets(&mc, &survey);
+    mc.defs[MOB_PIG as usize].per_km2_milli *= 2;
+    let doubled = mob::targets(&mc, &survey);
+    let d = doubled[MOB_PIG as usize] as i64 - 2 * base[MOB_PIG as usize] as i64;
+    assert!(d.abs() <= 1, "{base:?} doubled to {doubled:?}");
+    assert_eq!(doubled[MOB_WOLF as usize], base[MOB_WOLF as usize]);
+    // A species that only lives in highland is a fraction of one that
+    // lives everywhere.
+    mc.defs[MOB_PIG as usize].habitat_pm = [0, 0, 0, 1_000];
+    assert!(mob::targets(&mc, &survey)[MOB_PIG as usize] < doubled[MOB_PIG as usize] / 3);
+    mc.defs[MOB_PIG as usize].per_km2_milli = 1_000_000;
+    mc.defs[MOB_PIG as usize].habitat_pm = [0, 1_000, 1_000, 1_000];
     assert_eq!(
-        w.mobs.m.iter().filter(|m| m.kind == MOB_PIG).count(),
-        MAX_MOBS - wolves - 1
+        mob::targets(&mc, &survey)[MOB_PIG as usize],
+        mob::capacity(MOB_PIG)
     );
-    assert_eq!(w.mobs.m[mob::HELI_SLOT].kind, mob::MOB_HELI);
+}
+
+/// A dead animal comes back somewhere new — the reference's refill, which
+/// re-samples the habitat rather than remembering where it fell.
+#[test]
+fn a_respawn_is_drawn_fresh() {
+    let mut w = armed(11);
+    w.tick(&[]);
+    let slot = first_alive(&w, MOB_PIG);
+    let home = (w.mobs.m[slot].home_qx, w.mobs.m[slot].home_qz);
+    w.mobs.m[slot].alive = false;
+    w.mobs.m[slot].respawn_at = w.tick + 1;
+    w.tick(&[]);
+    w.tick(&[]);
+    assert!(w.mobs.m[slot].alive, "the slot never respawned");
+    assert_ne!((w.mobs.m[slot].home_qx, w.mobs.m[slot].home_qz), home);
 }
 
 /// Dormancy is the reference game's measure and ours is a hard skip: with
