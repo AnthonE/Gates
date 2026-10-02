@@ -48,7 +48,7 @@
 //! same `WALK_SPEED` a player sprints away from.
 //!
 //! **Bounded, per wall 4, and in two directions at once.** The roster is
-//! `MAX_MOBS` fixed slots — no spawn path can ask for a sixty-fifth pig.
+//! `MAX_MOBS` fixed slots — no spawn path can ask for one pig more.
 //! Decisions are phase-offset across `MOB_THINK_TICKS` (≈ 4 animals think
 //! per tick, not 64), and an animal with no player inside `MOB_WAKE_CM`
 //! does not step at all. Both of those are the reference game's own
@@ -1139,12 +1139,14 @@ pub const fn pack_leader_of(slot: usize) -> Option<usize> {
 /// its post and a free predator's is its den's leader. Pure in the slot.
 /// Only a pack-mate's call is answered — the reference's howl carries to
 /// the wolf's own pack and nobody else's.
-pub const fn pack_of(slot: usize) -> Option<u8> {
+pub const fn pack_of(slot: usize) -> Option<u16> {
+    // Guard packs sit past every slot, so no free pack's leader can share
+    // an id with a post however big the roster grows.
     if let Some(site) = guard_site_of(slot) {
-        return Some(200 + site as u8);
+        return Some((MAX_MOBS + site) as u16);
     }
     match pack_leader_of(slot) {
-        Some(l) => Some(l as u8),
+        Some(l) => Some(l as u16),
         None => None,
     }
 }

@@ -1124,19 +1124,21 @@ pub const MAX_HITSCAN_MARK_SAMPLES: usize = 64;
 /// (`mob.rs`). Not a queue: the roster is a fixed array of slots, each
 /// with a home the seed chose once, so there is no overflow policy to
 /// state — a slot is alive or it is waiting to hatch, and nothing can
-/// ever ask for a sixty-fifth pig.
+/// ever ask for one pig more.
 ///
 /// The number is a density, and it is stated as one: 64 animals over the
-/// ~2 km² of land a seed puts inside the continent falloff is ≈ 30 / km²,
-/// which is the same order as the reference game's own boar population
+/// ~2 km² of land the 2048 m island put inside the continent falloff was
+/// ≈ 30 / km², and the 4096 m island has four times the land, so 256 keeps
+/// it. That is the same order as the reference game's own boar population
 /// (`reference/ANIMALS.md` §3). It is also sized against the wire rather
-/// than only against the ground: at the 176 m AOI radius one client's
-/// disc is 9.7 ha, or 2.3% of the island, so the expectation inside a
-/// client's interest set is **1.5 animals** and the tail is nowhere near
-/// `MAX_SNAPSHOT_ENTITIES`. A roster ten times this size would still fit
+/// than only against the ground: the density is unchanged, so the
+/// expectation inside one client's 176 m AOI disc is still about **1.5
+/// animals** and the tail is nowhere near `MAX_SNAPSHOT_ENTITIES`. A roster ten times this size would still fit
 /// the sim's tick budget and would not fit that. Proposed default,
 /// DECISIONS.md §open ("animals v0").
-pub const MAX_MOBS: usize = 64;
+pub const MAX_MOBS: usize = 256;
+// Slots travel as `u8` (`brain.rs` howls, `mob.rs`), so 256 is the ceiling.
+const _: () = assert!(MAX_MOBS <= 256);
 
 /// The bit that says *this class-D entity is not a player*.
 ///
@@ -1227,12 +1229,12 @@ pub const DAY_PORTION: f32 = 0.875;
 
 /// The most bites one tick can land across the whole roster (mob.rs
 /// `Bites`). Derived, generously: only a *thinking* animal can bite, so
-/// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 4 plus
-/// rounding — 8 is that with headroom, not a tuning knob. **Overflow
+/// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 17 plus
+/// rounding — 32 is that with headroom, not a tuning knob. **Overflow
 /// drops the bite**: a full buffer is one merciful tick, and the phase
 /// lock retries the same pair two seconds later. Never a queue — a bite
 /// carried across ticks would land on a player who has already left.
-pub const MAX_MOB_BITES_PER_TICK: usize = 8;
+pub const MAX_MOB_BITES_PER_TICK: usize = 32;
 
 /// How close a player must be for an animal to be awake, in centimeters.
 ///
@@ -1345,4 +1347,4 @@ pub const MAX_NOISES: usize = 256;
 /// the true ceiling is the handful thinking on the tick. **Overflow drops
 /// the howl**: the call still happened (the pack answers off the roster, not
 /// the sound), only its sound is lost.
-pub const MAX_HOWLS_PER_TICK: usize = 8;
+pub const MAX_HOWLS_PER_TICK: usize = 32;

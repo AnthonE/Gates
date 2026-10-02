@@ -1197,7 +1197,7 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
 /// barrel and `worldcont::table_of` claims these two — and this is those
 /// two predicates read from the client side, never a third opinion.
 fn openable(o: Occupant) -> bool {
-    matches!(o, Occupant::CrateSlot | Occupant::CacheSlot)
+    sim_core::worldcont::table_of(o).is_some()
 }
 
 /// What `E` would OPEN in the scatter, or `Occupant::None` for nothing.

@@ -2666,6 +2666,29 @@ impl World {
         if ground == inventory::CONT_BAG {
             self.backpacks.drop_if_empty(ci, &mut self.events);
         }
+        // A crate this move emptied leaves the world until it refills, as
+        // the reference's does — the picture stops promising loot that is
+        // not there. Asked after BOTH writes, so shuffling a crate's last
+        // stack between its own slots never blinks it out.
+        if ground == inventory::CONT_WORLD {
+            self.vanish_if_emptied(ci);
+        }
+    }
+
+    /// Harvest an emptied world container until one tick before its refill
+    /// (`SlotLives::harvest`): the respawn sweep runs after the commands, so
+    /// the open that arrives on `refill_at` finds it standing and rolls it.
+    fn vanish_if_emptied(&mut self, ci: usize) {
+        let c = self.world_conts.entries()[ci];
+        if !c.is_empty() || c.refill_at <= self.tick + 1 {
+            return;
+        }
+        let occ = crate::worldcont::occupant_of(c.table as usize);
+        if occ == crate::terrain::Occupant::None {
+            return;
+        }
+        self.slot_lives
+            .harvest(c.cx, c.cz, occ, c.refill_at - 1, &mut self.events);
     }
 
     /// Lay down the arrows that are due (`spent::settle`): each falls onto
@@ -4546,7 +4569,10 @@ impl World {
                 }
             }
             Command::OpenWorldCont { id, cont } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // An emptied crate is out of the world until it refills.
+                let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
+                let gone = self.slot_lives.is_harvested(cx, cz);
+                if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
                     self.world_conts.open(
                         self.seed,
                         &self.scatter,
@@ -5320,6 +5346,7 @@ impl World {
             }
         }
         let mut blast_kills = crate::charge::BlastKills::new();
+        let mut blast_mobs = crate::charge::BlastMobs::new();
         crate::charge::tick_fuses(
             seed,
             &self.haven,
@@ -5333,6 +5360,8 @@ impl World {
             tick,
             &mut removals,
             &mut blast_kills,
+            &self.mobs,
+            &mut blast_mobs,
             &mut self.events,
         );
         // The blast's dead, laid down after every fuse resolved — the
@@ -5344,6 +5373,27 @@ impl World {
             if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
                 self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
             }
+        }
+        // The blast's animals, on the arrow's path: they run or turn on
+        // the planter, the planter gets the hitmarker, the dead drop meat.
+        for slot in 0..crate::limits::MAX_MOBS {
+            let dmg = blast_mobs.dmg[slot];
+            if dmg == 0 {
+                continue;
+            }
+            let by = self.live_slot_of(blast_mobs.by[slot]);
+            mob::hurt_slot(
+                &self.backpack,
+                &self.mob,
+                tick,
+                by,
+                &self.players,
+                &mut self.mobs,
+                &mut self.backpacks,
+                &mut self.events,
+                slot,
+                dmg,
+            );
         }
 
         // The roster steps after the player loop and before the arrows, and

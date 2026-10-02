@@ -977,7 +977,8 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
             // written to end.
             super::props::FellPart::Canopy
             | super::props::FellPart::Stump
-            | super::props::FellPart::Far => continue,
+            | super::props::FellPart::Far
+            | super::props::FellPart::Emptied => continue,
         };
         let p = t.translation();
         sound.play(Request::at(cue, [p.x, p.y, p.z]));

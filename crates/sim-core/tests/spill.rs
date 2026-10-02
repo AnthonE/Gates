@@ -447,7 +447,11 @@ fn a_spill_never_merges_into_somebody_else_s_bag() {
         .unwrap();
     assert_ne!(mine, theirs, "a bag of my own, not theirs topped up");
     assert_eq!(bp.len(), 2);
-    assert_eq!(inv_count(&bp.entries()[0].items, FILLER), 1, "theirs untouched");
+    assert_eq!(
+        inv_count(&bp.entries()[0].items, FILLER),
+        1,
+        "theirs untouched"
+    );
 }
 
 /// The disarm survives. `base_ticks == 0` is content that never armed the
