@@ -782,6 +782,10 @@ pub const VIEWMODEL_CARRY_SHIFT: Vec3 = Vec3::new(0.10, -0.02, 0.0);
 pub const VIEWMODEL_LIFT: Vec3 = Vec3::new(-0.10, 0.15, 0.0);
 /// How fast the arm comes up to, or down from, the raise and the carry, 1/s.
 pub const VIEWMODEL_LIFT_RATE: f32 = 8.0;
+/// Where the arm goes while a deployable is held as a blueprint
+/// (`sheet`): down out of the frame, view space metres. The sheet runs off
+/// the bottom of the frame, so the hands holding it are down there too.
+pub const VIEWMODEL_STOW: Vec3 = Vec3::new(0.06, -0.42, 0.0);
 /// Where in a stroke the arm has come all the way down out of the raise, as
 /// stroke progress: with the wind-up's own peak. A chop wound up from a
 /// torch held overhead leaves the top-right of the frame, so the arm drops
@@ -1036,6 +1040,12 @@ pub struct Motion {
     /// hammer's repair): taken next frame if the arm is at rest, dropped if
     /// it is mid-stroke, so clicking faster does not chain strokes.
     queued: bool,
+    /// How far the arm is lowered out of frame for the blueprint sheet,
+    /// 0..=1 ([`VIEWMODEL_STOW`]), eased.
+    stow: f32,
+    /// This frame's sway and bob, for the sheet to ride ([`Motion::idle`]).
+    idle_lag: Quat,
+    idle_drift: Vec3,
 }
 
 /// What the bow's string and arrow are drawn from this frame (`bow::drive`).
@@ -1058,6 +1068,12 @@ impl Motion {
     /// swing button: the hammer's repair (`verbs::keys`).
     pub fn strike(&mut self) {
         self.queued = true;
+    }
+
+    /// The sway and the bob (with the heave) this frame, without the
+    /// stroke: what `sheet::drive` carries the blueprint by.
+    pub fn idle(&self) -> (Quat, Vec3) {
+        (self.idle_lag, self.idle_drift)
     }
 
     pub fn bow(&self) -> BowPose {
@@ -1723,23 +1739,25 @@ pub fn swap(
                 .get(usize::from(n.sel).min(core.inv.len() - 1))
                 .copied();
             let skin = stack.map_or(0, |s| if s.count == 0 { 0 } else { s.skin });
+            let click = crate::ui::hold::click_in_hand(
+                &core.catalog,
+                &core.research,
+                &core.deploy_defs,
+                core.deploy_defs_have,
+                &core.inv,
+                n.sel,
+            );
             // Food and paper are not tools: a left click eats or reads them
             // (`ui::hold::Click`), and the hafted stand-in in the fist said
             // the opposite — a mushroom drawn as an axe.
             let tool = !matches!(
-                crate::ui::hold::click_in_hand(
-                    &core.catalog,
-                    &core.research,
-                    &core.deploy_defs,
-                    core.deploy_defs_have,
-                    &core.inv,
-                    n.sel,
-                ),
+                click,
                 crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
             );
             // **Holstered in THE GATE** (Rust: no weapon can be drawn in a
-            // safe zone): the hands are empty until you step out.
-            if core.holstered() {
+            // safe zone): the hands are empty until you step out. A
+            // deployable is held as a blueprint (`sheet`), not in the fist.
+            if core.holstered() || click == crate::ui::hold::Click::Deploy {
                 (None, true, 0, None, tool)
             } else {
                 (
@@ -2272,12 +2290,18 @@ pub fn animate(
     let k = 1.0 - (-VIEWMODEL_LIFT_RATE * dt).exp();
     m.lift += (f32::from(u8::from(lit)) - m.lift) * k;
     m.carry += (carry_of(def) - m.carry) * k;
+    let sheet = net.as_deref().is_some_and(super::sheet::up);
+    m.stow += (f32::from(u8::from(sheet)) - m.stow) * k;
+    m.idle_lag = lag;
+    m.idle_drift = bob + Vec3::Y * m.heave;
     *t = carried(
         m.carry * (1.0 - raise),
         lift_at(m.lift, s),
         lag * arc * draw_turn,
         throw + bob + draw_off + Vec3::Y * m.heave,
     );
+    let stow = m.stow * m.stow * (3.0 - 2.0 * m.stow);
+    t.translation += VIEWMODEL_STOW * stow;
 
     // ── The wrist, on top of the arm ────────────────────────────────────
     //

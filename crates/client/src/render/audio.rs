@@ -1320,7 +1320,8 @@ fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
 /// Something new in your hand (`Cue::Equip`): the hotbar moved to a slot
 /// holding an item, or the item in the held slot was swapped for another.
 /// Not an emptied hand, and not an item arriving in an empty one — that is a
-/// join's or a respawn's inventory landing, not a draw.
+/// join's or a respawn's inventory landing, not a draw. A deployable is drawn
+/// as a blueprint unrolling (`sheet`), so it rustles (`Cue::MapPaper`).
 pub fn hands(
     net: Option<NonSend<Net>>,
     mut sound: ResMut<Sound>,
@@ -1342,7 +1343,12 @@ pub fn hands(
         let drawn = held != sim_core::gather::NO_ITEM
             && (n.sel != sel || (held != was && was != sim_core::gather::NO_ITEM));
         if drawn {
-            sound.play(Request::own(Cue::Equip));
+            let cue = if super::sheet::up(n) {
+                Cue::MapPaper
+            } else {
+                Cue::Equip
+            };
+            sound.play(Request::own(cue));
         }
     }
     *last = Some((n.sel, held));
