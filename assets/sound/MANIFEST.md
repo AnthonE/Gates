@@ -52,6 +52,9 @@ which the decoder would clip), lightly high-passed, otherwise whole.
 | `door_open_0`–`1` | `DoorOpen` | Kenney, *RPG Audio*: `Audio/doorOpen_1.ogg, doorOpen_2.ogg` |
 | `door_close_0`–`3` | `DoorClose` | Kenney, *RPG Audio*: `Audio/doorClose_1..4.ogg` |
 | `gather_0`–`2` | `Gather` | Kenney, *rpg-audio*: `Audio/dropLeather.ogg`; Kenney, *rpg-audio*: `Audio/cloth2.ogg`; Kenney, *rpg-audio*: `Audio/cloth3.ogg` |
+| `equip_0`–`2` | `Equip` | Kenney, *RPG Audio*: `Audio/handleSmallLeather.ogg`, `handleSmallLeather2.ogg`, `cloth4.ogg` |
+| `map_paper_0`–`1` | `MapPaper` | Kenney, *RPG Audio*: `Audio/bookFlip1.ogg` (its last flip, from 0.28 s), `bookFlip3.ogg` |
+| `container_open_0`–`2` | `ContainerOpen` | Kenney, *RPG Audio*: `Audio/metalLatch.ogg` laid 60–70 ms ahead of `creak1.ogg`, `creak3.ogg` and `creak2.ogg` (−2 to −3 dB), one creak per take |
 
 ## `freesound/` — Freesound, cut here (2026-10-01)
 
@@ -141,5 +144,5 @@ resampled to the exact equal-tempered target.
 | `music_turn_calm`, `music_turn_tense`, `music_turn_combat` | `MusicTurnCalm`, `MusicTurnTense`, `MusicTurnCombat` |
 | `music_close_calm`, `music_close_tense`, `music_close_combat` | `MusicCloseCalm`, `MusicCloseTense`, `MusicCloseCombat` |
 
-147 files from Freesound, 62 from Kenney and 9 from VSCO-2, about 4.3 MB of
+147 files from Freesound, 70 from Kenney and 9 from VSCO-2, about 4.3 MB of
 Ogg in total.

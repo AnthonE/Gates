@@ -964,8 +964,14 @@ impl Plugin for GatesRenderPlugin {
         // open the map. `map::open` carries its own guard now and does not
         // rely on being downstream of anything.
         app.init_resource::<map::Island>()
-            .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
-            .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
+            .add_systems(
+                OnEnter(Screen::Map),
+                ((map::enter, map::setup).chain(), audio::map_paper),
+            )
+            .add_systems(
+                OnExit(Screen::Map),
+                ((map::teardown, map::leave), audio::map_paper),
+            )
             .add_systems(
                 Update,
                 (map::track, map::keys)
@@ -1657,6 +1663,7 @@ impl Plugin for GatesRenderPlugin {
                 // moved — a snort, a howl or a growl, by species and range.
                 audio::voices,
                 audio::ui_click,
+                audio::hands,
                 audio::fires,
                 audio::bed,
                 audio::pump,

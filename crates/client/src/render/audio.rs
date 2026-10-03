@@ -942,7 +942,21 @@ pub fn feed(
     feed: Res<super::feed::Feed>,
     world: Option<Res<super::WorldId>>,
     mut sound: ResMut<Sound>,
+    mut cont: Local<(u8, u32)>,
 ) {
+    // A container opened under your hands: a box's or a crate's latch and
+    // lid, a backpack's leather. Off the open view naming a new container,
+    // which is the server answering the open, not the key.
+    let open = (net.session.core.cont_kind, net.session.core.cont_handle);
+    if open != *cont && open.0 != sim_core::inventory::CONT_SELF {
+        let cue = if open.0 == sim_core::inventory::CONT_BAG {
+            Cue::Equip
+        } else {
+            Cue::ContainerOpen
+        };
+        sound.play(Request::own(cue));
+    }
+    *cont = open;
     // One marker per frame however many landed — `Cue::Hit`'s own cooldown
     // would refuse the rest anyway, and asking for four identical clicks so
     // three can be thrown away is work the queue does not need to do.
@@ -1177,6 +1191,45 @@ fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
         sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant
             == sim_core::terrain::Occupant::Bush
     })
+}
+
+/// Something new in your hand (`Cue::Equip`): the hotbar moved to a slot
+/// holding an item, or the item in the held slot was swapped for another.
+/// Not an emptied hand, and not an item arriving in an empty one — that is a
+/// join's or a respawn's inventory landing, not a draw.
+pub fn hands(
+    net: Option<NonSend<Net>>,
+    mut sound: ResMut<Sound>,
+    mut last: Local<Option<(u8, u16)>>,
+) {
+    let Some(n) = net.as_deref() else {
+        return;
+    };
+    let core = &n.session.core;
+    let held = if core.holstered() {
+        sim_core::gather::NO_ITEM
+    } else {
+        core.inv
+            .get(usize::from(n.sel))
+            .filter(|s| s.count > 0)
+            .map_or(sim_core::gather::NO_ITEM, |s| s.item)
+    };
+    if let Some((sel, was)) = *last {
+        let drawn = held != sim_core::gather::NO_ITEM
+            && (n.sel != sel || (held != was && was != sim_core::gather::NO_ITEM));
+        if drawn {
+            sound.play(Request::own(Cue::Equip));
+        }
+    }
+    *last = Some((n.sel, held));
+}
+
+/// The map unfolded or put away (`Cue::MapPaper`): on entering and on
+/// leaving `Screen::Map`.
+pub fn map_paper(sound: Option<ResMut<Sound>>) {
+    if let Some(mut sound) = sound {
+        sound.play(Request::own(Cue::MapPaper));
+    }
 }
 
 /// The interface's click (`Cue::UiClick`), on any button the pointer

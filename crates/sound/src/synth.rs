@@ -554,6 +554,8 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Learn => rustle(&mut r),
         Cue::CollapseWood => collapse(&mut r),
         Cue::Unlock => chime(&[(2_093.0, 0.0, 0.08), (2_637.0, 0.09, 0.10)]),
+        Cue::Equip | Cue::MapPaper => rustle(&mut r),
+        Cue::ContainerOpen => creak(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm

@@ -349,11 +349,18 @@ pub enum Cue {
     /// Night on the island, as a bed: a field of crickets. `render/audio.rs`
     /// brings it up as the light goes and the rain stops.
     BedNight,
+    /// Something new in your hand: leather and a strap as it comes off the
+    /// belt. Also a backpack on the ground being opened. Your own hands.
+    Equip,
+    /// The map, unfolded or put away: paper. Your own hands.
+    MapPaper,
+    /// A box or a crate opened: the latch, then the lid. Your own hands.
+    ContainerOpen,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 78;
+pub const CUE_COUNT: usize = 81;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -440,6 +447,9 @@ impl Cue {
         Cue::Unlock,
         Cue::CollapseWood,
         Cue::BedNight,
+        Cue::Equip,
+        Cue::MapPaper,
+        Cue::ContainerOpen,
     ];
 
     /// Is this cue a piece of music?
@@ -546,7 +556,10 @@ impl Cue {
             | Cue::DoorOpen
             | Cue::DoorClose
             | Cue::Drink
-            | Cue::Land => 0.07,
+            | Cue::Land
+            | Cue::Equip
+            | Cue::MapPaper
+            | Cue::ContainerOpen => 0.07,
             // A fire never crackles the same twice, and a bullet's whiz is
             // its speed and its miss distance.
             Cue::FireCrackle | Cue::Flyby => 0.10,
@@ -907,6 +920,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The night's crickets: scenery like the town's bed, its level the
     // hour's (`render/audio.rs`).
     row(AMB,   0.0, 0.20,   0, 0, false),  // the night
+    // Your own hands at the interface's level: the gather's register, and a
+    // cooldown so a scroll through the hotbar is not a drum roll.
+    row(GAME,  0.0, 0.50, 120, 3, false),  // equip
+    row(GAME,  0.0, 0.45, 150, 3, false),  // map paper
+    row(GAME,  0.0, 0.55, 200, 3, false),  // container open
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
