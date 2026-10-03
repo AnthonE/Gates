@@ -811,7 +811,12 @@ pub const EV_SWIPE: u8 = 50;
 /// EV_SWIPE_REFUSED: a = player id, b = `monument::REFUSE_S_*`, c = door.
 pub const EV_SWIPE_REFUSED: u8 = 51;
 
-pub const EV_MAX: u8 = EV_SWIPE_REFUSED;
+/// EV_SENTRY_LOCK: a = the sentry's roster id (`sentry.rs`), b = the player
+/// it locked on, c = 0. Broadcast to the clients that have the gun in
+/// interest — the beep before it fires — and the target's warning.
+pub const EV_SENTRY_LOCK: u8 = 52;
+
+pub const EV_MAX: u8 = EV_SENTRY_LOCK;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1248,8 +1253,17 @@ pub struct Player {
     pub safe: bool,
     /// Ticks left hostile (`combat::HOSTILE_TICKS`): set by any attack on a
     /// player, and while it runs the safe zone does not protect this body.
-    /// Hashed when non-zero; not saved — a restart forgives.
+    /// Carried through a death (Rust's rule); neither hashed nor saved — a
+    /// restart forgives.
     pub hostile: u16,
+    /// THE GATE's respawn point is unlocked: set the first time this player
+    /// stands in the town (Rust's Outpost spawn point). Carried through a
+    /// death; not saved.
+    pub gate_spawn: bool,
+    /// The tick THE GATE's respawn point is next free for this player
+    /// (`GATE_SPAWN_COOLDOWN_TICKS` after the last use). Carried through a
+    /// death; not saved.
+    pub gate_spawn_at: u64,
 }
 
 impl Player {
@@ -1268,9 +1282,14 @@ impl Player {
     }
 }
 
-/// How long a sleeper may lie in the town's safe zone before it is moved out
-/// of the main gate: 20 minutes, Rust's rule.
+/// How long a sleeper may lie in the town's safe zone before it is killed:
+/// 20 minutes, Rust's rule ("sleepers are automatically killed after 20
+/// minutes inside a safe zone").
 pub const SAFE_SLEEP_TICKS: u64 = 20 * 60 * crate::limits::TICK_HZ as u64;
+
+/// How long THE GATE's respawn point rests after a player wakes there:
+/// 30 minutes, Rust's Outpost spawn point.
+pub const GATE_SPAWN_COOLDOWN_TICKS: u64 = 30 * 60 * crate::limits::TICK_HZ as u64;
 
 impl Default for Player {
     fn default() -> Self {
@@ -1324,6 +1343,8 @@ impl Default for Player {
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
+            gate_spawn: false,
+            gate_spawn_at: 0,
         }
     }
 }
@@ -1812,6 +1833,13 @@ pub enum Command {
         id: u32,
         on_bag: bool,
     },
+    /// Answer the death screen with THE GATE: wake in the town's market
+    /// street (Rust's Outpost spawn point), if this player has been there
+    /// and the point is off its 30-minute cooldown — otherwise a beach,
+    /// never a refusal, for `Respawn`'s reason.
+    RespawnGate {
+        id: u32,
+    },
     /// Fill the held weapon's magazine from the pack (`ranged::reload`).
     ///
     /// No target and no count: the weapon is whatever is in the selected
@@ -1900,6 +1928,12 @@ pub struct World {
     /// The attack helicopter's brain — sim state, hashed whenever it is
     /// not `Default`. Its body is the roster's `heli::HELI_SLOT`.
     pub heli: crate::heli::Heli,
+    /// THE GATE's sentries' baked numbers (`sentry.rs`): inert by default,
+    /// armed by the shard's boot like the heli.
+    pub sentry_def: crate::sentry::SentryDef,
+    /// The sentries' brains — sim state, hashed whenever one is not
+    /// `Default`. Their bodies are the roster's `sentry::SENTRY_SLOT0..`.
+    pub sentries: [crate::sentry::Sentry; crate::sentry::SENTRIES],
     /// The animal roster — sim state, hashed. Homes are drawn from the
     /// seed at construction beside `haven` and never move; everything else
     /// in it is a tick's business.
@@ -2066,6 +2100,8 @@ impl World {
             mob: mob::MobContent::EMPTY,
             heli_def: crate::heli::HeliDef::INERT,
             heli: crate::heli::Heli::default(),
+            sentry_def: crate::sentry::SentryDef::INERT,
+            sentries: [crate::sentry::Sentry::default(); crate::sentry::SENTRIES],
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
@@ -2478,6 +2514,13 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
                 }
+                // No looting in the safe zone: another player's bag there
+                // is theirs alone (Rust's rule).
+                if !self.backpacks.may_loot(i, pid, &self.haven.town) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_SAFE, addr);
+                    return;
+                }
                 Some(i)
             }
             inventory::CONT_BOX => {
@@ -2861,8 +2904,11 @@ impl World {
             else {
                 return;
             };
-            let hp = self.deploys.entries()[i].hp;
-            self.struct_hitmarker(c.by, c.structure.min(hp));
+            let rec = self.deploys.entries()[i];
+            // The town's stations do not break, so they mark nothing.
+            if rec.owner != deploy::WORLD_OWNER {
+                self.struct_hitmarker(c.by, c.structure.min(rec.hp));
+            }
             deploy::damage_deploy(
                 &self.deploy,
                 &mut self.pieces,
@@ -3174,6 +3220,12 @@ impl World {
             // Carried for `known`'s reason: what a player owns is not in
             // their pockets, so a death does not take it (`skin.rs`).
             skins: body.skins,
+            // Rust's rule: hostility "persists across death in an attempt
+            // to prevent griefing" — dying is not a way back into the town.
+            hostile: body.hostile,
+            // THE GATE's respawn point and its cooldown are the person's.
+            gate_spawn: body.gate_spawn,
+            gate_spawn_at: body.gate_spawn_at,
             ..Player::default()
         };
         // **What it was wearing goes into the bag with what it was
@@ -3285,15 +3337,34 @@ impl World {
     /// The input frame survives on purpose: it is the client's, not the
     /// world's, and resetting `seq` would lie to prediction about which
     /// input the sim last executed.
-    fn wake(&mut self, slot: usize, on_bag: bool) {
+    /// Whether this body may wake at THE GATE now: the town stands, the
+    /// player has been there, the point is off its cooldown, and they are
+    /// not hostile — the sentries would only shoot them where they stood.
+    pub fn gate_spawn_ready(&self, p: &Player) -> bool {
+        self.haven.town.live && p.gate_spawn && p.hostile == 0 && self.tick >= p.gate_spawn_at
+    }
+
+    /// Where a player woken at THE GATE stands: the market street south of
+    /// the gate, spread across its width by id so two wakes do not stack.
+    fn gate_spawn_pos(&self, id: u32) -> (f32, f32) {
+        let (lx, lz) = crate::town::SPAWN_STREET;
+        let lx = lx - 3.0 + (id % 7) as f32;
+        crate::kit::to_world(&self.haven.town.placed(), lx, lz)
+    }
+
+    /// A new body: at THE GATE when asked and ready (Rust's Outpost spawn
+    /// point — a request it cannot fill is a beach, never a refusal), else
+    /// on the nearest own ready bag when asked, else on the ring.
+    fn wake(&mut self, slot: usize, on_bag: bool, at_gate: bool) {
         let body = self.players[slot];
         let (id, deaths, frame) = (body.id, body.deaths, body.frame);
+        let gate = at_gate && self.gate_spawn_ready(&body);
         // Nearest own ready bag to where the body fell; the scan spends it
         // for `BAG_COOLDOWN_TICKS`, so a chain of deaths inside one
         // cooldown walks the player's other bags and then the ring. Asked
         // only when the player asked: a bag the beach button did not want
         // must not be spent, or the choice would cost the same either way.
-        let bag = if on_bag {
+        let bag = if on_bag && !gate {
             self.deploys.claim_bag(
                 &self.deploy,
                 id,
@@ -3305,6 +3376,10 @@ impl World {
             None
         };
         let woke = match bag {
+            _ if gate => {
+                let (x, z) = self.gate_spawn_pos(id);
+                Body::at(self.seed, &self.haven, x, z)
+            }
             Some(rec) => deploy::bag_wake_body(self.seed, &self.haven, self.pieces.cols(), &rec),
             None => {
                 let (x, z) = self.spawn_pos_n(id, deaths as u32);
@@ -3350,6 +3425,14 @@ impl World {
             known,
             // The owned skins survive the new body, as `known` does.
             skins: body.skins,
+            // Hostility survives the death (Rust's rule, `die`'s note).
+            hostile: body.hostile,
+            gate_spawn: body.gate_spawn,
+            gate_spawn_at: if gate {
+                self.tick + GATE_SPAWN_COOLDOWN_TICKS
+            } else {
+                body.gate_spawn_at
+            },
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -3584,6 +3667,8 @@ impl World {
                     skins: crate::skin::SkinSet::EMPTY,
                     safe: false,
                     hostile: 0,
+                    gate_spawn: false,
+                    gate_spawn_at: 0,
                 };
                 craft::rearm(
                     &self.craft,
@@ -3599,7 +3684,7 @@ impl World {
                     // everything this function would have, so it is the
                     // exit and not a step (`PlayerSave::dead` says why the
                     // corpse itself is not restorable).
-                    self.wake(slot, false);
+                    self.wake(slot, false, false);
                     return;
                 }
             }
@@ -3708,7 +3793,7 @@ impl World {
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
-            self.wake(slot, false);
+            self.wake(slot, false, false);
             return;
         }
         // The craft queue survived the sleep; its completion tick did not
@@ -4598,8 +4683,10 @@ impl World {
             }
             Command::Loot { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    let town = self.haven.town;
                     self.backpacks.loot_nearest(
                         &self.gather,
+                        &town,
                         &mut self.players[slot],
                         &mut self.events,
                     );
@@ -4683,6 +4770,14 @@ impl World {
                     );
                 }
             }
+            Command::RespawnGate { id } => {
+                // `Respawn`'s authority exactly: only a corpse may ask.
+                if let Some(slot) = self.slot_of(id) {
+                    if self.players[slot].dead {
+                        self.wake(slot, false, true);
+                    }
+                }
+            }
             Command::Respawn { id, on_bag } => {
                 // `slot_of`, not `live_slot_of`: this is the one verb only
                 // a corpse may send, and the `dead` test below is the whole
@@ -4692,7 +4787,7 @@ impl World {
                 // live player to a beach.
                 if let Some(slot) = self.slot_of(id) {
                     if self.players[slot].dead {
-                        self.wake(slot, on_bag);
+                        self.wake(slot, on_bag, false);
                     }
                 }
             }
@@ -4844,14 +4939,16 @@ impl World {
     }
 
     /// The town's safe zone, once a tick before anything acts: who stands in
-    /// it, hostility running down, and a sleeper left inside past
-    /// `SAFE_SLEEP_TICKS` moved out of the main gate (the zone is not a
-    /// vault — Rust removes safe-zone sleepers after 20 minutes).
+    /// it, hostility running down, THE GATE's respawn point unlocking for
+    /// whoever reaches the town, and a sleeper left inside past
+    /// `SAFE_SLEEP_TICKS` killed — Rust's rule, "sleepers are automatically
+    /// killed after 20 minutes inside a safe zone". The kill is the
+    /// sentries', so the kill feed and the corpse say who did it.
     fn safe_zone(&mut self) {
         let town = self.haven.town;
         let sweep = self.tick.is_multiple_of(crate::limits::TICK_HZ as u64);
-        for i in 0..MAX_PLAYERS {
-            let p = &mut self.players[i];
+        let mut overslept = [false; MAX_PLAYERS];
+        for (i, p) in self.players.iter_mut().enumerate() {
             if !p.active {
                 continue;
             }
@@ -4859,15 +4956,19 @@ impl World {
             let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
             let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
             p.safe = crate::town::safe(&town, x, z);
-            if sweep
+            if p.safe && !p.dead && !p.sleeping {
+                p.gate_spawn = true;
+            }
+            overslept[i] = sweep
                 && p.safe
                 && p.sleeping
-                && self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS
-            {
-                let (ox, oz) =
-                    crate::kit::to_world(&town.placed(), 0.0, crate::town::SAFE_HALF_M + 8.0);
-                p.body = Body::at(self.seed, &self.haven, ox, oz);
-                p.safe = false;
+                && !p.dead
+                && self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS;
+        }
+        for (i, kill) in overslept.iter().enumerate() {
+            if *kill {
+                let by = mob::mob_id(crate::sentry::SENTRY_SLOT0);
+                self.die(i, by, DEATH_BY_MOB, NO_ITEM, 0);
             }
         }
     }
@@ -5225,13 +5326,19 @@ impl World {
             // lands it. There is no node → player → animal → structure order
             // any more; `melee.rs`'s header has the argument.
             let mut swung = gather::Swing::Absorbed;
-            let took_arm = ranged::draw(
-                tick,
-                &self.combat,
-                &mut self.arrows,
-                &mut self.events,
-                &mut self.players[i],
-            );
+            // **No weapon can be drawn in the safe zone** (Rust's rule): a
+            // spear, a bow, a gun or a charge in hand there does nothing at
+            // all, so nothing leaves the zone to hurt anyone outside it.
+            // The client holsters it on screen (`ItemRow::holster`).
+            let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i]);
+            let took_arm = holstered
+                || ranged::draw(
+                    tick,
+                    &self.combat,
+                    &mut self.arrows,
+                    &mut self.events,
+                    &mut self.players[i],
+                );
             if !took_arm && gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
                 let (body, crouched, yaw, pitch, held) = {
                     let p = &self.players[i];
@@ -5631,6 +5738,73 @@ impl World {
                     let by = mob::mob_id(crate::heli::HELI_SLOT);
                     self.down_or_die(victim, by, DEATH_BY_MOB, NO_ITEM, r.range_cm, false);
                 }
+            }
+        }
+
+        // THE GATE's sentries (`sentry.rs`): the heli's split again — the
+        // guns read the players, this lands what they hit. A round on a
+        // body the zone still protects (a bystander in the line of fire)
+        // does nothing; one on a hostile body hurts it and keeps it
+        // hostile, the way Rust's turrets do.
+        let mut rounds = [None; crate::sentry::SENTRIES];
+        {
+            let s0 = crate::sentry::SENTRY_SLOT0;
+            crate::sentry::step(
+                seed,
+                &self.haven,
+                tick,
+                &self.sentry_def,
+                self.pieces.cols(),
+                &mut crate::occupy::Occupants {
+                    doors: self.card_door_bits,
+                    table: &self.scatter,
+                    haven: &self.haven,
+                    harvested: &self.slot_lives,
+                    cache: &mut self.slot_cache,
+                },
+                &mut self.sentries,
+                &mut self.mobs.m[s0..s0 + crate::sentry::SENTRIES],
+                &self.players,
+                &mut self.events,
+                &mut rounds,
+            );
+        }
+        for (k, round) in rounds.iter().enumerate() {
+            let Some(r) = round else {
+                continue;
+            };
+            let slot = crate::sentry::SENTRY_SLOT0 + k;
+            let victim = r.victim as usize;
+            let (gx, gz) = {
+                let body = &self.mobs.m[slot].body;
+                (body.qx as i64, body.qz as i64)
+            };
+            let v = &mut self.players[victim];
+            if !v.active || v.hp == 0 || crate::combat::protected(v) {
+                continue;
+            }
+            // A hit keeps the hostile hostile (Rust: each turret hit
+            // restarts the clock); a bystander in the line of fire is not
+            // made one by being shot.
+            if v.hostile > 0 {
+                v.hostile = crate::combat::HOSTILE_TICKS;
+            }
+            let sector =
+                crate::combat::bearing_sector(gx - v.body.qx as i64, gz - v.body.qz as i64);
+            let crate::combat::Hurt { left, died, .. } =
+                crate::combat::hurt(&self.combat, v, r.damage);
+            let victim_id = v.id;
+            self.events
+                .push(EV_HURT, victim_id, sector as u32, r.damage as u32);
+            self.events.push(
+                EV_HEALTH,
+                victim_id,
+                left as u32,
+                self.combat.player_hp as u32,
+            );
+            if died {
+                let by = mob::mob_id(slot);
+                self.down_or_die(victim, by, DEATH_BY_MOB, NO_ITEM, r.range_cm, false);
             }
         }
 
@@ -6256,6 +6430,13 @@ impl World {
         // `Heli` is `Default` and folds nothing, so no golden moves.
         if self.heli != crate::heli::Heli::default() {
             h.update(&self.heli.hash_bytes());
+        }
+        // The sentries' brains, the heli's rule: one only once it has a
+        // target, so an unarmed world folds nothing.
+        for g in self.sentries.iter() {
+            if *g != crate::sentry::Sentry::default() {
+                h.update(&g.hash_bytes());
+            }
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

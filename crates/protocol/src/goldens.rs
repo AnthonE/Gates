@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 131] = [
+pub const FIXTURES: [&str; 134] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -240,6 +240,11 @@ pub const FIXTURES: [&str; 131] = [
     "event_hostile.bin",
     // The bush pick (v91).
     "action_pick.bin",
+    // THE GATE as Rust's safe zone (v92): a sentry's lock, the respawn
+    // point's state, and the verb that wakes there.
+    "event_sentry_lock.bin",
+    "event_gate_spawn.bin",
+    "action_respawn_gate.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -2042,6 +2047,19 @@ pub fn action_vend() -> (u8, u8) {
 /// Hostile until tick 0xDEAD_BEEF.
 pub fn event_hostile() -> u32 {
     0xDEAD_BEEF
+}
+
+/// The third sentry locks on to player 0x0102_0304.
+pub fn event_sentry_lock() -> (u32, u32) {
+    (
+        sim_core::mob::mob_id(sim_core::sentry::SENTRY_SLOT0 + 2),
+        0x0102_0304,
+    )
+}
+
+/// The town's respawn point is free again at tick 0x00C0_FFEE.
+pub fn event_gate_spawn() -> u32 {
+    0x00C0_FFEE
 }
 
 /// The green and red doors open, the blue shut.

@@ -976,9 +976,33 @@ pub fn pair_mut(
 }
 
 /// How long an attack on a player leaves the attacker unprotected by the
-/// town's safe zone, in ticks: two minutes (Rust's `sentry.hostileduration`
-/// default), so a fight at the gate cannot be ended by stepping inside.
-pub const HOSTILE_TICKS: u16 = 120 * crate::limits::TICK_HZ as u16;
+/// town's safe zone, in ticks: five minutes, Rust's safe-zone hostile timer
+/// since April 2021. While it runs the town's sentries shoot the attacker on
+/// sight (`sentry.rs`), so a fight at the gate cannot be ended by stepping
+/// inside, and it survives a death (`World::die`), as Rust's does.
+pub const HOSTILE_TICKS: u16 = 300 * crate::limits::TICK_HZ as u16;
+
+/// Whether `item` is a weapon the safe zone will not let anyone draw
+/// (Rust: "You can no longer draw a weapon in a safe zone"). Anything that
+/// fires or is thrown, and any melee row that is neither a gathering tool
+/// nor a light — so a spear is holstered and the rock, the torch, the
+/// hatchets and the pickaxes stay in hand.
+pub fn drawn_weapon(cc: &CombatContent, gc: &crate::gather::GatherContent, item: u16) -> bool {
+    if item == NO_ITEM {
+        return false;
+    }
+    if cc.held_ranged(item).is_some() || cc.held_throw(item).is_some() {
+        return true;
+    }
+    cc.held_melee(item).is_some() && !gc.is_tool(item) && gc.light_burn_of(item) == 0
+}
+
+/// A player standing in the safe zone with a weapon in hand: the hand does
+/// nothing (`World::tick`, `ranged::hitscan`).
+#[inline]
+pub fn holstered(cc: &CombatContent, gc: &crate::gather::GatherContent, p: &Player) -> bool {
+    p.safe && drawn_weapon(cc, gc, held_item(p))
+}
 
 /// Whether the safe zone protects this body: inside it and not hostile.
 #[inline]

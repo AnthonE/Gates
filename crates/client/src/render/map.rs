@@ -604,6 +604,26 @@ pub fn spawn_mark(
         return;
     }
 
+    // THE GATE's safe zone, to scale under its badge: the square inside
+    // which the sentries keep the peace. The town turns by quarter turns,
+    // so the square is always the map's own axes; percentages of a square
+    // frame are the same on both axes.
+    if m.kind == MarkKind::Town {
+        let side = 2.0 * sim_core::town::SAFE_HALF_M / sim_core::terrain::ISLAND_SIZE * 100.0;
+        frame.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(m.px * 100.0 - side * 0.5),
+                top: Val::Percent(m.py * 100.0 - side * 0.5),
+                width: Val::Percent(side),
+                height: Val::Percent(side),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BackgroundColor(fill.with_alpha(0.14)),
+            BorderColor::all(fill.with_alpha(0.85)),
+        ));
+    }
     let mut e = frame.spawn((
         node,
         // The disc behind the picture. A white silhouette over a hillshaded

@@ -1168,11 +1168,12 @@ impl Combat {
                 && self.drawer.is_some_and(|(id, since)| {
                     id == t.id && tick.wrapping_sub(since) >= DRAWN_TICKS
                 });
-            // In the safe zone (either of us) only a blow or a shot at me
-            // is an attack: nobody is started on there.
+            // In the safe zone (either of us) nothing is a fight: THE GATE's
+            // sentries answer whoever attacked (`sim_core::sentry`), and a
+            // blow back would make this body hostile under the same guns.
             let zone = t.species == Species::Player && (in_zone(kit, me) || in_zone(kit, t.pos));
             let provoked = rushing || drawn || raiding;
-            if (swung || shot || struck || charging || (provoked && !zone))
+            if ((!zone && (swung || shot || struck || provoked)) || charging)
                 && best.is_none_or(|(b, _)| d < b)
             {
                 best = Some((d, t.id));
@@ -1314,15 +1315,11 @@ impl Combat {
             foe.threat = tick;
         }
         self.foe = Some(foe);
-        // The safe zone: a player in it, or me in it, is fought only while
-        // it is striking me. Otherwise the fight is let go, never carried
-        // or shot into the town.
-        if t.species == Species::Player
-            && (in_zone(kit, me) || in_zone(kit, t.pos))
-            && !foe
-                .struck
-                .is_some_and(|at| tick.wrapping_sub(at) < CALM_TICKS)
-        {
+        // The safe zone: a player in it, or me in it, is never fought —
+        // the town's sentries shoot the one who struck, and striking back
+        // would put this body under them too. The fight is let go, never
+        // carried or shot into the town.
+        if t.species == Species::Player && (in_zone(kit, me) || in_zone(kit, t.pos)) {
             return self.over(Some(away), End::Parted);
         }
         let odds = odds(&t, kit, crowd(tracks, foe.id, me, tick));
@@ -2696,13 +2693,19 @@ mod tests {
         let inside = [0.0, 0.0, edge - 1.0];
         assert_eq!(combat.opening(&tracks, &kit, inside, 10), None);
         assert_eq!(combat.attacker(&tracks, &kit, inside, 10), None);
-        // A blow from beside me there is an attack all the same.
+        // Not even a blow from beside me there: THE GATE's sentries answer
+        // the one who struck, and striking back would put me under them.
         let mut combat = combat;
         let mut tracks = Tracks::new();
         tracks.stand(7, [0.0, 0.0, edge], true);
         combat.on_hurt(9, yaw_toward(0.0, -1.0));
         let struck = [0.0, 0.0, edge - 1.0];
-        assert_eq!(combat.attacker(&tracks, &kit, struck, 10), Some(7));
+        assert_eq!(combat.attacker(&tracks, &kit, struck, 10), None);
+        // The same blow out past the zone is an attack.
+        let mut tracks = Tracks::new();
+        tracks.stand(7, [0.0, 0.0, edge + 8.0], true);
+        let out = [0.0, 0.0, edge + 7.0];
+        assert_eq!(combat.attacker(&tracks, &kit, out, 10), Some(7));
     }
 
     /// A swing seen is at me only where it could land: ahead of it, in

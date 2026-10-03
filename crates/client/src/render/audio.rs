@@ -67,13 +67,18 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 5] = [
+pub const BEDS: [Cue; 6] = [
     Cue::BedWind,
     Cue::BedSurf,
     Cue::BedUnder,
     Cue::BedRain,
     Cue::BedRotor,
+    Cue::BedTown,
 ];
+
+/// How far past THE GATE's safe zone its yard is still heard, metres: full
+/// inside the walls, gone by the time the town is a silhouette. **(knob)**
+pub const TOWN_BED_R_M: f32 = 90.0;
 
 // One held engine slot per bed (`engine::HELD_BEDS`); music follows them.
 const _: () = assert!(BEDS.len() == HELD_BEDS);
@@ -818,7 +823,7 @@ pub fn shots(
             .map(|(_, t)| t.translation)
         {
             [t.x, t.y, t.z]
-        } else if super::heli::is_heli(shooter)
+        } else if (super::heli::is_heli(shooter) || super::sentry::is_sentry(shooter))
             && core.interp.sample(shooter, core.render_tick(), &mut rs)
         {
             // The attack helicopter has no drawn `Body`: its gun is heard
@@ -898,6 +903,21 @@ pub fn feed(
     }
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
+    }
+    // A kiosk trade went through (THE GATE): the coins.
+    for _ in feed.traded() {
+        sound.play(Request::own(Cue::Trade));
+    }
+    // A town sentry locking on: the beep, at the gun, for everyone in
+    // earshot — Rust's turret tells the whole town before it fires.
+    {
+        let core = &net.session.core;
+        let mut rs = client_core::interp::RemoteState::default();
+        for &(gun, _) in feed.sentry_locks() {
+            if core.interp.sample(gun, core.render_tick(), &mut rs) {
+                sound.play(Request::at(Cue::SentryLock, [rs.x, rs.y + 1.6, rs.z]));
+            }
+        }
     }
     // A mouthful landed (the refused half buzzes below, as `Refused::Consume`).
     // Read off the drained list, never a second pop. A heal with nothing to
@@ -1362,6 +1382,22 @@ pub fn bed(
         let near = (1.0 - gt.translation().distance(eye.pos) / ROTOR_R_M).clamp(0.0, 1.0);
         near * near
     });
+    // THE GATE's yard, by how far outside the safe square you stand: the
+    // square's own edge is full, and it fades over `TOWN_BED_R_M`.
+    sound.bed_target[5] = {
+        let t = &world.haven.town;
+        if t.live {
+            let half = sim_core::town::SAFE_HALF_M;
+            let (dx, dz) = (
+                ((eye.pos.x - t.x).abs() - half).max(0.0),
+                ((eye.pos.z - t.z).abs() - half).max(0.0),
+            );
+            let near = (1.0 - (dx * dx + dz * dz).sqrt() / TOWN_BED_R_M).clamp(0.0, 1.0);
+            near * near
+        } else {
+            0.0
+        }
+    };
 
     // Thunder: each bolt's clap once its sound has crossed the distance
     // (`weather::update` queued it at the bolt's own time plus d / 343).

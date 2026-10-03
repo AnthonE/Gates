@@ -79,7 +79,7 @@ pub const RESEARCH: [&str; 8] = [
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 15] = [
+pub const BUILD: [&str; 16] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -99,6 +99,9 @@ pub const BUILD: [&str; 15] = [
     // which way the ground went and what to do about it.
     "too far below the floor",
     "the hill is in the way",
+    // THE GATE (v92): a charge in the safe zone, or on the town's own
+    // stations — Rust's monuments are not raided.
+    "not in THE GATE",
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.

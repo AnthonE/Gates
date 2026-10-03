@@ -310,6 +310,16 @@ impl GatherContent {
         }
     }
 
+    /// Whether some node pays this item a tool's yield — a hatchet, a
+    /// pickaxe, the rock (`combat::drawn_weapon`).
+    pub fn is_tool(&self, item: u16) -> bool {
+        item != NO_ITEM
+            && self
+                .nodes
+                .iter()
+                .any(|n| n.tools.iter().any(|&(t, per)| t == item && per > 0))
+    }
+
     /// Inert: nothing is gatherable. `World::new` starts here; the boot
     /// path installs the baked table before the first tick.
     pub const EMPTY: Self = Self {

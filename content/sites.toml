@@ -5,8 +5,7 @@
 # Rust's Outpost is the shape (research 2026-09-30): category stalls for
 # food, building, tools, components and a resource exchange, unlimited
 # stock, and **no keycards for sale** — Facepunch pulled the blue card from
-# Outpost because buying it skipped the monument ladder. SALVAGE buys cards
-# back instead.
+# Outpost because buying it skipped the monument ladder.
 #
 # Every price is junk on exactly one side, and the loader refuses a table
 # that can be arbitraged: buying anything and selling it back — directly, or
@@ -81,3 +80,19 @@ offer = [
     { pay = "item.junk", pay_n = 60, get = "item.armor_roadsign_body", get_n = 1 },
     { pay = "item.junk", pay_n = 200, get = "item.revolver", get_n = 1 },
 ]
+
+# THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost turrets,
+# one on each watchtower roof. They shoot any hostile player standing in the
+# safe zone — anyone who hurt, or tried to hurt, a player in the last five
+# minutes (`combat::HOSTILE_TICKS`) — after a lock-on beep, and they cannot
+# be hurt. Lethal on purpose: the zone is safe because breaking its rules
+# inside it is a death.
+[sentry]
+range_m = 80
+damage = 35
+burst = 5
+rate_ms = 110
+burst_gap_ms = 900
+lock_ms = 1500
+lose_ms = 3000
+spread_cm_per_10m = 12

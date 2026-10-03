@@ -130,6 +130,8 @@ pub mod mobs;
 /// The app's state machine and the resources that carry it — shared by every
 /// screen, and by targets that have no screens at all. See the module docs.
 pub mod screen;
+pub mod sentry;
+pub mod town_signs;
 // The mip chains for `assets/textures/`. Bevy builds none for an ordinary
 // image format, and a one-level photograph minified across the island is the
 // static the operator saw. Derived off `AssetEvent::Added`, not a list.
@@ -703,7 +705,7 @@ impl Plugin for GatesRenderPlugin {
                 textures::load,
                 icons::load,
                 anim::load,
-                (mobs::load, heli::load),
+                (mobs::load, heli::load, sentry::load),
                 // The held-item models. Loaded once here rather than per
                 // swap: `AssetServer` dedups, but a `load` still walks and
                 // hashes a path, and `viewmodel::swap` runs every frame.
@@ -1414,9 +1416,14 @@ impl Plugin for GatesRenderPlugin {
                     // drain reads last frame's swings and misses this
                     // frame's — a dropped arc nothing would report.
                     bodies::stream.after(feed::drain),
-                    // The heli is the roster's last slot, which
-                    // `mobs::stream` leaves to `heli::stream`.
-                    (mobs::stream, heli::stream),
+                    // The heli is the roster's last slot and the town's
+                    // sentries the four below it, which `mobs::stream`
+                    // leaves to `heli::stream` and `sentry::stream`.
+                    (
+                        mobs::stream,
+                        heli::stream,
+                        sentry::stream.after(feed::drain),
+                    ),
                     // The legs read the gait `mobs::stream` just advanced.
                     mobs::trot,
                     rig::follow_eye,
@@ -1466,6 +1473,8 @@ impl Plugin for GatesRenderPlugin {
                         structures::fire_lights,
                         town::dress,
                         town::lamps,
+                        town_signs::build,
+                        town_signs::shopkeepers,
                         ziggurat::dress,
                         ziggurat::doors,
                     ),
@@ -1578,6 +1587,10 @@ impl Plugin for GatesRenderPlugin {
                 rain::drive.after(weather::update),
                 stars::drive.after(sky::compose),
                 hud::exposure,
+                // THE GATE's rules on screen: in and out of the zone, a
+                // sentry's lock, a holstered click. After the drain, for the
+                // lock it reads.
+                hud::gate_watch.after(feed::drain),
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a
                 // respawned trunk up — before it, a sapling would stand one

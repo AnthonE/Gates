@@ -88,6 +88,7 @@ pub fn shots(
     bodies: Query<(&Body, &GlobalTransform)>,
     animals: Query<&GlobalTransform, With<super::super::mobs::Animal>>,
     helis: Query<&GlobalTransform, With<super::super::heli::HeliBody>>,
+    sentries: Query<(&super::super::sentry::SentryHead, &GlobalTransform)>,
     mut contacts: ResMut<Contacts>,
     mut fx: ResMut<Fx>,
     mut cache: Local<Box<SlotCache>>,
@@ -133,12 +134,23 @@ pub fn shots(
         let heli = super::super::heli::is_heli(shooter)
             .then(|| helis.single().ok())
             .flatten();
+        let sentry = super::super::sentry::is_sentry(shooter)
+            .then(|| {
+                sentries
+                    .iter()
+                    .find(|(h, _)| h.0 == shooter)
+                    .map(|(_, gt)| *gt)
+            })
+            .flatten();
         let muzzle = if own {
             eye_pos + Vec3::from(cam.forward()) * 0.7 + Vec3::from(cam.right()) * 0.12
                 - Vec3::from(cam.up()) * 0.1
         } else if let Some(gt) = heli {
             // The attack helicopter's chin gun.
             gt.transform_point(super::super::heli::MUZZLE)
+        } else if let Some(gt) = sentry {
+            // A town sentry's barrel.
+            gt.transform_point(super::super::sentry::MUZZLE)
         } else {
             let drawn = bodies
                 .iter()

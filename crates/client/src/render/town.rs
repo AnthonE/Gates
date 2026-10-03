@@ -27,6 +27,14 @@ pub struct TownModel {
     done: bool,
 }
 
+impl TownModel {
+    /// Dressed, or given up on — what the loading screen waits for, so the
+    /// boxes never swap for the dressed town in front of a player.
+    pub fn ready(&self) -> bool {
+        self.done
+    }
+}
+
 /// The Blender dressing (`ci/site_kit.py gen --kit ci/kits/town.json`).
 pub const TOWN_GLB: &str = "models/site/town.glb";
 
@@ -100,6 +108,9 @@ pub fn spawn(
         .iter()
         .map(|&s| materials.add(depot::material(s, &server)))
         .collect();
+    let mut glow = TownGlow::default();
+    glow.track(Surface::Bulb, &mats[Surface::Bulb as usize]);
+    glow.track(Surface::Lapis, &mats[Surface::Lapis as usize]);
     let tf = transform(&t);
     for (surface, mesh) in kit_meshes(town::PARTS) {
         commands.spawn((
@@ -125,6 +136,7 @@ pub fn spawn(
             Transform::from_xyz(wx, t.floor_y + ly, wz),
         ));
     }
+    commands.insert_resource(glow);
     commands.insert_resource(TownModel {
         gltf: server.load(TOWN_GLB),
         done: false,
@@ -143,6 +155,7 @@ pub fn dress(
     gltfs: Res<Assets<bevy::gltf::Gltf>>,
     gmeshes: Res<Assets<bevy::gltf::GltfMesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut glow: Option<ResMut<TownGlow>>,
     root: Query<Entity, With<TownVisual>>,
     fallback: Query<Entity, With<TownFallback>>,
 ) {
@@ -186,7 +199,11 @@ pub fn dress(
                 // a back face lights with its normal flipped.
                 m.double_sided = true;
                 m.cull_mode = None;
-                materials.add(m)
+                let h = materials.add(m);
+                if let Some(glow) = glow.as_mut() {
+                    glow.track(surface, &h);
+                }
+                h
             })
             .clone();
         commands.spawn((ChildOf(root), Mesh3d(mesh), MeshMaterial3d(mat), tf));
@@ -209,20 +226,72 @@ const LAMP_COLOR: Color = Color::srgb(1.0, 0.78, 0.5);
 const LAMP_LUMENS: f32 = 2400.0;
 const LAMP_RANGE_M: f32 = 16.0;
 
-/// Lamps on at night, off by day (the server's clock, as the birds read it).
+/// The town's lit materials — the bulbs and the lapis seams — so the
+/// night can turn them up: a bulb is dark at noon, and the pylons' seams
+/// burn brighter after dusk, a beacon from across the island (Rust's
+/// Bandit Town got lights visible from long range for the same reason).
+#[derive(Resource, Default)]
+pub struct TownGlow {
+    bulbs: Vec<Handle<StandardMaterial>>,
+    lapis: Vec<Handle<StandardMaterial>>,
+    /// The night weight last written, so a still dusk costs nothing.
+    at: Option<f32>,
+}
+
+impl TownGlow {
+    fn track(&mut self, surface: Surface, h: &Handle<StandardMaterial>) {
+        match surface {
+            Surface::Bulb => self.bulbs.push(h.clone()),
+            Surface::Lapis => self.lapis.push(h.clone()),
+            _ => return,
+        }
+        self.at = None;
+    }
+}
+
+/// How dark it has to be for the lamps to be full on: by the sun's
+/// elevation, radians, fading in over [`LIT_SPAN`] around the horizon so
+/// dusk brings them up rather than a switch. **(knob)**
+const LIT_BELOW: f32 = 0.10;
+const LIT_SPAN: f32 = 0.22;
+/// The bulbs' glow at full night (`depot::material`'s value), linear.
+const BULB_GLOW: LinearRgba = LinearRgba::rgb(6.0, 4.5, 2.2);
+/// The lapis seams by day and at full night, linear. **(knob)**
+const LAPIS_DAY: LinearRgba = LinearRgba::rgb(0.25, 0.55, 1.6);
+const LAPIS_NIGHT: LinearRgba = LinearRgba::rgb(1.0, 2.3, 6.5);
+
+/// How much of the night it is, 0 at day to 1 at full dark, off the sun.
+pub fn night_weight(day_frac: f32) -> f32 {
+    ((LIT_BELOW - super::rig::sun_elevation(day_frac)) / LIT_SPAN).clamp(0.0, 1.0)
+}
+
+/// Lamps, bulbs and seams follow the dark (the server's clock, as the birds
+/// read it), fading through dusk and dawn.
 pub fn lamps(
     feed: Res<super::feed::Feed>,
     pin: Res<super::rig::DayPin>,
+    glow: Option<ResMut<TownGlow>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut q: Query<&mut PointLight, With<TownLamp>>,
 ) {
-    if q.is_empty() {
+    let Some(mut glow) = glow else { return };
+    let tick = pin.day_tick(feed.server_tick_est, &feed.env);
+    let w = night_weight(sim_core::world::day_frac(tick));
+    if glow.at.is_some_and(|a| (a - w).abs() < 0.01) {
         return;
     }
-    let night = sim_core::world::is_night(pin.day_tick(feed.server_tick_est, &feed.env));
-    let want = if night { LAMP_LUMENS } else { 0.0 };
+    glow.at = Some(w);
     for mut l in q.iter_mut() {
-        if l.intensity != want {
-            l.intensity = want;
+        l.intensity = LAMP_LUMENS * w;
+    }
+    for h in &glow.bulbs {
+        if let Some(m) = materials.get_mut(h) {
+            m.emissive = BULB_GLOW * w;
+        }
+    }
+    for h in &glow.lapis {
+        if let Some(m) = materials.get_mut(h) {
+            m.emissive = LAPIS_DAY * (1.0 - w) + LAPIS_NIGHT * w;
         }
     }
 }

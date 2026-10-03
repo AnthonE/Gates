@@ -210,7 +210,7 @@ pub fn warm_models(
             for sleeping in [false, true] {
                 commands.entity(cam).with_child((
                     Warming(WARM_FRAMES),
-                    super::anim::Reshade(sleeping),
+                    super::anim::Reshade::body(sleeping),
                     SceneRoot(scene.clone()),
                     at.with_scale(Vec3::splat(WARM_SIZE_M * rig.scale * 0.5)),
                 ));

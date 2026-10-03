@@ -52,9 +52,9 @@ use sim_core::world::{
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
     EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
-    EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
+    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
+    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED,
+    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -1398,6 +1398,7 @@ impl ShardCore {
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Reload => Command::Reload { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
+                    ActionMsg::RespawnGate => Command::RespawnGate { id: c.id },
                     ActionMsg::Move {
                         cont,
                         from_kind,
@@ -2869,6 +2870,33 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_SENTRY_LOCK => {
+                    // A town sentry's lock-on beep, to the clients that have
+                    // the gun in interest — the target always among them,
+                    // since it stands in the town under the gun. Not a
+                    // whole-population fan-in (`BODY_BROADCAST_ARMS`): four
+                    // guns lock at most once a look each.
+                    match protocol::encode_event_sentry_lock(ev.a, ev.b, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.roster_event_visible(slot, ev.a) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_SWING => {
                     // Broadcast **to the interest set**, which is the whole
                     // of the routing: an arm that moved is a fact about a
@@ -3429,6 +3457,30 @@ impl ShardCore {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].last_hostile = Some(until);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
+        // THE GATE's respawn point (wire v92), for the death screen: 0 while
+        // locked, else the tick it is next free (1 when it never rested).
+        if let Some(wslot) = self.live_wslot(slot) {
+            let p = &self.world.players[wslot];
+            let ready_at = if p.gate_spawn {
+                (p.gate_spawn_at as u32).max(1)
+            } else {
+                0
+            };
+            if self.clients[slot].last_gate_spawn != Some(ready_at) {
+                match protocol::encode_event_gate_spawn(ready_at, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_gate_spawn = Some(ready_at);
                             ShardStats::bump(&stats.ev_sent);
                         } else {
                             return;
@@ -4448,6 +4500,16 @@ impl ShardCore {
             return true;
         };
         !self.interest_settled(slot) || c.interest[w]
+    }
+
+    /// Does connection `slot` have roster slot `subject` (a tagged mob id)
+    /// in interest? `body_event_visible`'s roster half, for a fact that is
+    /// not a body broadcast — a sentry's lock.
+    fn roster_event_visible(&self, slot: usize, subject: u32) -> bool {
+        match mob::slot_of_id(subject) {
+            Some(m) => !self.interest_settled(slot) || self.clients[slot].m_interest[m],
+            None => false,
+        }
     }
 
     /// May connection `slot` be told about something that happened at

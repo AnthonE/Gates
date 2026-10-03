@@ -90,6 +90,10 @@ pub const MOB_KINDS: usize = 2;
 /// sake alone.
 pub const MOB_HELI: u8 = 2;
 pub use crate::heli::HELI_SLOT;
+/// THE GATE's sentry guns (`sentry.rs`), in the slots just below the heli's.
+/// Not a content species either: the slots are never homed and have no hit
+/// volume, and they ride the roster for the wire's sake alone.
+pub const MOB_SENTRY: u8 = 3;
 
 /// One roster slot in this many is a predator (`DECISIONS.md` §open,
 /// "predator v0"): 256 slots at 1-in-4 is room for 64 wolves (the site
@@ -123,6 +127,8 @@ pub(crate) const WOLF_SLOT_EVERY: usize = 4;
 pub const fn kind_of(slot: usize) -> u8 {
     if slot == HELI_SLOT {
         MOB_HELI
+    } else if crate::sentry::is_sentry_slot(slot) {
+        MOB_SENTRY
     } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
     } else {
@@ -776,21 +782,34 @@ pub fn targets(mc: &MobContent, survey: &Survey) -> [usize; MOB_KINDS] {
     out
 }
 
+/// Sentry slots that fall on the wolves' stride.
+const SENTRIES_ON_STRIDE: usize = {
+    let mut n = 0;
+    let mut k = 0;
+    while k < crate::sentry::SENTRIES {
+        if (crate::sentry::SENTRY_SLOT0 + k).is_multiple_of(WOLF_SLOT_EVERY) {
+            n += 1;
+        }
+        k += 1;
+    }
+    n
+};
+
 /// Slots the roster has for a species, guards aside.
 pub const fn capacity(kind: u8) -> usize {
     let wolf_slots = MAX_MOBS.div_ceil(WOLF_SLOT_EVERY);
     if kind == MOB_WOLF {
-        wolf_slots - SITE_GUARDS
+        wolf_slots - SITE_GUARDS - SENTRIES_ON_STRIDE
     } else {
-        // Every other slot, less the heli's.
-        MAX_MOBS - wolf_slots - 1
+        // Every other slot, less the heli's and the sentries'.
+        MAX_MOBS - wolf_slots - 1 - (crate::sentry::SENTRIES - SENTRIES_ON_STRIDE)
     }
 }
 
 /// A slot's place among its species' free slots, in slot order — which is
-/// the order they enrol in. `None` for a guard and the heli.
+/// the order they enrol in. `None` for a guard, a sentry and the heli.
 pub const fn ordinal(slot: usize) -> Option<usize> {
-    if slot == HELI_SLOT || guard_site_of(slot).is_some() {
+    if slot == HELI_SLOT || crate::sentry::is_sentry_slot(slot) || guard_site_of(slot).is_some() {
         return None;
     }
     if slot.is_multiple_of(WOLF_SLOT_EVERY) {
@@ -811,7 +830,7 @@ fn takes_part(
     want: &[usize; MOB_KINDS],
 ) -> bool {
     let kind = kind_of(slot);
-    if kind == MOB_HELI || mc.def(kind).hp == 0 {
+    if kind == MOB_HELI || kind == MOB_SENTRY || mc.def(kind).hp == 0 {
         return false;
     }
     match (ordinal(slot), guard_site_of(slot)) {
@@ -1286,7 +1305,7 @@ const CH_MOB_DEN: u32 = 116;
 /// for prey and for guards (whose pack is their post). Pure in the slot,
 /// like `kind_of`.
 pub const fn pack_leader_of(slot: usize) -> Option<usize> {
-    if !slot.is_multiple_of(WOLF_SLOT_EVERY) {
+    if !slot.is_multiple_of(WOLF_SLOT_EVERY) || crate::sentry::is_sentry_slot(slot) {
         return None;
     }
     let g = slot / WOLF_SLOT_EVERY;
@@ -1333,6 +1352,8 @@ fn den_of(
             || terrain::slope(seed, x, z) >= HOME_MAX_SLOPE
             || terrain::in_haven(haven, x, z)
             || terrain::in_waystation(haven, x, z)
+            || crate::town::covers(&haven.town, x, z, 20.0)
+            || crate::monument::covers(&haven.ziggurat, x, z, 20.0)
         {
             continue;
         }

@@ -745,17 +745,29 @@ mod carried_through_death {
     /// `skins` is `known`'s argument one step further out: what a player
     /// owns is not even in the world, it is the platform's answer about a
     /// person (`sim_core::skin`), and a death is not a sale.
-    pub const CARRIED: [&str; 6] = ["id", "active", "frame", "deaths", "known", "skins"];
+    ///
+    /// `hostile` is Rust's rule — hostility "persists across death in an
+    /// attempt to prevent griefing", so dying is no way back into THE GATE —
+    /// and THE GATE's respawn point and its cooldown belong to the person.
+    pub const CARRIED: [&str; 9] = [
+        "id",
+        "active",
+        "frame",
+        "deaths",
+        "known",
+        "skins",
+        "hostile",
+        "gate_spawn",
+        "gate_spawn_at",
+    ];
 
     /// Re-derived, dropped, or owned by the death itself. Anything here is
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 40] = [
-        // The town's safe zone: `safe` is read off the body every tick, and
-        // a respawn is far from the town, so a death forgives hostility.
+    pub const RE_DERIVED: [&str; 39] = [
+        // The town's safe zone: `safe` is read off the body every tick.
         "safe",
-        "hostile",
         "assist_target",
         "assist_by",
         "assist_ticks", // an interrupted hand hold

@@ -1654,13 +1654,19 @@ pub fn swap(
                 ),
                 crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
             );
-            (
-                crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
-                stack.is_none_or(|s| s.count == 0),
-                skin,
-                crate::ui::skins::tint_of(&core.skins, skin),
-                tool,
-            )
+            // **Holstered in THE GATE** (Rust: no weapon can be drawn in a
+            // safe zone): the hands are empty until you step out.
+            if core.holstered() {
+                (None, true, 0, None, tool)
+            } else {
+                (
+                    crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
+                    stack.is_none_or(|s| s.count == 0),
+                    skin,
+                    crate::ui::skins::tint_of(&core.skins, skin),
+                    tool,
+                )
+            }
         }
         None => (None, true, 0, None, true),
     };

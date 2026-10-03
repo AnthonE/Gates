@@ -143,6 +143,8 @@ struct SkinsFile {
 #[serde(deny_unknown_fields)]
 struct SitesFile {
     vendor: Vec<Vendor>,
+    #[serde(default)]
+    sentry: Option<schema::Sentry>,
 }
 
 /// The whole validated content set. Construction is the only way in, so
@@ -179,6 +181,8 @@ pub struct Content {
     pub skins: Vec<Skin>,
     /// The town's vendors, kiosk order (`sites.toml`).
     pub vendors: Vec<Vendor>,
+    /// THE GATE's sentry guns (`sites.toml` `[sentry]`), or none.
+    pub sentry: Option<schema::Sentry>,
     pub balance: Balance,
     anchors: Anchors,
 }
@@ -270,6 +274,7 @@ impl Content {
             heli: mobs.heli,
             skins: skins.skin,
             vendors: sites.vendor,
+            sentry: sites.sentry,
             balance,
             anchors: Anchors::default(),
         };

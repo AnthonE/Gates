@@ -106,7 +106,15 @@ pub fn enter(
     }
 }
 
-pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
+pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Option<NonSend<Net>>) {
+    // Rust's logout warning: a body left asleep in a safe zone is killed
+    // after twenty minutes (`world::SAFE_SLEEP_TICKS`), and leaving from
+    // here leaves it asleep.
+    let sleep_warning = net.as_ref().is_some_and(|n| {
+        let core = &n.session.core;
+        let [x, _, z] = core.eye_position();
+        !core.dead && sim_core::town::safe(&core.haven().town, x, z)
+    });
     let addr = if connecting.addr.is_empty() {
         String::new()
     } else {
@@ -158,6 +166,21 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
                 },
             ));
 
+            if sleep_warning {
+                root.spawn((
+                    ui::strong(
+                        "You are in THE GATE's safe zone. Leave now and you sleep here - \
+                         a sleeper in a safe zone is killed after 20 minutes.",
+                        14.0,
+                        Color::srgb(0.95, 0.42, 0.36),
+                    ),
+                    Node {
+                        max_width: Val::Px(460.0),
+                        margin: UiRect::bottom(Val::Px(12.0)),
+                        ..default()
+                    },
+                ));
+            }
             for (i, (verb, name, detail)) in VERBS.iter().enumerate() {
                 root.spawn((ui::row(460.0), *verb)).with_children(|b| {
                     b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));

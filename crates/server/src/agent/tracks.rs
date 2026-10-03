@@ -425,9 +425,12 @@ impl Tracks {
         // The loudest footsteps from out of sight this frame.
         let mut steps: Option<(f32, [f32; 3])> = None;
         for id in self.interp.ids() {
-            // The attack helicopter is no quarry and no rival: nothing the
-            // agent carries can reach it.
-            if id == self.me || mob::slot_of_id(id) == Some(mob::HELI_SLOT) {
+            // The attack helicopter and the town's sentries are no quarry
+            // and no rival: nothing the agent carries can reach them.
+            if id == self.me
+                || mob::slot_of_id(id)
+                    .is_some_and(|m| m == mob::HELI_SLOT || sim_core::sentry::is_sentry_slot(m))
+            {
                 continue;
             }
             let mut s = RemoteState::default();

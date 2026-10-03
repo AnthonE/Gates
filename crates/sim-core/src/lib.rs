@@ -49,6 +49,7 @@ pub mod research;
 pub mod rewind;
 pub mod rng;
 pub mod roster;
+pub mod sentry;
 pub mod skin;
 pub mod spent;
 pub mod survival;

@@ -309,11 +309,23 @@ pub enum Cue {
     /// rustle and a soft stem snap, heard at the bush — anyone's pick, so it
     /// is positional. Appended, the enum's append-order rule.
     BushPick,
+    /// A town sentry locking on (`sim_core::sentry`): Rust's turret beep,
+    /// three hard high pips at the gun before it fires. Positional — it is
+    /// the gun telling the town who it is about to shoot.
+    SentryLock,
+    /// A kiosk trade went through: two bright coin notes. Your own hands.
+    Trade,
+    /// Into THE GATE's safe zone, or out of it: a soft two-note bell.
+    GateChime,
+    /// THE GATE's yard, as a bed: a generator's hum, a radio somewhere
+    /// playing nothing in particular, and now and then a clank of sheet
+    /// metal. `render/audio.rs` turns it up as you near the town.
+    BedTown,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 63;
+pub const CUE_COUNT: usize = 67;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -385,6 +397,10 @@ impl Cue {
         Cue::BowDraw,
         Cue::BedRotor,
         Cue::BushPick,
+        Cue::SentryLock,
+        Cue::Trade,
+        Cue::GateChime,
+        Cue::BedTown,
     ];
 
     /// Is this cue a piece of music?
@@ -416,7 +432,12 @@ impl Cue {
     pub fn is_bed(self) -> bool {
         matches!(
             self,
-            Cue::BedWind | Cue::BedSurf | Cue::BedUnder | Cue::BedRain | Cue::BedRotor
+            Cue::BedWind
+                | Cue::BedSurf
+                | Cue::BedUnder
+                | Cue::BedRain
+                | Cue::BedRotor
+                | Cue::BedTown
         )
     }
 
@@ -512,6 +533,9 @@ impl Cue {
             // minutes and one recording retriggered would be its tell.
             Cue::Thunder => 0.12,
             Cue::CraftDone
+            | Cue::SentryLock
+            | Cue::Trade
+            | Cue::GateChime
             | Cue::Refused
             | Cue::Hit
             | Cue::HitHead
@@ -522,7 +546,8 @@ impl Cue {
             | Cue::BedSurf
             | Cue::BedUnder
             | Cue::BedRain
-            | Cue::BedRotor => 0.0,
+            | Cue::BedRotor
+            | Cue::BedTown => 0.0,
             // **Zero, and it is not the signal-cue argument.** A piece played
             // at 1.03× is a piece in a different key, and the next piece
             // would be in a third — the tail that covers a join would be
@@ -797,6 +822,14 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // impact's gain, so your own pick reads over your boots and a pick
     // across a clearing is still heard.
     row(GAME, 24.0, 0.65,  60, 4, true),   // bush picked
+    // The sentry's lock: a signal, so no pitch variation, and loud enough
+    // to carry across the yard to everyone near the one it is about.
+    row(GAME, 70.0, 0.70, 400, 7, true),   // sentry lock
+    row(GAME,  0.0, 0.45, 120, 4, false),  // trade
+    row(GAME,  0.0, 0.35, 800, 3, false),  // into / out of the zone
+    // The town's bed: scenery, so AMBIENCE; its level is `render/audio.rs`'s
+    // distance to the gate.
+    row(AMB,   0.0, 0.32,   0, 0, false),  // the town
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -1029,6 +1062,8 @@ pub struct SnapshotDef {
     pub rain: f32,
     /// The heli's rotor: the game bus's level, because it is a threat.
     pub rotor: f32,
+    /// THE GATE's yard: scenery, gone below water like the wind.
+    pub town: f32,
 }
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
@@ -1051,6 +1086,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         under: 0.0,
         rain: 1.0,
         rotor: 1.0,
+        town: 1.0,
     },
     // Submerged. The game bus survives at a level a player can still fight on
     // — being underwater must not be a stealth advantage handed out by the
@@ -1064,6 +1100,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         under: 1.0,
         rain: 0.0,
         rotor: 0.45,
+        town: 0.0,
     },
 ];
 
@@ -1129,6 +1166,7 @@ impl Snapshots {
             under: mix(a.under, b.under),
             rain: mix(a.rain, b.rain),
             rotor: mix(a.rotor, b.rotor),
+            town: mix(a.town, b.town),
         }
     }
 }
@@ -1152,6 +1190,7 @@ impl SnapshotDef {
             Cue::BedUnder => self.under,
             Cue::BedRain => self.rain,
             Cue::BedRotor => self.rotor,
+            Cue::BedTown => self.town,
             _ => 0.0,
         }
     }
