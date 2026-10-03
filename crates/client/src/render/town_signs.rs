@@ -352,7 +352,13 @@ pub fn shopkeepers(
         commands.spawn((
             WorldEntity,
             Shopkeeper,
-            super::anim::BodyAnim::default(),
+            // Idle from the start: a default `BodyAnim` wants no clip until
+            // `observe` sees it move, and a keeper never moves, so it would
+            // stand in the rig's bind pose forever.
+            super::anim::BodyAnim {
+                clip: Some(super::anim::Clip::Idle),
+                ..default()
+            },
             super::anim::Reshade(super::anim::Shade::Keeper),
             SceneRoot(scene.clone()),
             world_tf,
