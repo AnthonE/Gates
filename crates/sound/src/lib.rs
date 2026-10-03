@@ -321,11 +321,36 @@ pub enum Cue {
     /// playing nothing in particular, and now and then a clank of sheet
     /// metal. `render/audio.rs` turns it up as you near the town.
     BedTown,
+    /// A door (or shutter) swinging open, at the leaf. Appended, the enum's
+    /// append-order rule, like everything below.
+    DoorOpen,
+    /// A door swinging shut, at the leaf.
+    DoorClose,
+    /// You drank: a gulp or two. Your own mouth.
+    Drink,
+    /// You landed from a jump or a drop: a heavy boot thud. Your own feet.
+    Land,
+    /// A lit fire or furnace crackling, fired every second or so from the
+    /// nearest one in reach (`render/audio.rs::fires`).
+    FireCrackle,
+    /// A satchel's fuse sizzling at the charge, for its whole fuse.
+    Fuse,
+    /// Someone else's bullet passing close: the snap and whiz at the point
+    /// of the line nearest your head (`fx::gun::shots`).
+    Flyby,
+    /// A blueprint learned: a page turned. Your own hands.
+    Learn,
+    /// A lock or a hearth took your code or your name: the keypad's accept,
+    /// at the lock.
+    Unlock,
+    /// A twig or wooden piece coming down: planks splintering. [`Cue::Collapse`]
+    /// is the stone and metal ones.
+    CollapseWood,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 67;
+pub const CUE_COUNT: usize = 77;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -401,6 +426,16 @@ impl Cue {
         Cue::Trade,
         Cue::GateChime,
         Cue::BedTown,
+        Cue::DoorOpen,
+        Cue::DoorClose,
+        Cue::Drink,
+        Cue::Land,
+        Cue::FireCrackle,
+        Cue::Fuse,
+        Cue::Flyby,
+        Cue::Learn,
+        Cue::Unlock,
+        Cue::CollapseWood,
     ];
 
     /// Is this cue a piece of music?
@@ -496,12 +531,23 @@ impl Cue {
             | Cue::BulletMetal
             | Cue::FleshHit
             | Cue::Collapse
+            | Cue::CollapseWood
             | Cue::Knock
             | Cue::Reload
             | Cue::Eat
             | Cue::Bandage
             | Cue::BowDraw
-            | Cue::BushPick => 0.07,
+            | Cue::BushPick
+            | Cue::DoorOpen
+            | Cue::DoorClose
+            | Cue::Drink
+            | Cue::Land => 0.07,
+            // A fire never crackles the same twice, and a bullet's whiz is
+            // its speed and its miss distance.
+            Cue::FireCrackle | Cue::Flyby => 0.10,
+            // One long take, heard once per charge: a small nudge so two
+            // charges side by side are not in unison.
+            Cue::Fuse => 0.04,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -536,6 +582,8 @@ impl Cue {
             | Cue::SentryLock
             | Cue::Trade
             | Cue::GateChime
+            | Cue::Learn
+            | Cue::Unlock
             | Cue::Refused
             | Cue::Hit
             | Cue::HitHead
@@ -684,7 +732,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A tree coming down is the loudest thing in the forest — and it set
     // `MAX_AUDIBLE_M` until the gun's report outranged it at v54.
     row(GAME, 96.0, 0.90,   0, 6, true),   // tree fall
-    row(GAME,  0.0, 0.30,  40, 2, false),  // ui click
+    row(GAME,  0.0, 0.45,  40, 2, false),  // ui click
     // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
     // holds one looping voice each and moves their gains.
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
@@ -808,8 +856,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Your own mouth and your own hands: non-positional, and a meal is a
     // second apart (`survival::CONSUME_TICKS`), so the cooldown is only
     // there for two landing in one frame.
-    row(GAME,  0.0, 0.45,  60, 3, false),  // eat
-    row(GAME,  0.0, 0.45, 120, 3, false),  // bandage
+    // (The eat, bandage, bush, trade, zone, landing and page rows were
+    // raised part of the way back when their recordings came in: each
+    // measured well under the synthesized cue it replaced, peak for peak.)
+    row(GAME,  0.0, 0.70,  60, 3, false),  // eat
+    row(GAME,  0.0, 0.62, 120, 3, false),  // bandage
     // Your own bow, so non-positional, and quieter than the release it
     // leads to. The cooldown only stops a flutter on the right mouse from
     // stacking creaks.
@@ -821,15 +872,32 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A bush picked, at the bush: a footstep's reach and a little over an
     // impact's gain, so your own pick reads over your boots and a pick
     // across a clearing is still heard.
-    row(GAME, 24.0, 0.65,  60, 4, true),   // bush picked
+    row(GAME, 24.0, 0.85,  60, 4, true),   // bush picked
     // The sentry's lock: a signal, so no pitch variation, and loud enough
     // to carry across the yard to everyone near the one it is about.
     row(GAME, 70.0, 0.70, 400, 7, true),   // sentry lock
-    row(GAME,  0.0, 0.45, 120, 4, false),  // trade
-    row(GAME,  0.0, 0.35, 800, 3, false),  // into / out of the zone
+    row(GAME,  0.0, 0.80, 120, 4, false),  // trade
+    row(GAME,  0.0, 0.48, 800, 3, false),  // into / out of the zone
     // The town's bed: scenery, so AMBIENCE; its level is `render/audio.rs`'s
     // distance to the gate.
     row(AMB,   0.0, 0.32,   0, 0, false),  // the town
+    // Doors happen at a leaf: a footstep's reach, an impact's priority.
+    row(GAME, 24.0, 0.55,  60, 4, true),   // door open
+    row(GAME, 24.0, 0.60,  60, 4, true),   // door close
+    // Your own mouth and feet, like the eat and the step.
+    row(GAME,  0.0, 0.45, 300, 3, false),  // drink
+    row(GAME,  0.0, 0.72, 200, 3, false),  // land
+    // A fire is scenery: the ambience bus, a short reach, the lowest rank.
+    row(AMB,  14.0, 0.40,  80, 1, true),   // fire crackle
+    // A fuse is a bomb about to go off: carried far enough to run from,
+    // ranked with the hitmarker.
+    row(GAME, 32.0, 0.65, 500, 6, true),   // fuse
+    // A round past your head is the shot that was meant for you.
+    row(GAME, 30.0, 0.70,  60, 6, true),   // bullet flyby
+    // The interface answering you, like the craft chime.
+    row(GAME,  0.0, 0.85, 200, 4, false),  // learn
+    row(GAME, 16.0, 0.55, 150, 4, true),   // unlock
+    row(GAME, 60.0, 0.80,  80, 5, true),   // collapse, wood
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

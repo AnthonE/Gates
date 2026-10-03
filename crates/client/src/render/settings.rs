@@ -122,6 +122,9 @@ pub struct Settings {
     /// The reference's `audio.musicvolume`, which is the one bus that does
     /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
     pub vol_music: f32,
+    /// How hard the camera shakes and kicks (`render/shake.rs`), 0..1.
+    /// Zero turns it off for players it makes queasy.
+    pub shake: f32,
     /// Tell Discord what the player is doing (`crate::discord`).
     pub discord_presence: bool,
     /// Let that presence carry the shard's name and address, which is what
@@ -209,6 +212,7 @@ impl Default for Settings {
             // master and game ship at 1. A score at parity with footsteps
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
+            shake: 1.0,
             cat: 0,
             back: Screen::Menu,
             dirty: false,
@@ -244,6 +248,7 @@ pub enum Knob {
     VolGame,
     VolAmbience,
     VolMusic,
+    Shake,
 }
 
 impl Settings {
@@ -356,6 +361,7 @@ impl Settings {
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
             Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
+            Knob::Shake => self.shake = step_vol(self.shake, delta),
         }
         self.dirty = true;
     }
@@ -423,6 +429,7 @@ impl Settings {
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
             Knob::VolMusic => pct(self.vol_music),
+            Knob::Shake => pct(self.shake),
         }
     }
 
@@ -442,6 +449,7 @@ impl Settings {
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
+            shake: self.shake,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
             // Every row written out, always. `GfxFile`'s `None` means "the
@@ -502,6 +510,7 @@ impl Settings {
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            shake: step(p.shake, VOL_STEP).clamp(0.0, 1.0),
             discord_presence: p.discord_presence,
             // **Sanitized, not just loaded.** A hand-edited file could carry
             // sharing on under presence off, which no sequence of clicks can
@@ -840,6 +849,7 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Toggle("VSYNC", Knob::Vsync),
             Row::Number("FPS LIMIT", Knob::MaxFps, "frames per second"),
             Row::Toggle("FULLSCREEN", Knob::Fullscreen),
+            Row::Number("CAMERA SHAKE", Knob::Shake, "blasts, recoil, hits"),
         ],
         // **The readout is DERIVED, not written out beside the knob.** Three
         // of these rows used to be `Row::Fact`s reading "SMAA, always on",

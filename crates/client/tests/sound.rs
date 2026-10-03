@@ -3271,3 +3271,83 @@ fn the_hit_cue_has_exactly_one_producer_and_it_reads_the_rung() {
          reading the tree it thinks it is"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The recorded bank.
+// ---------------------------------------------------------------------------
+
+/// **Every cue is a recording** (operator, 2026-10-03: "we don't use any more
+/// procedural ones … real sound effects are nice"). The synthesizer stays as
+/// the fallback for a file that fails to decode, and this is what says none
+/// does: a cue that loses its row, or a file that stops decoding, is red here
+/// rather than quietly synthesized.
+#[test]
+fn every_cue_is_a_recording() {
+    use client::sound_bank;
+    for cue in Cue::ALL {
+        assert!(sound_bank::recorded(cue), "{cue:?} has no recording");
+        let Some((pcm, takes)) = sound_bank::recording(cue) else {
+            panic!("{cue:?}'s recording does not decode");
+        };
+        assert_eq!(
+            sound_bank::pcm(cue),
+            (pcm, takes),
+            "{cue:?} plays something other than its recording"
+        );
+        if sound_bank::whole(cue) {
+            assert_eq!(takes, 1, "{cue:?} is a whole file, not takes");
+        }
+    }
+}
+
+/// The recorded score is on the director's grid: each piece decodes to
+/// `music::PIECE_S` (a piece that drifted would start its successor over its
+/// body), its tail is quieter than its body, and the tail is not silence.
+#[test]
+fn the_recorded_pieces_are_on_the_grid() {
+    use client::sound_bank;
+    let want = (music::PIECE_S * SAMPLE_RATE as f32).round() as usize;
+    let body = (music::SECTION_S * SAMPLE_RATE as f32) as usize;
+    for cue in Cue::ALL.iter().filter(|c| c.is_music()) {
+        let (pcm, _) = sound_bank::recording(*cue).expect("a recorded piece");
+        assert!(
+            pcm.len().abs_diff(want) <= 64,
+            "{cue:?} is {} samples, not {want}",
+            pcm.len()
+        );
+        let s: Vec<f32> = pcm.iter().map(|v| *v as f32 / i16::MAX as f32).collect();
+        let tail = rms(&s[body..]);
+        let mid = rms(&s[body / 4..body]);
+        assert!(tail < mid * 0.6, "{cue:?}'s tail is as loud as its body");
+        assert!(tail > 0.002, "{cue:?} has no tail ({tail:.4})");
+        assert!(s[0].abs() < 0.05, "{cue:?} starts on a click");
+    }
+}
+
+/// A recorded bed loops: its last sample flows into its first, and its level
+/// does not dip across the join — the same gate `the_bed_loops_without_a_seam`
+/// holds the synthesized beds to, on the samples that actually play.
+#[test]
+fn every_recorded_bed_loops_without_a_seam() {
+    use client::sound_bank;
+    for cue in Cue::ALL.iter().filter(|c| c.is_bed()) {
+        let (pcm, _) = sound_bank::recording(*cue).expect("a recorded bed");
+        let s: Vec<f32> = pcm.iter().map(|v| *v as f32 / i16::MAX as f32).collect();
+        let n = s.len();
+        assert!(
+            n > SAMPLE_RATE as usize * 4,
+            "{cue:?} is under four seconds"
+        );
+        let step = (s[0] - s[n - 1]).abs();
+        assert!(step < 0.25, "{cue:?}'s loop point steps by {step}");
+        let w = SAMPLE_RATE as usize / 10;
+        let mut join: Vec<f32> = s[n - w..].to_vec();
+        join.extend_from_slice(&s[..w]);
+        let middle = rms(&s[n / 2 - w..n / 2 + w]);
+        let ratio = rms(&join) / middle;
+        assert!(
+            ratio > 0.5 && ratio < 2.0,
+            "{cue:?}'s loop join is {ratio:.2}x its own level"
+        );
+    }
+}

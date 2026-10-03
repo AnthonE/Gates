@@ -561,9 +561,25 @@ pub fn steps(
     mut sound: ResMut<Sound>,
     time: Res<Time>,
     fx: Option<ResMut<super::fx::Fx>>,
+    mut air: Local<Air>,
 ) {
     let body = &net.session.core.predict.body;
     let pos = net.session.core.predict.render_position();
+    // The landing: the body comes back to the ground faster than a step
+    // down would bring it. Before the stride's early-out, which a landing
+    // is not part of.
+    let vy = body.qvy as f32 * sim_core::movement::VEL_Q;
+    if !body.grounded {
+        air.airborne = true;
+        air.vy = vy;
+    } else if air.airborne {
+        air.airborne = false;
+        let v = -air.vy;
+        if v > LAND_SOUND_MPS && pos[1] >= sim_core::terrain::SEA_LEVEL {
+            let gain = ((v - LAND_SOUND_MPS) / 7.0).clamp(0.45, 1.0);
+            sound.play(Request::own(Cue::Land).with_gain(gain));
+        }
+    }
     let Some(mut step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
         return;
     };
@@ -584,6 +600,55 @@ pub fn steps(
 /// A crouched step's gain against a standing one at the same speed (v83):
 /// the crouch is the quiet walk, heard by players as well as animals.
 pub const CROUCH_STEP_GAIN: f32 = 0.5;
+
+/// A fall faster than this, m/s, lands with a thud (a jump lands at ~7).
+pub const LAND_SOUND_MPS: f32 = 3.5;
+
+/// The body's last airborne state, for [`steps`]'s landing.
+#[derive(Default)]
+pub struct Air {
+    airborne: bool,
+    vy: f32,
+}
+
+/// How far a lit fire is heard crackling, metres (the cue's own radius).
+pub const FIRE_REACH_M: f32 = 14.0;
+
+/// Lit fires crackle: the nearest lit fire or furnace in reach, a short
+/// recorded crackle every half second to a second. The fire's light is lit
+/// exactly when the sim says the fire is (`structures::fire_lights`), so the
+/// light is the authority here too.
+pub fn fires(
+    time: Res<Time>,
+    eye: Res<Eye>,
+    lights: Query<(&PointLight, &GlobalTransform), With<super::structures::FireLight>>,
+    mut sound: ResMut<Sound>,
+    mut next: Local<(f32, u32)>,
+) {
+    next.0 -= time.delta_secs();
+    if next.0 > 0.0 {
+        return;
+    }
+    let nearest = lights
+        .iter()
+        .filter(|(l, _)| l.intensity > 0.0)
+        .map(|(_, g)| g.translation())
+        .filter(|p| p.distance(eye.pos) < FIRE_REACH_M)
+        .min_by(|a, b| a.distance(eye.pos).total_cmp(&b.distance(eye.pos)));
+    // xorshift, for the gap: a fire that crackles on a metronome is a loop.
+    let mut x = next.1.max(1);
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    next.1 = x;
+    let r = x as f32 / u32::MAX as f32;
+    let Some(at) = nearest else {
+        next.0 = 0.5;
+        return;
+    };
+    sound.play(Request::at(Cue::FireCrackle, at.to_array()));
+    next.0 = 0.45 + 0.75 * r;
+}
 
 /// One remote body's step odometer — the same `sound::steps::Steps` the
 /// local player runs, one per drawn body, carried as a component so it dies
@@ -909,6 +974,10 @@ pub fn feed(
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
+    // A blueprint learned: it was a toast and no sound.
+    if !feed.learned().is_empty() {
+        sound.play(Request::own(Cue::Learn));
+    }
     // A kiosk trade went through (THE GATE): the coins.
     for _ in feed.traded() {
         sound.play(Request::own(Cue::Trade));
@@ -943,6 +1012,10 @@ pub fn feed(
     if feed.reloaded > 0 {
         sound.play(Request::own(Cue::Reload));
     }
+    // A drink landed: it was silent.
+    if feed.applied & client_core::core::APPLIED_DRANK != 0 {
+        sound.play(Request::own(Cue::Drink));
+    }
     // A knock, at the door knocked on — broadcast, so it is often somebody
     // else's hand, and where the door is is the news.
     if let Some(world) = world {
@@ -952,6 +1025,28 @@ pub fn feed(
             let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
             let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
             sound.play(Request::at(Cue::Knock, [x, y + 1.3, z]));
+        }
+        // A lock or a hearth took the code: the keypad's accept, at it.
+        for &(cx, cz, level, loc, grant) in feed.auths() {
+            if grant == sim_core::lock::GRANT_NONE {
+                continue;
+            }
+            let (x, z) = sim_core::build::anchor(cx, cz, loc);
+            let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+            let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+            sound.play(Request::at(Cue::Unlock, [x, y + 1.2, z]));
+        }
+        // A charge going live: its fuse sizzles where it was stuck, for
+        // anyone near enough to run.
+        if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
+            let (cx, cz, level, loc, _row, fuse) = core.charge_placed;
+            if fuse > 0 {
+                let (x, z) = sim_core::build::anchor(cx, cz, loc);
+                let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+                let y =
+                    super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+                sound.play(Request::at(Cue::Fuse, [x, y + 1.0, z]));
+            }
         }
     }
     // Every refusal kind, one sound. A player does not need to hear the
@@ -1148,7 +1243,28 @@ pub fn place(
             ),
         }
         .translation;
-        sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
+        // A piece sounds like what it is made of: an upgrade to stone is a
+        // block seating, to metal a sheet going on — the reference's grades
+        // each have their own. A deployable, a twig or a wooden piece is
+        // the plank going down.
+        let material = (!deploy)
+            .then(|| {
+                core.pieces
+                    .entries()
+                    .iter()
+                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                    .filter(|r| {
+                        (r.row as u16) < core.piece_defs_have.min(core.piece_defs.piece_count)
+                    })
+                    .map(|r| core.piece_defs.pieces[r.row as usize].material)
+            })
+            .flatten();
+        let cue = match material {
+            Some(sim_core::build::MAT_STONE) => Cue::ImpactStone,
+            Some(sim_core::build::MAT_METAL) => Cue::ImpactMetal,
+            _ => Cue::Place,
+        };
+        sound.play(Request::at(cue, [p.x, p.y, p.z]));
     }
 }
 

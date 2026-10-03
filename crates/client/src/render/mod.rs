@@ -152,6 +152,7 @@ pub mod presence;
 pub mod props;
 pub mod rig;
 pub mod settings;
+pub mod shake;
 // Where a blow meets the drawn mesh rather than the sim's cylinder.
 pub mod skin;
 // A spectator seat's label (wire v73): whose view this is. Everything else a
@@ -1640,6 +1641,7 @@ impl Plugin for GatesRenderPlugin {
                 // moved — a snort, a howl or a growl, by species and range.
                 audio::voices,
                 audio::ui_click,
+                audio::fires,
                 audio::bed,
                 audio::pump,
             )
@@ -1647,6 +1649,22 @@ impl Plugin for GatesRenderPlugin {
                 .after(Stream)
                 .run_if(world_running),
         );
+
+        // Camera shake (`shake.rs`): after the camera is rewritten from `Eye`
+        // and the frame's contacts are resolved, before the audio chain takes
+        // this frame's thunder off the queue. Not on a capture, a plate or a
+        // film: their frames are gates.
+        if self.capture.is_none() && !filming && !plate {
+            app.init_resource::<shake::Shake>().add_systems(
+                Update,
+                shake::apply
+                    .after(rig::follow_eye)
+                    .after(impact::snap)
+                    .before(audio::water)
+                    .run_if(world_placed)
+                    .run_if(world_running),
+            );
+        }
 
         // ---- the menus -----------------------------------------------
         // **Not on a capture run**, and that is a rule rather than a

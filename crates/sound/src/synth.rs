@@ -540,6 +540,19 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Bandage => bandage(&mut r),
         Cue::BowDraw => creak(&mut r),
         Cue::BushPick => rustle(&mut r),
+        // The recorded-only cues' fallbacks: the nearest thing the synth
+        // already makes, so a bank whose recording failed to decode still
+        // says something in the right place.
+        Cue::DoorOpen => creak(&mut r),
+        Cue::DoorClose => knock(&mut r),
+        Cue::Drink => munch(&mut r),
+        Cue::Land => render_take(Cue::StepSand, take),
+        Cue::FireCrackle => rustle(&mut r),
+        Cue::Fuse => rustle(&mut r),
+        Cue::Flyby => ricochet(&mut r),
+        Cue::Learn => rustle(&mut r),
+        Cue::CollapseWood => collapse(&mut r),
+        Cue::Unlock => chime(&[(2_093.0, 0.0, 0.08), (2_637.0, 0.09, 0.10)]),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm

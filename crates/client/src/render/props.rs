@@ -2913,6 +2913,7 @@ pub fn fall(
     mut marks: Option<ResMut<super::decal::Marks>>,
     world: Option<Res<super::WorldId>>,
     eye: Option<Res<super::Eye>>,
+    mut shake: Option<ResMut<super::shake::Shake>>,
 ) {
     let dt = time.delta_secs();
     for (f, mut top, mut t) in q.iter_mut() {
@@ -2931,6 +2932,18 @@ pub fn fall(
             }
         }
         if top.t >= FELL_FALL_S {
+            // The ground takes the trunk: felt as well as seen.
+            if let (Some(shake), Some(eye)) = (shake.as_deref_mut(), eye.as_deref()) {
+                use super::shake::{TREE_FULL_M, TREE_TRAUMA, TREE_ZERO_M};
+                let size = t.scale.y.clamp(0.5, 1.5);
+                shake.add_at(
+                    TREE_TRAUMA * size,
+                    t.translation,
+                    eye.pos,
+                    TREE_FULL_M,
+                    TREE_ZERO_M,
+                );
+            }
             if let (Some(fx), Some(world), Some(eye)) =
                 (fx.as_deref_mut(), world.as_deref(), eye.as_deref())
             {

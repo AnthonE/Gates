@@ -101,6 +101,7 @@ pub fn built(
     mut chips: ResMut<Chips>,
     mut marks: ResMut<Marks>,
     mut sound: ResMut<Sound>,
+    mut shake: Option<ResMut<super::super::shake::Shake>>,
 ) {
     if feed.placed().is_empty() && feed.removed().is_empty() {
         return;
@@ -201,7 +202,26 @@ pub fn built(
         // A piece crashes down; a deployable going (picked up, decayed) is
         // dust and no more — a charge on a door already has its blast.
         if !r.deploy {
-            sound.play(Request::at(Cue::Collapse, middle.to_array()));
+            // Planks splinter; stone and sheet metal crash.
+            let have = core.piece_defs_have.min(core.piece_defs.piece_count);
+            let wooden = (r.row as u16) < have
+                && core.piece_defs.pieces[r.row as usize].material <= sim_core::build::MAT_WOOD;
+            let cue = if wooden {
+                Cue::CollapseWood
+            } else {
+                Cue::Collapse
+            };
+            sound.play(Request::at(cue, middle.to_array()));
+            if let Some(shake) = shake.as_deref_mut() {
+                use super::super::shake::{COLLAPSE_FULL_M, COLLAPSE_TRAUMA, COLLAPSE_ZERO_M};
+                shake.add_at(
+                    COLLAPSE_TRAUMA,
+                    middle,
+                    eye.pos,
+                    COLLAPSE_FULL_M,
+                    COLLAPSE_ZERO_M,
+                );
+            }
         }
         let d = middle.distance(eye.pos);
         if lod(d) <= 0.0 {
