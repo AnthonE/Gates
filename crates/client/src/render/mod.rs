@@ -108,6 +108,7 @@ pub mod heldgen;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
+pub mod hurt_flash;
 pub mod impact;
 pub mod input;
 pub mod loading;
@@ -1567,6 +1568,14 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             wounded::overlay
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !filming),
+        )
+        // The red rim on a blow (`hurt_flash.rs`), off the same drained feed.
+        .add_systems(
+            Update,
+            hurt_flash::flash
                 .after(feed::drain)
                 .run_if(world_running)
                 .run_if(move || !filming),

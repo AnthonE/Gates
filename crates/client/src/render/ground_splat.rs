@@ -300,6 +300,16 @@ pub const HEIGHT_INFLUENCE: f32 = 0.15;
 /// detail, and finite.
 pub const NORMAL_Z_FLOOR: f32 = 0.2;
 
+/// How much the caustic web lifts the albedo of ground under shallow water at
+/// its brightest (`ground_splat.wgsl::caustic`): 1.0 doubles it on a thread.
+pub const CAUSTIC_GAIN: f32 = 1.1;
+/// Depth where the caustics start to fade, and where they are gone, metres.
+pub const CAUSTIC_FADE_FROM_M: f32 = 1.5;
+pub const CAUSTIC_FADE_TO_M: f32 = 5.0;
+/// How far light travels through the water per metre of depth on its way to
+/// the bed and back to the eye: down, then up again.
+pub const SEABED_PATH: f32 = 2.0;
+
 /// The uniform, laid out to match `GroundSplat` in the shader.
 #[derive(Clone, Default, ShaderType, Debug)]
 pub struct GroundSplatParams {
@@ -373,6 +383,12 @@ pub struct GroundSplatParams {
     pub cliff: Vec4,
     /// x = [`WALL_PLANE_BLEND`]. yzw reserved and zero.
     pub wall_planes: Vec4,
+    /// x = `terrain::SEA_LEVEL`, y = [`CAUSTIC_GAIN`], z/w =
+    /// [`CAUSTIC_FADE_FROM_M`]/[`CAUSTIC_FADE_TO_M`].
+    pub caustics: Vec4,
+    /// xyz = `water::EXTINCT`, w = [`SEABED_PATH`]: the water's own colour,
+    /// put on the bed under it.
+    pub water_tint: Vec4,
 }
 
 impl GroundSplatParams {
@@ -445,6 +461,18 @@ impl GroundSplatParams {
             aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
             cliff: Vec4::new(CLIFF_TAN_LO, CLIFF_TAN_HI, CLIFF_NOISE, CLIFF_NOISE_M),
             wall_planes: Vec4::new(WALL_PLANE_BLEND, 0.0, 0.0, 0.0),
+            caustics: Vec4::new(
+                sim_core::terrain::SEA_LEVEL,
+                CAUSTIC_GAIN,
+                CAUSTIC_FADE_FROM_M,
+                CAUSTIC_FADE_TO_M,
+            ),
+            water_tint: Vec4::new(
+                super::water::EXTINCT[0],
+                super::water::EXTINCT[1],
+                super::water::EXTINCT[2],
+                SEABED_PATH,
+            ),
         }
     }
 }

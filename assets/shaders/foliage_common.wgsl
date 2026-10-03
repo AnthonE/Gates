@@ -24,7 +24,8 @@ struct FoliageParams {
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> foliage: FoliageParams;
 // 4×1 texels written every frame from the CPU: [0] = (wind dir x, wind dir z,
-// strength, time), [1] = (trail window centre x, z, window edge m, 0).
+// strength, time), [1] = (trail window centre x, z, window edge m, 0),
+// [2] = (blast x, z, push, seconds since), [3] = (helicopter x, z, wash, 0).
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var foliage_state: texture_2d<f32>;
 // Trails of flattened grass, world-anchored and wrapping (`foliage::Trample`).
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var trample_map: texture_2d<f32>;
@@ -73,8 +74,41 @@ fn displace(root: vec3<f32>, anchor: vec3<f32>, h: f32, rand: f32) -> vec3<f32> 
     let flutter = foliage.sway.w * k * (0.3 + strength) * sin(fphase);
 
     var off = vec3<f32>(dir.x * bend + perp.x * flutter, flutter * 0.4, dir.y * bend + perp.y * flutter);
+
+    // Local gusts (`foliage::update`): a blast's shock, a front running out at
+    // 60 m/s that flattens what it passes and lets it spring back, and the
+    // helicopter's downwash churning what is under it. Both push away from
+    // their source, on the same cantilever as the wind.
+    var push = 0.0;
+    let s2 = textureLoad(foliage_state, vec2<i32>(2, 0), 0);
+    if s2.z > 0.0 {
+        let rel = anchor.xz - s2.xy;
+        let d = length(rel);
+        let since = s2.w - d / 60.0;
+        if since > 0.0 && d < 45.0 {
+            let fall = 1.0 - smoothstep(5.0, 45.0, d);
+            let p = foliage.sway.x * k * k * s2.z * fall * exp(-since / 0.45) * cos(since * 9.0);
+            let away = rel / max(d, 0.5);
+            off += vec3<f32>(away.x * p, 0.0, away.y * p);
+            push += abs(p);
+        }
+    }
+    let s3 = textureLoad(foliage_state, vec2<i32>(3, 0), 0);
+    if s3.z > 0.0 {
+        let rel = anchor.xz - s3.xy;
+        let d = length(rel);
+        if d < 30.0 {
+            let fall = 1.0 - smoothstep(3.0, 30.0, d);
+            let churn = 0.6 + 0.4 * sin(t * 17.0 + rand * 6.2831 + d * 0.9);
+            let p = foliage.sway.x * k * k * s3.z * fall * churn;
+            let away = rel / max(d, 0.5);
+            off += vec3<f32>(away.x * p, 0.0, away.y * p);
+            push += p;
+        }
+    }
     // Bending a stem shortens it: drop the tip so it swings on an arc.
-    off.y -= min(bend * bend / max(2.0 * h, 0.05), 0.5 * h);
+    let swing = abs(bend) + push;
+    off.y -= min(swing * swing / max(2.0 * h, 0.05), 0.5 * h);
 
     // Trails: flattened where somebody walked (grass only).
     if foliage.misc.x > 0.0 {

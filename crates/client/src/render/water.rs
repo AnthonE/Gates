@@ -544,6 +544,160 @@ pub fn crest_foam(h: f32, reach_m: f32) -> f32 {
     t * t * (3.0 - 2.0 * t) * CREST_FOAM_MAX
 }
 
+// ---------------------------------------------------------------------------
+// The breakers: shore waves that run toward land.
+// ---------------------------------------------------------------------------
+
+/// Breaker wavelength, metres. Long enough for the 2 m core to carry it
+/// ([`band_weight`]'s quarter-wavelength rule), short enough that a beach
+/// shows two or three lines of them.
+pub const SURF_LEN_M: f32 = 14.0;
+/// Seconds between two breakers reaching the beach.
+pub const SURF_PERIOD_S: f32 = 6.5;
+/// Breaker amplitude at full height, metres (peak is [`SHAPE_PEAK`] times it).
+pub const SURF_AMP_M: f32 = 0.2;
+/// Depth over which a breaker rises from nothing at the waterline to full —
+/// zero at the waterline for [`shoal`]'s reason: a wave left standing at zero
+/// depth climbs the beach and sits there.
+pub const SURF_RISE_M: f32 = 0.9;
+/// Depths between which the breakers hand back to the open swell.
+pub const SURF_FADE_FROM_M: f32 = 3.0;
+pub const SURF_FADE_TO_M: f32 = 7.0;
+/// How far from dry ground the distance field reaches, metres; the breakers
+/// fade out over its last third.
+pub const SURF_REACH_M: f32 = 48.0;
+/// The foam a breaking crest carries at its shallowest.
+pub const SURF_FOAM_MAX: f32 = 0.75;
+/// How far behind its crest a breaker's foam trail reaches before it has
+/// faded to a third, in radians of the breaker's own phase (τ is a whole
+/// [`SURF_LEN_M`]).
+pub const SURF_TRAIL_RAD: f32 = 1.6;
+/// The shore wash between two breakers, as a share of its peak. Low: the
+/// shallows between bores are clear water over sand, and the white is the
+/// bores themselves.
+pub const WASH_FLOOR: f32 = 0.12;
+
+/// Rust's 2023 water rewrite led with waves that "realistically move towards
+/// land": the swell here has four fixed bearings, so it runs along a beach as
+/// often as at it. A breaker is phased on the distance to the nearest dry
+/// ground instead of on a bearing, so its crests lie along the depth contours
+/// — which is what refraction does to a real wave coming in — and the phase
+/// advancing moves every crest shoreward.
+///
+/// How much breaker a vertex carries: none at the waterline, full between
+/// [`SURF_RISE_M`] and [`SURF_FADE_FROM_M`] of depth, gone by
+/// [`SURF_FADE_TO_M`] and toward the end of the distance field. Times `open`:
+/// a lake is calm.
+pub fn surf_envelope(depth_m: f32, dist_m: f32, open: f32) -> f32 {
+    let smooth = |t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let rise = smooth(depth_m / SURF_RISE_M);
+    let fade = 1.0 - smooth((depth_m - SURF_FADE_FROM_M) / (SURF_FADE_TO_M - SURF_FADE_FROM_M));
+    let reach = 1.0 - smooth((dist_m - SURF_REACH_M * 0.66) / (SURF_REACH_M * 0.34));
+    SURF_AMP_M * rise * fade * reach * open.clamp(0.0, 1.0)
+}
+
+/// Distance to the nearest dry vertex over a square block of a uniform grid,
+/// metres: a two-pass chamfer (straight and diagonal neighbours), capped at
+/// [`SURF_REACH_M`]. `depth` is the whole `n·n` grid; only indices `lo..=hi`
+/// on each axis are measured and written, the rest of `out` is set to the
+/// cap. Pure, so the gate can drive it.
+pub fn shore_distance(depth: &[f32], n: usize, lo: usize, hi: usize, step: f32, out: &mut [f32]) {
+    let cap = SURF_REACH_M;
+    for v in out.iter_mut() {
+        *v = cap;
+    }
+    if hi < lo || hi >= n {
+        return;
+    }
+    let diag = step * std::f32::consts::SQRT_2;
+    for iz in lo..=hi {
+        for ix in lo..=hi {
+            let i = iz * n + ix;
+            if depth[i] <= 0.0 {
+                out[i] = 0.0;
+            }
+        }
+    }
+    // Forward: from the top-left neighbours.
+    for iz in lo..=hi {
+        for ix in lo..=hi {
+            let i = iz * n + ix;
+            let mut d = out[i];
+            if ix > lo {
+                d = d.min(out[i - 1] + step);
+            }
+            if iz > lo {
+                d = d.min(out[i - n] + step);
+                if ix > lo {
+                    d = d.min(out[i - n - 1] + diag);
+                }
+                if ix < hi {
+                    d = d.min(out[i - n + 1] + diag);
+                }
+            }
+            out[i] = d;
+        }
+    }
+    // Backward: from the bottom-right neighbours.
+    for iz in (lo..=hi).rev() {
+        for ix in (lo..=hi).rev() {
+            let i = iz * n + ix;
+            let mut d = out[i];
+            if ix < hi {
+                d = d.min(out[i + 1] + step);
+            }
+            if iz < hi {
+                d = d.min(out[i + n] + step);
+                if ix < hi {
+                    d = d.min(out[i + n + 1] + diag);
+                }
+                if ix > lo {
+                    d = d.min(out[i + n - 1] + diag);
+                }
+            }
+            out[i] = d.min(cap);
+        }
+    }
+}
+
+/// One breaker's height and world-XZ gradient at a vertex, and its foam
+/// trail there (`0..=1`; `-1` where there is no breaker field at all).
+///
+/// `dir` is the unit direction away from the shore (the distance field's own
+/// gradient); `phase` advances, so the crests move toward the beach. The
+/// trail is 1 as a crest arrives and decays behind it — seaward, since the
+/// crest is moving shoreward — which is a breaking bore: a sharp white front
+/// and a fading wake, then clear water until the next.
+pub fn surf_at(amp: f32, dist_m: f32, dir: [f32; 2], phase: f32) -> (f32, f32, f32, f32) {
+    if dir == [0.0, 0.0] {
+        return (0.0, 0.0, 0.0, -1.0);
+    }
+    let k = std::f32::consts::TAU / SURF_LEN_M;
+    let theta = k * dist_m + phase;
+    let since = (theta - std::f32::consts::FRAC_PI_2).rem_euclid(std::f32::consts::TAU);
+    let trail = (-since / SURF_TRAIL_RAD).exp();
+    if amp <= 0.0 {
+        return (0.0, 0.0, 0.0, trail);
+    }
+    let (s, ds) = shape(theta);
+    let g = amp * ds * k;
+    (amp * s, g * dir[0], g * dir[1], trail)
+}
+
+/// The foam a breaker itself carries: its trail, scaled by how big it is here
+/// and by how shallow — a bore breaks in the shallows and is only a swell
+/// further out.
+pub fn breaker_foam(amp: f32, depth_m: f32, trail: f32) -> f32 {
+    if trail <= 0.0 || amp <= 0.0 {
+        return 0.0;
+    }
+    let breaking = 1.0 - ((depth_m - 0.8) / 2.7).clamp(0.0, 1.0);
+    SURF_FOAM_MAX * (amp / SURF_AMP_M) * trail * breaking
+}
+
 /// Mix foam into a graded colour. Both sides are premultiplied, so the foam's
 /// own colour is premultiplied here too — lerping a premultiplied colour
 /// toward a straight one is how foam ends up brighter than the alpha that
@@ -782,6 +936,23 @@ pub struct Sea {
     /// a crest against, so a whitecap is relative to the local sea state and
     /// not to a constant.
     reach: Vec<f32>,
+    /// How much of each vertex's water is open sea (`terrain::height_open`):
+    /// the breakers' share, cached like the swell's.
+    open: Vec<f32>,
+    /// The breakers: distance to the nearest dry vertex, the unit direction
+    /// away from it, and the envelope ([`surf_envelope`]). Rebuilt whole on
+    /// every snap — the field is global over the core, so it does not slide.
+    surf_dist: Vec<f32>,
+    surf_dir: Vec<[f32; 2]>,
+    surf_amp: Vec<f32>,
+    /// This frame's crest foam per vertex — the swell's whitecaps measured on
+    /// the swell alone, plus the breakers' — for the colour pass.
+    surf_foam: Vec<f32>,
+    /// This frame's breaker trail per vertex ([`surf_at`]), or `-1` where no
+    /// breaker runs: what the shore wash surges with instead of the swell.
+    surf_trail: Vec<f32>,
+    /// The breakers' phase, advanced and wrapped like the swell's.
+    surf_phase: f32,
     /// This frame's [`wave_field`] answer per vertex: `[h, gx, gz]`.
     ///
     /// **The only cache here that is a function of *when*, and it is a
@@ -979,6 +1150,13 @@ pub fn setup(
     sea.shore = vec![0.0; count];
     sea.shoal = vec![0.0; count];
     sea.reach = vec![0.0; count];
+    sea.open = vec![0.0; count];
+    sea.surf_dist = vec![SURF_REACH_M; count];
+    sea.surf_dir = vec![[0.0; 2]; count];
+    sea.surf_amp = vec![0.0; count];
+    sea.surf_foam = vec![0.0; count];
+    sea.surf_trail = vec![-1.0; count];
+    sea.surf_phase = 0.0;
     sea.field = vec![[0.0; 3]; count];
     sea.mesh = Some(mesh.clone());
     sea.material = Some(material.clone());
@@ -1155,6 +1333,10 @@ pub fn stream(
         shore,
         shoal: shoal_cache,
         reach,
+        open: open_cache,
+        surf_dist,
+        surf_dir,
+        surf_amp,
         ..
     } = &mut *sea;
 
@@ -1169,6 +1351,7 @@ pub fn stream(
         // `reach` too: it is `f(spacing) * shoal(depth)`, and `carry_of`
         // refuses any index whose spacing moved, so both factors slid.
         c.slide(reach, n);
+        c.slide(open_cache, n);
     }
 
     for iz in 0..n {
@@ -1193,6 +1376,7 @@ pub fn stream(
                 (SEA_LEVEL - h, open)
             };
             depth[i] = d;
+            open_cache[i] = open;
 
             let sp = spacing[ix].max(spacing[iz]);
             // A lake is calm: the swell and its surf are the open sea's, so
@@ -1222,6 +1406,37 @@ pub fn stream(
             } else {
                 0.0
             };
+        }
+    }
+
+    // The breakers' field, over the uniform core only: the distance to dry
+    // ground, the direction away from it, and how much breaker each vertex
+    // carries. Global over the core, so it is rebuilt rather than slid —
+    // two passes over ~4 k vertices on a snap.
+    let lo = coords.iter().position(|c| *c >= -CORE_M).unwrap_or(0);
+    let hi = coords.iter().rposition(|c| *c <= CORE_M).unwrap_or(0);
+    shore_distance(depth, n, lo, hi, STEP_M, surf_dist);
+    for iz in 0..n {
+        for ix in 0..n {
+            let i = iz * n + ix;
+            let inside = ix > lo && ix < hi && iz > lo && iz < hi;
+            if !inside || depth[i] <= 0.0 || open_cache[i] <= 0.0 {
+                surf_amp[i] = 0.0;
+                surf_dir[i] = [0.0, 0.0];
+                continue;
+            }
+            let gx = (surf_dist[i + 1] - surf_dist[i - 1]) / (2.0 * STEP_M);
+            let gz = (surf_dist[i + n] - surf_dist[i - n]) / (2.0 * STEP_M);
+            let len = (gx * gx + gz * gz).sqrt();
+            if len < 0.2 {
+                // A ridge of the field (equally far from two shores): no
+                // direction to run in, so no breaker.
+                surf_amp[i] = 0.0;
+                surf_dir[i] = [0.0, 0.0];
+                continue;
+            }
+            surf_dir[i] = [gx / len, gz / len];
+            surf_amp[i] = surf_envelope(depth[i], surf_dist[i], open_cache[i]);
         }
     }
 
@@ -1264,6 +1479,8 @@ pub fn animate(
     for (i, w) in WAVES.iter().enumerate() {
         sea.phase[i] = (sea.phase[i] - omega(w.len_m) * dt).rem_euclid(std::f32::consts::TAU);
     }
+    sea.surf_phase = (sea.surf_phase + std::f32::consts::TAU / SURF_PERIOD_S * dt)
+        .rem_euclid(std::f32::consts::TAU);
     sea.drift.x = (sea.drift.x + RIPPLE_DRIFT[0] * dt).fract();
     sea.drift.y = (sea.drift.y + RIPPLE_DRIFT[1] * dt).fract();
 
@@ -1308,6 +1525,34 @@ pub fn animate(
             field,
         );
     }
+    // The breakers ride on top of the swell: one more crest-sharpened sine
+    // where the envelope is non-zero, which is a thin band along the beach.
+    {
+        let Sea {
+            depth,
+            surf_dist,
+            surf_dir,
+            surf_amp,
+            surf_foam,
+            surf_trail,
+            surf_phase,
+            field,
+            reach,
+            ..
+        } = &mut *sea;
+        for i in 0..n * n {
+            // Whitecaps are judged on the swell before the breaker is added,
+            // or every breaker in the shallows would read as a whitecap on a
+            // swell that has shoaled to nothing.
+            let caps = crest_foam(field[i][0], reach[i]);
+            let (h, gx, gz, trail) = surf_at(surf_amp[i], surf_dist[i], surf_dir[i], *surf_phase);
+            field[i][0] += h;
+            field[i][1] += gx;
+            field[i][2] += gz;
+            surf_foam[i] = caps + breaker_foam(surf_amp[i], depth[i], trail);
+            surf_trail[i] = trail;
+        }
+    }
 
     // Three buffers, fetched one at a time because `attribute_mut` borrows the
     // mesh. Each is now a read out of `field` and an arithmetic write — no
@@ -1341,17 +1586,23 @@ pub fn animate(
                 // rather than maxed: a crest breaking inside the surf band is
                 // the whitest thing on the sea, and clamping happens in
                 // `with_foam`.
+                // Where breakers run, the wash surges with them — white as a
+                // bore arrives, clear between — and elsewhere (a lake, a far
+                // shore past the breakers' field) it breathes with the swell.
                 let wash = if sea.shore[i] > 0.0 {
-                    let x = cx + sea.coords[ix];
-                    let z = cz + sea.coords[iz];
-                    sea.shore[i] * foam_surge(x, z, phase[0])
+                    let trail = sea.surf_trail[i];
+                    let surge = if trail >= 0.0 {
+                        WASH_FLOOR + (1.0 - WASH_FLOOR) * trail
+                    } else {
+                        let x = cx + sea.coords[ix];
+                        let z = cz + sea.coords[iz];
+                        foam_surge(x, z, phase[0])
+                    };
+                    sea.shore[i] * surge
                 } else {
                     0.0
                 };
-                col[i] = with_foam(
-                    sea.base[i],
-                    wash + crest_foam(sea.field[i][0], sea.reach[i]),
-                );
+                col[i] = with_foam(sea.base[i], wash + sea.surf_foam[i]);
             }
         }
     }

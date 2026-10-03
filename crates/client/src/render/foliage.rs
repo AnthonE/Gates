@@ -420,7 +420,26 @@ pub fn init(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 /// Everything that walks through grass: other players and the animals.
 type Walkers = Or<(With<super::bodies::Body>, With<super::mobs::Animal>)>;
 
-/// This frame's wind, clock and trails, into [`FoliageUpload`].
+/// How hard a blast's shock bends what it passes, in units of the plant's own
+/// wind bend at full wind (`foliage_common.wgsl::displace`).
+pub const BLAST_PUSH: f32 = 4.0;
+/// How long after a blast its shock is still worth uploading, seconds.
+pub const BLAST_SHOCK_S: f32 = 2.5;
+/// How far a blast can be from the eye and still be uploaded, metres — past
+/// the shock's own reach plus the grass ring.
+pub const BLAST_UPLOAD_M: f32 = 140.0;
+/// How hard the attack helicopter's downwash bends what is under it, in the
+/// same units, at its lowest.
+pub const HELI_WASH: f32 = 2.5;
+/// Height above the ground at which the downwash is full, and where it is
+/// gone, metres.
+pub const HELI_WASH_FULL_M: f32 = 8.0;
+pub const HELI_WASH_GONE_M: f32 = 40.0;
+
+/// This frame's wind, clock and trails, into [`FoliageUpload`] — and the
+/// local gusts Rust's foliage answers to as well as the global wind: a
+/// blast's shock (texel 2) and the helicopter's downwash (texel 3).
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     time: Res<Time>,
     eye: Res<Eye>,
@@ -428,6 +447,10 @@ pub fn update(
     walkers: Query<&GlobalTransform, Walkers>,
     mut trample: ResMut<Trample>,
     mut up: ResMut<FoliageUpload>,
+    contacts: Option<Res<super::impact::Contacts>>,
+    heli: Query<&GlobalTransform, With<super::heli::HeliBody>>,
+    world: Option<Res<super::WorldId>>,
+    mut blast: Local<Option<(Vec2, f64)>>,
 ) {
     let dt = time.delta_secs().min(0.25);
     let w = weather.map(|w| *w).unwrap_or_default();
@@ -456,6 +479,37 @@ pub fn update(
 
     let clock = (time.elapsed_secs_f64() % CLOCK_WRAP_S) as f32;
     let centre = trample.centre();
+
+    // The most recent blast in reach, and how long ago.
+    let now = time.elapsed_secs_f64();
+    if let Some(c) = contacts.as_deref() {
+        for c in c.iter() {
+            if c.weapon == super::impact::Weapon::Blast && c.at.distance(eye.pos) < BLAST_UPLOAD_M {
+                *blast = Some((Vec2::new(c.at.x, c.at.z), now));
+            }
+        }
+    }
+    let shock = match *blast {
+        Some((at, t0)) if now - t0 < BLAST_SHOCK_S as f64 => {
+            [at.x, at.y, BLAST_PUSH, (now - t0) as f32]
+        }
+        _ => [0.0; 4],
+    };
+    // The helicopter's downwash, by how low it is over the ground under it.
+    let wash = heli
+        .iter()
+        .next()
+        .zip(world.as_deref())
+        .map(|(g, w)| {
+            let p = g.translation();
+            let ground =
+                sim_core::terrain::height(w.seed, p.x, p.z).max(sim_core::terrain::SEA_LEVEL);
+            let low = 1.0
+                - ((p.y - ground - HELI_WASH_FULL_M) / (HELI_WASH_GONE_M - HELI_WASH_FULL_M))
+                    .clamp(0.0, 1.0);
+            [p.x, p.z, HELI_WASH * low, 0.0]
+        })
+        .unwrap_or([0.0; 4]);
     up.state_px = [
         dir.x,
         dir.y,
@@ -465,14 +519,14 @@ pub fn update(
         centre.y,
         TRAMPLE_M,
         0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
+        shock[0],
+        shock[1],
+        shock[2],
+        shock[3],
+        wash[0],
+        wash[1],
+        wash[2],
+        wash[3],
     ];
     let px = Arc::make_mut(&mut up.trample_px);
     for (dst, v) in px.iter_mut().zip(&trample.px) {

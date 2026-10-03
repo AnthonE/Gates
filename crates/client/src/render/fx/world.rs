@@ -337,6 +337,34 @@ pub fn footstep(fx: &mut Fx, cue: Cue, at: Vec3, gain: f32) {
     }
 }
 
+/// A body breaking the surface: rings spread from it and spray goes up, more
+/// of both the harder it went in (`gain` is the splash cue's own, `0..1`).
+pub fn splash(fx: &mut Fx, at: Vec3, gain: f32) {
+    let at = Vec3::new(at.x, sim_core::terrain::SEA_LEVEL + 0.02, at.z);
+    emit(&mut fx.soft, Layer::Ring, 2, at, Vec3::Y, Matter::Water);
+    let n = scaled(8, gain.clamp(0.3, 1.0));
+    emit(&mut fx.soft, Layer::Droplets, n, at, Vec3::Y, Matter::Water);
+}
+
+/// A body landing from a jump or a drop: the ground it hits kicks up — sand
+/// most, soil a little, rock and water not at all (the water's splash is its
+/// own crossing).
+pub fn body_landing(fx: &mut Fx, cue: Cue, at: Vec3) {
+    let (n, matter) = match cue {
+        Cue::StepSand => (3, Matter::Sand),
+        Cue::StepGrass | Cue::StepLitter => (1, Matter::Dirt),
+        _ => return,
+    };
+    emit(
+        &mut fx.soft,
+        Layer::Dust,
+        n,
+        at + Vec3::Y * 0.05,
+        Vec3::Y,
+        matter,
+    );
+}
+
 /// A burning thing's flames and smoke, carried beside its
 /// `structures::FireLight`: whether it shows open flame (a fire pit does, a
 /// furnace keeps it inside), and where the flames and the smoke leave from,

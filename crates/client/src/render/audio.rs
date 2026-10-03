@@ -563,6 +563,7 @@ pub fn steps(
     fx: Option<ResMut<super::fx::Fx>>,
     mut air: Local<Air>,
 ) {
+    let mut fx = fx;
     let body = &net.session.core.predict.body;
     let pos = net.session.core.predict.render_position();
     // The landing: the body comes back to the ground faster than a step
@@ -578,6 +579,11 @@ pub fn steps(
         if v > LAND_SOUND_MPS && pos[1] >= sim_core::terrain::SEA_LEVEL {
             let gain = ((v - LAND_SOUND_MPS) / 7.0).clamp(0.45, 1.0);
             sound.play(Request::own(Cue::Land).with_gain(gain));
+            if let Some(fx) = fx.as_deref_mut() {
+                let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+                let ground = crate::sound::steps::surface_cue(splat, false);
+                super::fx::world::body_landing(fx, ground, Vec3::from(pos));
+            }
         }
     }
     let Some(mut step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
@@ -1565,7 +1571,13 @@ pub fn bed(
 /// **Runs before [`bed`] and [`pump`]**, because both read the snapshot this
 /// resolves and a mix state one frame stale is a mix that comes up as your
 /// head goes back under.
-pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMut<Sound>) {
+pub fn water(
+    net: NonSend<Net>,
+    eye: Res<Eye>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+    fx: Option<ResMut<super::fx::Fx>>,
+) {
     let dt = time.delta_secs();
     // The EARS, not the feet: the mix changes when your head goes under, and a
     // player wading chest-deep is still hearing the world above.
@@ -1578,9 +1590,12 @@ pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMu
 
     // The feet, for the splash: breaking the surface is your body entering the
     // water, which happens well before your head does.
-    let feet = net.session.core.predict.render_position()[1];
-    if let Some(gain) = sound.waterline.sample(feet, dt) {
+    let at = net.session.core.predict.render_position();
+    if let Some(gain) = sound.waterline.sample(at[1], dt) {
         sound.play(Request::own(Cue::Splash).with_gain(gain));
+        if let Some(mut fx) = fx {
+            super::fx::world::splash(&mut fx, Vec3::from(at), gain);
+        }
     }
 }
 
