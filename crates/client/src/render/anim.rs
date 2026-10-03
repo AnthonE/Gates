@@ -412,6 +412,12 @@ impl Rig {
     pub fn ready(&self) -> bool {
         self.scene.is_some() && self.graph.is_some()
     }
+    /// True once [`BodyShades`] holds its final handles. A body painted
+    /// before this keeps the fallback for its life, so a one-shot spawn
+    /// (THE GATE's shopkeepers) waits on it as well as on [`Rig::ready`].
+    pub fn shaded(&self) -> bool {
+        self.shaded
+    }
     fn node(&self, c: Clip) -> AnimationNodeIndex {
         self.nodes[c.slot()]
     }
@@ -443,6 +449,11 @@ pub fn load(
         sleeping: materials.add(StandardMaterial {
             base_color: Color::srgb(0.24, 0.26, 0.30),
             perceptual_roughness: 0.9,
+            ..default()
+        }),
+        keeper: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.30, 0.38, 0.22),
+            perceptual_roughness: 0.8,
             ..default()
         }),
         from_gltf: false,
@@ -507,8 +518,14 @@ pub fn build(
                     let mut tinted = base.clone();
                     tinted.base_color = Color::srgb(0.34, 0.38, 0.46);
                     tinted.perceptual_roughness = (tinted.perceptual_roughness + 0.1).min(1.0);
+                    // THE GATE's shopkeepers: the same bark gone mossy, so
+                    // a vendor never reads as a player standing at a stall
+                    // (Rust's vendors wear what no player can).
+                    let mut moss = base.clone();
+                    moss.base_color = Color::srgb(0.62, 0.86, 0.50);
                     shades.awake = only.clone();
                     shades.sleeping = materials.add(tinted);
+                    shades.keeper = materials.add(moss);
                     shades.from_gltf = true;
                     rig.shaded = true;
                 }
@@ -844,7 +861,27 @@ impl BodyAnim {
 /// spawns asynchronously**: at the frame `bodies::stream` inserts this there
 /// are no descendants yet, and a one-shot paint would silently miss every body.
 #[derive(Component)]
-pub struct Reshade(pub bool);
+pub struct Reshade(pub Shade);
+
+/// Which of [`BodyShades`] a body is painted in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shade {
+    Awake,
+    Sleeping,
+    /// One of THE GATE's shopkeepers — never a player.
+    Keeper,
+}
+
+impl Reshade {
+    /// A player's body, awake or asleep.
+    pub fn body(sleeping: bool) -> Self {
+        Reshade(if sleeping {
+            Shade::Sleeping
+        } else {
+            Shade::Awake
+        })
+    }
+}
 
 /// Paint our materials onto a scene's meshes. Runs only for bodies carrying
 /// [`Reshade`] — at spawn, and again on a sleep transition — so the descendant
@@ -857,10 +894,10 @@ pub fn reshade(
     waking: Res<BodyShades>,
 ) {
     for (body, want) in &pending {
-        let mat = if want.0 {
-            waking.sleeping.clone()
-        } else {
-            waking.awake.clone()
+        let mat = match want.0 {
+            Shade::Awake => waking.awake.clone(),
+            Shade::Sleeping => waking.sleeping.clone(),
+            Shade::Keeper => waking.keeper.clone(),
         };
         // Bounded breadth-first walk. The rig is 55 nodes; the cap is a wall-4
         // habit applied to a traversal rather than to a queue, so a malformed
@@ -908,6 +945,8 @@ pub fn reshade(
 pub struct BodyShades {
     pub awake: Handle<StandardMaterial>,
     pub sleeping: Handle<StandardMaterial>,
+    /// THE GATE's shopkeepers ([`Shade::Keeper`]).
+    pub keeper: Handle<StandardMaterial>,
     /// False while these are [`load`]'s untextured placeholders, true once
     /// [`build`] has replaced them with the model's own material and its
     /// tinted copy. Read by nothing yet; it is here so a body drawn brown is

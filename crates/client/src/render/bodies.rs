@@ -349,7 +349,7 @@ pub fn stream(
                     // The shade lives on the scene's descendants now, so the
                     // swap is a marker the walk consumes rather than a
                     // component on this entity — see `anim::Reshade`.
-                    commands.entity(entity).insert(Reshade(rs.sleeping));
+                    commands.entity(entity).insert(Reshade::body(rs.sleeping));
                     if let Some(live) = store.live.get_mut(&id) {
                         live.sleeping = rs.sleeping;
                     }
@@ -390,7 +390,7 @@ pub fn stream(
                         // Painted as soon as the scene's meshes exist; until
                         // then the body wears the library's own preview
                         // colours, which is one or two frames.
-                        Reshade(rs.sleeping),
+                        Reshade::body(rs.sleeping),
                         SceneRoot(scene.clone()),
                         Transform::from_translation(pos)
                             .with_rotation(facing)

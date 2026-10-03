@@ -330,7 +330,7 @@ pub fn shopkeepers(
 ) {
     let Some(world) = world else { return };
     let t = world.haven.town;
-    if !t.live || !drawn.is_empty() || !rig.ready() {
+    if !t.live || !drawn.is_empty() || !rig.ready() || !rig.shaded() {
         return;
     }
     let Some(scene) = rig.scene.clone() else {
@@ -353,7 +353,7 @@ pub fn shopkeepers(
             WorldEntity,
             Shopkeeper,
             super::anim::BodyAnim::default(),
-            super::anim::Reshade(false),
+            super::anim::Reshade(super::anim::Shade::Keeper),
             SceneRoot(scene.clone()),
             world_tf,
         ));
