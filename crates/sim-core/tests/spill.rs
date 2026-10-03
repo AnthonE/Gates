@@ -1143,7 +1143,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             skin: 0,
         };
     }
-    bp.loot_nearest(&gc, &mut p, &mut ev)
+    bp.loot_nearest(&gc, &sim_core::town::Town::NONE, &mut p, &mut ev)
         .expect("a bag in reach");
 
     assert_eq!(
@@ -1263,7 +1263,7 @@ fn a_skin_survives_a_bag_both_ways() {
 
     // Take-all: the stack comes back with its condition and its skin.
     let mut p = Player::default();
-    bp.loot_nearest(&gc, &mut p, &mut ev)
+    bp.loot_nearest(&gc, &sim_core::town::Town::NONE, &mut p, &mut ev)
         .expect("a bag in reach");
     assert!(
         p.inv.contains(&skinned),

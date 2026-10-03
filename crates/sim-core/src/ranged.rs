@@ -1785,8 +1785,9 @@ fn hitscan_in(
         let p = &players[i];
         // A corpse and a sleeper do not shoot. `World::tick`'s player loop
         // has already refused them the arm; this pass runs outside that
-        // loop, so it restates the rule rather than inheriting it.
-        if !p.active || p.dead || p.sleeping || p.hp == 0 {
+        // loop, so it restates the rule rather than inheriting it — and the
+        // safe zone's with it: a gun cannot be drawn there.
+        if !p.active || p.dead || p.sleeping || p.hp == 0 || p.safe {
             continue;
         }
         let item = held_item(p);

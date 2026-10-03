@@ -306,6 +306,10 @@ pub const REFUSE_B_PLATE_HIGH: u32 = 13;
 /// the hill rises into the floor (build plate v1). Terrace: start a new
 /// plate higher up.
 pub const REFUSE_B_PLATE_LOW: u32 = 14;
+/// Not in THE GATE: a charge planted by a player standing in the safe zone,
+/// or on the town's own stations. Rust's safe zone lets no weapon be drawn,
+/// and its monuments cannot be raided.
+pub const REFUSE_B_SAFE: u32 = 15;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").

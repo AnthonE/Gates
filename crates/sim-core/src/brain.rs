@@ -699,10 +699,13 @@ fn has_target(ctx: &Ctx, mob: &Mob) -> bool {
     mob.target != NO_TARGET && mob.roused_until > ctx.tick && valid_target(ctx.players, mob.target)
 }
 
+/// A player an animal may chase: awake, alive, and not in THE GATE's safe
+/// zone — Rust's "animals no longer attack players in safe zones", so a
+/// wolf that followed someone to the gate gives up there.
 fn valid_target(players: &[Player; MAX_PLAYERS], t: u8) -> bool {
     players
         .get(t as usize)
-        .is_some_and(|p| p.active && !p.sleeping && !p.dead)
+        .is_some_and(|p| p.active && !p.sleeping && !p.dead && !p.safe)
 }
 
 fn target_d2(ctx: &Ctx, mob: &Mob) -> Option<i64> {
@@ -899,7 +902,7 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     let (fx, fz) = yaw_dir(mob.yaw);
     let mut best: Option<(i64, u8)> = None;
     for (i, p) in ctx.players.iter().enumerate() {
-        if calm || !p.active || p.sleeping || p.dead {
+        if calm || !p.active || p.sleeping || p.dead || p.safe {
             continue;
         }
         let (dqx, dqz) = (p.body.qx - mob.body.qx, p.body.qz - mob.body.qz);
@@ -1460,6 +1463,10 @@ fn roam_point(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(f3
         let dist = (lo + ((h >> 8) & 0xFFFF) as f32 / 65536.0 * span).min(lim);
         let (px, pz) = (cx + dx * dist, cz + dz * dist);
         if (px - hx) * (px - hx) + (pz - hz) * (pz - hz) > lim * lim {
+            continue;
+        }
+        // Nothing wanders into the town.
+        if crate::town::reserves(&ctx.ground.haven.town, px, pz, 0.0) {
             continue;
         }
         if !ctx.nav.standable(ctx.ground, px, pz) {

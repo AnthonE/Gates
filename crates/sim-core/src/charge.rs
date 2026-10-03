@@ -40,7 +40,7 @@
 
 use crate::build::{
     anchor, BuildContent, Pieces, BUILD_REACH_M, REFUSE_B_COST, REFUSE_B_FULL, REFUSE_B_PIECE,
-    REFUSE_B_REACH, REFUSE_B_SPOT,
+    REFUSE_B_REACH, REFUSE_B_SAFE, REFUSE_B_SPOT,
 };
 use crate::combat::held_item;
 use crate::craft::{inv_count, inv_take};
@@ -213,6 +213,11 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
         return;
     };
+    // No weapon is drawn in the safe zone, and a charge is one.
+    if p.safe {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SAFE, 0);
+        return;
+    }
     let found = if deploy {
         deploys.find_index(cx, cz, level, loc)
     } else {
@@ -229,6 +234,11 @@ pub fn place(
         let rec = deploys.entries()[i];
         if rec.row as u16 >= dc.def_count || dc.defs[rec.row as usize].hp == 0 {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+            return;
+        }
+        // The town's own stations: a monument is not raided.
+        if rec.owner == crate::deploy::WORLD_OWNER {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SAFE, 0);
             return;
         }
         rec.row
@@ -628,6 +638,10 @@ fn detonate(
     if player_hp == 0 {
         return; // unarmed combat content
     }
+    // A blast that reaches anyone but its planter is an attack on a player,
+    // and the safe zone's rule is that trying counts: the planter is hostile
+    // whether the zone shielded the body or not.
+    let mut attacked = false;
     for (slot, p) in players.iter_mut().enumerate() {
         if !p.active || p.hp == 0 {
             continue;
@@ -637,7 +651,11 @@ fn detonate(
         let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
         let d = dist_cm(px, py, pz);
         let scaled = falloff(c.damage, d, blast);
-        if scaled == 0 || crate::combat::protected(p) {
+        if scaled == 0 {
+            continue;
+        }
+        attacked |= p.id != c.owner;
+        if crate::combat::protected(p) {
             continue;
         }
         // Which way the bomb was, from the body that just took it.
@@ -679,6 +697,11 @@ fn detonate(
             // `EV_DEATH` is `World::die`'s now (wounded v0); a blast never
             // wounds, so the world will make the corpse and say so.
             kills.push(slot as u8, c.owner, d.clamp(0, u16::MAX as i64) as u16);
+        }
+    }
+    if attacked {
+        if let Some(planter) = players.iter_mut().find(|p| p.active && p.id == c.owner) {
+            planter.hostile = crate::combat::HOSTILE_TICKS;
         }
     }
 }

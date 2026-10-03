@@ -350,7 +350,11 @@ pub const REFUSE_M_BUSY: u32 = 12;
 /// The largest reason above. Four bits hold `1..=15`, which is what the
 /// wire spends (widened from three with `PROTO_VER` 28, oven v0), and a
 /// reason added past 15 needs the width to move again.
-pub const REFUSE_M_MAX: u32 = REFUSE_M_BUSY;
+/// The bag is **another player's body in THE GATE's safe zone** — Rust's
+/// "No Looting" rule: a corpse or a sleeper's drop inside the zone opens
+/// only for its owner. An animal's bag is anyone's there as anywhere.
+pub const REFUSE_M_SAFE: u32 = 13;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_SAFE;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the

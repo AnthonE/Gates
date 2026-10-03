@@ -122,6 +122,10 @@ pub const SWING_RING: usize = 8;
 /// is the one worth hearing.
 pub const HOWL_RING: usize = 8;
 
+/// Town sentry lock-ons held between two frames (`EventMsg::SentryLock`):
+/// (the gun's roster id, the player it locked on to). Four guns; drop-oldest.
+pub const LOCK_RING: usize = 8;
+
 /// The victim slot of a hitmarker that names no body.
 ///
 /// The hitmarker ring carries two facts that read identically to a player —
@@ -1579,6 +1583,10 @@ pub struct ClientCore {
     /// Until when you are hostile, the low 32 bits of the server tick
     /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
     pub hostile_until: u32,
+    /// THE GATE's respawn point (`EventMsg::GateSpawn`): 0 while locked,
+    /// else the low 32 bits of the tick it is next free. See
+    /// [`Self::gate_spawn_left`].
+    pub gate_spawn_at: u32,
     /// The frame's facts for the two destructive readers below — one slot
     /// each, not a ring, because a body cannot go down twice or get up
     /// twice between two drains, and a second `Wounded` before the first
@@ -1683,6 +1691,10 @@ pub struct ClientCore {
     howls: [u32; HOWL_RING],
     howl_head: usize,
     howl_len: usize,
+    /// Town sentries that locked on to somebody: (gun id, target id).
+    locks: [(u32, u32); LOCK_RING],
+    lock_head: usize,
+    lock_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -1894,6 +1906,7 @@ impl ClientCore {
             cold_pct: 0,
             cold_hurting: false,
             hostile_until: 0,
+            gate_spawn_at: 0,
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
@@ -1929,6 +1942,9 @@ impl ClientCore {
             swing_head: 0,
             swing_len: 0,
             howls: [0; HOWL_RING],
+            locks: [(0, 0); LOCK_RING],
+            lock_head: 0,
+            lock_len: 0,
             howl_head: 0,
             howl_len: 0,
             knock_head: 0,
@@ -3104,6 +3120,15 @@ impl ClientCore {
                 self.swings[(self.swing_head + self.swing_len) % SWING_RING] = swinger;
                 self.swing_len += 1;
             }
+            EventMsg::SentryLock { sentry, target } => {
+                if self.lock_len == LOCK_RING {
+                    self.lock_head = (self.lock_head + 1) % LOCK_RING;
+                    self.lock_len -= 1;
+                }
+                self.locks[(self.lock_head + self.lock_len) % LOCK_RING] = (sentry, target);
+                self.lock_len += 1;
+            }
+            EventMsg::GateSpawn { ready_at } => self.gate_spawn_at = ready_at,
             EventMsg::Howl { mob } => {
                 // Drop-oldest, like the swing ring. An id that names an
                 // animal this client is not drawing matches nothing where
@@ -3431,6 +3456,18 @@ impl ClientCore {
         Some(s)
     }
 
+    /// Oldest buffered sentry lock-on: (gun id, target id). Drained once a
+    /// frame by `render::feed`, like every ring here.
+    pub fn pop_sentry_lock(&mut self) -> Option<(u32, u32)> {
+        if self.lock_len == 0 {
+            return None;
+        }
+        let l = self.locks[self.lock_head];
+        self.lock_head = (self.lock_head + 1) % LOCK_RING;
+        self.lock_len -= 1;
+        Some(l)
+    }
+
     /// Oldest buffered pack call: the tagged roster id of the animal that
     /// howled. Drained once a frame by `render::feed`, like every ring here.
     pub fn pop_howl(&mut self) -> Option<u32> {
@@ -3717,6 +3754,22 @@ impl ClientCore {
             return (0, 0);
         }
         self.mag
+    }
+
+    /// Rust's safe zone: standing in THE GATE with a weapon in hand, which
+    /// the sim will not let fire (`sim_core::combat::holstered`). The
+    /// catalog's `holster` bit is the sim's own weapon test, carried.
+    pub fn holstered(&self) -> bool {
+        let item = self.held_item();
+        if item == NO_ITEM {
+            return false;
+        }
+        let [x, _, z] = self.predict.position();
+        self.catalog
+            .rows
+            .get(item as usize)
+            .is_some_and(|r| r.holster)
+            && sim_core::town::safe(&self.haven().town, x, z)
     }
 
     /// The item index in the selected hotbar slot, `NO_ITEM` for an empty
@@ -4175,6 +4228,17 @@ impl ClientCore {
         }
         let now = self.clock.server_est.max(0.0) as u64 as u32;
         (self.hostile_until.wrapping_sub(now) as i32).max(0) as u32
+    }
+
+    /// THE GATE's respawn point for the death screen: `None` while it is
+    /// locked (you have not been to the town), else the ticks until it is
+    /// free — 0 when it is.
+    pub fn gate_spawn_left(&self) -> Option<u32> {
+        if self.gate_spawn_at == 0 {
+            return None;
+        }
+        let now = self.clock.server_est.max(0.0) as u64 as u32;
+        Some((self.gate_spawn_at.wrapping_sub(now) as i32).max(0) as u32)
     }
 
     /// The current playout delay in ticks (HUD, and S5b reports it to the

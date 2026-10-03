@@ -291,6 +291,10 @@ pub struct Feed {
     /// wire v76), by tagged roster id. A sound and nothing else.
     howls: [u32; FEED_CAP],
     n_howls: usize,
+    /// Town sentries that locked on to somebody this frame
+    /// (`EventMsg::SentryLock`, wire v92): (gun id, target id).
+    sentry_locks: [(u32, u32); FEED_CAP],
+    n_sentry_locks: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -400,6 +404,11 @@ impl Feed {
         &self.howls[..self.n_howls]
     }
 
+    /// Town sentries that locked on this frame: (gun id, target id).
+    pub fn sentry_locks(&self) -> &[(u32, u32)] {
+        &self.sentry_locks[..self.n_sentry_locks]
+    }
+
     /// Bodies this player's blows landed on this frame, oldest first.
     /// Never contains `client_core::core::NO_VICTIM` — see the field.
     pub fn hit_victims(&self) -> &[u32] {
@@ -489,6 +498,7 @@ impl Feed {
         self.n_impacts = 0;
         self.n_swings = 0;
         self.n_howls = 0;
+        self.n_sentry_locks = 0;
         self.n_placed = 0;
         self.n_removed = 0;
         self.wounded = None;
@@ -684,6 +694,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_howls;
             feed.howls[n] = h;
             feed.n_howls += 1;
+        }
+    }
+    while let Some(l) = core.pop_sentry_lock() {
+        if feed.n_sentry_locks >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_sentry_locks;
+            feed.sentry_locks[n] = l;
+            feed.n_sentry_locks += 1;
         }
     }
     while let Some(p) = core.pop_placed() {

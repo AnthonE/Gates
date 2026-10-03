@@ -903,22 +903,46 @@ pub enum ExposureChip {
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
 const HOSTILE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 
+/// How far past THE GATE's safe zone the hostile chip still shows, metres —
+/// Rust's icon "only appears within 200 m of a safe zone", which is the
+/// distance at which it decides anything: walking in would get you shot.
+const HOSTILE_CHIP_M: f32 = 200.0;
+
 /// The safe-zone chip's words and whether they are a warning, or `None`
-/// outside the town. Attacking a player makes you hittable for two minutes
-/// (`sim_core::combat::HOSTILE_TICKS`) wherever you stand, so inside the
-/// town the chip says so instead of promising a safety you do not have.
-fn safe_chip(in_town: bool, hostile_ticks: u32) -> Option<(String, bool)> {
+/// away from the town. Attacking a player makes you hostile for five
+/// minutes (`sim_core::combat::HOSTILE_TICKS`), and THE GATE's sentries
+/// shoot a hostile player inside — so near the town the chip says so
+/// instead of promising a safety you do not have.
+fn safe_chip(
+    in_town: bool,
+    near_town: bool,
+    hostile_ticks: u32,
+    holstered: bool,
+) -> Option<(String, bool)> {
+    if hostile_ticks > 0 && (in_town || near_town) {
+        let secs = hostile_ticks.div_ceil(sim_core::limits::TICK_HZ);
+        let line = if in_town {
+            format!(
+                "HOSTILE · THE SENTRIES WILL FIRE {}:{:02}",
+                secs / 60,
+                secs % 60
+            )
+        } else {
+            format!(
+                "HOSTILE {}:{:02} · STAY OUT OF THE GATE",
+                secs / 60,
+                secs % 60
+            )
+        };
+        return Some((line, true));
+    }
     if !in_town {
         return None;
     }
-    if hostile_ticks == 0 {
-        return Some(("SAFE ZONE".to_string(), false));
+    if holstered {
+        return Some(("SAFE ZONE · WEAPON HOLSTERED".to_string(), false));
     }
-    let secs = hostile_ticks.div_ceil(sim_core::limits::TICK_HZ);
-    Some((
-        format!("HOSTILE · NOT PROTECTED {}:{:02}", secs / 60, secs % 60),
-        true,
-    ))
+    Some(("SAFE ZONE".to_string(), false))
 }
 
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
@@ -944,8 +968,17 @@ pub fn exposure(
             ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
-                let in_town = sim_core::town::safe(&core.haven().town, x, z);
-                match safe_chip(in_town, core.hostile_left()) {
+                let town = &core.haven().town;
+                let in_town = sim_core::town::safe(town, x, z);
+                let near_town = sim_core::town::safe(town, x, z)
+                    || sim_core::town::reserves(
+                        town,
+                        x,
+                        z,
+                        HOSTILE_CHIP_M + sim_core::town::SAFE_HALF_M
+                            - sim_core::town::RESERVE_HALF_M,
+                    );
+                match safe_chip(in_town, near_town, core.hostile_left(), core.holstered()) {
                     Some((line, false)) => (true, line, SAFE_CHIP),
                     Some((line, true)) => (true, line, HOSTILE_CHIP),
                     None => (false, String::new(), SAFE_CHIP),
@@ -2142,6 +2175,59 @@ pub fn update(
     }
 }
 
+/// THE GATE's rules, said out loud (Rust's safe zone): a line on the way in
+/// and out of the zone, a sentry locking on to you, and why a click with a
+/// weapon in hand does nothing there (`input::gather` sends no swing).
+#[allow(clippy::too_many_arguments)]
+pub fn gate_watch(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    ui: Option<Res<super::panels::Ui>>,
+    screen: Option<Res<State<super::Screen>>>,
+    mut toast: ResMut<Toast>,
+    mut sound: ResMut<super::audio::Sound>,
+    mut was_in: Local<Option<bool>>,
+) {
+    let core = &net.session.core;
+    if core.dead {
+        *was_in = None;
+        return;
+    }
+    let [x, _, z] = core.eye_position();
+    let in_town = sim_core::town::safe(&core.haven().town, x, z);
+    match *was_in {
+        Some(false) if in_town => {
+            toast.say(if core.hostile_left() > 0 {
+                "THE GATE - you are hostile, and the sentries will fire"
+            } else {
+                "THE GATE - safe zone: no weapons, no killing, no looting, no sleeping"
+            });
+            sound.play(crate::sound::mixer::Request::own(
+                crate::sound::Cue::GateChime,
+            ));
+        }
+        Some(true) if !in_town => {
+            toast.say("you left THE GATE's safe zone");
+            sound.play(crate::sound::mixer::Request::own(
+                crate::sound::Cue::GateChime,
+            ));
+        }
+        _ => {}
+    }
+    *was_in = Some(in_town);
+    for &(_, target) in feed.sentry_locks() {
+        if target == core.player_id {
+            toast.warn("a sentry has locked on to you - you are hostile");
+        }
+    }
+    let in_world = screen.is_some_and(|s| *s.get() == super::Screen::InWorld);
+    let panel_open = ui.is_some_and(|u| u.panel != super::panels::Panel::None);
+    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) && core.holstered() {
+        toast.warn("you can't draw a weapon in a safe zone");
+    }
+}
+
 /// Drain the core's feedback rings into the toast, and count the timers down.
 ///
 /// **Every one of these had zero readers before this slice.** The sim has
@@ -2377,7 +2463,15 @@ pub fn feedback(
     // so the feed says who, and the screen — which does have the cause, the
     // weapon and the range — says how.
     for &(victim, killer) in feed.deaths() {
-        let name = |id: u32| crate::ui::names::label(core.tag(id), id);
+        // A roster id is an animal or a machine, named by its kind — never
+        // the wire's tagged number.
+        let name = |id: u32| match sim_core::mob::slot_of_id(id).map(sim_core::mob::kind_of) {
+            Some(sim_core::mob::MOB_SENTRY) => "THE GATE's sentry".to_string(),
+            Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
+            Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
+            Some(_) => "a pig".to_string(),
+            None => crate::ui::names::label(core.tag(id), id),
+        };
         if let Some(line) = kill_line_for(victim, killer, core.player_id, name) {
             toast.say(line);
         }
@@ -2647,6 +2741,15 @@ pub fn prompt(
             )
         } else {
             match aimed.0.prompt(&net.session.core.catalog) {
+                // A kiosk names its stall, so six counters are six shops
+                // before any panel opens.
+                s if aimed.0.verb == crate::ui::interact::Verb::Trade => {
+                    let name = net.session.core.vendor_name(aimed.0.handle as usize);
+                    match core::str::from_utf8(name) {
+                        Ok(n) if !n.is_empty() => format!("{s}  ·  {n}"),
+                        _ => s,
+                    }
+                }
                 s if !s.is_empty() => s,
                 _ => match swing_prompt_weak(swung.0.occupant, in_weak.0) {
                     s if !s.is_empty() => s,
@@ -4118,22 +4221,35 @@ mod tests {
     /// empty hearth with a bill says it is decaying, and a day reads as one.
     #[test]
     fn the_safe_zone_chip_owns_up_to_hostility() {
-        assert_eq!(safe_chip(false, 0), None);
+        assert_eq!(safe_chip(false, false, 0, false), None);
         assert_eq!(
-            safe_chip(false, 900),
+            safe_chip(false, false, 900, false),
             None,
-            "outside the town it says nothing"
+            "far from the town it says nothing"
         );
-        assert_eq!(safe_chip(true, 0), Some(("SAFE ZONE".to_string(), false)));
+        assert_eq!(
+            safe_chip(true, true, 0, false),
+            Some(("SAFE ZONE".to_string(), false))
+        );
+        assert_eq!(
+            safe_chip(true, true, 0, true),
+            Some(("SAFE ZONE · WEAPON HOLSTERED".to_string(), false))
+        );
         let hz = sim_core::limits::TICK_HZ;
         assert_eq!(
-            safe_chip(true, 102 * hz),
-            Some(("HOSTILE · NOT PROTECTED 1:42".to_string(), true))
+            safe_chip(true, true, 102 * hz, false),
+            Some(("HOSTILE · THE SENTRIES WILL FIRE 1:42".to_string(), true))
         );
         assert_eq!(
-            safe_chip(true, 1),
-            Some(("HOSTILE · NOT PROTECTED 0:01".to_string(), true)),
+            safe_chip(true, true, 1, false),
+            Some(("HOSTILE · THE SENTRIES WILL FIRE 0:01".to_string(), true)),
             "the last tick still warns"
+        );
+        // Within 200 m of the zone (Rust's rule), the warning before you
+        // walk in.
+        assert_eq!(
+            safe_chip(false, true, 300 * hz, false),
+            Some(("HOSTILE 5:00 · STAY OUT OF THE GATE".to_string(), true))
         );
     }
 

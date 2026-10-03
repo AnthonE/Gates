@@ -1732,6 +1732,29 @@ impl Content {
         })
     }
 
+    /// THE GATE's sentries (`[sentry]`), in sim units, or
+    /// `SentryDef::INERT` for a set without them.
+    pub fn bake_sentry(&self) -> Result<sim_core::sentry::SentryDef, String> {
+        let Some(t) = &self.sentry else {
+            return Ok(sim_core::sentry::SentryDef::INERT);
+        };
+        let ms_ticks = |ms: u32| -> Result<u16, String> {
+            u16::try_from((ms as u64 * TICK_HZ as u64 / 1000).max(1))
+                .map_err(|_| format!("bake: sentry {ms} ms overflows the sim"))
+        };
+        Ok(sim_core::sentry::SentryDef {
+            range_mm: t.range_m * 1000,
+            damage: t.damage as u16,
+            burst: t.burst as u8,
+            rate_ticks: ms_ticks(t.rate_ms)?,
+            gap_ticks: ms_ticks(t.burst_gap_ms)?,
+            lock_ticks: ms_ticks(t.lock_ms)?,
+            lose_ticks: ms_ticks(t.lose_ms)?,
+            // Centimetres per 10 m is millimetres per metre.
+            spread_pm: t.spread_cm_per_10m as u16,
+        })
+    }
+
     pub fn bake_mobs(&self) -> Result<MobContent, String> {
         let mut mc = MobContent::EMPTY;
         for m in &self.mobs {

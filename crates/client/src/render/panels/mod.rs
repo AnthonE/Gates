@@ -1030,12 +1030,22 @@ pub fn keys(
 /// full box are two events, and a panel that compared only the reason (or
 /// the move's address, which repeats with the drag) would show the second
 /// one as nothing happening.
-pub fn sync_refusals(mut ui: ResMut<Ui>, net: NonSend<super::Net>, mut seen: Local<u32>) {
+pub fn sync_refusals(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::Net>,
+    mut toast: ResMut<super::hud::Toast>,
+    mut seen: Local<u32>,
+) {
     let core = &net.session.core;
     if core.move_seq == *seen {
         return;
     }
     *seen = core.move_seq;
+    // THE GATE's "No Looting" is Rust's popup, not a panel line: the loot
+    // verb that hears it may have no panel open at all.
+    if core.last_move_refused as u32 == sim_core::inventory::REFUSE_M_SAFE {
+        toast.warn(crate::ui::slots::refusal_text(core.last_move_refused));
+    }
     if core.last_move_refused > 0 {
         let open = crate::ui::oven::converter_open(
             core.cont_kind,

@@ -108,6 +108,14 @@ fn main() {
     // The bush pick (v91).
     let len = protocol::encode_action_pick(goldens::action_pick(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[130], &buf[..len]);
+    // THE GATE as Rust's safe zone (v92).
+    let (sentry, target) = goldens::event_sentry_lock();
+    let len = protocol::encode_event_sentry_lock(sentry, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[131], &buf[..len]);
+    let len = protocol::encode_event_gate_spawn(goldens::event_gate_spawn(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[132], &buf[..len]);
+    let len = protocol::encode_action_respawn_gate(&mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[133], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

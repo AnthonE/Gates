@@ -253,6 +253,20 @@ pub const LAMPS: [(f32, f32, f32); 12] = [
 /// stands through a table, so the table stops a body before the pole would.
 pub const POLES: [(f32, f32); 4] = [(21.0, -24.0), (27.0, -24.0), (21.0, -19.0), (27.0, -19.0)];
 
+/// The sentry guns (`sentry.rs`), local (x, gun height over the floor, z):
+/// one on each watchtower's roof, high enough to see over the container
+/// walls into every corner of the yard.
+pub const SENTRY_POSTS: [(f32, f32, f32); 4] = [
+    (-35.0, 10.7, -35.0),
+    (35.0, 10.7, -35.0),
+    (-35.0, 10.7, 35.0),
+    (35.0, 10.7, 35.0),
+];
+
+/// Where a player woken at THE GATE stands up (local x, z): the market
+/// street south of the gate, spread across its width by who they are.
+pub const SPAWN_STREET: (f32, f32) = (0.0, -24.0);
+
 const _: () = {
     assert!(kit::well_formed(PARTS));
     // Every part inside the carved floor, corners included.
@@ -358,6 +372,13 @@ pub fn covers(t: &Town, x: f32, z: f32, pad: f32) -> bool {
 pub fn kiosk_world(t: &Town, k: usize) -> Option<(f32, f32)> {
     let &(x, z) = KIOSKS.get(k)?;
     Some(kit::to_world(&t.placed(), x, z))
+}
+
+/// Sentry `k`'s gun in world space: (x, y, z), metres.
+pub fn sentry_world(t: &Town, k: usize) -> Option<(f32, f32, f32)> {
+    let &(x, y, z) = SENTRY_POSTS.get(k)?;
+    let (wx, wz) = kit::to_world(&t.placed(), x, z);
+    Some((wx, t.floor_y + y, wz))
 }
 
 /// Station `k` in world space: (archetype name, x, z).

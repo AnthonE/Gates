@@ -101,10 +101,11 @@ use sim_core::world::{
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
     EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
     EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
-    PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
+    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
+    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND,
+    EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE,
+    PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR,
+    TRUST_VERB_MAX,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -4125,7 +4126,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 51] = [
+    const COVERED: [(&str, u8); 52] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4177,6 +4178,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_VEND_REFUSED", EV_VEND_REFUSED),
         ("EV_SWIPE", EV_SWIPE),
         ("EV_SWIPE_REFUSED", EV_SWIPE_REFUSED),
+        ("EV_SENTRY_LOCK", EV_SENTRY_LOCK),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -5532,4 +5534,45 @@ fn a_swipe_names_the_player_the_door_and_how() {
         (BUILDER, 0, 1),
         "the lever needs no card"
     );
+}
+
+/// `EV_SENTRY_LOCK: a = the gun's roster id, b = the player, c = 0` — a
+/// hostile body in the town, in reach of one sentry alone.
+#[test]
+fn a_sentry_lock_names_the_gun_and_the_target() {
+    use sim_core::sentry::{SentryDef, SENTRY_SLOT0};
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let t = w.haven.town;
+    assert!(t.live, "the fixture seed has a town");
+    // Eleven metres from the north-west tower's gun, sixty and more from
+    // the others, and a 40 m reach: one gun can answer.
+    let (x, z) = sim_core::kit::to_world(&t.placed(), -25.0, 30.0);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].hostile = sim_core::combat::HOSTILE_TICKS;
+    w.sentry_def = SentryDef {
+        range_mm: 40_000,
+        damage: 10,
+        burst: 1,
+        rate_ticks: 3,
+        gap_ticks: 30,
+        lock_ticks: 45,
+        lose_ticks: 90,
+        spread_pm: 0,
+    };
+    let mut ticks = 0;
+    while count(&w, EV_SENTRY_LOCK) == 0 {
+        w.tick(&[]);
+        ticks += 1;
+        assert!(ticks < 60, "no sentry locked on within two seconds");
+    }
+    let ev = only(&w, EV_SENTRY_LOCK);
+    assert_eq!(
+        ev.a,
+        sim_core::mob::mob_id(SENTRY_SLOT0 + 2),
+        "the north-west gun"
+    );
+    assert_eq!(ev.b, BUILDER);
+    assert_eq!(ev.c, 0, "EV_SENTRY_LOCK.c is reserved and must stay zero");
 }

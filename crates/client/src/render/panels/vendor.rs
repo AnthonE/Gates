@@ -138,6 +138,8 @@ pub fn build_screen(
                     }
                     any = true;
                     let can = have(o.pay) >= o.pay_n as u32;
+                    // SALVAGE's rows pay junk out: you are selling to it.
+                    let sells = o.get == junk;
                     p.spawn((
                         Node {
                             flex_direction: FlexDirection::Row,
@@ -170,10 +172,13 @@ pub fn build_screen(
                             ))
                             .with_children(|b| {
                                 b.spawn((
-                                    Text::new(if times == 1 {
-                                        "BUY".to_string()
-                                    } else {
-                                        format!("×{times}")
+                                    Text::new(match (times, sells) {
+                                        (1, true) => "SELL".to_string(),
+                                        (1, false) => "BUY".to_string(),
+                                        // The bill, so ×20 says what it costs.
+                                        _ => {
+                                            format!("×{times} · {}", o.pay_n as u32 * times as u32)
+                                        }
                                     }),
                                     font_bold(12.0),
                                     TextColor(if afford {
@@ -239,8 +244,7 @@ pub fn sync_status(feed: Res<Feed>, mut ui: ResMut<Ui>, net: NonSend<super::supe
     let core = &net.session.core;
     for &(offer, times) in feed.traded() {
         if let Some(o) = core.vend.get(offer as usize) {
-            let n = o.get_n as u32 * times as u32;
-            ui.say(format!("bought {n} {}", item_label(&core.catalog, o.get)));
+            ui.say(trade_line(core, o, times));
             ui.dirty = true;
         }
     }
@@ -248,5 +252,24 @@ pub fn sync_status(feed: Res<Feed>, mut ui: ResMut<Ui>, net: NonSend<super::supe
         if which == Refused::Vend {
             ui.say(crate::ui::refusals::vend(code));
         }
+    }
+}
+
+/// What a trade that went through did, in the player's words: SALVAGE buys
+/// from you, every other stall sells to you.
+pub fn trade_line(core: &ClientCore, o: sim_core::vend::VendOffer, times: u8) -> String {
+    let (pay, get) = (o.pay_n as u32 * times as u32, o.get_n as u32 * times as u32);
+    if o.get == core.research.coin {
+        format!(
+            "sold {pay} {} for {get} {}",
+            item_label(&core.catalog, o.pay),
+            item_label(&core.catalog, o.get)
+        )
+    } else {
+        format!(
+            "bought {get} {} for {pay} {}",
+            item_label(&core.catalog, o.get),
+            item_label(&core.catalog, o.pay)
+        )
     }
 }

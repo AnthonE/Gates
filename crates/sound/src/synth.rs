@@ -355,6 +355,17 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         // longest thing in the bank at 1.9 s.
         Cue::TreeFall => tree_fall(&mut r),
         Cue::UiClick => chime(&[(1_450.0, 0.0, 0.018)]),
+        // THE GATE. The sentry's lock is three hard pips — the one sound in
+        // the town that means somebody is about to die.
+        Cue::SentryLock => chime(&[
+            (2_400.0, 0.0, 0.07),
+            (2_400.0, 0.16, 0.07),
+            (2_400.0, 0.32, 0.07),
+        ]),
+        // A trade: two bright coin notes, up a fourth.
+        Cue::Trade => chime(&[(1_318.5, 0.0, 0.12), (1_760.0, 0.07, 0.22)]),
+        // Into or out of the safe zone: a soft bell, down a fifth.
+        Cue::GateChime => chime(&[(659.25, 0.0, 0.5), (440.0, 0.18, 0.7)]),
 
         // ---- the beds ---------------------------------------------------
         Cue::BedWind => bed(&mut r),
@@ -362,6 +373,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::BedUnder => under(&mut r),
         Cue::BedRain => rain(&mut r),
         Cue::BedRotor => rotor(&mut r),
+        Cue::BedTown => market(&mut r),
         Cue::Thunder => thunder(&mut r),
 
         // ---- the animals ------------------------------------------------
@@ -1469,6 +1481,60 @@ fn rotor(r: &mut Rng) -> Vec<f32> {
         };
         let whine = 0.035 * (std::f32::consts::TAU * whine_hz * time).sin();
         out.push(body + swish + whine + rumble.run(x) * 0.8);
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// THE GATE's yard: a generator droning on its harmonics with a slow
+/// uneven beat, a radio two containers away (band-limited noise in
+/// syllables, never words), and a few clanks of sheet metal across the loop.
+/// Every periodic part completes whole cycles over [`BED_LOOP_SECS`], so the
+/// seam is a crossfade between two copies of the same sound.
+fn market(r: &mut Rng) -> Vec<f32> {
+    use std::f32::consts::TAU;
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    let cycles = |hz: f32| (hz * BED_LOOP_SECS).round() / BED_LOOP_SECS;
+    let hum = cycles(50.0);
+    let mut floor = Lp::new(120.0);
+    let (mut radio_lp, mut radio_hp) = (Lp::new(2_800.0), Lp::new(650.0));
+    // The clanks: when, how high, how loud.
+    let clanks: Vec<(f32, f32, f32)> = (0..4)
+        .map(|_| {
+            (
+                0.5 + r.unit() * (BED_LOOP_SECS - 1.0),
+                700.0 + r.unit() * 900.0,
+                0.15 + 0.2 * r.unit(),
+            )
+        })
+        .collect();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let beat = 0.8 + 0.2 * surge(time, 7.0, 0.3, 2);
+        let drone = ((TAU * hum * time).sin() * 0.5
+            + (TAU * 2.0 * hum * time).sin() * 0.3
+            + (TAU * 3.0 * hum * time).sin() * 0.12)
+            * beat
+            * 0.35;
+        let x = r.noise();
+        let rumble = floor.run(x) * 0.9;
+        // Syllables: a fast gate under a slower phrase, both whole cycles.
+        let syllable = surge(time, 37.0, 0.0, 3) * surge(time, 5.0, 1.1, 2);
+        let band = {
+            let l = radio_lp.run(x);
+            l - radio_hp.run(l)
+        };
+        let radio = band * syllable * 0.12;
+        let mut clank = 0.0;
+        for &(at, hz, amp) in &clanks {
+            let dt = time - at;
+            if (0.0..0.6).contains(&dt) {
+                let env = (-dt / 0.12).exp();
+                clank += ((TAU * hz * dt).sin() + 0.5 * (TAU * hz * 2.76 * dt).sin()) * env * amp;
+            }
+        }
+        out.push(drone + rumble + radio + clank);
     }
     loop_seam(out, samples(BED_FADE_SECS))
 }

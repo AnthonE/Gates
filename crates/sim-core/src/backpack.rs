@@ -310,7 +310,8 @@ impl Backpacks {
     /// Splitting them into two stores would have bought a second wire
     /// message, a second sync walk and a second eviction policy for one
     /// difference (where the items came from) that nothing downstream
-    /// reads: `owner` is state-hash and test material only, never a gate.
+    /// reads: `owner` is state-hash material, and the one gate it feeds is THE
+    /// GATE's "No Looting" (`may_loot`).
     ///
     /// `None` when nothing stood up — an inert ladder (content that never
     /// armed the module) and an empty item set both take this exit, so a
@@ -575,9 +576,19 @@ impl Backpacks {
         }
     }
 
+    /// Whether `pid` may take from bag `i`: anywhere, unless it is another
+    /// player's bag lying in THE GATE's safe zone — Rust's "No Looting".
+    pub fn may_loot(&self, i: usize, pid: u32, town: &crate::town::Town) -> bool {
+        let b = &self.entries[i];
+        b.owner == pid
+            || b.owner & crate::limits::MOB_ID_TAG != 0
+            || !crate::town::safe(town, b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)
+    }
+
     pub fn loot_nearest(
         &mut self,
         gc: &GatherContent,
+        town: &crate::town::Town,
         p: &mut Player,
         events: &mut EventQueue,
     ) -> Option<u32> {
@@ -596,6 +607,15 @@ impl Backpacks {
             }
         }
         let (_, i) = best?;
+        if !self.may_loot(i, p.id, town) {
+            events.push(
+                crate::world::EV_MOVE_REFUSED,
+                p.id,
+                crate::inventory::REFUSE_M_SAFE,
+                0,
+            );
+            return None;
+        }
         let id = self.entries[i].id;
         for s in 0..INV_SLOTS {
             let stack = self.entries[i].items[s];

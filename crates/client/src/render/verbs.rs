@@ -169,6 +169,10 @@ pub fn resolve(
     ) && core
         .ovens()
         .is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level, aimed.0.loc);
+    aimed.0.public = matches!(
+        aimed.0.verb,
+        interact::Verb::Recycler | interact::Verb::Research | interact::Verb::TechTree
+    ) && interact::town_station(&core.haven().town, aimed.0.cx, aimed.0.cz);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);
@@ -1104,6 +1108,16 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
                 protocol::encode_action_rotate(cx, cz, level, loc, buf)
             });
         }
+        // THE GATE's stations are the town's: the sim refuses the pick-up
+        // (`deploy::WORLD_OWNER`), and the reason is not a lock.
+        Act::Demolish {
+            deploy: true,
+            cx,
+            cz,
+            ..
+        } if crate::ui::interact::town_station(&core.haven().town, cx, cz) => {
+            toast.warn(TOWN_PROPERTY);
+        }
         Act::Demolish {
             deploy,
             cx,
@@ -1141,6 +1155,9 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
     }
 }
 
+/// What a pick-up of one of THE GATE's own stations says.
+const TOWN_PROPERTY: &str = "that belongs to THE GATE - it can't be picked up";
+
 /// `Backspace` — take the nearest structure back down (demolish v1).
 ///
 /// Reads the same [`Near`] target `R` repairs and `U` upgrades, and
@@ -1158,6 +1175,10 @@ fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
         return;
     };
     let (deploy, cx, cz, level, loc) = (t.store == Store::Deploy, t.cx, t.cz, t.level, t.loc);
+    if deploy && crate::ui::interact::town_station(&net.session.core.haven().town, cx, cz) {
+        toast.warn(TOWN_PROPERTY);
+        return;
+    }
     send(net, toast, "demolish", |buf| {
         protocol::encode_action_demolish(deploy, cx, cz, level, loc, buf)
     });

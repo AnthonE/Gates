@@ -416,7 +416,14 @@ const SUB_SWIPE_REFUSED: u32 = 71;
 /// Until when you are hostile (own-fact, wire v89): the low 32 bits of the
 /// tick town protection returns, 0 when it has. Sent when it moves.
 const SUB_HOSTILE: u32 = 72;
-const SUB_MAX: u32 = SUB_HOSTILE;
+/// A town sentry locked on to a player (wire v92, `sim_core::sentry`): which
+/// gun, and who. The beep before it fires, to everyone who has the gun in
+/// interest.
+const SUB_SENTRY_LOCK: u32 = 73;
+/// THE GATE's respawn point (own-fact, wire v92): 0 while locked, else the
+/// low 32 bits of the tick it is next free (now or earlier means ready).
+const SUB_GATE_SPAWN: u32 = 74;
+const SUB_MAX: u32 = SUB_GATE_SPAWN;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -741,6 +748,9 @@ pub struct ItemRow {
     /// items, and the client needs this to send wood to FUEL and meat to
     /// INPUT on a right-click.
     pub oven: u16,
+    /// A weapon the safe zone holsters (v92, `combat::drawn_weapon`): the
+    /// client lowers it in THE GATE and says why a click there does nothing.
+    pub holster: bool,
 }
 
 /// Width of [`ItemRow::oven`].
@@ -759,6 +769,7 @@ impl ItemRow {
         draw_ticks: 0,
         nock_ticks: 0,
         oven: 0,
+        holster: false,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -1423,6 +1434,12 @@ pub enum EventMsg {
     /// protection returns (`sim_core::combat::HOSTILE_TICKS` after your last
     /// attack on a player), or 0 when you are not.
     Hostile { until: u32 },
+    /// Town sentry `sentry` (its roster id, `sim_core::sentry`) locked on
+    /// to player `target`: it fires `lock_ms` later.
+    SentryLock { sentry: u32, target: u32 },
+    /// THE GATE's respawn point: 0 while locked, else the low 32 bits of
+    /// the tick it is next free for you.
+    GateSpawn { ready_at: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
     /// charges in it; one hour's charge until wire v89). The third column
@@ -1906,6 +1923,8 @@ pub fn encode_event_catalog(
         w.write(row.nock_ticks as u32, 8)?;
         // The oven roles (v89).
         w.write(row.oven as u32, OVEN_ROLE_BITS)?;
+        // The safe zone's holster (v92).
+        w.write_bit(row.holster)?;
     }
     Ok((w.finish(), count))
 }
@@ -2970,6 +2989,36 @@ pub fn encode_event_hostile(until: u32, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+/// Width of a sentry's index among the town's guns.
+const SENTRY_BITS: u32 = 2;
+const _: () = assert!(sim_core::sentry::SENTRIES <= 1 << SENTRY_BITS);
+
+/// A town sentry locked on to a player (wire v92): the gun travels as its
+/// index among the sentries, never as a free roster id.
+pub fn encode_event_sentry_lock(
+    sentry: u32,
+    target: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let Some(slot) = sim_core::mob::slot_of_id(sentry) else {
+        return Err(WireError::Range);
+    };
+    if !sim_core::sentry::is_sentry_slot(slot) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SENTRY_LOCK)?;
+    w.write((slot - sim_core::sentry::SENTRY_SLOT0) as u32, SENTRY_BITS)?;
+    w.write(target, 32)?;
+    Ok(w.finish())
+}
+
+/// THE GATE's respawn point, as the owner should see it (wire v92).
+pub fn encode_event_gate_spawn(ready_at: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_GATE_SPAWN)?;
+    w.write(ready_at, 32)?;
+    Ok(w.finish())
+}
+
 /// Your swipe was refused.
 pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if code == 0
@@ -3778,6 +3827,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     draw_ticks: r.read(8)? as u8,
                     nock_ticks: r.read(8)? as u8,
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
+                    holster: r.read_bit()?,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -4400,6 +4450,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             bits: r.read(sim_core::monument::CARD_DOORS as u32)? as u8,
         },
         SUB_HOSTILE => EventMsg::Hostile { until: r.read(32)? },
+        SUB_SENTRY_LOCK => {
+            let k = r.read(SENTRY_BITS)? as usize;
+            if k >= sim_core::sentry::SENTRIES {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::SentryLock {
+                sentry: sim_core::mob::mob_id(sim_core::sentry::SENTRY_SLOT0 + k),
+                target: r.read(32)?,
+            }
+        }
+        SUB_GATE_SPAWN => EventMsg::GateSpawn {
+            ready_at: r.read(32)?,
+        },
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
             let door = r.read(2)? as u8;
@@ -5344,6 +5407,7 @@ mod tests {
                 nock_ticks: u8::MAX - 2 * i as u8,
                 // The oven roles (v89) at the width's corner.
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
+                holster: i % 2 == 0,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -6398,6 +6462,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/assist.rs"),
         },
         Module {
+            file: "sentry.rs",
+            src: include_str!("../../sim-core/src/sentry.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -6702,7 +6770,10 @@ mod wire_domains {
             // (`REFUSE_M_BUSY`). Four bits still hold them with three to
             // spare; the version turned for the header the same commit
             // grew, and this pin would have demanded it on its own.
-            live_max: 12,
+            //
+            // 12 -> 13 at wire v92: `REFUSE_M_SAFE`, THE GATE's "No
+            // Looting" — another player's bag in the safe zone.
+            live_max: 13,
         },
         Domain {
             what: "wear slot",
@@ -6773,9 +6844,11 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 15,
+            min_members: 16,
             bits: REFUSE_B_BITS,
-            live_max: 14,
+            // 15 at wire v92: `REFUSE_B_SAFE`, no charge planted in THE
+            // GATE or on its stations.
+            live_max: 15,
         },
         Domain {
             what: "container kind",
@@ -7277,6 +7350,10 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A town sentry's index among the guns (v92): bounded by
+            // `sentry::SENTRIES`, which a const-assert beside the width
+            // guards, and the decoder refuses past it.
+            "SENTRY_BITS",
             // A bag's look (v84): `1 + species` over the count `MOB_KINDS`,
             // which a const-assert beside the width guards, and both ends
             // refuse past it.

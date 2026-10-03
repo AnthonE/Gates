@@ -157,6 +157,7 @@ pub fn update(
     connecting: NonSend<Connecting>,
     mut menu: ResMut<Menu>,
     mut next: ResMut<NextState<Screen>>,
+    town: Option<Res<super::town::TownModel>>,
 ) {
     let p = read(eye.placed, &ring, &props, &clutter);
 
@@ -179,7 +180,9 @@ pub fn update(
         return;
     }
 
-    if p.done() {
+    // THE GATE's dressed model too (7 MB): drawn at any distance, so a swap
+    // from its boxes would happen in plain sight.
+    if p.done() && town.is_none_or(|t| t.ready()) {
         next.set(Screen::InWorld);
     }
 }

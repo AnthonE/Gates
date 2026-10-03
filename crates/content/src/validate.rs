@@ -1270,6 +1270,38 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The town's sentries: a gun that can reach the zone's far corner from
+    // its tower, inside the round's walk (`sentry::ROUND_SAMPLES`).
+    if let Some(t) = &c.sentry {
+        let positive = [
+            (t.range_m, "range_m"),
+            (t.damage, "damage"),
+            (t.burst, "burst"),
+            (t.rate_ms, "rate_ms"),
+            (t.burst_gap_ms, "burst_gap_ms"),
+            (t.lock_ms, "lock_ms"),
+            (t.lose_ms, "lose_ms"),
+        ];
+        if let Some((_, what)) = positive.iter().find(|(v, _)| *v == 0) {
+            return Err(format!("sentry: `{what}` is zero"));
+        }
+        if t.range_m < 50 || t.range_m > 100 {
+            return Err(
+                "sentry: range_m is 50–100 m (the zone's middle to its tower's walk)".into(),
+            );
+        }
+        if t.damage > 100 || t.burst > 30 {
+            return Err("sentry: damage is at most 100 a round, a burst at most 30".into());
+        }
+        if t.rate_ms > 10_000 || t.burst_gap_ms > 60_000 || t.lock_ms > 10_000 || t.lose_ms > 60_000
+        {
+            return Err("sentry: rate 10 s, gap 60 s, lock 10 s, lose 60 s at most".into());
+        }
+        if t.spread_cm_per_10m > 200 {
+            return Err("sentry: spread at most 200 cm per 10 m".into());
+        }
+    }
+
     // Mobs: every band here is a *reachability* check rather than a taste
     // one — an animal that cannot be killed, cannot be caught, or cannot be
     // left behind is content that reads as a bug in the sim.

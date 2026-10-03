@@ -318,6 +318,7 @@ pub fn bake_catalog(
                 draw_ticks,
                 nock_ticks,
                 oven: cook.packed_roles(idx as u16),
+                holster: sim_core::combat::drawn_weapon(combat, gather, idx as u16),
             },
         )
         .map_err(|_| {
@@ -370,6 +371,9 @@ pub struct SimTables {
     /// The attack helicopter (`heli.rs`). Armed by the boot alone: test
     /// shards assign their tables field by field and leave it inert.
     pub heli: sim_core::heli::HeliDef,
+    /// THE GATE's sentries (`sentry.rs`), armed by the boot alone like the
+    /// heli.
+    pub sentry: sim_core::sentry::SentryDef,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
     /// The skin catalog, twice: the sim's half (what fits what) and the
@@ -401,6 +405,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
         heli: content.bake_heli()?,
+        sentry: content.bake_sentry()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather, &survival, &cook)?,
         skins: content.bake_skins()?,
@@ -3085,6 +3090,7 @@ fn sim_thread(
         loot,
         mobs,
         heli,
+        sentry,
         research,
         catalog,
         skins,
@@ -3105,6 +3111,7 @@ fn sim_thread(
     core.world.loot = loot;
     core.world.mob = mobs;
     core.world.heli_def = heli;
+    core.world.sentry_def = sentry;
     core.world.research = research;
     core.world.skins = skins;
     core.catalog = catalog;

@@ -714,6 +714,29 @@ pub struct Habitat {
     pub highland: f32,
 }
 
+/// THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost
+/// turrets, shooting hostile players inside the town's safe zone. Optional —
+/// a `sites.toml` without `[sentry]` is a town without guns. Metres and
+/// milliseconds; the bake converts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sentry {
+    /// How far a gun looks and shoots.
+    pub range_m: u32,
+    /// Per round that lands, before armour.
+    pub damage: u32,
+    /// Rounds per burst, between rounds, and between bursts.
+    pub burst: u32,
+    pub rate_ms: u32,
+    pub burst_gap_ms: u32,
+    /// From the lock-on beep to the first round.
+    pub lock_ms: u32,
+    /// Unseen this long and it lets the target go.
+    pub lose_ms: u32,
+    /// Aim wobble: within this many centimetres per 10 m, on each axis.
+    pub spread_cm_per_10m: u32,
+}
+
 /// The attack helicopter (`sim-core/src/heli.rs`): an AI gunship that
 /// patrols the island on a schedule and shoots the players it can see.
 /// Optional — a `mobs.toml` without `[heli]` is a shard without one.

@@ -21,7 +21,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use bevy::image::Image;
 
-use crate::ui::death::{note, rows, sentence, wake_at, woke, Death, Wake};
+use crate::ui::death::{gate_line, note, rows, sentence, wake_at, woke, Anchors, Death, Wake};
 use crate::ui::map;
 
 use super::hud::Toast;
@@ -81,7 +81,15 @@ pub struct Answer {
     /// True once an answer has gone out, until the wake lands.
     pub sent: bool,
     /// What was asked for, so the wake can report which anchor answered.
-    pub asked_for_bag: bool,
+    pub asked: Option<Wake>,
+}
+
+/// What this death can offer: a bag you own, and THE GATE once reached.
+fn anchors(core: &client_core::core::ClientCore) -> Anchors {
+    Anchors {
+        bag: !core.own_bags().is_empty(),
+        gate: core.gate_spawn_left().is_some(),
+    }
 }
 
 /// Raise the screen when the core says this body died. Runs in `InWorld`.
@@ -104,10 +112,23 @@ pub fn awaken(
     mut next: ResMut<NextState<Screen>>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
-    if net.session.core.dead {
+    let core = &net.session.core;
+    if core.dead {
         return;
     }
-    if let Some(line) = woke(answer.asked_for_bag, net.session.core.woke_on_bag) {
+    // Which anchor answered a gate request: the point's rest restarting is
+    // the sim's own answer (`world::wake`), and it rides the same flush as
+    // the respawn. Not the predicted body, which stands where it fell until
+    // the next snapshot moves it.
+    let in_town = core.gate_spawn_left().is_some_and(|l| {
+        l as u64 + 60 * sim_core::limits::TICK_HZ as u64
+            > sim_core::world::GATE_SPAWN_COOLDOWN_TICKS
+    });
+    if let Some(line) = woke(
+        answer.asked.unwrap_or(Wake::Beach),
+        core.woke_on_bag,
+        in_town,
+    ) {
         toast.warn(line);
     }
     // Take the pointer back, so waking up does not need a click that would
@@ -189,6 +210,8 @@ pub fn setup(
     // which are ours (`protocol`'s `SUB_BAGS`).
     let bags = core.own_bags();
     let has_bag = !bags.is_empty();
+    let offer = anchors(core);
+    let gate_detail = gate_line(core.gate_spawn_left().unwrap_or(0), core.hostile_left() > 0);
     let ready = core.any_bag_ready();
     let mut marks = map::Marks::default();
     map::resolve_wake_marks(&mut marks, bags);
@@ -281,17 +304,22 @@ pub fn setup(
                 ));
             }
 
-            for (i, (wake, name, detail)) in rows(has_bag).iter().enumerate() {
+            for (i, (wake, name, detail)) in rows(offer).enumerate() {
+                let detail = if *wake == Wake::Gate {
+                    gate_detail.clone()
+                } else {
+                    detail.to_string()
+                };
                 root.spawn((ui::row(460.0), WakeRow(*wake)))
                     .with_children(|b| {
                         b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
-                        b.spawn(ui::label(*detail, 13.0, ui::DIM));
+                        b.spawn(ui::label(detail, 13.0, ui::DIM));
                     });
             }
 
             root.spawn((
                 Note,
-                ui::label(note(has_bag), 13.0, ui::FAINT),
+                ui::label(note(offer), 13.0, ui::FAINT),
                 Node {
                     margin: UiRect::top(Val::Px(16.0)),
                     ..default()
@@ -322,7 +350,7 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, net: NonSend<Net>, mut answer: 
     if answer.sent {
         return;
     }
-    let has_bag = !net.session.core.own_bags().is_empty();
+    let offer = anchors(&net.session.core);
 
     // **Digits only, and POSITIONAL.** A digit means the row it is drawn
     // beside — with no bag on the island, `1` is the beach, because `1` is
@@ -341,9 +369,12 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, net: NonSend<Net>, mut answer: 
     //
     // **Escape is not bound either**: there is nothing to back out to, and a
     // screen you can dismiss without answering is a corpse with no exit.
-    for (n, digit) in [KeyCode::Digit1, KeyCode::Digit2].into_iter().enumerate() {
+    for (n, digit) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3]
+        .into_iter()
+        .enumerate()
+    {
         if keyboard.just_pressed(digit) {
-            if let Some(wake) = wake_at(has_bag, n + 1) {
+            if let Some(wake) = wake_at(offer, n + 1) {
                 answer.chosen = Some(wake);
             }
         }
@@ -363,13 +394,16 @@ pub fn act(
     if answer.sent {
         return;
     }
-    let on_bag = wake == Wake::Bag;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_respawn(on_bag, &mut buf) {
+    let encoded = match wake {
+        Wake::Gate => protocol::encode_action_respawn_gate(&mut buf),
+        _ => protocol::encode_action_respawn(wake == Wake::Bag, &mut buf),
+    };
+    match encoded {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => {
                 answer.sent = true;
-                answer.asked_for_bag = on_bag;
+                answer.asked = Some(wake);
                 if let Ok(mut text) = notes.single_mut() {
                     text.0 = "waking...".to_string();
                 }
@@ -394,8 +428,8 @@ mod tests {
     use crate::ui::death::WAKES;
 
     /// `pause`'s rule: a row the keyboard cannot reach is a row half the
-    /// players will not use. `keys` above binds **two digits**, so a third
-    /// row in the table would ship unreachable — the digit loop is
+    /// players will not use. `keys` above binds **three digits**, so a
+    /// fourth row in the table would ship unreachable — the digit loop is
     /// hand-written and cannot grow by itself.
     ///
     /// The reachability of each row that *is* drawn is
@@ -406,8 +440,8 @@ mod tests {
     fn the_digit_loop_covers_every_row_the_table_can_offer() {
         assert_eq!(
             WAKES.len(),
-            2,
-            "a row was added to the wake table and `keys` still binds two digits"
+            3,
+            "a row was added to the wake table and `keys` still binds three digits"
         );
     }
 }

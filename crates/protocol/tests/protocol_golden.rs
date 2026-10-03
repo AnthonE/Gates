@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 131] = [
+const GOLDEN: [&[u8]; 134] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -194,6 +194,9 @@ const GOLDEN: [&[u8]; 131] = [
     include_bytes!("golden/action_swipe.bin"),
     include_bytes!("golden/event_hostile.bin"),
     include_bytes!("golden/action_pick.bin"),
+    include_bytes!("golden/event_sentry_lock.bin"),
+    include_bytes!("golden/event_gate_spawn.bin"),
+    include_bytes!("golden/action_respawn_gate.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -416,8 +419,13 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 129);
     // The bush pick (v91).
     g!(seen, golden_action, 130);
+    // THE GATE as Rust's safe zone (v92): a sentry's lock, the respawn
+    // point, and the verb that wakes there.
+    g!(seen, golden_event, 131);
+    g!(seen, golden_event, 132);
+    g!(seen, golden_action, 133);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 131, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 134, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -503,6 +511,14 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_reskin(slot, skin, &mut buf).unwrap()
+        }
+        "action_respawn_gate.bin" => {
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::RespawnGate,
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_respawn_gate(&mut buf).unwrap()
         }
         "action_pick.bin" => {
             let cell = protocol::goldens::action_pick();
@@ -1846,6 +1862,24 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_vend_offers(&vc, &names, 0, &mut buf)
                 .unwrap()
                 .0
+        }
+        "event_sentry_lock.bin" => {
+            let (sentry, target) = protocol::goldens::event_sentry_lock();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::SentryLock { sentry, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_sentry_lock(sentry, target, &mut buf).unwrap()
+        }
+        "event_gate_spawn.bin" => {
+            let ready_at = protocol::goldens::event_gate_spawn();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::GateSpawn { ready_at },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_gate_spawn(ready_at, &mut buf).unwrap()
         }
         "event_hostile.bin" => {
             let until = protocol::goldens::event_hostile();

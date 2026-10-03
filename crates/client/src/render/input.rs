@@ -447,7 +447,11 @@ pub fn gather(
     // the mouse. A downed player clicking hears nothing and sees no arm,
     // which is the truth.
     let downed = core.wounded;
-    if swings && !downed && !swallowed && mouse.pressed(MouseButton::Left) {
+    // **No weapon is drawn in THE GATE** (Rust's safe zone): the sim lets
+    // nothing fire there (`combat::holstered`), so the arm does not swing
+    // and the bow does not draw — `hud::holster_hint` says why.
+    let holstered = core.holstered();
+    if swings && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
     // **A bow is drawn with the right hand** (the reference's binding): held,
@@ -458,7 +462,7 @@ pub fn gather(
     // nothing. Only with the pointer captured: a right click that frees a
     // window is not a draw.
     let draws = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some();
-    if draws && !downed && locked && mouse.pressed(MouseButton::Right) {
+    if draws && !downed && !holstered && locked && mouse.pressed(MouseButton::Right) {
         buttons |= BTN_AIM;
         buttons &= !BTN_SPRINT;
     }

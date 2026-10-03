@@ -57,24 +57,25 @@ pub use event::{
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
-    encode_event_exposure, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hostile,
-    encode_event_howl, encode_event_hurt, encode_event_impact, encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
-    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_hit,
+    encode_event_hostile, encode_event_howl, encode_event_hurt, encode_event_impact,
+    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
     encode_event_research, encode_event_research_refused, encode_event_research_rows,
-    encode_event_respawn, encode_event_shot, encode_event_skins, encode_event_skins_owned,
-    encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_swipe_refused, encode_event_tag, encode_event_vend, encode_event_vend_offers,
-    encode_event_vend_refused, encode_event_vitals, encode_event_weak_mark, encode_event_wounded,
-    shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag,
-    WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    encode_event_respawn, encode_event_sentry_lock, encode_event_shot, encode_event_skins,
+    encode_event_skins_owned, encode_event_slot_change, encode_event_slot_grow_sync,
+    encode_event_slot_respawned, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
+    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
+    ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH,
+    CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH,
+    VENDOR_NAME_BYTES, VEND_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -1025,7 +1026,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v91 — a bush is picked with `E`, not swung at: `ACT_PICK` (27) names the
 /// bush's cell key, and a swing passes through a bush. A v90 client would
 /// still offer `[LMB] PICK BUSH` at a bush its swing can no longer reach.
-pub const PROTO_VER: u16 = 91;
+/// v92 — THE GATE made Rust's safe zone: catalog rows grow a `holster` bit
+/// (no weapon is drawn in the zone), `SUB_SENTRY_LOCK` (73) is a town
+/// sentry's lock-on beep, `SUB_GATE_SPAWN` (74) the town respawn point's
+/// state, `ACT_RESPAWN_GATE` (28) wakes there, and two refusal reasons
+/// (`REFUSE_M_SAFE`, no looting; `REFUSE_B_SAFE`, no charges). The town's
+/// sentries ride the roster's slots below the heli's (`MOB_SENTRY`).
+pub const PROTO_VER: u16 = 92;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1830,6 +1837,9 @@ const ACT_SWIPE: u32 = 26;
 /// Pick a bush by hand (wire v91, `sim_core::gather::pick`): the bush's
 /// `gather::cell_key`, a claim the sim re-derives and reaches for itself.
 const ACT_PICK: u32 = 27;
+/// Answer the death screen with THE GATE (wire v92, `Command::RespawnGate`).
+/// No payload: the sim decides whether the point is ready.
+const ACT_RESPAWN_GATE: u32 = 28;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1839,7 +1849,7 @@ const ACT_PICK: u32 = 27;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_PICK;
+const ACT_MAX: u32 = ACT_RESPAWN_GATE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2177,6 +2187,9 @@ pub enum ActionMsg {
     /// `CONT_WORLD` posture: the cell is a claim, and what stands there and
     /// whether it is in reach are the sim's verdict.
     Pick { cell: u32 },
+    /// Wake at THE GATE (wire v92): the town's respawn point, if this
+    /// player has been there and it is off its cooldown — else a beach.
+    RespawnGate,
     /// Learn the blueprint for what is in inventory `slot` (research.rs).
     /// `Consume`'s shape exactly, and for the same reason: the slot is the
     /// sender's claim and the sim is the verdict, so a forged index is a
@@ -2475,6 +2488,14 @@ pub fn encode_action_swipe(door: u8, buf: &mut [u8]) -> Result<usize, WireError>
 }
 
 /// `ActionMsg::Pick` — pick the bush at cell key `cell`.
+/// `ActionMsg::RespawnGate` — payload-free.
+pub fn encode_action_respawn_gate(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESPAWN_GATE, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_pick(cell: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
@@ -2861,6 +2882,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Swipe { door }
         }
         ACT_PICK => ActionMsg::Pick { cell: r.read(32)? },
+        ACT_RESPAWN_GATE => ActionMsg::RespawnGate,
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
             if index as usize >= sim_core::limits::CRAFT_QUEUE {
@@ -4698,12 +4720,12 @@ mod tests {
     fn the_action_lane_has_the_room_it_claims() {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
-        // ziggurat's doors (v87) 26 and the bush pick (v91) 27, leaving four
-        // five-bit codes.
-        assert_eq!(ACT_MAX, ACT_PICK);
+        // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
+        // respawn point (v92) 28, leaving three five-bit codes.
+        assert_eq!(ACT_MAX, ACT_RESPAWN_GATE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            4,
+            3,
             "the spare action codes moved — say so where the count is written"
         );
     }

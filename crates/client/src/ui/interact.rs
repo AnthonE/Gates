@@ -254,6 +254,10 @@ pub struct Pick {
     /// as "out" — the honest default, since an unheard fire is one this
     /// client has no news of.
     pub lit: bool,
+    /// THE GATE's own station (`town::STATIONS`): anyone's to use, nobody's
+    /// to take, and a recycler that pays the safe zone's share. Stamped by
+    /// the caller, as `lit` is, from [`town_station`].
+    pub public: bool,
     /// Squared distance from the player, and from the aim line. Diagnostics
     /// for the gate; nothing draws them.
     pub d2: f32,
@@ -349,7 +353,13 @@ impl Pick {
             // machine with no fire in it is the prompt lying about the
             // mechanism.
             Verb::Recycler => format!(
-                "[E] OPEN RECYCLER  ·  [C] {}",
+                "[E] OPEN {}  ·  [C] {}",
+                if self.public {
+                    // Rust's safe-zone recycler: it pays less than your own.
+                    format!("PUBLIC RECYCLER ({}%)", sim_core::town::PUBLIC_RECYCLE_PCT)
+                } else {
+                    "RECYCLER".to_string()
+                },
                 if self.lit { "STOP" } else { "START" }
             ),
             // The recycler's two keys (research table v1): the table is a
@@ -358,12 +368,14 @@ impl Pick {
             // because the press would then be refused and the prompt should
             // not offer it.
             Verb::Research => format!(
-                "[E] OPEN RESEARCH TABLE  ·  [C] {}",
+                "[E] OPEN {}RESEARCH TABLE  ·  [C] {}",
+                if self.public { "PUBLIC " } else { "" },
                 if self.lit { "RESEARCHING" } else { "BEGIN" }
             ),
             // "TECH TREE", not "OPEN WORKBENCH": the bench holds nothing
             // and opens nothing — what `E` does here is show the tree
             // (tech tree v0), so the prompt names the thing you get.
+            Verb::TechTree if self.public => "[E] TECH TREE  ·  PUBLIC WORKBENCH".to_string(),
             Verb::TechTree => "[E] TECH TREE".to_string(),
             Verb::Pick => "[E] PICK BUSH".to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
@@ -393,6 +405,18 @@ impl Pick {
             v => format!("[E] OPEN {}", v.label()),
         }
     }
+}
+
+/// Whether the deployable at cell (`cx`, `cz`) is one of THE GATE's own
+/// stations (`town::STATIONS`, seeded on build-cell centres).
+pub fn town_station(town: &sim_core::town::Town, cx: u16, cz: u16) -> bool {
+    town.live
+        && (0..sim_core::town::STATIONS.len()).any(|k| {
+            sim_core::town::station_world(town, k).is_some_and(|(_, x, z)| {
+                let cell = sim_core::build::BUILD_CELL_M;
+                (x / cell) as u16 == cx && (z / cell) as u16 == cz
+            })
+        })
 }
 
 /// The town kiosk `E` would trade at, or a `None` pick: the nearest counter

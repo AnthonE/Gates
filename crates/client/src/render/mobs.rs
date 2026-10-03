@@ -419,8 +419,9 @@ pub fn stream(
         let Some(slot) = mob::slot_of_id(id) else {
             continue;
         };
-        // The heli rides the roster's last slot and is `heli.rs`'s to draw.
-        if slot == mob::HELI_SLOT {
+        // The heli rides the roster's last slot and is `heli.rs`'s to draw;
+        // the town's sentries ride the four below it and are `sentry.rs`'s.
+        if slot == mob::HELI_SLOT || sim_core::sentry::is_sentry_slot(slot) {
             continue;
         }
         // Stamped on PRESENCE, not on a successful sample, for the reason

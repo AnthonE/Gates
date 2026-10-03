@@ -105,6 +105,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_MOB => match mob::slot_of_id(d.killer).map(mob::kind_of) {
             Some(mob::MOB_WOLF) => "a wolf ran you down".to_string(),
             Some(mob::MOB_HELI) => "the attack helicopter gunned you down".to_string(),
+            Some(mob::MOB_SENTRY) => "THE GATE's sentry gunned you down".to_string(),
             _ => "a pig gored you".to_string(),
         },
         // The blast's whole story is the distance, an arrow's rule — and
@@ -144,80 +145,121 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Wake {
     Bag,
+    /// THE GATE's respawn point (Rust's Outpost spawn point): unlocked by
+    /// reaching the town, resting 30 minutes after each use.
+    Gate,
     Beach,
 }
 
 /// The rows, in the reference's order: the anchor you'd rather have first.
 /// `(wake, title, the small line under it)`.
-pub const WAKES: [(Wake, &str, &str); 2] = [
+pub const WAKES: [(Wake, &str, &str); 3] = [
     (
         Wake::Bag,
         "Wake on your bag",
         "the nearest one that is ready",
     ),
+    (
+        Wake::Gate,
+        "Wake at THE GATE",
+        "the town's market street - rests 30 minutes after",
+    ),
     (Wake::Beach, "Wake on a beach", "the shoreline, somewhere"),
 ];
 
-/// The rows to draw. `has_bag` is `!ClientCore::own_bags().is_empty()` —
-/// **owning one, not one being ready.** A bag inside its cooldown is still
+/// What the screen can offer: a bag you own, and THE GATE once you have
+/// been there.
+///
+/// **Owning one, not one being ready.** A bag inside its cooldown is still
 /// a bag you placed and still somewhere you might rather wake; the sim
 /// picks the nearest ready one and falls back to the beach if none is, and
 /// [`woke`] tells the player which answered. Hiding the row on a cooldown
 /// would take the choice away for five minutes over a fact the client
-/// learned at the moment of death and cannot refresh.
-pub fn rows(has_bag: bool) -> &'static [(Wake, &'static str, &'static str)] {
-    if has_bag {
-        &WAKES
-    } else {
-        &WAKES[1..]
+/// learned at the moment of death and cannot refresh. THE GATE's row is the
+/// same: its line says when it rests, and asking early is a beach.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Anchors {
+    pub bag: bool,
+    pub gate: bool,
+}
+
+impl Anchors {
+    fn has(self, wake: Wake) -> bool {
+        match wake {
+            Wake::Bag => self.bag,
+            Wake::Gate => self.gate,
+            Wake::Beach => true,
+        }
     }
+}
+
+/// The rows to draw, in order. The beach is LAST whatever else is offered,
+/// so the digit that answers "just get me back in" is the last one.
+pub fn rows(a: Anchors) -> impl Iterator<Item = &'static (Wake, &'static str, &'static str)> {
+    WAKES.iter().filter(move |r| a.has(r.0))
 }
 
 /// The wake a **digit** selects — 1-based, over the rows actually drawn.
 ///
 /// Position, not identity, which is the whole point: with no bag, `1` is
-/// the beach, because `1` is the first row on the screen. A player does
-/// not read a table, they press the number next to the words.
-pub fn wake_at(has_bag: bool, n: usize) -> Option<Wake> {
+/// the first row on the screen, whatever it is. A player does not read a
+/// table, they press the number next to the words.
+pub fn wake_at(a: Anchors, n: usize) -> Option<Wake> {
     if n == 0 {
         return None;
     }
-    rows(has_bag).get(n - 1).map(|r| r.0)
+    rows(a).nth(n - 1).map(|r| r.0)
 }
 
-/// Whether a wake is on the screen at all — the gate for the **letter**
-/// aliases, which are bound to the anchor rather than to the position.
-/// `F` must do nothing for a player with no bag, or the alias is a way to
-/// press a button that was deliberately not drawn.
-pub fn offers(has_bag: bool, wake: Wake) -> bool {
-    rows(has_bag).iter().any(|r| r.0 == wake)
+/// Whether a wake is on the screen at all.
+pub fn offers(a: Anchors, wake: Wake) -> bool {
+    rows(a).any(|r| r.0 == wake)
 }
 
 /// The footer line under the rows.
 ///
-/// With no bag there is no choice to explain and one thing worth saying
-/// instead — *why* there is only one row. A player who is not told assumes
-/// the feature is broken, which is the same failure [`woke`] exists to
-/// avoid one beat later.
-pub fn note(has_bag: bool) -> &'static str {
-    if has_bag {
+/// With nothing but the beach there is no choice to explain and one thing
+/// worth saying instead — *why* there is only one row. A player who is not
+/// told assumes the feature is broken, which is the same failure [`woke`]
+/// exists to avoid one beat later.
+pub fn note(a: Anchors) -> &'static str {
+    if a.bag || a.gate {
         "click a row, or press its number"
     } else {
         "no bag placed - the shoreline is the only way back"
     }
 }
 
+/// THE GATE row's small line: when the point rests, or why it will not take
+/// you. `left_ticks` is `ClientCore::gate_spawn_left`'s answer.
+pub fn gate_line(left_ticks: u32, hostile: bool) -> String {
+    if hostile {
+        "not while you are hostile - this will be a beach".to_string()
+    } else if left_ticks > 0 {
+        let secs = left_ticks.div_ceil(sim_core::limits::TICK_HZ);
+        format!(
+            "resting {}:{:02} - this will be a beach",
+            secs / 60,
+            secs % 60
+        )
+    } else {
+        WAKES[1].2.to_string()
+    }
+}
+
 /// What the toast says once the wake lands.
 ///
-/// `asked_for_bag` is what the player pressed and `on_bag` is which anchor
-/// actually answered — **asking for a bag inside its cooldown gets a beach**,
-/// and a player who is not told that has no way to learn it except by
-/// looking around.
-pub fn woke(asked_for_bag: bool, on_bag: bool) -> Option<&'static str> {
-    match (asked_for_bag, on_bag) {
-        (true, false) => Some("no bag ready - you woke on a beach"),
-        (_, true) => Some("you woke on your bag"),
-        (false, false) => None,
+/// `asked` is what the player pressed; `on_bag` and `in_town` are which
+/// anchor actually answered — **asking for a bag inside its cooldown gets a
+/// beach**, and so does THE GATE while it rests, and a player who is not
+/// told that has no way to learn it except by looking around.
+pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
+    match (asked, on_bag, in_town) {
+        (_, true, _) => Some("you woke on your bag"),
+        (Wake::Gate, _, true) => Some("you woke at THE GATE"),
+        (Wake::Bag, false, _) => Some("no bag ready - you woke on a beach"),
+        (Wake::Gate, false, false) => Some("THE GATE would not take you - you woke on a beach"),
+        (Wake::Beach, false, _) => None,
     }
 }
 
@@ -399,74 +441,99 @@ mod tests {
         }
     }
 
-    /// **The item, in one assertion.** No bag placed ⇒ one row, and it is
-    /// the beach.
+    const NONE: Anchors = Anchors {
+        bag: false,
+        gate: false,
+    };
+    const BAG: Anchors = Anchors {
+        bag: true,
+        gate: false,
+    };
+    const GATE: Anchors = Anchors {
+        bag: false,
+        gate: true,
+    };
+    const BOTH: Anchors = Anchors {
+        bag: true,
+        gate: true,
+    };
+
+    /// **The item, in one assertion.** No bag placed and THE GATE never
+    /// reached ⇒ one row, and it is the beach.
     #[test]
-    fn a_player_with_no_bag_is_offered_no_bag() {
-        let r = rows(false);
-        assert_eq!(r.len(), 1, "a bagless death was offered a choice");
+    fn a_player_with_no_anchor_is_offered_only_the_beach() {
+        let r: Vec<_> = rows(NONE).collect();
+        assert_eq!(r.len(), 1, "an anchorless death was offered a choice");
         assert_eq!(r[0].0, Wake::Beach);
-        assert!(!offers(false, Wake::Bag));
-        assert_eq!(rows(true).len(), 2, "a bag owner lost the choice");
-        assert!(offers(true, Wake::Bag) && offers(true, Wake::Beach));
+        assert!(!offers(NONE, Wake::Bag) && !offers(NONE, Wake::Gate));
+        assert_eq!(rows(BAG).count(), 2, "a bag owner lost the choice");
+        assert!(offers(BAG, Wake::Bag) && !offers(BAG, Wake::Gate));
+        assert!(offers(GATE, Wake::Gate) && !offers(GATE, Wake::Bag));
+        assert_eq!(rows(BOTH).count(), 3);
     }
 
-    /// The beach is the LAST row either way, so the bagless list is a
-    /// suffix of the other. That is what keeps the two in one table
-    /// instead of two that can disagree about wording.
+    /// The beach is the LAST row whatever else is offered.
     #[test]
     fn the_beach_is_the_last_row_either_way() {
-        assert_eq!(rows(false), &WAKES[1..]);
-        assert_eq!(rows(true).last().unwrap().0, Wake::Beach);
+        for a in [NONE, BAG, GATE, BOTH] {
+            assert_eq!(rows(a).last().unwrap().0, Wake::Beach);
+        }
     }
 
-    /// A digit means the row it is drawn next to. With no bag, `1` is the
-    /// beach — the number the player can see, not the number the enum
-    /// happens to have.
+    /// A digit means the row it is drawn next to.
     #[test]
     fn a_digit_selects_by_position_and_not_by_identity() {
-        assert_eq!(wake_at(true, 1), Some(Wake::Bag));
-        assert_eq!(wake_at(true, 2), Some(Wake::Beach));
-        assert_eq!(wake_at(false, 1), Some(Wake::Beach));
+        assert_eq!(wake_at(BAG, 1), Some(Wake::Bag));
+        assert_eq!(wake_at(BAG, 2), Some(Wake::Beach));
+        assert_eq!(wake_at(NONE, 1), Some(Wake::Beach));
+        assert_eq!(wake_at(GATE, 1), Some(Wake::Gate));
+        assert_eq!(wake_at(BOTH, 2), Some(Wake::Gate));
+        assert_eq!(wake_at(BOTH, 3), Some(Wake::Beach));
         // Past the drawn rows, and the 1-based zero, are both nothing —
         // never a wrap onto the other answer.
-        assert_eq!(wake_at(false, 2), None);
-        assert_eq!(wake_at(true, 3), None);
-        assert_eq!(wake_at(true, 0), None);
-        assert_eq!(wake_at(false, 0), None);
+        assert_eq!(wake_at(NONE, 2), None);
+        assert_eq!(wake_at(BOTH, 4), None);
+        assert_eq!(wake_at(BAG, 0), None);
     }
 
-    /// Every drawn row has a key that reaches it, in both shapes —
-    /// `render::death`'s old assertion, moved here where it can be
-    /// written against the list rather than against a length.
+    /// Every drawn row has a key that reaches it, in every shape.
     #[test]
     fn every_drawn_row_is_reachable_by_its_own_digit() {
-        for has_bag in [false, true] {
-            for (i, (wake, _, _)) in rows(has_bag).iter().enumerate() {
+        for a in [NONE, BAG, GATE, BOTH] {
+            for (i, (wake, _, _)) in rows(a).enumerate() {
                 assert_eq!(
-                    wake_at(has_bag, i + 1),
+                    wake_at(a, i + 1),
                     Some(*wake),
-                    "row {i} of has_bag={has_bag} has no digit"
+                    "row {i} of {a:?} has no digit"
                 );
             }
         }
     }
 
-    /// The bagless footer says WHY there is one row. Silence there reads
-    /// as a broken screen.
+    /// The anchorless footer says WHY there is one row.
     #[test]
     fn the_bagless_footer_explains_itself() {
-        assert_ne!(note(false), note(true));
-        assert!(note(false).contains("bag"), "{}", note(false));
+        assert_ne!(note(NONE), note(BAG));
+        assert_eq!(note(GATE), note(BAG));
+        assert!(note(NONE).contains("bag"), "{}", note(NONE));
+    }
+
+    #[test]
+    fn the_gate_row_says_when_it_rests() {
+        assert_eq!(gate_line(0, false), WAKES[1].2);
+        assert!(gate_line(90 * sim_core::limits::TICK_HZ, false).starts_with("resting 1:30"));
+        assert!(gate_line(0, true).contains("hostile"));
     }
 
     #[test]
     fn the_wake_reports_the_anchor_that_answered() {
         assert_eq!(
-            woke(true, false),
+            woke(Wake::Bag, false, false),
             Some("no bag ready - you woke on a beach")
         );
-        assert_eq!(woke(true, true), Some("you woke on your bag"));
-        assert_eq!(woke(false, false), None);
+        assert_eq!(woke(Wake::Bag, true, false), Some("you woke on your bag"));
+        assert_eq!(woke(Wake::Beach, false, false), None);
+        assert_eq!(woke(Wake::Gate, false, true), Some("you woke at THE GATE"));
+        assert!(woke(Wake::Gate, false, false).unwrap().contains("beach"));
     }
 }
