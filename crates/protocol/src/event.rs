@@ -423,7 +423,19 @@ const SUB_SENTRY_LOCK: u32 = 73;
 /// THE GATE's respawn point (own-fact, wire v92): 0 while locked, else the
 /// low 32 bits of the tick it is next free (now or earlier means ready).
 const SUB_GATE_SPAWN: u32 = 74;
-const SUB_MAX: u32 = SUB_GATE_SPAWN;
+/// Somebody else's hands, heard (wire v93): a reload, a meal or a dressing,
+/// a drink, a keypad taking a code, a box or a bag opened, a bow drawn. The body, what it
+/// did ([`DEED_RELOAD`]…), and for a meal the item, so a bandage is not
+/// heard as a bite. Sent only to clients drawing that body and within
+/// earshot of it (`sim_core::limits::ACT_HEAR_CM`).
+///
+/// **The sound of the act and nothing about it.** The own-facts it is heard
+/// from stay unicast — how many rounds went in (`SUB_RELOAD`), whose code a
+/// lock now knows (`SUB_AUTH`), what is in the box — because each of those
+/// is intelligence. That something clicked, at a body you can already see
+/// and close enough to hear, is what Rust plays to everyone near.
+const SUB_HEARD: u32 = 75;
+const SUB_MAX: u32 = SUB_HEARD;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1440,6 +1452,9 @@ pub enum EventMsg {
     /// THE GATE's respawn point: 0 while locked, else the low 32 bits of
     /// the tick it is next free for you.
     GateSpawn { ready_at: u32 },
+    /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
+    /// for a meal the item. A sound and nothing else.
+    Heard { body: u32, deed: u8, item: u16 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
     /// charges in it; one hour's charge until wire v89). The third column
@@ -3019,6 +3034,43 @@ pub fn encode_event_gate_spawn(ready_at: u32, buf: &mut [u8]) -> Result<usize, W
     Ok(w.finish())
 }
 
+/// What a [`SUB_HEARD`] says a body did. A magazine filled from the pack.
+pub const DEED_RELOAD: u8 = 0;
+/// Something eaten or a wound dressed; the item says which.
+pub const DEED_MEAL: u8 = 1;
+/// A drink.
+pub const DEED_DRINK: u8 = 2;
+/// A lock or a hearth took a code.
+pub const DEED_KEYPAD: u8 = 3;
+/// A box or a crate opened.
+pub const DEED_OPEN_BOX: u8 = 4;
+/// A backpack on the ground opened.
+pub const DEED_OPEN_BAG: u8 = 5;
+/// A bow drawn: the aim going down with a draw weapon in hand.
+pub const DEED_DRAW: u8 = 6;
+/// The last deed the wire knows; a higher one is refused at both ends.
+pub const DEED_MAX: u8 = DEED_DRAW;
+const DEED_BITS: u32 = 3;
+const _: () = assert!((DEED_MAX as u32) < (1 << DEED_BITS));
+
+/// Somebody's hands, heard: the body, the deed, and the item a meal was
+/// (any other deed sends `u16::MAX`). Refuses a deed past [`DEED_MAX`].
+pub fn encode_event_heard(
+    body: u32,
+    deed: u8,
+    item: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if deed > DEED_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HEARD)?;
+    w.write(body, 32)?;
+    w.write(deed as u32, DEED_BITS)?;
+    w.write(item as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// Your swipe was refused.
 pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if code == 0
@@ -4463,6 +4515,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_GATE_SPAWN => EventMsg::GateSpawn {
             ready_at: r.read(32)?,
         },
+        SUB_HEARD => {
+            let body = r.read(32)?;
+            let deed = r.read(DEED_BITS)? as u8;
+            if deed > DEED_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Heard {
+                body,
+                deed,
+                item: r.read(16)? as u16,
+            }
+        }
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
             let door = r.read(2)? as u8;
@@ -7350,6 +7414,10 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // Which deed a `SUB_HEARD` names (v93): the wire's own short
+            // list, bounded by `DEED_MAX`, which a const-assert beside the
+            // width guards, and both ends refuse past it.
+            "DEED_BITS",
             // A town sentry's index among the guns (v92): bounded by
             // `sentry::SENTRIES`, which a const-assert beside the width
             // guards, and the decoder refuses past it.

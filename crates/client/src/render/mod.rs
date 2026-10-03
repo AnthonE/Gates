@@ -1654,6 +1654,11 @@ impl Plugin for GatesRenderPlugin {
                 // …and their arms. Same slice `bodies::stream` animates
                 // from, same transform it just wrote.
                 audio::remote_swings,
+                // …their deeds the server says were heard (a reload, a meal,
+                // a lid), and what the snapshot already says their hands and
+                // feet did (a draw, a landing).
+                audio::remote_heard,
+                audio::remote_hands,
                 // …and every shot in earshot, at the shooter. Same slice,
                 // and after it for the same reason: the transform this
                 // reads is the one `bodies::stream` just wrote.

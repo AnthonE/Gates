@@ -828,6 +828,131 @@ pub fn remote_swings(
     }
 }
 
+/// Is `item` a dressing rather than a meal: it heals and feeds nothing.
+fn dressing(catalog: &protocol::ItemCatalog, item: u16) -> bool {
+    let row = catalog.row(item as usize);
+    row.health > 0 && row.food == 0 && row.water == 0
+}
+
+/// Other bodies' hands, heard at the body (wire v93, `SUB_HEARD`): a
+/// magazine seated, a meal or a dressing, a drink, a keypad taking a code, a
+/// box's lid or a backpack's leather, a bow coming back. The server sends only what is in
+/// earshot; the mixer's falloff does the rest.
+pub fn remote_heard(
+    net: Option<NonSend<Net>>,
+    feed: Res<super::feed::Feed>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+    mut sound: ResMut<Sound>,
+) {
+    if feed.heard().is_empty() {
+        return;
+    }
+    let Some(n) = net.as_deref() else {
+        return;
+    };
+    for &(id, deed, item) in feed.heard() {
+        let Some((_, t)) = bodies.iter().find(|(b, _)| b.0 == id) else {
+            continue;
+        };
+        let cue = match deed {
+            protocol::DEED_RELOAD => Cue::RemoteReload,
+            protocol::DEED_MEAL if dressing(&n.session.core.catalog, item) => Cue::RemoteBandage,
+            protocol::DEED_MEAL => Cue::RemoteEat,
+            protocol::DEED_DRINK => Cue::RemoteDrink,
+            protocol::DEED_KEYPAD => Cue::Unlock,
+            protocol::DEED_OPEN_BOX => Cue::RemoteContainerOpen,
+            protocol::DEED_OPEN_BAG => Cue::RemoteEquip,
+            protocol::DEED_DRAW => Cue::RemoteBowDraw,
+            _ => continue,
+        };
+        let p = t.translation;
+        sound.play(Request::at(cue, [p.x, p.y + REMOTE_HANDS_H_M, p.z]));
+    }
+}
+
+/// Where another body's hands are heard from, above its feet.
+const REMOTE_HANDS_H_M: f32 = 1.1;
+/// Time in the air before coming down is heard: a jump is ~0.7 s, and a
+/// step off a 0.6 m ledge is ~0.25 s, which is a step and not a landing.
+pub const REMOTE_LAND_AIR_S: f32 = 0.3;
+
+/// One remote body as the ear last knew it: what it held (`None` until
+/// first sampled) and how long it has been off the ground. Inserted at
+/// spawn beside [`RemoteSteps`], so a body that re-enters interest starts
+/// fresh rather than "drawing" whatever it already had in hand.
+#[derive(Component, Default)]
+pub struct RemoteHands {
+    held: Option<Option<u16>>,
+    air_s: f32,
+}
+
+/// What other bodies' hands and feet do that the snapshot already says: a
+/// new item drawn (`RemoteState::held` changing to something), and a
+/// landing after a real jump or fall (`airborne` clearing) — a splash if it
+/// came down in the sea. No wire of its own: the facts were there.
+pub fn remote_hands(
+    net: Option<NonSend<Net>>,
+    world: Res<super::WorldId>,
+    time: Res<Time>,
+    mut bodies: Query<(
+        &super::bodies::Body,
+        &Transform,
+        &super::anim::BodyAnim,
+        &mut RemoteHands,
+    )>,
+    mut sound: ResMut<Sound>,
+    eye: Res<Eye>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
+) {
+    let Some(n) = net.as_deref() else {
+        return;
+    };
+    let core = &n.session.core;
+    let tick = core.render_tick();
+    let dt = time.delta_secs();
+    let mut rs = client_core::interp::RemoteState::default();
+    for (body, t, anim, mut hands) in bodies.iter_mut() {
+        let at = t.translation;
+        if core.interp.sample(body.0, tick, &mut rs) {
+            let now = (!rs.dead && !rs.wounded).then_some(rs.held).flatten();
+            if let Some(was) = hands.held {
+                if now.is_some() && now != was && !rs.sleeping {
+                    sound.play(Request::at(
+                        Cue::RemoteEquip,
+                        [at.x, at.y + REMOTE_HANDS_H_M, at.z],
+                    ));
+                }
+            }
+            hands.held = Some(now);
+        }
+        if anim.airborne {
+            hands.air_s += dt;
+            continue;
+        }
+        if hands.air_s >= REMOTE_LAND_AIR_S {
+            let wet = at.y < sim_core::terrain::SEA_LEVEL;
+            let cue = if wet {
+                Cue::RemoteSplash
+            } else {
+                Cue::RemoteLand
+            };
+            sound.play(Request::at(cue, [at.x, at.y, at.z]));
+            if let Some(fx) = fx.as_deref_mut() {
+                if at.distance(eye.pos) <= super::fx::world::STEP_FX_M {
+                    if wet {
+                        super::fx::world::splash(fx, at, 0.7);
+                    } else {
+                        let splat = sim_core::terrain::splat(world.seed, at.x, at.z);
+                        let ground = crate::sound::steps::surface_cue(splat, false);
+                        super::fx::world::body_landing(fx, ground, at);
+                    }
+                }
+            }
+        }
+        hands.air_s = 0.0;
+    }
+}
+
 /// Which report a shot makes, from the one bit that separates the two
 /// weapons.
 ///
@@ -1019,8 +1144,7 @@ pub fn feed(
     // eat in it — a bandage, a medkit — is wrapped rather than chewed: the
     // HUD's EAT/USE line draws the same distinction off the same row.
     for &(item, _slot) in feed.consumed() {
-        let row = net.session.core.catalog.row(item as usize);
-        let cue = if row.health > 0 && row.food == 0 && row.water == 0 {
+        let cue = if dressing(&net.session.core.catalog, item) {
             Cue::Bandage
         } else {
             Cue::Eat

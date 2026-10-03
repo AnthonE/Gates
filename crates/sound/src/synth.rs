@@ -557,6 +557,19 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Equip | Cue::MapPaper => rustle(&mut r),
         Cue::ContainerOpen => creak(&mut r),
 
+        // ---- other bodies' hands ----------------------------------------
+        // The same hands heard from across the room, by delegation for the
+        // remote swing's reason: what makes one remote is its def.
+        Cue::RemoteReload => render_take(Cue::Reload, take),
+        Cue::RemoteEat => render_take(Cue::Eat, take),
+        Cue::RemoteBandage => render_take(Cue::Bandage, take),
+        Cue::RemoteDrink => render_take(Cue::Drink, take),
+        Cue::RemoteContainerOpen => render_take(Cue::ContainerOpen, take),
+        Cue::RemoteEquip => render_take(Cue::Equip, take),
+        Cue::RemoteLand => render_take(Cue::Land, take),
+        Cue::RemoteSplash => render_take(Cue::Splash, take),
+        Cue::RemoteBowDraw => render_take(Cue::BowDraw, take),
+
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
         // is a lookup in `music::PIECES` rather than nine parameter sets, so

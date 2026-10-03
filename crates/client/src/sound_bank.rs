@@ -167,6 +167,15 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteStepRock => Cue::StepRock,
         Cue::RemoteStepWater => Cue::StepWater,
         Cue::RemoteSwing => Cue::Swing,
+        Cue::RemoteReload => Cue::Reload,
+        Cue::RemoteEat => Cue::Eat,
+        Cue::RemoteBandage => Cue::Bandage,
+        Cue::RemoteDrink => Cue::Drink,
+        Cue::RemoteContainerOpen => Cue::ContainerOpen,
+        Cue::RemoteEquip => Cue::Equip,
+        Cue::RemoteLand => Cue::Land,
+        Cue::RemoteSplash => Cue::Splash,
+        Cue::RemoteBowDraw => Cue::BowDraw,
         c => c,
     }
 }

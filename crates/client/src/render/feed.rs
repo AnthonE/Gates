@@ -291,6 +291,10 @@ pub struct Feed {
     /// wire v76), by tagged roster id. A sound and nothing else.
     howls: [u32; FEED_CAP],
     n_howls: usize,
+    /// Other bodies' hands heard this frame (`EventMsg::Heard`, wire v93):
+    /// (body id, `protocol::DEED_*`, item). A sound and nothing else.
+    heard: [(u32, u8, u16); FEED_CAP],
+    n_heard: usize,
     /// Town sentries that locked on to somebody this frame
     /// (`EventMsg::SentryLock`, wire v92): (gun id, target id).
     sentry_locks: [(u32, u32); FEED_CAP],
@@ -404,6 +408,12 @@ impl Feed {
         &self.howls[..self.n_howls]
     }
 
+    /// Other bodies' deeds heard this frame, oldest first: (body id,
+    /// `protocol::DEED_*`, item).
+    pub fn heard(&self) -> &[(u32, u8, u16)] {
+        &self.heard[..self.n_heard]
+    }
+
     /// Town sentries that locked on this frame: (gun id, target id).
     pub fn sentry_locks(&self) -> &[(u32, u32)] {
         &self.sentry_locks[..self.n_sentry_locks]
@@ -498,6 +508,7 @@ impl Feed {
         self.n_impacts = 0;
         self.n_swings = 0;
         self.n_howls = 0;
+        self.n_heard = 0;
         self.n_sentry_locks = 0;
         self.n_placed = 0;
         self.n_removed = 0;
@@ -694,6 +705,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_howls;
             feed.howls[n] = h;
             feed.n_howls += 1;
+        }
+    }
+    while let Some(h) = core.pop_heard() {
+        if feed.n_heard >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_heard;
+            feed.heard[n] = h;
+            feed.n_heard += 1;
         }
     }
     while let Some(l) = core.pop_sentry_lock() {

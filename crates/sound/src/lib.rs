@@ -356,11 +356,33 @@ pub enum Cue {
     MapPaper,
     /// A box or a crate opened: the latch, then the lid. Your own hands.
     ContainerOpen,
+    // ---- other bodies' hands (wire v93, `SUB_HEARD`) ------------------
+    // Each is its own cue's recording heard at another body: positional,
+    // culled by the one falloff law, with its own reach. `RemoteSwing`'s
+    // shape: the def is what makes it remote, never the waveform.
+    /// Somebody else seating a magazine.
+    RemoteReload,
+    /// Somebody else eating.
+    RemoteEat,
+    /// Somebody else dressing a wound.
+    RemoteBandage,
+    /// Somebody else drinking.
+    RemoteDrink,
+    /// Somebody else opening a box or a crate.
+    RemoteContainerOpen,
+    /// Somebody else drawing an item, or opening a backpack on the ground.
+    RemoteEquip,
+    /// Somebody else coming down from a jump or a fall.
+    RemoteLand,
+    /// Somebody else coming down into water.
+    RemoteSplash,
+    /// Somebody else drawing a bow.
+    RemoteBowDraw,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 81;
+pub const CUE_COUNT: usize = 90;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -450,6 +472,15 @@ impl Cue {
         Cue::Equip,
         Cue::MapPaper,
         Cue::ContainerOpen,
+        Cue::RemoteReload,
+        Cue::RemoteEat,
+        Cue::RemoteBandage,
+        Cue::RemoteDrink,
+        Cue::RemoteContainerOpen,
+        Cue::RemoteEquip,
+        Cue::RemoteLand,
+        Cue::RemoteSplash,
+        Cue::RemoteBowDraw,
     ];
 
     /// Is this cue a piece of music?
@@ -559,7 +590,16 @@ impl Cue {
             | Cue::Land
             | Cue::Equip
             | Cue::MapPaper
-            | Cue::ContainerOpen => 0.07,
+            | Cue::ContainerOpen
+            | Cue::RemoteReload
+            | Cue::RemoteEat
+            | Cue::RemoteBandage
+            | Cue::RemoteDrink
+            | Cue::RemoteContainerOpen
+            | Cue::RemoteEquip
+            | Cue::RemoteLand
+            | Cue::RemoteSplash
+            | Cue::RemoteBowDraw => 0.07,
             // A fire never crackles the same twice, and a bullet's whiz is
             // its speed and its miss distance.
             Cue::FireCrackle | Cue::Flyby => 0.10,
@@ -925,6 +965,22 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME,  0.0, 0.50, 120, 3, false),  // equip
     row(GAME,  0.0, 0.45, 150, 3, false),  // map paper
     row(GAME,  0.0, 0.55, 200, 3, false),  // container open
+    // Other bodies' hands, at the body. Each takes its own cue's gain and a
+    // reach of its own; a reload carries furthest and ranks with a remote
+    // swing, because it is the one a fight turns on — Rust's players listen
+    // for exactly that click to push. `limits::ACT_HEAR_CM` is the server's
+    // side of the widest of these.
+    row(GAME, 30.0, 0.54,  40, 4, true),   // reload, somebody else's
+    row(GAME, 12.0, 0.70,  60, 3, true),   // eat, somebody else's
+    row(GAME, 14.0, 0.62, 100, 3, true),   // bandage, somebody else's
+    row(GAME, 12.0, 0.45, 100, 3, true),   // drink, somebody else's
+    row(GAME, 20.0, 0.55,  60, 3, true),   // container open, somebody else's
+    row(GAME, 16.0, 0.50,  40, 3, true),   // equip, somebody else's
+    row(GAME, 24.0, 0.72,  40, 3, true),   // land, somebody else's
+    row(GAME, 30.0, 0.65,  60, 4, true),   // splash, somebody else's
+    // A bow coming back is the shot a moment before it: ranked with the
+    // reload, carried a little less far than the loose itself.
+    row(GAME, 18.0, 0.35,  60, 4, true),   // bow drawn, somebody else's
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

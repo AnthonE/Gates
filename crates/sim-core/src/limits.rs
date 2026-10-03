@@ -456,6 +456,12 @@ pub const CHAT_RING_CAP: usize = 4;
 /// see.
 pub const CHAT_LOCAL_CM: i64 = 2_000;
 
+/// How far another body's deed is heard, centimetres (wire v93,
+/// `SUB_HEARD`): a reload, a meal, a drink, a keypad, a lid. The server
+/// sends it to nobody farther, so the fact goes no further than its sound —
+/// the widest of those cues' radii (a reload's, 30 m) and a little over.
+pub const ACT_HEAR_CM: i64 = 3_200;
+
 /// Sparse slot-life store (harvested/damaged scatter slots). Sized past
 /// the ~14–17 k live slots a seed produces (TERRAIN.md §6, since forest
 /// density v1 on 2026-09-14 — it was 16,384 past ~8–12 k before, and
@@ -625,14 +631,18 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// — which is why this is sized against the worst case rather than the
 /// common one. Overflow policy is unchanged: **resync**.
 /// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
-pub const EVENT_RING_CAP: usize = 128;
+///
+/// 192 since wire v93, when the heard deeds became the third body arm.
+pub const EVENT_RING_CAP: usize = 192;
 
 /// How many `pump_events` arms broadcast a **body's** fact to the whole
 /// class-D interest set, each therefore able to fan in `AOI_RANK_EXIT`
 /// messages to one client in one tick.
 ///
-/// Two: `EV_SWING` (an arm moved) and `EV_SHOT` (a round left a weapon).
-/// Both are filtered by `ShardCore::body_event_visible`, and both fire on
+/// Three: `EV_SWING` (an arm moved), `EV_SHOT` (a round left a weapon), and
+/// since wire v93 the heard deeds (`ShardCore::flush_heard`: a reload, a
+/// meal, a drink, a keypad, a lid — one per body per tick, so one band).
+/// All are filtered by `ShardCore::body_event_visible`, and all fire on
 /// exactly the tick everyone is co-located — a raid — so the filter buys
 /// nothing precisely when the ring is fullest.
 ///
@@ -653,7 +663,7 @@ pub const EVENT_RING_CAP: usize = 128;
 /// link was the ring's own definition and therefore held nothing — see
 /// [`EVENT_RING_CAP`].
 /// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
-pub const BODY_BROADCAST_ARMS: usize = 2;
+pub const BODY_BROADCAST_ARMS: usize = 3;
 
 /// Slot-life entries the per-client harvested-set walk scans per tick
 /// (join sync / resync is drip-fed: at most one sync message per client

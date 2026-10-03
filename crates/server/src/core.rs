@@ -17,18 +17,22 @@ use protocol::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hurt,
-    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_recipes, encode_event_recovered, encode_event_reload, encode_event_reload_refused,
-    encode_event_removed, encode_event_research, encode_event_research_refused,
-    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, ActionMsg, ChatMsg,
-    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag,
-    WireError, WireGItem, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_gitem_sync, encode_event_health, encode_event_heard, encode_event_hit,
+    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
+    encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
+    encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
+    SnapshotEncoder, SnapshotHeader, WireBag, WireError, WireGItem, BAG_SYNC_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
+    SLOT_SYNC_BATCH,
+};
+use protocol::{
+    DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX, DEED_RELOAD,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
@@ -37,10 +41,10 @@ use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
-    DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK,
-    MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, MAX_SPECTATORS, SNAPSHOT_INTERVAL_TICKS,
-    STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
+    ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM,
+    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS,
+    MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, MAX_SPECTATORS,
+    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -164,6 +168,16 @@ pub struct ShardCore {
     pub vendor_names: Vec<String>,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
+    /// Deeds other clients should hear this tick (wire v93): (body,
+    /// `protocol::DEED_*`, item), at most one per body — so `MAX_PLAYERS`
+    /// cannot fill — and flushed by [`Self::flush_heard`] at the end of
+    /// `route_events`. A box opened in a drip lands after that flush and is
+    /// heard with the next tick's.
+    heard: [(u32, u8, u16); MAX_PLAYERS],
+    heard_len: usize,
+    /// Which world slots were drawing a bow last tick, for the edge a draw
+    /// is heard on (`route_events`).
+    drawing: [bool; MAX_PLAYERS],
     /// Who each player slot is (`EventMsg::Tag`): the proven address from
     /// the join, the platform name and picture when `faces.rs`'s read lands.
     /// A row outlives its connection, so a sleeper keeps its name for late
@@ -400,6 +414,9 @@ impl ShardCore {
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             vendor_names: Vec::new(),
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
+            heard: [(0, 0, 0); MAX_PLAYERS],
+            heard_len: 0,
+            drawing: [false; MAX_PLAYERS],
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
@@ -1964,6 +1981,10 @@ impl ShardCore {
                     }
                 }
                 EV_RELOAD => {
+                    // A fill is heard by whoever is near; the count is not.
+                    if ev.c > 0 {
+                        self.hear(ev.a, DEED_RELOAD, NO_ITEM);
+                    }
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // shooter left this tick
                     };
@@ -2333,6 +2354,12 @@ impl ShardCore {
                     // body they are about — same audience shape as health,
                     // and absolute for the same reason: a client that
                     // misses one hears the whole truth from the next.
+                    // A meal and a drink are also heard by whoever is near.
+                    match ev.code {
+                        EV_CONSUMED => self.hear(ev.a, DEED_MEAL, (ev.b >> 16) as u16),
+                        EV_DRANK => self.hear(ev.a, DEED_DRINK, NO_ITEM),
+                        _ => {}
+                    }
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // that player left this tick
                     };
@@ -3046,6 +3073,12 @@ impl ShardCore {
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let grant = ev.b as u8;
+                    // The keypad's beep is the exception, and it carries
+                    // none of the grant: whoever stands near hears a code
+                    // go in, as they would see the door open after it.
+                    if grant != sim_core::lock::GRANT_NONE {
+                        self.hear(ev.c, DEED_KEYPAD, NO_ITEM);
+                    }
                     let Some(slot) = self.client_slot_of(ev.c) else {
                         continue;
                     };
@@ -3345,6 +3378,25 @@ impl ShardCore {
                 _ => {}
             }
         }
+        // A bow drawn: the aim going down with a draw weapon in hand, the
+        // edge the drawer's own client creaks on (`viewmodel`'s draw).
+        for w in 0..MAX_PLAYERS {
+            let (id, drawing) = {
+                let p = &self.world.players[w];
+                let bow = self
+                    .world
+                    .combat
+                    .held_ranged(sim_core::combat::held_item(p))
+                    .is_some_and(|d| d.draw_ticks > 0 && !d.hitscan);
+                let aiming = p.frame.buttons & sim_core::input::BTN_AIM != 0;
+                (p.id, p.active && !p.dead && !p.wounded && aiming && bow)
+            };
+            if drawing && !self.drawing[w] {
+                self.hear(id, DEED_DRAW, NO_ITEM);
+            }
+            self.drawing[w] = drawing;
+        }
+        self.flush_heard(stats, send);
         if self.world.events.dropped > 0 {
             // The ring refused events this tick; whatever they announced,
             // the sync walk re-derives (limits.rs event-ring policy).
@@ -3371,6 +3423,69 @@ impl ShardCore {
         // used to close this function, and moved so the spectator mirror
         // (which wraps this function's `send`) forwards the sim's facts and
         // never a connection's own walk state (`NETCODE.md` §2.3).
+    }
+
+    /// Queue a deed the clients near `body` should hear. One per body per
+    /// flush — the bound the flush's fan-in is counted on — so a second in
+    /// the same tick is dropped.
+    fn hear(&mut self, body: u32, deed: u8, item: u16) {
+        let n = self.heard_len;
+        if n == self.heard.len() || self.heard[..n].iter().any(|h| h.0 == body) {
+            return;
+        }
+        self.heard[n] = (body, deed, item);
+        self.heard_len = n + 1;
+    }
+
+    /// Send this tick's heard deeds: each to the clients drawing that body
+    /// (the class-D filter, so a raid fans in at most `AOI_RANK_EXIT` a
+    /// tick, the third arm `BODY_BROADCAST_ARMS` counts) and standing within
+    /// `ACT_HEAR_CM` of it. Never back to the hands that did it: they hear
+    /// their own deed off its own-fact.
+    fn flush_heard(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        for i in 0..self.heard_len {
+            let (body, deed, item) = self.heard[i];
+            let Some(w) = Self::world_slot_of(&self.world, body) else {
+                continue; // gone this tick
+            };
+            let at = self.world.players[w].body;
+            let len = match encode_event_heard(body, deed, item, &mut self.ev_buf) {
+                Ok(len) => len,
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                }
+            };
+            for slot in 0..MAX_PLAYERS {
+                if !self.clients[slot].connected || self.clients[slot].id == body {
+                    continue;
+                }
+                if !self.body_event_visible(slot, body, Some(w)) {
+                    ShardStats::bump(&stats.ev_interest_skipped);
+                    continue;
+                }
+                let Some(to) = self.live_wslot(slot) else {
+                    continue;
+                };
+                let p = self.world.players[to].body;
+                let dx = (p.qx - at.qx) as i64 * 3;
+                let dz = (p.qz - at.qz) as i64 * 3;
+                if dx * dx + dz * dz > ACT_HEAR_CM * ACT_HEAR_CM {
+                    continue;
+                }
+                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.ev_sent);
+                } else {
+                    self.clients[slot].ev_resync();
+                    ShardStats::bump(&stats.ev_resyncs);
+                }
+            }
+        }
+        self.heard_len = 0;
     }
 
     /// Resolve which connection slot player `id` belongs to.
@@ -4250,6 +4365,16 @@ impl ShardCore {
                                     let opened = c.open_cont_reset;
                                     c.open_cont_reset = false;
                                     c.last_cont = now;
+                                    // The lid, heard by whoever is near.
+                                    if opened {
+                                        let id = c.id;
+                                        let deed = if kind == CONT_BAG {
+                                            DEED_OPEN_BAG
+                                        } else {
+                                            DEED_OPEN_BOX
+                                        };
+                                        self.hear(id, deed, NO_ITEM);
+                                    }
                                     // Whether what was opened is burning,
                                     // told to the hand that opened it: the
                                     // lit bit is broadcast only when it
