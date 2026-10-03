@@ -2871,17 +2871,18 @@ impl ShardCore {
                     }
                 }
                 EV_SENTRY_LOCK => {
-                    // A town sentry's lock-on beep: `EV_SHOT`'s audience,
-                    // the clients that have the gun in interest — the
-                    // target always among them, since it stands in the
-                    // town under the gun.
+                    // A town sentry's lock-on beep, to the clients that have
+                    // the gun in interest — the target always among them,
+                    // since it stands in the town under the gun. Not a
+                    // whole-population fan-in (`BODY_BROADCAST_ARMS`): four
+                    // guns lock at most once a look each.
                     match protocol::encode_event_sentry_lock(ev.a, ev.b, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
                                     continue;
                                 }
-                                if !self.body_event_visible(slot, ev.a, None) {
+                                if !self.roster_event_visible(slot, ev.a) {
                                     ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
@@ -4499,6 +4500,16 @@ impl ShardCore {
             return true;
         };
         !self.interest_settled(slot) || c.interest[w]
+    }
+
+    /// Does connection `slot` have roster slot `subject` (a tagged mob id)
+    /// in interest? `body_event_visible`'s roster half, for a fact that is
+    /// not a body broadcast — a sentry's lock.
+    fn roster_event_visible(&self, slot: usize, subject: u32) -> bool {
+        match mob::slot_of_id(subject) {
+            Some(m) => !self.interest_settled(slot) || self.clients[slot].m_interest[m],
+            None => false,
+        }
     }
 
     /// May connection `slot` be told about something that happened at

@@ -2693,13 +2693,19 @@ mod tests {
         let inside = [0.0, 0.0, edge - 1.0];
         assert_eq!(combat.opening(&tracks, &kit, inside, 10), None);
         assert_eq!(combat.attacker(&tracks, &kit, inside, 10), None);
-        // A blow from beside me there is an attack all the same.
+        // Not even a blow from beside me there: THE GATE's sentries answer
+        // the one who struck, and striking back would put me under them.
         let mut combat = combat;
         let mut tracks = Tracks::new();
         tracks.stand(7, [0.0, 0.0, edge], true);
         combat.on_hurt(9, yaw_toward(0.0, -1.0));
         let struck = [0.0, 0.0, edge - 1.0];
-        assert_eq!(combat.attacker(&tracks, &kit, struck, 10), Some(7));
+        assert_eq!(combat.attacker(&tracks, &kit, struck, 10), None);
+        // The same blow out past the zone is an attack.
+        let mut tracks = Tracks::new();
+        tracks.stand(7, [0.0, 0.0, edge + 8.0], true);
+        let out = [0.0, 0.0, edge + 7.0];
+        assert_eq!(combat.attacker(&tracks, &kit, out, 10), Some(7));
     }
 
     /// A swing seen is at me only where it could land: ahead of it, in
