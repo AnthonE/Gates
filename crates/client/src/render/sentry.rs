@@ -32,8 +32,8 @@ const OLIVE: u32 = 0x4a4d3c;
 /// gun 0.8 m over the roof and the feet 1.6 m under the gun, so the roof is
 /// at y = 0.8 here). `(centre, half-extent, hex)`.
 const BASE: &[([f32; 3], [f32; 3], u32)] = &[
-    ([0.0, 0.86, 0.0], [0.42, 0.06, 0.42], DARK),
-    ([0.0, 1.12, 0.0], [0.13, 0.22, 0.13], STEEL),
+    ([0.0, 0.87, 0.0], [0.55, 0.07, 0.55], DARK),
+    ([0.0, 1.12, 0.0], [0.18, 0.22, 0.18], STEEL),
 ];
 
 /// The head, facing **+Z** (the sim's yaw 0), about the pedestal's top.
@@ -47,6 +47,10 @@ const HEAD: &[([f32; 3], [f32; 3], u32)] = &[
 ];
 /// The head's pivot, in turret space.
 const HEAD_AT: Vec3 = Vec3::new(0.0, 1.6, 0.0);
+/// The head is drawn this much bigger than its boxes: at true size it is a
+/// bump on the roof edge from the street 35 m below. The muzzle and the lamp
+/// ride the head's transform, so they scale with it.
+const HEAD_SCALE: f32 = 1.6;
 /// The muzzle, in head space — where the flash goes.
 pub const MUZZLE: Vec3 = Vec3::new(0.0, 0.0, 0.9);
 /// The status lamp, in head space.
@@ -178,7 +182,9 @@ pub fn stream(
                                 SentryHead(id),
                                 Mesh3d(assets.head.clone()),
                                 MeshMaterial3d(assets.material.clone()),
-                                Transform::from_translation(HEAD_AT).with_rotation(aim),
+                                Transform::from_translation(HEAD_AT)
+                                    .with_rotation(aim)
+                                    .with_scale(Vec3::splat(HEAD_SCALE)),
                             ))
                             .with_children(|head| {
                                 head.spawn((
