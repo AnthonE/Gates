@@ -31,10 +31,13 @@
 //! body in the game would play the wrong animation with all gates green.
 //! `Gltf::named_animations` is a map, so a rename fails loudly at load instead.
 
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::time::Duration;
 
-use bevy::gltf::Gltf;
+use bevy::animation::AnimationTargetId;
+use bevy::gltf::{Gltf, GltfNode};
 use bevy::prelude::*;
+use sim_core::movement::{SPRINT_SPEED, WADE_SPEED_MULT, WALK_SPEED};
 
 /// The clips this game actually asks for.
 ///
@@ -138,14 +141,10 @@ impl Clip {
             Clip::Idle => "Idle_Loop",
             Clip::Walk => "Walk_Loop",
             Clip::Jog => "Jog_Fwd_Loop",
-            // **A real sprint again since 2026-08-17.** It aliased the jog
-            // played 1.35× faster for one afternoon, because the commissioned
-            // rig shipped seven clips and none of them was this;
-            // `ci/retarget_anim.py` moved the mannequin's whole library onto
-            // the new skeleton and the alias is retired. The per-clip playback
-            // rate that alias needed went with it — every clip now runs at the
-            // speed it was authored at, which is the only rate anybody can
-            // defend.
+            // A real sprint since 2026-08-17 (`ci/retarget_anim.py` moved
+            // the mannequin's library onto this skeleton). The locomotion
+            // loops play at the rate that keeps their feet planted at the
+            // body's real speed — see [`Clip::stride_mps`].
             Clip::Sprint => "Sprint_Loop",
             // Deliberately not a T-pose: a sleeper is a person standing
             // still, and the T-pose is a rig artifact.
@@ -230,6 +229,60 @@ impl Clip {
         Clip::CrouchIdle,
         Clip::CrouchWalk,
     ];
+
+    /// The ground speed a locomotion loop's feet were authored for, m/s, and
+    /// `None` for everything that is not one.
+    ///
+    /// **Measured off `stumpy.glb`, not chosen**: the speed of the planted
+    /// foot against the hips (forward kinematics over the clip, the lowest
+    /// foot or toe within 3 cm of the ground, median over the stance). Walk
+    /// 1.05, jog 3.97, sprint 5.66, crouch ~0.5. [`BodyAnim::rate`] divides the
+    /// body's real speed by this, which is what stops a jogging body skating
+    /// at the sim's 3.0 m/s on a clip authored for 4.
+    pub fn stride_mps(self) -> Option<f32> {
+        match self {
+            Clip::Walk => Some(1.05),
+            Clip::Jog => Some(3.97),
+            Clip::Sprint => Some(5.66),
+            Clip::CrouchWalk => Some(0.5),
+            _ => None,
+        }
+    }
+
+    /// Where in each locomotion loop the left foot is furthest forward, as a
+    /// fraction of the clip — measured off the file like [`Clip::stride_mps`].
+    /// A gait change lines the incoming loop up on it, so a walk blending
+    /// into a jog keeps the same foot in front instead of crossing its legs
+    /// for the length of the blend.
+    pub fn stride_mark(self) -> Option<f32> {
+        match self {
+            Clip::Walk => Some(0.25),
+            Clip::Jog => Some(0.208),
+            Clip::Sprint => Some(0.875),
+            Clip::CrouchWalk => Some(0.125),
+            _ => None,
+        }
+    }
+
+    /// Plays once and holds its last frame, rather than looping.
+    pub fn one_shot(self) -> bool {
+        matches!(self, Clip::Swing | Clip::Flinch | Clip::Death | Clip::Shoot)
+    }
+
+    /// The one-shots a body can play over its gait: a swing, a shot, a flinch.
+    pub fn transient(self) -> bool {
+        matches!(self, Clip::Swing | Clip::Flinch | Clip::Shoot)
+    }
+
+    /// The transient's slot in [`Rig::upper`].
+    fn upper_slot(self) -> Option<usize> {
+        match self {
+            Clip::Swing => Some(0),
+            Clip::Flinch => Some(1),
+            Clip::Shoot => Some(2),
+            _ => None,
+        }
+    }
 
     fn slot(self) -> usize {
         match self {
@@ -324,11 +377,50 @@ pub const SHOOT_CLIP_S: f32 = 0.625;
 /// late reads as a lurch — so a bare `>` at a boundary makes a body alternate
 /// clips every frame. The hysteresis is the cheapest fix and the only one that
 /// does not add latency.
-pub const ANIM_WALK_MPS: f32 = 0.6;
-pub const ANIM_JOG_MPS: f32 = 3.0;
-pub const ANIM_SPRINT_MPS: f32 = 5.4;
+///
+/// **Read off the sim's own speeds.** These were 0.6 / 3.0 / 5.4 with the band
+/// on top, so the sim's ordinary pace (`WALK_SPEED`, 3.0) never cleared 3.35
+/// and played the walk, and its sprint (5.5) never cleared 5.75 and played the
+/// jog: every running player in the game was drawn one gait slow. Each
+/// boundary now sits halfway between two speeds the sim actually moves at.
+///
+/// Low enough that a crouch through water (0.85 m/s) still steps.
+pub const ANIM_WALK_MPS: f32 = 0.45;
+/// Halfway between a wading walk (1.5 m/s) and a dry one (3.0): on this rig
+/// the sim's ordinary pace is a jog, and the walk is for water.
+pub const ANIM_JOG_MPS: f32 = (WALK_SPEED * WADE_SPEED_MULT + WALK_SPEED) * 0.5;
+/// Halfway between the ordinary pace (3.0) and the sprint (5.5).
+pub const ANIM_SPRINT_MPS: f32 = (WALK_SPEED + SPRINT_SPEED) * 0.5;
 /// Half-width of the dead band around each threshold, m/s.
 pub const ANIM_SPEED_HYSTERESIS: f32 = 0.35;
+
+/// The slowest and fastest a locomotion loop is played, as a multiple of its
+/// authored rate ([`BodyAnim::rate`]). Inside the band the feet stay planted;
+/// past it they slide, which beats a slow-motion jog or a crouch scuttling at
+/// four steps a second. The crouch is the clip that reaches the top: authored
+/// at ~0.5 m/s against the sim's 1.7.
+pub const ANIM_RATE_MIN: f32 = 0.5;
+pub const ANIM_RATE_MAX: f32 = 3.0;
+
+/// The furthest the legs turn away from where the body faces, radians (~69°).
+///
+/// The rig has no strafe or backpedal clips, so a body moving sideways turns
+/// its HIPS toward the travel and its spine back toward the aim
+/// ([`pose_spine`]): the legs run the forward loop along the ground they are
+/// actually covering and the chest and head stay on target. Past this the
+/// twist reads as broken rather than athletic, and the feet slide instead.
+pub const ANIM_TWIST_MAX: f32 = 1.2;
+/// How far past side-on the travel must swing before the legs flip between
+/// running forward and backpedalling, radians each way of 90°. Without it a
+/// body strafing exactly side-on would flip every frame.
+pub const ANIM_BACK_BAND: f32 = 0.26;
+/// How fast the legs swing round to a new travel direction, 1/s.
+pub const ANIM_TWIST_EASE: f32 = 10.0;
+/// A standing body's feet stay planted while its torso turns this far,
+/// radians (~46°); past it they step back round under it.
+pub const ANIM_IDLE_TWIST_MAX: f32 = 0.8;
+/// How fast they step round once they go, rad/s.
+pub const ANIM_IDLE_TURN_RPS: f32 = 5.0;
 
 /// How far a crouch clip's head is lifted back toward level, radians: the
 /// difference between `Crouch_Idle_Loop`'s gaze and `Idle_Loop`'s on the
@@ -381,6 +473,14 @@ pub struct Rig {
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
     nodes: [AnimationNodeIndex; 12],
+    /// Each clip's length, seconds, indexed by `Clip::slot` — what the gait
+    /// phase sync in [`drive`] converts a seek time into a stride phase with.
+    durations: [f32; 12],
+    /// The transients again, **masked off the legs** ([`Clip::upper_slot`]):
+    /// a swing, flinch or shot played over a moving gait poses the arms and
+    /// spine and leaves the hips and legs running. `None` for a clip the file
+    /// did not have.
+    upper: [Option<AnimationNodeIndex>; 3],
     /// Uniform scale that puts the rig at [`ANIM_BODY_H_M`]. A constant ratio
     /// of two measured heights, not a runtime fit — see [`ANIM_RIG_H_M`].
     pub scale: f32,
@@ -420,6 +520,21 @@ impl Rig {
     }
     fn node(&self, c: Clip) -> AnimationNodeIndex {
         self.nodes[c.slot()]
+    }
+    fn duration(&self, c: Clip) -> f32 {
+        self.durations[c.slot()].max(1e-3)
+    }
+    fn upper_node(&self, c: Clip) -> Option<AnimationNodeIndex> {
+        self.upper[c.upper_slot()?]
+    }
+    /// Metres of ground between this body's drawn footsteps, or `None` when
+    /// its gait is not a locomotion loop. The loop plants two feet a cycle,
+    /// and a cycle lasts the clip's length over the rate it is played at.
+    pub fn step_m(&self, anim: &BodyAnim) -> Option<f32> {
+        let clip = anim.clip?;
+        clip.stride_mps()?;
+        let cycle_s = self.duration(clip) / anim.rate().abs();
+        Some(anim.speed * cycle_s * 0.5)
     }
     /// The hold pose for the first-person arms.
     pub fn arms_node(&self) -> AnimationNodeIndex {
@@ -463,6 +578,8 @@ pub fn load(
         scene: None,
         graph: None,
         nodes: [AnimationNodeIndex::default(); 12],
+        durations: [1.0; 12],
+        upper: [None; 3],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -472,9 +589,12 @@ pub fn load(
 
 /// Build the graph and the shades once the glTF is in. Runs every frame until
 /// **both** have finished, then costs two branches.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     mut rig: ResMut<Rig>,
     gltfs: Res<Assets<Gltf>>,
+    clips: Res<Assets<AnimationClip>>,
+    gltf_nodes: Res<Assets<GltfNode>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut shades: ResMut<BodyShades>,
@@ -548,15 +668,45 @@ pub fn build(
         return;
     }
 
+    // The clips' lengths and the skeleton's node tree are sub-assets of the
+    // glTF and can land a frame after it: wait for both rather than build a
+    // graph that cannot phase-sync or cannot mask.
+    let mut durations = [1.0; 12];
+    for clip in Clip::ALL {
+        if let Some(h) = gltf.named_animations.get(clip.name()) {
+            let Some(c) = clips.get(h) else { return };
+            durations[clip.slot()] = c.duration();
+        }
+    }
+    let Some(legs) = leg_targets(gltf, &gltf_nodes) else {
+        return;
+    };
+
     let mut graph = AnimationGraph::new();
     let root = graph.root;
     let mut nodes = [AnimationNodeIndex::default(); 12];
+    let mut upper = [None; 3];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
         match gltf.named_animations.get(clip.name()) {
-            Some(h) => nodes[clip.slot()] = graph.add_clip(h.clone(), 1.0, root),
+            Some(h) => {
+                nodes[clip.slot()] = graph.add_clip(h.clone(), 1.0, root);
+                if let Some(i) = clip.upper_slot() {
+                    upper[i] = Some(graph.add_clip_with_mask(h.clone(), LEGS_MASK, 1.0, root));
+                }
+            }
             None => missing.push(clip.name()),
         }
+    }
+    // The hips and legs are mask group 0, so an upper node never poses them.
+    if legs.is_empty() {
+        error!(
+            "anim: no {HIPS_BONE:?} bone found under the rig's animation root — \
+             swings over a moving gait will move the legs too"
+        );
+    }
+    for target in legs {
+        graph.add_target_to_mask_group(target, LEGS_GROUP);
     }
     // The arms share the body's graph rather than owning a second one: one
     // graph asset, one handle, and `bind` cannot bind the arms by accident
@@ -579,6 +729,8 @@ pub fn build(
     }
     rig.missing = missing;
     rig.nodes = nodes;
+    rig.durations = durations;
+    rig.upper = upper;
     rig.arms = arms;
     rig.graph = Some(graphs.add(graph));
     rig.scene = gltf
@@ -587,25 +739,102 @@ pub fn build(
         .or_else(|| gltf.scenes.first().cloned());
 }
 
+/// The mask group the hips and legs belong to, and the mask that keeps an
+/// upper-body node off them.
+const LEGS_GROUP: u32 = 0;
+const LEGS_MASK: u64 = 1 << LEGS_GROUP;
+
+/// The bone the legs and the spine both hang from. Found by name like
+/// [`HEAD_BONE`], for the same reason.
+const HIPS_BONE: &str = "Hips";
+
+/// The animation targets of the hips and legs: the [`HIPS_BONE`] and every
+/// bone under it except the branch that leads to the head.
+///
+/// Structural rather than a list of nine leg-bone names, so a re-import that
+/// renames a toe does not quietly put it in the upper body. The ids are the
+/// glTF loader's own — each node's name path from the animation root — which
+/// is what `AnimationTargetId::from_names` hashes. `None` while the node
+/// sub-assets are still landing.
+fn leg_targets(gltf: &Gltf, nodes: &Assets<GltfNode>) -> Option<Vec<AnimationTargetId>> {
+    if gltf.nodes.iter().any(|h| !nodes.contains(h)) {
+        return None;
+    }
+    let Some(root) = gltf
+        .nodes
+        .iter()
+        .filter_map(|h| nodes.get(h))
+        .find(|n| n.is_animation_root)
+    else {
+        return Some(Vec::new());
+    };
+    // Does this subtree hold the head? Bounded like every walk in this file.
+    fn holds_head(n: &GltfNode, nodes: &Assets<GltfNode>, depth: u32) -> bool {
+        n.name == HEAD_BONE
+            || (depth < 32
+                && n.children
+                    .iter()
+                    .filter_map(|c| nodes.get(c))
+                    .any(|c| holds_head(c, nodes, depth + 1)))
+    }
+    let mut out = Vec::new();
+    // (node, its name path, inside the legs)
+    let mut stack = vec![(root, vec![Name::new(root.name.clone())], false)];
+    while let Some((n, path, legs)) = stack.pop() {
+        if out.len() > 256 || path.len() > 32 {
+            break;
+        }
+        let legs = legs || n.name == HIPS_BONE;
+        if legs {
+            out.push(AnimationTargetId::from_names(path.iter()));
+        }
+        for c in n.children.iter().filter_map(|c| nodes.get(c)) {
+            // The spine is the hips' one child that leads to the head.
+            if legs && holds_head(c, nodes, 0) {
+                continue;
+            }
+            let mut p = path.clone();
+            p.push(Name::new(c.name.clone()));
+            stack.push((c, p, legs));
+        }
+    }
+    Some(out)
+}
+
 /// What a body wants to be playing. Written by `bodies::stream` off state the
-/// sim sent; read by [`drive`]. A component and not a resource because it is
-/// per-body, and render state rather than sim state because the sim has no
-/// opinion about which clip anybody is in.
+/// sim sent; read by [`drive`] and [`pose_spine`]. A component and not a
+/// resource because it is per-body, and render state rather than sim state
+/// because the sim has no opinion about which clip anybody is in.
 #[derive(Component, Default)]
 pub struct BodyAnim {
+    /// The gait: what the legs are doing. [`BodyAnim::observe`] recomputes it
+    /// every frame; the one-shots live beside it in their own clocks.
     pub clip: Option<Clip>,
     /// Metres per second, low-passed. Public so `bodies` can integrate it.
     pub speed: f32,
+    /// Horizontal velocity, world x/z, low-passed beside [`BodyAnim::speed`].
+    /// Its direction against [`BodyAnim::facing`] is what turns the legs.
+    pub vel: Vec2,
     /// Last interpolated position, for the difference.
     pub last: Option<Vec3>,
+    /// Which way the body faces, radians of sim yaw (0 is +Z, increasing
+    /// toward +X). Set by the streamer beside `airborne`, before `observe`.
+    pub facing: f32,
+    /// Last frame's facing, so a standing body knows how far it turned.
+    pub last_facing: Option<f32>,
     /// Where this body is looking, radians from level, positive up. Straight
-    /// off the wire — `bodies::stream` decodes it — and read by [`head_look`].
-    ///
-    /// **The wire has carried this since the first snapshot and nothing ever
-    /// read it**, exactly as it had carried `yaw` before bodies started
-    /// facing where they walk. A body that looks at you is the difference
-    /// between a figure and a person, and it costs no packet.
+    /// off the wire — `bodies::stream` decodes it — and read by
+    /// [`pose_spine`]. A body that looks at you is the difference between a
+    /// figure and a person, and it costs no packet.
     pub pitch: f32,
+    /// How far the legs are turned from the facing, radians about up:
+    /// toward the travel while moving, held planted while standing.
+    /// [`pose_spine`] turns the hips by it and the spine back by it.
+    pub hip_yaw: f32,
+    /// The legs are backpedalling: the gait loop plays in reverse.
+    pub backward: bool,
+    /// The planted legs of a standing body are stepping back round under it.
+    pub turning: bool,
     /// Seconds left of a one-shot swing.
     ///
     /// **Beside the gait rather than inside `clip`, and that is the whole
@@ -613,13 +842,18 @@ pub struct BodyAnim {
     /// so a one-shot written there would be stomped the next one — the
     /// transient has to live in a field nothing else recomputes.
     pub swing_s: f32,
-    /// Seconds left of a one-shot flinch. Beside the gait for
-    /// [`BodyAnim::swing_s`]'s reason, and beside the SWING because the two
-    /// are one slot: see [`BodyAnim::flinch`].
+    /// Seconds left of a one-shot flinch. One slot with the swing and the
+    /// shot: see [`BodyAnim::flinch`].
     pub flinch_s: f32,
-    /// Seconds left of a one-shot shot. The third transient in the same
-    /// slot: see [`BodyAnim::flinch`].
+    /// Seconds left of a one-shot shot.
     pub shoot_s: f32,
+    /// The running one-shot owns the whole body, legs included, because it
+    /// began over a standing gait — the swing's lunge is authored with its
+    /// feet. Over a moving gait it plays on the upper body only and the legs
+    /// keep running ([`BodyAnim::wants_upper`]). Decided when the one-shot
+    /// starts and kept for its span, so a body that sets off mid-swing does
+    /// not restart the arc on the other layer.
+    pub transient_full: bool,
     /// Off the ground this frame, straight off the wire
     /// (`RemoteState::airborne`); `bodies::stream` sets it before
     /// [`BodyAnim::observe`] reads it.
@@ -627,27 +861,22 @@ pub struct BodyAnim {
     /// Crouched this frame, straight off the wire (`RemoteState::crouched`,
     /// v83); set beside [`BodyAnim::airborne`].
     pub crouched: bool,
-    /// Bumped once per transient heard — a swing **or** a flinch. `drive`
-    /// compares it against what it last started, so a second one arriving
-    /// while the first is still playing restarts the clip instead of being
-    /// swallowed by the `playing == want` guard.
-    ///
-    /// **One counter for both, because there is only ever one transient.**
-    /// A counter each would let a flinch that follows a swing be read as
-    /// "the same transient still running" by the sequence compare while
-    /// being a different clip by the `want` compare, which is two half-true
-    /// answers to one question.
+    /// Bumped once per one-shot heard. `drive` compares it against what it
+    /// last started, so a second swing arriving while the first is still
+    /// playing restarts the clip instead of being swallowed by the
+    /// `playing == want` guard. One counter for all three, because there is
+    /// only ever one transient.
     pub transient_seq: u32,
 }
 
 impl BodyAnim {
-    /// Fold a new sample in and choose a clip. `dt` is the frame's delta.
+    /// Fold a new sample in and choose a gait. `dt` is the frame's delta.
     ///
     /// The low pass is on the SPEED and not on the position: smoothing the
     /// position would fight the interpolator, which is already the authority
     /// on where the body is (`bodies.rs` header).
     pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool, dead: bool, wounded: bool) {
-        // The one-shot's clock, run here because this is the one function
+        // The one-shots' clocks, run here because this is the one function
         // every live body passes through every frame with a `dt` in hand.
         // `bodies::stream` calls this BEFORE it hears the frame's swings,
         // so a swing heard this frame gets its whole span.
@@ -658,68 +887,51 @@ impl BodyAnim {
             // Horizontal only. A body riding terrain up a hill is walking, not
             // climbing, and counting the vertical would read a slope as speed.
             let step = pos - last;
-            let raw = Vec2::new(step.x, step.z).length() / dt;
+            let raw = Vec2::new(step.x, step.z) / dt;
             // One-pole, fixed per-second constant so the smoothing does not
             // change with the frame rate.
             let k = 1.0 - (-12.0 * dt).exp();
-            self.speed += (raw - self.speed) * k;
+            self.speed += (raw.length() - self.speed) * k;
+            self.vel += (raw - self.vel) * k;
         }
         self.last = Some(pos);
+        let turned = self.last_facing.map_or(0.0, |f| wrap_pi(self.facing - f));
+        self.last_facing = Some(self.facing);
 
-        // **Death outranks everything, including sleep and including a
-        // swing in flight.** A body that is killed mid-stroke stops
-        // swinging; the one-shot's clock is still running above, and
-        // `drive` prefers this over it while `dead` holds, so the arc is
-        // abandoned rather than finished by a corpse. `Sleep` is below it
-        // for the same reason the sim puts `hp == 0` above `sleeping`: a
-        // sleeper who is killed is a corpse, not a sleeper.
-        if dead {
-            self.clip = Some(Clip::Death);
-            return;
-        }
-        // **Down is drawn as the fall, held** (wounded v0). The rig has no
-        // crawl clip (`assets/models/mannequin.gltf` — `Crouch_Fwd_Loop` is
-        // the nearest and a crouch is not a person on the ground), so a
-        // downed body plays `Death01` once and keeps its last pose, exactly
-        // as a corpse does; a crawl then slides the fallen pose across the
-        // ground at a third of a walk, which is the defect this file's
-        // header names and the honest v0 until a drag clip lands
-        // (`NOW.md` §0wnd). Above `Sleep` for the sim's reason: a sleeper
-        // that is down is down.
-        if wounded {
-            self.clip = Some(Clip::Death);
-            return;
-        }
-        if sleeping {
-            self.clip = Some(Clip::Sleep);
-            return;
-        }
-        // In the air the legs are not walking, whatever the speed says. The
-        // speed above keeps integrating, so the landing picks the right gait.
-        if self.airborne {
-            self.clip = Some(Clip::Air);
-            return;
-        }
-        // **Crouched** (v83): the crouch gait, and no transient under it.
-        // The one-shots' clocks are zeroed rather than left running, so
-        // standing back up mid-swing does not replay the swing's tail.
-        if self.crouched {
+        self.clip = Some(self.gait(sleeping, dead, wounded));
+        // A whole-body one-shot stands the body up, and the sim tests a
+        // crouched body's shorter cylinder, so a crouch ends it. An
+        // upper-body one carries on: its legs are already the crouch's.
+        if self.transient_full && matches!(self.clip, Some(Clip::CrouchIdle | Clip::CrouchWalk)) {
             self.swing_s = 0.0;
             self.flinch_s = 0.0;
             self.shoot_s = 0.0;
-            let h = ANIM_SPEED_HYSTERESIS;
-            let moving = self.clip == Some(Clip::CrouchWalk);
-            let walk = if moving {
-                self.speed > ANIM_WALK_MPS - h
-            } else {
-                self.speed > ANIM_WALK_MPS + h
-            };
-            self.clip = Some(if walk {
-                Clip::CrouchWalk
-            } else {
-                Clip::CrouchIdle
-            });
-            return;
+        }
+        self.steer(turned, dt);
+    }
+
+    /// The gait for this frame, off the flags and the speed.
+    fn gait(&self, sleeping: bool, dead: bool, wounded: bool) -> Clip {
+        // **Death outranks everything, including sleep and a swing in
+        // flight** — the sim's own order (`hp == 0` is what every weapon
+        // tests, and `die` carries `sleeping` forward). A body killed
+        // mid-stroke stops swinging: `wants` prefers this over the one-shot
+        // while `dead` holds.
+        //
+        // **Down is drawn as the fall, held** (wounded v0): the rig has no
+        // crawl clip, so a downed body plays `Death01` once and keeps its
+        // last pose, and a crawl slides that pose along the ground until a
+        // drag clip lands (`NOW.md` §0wnd).
+        if dead || wounded {
+            return Clip::Death;
+        }
+        if sleeping {
+            return Clip::Sleep;
+        }
+        // In the air the legs are not walking, whatever the speed says. The
+        // speed keeps integrating, so the landing picks the right gait.
+        if self.airborne {
+            return Clip::Air;
         }
         // Hysteresis: the threshold to speed UP is above the nominal and the
         // one to slow DOWN is below it, so a body sitting on a boundary keeps
@@ -729,117 +941,201 @@ impl BodyAnim {
         let rank = |c: Clip| match c {
             Clip::Sprint => 3,
             Clip::Jog => 2,
-            Clip::Walk => 1,
+            Clip::Walk | Clip::CrouchWalk => 1,
             _ => 0,
         };
         let up = |t: f32| self.speed > t + h;
         let down = |t: f32| self.speed < t - h;
-        let want = if up(ANIM_SPRINT_MPS) || (rank(now) >= 3 && !down(ANIM_SPRINT_MPS)) {
+        let moving = up(ANIM_WALK_MPS) || (rank(now) >= 1 && !down(ANIM_WALK_MPS));
+        // **Crouched** (v83): the sim tests a crouched body's shorter
+        // cylinder (`collide::CROUCH_HEIGHT_M`, measured off this clip's
+        // head), so drawing it standing would show a head where no head is.
+        if self.crouched {
+            return if moving {
+                Clip::CrouchWalk
+            } else {
+                Clip::CrouchIdle
+            };
+        }
+        if up(ANIM_SPRINT_MPS) || (rank(now) >= 3 && !down(ANIM_SPRINT_MPS)) {
             Clip::Sprint
         } else if up(ANIM_JOG_MPS) || (rank(now) >= 2 && !down(ANIM_JOG_MPS)) {
             Clip::Jog
-        } else if up(ANIM_WALK_MPS) || (rank(now) >= 1 && !down(ANIM_WALK_MPS)) {
+        } else if moving {
             Clip::Walk
         } else {
             Clip::Idle
-        };
-        self.clip = Some(want);
+        }
     }
 
-    /// Which clip this body should be playing right now — the gait
-    /// [`BodyAnim::observe`] chose, or the transient that outranks it.
-    /// `None` until `observe` has run once.
+    /// Turn the legs: toward the travel while a locomotion loop runs, held
+    /// planted while the body stands, and back under the body otherwise.
+    /// `turned` is how far the facing moved since last frame.
+    fn steer(&mut self, turned: f32, dt: f32) {
+        let ease = 1.0 - (-ANIM_TWIST_EASE * dt).exp();
+        match self.clip {
+            Some(c) if c.stride_mps().is_some() => {
+                self.turning = false;
+                // The travel's bearing against the facing, in the sim's yaw
+                // sense: atan2(x, z), zero straight ahead.
+                let rel = wrap_pi(self.vel.x.atan2(self.vel.y) - self.facing);
+                if self.backward {
+                    self.backward = rel.abs() > FRAC_PI_2 - ANIM_BACK_BAND;
+                } else {
+                    self.backward = rel.abs() > FRAC_PI_2 + ANIM_BACK_BAND;
+                }
+                // Backpedalling turns the legs toward the OPPOSITE of the
+                // travel, so the reversed loop walks them along it.
+                let want = if self.backward {
+                    wrap_pi(rel - PI)
+                } else {
+                    rel
+                };
+                let want = want.clamp(-ANIM_TWIST_MAX, ANIM_TWIST_MAX);
+                self.hip_yaw += (want - self.hip_yaw) * ease;
+            }
+            Some(Clip::Idle | Clip::CrouchIdle) => {
+                self.backward = false;
+                // Planted: the feet keep their heading while the body turns,
+                // so the twist takes up the turn...
+                self.hip_yaw =
+                    wrap_pi(self.hip_yaw - turned).clamp(-ANIM_TWIST_MAX, ANIM_TWIST_MAX);
+                // ...until it is too far, and they step back round.
+                if self.hip_yaw.abs() > ANIM_IDLE_TWIST_MAX {
+                    self.turning = true;
+                }
+                if self.turning {
+                    let step = ANIM_IDLE_TURN_RPS * dt;
+                    self.hip_yaw -= self.hip_yaw.clamp(-step, step);
+                    self.turning = self.hip_yaw.abs() > 0.02;
+                }
+            }
+            _ => {
+                self.backward = false;
+                self.turning = false;
+                self.hip_yaw -= self.hip_yaw * ease;
+            }
+        }
+    }
+
+    /// The playback rate for the gait: the body's real speed over the speed
+    /// the loop was authored for, so the feet stay planted, and negative
+    /// while backpedalling. 1 for anything that is not a locomotion loop.
+    pub fn rate(&self) -> f32 {
+        let Some(stride) = self.clip.and_then(Clip::stride_mps) else {
+            return 1.0;
+        };
+        let r = (self.speed / stride).clamp(ANIM_RATE_MIN, ANIM_RATE_MAX);
+        if self.backward {
+            -r
+        } else {
+            r
+        }
+    }
+
+    /// The running one-shot, if any. They are mutually exclusive by
+    /// construction — each one's start clears the others' clocks — so this
+    /// order never decides anything.
+    fn running(&self) -> Option<Clip> {
+        if self.flinch_s > 0.0 {
+            Some(Clip::Flinch)
+        } else if self.swing_s > 0.0 {
+            Some(Clip::Swing)
+        } else if self.shoot_s > 0.0 {
+            Some(Clip::Shoot)
+        } else {
+            None
+        }
+    }
+
+    /// What the whole body plays: the gait, or a one-shot that began over a
+    /// standing one. `None` until `observe` has run once.
     ///
     /// **The gait is read first, because one of its values outranks every
-    /// transient.** A body killed mid-stroke must stop swinging and must
-    /// not flinch — a corpse does neither — and `observe` has already
-    /// written `Clip::Death`, so the whole transient lane is switched off
-    /// under it. That is the only ordering that does not draw a dead man
-    /// finishing his punch, and it is why the two clocks are deliberately
-    /// left running underneath: death is a state that can end (the bit
-    /// clears when its owner leaves the death screen) and a transient that
-    /// had been *cleared* by a corpse could not be told from one that had
+    /// one-shot.** A body killed mid-stroke must stop swinging and must not
+    /// flinch, so `Clip::Death` switches both layers off. The clocks are
+    /// deliberately left running underneath: death is a state that can end
+    /// (the bit clears when its owner leaves the death screen), and a
+    /// one-shot *cleared* by a corpse could not be told from one that had
     /// expired.
-    ///
-    /// Below the corpse the two transients do NOT rank against each other
-    /// here, and that is deliberate: they are mutually exclusive by
-    /// construction, because [`BodyAnim::flinch`] and [`BodyAnim::swing`]
-    /// each clear the other's clock — that doc comment is the whole
-    /// argument, including why a bare priority compare here would be a bug.
     pub fn wants(&self) -> Option<Clip> {
         let gait = self.clip?;
-        if matches!(gait, Clip::Death | Clip::CrouchIdle | Clip::CrouchWalk) {
+        if gait == Clip::Death {
             return Some(gait);
         }
-        if self.flinch_s > 0.0 {
-            return Some(Clip::Flinch);
+        match self.running() {
+            Some(t) if self.transient_full => Some(t),
+            _ => Some(gait),
         }
-        if self.swing_s > 0.0 {
-            return Some(Clip::Swing);
-        }
-        if self.shoot_s > 0.0 {
-            return Some(Clip::Shoot);
-        }
-        Some(gait)
     }
 
-    /// Start a one-shot swing on this body.
-    ///
-    /// Clears any flinch — see [`BodyAnim::flinch`] for why the two
-    /// transients are one slot and why the newest wins.
+    /// What the upper body plays over the gait: a one-shot that began while
+    /// the legs were busy — running, crouched, in the air. `drive` plays it
+    /// on a node masked off the hips and legs, so they keep their gait.
+    pub fn wants_upper(&self) -> Option<Clip> {
+        if self.clip? == Clip::Death {
+            return None;
+        }
+        self.running().filter(|_| !self.transient_full)
+    }
+
+    /// Whichever one-shot just started: who owns the legs, and a new
+    /// sequence number so `drive` restarts the clip.
+    fn begin(&mut self) {
+        self.transient_full = matches!(self.clip, None | Some(Clip::Idle | Clip::Sleep));
+        self.transient_seq = self.transient_seq.wrapping_add(1);
+    }
+
+    /// Start a one-shot swing on this body. Clears the other one-shots —
+    /// see [`BodyAnim::flinch`] for why they are one slot and the newest wins.
     pub fn swing(&mut self) {
         self.swing_s = SWING_CLIP_S;
         self.flinch_s = 0.0;
         self.shoot_s = 0.0;
-        self.transient_seq = self.transient_seq.wrapping_add(1);
+        self.begin();
     }
 
     /// Start a one-shot shot on this body: it just loosed an arrow or fired
-    /// a round. Clears the other transients, the newest-wins rule
-    /// [`BodyAnim::flinch`] argues.
+    /// a round.
     pub fn shoot(&mut self) {
         self.shoot_s = SHOOT_CLIP_S;
         self.swing_s = 0.0;
         self.flinch_s = 0.0;
-        self.transient_seq = self.transient_seq.wrapping_add(1);
+        self.begin();
     }
 
     /// Start a one-shot flinch on this body: it just took a blow of yours.
     ///
-    /// ## The transients are one slot, and the newest wins
-    ///
-    /// A body has one `AnimationPlayer` and one clip at a time, so a flinch
-    /// arriving mid-swing is a ranking question. This clears the swing
-    /// rather than deferring to it, and the swing clears the flinch, for
-    /// three reasons — the third being the one that is not obvious.
+    /// ## The one-shots are one slot, and the newest wins
     ///
     /// **1. Deferring would hide the flinch in the one situation it exists
     /// for.** The sim allows a swing every `SWING_INTERVAL_TICKS / TICK_HZ`
-    /// = 1.267 s and [`SWING_CLIP_S`] runs 1.053 s of that, so a duelling
-    /// body's arm is at rest for 0.213 s in every 1.267 — 17%. Ranking the
-    /// swing above the flinch would drop ~83% of flinches in a melee fight,
-    /// which is exactly the fight this feedback is for.
+    /// = 1.267 s and [`SWING_CLIP_S`] runs 1.053 s of that, so ranking the
+    /// swing above the flinch would drop ~83% of flinches in a melee fight.
     ///
     /// **2. Truncating the arc removes no sim fact.** `EV_SWING` is pushed
-    /// from `gather::swing`'s cadence gate *after* the swing has already
-    /// resolved, so the drawn arc is a replay and not a wind-up: cutting it
-    /// short predicts nothing and cancels nothing. (What it does cost is
-    /// stated plainly in `DECISIONS.md` — the attacker sees a shortened arc
-    /// where everyone else sees a whole one, which is a second asymmetry on
-    /// top of the flinch's own.)
+    /// after the swing has already resolved, so the drawn arc is a replay:
+    /// cutting it short predicts nothing and cancels nothing.
     ///
-    /// **3. The loser's clock has to be stopped, not just outranked.** If
-    /// the swing's countdown kept running under a flinch, `wants` would see
-    /// `swing_s > 0` again the moment the flinch expired and `drive` would
-    /// play the swing **from frame zero** — an arc that shows its first
-    /// tenth of a second, vanishes for a third of a second, and then starts
-    /// over. That is worse than either ordering, and it is what a bare
-    /// priority compare without this line produces.
+    /// **3. The loser's clock has to be stopped, not just outranked.** A
+    /// swing still counting down under a flinch would be wanted again the
+    /// moment the flinch expired, and `drive` would replay it from frame
+    /// zero.
     pub fn flinch(&mut self) {
         self.flinch_s = FLINCH_CLIP_S;
         self.swing_s = 0.0;
         self.shoot_s = 0.0;
-        self.transient_seq = self.transient_seq.wrapping_add(1);
+        self.begin();
+    }
+}
+
+/// An angle wrapped into `(-π, π]`.
+fn wrap_pi(a: f32) -> f32 {
+    let w = (a + PI).rem_euclid(TAU) - PI;
+    if w <= -PI {
+        w + TAU
+    } else {
+        w
     }
 }
 
@@ -955,57 +1251,74 @@ pub struct BodyShades {
     pub from_gltf: bool,
 }
 
-/// How far a head may turn from level before the rest of the look is dropped,
-/// radians. ~52°, against a wire that can carry ~88°.
+/// How far a body may look from level, radians (~74°), against a wire that
+/// can carry ~88°. A clamp and not a scale: scaling makes every glance an
+/// understatement, and clamping is only wrong at the extremes.
 ///
-/// **A clamp and not a scale**, because the two fail differently: scaling
-/// makes every glance an understatement, and clamping is only wrong at the
-/// extremes — where a head-only look is *already* wrong, since a person
-/// looking at their own feet bends at the chest. The remainder is dropped
-/// rather than distributed, and distributing it across the spine is the
-/// follow-up this constant exists to make obvious.
-pub const ANIM_HEAD_PITCH_MAX: f32 = 0.9;
+/// The look is shared down the spine ([`SpineBones`]): the head takes the
+/// most of it and the chest the rest, the way a person looking at their own
+/// feet bends at the chest. It used to be the head alone, clamped at 0.9 rad,
+/// with the remainder dropped.
+pub const ANIM_LOOK_PITCH_MAX: f32 = 1.3;
 
-/// The head bone of one body, and the axis it pitches about.
-///
-/// **The axis is DERIVED from the rig at spawn, never typed.** "Look up" is a
-/// rotation about the body's right, and which local axis that is depends on
-/// how the exporter oriented the neck — this rig's bones are not
-/// axis-aligned, and guessing produced a head that rolled toward its shoulder
-/// instead of nodding. So it is read: at the frame a body is bound, the
-/// entity transforms are still the rig's rest pose, and the parent chain is
-/// walked to express the body's own right vector in the head's parent space.
-/// The retarget one directory over is the same lesson — a rig's axis
-/// convention is a measurement, not a convention you may assume.
-#[derive(Component)]
-pub struct HeadBone {
+/// How a look is split between the bones that share it, by weight: each
+/// spine bone 1, the neck 1.5, the head 3. Normalized over the bones a rig
+/// actually has, so the shares always sum to the whole look.
+const LOOK_SPINE_W: f32 = 1.0;
+const LOOK_NECK_W: f32 = 1.5;
+const LOOK_HEAD_W: f32 = 3.0;
+
+/// The body's right, in its own frame. **The rig faces +Z** — glTF's own
+/// convention, the sim's yaw 0, and what the walk measures: the planted foot
+/// travels toward −Z — so its right hand is on −X (`bodies.rs` measured that
+/// off the hand bone). "Look up" is a turn about the right.
+const BODY_RIGHT: Vec3 = Vec3::NEG_X;
+
+/// One bone [`pose_spine`] turns, and what it last wrote.
+struct SpineBone {
     entity: Entity,
-    /// Pitch axis, in the head's PARENT space, so the rotation pre-multiplies.
-    axis: Vec3,
-    /// The delta this system last wrote, so it can be removed before the next
-    /// one is composed.
-    ///
-    /// **Without it the head accelerates into the ground.** The animation
-    /// player rewrites the head's local rotation every frame *for a clip that
-    /// animates the head*, which is every clip this rig has — so composing
-    /// onto whatever is there happens to work, until a clip that leaves the
-    /// head alone arrives and the delta compounds sixty times a second. Sixty
-    /// frames of a 0.9 rad offset is not a subtle bug, but it is one that only
-    /// appears with a future asset, which is the kind worth spending a
-    /// quaternion on now.
+    /// Its share of the leg twist: +1 on the hips, minus a third of it on each
+    /// spine bone so the chest faces the aim again, 0 above.
+    yaw: f32,
+    /// Its share of the look.
+    pitch: f32,
+    /// The head: the crouch's head lift goes here alone.
+    head: bool,
+    /// The local delta this system last composed in, so it can be taken back
+    /// out on a frame the animation did not rewrite the bone.
     applied: Quat,
+    /// The rotation this system last wrote. A bone that still holds it was
+    /// not touched by the animation this frame.
+    written: Quat,
 }
 
-/// Find each body's head bone and work out which way it nods.
+/// The bones of one body that the look and the leg twist turn: the hips (if
+/// the rig names them) up the spine to the head, root first.
+///
+/// **The axes are not typed.** Every turn is composed in the BODY's frame —
+/// a twist about its up, a look about its right — and carried into each
+/// bone's parent frame through the rotations above it, read off the pose the
+/// animation just wrote. This rig's bones are not axis-aligned, and a typed
+/// axis once produced a head that rolled toward its shoulder instead of
+/// nodding.
+#[derive(Component)]
+pub struct SpineBones {
+    /// The rotation from the body root's frame into the first bone's parent,
+    /// read at bind: the scene root's stand-up turn. Nothing animates it.
+    root: Quat,
+    bones: Vec<SpineBone>,
+}
+
+/// Find each body's spine and work out how the look and the twist are shared.
 ///
 /// Runs on `Added<AnimationPlayer>` like [`bind`] and for the same reason: it
 /// is the one moment the scene's entities exist and nothing has posed them.
-pub fn bind_head(
+pub fn bind_spine(
     mut commands: Commands,
     names: Query<(Entity, &Name)>,
     parents: Query<&ChildOf>,
     transforms: Query<&Transform>,
-    bodies: Query<Entity, (With<BodyAnim>, Without<HeadBone>)>,
+    bodies: Query<Entity, (With<BodyAnim>, Without<SpineBones>)>,
     added: Query<Entity, Added<AnimationPlayer>>,
 ) {
     for player in &added {
@@ -1025,64 +1338,104 @@ pub fn bind_head(
 
         // The head, by name, among this body's descendants only — two bodies
         // are in the world at once and a global search would find somebody
-        // else's.
-        let mut head = None;
+        // else's. Its ancestors up to the body are the chain.
+        let mut chain = Vec::new();
         for (e, name) in &names {
             if name.as_str() != HEAD_BONE {
                 continue;
             }
+            let mut walk = vec![e];
             let mut up = e;
+            let mut ours = false;
             for _ in 0..16 {
-                if up == body {
-                    head = Some(e);
-                    break;
-                }
                 match parents.get(up) {
-                    Ok(p) => up = p.0,
+                    Ok(p) if p.0 == body => {
+                        ours = true;
+                        break;
+                    }
+                    Ok(p) => {
+                        up = p.0;
+                        walk.push(up);
+                    }
                     Err(_) => break,
                 }
             }
-            if head.is_some() {
+            if ours {
+                walk.reverse();
+                chain = walk;
                 break;
             }
         }
-        let Some(head) = head else {
+        if chain.is_empty() {
             error!(
                 "anim: no bone named {HEAD_BONE:?} under a body — remote heads \
                  will not follow the wire's pitch"
             );
-            commands.entity(body).insert(HeadBone {
-                entity: Entity::PLACEHOLDER,
-                axis: Vec3::X,
-                applied: Quat::IDENTITY,
+            commands.entity(body).insert(SpineBones {
+                root: Quat::IDENTITY,
+                bones: Vec::new(),
             });
             continue;
-        };
-
-        // The rest rotation of the head's PARENT, relative to the body root —
-        // walked from local transforms, because global ones have not been
-        // propagated for a scene spawned this frame.
-        let mut rot = Quat::IDENTITY;
-        let mut up = parents.get(head).map(|p| p.0).unwrap_or(head);
+        }
+        // Start at the hips when there are any: above them is the scene's own
+        // root, which nothing should turn.
+        let is_hips = |e: Entity| names.get(e).is_ok_and(|(_, n)| n.as_str() == HIPS_BONE);
+        let hips = chain.iter().position(|&e| is_hips(e));
+        let chain = &chain[hips.unwrap_or(0)..];
+        // The rest rotation from the body down to the first bone's parent,
+        // walked from local transforms: global ones have not been propagated
+        // for a scene spawned this frame.
+        let mut root = Quat::IDENTITY;
+        let mut up = parents.get(chain[0]).map(|p| p.0).unwrap_or(body);
         for _ in 0..16 {
             if up == body {
                 break;
             }
             if let Ok(t) = transforms.get(up) {
-                rot = t.rotation * rot;
+                root = t.rotation * root;
             }
             match parents.get(up) {
                 Ok(p) => up = p.0,
                 Err(_) => break,
             }
         }
-        // The body's right, expressed in that parent's space.
-        let axis = (rot.inverse() * Vec3::X).normalize_or_zero();
-        commands.entity(body).insert(HeadBone {
-            entity: head,
-            axis: if axis == Vec3::ZERO { Vec3::X } else { axis },
+        // hips? | spine… | neck | head
+        let rest = &chain[usize::from(hips.is_some())..];
+        let n = rest.len();
+        let spine = n.saturating_sub(2);
+        let weight = |i: usize| match n - 1 - i {
+            0 => LOOK_HEAD_W,
+            1 => LOOK_NECK_W,
+            _ => LOOK_SPINE_W,
+        };
+        let total: f32 = (0..n).map(weight).sum();
+        let mut bones = Vec::with_capacity(chain.len());
+        if hips.is_some() {
+            bones.push(SpineBone::new(chain[0], 1.0, 0.0, false));
+        }
+        for (i, &e) in rest.iter().enumerate() {
+            // The spine turns the chest back to the aim. No hips, no twist.
+            let yaw = if hips.is_some() && i < spine {
+                -1.0 / spine as f32
+            } else {
+                0.0
+            };
+            bones.push(SpineBone::new(e, yaw, weight(i) / total, i + 1 == n));
+        }
+        commands.entity(body).insert(SpineBones { root, bones });
+    }
+}
+
+impl SpineBone {
+    fn new(entity: Entity, yaw: f32, pitch: f32, head: bool) -> Self {
+        Self {
+            entity,
+            yaw,
+            pitch,
+            head,
             applied: Quat::IDENTITY,
-        });
+            written: Quat::IDENTITY,
+        }
     }
 }
 
@@ -1125,45 +1478,78 @@ pub const ARMS_HOLD_CLIP: &str = "Pistol_Idle_Loop";
 pub const ARMS_NODE: &str = "char1_arms";
 pub const BODY_NODE: &str = "char1_body";
 
-/// Point every remote's head where the wire says it is looking.
+/// Turn every remote's hips toward where its legs are going, its spine back
+/// toward where it faces, and its chest and head to where the wire says it
+/// is looking.
 ///
-/// **Scheduled between the animation and the transform propagation**, which is
-/// the only window where this is a single cheap write: the clip has posed the
-/// skeleton and nothing has turned local transforms into world ones yet, so
-/// overriding one bone costs one quaternion multiply and no re-propagation.
+/// **Scheduled between the animation and the transform propagation**, which
+/// is the only window where this is cheap: the clip has posed the skeleton and
+/// nothing has turned local transforms into world ones yet, so a handful of
+/// quaternion multiplies per body and no re-propagation.
+///
+/// ## The animation rewrites these bones every frame — usually
+///
+/// Every clip on this rig animates every one of them, so most frames the
+/// bone arrives fresh from the clip and the turn composes straight onto it.
+/// The previous cut of this system *always* took last frame's delta back out
+/// first, which against a freshly animated bone cancels this frame's: every
+/// remote head in the game held the clip's own gaze and never followed the
+/// wire's pitch, while a fixture with no animation passed. A bone that still
+/// holds exactly what this system wrote was not animated this frame, and only
+/// then is the old delta removed — so a clip that leaves a bone alone still
+/// cannot wind it round sixty times a second.
 ///
 /// Bevy draws, it does not decide (`RENDER.md` §1): the pitch is a value the
-/// sim already sent, this writes a transform, and nothing reads it back.
-pub fn head_look(mut bodies: Query<(&BodyAnim, &mut HeadBone)>, mut bones: Query<&mut Transform>) {
-    for (anim, mut head) in &mut bodies {
-        if head.entity == Entity::PLACEHOLDER {
-            continue;
-        }
-        let Ok(mut t) = bones.get_mut(head.entity) else {
-            continue;
-        };
-        // Remove last frame's delta before composing this one — see `applied`.
-        let base = head.applied.inverse() * t.rotation;
+/// sim already sent, the twist is derived from where the body moved, this
+/// writes transforms, and nothing reads them back.
+pub fn pose_spine(
+    mut bodies: Query<(&BodyAnim, &mut SpineBones)>,
+    mut bones: Query<&mut Transform>,
+) {
+    for (anim, mut spine) in &mut bodies {
         // **A corpse is not looking at anything.** The wire keeps carrying
-        // the pitch a body died holding — a dead player's record is frozen,
-        // not cleared — so composing it onto `Death01`'s fallen pose cranks
-        // the head of a body lying on the ground. The look is dropped to
-        // level rather than frozen at its last value, and dropped through
-        // the same `applied` bookkeeping so the delta it already wrote is
-        // still removed.
-        let want = match anim.clip {
-            Some(Clip::Death) => 0.0,
-            // The crouch clips hold the head ~42° further down than `Idle`
-            // (gaze −49.6° vs −7.9°), so a crouched body looking level would
-            // stare at the ground: lift the head by the difference.
-            Some(Clip::CrouchIdle | Clip::CrouchWalk) => {
-                anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX) + CROUCH_HEAD_LIFT
-            }
-            _ => anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX),
+        // the pitch a body died holding, and composing it onto `Death01`'s
+        // fallen pose cranks the head of a body lying on the ground. Both
+        // turns drop to nothing, through the same bookkeeping, so the delta
+        // already written is still removed.
+        let dead = anim.clip == Some(Clip::Death);
+        let pitch = if dead {
+            0.0
+        } else {
+            anim.pitch.clamp(-ANIM_LOOK_PITCH_MAX, ANIM_LOOK_PITCH_MAX)
         };
-        let delta = Quat::from_axis_angle(head.axis, want);
-        t.rotation = delta * base;
-        head.applied = delta;
+        // The crouch clips hold the head ~42° further down than `Idle` (gaze
+        // −49.6° vs −7.9°), so a crouched body looking level would stare at
+        // the ground: lift the head by the difference.
+        let lift = match anim.clip {
+            Some(Clip::CrouchIdle | Clip::CrouchWalk) => CROUCH_HEAD_LIFT,
+            _ => 0.0,
+        };
+        let yaw = if dead { 0.0 } else { anim.hip_yaw };
+        // The body frame → this bone's parent frame, built down the chain.
+        let mut w = spine.root;
+        for bone in spine.bones.iter_mut() {
+            let Ok(mut t) = bones.get_mut(bone.entity) else {
+                break;
+            };
+            let base = if t.rotation == bone.written {
+                bone.applied.inverse() * t.rotation
+            } else {
+                t.rotation
+            };
+            let look = pitch * bone.pitch + if bone.head { lift } else { 0.0 };
+            let turn =
+                Quat::from_rotation_y(yaw * bone.yaw) * Quat::from_axis_angle(BODY_RIGHT, look);
+            // A turn in the body frame, carried into the parent's.
+            // Normalized at every step: a bone the clip never rewrites is
+            // composed onto itself every frame, and through a chain of three
+            // the rounding compounds into a visibly shrinking head.
+            let local = (w.inverse() * turn * w).normalize();
+            t.rotation = (local * base).normalize();
+            bone.applied = local;
+            bone.written = t.rotation;
+            w = (w * t.rotation).normalize();
+        }
     }
 }
 
@@ -1180,7 +1566,19 @@ pub struct PlayerOf(pub Entity);
 /// a second and every body would stand frozen in its first pose — a failure
 /// that looks exactly like "the animation did not load".
 #[derive(Component, Default)]
-pub struct Playing(Option<Clip>, u32);
+pub struct Playing {
+    /// The whole-body clip, and the one-shot sequence it was started for.
+    base: Option<Clip>,
+    base_seq: u32,
+    /// The locomotion loop fading out under `base`, kept stepping in time
+    /// with it until its weight is gone.
+    fading: Option<Clip>,
+    /// The upper-body one-shot, and its sequence.
+    upper: Option<Clip>,
+    upper_seq: u32,
+    /// How much of the arms and spine the upper one-shot owns, 0..1.
+    upper_u: f32,
+}
 
 /// Attach the graph to every newly spawned player and find its body.
 pub fn bind(
@@ -1219,13 +1617,10 @@ pub fn bind(
     }
 }
 
-/// Cross-fade each player to whatever its body wants.
 /// How long a cross-fade INTO `want` takes, seconds.
 ///
 /// One value for everything except the flinch, whose blend is derived from
-/// its own clip rather than shared — [`FLINCH_BLEND_S`] says why. Written
-/// as a function rather than folded into the call site so the two constants
-/// stay the only numbers in the decision.
+/// its own clip rather than shared — [`FLINCH_BLEND_S`] says why.
 fn blend(want: Clip) -> f32 {
     match want {
         Clip::Flinch => FLINCH_BLEND_S,
@@ -1233,8 +1628,22 @@ fn blend(want: Clip) -> f32 {
     }
 }
 
+/// The most of the arms and spine the upper layer is given, short of 1 so
+/// its weight below stays finite.
+const UPPER_MAX: f32 = 0.995;
+
+/// A stable phase in `[0, 1)` per body, so a crowd standing still does not
+/// breathe in unison — the six shopkeepers at THE GATE did, to the frame.
+fn desync(body: Entity) -> f32 {
+    let h = body.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Cross-fade each player to whatever its body wants, play its gait at the
+/// rate that plants its feet, and lay any upper-body one-shot over it.
 pub fn drive(
     rig: Res<Rig>,
+    time: Res<Time>,
     anims: Query<&BodyAnim>,
     mut players: Query<(
         &PlayerOf,
@@ -1246,42 +1655,120 @@ pub fn drive(
     if !rig.ready() {
         return;
     }
+    let dt = time.delta_secs();
     for (owner, mut playing, mut player, mut transitions) in &mut players {
         let Ok(anim) = anims.get(owner.0) else {
             continue;
         };
-        // The ranking lives on `BodyAnim` (see [`BodyAnim::wants`]) rather
-        // than here, so a headless test can assert it without a `World`:
-        // the copy of it that used to sit in this loop was mirrored by hand
-        // into `death_stops_a_swing_in_flight`, which is a gate checking its
-        // own copy of the rule.
-        //
-        // The sequence number is what lets the next transient restart the
-        // clip: without it the `playing == want` guard below would swallow
-        // every swing after the first for as long as the body kept swinging.
+        // The ranking lives on `BodyAnim` (`wants`, `wants_upper`) rather
+        // than here, so a headless test can assert it without a `World`.
         let Some(want) = anim.wants() else { continue };
-        let transient = matches!(want, Clip::Swing | Clip::Flinch | Clip::Shoot);
-        let restart = transient && playing.1 != anim.transient_seq;
-        if playing.0 == Some(want) && !restart {
-            continue;
+        // The sequence number is what lets the next one-shot restart the
+        // clip: without it the `playing == want` guard would swallow every
+        // swing after the first for as long as the body kept swinging.
+        let restart = want.transient() && playing.base_seq != anim.transient_seq;
+        if playing.base != Some(want) || restart {
+            // Where the outgoing gait is in its stride, so the incoming one
+            // starts on the same foot.
+            let phase = playing.base.and_then(|from| {
+                let mark = from.stride_mark()?;
+                let t = player.animation(rig.node(from))?.seek_time();
+                Some(t / rig.duration(from) - mark)
+            });
+            let first = playing.base.is_none();
+            playing.fading = playing.base.filter(|c| c.stride_mark().is_some());
+            playing.base = Some(want);
+            playing.base_seq = anim.transient_seq;
+            let d = rig.duration(want);
+            let active = transitions.play(
+                &mut player,
+                rig.node(want),
+                Duration::from_secs_f32(blend(want)),
+            );
+            // **`.repeat()` for a loop and nothing for the four one-shots.**
+            // `RepeatAnimation::default()` is `Never`, so the one-shots need
+            // no completion callback: their clocks run out and the next
+            // frame's `want` is the gait again, and the death simply never
+            // stops being wanted, so it holds its final pose.
+            if !want.one_shot() {
+                active.repeat();
+                if let Some(mark) = want.stride_mark() {
+                    let p = phase.unwrap_or_else(|| desync(owner.0));
+                    active.set_seek_time((p + mark).rem_euclid(1.0) * d);
+                } else if first {
+                    active.set_seek_time(desync(owner.0) * d);
+                }
+            }
         }
-        playing.0 = Some(want);
-        playing.1 = anim.transient_seq;
-        let active = transitions.play(
-            &mut player,
-            rig.node(want),
-            Duration::from_secs_f32(blend(want)),
-        );
-        // **`.repeat()` for a gait and nothing for the four one-shots.**
-        // `RepeatAnimation::default()` is `Never`, so the swing, the flinch,
-        // the shot and the death are omissions rather than features — and
-        // none needs a completion callback. The transients' clocks run out and the
-        // next frame's `want` is the gait again; the death simply never
-        // stops being wanted, so Bevy holds its final pose and the body
-        // stays down for as long as the corpse is on the wire.
-        if !matches!(want, Clip::Swing | Clip::Flinch | Clip::Death | Clip::Shoot) {
-            active.repeat();
+        // The gait's rate, every frame: the body's speed changes under a
+        // loop that does not, and backpedalling is the same loop reversed.
+        if want.stride_mps().is_some() {
+            let rate = anim.rate();
+            if let Some(a) = player.animation_mut(rig.node(want)) {
+                a.set_speed(rate);
+            }
+            // The loop it is fading from steps through its stride at the
+            // same pace, so the two never disagree about which foot is down.
+            if let Some(from) = playing.fading {
+                let pace = rate / rig.duration(want) * rig.duration(from);
+                match player.animation_mut(rig.node(from)) {
+                    Some(a) if from != want => {
+                        a.set_speed(pace);
+                    }
+                    _ => playing.fading = None,
+                }
+            }
+        } else {
+            playing.fading = None;
         }
+        upper(&rig, anim, &mut playing, &mut player, dt);
+    }
+}
+
+/// The upper-body layer: a one-shot on the arms and spine while the legs
+/// keep their gait.
+///
+/// The node is masked off the hips and legs, so they only ever hear the
+/// gait. The arms and spine hear both, and Bevy blends whatever reaches a
+/// bone by weight: the gait layer's weights always sum to 1
+/// (`AnimationTransitions` holds them there), so giving this node `u/(1−u)`
+/// hands it exactly `u` of every upper bone. Not `AnimationTransitions`,
+/// which owns one main clip and would fade the gait out under it.
+fn upper(rig: &Rig, anim: &BodyAnim, playing: &mut Playing, player: &mut AnimationPlayer, dt: f32) {
+    let want = anim.wants_upper();
+    if let Some(c) = want {
+        if playing.upper != want || playing.upper_seq != anim.transient_seq {
+            if let Some(old) = playing.upper.and_then(|o| rig.upper_node(o)) {
+                player.stop(old);
+            }
+            if let Some(node) = rig.upper_node(c) {
+                player.start(node);
+            }
+            playing.upper = want;
+            playing.upper_seq = anim.transient_seq;
+        }
+    }
+    let Some(c) = playing.upper else {
+        return;
+    };
+    // In at the one-shot's own pace, out at the general one.
+    playing.upper_u = if want.is_some() {
+        (playing.upper_u + dt / blend(c)).min(1.0)
+    } else {
+        (playing.upper_u - dt / ANIM_BLEND_S).max(0.0)
+    };
+    let Some(node) = rig.upper_node(c) else {
+        playing.upper = None;
+        return;
+    };
+    if want.is_none() && playing.upper_u <= 0.0 {
+        player.stop(node);
+        playing.upper = None;
+        return;
+    }
+    if let Some(a) = player.animation_mut(node) {
+        let u = playing.upper_u.min(UPPER_MAX);
+        a.set_weight(u / (1.0 - u));
     }
 }
 
@@ -1308,16 +1795,160 @@ mod tests {
 
     #[test]
     fn speed_picks_the_gait() {
-        for (mps, want) in [
-            (0.0, Clip::Idle),
-            (2.0, Clip::Walk),
-            (4.2, Clip::Jog),
-            (7.0, Clip::Sprint),
+        use sim_core::movement::{CROUCH_SPEED, SPRINT_SPEED, WADE_SPEED_MULT, WALK_SPEED};
+        // Every speed the sim actually moves a body at, and the gait it is
+        // drawn in. The ordinary pace was drawn as a walk and the sprint as a
+        // jog until the thresholds were read off these constants.
+        for (mps, crouched, want) in [
+            (0.0, false, Clip::Idle),
+            (WALK_SPEED * WADE_SPEED_MULT, false, Clip::Walk),
+            (WALK_SPEED, false, Clip::Jog),
+            (SPRINT_SPEED * WADE_SPEED_MULT, false, Clip::Jog),
+            (SPRINT_SPEED, false, Clip::Sprint),
+            (0.0, true, Clip::CrouchIdle),
+            (CROUCH_SPEED * WADE_SPEED_MULT, true, Clip::CrouchWalk),
+            (CROUCH_SPEED, true, Clip::CrouchWalk),
         ] {
+            let mut a = BodyAnim {
+                crouched,
+                ..BodyAnim::default()
+            };
+            step(&mut a, mps, 120);
+            assert_eq!(a.clip, Some(want), "at {mps} m/s, crouched={crouched}");
+        }
+    }
+
+    #[test]
+    fn a_gait_plays_at_the_rate_that_plants_its_feet() {
+        use sim_core::movement::{SPRINT_SPEED, WALK_SPEED};
+        for mps in [WALK_SPEED, SPRINT_SPEED] {
             let mut a = BodyAnim::default();
             step(&mut a, mps, 120);
-            assert_eq!(a.clip, Some(want), "at {mps} m/s");
+            let stride = a.clip.and_then(Clip::stride_mps).unwrap();
+            assert!(
+                (a.rate() - mps / stride).abs() < 0.02,
+                "{:?} at {mps} m/s plays at {} — its feet slide",
+                a.clip,
+                a.rate()
+            );
         }
+        // Standing and one-shots run at their authored rate.
+        let mut a = BodyAnim::default();
+        step(&mut a, 0.0, 30);
+        assert_eq!(a.rate(), 1.0);
+        // A crouch is clamped rather than scuttled.
+        let mut a = BodyAnim {
+            crouched: true,
+            ..BodyAnim::default()
+        };
+        step(&mut a, sim_core::movement::CROUCH_SPEED, 120);
+        assert_eq!(a.rate(), ANIM_RATE_MAX);
+    }
+
+    /// Move a body along a world bearing (sim yaw sense) while it faces
+    /// `facing`.
+    fn travel(a: &mut BodyAnim, facing: f32, bearing: f32, mps: f32, frames: usize) {
+        let dt = 1.0 / 60.0;
+        let mut p = a.last.unwrap_or(Vec3::ZERO);
+        a.facing = facing;
+        for _ in 0..frames {
+            p.x += bearing.sin() * mps * dt;
+            p.z += bearing.cos() * mps * dt;
+            a.observe(p, dt, false, false, false);
+        }
+    }
+
+    #[test]
+    fn a_body_moving_backwards_backpedals() {
+        let mut a = BodyAnim::default();
+        travel(&mut a, 0.3, 0.3 + PI, 3.0, 120);
+        assert_eq!(a.clip, Some(Clip::Jog));
+        assert!(a.backward, "running away from its own facing, forwards");
+        assert!(a.rate() < 0.0, "the loop is not reversed");
+        assert!(
+            a.hip_yaw.abs() < 0.01,
+            "a straight backpedal twisted the legs"
+        );
+        // Diagonally back: the legs turn toward the travel, reversed.
+        let mut a = BodyAnim::default();
+        travel(&mut a, 0.0, PI - 0.5, 3.0, 120);
+        assert!(a.backward);
+        assert!((a.hip_yaw - -0.5).abs() < 0.01, "hip yaw {}", a.hip_yaw);
+    }
+
+    #[test]
+    fn a_strafing_body_turns_its_legs_toward_the_travel() {
+        let mut a = BodyAnim::default();
+        travel(&mut a, 1.0, 1.6, 3.0, 120);
+        assert!(!a.backward);
+        assert!((a.hip_yaw - 0.6).abs() < 0.01, "hip yaw {}", a.hip_yaw);
+        // Side-on: clamped, and still running forwards.
+        let mut a = BodyAnim::default();
+        travel(&mut a, 0.0, -FRAC_PI_2, 3.0, 120);
+        assert!(!a.backward);
+        assert!((a.hip_yaw + ANIM_TWIST_MAX).abs() < 0.01);
+        // Stopping brings the legs back under the body.
+        travel(&mut a, 0.0, 0.0, 0.0, 120);
+        assert_eq!(a.clip, Some(Clip::Idle));
+        travel(&mut a, 0.0, 0.0, 0.0, 120);
+        assert!(
+            a.hip_yaw.abs() < 0.03,
+            "the legs stayed twisted: {}",
+            a.hip_yaw
+        );
+    }
+
+    #[test]
+    fn a_standing_body_keeps_its_feet_until_it_turns_too_far() {
+        let mut a = BodyAnim::default();
+        travel(&mut a, 0.0, 0.0, 0.0, 30);
+        // A small turn: the feet stay where they were.
+        travel(&mut a, 0.4, 0.0, 0.0, 30);
+        assert!((a.hip_yaw + 0.4).abs() < 1e-4, "hip yaw {}", a.hip_yaw);
+        // Past the limit they step back round, all the way.
+        travel(&mut a, 1.4, 0.0, 0.0, 60);
+        assert!(a.hip_yaw.abs() < 0.03, "hip yaw {}", a.hip_yaw);
+        // Turning across ±π is a short turn, not a long one.
+        let mut a = BodyAnim::default();
+        travel(&mut a, PI - 0.1, 0.0, 0.0, 30);
+        travel(&mut a, -PI + 0.1, 0.0, 0.0, 1);
+        assert!((a.hip_yaw + 0.2).abs() < 1e-3, "hip yaw {}", a.hip_yaw);
+    }
+
+    #[test]
+    fn a_one_shot_over_moving_legs_plays_on_the_upper_body() {
+        let mut a = BodyAnim::default();
+        step(&mut a, 3.0, 120);
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Jog), "the legs stopped running");
+        assert_eq!(a.wants_upper(), Some(Clip::Swing));
+        // Stopping mid-swing does not move it to the other layer.
+        step(&mut a, 0.0, 30);
+        assert_eq!(a.wants(), Some(Clip::Idle));
+        assert_eq!(a.wants_upper(), Some(Clip::Swing));
+        // Standing still, a one-shot owns the whole body: the lunge has feet.
+        let mut a = BodyAnim::default();
+        step(&mut a, 0.0, 30);
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Swing));
+        assert_eq!(a.wants_upper(), None);
+    }
+
+    #[test]
+    fn angles_wrap_the_short_way() {
+        for (a, w) in [
+            (0.0, 0.0),
+            (PI + 0.1, -PI + 0.1),
+            (-PI - 0.1, PI - 0.1),
+            (5.0 * TAU + 0.2, 0.2),
+        ] {
+            assert!(
+                (wrap_pi(a) - w).abs() < 1e-4,
+                "wrap_pi({a}) = {}",
+                wrap_pi(a)
+            );
+        }
+        assert!((wrap_pi(PI) - PI).abs() < 1e-6);
     }
 
     #[test]
@@ -1360,11 +1991,14 @@ mod tests {
         a.airborne = true;
         step(&mut a, 4.2, 10);
         assert_eq!(a.wants(), Some(Clip::Air));
-        // A swing mid-jump is still a swing; a corpse is still a corpse.
+        // A swing mid-jump is still a swing, over the jump's legs; a corpse
+        // is still a corpse.
         a.swing();
-        assert_eq!(a.wants(), Some(Clip::Swing));
+        assert_eq!(a.wants(), Some(Clip::Air));
+        assert_eq!(a.wants_upper(), Some(Clip::Swing));
         a.observe(a.last.unwrap(), 1.0 / 60.0, false, true, false);
         assert_eq!(a.wants(), Some(Clip::Death));
+        assert_eq!(a.wants_upper(), None);
         let mut a = BodyAnim::default();
         step(&mut a, 4.2, 120);
         a.airborne = true;
@@ -1375,7 +2009,7 @@ mod tests {
     }
 
     #[test]
-    fn a_crouched_body_holds_its_crouch_through_a_swing() {
+    fn a_crouched_body_swings_without_standing_up() {
         let mut a = BodyAnim {
             crouched: true,
             ..BodyAnim::default()
@@ -1384,14 +2018,22 @@ mod tests {
         assert_eq!(a.wants(), Some(Clip::CrouchIdle));
         step(&mut a, 1.7, 60);
         assert_eq!(a.wants(), Some(Clip::CrouchWalk));
-        // A swing while crouched does not stand the body up...
+        // The swing goes on the upper body; the legs stay crouched.
         a.swing();
         assert_eq!(a.wants(), Some(Clip::CrouchWalk));
-        step(&mut a, 1.7, 1);
-        // ...and standing up afterwards does not replay its tail.
+        assert_eq!(a.wants_upper(), Some(Clip::Swing));
+        // A whole-body swing begun standing is ended by a crouch rather than
+        // standing the body back up for its span.
+        let mut a = BodyAnim::default();
+        step(&mut a, 0.0, 30);
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Swing));
+        a.crouched = true;
+        step(&mut a, 0.0, 1);
+        assert_eq!(a.wants(), Some(Clip::CrouchIdle));
         a.crouched = false;
-        step(&mut a, 1.7, 1);
-        assert_eq!(a.wants(), Some(Clip::Walk));
+        step(&mut a, 0.0, 1);
+        assert_eq!(a.wants(), Some(Clip::Idle), "standing up replayed the tail");
         // A crouched corpse is a corpse.
         a.crouched = true;
         a.observe(a.last.unwrap(), 1.0 / 60.0, false, true, false);

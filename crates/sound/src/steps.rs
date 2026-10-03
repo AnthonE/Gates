@@ -131,6 +131,19 @@ impl Steps {
     /// A jump that covered 4 m would otherwise fire five footsteps at the
     /// moment of touchdown.
     pub fn sample(&mut self, pos: [f32; 3], grounded: bool, dt_s: f32) -> Option<Step> {
+        self.sample_with(pos, grounded, dt_s, None)
+    }
+
+    /// [`Steps::sample`], with the metres per step given rather than taken
+    /// from [`stride_m`] — a remote body's drawn gait knows how far apart its
+    /// feet land, and its footsteps should land with them.
+    pub fn sample_with(
+        &mut self,
+        pos: [f32; 3],
+        grounded: bool,
+        dt_s: f32,
+        stride: Option<f32>,
+    ) -> Option<Step> {
         // `?` on the first frame: establish the origin, walk nowhere.
         let last = self.last.replace(pos)?;
         if !grounded {
@@ -149,7 +162,7 @@ impl Steps {
         if self.speed < STEP_MIN_SPEED {
             return None;
         }
-        let stride = stride_m(self.speed);
+        let stride = stride.unwrap_or_else(|| stride_m(self.speed)).max(0.1);
         if self.stride > 0.0 {
             // Exactly 1.0 at a steady pace, so a walk's arithmetic is untouched.
             self.travelled *= stride / self.stride;

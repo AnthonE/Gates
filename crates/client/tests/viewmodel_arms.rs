@@ -1068,7 +1068,7 @@ fn the_hold_clip_never_animates_the_hidden_bones_pose() {
             "{clip} animates {path} on {written:?}, under \
              {VIEWMODEL_HIDDEN_ARM} — the one-shot collapse in dress_arms \
              would be overwritten on the next frame. Re-apply it after \
-             AnimationSystems (anim::head_look's shape) or pick a clip that \
+             AnimationSystems (anim::pose_spine's shape) or pick a clip that \
              leaves it alone"
         );
     }

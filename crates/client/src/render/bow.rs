@@ -315,7 +315,7 @@ pub fn two_bone(s: Vec3, t: Vec3, a: f32, b: f32, pole: Vec3) -> (Vec3, Vec3) {
 /// the shoulder is set at [`DRAW_SHOULDER`] and the arm solved so the wrist is
 /// just behind the nock, so a hand draws the string instead of the string
 /// drawing itself. Between the animation and the propagation like
-/// `anim::head_look`: it overrides this frame's hold pose on the left arm and
+/// `anim::pose_spine`: it overrides this frame's hold pose on the left arm and
 /// costs no second propagation.
 #[allow(clippy::type_complexity)]
 pub fn draw_arm(
