@@ -101,6 +101,7 @@ pub fn built(
     mut chips: ResMut<Chips>,
     mut marks: ResMut<Marks>,
     mut sound: ResMut<Sound>,
+    mut shake: Option<ResMut<super::super::shake::Shake>>,
 ) {
     if feed.placed().is_empty() && feed.removed().is_empty() {
         return;
@@ -201,7 +202,26 @@ pub fn built(
         // A piece crashes down; a deployable going (picked up, decayed) is
         // dust and no more — a charge on a door already has its blast.
         if !r.deploy {
-            sound.play(Request::at(Cue::Collapse, middle.to_array()));
+            // Planks splinter; stone and sheet metal crash.
+            let have = core.piece_defs_have.min(core.piece_defs.piece_count);
+            let wooden = (r.row as u16) < have
+                && core.piece_defs.pieces[r.row as usize].material <= sim_core::build::MAT_WOOD;
+            let cue = if wooden {
+                Cue::CollapseWood
+            } else {
+                Cue::Collapse
+            };
+            sound.play(Request::at(cue, middle.to_array()));
+            if let Some(shake) = shake.as_deref_mut() {
+                use super::super::shake::{COLLAPSE_FULL_M, COLLAPSE_TRAUMA, COLLAPSE_ZERO_M};
+                shake.add_at(
+                    COLLAPSE_TRAUMA,
+                    middle,
+                    eye.pos,
+                    COLLAPSE_FULL_M,
+                    COLLAPSE_ZERO_M,
+                );
+            }
         }
         let d = middle.distance(eye.pos);
         if lod(d) <= 0.0 {
@@ -315,6 +335,34 @@ pub fn footstep(fx: &mut Fx, cue: Cue, at: Vec3, gain: f32) {
         }
         _ => {}
     }
+}
+
+/// A body breaking the surface: rings spread from it and spray goes up, more
+/// of both the harder it went in (`gain` is the splash cue's own, `0..1`).
+pub fn splash(fx: &mut Fx, at: Vec3, gain: f32) {
+    let at = Vec3::new(at.x, sim_core::terrain::SEA_LEVEL + 0.02, at.z);
+    emit(&mut fx.soft, Layer::Ring, 2, at, Vec3::Y, Matter::Water);
+    let n = scaled(8, gain.clamp(0.3, 1.0));
+    emit(&mut fx.soft, Layer::Droplets, n, at, Vec3::Y, Matter::Water);
+}
+
+/// A body landing from a jump or a drop: the ground it hits kicks up — sand
+/// most, soil a little, rock and water not at all (the water's splash is its
+/// own crossing).
+pub fn body_landing(fx: &mut Fx, cue: Cue, at: Vec3) {
+    let (n, matter) = match cue {
+        Cue::StepSand => (3, Matter::Sand),
+        Cue::StepGrass | Cue::StepLitter => (1, Matter::Dirt),
+        _ => return,
+    };
+    emit(
+        &mut fx.soft,
+        Layer::Dust,
+        n,
+        at + Vec3::Y * 0.05,
+        Vec3::Y,
+        matter,
+    );
 }
 
 /// A burning thing's flames and smoke, carried beside its

@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 134] = [
+pub const FIXTURES: [&str; 135] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -245,6 +245,8 @@ pub const FIXTURES: [&str; 134] = [
     "event_sentry_lock.bin",
     "event_gate_spawn.bin",
     "action_respawn_gate.bin",
+    // Another body's hands, heard (v93).
+    "event_heard.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -2055,6 +2057,11 @@ pub fn event_sentry_lock() -> (u32, u32) {
         sim_core::mob::mob_id(sim_core::sentry::SENTRY_SLOT0 + 2),
         0x0102_0304,
     )
+}
+
+/// Player 0x0102_0304 ate item 7.
+pub fn event_heard() -> (u32, u8, u16) {
+    (0x0102_0304, crate::DEED_MEAL, 7)
 }
 
 /// The town's respawn point is free again at tick 0x00C0_FFEE.

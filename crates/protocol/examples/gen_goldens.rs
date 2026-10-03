@@ -116,6 +116,10 @@ fn main() {
     write_fixture(goldens::FIXTURES[132], &buf[..len]);
     let len = protocol::encode_action_respawn_gate(&mut buf).unwrap();
     write_fixture(goldens::FIXTURES[133], &buf[..len]);
+    // Another body's hands, heard (v93).
+    let (body, deed, item) = goldens::event_heard();
+    let len = protocol::encode_event_heard(body, deed, item, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[134], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

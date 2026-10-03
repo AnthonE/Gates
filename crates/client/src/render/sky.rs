@@ -869,6 +869,34 @@ pub fn fog_falloff(sigma: f32) -> FogFalloff {
     }
 }
 
+/// The water's own colour as a fog, relative to the horizon's brightness:
+/// red is gone first and green carries furthest — `water::SCATTER_ALBEDO`'s
+/// family, bright enough to read as lit water rather than as night.
+pub const UNDERWATER_TINT: [f32; 3] = [0.10, 0.52, 0.45];
+/// How much of the surface's own extinction (`water::EXTINCT`) the eye sees
+/// through under it. Under 1 on purpose: the reference raised its underwater
+/// visibility more than once after players complained they could see nothing.
+pub const UNDERWATER_CLARITY: f32 = 0.5;
+
+/// The fog once the eye is under the surface: the water's extinction, per
+/// channel, so what is a few metres off goes green and what is twenty is gone.
+pub fn underwater_fog(light: f32, dark: f32) -> (Color, FogFalloff) {
+    let h = fog_rgb(light, dark, 1.0);
+    let c = Color::linear_rgb(
+        h[0] * UNDERWATER_TINT[0],
+        h[1] * UNDERWATER_TINT[1],
+        h[2] * UNDERWATER_TINT[2],
+    );
+    let e = Vec3::from_array(super::water::EXTINCT) * UNDERWATER_CLARITY;
+    (
+        c,
+        FogFalloff::Atmospheric {
+            extinction: e,
+            inscattering: e,
+        },
+    )
+}
+
 /// The weather's `DistanceFog` — what the rig inserts once on the desktop
 /// (at zero density) and `day_night` rewrites every frame.
 pub fn weather_fog(light: f32, dark: f32, sigma: f32) -> DistanceFog {

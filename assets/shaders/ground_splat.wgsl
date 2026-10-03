@@ -44,7 +44,7 @@
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
-    mesh_view_bindings::view,
+    mesh_view_bindings::{view, globals},
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{
         alpha_discard,
@@ -115,6 +115,12 @@ struct GroundSplat {
     // x = `WALL_PLANE_BLEND`: the share of each 45° step between two wall
     // planes over which both are read. yzw reserved and zero.
     wall_planes: vec4<f32>,
+    // Caustics (`ground_splat::CAUSTIC_*`): x = the sea level, y = strength,
+    // z/w = the depth where they start to fade / are gone (m).
+    caustics: vec4<f32>,
+    // The water's colour on the bed under it: xyz = `water::EXTINCT` per
+    // metre, w = the path a ray takes through it per metre of depth.
+    water_tint: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -207,6 +213,51 @@ fn cell_key(c: vec3<i32>) -> u32 {
 
 fn unit_of(h: u32) -> f32 {
     return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+// ── Caustics ────────────────────────────────────────────────────────────
+//
+// The sun focused by the moving surface into bright threads on what lies under
+// shallow water. Rust: "caustics really makes shallow water pop" (devblog 112),
+// and they were later shadowed by the sun — which this gets for free, because
+// it lifts the ALBEDO and the lighting that follows applies the sun's angle
+// and its shadow map to it.
+//
+// The network is the border of a cellular (Worley) field: F2 − F1 is small
+// along the lines equidistant from two feature points, which is the shape of
+// a caustic web. Each point orbits its cell's centre, so the web shimmers in
+// place instead of drifting, and two layers at different scales multiplied
+// make the threads break and re-join the way real ones do.
+fn caustic_layer(p: vec2<f32>, t: f32) -> f32 {
+    let cell = vec2<i32>(floor(p));
+    let f = fract(p);
+    var d1 = 8.0;
+    var d2 = 8.0;
+    for (var j = -1; j <= 1; j++) {
+        for (var i = -1; i <= 1; i++) {
+            let o = vec2<i32>(i, j);
+            let c = cell + o;
+            let h = lowbias32(bitcast<u32>(c.x) * 73856093u ^ bitcast<u32>(c.y) * 19349663u);
+            let r = vec2<f32>(unit_of(h), unit_of(lowbias32(h ^ 0x9e3779b9u)));
+            let orbit = vec2<f32>(sin(t * 1.7 + 6.2831853 * r.x), cos(t * 1.3 + 6.2831853 * r.y));
+            let pt = vec2<f32>(o) + vec2<f32>(0.5) + 0.36 * orbit - f;
+            let d = dot(pt, pt);
+            if d < d1 {
+                d2 = d1;
+                d1 = d;
+            } else if d < d2 {
+                d2 = d;
+            }
+        }
+    }
+    let edge = sqrt(d2) - sqrt(d1);
+    return 1.0 - smoothstep(0.0, 0.25, edge);
+}
+
+fn caustic(xz: vec2<f32>, t: f32) -> f32 {
+    let a = caustic_layer(xz * 0.9, t);
+    let b = caustic_layer(xz * 1.23 + vec2<f32>(17.3, -9.1), t * 1.21);
+    return a * b;
 }
 
 // Three independent draws in [0, 1) off one cell key.
@@ -707,6 +758,34 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // relief and not colour.
     let lit = dot(bw, grain) + road_weight * road_grain;
     pbr_input.material.base_color = vec4(base * lit, 1.0);
+
+    // What lies under water — the sea's shelf and the lakes' beds alike.
+    let under = splat.caustics.x - wp.y;
+    if under > 0.0 {
+        // **The water's colour, on the bed.** The surface attenuates what is
+        // behind it by ONE alpha, the mean of three transmittances
+        // (`water::depth_tint`'s own stated simplification), so it can darken
+        // the bed but never tint it — and shallow water over sand is green
+        // because red is gone first. The bed knows its own depth, so it takes
+        // the per-channel part here: each channel over the mean, so the
+        // surface's alpha still carries the darkening and nothing is counted
+        // twice.
+        let t = exp(-splat.water_tint.xyz * (under * splat.water_tint.w));
+        let tm = max((t.x + t.y + t.z) / 3.0, 1e-3);
+        var bed = base * lit * min(t / tm, vec3<f32>(1.6));
+        // Caustics, faded in over the first decimetres (the waterline is the
+        // shore's wet band, not a light show), out with depth, and out with
+        // distance before the web is finer than a pixel.
+        if splat.caustics.y > 0.0 {
+            let near = 1.0 - smoothstep(30.0, 55.0, length(wp - view.world_position));
+            let fade = smoothstep(0.05, 0.4, under)
+                * (1.0 - smoothstep(splat.caustics.z, splat.caustics.w, under)) * near;
+            if fade > 0.0 {
+                bed = bed * (1.0 + splat.caustics.y * fade * caustic(wp.xz, globals.time));
+            }
+        }
+        pbr_input.material.base_color = vec4(bed, 1.0);
+    }
 
     // **Roughness, per texel.** Until 110–113 landed this was `Σ wᵢ·roughᵢ`
     // over four authored scalars, and before those it was one shared 0.92 — so

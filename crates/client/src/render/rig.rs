@@ -900,9 +900,16 @@ pub fn day_night(
         // desktop, the island's own air in a browser, and the weather's
         // fog and rain on top of either.
         if let Some(mut fog) = fog {
-            let sigma = w.fog_sigma();
-            fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
-            fog.falloff = super::sky::fog_falloff(sigma);
+            if w.underwater {
+                // Under the surface the water is the fog.
+                let (color, falloff) = super::sky::underwater_fog(lux_share, w.dark);
+                fog.color = color;
+                fog.falloff = falloff;
+            } else {
+                let sigma = w.fog_sigma();
+                fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
+                fog.falloff = super::sky::fog_falloff(sigma);
+            }
         }
         if let Some(mut sky) = sky {
             // The composer bakes the hour and the weather into the deck's

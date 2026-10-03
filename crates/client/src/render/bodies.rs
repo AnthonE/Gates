@@ -389,6 +389,9 @@ pub fn stream(
                         // (`audio::RemoteSteps` — the producer reads the
                         // transform this system writes).
                         super::audio::RemoteSteps::default(),
+                        // What it held and how long it has been in the air,
+                        // for the draw and the landing it makes heard.
+                        super::audio::RemoteHands::default(),
                         // Painted as soon as the scene's meshes exist; until
                         // then the body wears the library's own preview
                         // colours, which is one or two frames.

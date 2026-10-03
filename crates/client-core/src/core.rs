@@ -126,6 +126,13 @@ pub const HOWL_RING: usize = 8;
 /// (the gun's roster id, the player it locked on to). Four guns; drop-oldest.
 pub const LOCK_RING: usize = 8;
 
+/// Other bodies' hands heard between two frames (`EventMsg::Heard`, wire
+/// v93): (body id, `protocol::DEED_*`, item). Eight for the swing ring's
+/// reason — `render::feed` drains into a `FEED_CAP` of eight — and a deed is
+/// rarer than a swing: a reload is seconds long. Drop-oldest: a sound, and
+/// the newest is the one still worth hearing.
+pub const HEARD_RING: usize = 8;
+
 /// The victim slot of a hitmarker that names no body.
 ///
 /// The hitmarker ring carries two facts that read identically to a player —
@@ -1695,6 +1702,10 @@ pub struct ClientCore {
     locks: [(u32, u32); LOCK_RING],
     lock_head: usize,
     lock_len: usize,
+    /// Other bodies' hands, heard: (body id, deed, item).
+    heard: [(u32, u8, u16); HEARD_RING],
+    heard_head: usize,
+    heard_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -1945,6 +1956,9 @@ impl ClientCore {
             locks: [(0, 0); LOCK_RING],
             lock_head: 0,
             lock_len: 0,
+            heard: [(0, 0, 0); HEARD_RING],
+            heard_head: 0,
+            heard_len: 0,
             howl_head: 0,
             howl_len: 0,
             knock_head: 0,
@@ -3140,6 +3154,16 @@ impl ClientCore {
                 self.howls[(self.howl_head + self.howl_len) % HOWL_RING] = mob;
                 self.howl_len += 1;
             }
+            EventMsg::Heard { body, deed, item } => {
+                // Drop-oldest, the swing ring's shape. An id naming no
+                // drawn body is heard nowhere, which is right for it.
+                if self.heard_len == HEARD_RING {
+                    self.heard_head = (self.heard_head + 1) % HEARD_RING;
+                    self.heard_len -= 1;
+                }
+                self.heard[(self.heard_head + self.heard_len) % HEARD_RING] = (body, deed, item);
+                self.heard_len += 1;
+            }
             EventMsg::Knock {
                 cx,
                 cz,
@@ -3466,6 +3490,19 @@ impl ClientCore {
         self.lock_head = (self.lock_head + 1) % LOCK_RING;
         self.lock_len -= 1;
         Some(l)
+    }
+
+    /// Oldest buffered deed heard from another body: (body id,
+    /// `protocol::DEED_*`, item). Drained once a frame by `render::feed`,
+    /// like every ring here.
+    pub fn pop_heard(&mut self) -> Option<(u32, u8, u16)> {
+        if self.heard_len == 0 {
+            return None;
+        }
+        let h = self.heard[self.heard_head];
+        self.heard_head = (self.heard_head + 1) % HEARD_RING;
+        self.heard_len -= 1;
+        Some(h)
     }
 
     /// Oldest buffered pack call: the tagged roster id of the animal that

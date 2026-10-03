@@ -374,6 +374,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::BedRain => rain(&mut r),
         Cue::BedRotor => rotor(&mut r),
         Cue::BedTown => market(&mut r),
+        Cue::BedNight => crickets(&mut r),
         Cue::Thunder => thunder(&mut r),
 
         // ---- the animals ------------------------------------------------
@@ -540,6 +541,34 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Bandage => bandage(&mut r),
         Cue::BowDraw => creak(&mut r),
         Cue::BushPick => rustle(&mut r),
+        // The recorded-only cues' fallbacks: the nearest thing the synth
+        // already makes, so a bank whose recording failed to decode still
+        // says something in the right place.
+        Cue::DoorOpen => creak(&mut r),
+        Cue::DoorClose => knock(&mut r),
+        Cue::Drink => munch(&mut r),
+        Cue::Land => render_take(Cue::StepSand, take),
+        Cue::FireCrackle => rustle(&mut r),
+        Cue::Fuse => rustle(&mut r),
+        Cue::Flyby => ricochet(&mut r),
+        Cue::Learn => rustle(&mut r),
+        Cue::CollapseWood => collapse(&mut r),
+        Cue::Unlock => chime(&[(2_093.0, 0.0, 0.08), (2_637.0, 0.09, 0.10)]),
+        Cue::Equip | Cue::MapPaper => rustle(&mut r),
+        Cue::ContainerOpen => creak(&mut r),
+
+        // ---- other bodies' hands ----------------------------------------
+        // The same hands heard from across the room, by delegation for the
+        // remote swing's reason: what makes one remote is its def.
+        Cue::RemoteReload => render_take(Cue::Reload, take),
+        Cue::RemoteEat => render_take(Cue::Eat, take),
+        Cue::RemoteBandage => render_take(Cue::Bandage, take),
+        Cue::RemoteDrink => render_take(Cue::Drink, take),
+        Cue::RemoteContainerOpen => render_take(Cue::ContainerOpen, take),
+        Cue::RemoteEquip => render_take(Cue::Equip, take),
+        Cue::RemoteLand => render_take(Cue::Land, take),
+        Cue::RemoteSplash => render_take(Cue::Splash, take),
+        Cue::RemoteBowDraw => render_take(Cue::BowDraw, take),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1481,6 +1510,42 @@ fn rotor(r: &mut Rng) -> Vec<f32> {
         };
         let whine = 0.035 * (std::f32::consts::TAU * whine_hz * time).sin();
         out.push(body + swish + whine + rumble.run(x) * 0.8);
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// Crickets at night: a few callers, each a high tone pulsed in short
+/// chirps at its own rate, over the faint hiss of the rest of the field.
+fn crickets(r: &mut Rng) -> Vec<f32> {
+    use std::f32::consts::{PI, TAU};
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    // Pitch, chirps a second, phase, level.
+    let callers: Vec<(f32, f32, f32, f32)> = (0..5)
+        .map(|_| {
+            (
+                4_200.0 + 1_300.0 * r.unit(),
+                1.6 + 1.6 * r.unit(),
+                r.unit(),
+                0.4 + 0.6 * r.unit(),
+            )
+        })
+        .collect();
+    let (mut hiss_lp, mut hiss_hp) = (Lp::new(8_000.0), Lp::new(3_000.0));
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let mut call = 0.0;
+        for &(hz, rate, phase, amp) in &callers {
+            // Four smooth pulses in the first fifth of each chirp period.
+            let at = (time * rate + phase).fract();
+            if at < 0.2 {
+                let pulse = (PI * (at / 0.05).fract()).sin();
+                call += amp * pulse * pulse * (TAU * hz * time).sin();
+            }
+        }
+        let h = hiss_lp.run(r.noise());
+        out.push(call * 0.3 + (h - hiss_hp.run(h)) * 0.2);
     }
     loop_seam(out, samples(BED_FADE_SECS))
 }

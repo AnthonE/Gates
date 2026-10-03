@@ -76,6 +76,24 @@ pub fn first_in_line(
         .min_by(f32::total_cmp)
 }
 
+/// A round passing closer than this to your head is heard going by, metres.
+pub const FLYBY_R_M: f32 = 4.0;
+/// …unless you are standing next to the gun: its report covers it.
+pub const FLYBY_MIN_M: f32 = 6.0;
+
+/// Where a round from `from` along `dir`, stopping at `stop`, passed nearest
+/// `ear` — if it passed within [`FLYBY_R_M`] of it on the way, far enough
+/// from the gun to be its own sound.
+pub fn flyby_point(from: Vec3, dir: Vec3, stop: Vec3, ear: Vec3) -> Option<Vec3> {
+    let along = (ear - from).dot(dir);
+    let reach = (stop - from).dot(dir);
+    if along < FLYBY_MIN_M || along > reach {
+        return None;
+    }
+    let at = from + dir * along;
+    (at.distance(ear) < FLYBY_R_M).then_some(at)
+}
+
 /// Draw every shot this frame: its flash at the muzzle, its tracer, and —
 /// for a hitscan miss past the shard's mark range — the contact its dust,
 /// mark and sound are thrown from.
@@ -92,6 +110,7 @@ pub fn shots(
     mut contacts: ResMut<Contacts>,
     mut fx: ResMut<Fx>,
     mut cache: Local<Box<SlotCache>>,
+    mut sound: Option<ResMut<super::super::audio::Sound>>,
 ) {
     if feed.shots().is_empty() {
         return;
@@ -219,6 +238,17 @@ pub fn shots(
         // The tracer, from a little past the muzzle (not through your own
         // gun) to where the round stopped — the body it met, if it met one.
         let tracer_end = hit_t.map_or(end, |t| eye_at + dir * t);
+
+        // Someone else's round passing your head: the snap is heard at the
+        // point of the line nearest you, and only if the round got there.
+        if let Some(sound) = sound.as_deref_mut().filter(|_| !own) {
+            if let Some(at) = flyby_point(eye_at, dir, tracer_end, eye_pos) {
+                sound.play(crate::sound::mixer::Request::at(
+                    crate::sound::Cue::Flyby,
+                    at.to_array(),
+                ));
+            }
+        }
         let start = muzzle + dir * if own { 1.5 } else { 0.3 };
         let dist = (tracer_end - start).dot(dir).max(0.0);
         if dist > 2.0 {

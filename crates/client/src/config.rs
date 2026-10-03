@@ -213,6 +213,8 @@ pub struct Persisted {
     pub vol_game: f32,
     pub vol_ambience: f32,
     pub vol_music: f32,
+    /// How hard the camera shakes, 0..1 (`render/shake.rs`).
+    pub shake: f32,
     /// Tell Discord what the player is doing (`crate::discord`). On by
     /// default, and that is safe rather than presumptuous for two reasons:
     /// the whole path is dark unless the build carries an application id,
@@ -318,6 +320,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_game" => num(&mut v.vol_game, value),
             "vol_ambience" => num(&mut v.vol_ambience, value),
             "vol_music" => num(&mut v.vol_music, value),
+            "shake" => num(&mut v.shake, value),
             "discord_presence" => flag(&mut v.discord_presence, value),
             "discord_share_server" => flag(&mut v.discord_share_server, value),
             // ── the individual graphics rows ──────────────────────────────
@@ -457,6 +460,7 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
     s.push_str(&format!("vol_music = {}\n", v.vol_music));
+    s.push_str(&format!("shake = {}\n", v.shake));
     s.push_str(&format!("discord_presence = {}\n", v.discord_presence));
     s.push_str(&format!(
         "discord_share_server = {}\n",
@@ -599,6 +603,7 @@ mod tests {
             vol_game: 1.0,
             vol_ambience: 1.0,
             vol_music: 1.0,
+            shake: 1.0,
             discord_presence: false,
             discord_share_server: true,
             // Empty on purpose: the overlay tests below are about the
@@ -622,6 +627,7 @@ mod tests {
             vol_game: 0.3,
             vol_ambience: 0.0,
             vol_music: 0.45,
+            shake: 0.5,
             discord_presence: true,
             discord_share_server: false,
             gfx: GfxFile {

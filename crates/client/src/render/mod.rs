@@ -108,6 +108,7 @@ pub mod heldgen;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
+pub mod hurt_flash;
 pub mod impact;
 pub mod input;
 pub mod loading;
@@ -152,6 +153,7 @@ pub mod presence;
 pub mod props;
 pub mod rig;
 pub mod settings;
+pub mod shake;
 // Where a blow meets the drawn mesh rather than the sim's cylinder.
 pub mod skin;
 // A spectator seat's label (wire v73): whose view this is. Everything else a
@@ -180,6 +182,8 @@ pub mod textures;
 pub mod ground_splat;
 pub mod tree;
 pub mod ui;
+// Under the surface: the water's fog and the shell past it.
+pub mod underwater;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
 // research, `TERRAIN.md` §4 is what it replaces.
 pub mod water;
@@ -960,8 +964,14 @@ impl Plugin for GatesRenderPlugin {
         // open the map. `map::open` carries its own guard now and does not
         // rely on being downstream of anything.
         app.init_resource::<map::Island>()
-            .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
-            .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
+            .add_systems(
+                OnEnter(Screen::Map),
+                ((map::enter, map::setup).chain(), audio::map_paper),
+            )
+            .add_systems(
+                OnExit(Screen::Map),
+                ((map::teardown, map::leave), audio::map_paper),
+            )
             .add_systems(
                 Update,
                 (map::track, map::keys)
@@ -1254,6 +1264,10 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
         // After the deck: the stars hide behind its field.
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
+        .add_systems(
+            OnEnter(Screen::Loading),
+            underwater::setup.after(rig::setup),
+        )
         // The beds, from the loading screen's first frame at zero. No camera
         // is needed: the pan is computed per start from `Eye` in `pump`.
         .add_systems(OnEnter(Screen::Loading), audio::setup)
@@ -1570,6 +1584,14 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !filming),
         )
+        // The red rim on a blow (`hurt_flash.rs`), off the same drained feed.
+        .add_systems(
+            Update,
+            hurt_flash::flash
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !filming),
+        )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
         .add_systems(
@@ -1585,6 +1607,7 @@ impl Plugin for GatesRenderPlugin {
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
                 stars::drive.after(sky::compose),
+                underwater::drive.after(rig::day_night),
                 hud::exposure,
                 // THE GATE's rules on screen: in and out of the zone, a
                 // sentry's lock, a holstered click. After the drain, for the
@@ -1631,6 +1654,11 @@ impl Plugin for GatesRenderPlugin {
                 // …and their arms. Same slice `bodies::stream` animates
                 // from, same transform it just wrote.
                 audio::remote_swings,
+                // …their deeds the server says were heard (a reload, a meal,
+                // a lid), and what the snapshot already says their hands and
+                // feet did (a draw, a landing).
+                audio::remote_heard,
+                audio::remote_hands,
                 // …and every shot in earshot, at the shooter. Same slice,
                 // and after it for the same reason: the transform this
                 // reads is the one `bodies::stream` just wrote.
@@ -1640,6 +1668,8 @@ impl Plugin for GatesRenderPlugin {
                 // moved — a snort, a howl or a growl, by species and range.
                 audio::voices,
                 audio::ui_click,
+                audio::hands,
+                audio::fires,
                 audio::bed,
                 audio::pump,
             )
@@ -1647,6 +1677,22 @@ impl Plugin for GatesRenderPlugin {
                 .after(Stream)
                 .run_if(world_running),
         );
+
+        // Camera shake (`shake.rs`): after the camera is rewritten from `Eye`
+        // and the frame's contacts are resolved, before the audio chain takes
+        // this frame's thunder off the queue. Not on a capture, a plate or a
+        // film: their frames are gates.
+        if self.capture.is_none() && !filming && !plate {
+            app.init_resource::<shake::Shake>().add_systems(
+                Update,
+                shake::apply
+                    .after(rig::follow_eye)
+                    .after(impact::snap)
+                    .before(audio::water)
+                    .run_if(world_placed)
+                    .run_if(world_running),
+            );
+        }
 
         // ---- the menus -----------------------------------------------
         // **Not on a capture run**, and that is a rule rather than a

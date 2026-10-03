@@ -864,3 +864,107 @@ fn the_resolved_field_is_the_field_at_that_vertex() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The breakers.
+// ---------------------------------------------------------------------------
+
+/// A breaker never stands on the beach, never runs out to sea and never
+/// troubles a lake — the same climbing-the-sand artefact `shoal` exists to
+/// prevent, for the wave that runs straight at the sand.
+#[test]
+fn a_breaker_lives_only_in_the_surf_zone_of_the_sea() {
+    assert_eq!(
+        surf_envelope(0.0, 0.0, 1.0),
+        0.0,
+        "a breaker at the waterline"
+    );
+    assert_eq!(surf_envelope(-0.5, 0.0, 1.0), 0.0, "a breaker on dry land");
+    assert_eq!(
+        surf_envelope(SURF_FADE_TO_M + 0.1, 20.0, 1.0),
+        0.0,
+        "a breaker offshore"
+    );
+    assert_eq!(surf_envelope(1.5, 10.0, 0.0), 0.0, "a breaker on a lake");
+    assert!(surf_envelope(1.5, 10.0, 1.0) > SURF_AMP_M * 0.9);
+    assert_eq!(
+        surf_envelope(1.5, SURF_REACH_M, 1.0),
+        0.0,
+        "past the field's reach"
+    );
+    // The core carries it: a quarter wavelength at or above the core step.
+    assert!(SURF_LEN_M * 0.25 >= STEP_M);
+}
+
+/// The distance field measures what it says on a straight shore.
+#[test]
+fn the_shore_distance_is_the_distance_to_dry_ground() {
+    let n = 40;
+    // Dry for x < 10, deepening after.
+    let depth: Vec<f32> = (0..n * n).map(|i| (i % n) as f32 - 9.5).collect();
+    let mut out = vec![0.0f32; n * n];
+    shore_distance(&depth, n, 0, n - 1, 2.0, &mut out);
+    for ix in 10..30 {
+        let got = out[20 * n + ix];
+        let want = ((ix - 9) as f32 * 2.0).min(SURF_REACH_M);
+        assert!((got - want).abs() < 1e-3, "x {ix}: {got} m, wanted {want}");
+    }
+    assert_eq!(out[20 * n + 3], 0.0, "dry ground is at distance zero");
+}
+
+/// **The point of the whole thing: the crests move toward land.** Track the
+/// highest crest along a line running offshore and step the phase: it must
+/// arrive closer to the beach.
+#[test]
+fn the_breakers_run_toward_land() {
+    let crest_at = |phase: f32| {
+        let mut best = (0.0f32, f32::MIN);
+        // One wavelength's worth of the surf zone, 10 m to 24 m out.
+        let mut d = 10.0;
+        while d < 10.0 + SURF_LEN_M {
+            let (h, _, _, _) = surf_at(SURF_AMP_M, d, [1.0, 0.0], phase);
+            if h > best.1 {
+                best = (d, h);
+            }
+            d += 0.05;
+        }
+        best.0
+    };
+    let a = crest_at(1.0);
+    let b = crest_at(1.3);
+    assert!(
+        b < a,
+        "the crest moved from {a} m to {b} m - away from the beach"
+    );
+    // And the gradient points the way the distance grows, scaled like the
+    // height: a finite difference along the direction agrees.
+    let (h0, gx, _, _) = surf_at(SURF_AMP_M, 12.0, [1.0, 0.0], 0.7);
+    let (h1, _, _, _) = surf_at(SURF_AMP_M, 12.001, [1.0, 0.0], 0.7);
+    assert!(
+        ((h1 - h0) / 0.001 - gx).abs() < 0.02,
+        "slope {gx} against {}",
+        (h1 - h0) / 0.001
+    );
+}
+
+/// A bore is a white front with a fading wake behind it — seaward — and clear
+/// water ahead of it: the trail peaks as the crest passes, has faded by the
+/// next crest, and there is no breaker at all where the field has no
+/// direction.
+#[test]
+fn a_bore_foams_behind_its_front() {
+    let k = std::f32::consts::TAU / SURF_LEN_M;
+    // Put the crest at 20 m: `k·d + phase = π/2`.
+    let phase = std::f32::consts::FRAC_PI_2 - k * 20.0;
+    let at = |d: f32| surf_at(SURF_AMP_M, d, [1.0, 0.0], phase).3;
+    assert!(at(20.0) > 0.99, "no foam at the front: {}", at(20.0));
+    assert!(at(22.0) > at(24.0), "the wake does not fade seaward");
+    assert!(at(19.0) < 0.1, "foam ahead of the front: {}", at(19.0));
+    assert_eq!(surf_at(SURF_AMP_M, 20.0, [0.0, 0.0], phase).3, -1.0);
+    assert_eq!(
+        breaker_foam(SURF_AMP_M, 8.0, 1.0),
+        0.0,
+        "a bore breaking in deep water"
+    );
+    assert!(breaker_foam(SURF_AMP_M, 0.5, 1.0) > 0.5 * SURF_FOAM_MAX);
+}

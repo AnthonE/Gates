@@ -11,7 +11,7 @@ use protocol::ItemCatalog;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::gather::{cell_key, weak_mark8, GatherContent, NO_CELL, SWING_INTERVAL_TICKS};
-use sim_core::input::BTN_PRIMARY;
+use sim_core::input::{BTN_AIM, BTN_PRIMARY};
 
 /// Wire pitch for a level look. `InputFrame`'s pitch 0 is straight DOWN, and
 /// a swing has been a ray along the look since melee aim v1 (2026-09-05) —
@@ -434,5 +434,65 @@ fn a_swing_reaches_every_client_not_just_the_swinger() {
     assert_eq!(
         to_swinger, to_stranger,
         "a broadcast reaches every connected client the same number of times"
+    );
+}
+
+/// A bow drawn is heard by the neighbour **once**, on the edge the drawer's
+/// own creak plays on (wire v93, `SUB_HEARD`'s `DEED_DRAW`) — not every tick
+/// the aim is held, and never echoed to the hand that drew.
+#[test]
+fn a_bow_draw_is_heard_once_by_the_neighbour() {
+    const BOW: u16 = 5;
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.combat.ranged[BOW as usize] = sim_core::combat::RangedDef {
+        damage: 10,
+        draw_ticks: 30,
+        ..Default::default()
+    };
+    core.world.dev_spawn = Some((2048.0, 2048.0));
+    core.catalog = probe_catalog();
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        clients[0].1.set_input(0, 0, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, 0, LEVEL, 0, 0, 0);
+        pump(&mut core, &stats, &mut clients, &[]);
+    }
+    let w0 = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(0))
+        .expect("the drawer is in the world");
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+
+    let mut seen: Vec<(usize, protocol::EventMsg)> = Vec::new();
+    for _ in 0..20 {
+        clients[0].1.set_input(BTN_AIM, 0, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, 0, LEVEL, 0, 0, 0);
+        pump_seen(&mut core, &stats, &mut clients, &[], &mut seen);
+    }
+    let heard: Vec<(usize, u32, u8)> = seen
+        .iter()
+        .filter_map(|(slot, m)| match m {
+            protocol::EventMsg::Heard { body, deed, .. } => Some((*slot, *body, *deed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        vec![(1, id_of(0), protocol::DEED_DRAW)],
+        "a held draw is one creak, heard by the neighbour alone"
     );
 }

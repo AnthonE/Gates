@@ -437,6 +437,67 @@ fn only_the_opener_is_shown_a_container() {
     );
 }
 
+/// Opening a bag is **heard** by whoever stands near it (wire v93,
+/// `SUB_HEARD`) — the lid, never what is under it — by nobody past
+/// `ACT_HEAR_CM`, and never echoed back to the hands that opened it.
+#[test]
+fn an_open_is_heard_near_and_not_far() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut clients = two_clients(&mut core, &stats);
+    let bag = bag_from_a_kill(&mut core, &stats, &mut clients);
+    // A third client, joined after the kill, to stand past earshot.
+    assert!(core.connect(2, id_of(2)));
+    clients.push((2usize, ClientCore::new(SEED, id_of(2), 0)));
+    let mut warm = Vec::new();
+    for _ in 0..8 {
+        pump(&mut core, &stats, &mut clients, &mut warm);
+    }
+    let (w0, w1, w2) = (
+        world_slot(&core, id_of(0)),
+        world_slot(&core, id_of(1)),
+        world_slot(&core, id_of(2)),
+    );
+    core.world.players[w1].body = core.world.players[w0].body;
+    // A body quantum is 3 cm, so this is a couple of metres past earshot —
+    // still well inside interest, so only the earshot test can stop it.
+    let mut far = core.world.players[w0].body;
+    far.qx += (sim_core::limits::ACT_HEAR_CM / 3) as i32 + 64;
+    // Something the far client is owed on this lane in this window, so the
+    // negative claim below is about the server and not a quiet capture.
+    core.world.players[w2].inv[0] = ItemStack {
+        item: THIRD,
+        count: COUNT_C,
+        cond: 0,
+        skin: 0,
+    };
+
+    let mut seen = Vec::new();
+    ask(&mut core, 0, CONT_BAG, bag);
+    for _ in 0..4 {
+        core.world.players[w2].body = far;
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+
+    assert!(
+        seen.iter()
+            .any(|(slot, m)| *slot == 2 && matches!(m, EventMsg::Inv { .. })),
+        "the capture recorded nothing for the far client: {seen:?}"
+    );
+    let heard: Vec<(usize, u32, u8)> = seen
+        .iter()
+        .filter_map(|(slot, m)| match m {
+            EventMsg::Heard { body, deed, .. } => Some((*slot, *body, *deed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heard,
+        vec![(1, id_of(0), protocol::DEED_OPEN_BAG)],
+        "the open must be heard once, by the neighbour alone"
+    );
+}
+
 #[test]
 fn walking_away_closes_the_panel_rather_than_starving_it() {
     let stats = ShardStats::default();

@@ -67,13 +67,14 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 6] = [
+pub const BEDS: [Cue; 7] = [
     Cue::BedWind,
     Cue::BedSurf,
     Cue::BedUnder,
     Cue::BedRain,
     Cue::BedRotor,
     Cue::BedTown,
+    Cue::BedNight,
 ];
 
 /// How far past THE GATE's safe zone its yard is still heard, metres: full
@@ -561,9 +562,31 @@ pub fn steps(
     mut sound: ResMut<Sound>,
     time: Res<Time>,
     fx: Option<ResMut<super::fx::Fx>>,
+    mut air: Local<Air>,
 ) {
+    let mut fx = fx;
     let body = &net.session.core.predict.body;
     let pos = net.session.core.predict.render_position();
+    // The landing: the body comes back to the ground faster than a step
+    // down would bring it. Before the stride's early-out, which a landing
+    // is not part of.
+    let vy = body.qvy as f32 * sim_core::movement::VEL_Q;
+    if !body.grounded {
+        air.airborne = true;
+        air.vy = vy;
+    } else if air.airborne {
+        air.airborne = false;
+        let v = -air.vy;
+        if v > LAND_SOUND_MPS && pos[1] >= sim_core::terrain::SEA_LEVEL {
+            let gain = ((v - LAND_SOUND_MPS) / 7.0).clamp(0.45, 1.0);
+            sound.play(Request::own(Cue::Land).with_gain(gain));
+            if let Some(fx) = fx.as_deref_mut() {
+                let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+                let ground = crate::sound::steps::surface_cue(splat, false);
+                super::fx::world::body_landing(fx, ground, Vec3::from(pos));
+            }
+        }
+    }
     let Some(mut step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
         return;
     };
@@ -584,6 +607,55 @@ pub fn steps(
 /// A crouched step's gain against a standing one at the same speed (v83):
 /// the crouch is the quiet walk, heard by players as well as animals.
 pub const CROUCH_STEP_GAIN: f32 = 0.5;
+
+/// A fall faster than this, m/s, lands with a thud (a jump lands at ~7).
+pub const LAND_SOUND_MPS: f32 = 3.5;
+
+/// The body's last airborne state, for [`steps`]'s landing.
+#[derive(Default)]
+pub struct Air {
+    airborne: bool,
+    vy: f32,
+}
+
+/// How far a lit fire is heard crackling, metres (the cue's own radius).
+pub const FIRE_REACH_M: f32 = 14.0;
+
+/// Lit fires crackle: the nearest lit fire or furnace in reach, a short
+/// recorded crackle every half second to a second. The fire's light is lit
+/// exactly when the sim says the fire is (`structures::fire_lights`), so the
+/// light is the authority here too.
+pub fn fires(
+    time: Res<Time>,
+    eye: Res<Eye>,
+    lights: Query<(&PointLight, &GlobalTransform), With<super::structures::FireLight>>,
+    mut sound: ResMut<Sound>,
+    mut next: Local<(f32, u32)>,
+) {
+    next.0 -= time.delta_secs();
+    if next.0 > 0.0 {
+        return;
+    }
+    let nearest = lights
+        .iter()
+        .filter(|(l, _)| l.intensity > 0.0)
+        .map(|(_, g)| g.translation())
+        .filter(|p| p.distance(eye.pos) < FIRE_REACH_M)
+        .min_by(|a, b| a.distance(eye.pos).total_cmp(&b.distance(eye.pos)));
+    // xorshift, for the gap: a fire that crackles on a metronome is a loop.
+    let mut x = next.1.max(1);
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    next.1 = x;
+    let r = x as f32 / u32::MAX as f32;
+    let Some(at) = nearest else {
+        next.0 = 0.5;
+        return;
+    };
+    sound.play(Request::at(Cue::FireCrackle, at.to_array()));
+    next.0 = 0.45 + 0.75 * r;
+}
 
 /// One remote body's step odometer — the same `sound::steps::Steps` the
 /// local player runs, one per drawn body, carried as a component so it dies
@@ -756,6 +828,131 @@ pub fn remote_swings(
     }
 }
 
+/// Is `item` a dressing rather than a meal: it heals and feeds nothing.
+fn dressing(catalog: &protocol::ItemCatalog, item: u16) -> bool {
+    let row = catalog.row(item as usize);
+    row.health > 0 && row.food == 0 && row.water == 0
+}
+
+/// Other bodies' hands, heard at the body (wire v93, `SUB_HEARD`): a
+/// magazine seated, a meal or a dressing, a drink, a keypad taking a code, a
+/// box's lid or a backpack's leather, a bow coming back. The server sends only what is in
+/// earshot; the mixer's falloff does the rest.
+pub fn remote_heard(
+    net: Option<NonSend<Net>>,
+    feed: Res<super::feed::Feed>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+    mut sound: ResMut<Sound>,
+) {
+    if feed.heard().is_empty() {
+        return;
+    }
+    let Some(n) = net.as_deref() else {
+        return;
+    };
+    for &(id, deed, item) in feed.heard() {
+        let Some((_, t)) = bodies.iter().find(|(b, _)| b.0 == id) else {
+            continue;
+        };
+        let cue = match deed {
+            protocol::DEED_RELOAD => Cue::RemoteReload,
+            protocol::DEED_MEAL if dressing(&n.session.core.catalog, item) => Cue::RemoteBandage,
+            protocol::DEED_MEAL => Cue::RemoteEat,
+            protocol::DEED_DRINK => Cue::RemoteDrink,
+            protocol::DEED_KEYPAD => Cue::Unlock,
+            protocol::DEED_OPEN_BOX => Cue::RemoteContainerOpen,
+            protocol::DEED_OPEN_BAG => Cue::RemoteEquip,
+            protocol::DEED_DRAW => Cue::RemoteBowDraw,
+            _ => continue,
+        };
+        let p = t.translation;
+        sound.play(Request::at(cue, [p.x, p.y + REMOTE_HANDS_H_M, p.z]));
+    }
+}
+
+/// Where another body's hands are heard from, above its feet.
+const REMOTE_HANDS_H_M: f32 = 1.1;
+/// Time in the air before coming down is heard: a jump is ~0.7 s, and a
+/// step off a 0.6 m ledge is ~0.25 s, which is a step and not a landing.
+pub const REMOTE_LAND_AIR_S: f32 = 0.3;
+
+/// One remote body as the ear last knew it: what it held (`None` until
+/// first sampled) and how long it has been off the ground. Inserted at
+/// spawn beside [`RemoteSteps`], so a body that re-enters interest starts
+/// fresh rather than "drawing" whatever it already had in hand.
+#[derive(Component, Default)]
+pub struct RemoteHands {
+    held: Option<Option<u16>>,
+    air_s: f32,
+}
+
+/// What other bodies' hands and feet do that the snapshot already says: a
+/// new item drawn (`RemoteState::held` changing to something), and a
+/// landing after a real jump or fall (`airborne` clearing) — a splash if it
+/// came down in the sea. No wire of its own: the facts were there.
+pub fn remote_hands(
+    net: Option<NonSend<Net>>,
+    world: Res<super::WorldId>,
+    time: Res<Time>,
+    mut bodies: Query<(
+        &super::bodies::Body,
+        &Transform,
+        &super::anim::BodyAnim,
+        &mut RemoteHands,
+    )>,
+    mut sound: ResMut<Sound>,
+    eye: Res<Eye>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
+) {
+    let Some(n) = net.as_deref() else {
+        return;
+    };
+    let core = &n.session.core;
+    let tick = core.render_tick();
+    let dt = time.delta_secs();
+    let mut rs = client_core::interp::RemoteState::default();
+    for (body, t, anim, mut hands) in bodies.iter_mut() {
+        let at = t.translation;
+        if core.interp.sample(body.0, tick, &mut rs) {
+            let now = (!rs.dead && !rs.wounded).then_some(rs.held).flatten();
+            if let Some(was) = hands.held {
+                if now.is_some() && now != was && !rs.sleeping {
+                    sound.play(Request::at(
+                        Cue::RemoteEquip,
+                        [at.x, at.y + REMOTE_HANDS_H_M, at.z],
+                    ));
+                }
+            }
+            hands.held = Some(now);
+        }
+        if anim.airborne {
+            hands.air_s += dt;
+            continue;
+        }
+        if hands.air_s >= REMOTE_LAND_AIR_S {
+            let wet = at.y < sim_core::terrain::SEA_LEVEL;
+            let cue = if wet {
+                Cue::RemoteSplash
+            } else {
+                Cue::RemoteLand
+            };
+            sound.play(Request::at(cue, [at.x, at.y, at.z]));
+            if let Some(fx) = fx.as_deref_mut() {
+                if at.distance(eye.pos) <= super::fx::world::STEP_FX_M {
+                    if wet {
+                        super::fx::world::splash(fx, at, 0.7);
+                    } else {
+                        let splat = sim_core::terrain::splat(world.seed, at.x, at.z);
+                        let ground = crate::sound::steps::surface_cue(splat, false);
+                        super::fx::world::body_landing(fx, ground, at);
+                    }
+                }
+            }
+        }
+        hands.air_s = 0.0;
+    }
+}
+
 /// Which report a shot makes, from the one bit that separates the two
 /// weapons.
 ///
@@ -870,7 +1067,21 @@ pub fn feed(
     feed: Res<super::feed::Feed>,
     world: Option<Res<super::WorldId>>,
     mut sound: ResMut<Sound>,
+    mut cont: Local<(u8, u32)>,
 ) {
+    // A container opened under your hands: a box's or a crate's latch and
+    // lid, a backpack's leather. Off the open view naming a new container,
+    // which is the server answering the open, not the key.
+    let open = (net.session.core.cont_kind, net.session.core.cont_handle);
+    if open != *cont && open.0 != sim_core::inventory::CONT_SELF {
+        let cue = if open.0 == sim_core::inventory::CONT_BAG {
+            Cue::Equip
+        } else {
+            Cue::ContainerOpen
+        };
+        sound.play(Request::own(cue));
+    }
+    *cont = open;
     // One marker per frame however many landed — `Cue::Hit`'s own cooldown
     // would refuse the rest anyway, and asking for four identical clicks so
     // three can be thrown away is work the queue does not need to do.
@@ -909,6 +1120,10 @@ pub fn feed(
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
+    // A blueprint learned: it was a toast and no sound.
+    if !feed.learned().is_empty() {
+        sound.play(Request::own(Cue::Learn));
+    }
     // A kiosk trade went through (THE GATE): the coins.
     for _ in feed.traded() {
         sound.play(Request::own(Cue::Trade));
@@ -929,8 +1144,7 @@ pub fn feed(
     // eat in it — a bandage, a medkit — is wrapped rather than chewed: the
     // HUD's EAT/USE line draws the same distinction off the same row.
     for &(item, _slot) in feed.consumed() {
-        let row = net.session.core.catalog.row(item as usize);
-        let cue = if row.health > 0 && row.food == 0 && row.water == 0 {
+        let cue = if dressing(&net.session.core.catalog, item) {
             Cue::Bandage
         } else {
             Cue::Eat
@@ -943,6 +1157,10 @@ pub fn feed(
     if feed.reloaded > 0 {
         sound.play(Request::own(Cue::Reload));
     }
+    // A drink landed: it was silent.
+    if feed.applied & client_core::core::APPLIED_DRANK != 0 {
+        sound.play(Request::own(Cue::Drink));
+    }
     // A knock, at the door knocked on — broadcast, so it is often somebody
     // else's hand, and where the door is is the news.
     if let Some(world) = world {
@@ -952,6 +1170,28 @@ pub fn feed(
             let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
             let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
             sound.play(Request::at(Cue::Knock, [x, y + 1.3, z]));
+        }
+        // A lock or a hearth took the code: the keypad's accept, at it.
+        for &(cx, cz, level, loc, grant) in feed.auths() {
+            if grant == sim_core::lock::GRANT_NONE {
+                continue;
+            }
+            let (x, z) = sim_core::build::anchor(cx, cz, loc);
+            let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+            let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+            sound.play(Request::at(Cue::Unlock, [x, y + 1.2, z]));
+        }
+        // A charge going live: its fuse sizzles where it was stuck, for
+        // anyone near enough to run.
+        if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
+            let (cx, cz, level, loc, _row, fuse) = core.charge_placed;
+            if fuse > 0 {
+                let (x, z) = sim_core::build::anchor(cx, cz, loc);
+                let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+                let y =
+                    super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+                sound.play(Request::at(Cue::Fuse, [x, y + 1.0, z]));
+            }
         }
     }
     // Every refusal kind, one sound. A player does not need to hear the
@@ -1077,6 +1317,45 @@ fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
     })
 }
 
+/// Something new in your hand (`Cue::Equip`): the hotbar moved to a slot
+/// holding an item, or the item in the held slot was swapped for another.
+/// Not an emptied hand, and not an item arriving in an empty one — that is a
+/// join's or a respawn's inventory landing, not a draw.
+pub fn hands(
+    net: Option<NonSend<Net>>,
+    mut sound: ResMut<Sound>,
+    mut last: Local<Option<(u8, u16)>>,
+) {
+    let Some(n) = net.as_deref() else {
+        return;
+    };
+    let core = &n.session.core;
+    let held = if core.holstered() {
+        sim_core::gather::NO_ITEM
+    } else {
+        core.inv
+            .get(usize::from(n.sel))
+            .filter(|s| s.count > 0)
+            .map_or(sim_core::gather::NO_ITEM, |s| s.item)
+    };
+    if let Some((sel, was)) = *last {
+        let drawn = held != sim_core::gather::NO_ITEM
+            && (n.sel != sel || (held != was && was != sim_core::gather::NO_ITEM));
+        if drawn {
+            sound.play(Request::own(Cue::Equip));
+        }
+    }
+    *last = Some((n.sel, held));
+}
+
+/// The map unfolded or put away (`Cue::MapPaper`): on entering and on
+/// leaving `Screen::Map`.
+pub fn map_paper(sound: Option<ResMut<Sound>>) {
+    if let Some(mut sound) = sound {
+        sound.play(Request::own(Cue::MapPaper));
+    }
+}
+
 /// The interface's click (`Cue::UiClick`), on any button the pointer
 /// presses. One system over every screen's buttons rather than a line in
 /// each screen's handler: a screen added later clicks without knowing this
@@ -1148,7 +1427,28 @@ pub fn place(
             ),
         }
         .translation;
-        sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
+        // A piece sounds like what it is made of: an upgrade to stone is a
+        // block seating, to metal a sheet going on — the reference's grades
+        // each have their own. A deployable, a twig or a wooden piece is
+        // the plank going down.
+        let material = (!deploy)
+            .then(|| {
+                core.pieces
+                    .entries()
+                    .iter()
+                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                    .filter(|r| {
+                        (r.row as u16) < core.piece_defs_have.min(core.piece_defs.piece_count)
+                    })
+                    .map(|r| core.piece_defs.pieces[r.row as usize].material)
+            })
+            .flatten();
+        let cue = match material {
+            Some(sim_core::build::MAT_STONE) => Cue::ImpactStone,
+            Some(sim_core::build::MAT_METAL) => Cue::ImpactMetal,
+            _ => Cue::Place,
+        };
+        sound.play(Request::at(cue, [p.x, p.y, p.z]));
     }
 }
 
@@ -1335,7 +1635,7 @@ pub fn bed(
     // Daylight only, now that a day exists (day/night v0): birds roost at
     // night, and the cause is the server's own clock rather than one this
     // layer invented — the refusal `birds.rs`' header recorded is repaid.
-    // Crickets are the night companion and still owed (`NOW.md` §0x).
+    // Crickets are the night companion: a bed (`Cue::BedNight`), below.
     //
     // Through `world::is_night` rather than the open-coded comparison this
     // used to carry: the sim reads the same boundary now (a predator's
@@ -1403,6 +1703,11 @@ pub fn bed(
             0.0
         }
     };
+    // The night's crickets, the birds' other half: up as the light goes,
+    // quiet in the rain, duller under a roof.
+    sound.bed_target[6] = weather.night
+        * (1.0 - 3.0 * weather.rain).max(0.0)
+        * if weather.sheltered { 0.5 } else { 1.0 };
 
     // Thunder: each bolt's clap once its sound has crossed the distance
     // (`weather::update` queued it at the bolt's own time plus d / 343).
@@ -1449,7 +1754,13 @@ pub fn bed(
 /// **Runs before [`bed`] and [`pump`]**, because both read the snapshot this
 /// resolves and a mix state one frame stale is a mix that comes up as your
 /// head goes back under.
-pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMut<Sound>) {
+pub fn water(
+    net: NonSend<Net>,
+    eye: Res<Eye>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+    fx: Option<ResMut<super::fx::Fx>>,
+) {
     let dt = time.delta_secs();
     // The EARS, not the feet: the mix changes when your head goes under, and a
     // player wading chest-deep is still hearing the world above.
@@ -1462,9 +1773,12 @@ pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMu
 
     // The feet, for the splash: breaking the surface is your body entering the
     // water, which happens well before your head does.
-    let feet = net.session.core.predict.render_position()[1];
-    if let Some(gain) = sound.waterline.sample(feet, dt) {
+    let at = net.session.core.predict.render_position();
+    if let Some(gain) = sound.waterline.sample(at[1], dt) {
         sound.play(Request::own(Cue::Splash).with_gain(gain));
+        if let Some(mut fx) = fx {
+            super::fx::world::splash(&mut fx, Vec3::from(at), gain);
+        }
     }
 }
 

@@ -2400,6 +2400,7 @@ pub fn stream(
     net: NonSend<Net>,
     models: Res<super::viewmodel::Models>,
     mut marks: Option<ResMut<super::decal::Marks>>,
+    mut sound: Option<ResMut<super::audio::Sound>>,
 ) {
     // One reborrow, then field-level borrows. `ResMut`'s `DerefMut` hands out
     // a borrow of the WHOLE resource, so reading `kit` while inserting into
@@ -2566,6 +2567,18 @@ pub fn stream(
                     let arch = core.deploy_defs.defs[live.row as usize].arch;
                     let was = deploy_transform(seed, haven, key, arch, live.open, live.plate);
                     m.forget_later(was.translation, DOOR_FORGET_R_M);
+                }
+                // The swing is heard at the leaf — your own on the press
+                // (the mirror is predicted), anyone else's on the event.
+                if let Some(sound) = sound.as_deref_mut().filter(|_| live.row == rec.row) {
+                    let leaf = deploy_transform(seed, haven, key, arch, rec.open, plate);
+                    let cue = if rec.open {
+                        crate::sound::Cue::DoorOpen
+                    } else {
+                        crate::sound::Cue::DoorClose
+                    };
+                    let at = leaf.translation + Vec3::Y * 1.0;
+                    sound.play(crate::sound::mixer::Request::at(cue, at.to_array()));
                 }
             }
             commands.entity(live.entity).despawn();

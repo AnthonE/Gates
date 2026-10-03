@@ -321,11 +321,68 @@ pub enum Cue {
     /// playing nothing in particular, and now and then a clank of sheet
     /// metal. `render/audio.rs` turns it up as you near the town.
     BedTown,
+    /// A door (or shutter) swinging open, at the leaf. Appended, the enum's
+    /// append-order rule, like everything below.
+    DoorOpen,
+    /// A door swinging shut, at the leaf.
+    DoorClose,
+    /// You drank: a gulp or two. Your own mouth.
+    Drink,
+    /// You landed from a jump or a drop: a heavy boot thud. Your own feet.
+    Land,
+    /// A lit fire or furnace crackling, fired every second or so from the
+    /// nearest one in reach (`render/audio.rs::fires`).
+    FireCrackle,
+    /// A satchel's fuse sizzling at the charge, for its whole fuse.
+    Fuse,
+    /// Someone else's bullet passing close: the snap and whiz at the point
+    /// of the line nearest your head (`fx::gun::shots`).
+    Flyby,
+    /// A blueprint learned: a page turned. Your own hands.
+    Learn,
+    /// A lock or a hearth took your code or your name: the keypad's accept,
+    /// at the lock.
+    Unlock,
+    /// A twig or wooden piece coming down: planks splintering. [`Cue::Collapse`]
+    /// is the stone and metal ones.
+    CollapseWood,
+    /// Night on the island, as a bed: a field of crickets. `render/audio.rs`
+    /// brings it up as the light goes and the rain stops.
+    BedNight,
+    /// Something new in your hand: leather and a strap as it comes off the
+    /// belt. Also a backpack on the ground being opened. Your own hands.
+    Equip,
+    /// The map, unfolded or put away: paper. Your own hands.
+    MapPaper,
+    /// A box or a crate opened: the latch, then the lid. Your own hands.
+    ContainerOpen,
+    // ---- other bodies' hands (wire v93, `SUB_HEARD`) ------------------
+    // Each is its own cue's recording heard at another body: positional,
+    // culled by the one falloff law, with its own reach. `RemoteSwing`'s
+    // shape: the def is what makes it remote, never the waveform.
+    /// Somebody else seating a magazine.
+    RemoteReload,
+    /// Somebody else eating.
+    RemoteEat,
+    /// Somebody else dressing a wound.
+    RemoteBandage,
+    /// Somebody else drinking.
+    RemoteDrink,
+    /// Somebody else opening a box or a crate.
+    RemoteContainerOpen,
+    /// Somebody else drawing an item, or opening a backpack on the ground.
+    RemoteEquip,
+    /// Somebody else coming down from a jump or a fall.
+    RemoteLand,
+    /// Somebody else coming down into water.
+    RemoteSplash,
+    /// Somebody else drawing a bow.
+    RemoteBowDraw,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 67;
+pub const CUE_COUNT: usize = 90;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -401,6 +458,29 @@ impl Cue {
         Cue::Trade,
         Cue::GateChime,
         Cue::BedTown,
+        Cue::DoorOpen,
+        Cue::DoorClose,
+        Cue::Drink,
+        Cue::Land,
+        Cue::FireCrackle,
+        Cue::Fuse,
+        Cue::Flyby,
+        Cue::Learn,
+        Cue::Unlock,
+        Cue::CollapseWood,
+        Cue::BedNight,
+        Cue::Equip,
+        Cue::MapPaper,
+        Cue::ContainerOpen,
+        Cue::RemoteReload,
+        Cue::RemoteEat,
+        Cue::RemoteBandage,
+        Cue::RemoteDrink,
+        Cue::RemoteContainerOpen,
+        Cue::RemoteEquip,
+        Cue::RemoteLand,
+        Cue::RemoteSplash,
+        Cue::RemoteBowDraw,
     ];
 
     /// Is this cue a piece of music?
@@ -438,6 +518,7 @@ impl Cue {
                 | Cue::BedRain
                 | Cue::BedRotor
                 | Cue::BedTown
+                | Cue::BedNight
         )
     }
 
@@ -496,12 +577,35 @@ impl Cue {
             | Cue::BulletMetal
             | Cue::FleshHit
             | Cue::Collapse
+            | Cue::CollapseWood
             | Cue::Knock
             | Cue::Reload
             | Cue::Eat
             | Cue::Bandage
             | Cue::BowDraw
-            | Cue::BushPick => 0.07,
+            | Cue::BushPick
+            | Cue::DoorOpen
+            | Cue::DoorClose
+            | Cue::Drink
+            | Cue::Land
+            | Cue::Equip
+            | Cue::MapPaper
+            | Cue::ContainerOpen
+            | Cue::RemoteReload
+            | Cue::RemoteEat
+            | Cue::RemoteBandage
+            | Cue::RemoteDrink
+            | Cue::RemoteContainerOpen
+            | Cue::RemoteEquip
+            | Cue::RemoteLand
+            | Cue::RemoteSplash
+            | Cue::RemoteBowDraw => 0.07,
+            // A fire never crackles the same twice, and a bullet's whiz is
+            // its speed and its miss distance.
+            Cue::FireCrackle | Cue::Flyby => 0.10,
+            // One long take, heard once per charge: a small nudge so two
+            // charges side by side are not in unison.
+            Cue::Fuse => 0.04,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -536,6 +640,8 @@ impl Cue {
             | Cue::SentryLock
             | Cue::Trade
             | Cue::GateChime
+            | Cue::Learn
+            | Cue::Unlock
             | Cue::Refused
             | Cue::Hit
             | Cue::HitHead
@@ -547,7 +653,8 @@ impl Cue {
             | Cue::BedUnder
             | Cue::BedRain
             | Cue::BedRotor
-            | Cue::BedTown => 0.0,
+            | Cue::BedTown
+            | Cue::BedNight => 0.0,
             // **Zero, and it is not the signal-cue argument.** A piece played
             // at 1.03× is a piece in a different key, and the next piece
             // would be in a third — the tail that covers a join would be
@@ -684,12 +791,12 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A tree coming down is the loudest thing in the forest — and it set
     // `MAX_AUDIBLE_M` until the gun's report outranged it at v54.
     row(GAME, 96.0, 0.90,   0, 6, true),   // tree fall
-    row(GAME,  0.0, 0.30,  40, 2, false),  // ui click
+    row(GAME,  0.0, 0.45,  40, 2, false),  // ui click
     // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
     // holds one looping voice each and moves their gains.
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
-    row(AMB,   0.0, 0.34,   0, 0, false),  // surf
-    row(AMB,   0.0, 0.40,   0, 0, false),  // submerged
+    row(AMB,   0.0, 0.38,   0, 0, false),  // surf
+    row(AMB,   0.0, 0.34,   0, 0, false),  // submerged
     // The pig announces itself before you see it (`reference/ANIMALS.md` —
     // the boar is identified by its snorting), so it carries past the
     // impacts but nowhere near a falling tree. Priority with the footsteps'
@@ -764,7 +871,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     //
     // The gun's 100 m is what sets `MAX_AUDIBLE_M`; the falling tree held
     // that title until v54.
-    row(GAME,  40.0, 0.45,  60, 4, true),   // bow released
+    row(GAME,  40.0, 0.42,  60, 4, true),   // bow released
     row(GAME, 100.0, 0.85,  60, 6, true),   // gun fired
     // The other two rungs of the marker (v58). Same bus, same radius (none
     // — they are signals, not places), same 45 ms cooldown and the same
@@ -782,7 +889,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Weather v0. The rain is a bed like the wind; thunder is ambience —
     // a player who turns the scenery down turns the storm down with it —
     // and non-positional, with a cooldown so two near bolts are one roll.
-    row(AMB,   0.0, 0.42,   0, 0, false),  // rain bed
+    row(AMB,   0.0, 0.47,   0, 0, false),  // rain bed
     row(AMB,   0.0, 0.85, 900, 3, false),  // thunder
     // Effects v2. A round landing carries like a blow does; a ricochet a
     // little further, being a whine; a body hit is information a life
@@ -791,12 +898,12 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, stone
     row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, wood
     row(GAME, 48.0, 0.60,  30, 4, true),   // bullet, metal
-    row(GAME, 56.0, 0.45,  90, 3, true),   // ricochet
+    row(GAME, 56.0, 0.84,  90, 3, true),   // ricochet
     row(GAME, 30.0, 0.70,  30, 5, true),   // flesh hit
     // The far report: past `ShotGun`'s radius the near layer is gone and
     // this is what is left of a gunshot. Twice the reach, dark, and at a
     // gain that meets the near layer where `render/audio.rs` switches.
-    row(GAME, 200.0, 0.45,  60, 6, true),  // gun fired, far
+    row(GAME, 200.0, 0.75,  60, 6, true),  // gun fired, far
     // A charge is the loudest thing on the island and the one sound a
     // whole server should know the place of.
     row(GAME, 200.0, 1.00,   0, 7, true),  // blast
@@ -804,12 +911,15 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock
     // Your own hands, so non-positional; the cooldown is what keeps a
     // reload key held down from being a rattle.
-    row(GAME,  0.0, 0.45, 250, 3, false),  // reload
+    row(GAME,  0.0, 0.54, 250, 3, false),  // reload
     // Your own mouth and your own hands: non-positional, and a meal is a
     // second apart (`survival::CONSUME_TICKS`), so the cooldown is only
     // there for two landing in one frame.
-    row(GAME,  0.0, 0.45,  60, 3, false),  // eat
-    row(GAME,  0.0, 0.45, 120, 3, false),  // bandage
+    // (The eat, bandage, bush, trade, zone, landing and page rows were
+    // raised part of the way back when their recordings came in: each
+    // measured well under the synthesized cue it replaced, peak for peak.)
+    row(GAME,  0.0, 0.70,  60, 3, false),  // eat
+    row(GAME,  0.0, 0.62, 120, 3, false),  // bandage
     // Your own bow, so non-positional, and quieter than the release it
     // leads to. The cooldown only stops a flutter on the right mouse from
     // stacking creaks.
@@ -817,19 +927,60 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The heli's rotor: a bed, so radius 0 and no cooldown — its level is
     // `render/audio.rs`'s distance law. GAME, not AMBIENCE: it is a threat,
     // and turning the scenery down must not turn it down.
-    row(GAME,  0.0, 0.60,   0, 0, false),  // rotor
+    row(GAME,  0.0, 0.52,   0, 0, false),  // rotor
     // A bush picked, at the bush: a footstep's reach and a little over an
     // impact's gain, so your own pick reads over your boots and a pick
     // across a clearing is still heard.
-    row(GAME, 24.0, 0.65,  60, 4, true),   // bush picked
+    row(GAME, 24.0, 0.85,  60, 4, true),   // bush picked
     // The sentry's lock: a signal, so no pitch variation, and loud enough
     // to carry across the yard to everyone near the one it is about.
     row(GAME, 70.0, 0.70, 400, 7, true),   // sentry lock
-    row(GAME,  0.0, 0.45, 120, 4, false),  // trade
-    row(GAME,  0.0, 0.35, 800, 3, false),  // into / out of the zone
+    row(GAME,  0.0, 0.80, 120, 4, false),  // trade
+    row(GAME,  0.0, 0.48, 800, 3, false),  // into / out of the zone
     // The town's bed: scenery, so AMBIENCE; its level is `render/audio.rs`'s
     // distance to the gate.
     row(AMB,   0.0, 0.32,   0, 0, false),  // the town
+    // Doors happen at a leaf: a footstep's reach, an impact's priority.
+    row(GAME, 24.0, 0.55,  60, 4, true),   // door open
+    row(GAME, 24.0, 0.60,  60, 4, true),   // door close
+    // Your own mouth and feet, like the eat and the step.
+    row(GAME,  0.0, 0.45, 300, 3, false),  // drink
+    row(GAME,  0.0, 0.72, 200, 3, false),  // land
+    // A fire is scenery: the ambience bus, a short reach, the lowest rank.
+    row(AMB,  14.0, 0.62,  80, 1, true),   // fire crackle
+    // A fuse is a bomb about to go off: carried far enough to run from,
+    // ranked with the hitmarker.
+    row(GAME, 32.0, 0.81, 500, 6, true),   // fuse
+    // A round past your head is the shot that was meant for you.
+    row(GAME, 30.0, 0.95,  60, 6, true),   // bullet flyby
+    // The interface answering you, like the craft chime.
+    row(GAME,  0.0, 0.85, 200, 4, false),  // learn
+    row(GAME, 16.0, 0.55, 150, 4, true),   // unlock
+    row(GAME, 60.0, 0.80,  80, 5, true),   // collapse, wood
+    // The night's crickets: scenery like the town's bed, its level the
+    // hour's (`render/audio.rs`).
+    row(AMB,   0.0, 0.20,   0, 0, false),  // the night
+    // Your own hands at the interface's level: the gather's register, and a
+    // cooldown so a scroll through the hotbar is not a drum roll.
+    row(GAME,  0.0, 0.50, 120, 3, false),  // equip
+    row(GAME,  0.0, 0.45, 150, 3, false),  // map paper
+    row(GAME,  0.0, 0.55, 200, 3, false),  // container open
+    // Other bodies' hands, at the body. Each takes its own cue's gain and a
+    // reach of its own; a reload carries furthest and ranks with a remote
+    // swing, because it is the one a fight turns on — Rust's players listen
+    // for exactly that click to push. `limits::ACT_HEAR_CM` is the server's
+    // side of the widest of these.
+    row(GAME, 30.0, 0.54,  40, 4, true),   // reload, somebody else's
+    row(GAME, 12.0, 0.70,  60, 3, true),   // eat, somebody else's
+    row(GAME, 14.0, 0.62, 100, 3, true),   // bandage, somebody else's
+    row(GAME, 12.0, 0.45, 100, 3, true),   // drink, somebody else's
+    row(GAME, 20.0, 0.55,  60, 3, true),   // container open, somebody else's
+    row(GAME, 16.0, 0.50,  40, 3, true),   // equip, somebody else's
+    row(GAME, 24.0, 0.72,  40, 3, true),   // land, somebody else's
+    row(GAME, 30.0, 0.65,  60, 4, true),   // splash, somebody else's
+    // A bow coming back is the shot a moment before it: ranked with the
+    // reload, carried a little less far than the loose itself.
+    row(GAME, 18.0, 0.35,  60, 4, true),   // bow drawn, somebody else's
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -1064,6 +1215,8 @@ pub struct SnapshotDef {
     pub rotor: f32,
     /// THE GATE's yard: scenery, gone below water like the wind.
     pub town: f32,
+    /// The night's crickets: scenery, gone below water like the wind.
+    pub night: f32,
 }
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
@@ -1087,6 +1240,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         rain: 1.0,
         rotor: 1.0,
         town: 1.0,
+        night: 1.0,
     },
     // Submerged. The game bus survives at a level a player can still fight on
     // — being underwater must not be a stealth advantage handed out by the
@@ -1101,6 +1255,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         rain: 0.0,
         rotor: 0.45,
         town: 0.0,
+        night: 0.0,
     },
 ];
 
@@ -1167,6 +1322,7 @@ impl Snapshots {
             rain: mix(a.rain, b.rain),
             rotor: mix(a.rotor, b.rotor),
             town: mix(a.town, b.town),
+            night: mix(a.night, b.night),
         }
     }
 }
@@ -1191,6 +1347,7 @@ impl SnapshotDef {
             Cue::BedRain => self.rain,
             Cue::BedRotor => self.rotor,
             Cue::BedTown => self.town,
+            Cue::BedNight => self.night,
             _ => 0.0,
         }
     }
