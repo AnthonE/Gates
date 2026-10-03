@@ -750,13 +750,92 @@ pub fn swing_apex_s() -> f32 {
 
 /// The rig's transform for a rotation about [`VIEWMODEL_SWING_PIVOT`] plus a
 /// displacement — the arithmetic that turns "turn about the shoulder" into
-/// the one `Transform` Bevy wants.
+/// the one `Transform` Bevy wants. This is the bare derivation every constant
+/// in this file was measured in; what is drawn lays [`carried`] over it.
 pub fn rig_transform(rot: Quat, off: Vec3) -> Transform {
-    Transform {
-        translation: VIEWMODEL_SWING_PIVOT - rot * VIEWMODEL_SWING_PIVOT + off,
+    carried(0.0, 0.0, rot, off)
+}
+
+/// How much bigger the arm and what it holds are drawn than the hold they were
+/// derived at, scaled about the palm.
+///
+/// **A presentation over the derivation, not a change to it.** Every constant
+/// above — [`VIEWMODEL_HOLD`], the grip, the hidden arm, the swing's pivot —
+/// still means what it measured; this is laid over the whole assembly last,
+/// the way the reference game frames its viewmodel bigger and further out than
+/// the arm would really be (operator, 2026-10-03: *"my hand is a lot bigger…
+/// more off to the side"*).
+///
+/// The stroke is divided by it ([`carried`]), so a bigger arm makes the same
+/// sweep across the frame rather than a bigger one: undivided, 1.25 already
+/// carried a chop's wind-up off the top of the frame.
+pub const VIEWMODEL_CARRY_SCALE: f32 = 1.35;
+/// How far the carried assembly is moved, view space metres: out to the
+/// right and a little down, which puts the palm at ndc (0.44, −0.55) where it
+/// sat at (0.32, −0.49).
+pub const VIEWMODEL_CARRY_SHIFT: Vec3 = Vec3::new(0.10, -0.02, 0.0);
+
+/// The raise a lit item is carried at — the whole arm turned about the
+/// shoulder ([`VIEWMODEL_SWING_PIVOT`]), YXZ radians: out to the right, and
+/// up. The reference game holds a torch up by the head, flame in the top-right
+/// corner where it lights the way without sitting in it.
+pub const VIEWMODEL_LIFT: Vec3 = Vec3::new(-0.10, 0.15, 0.0);
+/// How fast the arm comes up to, or down from, the raise and the carry, 1/s.
+pub const VIEWMODEL_LIFT_RATE: f32 = 8.0;
+/// Where in a stroke the arm has come all the way down out of the raise, as
+/// stroke progress: with the wind-up's own peak. A chop wound up from a
+/// torch held overhead leaves the top-right of the frame, so the arm drops
+/// to swing and comes back up after ([`lift_at`]).
+pub const VIEWMODEL_LIFT_DROP: f32 = 0.15;
+
+/// The raise at stroke progress `s` (1 at rest), for a resting raise `lift`.
+pub fn lift_at(lift: f32, s: f32) -> f32 {
+    lift * (1.0 - bump(s, VIEWMODEL_LIFT_DROP))
+}
+
+/// How much of the carry a row takes. A thrust takes none: its point is
+/// solved onto the crosshair at the depth of the sim's reach
+/// ([`thrust_snap`]), and a spear drawn a third longer would visibly run
+/// through somebody `combat::strike` cannot reach.
+pub fn carry_of(def: Option<&HeldModelDef>) -> f32 {
+    match def.map(|d| d.stroke) {
+        Some(Stroke::Thrust) => 0.0,
+        _ => 1.0,
+    }
+}
+
+/// The assembly's transform as drawn: the stroke `rot`/`off` about the
+/// shoulder, the raise (`lift` 0..1 of [`VIEWMODEL_LIFT`]) about the same
+/// shoulder, and the carry (`carry` 0..1 of [`VIEWMODEL_CARRY_SCALE`] and
+/// [`VIEWMODEL_CARRY_SHIFT`]) over all of it.
+///
+/// `carry` is a fraction because two things let go of it: a thrust row
+/// ([`carry_of`]) and a drawn bow, whose draw pose brings the arrow to the
+/// middle of the frame and would be pushed off the crosshair by it — so
+/// `animate` hands it `carry_of(row) · (1 − raise)`.
+pub fn carried(carry: f32, lift: f32, rot: Quat, off: Vec3) -> Transform {
+    let s = 1.0 + (VIEWMODEL_CARRY_SCALE - 1.0) * carry;
+    // The same sweep on screen, not a bigger one.
+    let rot = Quat::IDENTITY.slerp(rot, 1.0 / s);
+    let off = off / s;
+    let up = Quat::from_euler(
+        EulerRot::YXZ,
+        VIEWMODEL_LIFT.x * lift,
+        VIEWMODEL_LIFT.y * lift,
+        VIEWMODEL_LIFT.z * lift,
+    );
+    let rot = up * rot;
+    let arm = Transform {
+        translation: VIEWMODEL_SWING_PIVOT - rot * VIEWMODEL_SWING_PIVOT + up * off,
         rotation: rot,
         scale: Vec3::ONE,
-    }
+    };
+    let frame = Transform {
+        translation: palm_rig() * (1.0 - s) + VIEWMODEL_CARRY_SHIFT * carry,
+        rotation: Quat::IDENTITY,
+        scale: Vec3::splat(s),
+    };
+    frame * arm
 }
 
 /// The emitter a lit held item hangs in the world. One per session, spawned
@@ -934,6 +1013,10 @@ pub struct Motion {
     draw: crate::ui::draw::DrawClock,
     /// How far the bow is raised, 0..=1, eased toward the aim.
     raise: f32,
+    /// How far the arm is raised for a lit item, 0..=1 ([`VIEWMODEL_LIFT`]).
+    lift: f32,
+    /// How much of the carry the row in hand takes, eased ([`carry_of`]).
+    carry: f32,
     /// The loose's kick, counting down from 1 to 0.
     loose: f32,
     /// Loosed shots since the session began, the draw's `strokes`.
@@ -2182,7 +2265,16 @@ pub fn animate(
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
     let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
-    *t = rig_transform(
+    // A lit item is carried up by the head; anything else comes back down.
+    // Both eased, so a swap from a torch to an axe brings the arm down
+    // rather than cutting to it.
+    let lit = def.is_some_and(|d| d.light.is_some());
+    let k = 1.0 - (-VIEWMODEL_LIFT_RATE * dt).exp();
+    m.lift += (f32::from(u8::from(lit)) - m.lift) * k;
+    m.carry += (carry_of(def) - m.carry) * k;
+    *t = carried(
+        m.carry * (1.0 - raise),
+        lift_at(m.lift, s),
         lag * arc * draw_turn,
         throw + bob + draw_off + Vec3::Y * m.heave,
     );

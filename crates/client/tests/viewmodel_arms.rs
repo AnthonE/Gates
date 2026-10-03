@@ -47,12 +47,12 @@
 
 use client::render::bodies::RETIRED_BODY_PALM;
 use client::render::viewmodel::{
-    aim_snap, bump, item_rest_dir, palm_rig, rig_transform, swing_apex_s, swing_phases, swing_pose,
-    thrust_pose, thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y,
-    VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM,
-    VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_PALM,
-    VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S, VIEWMODEL_SWING_WINDUP,
-    VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
+    aim_snap, bump, carried, item_rest_dir, lift_at, palm_rig, rig_transform, swing_apex_s,
+    swing_phases, swing_pose, thrust_pose, thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X,
+    VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE,
+    VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD,
+    VIEWMODEL_PALM, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S,
+    VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
 };
 use client::ui::hold::{HeldModelDef, Stroke, HELD_MODELS};
 
@@ -805,9 +805,6 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
     let hold = [VIEWMODEL_HOLD.x, VIEWMODEL_HOLD.y, VIEWMODEL_HOLD.z];
 
     const N: usize = 120;
-    let mut path = 0.0f32;
-    let mut prev: Option<V3> = None;
-    let (mut lo, mut hi, mut wide) = (f32::MAX, f32::MIN, 0.0f32);
     let mut near_dead = f32::MAX;
     // The collapse point over the hold loop — the swing rides on top of
     // whatever the clip is doing with that bone.
@@ -816,62 +813,71 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
         .map(|t| collapsed_off_arm(&glb, clip, t))
         .collect();
 
-    for i in 0..=N {
-        let s = i as f32 / N as f32;
-        let (rot, off) = swing_pose(s);
-        let rig = rig_transform(rot, off);
-        let place = |p: V3| {
-            let v = rig.transform_point(bevy::math::Vec3::new(p[0], p[1], p[2]));
-            [v.x, v.y, v.z]
-        };
+    // Over the frames a chop is actually drawn in: the bare derivation, the
+    // carry every chopping row takes, and the carry with a torch's raise.
+    for (carry, lift) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)] {
+        let mut path = 0.0f32;
+        let mut prev: Option<V3> = None;
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for i in 0..=N {
+            let s = i as f32 / N as f32;
+            let (rot, off) = swing_pose(s);
+            let rig = carried(carry, lift_at(lift, s), rot, off);
+            let place = |p: V3| {
+                let v = rig.transform_point(bevy::math::Vec3::new(p[0], p[1], p[2]));
+                [v.x, v.y, v.z]
+            };
 
-        let at = place(hold);
-        if let Some(p) = prev {
-            path += dist(at, p);
-        }
-        prev = Some(at);
-        let (x, y) = ndc(at).unwrap_or_else(|| {
-            panic!("the swing takes the item to {at:?} at s={s:.2} — behind the near plane")
-        });
-        assert!(
-            x.abs() <= 1.20 && (-1.15..=1.05).contains(&y),
-            "the swing takes the item to ndc ({x:.2}, {y:.2}) at s={s:.2}, \
-             which is outside the frame it is supposed to sweep across"
-        );
-        lo = lo.min(y);
-        hi = hi.max(y);
-        wide = wide.max(x.abs());
-
-        for p in &dead_pts {
-            let q = place(*p);
+            let at = place(hold);
+            if let Some(p) = prev {
+                path += dist(at, p);
+            }
+            prev = Some(at);
+            let (x, y) = ndc(at).unwrap_or_else(|| {
+                panic!("the swing takes the item to {at:?} at s={s:.2} — behind the near plane")
+            });
             assert!(
-                !on_screen(q),
-                "{VIEWMODEL_HIDDEN_ARM}'s collapse point is dragged to {q:?} \
-                 at s={s:.2}, which is inside the frame"
+                x.abs() <= 1.20 && (-1.15..=1.05).contains(&y),
+                "the swing takes the item to ndc ({x:.2}, {y:.2}) at s={s:.2} \
+             (carry {carry}, lift {lift}), which is outside the frame it is \
+             supposed to sweep across"
             );
-            // Behind the camera the whole way. Measured as a DEPTH rather than
-            // as an ndc margin, because ndc has no answer behind the lens —
-            // and the depth is the property that makes the arc safe at all.
-            near_dead = near_dead.min(q[2]);
-        }
-    }
+            lo = lo.min(y);
+            hi = hi.max(y);
 
-    // **The floor is the defect, stated as a number.** *"the swing animation
-    // is the most underwhelming thing ever. hardly anything moves"* — the arc
-    // it replaced rotated the item 1.15 rad about its own grip and pushed the
-    // rig 13 cm, so the grip itself travelled ~26 cm over the whole stroke.
-    // Half a metre is comfortably past that and comfortably under what the
-    // frame allows.
-    assert!(
-        path > 0.5,
-        "the whole swing moves the grip {path:.2} m — that is the arc this \
-         replaced, not a swing"
-    );
-    assert!(
-        hi - lo > 0.8,
-        "the swing spans only {:.2} of the frame vertically",
-        hi - lo
-    );
+            for p in &dead_pts {
+                let q = place(*p);
+                assert!(
+                    !on_screen(q),
+                    "{VIEWMODEL_HIDDEN_ARM}'s collapse point is dragged to {q:?} \
+                 at s={s:.2}, which is inside the frame"
+                );
+                // Behind the camera the whole way. Measured as a DEPTH rather than
+                // as an ndc margin, because ndc has no answer behind the lens —
+                // and the depth is the property that makes the arc safe at all.
+                near_dead = near_dead.min(q[2]);
+            }
+        }
+
+        // **The floor is the defect, stated as a number.** *"the swing
+        // animation is the most underwhelming thing ever. hardly anything
+        // moves"* — the arc it replaced rotated the item 1.15 rad about its
+        // own grip and pushed the rig 13 cm, so the grip itself travelled
+        // ~26 cm over the whole stroke. Half a metre is comfortably past that
+        // and comfortably under what the frame allows. Held in every framing:
+        // the carry divides the stroke, and must not divide it into nothing.
+        assert!(
+            path > 0.5,
+            "the whole swing moves the grip {path:.2} m (carry {carry}, lift \
+             {lift}) — that is the arc this replaced, not a swing"
+        );
+        assert!(
+            hi - lo > 0.8,
+            "the swing spans only {:.2} of the frame vertically (carry \
+             {carry}, lift {lift})",
+            hi - lo
+        );
+    }
     assert!(
         near_dead > 1.0,
         "the swing brings the collapsed arm to {near_dead:.2} m — it has to \
@@ -1508,5 +1514,64 @@ fn a_drawn_bow_comes_up_to_the_middle_of_the_frame() {
     assert!(
         full.0.abs() < rest.0.abs() && full.1 > rest.1,
         "a drawn bow comes in and up from the carry: rest {rest:?}, drawn {full:?}"
+    );
+}
+
+#[test]
+fn the_carry_draws_the_hand_bigger_and_out_to_the_side() {
+    // Operator, 2026-10-03, comparing against the reference game: *"my hand
+    // is a lot bigger … more off to the side"*. The palm moves right and the
+    // whole assembly is drawn larger, which on screen is the distance from
+    // the palm to the wrist growing.
+    use bevy::math::Vec3;
+    let at = |carry: f32, p: Vec3| {
+        let v = carried(carry, 0.0, bevy::prelude::Quat::IDENTITY, Vec3::ZERO).transform_point(p);
+        ndc([v.x, v.y, v.z]).expect("in front of the camera")
+    };
+    let (bare_palm, bare_wrist) = (at(0.0, palm_rig()), at(0.0, VIEWMODEL_HOLD));
+    let (palm, wrist) = (at(1.0, palm_rig()), at(1.0, VIEWMODEL_HOLD));
+    let span = |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+    assert!(
+        palm.0 > bare_palm.0 + 0.08,
+        "the carry leaves the palm at ndc x {:.2} (bare {:.2}) — not out to the side",
+        palm.0,
+        bare_palm.0
+    );
+    assert!(
+        span(palm, wrist) > 1.2 * span(bare_palm, bare_wrist),
+        "the carried hand spans {:.3} of the frame against {:.3} bare — not bigger",
+        span(palm, wrist),
+        span(bare_palm, bare_wrist)
+    );
+    assert!(
+        palm.0 < 0.8 && palm.1 > -0.9,
+        "the carry pushed the palm out of shot: {palm:?}"
+    );
+}
+
+#[test]
+fn a_lit_item_is_held_up_with_its_head_in_the_top_right() {
+    // The torch, held the reference game's way: up by the head, flame in the
+    // top-right of the frame, not down in the fist's corner.
+    use bevy::math::Vec3;
+    let torch = HELD_MODELS
+        .iter()
+        .find(|d| d.light.is_some())
+        .expect("a row that casts light");
+    let head = palm_rig()
+        + tilt() * item_rest_dir(torch) * (torch.height_m * torch.scale * (1.0 - torch.grip_frac));
+    let at = |lift: f32, p: Vec3| {
+        let v = carried(1.0, lift, bevy::prelude::Quat::IDENTITY, Vec3::ZERO).transform_point(p);
+        ndc([v.x, v.y, v.z]).expect("in front of the camera")
+    };
+    let (low, up) = (at(0.0, head), at(1.0, head));
+    assert!(
+        up.1 > 0.5 && up.1 <= 1.0 && up.0 > 0.3 && up.0 <= 1.0,
+        "the raised {} has its head at ndc {up:?} — not in the top right",
+        torch.key
+    );
+    assert!(
+        up.1 > low.1 + 0.4,
+        "the raise lifts the head only from {low:?} to {up:?}"
     );
 }
