@@ -736,8 +736,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
     // holds one looping voice each and moves their gains.
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
-    row(AMB,   0.0, 0.34,   0, 0, false),  // surf
-    row(AMB,   0.0, 0.40,   0, 0, false),  // submerged
+    row(AMB,   0.0, 0.38,   0, 0, false),  // surf
+    row(AMB,   0.0, 0.34,   0, 0, false),  // submerged
     // The pig announces itself before you see it (`reference/ANIMALS.md` —
     // the boar is identified by its snorting), so it carries past the
     // impacts but nowhere near a falling tree. Priority with the footsteps'
@@ -812,7 +812,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     //
     // The gun's 100 m is what sets `MAX_AUDIBLE_M`; the falling tree held
     // that title until v54.
-    row(GAME,  40.0, 0.45,  60, 4, true),   // bow released
+    row(GAME,  40.0, 0.42,  60, 4, true),   // bow released
     row(GAME, 100.0, 0.85,  60, 6, true),   // gun fired
     // The other two rungs of the marker (v58). Same bus, same radius (none
     // — they are signals, not places), same 45 ms cooldown and the same
@@ -830,7 +830,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Weather v0. The rain is a bed like the wind; thunder is ambience —
     // a player who turns the scenery down turns the storm down with it —
     // and non-positional, with a cooldown so two near bolts are one roll.
-    row(AMB,   0.0, 0.42,   0, 0, false),  // rain bed
+    row(AMB,   0.0, 0.47,   0, 0, false),  // rain bed
     row(AMB,   0.0, 0.85, 900, 3, false),  // thunder
     // Effects v2. A round landing carries like a blow does; a ricochet a
     // little further, being a whine; a body hit is information a life
@@ -839,12 +839,12 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, stone
     row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, wood
     row(GAME, 48.0, 0.60,  30, 4, true),   // bullet, metal
-    row(GAME, 56.0, 0.45,  90, 3, true),   // ricochet
+    row(GAME, 56.0, 0.84,  90, 3, true),   // ricochet
     row(GAME, 30.0, 0.70,  30, 5, true),   // flesh hit
     // The far report: past `ShotGun`'s radius the near layer is gone and
     // this is what is left of a gunshot. Twice the reach, dark, and at a
     // gain that meets the near layer where `render/audio.rs` switches.
-    row(GAME, 200.0, 0.45,  60, 6, true),  // gun fired, far
+    row(GAME, 200.0, 0.75,  60, 6, true),  // gun fired, far
     // A charge is the loudest thing on the island and the one sound a
     // whole server should know the place of.
     row(GAME, 200.0, 1.00,   0, 7, true),  // blast
@@ -852,7 +852,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock
     // Your own hands, so non-positional; the cooldown is what keeps a
     // reload key held down from being a rattle.
-    row(GAME,  0.0, 0.45, 250, 3, false),  // reload
+    row(GAME,  0.0, 0.54, 250, 3, false),  // reload
     // Your own mouth and your own hands: non-positional, and a meal is a
     // second apart (`survival::CONSUME_TICKS`), so the cooldown is only
     // there for two landing in one frame.
@@ -868,7 +868,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The heli's rotor: a bed, so radius 0 and no cooldown — its level is
     // `render/audio.rs`'s distance law. GAME, not AMBIENCE: it is a threat,
     // and turning the scenery down must not turn it down.
-    row(GAME,  0.0, 0.60,   0, 0, false),  // rotor
+    row(GAME,  0.0, 0.52,   0, 0, false),  // rotor
     // A bush picked, at the bush: a footstep's reach and a little over an
     // impact's gain, so your own pick reads over your boots and a pick
     // across a clearing is still heard.
@@ -888,12 +888,12 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME,  0.0, 0.45, 300, 3, false),  // drink
     row(GAME,  0.0, 0.72, 200, 3, false),  // land
     // A fire is scenery: the ambience bus, a short reach, the lowest rank.
-    row(AMB,  14.0, 0.40,  80, 1, true),   // fire crackle
+    row(AMB,  14.0, 0.62,  80, 1, true),   // fire crackle
     // A fuse is a bomb about to go off: carried far enough to run from,
     // ranked with the hitmarker.
-    row(GAME, 32.0, 0.65, 500, 6, true),   // fuse
+    row(GAME, 32.0, 0.81, 500, 6, true),   // fuse
     // A round past your head is the shot that was meant for you.
-    row(GAME, 30.0, 0.70,  60, 6, true),   // bullet flyby
+    row(GAME, 30.0, 0.95,  60, 6, true),   // bullet flyby
     // The interface answering you, like the craft chime.
     row(GAME,  0.0, 0.85, 200, 4, false),  // learn
     row(GAME, 16.0, 0.55, 150, 4, true),   // unlock
