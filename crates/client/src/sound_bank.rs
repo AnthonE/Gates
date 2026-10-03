@@ -126,6 +126,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::BedRain, takes!("freesound", "bed_rain", 0)),
     (Cue::BedRotor, takes!("freesound", "bed_rotor", 0)),
     (Cue::BedTown, takes!("freesound", "bed_town", 0)),
+    (Cue::BedNight, takes!("freesound", "bed_night", 0)),
     (
         Cue::FireCrackle,
         takes!("freesound", "fire_crackle", 0 1 2 3 4 5 6 7),

@@ -346,11 +346,14 @@ pub enum Cue {
     /// A twig or wooden piece coming down: planks splintering. [`Cue::Collapse`]
     /// is the stone and metal ones.
     CollapseWood,
+    /// Night on the island, as a bed: a field of crickets. `render/audio.rs`
+    /// brings it up as the light goes and the rain stops.
+    BedNight,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 77;
+pub const CUE_COUNT: usize = 78;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -436,6 +439,7 @@ impl Cue {
         Cue::Learn,
         Cue::Unlock,
         Cue::CollapseWood,
+        Cue::BedNight,
     ];
 
     /// Is this cue a piece of music?
@@ -473,6 +477,7 @@ impl Cue {
                 | Cue::BedRain
                 | Cue::BedRotor
                 | Cue::BedTown
+                | Cue::BedNight
         )
     }
 
@@ -595,7 +600,8 @@ impl Cue {
             | Cue::BedUnder
             | Cue::BedRain
             | Cue::BedRotor
-            | Cue::BedTown => 0.0,
+            | Cue::BedTown
+            | Cue::BedNight => 0.0,
             // **Zero, and it is not the signal-cue argument.** A piece played
             // at 1.03× is a piece in a different key, and the next piece
             // would be in a third — the tail that covers a join would be
@@ -898,6 +904,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME,  0.0, 0.85, 200, 4, false),  // learn
     row(GAME, 16.0, 0.55, 150, 4, true),   // unlock
     row(GAME, 60.0, 0.80,  80, 5, true),   // collapse, wood
+    // The night's crickets: scenery like the town's bed, its level the
+    // hour's (`render/audio.rs`).
+    row(AMB,   0.0, 0.20,   0, 0, false),  // the night
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -1132,6 +1141,8 @@ pub struct SnapshotDef {
     pub rotor: f32,
     /// THE GATE's yard: scenery, gone below water like the wind.
     pub town: f32,
+    /// The night's crickets: scenery, gone below water like the wind.
+    pub night: f32,
 }
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
@@ -1155,6 +1166,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         rain: 1.0,
         rotor: 1.0,
         town: 1.0,
+        night: 1.0,
     },
     // Submerged. The game bus survives at a level a player can still fight on
     // — being underwater must not be a stealth advantage handed out by the
@@ -1169,6 +1181,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         rain: 0.0,
         rotor: 0.45,
         town: 0.0,
+        night: 0.0,
     },
 ];
 
@@ -1235,6 +1248,7 @@ impl Snapshots {
             rain: mix(a.rain, b.rain),
             rotor: mix(a.rotor, b.rotor),
             town: mix(a.town, b.town),
+            night: mix(a.night, b.night),
         }
     }
 }
@@ -1259,6 +1273,7 @@ impl SnapshotDef {
             Cue::BedRain => self.rain,
             Cue::BedRotor => self.rotor,
             Cue::BedTown => self.town,
+            Cue::BedNight => self.night,
             _ => 0.0,
         }
     }

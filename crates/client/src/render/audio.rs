@@ -67,13 +67,14 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 6] = [
+pub const BEDS: [Cue; 7] = [
     Cue::BedWind,
     Cue::BedSurf,
     Cue::BedUnder,
     Cue::BedRain,
     Cue::BedRotor,
     Cue::BedTown,
+    Cue::BedNight,
 ];
 
 /// How far past THE GATE's safe zone its yard is still heard, metres: full
@@ -1457,7 +1458,7 @@ pub fn bed(
     // Daylight only, now that a day exists (day/night v0): birds roost at
     // night, and the cause is the server's own clock rather than one this
     // layer invented — the refusal `birds.rs`' header recorded is repaid.
-    // Crickets are the night companion and still owed (`NOW.md` §0x).
+    // Crickets are the night companion: a bed (`Cue::BedNight`), below.
     //
     // Through `world::is_night` rather than the open-coded comparison this
     // used to carry: the sim reads the same boundary now (a predator's
@@ -1525,6 +1526,11 @@ pub fn bed(
             0.0
         }
     };
+    // The night's crickets, the birds' other half: up as the light goes,
+    // quiet in the rain, duller under a roof.
+    sound.bed_target[6] = weather.night
+        * (1.0 - 3.0 * weather.rain).max(0.0)
+        * if weather.sheltered { 0.5 } else { 1.0 };
 
     // Thunder: each bolt's clap once its sound has crossed the distance
     // (`weather::update` queued it at the bolt's own time plus d / 343).

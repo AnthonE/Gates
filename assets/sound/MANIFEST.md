@@ -112,6 +112,7 @@ boom: no clean CC0 recording of a real bullet passing exists.
 | `bed_rain_0` | `BedRain` | jmbphilmes, 200272, *Rain heavy 2 (rural)*: loop: 8.2-24.2 s (+2 s crossfade tail to 26.2 s), HP 100 Hz; the thunderclap at 43 s is far outside the window |
 | `bed_rotor_0` | `BedRotor` | John Sipos, 156678, *blackhawk.wav*: loop: 28.76-35.73 s with a 40 ms crossfade, HP 30 Hz |
 | `bed_town_0` | `BedTown` | jameswrowles, 516759, *Small Diesel Generator*: right channel only (the Rode NTG-2 at 3 m); loop 62.5-78.52 s (+2 s crossfade tail), steady 3 kW-loaded running, HP 30 Hz |
+| `bed_night_0` | `BedNight` | sengjinn, 175020, *AMBIENCE NIGHT FIELD CRICKET 01*: loop 12-28 s (+2 s crossfade tail), a steady field of crickets around midnight, HP 700 Hz |
 | `fire_crackle_0`–`7` | `FireCrackle` | ahriik, 508110, *fire ambience, flames, crackles, pops, burning*: takes 0-7: 5.30-6.20 s, 10.20-11.00 s, 11.35-12.35 s, 13.75-14.55 s, 14.85-15.85 s, 16.55-17.45 s, 19.50-20.50 s, 24.65-25.45 s; HP 300 Hz |
 | `swing_0`–`3` | `Swing` | qubodup, 60012, *swing 25*: take 0: the single swing, 0.012-0.255 s; qubodup, 60023, *swosh windy 36.flac*: take 1: 0.033-0.290 s; qubodup, 60029, *Swosh 42*: take 2: 0.056-0.305 s; qubodup, 60002, *Swoosh 15 Windy*: take 3: 0.024-0.285 s |
 | `eat_0`–`2` | `Eat` | iamshort, 181271, *Eating a Carrot*: take 0: 0.466-1.37 s (bite + one chew); take 1: 2.452-3.10 s (two chews); take 2: 3.383-4.03 s (two chews) |
@@ -140,5 +141,5 @@ resampled to the exact equal-tempered target.
 | `music_turn_calm`, `music_turn_tense`, `music_turn_combat` | `MusicTurnCalm`, `MusicTurnTense`, `MusicTurnCombat` |
 | `music_close_calm`, `music_close_tense`, `music_close_combat` | `MusicCloseCalm`, `MusicCloseTense`, `MusicCloseCombat` |
 
-146 files from Freesound, 62 from Kenney and 9 from VSCO-2, about 4.3 MB of
+147 files from Freesound, 62 from Kenney and 9 from VSCO-2, about 4.3 MB of
 Ogg in total.
