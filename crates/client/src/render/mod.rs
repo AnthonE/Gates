@@ -182,6 +182,8 @@ pub mod textures;
 pub mod ground_splat;
 pub mod tree;
 pub mod ui;
+// Under the surface: the water's fog and the shell past it.
+pub mod underwater;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
 // research, `TERRAIN.md` §4 is what it replaces.
 pub mod water;
@@ -1256,6 +1258,10 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
         // After the deck: the stars hide behind its field.
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
+        .add_systems(
+            OnEnter(Screen::Loading),
+            underwater::setup.after(rig::setup),
+        )
         // The beds, from the loading screen's first frame at zero. No camera
         // is needed: the pan is computed per start from `Eye` in `pump`.
         .add_systems(OnEnter(Screen::Loading), audio::setup)
@@ -1595,6 +1601,7 @@ impl Plugin for GatesRenderPlugin {
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
                 stars::drive.after(sky::compose),
+                underwater::drive.after(rig::day_night),
                 hud::exposure,
                 // THE GATE's rules on screen: in and out of the zone, a
                 // sentry's lock, a holstered click. After the drain, for the
