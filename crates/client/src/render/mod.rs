@@ -1214,28 +1214,27 @@ impl Plugin for GatesRenderPlugin {
             (
                 anim::build,
                 anim::bind.after(Stream),
-                // The hand bone, per body — `anim::bind_head`'s trigger and
+                // The hand bone, per body — `anim::bind_spine`'s trigger and
                 // its climb, one bone over. After `Stream` because the body
                 // it walks up to and the `Live` record it writes are both
                 // `bodies::stream`'s, spawned inside that set.
                 bodies::bind_hands.after(Stream),
-                anim::bind_head.after(Stream),
+                anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
             )
                 .run_if(world_running),
         )
-        // **The head override lives in `PostUpdate`, between the animation
+        // **The spine override lives in `PostUpdate`, between the animation
         // and the propagation, and that window is the whole reason it is
         // cheap.** The clip has posed the skeleton and nothing has turned
-        // local transforms into world ones yet, so pointing one bone at the
-        // pitch the wire carried costs a quaternion multiply and no
-        // re-propagation. Scheduled anywhere in `Update` it would either be
-        // overwritten by the animation player or need the hierarchy walked
-        // again.
+        // local transforms into world ones yet, so turning the hips, spine
+        // and head costs a few quaternion multiplies and no re-propagation.
+        // Scheduled anywhere in `Update` it would either be overwritten by
+        // the animation player or need the hierarchy walked again.
         .add_systems(
             PostUpdate,
-            anim::head_look
+            anim::pose_spine
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running),

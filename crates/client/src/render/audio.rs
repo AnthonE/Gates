@@ -602,14 +602,13 @@ pub struct RemoteSteps(pub Steps);
 /// nearby" is the mixer's own falloff at the cue's radius — the falling
 /// tree's pattern: push with a position, let the one distance law cull.
 ///
-/// Two honest gaps, both the wire's: there is no grounded bit (`NOW.md`
-/// §0v item 1), so a jumping remote ticks the odometer by the horizontal
-/// half of its arc; and a teleport (death, respawn) reads as ground
+/// One honest gap, the wire's: a teleport (death, respawn) reads as ground
 /// covered, which the odometer's own hitch cap bounds at ONE step. A
 /// sleeper stands still and the speed floor keeps it silent for free.
 pub fn remote_steps(
     world: Res<super::WorldId>,
     time: Res<Time>,
+    rig: Res<super::anim::Rig>,
     mut bodies: Query<
         (&Transform, &mut RemoteSteps, &super::anim::BodyAnim),
         With<super::bodies::Body>,
@@ -621,7 +620,13 @@ pub fn remote_steps(
     let dt = time.delta_secs();
     for (t, mut steps, anim) in bodies.iter_mut() {
         let pos = [t.translation.x, t.translation.y, t.translation.z];
-        let Some(mut step) = steps.0.sample(pos, true, dt) else {
+        // Spaced as the drawn feet are spaced (`Rig::step_m`), so a remote's
+        // steps land at the cadence its legs are moving; and nothing in the
+        // air, off the wire's airborne bit.
+        let Some(mut step) = steps
+            .0
+            .sample_with(pos, !anim.airborne, dt, rig.step_m(anim))
+        else {
             continue;
         };
         if anim.crouched {

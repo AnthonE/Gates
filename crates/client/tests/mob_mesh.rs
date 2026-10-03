@@ -25,9 +25,9 @@
 
 use bevy::prelude::*;
 use client::render::mobs::{
-    full_mps_of, leg_swing_rad, pig_body_mesh, pig_leg_mesh, pig_mesh, wolf_body_mesh,
-    wolf_leg_mesh, wolf_mesh, Gait, HerdAssets, SpeciesAssets, LEG_ANCHORS, PIG_H_M,
-    PIG_LEG_CYCLE_M, PIG_LEG_FULL_MPS, PIG_LEG_SWING_RAD, PIG_LEN_M, WOLF_H_M, WOLF_LEG_ANCHORS,
+    full_mps_of, leg_amp_rad, leg_swing_rad, pig_body_mesh, pig_leg_mesh, pig_mesh, stride_cycle_m,
+    wolf_body_mesh, wolf_leg_mesh, wolf_mesh, Gait, HerdAssets, SpeciesAssets, LEG_ANCHORS,
+    PIG_H_M, PIG_LEG_FULL_MPS, PIG_LEG_SWING_RAD, PIG_LEN_M, WOLF_H_M, WOLF_LEG_ANCHORS,
     WOLF_LEG_FULL_MPS, WOLF_LEN_M,
 };
 
@@ -291,20 +291,88 @@ fn the_stride_integrates_ground_not_frames() {
     }
     assert_eq!(g.phase, p0, "a standing pig strode");
     assert!(g.speed < 0.01, "a standing pig reads as moving");
-    // Half a cycle of ground moves the phase π, however long it took.
+    // Ground moves the phase by the stride the legs are taking at that
+    // speed, however long it took.
     let mut a = Gait::new(0);
     a.observe(Vec3::ZERO, 0.016);
-    a.observe(Vec3::new(PIG_LEG_CYCLE_M / 2.0, 0.0, 0.0), 0.1);
+    a.observe(Vec3::new(0.2, 0.0, 0.0), 0.1);
     let moved = (a.phase - p0).rem_euclid(TAU);
+    let want = 0.2 / stride_cycle_m(a.hip, a.speed, a.full_mps) * TAU;
     assert!(
-        (moved - PI).abs() < 1e-3,
-        "half a cycle of ground moved the phase {moved:.3} rad, not π"
+        (moved - want).abs() < 1e-3,
+        "0.2 m of ground moved the phase {moved:.3} rad, not {want:.3}"
     );
+    let _ = PI;
     // Climbing: vertical travel is not ground covered.
     let mut c = Gait::new(0);
     c.observe(Vec3::ZERO, 0.016);
     c.observe(Vec3::new(0.0, 3.0, 0.0), 0.016);
     assert_eq!(c.phase, p0, "a lifted pig pedalled");
+}
+
+/// **A hoof in stance stays where it landed.** Over the half-cycle a leg
+/// swings from front to back, its foot travels `2·hip·sin(amp)` backward
+/// against the hip; the body has to cover exactly that much ground in the
+/// same half-cycle or the hoof skates. It was a flat metre a cycle, which
+/// slid a walking pig's hooves by two thirds of their stride.
+#[test]
+fn a_planted_hoof_does_not_skate() {
+    for (hip, full) in [
+        (LEG_ANCHORS[0].0[1], PIG_LEG_FULL_MPS),
+        (WOLF_LEG_ANCHORS[0].0[1], WOLF_LEG_FULL_MPS),
+    ] {
+        for v in [0.8, 1.5, 2.75, full] {
+            let sweep = 2.0 * hip * leg_amp_rad(v, full).sin();
+            let body = stride_cycle_m(hip, v, full) / 2.0;
+            assert!(
+                (sweep - body).abs() < 1e-5,
+                "at {v} m/s the hoof sweeps {sweep:.3} m while the body covers {body:.3}"
+            );
+        }
+        // Slower is a shorter stride and a slower cadence, not a frantic one.
+        let cadence = |v: f32| v / stride_cycle_m(hip, v, full);
+        assert!(stride_cycle_m(hip, 1.0, full) < stride_cycle_m(hip, full, full));
+        assert!(cadence(1.0) < cadence(full));
+    }
+}
+
+/// The body sits down onto rigid legs as they swing out, so no hoof ever
+/// goes under and none floats far off the ground.
+#[test]
+fn the_body_bobs_with_the_stride_and_rests_level() {
+    let mut g = Gait::new(0);
+    g.observe(Vec3::ZERO, 0.016);
+    assert_eq!(g.bob(), 0.0, "a standing pig is sitting down");
+    let mut x = 0.0;
+    let mut lo = 0.0f32;
+    for _ in 0..240 {
+        x += PIG_LEG_FULL_MPS / 60.0;
+        g.observe(Vec3::new(x, 0.0, 0.0), 1.0 / 60.0);
+        let b = g.bob();
+        let lift = g.hip * (1.0 - leg_swing_rad(g.phase, 0.0, g.speed, g.full_mps).cos());
+        assert!(
+            b <= lift + 1e-6,
+            "the body dropped a hoof through the ground"
+        );
+        lo = lo.max(b);
+    }
+    assert!(lo > 0.01, "a running pig never bobbed");
+}
+
+/// The drawn heading eases toward the wire's the short way round.
+#[test]
+fn an_animal_turns_the_short_way() {
+    use std::f32::consts::{PI, TAU};
+    let mut g = Gait::new(0);
+    assert_eq!(g.turn(0.1, 0.016), 0.1, "the first heading is taken as is");
+    // Across the wrap: from 0.1 to TAU − 0.1 is 0.2 rad clockwise.
+    let y = g.turn(TAU - 0.1, 0.016);
+    assert!(!(0.1..=TAU - 0.2).contains(&y), "turned the long way: {y}");
+    for _ in 0..120 {
+        g.turn(TAU - 0.1, 0.016);
+    }
+    let d = (g.yaw.unwrap() - (TAU - 0.1) + PI).rem_euclid(TAU) - PI;
+    assert!(d.abs() < 1e-3, "never arrived: {d}");
 }
 
 /// Two pigs do not march in step: the phase origin is hashed from the

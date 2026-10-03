@@ -45,7 +45,7 @@ use sim_core::mob;
 ///     and by which hand `Punch_Cross` throws"*). `BODY_PALM`'s +0.22 is the
 ///     LEFT shoulder. Every remote in the game carried its axe in the wrong
 ///     hand, and the value was derived from a convention rather than from the
-///     file — the exact failure `anim::head_look`'s axis paid for once
+///     file — the exact failure `anim::pose_spine`'s axis paid for once
 ///     already, in the same skeleton, six weeks earlier.
 ///   · **y is 48 cm high** and z 22 cm forward.
 ///
@@ -299,6 +299,7 @@ pub fn stream(
                     // killed player is drawn standing at idle.
                     anim.airborne = rs.airborne;
                     anim.crouched = rs.crouched;
+                    anim.facing = wire_yaw_to_radians(rs.yaw);
                     anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
@@ -359,6 +360,7 @@ pub fn stream(
                 let mut anim = BodyAnim {
                     airborne: rs.airborne,
                     crouched: rs.crouched,
+                    facing: wire_yaw_to_radians(rs.yaw),
                     ..BodyAnim::default()
                 };
                 anim.observe(pos, 0.0, rs.sleeping, rs.dead, rs.wounded);
@@ -481,12 +483,12 @@ pub fn stream(
 ///
 /// A body's skeleton does not exist on the frame the body is spawned —
 /// `SceneRoot` fills in asynchronously — so there is nothing to parent to
-/// until the scene lands. `anim::bind` and `anim::bind_head` solve the same
+/// until the scene lands. `anim::bind` and `anim::bind_spine` solve the same
 /// problem the same way and this is their third instance: run on
 /// `Added<AnimationPlayer>`, which is the one moment a body's entities exist
 /// and nothing has posed them.
 ///
-/// **The walk is DOWN from the body, not a global name scan.** `bind_head`
+/// **The walk is DOWN from the body, not a global name scan.** `bind_spine`
 /// searches every named entity in the world and then checks each candidate's
 /// ancestry, which is O(all bones) per body; a descendant walk is O(this
 /// body's bones) and cannot find somebody else's hand by construction rather
@@ -518,7 +520,7 @@ pub fn bind_hands(
     ids: Query<&Body>,
 ) {
     for player in &added {
-        // Up to the body root — `bind_head`'s climb, same bound.
+        // Up to the body root — `bind_spine`'s climb, same bound.
         let mut at = player;
         let mut body = None;
         for _ in 0..16 {
@@ -556,7 +558,7 @@ pub fn bind_hands(
             }
         }
         let Some(bone) = bone else {
-            // Loud, like `bind_head`'s: the consequence is a whole feature
+            // Loud, like `bind_spine`'s: the consequence is a whole feature
             // being invisible with every gate green, and the cause is one
             // renamed bone in a re-imported file.
             error!(

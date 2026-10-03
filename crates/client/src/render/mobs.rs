@@ -82,13 +82,45 @@ pub const LEG_ANCHORS: [([f32; 3], f32); 4] = [
 /// and because the swing only ever *raises* a foot off its resting contact
 /// (`hip − len·cos` ≥ 0 for any angle under π/2), no amplitude this constant
 /// can hold ever pushes a hoof through the ground.
-pub const PIG_LEG_SWING_RAD: f32 = 0.6;
+///
+/// 0.75 rather than the opening 0.6: with the stride now planted
+/// ([`stride_cycle_m`]) a short leg's stride is its swing, and at 0.6 a
+/// fleeing pig had to pedal at five strides a second to cover its ground.
+pub const PIG_LEG_SWING_RAD: f32 = 0.75;
 
-/// Metres of ground per full stride cycle. Distance-integrated exactly like
-/// the footstep odometer (`sound/steps.rs`): cadence from a clock would make
-/// a fleeing pig's legs beat at a grazing pig's rate, and a hitch that
-/// teleported the animal wraps the phase instead of banking swings.
-pub const PIG_LEG_CYCLE_M: f32 = 1.0;
+/// Metres of ground one full stride covers at this speed — what the phase
+/// integrates distance against, so a hoof in stance stays where it landed.
+///
+/// A leg of length `hip` swinging `±amp` sweeps its foot `2·hip·sin(amp)`
+/// back across the ground while its diagonal pair swings forward, and the two
+/// pairs take turns, so a whole cycle is twice that. It was a flat 1.0 m,
+/// which at full flight slid every hoof by a quarter of its stride and at a
+/// walk — a shallow swing, the same metre — by two thirds of it.
+///
+/// The amplitude grows with the square root of speed rather than linearly,
+/// so a slow animal takes shorter AND slower steps the way a real one does,
+/// instead of a tiny swing at a frantic rate. Floored, so a standing animal
+/// is not dividing by nothing.
+pub fn stride_cycle_m(hip: f32, speed_mps: f32, full_mps: f32) -> f32 {
+    (4.0 * hip * leg_amp_rad(speed_mps, full_mps).sin()).max(0.05)
+}
+
+/// The swing amplitude at this speed, radians: full at the flight gait, the
+/// square root of the fraction below it.
+pub fn leg_amp_rad(speed_mps: f32, full_mps: f32) -> f32 {
+    PIG_LEG_SWING_RAD * (speed_mps / full_mps).clamp(0.0, 1.0).sqrt()
+}
+
+/// How far the body drops while its legs are out of vertical, as a fraction
+/// of the drop that keeps every hoof on the ground (`hip·(1 − cos swing)`).
+/// All of it pins the feet but bounces the body twice a stride; half reads as
+/// weight without the jitter, and the feet still never go under.
+pub const LEG_BOB: f32 = 0.5;
+
+/// How fast a drawn animal turns to its heading, 1/s. The sim turns an
+/// animal on a tick; easing the drawn heading takes the snap out of it, and
+/// nothing tests an animal's facing (its hit volume is a cylinder).
+pub const MOB_TURN_EASE: f32 = 10.0;
 
 /// The speed at which the swing reaches full amplitude, m/s — the animal's
 /// own flight gait (`flee_pct` 70 of the player's 5.5 m/s sprint, the
@@ -440,10 +472,12 @@ pub fn stream(
         match known {
             Some(entity) => {
                 if let Ok((mut t, mut gait)) = q.get_mut(entity) {
-                    gait.observe(pos, time.delta_secs());
-                    gait.settle(rs.sleeping, time.delta_secs());
-                    t.translation = pos - Vec3::Y * gait.lie * gait.hip * LIE_DROP;
-                    t.rotation = facing;
+                    let dt = time.delta_secs();
+                    gait.observe(pos, dt);
+                    gait.settle(rs.sleeping, dt);
+                    let drop = gait.lie * gait.hip * LIE_DROP + (1.0 - gait.lie) * gait.bob();
+                    t.translation = pos - Vec3::Y * drop;
+                    t.rotation = Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
                 }
             }
             None => {
@@ -529,8 +563,12 @@ pub struct Gait {
     /// folded — the sim's Sleep state (the wire's `sleeping` on an animal),
     /// eased over [`LIE_S`] so it settles rather than drops.
     pub lie: f32,
-    /// Its hip height, metres — how far lying down lowers it.
+    /// Its hip height, metres — how far lying down lowers it, and the length
+    /// of the leg the stride is planted against.
     pub hip: f32,
+    /// The drawn heading, radians, eased toward the wire's
+    /// ([`MOB_TURN_EASE`]). `None` until the first sample.
+    pub yaw: Option<f32>,
 }
 
 /// Seconds an animal takes to lie down or get up.
@@ -557,7 +595,30 @@ impl Gait {
             last: None,
             lie: 0.0,
             hip: hip_of(slot),
+            yaw: None,
         }
+    }
+
+    /// Ease the drawn heading toward the wire's, the short way round.
+    pub fn turn(&mut self, to: f32, dt: f32) -> f32 {
+        use std::f32::consts::{PI, TAU};
+        let yaw = match self.yaw {
+            None => to,
+            Some(y) => {
+                let d = (to - y + PI).rem_euclid(TAU) - PI;
+                (y + d * (1.0 - (-MOB_TURN_EASE * dt).exp())).rem_euclid(TAU)
+            }
+        };
+        self.yaw = Some(yaw);
+        yaw
+    }
+
+    /// How far the body sits below its standing height for the stride: the
+    /// legs are rigid, so when they are out of vertical the hoofs lift unless
+    /// the body comes down ([`LEG_BOB`]).
+    pub fn bob(&self) -> f32 {
+        let swing = leg_swing_rad(self.phase, 0.0, self.speed, self.full_mps);
+        LEG_BOB * self.hip * (1.0 - swing.cos())
     }
 
     /// Ease toward lying down (`asleep`) or standing, over [`LIE_S`].
@@ -591,8 +652,9 @@ impl Gait {
         // The phase integrates the distance itself — wrap, never bank, so a
         // hitch that teleported the animal lands mid-cycle instead of buying
         // a flurry of catch-up swings.
-        self.phase = (self.phase + d / PIG_LEG_CYCLE_M * std::f32::consts::TAU)
-            .rem_euclid(std::f32::consts::TAU);
+        let cycle = stride_cycle_m(self.hip, self.speed, self.full_mps);
+        self.phase =
+            (self.phase + d / cycle * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU);
     }
 }
 
@@ -600,8 +662,8 @@ impl Gait {
 /// the trot's arithmetic through this without a window.
 ///
 /// The sine keys the stride, the leg's own phase offset makes the diagonal
-/// pairs agree and the lateral pairs mirror, and the amplitude scales
-/// linearly with speed to [`PIG_LEG_SWING_RAD`] at `full_mps` — so a
+/// pairs agree and the lateral pairs mirror, and the amplitude grows with
+/// speed to [`PIG_LEG_SWING_RAD`] at `full_mps` ([`leg_amp_rad`]) — so a
 /// standing animal's legs rest at vertical no matter where its phase
 /// stopped.
 ///
@@ -611,8 +673,7 @@ impl Gait {
 /// the arithmetic saying that speed is a lope for one and a bolt for the
 /// other. The swing ceiling stays shared — that one is anatomy, not gait.
 pub fn leg_swing_rad(phase: f32, leg_phase: f32, speed_mps: f32, full_mps: f32) -> f32 {
-    let amp = PIG_LEG_SWING_RAD * (speed_mps / full_mps).clamp(0.0, 1.0);
-    (phase + leg_phase).sin() * amp
+    (phase + leg_phase).sin() * leg_amp_rad(speed_mps, full_mps)
 }
 
 /// Swing every drawn animal's legs off the gait `stream` just advanced.
