@@ -173,6 +173,7 @@ impl Ao {
 pub struct GfxFile {
     pub ao: Option<Ao>,
     pub smaa: Option<bool>,
+    pub taa: Option<bool>,
     pub bloom: Option<bool>,
     /// Whether the sun casts at all. Separate from the distance so that
     /// turning shadows off and on again does not cost the player the
@@ -333,6 +334,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             // preserved, because the next save rewrites it.
             "ao" => v.gfx.ao = Ao::from_name(value).or(v.gfx.ao),
             "smaa" => opt_flag(&mut v.gfx.smaa, value),
+            "taa" => opt_flag(&mut v.gfx.taa, value),
             "bloom" => opt_flag(&mut v.gfx.bloom, value),
             "shadows" => opt_flag(&mut v.gfx.shadows, value),
             "shadow_m" => opt_num(&mut v.gfx.shadow_m, value),
@@ -476,6 +478,9 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     }
     if let Some(b) = v.gfx.smaa {
         s.push_str(&format!("smaa = {b}\n"));
+    }
+    if let Some(b) = v.gfx.taa {
+        s.push_str(&format!("taa = {b}\n"));
     }
     if let Some(b) = v.gfx.bloom {
         s.push_str(&format!("bloom = {b}\n"));
@@ -633,6 +638,7 @@ mod tests {
             gfx: GfxFile {
                 ao: Some(Ao::Ultra),
                 smaa: Some(false),
+                taa: Some(true),
                 bloom: Some(true),
                 shadows: Some(false),
                 shadow_m: Some(140.0),
@@ -726,6 +732,7 @@ mod tests {
             gfx: GfxFile {
                 ao: Some(Ao::High),
                 smaa: Some(true),
+                taa: Some(true),
                 bloom: Some(true),
                 shadows: Some(true),
                 shadow_m: Some(200.0),

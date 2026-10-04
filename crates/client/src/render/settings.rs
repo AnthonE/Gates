@@ -233,6 +233,7 @@ pub enum Knob {
     ShadowMapPx,
     Ambient,
     Smaa,
+    Taa,
     Bloom,
     TreeLod,
     RenderScale,
@@ -316,6 +317,7 @@ impl Settings {
                 self.gfx.ao = Ao::LADDER[want as usize];
             }
             Knob::Smaa => self.gfx.smaa = !self.gfx.smaa,
+            Knob::Taa => self.gfx.taa = !self.gfx.taa,
             Knob::Bloom => self.gfx.bloom = !self.gfx.bloom,
             Knob::TreeLod => {
                 self.gfx.tree_lod_swap_m =
@@ -408,6 +410,7 @@ impl Settings {
             Knob::ShadowMapPx => format!("{}", self.gfx.shadow_map_px),
             Knob::Ambient => self.gfx.ao.name().to_uppercase(),
             Knob::Smaa => on_off(self.gfx.smaa),
+            Knob::Taa => on_off(self.gfx.taa),
             Knob::Bloom => on_off(self.gfx.bloom),
             Knob::RenderScale => format!("{}%", self.gfx.render_scale),
             Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
@@ -462,6 +465,7 @@ impl Settings {
             gfx: config::GfxFile {
                 ao: Some(self.gfx.ao),
                 smaa: Some(self.gfx.smaa),
+                taa: Some(self.gfx.taa),
                 bloom: Some(self.gfx.bloom),
                 shadows: Some(self.gfx.shadows),
                 shadow_m: Some(self.gfx.shadow_m),
@@ -558,6 +562,7 @@ fn gfx_from_file(preset: Quality, f: config::GfxFile) -> quality::Gfx {
         ),
         ao: f.ao.unwrap_or(base.ao),
         smaa: f.smaa.unwrap_or(base.smaa),
+        taa: f.taa.unwrap_or(base.taa),
         bloom: f.bloom.unwrap_or(base.bloom),
         shadows: f.shadows.unwrap_or(base.shadows),
         shadow_m: span(
@@ -885,6 +890,7 @@ fn rows(cat: usize) -> Vec<Row> {
             }),
             Row::Number("AMBIENT OCCLUSION", Knob::Ambient, "contact shading"),
             Row::Toggle("ANTI-ALIASING (SMAA)", Knob::Smaa),
+            Row::Toggle("TEMPORAL AA (REPLACES SMAA)", Knob::Taa),
             Row::Toggle("BLOOM", Knob::Bloom),
             Row::Number("FAR TREES", Knob::TreeLod, "metres to the hull"),
             Row::Number(
@@ -1826,6 +1832,7 @@ mod tests {
         let wild = config::GfxFile {
             ao: Some(Ao::Ultra),
             smaa: Some(true),
+            taa: Some(true),
             bloom: Some(true),
             shadows: Some(true),
             shadow_m: Some(5000.0),
@@ -1882,6 +1889,7 @@ mod tests {
         s.adjust(Knob::ShadowMapPx, -1);
         s.adjust(Knob::Ambient, 1);
         s.adjust(Knob::Smaa, 0);
+        s.adjust(Knob::Taa, 0);
         s.adjust(Knob::Bloom, 0);
         s.adjust(Knob::TreeLod, -1);
         s.adjust(Knob::Shadows, 0);
