@@ -629,7 +629,13 @@ fn the_draw_path_picks_the_mesh_off_the_slot() {
     // Both arms are exercised, so this cannot pass by the roster being
     // uniform — the failure mode the assertion above is blind to.
     assert!(seen_wolf > 0 && seen_pig > 0, "the roster is one species");
-    assert_eq!(seen_wolf, sim_core::limits::MAX_MOBS / 4);
+    // Every fourth slot, less the stride slots the heli and THE GATE's
+    // sentries ride in.
+    let reserved = (0..sim_core::limits::MAX_MOBS)
+        .step_by(4)
+        .filter(|&s| s == sim_core::mob::HELI_SLOT || sim_core::sentry::is_sentry_slot(s))
+        .count();
+    assert_eq!(seen_wolf, sim_core::limits::MAX_MOBS / 4 - reserved);
 }
 
 /// A sleeping animal (the wire's `sleeping` on an animal is the brain's
