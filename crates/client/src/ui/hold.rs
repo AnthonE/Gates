@@ -397,12 +397,10 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     // it lies broadside — 34.5 of its 34.5 cm across the screen, on an axe
     // whose head is already 61% of its own length.
     //
-    // ⚠ **Two things this row is NOT, and both are measured**: it is not the
-    // thumb line — the rig's thumb runs (0.412, 0.906, −0.095) in the hand's
-    // own frame and every pose that satisfies the framing above sits ~90° off
-    // it, because `VIEWMODEL_GRIP_Q` is reverse-derived from a VIEW pose and
-    // carries no anatomy at all; and it does not fix the swing, whose apex
-    // still finishes above the horizon. `NOW.md` §0fp carries both.
+    // The thumb line (*"in line with the thumb"*) is the HAND's to meet, not
+    // this row's: every pose that satisfies the framing above sits ~90° off
+    // the clip's thumb, so `grip_roll` turns the hand and forearm onto the
+    // haft instead (`render::viewmodel::hand_fit`) and these angles stay.
     //
     // ⚠ **The lean was invisible until the model was stood up**: the file's
     // own 32° lean cancelled a third of the lay, so the wrong angle and the
@@ -490,6 +488,7 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
         pose_yaw: 0.0,
         stroke: Stroke::Chop,
         light: Some(TORCH_LIGHT),
+        grip_roll: Some(GRIP_ROLL_CARRIED),
     },
     // A revolver is authored barrel-up so the shared quarter-turn points it
     // forward, and gripped low, at the handle.
@@ -503,6 +502,7 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
         pose_yaw: -0.65,
         stroke: Stroke::Shot,
         light: None,
+        grip_roll: None,
     },
     // A crossbow is laid forward the revolver's way and held at the wrist of
     // the stock, just behind the trigger, with the butt reaching back out of
@@ -519,6 +519,7 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
         pose_yaw: 0.35,
         stroke: Stroke::Shot,
         light: None,
+        grip_roll: None,
     },
     // The deployables, palmed level. `height_m` restates each FILE's +Y
     // extent (the gate measures it); the grip fraction puts the palm near the
@@ -530,17 +531,17 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     // cut at 0.26 put a 29 cm crate at 43 cm from the eye and it ate a
     // quarter of the frame — a held deployable is a token of the thing, and
     // the placement ghost at the reticle is the actual size claim.
-    HeldModelDef::upright("small_box", "models/deploy/box.glb", 0.610, 0.83, 0.16),
-    HeldModelDef::upright("large_box", "models/deploy/box.glb", 0.610, 0.81, 0.22),
-    HeldModelDef::upright("sleeping_bag", "models/deploy/bag.glb", 0.308, 0.80, 0.12),
-    HeldModelDef::upright(
+    HeldModelDef::deploy("small_box", "models/deploy/box.glb", 0.610, 0.83, 0.16),
+    HeldModelDef::deploy("large_box", "models/deploy/box.glb", 0.610, 0.81, 0.22),
+    HeldModelDef::deploy("sleeping_bag", "models/deploy/bag.glb", 0.308, 0.80, 0.12),
+    HeldModelDef::deploy(
         "workbench",
         "models/deploy/workbench.glb",
         0.822,
         0.81,
         0.15,
     ),
-    HeldModelDef::upright("hearth", "models/deploy/hearth.glb", 1.000, 0.80, 0.20),
+    HeldModelDef::deploy("hearth", "models/deploy/hearth.glb", 1.000, 0.80, 0.20),
     // Built in Blender by `ci/prop_kit.py` (`ci/prop_recipes.py`): authored
     // standing with the grip on the +Y axis, so no `stand_grip.py` pass. The
     // metal tools and the spear carry the stone rows' poses; everything small
@@ -608,31 +609,31 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
         0.30,
         1.00,
     ),
-    HeldModelDef::upright("furnace", "models/deploy/furnace.glb", 0.950, 0.80, 0.16),
-    HeldModelDef::upright("recycler", "models/deploy/recycler.glb", 1.037, 0.80, 0.15),
-    HeldModelDef::upright(
+    HeldModelDef::deploy("furnace", "models/deploy/furnace.glb", 0.950, 0.80, 0.16),
+    HeldModelDef::deploy("recycler", "models/deploy/recycler.glb", 1.037, 0.80, 0.15),
+    HeldModelDef::deploy(
         "research_table",
         "models/deploy/research_table.glb",
         0.800,
         0.81,
         0.15,
     ),
-    HeldModelDef::upright(
+    HeldModelDef::deploy(
         "workbench_2",
         "models/deploy/workbench2.glb",
         0.999,
         0.81,
         0.14,
     ),
-    HeldModelDef::upright(
+    HeldModelDef::deploy(
         "workbench_3",
         "models/deploy/workbench3.glb",
         1.099,
         0.81,
         0.13,
     ),
-    HeldModelDef::upright("wooden_door", "models/deploy/door.glb", 2.086, 0.50, 0.08),
-    HeldModelDef::upright(
+    HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.086, 0.50, 0.08),
+    HeldModelDef::deploy(
         "metal_door",
         "models/deploy/door_locked.glb",
         2.086,
@@ -765,7 +766,28 @@ pub struct HeldModelDef {
     /// What this item puts into the world when it is in the hand, or `None`
     /// for the twelve rows that put nothing. See [`HeldLight`].
     pub light: Option<HeldLight>,
+    /// How the hand closes on this row, or `None` to leave the hold clip's
+    /// hand as it is (the old wrist: the item hung where the camera put it).
+    ///
+    /// `Some(roll)` turns the hand so the model's +Y (its haft) runs along
+    /// the hand's own grip line, `render::viewmodel::VIEWMODEL_SEAT_DIR`
+    /// through `VIEWMODEL_SEAT`: across the palm, out past the thumb, with
+    /// the curled fingers round it. `roll` is the turn about the haft,
+    /// radians, from the smallest turn that gets the haft there; it picks
+    /// which side of the fist faces the eye. The item itself does not move:
+    /// the hand and arm do (`render::viewmodel::hand_fit`).
+    pub grip_roll: Option<f32>,
 }
+
+/// The hand's roll about a haft carried head-up — the hatchet's. Turns the
+/// back of the fist toward the eye so the fingers read wrapped round the
+/// haft and the thumb runs up it (operator, 2026-09-01: *"in line with the
+/// thumb"*), at a 35° wrist where the smallest turn is 22°. Shared by every
+/// upright carry, whose +Y is also what the fist closes on.
+pub const GRIP_ROLL_CARRIED: f32 = -0.52;
+/// The hand's roll for a row laid forward (the spear, the rolled plan): the
+/// fingers come round the near side of the shaft, at a 19° wrist.
+pub const GRIP_ROLL_LAID: f32 = 0.35;
 
 /// A light a held item casts. One row carries one today — the torch.
 ///
@@ -874,6 +896,7 @@ impl HeldModelDef {
             pose_yaw: 0.0,
             stroke: Stroke::Chop,
             light: None,
+            grip_roll: Some(GRIP_ROLL_LAID),
         }
     }
 
@@ -892,6 +915,7 @@ impl HeldModelDef {
             pose_yaw: 0.0,
             stroke: Stroke::Thrust,
             light: None,
+            grip_roll: Some(GRIP_ROLL_LAID),
         }
     }
 
@@ -923,6 +947,7 @@ impl HeldModelDef {
             pose_yaw: HAFTED_YAW,
             stroke: Stroke::Chop,
             light: None,
+            grip_roll: Some(GRIP_ROLL_CARRIED),
         }
     }
 
@@ -944,7 +969,23 @@ impl HeldModelDef {
             pose_yaw: 0.0,
             stroke: Stroke::Chop,
             light: None,
+            grip_roll: Some(GRIP_ROLL_CARRIED),
         }
+    }
+
+    /// A deployable, shown as a token of the world model. Not closed on:
+    /// first person holds these as a blueprint (`render::sheet`), and a
+    /// remote's box hangs where it always has.
+    const fn deploy(
+        key: &'static str,
+        path: &'static str,
+        height_m: f32,
+        grip_frac: f32,
+        scale: f32,
+    ) -> Self {
+        let mut d = Self::upright(key, path, height_m, grip_frac, scale);
+        d.grip_roll = None;
+        d
     }
 
     /// How far up the model's own +Y the grip point sits once scaled, metres.
