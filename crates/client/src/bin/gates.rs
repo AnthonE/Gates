@@ -149,6 +149,22 @@ fn main() -> AppExit {
         }
     }
 
+    // **The asset loader's thread gets a deep stack.** `bevy_gltf` blocks on
+    // a scope while a model's textures load, and while it waits the IO thread
+    // runs the next queued load, which blocks on its own scope: one nested
+    // set of frames per model in flight. With ~60 models at boot and one IO
+    // thread (a 4-core box), that overflowed the default 2 MiB and aborted
+    // the client before its first frame whenever the CPU was busy enough for
+    // the loads to queue up. Same thread count Bevy picks; `TaskPoolPlugin`
+    // keeps a pool that already exists.
+    bevy::tasks::IoTaskPool::get_or_init(|| {
+        bevy::tasks::TaskPoolBuilder::default()
+            .num_threads((bevy::tasks::available_parallelism() / 4).clamp(1, 4))
+            .stack_size(32 << 20)
+            .thread_name("IO Task Pool".to_string())
+            .build()
+    });
+
     let mut app = App::new();
     // **The asset root is the executable's directory, not the working one.**
     // Bevy resolved `textures/rock_albedo.jpg` to `target/debug/assets/...`
