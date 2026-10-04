@@ -45,6 +45,7 @@ pub mod bodies;
 pub mod boot;
 pub mod boulders;
 pub mod capture;
+pub mod cliffs;
 // The trailer camera: a recorded session through a scripted lens, encoded as
 // it renders. Native only — it pipes frames to an `ffmpeg` process.
 #[cfg(not(target_arch = "wasm32"))]
@@ -548,6 +549,7 @@ impl Plugin for GatesRenderPlugin {
         foliage::plugin(app);
         app.init_resource::<far_trees::FarForest>();
         app.init_resource::<boulders::RockRing>();
+        app.init_resource::<cliffs::CliffRing>();
         app.add_systems(Startup, far_trees::init);
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
@@ -1307,6 +1309,10 @@ impl Plugin for GatesRenderPlugin {
             OnEnter(Screen::Menu),
             boulders::teardown.after(world_teardown),
         )
+        .add_systems(
+            OnEnter(Screen::Menu),
+            cliffs::teardown.after(world_teardown),
+        )
         // The swell runs wherever the world runs — it is a surface, not a
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
@@ -1532,6 +1538,15 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             boulders::stream
+                .after(terrain_mesh::stream)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
+        // The cliff ledges wear it too (`cliffs.rs`).
+        .add_systems(
+            Update,
+            cliffs::stream
                 .after(terrain_mesh::stream)
                 .in_set(Stream)
                 .run_if(world_placed)
