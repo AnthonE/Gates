@@ -154,6 +154,7 @@ pub mod props;
 pub mod rig;
 pub mod settings;
 pub mod shake;
+pub mod sheet;
 // Where a blow meets the drawn mesh rather than the sim's cylinder.
 pub mod skin;
 // A spectator seat's label (wire v73): whose view this is. Everything else a
@@ -1141,6 +1142,10 @@ impl Plugin for GatesRenderPlugin {
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
                 viewmodel::hand_flame.after(viewmodel::spawn_item),
+                // A deployable held as a blueprint: it rides the sway and
+                // bob `animate` just stepped.
+                sheet::spawn,
+                sheet::drive.after(sheet::spawn).after(viewmodel::animate),
                 // The weak-spot cross, off the core's latched mark and the
                 // frame's sector answer — after the resolver that writes
                 // `InWeak`, so the cross brightens on the frame the prompt
