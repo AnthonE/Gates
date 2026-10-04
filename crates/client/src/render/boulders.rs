@@ -269,6 +269,9 @@ pub struct RockShape {
     pub moss: bool,
     /// Coarsest the faces may be: 1 draws a chunk, not a block.
     pub min_seg: usize,
+    /// The ground material's value multiplier at the rock's top
+    /// ([`ROCK_VALUE`] for a weathered boulder).
+    pub value: f32,
 }
 
 impl RockShape {
@@ -287,6 +290,7 @@ impl RockShape {
             key: (seed as u32) ^ ((b.shape as u32) << 8) ^ (b.yaw as u32).wrapping_mul(0x2545_F491),
             moss,
             min_seg: 2,
+            value: ROCK_VALUE,
         }
     }
 
@@ -433,10 +437,7 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
                         let up = ((p[k].y - r.y0) / hgt).clamp(0.0, 1.0);
                         // Recesses darker: the cheap half of occlusion.
                         let recess = 1.0 + d[k] * 0.3;
-                        ROCK_VALUE
-                            * (ROCK_FOOT_VALUE + (1.0 - ROCK_FOOT_VALUE) * up)
-                            * face
-                            * recess
+                        r.value * (ROCK_FOOT_VALUE + (1.0 - ROCK_FOOT_VALUE) * up) * face * recess
                     };
                     soup.tri(p, [moss; 3], [value(0), value(1), value(2)]);
                 }
@@ -480,6 +481,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
                 key: r.key ^ (k as u32 + 1).wrapping_mul(0x9E37_79B9),
                 moss: false,
                 min_seg: 1,
+                value: ROCK_VALUE,
             },
         );
     }

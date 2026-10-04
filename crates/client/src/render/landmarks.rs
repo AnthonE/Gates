@@ -88,6 +88,7 @@ pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
                 key: (seed as u32) ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9) ^ m.yaw as u32,
                 moss,
                 min_seg: 2,
+                value: boulders::ROCK_VALUE,
             },
         );
     }

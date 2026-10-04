@@ -28,17 +28,22 @@ use super::{Eye, WorldEntity, WorldId};
 pub const CLIFF_CELL_M: f32 = 32.0;
 /// Cells drawn either side of the eye's: ~220 m.
 pub const CLIFF_RING: i32 = 7;
-/// Candidate spacing inside a cell, metres. A face this many metres tall
-/// carries about one ledge.
-const STEP_M: f32 = 3.2;
-/// Cells built per frame; each is ~70 candidates of a few ground taps.
+/// Candidate spacing inside a cell, metres.
+const STEP_M: f32 = 4.0;
+/// Cells built per frame; each is ~64 candidates of a few ground taps.
 const BUILDS_PER_FRAME: usize = 2;
-/// The share of steep candidates that grow a ledge.
-const LEDGE_SHARE: f32 = 0.72;
+/// The share of steep candidates that grow a ledge where the crag field is
+/// full; it falls to nothing where the field is empty, so a face carries
+/// crags and smooth slabs between them rather than an even brick pattern.
+const LEDGE_SHARE: f32 = 0.9;
+/// The crag field's wavelength, metres.
+const CRAG_M: f32 = 22.0;
 /// Tallest visible downhill face, metres.
-const LEDGE_FACE_MAX_M: f32 = 1.6;
+const LEDGE_FACE_MAX_M: f32 = 3.2;
 /// Shortest visible downhill face, metres.
-const LEDGE_FACE_MIN_M: f32 = 0.5;
+const LEDGE_FACE_MIN_M: f32 = 0.8;
+/// A ledge's value against the face's: the same granite, freshly broken.
+const LEDGE_VALUE: f32 = 0.92;
 /// How far a ledge's foot is buried below the face, metres.
 const LEDGE_BURY_M: f32 = 0.7;
 /// Where scree may lie: walkable ground at most this steep…
@@ -178,7 +183,8 @@ pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
             // Downhill, along the fall line.
             let (dx, dz) = (-gx / s, -gz / s);
             if s >= terrain::CLIFF_SLOPE_RATIO {
-                if h(3) < LEDGE_SHARE && open_ground(haven, x, z) {
+                let crag = crag(x, z, seed_key);
+                if h(3) < LEDGE_SHARE * crag && open_ground(haven, x, z) {
                     ledge(&mut soup, seed, haven, x, z, y, s, (dx, dz), k);
                 }
             } else if s <= SCREE_SLOPE_MAX && h(4) < SCREE_SHARE {
@@ -195,6 +201,26 @@ pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
     soup
 }
 
+/// Where the crags gather, 0..1: smooth value noise at [`CRAG_M`], pushed
+/// toward its ends.
+fn crag(x: f32, z: f32, seed: u32) -> f32 {
+    let (fx, fz) = (x / CRAG_M, z / CRAG_M);
+    let (ix, iz) = (fx.floor(), fz.floor());
+    let (tx, tz) = (fx - ix, fz - iz);
+    let (ux, uz) = (tx * tx * (3.0 - 2.0 * tx), tz * tz * (3.0 - 2.0 * tz));
+    let c = |dx: i32, dz: i32| {
+        h01(
+            ((ix as i32 + dx) as u32).wrapping_mul(73_856_093)
+                ^ ((iz as i32 + dz) as u32).wrapping_mul(83_492_791),
+            seed ^ 0xc2a9,
+        )
+    };
+    let a = c(0, 0) + (c(1, 0) - c(0, 0)) * ux;
+    let b = c(0, 1) + (c(1, 1) - c(0, 1)) * ux;
+    let v = a + (b - a) * uz;
+    ((v - 0.25) / 0.5).clamp(0.0, 1.0)
+}
+
 /// One ledge whose downhill face stands at `(x, z)`.
 #[allow(clippy::too_many_arguments)]
 fn ledge(
@@ -209,17 +235,28 @@ fn ledge(
     k: u32,
 ) {
     let h = |c: u32| h01(k, c + 16);
-    // The ground just below the face must refuse a body too, or the ledge
-    // would stand on walkable foot-slope where a player could reach it.
-    let (fx, fz) = (x + dx * 1.5, z + dz * 1.5);
+    // Most ledges are modest and a few are big, the way a crag breaks.
+    let face = LEDGE_FACE_MIN_M + (LEDGE_FACE_MAX_M - LEDGE_FACE_MIN_M) * h(3) * h(3);
+    let hx = 1.4 + 3.6 * h(1) * h(1) + face * 0.5;
+    // Tops lean along the contour as bedding planes do, which raises one end
+    // of the face by up to `|tx| hx`.
+    let tx = (h(5) - 0.5) * 0.4;
+    let tallest = face + tx.abs() * hx;
+    // The ground below the face, out past where the ledge stands proud of
+    // the slope, must refuse a body too, or the ledge would stand on
+    // walkable foot-slope where a player could reach it.
+    let reach = tallest / s + 1.0;
+    let (fx, fz) = (x + dx * reach, z + dz * reach);
     if terrain::ground_slope(seed, haven, fx, fz) < terrain::CLIFF_SLOPE_RATIO {
         return;
     }
-    let hx = 1.1 + 2.2 * h(1);
-    // Deep enough that the shelf's uphill end is buried at any face height:
-    // the ground climbs `2 hz s` across it, against at most LEDGE_FACE_MAX_M.
-    let hz = (LEDGE_FACE_MAX_M / (2.0 * s) + 0.3).max(0.7 + 0.8 * h(2));
-    let face = LEDGE_FACE_MIN_M + (LEDGE_FACE_MAX_M - LEDGE_FACE_MIN_M) * h(3);
+    // Deep enough that the shelf's uphill end is buried: the ground climbs
+    // `2 hz s` across it, against the face's height.
+    let hz = (tallest / (2.0 * s) + 0.4).max(0.8 + 0.8 * h(2));
+    // Off the fall line a little, so no two ledges share a bearing.
+    let a = (h(7) - 0.5) * 0.7;
+    let (sa, ca) = a.sin_cos();
+    let (dx, dz) = (dx * ca - dz * sa, dx * sa + dz * ca);
     // The block's local +Z points downhill; its centre sits `hz` uphill of
     // the face.
     let (ccx, ccz) = (x - dx * hz, z - dz * hz);
@@ -228,6 +265,11 @@ fn ledge(
     let (ax, az) = (-dz, dx);
     let yl = terrain::ground(seed, haven, x + ax * hx, z + az * hx);
     let yr = terrain::ground(seed, haven, x - ax * hx, z - az * hx);
+    // A ledge across a gully would show its whole side; leave that ground
+    // to the face.
+    if y - yl.min(yr) > face {
+        return;
+    }
     let y0 = y.min(yl).min(yr) - LEDGE_BURY_M;
     let y1 = y + face;
     let moss = y > terrain::BEACH_MAX_H + 1.5 && y < terrain::TREELINE_H && h(4) < 0.35;
@@ -241,11 +283,12 @@ fn ledge(
             dir: (dx, dz),
             y0,
             y1,
-            tx: (h(5) - 0.5) * 0.3,
-            tz: (h(6) - 0.5) * 0.3,
+            tx,
+            tz: (h(6) - 0.5) * 0.25,
             key: k ^ 0x51ed_270b,
             moss,
             min_seg: 2,
+            value: LEDGE_VALUE * (0.85 + 0.3 * h(8)),
         },
     );
 }
@@ -285,6 +328,7 @@ fn scree(
                 key: k ^ (m + 1).wrapping_mul(0x85EB_CA6B),
                 moss: false,
                 min_seg: 1,
+                value: LEDGE_VALUE * 0.8,
             },
         );
     }
