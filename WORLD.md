@@ -662,16 +662,29 @@ experience"* · *"tbh idk what the Arrivals are. i mean they are humans. its
 like the gundam pilots. just imagine herro yuy grew up on some battle royale
 island."*
 
+And to the next draft: *"idk long term bio horror almost halo flood like
+seeing as this is all one degree from that story now that i think but its
+more like the forerunners you play as"* · *"Yea its a name change"* (the
+Alignment is Before Colony's Earth Sphere Alliance, renamed) · *"Gates
+eventually when players progress enough and we need more content. we will
+probably have some hidden metal underground doors kinda foreboding thing"*.
+
 - **The machine** is the ancients'. A real ancient civilization (§0–§3's)
   built it into the island's geography in a way that bends space and time,
   and it can "resurrect" a new type of people.
-- **The SI** came later. The Unified Earth Alignment banned it at the same
-  time humans started to build in space, and the island became a research
-  island for it. It was trained on specific ancient texts to key the sacred
-  math that taps hidden channels outside normal space and time. Safe SI is
-  a common part of the aligned world; this one is not safe.
+- **The SI** came later. The Unified Earth Alignment, the world's
+  government, banned it at the same time humans started to build in space,
+  and the island became a research island for it. It was trained on
+  specific ancient texts to key the sacred math that taps hidden channels
+  outside normal space and time. Safe SI is a common part of the aligned
+  world; this one is not safe.
 - **Under the island** is a factory like NERV's, probably with bio-mecha
-  chained up and harvested for something (§11.3).
+  chained up and harvested for something: a long-term bio-horror, almost
+  Halo's Flood. Gates opens it eventually, when players have progressed far
+  enough and the game needs more content, through hidden metal doors
+  underground (§11.3).
+- **One degree from Halo.** The whole story is, except that what you play is
+  more like its Forerunners.
 - **The island raises pilots**: humans, future Gundam pilots. That is half
   of what makes one; the other half is innate human skill with the right SI
   helpers. Anyone from the island remembers it only like a dream, and keeps
@@ -723,8 +736,9 @@ the island it will be like a NERV factory with probably some crazy bio mecha
 things that are like chained up and being harvested for something. the
 people"* (the message ends there).
 
-- **Gates is the preamble.** It never needs to go deep. The hard confirm is
-  Before Colony's: eventually, a gate from the Moon to Earth.
+- **Gates is the preamble.** Its story never needs to go deep; its ground
+  does, late, when the factory becomes content. The hard confirm is Before
+  Colony's: eventually, a gate from the Moon to Earth.
 - **Nothing says it.** No sign, toast, kiosk, death line, map label or
   devblog (`posts/`) names the banned SI, the machine, the gate system or
   what is under the island, or explains them.
@@ -745,10 +759,12 @@ people"* (the message ends there).
   drone; and the sacred math itself: glyphs on the ancients' works (the gold
   mile markers, the Observatory's rings), the texts the SI was trained on in
   plain sight, and the same glyphs flickering across ZERO's display in
-  Before Colony.
+  Before Colony. And the metal doors themselves, early: sealed steel in the
+  ground, the one modern thing among the ancients' obsidian and gold, long
+  before anything opens them.
 - **Names.** Gundam Wing's stay out of Gates (Sotsu · Sunrise's; Before
-  Colony keeps them behind its `canon-names` feature), and so does NERV
-  (Evangelion's).
+  Colony keeps them behind its `canon-names` feature), and so do NERV
+  (Evangelion's) and the Flood and the Forerunners (Halo's).
 
 ### 11.4 · Eventually: Greed Island and Nen
 
@@ -777,10 +793,9 @@ fiction hands it when it comes:
 
 ### 11.5 · Open — the operator's
 
-- What the bio-mecha under the island are harvested for. The message broke
-  off at *"the people"*.
-- Which game goes under the island, if Gates never goes deep.
-- Whether the Unified Earth Alignment is Before Colony's Earth Sphere
-  Alliance under its own name, or a body beside it.
+- What the bio-mecha under the island are harvested for (*"idk"*).
+- What *"more like the forerunners you play as"* makes of the players:
+  heirs of the ancients, or the ancients themselves, brought back by their
+  own machine.
 - Whether a Gates player ever carries anything into Before Colony. In the
   fiction, only a dream and the combat experience cross.
