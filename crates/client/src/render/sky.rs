@@ -80,7 +80,7 @@ pub const CLOUD_SCALE_M: f32 = 900.0;
 /// How much of the sky carries cloud, 0..1. `ART.md` §1 asks for cumulus with
 /// gaps — a solid overcast has no top stop either, because the bright tops are
 /// what carry the range.
-pub const CLOUD_COVER: f32 = 0.52;
+pub const CLOUD_COVER: f32 = 0.57;
 
 /// Sunlit cumulus, cd/m². `Skybox::brightness` is documented in cd/m² and is
 /// multiplied by `Exposure::exposure()` when the component is extracted, and
@@ -397,7 +397,7 @@ pub const EDGE: f32 = 0.13;
 const BILLOW: f32 = 0.3;
 /// How much a thick cloud's underside darkens at its core: light that came
 /// through a kilometre of cloud, against the thin rim the sun shines through.
-const CORE_SHADE: f32 = 0.38;
+const CORE_SHADE: f32 = 0.55;
 /// How much brighter a thin rim reads than the underside, as a share of the
 /// top-to-base step: the silver lining.
 const RIM_GLOW: f32 = 0.45;
