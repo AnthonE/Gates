@@ -1052,14 +1052,14 @@ fn the_refracted_path_is_bounded() {
 }
 
 /// The reflected sky is a sky: the horizon brighter than the zenith and
-/// greyer, the whole of it going with the daylight, a warm glow only for a low
-/// sun and only on the red side.
+/// greyer, a night floor far under the day and only at night, a warm glow
+/// only for a low sun and only on the red side, and a storm greyer and dimmer.
 #[test]
 fn the_reflected_sky_follows_the_day() {
     use bevy::math::Vec3;
     let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let noon_sun = Vec3::new(0.3, 0.8, 0.5).normalize();
-    let [z, h, g] = sky_light(noon_sun, 1.0, 0.0, 0.0);
+    let [z, h, g, f] = sky_light(noon_sun, 0.0, 0.0);
     assert!(lum(h) > lum(z), "the horizon is darker than the zenith");
     assert!(z[2] > z[0], "the zenith is not blue");
     assert!(
@@ -1067,17 +1067,20 @@ fn the_reflected_sky_follows_the_day() {
         "the horizon is not greyer than the zenith"
     );
     assert_eq!(g, [0.0; 3], "a dusk glow at noon");
-    let [zn, _, _] = sky_light(noon_sun, 0.0, 0.0, 1.0);
+    assert_eq!(f, [0.0; 3], "a night floor by day");
+    let [_, _, _, fnight] = sky_light(noon_sun, 0.0, 1.0);
+    assert!(lum(fnight) > 0.0, "the night sky is black");
     assert!(
-        lum(zn) < 0.01 * lum(z),
+        lum(fnight) < 0.01 * lum(z),
         "the night sky is as bright as the day"
     );
     let low = Vec3::new(0.95, 0.05, 0.0).normalize();
-    let [_, _, gd] = sky_light(low, 0.4, 0.0, 0.0);
+    let [_, _, gd, _] = sky_light(low, 0.0, 0.0);
     assert!(gd[0] > gd[2] && gd[0] > 0.0, "no warm glow at a low sun");
-    let [zs, _, _] = sky_light(noon_sun, 1.0, 1.0, 0.0);
+    let [zs, _, _, _] = sky_light(noon_sun, 1.0, 0.0);
     assert!(
         lum(zs) < lum(z),
         "a storm sky reflects brighter than a clear one"
     );
+    assert!(TWILIGHT_SKY > 0.0 && TWILIGHT_SKY < 1.0);
 }

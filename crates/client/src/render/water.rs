@@ -947,34 +947,56 @@ pub const GLINT_FAR_M: f32 = 400.0;
 /// targets, but only the desktop draws this sky; a browser reflects its deck.
 pub const SKY_DESAT: f32 = 0.45;
 
+/// How much faster the clear sky darkens than the sun's own transmittance
+/// does: the sky's light is the transmittance ratio (against the noon sun)
+/// raised to this. **Fitted to one measurement**, the probe's `--hour dusk`
+/// (sun 2.5° up, `rig::sun_elevation` at 0.855): the LUT's luminance ratio
+/// there is ~0.08 by the medium's optical depth, and the drawn horizon read
+/// sRGB (54,36,33) against noon's (157,162,157) under an exposure opened 2.5
+/// stops — ~0.02 of noon's radiance. `0.08^1.5 ≈ 0.022`. At the afternoon
+/// sun (25°) it costs 7% against the plain ratio.
+pub const SKY_FALLOFF: f32 = 1.5;
+
+/// The least of the clear sky's daylight, as a share of the sun's lux share
+/// (`rig::sun_lux`, whose twilight tail is "a little sun for the sky to
+/// scatter"). The transmittance toward a sun under the horizon is zero and
+/// the sky after sunset is not, quite. Under [`SKY_FALLOFF`]'s dusk value so
+/// it only takes over once the sun has gone.
+pub const TWILIGHT_SKY: f32 = 0.1;
+
 /// The browser's night-sky floor, deck units (`sky.rs`'s own `NIGHT_SKY`).
 const NIGHT_SKY: [f32; 3] = [0.0015, 0.002, 0.0035];
 /// The warm glow a low sun puts on the horizon near it, deck units
 /// (`sky.rs`'s `DUSK_GLOW`, which the browser's deck bakes the same way).
 const DUSK_GLOW: [f32; 3] = [0.10, 0.045, 0.02];
 
-/// The clear sky the sea reflects, cd/m²: `[zenith, horizon, dusk glow]`.
+/// The clear sky the sea reflects, cd/m², in full daylight:
+/// `[zenith, horizon, dusk glow, night floor]`. The hour's light multiplies
+/// the first three in the shader, never the floor.
 ///
 /// **The browser's backdrop, not a new sky.** `sky::backdrop_at` is the
 /// clear-sky radiance a page bakes behind its clouds — zenith luminance off
 /// the fill's own irradiance, the air's chroma, the horizon brighter and
-/// greyer along the air-mass curve — and the weather and the hour act on it
-/// exactly as `sky::compose_range` acts on the baked one. The desktop's real
-/// sky is the atmosphere's, which a forward material cannot sample (its
-/// sky-view LUT is not in the mesh view bindings), so this is the stand-in on
-/// both targets; a browser draws the deck itself instead (see `zenith.w`).
+/// greyer along the air-mass curve — and the weather acts on it exactly as
+/// `sky::compose_range` acts on the baked one. The desktop's real sky is the
+/// atmosphere's, which a forward material cannot sample (its sky-view LUT is
+/// not in the mesh view bindings), so this is the stand-in; a browser draws
+/// the deck itself instead (see `zenith.w`).
 ///
-/// `light` is the sun's share of daylight (`WeatherNow::sun_lux`), `dark` and
-/// `night` the weather's and the hour's.
-pub fn sky_light(sun: Vec3, light: f32, dark: f32, night: f32) -> [[f32; 3]; 3] {
+/// **The hour is applied in the shader, off the atmosphere's own
+/// transmittance LUT** (which IS in the mesh view bindings). Scaled by the
+/// sun's lux share alone, the first dusk capture put the sea at (112,119,134)
+/// under a horizon of (54,39,37): the share keeps a twilight tail on purpose
+/// (`rig::sun_lux`), and the exposure opens at dusk, so a sky that only dims
+/// by it reads lit and blue while the real one has gone dark and red.
+///
+/// `dark` and `night` are the weather's and the hour's.
+pub fn sky_light(sun: Vec3, dark: f32, night: f32) -> [[f32; 3]; 4] {
     let nits = super::sky::CLOUD_NITS;
     let grade = |b: [f32; 3]| -> [f32; 3] {
         let lum = super::fill::luminance(b);
         let grey = SKY_DESAT + (1.0 - SKY_DESAT) * 0.7 * dark;
-        core::array::from_fn(|c| {
-            ((b[c] + (lum - b[c]) * grey) * (1.0 - 0.4 * dark) * light + NIGHT_SKY[c] * night)
-                * nits
-        })
+        core::array::from_fn(|c| (b[c] + (lum - b[c]) * grey) * (1.0 - 0.4 * dark) * nits)
     };
     let zenith = grade(super::sky::backdrop_at(Vec3::Y));
     let horizon = grade(super::sky::backdrop_at(Vec3::X));
@@ -987,7 +1009,8 @@ pub fn sky_light(sun: Vec3, light: f32, dark: f32, night: f32) -> [[f32; 3]; 3] 
     };
     let g = dusk * ((sun.y + 0.1) / 0.1).clamp(0.0, 1.0) * (1.0 - 0.7 * dark);
     let glow = core::array::from_fn(|c| DUSK_GLOW[c] * g * nits);
-    [zenith, horizon, glow]
+    let floor = core::array::from_fn(|c| NIGHT_SKY[c] * night * nits);
+    [zenith, horizon, glow, floor]
 }
 
 /// How much longer the light's path through the water is than the water is
@@ -1026,6 +1049,14 @@ pub struct WaterParams {
     pub sun: Vec4,
     /// xyz the dusk glow toward a low sun, cd/m²; w spare.
     pub glow: Vec4,
+    /// xyz the night floor, cd/m²; w spare.
+    pub night: Vec4,
+    /// The hour's light on the clear sky: x the sun's share of daylight
+    /// (`WeatherNow::sun_lux`); y the height of the noon sun (`to_sun`'s y at
+    /// `CAPTURE_DAY_FRAC`), which the clear sky above is calibrated at, so the
+    /// atmosphere's transmittance over its value there is the hour natively;
+    /// z [`TWILIGHT_SKY`]; w [`SKY_FALLOFF`].
+    pub hour: Vec4,
     /// x [`EDGE_M`], y [`CONTACT_M`], z [`CONTACT_FOAM`], w the breakers'
     /// phase (wrapped to τ, so the lap it drives never jumps).
     pub shore: Vec4,
@@ -1034,10 +1065,11 @@ pub struct WaterParams {
 }
 
 impl WaterParams {
-    /// The uniform for a sky and a sun. Everything but those and the phase is
-    /// a constant of this file.
-    pub fn new(sky: [[f32; 3]; 3], sun: Vec3, phase: f32) -> Self {
-        let [zenith, horizon, glow] = sky;
+    /// The uniform for a sky, a sun and its share of daylight. Everything but
+    /// those and the phase is a constant of this file.
+    pub fn new(sky: [[f32; 3]; 4], sun: Vec3, light: f32, phase: f32) -> Self {
+        let [zenith, horizon, glow, floor] = sky;
+        let noon_y = super::rig::to_sun(super::rig::CAPTURE_DAY_FRAC).y;
         let clear = if super::sky::BAKE_BACKDROP { 0.0 } else { 1.0 };
         Self {
             optics: Vec4::new(EXTINCT[0], EXTINCT[1], EXTINCT[2], ALPHA_MAX),
@@ -1054,6 +1086,8 @@ impl WaterParams {
                 .normalize_or(Vec3::Y)
                 .extend(super::sky::CLOUD_NITS * super::sky::DECK_GAIN),
             glow: Vec4::new(glow[0], glow[1], glow[2], 0.0),
+            night: Vec4::new(floor[0], floor[1], floor[2], 0.0),
+            hour: Vec4::new(light, noon_y, TWILIGHT_SKY, SKY_FALLOFF),
             shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, phase),
             glint: Vec4::new(water_f0(), GLINT_A2_NEAR, GLINT_A2_FAR, GLINT_FAR_M),
         }
@@ -1062,15 +1096,14 @@ impl WaterParams {
     /// Noon in clear weather: what a frame with no weather yet draws.
     pub fn noon() -> Self {
         let sun = super::rig::to_sun(super::rig::CAPTURE_DAY_FRAC);
-        Self::new(sky_light(sun, 1.0, 0.0, 0.0), sun, 0.0)
+        Self::new(sky_light(sun, 0.0, 0.0), sun, 1.0, 0.0)
     }
 }
 
 /// The extension: the uniform and the sky's cubemap.
 ///
 /// **Not `#[bindless]`**, for the reason `ground_splat.rs` gives: it forces
-/// the whole `ExtendedMaterial` non-bindless, which is also what lets the
-/// shader read `pbr_bindings::normal_map_texture` by name.
+/// the whole `ExtendedMaterial` non-bindless.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct WaterExt {
     #[uniform(100)]
@@ -1740,8 +1773,9 @@ pub fn animate(
             // is a client of it. Headless (no weather) it is the noon sky.
             m.extension.params = match weather.as_deref() {
                 Some(w) => WaterParams::new(
-                    sky_light(w.sun, w.sun_lux, w.dark, w.night),
+                    sky_light(w.sun, w.dark, w.night),
                     w.sun,
+                    w.sun_lux,
                     sea.surf_phase,
                 ),
                 None => WaterParams {

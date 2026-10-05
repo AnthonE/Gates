@@ -37,6 +37,9 @@
 #ifdef DEPTH_PREPASS
 #import bevy_pbr::prepass_utils::prepass_depth
 #endif
+#ifdef ATMOSPHERE
+#import bevy_pbr::mesh_view_bindings::atmosphere_data
+#endif
 
 struct Water {
     // xyz `water::EXTINCT`, w `ALPHA_MAX`.
@@ -53,6 +56,11 @@ struct Water {
     sun: vec4<f32>,
     // xyz the dusk glow toward a low sun, cd/m²; w spare.
     glow: vec4<f32>,
+    // xyz the night floor, cd/m²; w spare.
+    night: vec4<f32>,
+    // x the sun's share of daylight, y the noon sun's height, z `TWILIGHT_SKY`,
+    // w `SKY_FALLOFF`.
+    hour: vec4<f32>,
     // x `EDGE_M`, y `CONTACT_M`, z `CONTACT_FOAM`, w the breakers' phase.
     shore: vec4<f32>,
     // x F0, y `GLINT_A2_NEAR`, z `GLINT_A2_FAR`, w `GLINT_FAR_M`.
@@ -96,29 +104,67 @@ fn air_weight(y: f32) -> f32 {
     return clamp((1.0 / (e + f) - m0) / (1.0 / f - m0), 0.0, 1.0);
 }
 
+#ifdef ATMOSPHERE
+// The eye's radius in the atmosphere's frame: at the ground. The island's
+// relief is noise against a 6 360 km planet.
+fn ground_r() -> f32 {
+    return atmosphere_data.atmosphere.bottom_radius + 1.0;
+}
+#endif
+
+// The hour's light on the clear sky (`water::sky_light` says why it is here).
+// Natively: the atmosphere's own transmittance toward the sun over its value
+// at the noon sun the clear sky is calibrated at — darker and redder as the
+// sun goes down, off the same LUT that reddens the sun on every surface. The
+// hue is taken at a third: the sky is lit along many paths through the air,
+// not only the direct one, and the full ratio turns a dusk zenith crimson
+// where the atmosphere draws it near grey. The level falls as the ratio to
+// `SKY_FALLOFF` (fitted at dusk) and is floored at `TWILIGHT_SKY` of the lux
+// share, for the sky after sunset. Without an atmosphere, the lux share.
+fn daylight_tint() -> vec3<f32> {
+#ifdef ATMOSPHERE
+    let r = ground_r();
+    let mu = clamp(water.sun.y, -1.0, 1.0);
+    let t = lighting::sample_transmittance_lut(r, max(mu, 0.0));
+    let t_ref = lighting::sample_transmittance_lut(r, water.hour.y);
+    let ratio = (t / max(t_ref, vec3<f32>(1e-4))) * smoothstep(-0.03, 0.02, mu);
+    let lum = dot(ratio, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let hue = ratio / max(lum, 1e-5);
+    let level = max(pow(max(lum, 0.0), water.hour.w), water.hour.z * water.hour.x);
+    return level * mix(vec3<f32>(1.0), hue, 0.35 * smoothstep(0.0, 1e-3, lum));
+#else
+    return vec3<f32>(water.hour.x);
+#endif
+}
+
 // Sky radiance toward `r` (unit, r.y >= 0), cd/m². The cloud deck is looked
 // up toward `rd` instead: the same reflection off the wave's own normal,
 // without the ripples. The deck has no mips, so a ripple-scattered ray reads
 // its noise at full resolution and the clouds come back as glitter; the swell
 // alone bends them the way a real sea smears them.
-fn sky_radiance(r: vec3<f32>, rd: vec3<f32>) -> vec3<f32> {
+fn sky_radiance(r: vec3<f32>, rd: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
     var c = mix(water.zenith.rgb, water.horizon.rgb, air_weight(r.y));
     // A low sun warms the horizon on its own side (`sky::compose_range`).
     let sh = water.sun.xz;
     let rh = r.xz;
     let facing = max(dot(rh, sh) * inverseSqrt(max(dot(rh, rh) * dot(sh, sh), 1e-8)), 0.0);
     let low = max(1.0 - clamp(r.y, 0.0, 1.0) / 0.4, 0.0);
-    c = (c + water.glow.rgb * (facing * facing * facing) * (low * low)) * water.zenith.w;
+    c = c + water.glow.rgb * (facing * facing * facing) * (low * low);
+    c = (c * tint + water.night.rgb) * water.zenith.w;
     // The deck, sampled the way the `Skybox` samples it (z flipped). Explicit
     // level: this runs under a branch.
     let raw = textureSampleLevel(sky_cube, sky_sampler, rd * vec3<f32>(1.0, 1.0, -1.0), 0.0).rgb;
-    // Natively the deck is stored with the atmosphere's warm transmittance
-    // divided out (`sky::deck_hue`) and the atmosphere multiplies it back in;
-    // read raw it is blue — the first capture's periwinkle speckle. What the
-    // atmosphere shows is the cloud's own grey dimmed by the air in front of
-    // it, so reflect that. A browser's deck is already the finished sky.
-    let grey = vec3<f32>(dot(raw, vec3<f32>(0.2126, 0.7152, 0.0722)));
-    let deck = mix(raw, grey * mix(0.9, 0.4, air_weight(rd.y)), water.zenith.w);
+    // Natively the atmosphere draws the deck as `inscatter + T·cube`, with T
+    // the column toward that direction — and the deck is stored with T's hue
+    // divided out (`sky::deck_hue`), so read raw it is blue (the first
+    // capture's periwinkle speckle) and too bright at the horizon (the first
+    // dusk's). Multiplying by the same LUT's T is the sky's own composite. A
+    // browser's deck is already the finished sky.
+#ifdef ATMOSPHERE
+    let deck = raw * lighting::sample_transmittance_lut(ground_r(), max(rd.y, 0.0));
+#else
+    let deck = raw;
+#endif
     return c + deck * water.sun.w;
 }
 
@@ -283,7 +329,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         R = normalize(vec3<f32>(R.x, max(R.y, 0.0) + 1e-3, R.z));
         var Rd = reflect(-V, pbr_input.world_normal);
         Rd = normalize(vec3<f32>(Rd.x, max(Rd.y, 0.0) + 1e-3, Rd.z));
-        let sky = sky_radiance(R, Rd) * view.exposure;
+        let sky = sky_radiance(R, Rd, daylight_tint()) * view.exposure;
         let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var) * smooth_share;
         // 6 · Premultiplied: the sky replaces what Fresnel takes from below.
         color = vec4<f32>(
