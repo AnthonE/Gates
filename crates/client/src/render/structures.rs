@@ -169,10 +169,11 @@ pub struct Tier {
     /// rather than built: it was a photograph of a tree, at 1.8× life size.
     ///
     /// It lives on the material rather than in the mesh
-    /// ([`build_kit`] sets `uv_transform`) because the piece meshes are
-    /// deduplicated by `(kind, size)` and SHARED across all four tiers — a
-    /// per-tier density baked into UVs would be four times the meshes. The
-    /// mesh's UV is therefore literally metres ([`quad`]), and this scales it.
+    /// ([`build_kit`] sets `uv_transform`): the plain part meshes (stairs,
+    /// frames, the ghost's) are shared across all four tiers, and the dressed
+    /// per-tier meshes ([`dress`]) keep the same metre UV so one density rule
+    /// covers both. The mesh's UV is therefore metres ([`quad`]), and this
+    /// scales it.
     pub tiles_per_m: f32,
 }
 
