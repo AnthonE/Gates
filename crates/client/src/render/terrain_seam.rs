@@ -10,7 +10,7 @@ use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
 use sim_core::terrain;
 
-use super::terrain_mesh::{CHUNK_M, FAR_DROP, FAR_STEP, NEAR_N};
+use super::terrain_mesh::{drawn_y, CHUNK_M, FAR_DROP, FAR_STEP, NEAR_N};
 
 /// Left, right, bottom, top, in the same order as the appended edge vertices.
 pub const NEIGHBORS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
@@ -58,8 +58,9 @@ pub fn append(mesh: &mut Mesh, seed: u64, haven: &terrain::Haven) {
         for segment in 0..coarse_segments {
             let a = positions[edge_vertex(edge, segment * fine_per_coarse)];
             let b = positions[edge_vertex(edge, (segment + 1) * fine_per_coarse)];
-            let ya = terrain::ground_memo(&mut lat, seed, haven, a[0], a[2]) - FAR_DROP;
-            let yb = terrain::ground_memo(&mut lat, seed, haven, b[0], b[2]) - FAR_DROP;
+            // The far mesh's own vertices, cliff relief included.
+            let ya = drawn_y(&mut lat, seed, haven, a[0], a[2], FAR_STEP) - FAR_DROP;
+            let yb = drawn_y(&mut lat, seed, haven, b[0], b[2], FAR_STEP) - FAR_DROP;
             for j in 0..=fine_per_coarse {
                 let i = segment * fine_per_coarse + j;
                 let index = NEAR_N * NEAR_N + (edge * NEAR_N + i) * 2 + 1;

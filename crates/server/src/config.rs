@@ -102,6 +102,11 @@ pub struct ShardConfig {
     /// depends on the second.
     /// Default `false`, DECISIONS.md §open ("siwe identity v1").
     pub require_auth: bool,
+    /// Dev-only: `dev_heli = false` keeps the patrol heli out (`HeliDef::INERT`).
+    /// Its first pass lands five minutes after boot and a burst downs anyone
+    /// standing in the open, which is every capture probe on a slow box.
+    /// Default `true`, the content's own heli.
+    pub dev_heli: bool,
     /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
     /// resolves against the CWD, which the repo commands make the repo
     /// root. The shard binary refuses to boot on invalid content.
@@ -351,6 +356,7 @@ impl ShardConfig {
             cert_pem: None,
             key_pem: None,
             require_auth: false,
+            dev_heli: true,
             content_dir: "content".into(),
             save_file: None,
             world_file: None,
@@ -436,6 +442,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut min_client: Option<u32> = None;
     let mut content_dir: Option<String> = None;
     let mut require_auth: Option<bool> = None;
+    let mut dev_heli: Option<bool> = None;
     let mut cert_pem: Option<String> = None;
     let mut key_pem: Option<String> = None;
     let mut save_file: Option<String> = None;
@@ -622,6 +629,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     key_pem = Some(value.to_string());
                 }
             }
+            "dev_heli" => match value {
+                "true" => dev_heli = Some(true),
+                "false" => dev_heli = Some(false),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: dev_heli must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
             "require_auth" => match value {
                 "true" => require_auth = Some(true),
                 "false" => require_auth = Some(false),
@@ -1028,6 +1045,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         cert_pem,
         key_pem,
         require_auth: require_auth.unwrap_or(false),
+        dev_heli: dev_heli.unwrap_or(true),
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
         save_file,
         world_file,

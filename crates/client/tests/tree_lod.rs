@@ -58,6 +58,7 @@ fn fixture() -> (App, PropAssets) {
     let maps = PropMaps {
         rock: MapSet::default(),
         bark: MapSet::default(),
+        birch: MapSet::default(),
         wood: MapSet::default(),
         stone: MapSet::default(),
         metal: MapSet::default(),

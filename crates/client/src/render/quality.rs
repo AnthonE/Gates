@@ -51,10 +51,14 @@
 //! performance feature — which `CLAUDE.md`'s trap list already names once,
 //! about `COVER_FULL`.
 
+use bevy::anti_alias::smaa::Smaa;
+use bevy::anti_alias::taa::TemporalAntiAliasing;
+use bevy::core_pipeline::prepass::MotionVectorPrepass;
 use bevy::light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap};
 use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::render::camera::{MipBias, TemporalJitter};
 
 use crate::config::{Ao, Quality};
 
@@ -75,6 +79,10 @@ use super::tree::TreeLod;
 pub struct Gfx {
     pub ao: Ao,
     pub smaa: bool,
+    /// Temporal anti-aliasing. When on it replaces SMAA: TAA resolves the
+    /// sub-pixel grass, needle and fence edges SMAA cannot, at the cost of
+    /// some softness. The capture probe always draws SMAA (see [`apply`]).
+    pub taa: bool,
     pub bloom: bool,
     /// Whether the sun casts at all.
     ///
@@ -211,6 +219,7 @@ pub fn preset(q: Quality) -> Gfx {
             render_scale: super::render_scale::RENDER_SCALE_MAX,
             ao: Ao::Medium,
             smaa: true,
+            taa: true,
             bloom: true,
             shadows: true,
             cascades: 4,
@@ -225,6 +234,7 @@ pub fn preset(q: Quality) -> Gfx {
             // one that measurement rejected (`RENDER.md` §0).
             ao: Ao::Low,
             smaa: true,
+            taa: true,
             bloom: true,
             shadows: true,
             cascades: 3,
@@ -239,6 +249,7 @@ pub fn preset(q: Quality) -> Gfx {
             // it goes last — but it does go: on the tier that exists for a
             // machine that cannot hold the frame, a pass is a pass.
             smaa: false,
+            taa: false,
             bloom: false,
             shadows: true,
             cascades: 2,
@@ -348,9 +359,12 @@ pub fn effective(g: Gfx) -> Gfx {
     // into (`props::stream`'s hand-off, fixed the same day —
     // `tests/ring_handoff.rs`). The distance stays on the argument above, not
     // on that frame.
+    // TAA wants a motion-vector prepass, which is the same storage-buffer
+    // layout wall as the AO above.
     #[cfg(target_arch = "wasm32")]
     let g = Gfx {
         ao: Ao::Off,
+        taa: false,
         tree_lod_swap_m: g.tree_lod_swap_m.max(MEDIUM_TREE_LOD_SWAP_M),
         ..g
     };
@@ -366,6 +380,8 @@ pub struct Tier {
     /// with the occlusion pass off keeps the depth the decals read.
     pub ssao: Option<ScreenSpaceAmbientOcclusionQualityLevel>,
     pub smaa: bool,
+    /// Supersedes `smaa` when both are on.
+    pub taa: bool,
     pub bloom: bool,
     pub shadows: bool,
     /// Shadow cascades and how far the last one reaches, metres. Each cascade
@@ -390,6 +406,7 @@ pub fn components(g: Gfx) -> Tier {
             Ao::Ultra => Some(ScreenSpaceAmbientOcclusionQualityLevel::Ultra),
         },
         smaa: g.smaa,
+        taa: g.taa,
         bloom: g.bloom,
         shadows: g.shadows,
         cascades: g.cascades,
@@ -519,6 +536,7 @@ pub fn shadow_vram_mb(g: Gfx) -> f32 {
 /// would re-extract the camera and rebuild the shadow config for nothing. So
 /// the trigger is the effective [`Gfx`] the player is actually on, compared
 /// against the one this system last wrote.
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     mut commands: Commands,
     settings: Res<super::Settings>,
@@ -530,7 +548,9 @@ pub fn apply(
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut lod: ResMut<TreeLod>,
     mut last: Local<Option<Gfx>>,
+    capture: Option<Res<super::capture::Capture>>,
 ) {
+    let capturing = capture.is_some();
     let fresh = cam.iter().any(|(_, marker)| marker.is_added());
     let want = effective(settings.gfx);
     let moved = *last != Some(want);
@@ -549,10 +569,26 @@ pub fn apply(
             }),
             None => e.remove::<ScreenSpaceAmbientOcclusion>(),
         };
-        if t.smaa {
-            e.insert(bevy::anti_alias::smaa::Smaa::default());
+        // The probe shoots a camera it has just teleported, so a temporal
+        // history would be the previous vantage; it keeps SMAA.
+        if t.taa && !capturing {
+            e.remove::<Smaa>();
+            e.insert(TemporalAntiAliasing::default());
         } else {
-            e.remove::<bevy::anti_alias::smaa::Smaa>();
+            // The jitter and the mip bias are TAA's required components and
+            // outlive it: left behind, the frame shakes with nothing to
+            // resolve it.
+            e.remove::<(
+                TemporalAntiAliasing,
+                TemporalJitter,
+                MipBias,
+                MotionVectorPrepass,
+            )>();
+            if t.smaa {
+                e.insert(Smaa::default());
+            } else {
+                e.remove::<Smaa>();
+            }
         }
         if t.bloom {
             e.insert(Bloom::NATURAL);

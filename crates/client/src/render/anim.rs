@@ -634,6 +634,18 @@ pub fn build(
     if !rig.shaded {
         match gltf.materials.as_slice() {
             [only] => {
+                // The skin is baked near-black (linear luma 0.056, level with
+                // grass: `NOW.md` §0dk), so players read as silhouettes and
+                // the first-person hand as a dark glove. Lift the shared
+                // material in place, which reaches every body and both arms
+                // at once; the sleeper and keeper shades set their own colour.
+                if let Some(m) = materials.get_mut(only) {
+                    m.base_color = Color::LinearRgba(LinearRgba::rgb(
+                        BODY_ALBEDO_LIFT,
+                        BODY_ALBEDO_LIFT,
+                        BODY_ALBEDO_LIFT,
+                    ));
+                }
                 if let Some(base) = materials.get(only) {
                     let mut tinted = base.clone();
                     tinted.base_color = Color::srgb(0.34, 0.38, 0.46);
@@ -1250,6 +1262,11 @@ pub struct BodyShades {
     /// one of them is a bug.
     pub from_gltf: bool,
 }
+
+/// The multiplier on `stumpy.glb`'s baked skin. 2.4 brings its 0.056 linear
+/// luma to litter's 0.135 and clips 0.14% of texels (measured in `NOW.md`
+/// §0dk); 3.0 would reach twig's 0.167 at 0.34%.
+pub const BODY_ALBEDO_LIFT: f32 = 2.4;
 
 /// How far a body may look from level, radians (~74°), against a wire that
 /// can carry ~88°. A clamp and not a scale: scaling makes every glance an

@@ -150,6 +150,10 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    if !cfg.dev_heli {
+        println!("⚠ dev_heli = false: no patrol heli — a DEV shard, never a public one");
+        tables.heli = sim_core::heli::HeliDef::INERT;
+    }
     // What this shard IS, before what it loaded. Three numbers and they are
     // three different questions (`protocol::version`): the build is what to
     // quote in a bug report, `proto` is the exact wire gate, and the floor is

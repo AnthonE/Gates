@@ -47,12 +47,16 @@
 
 use client::render::bodies::RETIRED_BODY_PALM;
 use client::render::viewmodel::{
-    aim_snap, bump, carried, item_rest_dir, lift_at, palm_rig, rig_transform, swing_apex_s,
-    swing_phases, swing_pose, thrust_pose, thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X,
-    VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE,
-    VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD,
-    VIEWMODEL_PALM, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S,
-    VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
+    bash_pose, bump, carried, carry_of, item_rest_dir, lift_at, palm_rig, rig_transform,
+    stroke_pose, stroke_snap, swing_apex_s, swing_phases, swing_pose, tap_pose, thrust_pose,
+    thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M,
+    VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M,
+    VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_PALM, VIEWMODEL_SWING_ATTACK,
+    VIEWMODEL_SWING_DROP, VIEWMODEL_SWING_S, VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX,
+    VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
+};
+use client::render::viewmodel::{
+    hand_fit, hand_rest, hand_set, item_pose, VIEWMODEL_SEAT, VIEWMODEL_SEAT_DIR,
 };
 use client::ui::hold::{HeldModelDef, Stroke, HELD_MODELS};
 
@@ -81,6 +85,8 @@ const NEAR_M: f32 = 0.1;
 const STEPS: usize = 24;
 
 type V3 = [f32; 3];
+/// A stroke's arm: rotation and displacement about the shoulder at progress `s`.
+type Pose = fn(f32) -> (bevy::math::Quat, bevy::math::Vec3);
 type Q = [f32; 4];
 
 // ── The file ─────────────────────────────────────────────────────────────
@@ -123,6 +129,7 @@ impl Glb {
             Some("SCALAR") => 1,
             Some("VEC3") => 3,
             Some("VEC4") => 4,
+            Some("MAT4") => 16,
             other => panic!("{RIG}: accessor {i} is {other:?}"),
         };
         let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
@@ -139,6 +146,46 @@ impl Glb {
                     .map(|c| {
                         let o = base + k * stride + 4 * c;
                         f32::from_le_bytes(self.bin[o..o + 4].try_into().unwrap())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// One accessor's unsigned-integer rows (joint indices, triangle indices),
+    /// with the same refusals as [`Glb::floats`].
+    fn ints(&self, i: usize) -> Vec<Vec<u32>> {
+        let a = &self.json["accessors"][i];
+        let size = match a["componentType"].as_u64() {
+            Some(5121) => 1,
+            Some(5123) => 2,
+            Some(5125) => 4,
+            other => panic!("{RIG}: accessor {i} is component type {other:?}, not an integer"),
+        };
+        let n = match a["type"].as_str() {
+            Some("SCALAR") => 1,
+            Some("VEC4") => 4,
+            other => panic!("{RIG}: accessor {i} is {other:?}"),
+        };
+        let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let base = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let stride = match bv["byteStride"].as_u64().unwrap_or(0) as usize {
+            0 => size * n,
+            s => s,
+        };
+        let count = a["count"].as_u64().unwrap() as usize;
+        (0..count)
+            .map(|k| {
+                (0..n)
+                    .map(|c| {
+                        let o = base + k * stride + size * c;
+                        let b = &self.bin[o..o + size];
+                        match size {
+                            1 => u32::from(b[0]),
+                            2 => u32::from(u16::from_le_bytes([b[0], b[1]])),
+                            _ => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                        }
                     })
                     .collect()
             })
@@ -668,14 +715,20 @@ fn the_hidden_arm_collapses_to_a_point_off_screen() {
     // build that never writes the offset at all — which is a gate checking its
     // own copy of the fix (`CLAUDE.md`'s naive-rebuild trap, one tier up).
     let bone = glb.node(VIEWMODEL_HIDDEN_ARM).unwrap();
-    let unmoved = view(glb.skeleton(clip, 0.0)[bone]);
-    let (rot, off) = swing_pose(0.10);
-    let at = rig_transform(rot, off).transform_point(bevy::math::Vec3::from_array(unmoved));
+    let unmoved = bevy::math::Vec3::from_array(view(glb.skeleton(clip, 0.0)[bone]));
+    let strokes: [Pose; 3] = [swing_pose, bash_pose, thrust_pose];
+    let seen = strokes.iter().any(|pose| {
+        (0..=120).any(|i| {
+            let (rot, off) = pose(i as f32 / 120.0);
+            let at = rig_transform(rot, off).transform_point(unmoved);
+            on_screen([at.x, at.y, at.z])
+        })
+    });
     assert!(
-        on_screen([at.x, at.y, at.z]),
-        "the un-offset collapse point stays out of frame through the swing on \
-         its own, so VIEWMODEL_HIDDEN_OFFSET is checking nothing — either the \
-         rig or the arc has changed under this gate"
+        seen,
+        "the un-offset collapse point stays out of frame through every stroke \
+         on its own, so VIEWMODEL_HIDDEN_OFFSET is checking nothing — either the \
+         rig or the arcs have changed under this gate"
     );
 
     // The distance the constant claims, held to a centimetre. A re-import or a
@@ -813,15 +866,21 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
         .map(|t| collapsed_off_arm(&glb, clip, t))
         .collect();
 
-    // Over the frames a chop is actually drawn in: the bare derivation, the
-    // carry every chopping row takes, and the carry with a torch's raise.
-    for (carry, lift) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)] {
+    // Over the frames a stroke is actually drawn in: the bare derivation, the
+    // carry every chopping row takes, and the carry with a torch's raise. The
+    // tap and the bash are held to the frame and the dead arm too; only the
+    // chop owes the floors below.
+    let strokes: [(&str, Pose); 3] = [("chop", swing_pose), ("tap", tap_pose), ("bash", bash_pose)];
+    for ((name, pose), (carry, lift)) in strokes
+        .into_iter()
+        .flat_map(|p| [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)].map(|f| (p, f)))
+    {
         let mut path = 0.0f32;
         let mut prev: Option<V3> = None;
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for i in 0..=N {
             let s = i as f32 / N as f32;
-            let (rot, off) = swing_pose(s);
+            let (rot, off) = pose(s);
             let rig = carried(carry, lift_at(lift, s), rot, off);
             let place = |p: V3| {
                 let v = rig.transform_point(bevy::math::Vec3::new(p[0], p[1], p[2]));
@@ -834,11 +893,11 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
             }
             prev = Some(at);
             let (x, y) = ndc(at).unwrap_or_else(|| {
-                panic!("the swing takes the item to {at:?} at s={s:.2} — behind the near plane")
+                panic!("the {name} takes the item to {at:?} at s={s:.2} — behind the near plane")
             });
             assert!(
                 x.abs() <= 1.20 && (-1.15..=1.05).contains(&y),
-                "the swing takes the item to ndc ({x:.2}, {y:.2}) at s={s:.2} \
+                "the {name} takes the item to ndc ({x:.2}, {y:.2}) at s={s:.2} \
              (carry {carry}, lift {lift}), which is outside the frame it is \
              supposed to sweep across"
             );
@@ -850,7 +909,7 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
                 assert!(
                     !on_screen(q),
                     "{VIEWMODEL_HIDDEN_ARM}'s collapse point is dragged to {q:?} \
-                 at s={s:.2}, which is inside the frame"
+                 at s={s:.2} of the {name}, which is inside the frame"
                 );
                 // Behind the camera the whole way. Measured as a DEPTH rather than
                 // as an ndc margin, because ndc has no answer behind the lens —
@@ -866,6 +925,12 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
         // ~26 cm over the whole stroke. Half a metre is comfortably past that
         // and comfortably under what the frame allows. Held in every framing:
         // the carry divides the stroke, and must not divide it into nothing.
+        if name != "chop" {
+            continue;
+        }
+        println!(
+            "chop (carry {carry}, lift {lift}): grip path {path:.2} m, ndc y {lo:.2}..{hi:.2}"
+        );
         assert!(
             path > 0.5,
             "the whole swing moves the grip {path:.2} m (carry {carry}, lift \
@@ -911,27 +976,34 @@ fn the_swing_pulse_is_smooth_at_both_ends_and_at_its_peak() {
         assert_eq!(bump(0.0, attack), 0.0);
         assert_eq!(bump(1.0, attack), 0.0);
     }
-    // The two pulses meet at the wind-up boundary, and both are zero there —
-    // which is what makes the composed stroke C¹ across the join too.
-    assert_eq!(bump(1.0, 0.5), 0.0, "the wind-up ends at rest");
-    assert_eq!(
-        bump(0.0, VIEWMODEL_SWING_ATTACK),
-        0.0,
-        "the strike starts at rest"
-    );
-    let (rot, off) = swing_pose(VIEWMODEL_SWING_WINDUP);
-    // Componentwise rather than `Quat::angle_between`, which is
-    // `acos(|dot|)` — and the dot of a float quaternion with an exact copy
-    // of itself can land a rounding step above 1, where `acos` is NaN and
-    // every comparison against it is false. `tests/remote_hand.rs` hit that
-    // for real.
+    // The stroke's two pulses together: rest at both ends, the strike alone
+    // at the apex, and no slope step anywhere. The cock falls INTO the strike
+    // rather than back to rest before it, so the join is a sum and has to be
+    // smooth as one.
+    assert_eq!(swing_phases(0.0), (0.0, 0.0));
+    assert_eq!(swing_phases(1.0), (0.0, 0.0));
+    let apex = swing_apex_s() / VIEWMODEL_SWING_S;
+    let (c, st) = swing_phases(apex);
     assert!(
-        rot.to_array()
-            .iter()
-            .zip([0.0, 0.0, 0.0, 1.0])
-            .all(|(a, b)| (a.abs() - b).abs() < 1e-4)
-            && off.length() < 1e-4,
-        "the rig passes back through its rest pose at the wind-up/strike join"
+        c.abs() < 1e-6 && (st - 1.0).abs() < 1e-5,
+        "the apex is the strike's alone: cock {c}, strike {st}"
+    );
+    const N: usize = 2000;
+    let slope = |i: usize| {
+        let (a, b) = (
+            swing_phases(i as f32 / N as f32),
+            swing_phases((i + 1) as f32 / N as f32),
+        );
+        ((b.0 - a.0) * N as f32, (b.1 - a.1) * N as f32)
+    };
+    let mut worst = 0.0f32;
+    for i in 0..N - 1 {
+        let (a, b) = (slope(i), slope(i + 1));
+        worst = worst.max((b.0 - a.0).abs()).max((b.1 - a.1).abs());
+    }
+    assert!(
+        worst < 0.2,
+        "a stroke phase's slope steps by {worst:.3} between samples — a flick"
     );
 }
 
@@ -1080,127 +1152,173 @@ fn the_hold_clip_never_animates_the_hidden_bones_pose() {
     }
 }
 
-/// How far above horizontal a direction points, degrees.
-fn elevation(v: bevy::prelude::Vec3) -> f32 {
-    v.y.atan2(v.x.hypot(v.z)).to_degrees()
+/// The assembly as drawn for a row at stroke progress `s`: its stroke about the
+/// shoulder, under the carry and raise it rests in. Rebuilt from published
+/// parts rather than borrowed from `animate` (`CLAUDE.md`'s naive-rebuild
+/// trap).
+fn drawn(def: &HeldModelDef, s: f32) -> bevy::prelude::Transform {
+    let (rot, off) = stroke_pose(def.stroke, s);
+    let lit = if def.light.is_some() { 1.0 } else { 0.0 };
+    carried(carry_of(Some(def)), lift_at(lit, s), rot, off)
 }
 
-/// How close a row's rest direction may come to being antiparallel to the aim,
-/// degrees. Under this, `aim_snap`'s cross product has no axis to normalise and
-/// it takes its named fallback — which is a defined answer, not a wrong one,
-/// but it is an answer nobody has looked at.
-const AIM_ANTIPODE_MARGIN_DEG: f32 = 25.0;
+/// A row's crown — the end `ahead_m` past the fist — in view space at `s`,
+/// with the row's own wrist turned in.
+fn crown_at(def: &HeldModelDef, s: f32) -> bevy::prelude::Vec3 {
+    let (cock, strike) = swing_phases(s);
+    let snap = stroke_snap(Some(def), cock, strike);
+    drawn(def, s).transform_point(palm_rig() + tilt() * (snap * item_rest_dir(def)) * def.ahead_m())
+}
+
+fn ndc_of(v: bevy::prelude::Vec3) -> (f32, f32) {
+    ndc([v.x, v.y, v.z]).unwrap_or_else(|| panic!("{v:?} is behind the near plane"))
+}
 
 #[test]
-fn the_strike_carries_every_held_row_below_where_it_started() {
-    // **This is the assertion this file spent a whole session not having**, and
-    // the cost was exact: standing the hatchet up on its grip axis turned the
-    // chop into a salute — the head finished **+37.6° above** the horizon where
-    // the laid-forward pose finished at −12.2° — and every gate in the repo
-    // stayed green, including the two swing gates twenty lines up. They pin the
-    // grip POINT: `the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it`
-    // transforms `VIEWMODEL_HOLD` and checks a path length, an ndc span and the
-    // dead arm's depth. Nothing here has ever transformed a DIRECTION, so a
-    // swing that ends pointing at the sky reads identically to one that chops.
+fn the_chop_comes_down_through_the_crosshair() {
+    // **The assertion the old arc never had to meet.** It swept yaw and roll
+    // together about the view axis, which is a chop for a tool laid along −Z
+    // and a sideways wipe for anything else: the hatchet's head trailed the
+    // fist across the frame and finished pointing into the screen (+70° on the
+    // arc alone, −12.8° with the wrist) and every gate stayed green, because
+    // they checked where the FIST went and that the head ended low.
     //
-    // The composition is rebuilt from published parts rather than borrowed from
-    // `animate` — `CLAUDE.md`'s naive-rebuild trap: a check that shares a code
-    // path with the thing it checks is checking that path against itself.
-    let apex = swing_apex_s() / VIEWMODEL_SWING_S;
-    let (arc, _) = swing_pose(apex);
-    let tilt = euler_yxz(VIEWMODEL_TILT.x, VIEWMODEL_TILT.y, VIEWMODEL_TILT.z);
-    let tilt = bevy::prelude::Quat::from_xyzw(tilt[0], tilt[1], tilt[2], tilt[3]);
-
-    // Chop rows only, since 2026-09-05: a `Stroke::Thrust` row never takes
-    // `aim_snap` — its wrist is `thrust_snap`, and where THAT lands is
-    // `the_thrust_lands_the_point_on_the_crosshair_at_the_sims_reach`'s
-    // business. Holding the spear to a chop it does not draw would be a green
-    // assertion about a stroke nobody sees.
+    // A chop is a head that comes down from over the shoulder onto what you
+    // are looking at. So, for every chopping row: at the apex its crown lies on
+    // the aim ray (`VIEWMODEL_SWING_DROP` under the crosshair, where `melee::
+    // cast` sends the blow) with the wrist under its cap, and between the
+    // wind-up's peak and the apex it descends on screen at every step.
+    use bevy::prelude::Vec3;
+    let apex = apex_progress();
+    let peak = 0.5 * VIEWMODEL_SWING_WINDUP;
+    let ray = Vec3::new(
+        0.0,
+        -VIEWMODEL_SWING_DROP.sin(),
+        -VIEWMODEL_SWING_DROP.cos(),
+    );
+    let mut rows = 0;
     for def in HELD_MODELS.iter().filter(|d| d.stroke == Stroke::Chop) {
-        let rest = item_rest_dir(def);
-        let at_rest = tilt * rest;
-        let at_apex = arc * (tilt * (aim_snap(rest, 1.0) * rest));
-        let (r, a) = (elevation(at_rest), elevation(at_apex));
-
-        // **"It comes down a bit" is not the assertion, and the first draft of
-        // this test learned that from its own mutant.** Reverting `aim_snap` to
-        // the fixed angle it replaced — the exact regression this file exists
-        // to catch — still descends 17°, so a `a < r - 5.0` bound passed it.
-        // A chop is not a descent, it is a LANDING: the head finishes at or
-        // under the horizon.
-        //
-        // Unless the row asked for more turn than `VIEWMODEL_SWING_WRIST_MAX`
-        // allows, which a tool carried steeply upright does. Then the aim has
-        // spent every degree it is permitted and where it lands is the cap's
-        // business, not the aim's — so the weaker "it came down" is all that is
-        // owed. The two branches together say: reach the horizon, or run out of
-        // wrist trying.
-        let want = rest
-            .normalize()
-            .dot(VIEWMODEL_SWING_AIM.normalize())
-            .clamp(-1.0, 1.0)
-            .acos();
-        let clamped = want > VIEWMODEL_SWING_WRIST_MAX - 1e-4;
-        if clamped {
-            assert!(
-                a < r - 5.0,
-                "{}: the strike is clamped at {VIEWMODEL_SWING_WRIST_MAX} rad and \
-                 still only gets from {r:.1}° to {a:.1}°. Even capped the head has \
-                 to come down.",
-                def.key
-            );
-        } else {
-            assert!(
-                a <= 2.0,
-                "{}: the strike finishes at {a:.1}° — above the horizon — having \
-                 asked for only {want:.3} rad of the \
-                 {VIEWMODEL_SWING_WRIST_MAX} it is allowed. It started at {r:.1}°. \
-                 The head does not LAND, which is not a chop: this is the salute \
-                 the fixed-angle wrist produced for any carry it was not tuned \
-                 for.",
-                def.key
-            );
-        }
-
-        // The aim's own singularity, gated because it is reachable from the
-        // HELD_MODELS table with no code change: a row carried within a few
-        // degrees of straight AWAY from the aim has no cross product to turn
-        // about and takes `aim_snap`'s named fallback axis instead.
-        let apart = rest
-            .normalize()
-            .dot(VIEWMODEL_SWING_AIM.normalize())
-            .clamp(-1.0, 1.0)
-            .acos()
-            .to_degrees();
+        rows += 1;
+        let (_, turned) = stroke_snap(Some(def), 0.0, 1.0).to_axis_angle();
         assert!(
-            apart < 180.0 - AIM_ANTIPODE_MARGIN_DEG,
-            "{}: rests {apart:.1}° from the strike aim, inside \
-             {AIM_ANTIPODE_MARGIN_DEG}° of antiparallel — `aim_snap` would fall \
-             back to a fixed axis and the strike would swing somewhere nobody \
-             chose. Re-aim the row.",
+            turned < VIEWMODEL_SWING_WRIST_MAX - 1e-3,
+            "{}: the chop's wrist needs {:.3} rad and VIEWMODEL_SWING_WRIST_MAX is \
+             {VIEWMODEL_SWING_WRIST_MAX} — the solve is clamped and the head cannot \
+             reach the crosshair",
+            def.key,
+            turned
+        );
+        let tip = crown_at(def, apex);
+        let along = tip.dot(ray);
+        let miss = (tip - ray * along).length();
+        let (top, low) = (ndc_of(crown_at(def, peak)), ndc_of(tip));
+        println!(
+            "{:14} crown: wind-up ndc ({:+.2}, {:+.2}) → apex ({:+.2}, {:+.2}), \
+             {:.1} mm off the aim ray at {along:.2} m; wrist {:.1}°",
+            def.key,
+            top.0,
+            top.1,
+            low.0,
+            low.1,
+            miss * 1000.0,
+            turned.to_degrees()
+        );
+        assert!(
+            along > 0.0 && miss < 0.01,
+            "{}: at the apex the crown is {:.1} mm off the aim ray — the chop does \
+             not land where the crosshair is",
+            def.key,
+            miss * 1000.0
+        );
+        assert!(
+            top.1 - low.1 > 0.8,
+            "{}: the crown only comes down from ndc y {:.2} to {:.2} — that is not \
+             a chop from over the shoulder",
+            def.key,
+            top.1,
+            low.1
+        );
+        const N: usize = 40;
+        let mut prev = top.1;
+        for i in 1..=N {
+            let s = peak + (apex - peak) * i as f32 / N as f32;
+            let y = ndc_of(crown_at(def, s)).1;
+            // A hair of slack for a lit row: its raise comes back up under
+            // the last few frames of the strike (`lift_at`).
+            assert!(
+                y <= prev + 0.01,
+                "{}: the crown rises from ndc y {prev:.3} to {y:.3} at s={s:.3}, on \
+                 the way DOWN to the apex",
+                def.key
+            );
+            prev = y;
+        }
+    }
+    assert!(
+        rows >= 4,
+        "only {rows} rows chop — this gate checked little"
+    );
+}
+
+#[test]
+fn the_tap_is_a_short_chop_and_the_bash_a_punch() {
+    // The other two turning strokes, held to what they are for. The hammer's
+    // knock is the chop at `VIEWMODEL_TAP`: it moves the arm less and still
+    // brings the head down toward the crosshair. The bash is a punch: the
+    // fist ends nearer the middle of the frame and further from the eye than
+    // it rests, and never leaves the frame.
+    use bevy::prelude::{Quat, Vec3};
+    let apex = apex_progress();
+    let wrist = |pose: Pose| {
+        let mut path = 0.0;
+        let mut prev =
+            carried(1.0, 0.0, Quat::IDENTITY, Vec3::ZERO).transform_point(VIEWMODEL_HOLD);
+        for i in 1..=120 {
+            let (rot, off) = pose(i as f32 / 120.0);
+            let at = carried(1.0, 0.0, rot, off).transform_point(VIEWMODEL_HOLD);
+            path += at.distance(prev);
+            prev = at;
+        }
+        path
+    };
+    let (tap, chop) = (wrist(tap_pose), wrist(swing_pose));
+    assert!(
+        tap < 0.6 * chop && tap > 0.2,
+        "the tap moves the wrist {tap:.2} m against the chop's {chop:.2} m"
+    );
+    let mut taps = 0;
+    for def in HELD_MODELS.iter().filter(|d| d.stroke == Stroke::Tap) {
+        taps += 1;
+        let (rest, hit) = (ndc_of(crown_at(def, 0.0)), ndc_of(crown_at(def, apex)));
+        assert!(
+            hit.1 < rest.1 - 0.15 && hit.0.hypot(hit.1) < rest.0.hypot(rest.1),
+            "{}: the tap takes the head from ndc {rest:?} to {hit:?} — not down \
+             toward the crosshair",
             def.key
         );
     }
-}
+    assert!(taps > 0, "no row taps");
 
-#[test]
-fn the_aim_reproduces_the_angle_it_replaced_for_a_laid_forward_tool() {
-    // `VIEWMODEL_SWING_AIM` is not a new number: it is `Rx(-0.70) * NEG_Z`, the
-    // direction the retired `VIEWMODEL_SWING_WRIST = 0.70` produced for a tool
-    // laid forward. So for any row still carried that way the new form must be
-    // the OLD rotation exactly, and this is what says so — without it, "every
-    // laid row is bit-identical" is a claim in a doc comment.
-    let laid = bevy::prelude::Vec3::NEG_Z;
-    let got = aim_snap(laid, 1.0);
-    let want = bevy::prelude::Quat::from_rotation_x(-0.70);
-    let apart = got.angle_between(want).to_degrees();
+    let palm = |s: f32| {
+        let (rot, off) = bash_pose(s);
+        carried(1.0, 0.0, rot, off).transform_point(palm_rig())
+    };
+    let (rest, hit) = (palm(0.0), palm(apex));
+    let (r, h) = (ndc_of(rest), ndc_of(hit));
     assert!(
-        apart < 0.05,
-        "the aim turns a laid-forward tool by a rotation {apart:.3}° from the \
-         0.70 rad about −X it replaced. The two forms are supposed to be the \
-         same rotation for this carry; they are not, so every hafted row just \
-         moved and nobody asked for it."
+        h.0.hypot(h.1) < r.0.hypot(r.1) - 0.25 && -hit.z > -rest.z + 0.15,
+        "the bash takes the fist from ndc {r:?} at {:.2} m to {h:?} at {:.2} m — \
+         not a punch at the crosshair",
+        -rest.z,
+        -hit.z
     );
+    for i in 0..=120 {
+        let (x, y) = ndc_of(palm(i as f32 / 120.0));
+        assert!(
+            x.abs() <= 1.0 && y.abs() <= 1.0,
+            "the bash takes the fist to ndc ({x:.2}, {y:.2})"
+        );
+    }
 }
 
 #[test]
@@ -1574,4 +1692,254 @@ fn a_lit_item_is_held_up_with_its_head_in_the_top_right() {
         up.1 > low.1 + 0.4,
         "the raise lifts the head only from {low:?} to {up:?}"
     );
+}
+
+// ── The fist closing on the haft ─────────────────────────────────────────
+
+/// A rotation's angle, radians, accurate near zero — `Quat::angle_between`
+/// is an `acos` of a dot product, which reads float noise as milliradians.
+fn turn_of(q: bevy::math::Quat) -> f32 {
+    2.0 * q.xyz().length().atan2(q.w.abs())
+}
+
+/// The `RightHand` bone's own vertices (more than half their weight on it),
+/// in that bone's frame, centimetres, and the triangles among them.
+fn hand_mesh(glb: &Glb) -> (Vec<bevy::math::Vec3>, Vec<[usize; 3]>) {
+    use bevy::math::{Mat4, Vec3};
+    let skin = &glb.json["skins"][0];
+    let bone = glb.node(HOLD_BONE).expect("the hand bone");
+    let j = skin["joints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|n| n.as_u64() == Some(bone as u64))
+        .expect("the hand is a joint of the skin");
+    let ibm = glb.floats(skin["inverseBindMatrices"].as_u64().unwrap() as usize)[j].clone();
+    let m = Mat4::from_cols_slice(&ibm);
+    // `char1_arms`: the half the viewmodel draws.
+    let prim = &glb.json["meshes"][0]["primitives"][0];
+    let at = |k: &str| prim["attributes"][k].as_u64().unwrap() as usize;
+    let pos = glb.floats(at("POSITION"));
+    let joints = glb.ints(at("JOINTS_0"));
+    let weights = glb.floats(at("WEIGHTS_0"));
+    let idx = glb.ints(prim["indices"].as_u64().unwrap() as usize);
+    let mut remap = vec![usize::MAX; pos.len()];
+    let mut verts = Vec::new();
+    for (v, p) in pos.iter().enumerate() {
+        let w: f32 = (0..4)
+            .filter(|&c| joints[v][c] as usize == j)
+            .map(|c| weights[v][c])
+            .sum();
+        if w > 0.5 {
+            remap[v] = verts.len();
+            verts.push(m.transform_point3(Vec3::new(p[0], p[1], p[2])));
+        }
+    }
+    let tris = idx
+        .chunks(3)
+        .map(|t| [t[0][0] as usize, t[1][0] as usize, t[2][0] as usize])
+        .filter(|t| t.iter().all(|&v| remap[v] != usize::MAX))
+        .map(|t| [remap[t[0]], remap[t[1]], remap[t[2]]])
+        .collect();
+    (verts, tris)
+}
+
+#[test]
+fn the_grip_line_runs_through_the_fist_and_clear_of_it() {
+    // `VIEWMODEL_SEAT`/`_DIR` are read off the hand, and this is the reading:
+    // a haft on that line does not pass through the skin, clears every
+    // vertex by its own radius, and has hand within a finger's reach on
+    // every side — the curled fingers over it, the palm under it, the thumb
+    // beside it. The seat it replaced (the knuckle line, 90° off the thumb)
+    // passed the last two and was still an axe floating over a palm in every
+    // frame, so this is necessary and not sufficient: the frame judges, this
+    // keeps a re-import from putting the haft through the back of the hand.
+    use bevy::math::Vec3;
+    let glb = Glb::open(&asset_path(RIG));
+    let (verts, tris) = hand_mesh(&glb);
+    assert!(verts.len() > 500, "only {} hand vertices", verts.len());
+    // The hatchet's haft at its drawn 0.72 is 3.2–4 cm across.
+    const R: f32 = 1.6;
+    const REACH: f32 = 3.5;
+    let (below, above) = (6.0, 34.0);
+    let c = VIEWMODEL_SEAT;
+    let d = VIEWMODEL_SEAT_DIR.normalize();
+    let a = d.cross(Vec3::Z).normalize();
+    let b = d.cross(a);
+    let mut clear = f32::MAX;
+    let mut sides = [false; 16];
+    for p in &verts {
+        let rel = *p - c;
+        let s = rel.dot(d);
+        if !(-below..=above).contains(&s) {
+            continue;
+        }
+        let perp = rel - d * s;
+        let r = perp.length();
+        clear = clear.min(r);
+        if r < R + REACH {
+            let ang = perp.dot(b).atan2(perp.dot(a));
+            let k = ((ang + std::f32::consts::PI) / std::f32::consts::TAU * 16.0) as usize % 16;
+            sides[k] = true;
+        }
+    }
+    let held = sides.iter().filter(|s| **s).count();
+    // The axis against every hand triangle (Möller–Trumbore on the segment).
+    let (p0, p1) = (c - d * below, c + d * above);
+    let crossed = tris
+        .iter()
+        .filter(|t| {
+            let (v0, v1, v2) = (verts[t[0]], verts[t[1]], verts[t[2]]);
+            let (e1, e2, dir) = (v1 - v0, v2 - v0, p1 - p0);
+            let pv = dir.cross(e2);
+            let det = e1.dot(pv);
+            if det.abs() < 1e-9 {
+                return false;
+            }
+            let tv = p0 - v0;
+            let u = tv.dot(pv) / det;
+            let qv = tv.cross(e1);
+            let v = dir.dot(qv) / det;
+            let t = e2.dot(qv) / det;
+            u >= 0.0 && v >= 0.0 && u + v <= 1.0 && (0.0..=1.0).contains(&t)
+        })
+        .count();
+    println!("grip line: {clear:.2} cm clear, hand on {held}/16 sides, {crossed} crossings");
+    assert_eq!(crossed, 0, "the grip line passes through the hand's skin");
+    assert!(
+        clear >= R,
+        "a {R} cm haft on the grip line cuts {:.2} cm into the hand",
+        R - clear
+    );
+    assert!(
+        held >= 15,
+        "the hand reaches round the grip line on only {held} of 16 sides"
+    );
+}
+
+#[test]
+fn a_fitted_hand_holds_the_item_where_the_framing_put_it() {
+    // **The item does not move; the hand does.** For every row, the hand
+    // placed by `hand_fit` composed with the item hung off it by `item_pose`
+    // is the identity in the hold frame — the angles and scales the operator
+    // tuned are untouched — while in the hand's own frame a gripped row's
+    // haft runs along the grip line with the palm point on the seat. And the
+    // arm that gets it there is an arm: a wrist bend, a forearm twist and a
+    // shift that stay in reach.
+    use bevy::math::Quat;
+    let mut fitted = 0;
+    for def in HELD_MODELS.iter() {
+        let fit = hand_fit(Some(def));
+        let item = item_pose(Some(fit), Quat::IDENTITY);
+        // The palm point in the hand's frame (cm), then back in the hold
+        // frame (m) through the fitted hand.
+        let seat = item.translation + item.rotation * (VIEWMODEL_PALM * item.scale.x);
+        let rot = fit.rot * item.rotation;
+        let palm = fit.pos + fit.rot * (seat / VIEWMODEL_GRIP_SCALE);
+        assert!(
+            turn_of(rot) < 1e-3 && palm.distance(VIEWMODEL_PALM) < 1e-4,
+            "{}: the fitted hand moves the item ({:.4} rad, {:.5} m)",
+            def.key,
+            turn_of(rot),
+            palm.distance(VIEWMODEL_PALM)
+        );
+        if def.grip_roll.is_none() {
+            assert_eq!(
+                fit,
+                hand_rest(),
+                "{}: no grip roll, so the clip's hand",
+                def.key
+            );
+            continue;
+        }
+        fitted += 1;
+        let haft = item.rotation * item_rest_dir(def);
+        assert!(
+            haft.normalize()
+                .cross(VIEWMODEL_SEAT_DIR.normalize())
+                .length()
+                < 1e-3
+                && haft.dot(VIEWMODEL_SEAT_DIR) > 0.0
+                && seat.distance(VIEWMODEL_SEAT) < 1e-2,
+            "{}: the haft runs {haft:?} through {seat:?} in the hand, not the grip line",
+            def.key
+        );
+        let (turn, twist, shift) = hand_set(fit);
+        let bend = turn_of(Quat::from_rotation_y(-twist) * turn);
+        println!(
+            "{:16} wrist {:5.1}°  forearm {:+6.1}°  arm {:.1} cm",
+            def.key,
+            bend.to_degrees(),
+            twist.to_degrees(),
+            shift.length() * 100.0
+        );
+        assert!(
+            bend.to_degrees() < 50.0,
+            "{}: the wrist bends {:.0}° to close on it",
+            def.key,
+            bend.to_degrees()
+        );
+        assert!(
+            twist.to_degrees().abs() < 75.0,
+            "{}: the forearm twists {:.0}°",
+            def.key,
+            twist.to_degrees()
+        );
+        assert!(
+            shift.length() < 0.12,
+            "{}: the arm moves {:.0} cm to get there",
+            def.key,
+            shift.length() * 100.0
+        );
+    }
+    assert!(fitted > 10, "only {fitted} rows close the fist");
+
+    // The stroke turns the item inside the fitted fist about the palm, so at
+    // the apex it is exactly where the rig-hung item's snap put it.
+    let def = HELD_MODELS
+        .iter()
+        .find(|d| d.key == "stone_hatchet")
+        .unwrap();
+    let fit = hand_fit(Some(def));
+    let snap = stroke_snap(Some(def), 0.0, 1.0);
+    let item = item_pose(Some(fit), snap);
+    let seat = item.translation + item.rotation * (VIEWMODEL_PALM * item.scale.x);
+    let palm = fit.pos + fit.rot * (seat / VIEWMODEL_GRIP_SCALE);
+    let old = item_pose(None, snap);
+    assert!(
+        turn_of((tilt() * fit.rot * item.rotation).inverse() * old.rotation) < 1e-3
+            && (VIEWMODEL_HOLD + tilt() * palm)
+                .distance(old.translation + old.rotation * VIEWMODEL_PALM)
+                < 1e-4,
+        "the snap in the fitted fist lands the item off the rig-hung one"
+    );
+}
+
+#[test]
+fn the_arm_bones_the_grip_composes_onto_are_animated_every_frame() {
+    // `pose_hand` multiplies onto the clip's `RightForeArm` and `RightHand`
+    // rotations each frame. That is free only while the clip writes both: an
+    // unanimated bone would take the turn again every frame and spin. And
+    // the forearm can carry the hand's +Y twist only while the clip's wrist
+    // keeps the hand's +Y on the forearm's — `hand_set` splits on that.
+    let glb = Glb::open(&asset_path(RIG));
+    let clip = client::render::anim::ARMS_HOLD_CLIP;
+    let ch = glb.channels(clip);
+    for name in ["RightForeArm", HOLD_BONE] {
+        let n = glb.node(name).unwrap();
+        assert!(
+            ch.iter().any(|(k, p)| *k == n && p == "rotation"),
+            "{clip} does not animate {name}'s rotation — pose_hand would accumulate on it"
+        );
+    }
+    let hand = glb.node(HOLD_BONE).unwrap();
+    for t in steps(&glb, clip) {
+        let q = glb.pose(clip, t)[&hand].rotation.expect("animated");
+        let y = rotate(q, [0.0, 1.0, 0.0]);
+        let off = y[1].clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(
+            off < 8.0,
+            "{clip}'s wrist tips the hand's +Y {off:.1}° off the forearm's at t={t:.2}"
+        );
+    }
 }

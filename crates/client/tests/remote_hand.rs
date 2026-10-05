@@ -156,7 +156,7 @@ fn the_remote_hand_uses_the_first_persons_grip_and_no_second_copy() {
     // a screenshot nobody takes.
     for &scale in &[1.0f32, 0.5, 2.0] {
         for (i, def) in HELD_MODELS.iter().enumerate() {
-            let mut g = grip();
+            let mut g = grip(Some(def));
             g.translation /= scale;
             g.scale /= scale;
             let want = g * client::render::viewmodel::pose(def, VIEWMODEL_PALM);
@@ -202,7 +202,7 @@ fn the_grip_lands_in_the_fist_at_any_rig_scale() {
     for &scale in &[1.0f32, 0.5, 2.0] {
         for (i, def) in HELD_MODELS.iter().enumerate() {
             let t = hand_pose(i, scale);
-            let mut g = grip();
+            let mut g = grip(Some(def));
             g.translation /= scale;
             g.scale /= scale;
             // Walk the model's own grip point out to the bone's frame, then
@@ -249,10 +249,10 @@ fn the_flame_sits_above_the_fist_by_the_rows_own_lift() {
         "the row declares the ladder's torch, not a second copy of it"
     );
     for &scale in &[1.0f32, 0.5, 2.0] {
-        let mut g = grip();
+        let mut g = grip(Some(def));
         g.translation /= scale;
         g.scale /= scale;
-        let t = flame_pose(def.flame_m(), scale);
+        let t = flame_pose(Some(i), def.flame_m(), scale);
         // Back into the hold frame: the lift is straight up its +Y and
         // nothing else.
         let in_hold = g
@@ -269,9 +269,9 @@ fn the_flame_sits_above_the_fist_by_the_rows_own_lift() {
     }
     // An unlit hand parks the emitter back at the fist rather than leaving
     // it where the last flame was — `update_hand` passes a zero lift.
-    let mut g = grip();
+    let mut g = grip(None);
     g.translation /= 1.0;
-    assert_eq!(flame_pose(0.0, 1.0).translation, g.translation);
+    assert_eq!(flame_pose(None, 0.0, 1.0).translation, g.translation);
 }
 
 /// The retired constant is kept, and it is kept for one reason.

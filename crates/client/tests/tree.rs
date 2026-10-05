@@ -494,26 +494,64 @@ fn the_leaf_card_is_actually_cut_out_and_is_not_the_needle() {
     card_is_cut_out(leaf_image(), "leaf");
     let leaf = level0_alphas(&leaf_image());
     let needle = level0_alphas(&needle_image());
-    assert_eq!(leaf.len(), needle.len(), "the two cards are one size");
-    let opaque = |a: &[u8]| a.iter().filter(|&&v| v > 128).count();
+    let share = |a: &[u8]| a.iter().filter(|&&v| v > 128).count() as f32 / a.len() as f32;
     assert!(
-        opaque(&leaf) > opaque(&needle),
-        "the leaf card ({} opaque texels) is not denser than the sprig ({}) — a \
+        share(&leaf) > share(&needle),
+        "the leaf card ({:.3} opaque) is not denser than the sprig ({:.3}) — a \
          leaf cluster is mostly leaf where a sprig is mostly air",
-        opaque(&leaf),
-        opaque(&needle)
+        share(&leaf),
+        share(&needle)
     );
-    let differ = leaf
-        .iter()
-        .zip(needle.iter())
-        .filter(|(l, n)| (**l > 128) != (**n > 128))
-        .count();
-    assert!(
-        differ * 100 / leaf.len() > 15,
-        "the two cards differ on only {}% of texels — the broadleaf is wearing \
-         the sprig again",
-        differ * 100 / leaf.len()
+}
+
+/// **The needle photograph is mean-1 once `NEEDLE_MAP_GAIN` is applied**, so
+/// the canopy's colour is still its vertex bands and the far cards bake the
+/// same colour the near tree draws. `ci/bake_needle_card.py` prints the gain
+/// it stored the photo at; this holds the constant to the shipped file.
+#[test]
+fn the_needle_photo_is_mean_one_under_its_gain() {
+    use client::render::tree::NEEDLE_MAP_GAIN;
+    photo_is_mean_one(
+        needle_image(),
+        NEEDLE_MAP_GAIN,
+        "needle",
+        "bake_needle_card",
     );
+}
+
+/// The leaf card is a mean-normalised photo too (`ci/bake_leaf_card.py`).
+#[test]
+fn the_leaf_photo_is_mean_one_under_its_gain() {
+    use client::render::tree::LEAF_MAP_GAIN;
+    photo_is_mean_one(leaf_image(), LEAF_MAP_GAIN, "leaf", "bake_leaf_card");
+}
+
+fn photo_is_mean_one(img: bevy::prelude::Image, gain: f32, what: &str, bake: &str) {
+    let w = img.texture_descriptor.size.width as usize;
+    let d = img.data.as_ref().expect("card has no data");
+    let lin = |b: u8| {
+        let c = b as f64 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (mut sum, mut n) = ([0.0f64; 3], 0usize);
+    for px in d[..w * w * 4].chunks_exact(4).filter(|p| p[3] > 128) {
+        for c in 0..3 {
+            sum[c] += lin(px[c]);
+        }
+        n += 1;
+    }
+    for (c, total) in sum.iter().enumerate() {
+        let mean = total / n as f64 * gain as f64;
+        assert!(
+            (0.9..=1.1).contains(&mean),
+            "{what} card channel {c} averages {mean:.3} under its gain — \
+             re-run ci/{bake}.py and copy the gain it prints"
+        );
+    }
 }
 
 fn level0_alphas(img: &bevy::prelude::Image) -> Vec<u8> {
@@ -860,18 +898,23 @@ fn the_canopy_elements_are_the_size_of_real_ones() {
 /// that number moves.
 #[test]
 fn the_cards_hold_the_density_the_forest_was_built_at() {
+    // Re-centred for the photographed card (`ci/bake_needle_card.py`, 0.211):
+    // a touch denser than the generated sprig's 0.185, which `shape_crown`'s
+    // smaller cards between the whorls more than pay back.
     let (needle, _, _) = grain(&needle_image());
     assert!(
-        (0.172..=0.198).contains(&needle),
-        "the needle mask tests to {needle:.3} coverage against the 0.185 it is \
-         built at and the 0.192 the canopy's stem counts and crown radii were \
-         swept at — outside this band the forest is a different density, not a \
+        (0.196..=0.226).contains(&needle),
+        "the needle mask tests to {needle:.3} coverage against the 0.211 it is \
+         baked at — outside this band the forest is a different density, not a \
          different grain"
     );
+    // Re-centred for the photographed leaf card (`ci/bake_leaf_card.py`
+    // fills to 0.228 and lands on 0.232): separate leaves with air between
+    // them, where the generated card was an even 0.256 spray.
     let (leaf, _, _) = grain(&leaf_image());
     assert!(
-        (0.241..=0.271).contains(&leaf),
-        "the leaf mask tests to {leaf:.3} coverage against 0.256"
+        (0.217..=0.247).contains(&leaf),
+        "the leaf mask tests to {leaf:.3} coverage against the 0.232 it is baked at"
     );
     // `tests/tree.rs`'s older gate says the leaf card must be the denser of the
     // two — a cluster is mostly leaf, a sprig mostly air — and two independent

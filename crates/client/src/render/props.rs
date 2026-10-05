@@ -208,6 +208,8 @@ pub struct PropAssets {
     /// used to wear for want of anything better — an untextured white surface
     /// whose only colour was the mesh's own trunk band.
     bark: [Handle<StandardMaterial>; TINT_POOL],
+    /// The broadleaf trunk's bark: a birch photograph (`textures::PropMaps`).
+    birch: [Handle<StandardMaterial>; TINT_POOL],
     rock: [Handle<StandardMaterial>; TINT_POOL],
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
@@ -1793,11 +1795,9 @@ pub(super) fn boxes_mesh_with(
 
 /// Build the shared mesh and material pool.
 ///
-/// `images` is here for exactly one thing: the needle card, which is generated
-/// rather than loaded (`tree::needle_image`). `assets/textures/` has bark and
-/// no leaf, and an un-masked leaf quad is a solid square — the opaque hull the
-/// browser already spent three passes rejecting. Generating it keeps the
-/// depot's asset list unchanged and cannot go missing from a build.
+/// `images` is here for exactly one thing: the two canopy cards, which are
+/// compiled into the binary rather than loaded (`tree::needle_image`,
+/// `tree::leaf_image`), so they cannot go missing from a build.
 pub fn assets(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -1995,11 +1995,19 @@ pub fn assets(
             })
         }),
         needle: tint_pool().map(|v| {
+            // The card is a mean-normalised photograph stored at
+            // `1 / NEEDLE_MAP_GAIN` (`tree::needle_image`).
+            let v = v * tree::NEEDLE_MAP_GAIN;
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
                 base_color_texture: Some(needle_map.clone()),
                 perceptual_roughness: 0.90,
                 reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
                 // Cards are two-sided by construction — you see the underside of
                 // every branch you stand beneath, and `ART.md` §5 calls that face
                 // the one every judge catches.
@@ -2015,11 +2023,18 @@ pub fn assets(
             })
         }),
         leaf: tint_pool().map(|v| {
+            // A mean-normalised photo too, stored at `1 / LEAF_MAP_GAIN`.
+            let v = v * tree::LEAF_MAP_GAIN;
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
                 base_color_texture: Some(leaf_map.clone()),
                 perceptual_roughness: 0.90,
                 reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
                 cull_mode: None,
                 // The same cutoff as the needle's, held to the card by the
                 // same gate (`tests/tree.rs`, the mip-chain coverage test).
@@ -2084,6 +2099,9 @@ pub fn assets(
         // grain already pointing the right way. Before this the bark half of
         // every tree wore `foliage`, an untextured white surface.
         bark: photo_pool(&maps.bark, 0.92, fresnel::DIELECTRIC, materials),
+        // Birch bark is papery and has a dull sheen where pine's is all
+        // fissure, so it is a touch less rough.
+        birch: photo_pool(&maps.birch, 0.80, fresnel::DIELECTRIC, materials),
     }
 }
 
@@ -2130,6 +2148,7 @@ pub fn stream(
             use super::foliage::Kind;
             for (pool, kind) in [
                 (&a.bark, Kind::Bark),
+                (&a.birch, Kind::Bark),
                 (&a.needle, Kind::Needle),
                 (&a.leaf, Kind::Leaf),
                 (&a.bush_leaf, Kind::BushLeaf),
@@ -2470,7 +2489,10 @@ pub fn spawn_slot(
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = species_variant(slot, a.pines.len());
-            (a.pines[variant].clone(), a.bark[tint].clone())
+            (
+                a.pines[variant].clone(),
+                a.trunk_material(variant, key).clone(),
+            )
         }
         // Each node takes its own model where one exists and the shared blob
         // where it does not. The fallback arm is the exact pair that shipped
@@ -3117,6 +3139,7 @@ impl PropAssets {
             ("leaf", &self.leaf),
             ("rock", &self.rock),
             ("bark", &self.bark),
+            ("birch", &self.birch),
         ] {
             out.extend(pool.iter().map(|h| (name, h)));
         }
@@ -3164,6 +3187,15 @@ impl PropAssets {
     /// would pass only for the quarter of slots that happened to land on it.
     pub fn bark_material(&self, key: u32) -> &Handle<StandardMaterial> {
         &self.bark[tint_of(key)]
+    }
+    /// The trunk material a tree of this variant draws at this key: pine
+    /// bark for a conifer, birch for a broadleaf. The one place the choice is
+    /// made, like [`Self::canopy_material`].
+    pub fn trunk_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
+        match tree::SPECIES[tree::species_of(variant)].tree_type {
+            bevy_procedural_tree::enums::TreeType::Evergreen => &self.bark[tint_of(key)],
+            bevy_procedural_tree::enums::TreeType::Deciduous => &self.birch[tint_of(key)],
+        }
     }
     /// The foliage material a slot with this key draws — the bush, the far
     /// hull and the outer ring all wear it. Keyed for [`Self::bark_material`]'s

@@ -717,6 +717,22 @@ async fn connect_retrying_a_shed(
 /// lane existed still expects. The caller owns the rows because they are
 /// **content**, resolved by id through `Content::piece_index` and friends —
 /// a row number compiled in here would be wall 7 broken by a load tool.
+/// How close another body must be for a bot to hold a wandering swing,
+/// metres: past any melee reach.
+const SWING_CLEAR_M: f32 = 3.0;
+
+/// Whether any other body stands within [`SWING_CLEAR_M`] of this bot.
+fn body_in_reach(view: &ClientView, me: u32) -> bool {
+    let Some(body) = view.get(me) else {
+        return false;
+    };
+    view.entities.iter().any(|(id, e)| {
+        let dx = (e.qx - body.qx) as f32 * POS_XZ_Q;
+        let dz = (e.qz - body.qz) as f32 * POS_XZ_Q;
+        *id != me && dx * dx + dz * dz < SWING_CLEAR_M * SWING_CLEAR_M
+    })
+}
+
 pub async fn run_bot(
     endpoint: &Endpoint<Client>,
     server: SocketAddr,
@@ -1149,6 +1165,14 @@ async fn run_bot_inner(
                 // A raid's selection step rides the input lane, because that
                 // is the only place a hotbar slot exists on the wire.
                 sel_held.apply(&mut f);
+                // A wandering swing beside another body is a melee hit on a
+                // player: the population downed the capture probe standing in
+                // its base. Nothing a bot does on purpose rides `BTN_PRIMARY`
+                // (charges and pieces are commands), so holding it near
+                // anyone costs only an idle swing.
+                if f.buttons & BTN_PRIMARY != 0 && body_in_reach(&view, report.player_id) {
+                    f.buttons &= !BTN_PRIMARY;
+                }
                 // A raider walks the way a player with a satchel does: inland
                 // off the beach until its plot is ground a foundation takes,
                 // then it stands there while a paced step waits, or the

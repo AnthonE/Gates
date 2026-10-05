@@ -246,6 +246,9 @@ pub struct GroundMaps {
 pub struct PropMaps {
     pub rock: MapSet,
     pub bark: MapSet,
+    /// The broadleaf's trunk: a real birch bark (TextureCan `wood_0027`, CC0),
+    /// where it used to be `bark` brightened ×2.6.
+    pub birch: MapSet,
     pub wood: MapSet,
     pub stone: MapSet,
     pub metal: MapSet,
@@ -265,6 +268,7 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(PropMaps {
         rock: MapSet::load(&assets, "rock"),
         bark: MapSet::load(&assets, "bark"),
+        birch: MapSet::load(&assets, "birch"),
         wood: MapSet::load(&assets, "wood"),
         stone: MapSet::load(&assets, "stone"),
         metal: MapSet::load(&assets, "metal"),

@@ -2,9 +2,9 @@
 //! camera-facing card.
 //!
 //! **Why this exists.** The near ring draws real trees to 128–192 m and the
-//! outer ring draws 112-triangle hulls to ~290 m (`props::OUTER_RADIUS`), and
-//! past that the far ground mesh ran to the horizon with nothing standing on
-//! it — a bald island under a forest. Rust's answer (`reference/FORESTS.md`
+//! outer ring to ~290 m (`props::OUTER_RADIUS`), and past that the far ground
+//! mesh ran to the horizon with nothing standing on it — a bald island under
+//! a forest. Both rings' far trees wear these same cards ([`TreeCards`]). Rust's answer (`reference/FORESTS.md`
 //! §5.5) is the one taken here: rank by distance, draw the nearest as meshes,
 //! and bill everything else to a cheap card.
 //!
@@ -67,14 +67,21 @@ pub const TILE_M: f32 = 256.0;
 /// few milliseconds, and the island is carded in a few hundred frames — the
 /// nearest tiles first, so the horizon fills in from the player outward.
 pub const CELLS_PER_FRAME: usize = 768;
-/// One atlas cell's edge, texels.
-pub const CARD_RES: u32 = 128;
+/// One atlas cell's width and height, texels. Tall, because a tree is: the
+/// conifer's card is ~5.5 m by 14 m, and a square cell spent half its texels
+/// across a silhouette that is narrow.
+pub const CARD_W: u32 = 128;
+/// See [`CARD_W`].
+pub const CARD_H: u32 = 256;
 /// Supersampling of the bake, per axis. The card's alpha is the share of
 /// subsamples a needle covered, which is what lets the mask cut anti-alias.
 const BAKE_SS: u32 = 3;
 /// The bark photograph's mean colour, sRGB — the near trunk is that photograph
 /// times a mean-1 vertex field, so the bake multiplies the field by this.
 const BARK_MEAN: u32 = 0x5c4636;
+/// [`BARK_MEAN`] for the broadleaf's birch photograph (`birch_albedo.jpg`,
+/// linear mean 0.316 0.315 0.320).
+const BIRCH_MEAN: u32 = 0x989899;
 /// How far a card is sunk, metres: the far ground sits under the true one.
 const CARD_SINK_M: f32 = 0.3;
 
@@ -161,6 +168,13 @@ pub fn init(
                 alpha_mode: AlphaMode::Mask(0.5),
                 perceptual_roughness: 0.9,
                 reflectance: super::fresnel::DIELECTRIC,
+                // The near canopy's own specular, or the card sheens where the
+                // tree it stands for does not.
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
                 // The card is wound to face the camera by construction, and a
                 // double-sided flip would turn its rounded normal inside out.
                 cull_mode: None,
@@ -458,23 +472,23 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
     let pool = tree::CONIFER_POOL;
     let needle = tree::needle_image();
     let leaf = tree::leaf_image();
-    let w = CARD_RES * pool as u32;
-    let h = CARD_RES;
+    let w = CARD_W * pool as u32;
+    let h = CARD_H;
     let mut level0 = vec![0u8; (w * h * 4) as usize];
     let mut dims = Vec::with_capacity(pool);
     for v in 0..pool {
         let (bark, needles) = tree::conifer(v);
-        let card = if tree::species_of(v) == 0 {
-            &needle
+        let (card, gain, trunk) = if tree::species_of(v) == 0 {
+            (&needle, tree::NEEDLE_MAP_GAIN, BARK_MEAN)
         } else {
-            &leaf
+            (&leaf, tree::LEAF_MAP_GAIN, BIRCH_MEAN)
         };
-        let (cell, d) = bake_card(&bark, &needles, card);
+        let (cell, d) = bake_card(&bark, &needles, card, gain, trunk);
         dims.push(d);
-        let x0 = v as u32 * CARD_RES;
-        for y in 0..CARD_RES {
-            for x in 0..CARD_RES {
-                let src = ((y * CARD_RES + x) * 4) as usize;
+        let x0 = v as u32 * CARD_W;
+        for y in 0..CARD_H {
+            for x in 0..CARD_W {
+                let src = ((y * CARD_W + x) * 4) as usize;
                 let dst = ((y * w + x0 + x) * 4) as usize;
                 level0[dst..dst + 4].copy_from_slice(&cell[src..src + 4]);
             }
@@ -507,6 +521,8 @@ struct Tri {
     p: [Vec3; 3],
     uv: [Vec2; 3],
     c: [[f32; 3]; 3],
+    /// The mean of the corners' normals' y: up-facing needles are lit.
+    ny: f32,
     leaf: bool,
 }
 
@@ -520,6 +536,10 @@ fn tris_of(m: &Mesh, leaf: bool, out: &mut Vec<Tri>) {
     };
     let cols = match m.attribute(Mesh::ATTRIBUTE_COLOR) {
         Some(VertexAttributeValues::Float32x4(v)) => Some(v),
+        _ => None,
+    };
+    let normals = match m.attribute(Mesh::ATTRIBUTE_NORMAL) {
+        Some(VertexAttributeValues::Float32x3(v)) => Some(v),
         _ => None,
     };
     let idx: Vec<usize> = match m.indices() {
@@ -541,7 +561,12 @@ fn tris_of(m: &Mesh, leaf: bool, out: &mut Vec<Tri>) {
             cols.and_then(|c| c.get(k))
                 .map_or([1.0; 3], |c| [c[0], c[1], c[2]])
         });
-        out.push(Tri { p, uv, c, leaf });
+        let ny = t
+            .iter()
+            .map(|&k| normals.and_then(|n| n.get(k)).map_or(0.0, |n| n[1]))
+            .sum::<f32>()
+            / 3.0;
+        out.push(Tri { p, uv, c, ny, leaf });
     }
 }
 
@@ -567,14 +592,34 @@ fn linear_to_srgb(v: f32) -> u8 {
 /// The share of its albedo a card's needles keep. A real crown shows mostly
 /// its own shade between the lit needles, and a card baked at bare albedo
 /// read as a pale ghost beside the mesh trees in front of it (2026-09-28).
-pub const CARD_CANOPY_SHADE: f32 = 0.6;
+pub const CARD_CANOPY_SHADE: f32 = 0.78;
 
 /// How much a baked texel's coverage is scaled up before the alpha test:
-/// a texel half covered by needles is crown, not a gap.
-pub const CARD_COVERAGE_BOOST: f32 = 2.0;
+/// a texel half covered by needles is crown, not a gap. Modest, so the gaps
+/// between limbs stay open and the outline stays ragged — at 2.0 with a
+/// closing pass the crown baked to one solid blob and every far pine read as
+/// a smooth green column.
+pub const CARD_COVERAGE_BOOST: f32 = 1.35;
 
-/// One tree, side-on, orthographic, into a `CARD_RES²` RGBA8 sRGB cell.
-fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
+/// How dark a needle facing straight down bakes, as a share of one facing up.
+///
+/// The card is lit in the frame by one rounded normal for the whole crown, so
+/// without this every needle in it is the same value and the crown reads as a
+/// flat green column. The near tree's canopy normals are mostly its crown's
+/// volume with a share of each card's own facing (`tree::blend_canopy_normals`),
+/// which is what mottles it lit-and-dark; this bakes that mottling, using only
+/// the vertical, because the card turns to every bearing and a side light baked
+/// in would be wrong from all but one.
+pub const CARD_LIGHT_FLOOR: f32 = 0.38;
+
+/// One tree, side-on, orthographic, into a `CARD_W × CARD_H` RGBA8 sRGB cell.
+fn bake_card(
+    bark: &Mesh,
+    needles: &Mesh,
+    card: &Image,
+    gain: f32,
+    trunk: u32,
+) -> (Vec<u8>, CardDims) {
     let (h, _) = tree::bounds(&[bark, needles]);
     let mut tris = Vec::new();
     tris_of(bark, false, &mut tris);
@@ -589,10 +634,10 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
     }
     let h = h.max(1.0);
     let half_w = half_w.max(0.5);
-    let n = (CARD_RES * BAKE_SS) as usize;
-    let mut depth = vec![f32::NEG_INFINITY; n * n];
-    let mut rgb = vec![[0.0f32; 3]; n * n];
-    let bark_c = props::linear(BARK_MEAN);
+    let (nw, nh) = ((CARD_W * BAKE_SS) as usize, (CARD_H * BAKE_SS) as usize);
+    let mut depth = vec![f32::NEG_INFINITY; nw * nh];
+    let mut rgb = vec![[0.0f32; 3]; nw * nh];
+    let bark_c = props::linear(trunk);
     let (tw, th, tex) = match card.data.as_ref() {
         Some(d) => (
             card.texture_descriptor.size.width as usize,
@@ -603,8 +648,8 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
     };
     let to_px = |p: Vec3| {
         Vec3::new(
-            (p.x / half_w * 0.5 + 0.5) * n as f32,
-            (1.0 - p.y / h) * n as f32,
+            (p.x / half_w * 0.5 + 0.5) * nw as f32,
+            (1.0 - p.y / h) * nh as f32,
             p.z,
         )
     };
@@ -617,9 +662,9 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
             continue;
         }
         let x0 = a.x.min(b.x).min(c.x).floor().max(0.0) as usize;
-        let x1 = (a.x.max(b.x).max(c.x).ceil() as usize).min(n);
+        let x1 = (a.x.max(b.x).max(c.x).ceil() as usize).min(nw);
         let y0 = a.y.min(b.y).min(c.y).floor().max(0.0) as usize;
-        let y1 = (a.y.max(b.y).max(c.y).ceil() as usize).min(n);
+        let y1 = (a.y.max(b.y).max(c.y).ceil() as usize).min(nh);
         for py in y0..y1 {
             for px in x0..x1 {
                 let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
@@ -630,7 +675,7 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
                     continue;
                 }
                 let z = a.z * w0 + b.z * w1 + c.z * w2;
-                let i = py * n + px;
+                let i = py * nw + px;
                 if z <= depth[i] {
                     continue;
                 }
@@ -650,10 +695,10 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
                         if k + 3 >= tex.len() || tex[k + 3] < mipmap::MASK_CUT {
                             continue;
                         }
-                        // The crown's own shade, baked: darker toward its
-                        // foot, where the tiers above shadow it.
-                        let up = 1.0 - fy / n as f32;
-                        let shade = CARD_CANOPY_SHADE * (0.72 + 0.28 * up);
+                        let lit = (0.5 + 0.75 * t.ny).clamp(0.0, 1.0);
+                        let shade = CARD_CANOPY_SHADE
+                            * gain
+                            * (CARD_LIGHT_FLOOR + (1.0 - CARD_LIGHT_FLOOR) * lit);
                         [
                             vc[0] * srgb_to_linear(tex[k]) * shade,
                             vc[1] * srgb_to_linear(tex[k + 1]) * shade,
@@ -670,15 +715,15 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
     }
     // Resolve the supersamples: colour averaged over what was covered, alpha
     // the share covered.
-    let r = CARD_RES as usize;
+    let (rw, rh) = (CARD_W as usize, CARD_H as usize);
     let ss = BAKE_SS as usize;
-    let mut acc = vec![[0.0f32; 4]; r * r];
-    for y in 0..r {
-        for x in 0..r {
+    let mut acc = vec![[0.0f32; 4]; rw * rh];
+    for y in 0..rh {
+        for x in 0..rw {
             let mut s = [0.0f32; 4];
             for sy in 0..ss {
                 for sx in 0..ss {
-                    let i = (y * ss + sy) * n + x * ss + sx;
+                    let i = (y * ss + sy) * nw + x * ss + sx;
                     if depth[i] > f32::NEG_INFINITY {
                         s[0] += rgb[i][0];
                         s[1] += rgb[i][1];
@@ -688,7 +733,7 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
                 }
             }
             if s[3] > 0.0 {
-                acc[y * r + x] = [
+                acc[y * rw + x] = [
                     s[0] / s[3],
                     s[1] / s[3],
                     s[2] / s[3],
@@ -701,18 +746,18 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
     // black.
     for _ in 0..4 {
         let prev = acc.clone();
-        for y in 0..r {
-            for x in 0..r {
-                if prev[y * r + x][3] > 0.0 {
+        for y in 0..rh {
+            for x in 0..rw {
+                if prev[y * rw + x][3] > 0.0 {
                     continue;
                 }
                 let mut s = [0.0f32; 4];
                 for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
                     let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    if nx < 0 || ny < 0 || nx >= r as i32 || ny >= r as i32 {
+                    if nx < 0 || ny < 0 || nx >= rw as i32 || ny >= rh as i32 {
                         continue;
                     }
-                    let q = prev[ny as usize * r + nx as usize];
+                    let q = prev[ny as usize * rw + nx as usize];
                     if q[3] > 0.0 || (q[0] + q[1] + q[2]) > 0.0 {
                         s[0] += q[0];
                         s[1] += q[1];
@@ -721,41 +766,40 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
                     }
                 }
                 if s[3] > 0.0 {
-                    acc[y * r + x] = [s[0] / s[3], s[1] / s[3], s[2] / s[3], 0.0];
+                    acc[y * rw + x] = [s[0] / s[3], s[1] / s[3], s[2] / s[3], 0.0];
                 }
             }
         }
     }
-    // Close the crown. Needles rasterised through the needle photograph's own
-    // holes leave a speckled mask, and a speckled mask at a distance reads as
-    // a see-through ghost of a tree, not a tree (2026-09-28): coverage is
-    // boosted, then a hole whose neighbours are mostly crown is filled.
+    // Close pinholes only. Needles rasterised through the needle photograph's
+    // own holes leave a speckled mask, and a speckled mask at a distance reads
+    // as a see-through ghost of a tree (2026-09-28) — but the gaps between
+    // limbs are the silhouette, so only a hole nearly surrounded by crown is
+    // filled.
     for t in acc.iter_mut() {
         t[3] = (t[3] * CARD_COVERAGE_BOOST).min(1.0);
     }
-    for _ in 0..2 {
-        let prev = acc.clone();
-        for y in 1..r - 1 {
-            for x in 1..r - 1 {
-                if prev[y * r + x][3] >= 0.5 {
-                    continue;
-                }
-                let mut solid = 0;
-                for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        let q = prev[(y as i32 + dy) as usize * r + (x as i32 + dx) as usize];
-                        if (dx != 0 || dy != 0) && q[3] >= 0.5 {
-                            solid += 1;
-                        }
+    let prev = acc.clone();
+    for y in 1..rh - 1 {
+        for x in 1..rw - 1 {
+            if prev[y * rw + x][3] >= 0.5 {
+                continue;
+            }
+            let mut solid = 0;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let q = prev[(y as i32 + dy) as usize * rw + (x as i32 + dx) as usize];
+                    if (dx != 0 || dy != 0) && q[3] >= 0.5 {
+                        solid += 1;
                     }
                 }
-                if solid >= 5 {
-                    acc[y * r + x][3] = 1.0;
-                }
+            }
+            if solid >= 7 {
+                acc[y * rw + x][3] = 1.0;
             }
         }
     }
-    let mut out = vec![0u8; r * r * 4];
+    let mut out = vec![0u8; rw * rh * 4];
     for (i, t) in acc.iter().enumerate() {
         out[i * 4] = linear_to_srgb(t[0]);
         out[i * 4 + 1] = linear_to_srgb(t[1]);

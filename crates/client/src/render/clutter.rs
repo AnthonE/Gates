@@ -77,42 +77,25 @@ pub const TUFT_H: f32 = 0.40;
 /// the layer's HEIGHT without it.
 pub const BRUSH_H: f32 = 0.75;
 
-/// A standing litter stalk's height at scale 1, metres.
+/// A fern clump's card height at scale 1, metres (it is twice as wide, the
+/// grass card's layout). **(knob)**
 ///
-/// **Why the litter channel stands up at all.** `sim-core`'s own density law
-/// says it must: `clutter_richness_at` counts channels 1 and 2 together —
-/// *"Grass (channel 1) and forest litter (channel 2) are the ground identities
-/// that grow things; sand and rock do not thicken"* — and thickens the
-/// population on both. The client then drew every one of those extra elements
-/// with `chip` at 16 × 2.2 × 3 cm, an aspect ratio of 7.3 and the flattest
-/// thing this file makes. So the sim said *understory* and the mesh said
-/// *gravel*, and the capture camera stands on 93 % litter (`NOW.md` §0gp),
-/// which is why the visual judge read "flat twig decals and not one 3D clutter
-/// mesh" on the near vantage.
-///
-/// Shorter than `TUFT_H` on purpose: this is standing debris under a canopy —
-/// dead stalks, bracken, a fern frond — not turf. `ART.md` §1's measured
-/// 20–40 cm band is quoted about GRASS and is not evidence about litter, so
-/// this number is not derived from it and is registered as an open knob
-/// instead.
-pub const FROND_H: f32 = 0.19;
+/// The litter channel stands up because `sim-core`'s density law says it
+/// grows things (`clutter_richness_at` thickens channels 1 and 2 together).
+/// It used to stand up as three tapered brown quads per stick, which read in
+/// every frame as spikes driven into the ground; a fern from a photograph is
+/// what a forest floor actually grows.
+pub const FERN_H: f32 = 0.5;
 
-/// Standing stalks per litter clump. Fewer than a tuft's blades were, for the
-/// same reason the height is lower — a litter floor is sparser standing matter than
-/// turf, and the fallen half of the clump is already carrying its coverage.
-pub const FRONDS_PER_CLUMP: u32 = 3;
+/// The share of litter elements in a fern colony that carry a fern. **(knob)**
+/// Ferns grow in colonies, so the share is modulated by a low-frequency patch
+/// field ([`fern_at`]): dense in places, absent between.
+pub const FERN_SHARE: f32 = 0.5;
 
-/// How much brighter a standing litter stalk's tip is than its root.
-pub const FROND_TIP_GAIN: f32 = 1.45;
-
-/// A standing litter stalk's root colour, linear: dead bracken, sRGB
-/// (86, 66, 44).
-///
-/// **Authored, no longer the ground's own litter identity** (2026-09-28). A
-/// stalk the colour of grey forest gravel, lit from the side, read as a bed
-/// of pale spikes over the whole floor; standing dead matter is darker and
-/// warmer than the ground it stands in.
-pub const FROND_ROOT: [f32; 3] = [0.093, 0.0545, 0.0252];
+/// The fern card atlas: four composed clumps from Poly Haven `fern_02` (CC0),
+/// in the grass atlas's layout (2x2 cells of 512x256, roots on the bottom
+/// edge) so [`card`] draws it unchanged. Baked by `ci/bake_fern_atlas.py`.
+pub const FERN_ATLAS: &str = "textures/fern_card_albedo.png";
 
 /// Authored colour per kind, sRGB.
 ///
@@ -149,6 +132,8 @@ pub struct ClutterRing {
     /// alpha test it does not need and tie two unrelated surfaces to one
     /// texture forever. 25 extra draws is the cheaper half of that trade.
     card_material: Option<Handle<super::foliage::FoliageMaterial>>,
+    /// The ferns' material: the card material wearing the fern atlas.
+    fern_material: Option<Handle<super::foliage::FoliageMaterial>>,
     /// Each tile's card child, so the near ones can cast shadows
     /// ([`GRASS_SHADOW_TILES`]) and the rest not.
     cards: HashMap<(i32, i32), Entity>,
@@ -177,107 +162,6 @@ impl ClutterRing {
 /// One baked clutter tile.
 #[derive(Component)]
 pub struct Tile(pub i32, pub i32);
-
-/// A standing quad's root-to-tip colour ramp, linear. The base sits in its own
-/// shade and the tip catches a rim of sun; a quad that is one value is rule 1's
-/// flat surface at blade scale.
-#[derive(Clone, Copy)]
-struct Ramp {
-    lo: [f32; 3],
-    hi: [f32; 3],
-}
-
-/// One standing quad's parameters. A struct rather than six arguments because
-/// `blade` is now called for two different populations and clippy caps an
-/// argument list at seven.
-#[derive(Clone, Copy)]
-struct Stalk {
-    base: Vec3,
-    dir: Vec2,
-    h: f32,
-    lean: f32,
-    ramp: Ramp,
-}
-
-/// A blade: a tapered quad leaning off vertical, two triangles.
-///
-/// `v` is the per-quad value jitter — rule 7's "no two identical instances".
-fn blade(s: &mut Soup, k: Stalk, v: f32) {
-    let (base, dir, h, lean) = (k.base, k.dir, k.h, k.lean);
-    // Wider than the first cut's 0.022/0.004. At 2.4 elements per square
-    // metre a narrow blade reads as a dark spike standing in mown lawn — the
-    // first native capture's exact defect — because the eye is being shown
-    // one thin silhouette rather than a mass.
-    let half_base = 0.030;
-    let half_tip = 0.008;
-    let side = Vec3::new(-dir.y, 0.0, dir.x);
-    let tip = base + Vec3::new(dir.x * lean * h, h, dir.y * lean * h);
-
-    let b0 = base - side * half_base;
-    let b1 = base + side * half_base;
-    let t0 = tip - side * half_tip;
-    let t1 = tip + side * half_tip;
-
-    let (lo, hi) = (k.ramp.lo, k.ramp.hi);
-    let col = move |p: Vec3| {
-        let t = ((p.y - base.y) / h).clamp(0.0, 1.0);
-        [
-            (lo[0] + (hi[0] - lo[0]) * t) * v,
-            (lo[1] + (hi[1] - lo[1]) * t) * v,
-            (lo[2] + (hi[2] - lo[2]) * t) * v,
-            1.0,
-        ]
-    };
-    // Grass scatters light as a mass, not as a set of plates. The first cut
-    // blended only 0.72 of the way to vertical and left 0.28 of a FACET
-    // normal in. Fully vertical: every blade is lit by the sky above it
-    // whichever way it happens to face, which is also what a real blade does
-    // once its neighbours have scattered into it.
-    //
-    // ⚠ **This line has now given TWO false reasons for going fully vertical,
-    // and both corrections matter because each pointed at a different fix.**
-    //
-    // The first said "a blade's two triangles wind opposite ways, so one took
-    // the sun and the other went black". They do not: `(b0,t0,b1)` and
-    // `(b1,t0,t1)` cross to the same side of the quad, and `tests/contact.rs`
-    // computes both facets over a swept blade and holds them in one
-    // hemisphere.
-    //
-    // The second — that the material's `double_sided` flip is what blackens
-    // half a tuft — is **also false, and was checked against Bevy's source
-    // rather than reasoned about** (2026-08-25). `pbr_functions.wgsl:130-134`
-    // wraps that negation in `#ifndef VERTEX_TANGENTS`, and
-    // `bevy_pbr/src/render/mesh.rs:2410` pushes `VERTEX_TANGENTS` whenever the
-    // layout carries `ATTRIBUTE_TANGENT` — which `Soup::mesh` puts on every
-    // clutter tile via `generate_tangents()`. The other `double_sided &&
-    // !is_front` in that file is inside `apply_normal_mapping`, and this
-    // material has no normal map. **No blade is ever flipped.** Do not
-    // "fix" this by turning `double_sided` off; it would change nothing here
-    // and would black out the back of every blade for real.
-    //
-    // **The real defect this line carried, and the fix.** A fully vertical
-    // normal is the GROUND's own normal, so every blade was shaded identically
-    // to the dirt it stood in — same sun cosine, same hemisphere sample — and
-    // albedo was the only thing separating grass from ground. That is the
-    // visual judge's "reads as paint" stated as arithmetic, on the layer that
-    // fills the bottom half of every frame.
-    //
-    // One number could not fix it, because BOTH ENDS ARE RIGHT: a blade's root
-    // really is bedded in the turf and should shade with it (`ART.md` rule 2 —
-    // nothing sits ON the ground), and its tip is a card standing in the light
-    // and should shade as itself (rule 1 — no surface may be one flat value).
-    // So the blend is a ramp up the blade rather than a constant, which is what
-    // `Soup::tri_ramp` exists for.
-    let up_volume = Some(base - Vec3::Y * 2.0);
-    let root_y = base.y;
-    let ramp = move |p: Vec3| {
-        let t = ((p.y - root_y) / h).clamp(0.0, 1.0);
-        // 1 at the root (the ground's normal), `BLADE_TIP_BLEND` at the tip.
-        1.0 - (1.0 - BLADE_TIP_BLEND) * t
-    };
-    s.tri_ramp(b0, t0, b1, col, up_volume, ramp);
-    s.tri_ramp(b1, t0, t1, col, up_volume, ramp);
-}
 
 // ---------------------------------------------------------------------------
 // The grass card — a photograph of a real tuft, on two crossed quads.
@@ -483,34 +367,6 @@ fn patch_tint(x: f32, z: f32) -> [f32; 3] {
 /// against.
 pub const BLADE_TIP_BLEND: f32 = 0.75;
 
-/// A spray of standing quads out of one root — the ONE builder for every
-/// standing thing the near-ground population draws, so a tuft of grass and a
-/// clump of standing litter cannot diverge in shape, lean or normal handling.
-///
-/// That last one is the reason this is a single function rather than two
-/// similar ones: `blade` forces its normals fully vertical, which `NOW.md`
-/// §0gc owns as a defect and will replace with a root-to-tip ramp. Sharing the
-/// builder means that fix lands on both populations at once instead of on
-/// whichever one its author happened to be looking at.
-fn stand(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, n: u32, h: f32, ramp: Ramp) {
-    for i in 0..n {
-        let a = yaw + i as f32 * 0.897 + hash01(seed, i + 17) * 0.9;
-        let dir = Vec2::new(a.sin(), a.cos());
-        let spread = 0.03 + 0.05 * hash01(seed, i + 61);
-        blade(
-            s,
-            Stalk {
-                base: at + Vec3::new(dir.x * spread, 0.0, dir.y * spread),
-                dir,
-                h: h * (0.55 + 0.7 * hash01(seed, i + 47)),
-                lean: 0.22 + 0.34 * hash01(seed, i + 31),
-                ramp,
-            },
-            0.85 + 0.3 * hash01(seed, i),
-        );
-    }
-}
-
 /// How far a chip's normals are pulled off their facets toward its own
 /// centroid. **A 5 cm stone with four hard facets is four flat values, and the
 /// visual judge read exactly that**: "stray flat blue triangles poking through
@@ -633,20 +489,12 @@ fn stone(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
 /// carries a few loose stones; the rest is the face itself.
 pub const SHARD_KEEP: f32 = 0.22;
 
-/// A litter clump: the fallen stick this kind has always been, plus the
-/// standing stalks the growing channel was owed.
+/// A litter element's fallen stick.
 ///
-/// **The chip stays, and it is emitted first.** `Clutter::Twig`'s own
-/// definition in `sim-core` is "fallen needles, sticks, cones", and that read
-/// is correct — a forest floor is mostly fallen matter. What it was missing is
-/// that a forest floor also has things standing IN the fallen matter, and one
-/// element covers 0.4 m² at the shipped density, so a clump is the honest unit.
-/// It is the same relationship a tuft already has to one grass element: seven
-/// blades from one placement, not one blade.
-///
-/// Emitting the chip first is load-bearing for the gate rather than for the
-/// picture: `tests/contact.rs` measures the chip's four triangles on all three
-/// chip-bearing kinds, and it finds them at a fixed offset.
+/// `Clutter::Twig`'s own definition in `sim-core` is "fallen needles, sticks,
+/// cones", and a forest floor is mostly fallen matter. What stands up in it is
+/// a fern, where [`fern_at`] says one grows — drawn by the fern material, so
+/// `stream` puts it in its own mesh.
 fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
     chip(
         s,
@@ -656,25 +504,31 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
         TWIG_C,
         seed,
     );
-    let root = FROND_ROOT;
-    // The seed is offset so the stalks' yaws do not correlate with the corner
-    // jitter of the stick they stand in — rule 7, at clump scale.
-    stand(
-        s,
-        at,
-        yaw,
-        seed ^ 0x9e37_79b9,
-        FRONDS_PER_CLUMP,
-        FROND_H * scale,
-        Ramp {
-            lo: root,
-            hi: [
-                root[0] * FROND_TIP_GAIN,
-                root[1] * FROND_TIP_GAIN,
-                root[2] * FROND_TIP_GAIN,
-            ],
-        },
-    );
+}
+
+/// Whether a litter element carries a fern: a colony field (the same smooth
+/// patch noise the meadow's tint uses, at its own offset) times
+/// [`FERN_SHARE`], rolled on the element's own hash. Visual only.
+pub fn fern_at(e: &ClutterElem) -> bool {
+    if e.kind != Clutter::Twig {
+        return false;
+    }
+    let colony = ((patch(e.x * 0.8 + 37.0, e.z * 0.8 - 11.0) - 0.30) / 0.2).clamp(0.0, 1.0);
+    hash01(seed_of(e), 0xfe41) < FERN_SHARE * colony
+}
+
+/// A fern clump: the grass card's crossed quads, wearing the fern atlas.
+fn fern(s: &mut Soup, e: &ClutterElem) {
+    let at = Vec3::new(e.x, e.y, e.z);
+    let yaw = e.yaw as f32 / 256.0 * std::f32::consts::TAU;
+    card(s, at, yaw, seed_of(e) ^ 0x0fe4_1000, FERN_H * e.scale);
+}
+
+/// An element's hash seed. The element's own cell coordinates would be a
+/// better key, but the fill does not return them; the quantized position is
+/// stable for the same reason and costs nothing.
+fn seed_of(e: &ClutterElem) -> u32 {
+    ((e.x * 64.0) as i32 as u32) ^ ((e.z * 64.0) as i32 as u32).rotate_left(13)
 }
 
 /// One element's geometry, alone, as a mesh — the same builder `stream` bakes
@@ -700,16 +554,18 @@ pub fn masked(kind: Clutter) -> bool {
 pub fn element_mesh(e: &ClutterElem) -> Mesh {
     let mut s = Soup::default();
     element(&mut s, e);
+    // A twig's fern is a second mesh in the tile (its own material); here it
+    // follows the stick, so a gate sees the whole element.
+    if fern_at(e) {
+        fern(&mut s, e);
+    }
     s.mesh()
 }
 
 fn element(s: &mut Soup, e: &ClutterElem) {
     let at = Vec3::new(e.x, e.y, e.z);
     let yaw = e.yaw as f32 / 256.0 * std::f32::consts::TAU;
-    // The element's own cell coordinates would be a better hash key, but the
-    // fill does not return them; the quantized position is stable for the
-    // same reason and costs nothing.
-    let seed = ((e.x * 64.0) as i32 as u32) ^ ((e.z * 64.0) as i32 as u32).rotate_left(13);
+    let seed = seed_of(e);
     match e.kind {
         Clutter::None => {}
         Clutter::Tuft => card(s, at, yaw, seed, TUFT_H * e.scale),
@@ -827,6 +683,24 @@ pub fn stream(
             foliage_mats.add(foliages.make(base, super::foliage::Kind::Grass))
         })
         .clone();
+    let fern_material = ring
+        .fern_material
+        .get_or_insert_with(|| {
+            let base = StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(
+                    assets.load_with_settings(FERN_ATLAS, super::textures::atlas(true)),
+                ),
+                alpha_mode: AlphaMode::Mask(CARD_ALPHA_CUT),
+                perceptual_roughness: 0.9,
+                reflectance: super::fresnel::DIELECTRIC,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            };
+            foliage_mats.add(foliages.make(base, super::foliage::Kind::Grass))
+        })
+        .clone();
 
     let tx = (eye.pos.x / CLUTTER_TILE_M).floor() as i32;
     let tz = (eye.pos.z / CLUTTER_TILE_M).floor() as i32;
@@ -917,8 +791,13 @@ pub fn stream(
             // material cannot be drawn by the wrong shader.
             let mut solid = Soup::default();
             let mut cards = Soup::default();
+            let mut ferns = Soup::default();
             let mut n_solid = 0usize;
             let mut n_cards = 0usize;
+            let mut n_ferns = 0usize;
+            // Off the faces the cliff relief moves: a shard there would float
+            // in front of a cut or sink into a buttress.
+            let mut lat = terrain::Lattice::new();
             for e in buf.iter().take(n) {
                 if e.kind == Clutter::Shard
                     && hash01(
@@ -928,12 +807,27 @@ pub fn stream(
                 {
                     continue;
                 }
+                if e.kind == Clutter::Shard
+                    && super::terrain_mesh::relief_moves(
+                        &mut lat,
+                        world.seed,
+                        &world.haven,
+                        e.x,
+                        e.z,
+                    )
+                {
+                    continue;
+                }
                 if masked(e.kind) {
                     n_cards += 1;
                     element(&mut cards, e);
                 } else {
                     n_solid += 1;
                     element(&mut solid, e);
+                }
+                if fern_at(e) {
+                    n_ferns += 1;
+                    fern(&mut ferns, e);
                 }
             }
             // The tile entity carries `Tile` and nothing drawable; each mesh
@@ -988,6 +882,18 @@ pub fn stream(
                     commands.entity(c).insert(NotShadowCaster);
                 }
                 ring.cards.insert(key, c);
+            }
+            // The ferns: the same card shape in their own material. Never
+            // shadow casters — a cutout per shadow texel for an understory
+            // that already sits in the canopy's shade.
+            if n_ferns > 0 {
+                commands.spawn((
+                    Mesh3d(meshes.add(ferns.mesh())),
+                    MeshMaterial3d(fern_material.clone()),
+                    Transform::IDENTITY,
+                    NotShadowCaster,
+                    ChildOf(e),
+                ));
             }
             ring.built.insert(key, e);
             filled += 1;

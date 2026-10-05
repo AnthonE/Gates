@@ -358,6 +358,9 @@ pub struct Capture {
     /// is the number the tail check exists because it cannot trust.
     extra: [Option<PathBuf>; EXTRA_SHOTS],
     n_extra: usize,
+    /// The probe's health as last logged, so every hit lands in the log
+    /// with its frame: a death report names a cause, this names the timing.
+    last_hp: u16,
     /// Has the probe got clear of any base it spawned inside?
     ///
     /// **The vantages are shot from wherever the body is, and `ci/scene.sh`
@@ -393,6 +396,7 @@ impl Capture {
             },
             extra: std::array::from_fn(|_| None),
             n_extra: 0,
+            last_hp: 0,
             cleared: false,
             clearing: 0,
         }
@@ -482,11 +486,35 @@ pub fn drive(
     // be read as a slow build. A shard seated with `population` makes this
     // likelier, not less — a raider's charge does not check who is standing
     // beside the base.
+    if let Some(n) = net.as_ref() {
+        let core = &n.session.core;
+        if core.hp_max > 0 && core.hp != cap.last_hp {
+            if core.hp < cap.last_hp {
+                eprintln!(
+                    "capture: probe hp {} -> {} at frame {}{}",
+                    cap.last_hp,
+                    core.hp,
+                    cap.frame,
+                    if core.wounded { " (wounded)" } else { "" }
+                );
+            }
+            cap.last_hp = core.hp;
+        }
+    }
     if *screen.get() == super::screen::Screen::Dead {
+        // What killed it, in the sim's own `DEATH_BY_*` numbering, so the next
+        // pass fixes a cause rather than a symptom.
+        let (cause, killer) = net.as_ref().map_or((u8::MAX, 0), |n| {
+            (
+                n.session.core.own_death_cause,
+                n.session.core.own_death_killer,
+            )
+        });
         eprintln!(
-            "capture: the probe DIED at frame {} — {} frame(s) written, the rest are \
-             not coming. Nothing below this line is evidence about a build. Pin \
-             `dev_spawn` somewhere the mob roster has not homed on (RENDER.md).",
+            "capture: the probe DIED at frame {} (cause {cause}, killer {killer}) — {} \
+             frame(s) written, the rest are not coming. Nothing below this line is \
+             evidence about a build. Pin `dev_spawn` somewhere the mob roster has not \
+             homed on (RENDER.md).",
             cap.frame, cap.taken
         );
         exit.write(AppExit::error());

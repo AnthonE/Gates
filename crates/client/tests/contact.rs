@@ -31,7 +31,7 @@
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::clutter::{
-    element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, FRONDS_PER_CLUMP, STONE_VERTS, TUFT_H,
+    element_mesh, CARDS_PER_TUFT, CHIP_SINK, CHIP_VOLUME_BLEND, STONE_VERTS, TUFT_H,
 };
 use sim_core::terrain::{Clutter, ClutterElem};
 
@@ -44,16 +44,12 @@ const CHIP_VERTS: usize = 12;
 
 /// Vertices a whole element mesh holds, per kind.
 ///
-/// A litter clump is its fallen chip PLUS standing stalks (2026-08-15,
-/// `NOW.md` §0gp — the growing channel was drawn with the flattest mesh in the
-/// file); pebble and shard are the chip alone. This is asserted rather than
-/// assumed so that BOTH halves of a clump are gated: deleting the stalks and
-/// deleting the chip they stand in are each red here.
-fn verts(kind: Clutter) -> usize {
+/// A litter element is its fallen chip, plus a fern card where one grows
+/// (`clutter::fern_at`); pebble and shard are a `stone`.
+fn verts_ok(kind: Clutter, n: usize) -> bool {
     match kind {
-        Clutter::Twig => CHIP_VERTS + FRONDS_PER_CLUMP as usize * 6,
-        // Pebble and shard are a `stone`.
-        _ => STONE_VERTS,
+        Clutter::Twig => n == CHIP_VERTS || n == CHIP_VERTS + CARDS_PER_TUFT as usize * 6,
+        _ => n == STONE_VERTS,
     }
 }
 
@@ -66,10 +62,11 @@ fn verts(kind: Clutter) -> usize {
 /// `clutter.rs::litter` emits the chip first and says that this is why.
 fn chip_span(m: &Mesh, kind: Clutter) -> (Vec<Vec3>, Vec<Vec3>) {
     let (p, n) = (positions(m), normals(m));
-    assert_eq!(
-        p.len(),
-        verts(kind),
-        "{kind:?}: element mesh is not the population it is supposed to be"
+    assert!(
+        verts_ok(kind, p.len()),
+        "{kind:?}: element mesh ({} vertices) is not the population it is \
+         supposed to be",
+        p.len()
     );
     let k = if kind == Clutter::Twig {
         CHIP_VERTS
