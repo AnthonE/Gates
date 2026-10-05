@@ -774,6 +774,16 @@ fn a_dressed_edge_piece_stays_inside_its_parts() {
         most > 100,
         "the dressed walls are suspiciously plain ({most} tris)"
     );
+    // The aprons the ground storey hangs under its walls, likewise.
+    for tier in 0..N_TIERS as u8 {
+        for own in 0..4u8 {
+            let (parts, n) = apron_parts(PostOwn::from_bits(own));
+            let m = dress::apron_mesh(&parts[..n], tier);
+            holds(&format!("tier {tier} apron {own}"), &m, 2400, |p| {
+                parts[..n].iter().any(|q| in_part(p, q))
+            });
+        }
+    }
 }
 
 /// Every floor, roof and footing slab, square and half, in every tier and at
