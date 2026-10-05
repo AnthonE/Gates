@@ -475,8 +475,8 @@ fn fit_to_bounds(bark: &mut Mesh, needles: &mut Mesh, height_m: f32) {
 /// `mean1` normalizes each result to unit luminance, which is what a surface
 /// that now wears a PHOTOGRAPH needs: the bark map carries the colour and this
 /// band keeps only the light-to-dark ramp up the trunk, per `ART.md` §7. The
-/// needles pass `false` — their map is a generated white alpha mask, so their
-/// vertex colour is still the only colour they have.
+/// needles pass `false` — their map is white (leaf) or a mean-normalised photo
+/// (needle, [`NEEDLE_MAP_GAIN`]), so the vertex colour is the canopy's colour.
 fn band(m: &mut Mesh, lo: u32, hi: u32, y0: f32, y1: f32, mean1: bool) {
     let Some(p) = positions(m) else { return };
     let (l, g) = (linear(lo), linear(hi));
@@ -694,6 +694,11 @@ fn occlude_canopy(m: &mut Mesh) {
             } else {
                 (r / rr).clamp(0.0, 1.0)
             };
+            // The top of the crown is open to the sky whatever its radius:
+            // a conifer's spire is a few small cards about the leader, all
+            // "near the axis", and it is the most exposed part of the tree.
+            let open = (((v[1] - lo_y) / span - 0.82) / 0.18).clamp(0.0, 1.0);
+            let e = e.max(open);
             CANOPY_AO_FLOOR + (1.0 - CANOPY_AO_FLOOR) * e.powf(CANOPY_AO_GAMMA)
         })
         .collect();
@@ -706,6 +711,67 @@ fn occlude_canopy(m: &mut Mesh) {
         c[0] *= k;
         c[1] *= k;
         c[2] *= k;
+    }
+}
+
+/// Vertical spacing of a conifer's whorls, metres. A pine puts its limbs out
+/// in tiers, one a year, and the tiers are what make it read as a pine rather
+/// than a cypress at any range: the generator scatters limbs evenly up the
+/// trunk, so [`shape_crown`] makes the tiers out of the needle cards.
+pub const WHORL_M: f32 = 1.6;
+/// How big a needle card is between two whorls, as a share of one in a whorl.
+pub const WHORL_GAP_SCALE: f32 = 0.45;
+/// How big a needle card is at the apex, as a share of one at the crown's foot
+/// — the spire. The limbs already shorten upward (the generator scales an
+/// evergreen's limb by how far up the trunk it starts), but a ~1 m card on
+/// every limb tip kept the crown a column ~2 m across all the way up.
+pub const APEX_SCALE: f32 = 0.35;
+
+/// Shape a conifer's needle cards into tiers and a spire.
+///
+/// Each card is scaled about its own attach point (the middle of its base
+/// edge, where the generator roots it on the limb) by the crown's taper and a
+/// whorl pulse up the height. Cards only ever shrink, so the crown stays
+/// inside the radius the sim's bounds were swept against.
+fn shape_crown(needles: &mut Mesh, variant: usize) {
+    let Some(p) = positions_mut(needles) else {
+        return;
+    };
+    if p.len() % 4 != 0 {
+        return;
+    }
+    // The generator's quad: (-w, size), (-w, 0), (w, 0), (w, size) — corners
+    // 1 and 2 are the base edge.
+    let root = |q: &[[f32; 3]]| {
+        Vec3::new(
+            (q[1][0] + q[2][0]) * 0.5,
+            (q[1][1] + q[2][1]) * 0.5,
+            (q[1][2] + q[2][2]) * 0.5,
+        )
+    };
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for q in p.chunks_exact(4) {
+        let y = root(q).y;
+        lo = lo.min(y);
+        hi = hi.max(y);
+    }
+    let span = (hi - lo).max(1e-3);
+    // Each seed's whorls sit at its own heights.
+    let phase0 = hash01(0x3b0e_71a5, variant as u32);
+    for q in p.chunks_exact_mut(4) {
+        let r = root(q);
+        let t = ((r.y - lo) / span).clamp(0.0, 1.0);
+        let cone = 1.0 - (1.0 - APEX_SCALE) * t;
+        // 1 at a whorl, falling to the gap between two: a raised cosine,
+        // flattened on top so a whorl is a band and not a line.
+        let ph = ((r.y - lo) / WHORL_M + phase0).fract();
+        let w = (0.5 + 0.5 * (ph * std::f32::consts::TAU).cos()).sqrt();
+        let s = cone * (WHORL_GAP_SCALE + (1.0 - WHORL_GAP_SCALE) * w);
+        for v in q.iter_mut() {
+            v[0] = r.x + (v[0] - r.x) * s;
+            v[1] = r.y + (v[1] - r.y) * s;
+            v[2] = r.z + (v[2] - r.z) * s;
+        }
     }
 }
 
@@ -731,6 +797,23 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
         };
 
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
+    if sp.tree_type == TreeType::Evergreen {
+        shape_crown(&mut needles, variant);
+        // The spire's shrunken top cards lower the apex; stretch the pair
+        // back up to its height, vertically only, so neither the trunk's
+        // radius (the sim's cylinder) nor the crown's grows.
+        let (h, _) = bounds(&[&bark, &needles]);
+        if h > f32::EPSILON {
+            let k = sp.height_m / h;
+            for m in [&mut bark, &mut needles] {
+                if let Some(p) = positions_mut(m) {
+                    for v in p.iter_mut() {
+                        v[1] *= k;
+                    }
+                }
+            }
+        }
+    }
     band(
         &mut bark,
         BARK_LO,
@@ -752,167 +835,56 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
     (bark, needles)
 }
 
-/// Needle-sprig size in texels. Two of these tile the leaf card's UV range.
-///
-/// **256, from 64 (canopy grain v0, 2026-09-16), and the reason is arithmetic
-/// rather than taste.** A conifer card measures 1.08 m of world on the
-/// shipped seeds (`examples/canopy_probe.rs`; NOT `LeafParams::size`, which is
-/// in the generator's units — see [`leaf_image`]), so at 64 texels one texel
-/// is **16.9 mm of tree**. `stamp`'s thinnest line that survives the 0.5 alpha
-/// cut is about one and a half texels, so the finest thing this card could
-/// draw was a **34 mm** stripe — and the sprig drew them 23 cm long. A real
-/// conifer needle is 1–2 mm by 3–6 cm. What the mask was drawing, measured,
-/// was **25× too wide and 5× too long**: not needles, FRONDS, which is why the
-/// operator's 2026-09-16 frames read as a forest of tree ferns.
-///
-/// At 256 a texel is 4.2 mm, a needle is ~1 texel wide and a 5 cm needle is
-/// twelve of them. That is the whole of the change — the card's world size is
-/// untouched, because it is swept against `BROADLEAF_MAX_R`/`PINE_MAX_R` and
-/// moving it moves the sim's crown ceiling. **Fix what is drawn inside the
-/// card, not the card.**
-///
-/// The cost is 256² × 4 B plus a chain, twice: ~700 kB of VRAM for both cards,
-/// against the 12 MB `ART.md` §7 discusses for one photographic set. The mip
-/// chain absorbs the rest — `needle_mips` preserves coverage through it by
-/// construction, which is what lets the level-0 detail be this fine at all.
-const NEEDLE_TEX: u32 = 256;
+/// The generated leaf card's size in texels (the broadleaf's; the conifer's
+/// card is the shipped photograph, [`needle_image`]).
+const LEAF_TEX: u32 = 256;
 
-/// The alpha card the canopy is actually made of — **generated at boot, not
-/// shipped.**
+/// The conifer needle card: a composed pine branch end from Poly Haven's CC0
+/// `pine_tree_01` twig maps, baked by `ci/bake_needle_card.py`.
 ///
-/// `assets/textures/` has bark and no leaf, and the Rust generator ships no
-/// textures at all (the JS one builds its own and hands over an `alphaTest`).
-/// A leaf quad with no alpha is a solid square, and a canopy of solid squares
-/// is the opaque hull the browser already rejected — so without this the
-/// generated tree is a *downgrade* on the whorl cone, not an upgrade.
+/// Compiled in rather than loaded, because `far_trees::bake_atlas` rasterises
+/// the real tree through this card at boot, before any asset could arrive.
+pub const NEEDLE_CARD_PNG: &[u8] =
+    include_bytes!("../../../../assets/textures/needle_card_albedo.png");
+
+/// What the needle card's RGB is multiplied by to be mean-1.
 ///
-/// Generating it follows `sky.rs`, which builds its cloud cubemap the same way
-/// and for the same reason: no asset, no download, no licence to carry, and it
-/// cannot go missing from a depot. A sprig is a cheap thing to draw — a stem
-/// with needles fanning off it — and alpha is the only channel that has to be
-/// right, because `AlphaMode::Mask` reads nothing else.
+/// The bake divides the photo by its own linear mean and scales it by
+/// `1 / NEEDLE_MAP_GAIN` so its brightest texels fit in a byte; the canopy's
+/// colour stays in the vertex bands ([`band`]) and the photograph adds only its
+/// variation. `tests/tree.rs` holds this against the shipped file.
+pub const NEEDLE_MAP_GAIN: f32 = 4.8589;
+
+/// What a canopy card's specular is scaled by (`StandardMaterial::
+/// specular_tint`; `reflectance` stays the physical 4 %).
+///
+/// A card stands in for a clump of needles whose specular is mostly shadowed
+/// by the clump itself. Lit as one plane, a back-lit card's grazing Fresnel
+/// sheened whole cards sky-grey or sun-tan — the pale patches on every near
+/// crown in the 2026-10 frames. 0.3 is a reflectance of 0.15 (F0 ≈ 0.4 %).
+pub const CANOPY_SPECULAR_TINT: f32 = 0.3;
+
+/// The alpha card the conifer canopy is made of: the shipped photograph,
+/// decoded, with a coverage-preserving mip chain.
 pub fn needle_image() -> Image {
-    let n = NEEDLE_TEX as usize;
-    let mut data = vec![0u8; n * n * 4];
-    let size = NEEDLE_TEX as f32;
-
-    // 2 branchlets, mirrored about the card's centre line, so a `Double`
-    // billboard pair does not show the same silhouette twice from every angle.
-    for (sx, dir) in [(0.30f32, 1.0f32), (0.70, -1.0)] {
-        let stem_x = sx * size;
-        let stem_len = size * 0.90;
-
-        // The woody axis: thin, tapering, running up the card.
-        let steps = stem_len.ceil() as u32;
-        for s in 0..=steps {
-            let u = s as f32 / steps.max(1) as f32;
-            stamp(
-                &mut data,
-                n,
-                stem_x,
-                1.0 + u * stem_len,
-                1.4 * (1.0 - 0.55 * u),
-            );
-        }
-
-        // Side twigs, alternating, shortening toward the tip — the same
-        // silhouette rule the whorls encode as a radius ramp.
-        //
-        // Jittered by a hash of the twig's index, for the reason `leaf_image`
-        // gives at length: an evenly spaced comb at one fixed angle reads as a
-        // FERN. A conifer's needles are genuinely regular along a twig, so the
-        // jitter here is smaller than the broadleaf's and lives mostly in
-        // where the twigs sit and how far they reach.
-        for i in 0..TWIGS {
-            let t = i as f32 / (TWIGS - 1).max(1) as f32;
-            let j = |salt: u32| hash01(0x6eed_0000 ^ salt, i) - 0.5;
-            let root_y = 1.0 + (0.05 + 0.88 * t + 0.04 * j(1)) * stem_len;
-            let side = if i % 2 == 0 { 1.0 } else { -1.0 } * dir;
-            let tlen = (1.0 - 0.58 * t) * (1.0 + 0.30 * j(2)) * size * 0.22;
-            // ~48° off the axis, sweeping up: a conifer's twigs rise. ±10°.
-            let a = 0.83 + 0.34 * j(3);
-            let (tx, ty) = (side * a.sin(), a.cos());
-            let ts = tlen.ceil() as u32;
-            for s in 0..=ts {
-                let u = s as f32 / ts.max(1) as f32;
-                stamp(
-                    &mut data,
-                    n,
-                    stem_x + tx * u * tlen,
-                    root_y + ty * u * tlen,
-                    1.0 * (1.0 - 0.45 * u),
-                );
-            }
-            needle_twig(&mut data, n, stem_x, root_y, tx, ty, tlen, NEEDLES_PER_TWIG);
-        }
-
-        // The axis carries needles between its twigs too. Without this a
-        // branchlet reads as a row of separated combs rather than as one
-        // dense spray, which is most of what tells a conifer from a fern.
-        needle_twig(&mut data, n, stem_x, 1.0, 0.0, 1.0, stem_len, AXIS_NEEDLES);
-    }
-
-    alpha_card(data)
-}
-
-/// Side twigs per branchlet, and needles per twig and per axis. Tuned on
-/// COVERAGE, which is the number that decides whether a canopy is opaque:
-/// `tests/tree.rs::the_needle_card_holds_its_world_coverage` holds the total
-/// inside a band around the 0.192 the 64² fern card measured, so this change
-/// is a change of GRAIN and not of density. Moving any of the three without
-/// re-running that gate is how the forest goes bald.
-const TWIGS: u32 = 20;
-/// See [`TWIGS`].
-const NEEDLES_PER_TWIG: u32 = 40;
-/// See [`TWIGS`].
-const AXIS_NEEDLES: u32 = 200;
-/// One needle's length in texels — 5 cm at the card's measured 4.2 mm/texel,
-/// which is the middle of a real conifer's 3–6 cm.
-const NEEDLE_LEN: f32 = 12.2;
-/// One needle's stamp radius in texels. `stamp` writes `1 - d/w`, so the
-/// texels that survive the 0.5 cut are those within `w/2` — at 0.85 that is a
-/// line about one texel wide, ~4 mm of tree, which is the finest thing this
-/// card can draw and about 3× a real needle. Below it the needle stops
-/// surviving the cut at all and the canopy goes transparent.
-const NEEDLE_W: f32 = 0.85;
-
-/// Clothe one twig in needles: `count` of them alternating down the axis from
-/// `(ax, ay)` along the unit direction `(tx, ty)`, each leaving it at ~55° and
-/// swept toward its tip.
-///
-/// One routine for the axis and for every side twig, because a needle is a
-/// needle wherever it is rooted — and because two copies of this loop is where
-/// the axis and the twigs would drift apart.
-#[allow(clippy::too_many_arguments)]
-fn needle_twig(
-    data: &mut [u8],
-    n: usize,
-    ax: f32,
-    ay: f32,
-    tx: f32,
-    ty: f32,
-    twig_len: f32,
-    count: u32,
-) {
-    // Perpendicular to the twig, in the card's plane.
-    let (px, py) = (-ty, tx);
-    for i in 0..count {
-        let t = i as f32 / (count - 1).max(1) as f32;
-        let (rx, ry) = (ax + tx * t * twig_len, ay + ty * t * twig_len);
-        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
-        // ~55° from the twig, swept toward the tip.
-        const SIN: f32 = 0.82;
-        const COS: f32 = 0.57;
-        let (dx, dy) = (px * side * SIN + tx * COS, py * side * SIN + ty * COS);
-        // Needles shorten toward the twig's tip.
-        let len = NEEDLE_LEN * (1.0 - 0.30 * t);
-        let steps = (len * 2.0).ceil() as u32;
-        for s in 0..=steps {
-            let u = s as f32 / steps.max(1) as f32;
-            // A needle tapers to a point.
-            let w = NEEDLE_W * (1.0 - 0.40 * u);
-            stamp(data, n, rx + dx * u * len, ry + dy * u * len, w);
-        }
+    let decoded = Image::from_buffer(
+        NEEDLE_CARD_PNG,
+        bevy::image::ImageType::Extension("png"),
+        bevy::image::CompressedImageFormats::NONE,
+        true,
+        bevy::image::ImageSampler::Default,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    let rgba = decoded.ok().and_then(|img| {
+        let w = img.texture_descriptor.size.width;
+        let h = img.texture_descriptor.size.height;
+        let data = img.data?;
+        (w == h && data.len() == (w * h * 4) as usize).then_some((data, w))
+    });
+    match rgba {
+        Some((data, w)) => alpha_card(data, w),
+        // A broken embed must not take the client down: draw the leaf card.
+        None => leaf_image(),
     }
 }
 
@@ -920,12 +892,12 @@ fn needle_twig(
 /// mip chain, the descriptor that carries it, and the trilinear sampler.
 /// Shared by [`needle_image`] and [`leaf_image`], because a second species'
 /// card that built its own chain would be the first place the two drifted.
-fn alpha_card(data: Vec<u8>) -> Image {
-    // Levels 1..n, coverage-preserved. See [`needle_mips`] for why a plain box
-    // filter is the wrong tool for an alpha-tested mask.
-    let levels = needle_mips(&data, NEEDLE_TEX);
-    let mip_level_count = levels.len() as u32;
-    let chained: Vec<u8> = levels.concat();
+fn alpha_card(data: Vec<u8>, size: u32) -> Image {
+    // Levels 1..n, coverage-preserved: an alpha-tested card draws the share of
+    // texels over the cut, and a plain box filter loses that share at every
+    // level (`mipmap::Filter::Mask`).
+    let chained = super::mipmap::chain(&data, size, size, super::mipmap::Filter::Mask);
+    let mip_level_count = super::mipmap::levels(size, size);
 
     // **Constructed at level 0, then given the chain.** `Image::new` asserts
     // `data.len() == width · height · block_size` — it describes one mip and
@@ -934,15 +906,14 @@ fn alpha_card(data: Vec<u8>) -> Image {
     // and the buffer are both plain fields, so the chain is installed after.
     let mut img = Image::new(
         Extent3d {
-            width: NEEDLE_TEX,
-            height: NEEDLE_TEX,
+            width: size,
+            height: size,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
         data,
-        // The needle's COLOUR comes from the mesh's vertex bands, so this map
-        // is a mask that happens to be white. sRGB anyway: it is multiplied
-        // into base colour and a linear white is still white.
+        // The canopy's COLOUR comes from the mesh's vertex bands; the map is
+        // white (the generated leaf) or a mean-normalised photo (the needle).
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
@@ -1002,9 +973,9 @@ fn alpha_card(data: Vec<u8>) -> Image {
 /// radius and `BROADLEAF_MAX_R` is the sim's number (`TREE_MAX_R`) — so what
 /// changed is what is drawn inside it.
 pub fn leaf_image() -> Image {
-    let n = NEEDLE_TEX as usize;
+    let n = LEAF_TEX as usize;
     let mut data = vec![0u8; n * n * 4];
-    let size = NEEDLE_TEX as f32;
+    let size = LEAF_TEX as f32;
 
     // Two twigs, mirrored about the centre line, so a `Double` billboard shows
     // two outlines and not one twice.
@@ -1071,7 +1042,7 @@ pub fn leaf_image() -> Image {
         }
     }
 
-    alpha_card(data)
+    alpha_card(data, LEAF_TEX)
 }
 
 /// Twiglets per leaf card and leaves per twiglet. Like the sprig's counts
@@ -1147,108 +1118,6 @@ fn leaf_twig(
             stamp(data, n, rx + dx * u * len, ry + dy * u * len, w);
         }
     }
-}
-
-/// Alpha cutoff the canopy's `AlphaMode::Mask` tests against, as a byte.
-///
-/// The cutoff itself is authored in `props.rs`'s foliage material
-/// (`AlphaMode::Mask(0.5)`) and this is the same number as a byte, so the two
-/// can drift; `tests/tree.rs::the_needle_chain_holds_its_coverage` pins them
-/// together. Alpha is linear even in an sRGB-encoded texture — only RGB carries
-/// the transfer function — so 0.5 is 128 and not 188.
-const NEEDLE_MASK_BYTE: u8 = 128;
-
-/// The full mip chain for the needle mask, level 0 first, **coverage-preserved**.
-///
-/// **Why this is not `image::imageops::resize` or a plain box filter.** The
-/// canopy is `AlphaMode::Mask(0.5)`, so what reaches the frame is not the
-/// filtered alpha — it is the *fraction of texels that survive a threshold*.
-/// Box-filtering a sparse mask drives every texel toward the mask's mean, and
-/// the mean of a needle sprig is well under 0.5, so each level loses coverage
-/// against the one above it. Measured with the rescale pinned at 1.0: **level 1
-/// alone keeps 0.53× of level 0's coverage** (0.102 against 0.192), one halving
-/// from full detail, and it compounds down the chain. That reads as a thinning
-/// forest rather than as a filtering artefact, so nobody looks for it in a
-/// texture — `tests/tree.rs::the_needle_chain_holds_its_coverage` is where the
-/// number comes from and is red under exactly that mutant.
-///
-/// The fix is Castaño's: after downsampling, scale the level's alpha so the
-/// share of texels above the cutoff matches level 0's. A bisection on the scale
-/// is enough — coverage is monotonic in it — and 12 steps resolves the scale to
-/// better than one part in 4,000 of the search span, which is finer than the
-/// 1/255 the channel can store anyway.
-///
-/// **This is the whole of the shimmer fix, and the shimmer is why it matters
-/// more than the baldness.** The map shipped with `mip_level_count` at 1, so a
-/// canopy 60 m out sampled a 64² needle mask at roughly one texel per several
-/// pixels with no minification filtering at all — every frame the camera moved,
-/// a different set of needles won the sample. `CLAUDE.md`'s "median fps hides
-/// shader-compile stalls" entry has the general shape of this: a still frame
-/// cannot see it, and every frame this project has ever judged was a still.
-fn needle_mips(level0: &[u8], size: u32) -> Vec<Vec<u8>> {
-    let coverage = |px: &[u8]| -> f32 {
-        let hit = px
-            .chunks_exact(4)
-            .filter(|p| p[3] > NEEDLE_MASK_BYTE)
-            .count();
-        hit as f32 / (px.len() / 4) as f32
-    };
-    let want = coverage(level0);
-
-    let mut out = vec![level0.to_vec()];
-    let mut w = size;
-    while w > 1 {
-        let prev = out.last().expect("out is seeded with level 0");
-        let half = w / 2;
-        let mut next = vec![0u8; (half * half) as usize * 4];
-        for y in 0..half as usize {
-            for x in 0..half as usize {
-                // Box of four. RGB is a constant white across the whole map, so
-                // only alpha carries anything and the average is exact.
-                let mut acc = 0u32;
-                for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                    let sy = y * 2 + dy;
-                    let sx = x * 2 + dx;
-                    acc += u32::from(prev[(sy * w as usize + sx) * 4 + 3]);
-                }
-                let i = (y * half as usize + x) * 4;
-                next[i] = 255;
-                next[i + 1] = 255;
-                next[i + 2] = 255;
-                next[i + 3] = (acc / 4) as u8;
-            }
-        }
-
-        // Bisect the alpha scale until this level tests to level 0's coverage.
-        // The upper bound is 8: past that the scale is pushing near-empty texels
-        // over the cutoff, which invents needles rather than preserving them,
-        // and the bottom levels are a handful of texels where exact coverage is
-        // unreachable at any scale.
-        let (mut lo, mut hi) = (1.0f32, 8.0f32);
-        for _ in 0..12 {
-            let mid = 0.5 * (lo + hi);
-            let scaled: Vec<u8> = next
-                .chunks_exact(4)
-                .flat_map(|p| {
-                    let a = (f32::from(p[3]) * mid).min(255.0) as u8;
-                    [255, 255, 255, a]
-                })
-                .collect();
-            if coverage(&scaled) < want {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let s = 0.5 * (lo + hi);
-        for p in next.chunks_exact_mut(4) {
-            p[3] = (f32::from(p[3]) * s).min(255.0) as u8;
-        }
-
-        out.push(next);
-        w = half;
-    }
-    out
 }
 
 /// Paint one soft dot of needle into the RGBA buffer, alpha-max blended.

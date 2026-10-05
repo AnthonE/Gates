@@ -1,18 +1,10 @@
 //! `tree_look` — a bench, not a gate: every generated tree's near pair, its
-//! far hull, and the two drawn together, shot headless from arm's length.
+//! far card, the two drawn together, and a grove shot the way the game sees a
+//! treeline (near pairs in front, cards behind), all headless.
 //!
 //! ```text
-//! cargo run --release -p client --features render --example tree_look -- <outdir>
+//! cargo run --release -p client --features render,native --example tree_look -- <outdir>
 //! ```
-//!
-//! Written 2026-09-13 to answer a question the operator's frame asked and
-//! nothing in `tests/` can: what does a broadleaf look like five metres away,
-//! what does its hull look like there, and is a hull drawn OVER its own pair
-//! the picture the operator took. Three rows of the six variants — row 0 the
-//! pair alone, row 1 the hull alone, row 2 both, which is what a tree looks
-//! like when neither LOD is culled — and a camera that walks a fixed list of
-//! poses, settling a fixed number of FRAMES at each (never a clock; under
-//! lavapipe a frame is about a second and says nothing about a GPU).
 //!
 //! Headless, on a box with no display:
 //! ```text
@@ -21,28 +13,26 @@
 //!   target/release/examples/tree_look /tmp/shots
 //! ```
 //!
-//! **Not a gate and never will be** (`CLAUDE.md`: the visual gate is a person
-//! looking, and this is the thing they look at). The materials are stand-ins
-//! for `props.rs`'s — a flat bark colour instead of the photograph — so what a
-//! frame here settles is SHAPE and the LOD pair's relationship, not colour.
+//! The materials are stand-ins for `props.rs`'s (no wind, no transmission, a
+//! flat bark colour), so a frame here settles shape and the LOD pair's
+//! relationship, not final colour.
 
 use std::path::PathBuf;
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
-use client::render::tree::{
-    conifer, impostor_of, leaf_image, needle_image, species_of, CONIFER_POOL,
-};
+use client::render::far_trees::{self, TreeCardMaterial, TreeCards};
+use client::render::tree::{conifer, leaf_image, needle_image, species_of, CONIFER_POOL};
 
-/// Rows sit side by side along X — the pair, the hull, both — far enough
-/// apart that a row's wide shot has no other row in front of it: at 45 m
-/// with a 70° field of view the frame is ±31 m wide, and the rows are 80 m
-/// apart. (The first draft stacked them in depth, and the middle row's wide
-/// shot was a picture of the front row.)
+/// Rows sit side by side along X — the pair, the card, both.
 const ROW_X: [f32; 3] = [0.0, 80.0, 160.0];
 /// Metres between variants along X within a row.
 const PITCH_M: f32 = 9.0;
+/// Where the grove stands, away from the rows.
+const GROVE: Vec3 = Vec3::new(0.0, 0.0, -400.0);
+/// Where the litter patch lies.
+const LITTER: Vec3 = Vec3::new(-200.0, 0.0, 0.0);
 /// Frames held at a pose before its shot, and after the last shot before exit.
 const SETTLE_FRAMES: u32 = 14;
 const TAIL_FRAMES: u32 = 24;
@@ -57,37 +47,64 @@ struct Shots {
     last_shot_frame: Option<u32>,
 }
 
+#[derive(Resource)]
+struct NearMats {
+    bark: Handle<StandardMaterial>,
+    needle: Handle<StandardMaterial>,
+    leaf: Handle<StandardMaterial>,
+    pairs: Vec<(Handle<Mesh>, Handle<Mesh>)>,
+}
+
 #[derive(Component)]
 struct Eye;
 
 /// `(label, eye, look-at)`.
 fn poses() -> Vec<(String, Vec3, Vec3)> {
     let mut v = Vec::new();
-    let names = ["pair", "hull", "both"];
+    let names = ["pair", "card", "both"];
     for (ri, rx) in ROW_X.iter().enumerate() {
         for (species, var) in [("conifer", 0usize), ("broadleaf", 3usize)] {
             let x = rx + var as f32 * PITCH_M;
-            // Arm's length: 6 m back, eye at 1.6 m, looking up into a crown
-            // that starts three metres over the eye on a 14 m tree.
             v.push((
                 format!("{}_{}_6m", names[ri], species),
                 Vec3::new(x + 1.2, 1.6, 6.0),
                 Vec3::new(x, 6.5, 0.0),
             ));
-            // Whole tree, 18 m back.
             v.push((
                 format!("{}_{}_18m", names[ri], species),
                 Vec3::new(x + 2.0, 1.6, 18.0),
                 Vec3::new(x, 6.5, 0.0),
             ));
         }
-        // The whole row from 45 m.
         v.push((
             format!("{}_wide", names[ri]),
             Vec3::new(rx + 2.5 * PITCH_M, 5.0, 45.0),
             Vec3::new(rx + 2.5 * PITCH_M, 6.5, 0.0),
         ));
     }
+    // Under a crown, looking up — the near canopy as a player sees it.
+    v.push((
+        "under_conifer".into(),
+        Vec3::new(1.5, 1.6, 1.5),
+        Vec3::new(-0.5, 9.0, -1.0),
+    ));
+    // The grove: eye height, then from a rise.
+    v.push((
+        "grove_eye".into(),
+        GROVE + Vec3::new(0.0, 1.6, 0.0),
+        GROVE + Vec3::new(0.0, 8.0, -100.0),
+    ));
+    v.push((
+        "grove_rise".into(),
+        GROVE + Vec3::new(0.0, 25.0, 20.0),
+        GROVE + Vec3::new(0.0, 0.0, -150.0),
+    ));
+    // The litter: a forest floor of sticks and ferns (`clutter::fern_at`).
+    v.push((
+        "litter".into(),
+        LITTER + Vec3::new(0.0, 1.6, 6.0),
+        LITTER + Vec3::new(0.0, 0.0, -2.0),
+    ));
     v
 }
 
@@ -101,24 +118,54 @@ fn main() -> AppExit {
         eprintln!("tree_look: {}: {e}", dir.display());
         return AppExit::from_code(2);
     }
+    // `TREE_LOOK_ATLAS=1`: also write the far-card atlas's level 0 as a PAM
+    // (`=only` writes it and exits, for iterating on the bake alone).
+    if let Ok(mode) = std::env::var("TREE_LOOK_ATLAS") {
+        let (img, _) = far_trees::bake_atlas();
+        let (w, h) = (
+            img.texture_descriptor.size.width,
+            img.texture_descriptor.size.height,
+        );
+        let data = img.data.as_deref().unwrap_or_default();
+        let mut pam =
+            format!("P7\nWIDTH {w}\nHEIGHT {h}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n")
+                .into_bytes();
+        pam.extend_from_slice(&data[..(w * h * 4) as usize]);
+        if let Err(e) = std::fs::write(dir.join("atlas.pam"), pam) {
+            eprintln!("tree_look: atlas: {e}");
+        }
+        if mode == "only" {
+            return AppExit::Success;
+        }
+    }
+    let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "gates — tree_look".into(),
-            resolution: (1280u32, 720u32).into(),
-            ..default()
-        }),
-        ..default()
-    }));
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "gates — tree_look".into(),
+                    resolution: (1280u32, 720u32).into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            .set(AssetPlugin {
+                file_path: assets.to_string_lossy().into_owned(),
+                ..default()
+            }),
+    );
+    app.add_plugins(MaterialPlugin::<TreeCardMaterial>::default());
     app.insert_resource(ClearColor(Color::srgb(0.55, 0.65, 0.80)));
     app.insert_resource(Out(dir));
     app.insert_resource(Shots::default());
-    app.add_systems(Startup, stage);
-    app.add_systems(Update, shoot);
+    app.add_systems(Startup, (stage, far_trees::init));
+    app.add_systems(Update, (place_cards, shoot));
     app.run()
 }
 
 fn stage(
+    server: Res<AssetServer>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -131,9 +178,14 @@ fn stage(
         Projection::Perspective(PerspectiveProjection {
             fov: 70.0_f32.to_radians(),
             near: 0.05,
-            far: 400.0,
+            far: 1000.0,
             ..default()
         }),
+        DistanceFog {
+            color: Color::srgb(0.62, 0.70, 0.80),
+            falloff: FogFalloff::from_visibility(1400.0),
+            ..default()
+        },
         Transform::from_translation(first.1).looking_at(first.2, Vec3::Y),
     ));
     commands.spawn((
@@ -152,14 +204,25 @@ fn stage(
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, 2.4, -0.5, 0.0)),
     ));
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.75, 0.82, 0.95),
+        brightness: 600.0,
+        ..default()
+    });
+    let ground = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.30, 0.34, 0.20),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(600.0, 400.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.30, 0.34, 0.20),
-            perceptual_roughness: 0.95,
-            ..default()
-        })),
+        MeshMaterial3d(ground.clone()),
         Transform::from_xyz(80.0 + 2.5 * PITCH_M, 0.0, 0.0),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(800.0, 800.0))),
+        MeshMaterial3d(ground),
+        Transform::from_translation(GROVE + Vec3::new(0.0, 0.0, -300.0)),
     ));
 
     let needle_map = images.add(needle_image());
@@ -169,58 +232,142 @@ fn stage(
         perceptual_roughness: 0.92,
         ..default()
     });
+    let g = client::render::tree::NEEDLE_MAP_GAIN;
+    let spec = client::render::tree::CANOPY_SPECULAR_TINT;
     let needle = materials.add(StandardMaterial {
+        base_color: Color::linear_rgb(g, g, g),
         base_color_texture: Some(needle_map),
         alpha_mode: AlphaMode::Mask(0.5),
         cull_mode: None,
         double_sided: true,
         perceptual_roughness: 0.86,
+        specular_tint: Color::linear_rgb(spec, spec, spec),
         ..default()
     });
-    // The broadleaf's card — the same choice `PropAssets::canopy_material`
-    // makes in the game, by species. The first run of this bench gave every
-    // variant the sprig and the broadleaf read as a yellower conifer.
     let leaf = materials.add(StandardMaterial {
         base_color_texture: Some(leaf_map),
+        specular_tint: Color::linear_rgb(spec, spec, spec),
         alpha_mode: AlphaMode::Mask(0.5),
         cull_mode: None,
         double_sided: true,
         perceptual_roughness: 0.86,
         ..default()
     });
-    // The hull's material: white, vertex-coloured, the shape of `props.rs`'s
-    // `foliage` pool.
-    let foliage = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        perceptual_roughness: 0.86,
-        ..default()
-    });
-
+    let mut pairs = Vec::new();
     for v in 0..CONIFER_POOL {
         let (bark_mesh, needle_mesh) = conifer(v);
-        let far_mesh = impostor_of(&bark_mesh, &needle_mesh, v);
-        println!(
-            "tree_look: variant {v} species {} — bark {} tris, needles {} tris, hull {} tris",
-            species_of(v),
-            client::render::tree::tris(&bark_mesh),
-            client::render::tree::tris(&needle_mesh),
-            client::render::tree::tris(&far_mesh),
-        );
-        let bark_h = meshes.add(bark_mesh);
-        let needle_h = meshes.add(needle_mesh);
-        let far_h = meshes.add(far_mesh);
+        pairs.push((meshes.add(bark_mesh), meshes.add(needle_mesh)));
+    }
+    // The litter patch, through the same element builder the tiles use.
+    let litter_soil = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.30, 0.22, 0.14),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(40.0, 40.0))),
+        MeshMaterial3d(litter_soil),
+        Transform::from_translation(LITTER + Vec3::Y * 0.01),
+    ));
+    let fern_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(server.load(client::render::clutter::FERN_ATLAS)),
+        alpha_mode: AlphaMode::Mask(0.5),
+        cull_mode: None,
+        double_sided: true,
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let mut ferns = 0;
+    for i in 0..30 {
+        for j in 0..30 {
+            let e = sim_core::terrain::ClutterElem {
+                kind: sim_core::terrain::Clutter::Twig,
+                x: LITTER.x - 10.0 + i as f32 * 0.64,
+                y: 0.0,
+                z: LITTER.z - 14.0 + j as f32 * 0.64,
+                yaw: ((i * 37 + j * 11) % 256) as u8,
+                scale: 1.0,
+            };
+            if client::render::clutter::fern_at(&e) {
+                ferns += 1;
+                commands.spawn((
+                    Mesh3d(meshes.add(client::render::clutter::element_mesh(&e))),
+                    MeshMaterial3d(fern_mat.clone()),
+                ));
+            }
+        }
+    }
+    println!("tree_look: {ferns} ferns in the litter patch");
+    commands.insert_resource(NearMats {
+        bark,
+        needle,
+        leaf,
+        pairs,
+    });
+}
+
+/// Once the cards are baked: the rows, and the grove.
+fn place_cards(
+    mut commands: Commands,
+    cards: Option<Res<TreeCards>>,
+    near: Option<Res<NearMats>>,
+    mut done: Local<bool>,
+) {
+    let (Some(cards), Some(near)) = (cards, near) else {
+        return;
+    };
+    if *done {
+        return;
+    }
+    *done = true;
+    let spawn_pair = |commands: &mut Commands, v: usize, at: Transform| {
+        let card = if species_of(v) == 0 {
+            &near.needle
+        } else {
+            &near.leaf
+        };
+        let (b, n) = &near.pairs[v];
+        commands.spawn((Mesh3d(b.clone()), MeshMaterial3d(near.bark.clone()), at));
+        commands.spawn((Mesh3d(n.clone()), MeshMaterial3d(card.clone()), at));
+    };
+    let spawn_card = |commands: &mut Commands, v: usize, tint: usize, at: Transform| {
+        commands.spawn((
+            Mesh3d(cards.ring_meshes[v].clone()),
+            MeshMaterial3d(cards.ring_materials[tint].clone()),
+            at,
+        ));
+    };
+    for v in 0..CONIFER_POOL {
         for (ri, rx) in ROW_X.iter().enumerate() {
             let at = Transform::from_xyz(rx + v as f32 * PITCH_M, 0.0, 0.0);
-            let pair = ri == 0 || ri == 2;
-            let hull = ri == 1 || ri == 2;
-            if pair {
-                let card = if species_of(v) == 0 { &needle } else { &leaf };
-                commands.spawn((Mesh3d(bark_h.clone()), MeshMaterial3d(bark.clone()), at));
-                commands.spawn((Mesh3d(needle_h.clone()), MeshMaterial3d(card.clone()), at));
+            if ri == 0 || ri == 2 {
+                spawn_pair(&mut commands, v, at);
             }
-            if hull {
-                commands.spawn((Mesh3d(far_h.clone()), MeshMaterial3d(foliage.clone()), at));
+            if ri == 1 || ri == 2 {
+                spawn_card(&mut commands, v, 1, at);
             }
+        }
+    }
+    // The grove: pairs to 60 m, cards past it, mostly conifers.
+    let mut rng = fastrand::Rng::with_seed(7);
+    for _ in 0..900 {
+        let d = 12.0 + rng.f32().powf(0.7) * 330.0;
+        let a = (rng.f32() - 0.5) * 2.2;
+        let at = GROVE + Vec3::new(a.sin() * d, 0.0, -a.cos() * d);
+        let v = if rng.f32() < 0.75 {
+            rng.usize(0..3)
+        } else {
+            rng.usize(3..CONIFER_POOL)
+        };
+        let t = Transform {
+            translation: at,
+            rotation: Quat::from_rotation_y(rng.f32() * std::f32::consts::TAU),
+            scale: Vec3::splat(0.85 + 0.3 * rng.f32()),
+        };
+        if d < 60.0 {
+            spawn_pair(&mut commands, v, t);
+        } else {
+            spawn_card(&mut commands, v, rng.usize(0..4), t);
         }
     }
 }

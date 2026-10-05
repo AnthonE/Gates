@@ -2,7 +2,7 @@
 //! rasterised side-on must come out as a tree — a solid-enough silhouette in
 //! its own cell, standing on the cell's bottom edge, sized like the tree.
 
-use client::render::far_trees::{bake_atlas, CARD_RES};
+use client::render::far_trees::{bake_atlas, CARD_H, CARD_W};
 use client::render::tree;
 
 #[test]
@@ -11,7 +11,7 @@ fn every_card_is_a_tree_standing_in_its_own_cell() {
     assert_eq!(dims.len(), tree::CONIFER_POOL);
     let w = img.texture_descriptor.size.width as usize;
     let data = img.data.as_ref().expect("the atlas keeps its bytes");
-    let r = CARD_RES as usize;
+    let (rw, rh) = (CARD_W as usize, CARD_H as usize);
     for (v, d) in dims.iter().enumerate() {
         let sp = &tree::SPECIES[tree::species_of(v)];
         assert!(
@@ -26,18 +26,18 @@ fn every_card_is_a_tree_standing_in_its_own_cell() {
             d.half_w
         );
         let (mut covered, mut bottom) = (0usize, 0usize);
-        for y in 0..r {
-            for x in 0..r {
-                let a = data[(y * w + v * r + x) * 4 + 3];
+        for y in 0..rh {
+            for x in 0..rw {
+                let a = data[(y * w + v * rw + x) * 4 + 3];
                 if a >= 128 {
                     covered += 1;
-                    if y >= r - 4 {
+                    if y >= rh - 4 {
                         bottom += 1;
                     }
                 }
             }
         }
-        let share = covered as f32 / (r * r) as f32;
+        let share = covered as f32 / (rw * rh) as f32;
         assert!(
             (0.08..0.9).contains(&share),
             "variant {v}: {share} of the cell is tree"

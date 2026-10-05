@@ -32,15 +32,12 @@
 
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use client::render::clutter::{
-    element_mesh, FRONDS_PER_CLUMP, FROND_H, FROND_ROOT, FROND_TIP_GAIN, TUFT_H,
-};
+use client::render::clutter::{element_mesh, fern_at, BRUSH_H, CARDS_PER_TUFT, FERN_H, TUFT_H};
 use sim_core::terrain::{Clutter, ClutterElem};
 
-/// The channels `clutter_richness_at` counts into `grow`, in its own order:
-/// splat channel 1 is grass and 2 is forest litter, and `Clutter`'s
-/// discriminants are `kind as usize - 1` into the same weights.
-const GROWING: [Clutter; 2] = [Clutter::Tuft, Clutter::Twig];
+/// The growing channels' standing kinds: channel 1's tuft (channel 2's litter
+/// stands up as a fern where one grows — `litter_grid`).
+const GROWING: [Clutter; 1] = [Clutter::Tuft];
 /// The two it refuses to thicken: sand and rock.
 const INERT: [Clutter; 2] = [Clutter::Pebble, Clutter::Shard];
 
@@ -64,13 +61,6 @@ fn positions(m: &Mesh) -> Vec<Vec3> {
     }
 }
 
-fn colors(m: &Mesh) -> Vec<[f32; 4]> {
-    match m.attribute(Mesh::ATTRIBUTE_COLOR) {
-        Some(VertexAttributeValues::Float32x4(v)) => v.clone(),
-        _ => panic!("clutter mesh has float4 colours"),
-    }
-}
-
 /// How tall an element's whole mesh stands, ground plane to highest vertex.
 ///
 /// Measured from the element's own placement height rather than from its
@@ -90,15 +80,41 @@ fn swept(kind: Clutter) -> Vec<f32> {
     (0..64).map(|i| stands(kind, (i * 4) as u8, 1.0)).collect()
 }
 
-/// **The gate this file exists for.** Every element of a channel `sim-core`
-/// thickens must stand taller than every element of a channel it does not.
+/// Litter elements over a grid, split by whether they carry a fern.
+fn litter_grid() -> (Vec<ClutterElem>, Vec<ClutterElem>) {
+    let (mut fern, mut bare) = (Vec::new(), Vec::new());
+    for i in 0..60 {
+        for j in 0..60 {
+            let e = ClutterElem {
+                kind: Clutter::Twig,
+                x: i as f32 * 1.37 - 40.0,
+                y: 0.0,
+                z: j as f32 * 1.21 + 10.0,
+                yaw: ((i * 7 + j * 13) % 256) as u8,
+                scale: 1.0,
+            };
+            if fern_at(&e) {
+                fern.push(e);
+            } else {
+                bare.push(e);
+            }
+        }
+    }
+    (fern, bare)
+}
+
+fn height_of(e: &ClutterElem) -> f32 {
+    positions(&element_mesh(e))
+        .iter()
+        .fold(0.0f32, |a, v| a.max(v.y - e.y))
+}
+
+/// **The gate this file exists for.** What a growing channel stands up must
+/// stand taller than anything sand or rock draws: every tuft, and every fern
+/// the litter grows — and the inert channels stay flat.
 ///
 /// Stated as a separation rather than as an absolute height on purpose: there
-/// is no measured litter height to hold anyone to. `ART.md` §1's 20–40 cm band
-/// is quoted about grass and §3 has no litter row at all, so an absolute floor
-/// here would be a number invented in a test and then defended as if it had
-/// been measured. The separation is not invented — `sim-core` already decided
-/// which channels grow, and this only asks the meshes to agree.
+/// is no measured litter height to hold anyone to.
 #[test]
 fn every_growing_channel_stands_and_every_inert_one_does_not() {
     let tallest_inert = INERT.iter().flat_map(|k| swept(*k)).fold(0.0f32, f32::max);
@@ -113,189 +129,102 @@ fn every_growing_channel_stands_and_every_inert_one_does_not() {
         assert!(
             shortest > tallest_inert,
             "{kind:?}: its shortest element stands {shortest:.4} m against \
-             {tallest_inert:.4} m for the tallest thing sand or rock draws — \
-             `clutter_richness_at` thickens this channel because it GROWS, and \
-             the mesh it thickens is no taller than gravel"
+             {tallest_inert:.4} m for the tallest thing sand or rock draws"
         );
     }
+    let (ferns, _) = litter_grid();
+    let shortest_fern = ferns.iter().map(height_of).fold(f32::INFINITY, f32::min);
+    assert!(
+        shortest_fern > tallest_inert,
+        "the shortest fern stands {shortest_fern:.4} m against {tallest_inert:.4} m \
+         for the tallest thing sand or rock draws"
+    );
 
-    // And the other direction, so the gate cannot be satisfied by standing
-    // everything up: a channel the sim refuses to thicken must stay flat.
     for kind in INERT {
         let tallest = swept(kind).iter().copied().fold(0.0f32, f32::max);
         assert!(
-            tallest < FROND_H * 0.5,
+            tallest < TUFT_H * 0.25,
             "{kind:?} stands {tallest:.4} m — sand and rock do not grow things \
              and must not sprout"
         );
     }
 }
 
-/// The clump keeps its fallen half. `Clutter::Twig`'s definition in `sim-core`
-/// is "fallen needles, sticks, cones" and that reading was never wrong — a
-/// forest floor IS mostly fallen matter. What it lacked was anything standing
-/// in the fallen matter, so the fix adds and does not replace.
-///
-/// The stick is identified the way `tests/contact.rs` identifies it: the first
-/// four triangles, sunk below the ground plane by `CHIP_SINK`.
+/// Ferns grow in colonies: some litter carries one and most does not, and the
+/// rest is the fallen stick `Clutter::Twig` always was — flat, never a spike.
+#[test]
+fn ferns_grow_in_colonies_and_the_rest_of_the_litter_lies_down() {
+    let (ferns, bare) = litter_grid();
+    let share = ferns.len() as f32 / (ferns.len() + bare.len()) as f32;
+    assert!(
+        (0.05..=0.5).contains(&share),
+        "{:.1}% of litter carries a fern — outside 5–50% it is either no \
+         understory or a fern carpet",
+        share * 100.0
+    );
+    for e in bare.iter().take(200) {
+        let h = height_of(e);
+        assert!(
+            h < TUFT_H * 0.25,
+            "a bare litter element stands {h:.3} m — the standing stalks were \
+             the brown spikes in every frame"
+        );
+    }
+}
+
+/// The litter keeps its fallen half, fern or not: the first four triangles are
+/// the stick, sunk below the ground plane by `CHIP_SINK`, and a fern stands on
+/// the ground rather than in it.
 #[test]
 fn the_litter_clump_still_has_the_stick_it_always_had() {
-    let e = elem(Clutter::Twig, 77, 1.0);
-    let m = element_mesh(&e);
-    let p = positions(&m);
-    assert_eq!(
-        p.len(),
-        12 + FRONDS_PER_CLUMP as usize * 6,
-        "a litter clump is a chip plus its standing stalks"
-    );
-    let sunk = p[..12].iter().filter(|v| v.y < e.y).count();
-    assert!(
-        sunk >= 4,
-        "only {sunk} of the stick's vertices sit below the ground it was \
-         placed on — the fallen half stopped being a chip"
-    );
-    let stalk_lo = p[12..].iter().fold(f32::INFINITY, |a, v| a.min(v.y));
-    assert!(
-        stalk_lo >= e.y - 1e-6,
-        "a stalk roots {:.4} m below the ground plane — standing litter grows \
-         out of the surface, it is not pressed into it like the stick",
-        e.y - stalk_lo
-    );
-}
-
-/// **Standing litter roots in its own authored colour** (`FROND_ROOT`, dead
-/// bracken). It was the ground's litter albedo until 2026-09-28, when the
-/// grey stalks read as a bed of pale spikes; the ramp still starts at one
-/// colour and only its value may jitter.
-#[test]
-fn a_standing_stalk_is_rooted_in_its_authored_colour() {
-    let e = elem(Clutter::Twig, 12, 1.0);
-    let m = element_mesh(&e);
-    let (p, c) = (positions(&m), colors(&m));
-    let want = FROND_ROOT;
-
-    // The root vertices of the stalks: the quad corners sitting on the ground
-    // plane. Their ramp parameter is 0, so their colour is the ramp's low end
-    // times that stalk's own value jitter — the DIRECTION must be
-    // `FROND_ROOT` exactly, and only the magnitude may vary.
-    let mut checked = 0;
-    for i in 12..p.len() {
-        if (p[i].y - e.y).abs() > 1e-6 {
-            continue;
-        }
-        let got = [c[i][0], c[i][1], c[i][2]];
-        // Scale-invariant comparison: the jitter is one scalar on all three
-        // channels, so the ratios between channels must survive it exactly.
-        let k = got[1] / want[1];
-        for ch in 0..3 {
-            let d = (got[ch] - want[ch] * k).abs();
-            assert!(
-                d < 1e-5,
-                "stalk root vertex {i} is {got:?}, which is not {want:?} times \
-                 any scalar (channel {ch} off by {d:e})"
-            );
-        }
-        checked += 1;
+    let (ferns, bare) = litter_grid();
+    for e in [&ferns[0], &bare[0]] {
+        let p = positions(&element_mesh(e));
+        let want = if fern_at(e) {
+            12 + CARDS_PER_TUFT as usize * 6
+        } else {
+            12
+        };
+        assert_eq!(p.len(), want, "a litter element is a chip plus its fern");
+        let sunk = p[..12].iter().filter(|v| v.y < e.y).count();
+        assert!(
+            sunk >= 4,
+            "only {sunk} of the stick's vertices sit below the ground it was \
+             placed on — the fallen half stopped being a chip"
+        );
     }
-    assert!(
-        checked >= FRONDS_PER_CLUMP as usize * 2,
-        "only {checked} stalk root vertices found — the sample is too thin to \
-         hold the claim"
-    );
 }
 
-/// The two shape constants, held against the one measured neighbour they have.
-///
-/// A `const` block, so this refuses at COMPILE time — the idiom
-/// `tests/contact.rs` already uses for `CHIP_VOLUME_BLEND`, and the stronger
-/// gate: the constants cannot be edited out of range in any build, including
-/// one nobody runs.
 #[test]
-fn standing_litter_is_understory_and_not_a_second_lawn() {
+fn a_fern_is_understory_and_not_a_shrub() {
     const {
         assert!(
-            FROND_H > TUFT_H * 0.25 && FROND_H < TUFT_H,
-            "standing litter is shorter than turf — it is debris under a \
-             canopy, not grass — but a quarter of a blade is a sliver again"
-        )
-    };
-    const {
-        assert!(
-            FRONDS_PER_CLUMP > 0,
-            "a litter clump with no stalks is the flat chip this file exists \
-             to retire"
-        )
-    };
-    // `ART.md` §5's `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear, applied to the
-    // brightest thing the stalk ramp can produce: the root times the gain.
-    let root = FROND_ROOT;
-    let tip = 0.2126 * root[0] * FROND_TIP_GAIN
-        + 0.7152 * root[1] * FROND_TIP_GAIN
-        + 0.0722 * root[2] * FROND_TIP_GAIN;
-    assert!(
-        (0.05..=0.55).contains(&tip),
-        "a stalk tip's albedo luma is {tip:.4}, outside ART.md §5's \
-         ALBEDO_LUMA_BAND [0.05, 0.55]"
-    );
-    const {
-        assert!(
-            FROND_TIP_GAIN > 1.0,
-            "the tip must be lighter than the root — a stalk that is one value \
-             is rule 1's flat surface at stalk scale"
+            FERN_H > TUFT_H * 0.5 && FERN_H < BRUSH_H,
+            "a fern clump stands between the turf and the brush layer"
         )
     };
 }
 
 /// Wall 4, at this seam: the growing channels must stay bounded against the
-/// budget the tile already carried.
-///
-/// A tile is capped at `CLUTTER_TILE_CAP` elements and baked into ONE mesh, so
-/// the cost of standing the litter channel up is (elements × the vertices each
-/// one adds).
-///
-/// ⚠ **This was a comparison against the tuft and it could not stay one**
-/// (grass cards v0). It read `clump < tuft`, which held while a tuft was seven
-/// blades at 42 vertices; a tuft is now three photographed cards at 18, so the
-/// same line demands a litter clump under 18 — and
-/// `standing_litter_is_understory_and_not_a_second_lawn` above forbids exactly
-/// that, because a clump with no stalks is the flat chip this file exists to
-/// retire. Two gates in one file contradicting each other is a worse failure
-/// than either alone, so the reference became the number rather than the
-/// neighbour.
-///
-/// **Nothing about litter regressed.** Its 30 vertices are the same 30 it has
-/// had since 2026-08-15; what moved is that the thing it was measured against
-/// got 2.3× cheaper. [`BLADE_TUFT_VERTS`] is that old ceiling, kept as the
-/// budget because it is the one a person actually accepted for a near-ground
-/// element.
+/// budget a near-ground element was accepted at.
 ///
 /// **42, and where it comes from**: `BLADES_PER_TUFT` was 7 and a blade is two
-/// triangles — the constant is deleted from `clutter.rs` with the blade path,
-/// so it is written out here rather than imported, and this comment is the
-/// derivation.
+/// triangles — the blade path is deleted, so it is written out here.
 const BLADE_TUFT_VERTS: usize = 42;
 
 #[test]
 fn the_growing_channels_stay_under_the_budget_that_was_accepted() {
-    let n = |k: Clutter| positions(&element_mesh(&elem(k, 33, 1.0))).len();
-    let (tuft, clump) = (n(Clutter::Tuft), n(Clutter::Twig));
+    let (ferns, _) = litter_grid();
+    let tuft = positions(&element_mesh(&elem(Clutter::Tuft, 33, 1.0))).len();
+    let clump = positions(&element_mesh(&ferns[0])).len();
     assert!(
         clump <= BLADE_TUFT_VERTS,
-        "a litter clump is {clump} vertices against the {BLADE_TUFT_VERTS} \
-         accepted for a near-ground element — the channel that covers 93% of \
-         the capture spawn has gone over the budget"
+        "a litter clump with its fern is {clump} vertices against the \
+         {BLADE_TUFT_VERTS} accepted for a near-ground element"
     );
-    // And it is not free either, which is the whole point of the change.
-    assert!(
-        clump > n(Clutter::Pebble),
-        "a litter clump costs no more than a pebble, so nothing was added"
-    );
-    // The card's own half of the same budget, and the direction it moved.
-    // A regression here would be somebody putting the blades back.
     assert!(
         tuft < BLADE_TUFT_VERTS,
         "a tuft is {tuft} vertices against the {BLADE_TUFT_VERTS} the blades \
-         cost — the card is supposed to be the cheaper geometry as well as \
-         the better-looking one"
+         cost"
     );
 }
