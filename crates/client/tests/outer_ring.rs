@@ -35,12 +35,13 @@
 
 use bevy::asset::AssetPlugin;
 use bevy::camera::visibility::VisibilityRange;
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::props::{
     assets, spawn_outer_tree, FellPart, Fellable, PropAssets, Topple, OUTER_CHUNKS, OUTER_RADIUS,
     SINK_M,
 };
-use client::render::terrain_mesh::{far_ground_y, FAR_DROP, FAR_STEP, NEAR_RADIUS};
+use client::render::terrain_mesh::{far_ground_y, heightfield, FAR_DROP, FAR_STEP, NEAR_RADIUS};
 use client::render::textures::{MapSet, PropMaps};
 use client::render::tree::{CONIFER_MAX_TRIS, IMPOSTOR_MAX_TRIS, TREE_LOD_CAP};
 use client::render::WorldId;
@@ -324,12 +325,18 @@ fn an_outer_tree_stands_on_the_far_mesh() {
 #[test]
 fn the_far_height_matches_the_mesh_at_its_own_vertices() {
     let w = WorldId::new(SEED);
+    // The mesh itself, not a restatement of it: the far mesh's vertices carry
+    // the cliff relief as well as the drop.
+    let (ox, oz) = (40.0 * FAR_STEP, 55.0 * FAR_STEP);
+    let mesh = heightfield(w.seed, &w.haven, ox, oz, 12, FAR_STEP, FAR_DROP);
+    let Some(VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        panic!("positions");
+    };
     for iz in 0..12 {
         for ix in 0..12 {
             let x = (ix as f32 + 40.0) * FAR_STEP;
             let z = (iz as f32 + 55.0) * FAR_STEP;
-            // What `heightfield` writes into a vertex: the ground tap, dropped.
-            let vertex = terrain::ground(w.seed, &w.haven, x, z) - FAR_DROP;
+            let vertex = p[iz * 12 + ix][1];
             let ours = far_ground_y(w.seed, &w.haven, x, z);
             assert!(
                 (vertex - ours).abs() < 1e-4,

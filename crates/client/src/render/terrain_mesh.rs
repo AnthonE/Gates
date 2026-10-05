@@ -89,7 +89,8 @@ pub const FAR_DROP: f32 = 0.15;
 /// which is a coupling worth more than the centimetres.
 ///
 /// Not used by the near ring: inside [`NEAR_RADIUS`] the drawn ground IS
-/// `terrain::ground` at 1 m, so `scatter`'s own `slot.y` is already exact.
+/// `terrain::ground` at 1 m, so `scatter`'s own `slot.y` is already exact
+/// (off cliff faces — see [`cliff_relief`], which the corners here include).
 pub fn far_ground_y(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> f32 {
     let gx = (x / FAR_STEP).floor() * FAR_STEP;
     let gz = (z / FAR_STEP).floor() * FAR_STEP;
@@ -99,14 +100,267 @@ pub fn far_ground_y(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> f32 {
     // One memo for the four corners: they are one lattice quad apart, so this
     // is the memo's best case and the same reason `heightfield` holds one.
     let mut lat = terrain::Lattice::new();
-    let h00 = terrain::ground_memo(&mut lat, seed, haven, gx, gz);
-    let h10 = terrain::ground_memo(&mut lat, seed, haven, gx + FAR_STEP, gz);
-    let h01 = terrain::ground_memo(&mut lat, seed, haven, gx, gz + FAR_STEP);
-    let h11 = terrain::ground_memo(&mut lat, seed, haven, gx + FAR_STEP, gz + FAR_STEP);
+    // The far mesh's corners carry the relief too (`drawn_y` at its pitch).
+    let h00 = drawn_y(&mut lat, seed, haven, gx, gz, FAR_STEP);
+    let h10 = drawn_y(&mut lat, seed, haven, gx + FAR_STEP, gz, FAR_STEP);
+    let h01 = drawn_y(&mut lat, seed, haven, gx, gz + FAR_STEP, FAR_STEP);
+    let h11 = drawn_y(
+        &mut lat,
+        seed,
+        haven,
+        gx + FAR_STEP,
+        gz + FAR_STEP,
+        FAR_STEP,
+    );
 
     let a = h00 + (h10 - h00) * tx;
     let b = h01 + (h11 - h01) * tx;
     a + (b - a) * tz - FAR_DROP
+}
+
+// ── Cliff relief ─────────────────────────────────────────────────────────
+//
+// A scarp is the sim's smooth heightfield, so its outline against the sky was
+// a rounded hump. The DRAWN ground is pushed in and out on faces too steep for
+// the sim to let a body climb, and only there: a vertical offset that is a
+// pure function of the sim's heights on a 5×5 stencil of the mesh's own
+// lattice, so every chunk, seam and LOD that samples the same point agrees.
+//
+// Two bounds keep it off what the sim decides. It is exactly zero unless
+// every vertex around it is steeper than `RELIEF_SLOPE_LO`, so no triangle
+// that touches walkable ground moves. And the drawn height stays inside the
+// sim's own heights across the stencil, so a cut never digs a pit below the
+// foot and a push never stands a wall above the lip. A body walking DOWN a
+// face (the sim allows it) is up to the offset off the drawn rock, as it
+// already is beside `cliffs.rs`'s ledges.
+
+/// Slope (rise/run, 1 m arms) where the relief starts: past the sim's cliff
+/// ratio by a margin, so the lip and the foot stay the sim's surface.
+pub const RELIEF_SLOPE_LO: f32 = terrain::CLIFF_SLOPE_RATIO * 1.15;
+/// Slope where the relief is at full strength.
+pub const RELIEF_SLOPE_HI: f32 = terrain::CLIFF_SLOPE_RATIO * 1.45;
+/// Most a face is pushed out, metres (vertical).
+pub const RELIEF_UP_M: f32 = 3.0;
+/// Most a face is cut back, metres (vertical). Deeper than the push: the
+/// scarps run 50 m tall, and a cut never closes over a body on the face.
+pub const RELIEF_DOWN_M: f32 = 6.0;
+/// Slope past which a horizontal offset stops growing in height.
+const RELIEF_SLOPE_CAP: f32 = 2.8;
+/// Spacing of the gullies, metres: the far mesh's share of the relief.
+const GULLY_M: f32 = 16.0;
+/// Height of one bed of the stepped strata, metres.
+const BED_M: f32 = 8.0;
+
+/// Integer hash to [0, 1).
+fn relief_hash(ix: i32, iz: i32, key: u32) -> f32 {
+    let mut h = (ix as u32).wrapping_mul(0x8da6_b343)
+        ^ (iz as u32).wrapping_mul(0xd816_3841)
+        ^ key.wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2c1b_3c6d);
+    h ^= h >> 12;
+    h = h.wrapping_mul(0x297a_2d39);
+    h ^= h >> 15;
+    (h >> 8) as f32 * (1.0 / 16_777_216.0)
+}
+
+/// Quintic-faded value noise in [0, 1) on a unit lattice.
+fn relief_noise(x: f32, z: f32, key: u32) -> f32 {
+    let (x0, z0) = (x.floor(), z.floor());
+    let (tx, tz) = (x - x0, z - z0);
+    let (ix, iz) = (x0 as i32, z0 as i32);
+    let fade = |t: f32| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    let (u, v) = (fade(tx), fade(tz));
+    let c00 = relief_hash(ix, iz, key);
+    let c10 = relief_hash(ix + 1, iz, key);
+    let c01 = relief_hash(ix, iz + 1, key);
+    let c11 = relief_hash(ix + 1, iz + 1, key);
+    let a = c00 + (c10 - c00) * u;
+    let b = c01 + (c11 - c01) * u;
+    a + (b - a) * v
+}
+
+/// A ridged field in [0, 1]: 1 on the crests, which meander as lines.
+fn ridged(x: f32, z: f32, key: u32) -> f32 {
+    let r = 1.0 - (relief_noise(x, z, key) * 2.0 - 1.0).abs();
+    r * r
+}
+
+/// The drawn ground's vertical offset from the sim's at `(x, z)`, metres.
+///
+/// `y` is the sim's ground there and `slope` its rise/run read at arms of
+/// `step` (the pitch of the mesh being built). Exactly `0.0` below
+/// [`RELIEF_SLOPE_LO`] and on authored sites. Features finer than the pitch
+/// can hold are left out, so the 8 m far mesh carries the gullies and the
+/// near ring the ribs and strata as well.
+pub fn cliff_relief(
+    seed: u64,
+    haven: &terrain::Haven,
+    x: f32,
+    z: f32,
+    y: f32,
+    slope: f32,
+    step: f32,
+) -> f32 {
+    if slope <= RELIEF_SLOPE_LO || y < SEA_LEVEL {
+        return 0.0;
+    }
+    let sweep = terrain::site_sweep(haven, x, z);
+    if sweep >= 1.0 {
+        return 0.0;
+    }
+    let t = ((slope - RELIEF_SLOPE_LO) / (RELIEF_SLOPE_HI - RELIEF_SLOPE_LO)).min(1.0);
+    let mask = t * t * (3.0 - 2.0 * t) * (1.0 - sweep);
+    let key = seed as u32 ^ (seed >> 32) as u32;
+    // A horizontal offset of the face becomes `slope` times as much height.
+    let lever = slope.min(RELIEF_SLOPE_CAP);
+
+    // Gullies cut back along the ridged field's crest lines, ~16 m apart;
+    // the face between them noses out as buttresses. Horizontal metres.
+    let mut out = 1.6 - 4.0 * ridged(x / GULLY_M, z / GULLY_M, key ^ 0x0b07);
+    let mut cut = 0.0;
+    if step <= 2.0 {
+        // Ribs down the buttresses. Nothing finer: the vertices are a metre
+        // apart and a feature near that size draws as a sawtooth outline.
+        out += (ridged(x / 6.0, z / 6.0, key ^ 0x51b5) - 0.4) * 0.9;
+        // Bedding: the face steps down in benches and risers. The beds dip
+        // across the island (`tilt`) and each one is its own strength, so
+        // no two ledges run parallel for long.
+        let tilt = (relief_noise(x / 70.0, z / 70.0, key ^ 0x7e11) - 0.5) * 9.0;
+        let b = (y + tilt) / BED_M;
+        let bed = b.floor();
+        let f = b - bed;
+        let strength = 0.5 + 0.5 * relief_hash(bed as i32, 0x5be7, key);
+        // `f³ − f`: flat at the foot of each bed, sheer at its top.
+        cut = BED_M * (f * f * f - f) * strength;
+    }
+    (mask * (out * lever + cut)).clamp(-RELIEF_DOWN_M, RELIEF_UP_M)
+}
+
+/// The relief at a vertex, from the sim's heights `h[j][i]` on the 5×5 stencil
+/// of the mesh's lattice around it (`h[2][2]` is the vertex, pitch `step`).
+///
+/// [`cliff_relief`] fed the gentlest slope of the 3×3 around the vertex, so a
+/// vertex beside walkable ground does not move; then held inside the
+/// stencil's own range of heights. The offset is returned as `drawn − y`, and
+/// the drawn height is `y + offset` (or `y` itself where it is zero).
+pub fn stencil_relief(
+    seed: u64,
+    haven: &terrain::Haven,
+    x: f32,
+    z: f32,
+    h: &[[f32; 5]; 5],
+    step: f32,
+) -> f32 {
+    let s =
+        |i: usize, j: usize| relief_slope(h[j][i + 1], h[j][i - 1], h[j + 1][i], h[j - 1][i], step);
+    let mut gentlest = s(2, 2);
+    if gentlest <= RELIEF_SLOPE_LO {
+        return 0.0;
+    }
+    for j in 1..4 {
+        for i in 1..4 {
+            gentlest = gentlest.min(s(i, j));
+        }
+    }
+    let y = h[2][2];
+    let r = cliff_relief(seed, haven, x, z, y, gentlest, step);
+    if r == 0.0 {
+        return 0.0;
+    }
+    let (mut lo, mut hi) = (y, y);
+    for v in h.iter().flatten() {
+        lo = lo.min(*v);
+        hi = hi.max(*v);
+    }
+    (y + r).clamp(lo, hi) - y
+}
+
+/// The drawn ground at a vertex of a mesh of pitch `step`: the sim's height
+/// plus [`stencil_relief`].
+///
+/// What `heightfield` writes (before its drop), restated for one point —
+/// `terrain_seam` joins to it, `far_ground_y` interpolates it. Five taps off a
+/// face, twenty-five on one.
+pub fn drawn_y(
+    lat: &mut terrain::Lattice,
+    seed: u64,
+    haven: &terrain::Haven,
+    x: f32,
+    z: f32,
+    step: f32,
+) -> f32 {
+    let mut g = |i: i32, j: i32| {
+        terrain::ground_memo(lat, seed, haven, x + i as f32 * step, z + j as f32 * step)
+    };
+    let y = g(0, 0);
+    if relief_slope(g(1, 0), g(-1, 0), g(0, 1), g(0, -1), step) <= RELIEF_SLOPE_LO {
+        return y;
+    }
+    let mut h = [[0.0f32; 5]; 5];
+    for (j, row) in h.iter_mut().enumerate() {
+        for (i, v) in row.iter_mut().enumerate() {
+            *v = g(i as i32 - 2, j as i32 - 2);
+        }
+    }
+    let r = stencil_relief(seed, haven, x, z, &h, step);
+    if r != 0.0 {
+        y + r
+    } else {
+        y
+    }
+}
+
+/// Rise/run from the four neighbours `step` away. At 1 m this is bit-for-bit
+/// `terrain::ground_slope`, the slope the sim vetoes cliffs by.
+pub fn relief_slope(xp: f32, xm: f32, zp: f32, zm: f32, step: f32) -> f32 {
+    let k = 0.5 / step;
+    let sx = (xp - xm) * k;
+    let sz = (zp - zm) * k;
+    (sx * sx + sz * sz).sqrt()
+}
+
+/// Whether the cliff relief moves the near ring's drawn surface at `(x, z)`
+/// off the sim's height — where something placed on the sim's height would
+/// float in front of a cut or sink into a buttress.
+pub fn relief_moves(
+    lat: &mut terrain::Lattice,
+    seed: u64,
+    haven: &terrain::Haven,
+    x: f32,
+    z: f32,
+) -> bool {
+    // A point this gentle has no 3×3 around any of its vertices that is all
+    // past the start of the relief.
+    if terrain::ground_slope_memo(lat, seed, haven, x, z) <= RELIEF_SLOPE_LO * 0.9 {
+        return false;
+    }
+    (near_drawn_y(lat, seed, haven, x, z) - terrain::ground_memo(lat, seed, haven, x, z)).abs()
+        > 0.02
+}
+
+/// The NEAR ring's drawn surface at any `(x, z)`: its 1 m triangles
+/// interpolated exactly as `heightfield` winds them. For things that sit on
+/// a cliff face (`cliffs.rs`), which the relief moves off the sim's height.
+pub fn near_drawn_y(
+    lat: &mut terrain::Lattice,
+    seed: u64,
+    haven: &terrain::Haven,
+    x: f32,
+    z: f32,
+) -> f32 {
+    let (x0, z0) = (x.floor(), z.floor());
+    let (fx, fz) = (x - x0, z - z0);
+    let mut v = |dx: f32, dz: f32| drawn_y(lat, seed, haven, x0 + dx, z0 + dz, 1.0);
+    // Quads split on the (1,0)–(0,1) diagonal: triangles `a c b` and `b c d`.
+    let (b, c) = (v(1.0, 0.0), v(0.0, 1.0));
+    if fx + fz <= 1.0 {
+        let a = v(0.0, 0.0);
+        a + (b - a) * fx + (c - a) * fz
+    } else {
+        let d = v(1.0, 1.0);
+        d + (c - d) * (1.0 - fx) + (b - d) * (1.0 - fz)
+    }
 }
 
 /// Chunks QUEUED per frame, and chunks torn down per frame. Stream-in AND
@@ -878,10 +1132,9 @@ pub fn vertex_mods(y: f32, x: f32, z: f32, grad: f32) -> [f32; 2] {
 /// - the normal's `±d` arms land on a half-lattice, so vertex `k−1`'s `+d` is
 ///   vertex `k`'s `−d` — one row of `n+1` taps for `2n` reads (`share_x`), and
 ///   one row of `n` carried down into the next row (`share_z`);
-/// - `terrain::slope`'s arm is a fixed 1 m, so at the near ring's 1 m pitch
-///   its four taps ARE the four neighbouring vertices (`grid_slope`), which a
-///   three-row rolling window with a border column already holds. The far mesh
-///   is 8 m apart and pays the four (its share is the two above);
+/// - the cliff relief reads a 5×5 stencil of vertex heights, which a height
+///   grid with a three-vertex border already holds (its slope at 1 m is
+///   `terrain::ground_slope` exactly);
 /// - `splat` re-derives the height it is standing on; `splat_from` takes the
 ///   one already in hand.
 ///
@@ -928,58 +1181,59 @@ pub fn heightfield(
 
     let share_x = (1..n).all(|k| vx(k - 1) + d == vx(k) - d);
     let share_z = (1..n).all(|k| vz(k - 1) + d == vz(k) - d);
-    let grid_slope = (1..n).all(|k| {
-        vx(k - 1) + 1.0 == vx(k)
-            && vx(k) - 1.0 == vx(k - 1)
-            && vz(k - 1) + 1.0 == vz(k)
-            && vz(k) - 1.0 == vz(k - 1)
-    });
 
-    // A row of vertex heights with one border column each side, so a vertex on
-    // the patch edge can still read its `slope` neighbour. Column `0` and
-    // column `stride - 1` are written as the naive `x ± 1.0`; the interior is
-    // the vertex lattice.
-    let stride = n + 2;
-    let col_x = |k: usize| {
-        if k == 0 {
-            vx(0) - 1.0
-        } else if k == stride - 1 {
-            vx(n - 1) + 1.0
+    // Every vertex height, with a border three vertices wide: the cliff relief
+    // reads a 5×5 stencil, and the normal reads the relief of the vertices
+    // either side — so a chunk's edge vertex resolves the same relief and
+    // normal as its neighbour's.
+    const B: usize = 3;
+    let side = n + 2 * B;
+    let gx = |k: usize| {
+        if (B..n + B).contains(&k) {
+            vx(k - B)
         } else {
-            vx(k - 1)
+            ox + (k as f32 - B as f32) * step
         }
     };
-    let row_z = |j: usize| {
-        if j == 0 {
-            vz(0) - 1.0
-        } else if j == stride - 1 {
-            vz(n - 1) + 1.0
+    let gz = |j: usize| {
+        if (B..n + B).contains(&j) {
+            vz(j - B)
         } else {
-            vz(j - 1)
+            oz + (j as f32 - B as f32) * step
         }
     };
-    // `&mut Lattice` as a parameter rather than a capture: the closure is
-    // called between other borrows of the same table.
-    let fill_row = |lat: &mut terrain::Lattice, dst: &mut Vec<f32>, j: usize| {
-        dst.clear();
-        let z = row_z(j);
-        for k in 0..stride {
-            // The border columns are only ever read on the `grid_slope` path.
-            dst.push(if grid_slope || (k > 0 && k < stride - 1) {
-                terrain::ground_memo(lat, seed, haven, col_x(k), z)
-            } else {
+    let mut hgrid = Vec::with_capacity(side * side);
+    for j in 0..side {
+        let z = gz(j);
+        for k in 0..side {
+            hgrid.push(terrain::ground_memo(&mut lat, seed, haven, gx(k), z));
+        }
+    }
+    let at = |j: usize, k: usize| hgrid[j * side + k];
+    // The relief at every vertex and one ring past the edge (`drawn_y`).
+    let rside = n + 2;
+    let mut relief = Vec::with_capacity(rside * rside);
+    for j in B - 1..n + B + 1 {
+        for k in B - 1..n + B + 1 {
+            let s = relief_slope(at(j, k + 1), at(j, k - 1), at(j + 1, k), at(j - 1, k), step);
+            relief.push(if s <= RELIEF_SLOPE_LO {
                 0.0
+            } else {
+                let mut h = [[0.0f32; 5]; 5];
+                for (dj, row) in h.iter_mut().enumerate() {
+                    for (dk, v) in row.iter_mut().enumerate() {
+                        *v = at(j + dj - 2, k + dk - 2);
+                    }
+                }
+                stencil_relief(seed, haven, gx(k), gz(j), &h, step)
             });
         }
-    };
-
-    let mut hprev: Vec<f32> = Vec::with_capacity(stride);
-    let mut hcur: Vec<f32> = Vec::with_capacity(stride);
-    let mut hnext: Vec<f32> = Vec::with_capacity(stride);
-    if grid_slope {
-        fill_row(&mut lat, &mut hprev, 0);
     }
-    fill_row(&mut lat, &mut hcur, 1);
+    // Indexed one past the vertex: `rel(iz + 1, ix + 1)` is vertex `(ix, iz)`.
+    let rel = |j: usize, k: usize| relief[j * rside + k];
+    // Relief per metre → the `2d` difference the normal is built from.
+    let rel_arm = d / step;
+
     // The normal's arms: `hxm[k]` is `x_k − d` (and `hxm[n]` the last `+ d`);
     // `hzp` is this row's `+ d`, which becomes the next row's `hzm`.
     let mut hxm = vec![0.0f32; n + 1];
@@ -988,9 +1242,6 @@ pub fn heightfield(
 
     for iz in 0..n {
         let z = vz(iz);
-        if grid_slope {
-            fill_row(&mut lat, &mut hnext, iz + 2);
-        }
         if share_x {
             for (k, slot) in hxm.iter_mut().enumerate() {
                 let sx = if k == n { vx(n - 1) + d } else { vx(k) - d };
@@ -1010,8 +1261,11 @@ pub fn heightfield(
 
         for ix in 0..n {
             let x = vx(ix);
-            let y = hcur[ix + 1];
-            positions.push([x, y - drop, z]);
+            let y = at(iz + B, ix + B);
+            let r = rel(iz + 1, ix + 1);
+            // Untouched bits wherever there is no relief (no `+ 0.0`).
+            let drawn = if r != 0.0 { y + r } else { y };
+            positions.push([x, drawn - drop, z]);
 
             // Analytic normal: the surface gradient, not the triangulation.
             let hx = if share_x {
@@ -1021,7 +1275,18 @@ pub fn heightfield(
                     - terrain::ground_memo(&mut lat, seed, haven, x - d, z)
             };
             let hz = hzp[ix] - hzm[ix];
-            let n_v = Vec3::new(-hx, 2.0 * d, -hz).normalize();
+            // …plus the relief's own gradient, across the neighbouring
+            // vertices, so the light shows the faces it cut.
+            let (mut nhx, mut nhz) = (hx, hz);
+            let (rxp, rxm) = (rel(iz + 1, ix + 2), rel(iz + 1, ix));
+            if rxp != rxm {
+                nhx += (rxp - rxm) * rel_arm;
+            }
+            let (rzp, rzm) = (rel(iz + 2, ix + 1), rel(iz, ix + 1));
+            if rzp != rzm {
+                nhz += (rzp - rzm) * rel_arm;
+            }
+            let n_v = Vec3::new(-nhx, 2.0 * d, -nhz).normalize();
             normals.push([n_v.x, n_v.y, n_v.z]);
 
             // The tangent, analytically, for the same reason the normal is
@@ -1033,7 +1298,7 @@ pub fn heightfield(
             // frame wants and what a Gram-Schmidt step would otherwise cost.
             // `w = 1` is mikktspace's own answer for this parameterisation,
             // kept rather than re-derived: see the module note.
-            let t_v = Vec3::new(2.0 * d, hx, 0.0).normalize();
+            let t_v = Vec3::new(2.0 * d, nhx, 0.0).normalize();
             tangents.push([t_v.x, t_v.y, t_v.z, 1.0]);
 
             // `splat_from` rather than `splat` because the height and the
@@ -1091,14 +1356,6 @@ pub fn heightfield(
             colors.push(vertex_splat(w));
             mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * UV_PER_M, z * UV_PER_M]);
-        }
-
-        if grid_slope {
-            // Roll the window: this row's `+1 m` is the next row's centre.
-            core::mem::swap(&mut hprev, &mut hcur);
-            core::mem::swap(&mut hcur, &mut hnext);
-        } else if iz + 1 < n {
-            fill_row(&mut lat, &mut hcur, iz + 2);
         }
     }
 

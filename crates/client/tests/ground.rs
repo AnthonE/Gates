@@ -87,22 +87,54 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
     let mut normals = Vec::with_capacity(n * n);
     let mut colors = Vec::with_capacity(n * n);
     let mut mods = Vec::with_capacity(n * n);
+    // The cliff relief at lattice index `(i, j)`, off its 5×5 stencil of the
+    // lattice — every tap fresh.
+    let cx = |i: i32| ox + i as f32 * step;
+    let cz = |j: i32| oz + j as f32 * step;
+    let g = |i: i32, j: i32| terrain::ground(seed, haven, cx(i), cz(j));
+    let relief = |i: i32, j: i32| {
+        // `stencil_relief`'s own first test, taken early: the gate's runtime.
+        let s =
+            terrain_mesh::relief_slope(g(i + 1, j), g(i - 1, j), g(i, j + 1), g(i, j - 1), step);
+        if s <= terrain_mesh::RELIEF_SLOPE_LO {
+            return 0.0;
+        }
+        let mut h = [[0.0f32; 5]; 5];
+        for (dj, row) in h.iter_mut().enumerate() {
+            for (di, v) in row.iter_mut().enumerate() {
+                *v = g(i + di as i32 - 2, j + dj as i32 - 2);
+            }
+        }
+        terrain_mesh::stencil_relief(seed, haven, cx(i), cz(j), &h, step)
+    };
     for iz in 0..n {
         for ix in 0..n {
             let x = ox + ix as f32 * step;
             let z = oz + iz as f32 * step;
             let y = terrain::ground(seed, haven, x, z);
-            positions.push([x, y - drop, z]);
+            let (i, j) = (ix as i32, iz as i32);
+            let r = relief(i, j);
+            let drawn = if r != 0.0 { y + r } else { y };
+            positions.push([x, drawn - drop, z]);
 
             let hx =
                 terrain::ground(seed, haven, x + d, z) - terrain::ground(seed, haven, x - d, z);
             let hz =
                 terrain::ground(seed, haven, x, z + d) - terrain::ground(seed, haven, x, z - d);
+            let (mut nhx, mut nhz) = (hx, hz);
+            let (rxp, rxm) = (relief(i + 1, j), relief(i - 1, j));
+            if rxp != rxm {
+                nhx += (rxp - rxm) * (d / step);
+            }
+            let (rzp, rzm) = (relief(i, j + 1), relief(i, j - 1));
+            if rzp != rzm {
+                nhz += (rzp - rzm) * (d / step);
+            }
             // glam's own `normalize`, not a restatement of it: this gate is
             // about which points were sampled, and a hand-rolled reciprocal
             // would fail on a rounding difference that has nothing to do with
             // the sharing.
-            let n_v = Vec3::new(-hx, 2.0 * d, -hz).normalize();
+            let n_v = Vec3::new(-nhx, 2.0 * d, -nhz).normalize();
             normals.push([n_v.x, n_v.y, n_v.z]);
 
             // `splat_from` over three numbers this side resolved for itself —
@@ -468,6 +500,86 @@ fn a_patch_over_a_carved_site_is_bit_identical_too() {
         65,
         FAR_STEP,
         0.15,
+    );
+}
+
+/// The cliff relief moves vertices only on faces too steep to climb, so the
+/// fixtures above can all sit on ground it never touches. This one is FOUND on
+/// a face (the vertex count it moves is asserted), at both pitches, and also
+/// pins the half of the relief that matters to the sim: no triangle touching
+/// walkable ground moves, to the bit.
+#[test]
+fn a_patch_on_a_cliff_face_is_bit_identical_too() {
+    let h = hv(SEED);
+    let moved = |ox: f32, oz: f32| {
+        let mut lat = terrain::Lattice::new();
+        let mut k = 0usize;
+        for iz in (0..NEAR_N).step_by(2) {
+            for ix in (0..NEAR_N).step_by(2) {
+                let (x, z) = (ox + ix as f32, oz + iz as f32);
+                let y = terrain::ground(SEED, h, x, z);
+                k += usize::from(terrain_mesh::drawn_y(&mut lat, SEED, h, x, z, 1.0) != y);
+            }
+        }
+        k
+    };
+    let side = (terrain::ISLAND_SIZE / CHUNK_M) as i32;
+    let (ox, oz, k) = (0..side * side)
+        .map(|i| ((i % side) as f32 * CHUNK_M, (i / side) as f32 * CHUNK_M))
+        .filter(|&(x, z)| terrain::ground_slope(SEED, h, x + 32.0, z + 32.0) > 0.4)
+        .map(|(x, z)| (x, z, moved(x, z)))
+        .find(|t| t.2 >= 60)
+        .expect("no cliff face on the seed");
+    let step = CHUNK_M / (NEAR_N - 1) as f32;
+    compare(
+        &format!("near chunk on a face at ({ox}, {oz}), ~{k} moved"),
+        ox,
+        oz,
+        NEAR_N,
+        step,
+        0.0,
+    );
+    compare(
+        &format!("far patch on a face at ({ox}, {oz})"),
+        ox,
+        oz,
+        9,
+        FAR_STEP,
+        0.15,
+    );
+
+    // No triangle that touches walkable ground moves: every vertex within one
+    // step (diagonals too) of a walkable one keeps the sim's height.
+    let mesh = terrain_mesh::heightfield(SEED, h, ox, oz, NEAR_N, step, 0.0);
+    let (p, _, _, _) = attrs(&mesh);
+    let at = |ix: usize, iz: usize| p[iz * NEAR_N + ix];
+    let mut walkable = 0usize;
+    for iz in 0..NEAR_N {
+        for ix in 0..NEAR_N {
+            let v = at(ix, iz);
+            if terrain::ground_slope(SEED, h, v[0], v[2]) >= terrain::CLIFF_SLOPE_RATIO {
+                continue;
+            }
+            walkable += 1;
+            for jz in iz.saturating_sub(1)..(iz + 2).min(NEAR_N) {
+                for jx in ix.saturating_sub(1)..(ix + 2).min(NEAR_N) {
+                    let w = at(jx, jz);
+                    assert_eq!(
+                        w[1].to_bits(),
+                        terrain::ground(SEED, h, w[0], w[2]).to_bits(),
+                        "({}, {}) beside walkable ({}, {}) left the sim's ground",
+                        w[0],
+                        w[2],
+                        v[0],
+                        v[2]
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        walkable > 0 && walkable < p.len(),
+        "the fixture must hold both kinds of ground"
     );
 }
 
