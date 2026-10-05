@@ -478,7 +478,7 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
         let (card, gain) = if tree::species_of(v) == 0 {
             (&needle, tree::NEEDLE_MAP_GAIN)
         } else {
-            (&leaf, 1.0)
+            (&leaf, tree::LEAF_MAP_GAIN)
         };
         let (cell, d) = bake_card(&bark, &needles, card, gain);
         dims.push(d);

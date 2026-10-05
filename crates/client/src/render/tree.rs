@@ -100,6 +100,14 @@ pub struct SpeciesDef {
     pub max_r_m: f32,
     pub leaf_lo: u32,
     pub leaf_hi: u32,
+    /// The trunk's two colours as they should READ, sRGB: the far hull wears
+    /// them as they are, and the near trunk's band takes their hue and value
+    /// over the shared bark photo through `bark_gain`.
+    pub bark_lo: u32,
+    pub bark_hi: u32,
+    /// What the near trunk's mean-1 band is multiplied by: 1 for the photo's
+    /// own value, more for a paler bark than the photo is.
+    pub bark_gain: f32,
 }
 
 /// The species pool. **Two, where there was one** — `reference/PLANTS.md` §6.1
@@ -117,6 +125,9 @@ pub const SPECIES: [SpeciesDef; 2] = [
         max_r_m: PINE_MAX_R,
         leaf_lo: NEEDLE_LO,
         leaf_hi: NEEDLE_HI,
+        bark_lo: BARK_LO,
+        bark_hi: BARK_HI,
+        bark_gain: 1.0,
     },
     // **Shorter than the conifer**, which is the whole read: a pine is a
     // spire and a broadleaf is not, and if the two shared a silhouette
@@ -132,6 +143,12 @@ pub const SPECIES: [SpeciesDef; 2] = [
         max_r_m: BROADLEAF_MAX_R,
         leaf_lo: BROADLEAF_LO,
         leaf_hi: BROADLEAF_HI,
+        // A birch's pale trunk, from the one bark photo we ship (WANTED
+        // §9.9 still asks for a real birch bark): the fissures stay dark
+        // and the bark between them reads grey-white rather than brown.
+        bark_lo: BIRCH_BARK_LO,
+        bark_hi: BIRCH_BARK_HI,
+        bark_gain: 2.6,
     },
 ];
 
@@ -186,12 +203,17 @@ const BARK_LO: u32 = 0x503b2b;
 const BARK_HI: u32 = 0x70583f;
 const NEEDLE_LO: u32 = 0x204825;
 const NEEDLE_HI: u32 = 0x4d8845;
-/// The broadleaf's two greens. Yellower and lighter than the conifer's, which
+/// The broadleaf's trunk as it should read: a pale birch grey (the near
+/// trunk's band is mean-1, so only the far hull sees the two differ).
+const BIRCH_BARK_LO: u32 = 0x8a867c;
+const BIRCH_BARK_HI: u32 = 0xa29e93;
+/// The broadleaf's two greens (each lobe then leans a little yellow or blue,
+/// [`Lobes`]). Yellower and lighter than the conifer's, which
 /// is the other half of telling the two apart at range — `ART.md` §5 asks for
 /// two greens minimum per canopy, and a second SPECIES wearing the first one's
 /// palette would read as the same tree at a different size.
-const BROADLEAF_LO: u32 = 0x3a5a22;
-const BROADLEAF_HI: u32 = 0x7fa03c;
+const BROADLEAF_LO: u32 = 0x324f1e;
+const BROADLEAF_HI: u32 = 0x6e9138;
 
 /// Where the bark's `BARK_LO`→`BARK_HI` ramp tops out, as a fraction of the
 /// tree's height, and where the canopy's leaf ramp starts.
@@ -475,8 +497,9 @@ fn fit_to_bounds(bark: &mut Mesh, needles: &mut Mesh, height_m: f32) {
 /// `mean1` normalizes each result to unit luminance, which is what a surface
 /// that now wears a PHOTOGRAPH needs: the bark map carries the colour and this
 /// band keeps only the light-to-dark ramp up the trunk, per `ART.md` §7. The
-/// needles pass `false` — their map is white (leaf) or a mean-normalised photo
-/// (needle, [`NEEDLE_MAP_GAIN`]), so the vertex colour is the canopy's colour.
+/// canopy passes `false` — both cards are mean-normalised photos
+/// ([`NEEDLE_MAP_GAIN`], [`LEAF_MAP_GAIN`]), so the vertex colour is the
+/// canopy's colour.
 fn band(m: &mut Mesh, lo: u32, hi: u32, y0: f32, y1: f32, mean1: bool) {
     let Some(p) = positions(m) else { return };
     let (l, g) = (linear(lo), linear(hi));
@@ -531,7 +554,12 @@ fn band(m: &mut Mesh, lo: u32, hi: u32, y0: f32, y1: f32, mean1: bool) {
 /// right — and turns it up at the apex and down under the skirt, which is what
 /// it had no way to express. The underside then reads (rule 3), and it is the
 /// hemisphere fill's job (`render/fill.rs`) to keep it off the 0.30 floor.
-fn blend_canopy_normals(m: &mut Mesh) {
+///
+/// A broadleaf passes its [`Lobes`]: each vertex's field is then mostly its
+/// own lobe's outward normal (centred a little low, so every lobe has a lit
+/// top), with the crown's ellipsoid underneath. One ellipsoid over a whole
+/// broadleaf shaded it as one smooth ball — the lollipop read.
+fn blend_canopy_normals(m: &mut Mesh, lobes: Option<&Lobes>) {
     let Some(p) = positions(m) else { return };
     let (lo_y, hi_y, r_max) = crown_extent(p);
     let c_y = (lo_y + hi_y) * 0.5;
@@ -541,11 +569,21 @@ fn blend_canopy_normals(m: &mut Mesh) {
     let (iy2, ir2) = (1.0 / (sy * sy), 1.0 / (sr * sr));
     let outward: Vec<[f32; 3]> = p
         .iter()
-        .map(|v| {
+        .enumerate()
+        .map(|(i, v)| {
             let e = Vec3::new(v[0] * ir2, (v[1] - c_y) * iy2, v[2] * ir2);
             // Dead centre of the crown has no outward direction; up is the
             // only defensible answer and it affects a handful of vertices.
-            e.normalize_or(Vec3::Y).to_array()
+            let crown = e.normalize_or(Vec3::Y);
+            let Some(l) = lobes else {
+                return crown.to_array();
+            };
+            let k = l.of[i] as usize;
+            let c = l.centre[k] - Vec3::Y * (LOBE_NORMAL_DROP * l.reach[k]);
+            let lobe = (Vec3::from_array(*v) - c).normalize_or(crown);
+            (crown * (1.0 - LOBE_NORMAL_SHARE) + lobe * LOBE_NORMAL_SHARE)
+                .normalize_or(crown)
+                .to_array()
         })
         .collect();
     let Some(VertexAttributeValues::Float32x3(n)) = m.attribute_mut(Mesh::ATTRIBUTE_NORMAL) else {
@@ -639,7 +677,12 @@ const CANOPY_AO_GAMMA: f32 = 1.6;
 /// albedo. Baked into the albedo is also the documented home for the micro
 /// scale, which is the one term that applies to direct light as well as
 /// indirect — and a canopy interior is dark to the sun, not only to the sky.
-fn occlude_canopy(m: &mut Mesh) {
+///
+/// A broadleaf's exposure is also scaled by how deep inside its own LOBE a
+/// vertex sits ([`LOBE_AO`]), so each lobe reads as a lit shell over a dark
+/// core rather than the whole crown as one; and each lobe wears its own value
+/// and a touch of hue ([`Lobes`]).
+fn occlude_canopy(m: &mut Mesh, lobes: Option<&Lobes>) {
     let Some(p) = positions(m) else { return };
     let (lo_y, hi_y, _) = crown_extent(p);
     let span = (hi_y - lo_y).max(f32::EPSILON);
@@ -685,7 +728,8 @@ fn occlude_canopy(m: &mut Mesh) {
     // borrow reason.
     let shade: Vec<f32> = p
         .iter()
-        .map(|v| {
+        .enumerate()
+        .map(|(i, v)| {
             let r = (v[0] * v[0] + v[2] * v[2]).sqrt();
             let rr = radius_at(v[1]);
             // Exposure: 0 buried on the axis, 1 out at the crown's surface.
@@ -698,7 +742,13 @@ fn occlude_canopy(m: &mut Mesh) {
             // a conifer's spire is a few small cards about the leader, all
             // "near the axis", and it is the most exposed part of the tree.
             let open = (((v[1] - lo_y) / span - 0.82) / 0.18).clamp(0.0, 1.0);
-            let e = e.max(open);
+            let mut e = e.max(open);
+            if let Some(l) = lobes {
+                let k = l.of[i] as usize;
+                let d = (Vec3::from_array(*v) - l.centre[k]).length();
+                let inner = (d / l.reach[k].max(1e-3)).clamp(0.0, 1.0);
+                e *= 1.0 - LOBE_AO * (1.0 - inner);
+            }
             CANOPY_AO_FLOOR + (1.0 - CANOPY_AO_FLOOR) * e.powf(CANOPY_AO_GAMMA)
         })
         .collect();
@@ -707,10 +757,11 @@ fn occlude_canopy(m: &mut Mesh) {
     else {
         return;
     };
-    for (c, k) in cols.iter_mut().zip(shade) {
-        c[0] *= k;
-        c[1] *= k;
-        c[2] *= k;
+    for (i, (c, k)) in cols.iter_mut().zip(shade).enumerate() {
+        let t = lobes.map_or([1.0; 3], |l| l.tint[l.of[i] as usize]);
+        c[0] *= k * t[0];
+        c[1] *= k * t[1];
+        c[2] *= k * t[2];
     }
 }
 
@@ -775,6 +826,216 @@ fn shape_crown(needles: &mut Mesh, variant: usize) {
     }
 }
 
+/// Lobes a broadleaf crown is gathered into. A broadleaf's crown is a
+/// handful of leaf masses with air between them; the generator spreads its
+/// cards evenly over the whole envelope, which reads as one smooth ball.
+pub const BROADLEAF_LOBES: usize = 14;
+/// How far each leaf card is pulled toward its lobe's centre, as a share of
+/// the way (each lobe scales it by 0.5-1.5). Tightens the lobes and opens
+/// gaps between them; much past 0.25 the crown turns to stacked pom-poms.
+pub const LOBE_PULL: f32 = 0.2;
+/// How much a card at a lobe's rim shrinks, against one at its heart.
+pub const LOBE_EDGE_SHRINK: f32 = 0.28;
+/// How big a card is at the foot of the crown, against one above it: a
+/// broadleaf's lowest limbs carry little, so the crown lifts off the trunk.
+pub const CROWN_FOOT_SCALE: f32 = 0.5;
+/// How much height counts against horizontal distance when the lobes are
+/// found. Under 1, so a lobe is taller than it is wide and the generator's
+/// three trunk sections do not each become a tier of balls.
+const LOBE_Y_WEIGHT: f32 = 0.5;
+/// The share of a lobed canopy normal that is its lobe's rather than the
+/// crown's ([`blend_canopy_normals`]).
+const LOBE_NORMAL_SHARE: f32 = 0.4;
+/// How far below a lobe's centre its normals radiate from, as a share of its
+/// reach: every lobe faces a little up, so each has a lit top.
+const LOBE_NORMAL_DROP: f32 = 0.3;
+/// How much darker a lobe's heart is than its shell ([`occlude_canopy`]).
+const LOBE_AO: f32 = 0.35;
+
+/// Which lobe each canopy vertex belongs to, and each lobe's centre, reach
+/// (its farthest vertex from the centre) and tint. Measured off the finished
+/// mesh, so normals and occlusion agree about where the lobes are.
+struct Lobes {
+    of: Vec<u16>,
+    centre: Vec<Vec3>,
+    reach: Vec<f32>,
+    tint: Vec<[f32; 3]>,
+}
+
+impl Lobes {
+    fn measure(m: &Mesh, of: Vec<u16>, variant: usize) -> Option<Self> {
+        let p = positions(m)?;
+        let k = of.iter().copied().max()? as usize + 1;
+        if of.len() != p.len() {
+            return None;
+        }
+        let mut sum = vec![Vec3::ZERO; k];
+        let mut n = vec![0u32; k];
+        for (v, &l) in p.iter().zip(&of) {
+            sum[l as usize] += Vec3::from_array(*v);
+            n[l as usize] += 1;
+        }
+        let centre: Vec<Vec3> = sum
+            .iter()
+            .zip(&n)
+            .map(|(s, &c)| *s / c.max(1) as f32)
+            .collect();
+        let mut reach = vec![0.0f32; k];
+        for (v, &l) in p.iter().zip(&of) {
+            let d = (Vec3::from_array(*v) - centre[l as usize]).length();
+            reach[l as usize] = reach[l as usize].max(d);
+        }
+        // Each lobe its own value, and a lean toward yellow or toward blue:
+        // leaf masses turned to the sun differently never match.
+        let tint = (0..k as u32)
+            .map(|i| {
+                let v = 0.86 + 0.26 * hash01(0x10be_0001 ^ variant as u32, i);
+                let y = hash01(0x10be_0002 ^ variant as u32, i) - 0.5;
+                [v * (1.0 + 0.16 * y), v, v * (1.0 - 0.24 * y)]
+            })
+            .collect();
+        Some(Self {
+            of,
+            centre,
+            reach,
+            tint,
+        })
+    }
+}
+
+/// Gather a broadleaf's leaf cards into [`BROADLEAF_LOBES`] lobes and lift
+/// the crown off the trunk. Returns each VERTEX's lobe.
+///
+/// Lobes are a few rounds of k-means over the cards' attach points, seeded by
+/// farthest-point sampling from a per-variant start, so each seed lobes
+/// differently. Each card is pulled toward its lobe's centre and scaled about
+/// its attach point, shrinking at the lobe's rim and at the crown's foot.
+/// Cards only shrink and only move toward the inside of the crown, and any
+/// card that would still poke past the crown's original radius is shrunk
+/// until it does not: the radius the sim's bounds were swept against holds.
+fn shape_broadleaf(needles: &mut Mesh, variant: usize) -> Option<Vec<u16>> {
+    let p = positions_mut(needles)?;
+    if p.len() % 4 != 0 || p.is_empty() {
+        return None;
+    }
+    let horiz = |v: &[f32; 3]| (v[0] * v[0] + v[2] * v[2]).sqrt();
+    let r0 = p.iter().map(horiz).fold(0.0f32, f32::max);
+    // The generator's quad: corners 1 and 2 are the base edge.
+    let root = |q: &[[f32; 3]]| {
+        Vec3::new(
+            (q[1][0] + q[2][0]) * 0.5,
+            (q[1][1] + q[2][1]) * 0.5,
+            (q[1][2] + q[2][2]) * 0.5,
+        )
+    };
+    let roots: Vec<Vec3> = p.chunks_exact(4).map(root).collect();
+    let cards = roots.len();
+    let k = BROADLEAF_LOBES.min(cards);
+    let (lo, hi) = roots
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(l, h), r| (l.min(r.y), h.max(r.y)));
+    let span = (hi - lo).max(1e-3);
+
+    // Clustered with height squashed ([`LOBE_Y_WEIGHT`]), so lobes run up
+    // the crown rather than stacking in tiers.
+    let keys: Vec<Vec3> = roots
+        .iter()
+        .map(|r| Vec3::new(r.x, r.y * LOBE_Y_WEIGHT, r.z))
+        .collect();
+    // Seeds: farthest-point sampling from a hashed start.
+    let first = (hash2(0x10be_5eed, variant as u32) as usize) % cards;
+    let mut centre = vec![keys[first]];
+    let mut d2: Vec<f32> = keys.iter().map(|r| r.distance_squared(centre[0])).collect();
+    while centre.len() < k {
+        let far = (0..cards).max_by(|&a, &b| d2[a].total_cmp(&d2[b]))?;
+        let c = keys[far];
+        centre.push(c);
+        for (d, r) in d2.iter_mut().zip(&keys) {
+            *d = d.min(r.distance_squared(c));
+        }
+    }
+    // A few k-means rounds, so the lobes are masses rather than hull points.
+    let nearest = |r: &Vec3, centre: &[Vec3]| {
+        (0..centre.len())
+            .min_by(|&a, &b| {
+                r.distance_squared(centre[a])
+                    .total_cmp(&r.distance_squared(centre[b]))
+            })
+            .unwrap_or(0)
+    };
+    let mut of = vec![0usize; cards];
+    for _ in 0..4 {
+        for (o, r) in of.iter_mut().zip(&keys) {
+            *o = nearest(r, &centre);
+        }
+        let mut sum = vec![Vec3::ZERO; k];
+        let mut n = vec![0u32; k];
+        for (&o, r) in of.iter().zip(&keys) {
+            sum[o] += *r;
+            n[o] += 1;
+        }
+        for ((c, s), &n) in centre.iter_mut().zip(&sum).zip(&n) {
+            if n > 0 {
+                *c = *s / n as f32;
+            }
+        }
+    }
+    // Back to real space: each lobe's centre is its attach points' mean.
+    for c in centre.iter_mut() {
+        c.y /= LOBE_Y_WEIGHT;
+    }
+    // Each lobe's typical radius: the mean attach-point distance from its
+    // centre.
+    let mut rad = vec![0.0f32; k];
+    let mut n = vec![0u32; k];
+    for (&o, r) in of.iter().zip(&roots) {
+        rad[o] += r.distance(centre[o]);
+        n[o] += 1;
+    }
+    for (r, &n) in rad.iter_mut().zip(&n) {
+        *r = (*r / n.max(1) as f32).max(0.05);
+    }
+    // Some lobes are fuller than others, and some tighter.
+    let size: Vec<f32> = (0..k as u32)
+        .map(|i| 0.82 + 0.18 * hash01(0x10be_0003 ^ variant as u32, i))
+        .collect();
+    let pull: Vec<f32> = (0..k as u32)
+        .map(|i| 0.5 + hash01(0x10be_0004 ^ variant as u32, i))
+        .collect();
+
+    for (ci, q) in p.chunks_exact_mut(4).enumerate() {
+        let r = roots[ci];
+        let o = of[ci];
+        let to = r + (centre[o] - r) * (LOBE_PULL * pull[o]);
+        let edge = smooth01((r.distance(centre[o]) / rad[o] - 0.6) / 0.9);
+        let foot = smooth01(((r.y - lo) / span) / 0.3);
+        let mut sc = size[o]
+            * (1.0 - LOBE_EDGE_SHRINK * edge)
+            * (CROWN_FOOT_SCALE + (1.0 - CROWN_FOOT_SCALE) * foot);
+        let orig: [[f32; 3]; 4] = [q[0], q[1], q[2], q[3]];
+        let place = |sc: f32, out: &mut [[f32; 3]]| {
+            for (v, o) in out.iter_mut().zip(&orig) {
+                *v = (to + (Vec3::from_array(*o) - r) * sc).to_array();
+            }
+        };
+        place(sc, q);
+        for _ in 0..16 {
+            if q.iter().map(horiz).fold(0.0f32, f32::max) <= r0 {
+                break;
+            }
+            sc *= 0.85;
+            place(sc, q);
+        }
+    }
+    Some(of.iter().flat_map(|&o| [o as u16; 4]).collect())
+}
+
+/// `smoothstep(0, 1, x)`.
+fn smooth01(x: f32) -> f32 {
+    let t = x.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// One conifer: `(bark, needles)`, fitted, banded and shaded.
 ///
 /// Deterministic in `variant` and nothing else — same variant, same tree, on
@@ -797,31 +1058,43 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
         };
 
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
-    if sp.tree_type == TreeType::Evergreen {
-        shape_crown(&mut needles, variant);
-        // The spire's shrunken top cards lower the apex; stretch the pair
-        // back up to its height, vertically only, so neither the trunk's
-        // radius (the sim's cylinder) nor the crown's grows.
-        let (h, _) = bounds(&[&bark, &needles]);
-        if h > f32::EPSILON {
-            let k = sp.height_m / h;
-            for m in [&mut bark, &mut needles] {
-                if let Some(p) = positions_mut(m) {
-                    for v in p.iter_mut() {
-                        v[1] *= k;
-                    }
+    let lobe_of = match sp.tree_type {
+        TreeType::Evergreen => {
+            shape_crown(&mut needles, variant);
+            None
+        }
+        TreeType::Deciduous => shape_broadleaf(&mut needles, variant),
+    };
+    // Both shapings shrink the top cards and lower the apex; stretch the pair
+    // back up to its height, vertically only, so neither the trunk's radius
+    // (the sim's cylinder) nor the crown's grows.
+    let (h, _) = bounds(&[&bark, &needles]);
+    if h > f32::EPSILON {
+        let k = sp.height_m / h;
+        for m in [&mut bark, &mut needles] {
+            if let Some(p) = positions_mut(m) {
+                for v in p.iter_mut() {
+                    v[1] *= k;
                 }
             }
         }
     }
+    let lobes = lobe_of.and_then(|of| Lobes::measure(&needles, of, variant));
     band(
         &mut bark,
-        BARK_LO,
-        BARK_HI,
+        sp.bark_lo,
+        sp.bark_hi,
         0.0,
         sp.height_m * BARK_BAND_TOP_FRAC,
         true,
     );
+    if let Some(VertexAttributeValues::Float32x4(c)) = bark.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+        for v in c.iter_mut() {
+            v[0] *= sp.bark_gain;
+            v[1] *= sp.bark_gain;
+            v[2] *= sp.bark_gain;
+        }
+    }
     band(
         &mut needles,
         sp.leaf_lo,
@@ -830,14 +1103,10 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
         sp.height_m,
         false,
     );
-    occlude_canopy(&mut needles);
-    blend_canopy_normals(&mut needles);
+    occlude_canopy(&mut needles, lobes.as_ref());
+    blend_canopy_normals(&mut needles, lobes.as_ref());
     (bark, needles)
 }
-
-/// The generated leaf card's size in texels (the broadleaf's; the conifer's
-/// card is the shipped photograph, [`needle_image`]).
-const LEAF_TEX: u32 = 256;
 
 /// The conifer needle card: a composed pine branch end from Poly Haven's CC0
 /// `pine_tree_01` twig maps, baked by `ci/bake_needle_card.py`.
@@ -855,6 +1124,15 @@ pub const NEEDLE_CARD_PNG: &[u8] =
 /// variation. `tests/tree.rs` holds this against the shipped file.
 pub const NEEDLE_MAP_GAIN: f32 = 4.8589;
 
+/// The broadleaf leaf card: birch-shaped leaves from ambientCG's CC0
+/// `LeafSet014`/`LeafSet001`, hung in clusters on a composed twig spray by
+/// `ci/bake_leaf_card.py`. Compiled in for [`NEEDLE_CARD_PNG`]'s reason.
+pub const LEAF_CARD_PNG: &[u8] = include_bytes!("../../../../assets/textures/leaf_card_albedo.png");
+
+/// [`NEEDLE_MAP_GAIN`] for the leaf card: what its RGB is multiplied by to be
+/// mean-1. `ci/bake_leaf_card.py` prints it; `tests/tree.rs` holds it.
+pub const LEAF_MAP_GAIN: f32 = 2.3747;
+
 /// What a canopy card's specular is scaled by (`StandardMaterial::
 /// specular_tint`; `reflectance` stays the physical 4 %).
 ///
@@ -867,8 +1145,28 @@ pub const CANOPY_SPECULAR_TINT: f32 = 0.3;
 /// The alpha card the conifer canopy is made of: the shipped photograph,
 /// decoded, with a coverage-preserving mip chain.
 pub fn needle_image() -> Image {
+    photo_card(NEEDLE_CARD_PNG)
+}
+
+/// The alpha card a broadleaf canopy is made of: the shipped leaf photograph,
+/// decoded, with the same coverage-preserving chain as [`needle_image`].
+///
+/// A species is a silhouette AND a card. The leaf card used to be generated
+/// here (white ovals stamped on twiglets), and on every frame it read as a
+/// smooth yellow-green mass: a mask with no value in it carries no light and
+/// dark, so the crown's only shading was the volume normal, which is a ball.
+/// The photo carries each leaf's own veins and edge and a spread of leaf
+/// values, and the card's twigs leave air between the clusters.
+pub fn leaf_image() -> Image {
+    photo_card(LEAF_CARD_PNG)
+}
+
+/// A shipped card PNG decoded into a finished alpha card. A broken embed must
+/// not take the client down, so it falls back to a plain disc card rather
+/// than panicking (`tests/tree.rs` decodes both shipped cards).
+fn photo_card(png: &[u8]) -> Image {
     let decoded = Image::from_buffer(
-        NEEDLE_CARD_PNG,
+        png,
         bevy::image::ImageType::Extension("png"),
         bevy::image::CompressedImageFormats::NONE,
         true,
@@ -883,15 +1181,24 @@ pub fn needle_image() -> Image {
     });
     match rgba {
         Some((data, w)) => alpha_card(data, w),
-        // A broken embed must not take the client down: draw the leaf card.
-        None => leaf_image(),
+        None => {
+            const N: u32 = 64;
+            let data = (0..N * N)
+                .flat_map(|i| {
+                    let (x, y) = ((i % N) as f32 + 0.5, (i / N) as f32 + 0.5);
+                    let d = ((x - 32.0).powi(2) + (y - 32.0).powi(2)).sqrt();
+                    [255, 255, 255, if d < 26.0 { 255 } else { 0 }]
+                })
+                .collect();
+            alpha_card(data, N)
+        }
     }
 }
 
 /// A finished alpha card from a level-0 RGBA buffer: the coverage-preserved
 /// mip chain, the descriptor that carries it, and the trilinear sampler.
-/// Shared by [`needle_image`] and [`leaf_image`], because a second species'
-/// card that built its own chain would be the first place the two drifted.
+/// Shared by both species' cards, because a second card that built its own
+/// chain would be the first place the two drifted.
 fn alpha_card(data: Vec<u8>, size: u32) -> Image {
     // Levels 1..n, coverage-preserved: an alpha-tested card draws the share of
     // texels over the cut, and a plain box filter loses that share at every
@@ -913,23 +1220,15 @@ fn alpha_card(data: Vec<u8>, size: u32) -> Image {
         TextureDimension::D2,
         data,
         // The canopy's COLOUR comes from the mesh's vertex bands; the map is
-        // white (the generated leaf) or a mean-normalised photo (the needle).
+        // a mean-normalised photo.
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
     img.data = Some(chained);
     img.texture_descriptor.mip_level_count = mip_level_count;
     // Trilinear across the chain, tiling off: the card's UVs are 0..1 and a
-    // wrapped needle mask bleeds the far edge into the near.
-    //
-    // ⚠ This comment used to justify the `mipmap_filter` line by saying
-    // `ImageSampler::linear()` leaves it at Nearest. **It does not, in Bevy
-    // 0.18.1**: `ImageSamplerDescriptor::linear()` sets all three filters to
-    // Linear and it is bare `default()` that leaves `mipmap_filter` at Nearest
-    // (`bevy_image/src/image.rs`, the `linear()` and `Default` impls). Spelling
-    // the three out stays right — it is explicit and it survives the next
-    // upgrade — but the reason was wrong, and it was wrong in the one place
-    // somebody checking our mip filtering would read first.
+    // wrapped mask bleeds the far edge into the near. (Spelled out rather
+    // than `ImageSamplerDescriptor::linear()` so it survives the next upgrade.)
     img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
         mag_filter: bevy::image::ImageFilterMode::Linear,
         min_filter: bevy::image::ImageFilterMode::Linear,
@@ -937,217 +1236,6 @@ fn alpha_card(data: Vec<u8>, size: u32) -> Image {
         ..default()
     });
     img
-}
-
-/// The alpha card a BROADLEAF canopy is made of — generated at boot beside
-/// [`needle_image`], and for the same reasons.
-///
-/// **A species is a silhouette AND a card, and until forest scale v0 the
-/// broadleaf had only the first.** Both species wore the needle sprig, so on
-/// the lavapipe bench (`examples/tree_look.rs`, 2026-09-14) the 11 m broadleaf
-/// read as a second, yellower conifer — a column of sprigs — and the whole
-/// reason the pool has two species (`reference/PLANTS.md` §6.1) was lost at
-/// any distance the card was legible. This is a cluster of rounded leaves on
-/// a short stem, two of them mirrored across the card the way the sprig is,
-/// so a `Double` billboard shows two outlines and not one twice.
-///
-/// Denser than the sprig on purpose: a leaf cluster is mostly leaf where a
-/// sprig is mostly air, and `tests/tree.rs` holds the two cards apart on
-/// exactly that — the same file's cut-out and mip-chain gates run over this
-/// card as they do over the needle's.
-///
-/// ⚠ **`LeafParams::size` is in the GENERATOR's units, not metres, and every
-/// comment in this file that read it as metres was wrong.** `fit_to_bounds`
-/// scales the whole mesh by `height_m / generated_height` after the cards are
-/// built, so the card's world size is `size × k` — and `k` is not 1. Measured
-/// on the shipped seeds (`examples/canopy_probe.rs`, 2026-09-16): the conifer
-/// authors 1.15 and draws a **1.08 m** card (k ≈ 0.94, near enough to 1 that
-/// nobody caught it), and the broadleaf authors 0.60 and draws a **1.25 m**
-/// one — **k ≈ 2.09**, because its trunk unit is 4.5 and its height 11 m. So
-/// the species whose comment claimed the *smaller* card has the larger one in
-/// the frame, by 23 %, and the leaves stamped into it were being sized against
-/// a number 2.1× under the truth. That is the whole of why a broadleaf read as
-/// one flat green blob: not the shape of the leaf, its SCALE.
-///
-/// The card size itself stays where the sweep put it — it feeds the crown
-/// radius and `BROADLEAF_MAX_R` is the sim's number (`TREE_MAX_R`) — so what
-/// changed is what is drawn inside it.
-pub fn leaf_image() -> Image {
-    let n = LEAF_TEX as usize;
-    let mut data = vec![0u8; n * n * 4];
-    let size = LEAF_TEX as f32;
-
-    // Two twigs, mirrored about the centre line, so a `Double` billboard shows
-    // two outlines and not one twice.
-    for (sx, dir) in [(0.28f32, 1.0f32), (0.72, -1.0)] {
-        let stem_x = sx * size;
-        let stem_len = size * 0.84;
-
-        // The woody axis.
-        let steps = stem_len.ceil() as u32;
-        for st in 0..=steps {
-            let u = st as f32 / steps.max(1) as f32;
-            stamp(
-                &mut data,
-                n,
-                stem_x,
-                1.0 + u * stem_len,
-                1.2 * (1.0 - 0.5 * u),
-            );
-        }
-
-        // Side twiglets, each carrying a few leaves — a spray, not a comb.
-        //
-        // ⚠ **Regular spacing is how this card turned into a FERN**, and the
-        // first draft of the 256² rebuild did exactly that: evenly spaced
-        // twiglets at one fixed angle, 24 small leaves combed down each, and
-        // the mask came out a textbook pinnate frond — the defect the rebuild
-        // exists to remove, re-entered through the other door. It was caught
-        // by dumping the card and looking at it (`dump_alpha`), which no
-        // coverage number could have done. So every twiglet's angle, length
-        // and root spacing is jittered by a hash of its index: deterministic,
-        // no RNG state, the same card on every client and every run.
-        for i in 0..LEAF_TWIGS {
-            let t = i as f32 / (LEAF_TWIGS - 1).max(1) as f32;
-            let j = |salt: u32| hash01(0x1eaf_0000 ^ salt, i) - 0.5;
-            let root_y = 1.0 + (0.06 + 0.86 * t + 0.05 * j(1)) * stem_len;
-            let side = if i % 2 == 0 { 1.0 } else { -1.0 } * dir;
-            let tlen = (1.0 - 0.45 * t) * (1.0 + 0.45 * j(2)) * size * 0.26;
-            // Wider off the axis than a conifer's twig: a broadleaf's limbs
-            // leave the stem closer to horizontal (`broadleaf_settings`).
-            let a = 0.62 + 0.42 * j(3);
-            let (tx, ty) = (side * a.sin(), a.cos());
-            let ts = tlen.ceil() as u32;
-            for st in 0..=ts {
-                let u = st as f32 / ts.max(1) as f32;
-                stamp(
-                    &mut data,
-                    n,
-                    stem_x + tx * u * tlen,
-                    root_y + ty * u * tlen,
-                    0.9 * (1.0 - 0.4 * u),
-                );
-            }
-            leaf_twig(
-                &mut data,
-                n,
-                stem_x,
-                root_y,
-                tx,
-                ty,
-                tlen,
-                LEAVES_PER_TWIG,
-                i,
-            );
-        }
-    }
-
-    alpha_card(data, LEAF_TEX)
-}
-
-/// Twiglets per leaf card and leaves per twiglet. Like the sprig's counts
-/// these are tuned on COVERAGE — the leaf card must stay DENSER than the
-/// needle card (a leaf cluster is mostly leaf where a sprig is mostly air) and
-/// `tests/tree.rs` holds both, so this is a change of grain and not of
-/// density. 192 leaves a card, where the first 256² draft drew 672.
-const LEAF_TWIGS: u32 = 12;
-/// See [`LEAF_TWIGS`].
-const LEAVES_PER_TWIG: u32 = 8;
-/// One leaf's length in texels — **11 cm**, and the number is set by the CARD
-/// rather than by botany. Say so plainly, because the two disagree.
-///
-/// The broadleaf's card measures **1.25 m** of world on the shipped seeds, not
-/// the 0.60 its `LeafParams::size` says — see [`leaf_image`]'s note — so at 256
-/// a texel is 4.9 mm. The 64² card drew leaves 19 texels at 19.6 mm/texel:
-/// **37 cm long and 12 cm wide**, a banana leaf on an 11 m tree, and the single
-/// most obvious thing in a frame with a broadleaf in it.
-///
-/// ⚠ **The first correction went too far the other way, and the card said so
-/// when it was looked at.** A birch leaf is 3–7 cm; drawn at 6 cm it takes
-/// **672 of them** to fill a 1.25 m card to the density the canopy is built
-/// at, and 672 small ovals combed along even twiglets is a textbook PINNATE
-/// FROND — the exact read this whole change exists to remove, re-entered
-/// through the other door. Coverage was identical either way. It was caught by
-/// dumping the mask and looking at it (`examples/canopy_probe.rs`'s
-/// `dump_alpha`), which is the whole of `CLAUDE.md`'s point about a person
-/// being the visual gate, applied to the one artefact a headless box can
-/// still show one.
-///
-/// So: 11 cm, 192 leaves, irregularly placed. That is a lime or an alder, not
-/// the birch `SPECIES` calls this species — and the way to get a birch is a
-/// SMALLER CARD, which is `BROADLEAF_MAX_R`'s business and therefore the
-/// sim's. `NOW.md` §0t carries it.
-const LEAF_LEN: f32 = 22.0;
-/// A leaf's half-width at its widest, texels — 6.4 cm against the 11 cm
-/// length, a broad ovate leaf's roughly 3:5 proportion.
-const LEAF_HALF_W: f32 = 6.6;
-
-/// A row of leaves alternating down one twiglet, each an oval leaving the twig
-/// at ~40° and swept toward its tip.
-#[allow(clippy::too_many_arguments)]
-fn leaf_twig(
-    data: &mut [u8],
-    n: usize,
-    ax: f32,
-    ay: f32,
-    tx: f32,
-    ty: f32,
-    twig_len: f32,
-    count: u32,
-    twig: u32,
-) {
-    let (px, py) = (-ty, tx);
-    for i in 0..count {
-        let t = i as f32 / (count - 1).max(1) as f32;
-        let j = |salt: u32| hash01(0x0eaf_0000 ^ salt ^ (twig << 8), i) - 0.5;
-        // Leaves sit along the twig, spaced unevenly. A perfectly alternating
-        // comb is the frond read — see [`leaf_image`].
-        let along = (t + 0.10 * j(1)).clamp(0.0, 1.05);
-        let (rx, ry) = (ax + tx * along * twig_len, ay + ty * along * twig_len);
-        let side = if i % 2 == 0 { 1.0 } else { -1.0 };
-        // ~40° off the twig, swept toward its tip, ±18°.
-        let a = 0.70 + 0.62 * j(2);
-        let (ss, cc) = (a.sin(), a.cos());
-        let (dx, dy) = (px * side * ss + tx * cc, py * side * ss + ty * cc);
-        let len = LEAF_LEN * (1.0 - 0.20 * t) * (1.0 + 0.30 * j(3));
-        let segs = (len * 2.0).ceil() as u32;
-        for sg in 0..=segs {
-            let u = sg as f32 / segs.max(1) as f32;
-            // An oval: widest in the middle, pointed at both ends.
-            let w = (std::f32::consts::PI * u).sin() * LEAF_HALF_W + 0.45;
-            stamp(data, n, rx + dx * u * len, ry + dy * u * len, w);
-        }
-    }
-}
-
-/// Paint one soft dot of needle into the RGBA buffer, alpha-max blended.
-///
-/// Max rather than add: two needles crossing must not read brighter than one,
-/// because the channel is coverage, not light.
-fn stamp(data: &mut [u8], n: usize, px: f32, py: f32, w: f32) {
-    let r = w.ceil() as i32;
-    for dy in -r..=r {
-        for dx in -r..=r {
-            let (x, y) = (px as i32 + dx, py as i32 + dy);
-            if x < 0 || y < 0 || x >= n as i32 || y >= n as i32 {
-                continue;
-            }
-            let d = (((px - x as f32).powi(2)) + ((py - y as f32).powi(2))).sqrt();
-            let a = (1.0 - (d / w).clamp(0.0, 1.0)).clamp(0.0, 1.0);
-            if a <= 0.0 {
-                continue;
-            }
-            let i = (y as usize * n + x as usize) * 4;
-            let cur = data[i + 3];
-            let new = (a * 255.0) as u8;
-            if new > cur {
-                data[i] = 255;
-                data[i + 1] = 255;
-                data[i + 2] = 255;
-                data[i + 3] = new;
-            }
-        }
-    }
 }
 
 /// Triangle count of a mesh, indices or not.
@@ -1831,7 +1919,7 @@ pub fn impostor_of(bark: &Mesh, needles: &Mesh, variant: usize) -> Mesh {
     // construction if the occlusion is ever removed.
     let canopy_k = canopy_mean_shade(needles, sp, h, &ramp);
     let color = |v: Vec3| {
-        let wood = ramp(BARK_LO, BARK_HI, 0.0, h * BARK_BAND_TOP_FRAC, v.y);
+        let wood = ramp(sp.bark_lo, sp.bark_hi, 0.0, h * BARK_BAND_TOP_FRAC, v.y);
         let lit = ramp(sp.leaf_lo, sp.leaf_hi, h * LEAF_BAND_BASE_FRAC, h, v.y);
         let leaf = [lit[0] * canopy_k, lit[1] * canopy_k, lit[2] * canopy_k];
         let f = leaf_share(v.y);
@@ -1876,7 +1964,7 @@ pub fn impostor_of(bark: &Mesh, needles: &Mesh, variant: usize) -> Mesh {
         }
     }
     let mut hull = s.mesh();
-    blend_canopy_normals(&mut hull);
+    blend_canopy_normals(&mut hull, None);
     hull
 }
 
