@@ -84,6 +84,13 @@ def sprig(rgb: np.ndarray, a: np.ndarray, box) -> np.ndarray:
 def place(canvas, spr, root_xy, stem_xy, angle_deg, length_px, mirror):
     """Paste `spr` (premultiplied) so its stem point lands on `root_xy`,
     pointing `angle_deg` off vertical (+ = right), `length_px` tall."""
+    layer, ox, oy = transformed(spr, root_xy, stem_xy, angle_deg, length_px, mirror)
+    composite(canvas, layer, ox, oy)
+
+
+def transformed(spr, root_xy, stem_xy, angle_deg, length_px, mirror):
+    """`spr` scaled, mirrored and turned as `place` draws it: the layer and
+    its top-left corner on the canvas."""
     h, w = spr.shape[:2]
     img = spr
     sx, sy = stem_xy
@@ -109,7 +116,12 @@ def place(canvas, spr, root_xy, stem_xy, angle_deg, length_px, mirror):
     ox, oy = int(round(root_xy[0] - px)), int(round(root_xy[1] - py))
     layer = np.stack([np.asarray(p) for p in pil], axis=-1).clip(0, None)
     layer[..., 3] = layer[..., 3].clip(0, 1)
-    # Composite "over", premultiplied.
+    return layer, ox, oy
+
+
+def composite(canvas, layer, ox, oy):
+    """`layer` "over" the canvas at (ox, oy), premultiplied."""
+    rh, rw = layer.shape[:2]
     H, Wc = canvas.shape[:2]
     x0, y0 = max(ox, 0), max(oy, 0)
     x1, y1 = min(ox + rw, Wc), min(oy + rh, H)

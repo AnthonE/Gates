@@ -908,13 +908,13 @@ fn the_cards_hold_the_density_the_forest_was_built_at() {
          baked at — outside this band the forest is a different density, not a \
          different grain"
     );
-    // Re-centred for the photographed leaf card (`ci/bake_leaf_card.py`,
-    // 0.228): leaf clusters with air between them, where the generated card
-    // was an even 0.256 spray.
+    // Re-centred for the photographed leaf card (`ci/bake_leaf_card.py`
+    // fills to 0.228 and lands on 0.232): separate leaves with air between
+    // them, where the generated card was an even 0.256 spray.
     let (leaf, _, _) = grain(&leaf_image());
     assert!(
-        (0.213..=0.243).contains(&leaf),
-        "the leaf mask tests to {leaf:.3} coverage against the 0.228 it is baked at"
+        (0.217..=0.247).contains(&leaf),
+        "the leaf mask tests to {leaf:.3} coverage against the 0.232 it is baked at"
     );
     // `tests/tree.rs`'s older gate says the leaf card must be the denser of the
     // two — a cluster is mostly leaf, a sprig mostly air — and two independent

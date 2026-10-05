@@ -50,6 +50,7 @@ struct Shots {
 #[derive(Resource)]
 struct NearMats {
     bark: Handle<StandardMaterial>,
+    birch: Handle<StandardMaterial>,
     needle: Handle<StandardMaterial>,
     leaf: Handle<StandardMaterial>,
     pairs: Vec<(Handle<Mesh>, Handle<Mesh>)>,
@@ -105,6 +106,10 @@ fn poses() -> Vec<(String, Vec3, Vec3)> {
         LITTER + Vec3::new(0.0, 1.6, 6.0),
         LITTER + Vec3::new(0.0, 0.0, -2.0),
     ));
+    // `TREE_LOOK_ONLY=broadleaf`: only the shots whose label holds it.
+    if let Ok(only) = std::env::var("TREE_LOOK_ONLY") {
+        v.retain(|(label, _, _)| label.contains(&only));
+    }
     v
 }
 
@@ -191,7 +196,7 @@ fn stage(
     commands.spawn((
         DirectionalLight {
             illuminance: 20_000.0,
-            shadows_enabled: true,
+            shadows_enabled: std::env::var("TREE_LOOK_NOSHADOW").is_err(),
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, -0.7, -0.9, 0.0)),
@@ -227,13 +232,19 @@ fn stage(
 
     let needle_map = images.add(needle_image());
     let leaf_map = images.add(leaf_image());
-    // The game's bark photo, so a species' trunk band reads as it will in
-    // the frame (`props.rs` wears the same file).
-    let bark = materials.add(StandardMaterial {
-        base_color_texture: Some(server.load("textures/bark_albedo.jpg")),
-        perceptual_roughness: 0.92,
-        ..default()
-    });
+    // The game's bark photos, so a species' trunk band reads as it will in
+    // the frame (`props.rs` wears the same files).
+    let mut photo = |role: &str, rough: f32| {
+        let m = client::render::textures::MapSet::load(&server, role);
+        materials.add(StandardMaterial {
+            base_color_texture: Some(m.albedo),
+            normal_map_texture: Some(m.normal),
+            perceptual_roughness: rough,
+            ..default()
+        })
+    };
+    let bark = photo("bark", 0.92);
+    let birch = photo("birch", 0.80);
     let g = client::render::tree::NEEDLE_MAP_GAIN;
     let spec = client::render::tree::CANOPY_SPECULAR_TINT;
     let needle = materials.add(StandardMaterial {
@@ -255,6 +266,8 @@ fn stage(
         cull_mode: None,
         double_sided: true,
         perceptual_roughness: 0.86,
+        // `TREE_LOOK_FLAT=1`: the leaf card unlit, its texture and mask alone.
+        unlit: std::env::var("TREE_LOOK_FLAT").is_ok(),
         ..default()
     });
     let mut pairs = Vec::new();
@@ -304,6 +317,7 @@ fn stage(
     println!("tree_look: {ferns} ferns in the litter patch");
     commands.insert_resource(NearMats {
         bark,
+        birch,
         needle,
         leaf,
         pairs,
@@ -325,13 +339,13 @@ fn place_cards(
     }
     *done = true;
     let spawn_pair = |commands: &mut Commands, v: usize, at: Transform| {
-        let card = if species_of(v) == 0 {
-            &near.needle
+        let (card, trunk) = if species_of(v) == 0 {
+            (&near.needle, &near.bark)
         } else {
-            &near.leaf
+            (&near.leaf, &near.birch)
         };
         let (b, n) = &near.pairs[v];
-        commands.spawn((Mesh3d(b.clone()), MeshMaterial3d(near.bark.clone()), at));
+        commands.spawn((Mesh3d(b.clone()), MeshMaterial3d(trunk.clone()), at));
         commands.spawn((Mesh3d(n.clone()), MeshMaterial3d(card.clone()), at));
     };
     let spawn_card = |commands: &mut Commands, v: usize, tint: usize, at: Transform| {

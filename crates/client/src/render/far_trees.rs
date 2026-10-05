@@ -79,6 +79,9 @@ const BAKE_SS: u32 = 3;
 /// The bark photograph's mean colour, sRGB — the near trunk is that photograph
 /// times a mean-1 vertex field, so the bake multiplies the field by this.
 const BARK_MEAN: u32 = 0x5c4636;
+/// [`BARK_MEAN`] for the broadleaf's birch photograph (`birch_albedo.jpg`,
+/// linear mean 0.316 0.315 0.320).
+const BIRCH_MEAN: u32 = 0x989899;
 /// How far a card is sunk, metres: the far ground sits under the true one.
 const CARD_SINK_M: f32 = 0.3;
 
@@ -475,12 +478,12 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
     let mut dims = Vec::with_capacity(pool);
     for v in 0..pool {
         let (bark, needles) = tree::conifer(v);
-        let (card, gain) = if tree::species_of(v) == 0 {
-            (&needle, tree::NEEDLE_MAP_GAIN)
+        let (card, gain, trunk) = if tree::species_of(v) == 0 {
+            (&needle, tree::NEEDLE_MAP_GAIN, BARK_MEAN)
         } else {
-            (&leaf, tree::LEAF_MAP_GAIN)
+            (&leaf, tree::LEAF_MAP_GAIN, BIRCH_MEAN)
         };
-        let (cell, d) = bake_card(&bark, &needles, card, gain);
+        let (cell, d) = bake_card(&bark, &needles, card, gain, trunk);
         dims.push(d);
         let x0 = v as u32 * CARD_W;
         for y in 0..CARD_H {
@@ -610,7 +613,13 @@ pub const CARD_COVERAGE_BOOST: f32 = 1.35;
 pub const CARD_LIGHT_FLOOR: f32 = 0.38;
 
 /// One tree, side-on, orthographic, into a `CARD_W × CARD_H` RGBA8 sRGB cell.
-fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image, gain: f32) -> (Vec<u8>, CardDims) {
+fn bake_card(
+    bark: &Mesh,
+    needles: &Mesh,
+    card: &Image,
+    gain: f32,
+    trunk: u32,
+) -> (Vec<u8>, CardDims) {
     let (h, _) = tree::bounds(&[bark, needles]);
     let mut tris = Vec::new();
     tris_of(bark, false, &mut tris);
@@ -628,7 +637,7 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image, gain: f32) -> (Vec<u8>, 
     let (nw, nh) = ((CARD_W * BAKE_SS) as usize, (CARD_H * BAKE_SS) as usize);
     let mut depth = vec![f32::NEG_INFINITY; nw * nh];
     let mut rgb = vec![[0.0f32; 3]; nw * nh];
-    let bark_c = props::linear(BARK_MEAN);
+    let bark_c = props::linear(trunk);
     let (tw, th, tex) = match card.data.as_ref() {
         Some(d) => (
             card.texture_descriptor.size.width as usize,
