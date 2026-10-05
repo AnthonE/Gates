@@ -204,6 +204,9 @@ dev_spawn_kit = "$KIT"
 # every inhabitant and the population re-dials its own closed door forever.
 require_auth = false
 population = $POPULATION
+# The patrol heli's first pass lands five minutes after boot and one burst
+# downs a body standing in the open: that was every probe death on a slow box.
+dev_heli = false
 TOML
 
 mkdir -p "$OUT"
