@@ -85,12 +85,12 @@ pub const BRUSH_H: f32 = 0.75;
 /// It used to stand up as three tapered brown quads per stick, which read in
 /// every frame as spikes driven into the ground; a fern from a photograph is
 /// what a forest floor actually grows.
-pub const FERN_H: f32 = 0.42;
+pub const FERN_H: f32 = 0.5;
 
 /// The share of litter elements in a fern colony that carry a fern. **(knob)**
 /// Ferns grow in colonies, so the share is modulated by a low-frequency patch
 /// field ([`fern_at`]): dense in places, absent between.
-pub const FERN_SHARE: f32 = 0.6;
+pub const FERN_SHARE: f32 = 0.5;
 
 /// The fern card atlas: four composed clumps from Poly Haven `fern_02` (CC0),
 /// in the grass atlas's layout (2x2 cells of 512x256, roots on the bottom
@@ -513,7 +513,7 @@ pub fn fern_at(e: &ClutterElem) -> bool {
     if e.kind != Clutter::Twig {
         return false;
     }
-    let colony = ((patch(e.x * 0.8 + 37.0, e.z * 0.8 - 11.0) - 0.42) / 0.22).clamp(0.0, 1.0);
+    let colony = ((patch(e.x * 0.8 + 37.0, e.z * 0.8 - 11.0) - 0.30) / 0.2).clamp(0.0, 1.0);
     hash01(seed_of(e), 0xfe41) < FERN_SHARE * colony
 }
 

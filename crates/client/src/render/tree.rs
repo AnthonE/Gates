@@ -694,6 +694,11 @@ fn occlude_canopy(m: &mut Mesh) {
             } else {
                 (r / rr).clamp(0.0, 1.0)
             };
+            // The top of the crown is open to the sky whatever its radius:
+            // a conifer's spire is a few small cards about the leader, all
+            // "near the axis", and it is the most exposed part of the tree.
+            let open = (((v[1] - lo_y) / span - 0.82) / 0.18).clamp(0.0, 1.0);
+            let e = e.max(open);
             CANOPY_AO_FLOOR + (1.0 - CANOPY_AO_FLOOR) * e.powf(CANOPY_AO_GAMMA)
         })
         .collect();
@@ -756,16 +761,11 @@ fn shape_crown(needles: &mut Mesh, variant: usize) {
     for q in p.chunks_exact_mut(4) {
         let r = root(q);
         let t = ((r.y - lo) / span).clamp(0.0, 1.0);
-        // The leader keeps its full cards: it is the spire's tip, and the
-        // tree's height (`fit_to_bounds`) is measured to it.
-        let lead = ((t - 0.86) / 0.08).clamp(0.0, 1.0);
-        let cone = 1.0 - (1.0 - APEX_SCALE) * t * (1.0 - lead);
-        let whorl_keep = lead;
+        let cone = 1.0 - (1.0 - APEX_SCALE) * t;
         // 1 at a whorl, falling to the gap between two: a raised cosine,
         // flattened on top so a whorl is a band and not a line.
         let ph = ((r.y - lo) / WHORL_M + phase0).fract();
         let w = (0.5 + 0.5 * (ph * std::f32::consts::TAU).cos()).sqrt();
-        let w = w + (1.0 - w) * whorl_keep;
         let s = cone * (WHORL_GAP_SCALE + (1.0 - WHORL_GAP_SCALE) * w);
         for v in q.iter_mut() {
             v[0] = r.x + (v[0] - r.x) * s;
@@ -799,6 +799,20 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
     if sp.tree_type == TreeType::Evergreen {
         shape_crown(&mut needles, variant);
+        // The spire's shrunken top cards lower the apex; stretch the pair
+        // back up to its height, vertically only, so neither the trunk's
+        // radius (the sim's cylinder) nor the crown's grows.
+        let (h, _) = bounds(&[&bark, &needles]);
+        if h > f32::EPSILON {
+            let k = sp.height_m / h;
+            for m in [&mut bark, &mut needles] {
+                if let Some(p) = positions_mut(m) {
+                    for v in p.iter_mut() {
+                        v[1] *= k;
+                    }
+                }
+            }
+        }
     }
     band(
         &mut bark,

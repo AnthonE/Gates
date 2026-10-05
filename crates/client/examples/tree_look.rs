@@ -31,6 +31,8 @@ const ROW_X: [f32; 3] = [0.0, 80.0, 160.0];
 const PITCH_M: f32 = 9.0;
 /// Where the grove stands, away from the rows.
 const GROVE: Vec3 = Vec3::new(0.0, 0.0, -400.0);
+/// Where the litter patch lies.
+const LITTER: Vec3 = Vec3::new(-200.0, 0.0, 0.0);
 /// Frames held at a pose before its shot, and after the last shot before exit.
 const SETTLE_FRAMES: u32 = 14;
 const TAIL_FRAMES: u32 = 24;
@@ -97,6 +99,12 @@ fn poses() -> Vec<(String, Vec3, Vec3)> {
         GROVE + Vec3::new(0.0, 25.0, 20.0),
         GROVE + Vec3::new(0.0, 0.0, -150.0),
     ));
+    // The litter: a forest floor of sticks and ferns (`clutter::fern_at`).
+    v.push((
+        "litter".into(),
+        LITTER + Vec3::new(0.0, 1.6, 6.0),
+        LITTER + Vec3::new(0.0, 0.0, -2.0),
+    ));
     v
 }
 
@@ -157,6 +165,7 @@ fn main() -> AppExit {
 }
 
 fn stage(
+    server: Res<AssetServer>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -249,6 +258,46 @@ fn stage(
         let (bark_mesh, needle_mesh) = conifer(v);
         pairs.push((meshes.add(bark_mesh), meshes.add(needle_mesh)));
     }
+    // The litter patch, through the same element builder the tiles use.
+    let litter_soil = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.30, 0.22, 0.14),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(40.0, 40.0))),
+        MeshMaterial3d(litter_soil),
+        Transform::from_translation(LITTER + Vec3::Y * 0.01),
+    ));
+    let fern_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(server.load(client::render::clutter::FERN_ATLAS)),
+        alpha_mode: AlphaMode::Mask(0.5),
+        cull_mode: None,
+        double_sided: true,
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let mut ferns = 0;
+    for i in 0..30 {
+        for j in 0..30 {
+            let e = sim_core::terrain::ClutterElem {
+                kind: sim_core::terrain::Clutter::Twig,
+                x: LITTER.x - 10.0 + i as f32 * 0.64,
+                y: 0.0,
+                z: LITTER.z - 14.0 + j as f32 * 0.64,
+                yaw: ((i * 37 + j * 11) % 256) as u8,
+                scale: 1.0,
+            };
+            if client::render::clutter::fern_at(&e) {
+                ferns += 1;
+                commands.spawn((
+                    Mesh3d(meshes.add(client::render::clutter::element_mesh(&e))),
+                    MeshMaterial3d(fern_mat.clone()),
+                ));
+            }
+        }
+    }
+    println!("tree_look: {ferns} ferns in the litter patch");
     commands.insert_resource(NearMats {
         bark,
         needle,
