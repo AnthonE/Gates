@@ -495,16 +495,6 @@ pub fn hand_fit(def: Option<&HeldModelDef>) -> HandFit {
     }
 }
 
-/// `fit` with the stroke's wrist turn `snap` taken about the palm, in the
-/// hold frame: the hand turns WITH the item, so a chop flicks the wrist
-/// instead of swivelling the haft through a still fist.
-pub fn fit_turned(fit: HandFit, snap: Quat) -> HandFit {
-    HandFit {
-        rot: snap * fit.rot,
-        pos: VIEWMODEL_PALM + snap * (fit.pos - VIEWMODEL_PALM),
-    }
-}
-
 /// What the arm does to put the bone at `fit`, relative to the hold clip:
 /// the hand bone's turn in its own frame, the part of it about the forearm's
 /// long axis (radians, which [`pose_hand`] hands to the forearm so the wrist
@@ -537,9 +527,15 @@ pub fn grip(def: Option<&HeldModelDef>) -> Transform {
 /// bone's once dressed (`fit` is the hand it hangs off), the rig's until
 /// then.
 ///
-/// `turn` turns the item about the palm in the hold frame. In the hand that
-/// is only the bow's aim, because the stroke turns the hand itself
-/// ([`fit_turned`]); off the rig it is the whole wrist.
+/// `turn` turns the item about the palm in the hold frame: the stroke's
+/// wrist snap and a bow's aim.
+///
+/// ⚠ **The snap turns the item inside the fist, not the fist.** Carrying it
+/// on the hand instead was tried: a 1.45 rad turn about the palm swings the
+/// wrist 17 cm, and shifting the arm after it walks the upper arm into the
+/// lens at the strike; turning about the wrist leaves the item low and the
+/// hand out of the bottom of the frame. The strike is 0.1 s; the rest pose
+/// is what reads.
 pub fn item_pose(fit: Option<HandFit>, turn: Quat) -> Transform {
     if let Some(fit) = fit {
         let rot = fit.rot.inverse();
@@ -2412,10 +2408,8 @@ pub fn animate(
     // CHILDREN (the model and the emitter), not the item, so the three
     // systems own one entity each and need no order between them.
     //
-    // In the hand, the stroke's snap turns the HAND about the palm and the
-    // item rides it ([`fit_turned`]); only a bow's aim turns the item within
-    // the fist. The hand eases to a new row's grip while the item takes its
-    // pose at once, so a swap never swings the item through the frame.
+    // The hand eases to a new row's grip while the item takes its pose at
+    // once, so a swap never swings the item through the frame.
     let (_, strike) = swing_phases(s);
     let snap = stroke_snap(def, strike);
     // A raised bow turns in the hand to aim; nothing else does.
@@ -2437,8 +2431,8 @@ pub fn animate(
     m.fit = Some(fit);
     if let Ok((mut it, in_hand)) = item.single_mut() {
         if in_hand {
-            *it = item_pose(Some(fit), aim);
-            m.set = Some(hand_set(fit_turned(fit, snap)));
+            *it = item_pose(Some(fit), snap * aim);
+            m.set = Some(hand_set(fit));
         } else {
             *it = item_pose(None, snap * aim);
             m.set = None;
@@ -2461,14 +2455,19 @@ pub fn pose_hand(
     let Ok((arms, mut root)) = arms.single_mut() else {
         return;
     };
-    let (Some(hand), Some(forearm), Some((turn, twist, shift))) = (arms.hand, arms.forearm, m.set)
-    else {
+    let (Some(hand), Some((turn, twist, shift))) = (arms.hand, m.set) else {
         return;
     };
     root.translation = VIEWMODEL_ARMS + shift;
-    if let Ok(mut f) = bones.get_mut(forearm) {
-        f.rotation *= Quat::from_rotation_y(twist);
-    }
+    // Without a forearm the wrist takes the whole turn: the same hand, a
+    // worse wrist, and never an item hung off a hand that did not turn.
+    let twist = match arms.forearm.and_then(|f| bones.get_mut(f).ok()) {
+        Some(mut f) => {
+            f.rotation *= Quat::from_rotation_y(twist);
+            twist
+        }
+        None => 0.0,
+    };
     if let Ok(mut h) = bones.get_mut(hand) {
         h.rotation = Quat::from_rotation_y(-twist) * h.rotation * turn;
     }

@@ -92,6 +92,13 @@ GRIP_Q = tuple(_crate(
     r"VIEWMODEL_GRIP_Q: Quat = Quat::from_xyzw\(\s*(-?[\d.]+),\s*(-?[\d.]+),"
     r"\s*(-?[\d.]+),\s*(-?[\d.]+)", 4))
 GRIP_M = _vec3("VIEWMODEL_GRIP_M")
+SEAT = _vec3("VIEWMODEL_SEAT")
+SEAT_DIR = _vec3("VIEWMODEL_SEAT_DIR")
+_HOLD_RS = os.path.join(ROOT, "crates/client/src/ui/hold.rs")
+_roll = re.search(r"GRIP_ROLL_CARRIED: f32 = (-?[\d.]+)", open(_HOLD_RS).read())
+if not _roll:
+    raise SystemExit(f"{_HOLD_RS}: no GRIP_ROLL_CARRIED; fix this bench.")
+GRIP_ROLL = float(_roll.group(1))
 # `render::rig::FOV_DEG` and the 16:9 the shipped window and `ci/scene.sh` use.
 FOV_DEG, ASPECT = 75.0, 16 / 9
 
@@ -146,6 +153,26 @@ def right_hand():
         v = pos[sel]
         out.append((np.concatenate([v, np.ones((len(v), 1))], 1) @ ib.T)[:, :3])
     return np.concatenate(out)
+
+
+def _axang(axis, ang):
+    axis = axis / np.linalg.norm(axis)
+    k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(ang) * k + (1 - np.cos(ang)) * k @ k
+
+
+def hand_view_fitted(hand, lay, yaw, roll=GRIP_ROLL):
+    """The hand `viewmodel::hand_fit` closes on a row at (lay, yaw): the rest
+    hand turned so the haft runs along the grip line, rolled, slid onto the
+    palm. The item does not move; this is where the fist goes."""
+    haft = GRIP @ (Ry(yaw) @ Rx(-lay) @ np.array([0, 1, 0.0]))
+    u = SEAT_DIR / np.linalg.norm(SEAT_DIR)
+    ax = np.cross(u, haft)
+    n = np.linalg.norm(ax)
+    arc = _axang(ax / n, np.arctan2(n, u @ haft)) if n > 1e-9 else np.eye(3)
+    rot = GRIP.T @ _axang(haft, roll) @ arc
+    pos = PALM - rot @ (SEAT / 100.0)
+    return HOLD + (pos + (0.01 * hand) @ rot.T) @ TILT.T
 
 
 def hand_view(hand):
@@ -242,7 +269,6 @@ def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "posesheet.png"
     w, h = 640, 360
     model, hand = held_model(ROW["rel"]), right_hand()
-    hv = hand_view(hand)
     cols = 2
     rows = (len(CANDIDATES) + cols - 1) // cols
     sheet = Image.new("RGB", (cols * w + (cols + 1) * 8, rows * h + (rows + 1) * 8), (16, 17, 19))
@@ -253,6 +279,7 @@ def main():
                f"  screen {sc:.0f} ({oclock(sc)} o'clock)  "
                f"lean {lean:+.0f}  elev {elev:.0f}")
         iv = item_view(model, ROW["height_m"], ROW["grip_frac"], lay, yaw, scale)
+        hv = hand_view_fitted(hand, lay, yaw)
         sheet.paste(panel(hv, iv, lab, w, h), (8 + (i % cols) * (w + 8), 8 + (i // cols) * (h + 8)))
         print(f"  {tag:14s} lay {np.degrees(lay):5.1f}  yaw {np.degrees(yaw):7.1f}  "
               f"scale {scale:.2f}   screen {sc:6.1f} ({oclock(sc):2d} o'clock)"

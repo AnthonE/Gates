@@ -55,7 +55,7 @@ use client::render::viewmodel::{
     VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
 };
 use client::render::viewmodel::{
-    fit_turned, hand_fit, hand_rest, hand_set, item_pose, VIEWMODEL_SEAT, VIEWMODEL_SEAT_DIR,
+    hand_fit, hand_rest, hand_set, item_pose, VIEWMODEL_SEAT, VIEWMODEL_SEAT_DIR,
 };
 use client::ui::hold::{HeldModelDef, Stroke, HELD_MODELS};
 
@@ -1820,25 +1820,24 @@ fn a_fitted_hand_holds_the_item_where_the_framing_put_it() {
     }
     assert!(fitted > 10, "only {fitted} rows close the fist");
 
-    // The stroke turns the hand and the item rides it, so at the apex the
-    // hand-carried snap puts the item exactly where the rig-carried snap did.
+    // The stroke turns the item inside the fitted fist about the palm, so at
+    // the apex it is exactly where the rig-hung item's snap put it.
     let def = HELD_MODELS
         .iter()
         .find(|d| d.key == "stone_hatchet")
         .unwrap();
     let fit = hand_fit(Some(def));
     let snap = aim_snap(item_rest_dir(def), 1.0);
-    let turned = fit_turned(fit, snap);
-    let item = item_pose(Some(fit), Quat::IDENTITY);
+    let item = item_pose(Some(fit), snap);
     let seat = item.translation + item.rotation * (VIEWMODEL_PALM * item.scale.x);
-    let palm = turned.pos + turned.rot * (seat / VIEWMODEL_GRIP_SCALE);
+    let palm = fit.pos + fit.rot * (seat / VIEWMODEL_GRIP_SCALE);
     let old = item_pose(None, snap);
     assert!(
-        turn_of((tilt() * turned.rot * item.rotation).inverse() * old.rotation) < 1e-3
+        turn_of((tilt() * fit.rot * item.rotation).inverse() * old.rotation) < 1e-3
             && (VIEWMODEL_HOLD + tilt() * palm)
                 .distance(old.translation + old.rotation * VIEWMODEL_PALM)
                 < 1e-4,
-        "the hand-carried snap lands the item off the rig-carried one"
+        "the snap in the fitted fist lands the item off the rig-hung one"
     );
 }
 
