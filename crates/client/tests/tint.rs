@@ -84,7 +84,13 @@ fn each_tinted_class_is_a_pool_of_distinct_greys_averaging_one() {
                      into; the modifier is a value multiplier",
                     c
                 );
-                lin.red
+                // The needle card is a mean-normalised photo stored at
+                // `1 / NEEDLE_MAP_GAIN`; the gain is the map's, not a tint.
+                if class == "needle" {
+                    lin.red / client::render::tree::NEEDLE_MAP_GAIN
+                } else {
+                    lin.red
+                }
             })
             .collect();
 

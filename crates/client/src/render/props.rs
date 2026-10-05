@@ -1995,11 +1995,19 @@ pub fn assets(
             })
         }),
         needle: tint_pool().map(|v| {
+            // The card is a mean-normalised photograph stored at
+            // `1 / NEEDLE_MAP_GAIN` (`tree::needle_image`).
+            let v = v * tree::NEEDLE_MAP_GAIN;
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
                 base_color_texture: Some(needle_map.clone()),
                 perceptual_roughness: 0.90,
                 reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
                 // Cards are two-sided by construction — you see the underside of
                 // every branch you stand beneath, and `ART.md` §5 calls that face
                 // the one every judge catches.
@@ -2020,6 +2028,11 @@ pub fn assets(
                 base_color_texture: Some(leaf_map.clone()),
                 perceptual_roughness: 0.90,
                 reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
                 cull_mode: None,
                 // The same cutoff as the needle's, held to the card by the
                 // same gate (`tests/tree.rs`, the mip-chain coverage test).

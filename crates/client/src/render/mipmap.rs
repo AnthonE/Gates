@@ -40,7 +40,7 @@
 //! `water::ripple_map` ("an `Image` constructed in code has
 //! `mip_level_count = 1`, and a one-level normal map on a surface that
 //! reaches 2.6 km is a shimmering carpet of aliased highlights") and
-//! `tree::needle_mips`. The photographs were the case nobody wrote it for,
+//! the old generated needle card. The photographs were the case nobody wrote it for,
 //! and they are the ones covering the whole island.
 //!
 //! ## Derived, not listed
@@ -207,7 +207,7 @@ impl Filter {
 /// measure**, and the two must agree or the chain preserves a coverage the
 /// frame does not draw. 0.5 of the 0..1 range is 128 and not 188: alpha is
 /// linear even in an sRGB-encoded texture — only RGB carries the transfer
-/// function. `tree::NEEDLE_MASK_BYTE` is the same number for the same reason.
+/// function.
 pub const MASK_CUT: u8 = 128;
 
 /// The bisection's upper bound on the alpha rescale.
@@ -215,7 +215,6 @@ pub const MASK_CUT: u8 = 128;
 /// Past this the scale is pushing near-empty texels over the cutoff, which
 /// INVENTS coverage rather than preserving it — and the bottom levels are a
 /// handful of texels where exact coverage is unreachable at any scale.
-/// `tree::needle_mips` uses the same ceiling for the same reason.
 const MASK_SCALE_MAX: f32 = 8.0;
 
 /// Whether any texel is less than fully opaque — i.e. whether the A channel
@@ -238,7 +237,7 @@ pub fn is_translucent(data: &[u8]) -> bool {
 /// mean of a grass card is about 0.22 — well under the cutoff — so each level
 /// loses coverage against the one above it and the loss compounds down the
 /// chain. On the page that reads as grass THINNING with distance, which looks
-/// like a density or LOD bug and is neither. `tree::needle_mips` measured its
+/// like a density or LOD bug and is neither. The old generated needle card measured its
 /// own version of this at 0.53× of level 0's coverage after ONE halving.
 ///
 /// Coverage is monotonic in the scale, so bisection is enough; 12 steps
@@ -257,11 +256,8 @@ pub fn is_translucent(data: &[u8]) -> bool {
 /// a texel; taking the midpoint can under-preserve, which is the baldness this
 /// function exists to stop.
 ///
-/// ⚠ **`tree::needle_mips` has the same line and takes the midpoint.** It has
-/// not been changed here: its alpha is a soft stamp, so its coverage is nearly
-/// continuous in the scale and the step is small, and its own gate pins the
-/// numbers it currently produces. It is a latent instance of this bug, not a
-/// live one — recorded so the next person to touch that file knows.
+/// The canopy cards (`tree::needle_image`, `tree::leaf_image`) build their
+/// chains through [`chain`] too, so there is one bisection and it takes `hi`.
 fn preserve_coverage(level: &mut [u8], want: f32) {
     let coverage = |scale: f32| -> f32 {
         let hit = level
