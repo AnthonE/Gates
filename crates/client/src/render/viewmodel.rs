@@ -23,8 +23,9 @@
 //!   · **Swing** — did I just do something? Driven by the client's mirror of
 //!     the sim's own swing cadence ([`crate::ui::swing`]), with [`Feed`] as a
 //!     backstop. **Its shape is the row's** ([`Stroke`]): a hatchet chops
-//!     ([`swing_pose`]) and a spear thrusts ([`thrust_pose`]), on one clock,
-//!     so the blow lands at one instant whichever it is.
+//!     ([`swing_pose`]), a hammer taps, a rock or a fist bashes and a spear
+//!     thrusts ([`thrust_pose`]), on one clock, so the blow lands at one
+//!     instant whichever it is.
 //!
 //! ### The swing trigger moved, and why
 //!
@@ -193,65 +194,57 @@ pub const VIEWMODEL_SWING_WINDUP: f32 = 0.30;
 /// return — a symmetric strike reads as a wave rather than a chop.
 pub const VIEWMODEL_SWING_ATTACK: f32 = 0.35;
 
-/// How far the wind-up pitches the rig **up**, radians.
-pub const VIEWMODEL_SWING_LIFT: f32 = 0.55;
-/// How far the wind-up cocks the rig out to the right — yaw and roll
-/// together, radians. Smaller than [`VIEWMODEL_SWING_SWEEP`] because a
-/// wind-up that matched the swing-through carries the grip off the right
-/// edge of the frame (measured at 0.55: ndc x 1.17).
-pub const VIEWMODEL_SWING_COCK: f32 = 0.28;
-/// How far the strike pitches the rig **down**, radians. Small next to the
-/// sweep on purpose: at this pivot most of the downward read on screen comes
-/// from the roll and the yaw carrying the item across and under.
-pub const VIEWMODEL_SWING_PITCH: f32 = 0.25;
-/// How far the strike sweeps the rig across — yaw and roll together, radians.
-pub const VIEWMODEL_SWING_SWEEP: f32 = 0.55;
-
-/// Where the wind-up displaces the whole rig, metres — up, out of the way of
-/// what is about to be hit.
-pub const VIEWMODEL_SWING_DRAW: Vec3 = Vec3::new(0.0, 0.16, 0.0);
-/// Where the strike displaces the whole rig, metres: left, down, and away
-/// from the eye. The Z term is the reach — [`VIEWMODEL_SWING_PUSH`] under its
-/// old name, kept as a component of the displacement rather than as a term of
-/// its own, because it is one motion.
-pub const VIEWMODEL_SWING_THROW: Vec3 = Vec3::new(-0.10, -0.10, -0.09);
-/// Where the item's long axis POINTS at the strike apex, in the hold frame —
-/// down and forward, which is where a chop lands.
+/// The chop's wind-up at its peak, as a turn of the whole arm about
+/// [`VIEWMODEL_SWING_PIVOT`], YXZ radians: up, and a little in toward the
+/// head, the way a right hand goes back over the shoulder.
 ///
-/// ## It is the old constant re-read, not a new number
-///
-/// This was `VIEWMODEL_SWING_WRIST: f32 = 0.70`, "how far the strike snaps the
-/// item about the hold frame's own X". That framing hid what the number was
-/// doing: `Rx(-0.70) * NEG_Z` is exactly `(0, -0.6442, -0.7648)`, so an angle
-/// about a fixed axis was an AIM DIRECTION for one particular carry — the
-/// laid-forward one, where the tool's long axis is the hold frame's −Z. Stated
-/// as a direction it serves every carry, and every laid-forward row lands
-/// bit-for-bit where it landed before, because for those rows the two forms are
-/// the same rotation.
-///
-/// **Why this had to change.** A tool's rest direction is the row's business
-/// now (`ui::hold::HeldModelDef::lay` and `pose_yaw`), and the hatchet's is
-/// 54.8° above horizontal where a laid tool's is 19.5°. A fixed angle about a
-/// fixed axis therefore aimed the two at different places: measured, the strike
-/// used to finish with the hatchet's head **+37.6° above the horizon** — a
-/// salute, not a chop — where the laid pose finished at −12.2°. Aiming at a
-/// direction instead makes the landing the invariant and the travel the
-/// difference, which is what a chop is.
-pub const VIEWMODEL_SWING_AIM: Vec3 = Vec3::new(0.0, -0.6442, -0.7648);
-
-/// The most the aim may turn the item, radians. **(knob)** — `DECISIONS.md`.
-///
-/// **A cap and not a target**, because the aim is a direction and the angle to
-/// it is the row's: a laid tool needs 0.70 rad (the old constant, unchanged), a
-/// bow carried upright wants 2.27. Uncapped, every row would land on exactly
-/// the same apex direction and the carry would stop reading at all.
-///
-/// 1.45 is chosen so the tool actually in hand lands where the swing has always
-/// landed: measured, it takes the hatchet's apex to −12.2°, which is the laid
-/// pose's historic landing to a tenth of a degree. It clamps the upright
-/// carries, which is the honest half — they finish above the horizon and would
-/// need the ARM to make up the rest, and the arm cannot (see [`swing_pose`]).
+/// **No roll, in the wind-up or the strike, and that is the fix.** The arc this
+/// replaced swept yaw and roll together by 0.55 rad, which is a chop only for
+/// a tool laid along −Z: roll spins about the view axis, so a haft carried
+/// head-up (the hatchet, 54.8° up) was laid over sideways like a wiper and its
+/// head trailed the fist across the frame. Pitch and yaw tip a haft FORWARD
+/// whichever way it rests, and the wrist ([`chop_snap`]) does the rest per row.
+pub const VIEWMODEL_SWING_COCK: Vec3 = Vec3::new(0.10, 0.30, 0.0);
+/// Where the wind-up displaces the whole rig, metres: up and back toward the
+/// shoulder.
+pub const VIEWMODEL_SWING_DRAW: Vec3 = Vec3::new(-0.03, 0.10, 0.06);
+/// The chop's strike at the apex, YXZ radians about the shoulder: in toward
+/// the crosshair and down. Small next to the wrist's turn on purpose — the fist
+/// stays in the lower right of the frame and the head travels.
+pub const VIEWMODEL_SWING_STRIKE: Vec3 = Vec3::new(0.18, -0.10, 0.0);
+/// Where the strike displaces the whole rig, metres: in, down and out.
+pub const VIEWMODEL_SWING_THROW: Vec3 = Vec3::new(-0.04, -0.02, -0.08);
+/// How far the wrist cocks the item back in the fist at the wind-up's peak,
+/// radians, about the axis it then strikes about: the head goes back over the
+/// shoulder before it comes down.
+pub const VIEWMODEL_SWING_BACK: f32 = 0.25;
+/// How far below the view axis the chop lands, radians. The head's crown
+/// finishes on this ray ([`chop_snap`]), so a chop comes down THROUGH the
+/// crosshair and bites just under it rather than stopping on it.
+pub const VIEWMODEL_SWING_DROP: f32 = 0.12;
+/// The most the chop's wrist may turn the item, radians: a cap on the solve
+/// in [`chop_snap`], for a row too short or too oddly carried to reach the
+/// aim ray. Every chopping row in `ui::hold` lands under it, and the gate
+/// says so.
 pub const VIEWMODEL_SWING_WRIST_MAX: f32 = 1.45;
+
+/// A [`Stroke::Tap`] (the hammer) is the chop at this fraction: the same
+/// path, arm and wrist, shorter. A repair knock, not a felling blow.
+pub const VIEWMODEL_TAP: f32 = 0.45;
+
+/// The bash (a rock, an empty fist, anything small): the wind-up draws the
+/// fist back and out, YXZ radians about the shoulder…
+pub const VIEWMODEL_BASH_COCK: Vec3 = Vec3::new(-0.06, 0.06, 0.0);
+/// …and back toward the eye, metres…
+pub const VIEWMODEL_BASH_DRAW: Vec3 = Vec3::new(0.02, 0.02, 0.10);
+/// …then the strike drives it in and up toward the crosshair…
+pub const VIEWMODEL_BASH_STRIKE: Vec3 = Vec3::new(0.20, 0.10, 0.0);
+/// …and out, away from the eye: a punch, about 30 cm of reach from the draw.
+pub const VIEWMODEL_BASH_THROW: Vec3 = Vec3::new(-0.02, 0.02, -0.20);
+/// How far the item in a bashing fist tips forward at the apex, and back at
+/// the wind-up, radians — the stone's face leads the blow.
+pub const VIEWMODEL_BASH_TURN: f32 = 0.35;
+pub const VIEWMODEL_BASH_BACK: f32 = 0.15;
 
 /// How far the thrust's wind-up cocks the rig out to the right, radians — a
 /// yaw about [`VIEWMODEL_SWING_PIVOT`]. **(knob)** — `DECISIONS.md` §open,
@@ -584,13 +577,8 @@ pub fn bow_aim(def: &crate::ui::hold::HeldModelDef, k: f32) -> Quat {
         * Quat::from_axis_angle(pose * Vec3::X, VIEWMODEL_BOW_CANT * k)
 }
 
-/// The strike's turn for an item whose long axis rests along `rest` in the hold
-/// frame, at strike progress `strike` in 0..1.
-///
-/// **Published because a gate has to walk it**, the same reason
-/// [`swing_pose`] is: `tests/viewmodel_arms.rs` composes this against every
-/// `HELD_MODELS` row to check the head finishes BELOW where it started, which
-/// is the assertion this file spent a session not having.
+/// The turn that carries `from` toward `to`, capped at `cap` radians and
+/// scaled by `strike` — the wrist the thrust and the bow share.
 ///
 /// The axis is the cross product with a named fallback rather than
 /// `Quat::from_rotation_arc`. That function is one line shorter and picks an
@@ -599,19 +587,18 @@ pub fn bow_aim(def: &crate::ui::hold::HeldModelDef, k: f32) -> Quat {
 /// be one item snapping to a random axis at a pose nobody photographs, and it
 /// is reachable from `ui::hold`'s table with no code change at all — so the
 /// margin is gated too.
-pub fn aim_snap(rest: Vec3, strike: f32) -> Quat {
-    turn_toward(rest, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_WRIST_MAX, strike)
+fn turn_toward(from: Vec3, to: Vec3, cap: f32, strike: f32) -> Quat {
+    let (axis, turn) = turn_between(from, to);
+    Quat::from_axis_angle(axis, turn.min(cap) * strike)
 }
 
-/// The turn that carries `from` toward `to`, capped at `cap` radians and
-/// scaled by `strike` — the one wrist both strokes share. See [`aim_snap`]
-/// for why the axis is a cross product with a named fallback.
-fn turn_toward(from: Vec3, to: Vec3, cap: f32, strike: f32) -> Quat {
+/// The axis and the angle of the smallest turn from `from` to `to`. See
+/// [`turn_toward`] for the fallback axis.
+fn turn_between(from: Vec3, to: Vec3) -> (Vec3, f32) {
     let u = from.normalize_or(Vec3::NEG_Z);
     let v = to.normalize_or(Vec3::NEG_Z);
     let axis = u.cross(v).try_normalize().unwrap_or(Vec3::NEG_X);
-    let turn = u.dot(v).clamp(-1.0, 1.0).acos().min(cap);
-    Quat::from_axis_angle(axis, turn * strike)
+    (axis, u.dot(v).clamp(-1.0, 1.0).acos())
 }
 
 /// The item's resting orientation in view space — [`VIEWMODEL_TILT`] as one
@@ -645,7 +632,7 @@ pub fn palm_rig() -> Vec3 {
 /// `D = −palm.z + √(ahead² − palm.x² − palm.y²)` — and the direction from the
 /// palm to `(0, 0, −D)` is the direction the item's long axis has to take.
 /// Brought back into the hold frame through the apex rotation and the tilt,
-/// that is a target for the same cross-product turn [`aim_snap`] uses, capped
+/// that is a target for the same cross-product turn [`turn_toward`] makes, capped
 /// by [`VIEWMODEL_THRUST_WRIST_MAX`] and scaled by `strike` on the way in and
 /// out, so the point arrives on the crosshair exactly when the blow lands and
 /// nowhere else.
@@ -686,21 +673,81 @@ pub fn thrust_snap(def: &HeldModelDef, strike: f32) -> Quat {
     turn_toward(item_rest_dir(def), want, VIEWMODEL_THRUST_WRIST_MAX, strike)
 }
 
-/// The wrist for whatever is in hand: [`thrust_snap`] for a thrust row,
-/// [`aim_snap`] for a chop, and the laid-forward chop for an empty fist or a
-/// capture run with no session — `NEG_Z` is the direction a laid tool rests
-/// along, so an empty hand swings exactly as everything swung before rows
-/// carried a stroke.
-pub fn stroke_snap(def: Option<&HeldModelDef>, strike: f32) -> Quat {
+/// The chop's wrist for a row (and the tap's, at [`VIEWMODEL_TAP`]): the turn
+/// about the palm, cocked back by [`VIEWMODEL_SWING_BACK`] at the wind-up and
+/// carried forward at the apex until the row's crown lies on the aim ray —
+/// [`VIEWMODEL_SWING_DROP`] under the crosshair.
+///
+/// ## The strike axis is the row's, not the view's
+///
+/// The turn is the smallest one from where the row's haft rests
+/// ([`item_rest_dir`]) to where it has to point at the apex, so its axis comes
+/// out of the carry: a haft standing head-up tips its head forward and down, a
+/// haft laid forward dips it. One fixed axis served one carry and swept every
+/// other one sideways.
+///
+/// Solved the way [`thrust_snap`] is: at the apex the rig is at the stroke's
+/// pose of [`swing_apex_s`] under the row's own carry and raise ([`carried`]),
+/// which fixes the palm; a crown `ahead_m` past the palm meets the aim ray at
+/// one depth, and the direction from the palm to there is the target. A row
+/// too short to reach the ray points straight down −Z instead, a defined
+/// answer and a red gate rather than a NaN.
+pub fn chop_snap(def: &HeldModelDef, cock: f32, strike: f32) -> Quat {
+    let k = if def.stroke == Stroke::Tap {
+        VIEWMODEL_TAP
+    } else {
+        1.0
+    };
+    let apex = swing_apex_s() / VIEWMODEL_SWING_S;
+    let (rot, off) = stroke_pose(def.stroke, apex);
+    let lit = if def.light.is_some() { 1.0 } else { 0.0 };
+    let rig = carried(carry_of(Some(def)), lift_at(lit, apex), rot, off);
+    let palm = rig.transform_point(palm_rig());
+    let reach = def.ahead_m() * rig.scale.x;
+    let ray = Vec3::new(
+        0.0,
+        -VIEWMODEL_SWING_DROP.sin(),
+        -VIEWMODEL_SWING_DROP.cos(),
+    );
+    let b = palm.dot(ray);
+    let disc = b * b - (palm.length_squared() - reach * reach);
+    let want_view = if disc > 0.0 && reach > 0.0 {
+        (ray * (b + disc.sqrt()) - palm) / reach
+    } else {
+        Vec3::NEG_Z
+    };
+    let want = tilt().inverse() * (rig.rotation.inverse() * want_view);
+    let (axis, turn) = turn_between(item_rest_dir(def), want);
+    let turn = turn.min(VIEWMODEL_SWING_WRIST_MAX);
+    Quat::from_axis_angle(axis, k * (turn * strike - VIEWMODEL_SWING_BACK * cock))
+}
+
+/// The bash's wrist: the item's long axis tipped toward the view's −Z at the
+/// apex, by [`VIEWMODEL_BASH_TURN`], and back by [`VIEWMODEL_BASH_BACK`] at
+/// the wind-up — the stone's face leads the punch.
+pub fn bash_snap(def: &HeldModelDef, cock: f32, strike: f32) -> Quat {
+    let (axis, _) = turn_between(item_rest_dir(def), tilt().inverse() * Vec3::NEG_Z);
+    Quat::from_axis_angle(
+        axis,
+        VIEWMODEL_BASH_TURN * strike - VIEWMODEL_BASH_BACK * cock,
+    )
+}
+
+/// The wrist for whatever is in hand, at the stroke's `(cock, strike)`
+/// ([`swing_phases`]). An empty fist has nothing to turn.
+pub fn stroke_snap(def: Option<&HeldModelDef>, cock: f32, strike: f32) -> Quat {
     match def {
-        Some(d) if d.stroke == Stroke::Thrust => thrust_snap(d, strike),
-        Some(d) if d.stroke == Stroke::Shot => Quat::IDENTITY,
-        Some(d) => aim_snap(item_rest_dir(d), strike),
-        None => aim_snap(Vec3::NEG_Z, strike),
+        Some(d) => match d.stroke {
+            Stroke::Chop | Stroke::Tap => chop_snap(d, cock, strike),
+            Stroke::Bash => bash_snap(d, cock, strike),
+            Stroke::Thrust => thrust_snap(d, strike),
+            Stroke::Shot => Quat::IDENTITY,
+        },
+        None => Quat::IDENTITY,
     }
 }
 
-/// An item's long axis at rest, in the hold frame — what [`aim_snap`] aims.
+/// An item's long axis at rest, in the hold frame — what the wrists turn from.
 ///
 /// `pose` puts the model's +Y through `Ry(pose_yaw) * Rx(-lay)`, so this is
 /// that rotation applied to +Y and nothing else. It is a function rather than
@@ -715,13 +762,10 @@ pub fn item_rest_dir(def: &crate::ui::hold::HeldModelDef) -> Vec3 {
 /// and falls across the rest.
 ///
 /// **C¹ at all three of its interesting points**, which is not decoration
-/// here: the swing composes two of these back to back, and a slope step at
-/// the join is a visible flick in a motion whose whole job is to read as one
-/// stroke. `sin²` and `cos²` are flat at 0 and at π/2, so the rise leaves 0
-/// with zero slope, meets the fall at 1 with zero slope from both sides, and
-/// returns to 0 the same way. (A bare `sin` — the shape `animate` used for
-/// its old arc — is *not*: its derivative at either end is π·A, so the item
-/// snapped into motion and snapped out of it.)
+/// here: the swing composes two of these, and a slope step is a visible flick
+/// in a motion whose whole job is to read as one stroke. `sin²` and `cos²`
+/// are flat at 0 and at π/2, so the rise leaves 0 with zero slope, meets the
+/// fall at 1 with zero slope from both sides, and returns to 0 the same way.
 pub fn bump(u: f32, attack: f32) -> f32 {
     if u <= 0.0 || u >= 1.0 {
         return 0.0;
@@ -736,56 +780,94 @@ pub fn bump(u: f32, attack: f32) -> f32 {
     }
 }
 
-/// The rig's rotation and displacement at swing progress `s` ∈ [0, 1], where
-/// 0 and 1 are both the rest pose.
+/// The arm about the shoulder for a stroke that turns: `cock`/`draw` at the
+/// wind-up's peak and `strike`/`throw` at the apex (YXZ radians, metres), all
+/// scaled by `k`.
+fn arm_pose(s: f32, k: f32, cock: Vec3, draw: Vec3, strike: Vec3, throw: Vec3) -> (Quat, Vec3) {
+    let (c, st) = swing_phases(s);
+    let e = (cock * c + strike * st) * k;
+    (
+        Quat::from_euler(EulerRot::YXZ, e.x, e.y, e.z),
+        (draw * c + throw * st) * k,
+    )
+}
+
+/// The chop's rig rotation and displacement at swing progress `s` ∈ [0, 1],
+/// where 0 and 1 are both the rest pose: up and back, then down and in, about
+/// the shoulder. The head's own path is mostly the wrist's ([`chop_snap`]).
 ///
 /// Published because the gate walks it: `tests/viewmodel_arms.rs` applies this
 /// to the hold point and to the collapsed arm's origin at every step of the
 /// stroke and asserts the first stays inside the frame and the second stays
-/// outside it. That is the one thing about this arc that is checkable without
-/// a GPU, and it is the thing that actually went wrong — the rig's own
-/// `Sword_Attack` was the obvious clip to play here and, measured, it carries
-/// the right hand **behind the camera** for 40% of its length and to ndc
-/// y −2.36 at the strike, because it is authored for a body seen from
+/// outside it. The rig's own `Sword_Attack` carries the right hand behind the
+/// camera for 40% of its length, because it is authored for a body seen from
 /// outside. See [`VIEWMODEL_SWING_PIVOT`].
 pub fn swing_pose(s: f32) -> (Quat, Vec3) {
-    let (wind, strike) = swing_phases(s);
-    // Yaw and roll move together — one diagonal, cocked out to the right and
-    // swept down across to the left — so they share a coefficient.
-    let turn = -VIEWMODEL_SWING_COCK * wind + VIEWMODEL_SWING_SWEEP * strike;
-    let rot = Quat::from_euler(
-        EulerRot::YXZ,
-        turn,
-        VIEWMODEL_SWING_LIFT * wind - VIEWMODEL_SWING_PITCH * strike,
-        turn,
-    );
-    (
-        rot,
-        VIEWMODEL_SWING_DRAW * wind + VIEWMODEL_SWING_THROW * strike,
+    arm_pose(
+        s,
+        1.0,
+        VIEWMODEL_SWING_COCK,
+        VIEWMODEL_SWING_DRAW,
+        VIEWMODEL_SWING_STRIKE,
+        VIEWMODEL_SWING_THROW,
     )
 }
 
-/// The two pulses of a stroke at progress `s` ∈ [0, 1]: `(wind, strike)`,
-/// each 0..1 and never both nonzero. One function for both strokes and for
-/// the wrist, so the arm and the item cannot disagree about when the blow
-/// lands — which is also what keeps [`swing_apex_s`] true of a thrust.
+/// The tap: [`swing_pose`] at [`VIEWMODEL_TAP`].
+pub fn tap_pose(s: f32) -> (Quat, Vec3) {
+    arm_pose(
+        s,
+        VIEWMODEL_TAP,
+        VIEWMODEL_SWING_COCK,
+        VIEWMODEL_SWING_DRAW,
+        VIEWMODEL_SWING_STRIKE,
+        VIEWMODEL_SWING_THROW,
+    )
+}
+
+/// The bash: the fist drawn back and out, then punched in toward the
+/// crosshair and away from the eye.
+pub fn bash_pose(s: f32) -> (Quat, Vec3) {
+    arm_pose(
+        s,
+        1.0,
+        VIEWMODEL_BASH_COCK,
+        VIEWMODEL_BASH_DRAW,
+        VIEWMODEL_BASH_STRIKE,
+        VIEWMODEL_BASH_THROW,
+    )
+}
+
+/// The two pulses of a stroke at progress `s` ∈ [0, 1]: `(cock, strike)`.
+/// One function for every stroke and for the wrist, so the arm and the item
+/// cannot disagree about when the blow lands — which is also what keeps
+/// [`swing_apex_s`] true of all of them.
+///
+/// The cock peaks halfway through [`VIEWMODEL_SWING_WINDUP`] and falls INTO
+/// the apex, overlapping the strike, so the arm comes down from the wind-up in
+/// one motion. It used to fall back to rest before the strike began, and a
+/// chop that comes down twice with a stop at rest between reads as a stutter.
+/// Both are zero, with zero slope, at the apex, so the apex pose is the
+/// strike's alone.
 pub fn swing_phases(s: f32) -> (f32, f32) {
     let w = VIEWMODEL_SWING_WINDUP;
-    if s < w {
-        (bump(s / w, 0.5), 0.0)
+    let apex = swing_apex_s() / VIEWMODEL_SWING_S;
+    let cock = bump(s / apex, 0.5 * w / apex);
+    let strike = if s < w {
+        0.0
     } else {
-        (0.0, bump((s - w) / (1.0 - w), VIEWMODEL_SWING_ATTACK))
-    }
+        bump((s - w) / (1.0 - w), VIEWMODEL_SWING_ATTACK)
+    };
+    (cock, strike)
 }
 
 /// The rig's rotation and displacement at thrust progress `s` ∈ [0, 1] —
 /// [`swing_pose`]'s twin for a [`Stroke::Thrust`] row, on the same clock.
 ///
-/// Same wind-up split, same attack fraction, same [`VIEWMODEL_SWING_S`], so
-/// the apex is the chop's apex. What differs is the path: the chop turns
-/// about the shoulder and sweeps, this draws the whole assembly back toward
-/// the eye and then drives it forward, inward and slightly up. The point's
-/// own convergence on the crosshair is not here — it is the wrist,
+/// Same phases, same [`VIEWMODEL_SWING_S`], so the apex is the chop's apex.
+/// What differs is the path: this draws the whole assembly back toward the eye
+/// and then drives it forward, inward and slightly up. The point's own
+/// convergence on the crosshair is not here — it is the wrist,
 /// [`thrust_snap`] — because it depends on the row's length and this does
 /// not. Published for the same reason [`swing_pose`] is: the gate walks it.
 pub fn thrust_pose(s: f32) -> (Quat, Vec3) {
@@ -802,11 +884,13 @@ pub fn thrust_pose(s: f32) -> (Quat, Vec3) {
     )
 }
 
-/// [`swing_pose`] or [`thrust_pose`], by the row — or nothing, for a row
-/// that is fired rather than swung.
+/// The arm's stroke for the row — or nothing, for a row that is fired rather
+/// than swung.
 pub fn stroke_pose(stroke: Stroke, s: f32) -> (Quat, Vec3) {
     match stroke {
         Stroke::Chop => swing_pose(s),
+        Stroke::Tap => tap_pose(s),
+        Stroke::Bash => bash_pose(s),
         Stroke::Thrust => thrust_pose(s),
         Stroke::Shot => (Quat::IDENTITY, Vec3::ZERO),
     }
@@ -2135,8 +2219,7 @@ pub fn animate(
     // second-drain defect `feed.rs` narrates.
     //
     // `None` is an empty hand, or a capture run with no session at all, and
-    // it chops: `stroke_snap` says why that is the historic swing and not an
-    // arbitrary default.
+    // it punches (`Stroke::Bash`).
     let def: Option<&'static HeldModelDef> = net
         .as_deref()
         .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))
@@ -2371,7 +2454,7 @@ pub fn animate(
     // and the tool head waggling on a stationary fist — the operator's
     // *"hardly anything moves"* (2026-08-30) was the second of those.
     let s = 1.0 - m.swing;
-    let (arc, throw) = stroke_pose(def.map_or(Stroke::Chop, |d| d.stroke), s);
+    let (arc, throw) = stroke_pose(def.map_or(Stroke::Bash, |d| d.stroke), s);
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
     let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
@@ -2410,8 +2493,8 @@ pub fn animate(
     //
     // The hand eases to a new row's grip while the item takes its pose at
     // once, so a swap never swings the item through the frame.
-    let (_, strike) = swing_phases(s);
-    let snap = stroke_snap(def, strike);
+    let (cock, strike) = swing_phases(s);
+    let snap = stroke_snap(def, cock, strike);
     // A raised bow turns in the hand to aim; nothing else does.
     let aim = match (bow, def) {
         (Some(_), Some(d)) => bow_aim(d, m.raise),
