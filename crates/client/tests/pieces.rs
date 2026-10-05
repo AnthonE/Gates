@@ -657,3 +657,218 @@ fn sided_meshes_follow_authoritative_facing_without_moving_geometry() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// §E · The dressed meshes stay inside the volume they dress (piece dress v0)
+// ---------------------------------------------------------------------------
+
+use client::render::structures::dress;
+
+const EDGE_SHAPES: [u8; 6] = [
+    sim_core::build::SHAPE_WALL,
+    sim_core::build::SHAPE_HALF_WALL,
+    sim_core::build::SHAPE_LOW_WALL,
+    sim_core::build::SHAPE_DOORWAY,
+    sim_core::build::SHAPE_WINDOW,
+    sim_core::build::SHAPE_FRAME,
+];
+
+/// Positions, normals and indices of a dressed mesh — after asserting it
+/// carries the attributes a normal-mapped, tinted surface needs.
+fn dressed(name: &str, m: &Mesh) -> (Vec<Vec3>, Vec<Vec3>, Vec<usize>) {
+    for (attr, what) in [
+        (Mesh::ATTRIBUTE_UV_0, "uv0"),
+        (Mesh::ATTRIBUTE_COLOR, "colour"),
+        (Mesh::ATTRIBUTE_TANGENT, "tangent"),
+    ] {
+        assert!(m.attribute(attr).is_some(), "{name}: no {what}");
+    }
+    let Some(VertexAttributeValues::Float32x3(p)) = m.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        panic!("{name}: positions");
+    };
+    let Some(VertexAttributeValues::Float32x3(n)) = m.attribute(Mesh::ATTRIBUTE_NORMAL) else {
+        panic!("{name}: normals");
+    };
+    let idx: Vec<usize> = m.indices().expect("indexed").iter().collect();
+    (
+        p.iter().map(|v| Vec3::from_array(*v)).collect(),
+        n.iter().map(|v| Vec3::from_array(*v)).collect(),
+        idx,
+    )
+}
+
+/// The whole contract for one dressed mesh: every vertex inside the volume
+/// (`inside`), every triangle facing the way its normals say, and a triangle
+/// budget a base of hundreds of pieces can afford.
+fn holds(name: &str, m: &Mesh, budget: usize, inside: impl Fn(Vec3) -> bool) -> usize {
+    let (pos, nor, idx) = dressed(name, m);
+    for p in &pos {
+        assert!(
+            inside(*p),
+            "{name}: vertex {p:?} is outside the volume the sim collides — \
+             detail goes INSIDE a piece, never on it"
+        );
+    }
+    for t in idx.chunks(3) {
+        let geo = (pos[t[1]] - pos[t[0]]).cross(pos[t[2]] - pos[t[0]]);
+        let stored = nor[t[0]] + nor[t[1]] + nor[t[2]];
+        assert!(
+            geo.dot(stored) > 0.0,
+            "{name}: a triangle winds against its normals — culled, see-through"
+        );
+    }
+    let tris = idx.len() / 3;
+    assert!(
+        tris <= budget,
+        "{name}: {tris} triangles against a budget of {budget} — this mesh is \
+         drawn once per piece and a base is hundreds of pieces"
+    );
+    tris
+}
+
+fn in_part(p: Vec3, part: &Part) -> bool {
+    let lo = part.offset - part.size * 0.5 - Vec3::splat(1e-4);
+    let hi = part.offset + part.size * 0.5 + Vec3::splat(1e-4);
+    p.cmpge(lo).all() && p.cmple(hi).all()
+}
+
+/// Every edge shape, in every tier, under every post ownership — and the
+/// diagonal walls — keeps every vertex inside the parts the sim collides.
+#[test]
+fn a_dressed_edge_piece_stays_inside_its_parts() {
+    use client::render::structures::{parts_for, shape_parts};
+    let mut most = 0;
+    for tier in 0..N_TIERS as u8 {
+        for shape in EDGE_SHAPES {
+            let (parts, n) = shape_parts(shape);
+            for own in 0..4u8 {
+                let keep = PostOwn::from_bits(own);
+                let owned: Vec<Part> = parts[..n]
+                    .iter()
+                    .copied()
+                    .filter(|p| keep.draws(p.role))
+                    .collect();
+                let m = dress::edge_mesh(&owned, tier, false);
+                let name = format!("tier {tier} shape {shape} own {own}");
+                let tris = holds(&name, &m, 2400, |p| owned.iter().any(|q| in_part(p, q)));
+                if own == 3 {
+                    println!("{name}: {tris} tris");
+                }
+                most = most.max(tris);
+            }
+            if matches!(
+                shape,
+                sim_core::build::SHAPE_WALL
+                    | sim_core::build::SHAPE_HALF_WALL
+                    | sim_core::build::SHAPE_LOW_WALL
+            ) {
+                let (diag, _) = parts_for(shape, sim_core::build::LOC_DIAG_A);
+                let m = dress::edge_mesh(&diag[..1], tier, true);
+                holds(&format!("tier {tier} diagonal {shape}"), &m, 2400, |p| {
+                    in_part(p, &diag[0])
+                });
+            }
+        }
+    }
+    assert!(
+        most > 100,
+        "the dressed walls are suspiciously plain ({most} tris)"
+    );
+    // The aprons the ground storey hangs under its walls, likewise.
+    for tier in 0..N_TIERS as u8 {
+        for own in 0..4u8 {
+            let (parts, n) = apron_parts(PostOwn::from_bits(own));
+            let m = dress::apron_mesh(&parts[..n], tier);
+            holds(&format!("tier {tier} apron {own}"), &m, 2400, |p| {
+                parts[..n].iter().any(|q| in_part(p, q))
+            });
+        }
+    }
+}
+
+/// Every floor, roof and footing slab, square and half, in every tier and at
+/// every skirt depth the kit caches, stays inside its slab — its top the walk
+/// surface, its sides the cell, a half's hypotenuse the diagonal.
+#[test]
+fn a_dressed_slab_stays_inside_its_slab() {
+    let h = sim_core::build::BUILD_CELL_M * 0.5;
+    let mut sizes = vec![(SLAB_T, false)];
+    for i in 0..SKIRT_STEPS {
+        sizes.push(((SLAB_T + i as f32 * SKIRT_STEP_M).min(SKIRT_MAX_M), true));
+    }
+    for tier in 0..N_TIERS as u8 {
+        for &(depth, foundation) in &sizes {
+            for tri in [false, true] {
+                let size = Vec3::new(2.0 * h, depth, 2.0 * h);
+                let m = dress::slab_mesh(size, tri, foundation, tier);
+                let name = format!("tier {tier} depth {depth} tri {tri} foundation {foundation}");
+                let tris = holds(&name, &m, 3000, |p| {
+                    p.x.abs() <= h + 1e-4
+                        && p.z.abs() <= h + 1e-4
+                        && p.y.abs() <= depth * 0.5 + 1e-4
+                        && (!tri || p.x + p.z <= 1e-4)
+                });
+                if depth == SLAB_T || depth >= SKIRT_MAX_M {
+                    println!("{name}: {tris} tris");
+                }
+            }
+        }
+    }
+}
+
+/// **The tier is geometry, so an upgrade must change the mesh.** The kit's
+/// pick for every dressed shape differs by tier — a stone wall drawn with the
+/// twig mesh would be the stale-upgrade defect, the right material over the
+/// wrong frame.
+#[test]
+fn every_tier_draws_its_own_mesh() {
+    use bevy::asset::AssetPlugin;
+    use client::render::structures::{build_kit, is_slab};
+    use sim_core::build::{
+        LOC_DIAG_A, LOC_EDGE_XLO, LOC_PLANE, SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF,
+        SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_WALL,
+    };
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+    app.init_asset::<Mesh>();
+    app.init_asset::<StandardMaterial>();
+    app.init_asset::<Image>();
+    let world = app.world_mut();
+    let assets = world.resource::<AssetServer>().clone();
+    let mut meshes = world.remove_resource::<Assets<Mesh>>().unwrap();
+    let mut mats = world.remove_resource::<Assets<StandardMaterial>>().unwrap();
+    let kit = build_kit(&assets, &mut meshes, &mut mats);
+
+    assert!(is_slab(SHAPE_FLOOR) && is_slab(SHAPE_ROOF) && is_slab(SHAPE_TRI_FLOOR));
+    assert!(!is_slab(SHAPE_FOUNDATION) && !is_slab(SHAPE_WALL));
+    let mut picks: Vec<(u8, u8)> = EDGE_SHAPES.iter().map(|&s| (s, LOC_EDGE_XLO)).collect();
+    picks.extend([
+        (SHAPE_WALL, LOC_DIAG_A),
+        (SHAPE_FOUNDATION, LOC_PLANE),
+        (SHAPE_TRI_FOUNDATION, LOC_PLANE),
+        (SHAPE_FLOOR, LOC_PLANE),
+        (SHAPE_ROOF, LOC_PLANE),
+        (SHAPE_TRI_FLOOR, LOC_PLANE),
+    ]);
+    for (shape, loc) in picks {
+        let ids: Vec<_> = (0..N_TIERS as u8)
+            .map(|t| kit.piece_mesh(shape, t, loc, PostOwn::BOTH, false, 3).id())
+            .collect();
+        for a in 0..ids.len() {
+            for b in a + 1..ids.len() {
+                assert_ne!(
+                    ids[a], ids[b],
+                    "shape {shape} draws tiers {a} and {b} with one mesh — an \
+                     upgrade between them would keep the old tier's geometry"
+                );
+            }
+        }
+        let m = meshes
+            .get(&kit.piece_mesh(shape, MAT_STONE, loc, PostOwn::BOTH, true, 3))
+            .expect("the kit's meshes are in the store it was handed");
+        assert!(
+            m.count_vertices() > 24,
+            "shape {shape} stone is a plain box"
+        );
+    }
+}
