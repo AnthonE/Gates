@@ -2115,7 +2115,7 @@ fn roofing(o: &mut Out, fp: &[Vec2], top: f32, under: f32, tier: u8) {
     // under the walk surface)
     let (pitch, drop, wmin, wmax, gap, seat_d) = match tier {
         MAT_TWIG => (0.3, 0.03, 0.9, 1.5, 0.0, 0.045),
-        MAT_WOOD => (0.25, 0.018, 0.14, 0.3, 0.007, 0.035),
+        MAT_WOOD => (0.3, 0.02, 0.18, 0.36, 0.007, 0.035),
         _ => (0.375, 0.018, 0.32, 0.6, 0.008, JOINT_M),
     };
     let seat = top - seat_d;
