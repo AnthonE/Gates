@@ -13,9 +13,9 @@
 //!   target/release/examples/tree_look /tmp/shots
 //! ```
 //!
-//! The materials are stand-ins for `props.rs`'s (no wind, no transmission, a
-//! flat bark colour), so a frame here settles shape and the LOD pair's
-//! relationship, not final colour.
+//! The materials are stand-ins for `props.rs`'s (no wind, no transmission),
+//! so a frame here settles shape and the LOD pair's relationship, not final
+//! colour.
 
 use std::path::PathBuf;
 
@@ -227,8 +227,10 @@ fn stage(
 
     let needle_map = images.add(needle_image());
     let leaf_map = images.add(leaf_image());
+    // The game's bark photo, so a species' trunk band reads as it will in
+    // the frame (`props.rs` wears the same file).
     let bark = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.42, 0.31, 0.21),
+        base_color_texture: Some(server.load("textures/bark_albedo.jpg")),
         perceptual_roughness: 0.92,
         ..default()
     });
@@ -244,7 +246,9 @@ fn stage(
         specular_tint: Color::linear_rgb(spec, spec, spec),
         ..default()
     });
+    let lg = client::render::tree::LEAF_MAP_GAIN;
     let leaf = materials.add(StandardMaterial {
+        base_color: Color::linear_rgb(lg, lg, lg),
         base_color_texture: Some(leaf_map),
         specular_tint: Color::linear_rgb(spec, spec, spec),
         alpha_mode: AlphaMode::Mask(0.5),

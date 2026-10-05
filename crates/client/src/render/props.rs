@@ -1793,11 +1793,9 @@ pub(super) fn boxes_mesh_with(
 
 /// Build the shared mesh and material pool.
 ///
-/// `images` is here for exactly one thing: the needle card, which is generated
-/// rather than loaded (`tree::needle_image`). `assets/textures/` has bark and
-/// no leaf, and an un-masked leaf quad is a solid square — the opaque hull the
-/// browser already spent three passes rejecting. Generating it keeps the
-/// depot's asset list unchanged and cannot go missing from a build.
+/// `images` is here for exactly one thing: the two canopy cards, which are
+/// compiled into the binary rather than loaded (`tree::needle_image`,
+/// `tree::leaf_image`), so they cannot go missing from a build.
 pub fn assets(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -2023,6 +2021,8 @@ pub fn assets(
             })
         }),
         leaf: tint_pool().map(|v| {
+            // A mean-normalised photo too, stored at `1 / LEAF_MAP_GAIN`.
+            let v = v * tree::LEAF_MAP_GAIN;
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
                 base_color_texture: Some(leaf_map.clone()),

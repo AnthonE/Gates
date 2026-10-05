@@ -511,7 +511,22 @@ fn the_leaf_card_is_actually_cut_out_and_is_not_the_needle() {
 #[test]
 fn the_needle_photo_is_mean_one_under_its_gain() {
     use client::render::tree::NEEDLE_MAP_GAIN;
-    let img = needle_image();
+    photo_is_mean_one(
+        needle_image(),
+        NEEDLE_MAP_GAIN,
+        "needle",
+        "bake_needle_card",
+    );
+}
+
+/// The leaf card is a mean-normalised photo too (`ci/bake_leaf_card.py`).
+#[test]
+fn the_leaf_photo_is_mean_one_under_its_gain() {
+    use client::render::tree::LEAF_MAP_GAIN;
+    photo_is_mean_one(leaf_image(), LEAF_MAP_GAIN, "leaf", "bake_leaf_card");
+}
+
+fn photo_is_mean_one(img: bevy::prelude::Image, gain: f32, what: &str, bake: &str) {
     let w = img.texture_descriptor.size.width as usize;
     let d = img.data.as_ref().expect("card has no data");
     let lin = |b: u8| {
@@ -530,11 +545,11 @@ fn the_needle_photo_is_mean_one_under_its_gain() {
         n += 1;
     }
     for (c, total) in sum.iter().enumerate() {
-        let mean = total / n as f64 * NEEDLE_MAP_GAIN as f64;
+        let mean = total / n as f64 * gain as f64;
         assert!(
             (0.9..=1.1).contains(&mean),
-            "needle card channel {c} averages {mean:.3} under NEEDLE_MAP_GAIN — \
-             re-run ci/bake_needle_card.py and copy the gain it prints"
+            "{what} card channel {c} averages {mean:.3} under its gain — \
+             re-run ci/{bake}.py and copy the gain it prints"
         );
     }
 }
@@ -893,10 +908,13 @@ fn the_cards_hold_the_density_the_forest_was_built_at() {
          baked at — outside this band the forest is a different density, not a \
          different grain"
     );
+    // Re-centred for the photographed leaf card (`ci/bake_leaf_card.py`,
+    // 0.228): leaf clusters with air between them, where the generated card
+    // was an even 0.256 spray.
     let (leaf, _, _) = grain(&leaf_image());
     assert!(
-        (0.241..=0.271).contains(&leaf),
-        "the leaf mask tests to {leaf:.3} coverage against 0.256"
+        (0.213..=0.243).contains(&leaf),
+        "the leaf mask tests to {leaf:.3} coverage against the 0.228 it is baked at"
     );
     // `tests/tree.rs`'s older gate says the leaf card must be the denser of the
     // two — a cluster is mostly leaf, a sprig mostly air — and two independent
