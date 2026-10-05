@@ -502,8 +502,8 @@ pub fn update(
         .zip(world.as_deref())
         .map(|(g, w)| {
             let p = g.translation();
-            let ground =
-                sim_core::terrain::height(w.seed, p.x, p.z).max(sim_core::terrain::SEA_LEVEL);
+            let ground = sim_core::terrain::ground(w.seed, &w.haven, p.x, p.z)
+                .max(sim_core::terrain::SEA_LEVEL);
             let low = 1.0
                 - ((p.y - ground - HELI_WASH_FULL_M) / (HELI_WASH_GONE_M - HELI_WASH_FULL_M))
                     .clamp(0.0, 1.0);

@@ -111,7 +111,9 @@ fn every_kind_spawns_without_a_duplicate_component() {
         if kind == MarkKind::None {
             assert_eq!(kids, 0, "{kind:?} is never drawn and must draw nothing");
         } else {
-            assert_eq!(kids, 1, "{kind:?} must spawn exactly one badge");
+            // THE GATE draws its safe-zone square first, under its badge.
+            let zone = usize::from(kind == MarkKind::Town);
+            assert_eq!(kids, 1 + zone, "{kind:?} must spawn exactly one badge");
         }
     }
 }
@@ -125,7 +127,7 @@ fn a_badge_holds_its_picture_and_a_destination_holds_its_name() {
             continue;
         }
         let (app, parent) = draw(kind, true);
-        let badge = children(&app, parent)[0];
+        let badge = *children(&app, parent).last().expect("a badge");
         let kids = children(&app, badge);
         let pictures = kids
             .iter()
@@ -157,7 +159,7 @@ fn a_mark_with_no_icon_is_still_a_mark() {
             continue;
         }
         let (app, parent) = draw(kind, false);
-        let badge = children(&app, parent)[0];
+        let badge = *children(&app, parent).last().expect("a badge");
         assert!(
             app.world().entity(badge).contains::<Node>(),
             "{kind:?} lost its badge with no icons loaded"
@@ -175,7 +177,7 @@ fn a_mark_with_no_icon_is_still_a_mark() {
 #[test]
 fn depot_badge_is_hollow_and_names_the_freight_destination() {
     let (app, parent) = draw(MarkKind::Depot, true);
-    let badge = children(&app, parent)[0];
+    let badge = *children(&app, parent).last().expect("a badge");
     let colour = app.world().entity(badge).get::<BackgroundColor>().unwrap();
     let (haven_app, haven_parent) = draw(MarkKind::Haven, true);
     let haven_badge = children(&haven_app, haven_parent)[0];
