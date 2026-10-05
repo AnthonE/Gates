@@ -968,3 +968,116 @@ fn a_bore_foams_behind_its_front() {
     );
     assert!(breaker_foam(SURF_AMP_M, 0.5, 1.0) > 0.5 * SURF_FOAM_MAX);
 }
+
+// ---------------------------------------------------------------------------
+// The surface shader.
+// ---------------------------------------------------------------------------
+
+const WATER_WGSL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/shaders/water.wgsl"
+);
+
+/// The uniform's two sides list the same fields in the same order. A uniform
+/// whose sides disagree still binds; every field after the mismatch is then
+/// garbage, and the symptom is a wrong-looking sea rather than a layout error.
+#[test]
+fn the_water_uniform_declares_the_same_fields_on_both_sides() {
+    fn fields(src: &str, header: &str, strip: &str) -> Vec<String> {
+        let body = src
+            .split_once(header)
+            .unwrap_or_else(|| panic!("no `{header}` in the source"))
+            .1;
+        let body = body.split_once("\n}").expect("unterminated struct").0;
+        body.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .filter_map(|l| l.trim_start_matches(strip).trim().split(':').next())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect()
+    }
+    let wgsl = std::fs::read_to_string(WATER_WGSL).expect("water.wgsl");
+    let rust = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render/water.rs"))
+        .expect("water.rs");
+    let shader = fields(&wgsl, "struct Water {", "");
+    let host = fields(&rust, "pub struct WaterParams {", "pub ");
+    assert_eq!(shader, host, "water.wgsl and WaterParams disagree");
+    assert!(shader.len() >= 9, "the parse matched nothing: {shader:?}");
+}
+
+/// Every derivative in the fragment is taken before its first branch, and no
+/// texture is sampled with implicit derivatives at all — the reflection's
+/// cube read sits under `if is_front`. naga does not enforce uniform control
+/// flow in the fragment stage, so either mistake compiles and smears.
+#[test]
+fn the_water_shader_takes_no_derivative_under_a_branch() {
+    let src = std::fs::read_to_string(WATER_WGSL).expect("water.wgsl");
+    let code: String = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("textureSample("),
+        "an implicit-derivative sample in water.wgsl"
+    );
+    let frag = code.split_once("fn fragment(").expect("no fragment").1;
+    let first_if = frag.find("if ").expect("no branch at all");
+    for d in ["dpdx", "dpdy", "fwidth"] {
+        if let Some(at) = frag.rfind(d) {
+            assert!(at < first_if, "`{d}` after the fragment's first branch");
+        }
+    }
+}
+
+/// The refracted path is bounded: straight down it is the depth, and at the
+/// most grazing view it is `1/sqrt(1 − 1/n²)` ≈ 1.51× the depth — never the
+/// straight line's `1/cos`, which would make the shallows opaque from the sand.
+#[test]
+fn the_refracted_path_is_bounded() {
+    assert!((refracted_path(1.0) - 1.0).abs() < 1e-6);
+    let grazing = 1.0 / (1.0 - 1.0 / (WATER_IOR * WATER_IOR)).sqrt();
+    assert!((refracted_path(0.0) - grazing).abs() < 1e-3);
+    assert!(grazing < 1.6);
+    let mut prev = refracted_path(1.0);
+    for i in (0..100).rev() {
+        let p = refracted_path(i as f32 / 100.0);
+        assert!(p >= prev - 1e-6, "the path shortened as the view flattened");
+        prev = p;
+    }
+    // The glint's Fresnel and the reflectance are one number.
+    let ior_f0 = ((WATER_IOR - 1.0) / (WATER_IOR + 1.0)).powi(2);
+    assert!((water_f0() - ior_f0).abs() < 2e-3);
+}
+
+/// The reflected sky is a sky: the horizon brighter than the zenith and
+/// greyer, the whole of it going with the daylight, a warm glow only for a low
+/// sun and only on the red side.
+#[test]
+fn the_reflected_sky_follows_the_day() {
+    use bevy::math::Vec3;
+    let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let noon_sun = Vec3::new(0.3, 0.8, 0.5).normalize();
+    let [z, h, g] = sky_light(noon_sun, 1.0, 0.0, 0.0);
+    assert!(lum(h) > lum(z), "the horizon is darker than the zenith");
+    assert!(z[2] > z[0], "the zenith is not blue");
+    assert!(
+        h[2] / h[0] < z[2] / z[0],
+        "the horizon is not greyer than the zenith"
+    );
+    assert_eq!(g, [0.0; 3], "a dusk glow at noon");
+    let [zn, _, _] = sky_light(noon_sun, 0.0, 0.0, 1.0);
+    assert!(
+        lum(zn) < 0.01 * lum(z),
+        "the night sky is as bright as the day"
+    );
+    let low = Vec3::new(0.95, 0.05, 0.0).normalize();
+    let [_, _, gd] = sky_light(low, 0.4, 0.0, 0.0);
+    assert!(gd[0] > gd[2] && gd[0] > 0.0, "no warm glow at a low sun");
+    let [zs, _, _] = sky_light(noon_sun, 1.0, 1.0, 0.0);
+    assert!(
+        lum(zs) < lum(z),
+        "a storm sky reflects brighter than a clear one"
+    );
+}

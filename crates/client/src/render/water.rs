@@ -28,11 +28,16 @@
 //!    footprint" law the ground's material already runs on (`TERRAIN.md` §4).
 //!    Below the shortest of them the detail is a tiling ripple normal map that
 //!    scrolls (see [`ripple_map`]).
-//! 4. **Reflections are not built**, and that is §5 and §6 read together:
-//!    reflections are the expensive half of water in the reference's own
-//!    settings screen, and the payoff they name is putting the *sky* into the
-//!    reflection — which a `StandardMaterial` under Bevy's atmosphere already
-//!    gets from its specular term.
+//! 4. **The reflection is the sky, and only the sky** (§5 and §6 read
+//!    together): screen-space reflection is the expensive half of water in
+//!    the reference's own settings screen, and the payoff they name is putting
+//!    the *sky* into the reflection. `assets/shaders/water.wgsl` reflects an
+//!    analytic clear sky ([`sky_light`]) plus the cloud deck's own cubemap
+//!    (the `Skybox` image) through Schlick's Fresnel, and draws a sun glint off
+//!    the scene's own directional light. It used to be the camera's
+//!    `EnvironmentMapLight` specular, which is the hemisphere FILL — a flat
+//!    low-frequency ambient — so the sea reflected an even teal-grey and no
+//!    sky at all.
 //! 5. **Foam** is a band *standing off* the waterline, slope-weighted (their
 //!    published sentence about their own ocean foam is that it is "mostly
 //!    visible on terrain slopes with higher inclination", §4), with its
@@ -41,21 +46,16 @@
 //!    [`FOAM_PEAK_M`], [`FOAM_JITTER_M`] and [`foam_surge`]. The land half of
 //!    the same job is `terrain_mesh::wet_factor`.
 //!
-//! ## What still makes a hard edge, and what would fix it
+//! ## The optics are per pixel now, off the depth prepass
 //!
-//! The alpha ramp here is a *vertex* quantity: it grades on the water column
-//! read off `terrain::height` at 2 m spacing and interpolated across the
-//! triangle. Against the terrain that is a good approximation of a per-pixel
-//! depth fade, because the terrain is the thing it sampled. Against anything
-//! else it knows nothing — a boulder, a foundation or a player standing in the
-//! shallows gets a hard ring where the sea meets it, because no vertex of this
-//! mesh has ever heard of them.
-//!
-//! The fix is the standard one and it is a shader: sample the depth prepass in
-//! the fragment, take the difference between the scene depth and the water's
-//! own, and fade alpha and add foam as it goes to zero. That needs an
-//! `ExtendedMaterial` and the first WGSL in the tree (`RENDER.md` §8), which is
-//! its own slice; it is written down in `NOW.md` rather than half-built here.
+//! The mesh carries two numbers a vertex — the foam, and the water column read
+//! off `terrain::height` — and the shader grades colour and alpha itself. On
+//! the desktop the camera has a `DepthPrepass` (SSAO requires it), so the
+//! shader reads the depth of whatever is BEHIND the surface and uses the
+//! water's own height over it: a boulder, a foundation or a wading player
+//! fades the sea to nothing where it meets them, and wears a broken lip of
+//! foam. A browser has no prepass (`rig.rs`), and the same shader falls back
+//! to the interpolated vertex column, which is the old behaviour.
 //!
 //! ## The frame cost, and where it is paid
 //!
@@ -67,19 +67,27 @@
 //!   frame for one 65² chunk and its normals, so it is not a new class of
 //!   cost.
 //! - **Every frame**: four sines per vertex and a write of position, normal
-//!   and colour. No `terrain` taps, no allocation — the attribute buffers are
+//!   and foam. No `terrain` taps, no allocation — the attribute buffers are
 //!   built once and mutated in place, which is `CLAUDE.md`'s no-per-frame-
 //!   allocation rule on the one system that runs every single frame.
 
-use bevy::asset::RenderAssetUsages;
+use bevy::asset::{Asset, RenderAssetUsages};
+use bevy::core_pipeline::Skybox;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat, TextureViewDescriptor,
+    TextureViewDimension,
+};
+use bevy::shader::ShaderRef;
 use sim_core::terrain::{self, SEA_LEVEL};
 
+use super::rig::EyeCam;
+use super::weather::WeatherNow;
 use super::{Eye, WorldEntity, WorldId};
 
 // ---------------------------------------------------------------------------
@@ -886,25 +894,255 @@ pub const WATER_IOR: f32 = 1.333;
 /// else, and the ripple map cannot widen a highlight it does not blur.
 pub const WATER_ROUGHNESS: f32 = 0.08;
 
-fn water_material(ripples: Handle<Image>) -> StandardMaterial {
-    StandardMaterial {
-        // White, because the colour IS the vertex colour: every vertex carries
-        // its own graded body colour and alpha out of `depth_tint`, and a base
-        // colour here would multiply all of them by one tint.
-        base_color: Color::WHITE,
-        normal_map_texture: Some(ripples),
-        perceptual_roughness: WATER_ROUGHNESS,
-        metallic: 0.0,
-        reflectance: WATER_REFLECTANCE,
-        ior: WATER_IOR,
-        // See `premultiplied`: this is what keeps the sky in the shallows.
-        alpha_mode: AlphaMode::Premultiplied,
-        // Visible from underneath. A player wading past chest height is
-        // looking at the surface from below, and a back-face-culled sea simply
-        // is not there.
-        cull_mode: None,
-        double_sided: true,
+/// Water's normal-incidence Fresnel reflectance, `F0`, as Bevy derives it from
+/// [`WATER_REFLECTANCE`]. The shader's sky reflection and sun glint both use
+/// it; `tests/water.rs` holds it to the IOR.
+pub fn water_f0() -> f32 {
+    0.16 * WATER_REFLECTANCE * WATER_REFLECTANCE
+}
+
+// ---------------------------------------------------------------------------
+// The surface shader: per-pixel optics, the sky in the reflection, the glint.
+// ---------------------------------------------------------------------------
+
+/// The sea's fragment shader, resolved against the asset root.
+pub const SHADER: &str = "shaders/water.wgsl";
+
+/// The sea as the world draws it: `StandardMaterial` for the lighting, the
+/// shadows and the ripple normal map, plus [`WaterExt`] for the optics.
+pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
+
+/// Metres of water over which the reflection and the foam fade in from the
+/// line where the surface meets something. **A contact line is a polygon
+/// intersection**, and anything drawn at full strength up to it — Fresnel
+/// does not know how deep the water is — draws that intersection as a hard
+/// line. 12 cm is a few pixels of beach at wading range and invisible past it.
+pub const EDGE_M: f32 = 0.12;
+/// How far up a thing standing in the water its foam lip reaches, metres of
+/// water column under the surface (desktop only: it is read off the depth
+/// prepass, so it rings boulders, foundations and legs, not only the beach).
+pub const CONTACT_M: f32 = 0.45;
+/// The most foam that lip carries. Well under the surf's own: it is lapping
+/// water, not a breaker, and a solid white ring outlines exactly what the
+/// shore wash was built not to outline.
+pub const CONTACT_FOAM: f32 = 0.45;
+/// The glint's GGX roughness² (`α²`, Bevy's `roughness` squared) at the eye
+/// and at [`GLINT_FAR_M`]. The near value is tight because the ripple map
+/// supplies the slope there; past it the map's mips have averaged the ripples
+/// flat, so the slope they no longer resolve comes back as roughness — a
+/// Cox–Munk sea at a light breeze has a total slope variance near 0.02.
+/// Without it the far glitter path collapses to a pinpoint mirror of the sun.
+pub const GLINT_A2_NEAR: f32 = 0.0016;
+pub const GLINT_A2_FAR: f32 = 0.02;
+pub const GLINT_FAR_M: f32 = 400.0;
+
+/// How far the reflected clear sky's chroma is pulled toward grey, `0..1`.
+///
+/// **Measured, against the desktop's own sky.** `sky::backdrop_at` colours
+/// the zenith with the air's raw single-scatter chroma, which is a deep blue
+/// (B/R ≈ 3.8 linear); the atmosphere the desktop actually draws arrives much
+/// greyer after multiple scattering and its thicker air. The first capture
+/// read the sky at ~5° as sRGB (129,153,171) and its reflection in the sea as
+/// (104,136,200) — a sea bluer than the sky it mirrors. Applied on both
+/// targets, but only the desktop draws this sky; a browser reflects its deck.
+pub const SKY_DESAT: f32 = 0.45;
+
+/// The browser's night-sky floor, deck units (`sky.rs`'s own `NIGHT_SKY`).
+const NIGHT_SKY: [f32; 3] = [0.0015, 0.002, 0.0035];
+/// The warm glow a low sun puts on the horizon near it, deck units
+/// (`sky.rs`'s `DUSK_GLOW`, which the browser's deck bakes the same way).
+const DUSK_GLOW: [f32; 3] = [0.10, 0.045, 0.02];
+
+/// The clear sky the sea reflects, cd/m²: `[zenith, horizon, dusk glow]`.
+///
+/// **The browser's backdrop, not a new sky.** `sky::backdrop_at` is the
+/// clear-sky radiance a page bakes behind its clouds — zenith luminance off
+/// the fill's own irradiance, the air's chroma, the horizon brighter and
+/// greyer along the air-mass curve — and the weather and the hour act on it
+/// exactly as `sky::compose_range` acts on the baked one. The desktop's real
+/// sky is the atmosphere's, which a forward material cannot sample (its
+/// sky-view LUT is not in the mesh view bindings), so this is the stand-in on
+/// both targets; a browser draws the deck itself instead (see `zenith.w`).
+///
+/// `light` is the sun's share of daylight (`WeatherNow::sun_lux`), `dark` and
+/// `night` the weather's and the hour's.
+pub fn sky_light(sun: Vec3, light: f32, dark: f32, night: f32) -> [[f32; 3]; 3] {
+    let nits = super::sky::CLOUD_NITS;
+    let grade = |b: [f32; 3]| -> [f32; 3] {
+        let lum = super::fill::luminance(b);
+        let grey = SKY_DESAT + (1.0 - SKY_DESAT) * 0.7 * dark;
+        core::array::from_fn(|c| {
+            ((b[c] + (lum - b[c]) * grey) * (1.0 - 0.4 * dark) * light + NIGHT_SKY[c] * night)
+                * nits
+        })
+    };
+    let zenith = grade(super::sky::backdrop_at(Vec3::Y));
+    let horizon = grade(super::sky::backdrop_at(Vec3::X));
+    // `compose_range`'s dusk: a sun under 0.25 of elevation warms the
+    // horizon toward it, gone once it is a tenth under the horizon.
+    let dusk = if sun.y > -0.1 {
+        ((0.25 - sun.y) / 0.25).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let g = dusk * ((sun.y + 0.1) / 0.1).clamp(0.0, 1.0) * (1.0 - 0.7 * dark);
+    let glow = core::array::from_fn(|c| DUSK_GLOW[c] * g * nits);
+    [zenith, horizon, glow]
+}
+
+/// How much longer the light's path through the water is than the water is
+/// deep, for an eye looking down at `cos_i` from the vertical.
+///
+/// **Refracted, not straight.** The straight-line path is `1 / cos_i` and runs
+/// away at grazing angles — a beach eye looking 20 m out would see the shallows
+/// as twelve times their depth and fully opaque. Snell bends the ray toward
+/// the vertical on the way in, so the path is `1 / cos_t` with
+/// `sin_t = sin_i / n`, and that is bounded: never more than ~1.51× the depth
+/// for water, which is why the shallows stay see-through from the sand.
+pub fn refracted_path(cos_i: f32) -> f32 {
+    let c = cos_i.clamp(0.0, 1.0);
+    let sin2_t = (1.0 - c * c) / (WATER_IOR * WATER_IOR);
+    1.0 / (1.0 - sin2_t).max(1e-4).sqrt()
+}
+
+/// The per-material uniform. Field order and names must match `struct Water`
+/// in `water.wgsl` exactly (`tests/water.rs` scrapes both).
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+pub struct WaterParams {
+    /// xyz [`EXTINCT`], w [`ALPHA_MAX`].
+    pub optics: Vec4,
+    /// xyz [`SCATTER_ALBEDO`], w [`WATER_IOR`].
+    pub scatter: Vec4,
+    /// xyz [`FOAM_BODY`], w [`FOAM_ALPHA`].
+    pub foam: Vec4,
+    /// xyz the clear sky's zenith, cd/m²; w how much of the analytic clear
+    /// sky to add under the deck — 1 natively (the deck's clear texels are
+    /// zero), 0 in a browser (the deck carries its own sky).
+    pub zenith: Vec4,
+    /// xyz the clear sky's horizon, cd/m²; w `sky::AIR_FLOOR`.
+    pub horizon: Vec4,
+    /// xyz toward the sun (unit); w cd/m² per deck texel unit — the
+    /// `Skybox` brightness the cubemap is drawn at.
+    pub sun: Vec4,
+    /// xyz the dusk glow toward a low sun, cd/m²; w spare.
+    pub glow: Vec4,
+    /// x [`EDGE_M`], y [`CONTACT_M`], z [`CONTACT_FOAM`], w the breakers'
+    /// phase (wrapped to τ, so the lap it drives never jumps).
+    pub shore: Vec4,
+    /// x `F0`, y [`GLINT_A2_NEAR`], z [`GLINT_A2_FAR`], w [`GLINT_FAR_M`].
+    pub glint: Vec4,
+}
+
+impl WaterParams {
+    /// The uniform for a sky and a sun. Everything but those and the phase is
+    /// a constant of this file.
+    pub fn new(sky: [[f32; 3]; 3], sun: Vec3, phase: f32) -> Self {
+        let [zenith, horizon, glow] = sky;
+        let clear = if super::sky::BAKE_BACKDROP { 0.0 } else { 1.0 };
+        Self {
+            optics: Vec4::new(EXTINCT[0], EXTINCT[1], EXTINCT[2], ALPHA_MAX),
+            scatter: Vec4::new(
+                SCATTER_ALBEDO[0],
+                SCATTER_ALBEDO[1],
+                SCATTER_ALBEDO[2],
+                WATER_IOR,
+            ),
+            foam: Vec4::new(FOAM_BODY[0], FOAM_BODY[1], FOAM_BODY[2], FOAM_ALPHA),
+            zenith: Vec4::new(zenith[0], zenith[1], zenith[2], clear),
+            horizon: Vec4::new(horizon[0], horizon[1], horizon[2], super::sky::AIR_FLOOR),
+            sun: sun
+                .normalize_or(Vec3::Y)
+                .extend(super::sky::CLOUD_NITS * super::sky::DECK_GAIN),
+            glow: Vec4::new(glow[0], glow[1], glow[2], 0.0),
+            shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, phase),
+            glint: Vec4::new(water_f0(), GLINT_A2_NEAR, GLINT_A2_FAR, GLINT_FAR_M),
+        }
+    }
+
+    /// Noon in clear weather: what a frame with no weather yet draws.
+    pub fn noon() -> Self {
+        let sun = super::rig::to_sun(super::rig::CAPTURE_DAY_FRAC);
+        Self::new(sky_light(sun, 1.0, 0.0, 0.0), sun, 0.0)
+    }
+}
+
+/// The extension: the uniform and the sky's cubemap.
+///
+/// **Not `#[bindless]`**, for the reason `ground_splat.rs` gives: it forces
+/// the whole `ExtendedMaterial` non-bindless, which is also what lets the
+/// shader read `pbr_bindings::normal_map_texture` by name.
+#[derive(Asset, AsBindGroup, TypePath, Clone)]
+pub struct WaterExt {
+    #[uniform(100)]
+    pub params: WaterParams,
+    /// The cloud deck — the camera's own `Skybox` image once there is one, a
+    /// black cube until then. `animate` swaps it in.
+    #[texture(101, dimension = "cube")]
+    #[sampler(102)]
+    pub sky: Handle<Image>,
+}
+
+impl MaterialExtension for WaterExt {
+    fn fragment_shader() -> ShaderRef {
+        SHADER.into()
+    }
+    /// Forward only, like the ground: this client never runs deferred.
+    fn deferred_fragment_shader() -> ShaderRef {
+        ShaderRef::Default
+    }
+}
+
+/// A 1×1 black cube: the sky before the deck exists. A `Skybox` hangs on the
+/// camera a system later than the sea is built (`sky::setup` runs after the
+/// rig), and an extension field cannot wait.
+fn black_cube() -> Image {
+    let mut image = Image::new(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        vec![0u8; 6 * 4],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
         ..default()
+    });
+    image
+}
+
+fn water_material(ripples: Handle<Image>, sky: Handle<Image>) -> WaterMaterial {
+    ExtendedMaterial {
+        base: StandardMaterial {
+            // White: the shader writes the body colour itself, off the depth.
+            base_color: Color::WHITE,
+            normal_map_texture: Some(ripples),
+            perceptual_roughness: WATER_ROUGHNESS,
+            metallic: 0.0,
+            // The shader zeroes this before Bevy's lighting runs — the sky and
+            // the glint are drawn by `water.wgsl`, and Bevy's own specular
+            // would add the hemisphere fill's reflection on top (`reference/
+            // WATER.md` §6: the failure mode of putting the sky in is energy
+            // counted twice). Kept physical so the value still says what water
+            // is.
+            reflectance: WATER_REFLECTANCE,
+            ior: WATER_IOR,
+            // See `depth_tint`: this is what keeps the sky in the shallows.
+            alpha_mode: AlphaMode::Premultiplied,
+            // Visible from underneath. A player wading past chest height is
+            // looking at the surface from below, and a back-face-culled sea
+            // simply is not there.
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        },
+        extension: WaterExt {
+            params: WaterParams::noon(),
+            sky,
+        },
     }
 }
 
@@ -922,7 +1160,8 @@ pub struct Sea {
     spacing: Vec<f32>,
     /// Depth of water under each vertex, metres. Negative over dry land.
     depth: Vec<f32>,
-    /// Static colour and alpha per vertex, before any foam.
+    /// [`depth_tint`] at each vertex, before any foam: the CPU reference for
+    /// what the shader grades per pixel (the shader reads the depth, not this).
     base: Vec<[f32; 4]>,
     /// The shore wash at each vertex, before this frame's surge. Kept apart
     /// from [`Sea::base`] because it is the half that breathes: the colour is a
@@ -971,7 +1210,7 @@ pub struct Sea {
     /// not true of one that lives as long as the sea.
     field: Vec<[f32; 3]>,
     mesh: Option<Handle<Mesh>>,
-    material: Option<Handle<StandardMaterial>>,
+    material: Option<Handle<WaterMaterial>>,
     /// The snapped grid centre, in [`SNAP_M`] cells. `None` until the first
     /// build.
     cell: Option<(i32, i32)>,
@@ -1097,7 +1336,7 @@ pub fn axis_spacing(coords: &[f32]) -> Vec<f32> {
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut sea: ResMut<Sea>,
 ) {
@@ -1109,7 +1348,10 @@ pub fn setup(
     // Everything is sized once, here, and mutated in place forever after.
     let positions = vec![[0.0f32, SEA_LEVEL, 0.0]; count];
     let normals = vec![[0.0f32, 1.0, 0.0]; count];
-    let colors = vec![[0.0f32, 0.0, 0.0, 0.0]; count];
+    // `[foam, water column]` per vertex — the shader's inputs (`water.wgsl`).
+    // UV1 rather than COLOR: two floats, not four, and nothing in Bevy's
+    // standard path reads a second UV set unless a texture asks for it.
+    let shore = vec![[0.0f32, DEEP_SENTINEL_M]; count];
     let uvs = vec![[0.0f32, 0.0]; count];
     // The tangent is CONSTANT and is written exactly once. The UVs are world
     // XZ over the tile, so `∂P/∂u` is `+X` everywhere no matter where the grid
@@ -1136,12 +1378,15 @@ pub fn setup(
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, shore);
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     mesh.insert_indices(Indices::U32(indices));
 
     let mesh = meshes.add(mesh);
-    let material = materials.add(water_material(images.add(ripple_map())));
+    let material = materials.add(water_material(
+        images.add(ripple_map()),
+        images.add(black_cube()),
+    ));
 
     sea.coords = coords;
     sea.spacing = spacing;
@@ -1457,7 +1702,8 @@ pub fn stream(
 /// Advance the swell and write this frame's surface.
 ///
 /// The only per-frame work: four sines a vertex, three attribute writes, and
-/// one `Affine2` on the material. No `terrain` taps and no allocation.
+/// the material's uniform (the ripple scroll and the sky). No `terrain` taps
+/// and no allocation.
 ///
 /// **"Four sines a vertex" is what this sentence always claimed and what the
 /// code only now does.** The three attribute writes cannot hold their borrows
@@ -1469,8 +1715,10 @@ pub fn stream(
 pub fn animate(
     mut sea: ResMut<Sea>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
     time: Res<Time>,
+    weather: Option<Res<WeatherNow>>,
+    skybox: Query<&Skybox, With<EyeCam>>,
 ) {
     if sea.cell.is_none() {
         return;
@@ -1486,7 +1734,30 @@ pub fn animate(
 
     if let Some(h) = sea.material.clone() {
         if let Some(m) = materials.get_mut(&h) {
-            m.uv_transform = Affine2::from_translation(sea.drift);
+            m.base.uv_transform = Affine2::from_translation(sea.drift);
+            // The sky the surface reflects: read off the weather, which reads
+            // the rig's clock — the sun and the hour have one owner and this
+            // is a client of it. Headless (no weather) it is the noon sky.
+            m.extension.params = match weather.as_deref() {
+                Some(w) => WaterParams::new(
+                    sky_light(w.sun, w.sun_lux, w.dark, w.night),
+                    w.sun,
+                    sea.surf_phase,
+                ),
+                None => WaterParams {
+                    shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, sea.surf_phase),
+                    ..WaterParams::noon()
+                },
+            };
+            // The deck the camera draws, once it hangs there. The composer
+            // replaces the image behind the same handle, and the material is
+            // re-prepared every frame by this very `get_mut`, so the clouds in
+            // the reflection follow the clouds in the sky.
+            if let Ok(sky) = skybox.single() {
+                if m.extension.sky != sky.image {
+                    m.extension.sky = sky.image.clone();
+                }
+            }
         }
     }
 
@@ -1578,7 +1849,7 @@ pub fn animate(
             *slot = [v.x, v.y, v.z];
         }
     }
-    if let Some(VertexAttributeValues::Float32x4(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+    if let Some(VertexAttributeValues::Float32x2(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_1) {
         for iz in 0..n {
             for ix in 0..n {
                 let i = iz * n + ix;
@@ -1602,7 +1873,9 @@ pub fn animate(
                 } else {
                     0.0
                 };
-                col[i] = with_foam(sea.base[i], wash + sea.surf_foam[i]);
+                // The shader grades the body off the depth and mixes this
+                // in with `with_foam`'s own arithmetic.
+                col[i] = [(wash + sea.surf_foam[i]).clamp(0.0, 1.0), sea.depth[i]];
             }
         }
     }
