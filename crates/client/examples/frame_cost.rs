@@ -267,7 +267,7 @@ fn main() {
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
     app.init_asset::<Mesh>();
     app.init_asset::<Image>();
-    app.init_asset::<StandardMaterial>();
+    app.init_asset::<water::WaterMaterial>();
     app.insert_resource(WorldId::new(SEED));
     app.init_resource::<Sea>();
     app.insert_resource(Eye {

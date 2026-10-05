@@ -546,6 +546,8 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         // The far treeline's cards (`far_trees.rs`).
         app.add_plugins(MaterialPlugin::<far_trees::TreeCardMaterial>::default());
+        // The sea's surface (`water.rs`, `water.wgsl`).
+        app.add_plugins(MaterialPlugin::<water::WaterMaterial>::default());
         foliage::plugin(app);
         app.init_resource::<far_trees::FarForest>();
         app.init_resource::<boulders::RockRing>();
