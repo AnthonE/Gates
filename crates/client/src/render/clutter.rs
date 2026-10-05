@@ -795,12 +795,26 @@ pub fn stream(
             let mut n_solid = 0usize;
             let mut n_cards = 0usize;
             let mut n_ferns = 0usize;
+            // Off the faces the cliff relief moves: a shard there would float
+            // in front of a cut or sink into a buttress.
+            let mut lat = terrain::Lattice::new();
             for e in buf.iter().take(n) {
                 if e.kind == Clutter::Shard
                     && hash01(
                         (e.x * 64.0) as i32 as u32,
                         (e.z * 64.0) as i32 as u32 ^ 0x5eed,
                     ) > SHARD_KEEP
+                {
+                    continue;
+                }
+                if e.kind == Clutter::Shard
+                    && super::terrain_mesh::relief_moves(
+                        &mut lat,
+                        world.seed,
+                        &world.haven,
+                        e.x,
+                        e.z,
+                    )
                 {
                     continue;
                 }
