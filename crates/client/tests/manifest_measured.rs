@@ -387,7 +387,7 @@ impl Drift {
 
 /// Leg 1. `MANIFEST.md`'s prop-bind table is the shipped albedos' own.
 ///
-/// Six roles × four numbers, every one a statistic of a `.jpg` this repo ships
+/// Seven roles × four numbers, every one a statistic of a `.jpg` this repo ships
 /// and expects to swap. This is the leg that was red when the file was written:
 /// `rock`'s row carried `Rock023`'s numbers a day after `Gravel004` replaced
 /// it, and the mean it stated (0.269) is 10% above what the file delivers.
@@ -401,7 +401,7 @@ fn the_manifests_prop_bind_table_is_the_shipped_files_own() {
     );
 
     let mut d = Drift::default();
-    for role in ["rock", "bark", "twig", "wood", "stone", "metal"] {
+    for role in ["rock", "bark", "birch", "twig", "wood", "stone", "metal"] {
         let r = row_for("MANIFEST.md's prop-bind table", &rows, role);
         assert!(
             r.len() >= 6,

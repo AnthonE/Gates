@@ -208,6 +208,8 @@ pub struct PropAssets {
     /// used to wear for want of anything better — an untextured white surface
     /// whose only colour was the mesh's own trunk band.
     bark: [Handle<StandardMaterial>; TINT_POOL],
+    /// The broadleaf trunk's bark: a birch photograph (`textures::PropMaps`).
+    birch: [Handle<StandardMaterial>; TINT_POOL],
     rock: [Handle<StandardMaterial>; TINT_POOL],
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
@@ -2097,6 +2099,9 @@ pub fn assets(
         // grain already pointing the right way. Before this the bark half of
         // every tree wore `foliage`, an untextured white surface.
         bark: photo_pool(&maps.bark, 0.92, fresnel::DIELECTRIC, materials),
+        // Birch bark is papery and has a dull sheen where pine's is all
+        // fissure, so it is a touch less rough.
+        birch: photo_pool(&maps.birch, 0.80, fresnel::DIELECTRIC, materials),
     }
 }
 
@@ -2143,6 +2148,7 @@ pub fn stream(
             use super::foliage::Kind;
             for (pool, kind) in [
                 (&a.bark, Kind::Bark),
+                (&a.birch, Kind::Bark),
                 (&a.needle, Kind::Needle),
                 (&a.leaf, Kind::Leaf),
                 (&a.bush_leaf, Kind::BushLeaf),
@@ -2483,7 +2489,10 @@ pub fn spawn_slot(
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = species_variant(slot, a.pines.len());
-            (a.pines[variant].clone(), a.bark[tint].clone())
+            (
+                a.pines[variant].clone(),
+                a.trunk_material(variant, key).clone(),
+            )
         }
         // Each node takes its own model where one exists and the shared blob
         // where it does not. The fallback arm is the exact pair that shipped
@@ -3130,6 +3139,7 @@ impl PropAssets {
             ("leaf", &self.leaf),
             ("rock", &self.rock),
             ("bark", &self.bark),
+            ("birch", &self.birch),
         ] {
             out.extend(pool.iter().map(|h| (name, h)));
         }
@@ -3177,6 +3187,15 @@ impl PropAssets {
     /// would pass only for the quarter of slots that happened to land on it.
     pub fn bark_material(&self, key: u32) -> &Handle<StandardMaterial> {
         &self.bark[tint_of(key)]
+    }
+    /// The trunk material a tree of this variant draws at this key: pine
+    /// bark for a conifer, birch for a broadleaf. The one place the choice is
+    /// made, like [`Self::canopy_material`].
+    pub fn trunk_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
+        match tree::SPECIES[tree::species_of(variant)].tree_type {
+            bevy_procedural_tree::enums::TreeType::Evergreen => &self.bark[tint_of(key)],
+            bevy_procedural_tree::enums::TreeType::Deciduous => &self.birch[tint_of(key)],
+        }
     }
     /// The foliage material a slot with this key draws — the bush, the far
     /// hull and the outer ring all wear it. Keyed for [`Self::bark_material`]'s

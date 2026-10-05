@@ -5,14 +5,21 @@ The sources are flat sheets of single leaves (`LeafSet014`, a pale doubly
 serrated birch/hornbeam leaf, and `LeafSet001`, a darker one of the same
 shape), so the card is composed the way `ci/bake_needle_card.py` composes the
 pine's: a thin dark twig from the attach point (bottom centre, where
-`bevy_procedural_tree` roots every leaf quad), side shoots off it, and the
-leaves hung on the shoots in clusters of two to five, the way a birch carries
-them on its short shoots. Clusters, not a comb: evenly spaced leaves along
-straight twigs read as a fern frond (`tree::leaf_image` says how that was
-learned).
+`bevy_procedural_tree` roots every leaf quad), side shoots off it, a fan of
+leaves at every shoot tip and single leaves and pairs along the shoots at
+random. Not a comb: evenly spaced leaves along straight twigs read as a fern
+frond (`tree::leaf_image` says how that was learned).
 
-Each leaf gets its own value (0.62-1.1) so the card carries the light and dark
-of leaves turned to and from the sun; the back ones are drawn first and darker.
+Leaves keep clear of each other (`MAX_OVERLAP`, `GAP_PX`) and are hung until
+the card reaches `TARGET_COVERAGE`: a cluster of overlapping leaves fuses into
+one blob a few mips down, and from 6 m that blob read as one big smeared leaf.
+For the same reason they are drawn larger than a birch's (10-13 cm on the
+~0.95 m median card, `examples/tree_sweep.rs`): at 8 m a pixel is ~14 mm, and
+a 7 cm leaf is a smudge.
+
+Each leaf gets its own value (0.47-1.17) so the card carries the light and
+dark of leaves turned to and from the sun, and neighbouring leaves on one card
+never share a tone.
 
 The RGB is stored **mean-normalised**, exactly like the needle card: divided by
 the covered texels' linear mean and scaled by `K` so the brightest 0.5 % fit in
@@ -37,7 +44,7 @@ from PIL import Image
 from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bake_needle_card import axis, lin_to_srgb, place, srgb_to_lin  # noqa: E402
+from bake_needle_card import axis, composite, lin_to_srgb, srgb_to_lin, transformed  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT / "assets/textures/candidates/leafsets"
@@ -50,9 +57,16 @@ SS = 2
 W = OUT_SIZE * SS
 CUT = 128
 ALPHA_GAIN = 1.15
-# One leaf's length as a share of the card. The broadleaf's card measures
-# ~1.25 m of tree (`tree::leaf_image`), so 0.066-0.096 is an 8-12 cm leaf.
-LEAF_LEN = (0.066, 0.096)
+# One leaf's length as a share of the card: 10-13 cm on the ~0.95 m median
+# card (see the header for why that is larger than a birch's).
+LEAF_LEN = (0.105, 0.135)
+# How much of a new leaf may land on one already hung (grown by `GAP_PX`
+# supersampled texels, ~2 texels of the card) before it is turned or dropped.
+MAX_OVERLAP = 0.12
+GAP_PX = 4
+# Coverage at the 0.5 cut the card is filled to: the old card's, which
+# `tests/tree.rs` holds the canopy's density to.
+TARGET_COVERAGE = 0.228
 SEED = 0xB12C4
 
 
@@ -138,14 +152,14 @@ def main() -> int:
         a, b = at(pts, max(t - 0.05, 0.0)), at(pts, min(t + 0.05, 1.0))
         return math.degrees(math.atan2(b[0] - a[0], a[1] - b[1]))
 
-    # The structure: a main twig, shoots off it alternately, and a pair of
-    # sub-shoots off each shoot. The bare foot of the main twig is the first
-    # 12 %, where the card meets its limb.
+    # The structure: a main twig, shoots off it alternately, and a sub-shoot
+    # or two off each shoot. The bare foot of the main twig is the first 12 %,
+    # where the card meets its limb.
     main_pts = curve(root, rng.uniform(-5, 5), W * 0.84, rng.uniform(-12, 12))
     twigs = [(main_pts, 0.0070, 0.0026)]
     shoots = []
-    plan = [(0.14, 1, 0.40), (0.24, -1, 0.42), (0.36, 1, 0.38), (0.47, -1, 0.36),
-            (0.59, 1, 0.30), (0.70, -1, 0.28), (0.81, 1, 0.20)]
+    plan = [(0.14, 1, 0.42), (0.25, -1, 0.44), (0.37, 1, 0.40), (0.48, -1, 0.38),
+            (0.60, 1, 0.32), (0.71, -1, 0.28), (0.82, 1, 0.20)]
     for t, side, ln in plan:
         base = at(main_pts, t + rng.uniform(-0.03, 0.03))
         ang = heading(main_pts, t) + side * rng.uniform(36, 62)
@@ -153,7 +167,7 @@ def main() -> int:
         shoots.append(pts)
         twigs.append((pts, 0.0040, 0.0015))
         for u in (0.35, 0.65):
-            if rng.uniform() < 0.25:
+            if rng.uniform() < 0.35:
                 continue
             sb = at(pts, u + rng.uniform(-0.05, 0.05))
             sside = rng.choice([-1, 1])
@@ -161,49 +175,98 @@ def main() -> int:
                         W * ln * rng.uniform(0.30, 0.45), -sside * rng.uniform(0, 20), n=5)
             shoots.append(sub)
             twigs.append((sub, 0.0024, 0.0012))
-
-    # Leaf clusters on short spurs along every shoot and a fuller one at each
-    # tip — clumps with air between them, which is the read a broadleaf spray
-    # has and a comb of evenly spaced leaves does not.
-    clusters = []  # (point, outward heading, leaf count)
-    for pts in shoots:
-        for t in (0.30, 0.55, 0.78):
-            if rng.uniform() < 0.25:
-                continue
-            p = at(pts, t + rng.uniform(-0.08, 0.08))
-            clusters.append((p, heading(pts, t) + rng.choice([-1, 1]) * rng.uniform(20, 70),
-                             int(rng.integers(2, 4))))
-        clusters.append((pts[-1], heading(pts, 1.0), int(rng.integers(5, 8))))
-    for t in (0.55, 0.75, 0.92):
-        clusters.append((at(main_pts, t), heading(main_pts, t)
-                         + rng.choice([-1, 1]) * rng.uniform(25, 60), int(rng.integers(2, 4))))
-    clusters.append((main_pts[-1], heading(main_pts, 1.0), 6))
-
-    jobs = []
-    for p, h, n in clusters:
-        # A fan about the cluster's heading.
-        spread = 160 if n >= 4 else 100
-        for k in range(n):
-            f = (k + 0.5) / n - 0.5
-            ang = h + f * spread + rng.uniform(-18, 18)
-            jobs.append((rng.uniform(0, 1), p, ang))
-    jobs.sort(key=lambda j: j[0])
+    shoots.append(main_pts)
 
     for pts, w0, w1 in twigs:
         axis(canvas, pts, W * w0, W * w1, twig)
 
-    for depth, p, ang in jobs:
+    # Leaf sites: a fan at every shoot tip, then single leaves and pairs along
+    # the shoots at random, alternating sides. Tips go first so every shoot
+    # ends in leaves however the card fills.
+    def tip_sites():
+        for pts in shoots:
+            h = heading(pts, 1.0)
+            n = int(rng.integers(2, 4))
+            for k in range(n):
+                f = (k + 0.5) / n - 0.5
+                yield pts[-1], h + f * 110 + rng.uniform(-15, 15)
+
+    def side_sites():
+        while True:
+            pts = shoots[int(rng.integers(0, len(shoots)))]
+            t = rng.uniform(0.2, 0.95)
+            side = rng.choice([-1, 1])
+            h = heading(pts, t)
+            yield at(pts, t), h + side * rng.uniform(30, 70)
+            if rng.uniform() < 0.4:
+                yield at(pts, t), h - side * rng.uniform(25, 60)
+
+    # Each leaf must keep clear of the ones already hung: one whose opaque
+    # footprint lands more than `MAX_OVERLAP` on another (grown by `GAP_PX`)
+    # is turned a little and tried again, then dropped. Overlapping clusters
+    # fuse into one blob a few mips down, and a blob lit as one card is what
+    # read as a big smeared leaf from 6 m (2026-10-05).
+    occupied = np.zeros((W, W), bool)
+    jobs = []
+
+    def try_leaf(p, ang):
         spr, stem = sprites[int(rng.integers(0, len(sprites)))]
+        length = W * rng.uniform(*LEAF_LEN)
+        mirror = bool(rng.integers(0, 2))
+        for turn in (0.0, rng.uniform(15, 30), -rng.uniform(15, 30)):
+            a = ang + turn
+            # A short petiole gap: the leaf hangs a few mm off its spur.
+            off = W * 0.006
+            q = (p[0] + math.sin(math.radians(a)) * off, p[1] - math.cos(math.radians(a)) * off)
+            layer, ox, oy = transformed(spr, q, stem, a, length, mirror)
+            rh, rw = layer.shape[:2]
+            x0, y0 = max(ox, 0), max(oy, 0)
+            x1, y1 = min(ox + rw, W), min(oy + rh, W)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            solid = layer[y0 - oy:y1 - oy, x0 - ox:x1 - ox, 3] > 0.5
+            area = solid.sum()
+            if area < 20 or area < 0.97 * (layer[..., 3] > 0.5).sum():
+                continue  # cut by the card edge: a straight edge reads
+            hit = (solid & occupied[y0:y1, x0:x1]).sum()
+            if hit > MAX_OVERLAP * area:
+                continue
+            grown = ndimage.binary_dilation(solid, iterations=GAP_PX)
+            occupied[y0:y1, x0:x1] |= grown
+            jobs.append((rng.uniform(0, 1), layer, ox, oy))
+            return True
+        return False
+
+    def coverage():
+        a = canvas[..., 3].copy()
+        for _, layer, ox, oy in jobs:
+            rh, rw = layer.shape[:2]
+            x0, y0 = max(ox, 0), max(oy, 0)
+            x1, y1 = min(ox + rw, W), min(oy + rh, W)
+            src = layer[y0 - oy:y1 - oy, x0 - ox:x1 - ox, 3]
+            a[y0:y1, x0:x1] = src + a[y0:y1, x0:x1] * (1 - src)
+        red = a.reshape(OUT_SIZE, SS, OUT_SIZE, SS).mean(axis=(1, 3))
+        return (np.clip(red * ALPHA_GAIN, 0, 1) > CUT / 255).mean()
+
+    for p, ang in tip_sites():
+        try_leaf(p, ang)
+    tries = 0
+    for p, ang in side_sites():
+        tries += 1
+        if try_leaf(p, ang) and len(jobs) % 8 == 0 and coverage() >= TARGET_COVERAGE:
+            break
+        if tries > 4000:
+            break
+
+    jobs.sort(key=lambda j: j[0])
+    for depth, layer, ox, oy in jobs:
         # Back leaves darker, front leaves at full value, with a per-leaf
-        # spread that stands for the leaf's own angle to the light.
-        value = (0.62 + 0.30 * depth) * rng.uniform(0.85, 1.12)
+        # spread that stands for the leaf's own angle to the light. Wider than
+        # a photo's own spread on purpose: neighbouring leaves on one card
+        # must differ in value, or the card reads as one flat plate.
+        value = (0.50 + 0.55 * depth) * rng.uniform(0.85, 1.12)
         tint = np.array([rng.uniform(0.94, 1.06), 1.0, rng.uniform(0.88, 1.06), 1.0], np.float32)
-        s = spr * np.array([value, value, value, 1.0], np.float32) * tint
-        # A short petiole gap: the leaf hangs a few mm off its spur.
-        off = W * 0.006
-        q = (p[0] + math.sin(math.radians(ang)) * off, p[1] - math.cos(math.radians(ang)) * off)
-        place(canvas, s, q, stem, ang, W * rng.uniform(*LEAF_LEN),
-              mirror=bool(rng.integers(0, 2)))
+        composite(canvas, layer * np.array([value, value, value, 1.0], np.float32) * tint, ox, oy)
 
     # Reduce SSx: premultiplied box, so colour is weighted by coverage.
     c = canvas.reshape(OUT_SIZE, SS, OUT_SIZE, SS, 4).mean(axis=(1, 3))

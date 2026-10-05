@@ -66,6 +66,7 @@ fn app_at(x_m: f32, z_m: f32) -> App {
     app.insert_resource(PropMaps {
         rock: MapSet::default(),
         bark: MapSet::default(),
+        birch: MapSet::default(),
         wood: MapSet::default(),
         stone: MapSet::default(),
         metal: MapSet::default(),

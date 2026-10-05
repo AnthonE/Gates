@@ -101,13 +101,10 @@ pub struct SpeciesDef {
     pub leaf_lo: u32,
     pub leaf_hi: u32,
     /// The trunk's two colours as they should READ, sRGB: the far hull wears
-    /// them as they are, and the near trunk's band takes their hue and value
-    /// over the shared bark photo through `bark_gain`.
+    /// them as they are, and the near trunk's mean-1 band takes their hue over
+    /// the species' bark photo (`props::PropAssets::trunk_material`).
     pub bark_lo: u32,
     pub bark_hi: u32,
-    /// What the near trunk's mean-1 band is multiplied by: 1 for the photo's
-    /// own value, more for a paler bark than the photo is.
-    pub bark_gain: f32,
 }
 
 /// The species pool. **Two, where there was one** — `reference/PLANTS.md` §6.1
@@ -127,7 +124,6 @@ pub const SPECIES: [SpeciesDef; 2] = [
         leaf_hi: NEEDLE_HI,
         bark_lo: BARK_LO,
         bark_hi: BARK_HI,
-        bark_gain: 1.0,
     },
     // **Shorter than the conifer**, which is the whole read: a pine is a
     // spire and a broadleaf is not, and if the two shared a silhouette
@@ -143,12 +139,10 @@ pub const SPECIES: [SpeciesDef; 2] = [
         max_r_m: BROADLEAF_MAX_R,
         leaf_lo: BROADLEAF_LO,
         leaf_hi: BROADLEAF_HI,
-        // A birch's pale trunk, from the one bark photo we ship (WANTED
-        // §9.9 still asks for a real birch bark): the fissures stay dark
-        // and the bark between them reads grey-white rather than brown.
+        // A birch's pale trunk: the near trunk wears a birch photograph
+        // (`textures::PropMaps::birch`) and the far hull these greys.
         bark_lo: BIRCH_BARK_LO,
         bark_hi: BIRCH_BARK_HI,
-        bark_gain: 2.6,
     },
 ];
 
@@ -348,43 +342,34 @@ fn conifer_settings() -> TreeMeshSettings {
 
 /// The broadleaf's parameters.
 ///
-/// **Started from the crate's own `Deciduous` defaults rather than invented**,
-/// which are ez-tree's baseline for the same species family; what moved from
-/// them is listed here and nothing else did, so the diff against upstream is
-/// readable.
+/// **Generated as the crate's `Evergreen` type, though the species is a
+/// broadleaf**, because the crate's `Deciduous` trunk is three end-to-end
+/// pieces and only the lowest carries full limbs: the middle one gets bare
+/// twigs and the top one a few leaves on the stem. Measured by
+/// `examples/tree_sweep.rs` (2026-10-05), its upper crown held 13–19 % of the
+/// lower's cards and the crown read as two or three stacked pom-poms at 18 m.
+/// `Evergreen` is one continuous trunk with limbs all the way up, shortening
+/// toward the top; with these limbs the upper half holds 66–100 % of the
+/// lower's cards and the crown is one mass. `SPECIES` still calls it
+/// `Deciduous`, which is what picks this block, the leaf card and
+/// [`shape_broadleaf`].
 ///
-/// - `levels: Two`, not the default `Three`. Leaves attach only to the LAST
-///   level (the conifer's block explains why that matters), and three levels
-///   of `children: [7, 4, 10]` is 280 terminal branches before a single leaf
-///   card — comfortably past `CONIFER_MAX_TRIS` on branch geometry alone.
-///   Two levels puts the canopy on 40 limbs and leaves the budget for cards.
-/// - `children: [6, 7, 0]` against the default `[7, 4, 10]`: fewer primaries
-///   and more secondaries, because with the third level gone the second one
-///   has to carry the crown's whole spread.
-/// - `angle[1] = 52°`, wider than the default 39°. A broadleaf's read is that
-///   its limbs leave the trunk closer to horizontal than a conifer's; at the
-///   default the crown is a narrow vase.
+/// - `levels: Two`: limbs carrying sub-branches carrying the cards. 20 × 4 is
+///   80 terminal branches, ~4.9 k triangles with the bark, inside
+///   `CONIFER_MAX_TRIS`.
+/// - `angle` 36° / 32°: steep, a birch's limbs leave the trunk steeply, and
+///   at 11 m the 2.9 m crown ceiling is a column, not a dome.
 /// - `force.direction` is `Vec3::Y` and **must be**, for exactly the reason
 ///   the conifer's block gives at length: a downward direction hits the
 ///   antipodal singularity in `Quat::from_rotation_arc` and bends the whole
 ///   tree sideways. Droop is the limb ANGLE's job in both species.
-/// - Bigger cards (0.42 m) and more of them (11) than the crate default's
-///   0.25/3, on the conifer's own measured reasoning: a card's contribution is
-///   its OPAQUE area and the mask cuts most of each card away, so a canopy
-///   sized against solid quads comes out spindly.
 fn broadleaf_settings() -> TreeMeshSettings {
     TreeMeshSettings {
-        tree_type: TreeType::Deciduous,
+        tree_type: TreeType::Evergreen,
         branch: BranchParams {
             levels: BranchRecursionLevel::Two,
-            // **Steep, since forest scale v0** — 36° / 32° from 52 / 44. At
-            // 11 m the 2.9 m crown ceiling is a column, not a dome, and the
-            // sweep (`examples/tree_sweep.rs`, 2026-09-14) could not get
-            // under it by shortening limbs alone: half-length limbs at the
-            // old angles still read 3.0–3.2 m. Closing the angles is what a
-            // birch does anyway; its limbs leave the trunk steeply.
             angle: [0.0, 36.0, 32.0, 0.0],
-            children: [6, 7, 0],
+            children: [20, 4, 0],
             force: BranchForce {
                 direction: Vec3::Y,
                 strength: 0.04,
@@ -392,43 +377,40 @@ fn broadleaf_settings() -> TreeMeshSettings {
             },
             gnarliness: [-0.04, 0.14, 0.10, 0.0],
             // [0] is proportion only — `fit_to_bounds` normalises height away.
-            // [1] and [2] are what set the crown's WIDTH, which is the sim's
-            // business through `BROADLEAF_MAX_R`; swept against the gate.
-            // Limbs at 0.38 / 0.20 of the 4.5 trunk unit, from 1.75 / 1.0:
-            // with the angles above this reads 2.68 m on the shipped seeds
-            // and 2.89 over eighteen — the widest thing in the pool by a
-            // hair, under the ceiling. The trunk is 0.11 from 0.22 for the
-            // doubled height: 0.234 m at the base, inside the sim's cylinder,
-            // which the conifer now sets (`OCCUPANT_R_M[Tree]`).
-            length: [4.5, 0.38, 0.20, 0.0],
+            // [1] and [2] set the crown's WIDTH, which is the sim's business
+            // through `BROADLEAF_MAX_R`: the sweep reads 2.41 m on the shipped
+            // seeds and 2.46 over fifteen against the 2.9 ceiling. The trunk
+            // reads 0.233 m at the base, inside the sim's cylinder, which the
+            // conifer sets (`OCCUPANT_R_M[Tree]`).
+            length: [4.5, 0.9, 0.25, 0.0],
             trunk_base_radius: 0.11,
             radius_factor: [1.0, 0.42, 0.34, 0.0],
-            sections: [10, 5, 3, 0],
-            segments: [7, 5, 3, 0],
-            // Limbs from 22% of the trunk, lower than the crate's 32%: on a
-            // 5.4 m tree 32% is 1.7 m, which is head height, and a forest of
-            // bare poles at eye level is what the conifer's block calls a
-            // colonnade.
-            start: [0.0, 0.22, 0.3, 0.0],
-            taper: [0.94, 0.82, 0.85, 0.0],
+            sections: [10, 4, 2, 0],
+            segments: [7, 4, 3, 0],
+            // Limbs from 24 % of the trunk (2.6 m): clear of head height, so
+            // the stand is not a colonnade of bare poles at eye level.
+            start: [0.0, 0.24, 0.1, 0.0],
+            // An `Evergreen` trunk tapers to `1 - taper` of its base over
+            // its own length: a fifth at the top, a slender birch.
+            taper: [0.8, 0.82, 0.85, 0.0],
             twist: [0.06, -0.05, 0.0, 0.0],
         },
         leaves: LeafParams {
             leaf_billboard: LeafBillboard::Double,
             angle: 48.0,
-            count: 11,
+            count: 10,
             start: 0.0,
-            // 0.60 m at 11 m, from 0.42 at 5.4: smaller as a fraction of the
-            // tree, because a card's size adds to the crown radius directly
-            // and the ceiling did not grow with the height.
+            // A card's size adds to the crown radius directly, and the
+            // ceiling did not grow with the height.
             size: 0.60,
             size_variance: 0.35,
         },
     }
 }
 
-/// The parameter block for a species index.
-fn settings(species: usize) -> TreeMeshSettings {
+/// The parameter block for a species index. Public so `examples/tree_sweep.rs`
+/// sweeps candidates as edits of what ships rather than a restated copy.
+pub fn settings(species: usize) -> TreeMeshSettings {
     match SPECIES[species].tree_type {
         TreeType::Evergreen => conifer_settings(),
         TreeType::Deciduous => broadleaf_settings(),
@@ -742,13 +724,15 @@ fn occlude_canopy(m: &mut Mesh, lobes: Option<&Lobes>) {
             // a conifer's spire is a few small cards about the leader, all
             // "near the axis", and it is the most exposed part of the tree.
             let open = (((v[1] - lo_y) / span - 0.82) / 0.18).clamp(0.0, 1.0);
-            let mut e = e.max(open);
+            let mut e = e;
             if let Some(l) = lobes {
                 let k = l.of[i] as usize;
                 let d = (Vec3::from_array(*v) - l.centre[k]).length();
                 let inner = (d / l.reach[k].max(1e-3)).clamp(0.0, 1.0);
                 e *= 1.0 - LOBE_AO * (1.0 - inner);
             }
+            // Open sky last, so a lobe's dark heart cannot bury the apex.
+            let e = e.max(open);
             CANOPY_AO_FLOOR + (1.0 - CANOPY_AO_FLOOR) * e.powf(CANOPY_AO_GAMMA)
         })
         .collect();
@@ -832,16 +816,29 @@ fn shape_crown(needles: &mut Mesh, variant: usize) {
 pub const BROADLEAF_LOBES: usize = 14;
 /// How far each leaf card is pulled toward its lobe's centre, as a share of
 /// the way (each lobe scales it by 0.5-1.5). Tightens the lobes and opens
-/// gaps between them; much past 0.25 the crown turns to stacked pom-poms.
-pub const LOBE_PULL: f32 = 0.2;
+/// gaps between them; at 0.2 the gaps already read as stacked pom-poms.
+pub const LOBE_PULL: f32 = 0.12;
 /// How much a card at a lobe's rim shrinks, against one at its heart.
 pub const LOBE_EDGE_SHRINK: f32 = 0.28;
 /// How big a card is at the foot of the crown, against one above it: a
 /// broadleaf's lowest limbs carry little, so the crown lifts off the trunk.
 pub const CROWN_FOOT_SCALE: f32 = 0.5;
+/// How big a card is at the very top of the crown, against one below it, so
+/// the crown rounds off rather than ending flat on its full width.
+pub const CROWN_TOP_SCALE: f32 = 0.65;
+/// How far each card moves toward the height an evenly filled crown would
+/// give it ([`shape_broadleaf`]): 0 leaves the generator's bunching, 1 is a
+/// crown of uniform density.
+pub const CROWN_EVEN: f32 = 0.6;
+/// How much sparser the evened crown is at its top than at its foot: the
+/// crown narrows upward, and the same card count at every height packed its
+/// top into a dense cap whose inside `occlude_canopy` rightly darkens — a lit
+/// apex reading as buried (`tests/tree.rs`, the crown-profile gate). In
+/// (0, 1); 0.5 halves the density by the top.
+pub const CROWN_EVEN_TAPER: f32 = 0.5;
 /// How much height counts against horizontal distance when the lobes are
-/// found. Under 1, so a lobe is taller than it is wide and the generator's
-/// three trunk sections do not each become a tier of balls.
+/// found. Under 1, so a lobe is taller than it is wide and the lobes run up
+/// the crown rather than stacking in tiers of balls.
 const LOBE_Y_WEIGHT: f32 = 0.5;
 /// The share of a lobed canopy normal that is its lobe's rather than the
 /// crown's ([`blend_canopy_normals`]).
@@ -903,16 +900,18 @@ impl Lobes {
     }
 }
 
-/// Gather a broadleaf's leaf cards into [`BROADLEAF_LOBES`] lobes and lift
-/// the crown off the trunk. Returns each VERTEX's lobe.
+/// Even a broadleaf's leaf cards out up the crown, gather them into
+/// [`BROADLEAF_LOBES`] lobes, lift the crown off the trunk and round its top.
+/// Returns each VERTEX's lobe.
 ///
 /// Lobes are a few rounds of k-means over the cards' attach points, seeded by
 /// farthest-point sampling from a per-variant start, so each seed lobes
 /// differently. Each card is pulled toward its lobe's centre and scaled about
-/// its attach point, shrinking at the lobe's rim and at the crown's foot.
-/// Cards only shrink and only move toward the inside of the crown, and any
-/// card that would still poke past the crown's original radius is shrunk
-/// until it does not: the radius the sim's bounds were swept against holds.
+/// its attach point, shrinking at the lobe's rim, the crown's foot and its
+/// top. Cards move vertically or toward the inside of the crown and only
+/// shrink, and any card that would still poke past the crown's original
+/// radius is shrunk until it does not: the radius the sim's bounds were swept
+/// against holds.
 fn shape_broadleaf(needles: &mut Mesh, variant: usize) -> Option<Vec<u16>> {
     let p = positions_mut(needles)?;
     if p.len() % 4 != 0 || p.is_empty() {
@@ -928,13 +927,38 @@ fn shape_broadleaf(needles: &mut Mesh, variant: usize) -> Option<Vec<u16>> {
             (q[1][2] + q[2][2]) * 0.5,
         )
     };
-    let roots: Vec<Vec3> = p.chunks_exact(4).map(root).collect();
+    let mut roots: Vec<Vec3> = p.chunks_exact(4).map(root).collect();
     let cards = roots.len();
     let k = BROADLEAF_LOBES.min(cards);
-    let (lo, hi) = roots
-        .iter()
-        .fold((f32::MAX, f32::MIN), |(l, h), r| (l.min(r.y), h.max(r.y)));
+
+    // Even the cards out up the crown ([`CROWN_EVEN`]) before anything else:
+    // each card moves part of the way to where its height rank would put it
+    // if the crown were evenly filled. The generator hangs its limbs at
+    // random heights, so a few bunch and leave a bare band, and a bare band
+    // between two leafy ones is a waist — the stacked-pom-pom read. Vertical
+    // only, so no card's radius changes.
+    let mut order: Vec<usize> = (0..cards).collect();
+    order.sort_by(|&a, &b| roots[a].y.total_cmp(&roots[b].y).then(a.cmp(&b)));
+    let (lo, hi) = (roots[order[0]].y, roots[order[cards - 1]].y);
     let span = (hi - lo).max(1e-3);
+    // The even crown thins linearly toward its top ([`CROWN_EVEN_TAPER`]):
+    // its card density at height fraction `t` is `1 - taper·t`, and a card's
+    // rank fraction `u` inverts that density's integral.
+    let taper = CROWN_EVEN_TAPER;
+    for (rank, &c) in order.iter().enumerate() {
+        let u = (rank as f32 + 0.5) / cards as f32;
+        let t = (1.0
+            - (1.0 - 2.0 * taper * u * (1.0 - 0.5 * taper))
+                .max(0.0)
+                .sqrt())
+            / taper;
+        let even = lo + span * t;
+        let lift = CROWN_EVEN * (even - roots[c].y);
+        roots[c].y += lift;
+        for v in &mut p[c * 4..c * 4 + 4] {
+            v[1] += lift;
+        }
+    }
 
     // Clustered with height squashed ([`LOBE_Y_WEIGHT`]), so lobes run up
     // the crown rather than stacking in tiers.
@@ -1008,10 +1032,13 @@ fn shape_broadleaf(needles: &mut Mesh, variant: usize) -> Option<Vec<u16>> {
         let o = of[ci];
         let to = r + (centre[o] - r) * (LOBE_PULL * pull[o]);
         let edge = smooth01((r.distance(centre[o]) / rad[o] - 0.6) / 0.9);
-        let foot = smooth01(((r.y - lo) / span) / 0.3);
+        let t = (r.y - lo) / span;
+        let foot = smooth01(t / 0.3);
+        let top = smooth01((t - 0.75) / 0.25);
         let mut sc = size[o]
             * (1.0 - LOBE_EDGE_SHRINK * edge)
-            * (CROWN_FOOT_SCALE + (1.0 - CROWN_FOOT_SCALE) * foot);
+            * (CROWN_FOOT_SCALE + (1.0 - CROWN_FOOT_SCALE) * foot)
+            * (1.0 - (1.0 - CROWN_TOP_SCALE) * top);
         let orig: [[f32; 3]; 4] = [q[0], q[1], q[2], q[3]];
         let place = |sc: f32, out: &mut [[f32; 3]]| {
             for (v, o) in out.iter_mut().zip(&orig) {
@@ -1042,20 +1069,28 @@ fn smooth01(x: f32) -> f32 {
 /// every client and every run. That is what lets a chunk stream out and back
 /// bit-identical, the same law the whorl builder's hashes carried.
 pub fn conifer(variant: usize) -> (Mesh, Mesh) {
-    let sp = &SPECIES[species_of(variant)];
+    let species = species_of(variant);
+    grow(species, variant, &settings(species))
+}
+
+/// [`conifer`] with the parameter block passed in: `species`' height, bark
+/// and post-passes over `s`, seeded by `variant`. `examples/tree_sweep.rs`
+/// measures candidate blocks through it, so a candidate is judged on the
+/// finished tree and not on the generator's raw output.
+pub fn grow(species: usize, variant: usize, s: &TreeMeshSettings) -> (Mesh, Mesh) {
+    let sp = &SPECIES[species];
     // Seeded off the same mixer the rest of `props.rs` uses rather than the
     // raw index, so variant 0 and variant 1 are not neighbouring PRNG streams.
     let mut rng = fastrand::Rng::with_seed(hash2(0x9e37_79b9, variant as u32) as u64);
-    let (mut bark, mut needles) =
-        match generate_tree_meshes(&settings(species_of(variant)), &mut rng) {
-            Ok(pair) => pair,
-            // A generator failure must not be a black screen. The only
-            // documented error is index overflow, which `u32_indices` makes
-            // unreachable at these counts — but "unreachable" is not
-            // "impossible", and an empty pair draws nothing rather than
-            // panicking a client at boot.
-            Err(_) => (Mesh::from(Cuboid::default()), Mesh::from(Cuboid::default())),
-        };
+    let (mut bark, mut needles) = match generate_tree_meshes(s, &mut rng) {
+        Ok(pair) => pair,
+        // A generator failure must not be a black screen. The only
+        // documented error is index overflow, which `u32_indices` makes
+        // unreachable at these counts — but "unreachable" is not
+        // "impossible", and an empty pair draws nothing rather than
+        // panicking a client at boot.
+        Err(_) => (Mesh::from(Cuboid::default()), Mesh::from(Cuboid::default())),
+    };
 
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
     let lobe_of = match sp.tree_type {
@@ -1088,13 +1123,6 @@ pub fn conifer(variant: usize) -> (Mesh, Mesh) {
         sp.height_m * BARK_BAND_TOP_FRAC,
         true,
     );
-    if let Some(VertexAttributeValues::Float32x4(c)) = bark.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
-        for v in c.iter_mut() {
-            v[0] *= sp.bark_gain;
-            v[1] *= sp.bark_gain;
-            v[2] *= sp.bark_gain;
-        }
-    }
     band(
         &mut needles,
         sp.leaf_lo,
@@ -1131,7 +1159,7 @@ pub const LEAF_CARD_PNG: &[u8] = include_bytes!("../../../../assets/textures/lea
 
 /// [`NEEDLE_MAP_GAIN`] for the leaf card: what its RGB is multiplied by to be
 /// mean-1. `ci/bake_leaf_card.py` prints it; `tests/tree.rs` holds it.
-pub const LEAF_MAP_GAIN: f32 = 2.3747;
+pub const LEAF_MAP_GAIN: f32 = 2.7338;
 
 /// What a canopy card's specular is scaled by (`StandardMaterial::
 /// specular_tint`; `reflectance` stays the physical 4 %).
@@ -1229,10 +1257,16 @@ fn alpha_card(data: Vec<u8>, size: u32) -> Image {
     // Trilinear across the chain, tiling off: the card's UVs are 0..1 and a
     // wrapped mask bleeds the far edge into the near. (Spelled out rather
     // than `ImageSamplerDescriptor::linear()` so it survives the next upgrade.)
+    //
+    // Anisotropic, at the grass atlas's 4 (`textures::atlas`): most canopy
+    // cards are seen at an angle, and at 1 the mip is picked by the card's
+    // long axis on screen, so a tilted card drew from a level two or three
+    // blurrier than its face needed and its leaves fused into a smear.
     img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
         mag_filter: bevy::image::ImageFilterMode::Linear,
         min_filter: bevy::image::ImageFilterMode::Linear,
         mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        anisotropy_clamp: 4,
         ..default()
     });
     img
