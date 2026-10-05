@@ -9,6 +9,10 @@
 //! members flush with the faces, infill recessed a few centimetres, joints cut
 //! in — and `tests/pieces.rs` §E holds every vertex inside the part it dresses,
 //! so nothing here moves a face a player can touch or an arrow can hit.
+//! The risers are dressed over the sim's own walk patches the same way —
+//! treads where the plain flight's are, stringers, carriages and blocks in
+//! the slab the sim blocks beneath them — and so are the roofs (a lapped
+//! covering on a floor's frame) and the floor frames.
 //!
 //! One mesh per shape × tier (× post ownership × soft side, × skirt step),
 //! shared by every address, so a base of hundreds of pieces is still a few
@@ -19,10 +23,16 @@
 use std::f32::consts::PI;
 
 use bevy::prelude::*;
-use sim_core::build::{BUILD_CELL_M, LEVEL_H_M, MAT_STONE, MAT_TWIG, MAT_WOOD};
-use sim_core::collide::WALL_THICKNESS_M;
+use sim_core::build::{
+    BUILD_CELL_M, LEVEL_H_M, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_FOUNDATION_STEPS,
+    SHAPE_RAMP, SHAPE_STAIRS_TRI_SPIRAL,
+};
+use sim_core::collide::{FRAME_RIM_M, WALL_THICKNESS_M};
 
-use super::{buffers, face_tint, finish, post_w, Buffers, Part, PartRole, EDGE_DROP_M};
+use super::{
+    buffers, face_tint, finish, post_w, Buffers, Part, PartRole, EDGE_DROP_M, SKIRT_MAX_M, SLAB_T,
+    STAIR_RISERS,
+};
 
 /// Half a wall's thickness: where an edge piece's two faces are.
 const T2: f32 = WALL_THICKNESS_M * 0.5;
@@ -38,10 +48,19 @@ const BLOCK_M: f32 = 0.9;
 /// A stone joint's chamfer: how far in from the block's edge it starts and
 /// how deep it cuts, metres.
 pub const JOINT_M: f32 = 0.025;
+/// The chamfers of a block on an upright face, edges `[u0, u1, v0, v1]`: the
+/// arris over a bed joint (the block's foot, `v0`) cut half as wide again,
+/// so it tips 34° off the face rather than 45°. A 45° arris facing down in
+/// a high sun went near-black and drew every bed joint twice as dark as the
+/// head joints beside it.
+const WALL_JOINTS: [f32; 4] = [JOINT_M, JOINT_M, JOINT_M * 1.5, JOINT_M];
 
 /// How a member wears its tier's photograph: the grain direction (the map's
 /// `v`), texture metres per metre across and along it, an offset so two
-/// members do not show the same patch, and a scalar albedo tint.
+/// members do not show the same patch, and a scalar albedo tint. `turn`
+/// lays the map a quarter-turn round, its `u` along the grain (and `su`
+/// with it) — a steel section stretching the sheet's ribs out along its
+/// length rather than across it.
 #[derive(Clone, Copy, Debug)]
 struct Look {
     g: Vec3,
@@ -49,9 +68,7 @@ struct Look {
     sv: f32,
     off: Vec2,
     tint: f32,
-    /// Lay `v` around a prism's perimeter rather than along it — a steel
-    /// section reading the corrugated map's ribs as its own flanges.
-    around: bool,
+    turn: bool,
 }
 
 impl Look {
@@ -62,8 +79,14 @@ impl Look {
             sv: 1.0,
             off: Vec2::ZERO,
             tint,
-            around: false,
+            turn: false,
         }
+    }
+
+    /// `(u, v)` in map metres: turned if the look says so, then scaled.
+    fn map(&self, u: f32, v: f32) -> Vec2 {
+        let (u, v) = if self.turn { (v, u) } else { (u, v) };
+        Vec2::new(u * self.su, v * self.sv) + self.off
     }
 
     fn across(mut self, su: f32) -> Self {
@@ -100,7 +123,7 @@ impl Look {
             let b = self.g.cross(a).normalize();
             (p.dot(a), p.dot(b))
         };
-        Vec2::new(u * self.su, v * self.sv) + self.off
+        self.map(u, v)
     }
 }
 
@@ -150,7 +173,16 @@ impl Out {
     /// One convex face. The winding is fixed here against `out`, the side the
     /// face looks toward, so no caller can hand over a face culled inside out.
     fn face(&mut self, pts: &[Vec3], out: Vec3, look: &Look) {
-        self.face_with(pts, out, look, None, None);
+        self.face_with(pts, out, look, None, None, None);
+    }
+
+    /// A face that takes the face tint of `tint_n` rather than its own
+    /// normal: a joint's chamfer reads as part of the stone face it is cut
+    /// into, not as a top or an underside. Without it a wall's horizontal
+    /// joints carried the 1.14 / 0.86 top-and-bottom gains on their two
+    /// chamfers and read twice as stark as the vertical ones beside them.
+    fn face_tinted(&mut self, pts: &[Vec3], out: Vec3, look: &Look, tint_n: Vec3) {
+        self.face_with(pts, out, look, None, None, Some(tint_n));
     }
 
     fn face_with(
@@ -160,6 +192,7 @@ impl Out {
         look: &Look,
         uvs: Option<&[Vec2]>,
         normals: Option<&[Vec3]>,
+        tint_n: Option<Vec3>,
     ) {
         let raw = newell(pts);
         if raw.length_squared() < 1e-12 {
@@ -174,7 +207,7 @@ impl Out {
             let j = if flip { k - 1 - i } else { i };
             let p = pts[j];
             let vn = normals.map_or(n, |ns| ns[j]);
-            let t = face_tint(vn, p.y, self.y0, self.y1) * look.tint;
+            let t = face_tint(tint_n.unwrap_or(vn), p.y, self.y0, self.y1) * look.tint;
             pos.push(p.to_array());
             nor.push(vn.to_array());
             col.push([t, t, t, 1.0]);
@@ -205,14 +238,13 @@ impl Out {
         let g = a.cross(b);
         let at = |p: Vec2, s: f32| o + a * p.x + b * p.y + g * s;
         let c = poly.iter().copied().sum::<Vec2>() / poly.len() as f32;
-        let along = look.g.dot(g).abs() > 0.9 && !look.around;
+        let along = look.g.dot(g).abs() > 0.9;
         let uv = |arc: f32, s: f32| {
-            look.off
-                + if along {
-                    Vec2::new(arc * look.su, s * look.sv)
-                } else {
-                    Vec2::new(s * look.su, arc * look.sv)
-                }
+            if along {
+                look.map(arc, s)
+            } else {
+                look.map(s, arc)
+            }
         };
         let radial = |p: Vec2| (a * (p.x - c.x) + b * (p.y - c.y)).normalize();
         let mut arc = 0.0;
@@ -230,9 +262,9 @@ impl Out {
             ];
             if smooth {
                 let ns = [radial(p), radial(q), radial(q), radial(p)];
-                self.face_with(&pts, out, look, Some(&uvs), Some(&ns));
+                self.face_with(&pts, out, look, Some(&uvs), Some(&ns), None);
             } else {
-                self.face_with(&pts, out, look, Some(&uvs), None);
+                self.face_with(&pts, out, look, Some(&uvs), None, None);
             }
             arc += len;
         }
@@ -339,7 +371,8 @@ impl Out {
                         m + e[k] * s * i[k] + e[u] * su * h[u] + e[v] * i[v],
                         m + e[k] * s * i[k] + e[u] * su * h[u] - e[v] * i[v],
                     ];
-                    self.face(&pts, e[k] * s + e[u] * su, look);
+                    let bn = e[k] * s + e[u] * su;
+                    self.face_tinted(&pts, bn, look, side_of(bn));
                 }
             }
         }
@@ -352,7 +385,7 @@ impl Out {
                         m + s * Vec3::new(i.x, h.y, i.z),
                         m + s * Vec3::new(i.x, i.y, h.z),
                     ];
-                    self.face(&pts, s, look);
+                    self.face_tinted(&pts, s, look, side_of(s));
                 }
             }
         }
@@ -360,7 +393,7 @@ impl Out {
 
     /// One block's face on a plane (`o` its point at `u = v = 0`, `n`
     /// outward): a front over `rect` = `[u0, u1, v0, v1]`, and on each edge
-    /// `cut` names a chamfer `c` wide falling `d` deep to the rect's edge —
+    /// `cut` names a chamfer `c[edge]` wide falling `d` deep to the rect's edge —
     /// where two blocks meet, their chamfers make the joint. An uncut edge
     /// keeps the front to the rect's edge, and the half-groove a cut edge
     /// opens there is capped.
@@ -372,14 +405,14 @@ impl Out {
         (u, v): (Vec3, Vec3),
         r: [f32; 4],
         cut: [bool; 4],
-        c: f32,
+        c: [f32; 4],
         d: f32,
         look: &Look,
     ) {
-        let k = |i: usize| if cut[i] { c } else { 0.0 };
+        let k = |i: usize| if cut[i] { c[i] } else { 0.0 };
         let f = [r[0] + k(0), r[1] - k(1), r[2] + k(2), r[3] - k(3)];
         let at = |uu: f32, vv: f32, depth: f32| o + u * uu + v * vv - n * depth;
-        self.face(
+        self.face_tinted(
             &[
                 at(f[0], f[2], 0.0),
                 at(f[1], f[2], 0.0),
@@ -388,13 +421,14 @@ impl Out {
             ],
             n,
             look,
+            n,
         );
         // The u-edges (u0, u1) run along v; the v-edges along u.
         for (e, fu, ru, dir) in [(0, f[0], r[0], -u), (1, f[1], r[1], u)] {
             if !cut[e] {
                 continue;
             }
-            self.face(
+            self.face_tinted(
                 &[
                     at(fu, f[2], 0.0),
                     at(fu, f[3], 0.0),
@@ -403,13 +437,15 @@ impl Out {
                 ],
                 dir + n,
                 look,
+                n,
             );
             for (ve, rv, vdir) in [(2, r[2], -v), (3, r[3], v)] {
                 if !cut[ve] {
-                    self.face(
+                    self.face_tinted(
                         &[at(fu, rv, 0.0), at(ru, rv, d), at(ru, rv, 0.0)],
                         vdir,
                         look,
+                        n,
                     );
                 }
             }
@@ -418,7 +454,7 @@ impl Out {
             if !cut[e] {
                 continue;
             }
-            self.face(
+            self.face_tinted(
                 &[
                     at(f[0], fv, 0.0),
                     at(f[1], fv, 0.0),
@@ -427,13 +463,15 @@ impl Out {
                 ],
                 dir + n,
                 look,
+                n,
             );
             for (ue, ru, udir) in [(0, r[0], -u), (1, r[1], u)] {
                 if !cut[ue] {
-                    self.face(
+                    self.face_tinted(
                         &[at(ru, fv, 0.0), at(ru, rv, d), at(ru, rv, 0.0)],
                         udir,
                         look,
+                        n,
                     );
                 }
             }
@@ -456,19 +494,254 @@ impl Out {
         );
     }
 
-    /// A prism standing up: `poly` in `(x, z)`, swept over `y0..y1`.
-    fn prism_y(&mut self, poly_xz: &[Vec2], y0: f32, y1: f32, look: &Look, caps: [bool; 2]) {
-        let poly: Vec<Vec2> = poly_xz.iter().map(|p| Vec2::new(p.y, p.x)).collect();
-        self.extrude(
-            Vec3::ZERO,
-            Vec3::Z,
-            Vec3::X,
-            &poly,
-            [y0, y1],
-            look,
-            caps,
-            false,
-        );
+    /// How many vertices are down so far — the mark [`Out::place_since`]
+    /// moves from.
+    fn mark(&self) -> usize {
+        self.b.0.len()
+    }
+
+    /// Turn everything emitted since `start` a whole number of quarter-turns
+    /// about +y and move it by `off`: `m` maps `(x, z)` and holds only 0 and
+    /// ±1 with determinant +1, so the move is exact and keeps every winding.
+    fn place_since(&mut self, start: usize, m: [[f32; 2]; 2], off: Vec3) {
+        let turn = |v: [f32; 3]| {
+            [
+                m[0][0] * v[0] + m[0][1] * v[2],
+                v[1],
+                m[1][0] * v[0] + m[1][1] * v[2],
+            ]
+        };
+        let (pos, nor, ..) = &mut self.b;
+        for p in &mut pos[start..] {
+            let q = turn(*p);
+            *p = [q[0] + off.x, q[1] + off.y, q[2] + off.z];
+        }
+        for n in &mut nor[start..] {
+            *n = turn(*n);
+        }
+    }
+
+    /// A plate over the convex footprint `poly` in `(x, z)`, its top and its
+    /// foot at per-point heights (each planar); `caps` = `[foot, top]`.
+    fn plate(
+        &mut self,
+        poly: &[Vec2],
+        top: impl Fn(Vec2) -> f32,
+        foot: impl Fn(Vec2) -> f32,
+        look: &Look,
+        caps: [bool; 2],
+    ) {
+        let poly = tidy(poly);
+        let n = poly.len();
+        if n < 3 {
+            return;
+        }
+        let c = centroid(&poly);
+        let up: Vec<Vec3> = poly.iter().map(|&p| Vec3::new(p.x, top(p), p.y)).collect();
+        let dn: Vec<Vec3> = poly.iter().map(|&p| Vec3::new(p.x, foot(p), p.y)).collect();
+        if caps[1] {
+            self.face(&up, Vec3::Y, look);
+        }
+        if caps[0] {
+            self.face(&dn, Vec3::NEG_Y, look);
+        }
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let mid = (poly[i] + poly[j]) * 0.5 - c;
+            self.face(
+                &[dn[i], dn[j], up[j], up[i]],
+                Vec3::new(mid.x, 0.0, mid.y),
+                look,
+            );
+        }
+    }
+
+    /// A level plate between `y0` and `y1`.
+    fn slab(&mut self, poly: &[Vec2], y0: f32, y1: f32, look: &Look, caps: [bool; 2]) {
+        self.plate(poly, |_| y1, |_| y0, look, caps);
+    }
+
+    /// One stone over the convex `poly` with its face at `y`: the face pulled
+    /// in by `c`, and a chamfer ring falling `d` to the polygon's edge — the
+    /// flag's half of a joint, [`Out::pillow`] for any outline. False (and
+    /// nothing drawn) for a sliver too thin to take the chamfer.
+    fn pillow_poly(&mut self, poly: &[Vec2], y: f32, c: f32, d: f32, look: &Look) -> bool {
+        let poly = tidy(poly);
+        if poly.len() < 3 || area2(&poly).abs() < 0.01 {
+            return false;
+        }
+        let top = inset(&poly, c);
+        let (a0, a1) = (area2(&poly), area2(&top));
+        if a0 * a1 <= 0.0 || a1.abs() < 0.004 || top.iter().any(|p| !p.is_finite()) {
+            return false;
+        }
+        let up: Vec<Vec3> = top.iter().map(|p| Vec3::new(p.x, y, p.y)).collect();
+        self.face(&up, Vec3::Y, look);
+        let cen = centroid(&poly);
+        for i in 0..poly.len() {
+            let j = (i + 1) % poly.len();
+            let mid = ((poly[i] + poly[j]) * 0.5 - cen).normalize_or_zero();
+            self.face_tinted(
+                &[
+                    Vec3::new(poly[i].x, y - d, poly[i].y),
+                    Vec3::new(poly[j].x, y - d, poly[j].y),
+                    up[j],
+                    up[i],
+                ],
+                Vec3::new(mid.x, 1.0, mid.y),
+                look,
+                Vec3::Y,
+            );
+        }
+        true
+    }
+
+    /// Poles along `poly`'s edges, `r` in from them, at height `y`, each
+    /// stopped short of its corners so no end pokes past the next edge.
+    fn rim_poles(&mut self, poly: &[Vec2], y: f32, r: f32, seed: u32) {
+        let poly = tidy(poly);
+        let mid = inset(&poly, r);
+        let n = poly.len();
+        let c = centroid(&poly);
+        for i in 0..n {
+            let (a, b) = (mid[i], mid[(i + 1) % n]);
+            let len = a.distance(b);
+            if len < 4.0 * r {
+                continue;
+            }
+            let d = (b - a) / len;
+            let mut out = Vec2::new(d.y, -d.x);
+            if out.dot(c - a) > 0.0 {
+                out = -out;
+            }
+            let (a, b) = (a + d * r, b - d * r);
+            self.pole(
+                Vec3::new(a.x, y, a.y),
+                Vec3::new(b.x, y, b.y),
+                r,
+                Vec3::new(out.x, 0.0, out.y),
+                &twig_pole(seed.wrapping_add(i as u32 * 17)),
+            );
+        }
+    }
+
+    /// The mitred members of a frame round `poly`, `w` wide, `y0..y1`, each
+    /// wearing `look` with its grain along its own edge.
+    fn rim_plates(&mut self, poly: &[Vec2], w: f32, y0: f32, y1: f32, look: impl Fn(Vec3) -> Look) {
+        let poly = tidy(poly);
+        let inner = inset(&poly, w);
+        let n = poly.len();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let d = (poly[j] - poly[i]).normalize();
+            self.slab(
+                &[poly[i], poly[j], inner[j], inner[i]],
+                y0,
+                y1,
+                &look(Vec3::new(d.x, 0.0, d.y)),
+                [true, true],
+            );
+        }
+    }
+}
+
+/// A face tint's normal for a chamfer: the horizontal part of `n`, so a
+/// joint's bevel takes the side gain of the face it is cut into.
+fn side_of(n: Vec3) -> Vec3 {
+    let h = Vec3::new(n.x, 0.0, n.z);
+    if h.length_squared() > 1e-6 {
+        h.normalize()
+    } else {
+        n
+    }
+}
+
+fn area2(poly: &[Vec2]) -> f32 {
+    (0..poly.len())
+        .map(|i| poly[i].perp_dot(poly[(i + 1) % poly.len()]))
+        .sum()
+}
+
+fn centroid(poly: &[Vec2]) -> Vec2 {
+    poly.iter().copied().sum::<Vec2>() / poly.len().max(1) as f32
+}
+
+/// `poly` without repeated or collinear corners, which a clip leaves and
+/// which [`inset`] cannot take (two parallel edges have no corner).
+fn tidy(poly: &[Vec2]) -> Vec<Vec2> {
+    let mut v: Vec<Vec2> = Vec::with_capacity(poly.len());
+    for &p in poly {
+        if v.last().is_none_or(|q| q.distance(p) > 1e-4) {
+            v.push(p);
+        }
+    }
+    while v.len() > 1 && v[0].distance(v[v.len() - 1]) <= 1e-4 {
+        v.pop();
+    }
+    loop {
+        let n = v.len();
+        if n < 3 {
+            return v;
+        }
+        let Some(i) = (0..n).find(|&i| {
+            let (a, b, c) = (v[(i + n - 1) % n], v[i], v[(i + 1) % n]);
+            (b - a).perp_dot(c - b).abs() < 1e-6
+        }) else {
+            return v;
+        };
+        v.remove(i);
+    }
+}
+
+/// `poly` (convex) cut to the half-plane `n · p <= d`.
+fn clip_half(poly: &[Vec2], n: Vec2, d: f32) -> Vec<Vec2> {
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        let (da, db) = (n.dot(a) - d, n.dot(b) - d);
+        if da <= 0.0 {
+            out.push(a);
+        }
+        if (da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0) {
+            out.push(a + (b - a) * (da / (da - db)));
+        }
+    }
+    out
+}
+
+/// `poly` cut to the convex `hull`.
+fn clip_to(poly: &[Vec2], hull: &[Vec2]) -> Vec<Vec2> {
+    let c = centroid(hull);
+    let mut out = poly.to_vec();
+    for i in 0..hull.len() {
+        let (a, b) = (hull[i], hull[(i + 1) % hull.len()]);
+        let mut n = Vec2::new(b.y - a.y, a.x - b.x);
+        if n.dot(c - a) > 0.0 {
+            n = -n;
+        }
+        out = clip_half(&out, n, n.dot(a));
+        if out.len() < 3 {
+            return Vec::new();
+        }
+    }
+    tidy(&out)
+}
+
+fn rect(x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<Vec2> {
+    vec![
+        Vec2::new(x0, z0),
+        Vec2::new(x1, z0),
+        Vec2::new(x1, z1),
+        Vec2::new(x0, z1),
+    ]
+}
+
+/// The square cell's footprint, or the NW half's.
+fn footprint(tri: bool) -> Vec<Vec2> {
+    if tri {
+        tri_xz().to_vec()
+    } else {
+        rect(-H, H, -H, H)
     }
 }
 
@@ -700,16 +973,21 @@ fn timber(g: Vec3) -> Look {
 fn stone(seed: u32) -> Look {
     Look::new(Vec3::Y, 0.72).vary(seed, 0.08)
 }
+/// Corrugated sheet. The map's ribs vary along `u`, so `g` is the way the
+/// ribs RUN: up a wall (`Y`), down a roof. 0.85 holds weathered sheet
+/// (luma 0.189) a clear step under the stone tier's ~0.25.
 fn sheet(g: Vec3, seed: u32) -> Look {
-    Look::new(g, 1.04).vary(seed, 0.05)
+    Look::new(g, 0.85).vary(seed, 0.06)
 }
-/// A steel section wraps the corrugated map's ribs around its perimeter, a
-/// rib or so per face, so it reads as rolled flanges running its length.
+/// A steel section, darker than its sheet: the map turned so its ribs cross
+/// the section and stretched sixteen-fold along it, so a face takes a
+/// sliver of one rib — flat plate streaked lengthwise with worn paint, not a
+/// pipe of corrugation.
 fn steel(g: Vec3) -> Look {
-    let mut l = Look::new(g, 0.52);
-    l.around = true;
-    l.sv = 0.35;
-    l
+    Look {
+        turn: true,
+        ..Look::new(g, 0.55).across(0.06)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -841,7 +1119,7 @@ pub fn apron_mesh(parts: &[Part], tier: u8) -> Mesh {
                                 (Vec3::Z, Vec3::Y),
                                 [z[0], z[1], w[0], w[1]],
                                 [true; 4],
-                                JOINT_M,
+                                WALL_JOINTS,
                                 JOINT_M,
                                 &stone(
                                     (salt.wrapping_mul(131) + (k * 16 + j) as u32) ^ s.to_bits(),
@@ -869,7 +1147,7 @@ pub fn apron_mesh(parts: &[Part], tier: u8) -> Mesh {
                 o.cuboid(
                     Vec3::new(-T2 + 0.04, lo.y, lo.z),
                     Vec3::new(T2 - 0.04, rim, hi.z),
-                    &sheet(Vec3::Z, salt),
+                    &sheet(Vec3::Y, salt),
                     ONLY_X,
                 );
             }
@@ -1111,7 +1389,7 @@ fn stone_body(o: &mut Out, lo: Vec3, hi: Vec3, e: Edges, salt: u32) {
                     (Vec3::Z, Vec3::Y),
                     [z[0], z[1], y0, y1],
                     [true; 4],
-                    JOINT_M,
+                    WALL_JOINTS,
                     JOINT_M,
                     &stone(seed),
                 );
@@ -1146,9 +1424,8 @@ fn metal_body(o: &mut Out, lo: Vec3, hi: Vec3, e: Edges, salt: u32) {
     for (r, (y0, y1)) in f.rows().into_iter().enumerate() {
         for i in 0..bays {
             let z0 = f.zb + bay * i as f32;
-            // Ribs run up the sheet: the map's ribs vary along `v`, so `v`
-            // runs along the wall.
-            let look = sheet(Vec3::Z, salt.wrapping_mul(13) + (r * 8 + i) as u32);
+            // Ribs run up the sheet.
+            let look = sheet(Vec3::Y, salt.wrapping_mul(13) + (r * 8 + i) as u32);
             o.cuboid(
                 Vec3::new(-T2 + RECESS, y0, z0),
                 Vec3::new(T2 - RECESS, y1, z0 + bay),
@@ -1162,14 +1439,8 @@ fn metal_body(o: &mut Out, lo: Vec3, hi: Vec3, e: Edges, salt: u32) {
                     Vec2::new(z0 + STRAP * 0.5, y1),
                     Vec2::new(z0 - STRAP * 0.5, y1),
                 ];
-                let strap = Look::new(Vec3::Z, 0.52).across(1.0);
                 for s in [-1.0f32, 1.0] {
-                    o.sheet_x(
-                        &poly,
-                        s * (T2 - RECESS),
-                        s * T2,
-                        &Look { sv: 0.35, ..strap },
-                    );
+                    o.sheet_x(&poly, s * (T2 - RECESS), s * T2, &steel(Vec3::Y));
                 }
             }
         }
@@ -1190,32 +1461,47 @@ fn tri_xz() -> [Vec2; 3] {
 /// gives it the rim-and-skirt of a footing; otherwise it is a floor, framed
 /// underneath.
 pub fn slab_mesh(size: Vec3, tri: bool, foundation: bool, tier: u8) -> Mesh {
+    slab_as(size, tri, foundation, false, tier)
+}
+
+/// A roof: a floor's frame under a lapped covering — thatch, shingles,
+/// slates or corrugated sheet — in place of its deck, the courses' butts at
+/// the walk surface and everything else below it.
+pub fn roof_mesh(tri: bool, tier: u8) -> Mesh {
+    slab_as(Vec3::new(2.0 * H, SLAB_T, 2.0 * H), tri, false, true, tier)
+}
+
+fn slab_as(size: Vec3, tri: bool, foundation: bool, roof: bool, tier: u8) -> Mesh {
     let top = size.y * 0.5;
     let bot = -top;
     let mut o = Out::new(bot, top);
     if tri {
-        tri_slab(&mut o, top, bot, foundation, tier);
+        tri_slab(&mut o, top, bot, foundation, roof, tier);
     } else {
         match tier {
-            MAT_TWIG => twig_slab(&mut o, top, bot, foundation),
-            MAT_WOOD => wood_slab(&mut o, top, bot, foundation),
-            MAT_STONE => stone_slab(&mut o, top, bot),
-            _ => metal_slab(&mut o, top, bot, foundation),
+            MAT_TWIG => twig_slab(&mut o, top, bot, foundation, roof),
+            MAT_WOOD => wood_slab(&mut o, top, bot, foundation, roof),
+            MAT_STONE => stone_slab(&mut o, top, bot, roof),
+            _ => metal_slab(&mut o, top, bot, foundation, roof),
         }
     }
     finish(o.b)
 }
 
-fn twig_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
+fn twig_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
     const DECK: f32 = 0.07;
     const RIM: f32 = 0.11;
     let deck_bot = top - DECK;
-    o.cuboid(
-        Vec3::new(-H, deck_bot, -H),
-        Vec3::new(H, top, H),
-        &Look::new(Vec3::X, 1.0),
-        if foundation { SKIP_NY } else { 0 },
-    );
+    if roof {
+        roofing(o, &footprint(false), top, deck_bot, MAT_TWIG);
+    } else {
+        o.cuboid(
+            Vec3::new(-H, deck_bot, -H),
+            Vec3::new(H, top, H),
+            &Look::new(Vec3::X, 1.0),
+            if foundation { SKIP_NY } else { 0 },
+        );
+    }
     let y = deck_bot - RIM;
     for s in [-1.0f32, 1.0] {
         let edge = s * (H - RIM);
@@ -1274,17 +1560,21 @@ fn twig_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
     }
 }
 
-fn wood_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
+fn wood_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
     const DECK: f32 = 0.06;
     const RIM_W: f32 = 0.12;
     const CH: f32 = 0.015;
     let deck_bot = top - DECK;
-    o.cuboid(
-        Vec3::new(-H, deck_bot, -H),
-        Vec3::new(H, top, H),
-        &Look::new(Vec3::X, 1.05),
-        if foundation { SKIP_NY } else { 0 },
-    );
+    if roof {
+        roofing(o, &footprint(false), top, deck_bot, MAT_WOOD);
+    } else {
+        o.cuboid(
+            Vec3::new(-H, deck_bot, -H),
+            Vec3::new(H, top, H),
+            &Look::new(Vec3::X, 1.05),
+            if foundation { SKIP_NY } else { 0 },
+        );
+    }
     // The rim: four beams under the deck's edges, flush with its sides.
     let rim_bot = if foundation {
         (top - 0.30).max(bot)
@@ -1344,11 +1634,16 @@ fn wood_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
     }
 }
 
-fn stone_slab(o: &mut Out, top: f32, bot: f32) {
+fn stone_slab(o: &mut Out, top: f32, bot: f32, roof: bool) {
     const FLAG: f32 = 0.75;
     let d = JOINT_M;
-    // Flagstones on the walk surface, rows offset by half a stone.
-    let rows = joint_lines(-H, H, FLAG, -H, 0);
+    // Slates on a roof; flagstones on a floor, rows offset by half a stone.
+    let rows = if roof {
+        roofing(o, &footprint(false), top, top - d - 0.01, MAT_STONE);
+        Vec::new()
+    } else {
+        joint_lines(-H, H, FLAG, -H, 0)
+    };
     for (r, zw) in rows.windows(2).enumerate() {
         let cols = joint_lines(-H, H, FLAG, -H, r as i32);
         for (c, xw) in cols.windows(2).enumerate() {
@@ -1358,7 +1653,7 @@ fn stone_slab(o: &mut Out, top: f32, bot: f32) {
                 (Vec3::X, Vec3::Z),
                 [xw[0], xw[1], zw[0], zw[1]],
                 [true; 4],
-                JOINT_M,
+                [JOINT_M; 4],
                 d,
                 &stone(900 + (r * 8 + c) as u32).grain(Vec3::Z),
             );
@@ -1366,18 +1661,7 @@ fn stone_slab(o: &mut Out, top: f32, bot: f32) {
     }
     // The sides: a rim course, then coursed blocks down the skirt. Outer
     // edges stay square so the four sides and the flags close on each other.
-    let mut lines = vec![top - d];
-    let rim = top - 0.30;
-    if rim > bot + 0.12 {
-        lines.push(rim);
-        let mut y = rim - COURSE_M;
-        while y > bot + 0.12 {
-            lines.push(y);
-            y -= COURSE_M;
-        }
-    }
-    lines.push(bot);
-    lines.reverse();
+    let lines = stone_courses(top, bot, d);
     let n = lines.len() - 1;
     for (face, (nrm, along)) in [
         (Vec3::X, Vec3::Z),
@@ -1398,7 +1682,7 @@ fn stone_slab(o: &mut Out, top: f32, bot: f32) {
                     (along, Vec3::Y),
                     [u[0], u[1], w[0], w[1]],
                     [j > 0, j < m - 1, k > 0, k < n - 1],
-                    JOINT_M,
+                    WALL_JOINTS,
                     d,
                     &stone(1200 + (face * 64 + k * 8 + j) as u32),
                 );
@@ -1417,17 +1701,21 @@ fn stone_slab(o: &mut Out, top: f32, bot: f32) {
     );
 }
 
-fn metal_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
+fn metal_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
     const DECK: f32 = 0.04;
     const RIM_W: f32 = 0.10;
     const CH: f32 = 0.01;
     let deck_bot = top - DECK;
-    o.cuboid(
-        Vec3::new(-H, deck_bot, -H),
-        Vec3::new(H, top, H),
-        &sheet(Vec3::Z, 80),
-        if foundation { SKIP_NY } else { 0 },
-    );
+    if roof {
+        roofing(o, &footprint(false), top, deck_bot, MAT_METAL);
+    } else {
+        o.cuboid(
+            Vec3::new(-H, deck_bot, -H),
+            Vec3::new(H, top, H),
+            &sheet(Vec3::Z, 80),
+            if foundation { SKIP_NY } else { 0 },
+        );
+    }
     let rim_bot = if foundation {
         (top - 0.30).max(bot)
     } else {
@@ -1468,9 +1756,8 @@ fn metal_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
             Vec3::new(-H + SET, bot, -H + SET),
             Vec3::new(H - SET, rim_bot, H - SET),
         );
-        // Ribs run up every side: `v` along each side's own length.
-        o.cuboid(lo, hi, &sheet(Vec3::Z, 81), !(SKIP_PX | SKIP_NX));
-        o.cuboid(lo, hi, &sheet(Vec3::X, 82), !(SKIP_PZ | SKIP_NZ));
+        // Ribs run up every side.
+        o.cuboid(lo, hi, &sheet(Vec3::Y, 81), SKIP_PY | SKIP_NY);
         o.face(
             &[
                 Vec3::new(lo.x, bot, lo.z),
@@ -1516,78 +1803,1068 @@ fn metal_slab(o: &mut Out, top: f32, bot: f32, foundation: bool) {
     }
 }
 
-/// The half-cell triangles: a deck, a rim under it, and a footing's skirt set
-/// back from the rim — stone in courses with a groove between each.
-fn tri_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, tier: u8) {
-    let tri = tri_xz();
-    let rim_bot = if foundation {
-        (top - 0.30).max(bot)
+/// The half-cell triangles, dressed as the square slabs are: the same deck,
+/// rim, joists, skirt and corner posts, run round three edges instead of
+/// four — the hypotenuse taking a mitred member, a pole, a coursed face of
+/// its own.
+fn tri_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool, tier: u8) {
+    let tri = footprint(true);
+    match tier {
+        MAT_TWIG => twig_tri(o, &tri, top, bot, foundation, roof),
+        MAT_STONE => stone_tri(o, &tri, top, bot, roof),
+        _ => framed_tri(o, &tri, top, bot, foundation, roof, tier),
+    }
+}
+
+fn twig_tri(o: &mut Out, tri: &[Vec2], top: f32, bot: f32, foundation: bool, roof: bool) {
+    const DECK: f32 = 0.07;
+    const RIM: f32 = 0.11;
+    const SET: f32 = 0.05;
+    let deck_bot = top - DECK;
+    if roof {
+        roofing(o, tri, top, deck_bot, MAT_TWIG);
     } else {
-        bot
-    };
-    if tier == MAT_STONE {
-        let d = JOINT_M;
-        let groove = inset(&tri, d);
-        // A cap course under the walk surface, then the rim and the skirt.
-        let mut lines = vec![bot, top - 0.14];
-        let mut y = rim_bot;
-        while y > bot + 0.12 {
-            lines.push(y);
-            y -= COURSE_M;
-        }
-        lines.push(top);
-        lines.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
-        lines.dedup_by(|a, b| (*a - *b).abs() < 0.12);
-        let n = lines.len() - 1;
-        for (k, w) in lines.windows(2).enumerate() {
-            let y0 = if k == 0 { w[0] } else { w[0] + d };
-            let y1 = if k == n - 1 { w[1] } else { w[1] - d };
-            o.prism_y(
-                &tri,
-                y0,
-                y1,
-                &stone(1500 + k as u32).grain(Vec3::Y),
-                [true, true],
+        o.slab(
+            tri,
+            deck_bot,
+            top,
+            &Look::new(Vec3::X, 1.0),
+            [!foundation, true],
+        );
+    }
+    let y = deck_bot - RIM;
+    o.rim_poles(tri, y, RIM, 40);
+    if !foundation {
+        // Joists under the mat, stopped inside the hypotenuse's rim pole.
+        for (i, x) in [-0.75f32, 0.0].into_iter().enumerate() {
+            let r = 0.085;
+            let (z0, z1) = (
+                -H + 2.0 * RIM,
+                -x - RIM * std::f32::consts::SQRT_2 - 1.5 * r,
             );
-            if k + 1 < n {
-                o.prism_y(
-                    &groove,
-                    w[1] - d,
-                    w[1] + d,
-                    &stone(1600 + k as u32),
-                    [false, false],
+            if z1 - z0 > 0.3 {
+                o.pole(
+                    Vec3::new(x, deck_bot - r, z0),
+                    Vec3::new(x, deck_bot - r, z1),
+                    r,
+                    Vec3::NEG_Y,
+                    &twig_pole(50 + i as u32),
                 );
             }
         }
         return;
     }
-    let (deck_t, deck, rim, skirt, set) = match tier {
-        MAT_TWIG => (
-            0.07,
-            Look::new(Vec3::X, 1.0),
-            Look::new(Vec3::X, 1.04),
-            twig_mat(),
-            0.05,
-        ),
-        MAT_WOOD => (
-            0.06,
-            Look::new(Vec3::X, 1.05),
-            timber(Vec3::X),
-            planks(),
-            0.035,
-        ),
-        _ => (
-            0.04,
-            sheet(Vec3::Z, 90),
-            steel(Vec3::X),
-            sheet(Vec3::X, 91),
-            0.04,
-        ),
+    if bot < y - 0.01 {
+        o.slab(&inset(tri, SET), bot, y, &twig_mat(), [true, false]);
+    }
+    let r = 0.12;
+    for (i, p) in inset(tri, r).into_iter().enumerate() {
+        o.pole(
+            Vec3::new(p.x, bot, p.y),
+            Vec3::new(p.x, deck_bot, p.y),
+            r,
+            Vec3::X,
+            &Look::new(Vec3::Y, 0.98).vary(60 + i as u32, 0.04),
+        );
+    }
+}
+
+/// Wood and metal: a deck on a mitred rim, joists under a floor, a set-back
+/// skirt and corner posts under a footing.
+fn framed_tri(
+    o: &mut Out,
+    tri: &[Vec2],
+    top: f32,
+    bot: f32,
+    foundation: bool,
+    roof: bool,
+    tier: u8,
+) {
+    let wood = tier == MAT_WOOD;
+    let (deck_t, rim_w, set, member): (f32, f32, f32, fn(Vec3) -> Look) = if wood {
+        (0.06, 0.12, 0.035, timber)
+    } else {
+        (0.04, 0.10, 0.04, steel)
     };
-    o.prism_y(&tri, top - deck_t, top, &deck, [false, true]);
-    o.prism_y(&tri, rim_bot, top - deck_t, &rim, [true, false]);
-    if foundation && bot < rim_bot - 0.01 {
-        o.prism_y(&inset(&tri, set), bot, rim_bot, &skirt, [true, false]);
+    let deck_bot = top - deck_t;
+    if roof {
+        roofing(o, tri, top, deck_bot, tier);
+    } else {
+        let deck = if wood {
+            Look::new(Vec3::X, 1.05)
+        } else {
+            sheet(Vec3::Z, 90)
+        };
+        o.slab(tri, deck_bot, top, &deck, [!foundation, true]);
+    }
+    let rim_bot = if foundation {
+        (top - 0.30).max(bot)
+    } else {
+        bot
+    };
+    o.rim_plates(tri, rim_w, rim_bot, deck_bot, member);
+    if !foundation {
+        let (xs, hw, foot): (&[f32], f32, f32) = if wood {
+            (&[-0.75, 0.0], 0.05, 0.03)
+        } else {
+            (&[-0.75, 0.0], 0.04, 0.04)
+        };
+        for &x in xs {
+            let z0 = -H + rim_w;
+            let z1 = -(x + hw) - rim_w * std::f32::consts::SQRT_2 - 0.01;
+            if z1 - z0 > 0.3 {
+                o.beam(
+                    Vec3::new(x - hw, bot + foot, z0),
+                    Vec3::new(x + hw, deck_bot, z1),
+                    2,
+                    if wood { 0.015 } else { 0.01 },
+                    &member(Vec3::Z),
+                );
+            }
+        }
+        return;
+    }
+    if bot >= rim_bot - 0.01 {
+        return;
+    }
+    let skirt = if wood {
+        planks().vary(70, 0.0)
+    } else {
+        sheet(Vec3::Y, 91)
+    };
+    o.slab(&inset(tri, set), bot, rim_bot, &skirt, [true, false]);
+    // Corner posts: a square one in the right angle, a wedge in each of the
+    // two sharp corners, where a square post would stand out of the cell.
+    let w = if wood { 0.2 } else { 0.18 };
+    o.beam(
+        Vec3::new(-H, bot, -H),
+        Vec3::new(-H + w, rim_bot, -H + w),
+        1,
+        if wood { 0.03 } else { 0.015 },
+        &member(Vec3::Y).across(0.5),
+    );
+    for (v, a, b) in [(tri[1], tri[0], tri[2]), (tri[2], tri[0], tri[1])] {
+        let wedge = [
+            v,
+            v + (a - v).normalize() * w * 1.6,
+            v + (b - v).normalize() * w * 1.6,
+        ];
+        o.slab(
+            &wedge,
+            bot,
+            rim_bot,
+            &member(Vec3::Y).across(0.5),
+            [true, false],
+        );
+    }
+    if !wood {
+        // Cover straps on the two square sides, as the square footing has.
+        for (nrm, along) in [(Vec3::NEG_X, Vec3::Z), (Vec3::NEG_Z, Vec3::X)] {
+            for t in [-0.5f32, 0.5] {
+                let mid = along * t + nrm * (H - set * 0.5) + Vec3::Y * (bot + rim_bot) * 0.5;
+                let half = along * 0.04 + nrm.abs() * set * 0.5;
+                let hy = Vec3::Y * (rim_bot - bot) * 0.5;
+                o.cuboid(
+                    mid - half - hy,
+                    mid + half + hy,
+                    &steel(Vec3::Y),
+                    SKIP_PY | SKIP_NY,
+                );
+            }
+        }
+    }
+}
+
+/// Stone: flags on top (or slates on a roof), coursed blocks down the two
+/// square sides and the hypotenuse, the outer corners square.
+fn stone_tri(o: &mut Out, tri: &[Vec2], top: f32, bot: f32, roof: bool) {
+    const FLAG: f32 = 0.75;
+    let d = JOINT_M;
+    if roof {
+        roofing(o, tri, top, top - d - 0.01, MAT_STONE);
+    } else {
+        for (r, zw) in joint_lines(-H, H, FLAG, -H, 0).windows(2).enumerate() {
+            for (c, xw) in joint_lines(-H, H, FLAG, -H, r as i32)
+                .windows(2)
+                .enumerate()
+            {
+                let cell = clip_to(&rect(xw[0], xw[1], zw[0], zw[1]), tri);
+                if cell.len() >= 3 {
+                    o.pillow_poly(
+                        &cell,
+                        top,
+                        JOINT_M,
+                        d,
+                        &stone(900 + (r * 8 + c) as u32).grain(Vec3::Z),
+                    );
+                }
+            }
+        }
+        // Under the flags, so a corner too thin to dress is not a hole.
+        o.slab(
+            &inset(tri, 0.01),
+            bot + 0.01,
+            top - d,
+            &stone(1998),
+            [false, true],
+        );
+    }
+    let lines = stone_courses(top, bot, d);
+    let n = lines.len() - 1;
+    let r2 = std::f32::consts::FRAC_1_SQRT_2;
+    let hyp = Vec3::new(r2, 0.0, r2);
+    for (face, (o_pt, nrm, along, u0, u1)) in [
+        (Vec3::NEG_X * H, Vec3::NEG_X, Vec3::Z, -H, H),
+        (Vec3::NEG_Z * H, Vec3::NEG_Z, Vec3::X, -H, H),
+        (
+            Vec3::ZERO,
+            hyp,
+            Vec3::new(r2, 0.0, -r2),
+            -H * std::f32::consts::SQRT_2,
+            H * std::f32::consts::SQRT_2,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (k, w) in lines.windows(2).enumerate() {
+            let joints = joint_lines(u0, u1, 1.0, u0 + face as f32 * 0.25, k as i32);
+            let m = joints.len() - 1;
+            for (j, u) in joints.windows(2).enumerate() {
+                // At a sharp corner a bed joint's chamfer would cut through
+                // the other face: the end stones there are square quoins.
+                let quoin = (j == m - 1) || (face == 2 && j == 0);
+                o.pillow(
+                    o_pt,
+                    nrm,
+                    (along, Vec3::Y),
+                    [u[0], u[1], w[0], w[1]],
+                    [j > 0, j < m - 1, k > 0 && !quoin, k < n - 1 && !quoin],
+                    WALL_JOINTS,
+                    d,
+                    &stone(1300 + (face * 64 + k * 8 + j) as u32),
+                );
+            }
+        }
+    }
+    let base: Vec<Vec3> = tri.iter().map(|p| Vec3::new(p.x, bot, p.y)).collect();
+    o.face(&base, Vec3::NEG_Y, &stone(1999));
+}
+
+/// A stone slab's side courses, bottom up: the bottom, the courses under the
+/// rim, the rim, and the line `d` under the walk surface the flags fall to.
+fn stone_courses(top: f32, bot: f32, d: f32) -> Vec<f32> {
+    let mut lines = vec![top - d];
+    let rim = top - 0.30;
+    if rim > bot + 0.12 {
+        lines.push(rim);
+        let mut y = rim - COURSE_M;
+        while y > bot + 0.12 {
+            lines.push(y);
+            y -= COURSE_M;
+        }
+    }
+    lines.push(bot);
+    lines.reverse();
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// Roofs
+// ---------------------------------------------------------------------------
+
+/// A roof's covering over `fp`, from `under` to the walk surface `top`:
+/// lapped courses whose butts stand at `top` and whose tails fall toward +z,
+/// where the next course's butt laps over them — thatch bundles, cut
+/// shingles, split slates — or, for metal, corrugated sheets running the
+/// other way under a flashed edge. An underlay below the courses closes
+/// every gap between them, so no joint is a slit of sky.
+fn roofing(o: &mut Out, fp: &[Vec2], top: f32, under: f32, tier: u8) {
+    let (xlo, xhi) = fp
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+    let (zlo, zhi) = fp
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+    if tier == MAT_METAL {
+        const FLASH: f32 = 0.06;
+        let seat = top - 0.03;
+        o.slab(fp, under, seat, &steel(Vec3::X), [true, true]);
+        o.rim_plates(fp, FLASH, seat, top, steel);
+        let inner = inset(fp, FLASH);
+        let (a, b) = inner
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+        let n = ((b - a) / 0.95).round().max(1.0) as usize;
+        let w = (b - a) / n as f32;
+        for i in 0..n {
+            let x0 = a + w * i as f32;
+            let cell = clip_to(&rect(x0, x0 + w, zlo, zhi), &inner);
+            let lap = if i % 2 == 0 { 0.008 } else { 0.014 };
+            o.plate(
+                &cell,
+                |_| top - lap,
+                |_| seat,
+                &sheet(Vec3::Z, 92 + i as u32),
+                [false, true],
+            );
+        }
+        return;
+    }
+    // (course pitch, tail drop, unit widths, gap, how far the course sits
+    // under the walk surface)
+    let (pitch, drop, wmin, wmax, gap, seat_d) = match tier {
+        MAT_TWIG => (0.3, 0.03, 0.9, 1.5, 0.0, 0.045),
+        MAT_WOOD => (0.25, 0.018, 0.14, 0.3, 0.007, 0.035),
+        _ => (0.375, 0.018, 0.32, 0.6, 0.008, JOINT_M),
+    };
+    let seat = top - seat_d;
+    if tier == MAT_STONE {
+        // Inside the side courses, which stand to `seat` at the cell's edge.
+        o.slab(&inset(fp, 0.004), under, seat, &stone(1990), [false, true]);
+    } else if seat > under + 0.004 {
+        let look = if tier == MAT_TWIG {
+            twig_mat()
+        } else {
+            planks().grain(Vec3::X)
+        };
+        o.slab(fp, under, seat, &look, [true, true]);
+    }
+    let mut z = zlo;
+    let mut row = 0u32;
+    while z < zhi - 1e-3 {
+        let z1 = (z + pitch).min(zhi);
+        let span = z1 - z;
+        let mut x = xlo - rand01(row, 9) * wmin;
+        let mut i = 0u32;
+        while x < xhi - 1e-3 {
+            let w = wmin + (wmax - wmin) * rand01(row * 64 + i, 5);
+            let a = if x > xlo + 1e-3 { x + gap * 0.5 } else { xlo };
+            let b = if x + w < xhi - 1e-3 {
+                x + w - gap * 0.5
+            } else {
+                xhi
+            };
+            let cell = clip_to(&rect(a, b, z, z1), fp);
+            if cell.len() >= 3 && b - a > 0.03 {
+                let seed = 2000 + row * 64 + i;
+                let look = match tier {
+                    MAT_TWIG => Look::new(Vec3::Z, 0.95).vary(seed, 0.08),
+                    MAT_WOOD => planks().grain(Vec3::Z).across(0.5).vary(seed, 0.1),
+                    _ => stone(seed).grain(Vec3::Z),
+                };
+                let z0 = z;
+                o.plate(
+                    &cell,
+                    |p| top - drop * (p.y - z0) / span,
+                    |_| seat,
+                    &look,
+                    [false, true],
+                );
+            }
+            x += w;
+            i += 1;
+        }
+        z = z1;
+        row += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Floor frames
+// ---------------------------------------------------------------------------
+
+/// A floor frame — the rails round its opening, square or half — in `tier`,
+/// baked at the piece's root (walk surface `y = 0`, rails `SLAB_T` deep):
+/// lashed poles round lashed corner posts, a butted timber frame, a ring of
+/// dressed blocks, a steel ring under a tread plate.
+pub fn floor_frame_mesh(tri: bool, tier: u8) -> Mesh {
+    let (top, bot) = (0.0, -SLAB_T);
+    let r = FRAME_RIM_M;
+    let fp = footprint(tri);
+    let mut o = Out::new(bot, top);
+    match tier {
+        MAT_TWIG => {
+            let pr = r * 0.5 - 0.004;
+            for (k, y) in [top - pr, bot + pr].into_iter().enumerate() {
+                o.rim_poles(&fp, y, pr, 300 + k as u32 * 8);
+            }
+            for (i, p) in inset(&fp, pr).into_iter().enumerate() {
+                o.pole(
+                    Vec3::new(p.x, bot, p.y),
+                    Vec3::new(p.x, top, p.y),
+                    pr - 0.006,
+                    Vec3::X,
+                    &Look::new(Vec3::Y, 0.98).vary(320 + i as u32, 0.04),
+                );
+                let rope = Look::new(Vec3::X, 0.62).across(3.0);
+                for y in [top - pr, bot + pr] {
+                    o.pole(
+                        Vec3::new(p.x, y - 0.045, p.y),
+                        Vec3::new(p.x, y + 0.045, p.y),
+                        pr - 0.001,
+                        Vec3::X,
+                        &rope,
+                    );
+                }
+            }
+        }
+        MAT_WOOD if !tri => {
+            for s in [-1.0f32, 1.0] {
+                let (a, b) = (s * H, s * (H - r));
+                o.beam(
+                    Vec3::new(a.min(b), bot, -H),
+                    Vec3::new(a.max(b), top, H),
+                    2,
+                    0.015,
+                    &timber(Vec3::Z),
+                );
+                o.beam(
+                    Vec3::new(-H + r, bot, a.min(b)),
+                    Vec3::new(H - r, top, a.max(b)),
+                    0,
+                    0.015,
+                    &timber(Vec3::X),
+                );
+            }
+        }
+        MAT_WOOD => o.rim_plates(&fp, r, bot, top, timber),
+        MAT_STONE if !tri => {
+            for s in [-1.0f32, 1.0] {
+                let (a, b) = (s * H, s * (H - r));
+                let (lo, hi) = (a.min(b), a.max(b));
+                for (j, z) in joint_lines(-H, H, 0.75, -H, 0).windows(2).enumerate() {
+                    o.block(
+                        Vec3::new(lo, bot, z[0]),
+                        Vec3::new(hi, top, z[1]),
+                        JOINT_M,
+                        &stone(400 + j as u32 + (s > 0.0) as u32 * 16),
+                    );
+                }
+                for (j, x) in joint_lines(-H + r, H - r, 0.75, -H, 1)
+                    .windows(2)
+                    .enumerate()
+                {
+                    o.block(
+                        Vec3::new(x[0], bot, lo),
+                        Vec3::new(x[1], top, hi),
+                        JOINT_M,
+                        &stone(440 + j as u32 + (s > 0.0) as u32 * 16),
+                    );
+                }
+            }
+        }
+        MAT_STONE => {
+            // Each mitred rail cut into stones along its length, a chamfered
+            // face on each and the joints between them.
+            let inner = inset(&fp, r);
+            for i in 0..fp.len() {
+                let j = (i + 1) % fp.len();
+                let len = fp[i].distance(fp[j]);
+                let cuts = ((len / 0.8).round().max(1.0)) as usize;
+                for c in 0..cuts {
+                    let (t0, t1) = (c as f32 / cuts as f32, (c + 1) as f32 / cuts as f32);
+                    let seg = [
+                        fp[i].lerp(fp[j], t0),
+                        fp[i].lerp(fp[j], t1),
+                        inner[i].lerp(inner[j], t1),
+                        inner[i].lerp(inner[j], t0),
+                    ];
+                    let look = stone(460 + (i * 8 + c) as u32);
+                    o.pillow_poly(&seg, top, JOINT_M, JOINT_M, &look);
+                    o.slab(&seg, bot, top - JOINT_M, &look, [true, false]);
+                }
+            }
+        }
+        _ => {
+            const T: f32 = 0.012;
+            if tri {
+                o.rim_plates(&fp, r, bot, top - T, steel);
+            } else {
+                for s in [-1.0f32, 1.0] {
+                    let (a, b) = (s * H, s * (H - r));
+                    o.beam(
+                        Vec3::new(a.min(b), bot, -H),
+                        Vec3::new(a.max(b), top - T, H),
+                        2,
+                        0.01,
+                        &steel(Vec3::Z),
+                    );
+                    o.beam(
+                        Vec3::new(-H + r, bot, a.min(b)),
+                        Vec3::new(H - r, top - T, a.max(b)),
+                        0,
+                        0.01,
+                        &steel(Vec3::X),
+                    );
+                }
+            }
+            o.rim_plates(&fp, r, top - T, top, |d| sheet(d.cross(Vec3::Y), 95));
+        }
+    }
+    finish(o.b)
+}
+
+// ---------------------------------------------------------------------------
+// Risers: stairs, ramps, the turned and spiral flights, foundation steps
+// ---------------------------------------------------------------------------
+
+/// A riser dressed in `tier` over the walk patches the sim stands players on
+/// (`sim_core::circulation::patches`), in the cell frame at the piece's root.
+///
+/// Each climbing patch is a [`Run`] drawn in its own frame and turned into
+/// place; each level patch is a landing. The treads sit where the plain
+/// flight's do — within half a riser of the walk surface — and everything
+/// else hangs inside the slab the sim blocks under it ([`SLAB_T`] below the
+/// surface, or down to the skirt for foundation steps), which
+/// `tests/pieces.rs` §E holds vertex by vertex.
+pub fn riser_mesh(shape: u8, tier: u8) -> Mesh {
+    let (patches, n) = sim_core::circulation::patches(shape);
+    let deep = (shape == SHAPE_FOUNDATION_STEPS).then_some(-SKIRT_MAX_M);
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for p in &patches[..n] {
+        let far = p.height(p.x1, p.z1);
+        lo = lo.min(p.y.min(far) - SLAB_T);
+        hi = hi.max(p.y.max(far));
+    }
+    let mut o = Out::new(lo, hi);
+    let tri = shape == SHAPE_STAIRS_TRI_SPIRAL;
+    for (i, p) in patches[..n].iter().enumerate() {
+        let seed = (tier as u32) << 12 | (shape as u32) << 4 | i as u32;
+        let (x0, x1, z0, z1) = (p.x0 - H, p.x1 - H, p.z0 - H, p.z1 - H);
+        let (rx, rz) = (p.sx * (p.x1 - p.x0), p.sz * (p.z1 - p.z0));
+        if rx == 0.0 && rz == 0.0 {
+            let mut poly = rect(x0, x1, z0, z1);
+            if tri {
+                poly = tidy(&clip_half(&poly, Vec2::ONE, 0.0));
+            }
+            let y = if p.y.abs() < 1e-6 { p.y - SINK_M } else { p.y };
+            landing(&mut o, &poly, y, p.y - SLAB_T, tier, seed);
+            continue;
+        }
+        let (cx, cz) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+        // Which way it climbs, as the quarter-turn that carries the run's
+        // own frame (+z up the slope) onto the cell.
+        let (len, w, rise, m, off) = if rz > 0.0 {
+            (
+                z1 - z0,
+                x1 - x0,
+                rz,
+                [[1.0, 0.0], [0.0, 1.0]],
+                Vec3::new(cx, 0.0, z0),
+            )
+        } else if rz < 0.0 {
+            (
+                z1 - z0,
+                x1 - x0,
+                -rz,
+                [[-1.0, 0.0], [0.0, -1.0]],
+                Vec3::new(cx, 0.0, z1),
+            )
+        } else if rx > 0.0 {
+            (
+                x1 - x0,
+                z1 - z0,
+                rx,
+                [[0.0, 1.0], [-1.0, 0.0]],
+                Vec3::new(x0, 0.0, cz),
+            )
+        } else {
+            (
+                x1 - x0,
+                z1 - z0,
+                -rx,
+                [[0.0, -1.0], [1.0, 0.0]],
+                Vec3::new(x1, 0.0, cz),
+            )
+        };
+        let steps = if shape == SHAPE_RAMP {
+            0
+        } else {
+            (rise / LEVEL_H_M * STAIR_RISERS as f32).ceil() as usize
+        };
+        let run = Run {
+            len,
+            w,
+            y0: p.y.min(p.height(p.x1, p.z1)),
+            rise,
+            steps,
+            deep,
+        };
+        let start = o.mark();
+        match tier {
+            MAT_TWIG => run_twig(&mut o, &run, seed),
+            MAT_WOOD => run_wood(&mut o, &run, seed),
+            MAT_STONE => run_stone(&mut o, &run, seed),
+            _ => run_metal(&mut o, &run, seed),
+        }
+        o.place_since(start, m, off);
+    }
+    finish(o.b)
+}
+
+/// How far a riser's tread or landing that lies ON the storey base sinks
+/// under it: the floor beneath already draws that surface, and two faces on
+/// one plane would z-fight across it.
+const SINK_M: f32 = 0.006;
+
+/// One climbing walk patch in its own frame: `z` from 0 at its foot to
+/// `len` at its head, `x` across `±w/2`, the surface rising `rise` from `y0`
+/// in `steps` treads (0 for a smooth ramp). `deep` is the floor a foundation
+/// flight stands solid on.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    len: f32,
+    w: f32,
+    y0: f32,
+    rise: f32,
+    steps: usize,
+    deep: Option<f32>,
+}
+
+impl Run {
+    /// The walk surface at `z`.
+    fn h(&self, z: f32) -> f32 {
+        self.y0 + self.rise * z / self.len
+    }
+
+    /// Tread `k`: its `z` span and its height — the plain flight's treads,
+    /// half-depth at the two ends, each centred on the walk surface. A foot
+    /// tread on the storey base sinks [`SINK_M`] under the floor it lies on.
+    fn tread(&self, k: usize) -> (f32, f32, f32) {
+        let n = self.steps as f32;
+        let a = ((k as f32 - 0.5) / n).max(0.0) * self.len;
+        let b = ((k as f32 + 0.5) / n).min(1.0) * self.len;
+        let y = self.y0 + self.rise * k as f32 / n;
+        (a, b, if y.abs() < 1e-6 { y - SINK_M } else { y })
+    }
+
+    fn slen(&self) -> f32 {
+        (self.len * self.len + self.rise * self.rise).sqrt()
+    }
+
+    /// Up the slope, and out of it.
+    fn dir(&self) -> Vec3 {
+        Vec3::new(0.0, self.rise, self.len) / self.slen()
+    }
+
+    fn nrm(&self) -> Vec3 {
+        Vec3::new(0.0, self.len, -self.rise) / self.slen()
+    }
+
+    /// The surface point `s` metres up the slope.
+    fn at(&self, s: f32) -> Vec3 {
+        Vec3::new(0.0, self.y0, 0.0) + self.dir() * s
+    }
+
+    /// A side-on outline in `(z, y)` running `top` and `bot` metres off the
+    /// walk line, its top held under the run's head so a stringer never
+    /// stands above the floor it delivers you to.
+    fn outline(&self, top: f32, bot: f32) -> Vec<Vec2> {
+        let cap = self.y0 + self.rise;
+        let t = |z: f32| self.h(z) + top;
+        let mut v = vec![
+            Vec2::new(0.0, self.h(0.0) + bot),
+            Vec2::new(self.len, self.h(self.len) + bot),
+        ];
+        if t(self.len) > cap + 1e-5 && t(0.0) < cap - 1e-5 {
+            v.push(Vec2::new(self.len, cap));
+            v.push(Vec2::new((cap - top - self.y0) * self.len / self.rise, cap));
+        } else {
+            v.push(Vec2::new(self.len, t(self.len).min(cap)));
+        }
+        v.push(Vec2::new(0.0, t(0.0).min(cap)));
+        v
+    }
+
+    /// A foundation flight's body under its stringers, down to the floor it
+    /// stands on, set `set` in from the run's sides.
+    fn body(&self, o: &mut Out, set: f32, look: &Look) {
+        let Some(floor) = self.deep else {
+            return;
+        };
+        let poly = [
+            Vec2::new(0.0, floor),
+            Vec2::new(self.len, floor),
+            Vec2::new(self.len, self.h(self.len) - 0.2),
+            Vec2::new(0.0, self.h(0.0) - 0.2),
+        ];
+        let hw = self.w * 0.5 - set;
+        o.sheet_x(&poly, -hw, hw, look);
+    }
+}
+
+/// Twig: round treads lashed across two pole stringers over a stick mat; a
+/// ramp is poles laid side by side up the slope.
+fn run_twig(o: &mut Out, r: &Run, seed: u32) {
+    const RS: f32 = 0.06;
+    const RP: f32 = 0.06;
+    let hw = r.w * 0.5;
+    let nrm = r.nrm();
+    let drop = if r.steps > 0 {
+        0.15
+    } else {
+        (2.0 * RP + RS) / nrm.y
+    };
+    for (i, side) in [-1.0f32, 1.0].into_iter().enumerate() {
+        let x = side * (hw - RS);
+        let (a, b) = (RS * 1.4, r.len - RS * 1.4);
+        o.pole(
+            Vec3::new(x, r.h(a) - drop, a),
+            Vec3::new(x, r.h(b) - drop, b),
+            RS,
+            Vec3::X,
+            &twig_pole(seed ^ ((i as u32 + 1) * 977)),
+        );
+    }
+    if r.steps > 0 {
+        for k in 0..=r.steps {
+            let (za, zb, y) = r.tread(k);
+            // The half-depth treads at the two ends are the floors the
+            // flight runs between; a pole there would hang off nothing.
+            let rt = 0.065f32.min((zb - za) * 0.5);
+            if rt < 0.05 {
+                continue;
+            }
+            let zc = (za + zb) * 0.5;
+            o.pole(
+                Vec3::new(-hw, y - rt, zc),
+                Vec3::new(hw, y - rt, zc),
+                rt,
+                Vec3::Y,
+                &twig_pole(seed.wrapping_mul(31).wrapping_add(k as u32)),
+            );
+        }
+    } else {
+        // A pole's corners reach 1.08 RP from its axis; these are the
+        // first and last axes whose corners stay over the run.
+        let (sin, cos) = (-nrm.z, nrm.y);
+        let s0 = RP * (1.08 - sin) / cos;
+        let s1 = r.slen() - RP * (1.08 + sin) / cos;
+        let n = ((s1 - s0) / (2.0 * RP + 0.004)).floor().max(0.0) as usize + 1;
+        let pitch = (s1 - s0) / (n.max(2) - 1) as f32;
+        for i in 0..n {
+            let c = r.at(s0 + pitch * i as f32) - nrm * RP;
+            o.pole(
+                c - Vec3::X * hw,
+                c + Vec3::X * hw,
+                RP,
+                nrm,
+                &twig_pole(seed.wrapping_mul(31).wrapping_add(i as u32)),
+            );
+        }
+    }
+    // A stick mat under the poles closes the flight from below.
+    let mat = if r.steps > 0 {
+        -0.135
+    } else {
+        -(2.0 * RP + 0.005) / nrm.y
+    };
+    o.sheet_x(
+        &r.outline(mat, mat - 0.05),
+        -(hw - 0.1),
+        hw - 0.1,
+        &twig_mat(),
+    );
+    r.body(o, 0.05, &twig_mat());
+}
+
+/// Wood: plank treads and set-back riser boards housed in two closed timber
+/// stringers, a carriage under a wide flight; a ramp is boards across the
+/// slope on the stringers.
+fn run_wood(o: &mut Out, r: &Run, seed: u32) {
+    const SW: f32 = 0.07;
+    const T: f32 = 0.045;
+    let hw = r.w * 0.5;
+    let inner = hw - SW;
+    let grain = r.dir();
+    let under = if r.steps > 0 {
+        for k in 0..=r.steps {
+            let (za, zb, y) = r.tread(k);
+            if zb - za < 0.03 {
+                continue;
+            }
+            // Each tread runs on under the next riser, which stands on it.
+            let tail = if k < r.steps { 0.045 } else { 0.0 };
+            o.beam(
+                Vec3::new(-inner, y - T, za),
+                Vec3::new(inner, y, (zb + tail).min(r.len)),
+                0,
+                0.012,
+                &planks().vary(seed.wrapping_add(k as u32 * 7), 0.06),
+            );
+            if k > 0 {
+                let below = r.tread(k - 1).2;
+                let zr = za + 0.02;
+                if y - T > below + 0.02 {
+                    o.cuboid(
+                        Vec3::new(-inner, below, zr),
+                        Vec3::new(inner, y - T, zr + 0.022),
+                        &planks()
+                            .grain(Vec3::X)
+                            .vary(seed.wrapping_add(101 + k as u32), 0.05),
+                        0,
+                    );
+                }
+            }
+        }
+        (0.04, -0.135)
+    } else {
+        let (dir, nrm) = (r.dir(), r.nrm());
+        // Stopped short of the head by what a board's thickness overhangs it.
+        let run = r.slen() - T * (-nrm.z / nrm.y);
+        let n = (run / 0.146).floor().max(1.0);
+        let pitch = run / n;
+        for i in 0..n as usize {
+            let c = r.at(pitch * (i as f32 + 0.5)) - nrm * (T * 0.5);
+            o.extrude(
+                c,
+                nrm,
+                dir,
+                &chamfer_rect(T * 0.5, pitch * 0.5 - 0.003, 0.008),
+                [-hw, hw],
+                &planks()
+                    .grain(Vec3::X)
+                    .vary(seed.wrapping_add(i as u32 * 7), 0.06),
+                [true, true],
+                false,
+            );
+        }
+        let u = -(T / nrm.y) - 0.002;
+        (u, u)
+    };
+    for side in [-1.0f32, 1.0] {
+        o.sheet_x(
+            &r.outline(under.0, -0.27),
+            side * inner,
+            side * hw,
+            &timber(grain),
+        );
+    }
+    if r.w > 1.5 {
+        o.sheet_x(&r.outline(under.1, -0.29), -0.045, 0.045, &timber(grain));
+    }
+    r.body(o, 0.035, &planks());
+}
+
+/// Stone: one block per tread, two across a wide flight with the joint
+/// staggered, the soffit stepping down under them; a ramp is flags laid on
+/// the slope over a sloped core.
+fn run_stone(o: &mut Out, r: &Run, seed: u32) {
+    let hw = r.w * 0.5;
+    if r.steps > 0 {
+        for k in 0..=r.steps {
+            let (za, zb, y) = r.tread(k);
+            if zb - za < 0.03 {
+                continue;
+            }
+            let bot = match r.deep {
+                Some(_) => y - SLAB_T,
+                None => r.h(zb) - SLAB_T + 0.003,
+            }
+            .min(y - 0.06);
+            let cuts = if r.w > 1.5 {
+                let j = if k % 2 == 0 { 0.3 } else { -0.35 } * hw;
+                vec![-hw, j, hw]
+            } else {
+                vec![-hw, hw]
+            };
+            for (j, x) in cuts.windows(2).enumerate() {
+                o.block(
+                    Vec3::new(x[0], bot, za),
+                    Vec3::new(x[1], y, zb),
+                    JOINT_M,
+                    &stone(seed.wrapping_mul(131).wrapping_add((k * 4 + j) as u32)),
+                );
+            }
+        }
+    } else {
+        let (dir, nrm) = (r.dir(), r.nrm());
+        let run = r.slen() - JOINT_M * (-nrm.z / nrm.y);
+        for (i, s) in joint_lines(0.0, run, 0.6, 0.0, 0).windows(2).enumerate() {
+            for (j, x) in joint_lines(-hw, hw, 0.75, -hw, i as i32)
+                .windows(2)
+                .enumerate()
+            {
+                o.pillow(
+                    r.at(0.0),
+                    nrm,
+                    (Vec3::X, dir),
+                    [x[0], x[1], s[0], s[1]],
+                    [true; 4],
+                    [JOINT_M; 4],
+                    JOINT_M,
+                    &stone(seed.wrapping_mul(131).wrapping_add((i * 8 + j) as u32)).grain(dir),
+                );
+            }
+        }
+        o.sheet_x(
+            &r.outline(-JOINT_M / nrm.y, -SLAB_T + 0.003),
+            -hw,
+            hw,
+            &stone(seed ^ 0x55),
+        );
+    }
+    r.body(o, 0.01, &stone(seed ^ 0x77));
+}
+
+/// Metal: tread plates with a turned-down nosing and kick plates between two
+/// steel channels; a ramp is a ribbed plate on cross purlins.
+fn run_metal(o: &mut Out, r: &Run, seed: u32) {
+    const SW: f32 = 0.035;
+    const LIP: f32 = 0.06;
+    const T: f32 = 0.012;
+    const NOSE: f32 = 0.045;
+    let hw = r.w * 0.5;
+    let inner = hw - SW;
+    let grain = r.dir();
+    let top = if r.steps > 0 {
+        for k in 0..=r.steps {
+            let (za, zb, y) = r.tread(k);
+            if zb - za < 0.03 {
+                continue;
+            }
+            let tail = if k < r.steps { 0.04 } else { 0.0 };
+            o.cuboid(
+                Vec3::new(-inner, y - T, za),
+                Vec3::new(inner, y, (zb + tail).min(r.len)),
+                &sheet(Vec3::X, seed.wrapping_add(k as u32)),
+                0,
+            );
+            o.cuboid(
+                Vec3::new(-inner, y - NOSE, za),
+                Vec3::new(inner, y - T, za + T),
+                &steel(Vec3::X),
+                0,
+            );
+            if k > 0 {
+                let below = r.tread(k - 1).2;
+                let zr = za + 0.03;
+                if y - T > below + 0.02 {
+                    o.cuboid(
+                        Vec3::new(-inner, below, zr),
+                        Vec3::new(inner, y - T, zr + 0.008),
+                        &sheet(Vec3::Y, seed.wrapping_add(50 + k as u32)),
+                        0,
+                    );
+                }
+            }
+        }
+        0.03
+    } else {
+        let (dir, nrm) = (r.dir(), r.nrm());
+        let tv = T / nrm.y;
+        o.sheet_x(&r.outline(0.0, -tv), -hw, hw, &sheet(Vec3::X, seed));
+        let n = (r.slen() / 0.7).round().max(2.0) as usize;
+        for i in 0..n {
+            let c = r.at(r.slen() * (i as f32 + 0.5) / n as f32) - nrm * (T + 0.04);
+            o.extrude(
+                c,
+                nrm,
+                dir,
+                &chamfer_rect(0.04, 0.03, 0.006),
+                [-inner, inner],
+                &steel(Vec3::X),
+                [true, true],
+                false,
+            );
+        }
+        -tv
+    };
+    for side in [-1.0f32, 1.0] {
+        o.sheet_x(
+            &r.outline(top, -0.22),
+            side * inner,
+            side * hw,
+            &steel(grain),
+        );
+        o.sheet_x(
+            &r.outline(-0.2, -0.22),
+            side * (inner - LIP),
+            side * inner,
+            &steel(grain),
+        );
+    }
+    r.body(o, 0.04, &sheet(Vec3::Y, seed ^ 0x33));
+}
+
+/// A riser's level patch at `y` over the convex `poly`: the tier's deck on
+/// its rim, down to `bot`, the floor of the slab the sim blocks under it.
+fn landing(o: &mut Out, poly: &[Vec2], y: f32, bot: f32, tier: u8, seed: u32) {
+    match tier {
+        MAT_TWIG => {
+            const DECK: f32 = 0.07;
+            const R: f32 = 0.075;
+            o.slab(poly, y - DECK, y, &Look::new(Vec3::X, 1.0), [true, true]);
+            o.rim_poles(poly, y - DECK - R, R, seed);
+            o.slab(
+                &inset(poly, 0.06),
+                bot + 0.02,
+                y - DECK,
+                &twig_mat(),
+                [true, false],
+            );
+        }
+        MAT_WOOD => {
+            const T: f32 = 0.05;
+            let (z0, z1) = poly
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+            let (x0, x1) = poly
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+            let n = ((z1 - z0) / 0.15).round().max(1.0) as usize;
+            let pitch = (z1 - z0) / n as f32;
+            for i in 0..n {
+                let (a, b) = (z0 + pitch * i as f32, z0 + pitch * (i + 1) as f32);
+                let (a, b) = (
+                    if i > 0 { a + 0.003 } else { a },
+                    if i + 1 < n { b - 0.003 } else { b },
+                );
+                let board = clip_to(&rect(x0, x1, a, b), poly);
+                o.slab(
+                    &board,
+                    y - T,
+                    y,
+                    &planks()
+                        .grain(Vec3::X)
+                        .vary(seed.wrapping_mul(17).wrapping_add(i as u32), 0.06),
+                    [true, true],
+                );
+            }
+            o.rim_plates(poly, 0.1, bot + 0.04, y - T, timber);
+        }
+        MAT_STONE => {
+            let (z0, z1) = poly
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+            let (x0, x1) = poly
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+            for (r, zw) in joint_lines(z0, z1, 0.6, z0, 0).windows(2).enumerate() {
+                for (c, xw) in joint_lines(x0, x1, 0.6, x0, r as i32)
+                    .windows(2)
+                    .enumerate()
+                {
+                    let cell = clip_to(&rect(xw[0], xw[1], zw[0], zw[1]), poly);
+                    if cell.len() >= 3 {
+                        o.pillow_poly(
+                            &cell,
+                            y,
+                            JOINT_M,
+                            JOINT_M,
+                            &stone(seed.wrapping_mul(29).wrapping_add((r * 8 + c) as u32)),
+                        );
+                    }
+                }
+            }
+            o.slab(poly, bot, y - JOINT_M, &stone(seed ^ 0x55), [true, true]);
+        }
+        _ => {
+            const T: f32 = 0.03;
+            o.slab(poly, y - T, y, &sheet(Vec3::X, seed), [true, true]);
+            o.rim_plates(poly, 0.09, bot + 0.05, y - T, steel);
+        }
     }
 }
 

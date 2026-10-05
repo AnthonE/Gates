@@ -271,16 +271,18 @@ const TIER: [Tier; N_TIERS] = [
         metallic: 0.0,
         tiles_per_m: 0.55,
     },
-    // metal · `CorrugatedSteel009` publishes no physical size at all
-    // (`dimensionX`/`Y` are 0). Counted instead: ~22 ribs across the map, so
-    // 0.55 lands the corrugation pitch at ~83 mm against a real profile's 76.
-    // The one conductor: `ART.md` reads the reference's tier as *sheen* as
-    // much as hue, and a tier told apart by colour alone reads as paint.
+    // metal · `corrugated`, Poly Haven `worn_corrugated_iron`, authored at
+    // 1800 mm → 0.55: galvanised sheet under peeling paint, luma 0.189. It
+    // was `CorrugatedSteel009` (the props' clean `metal`) at metallic 0.85,
+    // roughness 0.38, and a wall like that in direct sun was a mirror of the
+    // sky with a hot lobe on it — near-white, brighter than the stone tier
+    // below it. Paint and oxide are dielectric and scatter: half a conductor
+    // and a rough sheen is weathered steel, a step darker than stone.
     Tier {
-        role: "metal",
+        role: "corrugated",
         gain: 1.0,
-        roughness: 0.38,
-        metallic: 0.85,
+        roughness: 0.7,
+        metallic: 0.35,
         tiles_per_m: 0.55,
     },
 ];
@@ -631,8 +633,14 @@ pub struct Kit {
     /// hundred depths are `N_TIERS × 2 × SKIRT_STEPS` meshes and the hammer
     /// highlight's one-entity contract (`Transform` + `Mesh3d`) holds.
     footing: [[[Handle<Mesh>; 2]; SKIRT_STEPS]; N_TIERS],
-    /// Floors and roofs — the one-slab shapes — per tier, square then tri.
+    /// Floors — the one-slab shapes — per tier, square then tri.
     slab: [[Handle<Mesh>; 2]; N_TIERS],
+    /// The other shapes dressed per tier, by shape: the roofs (a floor's
+    /// frame under a covering), the floor frames, and every riser — stairs,
+    /// ramp, the turned and spiral flights and foundation steps
+    /// ([`dress::roof_mesh`], [`dress::floor_frame_mesh`],
+    /// [`dress::riser_mesh`]). `None` for a shape drawn some other way.
+    dressed: Dressed,
     /// A ground-storey edge piece's apron, per tier and corner-post
     /// ownership ([`apron_parts`]) — the plinth under its outer half, dressed
     /// as the footing it stands in front of ([`dress::apron_mesh`]).
@@ -660,6 +668,8 @@ pub struct Kit {
 
 /// [`Kit::edge_mesh`]: tier, shape, ownership, soft side.
 type EdgeMeshes = [[[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES]; N_TIERS];
+/// [`Kit::dressed`]: tier, shape.
+type Dressed = [[Option<Handle<Mesh>>; N_SHAPES]; N_TIERS];
 
 impl Kit {
     /// The material a piece of `material` draws in at damage band `dmg`.
@@ -712,6 +722,9 @@ impl Kit {
             return self.edge_mesh[t][s][own.bits() as usize][side]
                 .clone()
                 .expect("every edge shape has a mesh per tier and ownership");
+        }
+        if let Some(h) = &self.dressed[t][s] {
+            return h.clone();
         }
         if is_slab(shape) {
             return self.slab[t][usize::from(tri)].clone();
@@ -2378,6 +2391,20 @@ pub fn build_kit(
         let size = Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M);
         [false, true].map(|tri| meshes.add(dress::slab_mesh(size, tri, false, t as u8)))
     });
+    let dressed: Dressed = std::array::from_fn(|t| {
+        std::array::from_fn(|shape| {
+            let (t, shape) = (t as u8, shape as u8);
+            let mesh = match shape {
+                sim_core::build::SHAPE_ROOF => dress::roof_mesh(false, t),
+                SHAPE_TRI_ROOF => dress::roof_mesh(true, t),
+                SHAPE_FLOOR_FRAME => dress::floor_frame_mesh(false, t),
+                sim_core::build::SHAPE_TRI_FLOOR_FRAME => dress::floor_frame_mesh(true, t),
+                s if sim_core::circulation::is_riser(s) => dress::riser_mesh(s, t),
+                _ => return None,
+            };
+            Some(meshes.add(mesh))
+        })
+    });
     let apron = std::array::from_fn(|t| {
         std::array::from_fn(|own| {
             let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
@@ -2402,6 +2429,7 @@ pub fn build_kit(
         diag_mesh,
         footing,
         slab,
+        dressed,
         apron,
         tier,
         deploy_mesh,
@@ -3009,11 +3037,8 @@ fn spawn_piece(
         let part = foundation_part(seed, haven, cx, cz, tri, plate);
         step = footing_of(seed, haven, cx, cz, plate).0;
         root * part.transform()
-    } else if is_edge_shape(shape) {
-        // Straight and diagonal edges alike: the parts are baked at the root.
-        root
     } else {
-        root * shape_parts(shape).0[0].transform()
+        root * piece_local(shape)
     };
     let mesh = kit.piece_mesh(shape, material, loc, own, soft_side != 0, step);
     let mut piece = commands.spawn((
@@ -3036,6 +3061,23 @@ fn spawn_piece(
         }
     }
     piece.id()
+}
+
+/// Where a standing non-foundation piece's mesh sits under its address's
+/// root: the edge shapes, the floor frames and every riser are baked at the
+/// root (the risers in the cell frame the sim's walk patches are written
+/// in, so a dressed flight carries no pitch), and the slabs carry their one
+/// part's offset, their meshes being centred on it.
+pub fn piece_local(shape: u8) -> Transform {
+    if is_edge_shape(shape)
+        || shape == SHAPE_FLOOR_FRAME
+        || shape == sim_core::build::SHAPE_TRI_FLOOR_FRAME
+        || sim_core::circulation::is_riser(shape)
+    {
+        Transform::IDENTITY
+    } else {
+        shape_parts(shape).0[0].transform()
+    }
 }
 
 /// How far from a door leaf's middle its marks go when it swings, metres:

@@ -816,6 +816,173 @@ fn a_dressed_slab_stays_inside_its_slab() {
     }
 }
 
+/// Every roof, square and half, in every tier, stays inside its slab: the
+/// covering's butts at the walk surface and nothing above it.
+#[test]
+fn a_dressed_roof_stays_inside_its_slab() {
+    let h = sim_core::build::BUILD_CELL_M * 0.5;
+    for tier in 0..N_TIERS as u8 {
+        for tri in [false, true] {
+            let m = dress::roof_mesh(tri, tier);
+            let name = format!("tier {tier} roof tri {tri}");
+            let tris = holds(&name, &m, 3000, |p| {
+                p.x.abs() <= h + 1e-4
+                    && p.z.abs() <= h + 1e-4
+                    && p.y.abs() <= SLAB_T * 0.5 + 1e-4
+                    && (!tri || p.x + p.z <= 1e-4)
+            });
+            println!("{name}: {tris} tris");
+        }
+    }
+}
+
+/// The floor frames keep to their rails: the square one to the four rail
+/// parts the table emits, the half one to the sim's own rim test.
+#[test]
+fn a_dressed_floor_frame_stays_inside_its_rails() {
+    use client::render::structures::shape_parts;
+    use sim_core::build::{BUILD_CELL_M, LOC_TRI_XLO_ZLO, SHAPE_FLOOR_FRAME};
+    use sim_core::collide::tri_frame_solid;
+    let h = BUILD_CELL_M * 0.5;
+    let (parts, n) = shape_parts(SHAPE_FLOOR_FRAME);
+    for tier in 0..N_TIERS as u8 {
+        let name = format!("tier {tier} floor frame");
+        let tris = holds(&name, &dress::floor_frame_mesh(false, tier), 2400, |p| {
+            parts[..n].iter().any(|q| in_part(p, q))
+        });
+        println!("{name}: {tris} tris");
+        let name = format!("tier {tier} tri floor frame");
+        let tris = holds(&name, &dress::floor_frame_mesh(true, tier), 2400, |p| {
+            p.y <= 1e-4
+                && p.y >= -SLAB_T - 1e-4
+                && p.x >= -h - 1e-4
+                && p.z >= -h - 1e-4
+                && p.x + p.z <= 1e-4
+                && tri_frame_solid(LOC_TRI_XLO_ZLO, p.x + h, p.z + h, 1e-4)
+        });
+        println!("{name}: {tris} tris");
+    }
+}
+
+/// The highest up-facing surface of `m` over `(x, z)`, or −∞.
+fn top_at(m: &Mesh, x: f32, z: f32) -> f32 {
+    let (pos, _, idx) = dressed("top_at", m);
+    let mut top = f32::NEG_INFINITY;
+    let p = Vec2::new(x, z);
+    for t in idx.chunks(3) {
+        let [a, b, c] = [pos[t[0]], pos[t[1]], pos[t[2]]];
+        if (b - a).cross(c - a).y <= 1e-9 {
+            continue;
+        }
+        let (a2, u, v) = (
+            Vec2::new(a.x, a.z),
+            Vec2::new(b.x - a.x, b.z - a.z),
+            Vec2::new(c.x - a.x, c.z - a.z),
+        );
+        let det = u.perp_dot(v);
+        let d = p - a2;
+        let (s, w) = (d.perp_dot(v) / det, u.perp_dot(d) / det);
+        if s >= -1e-5 && w >= -1e-5 && s + w <= 1.0 + 1e-5 {
+            top = top.max(a.y + s * (b.y - a.y) + w * (c.y - a.y));
+        }
+    }
+    top
+}
+
+/// Every riser in every tier keeps every vertex inside the slab the sim
+/// blocks under its walk patches (`collide::plane_blocked`'s band, down to
+/// the skirt for foundation steps), its treads within half a riser of the
+/// surface as the plain flight's are and nothing over the storey it climbs
+/// to — and it still draws a surface to walk on over every patch.
+#[test]
+fn a_dressed_riser_stays_inside_its_walk_slab() {
+    use sim_core::build::*;
+    use sim_core::circulation;
+    let h = BUILD_CELL_M * 0.5;
+    let riser = client::render::structures::STAIR_RISERS as f32;
+    for shape in [
+        SHAPE_STAIRS,
+        SHAPE_FOUNDATION_STEPS,
+        SHAPE_RAMP,
+        SHAPE_STAIRS_L,
+        SHAPE_STAIRS_U,
+        SHAPE_STAIRS_SPIRAL,
+        SHAPE_STAIRS_TRI_SPIRAL,
+    ] {
+        let (patches, n) = circulation::patches(shape);
+        let patches = &patches[..n];
+        let head = patches
+            .iter()
+            .map(|p| p.y.max(p.height(p.x1, p.z1)))
+            .fold(f32::MIN, f32::max);
+        let half = |q: &circulation::Patch| {
+            let rise = (q.sx * (q.x1 - q.x0) + q.sz * (q.z1 - q.z0)).abs();
+            let steps = (rise / LEVEL_H_M * riser).ceil();
+            if shape == SHAPE_RAMP || steps == 0.0 {
+                0.0
+            } else {
+                rise / steps * 0.5
+            }
+        };
+        let tri = shape == SHAPE_STAIRS_TRI_SPIRAL;
+        for tier in 0..N_TIERS as u8 {
+            let m = dress::riser_mesh(shape, tier);
+            let name = format!("tier {tier} riser {shape}");
+            let tris = holds(&name, &m, 2400, |p| {
+                let (x, z, e) = (p.x + h, p.z + h, 1e-4);
+                if p.y > head + e || (tri && x + z > BUILD_CELL_M + e) {
+                    return false;
+                }
+                patches.iter().any(|q| {
+                    if x < q.x0 - e || x > q.x1 + e || z < q.z0 - e || z > q.z1 + e {
+                        return false;
+                    }
+                    let s = q.height(x.clamp(q.x0, q.x1), z.clamp(q.z0, q.z1));
+                    let floor = if shape == SHAPE_FOUNDATION_STEPS {
+                        -SKIRT_MAX_M
+                    } else {
+                        s - SLAB_T
+                    };
+                    p.y <= s + half(q) + e && p.y >= floor - e
+                })
+            });
+            println!("{name}: {tris} tris");
+            // Walk every patch on a grid: a drawn top within reach of the
+            // surface everywhere, so no tier dresses a flight into a ladder
+            // with nothing between its rungs.
+            for q in patches {
+                for i in 0..12 {
+                    for j in 0..12 {
+                        let x = q.x0 + (q.x1 - q.x0) * (i as f32 + 0.5) / 12.0;
+                        let z = q.z0 + (q.z1 - q.z0) * (j as f32 + 0.5) / 12.0;
+                        if tri && x + z > BUILD_CELL_M - 0.05 {
+                            continue;
+                        }
+                        // The half-depth treads at a flight's two ends lie
+                        // on the floors it joins, which carry the step.
+                        let t = if q.sx != 0.0 {
+                            (x - q.x0) / (q.x1 - q.x0)
+                        } else {
+                            (z - q.z0) / (q.z1 - q.z0)
+                        };
+                        let rise = (q.sx * (q.x1 - q.x0) + q.sz * (q.z1 - q.z0)).abs();
+                        let end = 0.5 / (rise / LEVEL_H_M * riser).ceil().max(1.0) + 0.01;
+                        if rise > 0.0 && shape != SHAPE_RAMP && (t < end || t > 1.0 - end) {
+                            continue;
+                        }
+                        let s = q.height(x, z);
+                        let drawn = top_at(&m, x - h, z - h);
+                        assert!(
+                            drawn >= s - half(q) - 0.15,
+                            "{name}: nothing to stand on at {x}, {z} — walk {s}, drawn {drawn}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// **The tier is geometry, so an upgrade must change the mesh.** The kit's
 /// pick for every dressed shape differs by tier — a stone wall drawn with the
 /// twig mesh would be the stale-upgrade defect, the right material over the
@@ -825,8 +992,10 @@ fn every_tier_draws_its_own_mesh() {
     use bevy::asset::AssetPlugin;
     use client::render::structures::{build_kit, is_slab};
     use sim_core::build::{
-        LOC_DIAG_A, LOC_EDGE_XLO, LOC_PLANE, SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF,
-        SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_WALL,
+        LOC_DIAG_A, LOC_EDGE_XLO, LOC_PLANE, LOC_RISER, LOC_TRI_XLO_ZLO, SHAPE_FLOOR,
+        SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FOUNDATION_STEPS, SHAPE_RAMP, SHAPE_ROOF,
+        SHAPE_STAIRS, SHAPE_STAIRS_L, SHAPE_STAIRS_SPIRAL, SHAPE_STAIRS_TRI_SPIRAL, SHAPE_STAIRS_U,
+        SHAPE_TRI_FLOOR, SHAPE_TRI_FLOOR_FRAME, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
     };
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
@@ -849,6 +1018,16 @@ fn every_tier_draws_its_own_mesh() {
         (SHAPE_FLOOR, LOC_PLANE),
         (SHAPE_ROOF, LOC_PLANE),
         (SHAPE_TRI_FLOOR, LOC_PLANE),
+        (SHAPE_TRI_ROOF, LOC_TRI_XLO_ZLO),
+        (SHAPE_FLOOR_FRAME, LOC_PLANE),
+        (SHAPE_TRI_FLOOR_FRAME, LOC_TRI_XLO_ZLO),
+        (SHAPE_STAIRS, LOC_RISER),
+        (SHAPE_FOUNDATION_STEPS, LOC_RISER),
+        (SHAPE_RAMP, LOC_RISER),
+        (SHAPE_STAIRS_L, LOC_RISER),
+        (SHAPE_STAIRS_U, LOC_RISER),
+        (SHAPE_STAIRS_SPIRAL, LOC_RISER),
+        (SHAPE_STAIRS_TRI_SPIRAL, LOC_RISER),
     ]);
     for (shape, loc) in picks {
         let ids: Vec<_> = (0..N_TIERS as u8)
