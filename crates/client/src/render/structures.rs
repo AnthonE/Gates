@@ -632,9 +632,10 @@ pub struct Kit {
     footing: [[[Handle<Mesh>; 2]; SKIRT_STEPS]; N_TIERS],
     /// Floors and roofs — the one-slab shapes — per tier, square then tri.
     slab: [[Handle<Mesh>; 2]; N_TIERS],
-    /// A ground-storey edge piece's apron, per corner-post ownership
-    /// ([`apron_parts`]) — the plinth under its outer half.
-    apron: [Handle<Mesh>; 4],
+    /// A ground-storey edge piece's apron, per tier and corner-post
+    /// ownership ([`apron_parts`]) — the plinth under its outer half, dressed
+    /// as the footing it stands in front of ([`dress::apron_mesh`]).
+    apron: [[Handle<Mesh>; 4]; N_TIERS],
     /// One material per (tier, damage band). `DMG_BANDS` × `N_TIERS` = 32
     /// materials, built once — which is the whole reason the band is 3 bits
     /// and not a float: a continuous damage value would mean a material per
@@ -717,6 +718,14 @@ impl Kit {
         self.shape_mesh[s][0]
             .clone()
             .expect("every live part has a mesh")
+    }
+}
+
+impl Kit {
+    /// The apron a ground-storey edge piece of `material` hangs under its
+    /// foot ([`apron_parts`]) for the posts it owns.
+    pub fn apron_mesh(&self, material: u8, own: PostOwn) -> Handle<Mesh> {
+        self.apron[(material as usize).min(N_TIERS - 1)][own.bits() as usize].clone()
     }
 }
 
@@ -2368,9 +2377,11 @@ pub fn build_kit(
         let size = Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M);
         [false, true].map(|tri| meshes.add(dress::slab_mesh(size, tri, false, t as u8)))
     });
-    let apron = std::array::from_fn(|own| {
-        let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
-        meshes.add(parts_mesh(&parts[..n]))
+    let apron = std::array::from_fn(|t| {
+        std::array::from_fn(|own| {
+            let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
+            meshes.add(dress::apron_mesh(&parts[..n], t as u8))
+        })
     });
     // One footing mesh per quantised depth, per kind — built here rather
     // than on demand so a player walking onto new ground never pays a mesh
@@ -3017,7 +3028,7 @@ fn spawn_piece(
     if is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
         if let Some(apron) = edge_apron_transform(addr.2, foot_drop) {
             piece.with_child((
-                Mesh3d(kit.apron[own.bits() as usize].clone()),
+                Mesh3d(kit.apron_mesh(material, own)),
                 MeshMaterial3d(mat),
                 apron,
             ));

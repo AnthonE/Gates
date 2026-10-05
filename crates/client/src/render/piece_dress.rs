@@ -737,29 +737,141 @@ pub fn edge_mesh(parts: &[Part], tier: u8, diagonal: bool) -> Mesh {
                 _ => metal_body(&mut o, lo, hi, e, salt),
             }
         } else {
-            let c = (lo + hi) * 0.5;
-            match tier {
-                MAT_TWIG => {
-                    let look = Look::new(Vec3::Y, 0.98).vary(salt, 0.04);
-                    o.pole(
-                        Vec3::new(c.x, lo.y, c.z),
-                        Vec3::new(c.x, hi.y, c.z),
-                        0.14,
-                        Vec3::X,
-                        &look,
-                    );
-                    lashings(&mut o, c, lo.y, hi.y);
-                }
-                MAT_WOOD => o.beam(lo, hi, 1, 0.04, &timber(Vec3::Y).across(0.5)),
-                MAT_STONE => {
-                    let lines = course_lines(lo.y, hi.y, COURSE_M, 0.0);
-                    for (k, w) in lines.windows(2).enumerate() {
-                        let l = Vec3::new(lo.x, w[0], lo.z);
-                        let h = Vec3::new(hi.x, w[1], hi.z);
-                        o.block(l, h, JOINT_M, &stone(salt * 31 + k as u32));
+            post(&mut o, tier, lo, hi, salt, Some(0.0));
+        }
+    }
+    finish(o.b)
+}
+
+/// A corner post in `tier`: a lashed pole, a chamfered timber, a stack of
+/// dressed stones on the course grid `courses` counts from, a steel column.
+/// `courses` is `None` for an apron's post, which also takes no lashings.
+fn post(o: &mut Out, tier: u8, lo: Vec3, hi: Vec3, salt: u32, courses: Option<f32>) {
+    let c = (lo + hi) * 0.5;
+    match tier {
+        MAT_TWIG => {
+            let look = Look::new(Vec3::Y, 0.98).vary(salt, 0.04);
+            o.pole(
+                Vec3::new(c.x, lo.y, c.z),
+                Vec3::new(c.x, hi.y, c.z),
+                0.14,
+                Vec3::X,
+                &look,
+            );
+            if courses.is_some() {
+                lashings(o, c, lo.y, hi.y);
+            }
+        }
+        MAT_WOOD => o.beam(lo, hi, 1, 0.04, &timber(Vec3::Y).across(0.5)),
+        MAT_STONE => {
+            let lines = course_lines(lo.y, hi.y, COURSE_M, courses.unwrap_or(APRON_COURSE_M));
+            for (k, w) in lines.windows(2).enumerate() {
+                let l = Vec3::new(lo.x, w[0], lo.z);
+                let h = Vec3::new(hi.x, w[1], hi.z);
+                o.block(l, h, JOINT_M, &stone(salt * 31 + k as u32));
+            }
+        }
+        _ => o.beam(lo, hi, 1, 0.015, &steel(Vec3::Y)),
+    }
+}
+
+/// Where an apron's top course ends, storey-local: a footing's rim depth
+/// under the storey base, so the plinth under a wall courses level with the
+/// foundation beside it.
+const APRON_COURSE_M: f32 = -0.30;
+
+/// A ground-storey edge piece's apron ([`super::apron_parts`]) dressed in
+/// `tier` as the footing it stands in front of: a sill timber, log, cap
+/// course or steel rim under the wall's foot, and the skirt's infill below.
+pub fn apron_mesh(parts: &[Part], tier: u8) -> Mesh {
+    let bot = parts
+        .iter()
+        .map(|p| p.offset.y - p.size.y * 0.5)
+        .fold(f32::MAX, f32::min);
+    let mut o = Out::new(bot, -EDGE_DROP_M);
+    for (i, p) in parts.iter().enumerate() {
+        let (lo, hi) = bounds(p);
+        let salt = 0x400 | (tier as u32) << 8 | i as u32;
+        if p.role != PartRole::Body {
+            post(&mut o, tier, lo, hi, salt, None);
+            continue;
+        }
+        match tier {
+            MAT_TWIG => {
+                let r = T2;
+                o.pole(
+                    Vec3::new(0.0, hi.y - r, lo.z),
+                    Vec3::new(0.0, hi.y - r, hi.z),
+                    r,
+                    Vec3::X,
+                    &twig_pole(salt),
+                );
+                o.cuboid(
+                    Vec3::new(-T2 + 0.05, lo.y, lo.z),
+                    Vec3::new(T2 - 0.05, hi.y - r, hi.z),
+                    &twig_mat(),
+                    ONLY_X,
+                );
+            }
+            MAT_WOOD => {
+                let rim = hi.y - 0.26;
+                o.beam(
+                    Vec3::new(-T2, rim, lo.z),
+                    Vec3::new(T2, hi.y, hi.z),
+                    2,
+                    0.02,
+                    &timber(Vec3::Z),
+                );
+                o.cuboid(
+                    Vec3::new(-T2 + 0.035, lo.y, lo.z),
+                    Vec3::new(T2 - 0.035, rim, hi.z),
+                    &planks(),
+                    ONLY_X,
+                );
+            }
+            MAT_STONE => {
+                let lines = course_lines(lo.y, hi.y, COURSE_M, APRON_COURSE_M);
+                for (k, w) in lines.windows(2).enumerate() {
+                    let joints = joint_lines(lo.z, hi.z, BLOCK_M, -H, k as i32);
+                    for (j, z) in joints.windows(2).enumerate() {
+                        for s in [-1.0f32, 1.0] {
+                            o.pillow(
+                                Vec3::X * s * T2,
+                                Vec3::X * s,
+                                (Vec3::Z, Vec3::Y),
+                                [z[0], z[1], w[0], w[1]],
+                                [true; 4],
+                                JOINT_M,
+                                JOINT_M,
+                                &stone(
+                                    (salt.wrapping_mul(131) + (k * 16 + j) as u32) ^ s.to_bits(),
+                                ),
+                            );
+                        }
                     }
                 }
-                _ => o.beam(lo, hi, 1, 0.015, &steel(Vec3::Y)),
+                o.cuboid(
+                    Vec3::new(-T2 + JOINT_M, lo.y, lo.z),
+                    Vec3::new(T2 - JOINT_M, hi.y, hi.z),
+                    &stone(salt),
+                    SKIP_PX | SKIP_NX,
+                );
+            }
+            _ => {
+                let rim = hi.y - 0.22;
+                o.beam(
+                    Vec3::new(-T2, rim, lo.z),
+                    Vec3::new(T2, hi.y, hi.z),
+                    2,
+                    0.012,
+                    &steel(Vec3::Z),
+                );
+                o.cuboid(
+                    Vec3::new(-T2 + 0.04, lo.y, lo.z),
+                    Vec3::new(T2 - 0.04, rim, hi.z),
+                    &sheet(Vec3::Z, salt),
+                    ONLY_X,
+                );
             }
         }
     }
