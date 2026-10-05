@@ -299,6 +299,30 @@ fn fbm_tiled(seed: u64, x: f32, y: f32) -> f32 {
     f
 }
 
+/// Billowed octaves of the same lattice: `|2v − 1|` folds each octave into
+/// rounded lumps with creases between them, the cauliflower a cumulus edge
+/// is made of. Starts an octave up, so it only roughens the puffs [`fbm_tiled`]
+/// lays out and never moves where a cloud is.
+fn billow_tiled(seed: u64, x: f32, y: f32) -> f32 {
+    let mut f = 0.0;
+    let mut amp = 0.5;
+    let mut freq = 2.0;
+    let mut period = FIELD_PERIOD as i32 * 2;
+    for o in 0..3 {
+        let v = value_tiled(
+            seed ^ 0xb111_0000 ^ (o as u64).wrapping_mul(0x9E37_79B9),
+            x * freq,
+            y * freq,
+            period,
+        );
+        f += amp * (2.0 * v - 1.0).abs();
+        amp *= 0.5;
+        freq *= 2.0;
+        period *= 2;
+    }
+    f
+}
+
 /// World direction for a cube texel.
 ///
 /// **Cube space is world space with z flipped**: `skybox.wgsl` samples with
@@ -366,8 +390,20 @@ pub const DECK_CUTOFF: f32 = 0.045;
 pub const HORIZON_FADE: f32 = 0.10;
 /// How far the light march steps toward the sun, noise units.
 const LIT_STEP: f32 = 0.35;
-/// The coverage threshold's softness: edges are wisps, not a cutout.
-pub const EDGE: f32 = 0.22;
+/// The coverage threshold's softness. Narrow enough that a cumulus has an
+/// edge you could draw round, wide enough that the edge is still soft.
+pub const EDGE: f32 = 0.13;
+/// The billowed share of the field ([`billow_tiled`]).
+const BILLOW: f32 = 0.3;
+/// How much a thick cloud's underside darkens at its core: light that came
+/// through a kilometre of cloud, against the thin rim the sun shines through.
+const CORE_SHADE: f32 = 0.38;
+/// How much brighter a thin rim reads than the underside, as a share of the
+/// top-to-base step: the silver lining.
+const RIM_GLOW: f32 = 0.45;
+/// Below this `d.y` (~20°) the eye starts to see a cloud's lit side rather
+/// than its base, and by [`DECK_CUTOFF`] it sees almost only that.
+const SIDE_VIEW_Y: f32 = 0.34;
 /// The moon's disk, as cosines of its radius (~1.7°) and its soft edge
 /// (~2.3°) — drawn big, the way a person remembers it — and its halo (~8.6°).
 const MOON_COS_IN: f32 = 0.999_55;
@@ -436,7 +472,9 @@ impl CloudField {
         let step = FIELD_PERIOD as f32 / n as f32;
         for j in 0..n {
             for i in 0..n {
-                data[j * n + i] = fbm_tiled(seed, i as f32 * step, j as f32 * step);
+                let (x, y) = (i as f32 * step, j as f32 * step);
+                data[j * n + i] =
+                    fbm_tiled(seed, x, y) * (1.0 - BILLOW) + billow_tiled(seed, x, y) * BILLOW;
             }
         }
         Self {
@@ -787,7 +825,17 @@ pub fn compose_range(
                 // thinner is on a lit face — a light march in one sample.
                 let f_sun = field.sample(q.x + toward.x, q.y + toward.y);
                 let lit = ((f - f_sun) * 6.0 + 0.5).clamp(0.0, 1.0);
-                cloud = core::array::from_fn(|c| base[c] + (top[c] - base[c]) * lit);
+                // Overhead the eye sees a base: grey, darker where the cloud
+                // is thick, brighter at a thin rim. Toward the horizon it
+                // sees the cloud's side, lit like a top.
+                let thick = ((f - thresh) / (3.0 * EDGE)).clamp(0.0, 1.0);
+                let side = ((SIDE_VIEW_Y - d.y) / (SIDE_VIEW_Y - DECK_CUTOFF)).clamp(0.0, 1.0);
+                let under: [f32; 3] = core::array::from_fn(|c| {
+                    base[c] * (1.0 - CORE_SHADE * thick)
+                        + (top[c] - base[c]) * RIM_GLOW * (1.0 - c0)
+                });
+                let w = (lit * (1.0 - 0.5 * thick)).max(side * side * (3.0 - 2.0 * side));
+                cloud = core::array::from_fn(|c| under[c] + (top[c] - under[c]) * w);
                 if !p.backdrop {
                     let hue = deck_hue(d.y);
                     for c in 0..3 {
