@@ -437,16 +437,19 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
         0.22,
         1.0,
     ),
-    HeldModelDef::hafted("hammer", "models/held/hammer.glb", 0.350, 0.25, 1.0),
+    // Carried as the axe is, but it taps: the hammer's swing is a repair.
+    HeldModelDef::hafted("hammer", "models/held/hammer.glb", 0.350, 0.25, 1.0).stroked(Stroke::Tap),
     // A rolled document is carried in the middle — no haft either, so the
     // fist closes around the roll rather than beside it. 0.50 of 0.069 is
     // 3.5 cm; the same fraction used to mean 15 cm up a model 6.9 cm tall.
+    // Its click builds, so it never swings; if it did, a roll of paper bashes.
     HeldModelDef::tool(
         "building_plan",
         "models/held/building_plan.glb",
         0.069,
         0.50,
-    ),
+    )
+    .stroked(Stroke::Bash),
     // **The spear is the reason this table has a fraction at all.** At 1.8 m
     // it is seventeen times the rock's height, and one shared offset put its
     // butt through the camera. The fist a third of the way up from the butt
@@ -680,10 +683,15 @@ pub const HAFTED_YAW: f32 = -0.663;
 /// of a player standing at the row's content reach.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stroke {
-    /// Cocked out to the right, swept down and across — a hatchet, a rock, a
-    /// hammer, and every row that has not said otherwise.
-    /// `render::viewmodel::swing_pose`.
+    /// Wound up over the shoulder and brought down through the crosshair, the
+    /// head landing just under it — a hatchet, a pickaxe, a torch.
+    /// `render::viewmodel::swing_pose` for the arm, `chop_snap` for the wrist.
     Chop,
+    /// The chop, short: a hammer's repair knock. `render::viewmodel::tap_pose`.
+    Tap,
+    /// Drawn back and punched in toward the crosshair — a rock, an empty fist,
+    /// anything small carried upright. `render::viewmodel::bash_pose`.
+    Bash,
     /// Drawn back, then driven forward along the view axis with the point
     /// converging on the crosshair — a spear. `render::viewmodel::thrust_pose`
     /// for the arm and `thrust_snap` for the wrist.
@@ -760,8 +768,7 @@ pub struct HeldModelDef {
     /// shows its PROFILE — seen from dead behind, a gun is a stack of
     /// blocks, and the L-shape is the whole read.
     pub pose_yaw: f32,
-    /// How this row is swung. See [`Stroke`] — one row is a thrust and the
-    /// rest chop, and a row that says nothing chops.
+    /// How this row is swung. See [`Stroke`].
     pub stroke: Stroke,
     /// What this item puts into the world when it is in the hand, or `None`
     /// for the twelve rows that put nothing. See [`HeldLight`].
@@ -951,7 +958,7 @@ impl HeldModelDef {
         }
     }
 
-    /// A carried object: stays upright, drawn at `scale`.
+    /// A carried object: stays upright, drawn at `scale`, and bashed with.
     const fn upright(
         key: &'static str,
         path: &'static str,
@@ -967,10 +974,16 @@ impl HeldModelDef {
             scale,
             lay: 0.0,
             pose_yaw: 0.0,
-            stroke: Stroke::Chop,
+            stroke: Stroke::Bash,
             light: None,
             grip_roll: Some(GRIP_ROLL_CARRIED),
         }
+    }
+
+    /// The same row, swung as `stroke`.
+    const fn stroked(mut self, stroke: Stroke) -> Self {
+        self.stroke = stroke;
+        self
     }
 
     /// A deployable, shown as a token of the world model. Not closed on:
