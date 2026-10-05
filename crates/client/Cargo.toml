@@ -159,6 +159,13 @@ path = "examples/tree_look.rs"
 required-features = ["render", "native"]
 
 [[example]]
+name = "piece_bench"
+path = "examples/piece_bench.rs"
+# The building kit under the game's light, headless — `native` for the reason
+# `tree_look` takes it: it opens a window and writes to disk.
+required-features = ["render", "native"]
+
+[[example]]
 name = "tree_sweep"
 path = "examples/tree_sweep.rs"
 required-features = ["render", "native"]
