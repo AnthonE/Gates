@@ -258,15 +258,15 @@ const TIER: [Tier; N_TIERS] = [
         metallic: 0.0,
         tiles_per_m: 1.0,
     },
-    // stone · `Bricks089`, published 2200 × 1100 mm — NOT square, and the
-    // file we ship is 1024², so the authored scale did not survive the fetch
-    // and there is no honest ratio to take. Keeping 0.55 is the measured
-    // answer anyway: it puts a course at ~23 cm over the map's ~8 courses,
-    // which is field-stone size.
+    // stone · `ashlar`, Poly Haven `rock_boulder_dry`, authored at 1800 mm
+    // → 0.55. A JOINTLESS stone since piece dress v0: the courses and joints
+    // are geometry now (`dress::stone_body`), and the rubble photograph this
+    // row wore before (`Bricks089`, still the props' `stone`) drew a second,
+    // disagreeing set of joints inside every block.
     Tier {
-        role: "stone",
+        role: "ashlar",
         gain: 1.0,
-        roughness: 0.72,
+        roughness: 0.8,
         metallic: 0.0,
         tiles_per_m: 0.55,
     },
@@ -614,21 +614,24 @@ pub struct Kit {
     /// table — and deduplicated by size, so the doorway's two posts share a
     /// mesh and the three slab shapes share one slab.
     shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES],
-    /// The straight edge shapes as ONE mesh each, per corner-post ownership
-    /// ([`PostOwn::bits`]): body and owned posts baked together
-    /// ([`parts_mesh`]), so a wall, a doorway, a window and a frame are each
-    /// one entity with its mesh on it whatever they own. Four ownership
-    /// variants, each with two soft-face orientations, built once per shape.
-    edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES],
-    /// The diagonal wall's body ([`diagonal_parts`]) — its own size.
-    diag_mesh: [[Handle<Mesh>; 2]; 3],
+    /// The straight edge shapes as ONE mesh each, per tier and corner-post
+    /// ownership ([`PostOwn::bits`]): body and owned posts dressed and baked
+    /// together ([`dress::edge_mesh`]), so a wall, a doorway, a window and a
+    /// frame are each one entity with its mesh on it whatever they own. Per
+    /// TIER since piece dress v0, because the tier is geometry now — a twig
+    /// frame and a stone wall are different meshes over the same volume.
+    edge_mesh: EdgeMeshes,
+    /// The diagonal wall's body ([`diagonal_parts`]) — its own size, per tier.
+    diag_mesh: [[[Handle<Mesh>; 2]; 3]; N_TIERS],
     /// The footings, for the shapes whose one part is sized PER ADDRESS
     /// rather than per shape — the foundations, whose skirt depth follows
-    /// the terrain under their cell ([`foundation_part`]). Indexed by
+    /// the terrain under their cell ([`foundation_part`]). Indexed by tier,
     /// [`skirt_step`]'s bucket, then by `Tri`, so a hundred foundations at a
-    /// hundred depths are `2 × SKIRT_STEPS` meshes and the hammer
+    /// hundred depths are `N_TIERS × 2 × SKIRT_STEPS` meshes and the hammer
     /// highlight's one-entity contract (`Transform` + `Mesh3d`) holds.
-    footing: [[Handle<Mesh>; 2]; SKIRT_STEPS],
+    footing: [[[Handle<Mesh>; 2]; SKIRT_STEPS]; N_TIERS],
+    /// Floors and roofs — the one-slab shapes — per tier, square then tri.
+    slab: [[Handle<Mesh>; 2]; N_TIERS],
     /// A ground-storey edge piece's apron, per corner-post ownership
     /// ([`apron_parts`]) — the plinth under its outer half.
     apron: [Handle<Mesh>; 4],
@@ -651,6 +654,85 @@ pub struct Kit {
     gitem_mat: Handle<StandardMaterial>,
     arrow_mesh: Handle<Mesh>,
     arrow_mat: Handle<StandardMaterial>,
+}
+
+/// [`Kit::edge_mesh`]: tier, shape, ownership, soft side.
+type EdgeMeshes = [[[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES]; N_TIERS];
+
+impl Kit {
+    /// The material a piece of `material` draws in at damage band `dmg`.
+    pub fn piece_material(&self, material: u8, dmg: u8) -> Handle<StandardMaterial> {
+        self.tier[(material as usize).min(N_TIERS - 1)][(dmg as usize).min(DMG_BANDS as usize - 1)]
+            .clone()
+    }
+
+    /// The mesh a piece of `shape` in `material` draws with at `loc`.
+    ///
+    /// **Per tier, and read on every spawn** — an upgrade keeps the address
+    /// and changes the row, `stream` respawns on a row change, and this is
+    /// where the new row's tier picks the new geometry, so an upgraded wall
+    /// can never keep its twig frame. `step` is the footing's skirt bucket
+    /// ([`footing_of`]) and only the foundations read it; `own` and
+    /// `soft_side` only the edge shapes.
+    pub fn piece_mesh(
+        &self,
+        shape: u8,
+        material: u8,
+        loc: u8,
+        own: PostOwn,
+        soft_side: bool,
+        step: usize,
+    ) -> Handle<Mesh> {
+        let t = (material as usize).min(N_TIERS - 1);
+        let side = usize::from(soft_side);
+        let tri = matches!(
+            shape,
+            SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+        );
+        if matches!(
+            shape,
+            sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
+        ) {
+            return self.footing[t][step.min(SKIRT_STEPS - 1)][usize::from(tri)].clone();
+        }
+        if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL)
+            && (loc == LOC_DIAG_A || loc == LOC_DIAG_B)
+        {
+            let kind = match shape {
+                SHAPE_HALF_WALL => 1,
+                SHAPE_LOW_WALL => 2,
+                _ => 0,
+            };
+            return self.diag_mesh[t][kind][side].clone();
+        }
+        let s = (shape as usize).min(N_SHAPES - 1);
+        if is_edge_shape(shape) {
+            return self.edge_mesh[t][s][own.bits() as usize][side]
+                .clone()
+                .expect("every edge shape has a mesh per tier and ownership");
+        }
+        if is_slab(shape) {
+            return self.slab[t][usize::from(tri)].clone();
+        }
+        self.shape_mesh[s][0]
+            .clone()
+            .expect("every live part has a mesh")
+    }
+}
+
+/// Is `shape` drawn as one level slab a cell across — a floor or a roof,
+/// square or half — rather than a frame, a flight or a footing? Read off the
+/// parts table, so a shape the table draws as a slab is dressed as one.
+pub fn is_slab(shape: u8) -> bool {
+    let (parts, n) = shape_parts(shape);
+    let p = parts[0];
+    n == 1
+        && matches!(p.kind, PartKind::Box | PartKind::Tri)
+        && p.size == Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M)
+        && !matches!(
+            shape,
+            sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
+        )
 }
 
 struct LootLive {
@@ -2245,38 +2327,46 @@ pub fn build_kit(
             *slot = Some(handle);
         }
     }
-    // The straight edge shapes, merged per ownership: the body and whichever
-    // of the two corner posts the piece draws (`post_owner`).
-    let mut edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES] =
-        std::array::from_fn(|_| std::array::from_fn(|_| [NO_MESH; 2]));
-    for shape in [
-        SHAPE_WALL,
-        SHAPE_HALF_WALL,
-        SHAPE_LOW_WALL,
-        SHAPE_DOORWAY,
-        SHAPE_WINDOW,
-        SHAPE_FRAME,
-    ] {
-        let (parts, n) = shape_parts(shape);
-        for own in 0..4u8 {
-            let keep = PostOwn::from_bits(own);
-            let owned: Vec<Part> = parts[..n]
-                .iter()
-                .copied()
-                .filter(|p| keep.draws(p.role))
-                .collect();
-            edge_mesh[shape as usize][own as usize] =
-                std::array::from_fn(|side| Some(meshes.add(sided_parts_mesh(&owned, side != 0))));
+    // The straight edge shapes, dressed per tier and merged per ownership:
+    // the body and whichever of the two corner posts the piece draws
+    // (`post_owner`). One tangent pass per mesh; the two soft-side
+    // orientations differ only in vertex colour (`dress::retint_sides`).
+    let mut edge_mesh: EdgeMeshes =
+        std::array::from_fn(|_| std::array::from_fn(|_| std::array::from_fn(|_| [NO_MESH; 2])));
+    for (t, row) in edge_mesh.iter_mut().enumerate() {
+        for shape in [
+            SHAPE_WALL,
+            SHAPE_HALF_WALL,
+            SHAPE_LOW_WALL,
+            SHAPE_DOORWAY,
+            SHAPE_WINDOW,
+            SHAPE_FRAME,
+        ] {
+            let (parts, n) = shape_parts(shape);
+            for own in 0..4u8 {
+                let keep = PostOwn::from_bits(own);
+                let owned: Vec<Part> = parts[..n]
+                    .iter()
+                    .copied()
+                    .filter(|p| keep.draws(p.role))
+                    .collect();
+                let plain = dress::edge_mesh(&owned, t as u8, false);
+                row[shape as usize][own as usize] = std::array::from_fn(|side| {
+                    Some(meshes.add(dress::retint_sides(&plain, side != 0)))
+                });
+            }
         }
     }
-    let diag_mesh = std::array::from_fn(|kind| {
-        std::array::from_fn(|side| {
+    let diag_mesh = std::array::from_fn(|t| {
+        std::array::from_fn(|kind| {
             let shape = [SHAPE_WALL, SHAPE_HALF_WALL, SHAPE_LOW_WALL][kind];
-            meshes.add(sided_parts_mesh(
-                &parts_for(shape, LOC_DIAG_A).0[..1],
-                side != 0,
-            ))
+            let plain = dress::edge_mesh(&parts_for(shape, LOC_DIAG_A).0[..1], t as u8, true);
+            std::array::from_fn(|side| meshes.add(dress::retint_sides(&plain, side != 0)))
         })
+    });
+    let slab = std::array::from_fn(|t| {
+        let size = Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M);
+        [false, true].map(|tri| meshes.add(dress::slab_mesh(size, tri, false, t as u8)))
     });
     let apron = std::array::from_fn(|own| {
         let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
@@ -2286,10 +2376,12 @@ pub fn build_kit(
     // than on demand so a player walking onto new ground never pays a mesh
     // upload mid-frame (`RENDER.md` §2's prewarm discipline, applied to
     // geometry).
-    let footing = std::array::from_fn(|i| {
-        let depth = (SLAB_T + i as f32 * SKIRT_STEP_M).min(SKIRT_MAX_M);
-        let size = Vec3::new(BUILD_CELL_M, depth, BUILD_CELL_M);
-        [meshes.add(box_mesh(size)), meshes.add(tri_prism_mesh(size))]
+    let footing = std::array::from_fn(|t| {
+        std::array::from_fn(|i| {
+            let depth = (SLAB_T + i as f32 * SKIRT_STEP_M).min(SKIRT_MAX_M);
+            let size = Vec3::new(BUILD_CELL_M, depth, BUILD_CELL_M);
+            [false, true].map(|tri| meshes.add(dress::slab_mesh(size, tri, true, t as u8)))
+        })
     });
     Kit {
         shutters_open: meshes.add(open_shutters_mesh()),
@@ -2297,6 +2389,7 @@ pub fn build_kit(
         edge_mesh,
         diag_mesh,
         footing,
+        slab,
         apron,
         tier,
         deploy_mesh,
@@ -2874,9 +2967,7 @@ fn spawn_piece(
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
     // material the sim gained without a row here — which is a red test long
     // before it is a wrong wall.
-    let mat = kit.tier[(material as usize).min(N_TIERS - 1)]
-        [(dmg as usize).min(DMG_BANDS as usize - 1)]
-    .clone();
+    let mat = kit.piece_material(material, dmg);
     // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
@@ -2893,7 +2984,8 @@ fn spawn_piece(
     // edge shapes, per footing depth for the foundations — and sits on the
     // root; a one-part shape carries its part's own transform, which is where
     // the stairs' pitch lives.
-    let (mesh, transform) = if matches!(
+    let mut step = 0;
+    let transform = if matches!(
         shape,
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
@@ -2903,36 +2995,15 @@ fn spawn_piece(
         // carries no scale and the skirt wears a metre-scaled texture.
         let tri = shape == SHAPE_TRI_FOUNDATION;
         let part = foundation_part(seed, haven, cx, cz, tri, plate);
-        let (step, _) = footing_of(seed, haven, cx, cz, plate);
-        (
-            kit.footing[step][usize::from(tri)].clone(),
-            root * part.transform(),
-        )
-    } else if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL)
-        && (loc == LOC_DIAG_A || loc == LOC_DIAG_B)
-    {
-        let kind = match shape {
-            SHAPE_HALF_WALL => 1,
-            SHAPE_LOW_WALL => 2,
-            _ => 0,
-        };
-        (kit.diag_mesh[kind][soft_side].clone(), root)
+        step = footing_of(seed, haven, cx, cz, plate).0;
+        root * part.transform()
     } else if is_edge_shape(shape) {
-        (
-            kit.edge_mesh[(shape as usize).min(N_SHAPES - 1)][own.bits() as usize][soft_side]
-                .clone()
-                .expect("every edge shape has a mesh per ownership"),
-            root,
-        )
+        // Straight and diagonal edges alike: the parts are baked at the root.
+        root
     } else {
-        let (parts, _) = shape_parts(shape);
-        (
-            kit.shape_mesh[(shape as usize).min(N_SHAPES - 1)][0]
-                .clone()
-                .expect("every live part has a mesh"),
-            root * parts[0].transform(),
-        )
+        root * shape_parts(shape).0[0].transform()
     };
+    let mesh = kit.piece_mesh(shape, material, loc, own, soft_side != 0, step);
     let mut piece = commands.spawn((
         super::WorldEntity,
         Mesh3d(mesh),
@@ -3559,6 +3630,9 @@ fn tri_frame_into(b: &mut Buffers, at: Vec3) {
         );
     }
 }
+#[path = "piece_dress.rs"]
+pub mod dress;
+
 #[cfg(test)]
 #[path = "loot_tests.rs"]
 mod loot_tests;
