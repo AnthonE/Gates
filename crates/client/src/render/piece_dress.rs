@@ -1481,7 +1481,7 @@ fn slab_as(size: Vec3, tri: bool, foundation: bool, roof: bool, tier: u8) -> Mes
         match tier {
             MAT_TWIG => twig_slab(&mut o, top, bot, foundation, roof),
             MAT_WOOD => wood_slab(&mut o, top, bot, foundation, roof),
-            MAT_STONE => stone_slab(&mut o, top, bot, roof),
+            MAT_STONE => stone_slab(&mut o, top, bot, foundation, roof),
             _ => metal_slab(&mut o, top, bot, foundation, roof),
         }
     }
@@ -1634,7 +1634,7 @@ fn wood_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
     }
 }
 
-fn stone_slab(o: &mut Out, top: f32, bot: f32, roof: bool) {
+fn stone_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
     const FLAG: f32 = 0.75;
     let d = JOINT_M;
     // Slates on a roof; flagstones on a floor, rows offset by half a stone.
@@ -1689,16 +1689,38 @@ fn stone_slab(o: &mut Out, top: f32, bot: f32, roof: bool) {
             }
         }
     }
-    o.face(
-        &[
-            Vec3::new(-H, bot, -H),
-            Vec3::new(H, bot, -H),
-            Vec3::new(H, bot, H),
-            Vec3::new(-H, bot, H),
-        ],
-        Vec3::NEG_Y,
-        &stone(1999),
-    );
+    if foundation {
+        // Buried: nobody sees a foundation's bed.
+        o.face(
+            &[
+                Vec3::new(-H, bot, -H),
+                Vec3::new(H, bot, -H),
+                Vec3::new(H, bot, H),
+                Vec3::new(-H, bot, H),
+            ],
+            Vec3::NEG_Y,
+            &stone(1999),
+        );
+        return;
+    }
+    // A floor or a roof seen from the room under it: a soffit of dressed
+    // stones, jointed like the flags above but laid the other way.
+    let rows = joint_lines(-H, H, FLAG, -H, 1);
+    for (r, xw) in rows.windows(2).enumerate() {
+        let cols = joint_lines(-H, H, FLAG, -H, r as i32 + 1);
+        for (c, zw) in cols.windows(2).enumerate() {
+            o.pillow(
+                Vec3::Y * bot,
+                Vec3::NEG_Y,
+                (Vec3::X, Vec3::Z),
+                [xw[0], xw[1], zw[0], zw[1]],
+                [true; 4],
+                [JOINT_M; 4],
+                d,
+                &stone(1500 + (r * 8 + c) as u32).grain(Vec3::X),
+            );
+        }
+    }
 }
 
 fn metal_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
