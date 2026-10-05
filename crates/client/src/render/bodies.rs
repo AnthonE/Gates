@@ -150,7 +150,7 @@ struct Live {
 ///
 /// ## The same grip the first-person hand uses, and nothing else
 ///
-/// `viewmodel::grip()` is the item's pose relative to the fist — derived off
+/// `viewmodel::grip(row)` is the item's pose relative to the fist — derived off
 /// the shipped rig, and a property of the hand rather than of the camera, so
 /// there is exactly one of it and both hands compose it. What used to be here
 /// was a second, independent answer to the same question ([`RETIRED_BODY_PALM`])
@@ -173,7 +173,7 @@ struct Live {
 /// item — the same sentence this function has carried since it existed, now
 /// applied one level further down the chain.
 pub fn hand_pose(row: usize, scale: f32) -> Transform {
-    grip(scale) * super::viewmodel::pose(&HELD_MODELS[row], VIEWMODEL_PALM)
+    grip(Some(row), scale) * super::viewmodel::pose(&HELD_MODELS[row], VIEWMODEL_PALM)
 }
 
 /// The flame's transform in the same frame, `lift` metres up the hold frame's
@@ -182,14 +182,14 @@ pub fn hand_pose(row: usize, scale: f32) -> Transform {
 /// Its own function rather than a branch inside [`hand_pose`] because the two
 /// are written on different transitions (`Live::held` and `Live::lit`), which
 /// is the whole reason there are two entities.
-pub fn flame_pose(lift: f32, scale: f32) -> Transform {
-    grip(scale) * Transform::from_translation(Vec3::Y * lift)
+pub fn flame_pose(row: Option<usize>, lift: f32, scale: f32) -> Transform {
+    grip(row, scale) * Transform::from_translation(Vec3::Y * lift)
 }
 
 /// [`viewmodel::grip`](super::viewmodel::grip) with the body root's own scale
 /// divided out — see [`hand_pose`].
-fn grip(scale: f32) -> Transform {
-    let mut g = super::viewmodel::grip();
+fn grip(row: Option<usize>, scale: f32) -> Transform {
+    let mut g = super::viewmodel::grip(row.map(|r| &HELD_MODELS[r]));
     g.translation /= scale;
     g.scale /= scale;
     g
@@ -744,7 +744,7 @@ fn update_hand(
             // leaving it where the last flame was: a zero-intensity light is
             // invisible, but a stale transform is a value a later reader
             // could trust.
-            flame_pose(lift, scale),
+            flame_pose(want_lit, lift, scale),
         ));
         live.lit = want_lit;
     }

@@ -1258,6 +1258,17 @@ impl Plugin for GatesRenderPlugin {
         )
         // The bow's drawing hand, in the same window and for the same
         // reason: it overrides the hold clip's left arm for the frame.
+        // The first-person fist closing on what it holds: over the hold clip
+        // in the same window, and before the bow's arm, which reads the bow's
+        // place through this hand.
+        .add_systems(
+            PostUpdate,
+            viewmodel::pose_hand
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate)
+                .before(bow::draw_arm)
+                .run_if(world_running),
+        )
         .add_systems(
             PostUpdate,
             bow::draw_arm

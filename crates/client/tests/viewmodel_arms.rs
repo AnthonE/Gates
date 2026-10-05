@@ -54,6 +54,9 @@ use client::render::viewmodel::{
     VIEWMODEL_PALM, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S,
     VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
 };
+use client::render::viewmodel::{
+    hand_fit, hand_rest, hand_set, item_pose, VIEWMODEL_SEAT, VIEWMODEL_SEAT_DIR,
+};
 use client::ui::hold::{HeldModelDef, Stroke, HELD_MODELS};
 
 /// Assets live beside the crate — `tests/rig_asset.rs`'s hop.
@@ -123,6 +126,7 @@ impl Glb {
             Some("SCALAR") => 1,
             Some("VEC3") => 3,
             Some("VEC4") => 4,
+            Some("MAT4") => 16,
             other => panic!("{RIG}: accessor {i} is {other:?}"),
         };
         let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
@@ -139,6 +143,46 @@ impl Glb {
                     .map(|c| {
                         let o = base + k * stride + 4 * c;
                         f32::from_le_bytes(self.bin[o..o + 4].try_into().unwrap())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// One accessor's unsigned-integer rows (joint indices, triangle indices),
+    /// with the same refusals as [`Glb::floats`].
+    fn ints(&self, i: usize) -> Vec<Vec<u32>> {
+        let a = &self.json["accessors"][i];
+        let size = match a["componentType"].as_u64() {
+            Some(5121) => 1,
+            Some(5123) => 2,
+            Some(5125) => 4,
+            other => panic!("{RIG}: accessor {i} is component type {other:?}, not an integer"),
+        };
+        let n = match a["type"].as_str() {
+            Some("SCALAR") => 1,
+            Some("VEC4") => 4,
+            other => panic!("{RIG}: accessor {i} is {other:?}"),
+        };
+        let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let base = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let stride = match bv["byteStride"].as_u64().unwrap_or(0) as usize {
+            0 => size * n,
+            s => s,
+        };
+        let count = a["count"].as_u64().unwrap() as usize;
+        (0..count)
+            .map(|k| {
+                (0..n)
+                    .map(|c| {
+                        let o = base + k * stride + size * c;
+                        let b = &self.bin[o..o + size];
+                        match size {
+                            1 => u32::from(b[0]),
+                            2 => u32::from(u16::from_le_bytes([b[0], b[1]])),
+                            _ => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+                        }
                     })
                     .collect()
             })
@@ -1574,4 +1618,254 @@ fn a_lit_item_is_held_up_with_its_head_in_the_top_right() {
         up.1 > low.1 + 0.4,
         "the raise lifts the head only from {low:?} to {up:?}"
     );
+}
+
+// ── The fist closing on the haft ─────────────────────────────────────────
+
+/// A rotation's angle, radians, accurate near zero — `Quat::angle_between`
+/// is an `acos` of a dot product, which reads float noise as milliradians.
+fn turn_of(q: bevy::math::Quat) -> f32 {
+    2.0 * q.xyz().length().atan2(q.w.abs())
+}
+
+/// The `RightHand` bone's own vertices (more than half their weight on it),
+/// in that bone's frame, centimetres, and the triangles among them.
+fn hand_mesh(glb: &Glb) -> (Vec<bevy::math::Vec3>, Vec<[usize; 3]>) {
+    use bevy::math::{Mat4, Vec3};
+    let skin = &glb.json["skins"][0];
+    let bone = glb.node(HOLD_BONE).expect("the hand bone");
+    let j = skin["joints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|n| n.as_u64() == Some(bone as u64))
+        .expect("the hand is a joint of the skin");
+    let ibm = glb.floats(skin["inverseBindMatrices"].as_u64().unwrap() as usize)[j].clone();
+    let m = Mat4::from_cols_slice(&ibm);
+    // `char1_arms`: the half the viewmodel draws.
+    let prim = &glb.json["meshes"][0]["primitives"][0];
+    let at = |k: &str| prim["attributes"][k].as_u64().unwrap() as usize;
+    let pos = glb.floats(at("POSITION"));
+    let joints = glb.ints(at("JOINTS_0"));
+    let weights = glb.floats(at("WEIGHTS_0"));
+    let idx = glb.ints(prim["indices"].as_u64().unwrap() as usize);
+    let mut remap = vec![usize::MAX; pos.len()];
+    let mut verts = Vec::new();
+    for (v, p) in pos.iter().enumerate() {
+        let w: f32 = (0..4)
+            .filter(|&c| joints[v][c] as usize == j)
+            .map(|c| weights[v][c])
+            .sum();
+        if w > 0.5 {
+            remap[v] = verts.len();
+            verts.push(m.transform_point3(Vec3::new(p[0], p[1], p[2])));
+        }
+    }
+    let tris = idx
+        .chunks(3)
+        .map(|t| [t[0][0] as usize, t[1][0] as usize, t[2][0] as usize])
+        .filter(|t| t.iter().all(|&v| remap[v] != usize::MAX))
+        .map(|t| [remap[t[0]], remap[t[1]], remap[t[2]]])
+        .collect();
+    (verts, tris)
+}
+
+#[test]
+fn the_grip_line_runs_through_the_fist_and_clear_of_it() {
+    // `VIEWMODEL_SEAT`/`_DIR` are read off the hand, and this is the reading:
+    // a haft on that line does not pass through the skin, clears every
+    // vertex by its own radius, and has hand within a finger's reach on
+    // every side — the curled fingers over it, the palm under it, the thumb
+    // beside it. The seat it replaced (the knuckle line, 90° off the thumb)
+    // passed the last two and was still an axe floating over a palm in every
+    // frame, so this is necessary and not sufficient: the frame judges, this
+    // keeps a re-import from putting the haft through the back of the hand.
+    use bevy::math::Vec3;
+    let glb = Glb::open(&asset_path(RIG));
+    let (verts, tris) = hand_mesh(&glb);
+    assert!(verts.len() > 500, "only {} hand vertices", verts.len());
+    // The hatchet's haft at its drawn 0.72 is 3.2–4 cm across.
+    const R: f32 = 1.6;
+    const REACH: f32 = 3.5;
+    let (below, above) = (6.0, 34.0);
+    let c = VIEWMODEL_SEAT;
+    let d = VIEWMODEL_SEAT_DIR.normalize();
+    let a = d.cross(Vec3::Z).normalize();
+    let b = d.cross(a);
+    let mut clear = f32::MAX;
+    let mut sides = [false; 16];
+    for p in &verts {
+        let rel = *p - c;
+        let s = rel.dot(d);
+        if !(-below..=above).contains(&s) {
+            continue;
+        }
+        let perp = rel - d * s;
+        let r = perp.length();
+        clear = clear.min(r);
+        if r < R + REACH {
+            let ang = perp.dot(b).atan2(perp.dot(a));
+            let k = ((ang + std::f32::consts::PI) / std::f32::consts::TAU * 16.0) as usize % 16;
+            sides[k] = true;
+        }
+    }
+    let held = sides.iter().filter(|s| **s).count();
+    // The axis against every hand triangle (Möller–Trumbore on the segment).
+    let (p0, p1) = (c - d * below, c + d * above);
+    let crossed = tris
+        .iter()
+        .filter(|t| {
+            let (v0, v1, v2) = (verts[t[0]], verts[t[1]], verts[t[2]]);
+            let (e1, e2, dir) = (v1 - v0, v2 - v0, p1 - p0);
+            let pv = dir.cross(e2);
+            let det = e1.dot(pv);
+            if det.abs() < 1e-9 {
+                return false;
+            }
+            let tv = p0 - v0;
+            let u = tv.dot(pv) / det;
+            let qv = tv.cross(e1);
+            let v = dir.dot(qv) / det;
+            let t = e2.dot(qv) / det;
+            u >= 0.0 && v >= 0.0 && u + v <= 1.0 && (0.0..=1.0).contains(&t)
+        })
+        .count();
+    println!("grip line: {clear:.2} cm clear, hand on {held}/16 sides, {crossed} crossings");
+    assert_eq!(crossed, 0, "the grip line passes through the hand's skin");
+    assert!(
+        clear >= R,
+        "a {R} cm haft on the grip line cuts {:.2} cm into the hand",
+        R - clear
+    );
+    assert!(
+        held >= 15,
+        "the hand reaches round the grip line on only {held} of 16 sides"
+    );
+}
+
+#[test]
+fn a_fitted_hand_holds_the_item_where_the_framing_put_it() {
+    // **The item does not move; the hand does.** For every row, the hand
+    // placed by `hand_fit` composed with the item hung off it by `item_pose`
+    // is the identity in the hold frame — the angles and scales the operator
+    // tuned are untouched — while in the hand's own frame a gripped row's
+    // haft runs along the grip line with the palm point on the seat. And the
+    // arm that gets it there is an arm: a wrist bend, a forearm twist and a
+    // shift that stay in reach.
+    use bevy::math::Quat;
+    let mut fitted = 0;
+    for def in HELD_MODELS.iter() {
+        let fit = hand_fit(Some(def));
+        let item = item_pose(Some(fit), Quat::IDENTITY);
+        // The palm point in the hand's frame (cm), then back in the hold
+        // frame (m) through the fitted hand.
+        let seat = item.translation + item.rotation * (VIEWMODEL_PALM * item.scale.x);
+        let rot = fit.rot * item.rotation;
+        let palm = fit.pos + fit.rot * (seat / VIEWMODEL_GRIP_SCALE);
+        assert!(
+            turn_of(rot) < 1e-3 && palm.distance(VIEWMODEL_PALM) < 1e-4,
+            "{}: the fitted hand moves the item ({:.4} rad, {:.5} m)",
+            def.key,
+            turn_of(rot),
+            palm.distance(VIEWMODEL_PALM)
+        );
+        if def.grip_roll.is_none() {
+            assert_eq!(
+                fit,
+                hand_rest(),
+                "{}: no grip roll, so the clip's hand",
+                def.key
+            );
+            continue;
+        }
+        fitted += 1;
+        let haft = item.rotation * item_rest_dir(def);
+        assert!(
+            haft.normalize()
+                .cross(VIEWMODEL_SEAT_DIR.normalize())
+                .length()
+                < 1e-3
+                && haft.dot(VIEWMODEL_SEAT_DIR) > 0.0
+                && seat.distance(VIEWMODEL_SEAT) < 1e-2,
+            "{}: the haft runs {haft:?} through {seat:?} in the hand, not the grip line",
+            def.key
+        );
+        let (turn, twist, shift) = hand_set(fit);
+        let bend = turn_of(Quat::from_rotation_y(-twist) * turn);
+        println!(
+            "{:16} wrist {:5.1}°  forearm {:+6.1}°  arm {:.1} cm",
+            def.key,
+            bend.to_degrees(),
+            twist.to_degrees(),
+            shift.length() * 100.0
+        );
+        assert!(
+            bend.to_degrees() < 50.0,
+            "{}: the wrist bends {:.0}° to close on it",
+            def.key,
+            bend.to_degrees()
+        );
+        assert!(
+            twist.to_degrees().abs() < 75.0,
+            "{}: the forearm twists {:.0}°",
+            def.key,
+            twist.to_degrees()
+        );
+        assert!(
+            shift.length() < 0.12,
+            "{}: the arm moves {:.0} cm to get there",
+            def.key,
+            shift.length() * 100.0
+        );
+    }
+    assert!(fitted > 10, "only {fitted} rows close the fist");
+
+    // The stroke turns the item inside the fitted fist about the palm, so at
+    // the apex it is exactly where the rig-hung item's snap put it.
+    let def = HELD_MODELS
+        .iter()
+        .find(|d| d.key == "stone_hatchet")
+        .unwrap();
+    let fit = hand_fit(Some(def));
+    let snap = aim_snap(item_rest_dir(def), 1.0);
+    let item = item_pose(Some(fit), snap);
+    let seat = item.translation + item.rotation * (VIEWMODEL_PALM * item.scale.x);
+    let palm = fit.pos + fit.rot * (seat / VIEWMODEL_GRIP_SCALE);
+    let old = item_pose(None, snap);
+    assert!(
+        turn_of((tilt() * fit.rot * item.rotation).inverse() * old.rotation) < 1e-3
+            && (VIEWMODEL_HOLD + tilt() * palm)
+                .distance(old.translation + old.rotation * VIEWMODEL_PALM)
+                < 1e-4,
+        "the snap in the fitted fist lands the item off the rig-hung one"
+    );
+}
+
+#[test]
+fn the_arm_bones_the_grip_composes_onto_are_animated_every_frame() {
+    // `pose_hand` multiplies onto the clip's `RightForeArm` and `RightHand`
+    // rotations each frame. That is free only while the clip writes both: an
+    // unanimated bone would take the turn again every frame and spin. And
+    // the forearm can carry the hand's +Y twist only while the clip's wrist
+    // keeps the hand's +Y on the forearm's — `hand_set` splits on that.
+    let glb = Glb::open(&asset_path(RIG));
+    let clip = client::render::anim::ARMS_HOLD_CLIP;
+    let ch = glb.channels(clip);
+    for name in ["RightForeArm", HOLD_BONE] {
+        let n = glb.node(name).unwrap();
+        assert!(
+            ch.iter().any(|(k, p)| *k == n && p == "rotation"),
+            "{clip} does not animate {name}'s rotation — pose_hand would accumulate on it"
+        );
+    }
+    let hand = glb.node(HOLD_BONE).unwrap();
+    for t in steps(&glb, clip) {
+        let q = glb.pose(clip, t)[&hand].rotation.expect("animated");
+        let y = rotate(q, [0.0, 1.0, 0.0]);
+        let off = y[1].clamp(-1.0, 1.0).acos().to_degrees();
+        assert!(
+            off < 8.0,
+            "{clip}'s wrist tips the hand's +Y {off:.1}° off the forearm's at t={t:.2}"
+        );
+    }
 }

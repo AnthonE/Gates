@@ -354,8 +354,10 @@ pub const VIEWMODEL_HEAVE_JOLT_MAX: f32 = 12.0;
 #[derive(Resource, Default)]
 pub struct DrawZoom(pub f32);
 
-/// Where the item sits in the **`RightHand` bone's own frame**, once
-/// [`dress_arms`] has hung it there.
+/// Where the item sits in the **`RightHand` bone's own frame** while that
+/// hand is exactly as the hold clip poses it — the REST hand, which is what
+/// [`hand_rest`] reads and every [`HandFit`] is measured from. The hand a
+/// row actually draws is turned off it by [`hand_fit`].
 ///
 /// ## Derived off the shipped file, and the derivation is the whole entry
 ///
@@ -426,33 +428,135 @@ pub struct HeldItem;
 #[derive(Component)]
 pub struct InHand;
 
-/// The item's transform in whichever frame it is hanging in — the hand bone's
-/// once dressed, the rig's until then.
+/// The grip line: where a haft crosses the hand, in the **`RightHand` bone's
+/// own frame**, centimetres (the bone's units).
 ///
-/// `wrist` is the strike's snap, radians about the hold frame's own X.
-pub fn item_pose(in_hand: bool, snap: Quat) -> Transform {
-    if in_hand {
-        let mut t = grip();
-        // The snap turns the item about the item frame's ORIGIN, which is the
-        // wrist bone — not the palm, where the fist actually closes. Left
-        // alone that slides the haft THROUGH the hand by
-        // `2·|VIEWMODEL_PALM|·sin(θ/2)`: 9.4 cm at the old 0.70 rad and 18.1 cm
-        // at the 1.45 this now allows. So the turn is taken about the palm,
-        // which is `rig_transform`'s arithmetic one frame over — and in the
-        // bone's own units, because a child of the hand inherits the rig's
-        // 0.01 scale (see [`VIEWMODEL_GRIP_SCALE`]).
-        t.rotation *= snap;
-        t.translation +=
-            VIEWMODEL_GRIP_SCALE * (VIEWMODEL_GRIP_Q * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM));
-        t
+/// Measured off `stumpy.glb`'s hand rather than off a view pose, which is
+/// what the old seat could not be: [`VIEWMODEL_GRIP_Q`] is `hand⁻¹ ∘ view`
+/// and carries no anatomy, so the haft crossed the knuckles about 90° off
+/// the thumb and the frame showed an axe floating over an open palm. In this
+/// bone frame the fingers run up +Y and curl toward +X (the palm side), the
+/// thumb sits out on +X and toward −Z, and the line runs diagonally across
+/// the palm from the heel to the thumb–index web: a 3.2 cm rod on it clears
+/// every vertex of the hand and has hand on all sixteen sides.
+/// `tests/viewmodel_arms.rs` re-measures both off the file.
+pub const VIEWMODEL_SEAT: Vec3 = Vec3::new(4.1, 14.2, -2.4);
+/// The grip line's direction through [`VIEWMODEL_SEAT`], butt to head, in the
+/// same bone frame: 41° off the curled fingers' channel, toward the thumb.
+pub const VIEWMODEL_SEAT_DIR: Vec3 = Vec3::new(0.185, 0.531, -0.827);
+/// How fast the hand turns to a newly drawn row's grip, 1/s.
+pub const VIEWMODEL_HAND_RATE: f32 = 12.0;
+
+/// The hand's pose in the item's hold frame (`T(VIEWMODEL_HOLD)·R(VIEWMODEL_TILT)`,
+/// metres): the bone's rotation, and where its origin — the wrist — is.
+///
+/// **The item never moves for this; the hand does.** Every row's pose in
+/// view is the hold frame's (the angles and scales the operator tuned), so
+/// fitting a hand to a row is placing the hand in that frame: the item hangs
+/// off the bone by the inverse ([`item_pose`]) and the arm is turned and
+/// shifted to put the bone there ([`hand_set`], [`pose_hand`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandFit {
+    pub rot: Quat,
+    pub pos: Vec3,
+}
+
+/// The hold clip's own hand in the hold frame: [`VIEWMODEL_GRIP_M`] and
+/// [`VIEWMODEL_GRIP_Q`] inverted.
+pub fn hand_rest() -> HandFit {
+    let rot = VIEWMODEL_GRIP_Q.inverse();
+    HandFit {
+        rot,
+        pos: -(rot * VIEWMODEL_GRIP_M) / VIEWMODEL_GRIP_SCALE,
+    }
+}
+
+/// The hand a row is held in: the rest hand turned so the row's haft (its
+/// model +Y, [`item_rest_dir`]) runs along [`VIEWMODEL_SEAT_DIR`], rolled
+/// about the haft by the row's `grip_roll`, and slid so [`VIEWMODEL_SEAT`]
+/// lands on the palm point the model is posed around ([`VIEWMODEL_PALM`]).
+/// A row with no `grip_roll`, and an empty hand, keep the rest hand.
+///
+/// The turn is worked in the rest hand's own frame — the haft there is
+/// `VIEWMODEL_GRIP_Q · rest` — and starts from the smallest turn onto it,
+/// so the wrist stays as near the clip's as the row allows.
+pub fn hand_fit(def: Option<&HeldModelDef>) -> HandFit {
+    let rest = hand_rest();
+    let Some((d, roll)) = def.and_then(|d| d.grip_roll.map(|r| (d, r))) else {
+        return rest;
+    };
+    let haft = (VIEWMODEL_GRIP_Q * item_rest_dir(d)).normalize_or(Vec3::Y);
+    let turn = Quat::from_axis_angle(haft, roll)
+        * turn_toward(VIEWMODEL_SEAT_DIR, haft, std::f32::consts::PI, 1.0);
+    let rot = rest.rot * turn;
+    HandFit {
+        rot,
+        pos: VIEWMODEL_PALM - rot * (VIEWMODEL_SEAT / VIEWMODEL_GRIP_SCALE),
+    }
+}
+
+/// What the arm does to put the bone at `fit`, relative to the hold clip:
+/// the hand bone's turn in its own frame, the part of it about the forearm's
+/// long axis (radians, which [`pose_hand`] hands to the forearm so the wrist
+/// only bends), and the shift of the whole arm in the [`HeldRig`] frame,
+/// metres.
+pub fn hand_set(fit: HandFit) -> (Quat, f32, Vec3) {
+    let rest = hand_rest();
+    let turn = rest.rot.inverse() * fit.rot;
+    // The twist about +Y. The forearm and the hand share that axis on this
+    // rig (the clip's hand is a 30° turn about it), so the forearm can carry
+    // the twist and leave the wrist the swing.
+    let mut twist = 2.0 * turn.y.atan2(turn.w);
+    if twist > std::f32::consts::PI {
+        twist -= std::f32::consts::TAU;
+    } else if twist < -std::f32::consts::PI {
+        twist += std::f32::consts::TAU;
+    }
+    (turn, twist, tilt() * (fit.pos - rest.pos))
+}
+
+/// The grip a row is held by: the item's transform in the `RightHand` bone's
+/// frame for the hand [`hand_fit`] gives it. The first-person hand and every
+/// remote body's hand (`bodies::hand_pose`) hang the item by this, so one
+/// row is held one way.
+pub fn grip(def: Option<&HeldModelDef>) -> Transform {
+    item_pose(Some(hand_fit(def)), Quat::IDENTITY)
+}
+
+/// The item's transform in whichever frame it is hanging in — the hand
+/// bone's once dressed (`fit` is the hand it hangs off), the rig's until
+/// then.
+///
+/// `turn` turns the item about the palm in the hold frame: the stroke's
+/// wrist snap and a bow's aim.
+///
+/// ⚠ **The snap turns the item inside the fist, not the fist.** Carrying it
+/// on the hand instead was tried: a 1.45 rad turn about the palm swings the
+/// wrist 17 cm, and shifting the arm after it walks the upper arm into the
+/// lens at the strike; turning about the wrist leaves the item low and the
+/// hand out of the bottom of the frame. The strike is 0.1 s; the rest pose
+/// is what reads.
+pub fn item_pose(fit: Option<HandFit>, turn: Quat) -> Transform {
+    if let Some(fit) = fit {
+        let rot = fit.rot.inverse();
+        // About the palm, not the item frame's origin: turning about the
+        // origin slides the haft through the fist. In the bone's own units —
+        // a child of the hand inherits the rig's 0.01 scale (see
+        // [`VIEWMODEL_GRIP_SCALE`]).
+        Transform {
+            translation: VIEWMODEL_GRIP_SCALE
+                * (rot * (VIEWMODEL_PALM - turn * VIEWMODEL_PALM - fit.pos)),
+            rotation: rot * turn,
+            scale: Vec3::splat(VIEWMODEL_GRIP_SCALE),
+        }
     } else {
         let rest = tilt();
         Transform {
             // The same correction, in the frame this branch lives in: here the
             // item hangs off the camera at scale 1, so the palm offset needs no
             // unit change.
-            translation: VIEWMODEL_HOLD + rest * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM),
-            rotation: rest * snap,
+            translation: VIEWMODEL_HOLD + rest * (VIEWMODEL_PALM - turn * VIEWMODEL_PALM),
+            rotation: rest * turn,
             scale: Vec3::ONE,
         }
     }
@@ -605,33 +709,6 @@ pub fn stroke_snap(def: Option<&HeldModelDef>, strike: f32) -> Quat {
 /// two stop agreeing.
 pub fn item_rest_dir(def: &crate::ui::hold::HeldModelDef) -> Vec3 {
     Quat::from_rotation_y(def.pose_yaw) * Quat::from_rotation_x(-def.lay) * Vec3::Y
-}
-
-/// The item's frame **in the `RightHand` bone's own space** — the constants
-/// above as one transform.
-///
-/// ## One grip, two hands, and that is the point
-///
-/// `bodies::hand_pose` composes this same function for a REMOTE body, and the
-/// sharing is the argument rather than a saving: a grip is a property of the
-/// fist and the item, not of the camera or of the body it hangs on. The same
-/// character rig holds the same hatchet the same way whether you are looking
-/// down your own arm or across a clearing at somebody else's, so a second
-/// constant for the third-person case would be a copy that can drift — and
-/// the one it replaced *had* drifted, by 0.69 m and onto the wrong side of
-/// the body (`bodies::hand_pose`'s doc carries the measurement).
-///
-/// It is derived against [`super::anim::ARMS_HOLD_CLIP`] and that does not
-/// make it first-person-only: the derivation reads the item's pose *relative
-/// to the hand*, so [`VIEWMODEL_ARMS`] and the camera cancel out of it. What
-/// the clip supplies is a fist actually gripping something, which is the only
-/// pose in which "where does a held thing sit" has an answer at all.
-pub fn grip() -> Transform {
-    Transform {
-        translation: VIEWMODEL_GRIP_M,
-        rotation: VIEWMODEL_GRIP_Q,
-        scale: Vec3::splat(VIEWMODEL_GRIP_SCALE),
-    }
 }
 
 /// A 0 → 1 → 0 pulse over `u` ∈ [0, 1] that rises across `attack` of its span
@@ -1046,6 +1123,12 @@ pub struct Motion {
     /// This frame's sway and bob, for the sheet to ride ([`Motion::idle`]).
     idle_lag: Quat,
     idle_drift: Vec3,
+    /// The hand the row in it is held in ([`hand_fit`]), eased toward a new
+    /// row's; `None` until the first frame, which takes it outright.
+    fit: Option<HandFit>,
+    /// This frame's [`hand_set`] — the hand's turn, the forearm's share of
+    /// it and the arm's shift — for [`pose_hand`] to write after the clip.
+    set: Option<(Quat, f32, Vec3)>,
 }
 
 /// What the bow's string and arrow are drawn from this frame (`bow::drive`).
@@ -1156,7 +1239,7 @@ pub fn spawn_item(
             .with_children(|rig| {
                 rig.spawn((
                     HeldItem,
-                    item_pose(false, Quat::IDENTITY),
+                    item_pose(None, Quat::IDENTITY),
                     Visibility::Inherited,
                 ))
                 .with_children(|item| {
@@ -1321,6 +1404,9 @@ pub struct ViewArms {
     /// and doing it per frame to find one entity that cannot move is a cost
     /// with nothing bought.
     player: Option<Entity>,
+    /// The `RightForeArm` bone, which carries the twist of a row's grip
+    /// ([`pose_hand`]).
+    forearm: Option<Entity>,
     /// Whether the body half has been hidden and the player bound.
     dressed: bool,
 }
@@ -1464,6 +1550,7 @@ pub fn spawn_arms(
             ViewArms {
                 hand: None,
                 player: None,
+                forearm: None,
                 dressed: false,
             },
             SceneRoot(scene),
@@ -1511,6 +1598,7 @@ pub fn dress_arms(
     let mut off_arm = None;
     // The folded arm's joints below the shoulder, for the bow's draw hand.
     let (mut upper, mut fore, mut left_hand) = (None, None, None);
+    let mut forearm = None;
     let mut drawn = Vec::new();
     while let Some(e) = stack.pop() {
         seen += 1;
@@ -1524,6 +1612,7 @@ pub fn dress_arms(
             match n.as_str() {
                 super::anim::BODY_NODE => body_half = Some(e),
                 "RightHand" => hand = Some(e),
+                "RightForeArm" => forearm = Some(e),
                 VIEWMODEL_HIDDEN_ARM => off_arm = Some(e),
                 "LeftArm" => upper = Some(e),
                 "LeftForeArm" => fore = Some(e),
@@ -1617,12 +1706,15 @@ pub fn dress_arms(
     let Ok(item) = item.single() else {
         return;
     };
-    commands
-        .entity(item)
-        .insert((ChildOf(hand), InHand, item_pose(true, Quat::IDENTITY)));
+    commands.entity(item).insert((
+        ChildOf(hand),
+        InHand,
+        item_pose(Some(hand_rest()), Quat::IDENTITY),
+    ));
 
     arms.hand = Some(hand);
     arms.player = Some(player);
+    arms.forearm = forearm;
     arms.dressed = true;
     // Optional where the rest is required: without them a raised bow is
     // simply drawn by no hand, which is how it shipped.
@@ -2315,14 +2407,69 @@ pub fn animate(
     // being exact about why: `swap` and `hand_light` write the item's
     // CHILDREN (the model and the emitter), not the item, so the three
     // systems own one entity each and need no order between them.
+    //
+    // The hand eases to a new row's grip while the item takes its pose at
+    // once, so a swap never swings the item through the frame.
+    let (_, strike) = swing_phases(s);
+    let snap = stroke_snap(def, strike);
+    // A raised bow turns in the hand to aim; nothing else does.
+    let aim = match (bow, def) {
+        (Some(_), Some(d)) => bow_aim(d, m.raise),
+        _ => Quat::IDENTITY,
+    };
+    // Holstered in THE GATE the fist is empty (`swap`), so it is the rest hand.
+    let holstered = net.as_deref().is_some_and(|n| n.session.core.holstered());
+    let want = hand_fit(def.filter(|_| !holstered));
+    let k = 1.0 - (-VIEWMODEL_HAND_RATE * dt).exp();
+    let fit = match m.fit {
+        Some(f) => HandFit {
+            rot: f.rot.slerp(want.rot, k),
+            pos: f.pos.lerp(want.pos, k),
+        },
+        None => want,
+    };
+    m.fit = Some(fit);
     if let Ok((mut it, in_hand)) = item.single_mut() {
-        let (_, strike) = swing_phases(s);
-        // A raised bow turns in the hand to aim; nothing else does.
-        let aim = match (bow, def) {
-            (Some(_), Some(d)) => bow_aim(d, m.raise),
-            _ => Quat::IDENTITY,
-        };
-        *it = item_pose(in_hand, stroke_snap(def, strike) * aim);
+        if in_hand {
+            *it = item_pose(Some(fit), snap * aim);
+            m.set = Some(hand_set(fit));
+        } else {
+            *it = item_pose(None, snap * aim);
+            m.set = None;
+        }
+    }
+}
+
+/// Put the first-person arm where [`animate`]'s grip wants it, over the hold
+/// clip: the arm shifted in the rig, the forearm twisted about its own axis
+/// and the hand bent at the wrist for the rest, so the fist closes on the row
+/// in it ([`hand_fit`]). Between the animation and the propagation, like
+/// `bow::draw_arm`: both bones are animated by the clip every frame, so
+/// composing onto them never accumulates (`tests/viewmodel_arms.rs` holds
+/// the clip to that).
+pub fn pose_hand(
+    m: Res<Motion>,
+    mut arms: Query<(&ViewArms, &mut Transform)>,
+    mut bones: Query<&mut Transform, Without<ViewArms>>,
+) {
+    let Ok((arms, mut root)) = arms.single_mut() else {
+        return;
+    };
+    let (Some(hand), Some((turn, twist, shift))) = (arms.hand, m.set) else {
+        return;
+    };
+    root.translation = VIEWMODEL_ARMS + shift;
+    // Without a forearm the wrist takes the whole turn: the same hand, a
+    // worse wrist, and never an item hung off a hand that did not turn.
+    let twist = match arms.forearm.and_then(|f| bones.get_mut(f).ok()) {
+        Some(mut f) => {
+            f.rotation *= Quat::from_rotation_y(twist);
+            twist
+        }
+        None => 0.0,
+    };
+    if let Ok(mut h) = bones.get_mut(hand) {
+        h.rotation = Quat::from_rotation_y(-twist) * h.rotation * turn;
     }
 }
 
