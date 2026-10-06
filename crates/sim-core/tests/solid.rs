@@ -294,15 +294,9 @@ fn scale_moves_the_reach_and_the_top_together() {
         ),
         "a body standing on the small boulder was still blocked by it"
     );
+    // A short volume: a body steps up the 0.31 m between the two tops.
     assert!(
-        terrain::slot_blocks(
-            &large,
-            0.0,
-            0.0,
-            top * 0.9,
-            CAPSULE_RADIUS_M,
-            CAPSULE_HEIGHT_M
-        ),
+        terrain::slot_blocks(&large, 0.0, 0.0, top * 0.9, CAPSULE_RADIUS_M, 0.1),
         "the large boulder's extra height did not block"
     );
     // A slot's ground is its own, not sea level: a node on a hill blocks at
