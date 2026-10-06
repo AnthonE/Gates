@@ -319,7 +319,7 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     HeldModelDef {
         key: "bat",
         src: HeldSrc::Gen("bat"),
-        height_m: 0.842,
+        height_m: 0.840,
         grip_frac: 0.12,
         scale: 0.75,
         lay: HAFTED_LAY,

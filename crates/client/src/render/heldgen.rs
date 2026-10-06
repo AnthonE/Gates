@@ -288,67 +288,75 @@ fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> 
     m
 }
 
-/// The bat's +Y extent: the end face's crown. `ui::hold`'s row restates it.
-const BAT_LEN: f32 = 0.842;
+/// The bat's +Y extent: the tip of the dome. `ui::hold`'s row restates it.
+const BAT_LEN: f32 = 0.840;
 
-/// Triple T's bat (operator, 2026-10-06): a plain turned-wood baseball bat,
-/// knob at the foot and barrel up. Adult wood-bat proportions, 84 cm: a
-/// 2.4 cm handle above a 4.3 cm knob, a long taper, a 6.7 cm barrel and a
-/// rounded end, so the fist closes on the handle just above the knob.
+/// Triple T's bat (operator, 2026-10-06: *"kind of fatter"*): the club in the
+/// original Tung Tung Tung Sahur picture, measured off it rather than off a
+/// regulation bat. Against a real wood bat it has a handle ~40% thicker
+/// (3.4 cm), a barrel ~30% fatter (8.8 cm), a taper that starts at the hand
+/// and keeps going instead of a long thin handle, and a big rounded dome for
+/// an end. 84 cm, knob at the foot, so the fist closes just above the knob.
 fn bat_mesh() -> Mesh {
-    const HANDLE_R: f32 = 0.0122;
-    const BARREL_R: f32 = 0.0335;
+    const HANDLE_R: f32 = 0.017;
+    const BARREL_R: f32 = 0.044;
     // The taper, handle to barrel, as a smoothstep over this span of y.
-    const TAPER: (f32, f32) = (0.20, 0.64);
-    // The end: a lip rounded at `LIP` into a face very slightly domed.
-    const FACE: f32 = 0.840;
-    const LIP: f32 = 0.009;
+    const TAPER: (f32, f32) = (0.16, 0.74);
+    // Where the barrel stops and the dome starts. The dome is a
+    // superellipse quarter, blunter than a hemisphere and longer than one.
+    const DOME: f32 = 0.790;
+    const DOME_P: f32 = 2.2;
     // The knob, foot up: a flattened bead flaring into the handle.
     let mut p: Vec<(f32, f32)> = vec![
         (0.000, 0.0),
-        (0.001, 0.010),
-        (0.003, 0.016),
-        (0.007, 0.0200),
-        (0.012, 0.0215),
-        (0.017, 0.0210),
-        (0.022, 0.0180),
-        (0.027, 0.0145),
-        (0.033, 0.0125),
+        (0.001, 0.013),
+        (0.004, 0.020),
+        (0.008, 0.0245),
+        (0.013, 0.0260),
+        (0.018, 0.0255),
+        (0.023, 0.0225),
+        (0.028, 0.0190),
+        (0.034, 0.0172),
     ];
-    let (y0, y1) = (0.033, FACE - LIP);
     let steps = 48;
     for i in 1..=steps {
-        let y = y0 + (y1 - y0) * i as f32 / steps as f32;
+        let y = 0.034 + (DOME - 0.034) * i as f32 / steps as f32;
         let t = ((y - TAPER.0) / (TAPER.1 - TAPER.0)).clamp(0.0, 1.0);
         p.push((
             y,
             HANDLE_R + (BARREL_R - HANDLE_R) * t * t * (3.0 - 2.0 * t),
         ));
     }
-    for i in 1..=6 {
-        let a = i as f32 / 6.0 * std::f32::consts::FRAC_PI_2;
-        p.push((y1 + LIP * a.sin(), BARREL_R - LIP + LIP * a.cos()));
+    let h = BAT_LEN - DOME;
+    for i in 1..=12 {
+        let a = i as f32 / 12.0;
+        let r = if i == 12 {
+            0.0
+        } else {
+            BARREL_R * (1.0 - a.powf(DOME_P)).powf(1.0 / DOME_P)
+        };
+        p.push((DOME + h * a, r));
     }
-    p.push((FACE + 0.0012, (BARREL_R - LIP) * 0.55));
-    p.push((BAT_LEN, 0.0));
 
-    // Light ash, darker where hands have been and on the end grain, with
-    // streaks of grain running the length.
-    const WOOD: [f32; 3] = [0.62, 0.42, 0.22];
-    lathe(&p, 24, |y, r, a| {
-        let grain = 1.0 + 0.05 * (5.0 * a + 1.7 * (2.0 * a + 9.0 * y).sin()).sin()
-            - 0.04 * (13.0 * a + 3.0 * y).sin().abs();
+    // Honey-amber varnished wood, the picture's colour taken out of its
+    // lamplight. The grain is strong on purpose: a vertex tint is all this
+    // mesh has for a surface, and at the first cut's ±5% the in-game frame
+    // read flat peach plastic (measured ±4 of 255 along the whole bat).
+    // Long streaks with thin dark lines between them, darker where hands
+    // have been.
+    const WOOD: [f32; 3] = [0.58, 0.21, 0.025];
+    lathe(&p, 40, |y, _r, a| {
+        let streak = 0.12 * (7.0 * a + 2.2 * (3.0 * a + 6.0 * y).sin()).sin()
+            + 0.08 * (17.0 * a + 4.0 * y).sin();
+        let line = (11.0 * a + 1.3 * (5.0 * y + 2.0 * a).sin()).sin().max(0.0);
+        let along = 0.05 * (13.0 * y).sin();
+        let grain = 1.0 + streak + along - 0.30 * line.powi(8);
         let handled = if y < 0.30 {
-            0.86 + 0.14 * (y / 0.30)
+            0.72 + 0.28 * (y / 0.30)
         } else {
             1.0
         };
-        let end_grain = if y > FACE && r < BARREL_R - LIP {
-            0.78
-        } else {
-            1.0
-        };
-        let k = grain * handled * end_grain;
+        let k = grain * handled;
         [WOOD[0] * k, WOOD[1] * k, WOOD[2] * k, 1.0]
     })
 }
@@ -761,9 +769,10 @@ pub fn mesh(name: &str) -> Mesh {
 /// carries is a `PointLight` on the hand, never a bright material.
 pub fn material(name: &str) -> StandardMaterial {
     match name {
-        // Turned and lacquered: smoother than the torch's raw shaft.
+        // Varnished: the picture's bat carries a clear highlight down its
+        // length, so much smoother than the torch's raw shaft.
         "bat" => StandardMaterial {
-            perceptual_roughness: 0.55,
+            perceptual_roughness: 0.38,
             reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
