@@ -9,8 +9,12 @@
 //! or 112 m for the sites.
 
 // An example prints and draws pixels; the sim walls on `print!` and on
-// `abs`/`rem_euclid` are for sim code, and nothing here feeds the sim.
-#![allow(clippy::disallowed_macros, clippy::disallowed_methods)]
+// `abs`/`rem_euclid`/`File` are for sim code, and nothing here feeds the sim.
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::disallowed_types
+)]
 
 use sim_core::terrain::{self, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE};
 use std::io::Write;
