@@ -4,7 +4,8 @@
 operator conversations that were explicitly exploratory — *"help me think"*,
 *"help me consider and log all of this"* — so nothing here is spoken and
 nothing here may land on its strength alone. `DECISIONS.md` §open carries the
-one row that points at this file.
+one row that points at this file. **§11 is the exception:** spoken
+2026-10-05, one timeline with Before Colony, and a secret the game keeps.
 
 **This is a roadmap, not a v1 specification** (operator, 2026-08-10: *"early
 on we dont have to do this, it might be paths over time that evolve the
@@ -17,7 +18,8 @@ building is late (§9.1).
 deviation."* The sum of this document is the outer bound of how far Gates
 moves from the survival game it is — not a floor to build up from. Classes,
 levels, spells, quests, player-facing magic of any kind are outside it by
-the operator's own line, and §7.1 is the rule that keeps them out.
+the operator's own line, and §7.1 is the rule that keeps them out. Since
+2026-10-05 that is *for now* rather than for good (§11.4).
 
 Read it before proposing art, monuments, extraction rules, or a second health
 pool. Its §8 is the useful half: five places this direction **collides with a
@@ -629,3 +631,171 @@ Collected for `DECISIONS.md`; none of it is a number a loop may invent.
   universal and never loot (§6.1). That last is a design rule rather than a
   number and is what decides whether this stays a survival game.
 - **How many monuments the alpha carries**, against `DESIGN.md` §2's two.
+
+---
+
+## 11 · One timeline with Before Colony (spoilers: never in the game)
+
+Operator, 2026-10-05: *"ive decided to make these games the same timeline.
+Gates was a research island for a banned SI and eventually it does get to
+space. the machine was built into the geography of the area in such a way
+that it messes with space time and can "resurrect" a certain new type of
+people. the island is like a training ground for future gundam pilots. the
+gate system is how the SI makes it to space eventually and infects the
+autonomous mecha in space. but yea its also where they raise the pilots.
+thats just half of the puzzle besides innate human skills with proper SI
+helpers."*
+
+**Spoken, unlike the rest of this file.** The other game is **Before
+Colony** (`AnthonE/Before-Colony`, the Gundam Wing MMO). Its `docs/STORY.md`,
+"Under everything", is this section's twin, and the two change together.
+
+### 11.1 · What is now true
+
+Answering this section's first draft, same day: *"It was an ancient
+civilization"* · *"Unified Earth Alignment at the same time humans started
+to build in space. the SI was trained on specific ancient text to key the
+sacred math needed to tap into hidden channels outside normal space time.
+Safe SI is a common part of the "aligned" world"* · *"Anyone from gates just
+remembers it like a dream and not much more besides the initiate combat
+experience"* · *"tbh idk what the Arrivals are. i mean they are humans. its
+like the gundam pilots. just imagine herro yuy grew up on some battle royale
+island."*
+
+And to the next draft: *"idk long term bio horror almost halo flood like
+seeing as this is all one degree from that story now that i think but its
+more like the forerunners you play as"* · *"Yea its a name change"* (the
+Alignment is Before Colony's Earth Sphere Alliance, renamed) · *"Gates
+eventually when players progress enough and we need more content. we will
+probably have some hidden metal underground doors kinda foreboding thing"*.
+
+- **The machine** is the ancients'. A real ancient civilization (§0–§3's)
+  built it into the island's geography in a way that bends space and time,
+  and it can "resurrect" a new type of people.
+- **The SI** came later. The Unified Earth Alignment, the world's
+  government, banned it at the same time humans started to build in space,
+  and the island became a research island for it. It was trained on
+  specific ancient texts to key the sacred math that taps hidden channels
+  outside normal space and time. Safe SI is a common part of the aligned
+  world; this one is not safe.
+- **Under the island** is a factory like NERV's, probably with bio-mecha
+  chained up and harvested for something: a long-term bio-horror, almost
+  Halo's Flood. Gates opens it eventually, when players have progressed far
+  enough and the game needs more content, through hidden metal doors
+  underground (§11.3).
+- **One degree from Halo.** The whole story is, except that what you play is
+  more like its Forerunners.
+- **The island raises pilots**: humans, future Gundam pilots. That is half
+  of what makes one; the other half is innate human skill with the right SI
+  helpers. Anyone from the island remembers it only like a dream, and keeps
+  little more than the combat experience.
+- **The gate system** is how the SI eventually reaches space, where it
+  infects the autonomous mecha: Before Colony's Mobile Dolls.
+- **SI tech** at the top end (vessels, and other combinations of
+  integration) is nearly physics-breaking, close to magic, and even talking
+  with an SI can be enough to cause trouble (§11.4).
+
+### 11.2 · What it does to this file
+
+Taste, and the operator's to overrule. §0's threshold now has a machine
+behind it, and its table gains a cause:
+
+| the mechanic | §0 said | underneath |
+|---|---|---|
+| you respawn on the beach forever | a threshold does not let you leave by dying | the machine brings its people back, and the players are its people |
+| the world wipes on a cadence | the gate cycles | broken time: the island's years come round again, while Before Colony's clock "never resets" |
+| the civilization is gone and the wilderness is wrong | something came through, and it is still here | the ancients built the machine and are gone; the SI came after them, and has not left yet |
+| banked JUNK survives a wipe | what you send out leaves the broken place | the gate system leads out — to space, in the end |
+
+Three consequences:
+
+- **§3's monuments are the machine.** *"Built into the geography"* means
+  the ruins are its working parts: §2's rule (infrastructure, not temples)
+  becomes literal, §2's dimensional freight terminal was always a gate, and
+  §5's repairs switch pieces of the machine back on.
+- **Before Colony's pilots are the island's.** Its Arrivals *"wake in the
+  docking hub with no records, trained as pilots"* (`STORY.md`): humans who
+  remember the island like a dream and kept its combat experience. They come
+  back from a destroyed suit for the same reason a player wakes on the beach.
+- **Extraction is the SI's road out** (a proposal). §4's window is a gate
+  held open so that what you send out leaves the island, and the gate system
+  is how the SI leaves too. So every window the players force open to get
+  their coin out is a door it can use, and a clan holding the Severed Gate
+  open (§5.3) is doing its work for it. Nobody ever says so, and it costs
+  nothing §4 doesn't already build. Before Colony's gate from the Moon to
+  Earth is the same irony from the other end.
+
+### 11.3 · Keeping it hidden
+
+Operator, same day: *"Gates can stay mysterious and the Before Colony is more
+In medias res but always have hidden in plain sight stuff until reveal one
+day"*, and later: *"in gates its sort of the pre amble and doesnt need to
+ever go too deep. when u play the space game we eventually get a gate setup
+to get from the moon to earth and then it would be the hard confirm. under
+the island it will be like a NERV factory with probably some crazy bio mecha
+things that are like chained up and being harvested for something. the
+people"* (the message ends there).
+
+- **Gates is the preamble.** Its story never needs to go deep; its ground
+  does, late, when the factory becomes content. The hard confirm is Before
+  Colony's: eventually, a gate from the Moon to Earth.
+- **Nothing says it.** No sign, toast, kiosk, death line, map label or
+  devblog (`posts/`) names the banned SI, the machine, the gate system or
+  what is under the island, or explains them.
+- **A clue is ordinary on its own** — a name, a sound, a shape, something
+  the world does — and reads differently only to someone who knows. §7.1
+  holds: a clue is a place or a behaviour, never a lore item in a bag. Both
+  games' clues agree.
+- **Already in the game:** the town is THE GATE, and it decides where you
+  wake (*"THE GATE would not take you - you woke on a beach"*,
+  `crates/client/src/ui/death.rs`); the BLACK ZIGGURAT is marked on the
+  map (`crates/client/src/ui/map.rs`). In Before Colony, pilots without
+  bodies wear the Mobile Dolls' tag (MD), and a ZERO seizure flies a suit
+  with a Doll's reflexes.
+- **Worth planting:** one shape across both games, the ring (the Severed
+  Gate's shattered gold ring; the docking hub's ring of amber lights in
+  Before Colony); one sound, THE GATE's yard hum
+  (`crates/sound/src/synth.rs`) sharing its notes with Before Colony's ZERO
+  drone; and the sacred math itself: glyphs on the ancients' works (the gold
+  mile markers, the Observatory's rings), the texts the SI was trained on in
+  plain sight, and the same glyphs flickering across ZERO's display in
+  Before Colony. And the metal doors themselves, early: sealed steel in the
+  ground, the one modern thing among the ancients' obsidian and gold, long
+  before anything opens them.
+- **Names.** Gundam Wing's stay out of Gates (Sotsu · Sunrise's; Before
+  Colony keeps them behind its `canon-names` feature), and so do NERV
+  (Evangelion's) and the Flood and the Forerunners (Halo's).
+
+### 11.4 · Eventually: Greed Island and Nen
+
+Operator, same message: *"Eventually gates might have more of a greed island
+and nin aspect to it all from HxH and obviously the mecha game is Gundam
+Wing. The SI tech is nearly physics breaking and magic like at the top end
+of vessels and other combos of integration even just chatting with one can
+be enough to cause problems."*
+
+**This moves the header's ceiling.** On 2026-08-10 player-facing power was
+outside the deviation for good; now it is outside it *for now*. Nothing is
+scheduled, and §7.1 governs until a specific mechanic is spoken. What the
+fiction hands it when it comes:
+
+- **The power is the SI's, and it bites.** Anything magic-like on the island
+  is the sacred math tapping hidden channels outside normal space and time,
+  keyed by an SI, so its price is in the world already: talking to one is a
+  risk. That gives a Nen-shaped system its reason: its conditions and vows
+  become the terms an SI sets, and breaking them costs.
+- **Greed Island's shape is half built.** A real island run like a game by
+  an unseen hand, that trains the people in it, where nothing leaves except
+  through certain doors (§4) and nobody leaves by dying (§0).
+- **Our own names.** Hunter × Hunter, Greed Island and Nen are Yoshihiro
+  Togashi's (Shueisha): inspiration, never a word in the game, as §1.1 says
+  of Fel.
+
+### 11.5 · Open — the operator's
+
+- What the bio-mecha under the island are harvested for (*"idk"*).
+- What *"more like the forerunners you play as"* makes of the players:
+  heirs of the ancients, or the ancients themselves, brought back by their
+  own machine.
+- Whether a Gates player ever carries anything into Before Colony. In the
+  fiction, only a dream and the combat experience cross.

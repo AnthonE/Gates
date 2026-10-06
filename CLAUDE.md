@@ -43,7 +43,8 @@ need to run it locally.
 - Read the big docs before starting. Grep them when you need an answer:
   `DESIGN.md` (product), `NETCODE.md`, `TERRAIN.md`, `RENDER.md`, `ART.md`
   (visual bar), `CONTENT.md` (content schemas), `reference/*.md` (how Rust
-  the game does a system), `NOW.md` (backlog).
+  the game does a system), `NOW.md` (backlog), `WORLD.md` (the fiction; its
+  §11 is a secret shared with Before Colony and never said in game).
 - Register numbers anywhere. They go in code, or in `content/*.toml` for items
   and balance. `DECISIONS.md` §Open is history and no longer has to match.
 
