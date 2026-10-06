@@ -129,6 +129,10 @@ SURF = {
     "kred": dict(proc="paint", color=(0.55, 0.04, 0.04), rough=0.4, metal=0.0, wear=0.0, grime=0.0),
     "signgreen": dict(proc="plain", color=(0.02, 0.30, 0.10), rough=0.5, metal=0.0, wear=0.0, grime=0.0),
     "signwhite": dict(proc="plain", color=(0.85, 0.85, 0.82), rough=0.5, metal=0.0, wear=0.0, grime=0.0),
+    # The roadside junk: a wreck's faded paint, a road sign's enamel.
+    "carpaint": dict(tex="paint", sat=0.0, color=(0.11, 0.17, 0.19), rough=1.0, metal=None, grime=0.8),
+    "signyellow": dict(proc="paint", color=(0.62, 0.42, 0.03), rough=0.5, metal=0.0, grime=0.6),
+    "signblack": dict(proc="paint", color=(0.018, 0.018, 0.02), rough=0.55, metal=0.0, grime=0.3),
 }
 
 
