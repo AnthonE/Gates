@@ -562,6 +562,11 @@ fn bays_concentrate_the_route_without_enriching_it() {
                 if terrain::ring_band(&haven.ring, x, z) != RoadBand::Shoulder {
                     continue;
                 }
+                // A junk pile is its own draw (roadside junk), not the
+                // shoulder's bay/open split this measures.
+                if terrain::junk_block(seed, cx, cz) {
+                    continue;
+                }
                 let barrel =
                     terrain::scatter(seed, &table, &haven, cx, cz).occupant == Occupant::BarrelSlot;
                 if terrain::in_bay(seed, x, z) {
