@@ -1,32 +1,29 @@
-//! Cliff outcrops: rock ledges stepping down every face too steep to walk,
-//! and the scree lying at their feet.
+//! Cliffs: the rock skin over every face too steep to walk
+//! (`cliff_skin.rs`), the crags breaking its lip against the sky, and the
+//! scree lying at its foot.
 //!
 //! A scarp is the smooth heightfield, so from any distance it read as one pale
-//! sheet with a photograph on it (`NOW.md` §0rf items 2–3). This stands
-//! fractured blocks in the face — [`boulders::rock_block`], on the ground's own
-//! material, so a ledge is the same granite as the face it juts from. Each
-//! block is buried uphill and shows a vertical downhill face with a short shelf
-//! on top, so a cliff reads as stacked ledges rather than a ramp, and the
-//! ledges throw shadow down the face.
+//! sheet with a photograph on it (`NOW.md` §0rf items 2–3). Blocks stood in
+//! the face read as bricks on plaster; the skin breaks the whole face into
+//! planes, strata, shelves and overhangs instead.
 //!
-//! The blocks sit on the DRAWN face (`terrain_mesh::near_drawn_y`), which the
-//! cliff relief moves off the sim's height; the slope tests stay the sim's.
-//! The relief cannot touch the walkable top, so the lip's outline against the
-//! sky is broken by low crag teeth standing in the face just under it, every
-//! corner of each on ground too steep to walk.
+//! The skin cannot touch the walkable top, so the lip's outline against the
+//! sky is broken by low crag teeth standing in the face just under it
+//! ([`boulders::rock_block`], on the ground's own material and chiselled into
+//! facets), every corner of each on ground too steep to walk. They sit on
+//! the DRAWN face (`terrain_mesh::near_drawn_y`), which the cliff relief
+//! moves off the sim's height; the slope tests stay the sim's.
 //!
-//! **Drawn, not decided: nothing here collides.** A block stands only where
-//! the sim already refuses a body — slope past [`terrain::CLIFF_SLOPE_RATIO`]
-//! at the block AND just below its face — and stands proud of the slope by at
-//! most [`LEDGE_FACE_MAX_M`] / `CLIFF_SLOPE_RATIO` horizontally, so nobody can
-//! walk into one. The scree is ankle-high, like the clutter a body already
-//! wades through.
+//! **Drawn, not decided: nothing here collides.** The skin and the teeth
+//! stand only where the sim already refuses a body. The scree is ankle-high,
+//! like the clutter a body already wades through.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::terrain::{self, Haven};
 
 use super::boulders::{rock_block, RockShape, RockSoup};
+use super::cliff_skin;
 use super::terrain_mesh::{near_drawn_y, Ring};
 use super::{Eye, WorldEntity, WorldId};
 
@@ -36,22 +33,15 @@ pub const CLIFF_CELL_M: f32 = 32.0;
 pub const CLIFF_RING: i32 = 7;
 /// Candidate spacing inside a cell, metres.
 const STEP_M: f32 = 4.0;
-/// Cells built per frame; each is ~64 candidates of a few ground taps.
-const BUILDS_PER_FRAME: usize = 2;
-/// The share of steep candidates that grow a ledge where the crag field is
-/// full; it falls to nothing where the field is empty, so a face carries
-/// crags and smooth slabs between them rather than an even brick pattern.
-const LEDGE_SHARE: f32 = 0.9;
+/// Cells built per frame; each is a 1 m lattice of the skin where the cell
+/// is steep, and ~64 candidates of a few ground taps.
+const BUILDS_PER_FRAME: usize = 1;
 /// The crag field's wavelength, metres.
 const CRAG_M: f32 = 22.0;
-/// Tallest visible downhill face, metres.
-const LEDGE_FACE_MAX_M: f32 = 3.2;
-/// Shortest visible downhill face, metres.
-const LEDGE_FACE_MIN_M: f32 = 0.8;
-/// A ledge's value against the face's: the same granite, freshly broken.
-const LEDGE_VALUE: f32 = 0.92;
-/// How far a ledge's foot is buried below the face, metres.
-const LEDGE_BURY_M: f32 = 0.7;
+/// A crag's value against the face's: the same granite, freshly broken.
+const CRAG_VALUE: f32 = 0.92;
+/// How far a tooth's foot is buried below the face, metres.
+const TOOTH_BURY_M: f32 = 0.7;
 /// Where scree may lie: walkable ground at most this steep…
 const SCREE_SLOPE_MAX: f32 = 0.95;
 /// …with a cliff this many metres uphill of it.
@@ -71,6 +61,15 @@ const TOOTH_RISE_MAX_M: f32 = 1.5;
 /// Tallest a tooth may be from its buried foot, metres: a face that drops
 /// away faster than this under the lip would make it a free-standing pillar.
 const TOOTH_TALL_MAX_M: f32 = 5.0;
+
+/// The share of teeth in the green band with turf on top.
+const TOOTH_MOSS_SHARE: f32 = 0.8;
+/// How lush that turf is (`RockShape::moss`).
+const TOOTH_MOSS: f32 = 1.7;
+/// Chisel depth as a share of a cliff rock's smallest extent.
+const CHISEL_SHARE: f32 = 0.6;
+/// Deepest a chisel plane cuts into a cliff rock, metres.
+const CHISEL_MAX_M: f32 = 1.6;
 
 #[derive(Resource, Default)]
 pub struct CliffRing {
@@ -179,9 +178,10 @@ fn open_ground(haven: &Haven, x: f32, z: f32) -> bool {
     !terrain::in_haven(haven, x, z) && terrain::site_sweep(haven, x, z) <= 0.0
 }
 
-/// Every ledge and scree pile of one cell, as one rock soup.
+/// The skin, the teeth and the scree of one cell, as one rock soup.
 pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
     let mut soup = RockSoup::default();
+    cliff_skin::skin(&mut soup, seed, haven, CLIFF_CELL_M, cx, cz);
     let n = (CLIFF_CELL_M / STEP_M) as i32;
     let cell_key = (cx as u32).wrapping_mul(73_856_093) ^ (cz as u32).wrapping_mul(19_349_663);
     let seed_key = seed as u32 ^ (seed >> 32) as u32;
@@ -210,12 +210,10 @@ pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
                 // Just under the lip, a tooth standing above it breaks the
                 // outline the walkable top would otherwise draw.
                 let lip = lip_above(seed, haven, x, z, (dx, dz));
-                let toothed = lip.is_some_and(|lip| {
-                    h(5) < TOOTH_SHARE * crag
-                        && tooth(&mut soup, &mut lat, seed, haven, (x, z), lip, (dx, dz), k)
-                });
-                if !toothed && h(3) < LEDGE_SHARE * crag {
-                    ledge(&mut soup, &mut lat, seed, haven, x, z, s, (dx, dz), k);
+                if let Some(lip) = lip {
+                    if h(5) < TOOTH_SHARE * crag {
+                        tooth(&mut soup, &mut lat, seed, haven, (x, z), lip, (dx, dz), k);
+                    }
                 }
             } else if s <= SCREE_SLOPE_MAX && h(4) < SCREE_SHARE {
                 // A cliff uphill: the stones that fell off it.
@@ -229,6 +227,23 @@ pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
         }
     }
     soup
+}
+
+/// Turf on a tooth's top, keyed by `h` in [0, 1): most in the green band
+/// carry it, as the rim of a grown-over face does; none on the beach or past
+/// the treeline.
+fn tooth_moss(y: f32, h: f32) -> f32 {
+    if y <= terrain::BEACH_MAX_H + 1.5 || y >= terrain::TREELINE_H || h >= TOOTH_MOSS_SHARE {
+        0.0
+    } else {
+        TOOTH_MOSS
+    }
+}
+
+/// How deep the planes that break a cliff rock's edges cut, metres: a share
+/// of its smallest extent, so a crag loses its corners and not its shape.
+fn chisel_m(hx: f32, hz: f32, face: f32) -> f32 {
+    (CHISEL_SHARE * hx.min(hz).min(face)).min(CHISEL_MAX_M)
 }
 
 /// Where the crags gather, 0..1: smooth value noise at [`CRAG_M`], pushed
@@ -278,7 +293,7 @@ fn tooth(
     (ul, y_lip): (f32, f32),
     (dx, dz): (f32, f32),
     k: u32,
-) -> bool {
+) {
     let h = |c: u32| h01(k, c + 32);
     // Broad and low: a rocky rim, not a standing stone.
     let hx = 1.4 + 2.6 * h(1) * h(1);
@@ -306,15 +321,15 @@ fn tooth(
             cz + az * hx * u + bz * hz * v,
         );
         if terrain::ground_slope(seed, haven, px, pz) < terrain::CLIFF_SLOPE_RATIO {
-            return false;
+            return;
         }
         foot = foot.min(near_drawn_y(lat, seed, haven, px, pz));
     }
     let rise = TOOTH_RISE_MIN_M + (TOOTH_RISE_MAX_M - TOOTH_RISE_MIN_M) * h(4) * h(4) * h(4);
-    if y_lip + rise - (foot - LEDGE_BURY_M) > TOOTH_TALL_MAX_M {
-        return false;
+    if y_lip + rise - (foot - TOOTH_BURY_M) > TOOTH_TALL_MAX_M {
+        return;
     }
-    let moss = y_lip > terrain::BEACH_MAX_H + 1.5 && y_lip < terrain::TREELINE_H && h(5) < 0.4;
+    let moss = tooth_moss(y_lip, h(5));
     rock_block(
         soup,
         &RockShape {
@@ -323,95 +338,16 @@ fn tooth(
             hx,
             hz,
             dir: (bx, bz),
-            y0: foot - LEDGE_BURY_M,
+            y0: foot - TOOTH_BURY_M,
             y1: y_lip + rise,
             tx: (h(6) - 0.5) * 0.5,
             // The top falls away toward the drop, as a weathered rim does.
             tz: -0.1 - 0.25 * h(7),
             key: k ^ 0x7007_7a11,
             moss,
+            chisel: chisel_m(hx, hz, y_lip + rise - foot),
             min_seg: 2,
-            value: LEDGE_VALUE * (0.85 + 0.3 * h(8)),
-        },
-    );
-    true
-}
-
-/// One ledge whose downhill face stands at `(x, z)`.
-#[allow(clippy::too_many_arguments)]
-fn ledge(
-    soup: &mut RockSoup,
-    lat: &mut terrain::Lattice,
-    seed: u64,
-    haven: &Haven,
-    x: f32,
-    z: f32,
-    s: f32,
-    (dx, dz): (f32, f32),
-    k: u32,
-) {
-    let h = |c: u32| h01(k, c + 16);
-    // Most ledges are modest and a few are big, the way a crag breaks.
-    let face = LEDGE_FACE_MIN_M + (LEDGE_FACE_MAX_M - LEDGE_FACE_MIN_M) * h(3) * h(3);
-    let hx = 1.4 + 3.6 * h(1) * h(1) + face * 0.5;
-    // Tops lean along the contour as bedding planes do, which raises one end
-    // of the face by up to `|tx| hx`.
-    let tx = (h(5) - 0.5) * 0.4;
-    let tallest = face + tx.abs() * hx;
-    // The ground below the face, out past where the ledge stands proud of
-    // the slope, must refuse a body too, or the ledge would stand on
-    // walkable foot-slope where a player could reach it.
-    let reach = tallest / s + 1.0;
-    let (fx, fz) = (x + dx * reach, z + dz * reach);
-    if terrain::ground_slope(seed, haven, fx, fz) < terrain::CLIFF_SLOPE_RATIO {
-        return;
-    }
-    // Deep enough that the shelf's uphill end is buried: the ground climbs
-    // `2 hz s` across it, against the face's height.
-    let hz = (tallest / (2.0 * s) + 0.4).max(0.8 + 0.8 * h(2));
-    // Off the fall line a little, so no two ledges share a bearing.
-    let a = (h(7) - 0.5) * 0.7;
-    let (sa, ca) = a.sin_cos();
-    let (dx, dz) = (dx * ca - dz * sa, dx * sa + dz * ca);
-    // The block's local +Z points downhill; its centre sits `hz` uphill of
-    // the face.
-    let (ccx, ccz) = (x - dx * hz, z - dz * hz);
-    // The contour either side of the face: a block over a gully must reach
-    // down to the lowest of them, or it hangs in the air at one end.
-    let (ax, az) = (-dz, dx);
-    let y = near_drawn_y(lat, seed, haven, x, z);
-    let yl = near_drawn_y(lat, seed, haven, x + ax * hx, z + az * hx);
-    let yr = near_drawn_y(lat, seed, haven, x - ax * hx, z - az * hx);
-    // A ledge across a gully would show its whole side; leave that ground
-    // to the face.
-    if y - yl.min(yr) > face {
-        return;
-    }
-    let y0 = y.min(yl).min(yr) - LEDGE_BURY_M;
-    let y1 = y + face;
-    // The relief can cut the face back behind the block; a block whose back
-    // would stand a metre out of the rock is left out.
-    let (bx, bz) = (x - dx * 2.0 * hz, z - dz * 2.0 * hz);
-    if near_drawn_y(lat, seed, haven, bx, bz) < y1 - 1.0 {
-        return;
-    }
-    let moss = y > terrain::BEACH_MAX_H + 1.5 && y < terrain::TREELINE_H && h(4) < 0.35;
-    rock_block(
-        soup,
-        &RockShape {
-            x: ccx,
-            z: ccz,
-            hx,
-            hz,
-            dir: (dx, dz),
-            y0,
-            y1,
-            tx,
-            tz: (h(6) - 0.5) * 0.25,
-            key: k ^ 0x51ed_270b,
-            moss,
-            min_seg: 2,
-            value: LEDGE_VALUE * (0.85 + 0.3 * h(8)),
+            value: CRAG_VALUE * (0.85 + 0.3 * h(8)),
         },
     );
 }
@@ -451,9 +387,10 @@ fn scree(
                 tx: (h(7) - 0.5) * 0.6,
                 tz: (h(8) - 0.5) * 0.6,
                 key: k ^ (m + 1).wrapping_mul(0x85EB_CA6B),
-                moss: false,
+                moss: 0.0,
+                chisel: 0.0,
                 min_seg: 1,
-                value: LEDGE_VALUE * 0.8,
+                value: CRAG_VALUE * 0.8,
             },
         );
     }
