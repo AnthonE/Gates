@@ -75,7 +75,7 @@ fn main() {
                 Occupant::StoneNode => stone += 1,
                 Occupant::MetalNode => metal += 1,
                 Occupant::SulfurNode => sulfur += 1,
-                Occupant::Bush => bush += 1,
+                o if o.is_plant() => bush += 1,
                 Occupant::Tree => tree += 1,
                 _ => {}
             }
@@ -131,7 +131,7 @@ fn main() {
         ("stone", Occupant::StoneNode),
         ("metal", Occupant::MetalNode),
         ("sulfur", Occupant::SulfurNode),
-        ("bush", Occupant::Bush),
+        ("bush", Occupant::BerryBush),
     ] {
         println!(
             "  {name:<6} per 100 cells: on cliff {:.2}  cliffside {:.2}  open {:.2}",
@@ -185,7 +185,7 @@ fn main() {
             ("stone", Occupant::StoneNode),
             ("metal", Occupant::MetalNode),
             ("sulfur", Occupant::SulfurNode),
-            ("bush", Occupant::Bush),
+            ("bush", Occupant::BerryBush),
             ("tree", Occupant::Tree),
             ("rock", Occupant::Rock),
         ] {

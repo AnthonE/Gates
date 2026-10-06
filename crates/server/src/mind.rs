@@ -138,7 +138,10 @@ pub enum Goal {
     GatherWood,
     GatherStone,
     GatherOre,
+    /// Pick a berry bush: food and water.
     Forage,
+    /// Pick hemp: cloth.
+    GatherHemp,
     /// Craft one of the named item, resolved through the wire catalog and
     /// recipe table when it starts. Never an index.
     Craft(Name),
@@ -208,12 +211,13 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 22] = [
+    pub const FIXED: [Goal; 23] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
         Goal::GatherOre,
         Goal::Forage,
+        Goal::GatherHemp,
         Goal::Eat,
         Goal::Drink,
         Goal::Flee,
@@ -241,6 +245,7 @@ impl Goal {
             Goal::GatherStone => "gather_stone",
             Goal::GatherOre => "gather_ore",
             Goal::Forage => "forage",
+            Goal::GatherHemp => "gather_hemp",
             Goal::Craft(_) => "craft",
             Goal::Eat => "eat",
             Goal::Drink => "drink",
@@ -296,7 +301,8 @@ impl Goal {
             Goal::GatherWood => "Chop a tree in view; wood makes tools.".into(),
             Goal::GatherStone => "Mine a stone node in view.".into(),
             Goal::GatherOre => "Mine a metal or sulfur node in view.".into(),
-            Goal::Forage => "Pick a bush: cloth, and berries for food and water.".into(),
+            Goal::Forage => "Pick a berry bush in view: berries for food and water.".into(),
+            Goal::GatherHemp => "Pick hemp in view; cloth makes bags and bandages.".into(),
             Goal::Craft(name) => format!("Craft one {}.", name.as_str()),
             Goal::Eat => "Eat from the pack until food is mostly full.".into(),
             Goal::Drink => "Drink until water is mostly full: juicy food, else the sea (costs health).".into(),
@@ -708,7 +714,9 @@ pub struct Summary {
     pub trees: Sighting,
     pub stone_nodes: Sighting,
     pub ore_nodes: Sighting,
+    /// Berry bushes; hemp is `hemp`.
     pub bushes: Sighting,
+    pub hemp: Sighting,
     pub players: Sighting,
     pub animals: Sighting,
     pub water_near: Sighting,
@@ -793,6 +801,11 @@ impl Summary {
             bearing: 0,
         },
         bushes: Sighting {
+            count: 0,
+            nearest_m: 0,
+            bearing: 0,
+        },
+        hemp: Sighting {
             count: 0,
             nearest_m: 0,
             bearing: 0,
@@ -944,7 +957,8 @@ impl Summary {
                 "trees": self.trees.json(),
                 "stone_nodes": self.stone_nodes.json(),
                 "ore_nodes": self.ore_nodes.json(),
-                "bushes": self.bushes.json(),
+                "berry_bushes": self.bushes.json(),
+                "hemp": self.hemp.json(),
                 "players": self.players.json(),
                 "animals": self.animals.json(),
             },
@@ -1604,9 +1618,9 @@ impl Scripted {
                     return (Goal::Craft(*name), "scripted: a sleeping bag is craftable");
                 }
                 // Not craftable for want of cloth, unless it is for want of
-                // room, which a bush does not make.
-                if s.offers(Goal::Forage) && s.bushes.count > 0 && s.free_slots > 1 {
-                    return (Goal::Forage, "scripted: cloth for a sleeping bag");
+                // room, which hemp does not make.
+                if s.offers(Goal::GatherHemp) && s.hemp.count > 0 && s.free_slots > 1 {
+                    return (Goal::GatherHemp, "scripted: cloth for a sleeping bag");
                 }
             }
         }
@@ -1703,7 +1717,7 @@ impl Scripted {
                 let (goal, seen) = match name.as_str() {
                     "Wood" => (Goal::GatherWood, s.trees.count > 0),
                     "Stone" => (Goal::GatherStone, s.stone_nodes.count > 0),
-                    "Cloth" => (Goal::Forage, s.bushes.count > 0),
+                    "Cloth" => (Goal::GatherHemp, s.hemp.count > 0),
                     "Metal Ore" | "Sulfur Ore" => (Goal::GatherOre, s.ore_nodes.count > 0),
                     "Animal Fat" => (Goal::Hunt, s.animals.count > 0),
                     _ => (Goal::Loot, false),
@@ -2034,8 +2048,8 @@ mod tests {
         (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
         s.free_slots = 20;
         s.offer(Goal::Explore);
-        s.offer(Goal::Forage);
-        s.bushes.add(10.0, 0);
+        s.offer(Goal::GatherHemp);
+        s.hemp.add(10.0, 0);
         let bag = name(BAG_ITEM);
         s.craftable[0] = bag;
         s.craftable_len = 1;
@@ -2047,10 +2061,10 @@ mod tests {
         s.items_len = 2;
         assert_eq!(scripted.pick(&s).0, Goal::Craft(bag));
         s.craftable_len = 0;
-        assert_eq!(scripted.pick(&s).0, Goal::Forage, "cloth for one");
-        // A full pack is not why it was short of cloth: a bush does not help.
+        assert_eq!(scripted.pick(&s).0, Goal::GatherHemp, "cloth for one");
+        // A full pack is not why it was short of cloth: hemp does not help.
         s.free_slots = 0;
-        assert_ne!(scripted.pick(&s).0, Goal::Forage, "no room for one");
+        assert_ne!(scripted.pick(&s).0, Goal::GatherHemp, "no room for one");
         s.free_slots = 20;
         s.items[2] = (bag, 1);
         s.items_len = 3;

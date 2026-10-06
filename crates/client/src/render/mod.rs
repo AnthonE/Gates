@@ -151,6 +151,8 @@ pub mod render_scale;
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod presence;
+// The plants the bush column grows: shrubs, berry bushes and hemp.
+pub mod plants;
 pub mod props;
 pub mod rig;
 pub mod settings;

@@ -1267,9 +1267,14 @@ pub fn fell(
         // inferred: the trunk speaks for the tree, a `Vanish` node speaks for
         // itself, and the canopy and the stump are silent because they are
         // parts of something that already made a sound.
+        let plant = if matches!(f.part, super::props::FellPart::Vanish) {
+            picked_plant(world.as_deref(), f.key)
+        } else {
+            None
+        };
         let cue = match f.part {
             super::props::FellPart::Trunk => Cue::TreeFall,
-            super::props::FellPart::Vanish if is_bush(world.as_deref(), f.key) => {
+            super::props::FellPart::Vanish if plant.is_some() => {
                 if picked[..n_picked].contains(&f.key) {
                     continue;
                 }
@@ -1277,9 +1282,8 @@ pub fn fell(
                     picked[n_picked] = f.key;
                     n_picked += 1;
                 }
-                let at = t.translation()
-                    + Vec3::Y
-                        * super::impact::strike_height(sim_core::terrain::Occupant::Bush as u8);
+                let high = super::impact::strike_height(plant.map_or(0, |o| o as u8));
+                let at = t.translation() + Vec3::Y * high;
                 fx.impact(
                     &super::impact::Contact {
                         at,
@@ -1307,14 +1311,14 @@ pub fn fell(
     }
 }
 
-/// Whether the slot at cell key `key` is a bush — the scatter's answer, cold
-/// (`terrain::scatter`), which is fine on the one frame a slot goes away.
-fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
-    world.is_some_and(|w| {
-        let (cx, cz) = ((key >> 16) as i32, (key & 0xFFFF) as i32);
-        sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant
-            == sim_core::terrain::Occupant::Bush
-    })
+/// The plant a hand picks standing at cell key `key` (a berry bush or hemp),
+/// or `None` — the scatter's answer, cold (`terrain::scatter`), which is fine
+/// on the one frame a slot goes away.
+fn picked_plant(world: Option<&super::WorldId>, key: u32) -> Option<sim_core::terrain::Occupant> {
+    let w = world?;
+    let (cx, cz) = ((key >> 16) as i32, (key & 0xFFFF) as i32);
+    let o = sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant;
+    sim_core::gather::pickable(o).then_some(o)
 }
 
 /// Something new in your hand (`Cue::Equip`): the hotbar moved to a slot

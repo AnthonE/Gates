@@ -298,8 +298,15 @@ pub enum Kind {
     Wood = 0,
     Stone = 1,
     Ore = 2,
+    /// The berry bush: food and water.
     Forage = 3,
+    /// Hemp: cloth. Its own kind, so a thirsty body walks to berries and
+    /// not to whichever plant is nearest.
+    Hemp = 4,
 }
+
+/// How many [`Kind`]s there are — the length of every per-kind table.
+const KINDS: usize = 5;
 
 impl Kind {
     fn of(occupant: Occupant) -> Option<Kind> {
@@ -307,7 +314,8 @@ impl Kind {
             Occupant::Tree => Some(Kind::Wood),
             Occupant::StoneNode => Some(Kind::Stone),
             Occupant::MetalNode | Occupant::SulfurNode => Some(Kind::Ore),
-            Occupant::Bush => Some(Kind::Forage),
+            Occupant::BerryBush => Some(Kind::Forage),
+            Occupant::Hemp => Some(Kind::Hemp),
             _ => None,
         }
     }
@@ -318,8 +326,14 @@ impl Kind {
             Goal::GatherStone => Some(Kind::Stone),
             Goal::GatherOre => Some(Kind::Ore),
             Goal::Forage => Some(Kind::Forage),
+            Goal::GatherHemp => Some(Kind::Hemp),
             _ => None,
         }
+    }
+
+    /// Picked by hand with `E` rather than swung at.
+    fn picked(self) -> bool {
+        matches!(self, Kind::Forage | Kind::Hemp)
     }
 }
 
@@ -360,7 +374,9 @@ pub struct Senses {
     pub trees: Sighting,
     pub stone_nodes: Sighting,
     pub ore_nodes: Sighting,
+    /// Berry bushes in view; hemp is `hemp`.
     pub bushes: Sighting,
+    pub hemp: Sighting,
     pub players: Sighting,
     pub animals: Sighting,
     pub water: Sighting,
@@ -395,7 +411,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [u128; 4],
+    pub yields: [u128; KINDS],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
     /// A bag failed to go down near here a moment ago (`Home::bag_held`).
@@ -447,7 +463,7 @@ pub struct Memory {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Sweep {
-    cells: [Sighting; 4],
+    cells: [Sighting; KINDS],
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -685,7 +701,7 @@ pub struct Survivor {
     scan: i32,
     scanned_at: Option<u32>,
     /// The nearest resource of each kind last seen, and when.
-    recall: [Option<(Target, u32)>; 4],
+    recall: [Option<(Target, u32)>; KINDS],
     /// A sweep of the sight window has completed since the body appeared.
     sensed: bool,
     seen_tick: Option<u32>,
@@ -782,7 +798,7 @@ impl Survivor {
             seek: None,
             scan: 0,
             scanned_at: None,
-            recall: [None; 4],
+            recall: [None; KINDS],
             sensed: false,
             seen_tick: None,
             seen_at: Instant::now(),
@@ -1589,6 +1605,7 @@ impl Survivor {
             | Goal::GatherStone
             | Goal::GatherOre
             | Goal::Forage
+            | Goal::GatherHemp
             | Goal::Drink
             | Goal::Recover
             | Goal::Bag
@@ -1927,12 +1944,9 @@ impl Survivor {
             }
             return intent;
         }
-        if kind == Kind::Forage
-            && distance <= REACH_M
-            && pick_reaches(core, body, yaw, pitch, target)
-        {
-            // A bush is picked with `E`, not swung at: the human client's
-            // `[E] PICK BUSH`, sent once the view the hands hold is on it.
+        if kind.picked() && distance <= REACH_M && pick_reaches(core, body, yaw, pitch, target) {
+            // A plant is picked with `E`, not swung at: the human client's
+            // `[E] PICK`, sent once the view the hands hold is on it.
             self.stats.phase = Phase::Harvesting;
             let (held_yaw, held_pitch) = self.hands.view();
             let haven = self.haven.expect("connected haven");
@@ -1942,7 +1956,7 @@ impl Survivor {
                 let cell = target.key();
                 self.queue(|buf| protocol::encode_action_pick(cell, buf));
             }
-        } else if kind != Kind::Forage && swing_reaches(core, body, yaw, pitch, target) {
+        } else if !kind.picked() && swing_reaches(core, body, yaw, pitch, target) {
             // Holding primary is the human harvesting verb. A harvest swing
             // never lands on a body: one standing on the swing's own ray
             // holds it, wherever else bodies stand round the node.
@@ -2851,6 +2865,7 @@ impl Survivor {
                     | Goal::GatherStone
                     | Goal::GatherOre
                     | Goal::Forage
+                    | Goal::GatherHemp
                     | Goal::Wait
                     | Goal::GoHome,
                 ) => true,
@@ -4064,11 +4079,12 @@ impl Survivor {
                     }
                 }
             }
-            let [trees, stone, ore, bushes] = cells;
+            let [trees, stone, ore, bushes, hemp] = cells;
             self.senses.trees = trees;
             self.senses.stone_nodes = stone;
             self.senses.ore_nodes = ore;
             self.senses.bushes = bushes;
+            self.senses.hemp = hemp;
             self.sweep = Sweep::default();
             self.sensed = true;
         }
@@ -4293,7 +4309,7 @@ impl Survivor {
             // A second respawn ask may still be held; a live body needs none.
             self.outbox = None;
             // A new body on a new beach: what the old one saw is elsewhere.
-            self.recall = [None; 4];
+            self.recall = [None; KINDS];
             self.tracks.forget();
             self.hands.forget();
             // The map this body walked stays learned; the way it was
@@ -4540,7 +4556,7 @@ pub fn best_tool(core: &ClientCore, kind: Kind) -> Option<u8> {
     let ladder: &[&str] = match kind {
         Kind::Wood => &TREE_TOOLS,
         Kind::Stone | Kind::Ore => &NODE_TOOLS,
-        Kind::Forage => return Some(best_tool(core, Kind::Stone).unwrap_or(0)),
+        Kind::Forage | Kind::Hemp => return Some(best_tool(core, Kind::Stone).unwrap_or(0)),
     };
     for name in ladder {
         for (slot, stack) in core.inv[..HOTBAR_SLOTS].iter().enumerate() {
@@ -4831,6 +4847,7 @@ pub fn observe(
     s.stone_nodes = senses.stone_nodes;
     s.ore_nodes = senses.ore_nodes;
     s.bushes = senses.bushes;
+    s.hemp = senses.hemp;
     s.players = senses.players;
     s.animals = senses.animals;
     s.water_near = senses.water;
@@ -4904,6 +4921,9 @@ pub fn observe(
     }
     if fits(Kind::Forage) {
         s.offer(Goal::Forage);
+    }
+    if fits(Kind::Hemp) {
+        s.offer(Goal::GatherHemp);
     }
     // Eat and drink are offered only below the level they fill to, and
     // only where they can work: something worth eating in the pack; a food
@@ -5150,7 +5170,7 @@ fn swing_reaches(
 }
 
 /// A pick along this view from where the body stands reaches the target
-/// bush first: the cast the human client's `[E] PICK BUSH` prompt makes.
+/// plant first: the cast the human client's `[E] PICK` prompt makes.
 fn pick_reaches(
     core: &mut ClientCore,
     body: &EntityState,
@@ -5166,7 +5186,7 @@ fn pick_reaches(
         sim_core::gather::PICK_REACH_M * MM_PER_M,
     );
     let (seed, mut island) = core.island();
-    melee::bush_cast(seed, &mut island, &ray)
+    melee::pick_cast(seed, &mut island, &ray)
         .is_some_and(|hit| hit.cx == target.cx && hit.cz == target.cz)
 }
 

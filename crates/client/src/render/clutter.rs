@@ -71,8 +71,8 @@ pub const TUFT_H: f32 = 0.40;
 /// and the same grass atlas as a tuft** — which is why this is honestly called
 /// brush and not a shrub. `card` scales width with height (`half_w` is
 /// `hj * CARD_ASPECT * 0.5`), so a taller card is a proportionally wider one
-/// and no leaf on the atlas is stretched — the distortion `BUSH_CARD_HALF`
-/// exists to refuse, avoided here for free. A leafy shrub wants the bush atlas
+/// and no leaf on the atlas is stretched — the distortion the bush's square
+/// cards exist to refuse (`plants::card`), avoided here for free. A leafy shrub wants the bush atlas
 /// and a third material per tile; that is a separate slice, and this one buys
 /// the layer's HEIGHT without it.
 pub const BRUSH_H: f32 = 0.75;

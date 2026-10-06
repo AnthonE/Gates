@@ -305,7 +305,9 @@ fn only_a_tree_carries_a_visibility_range() {
     for occupant in [
         Occupant::Rock,
         Occupant::StoneNode,
-        Occupant::Bush,
+        Occupant::BerryBush,
+        Occupant::Hemp,
+        Occupant::Shrub,
         Occupant::BarrelSlot,
     ] {
         let (_, kids) = spawned(&mut app, &a, &slot(occupant));

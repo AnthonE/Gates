@@ -130,7 +130,7 @@ fn census(seed: u64) -> Census {
             c.cells[b] += 1;
             match terrain::scatter(seed, &table, &haven, cx, cz).occupant {
                 Occupant::Tree => c.tree[b] += 1,
-                Occupant::Bush => c.bush[b] += 1,
+                o if o.is_plant() => c.bush[b] += 1,
                 _ => {}
             }
         }
@@ -170,7 +170,7 @@ fn report(seed: u64, c: &Census) {
 ///
 /// **This measures the CLUTTER layer, and the reason is arithmetic rather
 /// than preference.** The obvious place for the understory is the scatter
-/// grid beside `Occupant::Bush`, and the grid provably cannot hold one:
+/// grid beside the bush column, and the grid provably cannot hold one:
 /// `tests/scatter.rs::test_no_biome_row_saturates` caps a biome row at
 /// `1000 / max(clump)` = **370‰**, the Forest row already spends 350, and its
 /// fixed costs leave the bush **70.4‰** — which is exactly the Meadow's bush
@@ -544,14 +544,14 @@ fn the_treeline_is_scrub_and_the_forest_core_is_not() {
                     e_cells += 1;
                     match occ {
                         Occupant::Tree => e_tree += 1,
-                        Occupant::Bush => e_bush += 1,
+                        o if o.is_plant() => e_bush += 1,
                         _ => {}
                     }
                 } else if u32::from(w[2]) > u32::from(w[1]) * 4 {
                     c_cells += 1;
                     match occ {
                         Occupant::Tree => c_tree += 1,
-                        Occupant::Bush => c_bush += 1,
+                        o if o.is_plant() => c_bush += 1,
                         _ => {}
                     }
                 }

@@ -131,8 +131,17 @@ impl MaterialExtension for Foliage {
 pub enum Kind {
     /// A grass tile's cards (`clutter.rs`): baked, faded, trampled.
     Grass,
-    /// A bush's leaf cards, drawn in the blob's frame.
+    /// A shrub's or a berry bush's leaf cards (`plants.rs`), ground-rooted.
     BushLeaf,
+    /// Hemp's leaf cards: the bush's bend, and a gentler edge-on cut — a hemp
+    /// leaf is a near-horizontal plate, so from a standing eye most of them
+    /// are seen at a grazing angle, and the leaves' full cut would strip the
+    /// plant to its stalk.
+    HempLeaf,
+    /// A plant's wood — twigs, the hemp stalk, the berries — on the bush's
+    /// bend so it stays inside its leaves, with no flutter (a berry would
+    /// wobble out of round) and no edge-on cut (it is a solid, not a card).
+    Stem,
     /// A near tree's trunk: sways with its canopy, never flutters.
     Bark,
     /// A conifer's needle cards.
@@ -147,11 +156,17 @@ pub enum Kind {
 /// difference here tears the canopy off its branches.
 const TREE_SWAY: [f32; 3] = [0.22, 6.6, 0.9];
 
+/// A plant's sway, the same way: amplitude at the reference height, the
+/// reference height, the angular frequency. **Shared by a plant's leaves and
+/// its wood**, so the berries and the stalk stay where the leaves are.
+const PLANT_SWAY: [f32; 3] = [0.09, 1.5, 1.7];
+
 impl Kind {
     /// The uniform for this kind. Static: see the module doc for why it
     /// must never change at runtime.
     pub fn params(self) -> FoliageParams {
         let [ta, th, tw] = TREE_SWAY;
+        let [pa, ph, pw] = PLANT_SWAY;
         let (sway, fade, misc) = match self {
             Kind::Grass => (
                 Vec4::new(0.06, super::clutter::TUFT_H, 2.6, 0.012),
@@ -160,17 +175,19 @@ impl Kind {
                 Vec4::new(GRASS_FADE_START_M, GRASS_FADE_END_M, 0.5, 0.0),
                 Vec4::new(1.0, 0.0, 0.0, 0.0),
             ),
+            // A plant is built ground-rooted (`plants.rs`): its root is the
+            // frame's origin.
             Kind::BushLeaf => (
-                Vec4::new(0.09, 1.5, 1.7, 0.02),
-                // The bush's frame is the blob's: its root is `lift` below.
-                Vec4::new(
-                    0.0,
-                    0.0,
-                    1.0,
-                    -super::props::archetype_lift(sim_core::terrain::Occupant::Bush),
-                ),
+                Vec4::new(pa, ph, pw, 0.02),
+                Vec4::new(0.0, 0.0, 1.0, 0.0),
                 Vec4::ZERO,
             ),
+            Kind::HempLeaf => (
+                Vec4::new(pa, ph, pw, 0.02),
+                Vec4::new(0.0, 0.0, 0.35, 0.0),
+                Vec4::ZERO,
+            ),
+            Kind::Stem => (Vec4::new(pa, ph, pw, 0.0), Vec4::ZERO, Vec4::ZERO),
             Kind::Bark => (Vec4::new(ta, th, tw, 0.0), Vec4::ZERO, Vec4::ZERO),
             Kind::Needle => (
                 Vec4::new(ta, th, tw, 0.025),
@@ -191,10 +208,10 @@ impl Kind {
     /// ("disabled translucency coming from indirect lighting", DB198).
     pub fn transmission(self) -> f32 {
         match self {
-            Kind::Grass | Kind::BushLeaf => 0.3,
+            Kind::Grass | Kind::BushLeaf | Kind::HempLeaf => 0.3,
             Kind::Needle => 0.25,
             Kind::Leaf => 0.35,
-            Kind::Bark => 0.0,
+            Kind::Bark | Kind::Stem => 0.0,
         }
     }
 }

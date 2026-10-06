@@ -98,13 +98,15 @@ fn main() {
     }
     let live: u32 = counts[1..].iter().sum();
     println!(
-        "slots: live {live} (tree {} stone {} metal {} sulfur {} bush {} rock {} barrel {} \
-         crate {} shelter {})",
+        "slots: live {live} (tree {} stone {} metal {} sulfur {} berry {} hemp {} shrub {} \
+         rock {} barrel {} crate {} shelter {})",
         counts[Occupant::Tree as usize],
         counts[Occupant::StoneNode as usize],
         counts[Occupant::MetalNode as usize],
         counts[Occupant::SulfurNode as usize],
-        counts[Occupant::Bush as usize],
+        counts[Occupant::BerryBush as usize],
+        counts[Occupant::Hemp as usize],
+        counts[Occupant::Shrub as usize],
         counts[Occupant::Rock as usize],
         counts[Occupant::BarrelSlot as usize],
         counts[Occupant::CrateSlot as usize],

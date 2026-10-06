@@ -71,15 +71,17 @@ pub fn container_index(name: &str) -> Option<usize> {
     })
 }
 
-/// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
+/// Gatherable index (`sim_core::gather::node_index`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
-    match a {
-        NodeArchetype::Tree => 0,
-        NodeArchetype::StoneNode => 1,
-        NodeArchetype::MetalNode => 2,
-        NodeArchetype::SulfurNode => 3,
-        NodeArchetype::Bush => 4,
-    }
+    let o = match a {
+        NodeArchetype::Tree => sim_core::terrain::Occupant::Tree,
+        NodeArchetype::StoneNode => sim_core::terrain::Occupant::StoneNode,
+        NodeArchetype::MetalNode => sim_core::terrain::Occupant::MetalNode,
+        NodeArchetype::SulfurNode => sim_core::terrain::Occupant::SulfurNode,
+        NodeArchetype::BerryBush => sim_core::terrain::Occupant::BerryBush,
+        NodeArchetype::Hemp => sim_core::terrain::Occupant::Hemp,
+    };
+    sim_core::gather::node_index(o).expect("every archetype is a gather node")
 }
 
 impl Content {

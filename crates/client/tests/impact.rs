@@ -275,7 +275,7 @@ fn two_bursts_are_not_the_same_burst() {
 fn every_swingable_node_has_a_matter() {
     for (o, want) in [
         (Occupant::Tree, Matter::Wood),
-        (Occupant::Bush, Matter::Plant),
+        (Occupant::BerryBush, Matter::Plant),
         (Occupant::StoneNode, Matter::Stone),
         (Occupant::MetalNode, Matter::Metal),
         (Occupant::SulfurNode, Matter::Stone),
@@ -468,7 +468,7 @@ fn only_a_swing_throws_chips_and_a_payout_does_not() {
         "a scaled node's burst is not on its scaled skin ({planar:.3})"
     );
     // A bush has no skin and is struck at its centre.
-    pick.occupant = Occupant::Bush as u8;
+    pick.occupant = Occupant::BerryBush as u8;
     let b = gather_burst(true, &pick, from).expect("a swing at a bush");
     assert!((b.at.x - pick.x).abs() < 1e-6 && (b.at.z - pick.z).abs() < 1e-6);
 }
@@ -490,7 +490,7 @@ fn a_swing_lands_on_the_sims_own_skin() {
             "{o:?}'s strike skin is not its collision skin"
         );
     }
-    assert_eq!(skin_radius(Occupant::Bush as u8), 0.0);
+    assert_eq!(skin_radius(Occupant::BerryBush as u8), 0.0);
     assert_eq!(skin_radius(0), 0.0);
 }
 
