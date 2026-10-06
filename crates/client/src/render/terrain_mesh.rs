@@ -1455,15 +1455,15 @@ pub fn stream(
         }
         if ring.road_chart.is_none() && ring.road_task.is_none() {
             ring.road_task = Some(pool.spawn(async move {
-                Arc::new(RoadChart::build(seed, CHUNK_M / (NEAR_N - 1) as f32))
+                Arc::new(RoadChart::build(&haven.ring, CHUNK_M / (NEAR_N - 1) as f32))
             }));
         }
     }
     #[cfg(target_arch = "wasm32")]
     if ring.road_chart.is_none() {
-        let builder = ring
-            .road_builder
-            .get_or_insert_with(|| RoadChartBuilder::new(seed, CHUNK_M / (NEAR_N - 1) as f32));
+        let builder = ring.road_builder.get_or_insert_with(|| {
+            RoadChartBuilder::new(haven.ring, CHUNK_M / (NEAR_N - 1) as f32)
+        });
         if let Some(chart) = builder.advance() {
             ring.road_chart = Some(Arc::new(chart));
             ring.road_builder = None;
