@@ -156,6 +156,17 @@ pub struct PropAssets {
     barrel: Handle<Mesh>,
     crate_box: Handle<Mesh>,
     cache_box: Handle<Mesh>,
+    /// The roadside junk (Rust's roadside spawns): the sign, the food box,
+    /// the wrecked car and the tyre stack. The oil barrel is `barrel` in red.
+    road_sign: Handle<Mesh>,
+    food_box: Handle<Mesh>,
+    car_wreck: Handle<Mesh>,
+    tire_stack: Handle<Mesh>,
+    /// Untextured, white: the sign and the car carry their own albedo in
+    /// their vertices (`boxes_mesh_with(.., linear, ..)`).
+    painted: Handle<StandardMaterial>,
+    oil_red: Handle<StandardMaterial>,
+    rubber: Handle<StandardMaterial>,
     shelter: Handle<Mesh>,
     canopy: Handle<Mesh>,
     /// The two authored sites' materials. They are fields rather than a reach
@@ -1570,7 +1581,7 @@ impl PropModels {
     /// draw path; the cost is that a node transform is dropped at load, which
     /// is why `ci/import_meshy.py` bakes its scale into the vertices.
     pub fn load(server: &AssetServer) -> Self {
-        let n = Occupant::EliteCrate as usize + 1;
+        let n = Occupant::TireStack as usize + 1;
         let pools = (0..n)
             .map(|i| match OCCUPANTS.iter().find(|o| **o as usize == i) {
                 Some(o) => prop_models(*o)
@@ -1601,7 +1612,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 15] = [
+pub const OCCUPANTS: [Occupant; 20] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1617,7 +1628,16 @@ pub const OCCUPANTS: [Occupant; 15] = [
     Occupant::GreenCrate,
     Occupant::BlueCrate,
     Occupant::EliteCrate,
+    Occupant::OilBarrel,
+    Occupant::RoadSign,
+    Occupant::FoodCrate,
+    Occupant::CarWreck,
+    Occupant::TireStack,
 ];
+
+/// The roadside junk's colours, row for row with the sim's box tables.
+pub const ROAD_SIGN_HEX: [u32; 2] = [0x5f5f5c, 0xb8901f];
+pub const CAR_WRECK_HEX: [u32; 3] = [0x6e3519, 0x5a2c16, 0x4a2412];
 
 /// The mesh the client draws for one occupant, as a pure function.
 ///
@@ -1663,6 +1683,23 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         Occupant::WaystationCanopy => {
             boxes_mesh(&authored(&terrain::WAYSTATION_CANOPY_BOXES, &CANOPY_HEX))
         }
+        // The barrel's drum, painted red where it is drawn.
+        Occupant::OilBarrel => Cylinder::new(0.2925, 0.88).mesh().resolution(10).build(),
+        Occupant::RoadSign => boxes_mesh_with(
+            &authored(&terrain::ROAD_SIGN_BOXES, &ROAD_SIGN_HEX),
+            linear,
+            1.0,
+        ),
+        Occupant::FoodCrate => boxes_mesh(&[([0., 0., 0.], [0.5, 0.2, 0.3], 0x8a6a3e)]),
+        Occupant::CarWreck => boxes_mesh_with(
+            &authored(&terrain::CAR_WRECK_BOXES, &CAR_WRECK_HEX),
+            linear,
+            1.0,
+        ),
+        Occupant::TireStack => Cylinder::new(0.42, terrain::TIRE_STACK_TOP_M)
+            .mesh()
+            .resolution(14)
+            .build(),
     })
 }
 
@@ -1686,6 +1723,11 @@ pub fn archetype_lift(o: Occupant) -> f32 {
             0.4
         }
         Occupant::CacheSlot => 0.275,
+        Occupant::OilBarrel => 0.44,
+        Occupant::FoodCrate => 0.2,
+        Occupant::TireStack => terrain::TIRE_STACK_TOP_M * 0.5,
+        // The box tables put ground at y = 0, like the authored structures.
+        Occupant::RoadSign | Occupant::CarWreck => 0.0,
         // The two authored structures and the tree stand on their own base:
         // their tables put ground at y = 0 rather than centring the mesh.
         Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
@@ -1923,6 +1965,27 @@ pub fn assets(
         barrel: meshes.add(archetype_mesh(Occupant::BarrelSlot).expect("barrel mesh")),
         crate_box: meshes.add(archetype_mesh(Occupant::CrateSlot).expect("crate mesh")),
         cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
+        road_sign: meshes.add(archetype_mesh(Occupant::RoadSign).expect("sign mesh")),
+        food_box: meshes.add(archetype_mesh(Occupant::FoodCrate).expect("food box mesh")),
+        car_wreck: meshes.add(archetype_mesh(Occupant::CarWreck).expect("car mesh")),
+        tire_stack: meshes.add(archetype_mesh(Occupant::TireStack).expect("tyre mesh")),
+        painted: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.8,
+            metallic: 0.3,
+            ..default()
+        }),
+        oil_red: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.55, 0.09, 0.06),
+            perceptual_roughness: 0.55,
+            metallic: 0.5,
+            ..default()
+        }),
+        rubber: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.035, 0.035, 0.04),
+            perceptual_roughness: 0.92,
+            ..default()
+        }),
         // Both authored structures fall back to the sim's own box tables —
         // see the `authored` block above for what mirroring them by hand
         // cost, and `site_asset` for why the massing stays rather than being
@@ -2552,6 +2615,11 @@ pub fn spawn_slot(
         },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
+        Occupant::OilBarrel => (a.barrel.clone(), a.oil_red.clone()),
+        Occupant::RoadSign => (a.road_sign.clone(), a.painted.clone()),
+        Occupant::FoodCrate => (a.food_box.clone(), a.wood.clone()),
+        Occupant::CarWreck => (a.car_wreck.clone(), a.painted.clone()),
+        Occupant::TireStack => (a.tire_stack.clone(), a.rubber.clone()),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             let tier = slot.occupant as usize - Occupant::GreenCrate as usize;
             match &a.tier_models[tier] {
@@ -2586,6 +2654,8 @@ pub fn spawn_slot(
             | Occupant::Bush
             | Occupant::Rock
             | Occupant::BarrelSlot
+            | Occupant::OilBarrel
+            | Occupant::RoadSign
     );
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
@@ -3150,6 +3220,9 @@ impl PropAssets {
             ("wood", &self.wood),
             ("metal", &self.metal),
             ("stone", &self.stone),
+            ("painted", &self.painted),
+            ("oil_red", &self.oil_red),
+            ("rubber", &self.rubber),
         ]);
         out
     }

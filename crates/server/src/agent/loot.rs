@@ -59,8 +59,8 @@ pub enum Prize {
 impl Prize {
     pub fn of(occupant: Occupant) -> Option<Prize> {
         match occupant {
-            Occupant::BarrelSlot => Some(Prize::Barrel),
-            Occupant::CrateSlot | Occupant::CacheSlot => Some(Prize::Crate),
+            Occupant::BarrelSlot | Occupant::OilBarrel | Occupant::RoadSign => Some(Prize::Barrel),
+            Occupant::CrateSlot | Occupant::CacheSlot | Occupant::FoodCrate => Some(Prize::Crate),
             _ => None,
         }
     }

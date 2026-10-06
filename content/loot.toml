@@ -187,3 +187,51 @@ entries = [
     { item = "item.medkit", weight = 10, count_min = 1, count_max = 2 },
     { item = "item.gears", weight = 10, count_min = 3, count_max = 5 },
 ]
+
+# --- Roadside junk (Rust's roadside spawns: oil barrels, road signs, food
+# boxes, junk piles; `terrain.rs` "Roadside junk"). ---------------------------
+
+# Rust's red oil barrel: smashed, pays fuel. Theirs is crude plus the low
+# grade devblog 145 added; we have no crude, so it is all low grade.
+[[loot_table]]
+id = "loot.oil_barrel"
+container = "oil_barrel"
+rolls_min = 1
+rolls_max = 1
+hits = 3
+guaranteed = [{ item = "item.lowgrade", count_min = 8, count_max = 12 }]
+entries = [
+    { item = "item.lowgrade", weight = 10, count_min = 4, count_max = 8 },
+    { item = "item.fat", weight = 4, count_min = 5, count_max = 10 },
+]
+
+# A road sign, smashed for its sheet metal (theirs pays a road sign and a
+# metal pipe, both scrap-and-metal in the recycler).
+[[loot_table]]
+id = "loot.roadsign"
+container = "roadsign"
+rolls_min = 1
+rolls_max = 1
+hits = 3
+guaranteed = [
+    { item = "item.metal_frags", count_min = 15, count_max = 25 },
+    { item = "item.junk", count_min = 1, count_max = 1 },
+]
+entries = [
+    { item = "item.metal_frags", weight = 10, count_min = 5, count_max = 10 },
+    { item = "item.gears", weight = 1, count_min = 1, count_max = 1 },
+]
+
+# Rust's roadside food box: opened, pays food and nothing else.
+[[loot_table]]
+id = "loot.food"
+container = "food"
+rolls_min = 2
+rolls_max = 3
+hits = 1
+entries = [
+    { item = "item.corn", weight = 10, count_min = 2, count_max = 4 },
+    { item = "item.berries", weight = 10, count_min = 3, count_max = 6 },
+    { item = "item.mushrooms", weight = 8, count_min = 2, count_max = 4 },
+    { item = "item.cooked_meat", weight = 6, count_min = 1, count_max = 3 },
+]

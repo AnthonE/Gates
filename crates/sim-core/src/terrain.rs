@@ -2793,6 +2793,108 @@ const _: () = {
     assert!(BAY_SPAN_YAW > 0);
 };
 
+// --- Roadside junk (Rust's roadside spawns) ------------------------------
+//
+// Rust lines its roads with more than barrels: red oil barrels, road signs
+// you smash for metal, food boxes, and junk piles — "1-4 barrels and if
+// you're lucky, a crate" around a wrecked car or a tyre stack, which "only
+// spawn next to roads and powerlines" (changelist 2610, devblog 145). The
+// open shoulder draws the barrel first and these on the bands above it, so
+// a cell that held a barrel still holds it. A junk pile is a 32 m block of
+// road where the shoulder and the verge beside it fill densely with junk.
+
+/// Shoulder chance of a red oil barrel, permille, drawn above the barrel's.
+pub const ROAD_OIL_BARREL_PERMILLE: u16 = 40;
+/// …of a road sign.
+pub const ROAD_SIGN_PERMILLE: u16 = 50;
+/// …of a food box.
+pub const ROAD_FOOD_PERMILLE: u16 = 20;
+
+/// Cells per side of a junk-pile block. Four cells is 32 m of road.
+pub const JUNK_BLOCK_CELLS: i32 = 4;
+/// Chance a block is a junk pile, permille. Only blocks a road crosses
+/// show it.
+pub const JUNK_PILE_PERMILLE: u16 = 90;
+/// How far from a road's centre line a junk pile spreads, metres — the
+/// shoulder and the verge beyond it.
+pub const JUNK_REACH_M: f32 = 9.0;
+/// Chance a candidate cell inside a junk pile holds something, permille.
+pub const JUNK_FILL_PERMILLE: u16 = 700;
+
+const CH_JUNK: u32 = 216;
+
+const _: () = {
+    assert!(
+        ROAD_BAY_BARREL_PERMILLE
+            + ROAD_OIL_BARREL_PERMILLE
+            + ROAD_SIGN_PERMILLE
+            + ROAD_FOOD_PERMILLE
+            < 1000
+    );
+    assert!(JUNK_REACH_M > ROAD_SHOULDER_HALF_W);
+    assert!(JUNK_FILL_PERMILLE < 1000 && JUNK_PILE_PERMILLE < 1000);
+};
+
+/// Is the block holding cell `(cx, cz)` a junk pile?
+pub fn junk_block(seed: u64, cx: i32, cz: i32) -> bool {
+    let h = cell_hash(
+        seed,
+        cx.div_euclid(JUNK_BLOCK_CELLS),
+        cz.div_euclid(JUNK_BLOCK_CELLS),
+        CH_JUNK,
+    );
+    ((h >> 20) % 1000) < JUNK_PILE_PERMILLE as u64
+}
+
+/// What a junk pile puts in a cell, from a 0..100 pick.
+fn junk_pick(pick: u16) -> Occupant {
+    match pick {
+        0..=14 => Occupant::CarWreck,
+        15..=29 => Occupant::TireStack,
+        30..=69 => Occupant::BarrelSlot,
+        70..=84 => Occupant::OilBarrel,
+        _ => Occupant::FoodCrate,
+    }
+}
+
+/// Distance from (x, z) to the nearest road centre line within `reach`,
+/// and the yaw of that road there, or `None`. The yaw is the road's own
+/// heading as a `yaw_lut` index, so a slot seated with it lies along the
+/// road.
+fn road_near(haven: &Haven, x: f32, z: f32, reach: f32) -> Option<(f32, u8)> {
+    let mut best: Option<(f32, u8)> = None;
+    let c = ISLAND_SIZE * 0.5;
+    let (dx, dz) = (x - c, z - c);
+    let d2 = dx * dx + dz * dz;
+    let lo = ROAD_R_MIN - RING_INLAND_MAX - reach;
+    let hi = ROAD_R_MAX + reach;
+    if d2 >= lo * lo && d2 <= hi * hi {
+        let d = haven.ring.dist2(x, z).sqrt();
+        if d <= reach {
+            let k = bearing_index(dx, dz) as i32;
+            let (ax, az) = haven.ring.node(k - 1);
+            let (bx, bz) = haven.ring.node(k + 1);
+            best = Some((d, bearing_index(bx - ax, bz - az) as u8));
+        }
+    }
+    for road in haven.roads.iter() {
+        if !road.live
+            || x < road.px.min(road.rx) - reach - SIDE_ROAD_BEND_M
+            || x > road.px.max(road.rx) + reach + SIDE_ROAD_BEND_M
+            || z < road.pz.min(road.rz) - reach - SIDE_ROAD_BEND_M
+            || z > road.pz.max(road.rz) + reach + SIDE_ROAD_BEND_M
+        {
+            continue;
+        }
+        let d = road.dist2(x, z).sqrt();
+        if d <= reach && best.is_none_or(|(b, _)| d < b) {
+            let (ex, ez) = (road.rx - road.px, road.rz - road.pz);
+            best = Some((d, bearing_index(ex, ez) as u8));
+        }
+    }
+    best
+}
+
 /// Is this point on a sheltered arc of coast — a bay rather than a headland
 /// or open shore? Pure, two `height` taps, and meaningful only near the ring
 /// (it asks about the coastline the sample's own radial crosses).
@@ -6355,6 +6457,19 @@ pub enum Occupant {
     BlueCrate = 14,
     /// The sanctum's crate: content's `elite`.
     EliteCrate = 15,
+    /// Rust's red oil barrel: smashed like a barrel, pays fuel
+    /// (`loot.oil_barrel`). Roadside and in junk piles.
+    OilBarrel = 16,
+    /// A road sign on a post, smashed for its scrap metal (`loot.roadsign`).
+    /// Volume is `ROAD_SIGN_BOXES`, faced along the road.
+    RoadSign = 17,
+    /// A roadside food box, opened like a cache (`loot.food`).
+    FoodCrate = 18,
+    /// A junk pile's wrecked car: cover you can climb, not loot. Volume is
+    /// `CAR_WRECK_BOXES`, parked along the road.
+    CarWreck = 19,
+    /// A junk pile's stack of tyres: crouch cover.
+    TireStack = 20,
 }
 
 /// How many species a [`Slot`] may be. **The client's own pools must agree
@@ -6938,23 +7053,62 @@ fn scatter_in<C: Corners>(
     // carriageway stays clear so the loop is walkable, and the shoulder
     // draws barrels off its own bits so the route is worth walking.
     let mut occupant = Occupant::None;
-    match road_band_in(c, seed, haven, x, z) {
-        RoadBand::Carriageway => return none,
-        RoadBand::Shoulder => {
-            // Same draw, two thresholds: the bay concentrates what the open
-            // coast gives up, so the loop's total pay is unmoved and its
-            // shape is not. The roll is untouched, so which cells change is
-            // decided by the coastline, never by a reshuffle.
-            let rate = if in_bay_in(c, seed, x, z) {
-                ROAD_BAY_BARREL_PERMILLE
-            } else {
-                ROAD_OPEN_BARREL_PERMILLE
-            };
-            if (((h >> 44) % 1000) as u16) < rate {
-                occupant = Occupant::BarrelSlot;
+    // Roadside junk faces along the road; everything else keeps its drawn yaw.
+    let mut yaw = ((h >> 28) & 0xFF) as u8;
+    let band = road_band_in(c, seed, haven, x, z);
+    if band == RoadBand::Carriageway {
+        return none;
+    }
+    let roll = ((h >> 44) % 1000) as u16;
+    // Bits 54..64, which no other draw here reads.
+    let pick = ((h >> 54) % 100) as u16;
+    let junk = if junk_block(seed, cell_x, cell_z) {
+        road_near(haven, x, z, JUNK_REACH_M)
+    } else {
+        None
+    };
+    if let Some((d, road_yaw)) = junk {
+        if roll < JUNK_FILL_PERMILLE {
+            occupant = junk_pick(pick);
+            // Parked along the road, a little askew.
+            yaw = road_yaw
+                .wrapping_add(((h >> 28) & 0x0F) as u8)
+                .wrapping_sub(8)
+                .wrapping_add(if (h >> 32) & 1 == 0 { 0 } else { 128 });
+            if occupant == Occupant::CarWreck && d < ROAD_HALF_W + JUNK_CAR_CLEAR_M * SLOT_SCALE_MAX
+            {
+                occupant = Occupant::TireStack;
             }
         }
-        RoadBand::Off => {}
+    } else if band == RoadBand::Shoulder {
+        // Same draw, two thresholds: the bay concentrates what the open
+        // coast gives up, so the loop's total pay is unmoved and its
+        // shape is not. The roll is untouched, so which cells change is
+        // decided by the coastline, never by a reshuffle.
+        let rate = if in_bay_in(c, seed, x, z) {
+            ROAD_BAY_BARREL_PERMILLE
+        } else {
+            ROAD_OPEN_BARREL_PERMILLE
+        };
+        let oil = rate + ROAD_OIL_BARREL_PERMILLE;
+        let sign = oil + ROAD_SIGN_PERMILLE;
+        let food = sign + ROAD_FOOD_PERMILLE;
+        occupant = if roll < rate {
+            Occupant::BarrelSlot
+        } else if roll < oil {
+            Occupant::OilBarrel
+        } else if roll < sign {
+            Occupant::RoadSign
+        } else if roll < food {
+            Occupant::FoodCrate
+        } else {
+            Occupant::None
+        };
+        if occupant == Occupant::RoadSign {
+            if let Some((_, road_yaw)) = road_near(haven, x, z, ROAD_SHOULDER_HALF_W) {
+                yaw = road_yaw.wrapping_add(if (h >> 32) & 1 == 0 { 0 } else { 128 });
+            }
+        }
     }
 
     if occupant == Occupant::None {
@@ -7042,7 +7196,7 @@ fn scatter_in<C: Corners>(
         x,
         y: hy,
         z,
-        yaw: ((h >> 28) & 0xFF) as u8,
+        yaw,
         scale,
         // Bits 20..28 — a byte no other draw in this function reads, so
         // adding species reshuffled nothing: the roll (`h % 1000`), the yaw
@@ -8625,6 +8779,39 @@ pub const WAYSTATION_CANOPY_R_M: f32 = 3.96;
 /// `props.js`'s `WAYSTATION_CANOPY_PEAK`, and `OCCUPANT_TOP_M`'s row 12.
 pub const WAYSTATION_CANOPY_PEAK_M: f32 = 4.1;
 
+/// A road sign, on `SHELTER_BOXES`' terms: a post and the plate on it.
+/// Local +Z is the plate's normal, so a sign seated with the road's own yaw
+/// faces the traffic. The plate's underside is the standing capsule's head
+/// height, so a body walks under it and is stopped only by the post.
+pub const ROAD_SIGN_BOXES: [[f32; 6]; 2] = [
+    [0.0, 1.1, 0.0, 0.08, 2.2, 0.08],  // post
+    [0.0, 1.95, 0.05, 0.9, 0.5, 0.03], // plate
+];
+/// Bounding radius of `ROAD_SIGN_BOXES`: the plate's far corner, rounded up.
+pub const ROAD_SIGN_R_M: f32 = 0.4547;
+/// The plate's top.
+pub const ROAD_SIGN_PEAK_M: f32 = 2.2;
+
+/// A junk pile's wrecked car, wheels gone and sat on the ground. Local +Z is
+/// its length, so a car seated with the road's yaw is parked along it. A
+/// body can climb onto it (`slot_ground` reads the boxes).
+pub const CAR_WRECK_BOXES: [[f32; 6]; 3] = [
+    [0.0, 0.35, 0.0, 1.7, 0.7, 4.0],  // body
+    [0.0, 1.05, -0.2, 1.5, 0.7, 2.1], // cabin
+    [0.0, 1.45, -0.3, 1.4, 0.1, 1.7], // caved-in roof
+];
+/// Bounding radius of `CAR_WRECK_BOXES`: the body's corner, rounded up.
+pub const CAR_WRECK_R_M: f32 = 2.1732;
+/// The roof's top.
+pub const CAR_WRECK_PEAK_M: f32 = 1.5;
+/// How far a wreck's centre must stand off the coast ring's carriageway
+/// edge, metres: its half-width plus what the yaw jitter swings the corners.
+pub const JUNK_CAR_CLEAR_M: f32 = 1.3;
+
+/// A tyre stack's height: over a crouched body (`CROUCH_HEIGHT_M` 1.05),
+/// under a standing one.
+pub const TIRE_STACK_TOP_M: f32 = 1.2;
+
 /// `|v|` in a const context, which `f32::abs` is not. Sign flip only — no
 /// libm, nothing outside the L1 float set.
 const fn abs_const(v: f32) -> f32 {
@@ -8763,7 +8950,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 16] = [
+pub const OCCUPANT_R_M: [f32; 21] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -8804,9 +8991,14 @@ pub const OCCUPANT_R_M: [f32; 16] = [
     // the volume. A canopy is the other shape a radius cannot express: a
     // cylinder here would seal four open bays a player is meant to walk into.
     WAYSTATION_CANOPY_R_M,
-    0.6801, // GreenCrate — the crate's box
-    0.6801, // BlueCrate
-    0.6801, // EliteCrate
+    0.6801,        // GreenCrate — the crate's box
+    0.6801,        // BlueCrate
+    0.6801,        // EliteCrate
+    0.2925,        // OilBarrel — the barrel's drum
+    ROAD_SIGN_R_M, // RoadSign — broad phase; ROAD_SIGN_BOXES is the volume
+    0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
+    CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
+    0.42,          // TireStack — the tyre's outer radius
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -8823,7 +9015,7 @@ pub const OCCUPANT_R_M: [f32; 16] = [
 /// 14 m; the sim cannot tell the species apart, so the shorter one wins and
 /// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 16] = [
+pub const OCCUPANT_TOP_M: [f32; 21] = [
     0.0,  // None
     11.0, // Tree — the broadleaf's drawn height
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -8843,9 +9035,14 @@ pub const OCCUPANT_TOP_M: [f32; 16] = [
     // overhead are inside this interval and a standing body is not; the box
     // loop is what lets a player walk under them.
     WAYSTATION_CANOPY_PEAK_M,
-    0.8, // GreenCrate
-    0.8, // BlueCrate
-    0.8, // EliteCrate
+    0.8,              // GreenCrate
+    0.8,              // BlueCrate
+    0.8,              // EliteCrate
+    0.88,             // OilBarrel
+    ROAD_SIGN_PEAK_M, // RoadSign — the plate's top
+    0.4,              // FoodCrate — lift 0.2 + half-height 0.2
+    CAR_WRECK_PEAK_M, // CarWreck — the roof
+    TIRE_STACK_TOP_M, // TireStack
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -8910,6 +9107,11 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
+        Occupant::OilBarrel => (0.2925, 0.88),
+        Occupant::RoadSign => (ROAD_SIGN_R_M, ROAD_SIGN_PEAK_M),
+        Occupant::FoodCrate => (0.5831, 0.4),
+        Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
+        Occupant::TireStack => (0.42, TIRE_STACK_TOP_M),
     }
 }
 
@@ -8918,7 +9120,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 16 && OCCUPANT_TOP_M.len() == 16);
+    assert!(OCCUPANT_R_M.len() == 21 && OCCUPANT_TOP_M.len() == 21);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -8952,6 +9154,16 @@ const _: () = {
     assert!(occupant_volume(Occupant::GreenCrate).1 == OCCUPANT_TOP_M[13]);
     assert!(occupant_volume(Occupant::BlueCrate).1 == OCCUPANT_TOP_M[14]);
     assert!(occupant_volume(Occupant::EliteCrate).1 == OCCUPANT_TOP_M[15]);
+    assert!(occupant_volume(Occupant::OilBarrel).0 == OCCUPANT_R_M[16]);
+    assert!(occupant_volume(Occupant::RoadSign).0 == OCCUPANT_R_M[17]);
+    assert!(occupant_volume(Occupant::FoodCrate).0 == OCCUPANT_R_M[18]);
+    assert!(occupant_volume(Occupant::CarWreck).0 == OCCUPANT_R_M[19]);
+    assert!(occupant_volume(Occupant::TireStack).0 == OCCUPANT_R_M[20]);
+    assert!(occupant_volume(Occupant::OilBarrel).1 == OCCUPANT_TOP_M[16]);
+    assert!(occupant_volume(Occupant::RoadSign).1 == OCCUPANT_TOP_M[17]);
+    assert!(occupant_volume(Occupant::FoodCrate).1 == OCCUPANT_TOP_M[18]);
+    assert!(occupant_volume(Occupant::CarWreck).1 == OCCUPANT_TOP_M[19]);
+    assert!(occupant_volume(Occupant::TireStack).1 == OCCUPANT_TOP_M[20]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who
@@ -8981,6 +9193,18 @@ const _: () = {
         WAYSTATION_CANOPY_R_M
     ));
     assert!(boxes_peak(&WAYSTATION_CANOPY_BOXES) == WAYSTATION_CANOPY_PEAK_M);
+
+    // --- the roadside junk, on the same broad-phase rules ------------------
+    assert!(boxes_corner_fits(&ROAD_SIGN_BOXES, ROAD_SIGN_R_M));
+    assert!(boxes_peak(&ROAD_SIGN_BOXES) == ROAD_SIGN_PEAK_M);
+    assert!(boxes_corner_fits(&CAR_WRECK_BOXES, CAR_WRECK_R_M));
+    assert!(boxes_peak(&CAR_WRECK_BOXES) == CAR_WRECK_PEAK_M);
+    // Every box rests on the ground or on another box: nothing floats.
+    assert!(CAR_WRECK_BOXES[0][1] - CAR_WRECK_BOXES[0][4] * 0.5 == 0.0);
+    assert!(ROAD_SIGN_BOXES[0][1] - ROAD_SIGN_BOXES[0][4] * 0.5 == 0.0);
+    // The car is parked along the road, so its half-width (with the yaw
+    // jitter) is what has to clear the carriageway, not its length.
+    assert!(CAR_WRECK_BOXES[0][3] * 0.5 < JUNK_CAR_CLEAR_M);
 
     // The two tiers are different SHAPES, not one shape at two sizes, and
     // that is the whole point of the second table (`NOW.md` §4b). Scaling
@@ -9098,6 +9322,27 @@ pub fn slot_blocks(
             capsule_r,
             capsule_h,
         ),
+        // No floor row in either: `usize::MAX` skips nothing.
+        Occupant::RoadSign => boxes_block(
+            slot,
+            &ROAD_SIGN_BOXES,
+            usize::MAX,
+            dx,
+            dz,
+            feet_y,
+            capsule_r,
+            capsule_h,
+        ),
+        Occupant::CarWreck => boxes_block(
+            slot,
+            &CAR_WRECK_BOXES,
+            usize::MAX,
+            dx,
+            dz,
+            feet_y,
+            capsule_r,
+            capsule_h,
+        ),
         _ => true,
     }
 }
@@ -9130,6 +9375,8 @@ pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32, capsule_r: f32) -> 
         Occupant::WaystationCanopy => {
             boxes_ground(slot, &WAYSTATION_CANOPY_BOXES, dx, dz, lid, capsule_r)
         }
+        Occupant::RoadSign => boxes_ground(slot, &ROAD_SIGN_BOXES, dx, dz, lid, capsule_r),
+        Occupant::CarWreck => boxes_ground(slot, &CAR_WRECK_BOXES, dx, dz, lid, capsule_r),
         _ => {
             let reach = r * slot.scale + capsule_r;
             if dx * dx + dz * dz >= reach * reach {
