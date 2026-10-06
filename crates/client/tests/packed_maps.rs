@@ -108,6 +108,9 @@ fn packed_models() -> Vec<&'static str> {
     for p in client::render::props::TIER_CRATE_GLB {
         set.insert(p);
     }
+    for (_, p) in client::render::props::ROADSIDE_GLB {
+        set.insert(p);
+    }
     for m in HELD_MODELS.iter() {
         if let HeldSrc::Glb(p) = &m.src {
             set.insert(*p);

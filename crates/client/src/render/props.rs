@@ -189,6 +189,8 @@ pub struct PropAssets {
     small_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     /// The keycard crates' own models, where they loaded ([`TIER_CRATE_GLB`]).
     tier_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
+    /// The roadside junk's models, row for row with [`ROADSIDE_GLB`].
+    roadside_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 5],
     /// The ziggurat's green, blue and elite crates: the supply crate's shape
     /// in painted steel, so a tier reads at a glance.
     tier_crates: [Handle<StandardMaterial>; 3],
@@ -1535,6 +1537,9 @@ pub struct PropModels {
     /// The keycard crates' models ([`TIER_CRATE_GLB`]), green, blue, elite.
     /// Empty on a headless build, which then draws the painted crate.
     tier: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// The roadside junk's models, row for row with [`ROADSIDE_GLB`]. Empty
+    /// on a headless build, which then draws the box massing.
+    roadside: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
 
 /// The ziggurat's green, blue and elite crates, built by `ci/prop_kit.py`:
@@ -1546,6 +1551,18 @@ pub const TIER_CRATE_GLB: [&str; 3] = [
     "models/prop/crate_green.glb",
     "models/prop/crate_blue.glb",
     "models/prop/crate_elite.glb",
+];
+
+/// The roadside junk, built by `ci/prop_kit.py` and kept out of
+/// [`prop_models`] for the keycard crates' reason: painted, not
+/// photogrammetry. The barrel, box and tyres are centred like their massing;
+/// the sign and the wreck stand on 0 over their sim box tables.
+pub const ROADSIDE_GLB: [(Occupant, &str); 5] = [
+    (Occupant::OilBarrel, "models/prop/oil_barrel.glb"),
+    (Occupant::RoadSign, "models/prop/road_sign.glb"),
+    (Occupant::FoodCrate, "models/prop/food_crate.glb"),
+    (Occupant::CarWreck, "models/prop/car_wreck.glb"),
+    (Occupant::TireStack, "models/prop/tire_stack.glb"),
 ];
 
 fn load_model(
@@ -1595,7 +1612,21 @@ impl PropModels {
             .iter()
             .map(|path| load_model(server, path))
             .collect();
-        Self { pools, tier }
+        let roadside = ROADSIDE_GLB
+            .iter()
+            .map(|(_, path)| load_model(server, path))
+            .collect();
+        Self {
+            pools,
+            tier,
+            roadside,
+        }
+    }
+
+    /// The roadside model for `o`, or `None` for the massing.
+    pub fn roadside(&self, o: Occupant) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        let i = ROADSIDE_GLB.iter().position(|(r, _)| *r == o)?;
+        self.roadside.get(i).cloned()
     }
 
     /// Keycard crate `tier`'s model, or `None` for the painted massing.
@@ -2020,6 +2051,7 @@ pub fn assets(
             models.pool(Occupant::CacheSlot).first().cloned(),
         ],
         tier_models: [0, 1, 2].map(|i| models.tier_crate(i)),
+        roadside_models: ROADSIDE_GLB.map(|(o, _)| models.roadside(o)),
         tier_crates: [
             Color::srgb(0.22, 0.55, 0.28),
             Color::srgb(0.20, 0.36, 0.78),
@@ -2615,11 +2647,26 @@ pub fn spawn_slot(
         },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
-        Occupant::OilBarrel => (a.barrel.clone(), a.oil_red.clone()),
-        Occupant::RoadSign => (a.road_sign.clone(), a.painted.clone()),
-        Occupant::FoodCrate => (a.food_box.clone(), a.wood.clone()),
-        Occupant::CarWreck => (a.car_wreck.clone(), a.painted.clone()),
-        Occupant::TireStack => (a.tire_stack.clone(), a.rubber.clone()),
+        Occupant::OilBarrel
+        | Occupant::RoadSign
+        | Occupant::FoodCrate
+        | Occupant::CarWreck
+        | Occupant::TireStack => {
+            let i = ROADSIDE_GLB
+                .iter()
+                .position(|(o, _)| *o == slot.occupant)
+                .unwrap_or(0);
+            match &a.roadside_models[i] {
+                Some(m) => m.clone(),
+                None => match slot.occupant {
+                    Occupant::OilBarrel => (a.barrel.clone(), a.oil_red.clone()),
+                    Occupant::RoadSign => (a.road_sign.clone(), a.painted.clone()),
+                    Occupant::FoodCrate => (a.food_box.clone(), a.wood.clone()),
+                    Occupant::CarWreck => (a.car_wreck.clone(), a.painted.clone()),
+                    _ => (a.tire_stack.clone(), a.rubber.clone()),
+                },
+            }
+        }
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             let tier = slot.occupant as usize - Occupant::GreenCrate as usize;
             match &a.tier_models[tier] {

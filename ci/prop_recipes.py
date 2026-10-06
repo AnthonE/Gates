@@ -633,9 +633,11 @@ TYRE = [(0.19, -0.075), (0.21, -0.105), (0.30, -0.118), (0.375, -0.115), (0.398,
 def tire_stack(k):
     # Five tyres, not quite square on each other: a square-shouldered
     # section with three tread grooves round the crown.
-    offs = ((0.0, 0.0), (0.012, -0.008), (-0.01, 0.012), (0.014, 0.006), (-0.006, -0.014))
+    # Offsets stay small: the fit is uniform, and a tyre pushed out on a
+    # diagonal reaches past the stack's blocked radius.
+    offs = ((0.0, 0.0), (0.006, -0.004), (-0.005, 0.006), (0.007, 0.003), (-0.003, -0.007))
     for i, (x, y) in enumerate(offs):
-        k.lathe(TYRE, (x, y, 0.12 + i * 0.24), "tyre", n=28, closed=True)
+        k.lathe(TYRE, (x, y, 0.12 + i * 0.24), "tyre", n=22, closed=True)
 
 
 @recipe("car_wreck", "models/prop/car_wreck.glb", kind="asis", tex=1024)
