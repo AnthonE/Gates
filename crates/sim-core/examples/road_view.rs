@@ -8,8 +8,9 @@
 //! footprint (box tables rotated by the slot's yaw). 384 px windows: 48 m,
 //! or 112 m for the sites.
 
-// An example prints; the sim walls on `print!` are for sim code.
-#![allow(clippy::disallowed_macros)]
+// An example prints and draws pixels; the sim walls on `print!` and on
+// `abs`/`rem_euclid` are for sim code, and nothing here feeds the sim.
+#![allow(clippy::disallowed_macros, clippy::disallowed_methods)]
 
 use sim_core::terrain::{self, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE};
 use std::io::Write;
