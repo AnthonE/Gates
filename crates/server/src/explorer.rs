@@ -206,8 +206,8 @@ pub const DRESS_TICKS: u32 = TICK_HZ;
 /// Tool ladders, best first, by catalog name — the player's knowledge of
 /// which tool fells a tree and which breaks rock. Never indices; yields,
 /// wear and stack sizes stay content's.
-pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Rock"];
-pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Rock"];
+pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Bat"];
+pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Bat"];
 
 const _: () = assert!(
     MAX_ITEM_DEFS <= 128,
@@ -5241,7 +5241,7 @@ mod tests {
         core.catalog
             .set(
                 3,
-                b"Rock",
+                b"Bat",
                 ItemRow {
                     cond_max: 100,
                     stack_max: 1,

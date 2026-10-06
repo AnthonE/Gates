@@ -2,9 +2,9 @@
 # (CONTENT.md §1). Archetypes name sim-core scatter occupants (terrain.rs).
 # `hand` is the bare-hand row, and **no swung node carries one any more**
 # (DECISIONS.md 2026-08-15): bare hands gather nothing, exactly as they do
-# in the reference. A spawn bootstraps off the rock the kit grants, and
-# re-makes one for 10 stone if it loses it (balance.toml `[[spawn_kit]]`,
-# recipes.toml `recipe.rock`).
+# in the reference. A spawn bootstraps off the bat the kit grants, and
+# re-makes one for 10 wood if it loses it (balance.toml `[[spawn_kit]]`,
+# recipes.toml `recipe.bat`).
 #
 # An ABSENT `hand` row is how that is said, not `hand = 0`: `validate.rs`
 # refuses a zero yield for any tool including this one, and `bake.rs`
@@ -75,7 +75,7 @@ finish_bonus_pct = 50
 # Note the wood ladder is much flatter than the ore ladder: 810 → 867 is
 # 0.93, where a stone pickaxe draws 0.79 of a metal one.
 [gatherable.yield_per_hit]
-"item.rock" = 50
+"item.bat" = 50
 "item.hatchet_stone" = 81
 "item.hatchet_metal" = 87
 
@@ -89,7 +89,7 @@ finish_bonus_pct = 50
 # condition-carrying tool a node pays and V3 refuses one for any it does
 # not.
 [gatherable.condition_loss]
-"item.rock" = 30
+"item.bat" = 30
 "item.hatchet_stone" = 30
 "item.hatchet_metal" = 30
 
@@ -122,12 +122,12 @@ finish_bonus_pct = 20
 # generosity: their 1000 is priced for a world where you are shot off the
 # node, and ours is not.
 [gatherable.yield_per_hit]
-"item.rock" = 38
+"item.bat" = 38
 "item.pickaxe_stone" = 79
 "item.pickaxe_metal" = 100
 
 [gatherable.condition_loss]
-"item.rock" = 30
+"item.bat" = 30
 "item.pickaxe_stone" = 30
 "item.pickaxe_metal" = 30
 
@@ -147,12 +147,12 @@ finish_bonus_pct = 20
 # to gate, so that half is not taken (§4.3b names it as the place HQM
 # belongs if a tier ever lands).
 [gatherable.yield_per_hit]
-"item.rock" = 25
+"item.bat" = 25
 "item.pickaxe_stone" = 49
 "item.pickaxe_metal" = 60
 
 [gatherable.condition_loss]
-"item.rock" = 30
+"item.bat" = 30
 "item.pickaxe_stone" = 30
 "item.pickaxe_metal" = 30
 
@@ -174,12 +174,12 @@ finish_bonus_pct = 20
 # page claiming 200 also calls stone 750 and metal 500, both wrong against
 # EXACT figures. What changes here is only the ladder below the best tool.
 [gatherable.yield_per_hit]
-"item.rock" = 10
+"item.bat" = 10
 "item.pickaxe_stone" = 26
 "item.pickaxe_metal" = 30
 
 [gatherable.condition_loss]
-"item.rock" = 30
+"item.bat" = 30
 "item.pickaxe_stone" = 30
 "item.pickaxe_metal" = 30
 

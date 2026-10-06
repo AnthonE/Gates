@@ -56,7 +56,7 @@
 # resolves to `item.spear_metal` and no raid number moves.
 
 [[weapon]]
-id = "item.rock"
+id = "item.bat"
 kind = "melee"
 damage = 20
 structure = 1

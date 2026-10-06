@@ -34,6 +34,8 @@
 //! slice nobody has looked at yet (`NOW.md` §0tl,
 //! `assets/models/MANIFEST.md`).
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use super::props::{tint1, Soup};
@@ -225,6 +227,130 @@ fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
             }
         }
     }
+}
+
+/// Revolve a profile around +Y with SMOOTH normals. `turned` facets every
+/// band, which suits a torch's wrap and not a bat, whose whole read is one
+/// polished taper. `sides + 1` columns so the UV seam closes; a radius of
+/// zero is a pole, and the degenerate half of each quad touching it is
+/// skipped (mikktspace refuses a zero-area triangle).
+fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> [f32; 4]) -> Mesh {
+    let n = profile.len();
+    let cols = sides + 1;
+    let mut pos = Vec::with_capacity(n * cols);
+    let mut nrm = Vec::with_capacity(n * cols);
+    let mut uv = Vec::with_capacity(n * cols);
+    let mut col = Vec::with_capacity(n * cols);
+    for (k, &(y, r)) in profile.iter().enumerate() {
+        // The profile's outward normal in the (r, y) half-plane, from its
+        // neighbours: a central difference, one-sided at the two ends.
+        let (ya, ra) = profile[k.saturating_sub(1)];
+        let (yb, rb) = profile[(k + 1).min(n - 1)];
+        let (dr, dy) = (rb - ra, yb - ya);
+        let len = (dr * dr + dy * dy).sqrt().max(1e-9);
+        let (nr, ny) = (dy / len, -dr / len);
+        for j in 0..cols {
+            let a = j as f32 * std::f32::consts::TAU / sides as f32;
+            let (sin, cos) = a.sin_cos();
+            pos.push([cos * r, y, sin * r]);
+            nrm.push([cos * nr, ny, sin * nr]);
+            uv.push([j as f32 / sides as f32, y * 3.0]);
+            col.push(color(y, r, a));
+        }
+    }
+    let w = cols as u32;
+    let mut idx = Vec::with_capacity((n - 1) * sides * 6);
+    for k in 0..n - 1 {
+        let (r0, r1) = (profile[k].1, profile[k + 1].1);
+        for j in 0..sides as u32 {
+            let a = k as u32 * w + j;
+            let b = a + w;
+            // `turned`'s winding: ring k, ring k+1, ring k+1 one column on.
+            if r1 > 0.0 {
+                idx.extend([a, b, b + 1]);
+            }
+            if r0 > 0.0 {
+                idx.extend([a, b + 1, a + 1]);
+            }
+        }
+    }
+    let mut m = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m.generate_tangents()
+        .expect("a lathe has positions, normals and UVs");
+    m
+}
+
+/// The bat's +Y extent: the end face's crown. `ui::hold`'s row restates it.
+const BAT_LEN: f32 = 0.842;
+
+/// Triple T's bat (operator, 2026-10-06): a plain turned-wood baseball bat,
+/// knob at the foot and barrel up. Adult wood-bat proportions, 84 cm: a
+/// 2.4 cm handle above a 4.3 cm knob, a long taper, a 6.7 cm barrel and a
+/// rounded end, so the fist closes on the handle just above the knob.
+fn bat_mesh() -> Mesh {
+    const HANDLE_R: f32 = 0.0122;
+    const BARREL_R: f32 = 0.0335;
+    // The taper, handle to barrel, as a smoothstep over this span of y.
+    const TAPER: (f32, f32) = (0.20, 0.64);
+    // The end: a lip rounded at `LIP` into a face very slightly domed.
+    const FACE: f32 = 0.840;
+    const LIP: f32 = 0.009;
+    // The knob, foot up: a flattened bead flaring into the handle.
+    let mut p: Vec<(f32, f32)> = vec![
+        (0.000, 0.0),
+        (0.001, 0.010),
+        (0.003, 0.016),
+        (0.007, 0.0200),
+        (0.012, 0.0215),
+        (0.017, 0.0210),
+        (0.022, 0.0180),
+        (0.027, 0.0145),
+        (0.033, 0.0125),
+    ];
+    let (y0, y1) = (0.033, FACE - LIP);
+    let steps = 48;
+    for i in 1..=steps {
+        let y = y0 + (y1 - y0) * i as f32 / steps as f32;
+        let t = ((y - TAPER.0) / (TAPER.1 - TAPER.0)).clamp(0.0, 1.0);
+        p.push((
+            y,
+            HANDLE_R + (BARREL_R - HANDLE_R) * t * t * (3.0 - 2.0 * t),
+        ));
+    }
+    for i in 1..=6 {
+        let a = i as f32 / 6.0 * std::f32::consts::FRAC_PI_2;
+        p.push((y1 + LIP * a.sin(), BARREL_R - LIP + LIP * a.cos()));
+    }
+    p.push((FACE + 0.0012, (BARREL_R - LIP) * 0.55));
+    p.push((BAT_LEN, 0.0));
+
+    // Light ash, darker where hands have been and on the end grain, with
+    // streaks of grain running the length.
+    const WOOD: [f32; 3] = [0.62, 0.42, 0.22];
+    lathe(&p, 24, |y, r, a| {
+        let grain = 1.0 + 0.05 * (5.0 * a + 1.7 * (2.0 * a + 9.0 * y).sin()).sin()
+            - 0.04 * (13.0 * a + 3.0 * y).sin().abs();
+        let handled = if y < 0.30 {
+            0.86 + 0.14 * (y / 0.30)
+        } else {
+            1.0
+        };
+        let end_grain = if y > FACE && r < BARREL_R - LIP {
+            0.78
+        } else {
+            1.0
+        };
+        let k = grain * handled * end_grain;
+        [WOOD[0] * k, WOOD[1] * k, WOOD[2] * k, 1.0]
+    })
 }
 
 /// A tapered wooden shaft and layered cloth winding. The existing crown,
@@ -619,6 +745,7 @@ fn crossbow_mesh() -> Mesh {
 /// CI reaches this before a boot does.
 pub fn mesh(name: &str) -> Mesh {
     match name {
+        "bat" => bat_mesh(),
         "torch" => torch_mesh(),
         "revolver" => revolver_mesh(),
         "crossbow" => crossbow_mesh(),
@@ -634,6 +761,12 @@ pub fn mesh(name: &str) -> Mesh {
 /// carries is a `PointLight` on the hand, never a bright material.
 pub fn material(name: &str) -> StandardMaterial {
     match name {
+        // Turned and lacquered: smoother than the torch's raw shaft.
+        "bat" => StandardMaterial {
+            perceptual_roughness: 0.55,
+            reflectance: super::fresnel::DIELECTRIC,
+            ..default()
+        },
         "torch" => StandardMaterial {
             perceptual_roughness: 0.85,
             // See `render::fresnel`: 0.14 was F0 0.31%.
@@ -672,6 +805,7 @@ mod tests {
         for m in [
             handle_mesh(),
             head_mesh(),
+            mesh("bat"),
             mesh("torch"),
             mesh("revolver"),
             mesh("crossbow"),

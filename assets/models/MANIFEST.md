@@ -685,7 +685,6 @@ silently breaking one. `crates/client/tests/held_assets.rs` reads
 
 | file | item | task id | credits |
 |---|---|---|---|
-| `held/rock.glb` | Rock | `019fefe3-2c88` | 24 |
 | `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 | **stood up** 2026-09-01 |
 | `held/stone_pickaxe.glb` | Stone Pickaxe | `019fefe9-a24e` | 24 |
 | `held/hammer.glb` | Hammer | `019feffa-b068` | 24 |
