@@ -318,9 +318,16 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     // axe stood up in the lower right, whole in frame, the thumb wrapped round
     // the front of the haft) with *"too big"* and *"we have the hand kinda
     // odd"*, then *"let gravity pull the bat down some and make it a bit
-    // bigger"*. Picked off captures, not reasoned: lay −45° / yaw 150° hangs
-    // it at 73° on screen (the barrel's weight dropping it 17° right of
-    // upright), top tipped 10° away from the eye, drawn at 0.66.
+    // bigger"*. Picked off captures, not reasoned: lay −55° / yaw 150° hangs
+    // it at 67° on screen (the barrel's weight dropping it 23° right of
+    // upright), top tipped 17° away from the eye, which is what keeps the
+    // whole bat in frame.
+    //
+    // **Full size, scale 1.0, and that is not a taste call.** At 0.66 the
+    // handle drew 2.2 cm across, thinner than the thumb closed on it
+    // (operator: *"his thumb is thicker than the thinnest part of the
+    // bat"*). At 1.0 it is the 3.4 cm the hand's grip line was measured for
+    // (`VIEWMODEL_SEAT`'s 3.2 cm rod), so the fist and the bat agree.
     //
     // **The roll is the hand fix, and the arm is what limits it.**
     // `GRIP_ROLL_CARRIED` on an upright bat shows the back of the fist with
@@ -328,15 +335,15 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     // full-on (the reference's other half) needs a 127° wrist and a 109°
     // forearm twist, which `tests/viewmodel_arms.rs` refuses and the frame
     // showed as a broken arm. −0.8 is the best the arm can do inside its
-    // limits (wrist 42°, forearm −28°, arm 9.0 cm): the thumb side of the
+    // limits (wrist 44°, forearm −20°, arm 10.1 cm): the thumb side of the
     // fist faces the eye, the thumb wrapped over the front of the handle.
     HeldModelDef {
         key: "bat",
         src: HeldSrc::Gen("bat"),
         height_m: 0.840,
         grip_frac: 0.12,
-        scale: 0.66,
-        lay: -0.785,
+        scale: 1.0,
+        lay: -0.960,
         pose_yaw: 2.618,
         stroke: Stroke::Chop,
         light: None,
