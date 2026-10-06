@@ -1,11 +1,12 @@
 //! Top-down picture of the road and what stands on it, to scale.
 //!
-//!   cargo run --release -p sim-core --example road_view -- <seed-hex> <out.ppm> [junk|open] [n]
+//!   cargo run --release -p sim-core --example road_view -- <seed-hex> <out.ppm> [junk|open|sites] [n]
 //!
 //! Finds `n` (default 4) windows on the coast ring — around junk-pile wrecks,
-//! or on open road — and tiles them into one PPM: carriageway dark, shoulder
-//! tan, every occupant drawn as its sim footprint (box tables rotated by the
-//! slot's yaw). 0.125 m a pixel, 48 m a window.
+//! on open road, or at the pad and its waystations — and tiles them into one
+//! PPM: carriageway dark, shoulder tan, every occupant drawn as its sim
+//! footprint (box tables rotated by the slot's yaw). 384 px windows: 48 m,
+//! or 112 m for the sites.
 
 // An example prints; the sim walls on `print!` are for sim code.
 #![allow(clippy::disallowed_macros)]
@@ -13,9 +14,7 @@
 use sim_core::terrain::{self, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE};
 use std::io::Write;
 
-const PX_M: f32 = 0.125;
-const WIN_M: f32 = 48.0;
-const WIN_PX: usize = (WIN_M / PX_M) as usize;
+const WIN_PX: usize = 384;
 
 fn colour(o: Occupant) -> [u8; 3] {
     match o {
@@ -61,14 +60,21 @@ fn covers(s: &terrain::Slot, x: f32, z: f32) -> bool {
     })
 }
 
-fn render(seed: u64, h: &terrain::Haven, table: &ScatterTable, cx: f32, cz: f32) -> Vec<[u8; 3]> {
-    let x0 = cx - WIN_M * 0.5;
-    let z0 = cz - WIN_M * 0.5;
+fn render(
+    seed: u64,
+    h: &terrain::Haven,
+    table: &ScatterTable,
+    (cx, cz): (f32, f32),
+    win_m: f32,
+) -> Vec<[u8; 3]> {
+    let px_m = win_m / WIN_PX as f32;
+    let x0 = cx - win_m * 0.5;
+    let z0 = cz - win_m * 0.5;
     let mut slots = Vec::new();
     let c0 = ((x0 / CELL_SIZE) as i32 - 1).max(0);
-    let c1 = (((x0 + WIN_M) / CELL_SIZE) as i32 + 1).min(CELLS_PER_SIDE - 1);
+    let c1 = (((x0 + win_m) / CELL_SIZE) as i32 + 1).min(CELLS_PER_SIDE - 1);
     let r0 = ((z0 / CELL_SIZE) as i32 - 1).max(0);
-    let r1 = (((z0 + WIN_M) / CELL_SIZE) as i32 + 1).min(CELLS_PER_SIDE - 1);
+    let r1 = (((z0 + win_m) / CELL_SIZE) as i32 + 1).min(CELLS_PER_SIDE - 1);
     for gz in r0..=r1 {
         for gx in c0..=c1 {
             let s = terrain::scatter(seed, table, h, gx, gz);
@@ -80,9 +86,9 @@ fn render(seed: u64, h: &terrain::Haven, table: &ScatterTable, cx: f32, cz: f32)
     let mut img = vec![[0u8; 3]; WIN_PX * WIN_PX];
     for py in 0..WIN_PX {
         for px in 0..WIN_PX {
-            let x = x0 + (px as f32 + 0.5) * PX_M;
+            let x = x0 + (px as f32 + 0.5) * px_m;
             // North up: image row 0 is the window's far +z edge.
-            let z = z0 + WIN_M - (py as f32 + 0.5) * PX_M;
+            let z = z0 + win_m - (py as f32 + 0.5) * px_m;
             let g = terrain::ground(seed, h, x, z);
             let mut c = if g < terrain::LAND_MIN_H {
                 [40, 70, 110]
@@ -99,7 +105,7 @@ fn render(seed: u64, h: &terrain::Haven, table: &ScatterTable, cx: f32, cz: f32)
                 }
             }
             // A 4 m grid, faintly, for scale.
-            if (x.rem_euclid(4.0) < PX_M) || (z.rem_euclid(4.0) < PX_M) {
+            if (x.rem_euclid(4.0) < px_m) || (z.rem_euclid(4.0) < px_m) {
                 c = [
                     c[0].saturating_sub(18),
                     c[1].saturating_sub(18),
@@ -122,19 +128,32 @@ fn main() {
         .get(2)
         .cloned()
         .unwrap_or_else(|| "road_view.ppm".into());
-    let junk = args.get(3).is_none_or(|m| m != "open");
+    let mode = args.get(3).map_or("junk", |m| m.as_str());
     let n: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(4);
     let table = ScatterTable::alpha_default();
     let h = terrain::haven(seed);
 
-    // Window centres: wrecks for junk piles, else open-shoulder road signs.
-    let want = if junk {
-        Occupant::CarWreck
-    } else {
+    // Window centres: wrecks for junk piles, open-shoulder road signs, or
+    // the sites on the ring.
+    let want = if mode == "open" {
         Occupant::RoadSign
+    } else {
+        Occupant::CarWreck
     };
+    let win_m = if mode == "sites" { 112.0 } else { 48.0 };
     let mut centres: Vec<(f32, f32)> = Vec::new();
+    if mode == "sites" {
+        centres.push((h.x, h.z));
+        for ws in h.minor.iter() {
+            if ws.live && ws.kind == terrain::SiteKind::Waystation {
+                centres.push((ws.x, ws.z));
+            }
+        }
+    }
     'scan: for gz in 0..CELLS_PER_SIDE {
+        if mode == "sites" {
+            break;
+        }
         for gx in 0..CELLS_PER_SIDE {
             let s = terrain::scatter(seed, &table, &h, gx, gz);
             if s.occupant == want
@@ -158,7 +177,7 @@ fn main() {
     let mut sheet = vec![[255u8; 3]; w * hgt];
     for (i, (x, z)) in centres.iter().enumerate() {
         println!("window {i}: centre ({x:.0}, {z:.0})");
-        let img = render(seed, &h, &table, *x, *z);
+        let img = render(seed, &h, &table, (*x, *z), win_m);
         let (ox, oy) = ((i % cols) * (WIN_PX + 4), (i / cols) * (WIN_PX + 4));
         for py in 0..WIN_PX {
             for px in 0..WIN_PX {
