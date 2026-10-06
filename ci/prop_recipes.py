@@ -601,7 +601,7 @@ def road_sign(k):
 def food_crate(k):
     # A plank box in a batten frame, a three-board lid, rope handles at the
     # ends and a stencilled label on the front.
-    k.box((0.94, 0.54, 0.34), (0, 0, 0.2), "wood", bevel=0.006)
+    k.box((0.94, 0.54, 0.34), (0, 0, 0.2), "planks", bevel=0.006)
     for z in (0.12, 0.2, 0.28):
         for y in (-0.271, 0.271):
             k.box((0.94, 0.003, 0.006), (0, y, z), "soot", bevel=0.0)
@@ -614,7 +614,7 @@ def food_crate(k):
         for x in (-0.48, 0.48):
             k.box((0.04, 0.6, 0.05), (x, 0, z), "darkwood", bevel=0.006)
     for y in (-0.18, 0.0, 0.18):
-        k.box((0.92, 0.165, 0.025), (0, y, 0.385), "wood", bevel=0.004)
+        k.box((0.92, 0.165, 0.025), (0, y, 0.385), "planks", bevel=0.004)
     for x in (-0.49, 0.49):
         for y in (-0.29, 0.29):
             for z in (0.03, 0.37):
