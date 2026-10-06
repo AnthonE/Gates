@@ -2211,7 +2211,7 @@ pub fn stream(
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
                     let cell_z = key.1 * cells + iz;
-                    let mut slot = terrain::scatter_memo(
+                    let slot = terrain::scatter_memo(
                         &mut lat,
                         world.seed,
                         &world.table,
@@ -2222,7 +2222,6 @@ pub fn stream(
                     if slot.occupant == Occupant::None {
                         continue;
                     }
-                    slot.y -= slope_sink(&mut lat, &world, &slot);
                     // `cell_key` is `sim_core::gather`'s own, not a second
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
@@ -2435,24 +2434,6 @@ pub fn spawn_outer_tree(
         MeshMaterial3d(a.foliage[tint_of(key)].clone()),
         transform,
     ));
-}
-
-/// How far a rock or an ore node is drawn below its slot on a slope: the
-/// ground's fall across its footprint (the slope times its radius), so its
-/// downhill edge meets the hillside instead of floating over it — the
-/// ranges put most of the ore on slopes, where `SINK_M` alone left a gap
-/// under every node. Capped at a third of its height, so a node on a cliff
-/// still reads as a node. Drawn only: the sim's volume stays the slot's.
-pub fn slope_sink(lat: &mut terrain::Lattice, world: &WorldId, slot: &terrain::Slot) -> f32 {
-    if !matches!(
-        slot.occupant,
-        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock
-    ) {
-        return 0.0;
-    }
-    let (r, top) = terrain::occupant_volume(slot.occupant);
-    let slope = terrain::ground_slope_memo(lat, world.seed, &world.haven, slot.x, slot.z);
-    (slope * r * slot.scale).min(top * slot.scale / 3.0)
 }
 
 /// Draw one scatter slot as a child of its chunk.
