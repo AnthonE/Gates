@@ -556,7 +556,7 @@ def oil_barrel(k):
              (0.279, 0.285), (0.2925, 0.293), (0.2925, 0.307), (0.279, 0.315),
              (0.279, 0.565), (0.2925, 0.573), (0.2925, 0.587), (0.279, 0.595),
              (0.279, 0.836), (0.2925, 0.854), (0.289, 0.874), (0.276, 0.88), (0.262, 0.866),
-             (0.0, 0.862)], (0, 0, 0), "red", n=28)
+             (0.0, 0.862)], (0, 0, 0), "drumred", n=28)
     # Rust creeping up from where it stood in the wet.
     k.lathe([(0.2805, 0.0), (0.2935, 0.026), (0.2805, 0.05)], (0, 0, 0), "rusty", n=28)
     # Two bungs on the lid.
@@ -602,9 +602,6 @@ def food_crate(k):
     # A plank box in a batten frame, a three-board lid, rope handles at the
     # ends and a stencilled label on the front.
     k.box((0.94, 0.54, 0.34), (0, 0, 0.2), "planks", bevel=0.006)
-    for z in (0.12, 0.2, 0.28):
-        for y in (-0.271, 0.271):
-            k.box((0.94, 0.003, 0.006), (0, y, z), "soot", bevel=0.0)
     for x in (-0.48, 0.48):
         for y in (-0.28, 0.28):
             k.box((0.04, 0.04, 0.40), (x, y, 0.2), "darkwood", bevel=0.006)
@@ -626,12 +623,19 @@ def food_crate(k):
     k.box((0.20, 0.003, 0.02), (-0.04, -0.2765, 0.175), "signblack", bevel=0.0)
 
 
+TYRE = [(0.19, -0.075), (0.21, -0.105), (0.30, -0.118), (0.375, -0.115), (0.398, -0.098),
+        (0.405, -0.07), (0.405, -0.05), (0.396, -0.045), (0.396, -0.025), (0.405, -0.02),
+        (0.405, 0.02), (0.396, 0.025), (0.396, 0.045), (0.405, 0.05), (0.405, 0.07),
+        (0.398, 0.098), (0.375, 0.115), (0.30, 0.118), (0.21, 0.105), (0.19, 0.075)]
+
+
 @recipe("tire_stack", "models/prop/tire_stack.glb", kind="centre", size=(0.84, 1.2, 0.84))
 def tire_stack(k):
-    # Five tyres, not quite square on each other.
+    # Five tyres, not quite square on each other: a square-shouldered
+    # section with three tread grooves round the crown.
     offs = ((0.0, 0.0), (0.012, -0.008), (-0.01, 0.012), (0.014, 0.006), (-0.006, -0.014))
     for i, (x, y) in enumerate(offs):
-        k.torus(0.285, 0.12, (x, y, 0.12 + i * 0.24), "rubber", n=22, m=9)
+        k.lathe(TYRE, (x, y, 0.12 + i * 0.24), "tyre", n=28, closed=True)
 
 
 @recipe("car_wreck", "models/prop/car_wreck.glb", kind="asis", tex=1024)
@@ -657,7 +661,7 @@ def car_wreck(k):
     for y in (-1.22, 1.22):
         k.cyl(0.34, 1.705, (0, y, 0.2), "soot", axis="X", n=18, bevel=0.0)
         for x in (-0.68, 0.68):
-            k.cyl(0.30, 0.2, (x, y, 0.18), "rubber", axis="X", n=16, bevel=0.03)
+            k.cyl(0.30, 0.2, (x, y, 0.18), "tyre", axis="X", n=16, bevel=0.03)
     # Door seams and handles.
     for x in (-0.852, 0.852):
         for y in (-0.62, 0.32, 1.02):
@@ -667,7 +671,7 @@ def car_wreck(k):
     # The glasshouse: a side profile extruded across the car, glass inside a
     # painted frame.
     k.slab([(-0.85, 0.0), (1.25, 0.0), (1.06, 0.68), (-0.42, 0.68)], 1.40, (0, 0, 0.70),
-           "glass", plane="YZ", bevel=0.01)
+           "carglass", plane="YZ", bevel=0.01)
     for x in (-0.715, 0.715):
         k.slab([(-0.85, 0.0), (-0.75, 0.0), (-0.34, 0.68), (-0.44, 0.68)], 0.07, (x, 0, 0.70), P,
                plane="YZ", bevel=0.004)

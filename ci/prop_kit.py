@@ -130,7 +130,12 @@ SURF = {
     "signgreen": dict(proc="plain", color=(0.02, 0.30, 0.10), rough=0.5, metal=0.0, wear=0.0, grime=0.0),
     "signwhite": dict(proc="plain", color=(0.85, 0.85, 0.82), rough=0.5, metal=0.0, wear=0.0, grime=0.0),
     # The roadside junk: a wreck's faded paint, a road sign's enamel.
-    "carpaint": dict(tex="paint", sat=0.0, color=(0.11, 0.17, 0.19), rough=1.0, metal=None, grime=0.8),
+    # Faded paint chipped through to rust over most of it (`chip`/`chipcol`).
+    "carpaint": dict(proc="paint", color=(0.075, 0.12, 0.13), rough=0.75, metal=0.0, grime=0.9,
+                     chip=0.5, chipcol=(0.15, 0.065, 0.03), chipmetal=0.15),
+    "carglass": dict(proc="plain", color=(0.025, 0.03, 0.03), rough=0.35, metal=0.0, wear=0.0, grime=0.8),
+    "drumred": dict(tex="paint", sat=0.0, color=(0.30, 0.035, 0.025), rough=1.0, metal=None, grime=0.7),
+    "tyre": dict(proc="plain", color=(0.03, 0.03, 0.03), rough=0.9, metal=0.0, wear=0.2, grime=0.9),
     "signyellow": dict(proc="paint", color=(0.62, 0.42, 0.03), rough=0.5, metal=0.0, grime=0.6),
     # Thin decals on the enamel: every face is an edge, so no edge wear.
     "signblack": dict(proc="plain", color=(0.018, 0.018, 0.02), rough=0.55, metal=0.0, wear=0.0, grime=0.0),
@@ -284,8 +289,9 @@ class Kit:
         return self._emit(bm, surf, at, rot, 0.0)
 
     def lathe(self, profile, at=(0, 0, 0), surf="steel", axis="Z", rot=(0, 0, 0), n=16,
-              scale=None, bevel=0.0):
-        """Revolve [(radius, z), ...] about Z. A radius of 0 closes the end."""
+              scale=None, bevel=0.0, closed=False):
+        """Revolve [(radius, z), ...] about Z. A radius of 0 closes the end;
+        `closed` joins the last point back to the first (a ring, no caps)."""
         bm = self.bmesh.new()
         rings = []
         for rad, z in profile:
@@ -294,7 +300,10 @@ class Kit:
                 continue
             rings.append([bm.verts.new((rad * math.cos(2 * math.pi * j / n),
                                         rad * math.sin(2 * math.pi * j / n), z)) for j in range(n)])
-        for a, b in zip(rings, rings[1:]):
+        pairs = list(zip(rings, rings[1:]))
+        if closed:
+            pairs.append((rings[-1], rings[0]))
+        for a, b in pairs:
             if len(a) == 1 and len(b) == 1:
                 continue
             for j in range(n):
@@ -305,9 +314,9 @@ class Kit:
                     bm.faces.new((a[j], b[0], a[j2]))
                 else:
                     bm.faces.new((a[j], b[j], b[j2], a[j2]))
-        if len(rings[0]) > 1:
+        if len(rings[0]) > 1 and not closed:
             bm.faces.new(list(reversed(rings[0])))
-        if len(rings[-1]) > 1:
+        if len(rings[-1]) > 1 and not closed:
             bm.faces.new(rings[-1])
         self.bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
         self._axis(bm, axis)
@@ -523,13 +532,16 @@ def material(bpy, key):
         # coarse noise crosses a threshold.
         n = noise(35.0, 6.0)
         chip = N.new("ShaderNodeMapRange")
-        chip.inputs["From Min"].default_value = 0.66
-        chip.inputs["From Max"].default_value = 0.70
+        t0 = s.get("chip", 0.66)
+        chip.inputs["From Min"].default_value = t0
+        chip.inputs["From Max"].default_value = t0 + 0.04
         L.new(noise(14.0, 8.0), chip.inputs["Value"])
-        L.new(mix(chip.outputs[0], ramp(n, lo, hi), (0.12, 0.11, 0.10)), bsdf.inputs["Base Color"])
+        L.new(mix(chip.outputs[0], ramp(n, lo, hi), s.get("chipcol", (0.12, 0.11, 0.10))),
+              bsdf.inputs["Base Color"])
         r = math_("ADD", math_("MULTIPLY", chip.outputs[0], -0.15), s["rough"])
         L.new(math_("ADD", r, math_("MULTIPLY", n, 0.15)), bsdf.inputs["Roughness"])
-        _relabel_metal(N, L, metal, math_("ADD", math_("MULTIPLY", chip.outputs[0], 0.8), s["metal"]))
+        _relabel_metal(N, L, metal, math_("ADD", math_("MULTIPLY", chip.outputs[0], s.get("chipmetal", 0.8)),
+                                          s["metal"]))
         bump(math_("ADD", n, math_("MULTIPLY", chip.outputs[0], -0.6)), 0.25)
     elif p == "fur":
         # Short coarse hair: noise stretched along the body (Blender Y) for
