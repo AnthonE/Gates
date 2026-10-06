@@ -580,7 +580,7 @@ def road_sign(k):
     k.box((0.08, 0.08, 0.05), (0, 0, 0.025), "concrete", bevel=0.01)
     # The plate: galvanised sheet behind, yellow enamel in front, a black
     # border and three chevrons — a bend ahead.
-    k.box((0.9, 0.010, 0.5), (0, -0.040, 1.95), "sheet", bevel=0.003)
+    k.box((0.9, 0.010, 0.5), (0, -0.040, 1.95), "steel", bevel=0.003)
     k.box((0.88, 0.006, 0.48), (0, -0.048, 1.95), "signyellow", bevel=0.002)
     for z in (1.725, 2.175):
         k.box((0.88, 0.004, 0.022), (0, -0.0525, z), "signblack", bevel=0.0)
