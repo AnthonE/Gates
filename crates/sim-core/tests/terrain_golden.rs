@@ -191,9 +191,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// is why the budget had to be hashed rather than seen.
 /// **Moved `0xE2A6_201F_1CA7_960E` → `0xCFCA_CCE7_8F3D_FD8D` at roadside junk**:
 /// oil barrels, road signs, food boxes and junk piles along the roads.
-/// **Moved → `0xBDC3_8E06_9260_7D74` at the 8 m ring** and the junk piles that gather
-/// round a corner; every site stays where it was (`RingPath::built`).
-const GOLDEN_TERRAIN_HASH: u64 = 0xBDC3_8E06_9260_7D74;
+/// **Moved → `0x9FA3_83B2_460B_F5D1` at the 8 m ring** and the junk piles that gather
+/// round a corner, merged over main's slope-sunk rocks
+/// (`0x66EB_1534_8463_B430`); every site stays where it was
+/// (`RingPath::built`).
+const GOLDEN_TERRAIN_HASH: u64 = 0x9FA3_83B2_460B_F5D1;
 
 #[test]
 fn test_terrain_golden() {

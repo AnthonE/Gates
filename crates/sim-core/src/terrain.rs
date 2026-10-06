@@ -7423,7 +7423,9 @@ fn scatter_in<C: Corners>(
     Slot {
         occupant,
         x,
-        y: hy,
+        // Rocks and nodes sit into the hillside (`slope_sink`), the volume
+        // with them, so the top a body stands on is the top it sees.
+        y: hy - slope_sink(occupant, sl, scale),
         z,
         yaw,
         scale,
@@ -9344,6 +9346,35 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
     }
 }
 
+/// How far a rock or an ore node stands below the ground at its slot on a
+/// slope: the ground's fall across its footprint, so its downhill edge meets
+/// the hillside instead of floating over it, capped at a third of its height.
+///
+/// In the slot's `y`, not just the draw. Until 2026-10-06 only the client sank
+/// them, so on a hillside the volume stood up to 0.6 m above the drawn rock
+/// and a body walking downhill was stopped on its invisible rim with its feet
+/// above the stone it could see.
+pub fn slope_sink(o: Occupant, slope: f32, scale: f32) -> f32 {
+    match o {
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock => {
+            let (r, top) = occupant_volume(o);
+            (slope * r * scale).min(top * scale / 3.0)
+        }
+        _ => 0.0,
+    }
+}
+
+/// Whether a body walks onto this occupant's top when it is within a step of
+/// its feet, the way it walks onto a formation block, rather than being
+/// stopped by its side. Rocks and nodes: on a hillside their uphill edge is
+/// barely proud of the ground.
+pub const fn steppable(o: Occupant) -> bool {
+    matches!(
+        o,
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock
+    )
+}
+
 const _: () = {
     // The published tables ARE the match, row for row. Written out rather
     // than looped because a loop would need the variant list this file is
@@ -9520,7 +9551,16 @@ pub fn slot_blocks(
     if r <= 0.0 {
         return false;
     }
-    if feet_y >= slot.y + top * slot.scale || feet_y + capsule_h <= slot.y {
+    let t = slot.y + top * slot.scale;
+    if feet_y >= t || feet_y + capsule_h <= slot.y {
+        return false;
+    }
+    // A body steps up onto a rock top within a step (`slot_ground` holds it
+    // there); a short volume (an arrow) is stopped by any of it.
+    if steppable(slot.occupant)
+        && capsule_h >= crate::movement::STEP_UP
+        && t <= feet_y + crate::movement::STEP_UP
+    {
         return false;
     }
     // Broad phase, and for every occupant but one it is also the answer.
