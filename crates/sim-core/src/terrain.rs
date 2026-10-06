@@ -1684,6 +1684,23 @@ pub const ROAD_SHOULDER_HALF_W: f32 = 7.0;
 pub const SIDE_ROAD_HALF_W: f32 = 2.0;
 /// A side road's shoulder half-width, meters: 3 m either side, as the ring.
 pub const SIDE_ROAD_SHOULDER_HALF_W: f32 = 5.0;
+/// The footprint [`ring_probe`] asks the coastline about, meters — the
+/// SOLVER's question, kept at the 4 m it was tuned on when the built road
+/// widened. "Could a road stand here" decides where the ring and every site
+/// on it go; asked at 8 m, it turned down most of the coast and the haven
+/// fell back to the island centre. The solved road is then built and
+/// drawn at `ROAD_HALF_W`.
+pub const RING_PROBE_HALF_W: f32 = 2.0;
+pub const RING_PROBE_SHOULDER_HALF_W: f32 = 5.0;
+/// Sites on the ring the built road narrows for: the pad and its
+/// waystations, whose containers stand on a ring round a centre the road
+/// runs through. Five crates 72° apart always leave one within 18° of the
+/// road's line, 3.1 m off it on the pad's 10 m ring — inside an 8 m road,
+/// outside a 4 m one.
+pub const RING_NARROWS: usize = 1 + WAYSTATIONS;
+/// How far past a site's own radius the road takes to widen back out,
+/// metres.
+pub const RING_NARROW_TAPER_M: f32 = 16.0;
 /// The radial bracket the ring may live in, meters from island center.
 /// The shoreline sits at CONTINENT_RADIUS ± COAST_WOBBLE modulated by
 /// relief; these bound it with margin, and double as the broad phase.
@@ -2014,19 +2031,19 @@ fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand 
     // crossing can be inside the shoulder window without a grade steeper
     // than ROAD_MAX_GRADE, so most of the island answers in one tap.
     let hp = height_in(co, seed, c + ux * r, c + uz * r);
-    if fabs(hp) > ROAD_SHOULDER_HALF_W * ROAD_MAX_GRADE {
+    if fabs(hp) > RING_PROBE_SHOULDER_HALF_W * ROAD_MAX_GRADE {
         return RoadBand::Off;
     }
 
     // The probe's sign says which way the crossing lies, so the window only
     // costs one more tap per width tested, not two.
     let band = if hp > SEA_LEVEL {
-        let w = ROAD_SHOULDER_HALF_W;
+        let w = RING_PROBE_SHOULDER_HALF_W;
         if height_in(
             co,
             seed,
-            c + ux * (r + ROAD_HALF_W),
-            c + uz * (r + ROAD_HALF_W),
+            c + ux * (r + RING_PROBE_HALF_W),
+            c + uz * (r + RING_PROBE_HALF_W),
         ) <= SEA_LEVEL
         {
             RoadBand::Carriageway
@@ -2036,12 +2053,12 @@ fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand 
             RoadBand::Off
         }
     } else {
-        let w = ROAD_SHOULDER_HALF_W;
+        let w = RING_PROBE_SHOULDER_HALF_W;
         if height_in(
             co,
             seed,
-            c + ux * (r - ROAD_HALF_W),
-            c + uz * (r - ROAD_HALF_W),
+            c + ux * (r - RING_PROBE_HALF_W),
+            c + uz * (r - RING_PROBE_HALF_W),
         ) > SEA_LEVEL
         {
             RoadBand::Carriageway
@@ -2265,6 +2282,15 @@ pub struct RingPath {
     /// queries never resample terrain or feed a carved height to the solver.
     pub y: [f32; RING_BEARINGS],
     pub graded: bool,
+    /// Built: the road as it is laid, `ROAD_HALF_W` wide and narrowed at the
+    /// sites in `narrow`. Unbuilt — while `haven` is still solving — every
+    /// question is asked at the solver's `RING_PROBE_*` footprint, the one
+    /// the whole site search was tuned against, so widening the road moved
+    /// no site.
+    pub built: bool,
+    /// `[x, z, radius]` of each site the built road narrows through; radius
+    /// 0 is an empty row.
+    pub narrow: [[f32; 3]; RING_NARROWS],
 }
 
 impl RingPath {
@@ -2274,7 +2300,30 @@ impl RingPath {
         r: [(ROAD_R_MIN + ROAD_R_MAX) * 0.5; RING_BEARINGS],
         y: [0.0; RING_BEARINGS],
         graded: false,
+        built: false,
+        narrow: [[0.0; 3]; RING_NARROWS],
     };
+
+    /// Carriageway and shoulder half-widths at (x, z), metres.
+    pub fn widths(&self, x: f32, z: f32) -> (f32, f32) {
+        if !self.built {
+            return (RING_PROBE_HALF_W, RING_PROBE_SHOULDER_HALF_W);
+        }
+        let mut t = 1.0f32;
+        for n in &self.narrow {
+            if n[2] <= 0.0 {
+                continue;
+            }
+            let (dx, dz) = (x - n[0], z - n[1]);
+            let d2 = dx * dx + dz * dz;
+            let far = n[2] + RING_NARROW_TAPER_M;
+            if d2 < far * far {
+                t = t.min(((d2.sqrt() - n[2]) / RING_NARROW_TAPER_M).clamp(0.0, 1.0));
+            }
+        }
+        let hw = RING_PROBE_HALF_W + (ROAD_HALF_W - RING_PROBE_HALF_W) * t;
+        (hw, hw + (ROAD_SHOULDER_HALF_W - ROAD_HALF_W))
+    }
 
     /// World position of node `i`, wrapping.
     pub fn node(&self, i: i32) -> (f32, f32) {
@@ -2301,6 +2350,8 @@ impl RingPath {
             return raw;
         }
         let bearing = bearing_index(dx, dz);
+        let shoulder = self.widths(x, z).1;
+        let reach = shoulder + RING_BLEND_M;
         let mut outside = 1.0;
         let mut k = bearing as i32 - RING_SEG_WINDOW;
         while k <= bearing as i32 + RING_SEG_WINDOW {
@@ -2308,7 +2359,7 @@ impl RingPath {
             let (bx, bz) = self.node(k + 1);
             let d2 = seg_dist2(ax, az, bx, bz, x, z);
             if d2 < reach * reach {
-                let t = ((d2.sqrt() - ROAD_SHOULDER_HALF_W) / RING_BLEND_M).clamp(0.0, 1.0);
+                let t = ((d2.sqrt() - shoulder) / RING_BLEND_M).clamp(0.0, 1.0);
                 outside *= t * t * (3.0 - 2.0 * t);
             }
             k += 1;
@@ -2434,9 +2485,13 @@ pub fn ring_band(ring: &RingPath, x: f32, z: f32) -> RoadBand {
         return RoadBand::Off;
     }
     let d = ring.dist2(x, z).sqrt();
-    if d <= ROAD_HALF_W {
+    if d > ROAD_SHOULDER_HALF_W {
+        return RoadBand::Off;
+    }
+    let (hw, sw) = ring.widths(x, z);
+    if d <= hw {
         RoadBand::Carriageway
-    } else if d <= ROAD_SHOULDER_HALF_W {
+    } else if d <= sw {
         RoadBand::Shoulder
     } else {
         RoadBand::Off
@@ -2929,6 +2984,22 @@ fn junk_heart(seed: u64, haven: &Haven, cx: i32, cz: i32) -> Option<(i32, i32, u
     None
 }
 
+/// Is every corner of a wreck's body at (x, z, yaw), at the widest slot
+/// scale, off every carriageway?
+fn car_corners_clear(seed: u64, haven: &Haven, x: f32, z: f32, yaw: u8) -> bool {
+    let (sn, cs) = crate::yaw_lut::yaw_dir((yaw as u16) << 8);
+    let b = CAR_WRECK_BOXES[0];
+    let (hx, hz) = (b[3] * 0.5 * SLOT_SCALE_MAX, b[5] * 0.5 * SLOT_SCALE_MAX);
+    [(-hx, -hz), (-hx, hz), (hx, -hz), (hx, hz)]
+        .iter()
+        .all(|&(lx, lz)| {
+            // Local +Z is (sin, cos), local +X is (cos, −sin): `boxes_block`'s basis.
+            let wx = x + lx * cs + lz * sn;
+            let wz = z - lx * sn + lz * cs;
+            road_band(seed, haven, wx, wz) != RoadBand::Carriageway
+        })
+}
+
 /// A junk-pile slot for cell `(cx, cz)` if it is one of the four cells round
 /// its block's heart: where it stands, what it is, and its yaw.
 ///
@@ -2976,7 +3047,11 @@ fn junk_pile_slot(
             .wrapping_add(((h >> 28) & 0x0F) as u8)
             .wrapping_sub(8)
             .wrapping_add(if (h >> 32) & 1 == 0 { 0 } else { 128 });
-        let car_ok = best >= ROAD_HALF_W + JUNK_CAR_CLEAR_M * SLOT_SCALE_MAX;
+        // Clear of the nearest centre line, and every corner of the body off
+        // every carriageway — a junction's other road, or a landmark trail,
+        // is not the road the yaw was read off.
+        let car_ok = best >= ROAD_HALF_W + JUNK_CAR_CLEAR_M * SLOT_SCALE_MAX
+            && car_corners_clear(seed, haven, x, z, yaw);
         let o = if car_ok {
             Occupant::CarWreck
         } else {
@@ -3999,6 +4074,19 @@ pub fn haven(seed: u64) -> Haven {
     // And last, the roads to whatever the ring does not reach. Last because
     // a road is a consequence: it needs both ends to exist, and one of them
     // is a site the loop above just chose.
+    //
+    // Then the ring is BUILT: everything above was solved at the probe's
+    // footprint, and from here on the road is its laid width, narrowed
+    // through the sites that stand on it.
+    pad.ring.built = true;
+    pad.ring.narrow[0] = [pad.x, pad.z, HAVEN_FOOTPRINT.scatter_m];
+    let mut n = 1;
+    for ws in pad.minor.iter() {
+        if ws.live && ws.kind == SiteKind::Waystation && n < RING_NARROWS {
+            pad.ring.narrow[n] = [ws.x, ws.z, WAYSTATION_FOOTPRINT.scatter_m];
+            n += 1;
+        }
+    }
     pad
 }
 
@@ -4837,10 +4925,10 @@ pub const SIDE_ROAD_BEARINGS: i32 = 16;
 /// Half `SIDE_ROAD_HALF_W`; five transverse samples span the full carriageway.
 pub const SIDE_ROAD_SAMPLE_M: f32 = SIDE_ROAD_HALF_W * 0.5;
 
-/// How far the march for the ring steps, metres. `ROAD_HALF_W` is the
-/// carriageway's half-width, so a march at this pitch cannot step over the
-/// surface it is looking for.
-pub const SIDE_ROAD_MARCH_M: f32 = ROAD_HALF_W;
+/// How far the march for the ring steps, metres. Under the carriageway's
+/// half-width, so a march at this pitch cannot step over the surface it is
+/// looking for.
+pub const SIDE_ROAD_MARCH_M: f32 = RING_PROBE_HALF_W;
 
 /// Bearing steps of ring, either side of a candidate junction, that have to
 /// run unbroken before the junction is accepted — **and this is the one
@@ -6358,7 +6446,7 @@ fn ground_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) ->
         // sea-facing road edge. Only this shallow fill bypasses protection.
         if protected < LAND_MIN_H {
             let d = haven.ring.dist2(x, z).sqrt();
-            let t = ((d - ROAD_SHOULDER_HALF_W) / RING_BLEND_M).clamp(0.0, 1.0);
+            let t = ((d - haven.ring.widths(x, z).1) / RING_BLEND_M).clamp(0.0, 1.0);
             if t == 0.0 {
                 LAND_MIN_H
             } else {
