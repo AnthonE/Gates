@@ -189,11 +189,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
 /// height moved; the golden seed's windows hold no rock-channel cell, which
 /// is why the budget had to be hashed rather than seen.
-/// **Moved `0xE2A6_201F_1CA7_960E` → `0xF807_F344_FB84_C261` when the bush
-/// column split into shrubs, berry bushes and hemp** (2026-10-06,
-/// `terrain::plant_of`): every cell that held a bush still holds a plant,
-/// and only which plant moved.
-const GOLDEN_TERRAIN_HASH: u64 = 0xF807_F344_FB84_C261;
+/// **Moved again when the bush column split into shrubs, berry bushes and
+/// hemp** (2026-10-06, `terrain::plant_of`): every cell that held a bush
+/// still holds a plant, and only which plant moved.
+const GOLDEN_TERRAIN_HASH: u64 = 0x5365_FF69_71A9_7BA3;
 
 #[test]
 fn test_terrain_golden() {

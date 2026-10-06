@@ -332,11 +332,13 @@ impl Occupants<'_> {
     /// Whether a rock stops a volume of radius `r` and height `h` at
     /// (`x`, `z`) with its bottom at `feet_y`.
     ///
-    /// A body (a volume a step or more tall) is stopped by a side — rock
-    /// above its feet that is steeper than the cliff ratio or more than a
-    /// step up — and walks on a top. Anything smaller (an arrow's probe) is
-    /// stopped by being inside the rock at all. A block overhead, its bottom
-    /// above the volume's top, is passed under.
+    /// A body (a volume a step or more tall) is stopped by rock more than a
+    /// step above its feet and steps up onto anything lower, the rule the
+    /// landmark and kit boxes keep. Until 2026-10-06 a block's side stopped
+    /// it from 5 cm, so a body walking down a hill hung on the buried uphill
+    /// edge of a block whose drawn top rounds into the ground there. Anything
+    /// smaller (an arrow's probe) is stopped by being inside the rock at all.
+    /// A block overhead, its bottom above the volume's top, is passed under.
     fn rock_blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32, h: f32) -> bool {
         let mut hit = false;
         let (cache, haven) = (&mut *self.cache, self.haven);
@@ -347,19 +349,15 @@ impl Occupants<'_> {
             }
             let f = cache.formation(seed, haven, bx, bz);
             for b in f.iter() {
-                let Some((s, slope, bottom)) = crate::boulder::surface(b, x, z, dil) else {
+                let Some((s, _, bottom)) = crate::boulder::surface(b, x, z, dil) else {
                     continue;
                 };
                 if s <= feet_y || feet_y + h <= bottom {
                     continue;
                 }
                 // A short volume is stopped by any rock above its feet; a
-                // body only by a rise it cannot step or a flank too steep
-                // to stand on.
-                if h < crate::movement::STEP_UP
-                    || s > feet_y + crate::movement::STEP_UP
-                    || (s > feet_y + 0.05 && slope > terrain::CLIFF_SLOPE_RATIO)
-                {
+                // body only by a rise it cannot step.
+                if h < crate::movement::STEP_UP || s > feet_y + crate::movement::STEP_UP {
                     hit = true;
                     return;
                 }

@@ -217,6 +217,89 @@ fn a_boulder_stops_a_body_at_its_own_radius() {
     }
 }
 
+/// Walking down a hillside at a rock or a node never hangs a body on a top it
+/// could step onto. The operator's 2026-10-06 frame: the volume stood above
+/// the drawn rock on a slope (only the client sank it) and a body was stopped
+/// by its side even a centimetre proud, so it hung in the air over the stone
+/// it could see. Sixty sloped rocks and nodes on each seed,
+/// walked at down the fall line from 5 m uphill.
+#[test]
+fn a_body_walking_downhill_is_not_hung_on_a_rock_it_could_step_onto() {
+    let cols = ColIndex::new();
+    for seed in SEEDS {
+        let haven = hv(seed);
+        let mut sc = Scratch::live(seed);
+        let mut walked = 0;
+        // From a quarter in: the first rows are sea.
+        let mut cell = CELLS_PER_SIDE * CELLS_PER_SIDE / 4;
+        while walked < 60 && cell < CELLS_PER_SIDE * CELLS_PER_SIDE {
+            let (cx, cz) = (cell % CELLS_PER_SIDE, cell / CELLS_PER_SIDE);
+            cell += 1;
+            let s = terrain::scatter(seed, &sc.table, &sc.haven, cx, cz);
+            if !terrain::steppable(s.occupant) {
+                continue;
+            }
+            let g = |x: f32, z: f32| terrain::ground(seed, haven, x, z);
+            let (ux, uz) = (
+                g(s.x + 0.5, s.z) - g(s.x - 0.5, s.z),
+                g(s.x, s.z + 0.5) - g(s.x, s.z - 0.5),
+            );
+            let slope2 = ux * ux + uz * uz;
+            if slope2 < 0.5 * 0.5 {
+                continue;
+            }
+            walked += 1;
+            let l = slope2.sqrt();
+            let (ux, uz) = (ux / l, uz / l);
+            // The table bearing nearest straight downhill.
+            let yaw = (0..256u16)
+                .map(|k| k << 8)
+                .max_by(|a, b| {
+                    let d = |y: u16| {
+                        let (fx, fz) = yaw_dir(y);
+                        -(fx * ux + fz * uz)
+                    };
+                    d(*a).total_cmp(&d(*b))
+                })
+                .unwrap();
+            let mut b = Body::at(seed, haven, s.x + ux * 5.0, s.z + uz * 5.0);
+            let f = InputFrame {
+                seq: 1,
+                yaw,
+                move_z: 127,
+                ..InputFrame::default()
+            };
+            let mut before = pos(&b);
+            for t in 0..150 {
+                if t == 120 {
+                    before = pos(&b);
+                }
+                movement::step(seed, haven, &cols, &mut sc.occupants(), &mut b, &f);
+            }
+            let (x, z) = pos(&b);
+            let moved = ((x - before.0) * (x - before.0) + (z - before.1) * (z - before.1)).sqrt();
+            if moved > 0.05 || dist(&b, &s) > reach(&s) + 0.2 {
+                continue;
+            }
+            let feet = b.qy as f32 * movement::POS_Y_Q;
+            let top = s.y + terrain::occupant_volume(s.occupant).1 * s.scale;
+            assert!(
+                top > feet + movement::STEP_UP,
+                "seed {seed}: a body walking downhill hung at ({x:.2}, {z:.2}) on a \
+                 {:?} at ({:.2}, {:.2}) whose top {top:.2} is within a step of its \
+                 feet {feet:.2}",
+                s.occupant,
+                s.x,
+                s.z
+            );
+        }
+        assert!(
+            walked >= 20,
+            "seed {seed}: only {walked} sloped rocks to walk at"
+        );
+    }
+}
+
 /// Marks exactly one cell harvested — the felled-tree fixture.
 struct Felled(u16, u16);
 

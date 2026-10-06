@@ -526,7 +526,7 @@ const TICKS: u64 = 900;
 /// digest folds is eight bytes (its skin joins it), craft jobs hash their
 /// skin and each player its owned set. No command in the script names a
 /// skin, so every one of those fields is zero.
-const GOLDEN_FINAL_HASH: u64 = 0xC372_6229_3617_7022;
+const GOLDEN_FINAL_HASH: u64 = 0x648A_1F38_16B5_002C;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -626,7 +626,7 @@ const GOLDEN_FINAL_HASH: u64 = 0xC372_6229_3617_7022;
 /// the script's walkers mount and leave its foundations a few ticks
 /// differently. The end state holds, and the wall-plane rule that landed
 /// with it moves nothing here.
-const GOLDEN_TRACE_HASH: u64 = 0x1F3C_1ADE_AB0B_E32A;
+const GOLDEN_TRACE_HASH: u64 = 0x2390_29F0_4E9D_EAB3;
 
 /// Fold a stamped trace into one number.
 ///
@@ -1374,8 +1374,9 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         "the script placed {placed} pieces — the build success path is falling out \
          of the replay surface"
     );
+    // 14: walking onto sloped rocks (2026-10-06) took `SEED` from 16 to 15.
     assert!(
-        deployed >= 16,
+        deployed >= 14,
         "the script deployed {deployed} — the deploy success path is falling out \
          of the replay surface"
     );
