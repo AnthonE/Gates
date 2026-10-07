@@ -100,9 +100,11 @@ junk="$(find "$OUT" \( -name '*.rlib' -o -name '*.rmeta' -o -name '*.d' \
 
 # The same id the depot carries, from the same function, so the two never
 # name one commit two ways.
-# The module is the "binary" here: on a dirty tree the id carries its content
-# hash, so two different builds cannot share one directory name.
-ID="$(OUT="$OUT" python3 -c 'import os, sys, pathlib; sys.path.insert(0, "ci"); import depot; print(depot.build_id(pathlib.Path(os.environ["OUT"]) / "client_web_bg.wasm"))')"
+# `build.json` is the "binary" here: on a dirty tree the id carries its
+# content hash, and it holds the hash of BOTH modules — a dirty change to
+# WebGPU-only code leaves `client_web_bg.wasm` byte-identical, and keyed on
+# that the id would repeat and rsync would rewrite the live directory.
+ID="$(OUT="$OUT" python3 -c 'import os, sys, pathlib; sys.path.insert(0, "ci"); import depot; print(depot.build_id(pathlib.Path(os.environ["OUT"]) / "build.json"))')"
 DEST="$ROOT/$ID"
 echo "== build $ID"
 echo "   $(du -sh "$OUT" | cut -f1) staged, $(find "$OUT" -type f | wc -l) files"

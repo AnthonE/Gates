@@ -539,58 +539,106 @@ function counted(res) {
    which is the desktop's frame — the atmosphere, ambient occlusion, bloom,
    four shadow cascades — and once through WebGL2 for every browser without
    it. Bevy picks its GPU API when it is COMPILED and has no fallback at run
-   time, so the page picks, before the download: a browser that hands back a
-   WebGPU adapter gets the WebGPU module — if it has the two optional
-   features that frame leans on and Bevy never checks for: filterable 32-bit
-   floats (the atmosphere's lookup tables) and an `rg11b10ufloat` render
-   target (bloom). Without either the WebGPU frame would be lost, not
-   degraded, so that browser gets WebGL2. `?gfx=webgl2` or `?gfx=webgpu`
-   forces one. An older `build.json` that names no modules is the WebGL2
-   module alone. */
+   time, so the page picks, before the download. A browser gets the WebGPU
+   module when it hands back a hardware adapter with filterable 32-bit
+   floats: Bevy binds the atmosphere's `Rgba32Float` tables as filterable and
+   never checks, so without them the WebGPU frame is lost rather than
+   degraded. A software adapter (`isFallbackAdapter`) gets WebGL2 too — the
+   desktop's frame on a CPU is slower than the cheap one. Everything the
+   device can or cannot bind past that, Rust reads off the device itself
+   (`render::quality::GpuCaps`).
+
+   `?gfx=webgl2` or `?gfx=webgpu` forces one. A WebGPU module that failed on
+   this browser is remembered against that BUILD (`gates.webgpu.failed`), so
+   the next visit goes straight to WebGL2 and a new publish tries again;
+   `?gfx=webgpu` forgets it. An older `build.json` that names no modules is
+   the WebGL2 module alone. */
 const MODULES = {
   webgl2: { js: "./client_web.js", wasm: "client_web_bg.wasm", name: "WebGL2" },
   webgpu: { js: "./client_web_gpu.js", wasm: "client_web_gpu_bg.wasm", name: "WebGPU" },
 };
-async function pickModule(built) {
-  const has = (k) => k === "webgl2" || !!(built && built[k]);
-  const forced = q.get("gfx");
-  if ((forced === "webgl2" || forced === "webgpu") && has(forced)) return forced;
-  if (!has("webgpu") || !navigator.gpu) return "webgl2";
+const GPU_FAILED = "gates.webgpu.failed";
+/* Started at load, beside the `build.json` fetch, rather than after it. */
+const gpuProbe = (async () => {
+  if (!navigator.gpu) return { ok: false, why: "no WebGPU in this browser" };
   try {
     /* A blocklisted GPU answers null; a wedged one may never answer. */
     const adapter = await Promise.race([
       navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
       new Promise((r) => setTimeout(() => r(null), 3000)),
     ]);
-    const needs = ["float32-filterable", "rg11b10ufloat-renderable"];
-    return adapter && needs.every((f) => adapter.features.has(f)) ? "webgpu" : "webgl2";
+    if (!adapter) return { ok: false, why: "no WebGPU adapter" };
+    const info = adapter.info || {};
+    if (info.isFallbackAdapter || adapter.isFallbackAdapter) return { ok: false, why: "software WebGPU adapter" };
+    if (!adapter.features.has("float32-filterable")) return { ok: false, why: "no float32-filterable" };
+    return { ok: true, why: "WebGPU adapter" };
   } catch (err) {
-    return "webgl2";
+    return { ok: false, why: "WebGPU adapter refused" };
   }
+})();
+const moduleKey = (sizes) => sizes ? String(sizes.sha256 || sizes.wasm_bytes || "") : "";
+
+async function pickModule(built) {
+  const has = (k) => (built ? !!built[k] : k === "webgl2");
+  const forced = q.get("gfx");
+  if (forced === "webgpu") { try { localStorage.removeItem(GPU_FAILED); } catch (err) { /* private mode */ } }
+  if ((forced === "webgl2" || forced === "webgpu") && has(forced)) return { gfx: forced, why: "forced by ?gfx" };
+  if (!has("webgpu")) return { gfx: "webgl2", why: "this build has no WebGPU module" };
+  if (!has("webgl2")) return { gfx: "webgpu", why: "this build has no WebGL2 module" };
+  try {
+    if (localStorage.getItem(GPU_FAILED) === moduleKey(built.webgpu)) {
+      return { gfx: "webgl2", why: "WebGPU failed here before" };
+    }
+  } catch (err) { /* private mode */ }
+  const probe = await gpuProbe;
+  return { gfx: probe.ok ? "webgpu" : "webgl2", why: probe.why };
 }
 
-/* The WebGPU module's error hook (`render/web.rs`, `watch_gpu`): WebGPU
-   refuses a pipeline quietly and the frame is simply not drawn, so the first
-   refusal puts a line over the canvas offering the WebGL2 module. The join is
-   spent by then, so the way there is a reload. */
+/* Back to the page and into the WebGL2 module, once: the failure is written
+   against this build before the reload, and the WebGL2 module has no hook
+   that could send it back, so this cannot loop. The session is spent — a
+   canvas that has held a WebGPU context never takes a WebGL2 one, and
+   Bevy's `run()` does not return — so the way there is a reload. */
+let builtModules = null;
+let playStarted = 0;
+function gpuFallBack(why) {
+  try { localStorage.setItem(GPU_FAILED, moduleKey(builtModules && builtModules.webgpu)); } catch (err) { /* private mode */ }
+  window.gatesLeft(`${why} — switched to WebGL2`);
+}
+
+/* The WebGPU module's error hook (`render/web.rs`, `watch_gpu`). WebGPU
+   refuses a pipeline quietly and the frame is simply not drawn. A LOST
+   device draws nothing ever again, so that one reloads into WebGL2; a
+   refusal puts a line over the canvas offering it, and is remembered. */
 let gpuTrouble = false;
-window.gatesGpuError = (msg) => {
-  if (gpuTrouble || window.gatesGfx !== "webgpu") return;
+window.gatesGpuError = (msg, kind) => {
+  if (window.gatesGfx !== "webgpu") return;
+  if (kind === "lost") { gpuFallBack("the graphics device was lost under WebGPU"); return; }
+  try { localStorage.setItem(GPU_FAILED, moduleKey(builtModules && builtModules.webgpu)); } catch (err) { /* private mode */ }
+  if (gpuTrouble) return;
   gpuTrouble = true;
   const bar = document.createElement("div");
   bar.setAttribute("role", "alert");
   bar.style.cssText = "position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:50;"
     + "max-width:min(92vw,640px);padding:10px 14px;border-radius:6px;background:rgba(24,20,16,.92);"
-    + "color:#f2e9dc;font:14px/1.4 'Roboto Condensed',system-ui,sans-serif;box-shadow:0 2px 12px #0008";
+    + "color:#f2e9dc;font:14px/1.4 var(--sans);box-shadow:0 2px 12px #0008";
   const link = document.createElement("a");
   const u = new URL(location.href);
   u.searchParams.set("gfx", "webgl2");
   link.href = u.toString();
   link.textContent = "Reload with WebGL2";
   link.style.cssText = "color:#ffcf7a;margin-left:8px";
-  bar.append("The graphics card refused part of the frame under WebGPU.", link);
+  bar.append("The graphics card refused part of the frame under WebGPU (press Esc to click).", link);
   bar.title = String(msg).slice(0, 400);
   document.body.append(bar);
+};
+/* A panic in the first half-minute of a WebGPU module is almost always its
+   device not starting (Bevy's "Unable to find a GPU!" comes before the hook
+   above exists). `client-web`'s panic hook calls this. */
+window.gatesPanic = () => {
+  if (window.gatesGfx === "webgpu" && playStarted && performance.now() - playStarted < 30000) {
+    gpuFallBack("WebGPU did not start in this browser");
+  }
 };
 
 async function load(gfx, sizes) {
@@ -598,8 +646,12 @@ async function load(gfx, sizes) {
   dl.got = 0;
   dl.want = sizes && Number(sizes.wasm_bytes) > 0 ? Number(sizes.wasm_bytes) : 0;
   paintDownload();
-  const mod = await import(m.js);
-  const res = fetch(new URL(m.wasm, import.meta.url)).then(counted);
+  /* The glue and its module are a pair (wasm-bindgen hashes the import
+     names), so both are asked for by the pair's own hash: a cached glue from
+     the last publish cannot meet this publish's module. */
+  const v = sizes && sizes.sha256 ? "?v=" + String(sizes.sha256).slice(0, 12) : "";
+  const mod = await import(m.js + v);
+  const res = fetch(new URL(m.wasm + v, import.meta.url)).then(counted);
   /* The module's exports, kept on the window for a person with the console
      open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
      the number to read when a tab dies with no message (an out-of-memory
@@ -611,36 +663,37 @@ async function load(gfx, sizes) {
 }
 
 async function boot() {
-  let built = null;
   let bits = [];
   try {
     const r = await fetch("build.json", { cache: "no-cache" });
     if (r.ok) {
       const b = await r.json();
-      built = b.modules || null;
+      builtModules = b.modules || null;
       bits = [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean);
-      if (!built && Number(b.wasm_bytes) > 0) built = { webgl2: { wasm_bytes: b.wasm_bytes } };
+      if (!builtModules && Number(b.wasm_bytes) > 0) builtModules = { webgl2: { wasm_bytes: b.wasm_bytes } };
     }
   } catch (err) { /* a dev build without it: the bar counts megabytes */ }
-  let gfx = await pickModule(built);
+  let { gfx, why } = await pickModule(builtModules);
   const footer = () => {
     $("build").textContent = "Gates " + [...bits, MODULES[gfx].name].join(" · ");
+    $("build").title = why;
   };
   footer();
   paintDownload();
   try {
     try {
-      glue = await load(gfx, built && built[gfx]);
+      glue = await load(gfx, builtModules && builtModules[gfx]);
     } catch (err) {
       /* A WebGPU module that will not compile or instantiate here still
          leaves the WebGL2 one, and a player should get that rather than an
-         error. Anything after instantiation is Bevy's, and fails in the
-         canvas — `?gfx=webgl2` is the way past it. */
-      if (gfx !== "webgpu") throw err;
+         error. Failures after this are Bevy's: `gatesPanic` and
+         `gatesGpuError` above. */
+      if (gfx !== "webgpu" || !(builtModules && builtModules.webgl2)) throw err;
       console.warn("gates: the WebGPU module failed, loading WebGL2", err);
       gfx = "webgl2";
+      why = "the WebGPU module did not load";
       footer();
-      glue = await load(gfx, built && built[gfx]);
+      glue = await load(gfx, builtModules && builtModules[gfx]);
     }
     dl.done = true;
   } catch (err) {
@@ -813,6 +866,7 @@ async function enter(g, audio, row) {
   await audio;
   /* `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
      loop to requestAnimationFrame and `run()` does not come back. */
+  playStarted = performance.now();
   g.play("#gates");
 }
 

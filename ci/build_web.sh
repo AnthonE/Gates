@@ -99,6 +99,15 @@ for m in $modules; do
     --out-name "$stem" \
     --out-dir "$out" \
     "target/wasm32-unknown-unknown/$profile/client_web.wasm"
+  # **Prove which one was bound.** Only wgpu's WebGPU backend imports
+  # `requestAdapter`; a module that has it under the WebGL2 name (a feature
+  # unified in from somewhere) or lacks it under the WebGPU one is the wrong
+  # page, and it would load and draw nothing rather than fail here.
+  if grep -qa '__wbg_requestAdapter_' "$out/${stem}_bg.wasm"; then got=webgpu; else got=webgl2; fi
+  [ "$got" = "$m" ] || {
+    echo "$stem: bound a $got module where the page expects $m" >&2
+    exit 1
+  }
 done
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 # The menu's face is the game's (`render/ui.rs` embeds the same two files), and
@@ -239,8 +248,12 @@ for m in client_web client_web_gpu; do
   mraw=$(stat -c%s "$out/${m}_bg.wasm")
   mgz=$(stat -c%s "$out/${m}_bg.wasm.gz")
   name=$([ "$m" = client_web_gpu ] && echo webgpu || echo webgl2)
+  # The pair's own hash: the page asks for glue and module by it, so a
+  # cached glue from the last publish never meets this one's module
+  # (wasm-bindgen hashes the import names, and a mismatch is a LinkError).
+  sha=$(cat "$out/$m.js" "$out/${m}_bg.wasm" | sha256sum | cut -c1-64)
   printf "   %s_bg.wasm  %d bytes raw, %d gzipped (%s)\n" "$m" "$mraw" "$mgz" "$name"
-  mods="$mods${mods:+,}\"$name\":{\"js\":\"$m.js\",\"wasm\":\"${m}_bg.wasm\",\"wasm_bytes\":$mraw,\"wasm_gz_bytes\":$mgz}"
+  mods="$mods${mods:+,}\"$name\":{\"js\":\"$m.js\",\"wasm\":\"${m}_bg.wasm\",\"wasm_bytes\":$mraw,\"wasm_gz_bytes\":$mgz,\"sha256\":\"$sha\"}"
 done
 raw=$(stat -c%s "$out/client_web_bg.wasm" 2>/dev/null || echo 0)
 # Written beside the module rather than measured and thrown away: the
