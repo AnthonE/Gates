@@ -43,6 +43,7 @@ const CH_CLUMP: u32 = 72; // +octave index, 3 octaves
 const CH_CLUTTER: u32 = 80; // the sub-metre ground population
 const CH_COAST_BAY: u32 = 88; // the coastline's headlands and coves
 const CH_SPECIES: u32 = 96; // which species a stand is painted with
+const CH_PLANT: u32 = 152; // which plant the bush column grows (`plant_of`)
 const CH_MASSIF_PLACE: u32 = 128; // where each interior range stands
 const CH_GULLY: u32 = 136; // +octave index, GULLY_OCTAVES of them
 const CH_MASSIF_WARP: u32 = 144; // +0 the ranges' own warp in x, +2 in z
@@ -6636,7 +6637,15 @@ pub enum Occupant {
     StoneNode = 2,
     MetalNode = 3,
     SulfurNode = 4,
-    Bush = 5,
+    /// A berry bush: picked by hand with `E` for berries (`gather.bush`).
+    /// The one bush on the island that pays anything, which is the
+    /// reference's rule: every other shrub is scenery ([`Shrub`]), and
+    /// cloth grows on its own plant ([`Hemp`]). Drawn by the bush column's
+    /// roll, [`plant_of`].
+    ///
+    /// [`Shrub`]: Occupant::Shrub
+    /// [`Hemp`]: Occupant::Hemp
+    BerryBush = 5,
     Rock = 6,
     BarrelSlot = 7,
     // 8 is deliberately skipped: the client's archetype table is indexed by
@@ -6692,6 +6701,23 @@ pub enum Occupant {
     CarWreck = 19,
     /// A junk pile's stack of tyres: crouch cover.
     TireStack = 20,
+    /// A hemp plant: picked by hand with `E` for cloth (`gather.hemp`), its
+    /// own row rather than a side payout of the bush. Passable, like every
+    /// plant the bush column grows.
+    Hemp = 21,
+    /// A shrub that is only scenery: no prompt, no payout, nothing a swing
+    /// lands on. Most of what the bush column grows, because in the
+    /// reference most bushes are cover and only the berry bush is food.
+    Shrub = 22,
+}
+
+impl Occupant {
+    /// Whether this is one of the three things the bush column grows
+    /// ([`plant_of`]): a shrub, a berry bush or a hemp plant. Every one is
+    /// passable and none blocks a swing, an arrow or a body.
+    pub const fn is_plant(self) -> bool {
+        matches!(self, Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub)
+    }
 }
 
 /// How many species a [`Slot`] may be. **The client's own pools must agree
@@ -6719,7 +6745,49 @@ pub const OCCUPANT_KINDS: usize = 7;
 /// core and trees at their edge. `tests/forest.rs` re-derives both from the
 /// shipped table rather than trusting these.
 pub const ROW_TREE: usize = 0;
+/// The bush column. A cell that draws it grows a PLANT, and which one is a
+/// second roll ([`plant_of`]), so the column's weight is how much scrub
+/// stands somewhere and [`PLANT_SHARES`] is what that scrub is.
 pub const ROW_BUSH: usize = 4;
+
+/// What the bush column grows, per biome: `[berry bush, hemp]` per mille of
+/// the column's draws, and the remainder is a [`Occupant::Shrub`] — scenery.
+/// **(knob)**
+///
+/// Most of it is scenery on purpose. In the reference only the berry bush is
+/// picked and every other shrub is cover; here every bush used to pay cloth
+/// AND berries, so the prompt was on everything green. Hemp is the
+/// meadow's plant and the berry bush the forest edge's, which is where the
+/// treeline transfer puts most of the column.
+pub const PLANT_SHARES: [[u16; 2]; 4] = [
+    [100, 150], // Beach
+    [200, 330], // Meadow
+    [280, 140], // Forest
+    [150, 80],  // Highland
+];
+
+const _: () = {
+    let mut b = 0;
+    while b < PLANT_SHARES.len() {
+        assert!(PLANT_SHARES[b][0] + PLANT_SHARES[b][1] <= 1000);
+        b += 1;
+    }
+};
+
+/// Which plant a cell that drew the bush column grows: its own hash channel,
+/// so the roll that put a plant there and the roll that says which plant are
+/// independent, and every cell that held a bush still holds a plant.
+pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
+    let r = (cell_hash(seed, cell_x, cell_z, CH_PLANT) % 1000) as u16;
+    let [berry, hemp] = PLANT_SHARES[b as usize];
+    if r < berry {
+        Occupant::BerryBush
+    } else if r < berry + hemp {
+        Occupant::Hemp
+    } else {
+        Occupant::Shrub
+    }
+}
 
 /// Per-biome scatter weights in per-mille of a cell draw, order
 /// [Tree, Stone, Metal, Sulfur, Bush, Rock, Barrel]; remainder is None.
@@ -7358,12 +7426,10 @@ fn scatter_in<C: Corners>(
         // is a convex mix of the two — which is what keeps the saturation
         // rail a statement about four pure rows (`scatter_draw_row`).
         let g = clump_in(c, seed, x, z);
+        let moist = moisture_in(c, seed, x, z);
         // And the island's ore budget over the row, so an island's metal and
         // sulfur follow `ORE_TARGET` rather than its rock area.
-        let row = ore_budgeted(
-            scatter_draw_row(table, hy, moisture_in(c, seed, x, z), sl, g),
-            haven,
-        );
+        let row = ore_budgeted(scatter_draw_row(table, hy, moist, sl, g), haven);
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {
@@ -7374,7 +7440,7 @@ fn scatter_in<C: Corners>(
                     1 => Occupant::StoneNode,
                     2 => Occupant::MetalNode,
                     3 => Occupant::SulfurNode,
-                    4 => Occupant::Bush,
+                    4 => plant_of(seed, cell_x, cell_z, biome(hy, moist)),
                     5 => Occupant::Rock,
                     _ => Occupant::BarrelSlot,
                 };
@@ -9181,7 +9247,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 21] = [
+pub const OCCUPANT_R_M: [f32; 23] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -9230,6 +9296,8 @@ pub const OCCUPANT_R_M: [f32; 21] = [
     0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
     CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
     0.42,          // TireStack — the tyre's outer radius
+    0.0,           // Hemp — passable, like the bush
+    0.0,           // Shrub — passable, like the bush
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -9246,7 +9314,7 @@ pub const OCCUPANT_R_M: [f32; 21] = [
 /// 14 m; the sim cannot tell the species apart, so the shorter one wins and
 /// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 21] = [
+pub const OCCUPANT_TOP_M: [f32; 23] = [
     0.0,  // None
     11.0, // Tree — the broadleaf's drawn height
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -9274,6 +9342,8 @@ pub const OCCUPANT_TOP_M: [f32; 21] = [
     0.4,              // FoodCrate — lift 0.2 + half-height 0.2
     CAR_WRECK_PEAK_M, // CarWreck — the roof
     TIRE_STACK_TOP_M, // TireStack
+    0.0,              // Hemp
+    0.0,              // Shrub
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -9330,7 +9400,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),
-        Occupant::Bush => (0.0, 0.0),
+        Occupant::BerryBush => (0.0, 0.0),
         Occupant::Rock => (1.1145, 1.5403),
         Occupant::BarrelSlot => (0.2925, 0.88),
         Occupant::CrateSlot => (0.6801, 0.8),
@@ -9343,6 +9413,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::FoodCrate => (0.5831, 0.4),
         Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
         Occupant::TireStack => (0.42, TIRE_STACK_TOP_M),
+        Occupant::Hemp | Occupant::Shrub => (0.0, 0.0),
     }
 }
 
@@ -9380,7 +9451,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 21 && OCCUPANT_TOP_M.len() == 21);
+    assert!(OCCUPANT_R_M.len() == 23 && OCCUPANT_TOP_M.len() == 23);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -9389,7 +9460,7 @@ const _: () = {
     assert!(occupant_volume(Occupant::StoneNode).0 == OCCUPANT_R_M[2]);
     assert!(occupant_volume(Occupant::MetalNode).0 == OCCUPANT_R_M[3]);
     assert!(occupant_volume(Occupant::SulfurNode).0 == OCCUPANT_R_M[4]);
-    assert!(occupant_volume(Occupant::Bush).0 == OCCUPANT_R_M[5]);
+    assert!(occupant_volume(Occupant::BerryBush).0 == OCCUPANT_R_M[5]);
     assert!(occupant_volume(Occupant::Rock).0 == OCCUPANT_R_M[6]);
     assert!(occupant_volume(Occupant::BarrelSlot).0 == OCCUPANT_R_M[7]);
     assert!(occupant_volume(Occupant::CrateSlot).0 == OCCUPANT_R_M[9]);
@@ -9401,7 +9472,7 @@ const _: () = {
     assert!(occupant_volume(Occupant::StoneNode).1 == OCCUPANT_TOP_M[2]);
     assert!(occupant_volume(Occupant::MetalNode).1 == OCCUPANT_TOP_M[3]);
     assert!(occupant_volume(Occupant::SulfurNode).1 == OCCUPANT_TOP_M[4]);
-    assert!(occupant_volume(Occupant::Bush).1 == OCCUPANT_TOP_M[5]);
+    assert!(occupant_volume(Occupant::BerryBush).1 == OCCUPANT_TOP_M[5]);
     assert!(occupant_volume(Occupant::Rock).1 == OCCUPANT_TOP_M[6]);
     assert!(occupant_volume(Occupant::BarrelSlot).1 == OCCUPANT_TOP_M[7]);
     assert!(occupant_volume(Occupant::CrateSlot).1 == OCCUPANT_TOP_M[9]);
@@ -9424,6 +9495,10 @@ const _: () = {
     assert!(occupant_volume(Occupant::FoodCrate).1 == OCCUPANT_TOP_M[18]);
     assert!(occupant_volume(Occupant::CarWreck).1 == OCCUPANT_TOP_M[19]);
     assert!(occupant_volume(Occupant::TireStack).1 == OCCUPANT_TOP_M[20]);
+    assert!(occupant_volume(Occupant::Hemp).0 == OCCUPANT_R_M[21]);
+    assert!(occupant_volume(Occupant::Shrub).0 == OCCUPANT_R_M[22]);
+    assert!(occupant_volume(Occupant::Hemp).1 == OCCUPANT_TOP_M[21]);
+    assert!(occupant_volume(Occupant::Shrub).1 == OCCUPANT_TOP_M[22]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who

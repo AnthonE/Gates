@@ -24,7 +24,7 @@ const WIN_PX: usize = 384;
 fn colour(o: Occupant) -> [u8; 3] {
     match o {
         Occupant::Tree => [30, 80, 35],
-        Occupant::Bush => [90, 140, 60],
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => [90, 140, 60],
         Occupant::Rock | Occupant::StoneNode => [120, 120, 115],
         Occupant::MetalNode => [150, 120, 100],
         Occupant::SulfurNode => [190, 180, 60],

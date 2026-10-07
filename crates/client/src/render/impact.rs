@@ -201,7 +201,9 @@ impl Matter {
     pub fn of_occupant(o: u8) -> Matter {
         match o {
             x if x == Occupant::Tree as u8 => Matter::Wood,
-            x if x == Occupant::Bush as u8 => Matter::Plant,
+            x if x == Occupant::BerryBush as u8 => Matter::Plant,
+            x if x == Occupant::Hemp as u8 => Matter::Plant,
+            x if x == Occupant::Shrub as u8 => Matter::Plant,
             x if x == Occupant::StoneNode as u8 => Matter::Stone,
             x if x == Occupant::MetalNode as u8 => Matter::Metal,
             x if x == Occupant::SulfurNode as u8 => Matter::Stone,
@@ -271,7 +273,8 @@ pub enum Weapon {
 pub fn strike_height(occupant: u8) -> f32 {
     match occupant {
         x if x == Occupant::Tree as u8 => 1.20,
-        x if x == Occupant::Bush as u8 => 0.55,
+        x if x == Occupant::BerryBush as u8 => 0.55,
+        x if x == Occupant::Hemp as u8 => 0.7,
         x if x == Occupant::BarrelSlot as u8 => 0.80,
         x if x == Occupant::OilBarrel as u8 => 0.80,
         x if x == Occupant::RoadSign as u8 => 1.20,

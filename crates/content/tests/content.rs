@@ -326,7 +326,12 @@ fn hash_moves_with_values() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    g.1 = g.1.replace("per_hit = 5", "per_hit = 4");
+    // The tree's mushrooms, since the bush's berries became its primary.
+    assert!(g.1.contains("output = \"item.mushrooms\"\nper_hit = 1"));
+    g.1 = g.1.replace(
+        "output = \"item.mushrooms\"\nper_hit = 1",
+        "output = \"item.mushrooms\"\nper_hit = 2",
+    );
     assert_ne!(
         base,
         build(&srcs).unwrap().hash(),
@@ -979,7 +984,7 @@ fn bake_refuses_duplicate_archetype() {
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
     entry.1.push_str(
-        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"bush\"\n\
+        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"berry_bush\"\n\
          output = \"item.cloth\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 10\n",
     );
@@ -2093,8 +2098,8 @@ fn a_clock_with_no_answer_is_refused() {
     // Take the berries off the bush: hunger drains, nothing pays food.
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.berries\"",
-        "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
+        "archetype = \"berry_bush\"\noutput = \"item.berries\"",
+        "archetype = \"berry_bush\"\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
     // The honest version of the same defect — the rows simply absent. All
@@ -2110,7 +2115,9 @@ fn a_clock_with_no_answer_is_refused() {
         .unwrap();
     for row in [
         "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n",
-        "\n[gatherable.secondary]\noutput = \"item.berries\"\nper_hit = 5\n",
+        "\n[[gatherable]]\nid = \"gather.bush\"\narchetype = \"berry_bush\"\n\
+         output = \"item.berries\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 5\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2217,14 +2224,14 @@ fn a_drink_that_is_not_a_trade_is_refused() {
 fn a_secondary_that_pays_nothing_is_refused() {
     refuses(
         "gatherables.toml",
-        "output = \"item.berries\"\nper_hit = 5",
-        "output = \"item.berries\"\nper_hit = 0",
+        "output = \"item.mushrooms\"\nper_hit = 1",
+        "output = \"item.mushrooms\"\nper_hit = 0",
         "pays nothing",
     );
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.berries\"",
-        "[gatherable.secondary]\noutput = \"item.cloth\"",
+        "[gatherable.secondary]\noutput = \"item.mushrooms\"",
+        "[gatherable.secondary]\noutput = \"item.wood\"",
         "repeats the primary output",
     );
 }

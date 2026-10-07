@@ -9,8 +9,8 @@
 # An ABSENT `hand` row is how that is said, not `hand = 0`: `validate.rs`
 # refuses a zero yield for any tool including this one, and `bake.rs`
 # initialises `hand_yield: 0`, so deleting the line is the content-only
-# move and writing the zero is a code change. The bush keeps its row on
-# purpose — see its own comment below.
+# move and writing the zero is a code change. The two picked plants keep
+# their rows on purpose — see their own comment below.
 #
 # **A node's whole payout is `hits × yield_per_hit[tool]`, and the two
 # percentages below move WHEN it arrives, never how much** (operator,
@@ -183,30 +183,40 @@ finish_bonus_pct = 20
 "item.pickaxe_stone" = 30
 "item.pickaxe_metal" = 30
 
-# Bush: an instant hand pickup, not a swung node — outside the node band.
-# It is also the island's only food, which is why `validate::structural`
-# refuses content whose survival clock has nothing that pays a consumable
-# (DECISIONS.md §open, "food you can get"). The berries are a `secondary`:
-# flat, no tool row and no weak-spot bonus, because picking is not chopping.
+# Bushes: the berry bush and hemp are instant hand pickups (`E`), not swung
+# nodes — outside the node band. **Every other bush on the island is
+# scenery** (`terrain::Occupant::Shrub`): in the reference only the berry
+# bush is picked, and cloth grows on its own plant. Until 2026-10-06 every
+# bush paid 10 cloth AND 5 berries, so the pick prompt was on everything
+# green. Which plant a bush cell grows is `terrain::plant_of`.
 #
-# **This is the one `hand` row that survived 2026-08-15, and it is exempt
-# for the same reason it has no tool row at all**: you pick a bush, you do
-# not smash it, and the reference hand-picks its own forage too. Deleting
-# it would also be a refused boot rather than a naked bush — `hand = 10` is
-# this node's ONLY yield row, and `validate.rs` refuses an empty yield
+# **These are the `hand` rows that survived 2026-08-15, and they are exempt
+# for the same reason they have no tool row at all**: you pick a plant, you
+# do not smash it, and the reference hand-picks its own forage too. Deleting
+# one would also be a refused boot rather than a naked plant — `hand` is
+# each node's ONLY yield row, and `validate.rs` refuses an empty yield
 # table. So the exemption is both correct and forced, and a future pass
 # that "finishes the sweep" here breaks the food loop and the boot at once.
 
+# The berry bush: berries, the forager's food and water
+# (DECISIONS.md §open, "food you can get").
 [[gatherable]]
 id = "gather.bush"
-archetype = "bush"
+archetype = "berry_bush"
+output = "item.berries"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 5
+
+# Hemp: 10 cloth a plant, the reference's own number.
+[[gatherable]]
+id = "gather.hemp"
+archetype = "hemp"
 output = "item.cloth"
 hits = 1
 weak_spot_bonus_pct = 0
 
 [gatherable.yield_per_hit]
 hand = 10
-
-[gatherable.secondary]
-output = "item.berries"
-per_hit = 5

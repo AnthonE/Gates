@@ -1197,8 +1197,27 @@ fn a_rock_is_not_a_target() {
     assert_eq!(swing_label(Occupant::None as u8), "");
     // 8 is the stump — a consequence of a harvest, never a target.
     assert_eq!(swing_label(8), "");
-    // A bush is picked with `E`, never swung at.
-    assert_eq!(swing_label(Occupant::Bush as u8), "");
+    // A berry bush and hemp are picked with `E`, never swung at, and a
+    // shrub is scenery.
+    for o in [Occupant::BerryBush, Occupant::Hemp, Occupant::Shrub] {
+        assert_eq!(swing_label(o as u8), "", "{o:?}");
+    }
+}
+
+/// The pick prompt says what the plant pays: a berry bush's berries, or
+/// hemp. It said BUSH while every bush paid cloth and berries both.
+#[test]
+fn the_pick_prompt_names_the_plant() {
+    let prompt = |o: Occupant| {
+        pick_mod::Pick {
+            verb: pick_mod::Verb::Pick,
+            occupant: o as u8,
+            ..Default::default()
+        }
+        .prompt(&protocol::ItemCatalog::EMPTY)
+    };
+    assert_eq!(prompt(Occupant::BerryBush), "[E] PICK BERRIES");
+    assert_eq!(prompt(Occupant::Hemp), "[E] PICK HEMP");
 }
 
 /// **A bush is `E`, not the left button** (operator, 2026-10-02). Looking at
@@ -1215,8 +1234,8 @@ fn a_bush_is_picked_with_e_and_never_swung() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
-    let (cx, cz, sx, sy, sz) = find_slot(seed, Occupant::Bush).expect("seed 7 has a bush");
-    let (r, top) = swing_volume(Occupant::Bush);
+    let (cx, cz, sx, sy, sz) = find_slot(seed, Occupant::BerryBush).expect("seed 7 has a bush");
+    let (r, top) = swing_volume(Occupant::BerryBush);
 
     let mut w = Box::new(World::new(seed));
     w.gather = GatherContent::probe_fixture();
@@ -1244,13 +1263,13 @@ fn a_bush_is_picked_with_e_and_never_swung() {
     let swing = resolve_swing(aim, &mut island);
     assert_ne!(
         swing.occupant,
-        Occupant::Bush as u8,
+        Occupant::BerryBush as u8,
         "a swing still lands on a bush"
     );
     let pick = resolve_pick(aim, &mut island);
     assert_eq!(
         pick.occupant,
-        Occupant::Bush as u8,
+        Occupant::BerryBush as u8,
         "E does not name the bush"
     );
     assert_eq!((pick.cx, pick.cz), (cx as u16, cz as u16));
