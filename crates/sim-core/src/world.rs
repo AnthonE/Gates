@@ -6803,8 +6803,11 @@ impl World {
             h.update(&buf);
         }
         // Fires burning: where, until when, and whose — the death a fire
-        // deals is its archer's.
-        h.update(&(self.fires.len() as u64).to_le_bytes());
+        // deals is its archer's. Only when there are any, so a world without
+        // one hashes as it did before fire arrows.
+        if !self.fires.is_empty() {
+            h.update(&(self.fires.len() as u64).to_le_bytes());
+        }
         for f in self.fires.entries() {
             let mut buf = [0u8; 28];
             buf[0..4].copy_from_slice(&f.qx.to_le_bytes());
