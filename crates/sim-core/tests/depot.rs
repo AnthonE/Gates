@@ -106,7 +106,8 @@ fn carriageways_clear_real_capsules_over_final_ground_including_both_edges() {
                     let t = i as f32 / n as f32;
                     for cross in -2..=2 {
                         // Body centres remain inside the carriageway by their radius.
-                        let off = cross as f32 * (terrain::ROAD_HALF_W - CAPSULE_RADIUS_M) * 0.5;
+                        let off =
+                            cross as f32 * (terrain::SIDE_ROAD_HALF_W - CAPSULE_RADIUS_M) * 0.5;
                         let (x, z) = (ax + ex * t + ez / len * off, az + ez * t - ex / len * off);
                         let y = terrain::ground(seed, &h, x, z);
                         assert!(y >= terrain::LAND_MIN_H, "seed {seed} water {x},{z}");

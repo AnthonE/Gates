@@ -159,7 +159,7 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             // at the right POINT and under the right condition, which is the
             // failure `lattice.rs` records — a naive side that re-derives the
             // law from the function under test proves nothing about either.
-            if step <= terrain::ROAD_HALF_W {
+            if step <= terrain::SIDE_ROAD_HALF_W {
                 w = terrain::splat_road(w, terrain::road_band(seed, haven, x, z));
             }
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);

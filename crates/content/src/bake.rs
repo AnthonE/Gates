@@ -67,6 +67,9 @@ pub fn container_index(name: &str) -> Option<usize> {
         "green" => sim_core::loot::LOOT_GREEN,
         "blue" => sim_core::loot::LOOT_BLUE,
         "elite" => sim_core::loot::LOOT_ELITE,
+        "oil_barrel" => sim_core::loot::LOOT_OIL_BARREL,
+        "roadsign" => sim_core::loot::LOOT_ROADSIGN,
+        "food" => sim_core::loot::LOOT_FOOD,
         _ => return None,
     })
 }

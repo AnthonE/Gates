@@ -2130,6 +2130,7 @@ fn a_clock_with_no_answer_is_refused() {
         "test fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(corn_row, "");
+    strip_food_box(&mut srcs);
     let err = build(&srcs).expect_err("a foodless island must be refused");
     assert!(
         err.contains("the clock has no answer"),
@@ -2183,6 +2184,8 @@ fn a_clock_with_no_answer_is_refused() {
             );
         }
     }
+    // The food box's cooked meat waters too.
+    strip_food_box(&mut srcs);
     let err = build(&srcs).expect_err("a dry island with a disarmed drink must be refused");
     assert!(
         err.contains("the clock has no answer"),
@@ -3537,6 +3540,19 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
 /// verb that puts an item in a hand. The clock wall (`validate.rs`) only
 /// asks that SOMETHING answers hunger, so berries alone kept it green —
 /// this asks the per-row question the wall deliberately does not.
+/// Take the roadside food box's table out of `loot.toml`, for the mutants
+/// that strand one food: the box pays every food, so it would answer them.
+fn strip_food_box(srcs: &mut [(&str, String)]) {
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let start =
+        l.1.find("[[loot_table]]\nid = \"loot.food\"")
+            .expect("fixture rot: the food box's table moved");
+    let end = l.1[start + 1..]
+        .find("[[loot_table]]")
+        .map_or(l.1.len(), |e| start + 1 + e);
+    l.1.replace_range(start..end, "");
+}
+
 #[test]
 fn every_consumable_the_content_ships_is_reachable() {
     let c = build(&sources()).expect("shipped content builds");
@@ -3568,6 +3584,7 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the tree's mushroom row moved"
     );
     g.1 = g.1.replace(row, "\n");
+    strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
@@ -3583,6 +3600,7 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(row, "");
+    strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — the bush and the tree keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),

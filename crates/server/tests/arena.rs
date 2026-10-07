@@ -44,8 +44,22 @@ fn meet(
 ) -> Arena {
     let content = content();
     let mut a = Arena::new(temperament);
-    // The agent settles in: it has looked around and chosen a goal.
+    // The agent settles in: it has looked around and chosen a goal…
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    // …and has turned to it. "In front" is where it is looking, so the other
+    // body is placed once the heading holds: staged mid-turn, toward a goal
+    // behind it, "ahead" is a place it is about to turn its back on.
+    let mut last = a.player(ID).frame.yaw;
+    let mut still = 0;
+    for _ in 0..300 {
+        a.step();
+        let yaw = a.player(ID).frame.yaw;
+        still = if yaw == last { still + 1 } else { 0 };
+        last = yaw;
+        if still >= 15 {
+            break;
+        }
+    }
     let weapon = stack(&content, mine);
     a.stage(ID, |p| {
         p.inv[0] = weapon;
@@ -594,9 +608,12 @@ fn the_agent_heals_after_a_fight() {
     let mut a = Arena::new(Temperament::Opportunist);
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
     let spear = stack(&content, "item.spear_wood");
+    // Already knocked about: the spear can win without taking a blow (it
+    // outreaches the rock), and a fight it walks out of untouched leaves
+    // nothing for this test to see healed.
     a.stage(ID, |p| {
         p.inv[0] = spear;
-        p.hp = p.hp_max;
+        p.hp = p.hp_max * 3 / 5;
     });
     assert!(a.shard.connect(1, RUSHER));
     a.step();

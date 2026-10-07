@@ -493,6 +493,16 @@ pub const MAX_SLOT_LIVES: usize = 131_072;
 /// Proposed default, DECISIONS.md §open (occupant collision v0 row).
 pub const SLOT_CACHE_SLOTS: usize = 1_024;
 
+/// Lines in the direct-mapped memo of `cliff::crag` that the occupant query
+/// reads cliff crags through (occupy.rs), on the shard's `World`. A body's
+/// query scans at most 49 spots, so a full shard has `MAX_PLAYERS * 49` live
+/// at once; at 44 B a line this is 1.4 MB. `SLOT_CACHE_SLOTS`'s posture: a
+/// memo of a pure function, so a collision re-resolves (five ground taps off
+/// a cliff) and nothing can be lost. Must stay a power of two.
+pub const CRAG_CACHE_LINES: usize = 32_768;
+/// The same memo for one predicted body (`ClientCore`, fixtures).
+pub const CRAG_CACHE_LINES_ONE: usize = 512;
+
 /// Building-piece definitions the sim preallocates for (the shipped set
 /// is 44 rows — 11 shapes × 4 materials, content/building.toml, since
 /// triangles v0). The content bake refuses a set past this. Structural
@@ -729,7 +739,7 @@ pub const MAX_BOXES: usize = 256;
 /// dropping one and re-minting it on the next open would re-roll the loot
 /// immediately, which turns the cap into a dupe rather than a limit.
 /// Proposed default, DECISIONS.md §open (world containers v0).
-pub const MAX_WORLD_CONTS: usize = 64;
+pub const MAX_WORLD_CONTS: usize = 256;
 
 /// Vendor offers on the island, all kiosks together (`vend.rs`). Refused
 /// past at bake.
@@ -881,7 +891,7 @@ const _: () = assert!(MAX_SKINS.is_multiple_of(64), "a SkinSet is whole u64 word
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a
 /// knob: the index is code (`loot::LOOT_*`), so a table the sim has no
 /// verb for is a bake error rather than a silent extra row.
-pub const MAX_LOOT_TABLES: usize = 8;
+pub const MAX_LOOT_TABLES: usize = 12;
 
 /// Weighted rows one loot table may carry (the shipped crate table uses
 /// 9). The bake refuses past it. Structural cap like `MAX_RECIPE_INPUTS`,

@@ -562,6 +562,11 @@ fn bays_concentrate_the_route_without_enriching_it() {
                 if terrain::ring_band(&haven.ring, x, z) != RoadBand::Shoulder {
                     continue;
                 }
+                // A junk pile is its own draw (roadside junk), not the
+                // shoulder's bay/open split this measures.
+                if terrain::junk_block(seed, cx, cz) {
+                    continue;
+                }
                 let barrel =
                     terrain::scatter(seed, &table, &haven, cx, cz).occupant == Occupant::BarrelSlot;
                 if terrain::in_bay(seed, x, z) {
@@ -688,7 +693,11 @@ fn bays_concentrate_the_route_without_enriching_it() {
 /// its old derivation, ~15% under the measured worst, so it is still low
 /// enough that coastline variance cannot trip it and high enough that halving
 /// the gap between the two knobs does.
-const BAY_RATIO_MIN: f32 = 1.63;
+///
+/// **Re-measured 2026-10-06 for the 8 m road**, whose shoulder now runs 4–7 m
+/// off the centre line rather than 2–5, so different cells fall in it: the
+/// worst seed reads 1.57. Same derivation, ~15% under it.
+const BAY_RATIO_MIN: f32 = 1.33;
 
 /// How far either conservation claim may drift, in per-mille. The two rates
 /// are set against the MEASURED sheltered share, which moves with the seed's

@@ -83,7 +83,6 @@ use crate::limits::{
     MAX_SPENT_ARROWS, MAX_WORLD_CONTS, SKIN_WORDS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
-use crate::loot::{LOOT_BLUE, LOOT_CACHE, LOOT_CRATE, LOOT_ELITE, LOOT_GREEN};
 use crate::movement;
 use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
@@ -416,7 +415,7 @@ pub enum WorldSaveError {
     /// a door whose owner's own four digits no longer open it.
     BadCode,
     /// A world container names a loot table that is not a container's
-    /// (`LOOT_CRATE` or `LOOT_CACHE`). Refused rather than coerced to a
+    /// (`worldcont::occupant_of` knows it). Refused rather than coerced to a
     /// default: a crate silently rolling the barrel's table is the whole
     /// destination gradient quietly deleted, and it would look like
     /// nothing at all in a log.
@@ -1480,8 +1479,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         {
             return Err(WorldSaveError::AddressOutOfRange);
         }
-        if ![LOOT_CRATE, LOOT_CACHE, LOOT_GREEN, LOOT_BLUE, LOOT_ELITE].contains(&(table as usize))
-        {
+        if crate::worldcont::occupant_of(table as usize) == terrain::Occupant::None {
             return Err(WorldSaveError::BadWorldContTable);
         }
         let cell_m = terrain::CELL_SIZE;
@@ -1835,7 +1833,7 @@ mod tests {
             + 256 * 139                     // containers: 13 + 12 eight-byte stacks + the oven's 30
             + 512 * 106                     // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
-            + 64 * 261                      // world containers: 21 + 30 eight-byte stacks
+            + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
             + 64 * 25                       // charges
             + 512 * 34                      // stopped arrows (format 10; host + life at 18)
             + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
@@ -1937,10 +1935,12 @@ mod tests {
         // stopped arrows (host + life), and 256 more loose stacks × 32.
         // 3_495_502 → 3_499_854 at format 19 (free placement): the pose on
         // 1,024 deploys, the slot on 256 hearths, slot + pose on 256 boxes.
-        // 3_499_854 → 3_501_390 at format 20: a stuck arrow's direction,
+        // 3_499_854 → 3_549_966 at roadside junk: 192 more world containers
+        // × 261, for the roadside food boxes.
+        // 3_549_966 → 3_551_502 at format 20: a stuck arrow's direction,
         // three bytes on each of 512 loose stacks.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_501_390,
+            WORLD_SAVE_MAX_BYTES, 3_551_502,
             "the world save ceiling moved"
         );
     }

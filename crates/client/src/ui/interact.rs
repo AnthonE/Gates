@@ -1171,6 +1171,8 @@ pub fn swing_label(occupant: u8) -> &'static str {
         o if o == Occupant::SulfurNode as u8 => "MINE SULFUR",
         // No bush: it is picked with `E` (`resolve_pick`), never swung at.
         o if o == Occupant::BarrelSlot as u8 => "SMASH BARREL",
+        o if o == Occupant::OilBarrel as u8 => "SMASH OIL BARREL",
+        o if o == Occupant::RoadSign as u8 => "SMASH ROAD SIGN",
         _ => "",
     }
 }

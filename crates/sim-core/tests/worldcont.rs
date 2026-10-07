@@ -787,7 +787,7 @@ fn the_cap_is_above_what_terrain_authors() {
     for cx in 0..CELLS_PER_SIDE {
         for cz in 0..CELLS_PER_SIDE {
             let s = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if matches!(s.occupant, Occupant::CrateSlot | Occupant::CacheSlot) {
+            if sim_core::worldcont::table_of(s.occupant).is_some() {
                 authored += 1;
             }
         }

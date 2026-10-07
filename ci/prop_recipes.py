@@ -540,3 +540,147 @@ def crate_blue(k):
 @recipe("crate_elite", "models/prop/crate_elite.glb", kind="centre", size=(1.1, 0.8, 0.8))
 def crate_elite(k):
     _tier_crate(k, "red", "yellow")
+
+
+# ── roadside junk ───────────────────────────────────────────────────────────
+# Rust's roadside spawns (`terrain.rs` "Roadside junk"). The oil barrel, food
+# box and tyre stack are centred like their massings; the sign and the wreck
+# are authored as-is over `ROAD_SIGN_BOXES` / `CAR_WRECK_BOXES` (ground at 0,
+# glTF +Z — Blender −Y — is the sign's face and the wreck's bonnet end).
+
+@recipe("oil_barrel", "models/prop/oil_barrel.glb", kind="centre", size=(0.585, 0.88, 0.585))
+def oil_barrel(k):
+    # A 55-gallon drum: rolled chimes top and bottom, two rolling hoops, the
+    # lid sunk inside the top chime.
+    k.lathe([(0.0, 0.0), (0.268, 0.0), (0.284, 0.008), (0.2925, 0.026), (0.279, 0.044),
+             (0.279, 0.285), (0.2925, 0.293), (0.2925, 0.307), (0.279, 0.315),
+             (0.279, 0.565), (0.2925, 0.573), (0.2925, 0.587), (0.279, 0.595),
+             (0.279, 0.836), (0.2925, 0.854), (0.289, 0.874), (0.276, 0.88), (0.262, 0.866),
+             (0.0, 0.862)], (0, 0, 0), "drumred", n=28)
+    # Rust creeping up from where it stood in the wet.
+    k.lathe([(0.2805, 0.0), (0.2935, 0.026), (0.2805, 0.05)], (0, 0, 0), "rusty", n=28)
+    # Two bungs on the lid.
+    k.cyl(0.032, 0.018, (0.15, 0.04, 0.868), "steel", n=12, bevel=0.003)
+    k.cyl(0.020, 0.016, (-0.16, -0.06, 0.867), "steel", n=10, bevel=0.003)
+    # A hazard diamond on the front.
+    k.slab([(0.0, -0.075), (0.075, 0.0), (0.0, 0.075), (-0.075, 0.0)], 0.004,
+           (0, -0.281, 0.44), "signyellow", plane="XZ", bevel=0.0)
+    k.slab([(0.0, -0.03), (0.03, 0.0), (0.0, 0.03), (-0.03, 0.0)], 0.003,
+           (0, -0.2835, 0.44), "signblack", plane="XZ", bevel=0.0)
+
+
+@recipe("road_sign", "models/prop/road_sign.glb", kind="asis", tex=1024)
+def road_sign(k):
+    # A punched square steel post, 2.2 m, set in a lump of concrete.
+    k.box((0.06, 0.06, 2.2), (0, 0, 1.1), "steel", bevel=0.005)
+    for i in range(26):
+        z = 0.18 + i * 0.075
+        for y in (-0.0305, 0.0305):
+            k.box((0.018, 0.002, 0.018), (0, y, z), "soot", bevel=0.0)
+    k.box((0.08, 0.08, 0.05), (0, 0, 0.025), "concrete", bevel=0.01)
+    # The plate: galvanised sheet behind, yellow enamel in front, a black
+    # border and three chevrons — a bend ahead.
+    k.box((0.9, 0.010, 0.5), (0, -0.040, 1.95), "steel", bevel=0.003)
+    k.box((0.88, 0.006, 0.48), (0, -0.048, 1.95), "signyellow", bevel=0.002)
+    for z in (1.725, 2.175):
+        k.box((0.88, 0.004, 0.022), (0, -0.0525, z), "signblack", bevel=0.0)
+    for x in (-0.429, 0.429):
+        k.box((0.022, 0.004, 0.48), (x, -0.0525, 1.95), "signblack", bevel=0.0)
+    for x in (-0.24, 0.0, 0.24):
+        k.slab([(-0.06, -0.15), (0.0, -0.15), (0.09, 0.0), (0.0, 0.15), (-0.06, 0.15), (0.03, 0.0)],
+               0.004, (x, -0.0525, 1.95), "signblack", plane="XZ", bevel=0.0)
+    # Two straps round the post.
+    for z in (1.78, 2.12):
+        k.box((0.075, 0.07, 0.024), (0, -0.002, z), "iron", bevel=0.004)
+    # Someone used it for target practice.
+    for x, z in ((0.31, 2.06), (-0.17, 1.83), (0.12, 1.79), (-0.33, 2.09)):
+        k.cyl(0.011, 0.022, (x, -0.046, z), "soot", axis="Y", n=8, bevel=0.0)
+
+
+@recipe("food_crate", "models/prop/food_crate.glb", kind="centre", size=(1.0, 0.4, 0.6))
+def food_crate(k):
+    # A plank box in a batten frame, a three-board lid, rope handles at the
+    # ends and a stencilled label on the front.
+    k.box((0.94, 0.54, 0.34), (0, 0, 0.2), "planks", bevel=0.006)
+    for x in (-0.48, 0.48):
+        for y in (-0.28, 0.28):
+            k.box((0.04, 0.04, 0.40), (x, y, 0.2), "darkwood", bevel=0.006)
+    for z in (0.025, 0.375):
+        for y in (-0.28, 0.28):
+            k.box((1.0, 0.04, 0.05), (0, y, z), "darkwood", bevel=0.006)
+        for x in (-0.48, 0.48):
+            k.box((0.04, 0.6, 0.05), (x, 0, z), "darkwood", bevel=0.006)
+    for y in (-0.18, 0.0, 0.18):
+        k.box((0.92, 0.165, 0.025), (0, y, 0.385), "planks", bevel=0.004)
+    for x in (-0.49, 0.49):
+        for y in (-0.29, 0.29):
+            for z in (0.03, 0.37):
+                k.box((0.03, 0.03, 0.06), (x, y, z), "iron", bevel=0.003)
+    for s in (-1, 1):
+        k.torus(0.07, 0.012, (s * 0.505, 0, 0.22), "rope", axis="X", n=12, m=5, arc=180)
+    k.box((0.34, 0.004, 0.14), (0, -0.274, 0.2), "signwhite", bevel=0.0)
+    k.box((0.30, 0.003, 0.03), (0, -0.2765, 0.23), "signblack", bevel=0.0)
+    k.box((0.20, 0.003, 0.02), (-0.04, -0.2765, 0.175), "signblack", bevel=0.0)
+
+
+TYRE = [(0.19, -0.075), (0.21, -0.105), (0.30, -0.118), (0.375, -0.115), (0.398, -0.098),
+        (0.405, -0.07), (0.405, -0.05), (0.396, -0.045), (0.396, -0.025), (0.405, -0.02),
+        (0.405, 0.02), (0.396, 0.025), (0.396, 0.045), (0.405, 0.05), (0.405, 0.07),
+        (0.398, 0.098), (0.375, 0.115), (0.30, 0.118), (0.21, 0.105), (0.19, 0.075)]
+
+
+@recipe("tire_stack", "models/prop/tire_stack.glb", kind="centre", size=(0.84, 1.2, 0.84))
+def tire_stack(k):
+    # Five tyres, not quite square on each other: a square-shouldered
+    # section with three tread grooves round the crown.
+    # Offsets stay small: the fit is uniform, and a tyre pushed out on a
+    # diagonal reaches past the stack's blocked radius.
+    offs = ((0.0, 0.0), (0.006, -0.004), (-0.005, 0.006), (0.007, 0.003), (-0.003, -0.007))
+    for i, (x, y) in enumerate(offs):
+        k.lathe(TYRE, (x, y, 0.12 + i * 0.24), "tyre", n=22, closed=True)
+
+
+@recipe("car_wreck", "models/prop/car_wreck.glb", kind="asis", tex=1024)
+def car_wreck(k):
+    # A stripped saloon sat on its sills: inside `CAR_WRECK_BOXES` — body
+    # 1.7 × 4.0 to 0.7, cabin 1.5 × 2.1 to 1.4, roof to 1.5 — in Blender
+    # space, so the cabin's glTF z −0.2 is y +0.2 here.
+    P, R = "carpaint", "rusty"
+    k.box((1.56, 3.80, 0.22), (0, 0, 0.11), R, bevel=0.03)
+    k.box((1.70, 3.70, 0.40), (0, 0, 0.42), P, bevel=0.07, segs=2)
+    k.box((1.64, 0.22, 0.30), (0, -1.86, 0.38), P, bevel=0.06, segs=2)
+    k.box((1.64, 0.22, 0.34), (0, 1.86, 0.40), P, bevel=0.06, segs=2)
+    # Bonnet (front, −Y), rusted through; boot lid in the paint.
+    k.box((1.58, 1.08, 0.05), (0, -1.30, 0.645), R, rot=(-3, 0, 0), bevel=0.02)
+    k.box((1.58, 0.70, 0.05), (0, 1.52, 0.645), P, rot=(2, 0, 0), bevel=0.02)
+    # Bumpers, lamps, plates.
+    for y in (-1.96, 1.96):
+        k.box((1.62, 0.08, 0.13), (0, y, 0.28), "iron", bevel=0.02)
+    for x in (-0.6, 0.6):
+        k.cyl(0.075, 0.05, (x, -1.965, 0.47), "soot", axis="Y", n=12, bevel=0.004)
+        k.box((0.22, 0.04, 0.09), (x, 1.965, 0.50), "red", bevel=0.005)
+    # Wheel arches and the flat tyres left in them.
+    for y in (-1.22, 1.22):
+        k.cyl(0.34, 1.705, (0, y, 0.2), "soot", axis="X", n=18, bevel=0.0)
+        for x in (-0.68, 0.68):
+            k.cyl(0.30, 0.2, (x, y, 0.18), "tyre", axis="X", n=16, bevel=0.03)
+    # Door seams and handles.
+    for x in (-0.852, 0.852):
+        for y in (-0.62, 0.32, 1.02):
+            k.box((0.004, 0.008, 0.36), (x, y, 0.44), "soot", bevel=0.0)
+        for y in (-0.05, 0.85):
+            k.box((0.01, 0.12, 0.025), (x, y, 0.56), "steel", bevel=0.003)
+    # The glasshouse: a side profile extruded across the car, glass inside a
+    # painted frame.
+    k.slab([(-0.85, 0.0), (1.25, 0.0), (1.06, 0.68), (-0.42, 0.68)], 1.40, (0, 0, 0.70),
+           "carglass", plane="YZ", bevel=0.01)
+    for x in (-0.715, 0.715):
+        k.slab([(-0.85, 0.0), (-0.75, 0.0), (-0.34, 0.68), (-0.44, 0.68)], 0.07, (x, 0, 0.70), P,
+               plane="YZ", bevel=0.004)
+        k.slab([(0.22, 0.0), (0.34, 0.0), (0.34, 0.68), (0.22, 0.68)], 0.07, (x, 0, 0.70), P,
+               plane="YZ", bevel=0.004)
+        k.slab([(1.25, 0.0), (1.12, 0.0), (0.95, 0.68), (1.07, 0.68)], 0.07, (x, 0, 0.70), P,
+               plane="YZ", bevel=0.004)
+    k.box((1.46, 2.08, 0.04), (0, 0.2, 0.72), P, bevel=0.01)
+    # The roof, caved in a little.
+    k.box((1.42, 1.62, 0.08), (0, 0.32, 1.41), P, rot=(0, 1.5, 0), bevel=0.02)
