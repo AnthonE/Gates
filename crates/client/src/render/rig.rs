@@ -580,16 +580,11 @@ pub const NIGHT_DIP: f32 = 0.35;
 /// Moonlight is ~0.25 lux; this is far brighter because the exposure never
 /// adapts — the number is a look, not a photometric claim.
 ///
-/// ⚠ **It is also the ceiling on every flame in this client, which nobody
-/// had measured until a torch needed one.** A point source stops beating a
-/// uniform ambient at `sqrt(lumens / 4π·ambient)`
-/// (`ui::hold::pool_radius_m`), so against 60 lux the campfire's 900 lm
-/// reaches **1.09 m** and the torch's 600 lm reaches **0.89 m** — both are
-/// pools you stand in rather than lights you see by, and no honest lumen
-/// figure fixes that from the other end: a real pitch torch is ~250 lm and
-/// this one is already 2.4× it. 240× moonlight is where the ratio went.
-/// Changing it is one owner over this file's coupled set (`CLAUDE.md`
-/// §traps) and a look only a person can judge — `NOW.md` §0tl.
+/// Through that exposure it draws the ground at about 1/255 — black — and
+/// so did a flame at its own lumens. Flames are opened by
+/// [`flame_gain`] instead, the eye's adaptation applied to the lights that
+/// matter at night; this term carries the night's look and is not part of
+/// that.
 pub const NIGHT_AMBIENT_LUX: f32 = 60.0;
 
 /// The sun's elevation at a point in the cycle: a sine arch over the day
@@ -698,6 +693,37 @@ pub fn exposure_ev100(frac: f32) -> f32 {
     let set = ((e + 0.12) / 0.09).clamp(0.0, 1.0);
     let s = rise.min(set);
     DAY_EV100 - TWILIGHT_OPEN_STOPS * s * s * (3.0 - 2.0 * s)
+}
+
+/// How many times its own lumens a flame is drawn at, deep in the night.
+///
+/// The exposure is daylight's ([`DAY_EV100`]) and never adapts, so a flame
+/// priced in honest lumens is black at night: the operator's frame under a
+/// lit 600 lm torch read **1/255 on the ground** (2026-10-07, *"i cant see
+/// it lighting the area"*). An eye opens about ten stops from noon to a
+/// moonless night; this is that opening, applied to the lights a player
+/// carries and builds (the torch, a fire) and to nothing that was already
+/// tuned against the dark (the ambient, the sky). By day it is 1, so a lit
+/// torch at noon is still not a second sun.
+pub const FLAME_NIGHT_GAIN: f32 = 1000.0;
+
+/// [`FLAME_NIGHT_GAIN`] at a point in the cycle, under `occ` of cloud: an
+/// eye opens in proportion to the dark, so this is the inverse of the share
+/// of sun that gets through, from 1 at a clear noon up to the night's cap.
+pub fn flame_gain(frac: f32, occ: f32) -> f32 {
+    let lit = sun_lux(frac) * (1.0 - 0.9 * occ);
+    (1.0 / lit.max(1.0 / FLAME_NIGHT_GAIN)).clamp(1.0, FLAME_NIGHT_GAIN)
+}
+
+/// This frame's [`flame_gain`], written by [`day_night`] (the one owner of
+/// the hour) and read by everything that burns.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct FlameGain(pub f32);
+
+impl Default for FlameGain {
+    fn default() -> Self {
+        Self(1.0)
+    }
 }
 
 /// The sun's light as a share of full daylight: `daylight`, with the
@@ -818,11 +844,15 @@ type CamLight = (
 /// the fog and the exposure. The weather (weather v0) arrives as one more input:
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
+// Nine, which clippy counts: the flame gain is the ninth, and it is written
+// here for the reason the sun is — this is the one owner of the hour.
+#[allow(clippy::too_many_arguments)]
 pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
+    mut gain: ResMut<FlameGain>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
     mut cam: Query<CamLight, With<EyeCam>>,
@@ -833,6 +863,10 @@ pub fn day_night(
     let elev = sun_elevation(frac);
     let w = weather.as_deref().copied().unwrap_or_default();
     let occ = w.occlusion();
+    let g = flame_gain(frac, occ);
+    if gain.0 != g {
+        gain.0 = g;
+    }
     if let Ok((mut t, mut d, disk)) = sun.single_mut() {
         t.rotation = sun_rotation_render(frac);
         // The twilight tail lights the sky after sunset; cloud takes the

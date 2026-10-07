@@ -88,6 +88,7 @@ fn app_pinned(pin: DayPin) -> App {
     // writer). The defaults have it on, which is what every assertion below
     // about `shadows_enabled` is written against.
     app.init_resource::<client::render::Settings>();
+    app.init_resource::<rig::FlameGain>();
     app.add_systems(Update, day_night);
     // The rig's two entities, at their spawn-time shapes.
     app.world_mut().spawn((

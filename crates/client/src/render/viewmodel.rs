@@ -232,6 +232,26 @@ pub const VIEWMODEL_SWING_WRIST_MAX: f32 = 1.45;
 /// path, arm and wrist, shorter. A repair knock, not a felling blow.
 pub const VIEWMODEL_TAP: f32 = 0.45;
 
+/// A [`Stroke::Swipe`]'s wind-up (the torch), YXZ radians about the shoulder
+/// and metres: a short draw up and out from where the torch is already
+/// carried, up by the head, rather than the chop's heave over the shoulder.
+/// The head comes down onto the chop's aim ray at the chop's apex — a
+/// forehand arc from the upper right through the crosshair, with the flame
+/// on screen all the way.
+pub const VIEWMODEL_SWIPE_COCK: Vec3 = Vec3::new(-0.04, 0.06, 0.0);
+pub const VIEWMODEL_SWIPE_DRAW: Vec3 = Vec3::new(0.0, 0.02, 0.05);
+/// The swipe's strike: the chop's, swept further in across the body by the
+/// out-turn the torch is carried at ([`VIEWMODEL_LIFT`]), so the head comes
+/// down across the frame onto the crosshair rather than beside it.
+pub const VIEWMODEL_SWIPE_STRIKE: Vec3 = Vec3::new(
+    VIEWMODEL_SWING_STRIKE.x - VIEWMODEL_LIFT.x,
+    VIEWMODEL_SWING_STRIKE.y,
+    VIEWMODEL_SWING_STRIKE.z,
+);
+/// How far the swipe's wrist cocks the head back, radians — a flick, where
+/// the chop's [`VIEWMODEL_SWING_BACK`] lays the head over the shoulder.
+pub const VIEWMODEL_SWIPE_BACK: f32 = 0.08;
+
 /// The bash (a rock, an empty fist, anything small): the wind-up draws the
 /// fist back and out, YXZ radians about the shoulder…
 pub const VIEWMODEL_BASH_COCK: Vec3 = Vec3::new(-0.06, 0.06, 0.0);
@@ -701,7 +721,7 @@ pub fn chop_snap(def: &HeldModelDef, cock: f32, strike: f32) -> Quat {
     let apex = swing_apex_s() / VIEWMODEL_SWING_S;
     let (rot, off) = stroke_pose(def.stroke, apex);
     let lit = if def.light.is_some() { 1.0 } else { 0.0 };
-    let rig = carried(carry_of(Some(def)), lift_at(lit, apex), rot, off);
+    let rig = carried(carry_of(Some(def)), lit, rot, off);
     let palm = rig.transform_point(palm_rig());
     let reach = def.ahead_m() * rig.scale.x;
     let ray = Vec3::new(
@@ -719,7 +739,12 @@ pub fn chop_snap(def: &HeldModelDef, cock: f32, strike: f32) -> Quat {
     let want = tilt().inverse() * (rig.rotation.inverse() * want_view);
     let (axis, turn) = turn_between(item_rest_dir(def), want);
     let turn = turn.min(VIEWMODEL_SWING_WRIST_MAX);
-    Quat::from_axis_angle(axis, k * (turn * strike - VIEWMODEL_SWING_BACK * cock))
+    let back = if def.stroke == Stroke::Swipe {
+        VIEWMODEL_SWIPE_BACK
+    } else {
+        VIEWMODEL_SWING_BACK
+    };
+    Quat::from_axis_angle(axis, k * (turn * strike - back * cock))
 }
 
 /// The bash's wrist: the item's long axis tipped toward the view's −Z at the
@@ -738,7 +763,7 @@ pub fn bash_snap(def: &HeldModelDef, cock: f32, strike: f32) -> Quat {
 pub fn stroke_snap(def: Option<&HeldModelDef>, cock: f32, strike: f32) -> Quat {
     match def {
         Some(d) => match d.stroke {
-            Stroke::Chop | Stroke::Tap => chop_snap(d, cock, strike),
+            Stroke::Chop | Stroke::Tap | Stroke::Swipe => chop_snap(d, cock, strike),
             Stroke::Bash => bash_snap(d, cock, strike),
             Stroke::Thrust => thrust_snap(d, strike),
             Stroke::Shot => Quat::IDENTITY,
@@ -825,6 +850,19 @@ pub fn tap_pose(s: f32) -> (Quat, Vec3) {
     )
 }
 
+/// The swipe: a short draw ([`VIEWMODEL_SWIPE_COCK`]) and a strike across
+/// the body ([`VIEWMODEL_SWIPE_STRIKE`]).
+pub fn swipe_pose(s: f32) -> (Quat, Vec3) {
+    arm_pose(
+        s,
+        1.0,
+        VIEWMODEL_SWIPE_COCK,
+        VIEWMODEL_SWIPE_DRAW,
+        VIEWMODEL_SWIPE_STRIKE,
+        VIEWMODEL_SWING_THROW,
+    )
+}
+
 /// The bash: the fist drawn back and out, then punched in toward the
 /// crosshair and away from the eye.
 pub fn bash_pose(s: f32) -> (Quat, Vec3) {
@@ -890,6 +928,7 @@ pub fn stroke_pose(stroke: Stroke, s: f32) -> (Quat, Vec3) {
     match stroke {
         Stroke::Chop => swing_pose(s),
         Stroke::Tap => tap_pose(s),
+        Stroke::Swipe => swipe_pose(s),
         Stroke::Bash => bash_pose(s),
         Stroke::Thrust => thrust_pose(s),
         Stroke::Shot => (Quat::IDENTITY, Vec3::ZERO),
@@ -937,27 +976,18 @@ pub const VIEWMODEL_CARRY_SCALE: f32 = 1.35;
 pub const VIEWMODEL_CARRY_SHIFT: Vec3 = Vec3::new(0.10, -0.02, 0.0);
 
 /// The raise a lit item is carried at — the whole arm turned about the
-/// shoulder ([`VIEWMODEL_SWING_PIVOT`]), YXZ radians: out to the right, and
-/// up. The reference game holds a torch up by the head, flame in the top-right
-/// corner where it lights the way without sitting in it.
-pub const VIEWMODEL_LIFT: Vec3 = Vec3::new(-0.10, 0.15, 0.0);
+/// shoulder ([`VIEWMODEL_SWING_PIVOT`]), YXZ radians: out to the right. The
+/// reference game holds a torch up beside the head, flame in the upper right
+/// where it lights the way without sitting in it — and all of it on screen:
+/// with 0.15 of pitch on top, the flame burned off the top of the frame
+/// once it sat on the head (operator, 2026-10-07).
+pub const VIEWMODEL_LIFT: Vec3 = Vec3::new(-0.10, 0.0, 0.0);
 /// How fast the arm comes up to, or down from, the raise and the carry, 1/s.
 pub const VIEWMODEL_LIFT_RATE: f32 = 8.0;
 /// Where the arm goes while a deployable is held as a blueprint
 /// (`sheet`): down out of the frame, view space metres. The sheet runs off
 /// the bottom of the frame, so the hands holding it are down there too.
 pub const VIEWMODEL_STOW: Vec3 = Vec3::new(0.06, -0.42, 0.0);
-/// Where in a stroke the arm has come all the way down out of the raise, as
-/// stroke progress: with the wind-up's own peak. A chop wound up from a
-/// torch held overhead leaves the top-right of the frame, so the arm drops
-/// to swing and comes back up after ([`lift_at`]).
-pub const VIEWMODEL_LIFT_DROP: f32 = 0.15;
-
-/// The raise at stroke progress `s` (1 at rest), for a resting raise `lift`.
-pub fn lift_at(lift: f32, s: f32) -> f32 {
-    lift * (1.0 - bump(s, VIEWMODEL_LIFT_DROP))
-}
-
 /// How much of the carry a row takes. A thrust takes none: its point is
 /// solved onto the crosshair at the depth of the sim's reach
 /// ([`thrust_snap`]), and a spear drawn a third longer would visibly run
@@ -1022,41 +1052,48 @@ pub fn carried(carry: f32, lift: f32, rot: Quat, off: Vec3) -> Transform {
 #[derive(Component)]
 pub struct HandLight;
 
-/// The visible flame on a lit torch in your own hand: a child of
-/// [`HandLight`], so it sits where the light does. `core` is the hot inner
-/// egg, drawn smaller inside the orange mantle.
+/// The fire on a lit torch in your own hand: a small pool of flame tongues
+/// simulated in [`HandLight`]'s own frame and drawn as one mesh under it, so
+/// it stays on the torch head through every bob, sway and swing
+/// ([`hand_fire`]). It replaced two additive spheres that read as one peach
+/// blob (operator, 2026-10-07: *"the fire effect kinda sucks"*).
+///
+/// **In the hand's frame, not the world's.** The world pool's fire is left
+/// behind by the body carrying it: a tongue lives a third of a second, a
+/// walking body covers a metre and more in that, and a turn of the head
+/// sweeps the torch half a metre — so world-space tongues on a torch half a
+/// metre from the eye trail off the head the moment anything moves. These
+/// ride the torch and take back only [`HAND_FIRE_TRAIL`] of its motion
+/// through the air, which bends the flame away from a swing or a run
+/// without tearing it off. The tongues are `fx::world::torch_flame`'s, the
+/// emitter another player's torch burns with in the world. The embers stay
+/// world-space (`fx::world::fires`): a spark left behind is what a spark
+/// does.
 #[derive(Component)]
-pub struct HandFlame {
-    pub core: bool,
+pub struct HandFire {
+    pool: super::fx::pool::Pool,
+    /// Where the emitter was last frame, world space.
+    last: Option<Vec3>,
 }
 
-/// The first-person torch's particles, as a fraction of a fire pit's — a
-/// size under the remote torch's `fx::world::TORCH_FIRE_SCALE`, because this
-/// one burns half a metre from the eye rather than across a clearing.
+/// The first-person torch's world embers, as a fraction of a fire pit's —
+/// a size under the remote torch's `fx::world::TORCH_FIRE_SCALE`, because
+/// this one burns half a metre from the eye rather than across a clearing.
 pub const HAND_FIRE_SCALE: f32 = 0.22;
 
-/// The flame's mantle: radius and how many radii tall, metres. It sits on
-/// the torch head with its foot at the crown — the emitter is
-/// `hold::FLAME_LIFT_M` above it — and the core is [`FLAME_CORE`] of it.
-pub const FLAME_R_M: f32 = 0.02;
-pub const FLAME_TALL: f32 = 2.4;
-pub const FLAME_CORE: f32 = 0.55;
+/// How much of the torch head's motion through the air the flame takes back
+/// — 0 is welded to the head, 1 is left where it was.
+pub const HAND_FIRE_TRAIL: f32 = 0.45;
+/// A jump of the head bigger than this in a frame is a teleport (a respawn,
+/// a reconnect), not a motion, metres.
+pub const HAND_FIRE_JUMP_M: f32 = 1.0;
+/// Particles the hand's fire may hold.
+pub const HAND_FIRE_POOL: usize = 96;
 
-/// The flame's transform at time `t` seconds: a mantle (or its core) that
-/// flickers taller and thinner by two incommensurate waves, so the beat
-/// never visibly repeats. Pure, so a test can hold the flame on the head.
-pub fn hand_flame_pose(core: bool, t: f32) -> Transform {
-    let k = if core { FLAME_CORE } else { 1.0 };
-    let flick = 1.0 + 0.12 * (t * 17.0).sin() + 0.07 * (t * 29.0 + 1.3).sin();
-    let r = FLAME_R_M * k * (1.0 - 0.35 * (flick - 1.0));
-    let h = FLAME_R_M * FLAME_TALL * k * flick;
-    Transform {
-        // Foot on the crown: the egg's bottom is `h` below its centre, and
-        // the crown is the lift below the emitter.
-        translation: Vec3::Y * (h - crate::ui::hold::FLAME_LIFT_M),
-        rotation: Quat::IDENTITY,
-        scale: Vec3::new(r, h, r),
-    }
+/// A flame's brightness over time, about 1: three waves that never line up,
+/// so the light the torch throws breathes rather than pulses.
+pub fn flame_flicker(t: f32) -> f32 {
+    1.0 + 0.07 * (t * 11.0).sin() + 0.05 * (t * 23.0 + 1.3).sin() + 0.03 * (t * 37.0 + 0.4).sin()
 }
 
 /// The child that carries whichever model is in hand. Separate from
@@ -1274,6 +1311,7 @@ pub fn spawn_item(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     maps: Res<PropMaps>,
+    fx: Res<super::fx::Fx>,
     cam: Query<Entity, With<EyeCam>>,
 ) {
     if *done {
@@ -1384,53 +1422,38 @@ pub fn spawn_item(
                             shadows_enabled: false,
                             ..default()
                         },
-                        // The flame you can SEE, which your own torch never
-                        // had: a lit one was a light with no fire, while
-                        // everyone else's drew `bodies::BodyFlame`'s. The
-                        // same component on the same emitter, so
-                        // `fx::world::fires` burns it only while
-                        // `hand_light` has it lit, at a torch's size. The
-                        // smoke leaves well above the head so it does not
-                        // hang in front of your own eyes.
+                        // The embers and the smoke, which the world pool
+                        // throws while `hand_light` has the emitter lit; the
+                        // tongues are `HandFire`'s, drawn in this frame.
+                        // The smoke leaves well above the head so it does
+                        // not hang in front of your own eyes.
                         super::fx::world::FireFx {
                             flames: true,
                             flame_dy: 0.0,
                             smoke_dy: 0.6,
                             scale: HAND_FIRE_SCALE,
+                            tongues: super::fx::world::Tongues::Owned,
                         },
                         Transform::IDENTITY,
                     ))
                     .with_children(|light| {
-                        // The flame's body: two additive eggs, a dim orange
-                        // mantle and a hot core, hung off the emitter so
-                        // they sit on the torch head through every bob and
-                        // swing. World-space particles trail a moving hand
-                        // (which is what a flame does) and this does not, so
-                        // the torch reads as burning at a sprint too.
-                        // `hand_flame` shows, hides and flickers them.
-                        let egg = meshes.add(Sphere::new(1.0).mesh().uv(12, 8));
-                        for (core, color) in [
-                            (false, LinearRgba::new(1.5, 0.52, 0.12, 1.0)),
-                            (true, LinearRgba::new(2.2, 1.35, 0.55, 1.0)),
-                        ] {
-                            light.spawn((
-                                HandFlame { core },
-                                Mesh3d(egg.clone()),
-                                // Front faces only: an additive egg drawn
-                                // from both sides doubles into one flat
-                                // blob, where one side leaves the core to
-                                // be the brighter middle.
-                                MeshMaterial3d(materials.add(StandardMaterial {
-                                    base_color: Color::LinearRgba(color),
-                                    unlit: true,
-                                    alpha_mode: AlphaMode::Add,
-                                    ..default()
-                                })),
-                                Transform::from_scale(Vec3::ZERO),
-                                bevy::light::NotShadowCaster,
-                                Visibility::Hidden,
-                            ));
-                        }
+                        // The flame you can SEE: one mesh of tongues in the
+                        // emitter's frame, so it sits on the torch head
+                        // through every bob and swing. Empty, and so drawn
+                        // as nothing, while the torch is out.
+                        light.spawn((
+                            HandFire {
+                                pool: super::fx::pool::Pool::new(HAND_FIRE_POOL, false),
+                                last: None,
+                            },
+                            Mesh3d(meshes.add(super::fx::pool::pool_mesh(HAND_FIRE_POOL))),
+                            MeshMaterial3d(fx.glow_mat.clone()),
+                            Transform::IDENTITY,
+                            Visibility::Inherited,
+                            // The pool's bounds are its first, empty write.
+                            NoFrustumCulling,
+                            bevy::light::NotShadowCaster,
+                        ));
                     });
                 });
             });
@@ -1891,6 +1914,22 @@ pub fn pose(def: &crate::ui::hold::HeldModelDef, palm: Vec3) -> Transform {
     }
 }
 
+/// Where a lit row's flame burns, in the item's hold frame (the frame
+/// [`HeldItem`] and a remote body's grip hang things in): [`FLAME_LIFT_M`]
+/// over the crown of the model as [`pose`] places it.
+///
+/// Read off the same pose the mesh is drawn with, palm offset and all. The
+/// light used to hang at `flame_m` straight up from the frame's origin —
+/// the WRIST — while the mesh hangs off [`VIEWMODEL_PALM`], so the fire
+/// burned 13 cm beside the torch head (operator, 2026-10-07: *"its not near
+/// the actual torch"*).
+///
+/// [`FLAME_LIFT_M`]: crate::ui::hold::FLAME_LIFT_M
+pub fn flame_at(def: &HeldModelDef) -> Vec3 {
+    pose(def, VIEWMODEL_PALM).transform_point(Vec3::Y * def.height_m)
+        + Vec3::Y * crate::ui::hold::FLAME_LIFT_M
+}
+
 #[allow(clippy::type_complexity)]
 pub fn swap(
     net: Option<NonSend<Net>>,
@@ -2021,49 +2060,87 @@ pub fn swap(
 /// one entity that outlives every swap.
 pub fn hand_light(
     net: Option<NonSend<Net>>,
+    time: Res<Time>,
+    gain: Res<super::rig::FlameGain>,
     q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
 ) {
-    let want = net.as_deref().and_then(|n| {
-        let core = &n.session.core;
-        // A downed body has dropped what it held, and the sim burns no
-        // flame on it (`light::is_lit`) — so neither does this screen.
-        let latch = n.light && !core.wounded && !core.dead;
-        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, latch)
-    });
-    apply_hand_light(want, q);
+    let want = net.as_deref().and_then(lit_in_hand);
+    // The night eye's gain (`rig::flame_gain`) and the flame's own breath.
+    apply_hand_light(want, gain.0 * flame_flicker(time.elapsed_secs()), q);
 }
 
-/// Show and flicker [`HandFlame`] while the torch in your hand is lit — the
-/// same derived flame [`hand_light`] lights the world with.
-pub fn hand_flame(
+/// The [`crate::ui::hold::HELD_MODELS`] row burning in your own hand, if
+/// any — what [`hand_light`] lights the world with and [`hand_fire`] draws.
+fn lit_in_hand(n: &Net) -> Option<usize> {
+    let core = &n.session.core;
+    // A downed body has dropped what it held, and the sim burns no flame on
+    // it (`light::is_lit`) — so neither does this screen.
+    let latch = n.light && !core.wounded && !core.dead;
+    crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, latch)
+}
+
+/// Burn the fire on the torch in your hand ([`HandFire`]): step its tongues,
+/// let the air take back a share of the head's motion, light new ones while
+/// the torch is lit, and turn the lot to face the eye.
+///
+/// In `PostUpdate` after the propagation, `fx::draw`'s slot and reason: a
+/// billboard faces the camera this frame renders, from where the hand is
+/// this frame.
+pub fn hand_fire(
     net: Option<NonSend<Net>>,
     time: Res<Time>,
-    mut q: Query<(&HandFlame, &mut Transform, &mut Visibility)>,
+    cam: Query<&GlobalTransform, (With<EyeCam>, Without<HandFire>)>,
+    mut q: Query<(&mut HandFire, &Mesh3d, &GlobalTransform)>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let lit = net.as_deref().is_some_and(|n| {
-        let core = &n.session.core;
-        let latch = n.light && !core.wounded && !core.dead;
-        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, latch).is_some()
-    });
-    let t = time.elapsed_secs();
-    for (flame, mut tf, mut vis) in &mut q {
-        let want = if lit {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *vis != want {
-            *vis = want;
+    use super::fx::pool::Cam;
+    let dt = time.delta_secs().min(0.1);
+    let lit = net.as_deref().and_then(lit_in_hand).is_some();
+    let Ok(cam) = cam.single() else { return };
+    for (mut fire, mesh, gt) in &mut q {
+        let fire = &mut *fire;
+        let (scale, rot, at) = gt.to_scale_rotation_translation();
+        let inv = rot.inverse();
+        let k = 1.0 / scale.x.max(1e-4);
+        fire.pool.step(dt);
+        if let Some(last) = fire.last {
+            let moved = at - last;
+            if moved.length() < HAND_FIRE_JUMP_M {
+                fire.pool.shift(-(inv * moved) * (k * HAND_FIRE_TRAIL));
+            }
         }
-        if lit {
-            *tf = hand_flame_pose(flame.core, t);
+        fire.last = Some(at);
+        // Out, or put away: the emitter goes back to the wrist this frame
+        // (`apply_hand_light`), and what was burning would go with it.
+        if !lit {
+            fire.pool.clear();
+        }
+        if lit && dt > 0.0 {
+            // Fire rises up, whatever angle the torch is held at — mostly
+            // up the SCREEN, because the torch is: it rides the view, so a
+            // flame rising to the world's up streams at the lens whenever
+            // the player looks at their feet.
+            let up = (inv * Vec3::from(cam.up()) * 0.7 + inv * Vec3::Y * 0.3).normalize_or(Vec3::Y);
+            let crown = Vec3::Y * -crate::ui::hold::FLAME_LIFT_M;
+            super::fx::world::torch_flame(&mut fire.pool, crown, up, dt, true);
+        }
+        if !fire.pool.needs_write() {
+            continue;
+        }
+        let local = Cam {
+            pos: gt.affine().inverse().transform_point3(cam.translation()),
+            right: inv * Vec3::from(cam.right()),
+            up: inv * Vec3::from(cam.up()),
+        };
+        if let Some(m) = meshes.get_mut(&mesh.0) {
+            fire.pool.write(m, &local, Vec3::ZERO);
         }
     }
 }
 
-/// [`hand_light`] with the held row as a value. The half a gate can drive —
-/// `structures::apply_fire_lights` is the same split for the same reason:
-/// the socket is the only thing the system adds.
+/// [`hand_light`] with the held row and the gain as values. The half a gate
+/// can drive — `structures::apply_fire_lights` is the same split for the
+/// same reason: the socket is the only thing the system adds.
 ///
 /// A row with no `light` and an empty hand are one case on purpose. There is
 /// no third state: an emitter that is off is a zero, not a hidden entity,
@@ -2078,30 +2155,31 @@ pub fn hand_flame(
 /// facts, not about a `PointLight`.
 pub fn apply_hand_light(
     want: Option<usize>,
+    gain: f32,
     mut q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
 ) {
-    let (lumens, range, lift) = match want.map(|i| &crate::ui::hold::HELD_MODELS[i]) {
+    let (lumens, range, at) = match want.map(|i| &crate::ui::hold::HELD_MODELS[i]) {
         Some(row) => match row.light {
-            Some(l) => (l.lumens, l.range_m, row.flame_m()),
-            None => (0.0, 0.0, 0.0),
+            Some(l) => (l.lumens * gain, l.range_m, flame_at(row)),
+            None => (0.0, 0.0, Vec3::ZERO),
         },
-        None => (0.0, 0.0, 0.0),
+        None => (0.0, 0.0, Vec3::ZERO),
     };
     for (mut light, mut tf) in &mut q {
         // Assign only on a change, `apply_fire_lights`' reason exactly:
         // `PointLight` is `Changed`-tracked and the render world re-extracts
-        // what moved, so writing the same lumens every frame would re-upload
-        // this light forever. The transform is the same — and it is the
-        // stronger case here, because a `Transform` write on a parent of
-        // nothing still dirties the propagation.
+        // what moved. A lit torch flickers, so it changes every frame; an
+        // unlit one is written once. The transform is the same — and it is
+        // the stronger case here, because a `Transform` write on a parent
+        // still dirties the propagation.
         if light.intensity != lumens {
             light.intensity = lumens;
         }
         if light.range != range {
             light.range = range;
         }
-        if tf.translation.y != lift {
-            tf.translation.y = lift;
+        if tf.translation != at {
+            tf.translation = at;
         }
     }
 }
@@ -2471,7 +2549,7 @@ pub fn animate(
     m.idle_drift = bob + Vec3::Y * m.heave;
     *t = carried(
         m.carry * (1.0 - raise),
-        lift_at(m.lift, s),
+        m.lift,
         lag * arc * draw_turn,
         throw + bob + draw_off + Vec3::Y * m.heave,
     );
