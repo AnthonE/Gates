@@ -2,7 +2,7 @@
   "out": "film/ads/gates-trailer-30s-16x9.mp4",
   "size": [1920, 1080],
   "fps": 30,
-  "shots": ["film/shots/land-b", "film/shots/land", "film/shots/base", "film/shots/base-b"],
+  "shots": ["film/shots/night", "film/shots/land-b", "film/shots/land", "film/shots/base", "film/shots/base-b"],
   "bank": "film/bank",
   "fade_in": 0.6,
   "fade_out": 0.8,
