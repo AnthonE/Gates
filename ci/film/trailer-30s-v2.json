@@ -10,10 +10,15 @@
   "crf": 16,
   "maxrate": "9M",
   "grade": "eq=contrast=1.04:saturation=1.05,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02",
-  "finish": {"halation": 0.12, "vignette": 0.35, "grain": 3, "letterbox": 2.39},
+  "finish": {
+    "halation": 0.12,
+    "vignette": 0.35,
+    "grain": 3,
+    "letterbox": 2.39
+  },
   "clips": [
     {"shot": "dawn-sea", "in": 2.0, "len": 4.0, "game": 0.6},
-    {"shot": "zig-crown", "in": 1.5, "len": 4.0, "game": 0.4, "transition": "cut"},
+    {"shot": "zig-reveal", "in": 1.5, "len": 4.0, "game": 0.4, "transition": "cut", "grade": "eq=gamma=1.15:contrast=1.05:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02"},
     {"shot": "build-lapse2", "in": 0.5, "len": 2.667, "game": 0.25, "transition": "cut"},
     {"shot": "base-golden", "in": 3.8, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "base-storm", "in": 1.5, "len": 2.666, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.08:saturation=0.72:gamma=1.05,colorbalance=rs=-0.03:bs=0.04"},
@@ -26,7 +31,9 @@
     {"at": 13.6, "len": 2.3, "text": "SURVIVE", "size": 0.13, "y": 0.5},
     {"at": 17.4, "len": 2.4, "text": "RAID", "size": 0.15, "y": 0.5}
   ],
-  "flashes": [{"at": 17.3, "len": 0.2}],
+  "flashes": [
+    {"at": 17.3, "len": 0.2}
+  ],
   "music": [
     {"src": "30_MusicOpenTense.wav", "at": 0.0, "gain": 0.85, "fade_in": 0.8},
     {"src": "33_MusicTurnTense.wav", "at": 8.0, "gain": 0.85},
@@ -42,7 +49,10 @@
     {"src": "trailer_braam.wav", "at": 23.95, "gain": 0.9}
   ],
   "card": {
-    "len": 6.5, "fade": 0.6, "shot": "zig-crown", "at": 5.5,
+    "len": 6.5,
+    "fade": 0.6,
+    "shot": "zig-reveal",
+    "at": 5.0,
     "title": "GATES",
     "lines": ["THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER", "PLAY NOW  ·  ELOPROS.COM/GAMES/GATES"]
   }

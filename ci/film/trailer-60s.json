@@ -21,7 +21,7 @@
     {"shot": "dawn-sea", "in": 0.3, "len": 8.0, "game": 0.6},
     {"shot": "beach-push", "in": 0.6, "len": 5.333, "game": 0.7, "transition": "cut", "grade": "eq=gamma=1.18:contrast=1.06:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.04:bh=-0.02"},
     {"shot": "aerial-zig", "in": 1.0, "len": 5.333, "game": 0.3, "transition": "cut"},
-    {"shot": "zig-crown", "in": 1.0, "len": 5.334, "game": 0.4, "transition": "cut"},
+    {"shot": "zig-reveal", "in": 1.0, "len": 5.334, "game": 0.4, "transition": "cut", "grade": "eq=gamma=1.15:contrast=1.05:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02"},
     {"shot": "build-lapse2", "in": 0.1, "len": 5.333, "game": 0.25, "transition": "cut"},
     {"shot": "base-golden", "in": 3.8, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "zig-dusk", "in": 2.0, "len": 2.667, "game": 0.5, "transition": "cut"},
@@ -76,8 +76,8 @@
   "card": {
     "len": 8.0,
     "fade": 0.6,
-    "shot": "zig-crown",
-    "at": 5.5,
+    "shot": "zig-reveal",
+    "at": 5.0,
     "title": "GATES",
     "lines": ["THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER", "PLAY NOW  ·  ELOPROS.COM/GAMES/GATES"]
   },
