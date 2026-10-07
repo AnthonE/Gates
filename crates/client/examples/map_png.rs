@@ -69,6 +69,9 @@ fn main() {
         );
     };
     row("HAVEN", haven.x, haven.z);
+    if haven.ziggurat.live {
+        row("ZIGGURAT", haven.ziggurat.x, haven.ziggurat.z);
+    }
     for (i, w) in haven.minor.iter().enumerate() {
         if w.live {
             row(&format!("site {i} {:?}", w.kind), w.x, w.z);

@@ -10,7 +10,7 @@ PIL in the game's own face (Roboto Condensed), since ads mostly play muted.
 
     {
       "out": "film/ads/trailer.mp4", "size": [1920, 1080], "fps": 30,
-      "shots": "film/shots/wide",            # dir of NN-name.mp4 + .wav
+      "shots": "film/shots/wide",            # dir (or dirs) of NN-name.mp4 + .wav
       "bank": "film/bank",                   # soundbank dir (music, sfx)
       "fade": 0.3,                           # default crossfade, seconds
       "clips": [{"shot": "beach", "in": 0.5, "len": 3.5,
@@ -22,6 +22,20 @@ PIL in the game's own face (Roboto Condensed), since ads mostly play muted.
       "card": {"len": 4, "shot": "beach", "at": 2.0,
                "title": "GATES", "lines": ["...", "..."]}
     }
+
+More, all optional:
+
+    "grade": "curves=...",      # every clip's ffmpeg grade unless it has one
+    clip "transition": "fade" | "black" | "white" | "cut"   # into this clip
+    clip "speed": 0.5            # retime the clip (slow it down, speed it up)
+    "finish": {"halation": 0.15, # highlights bloom into a warm glow
+               "vignette": 0.4,  # radians, ffmpeg's vignette angle
+               "grain": 5,       # temporal luma grain
+               "letterbox": 2.39},  # bars to this aspect
+    "flashes": [{"at": 14.1, "len": 0.2}],   # a white frame that fades
+    music/sfx "in": 3.0, "fade_in": 0.5      # start partway in, ease in
+
+`ci/film_sfx.py DIR` writes trailer hits, risers and whooshes into a bank.
 """
 
 import json
@@ -45,12 +59,14 @@ def run(cmd):
     return r.stdout
 
 
-def find_shot(shots_dir, name, ext):
-    for f in sorted(os.listdir(shots_dir)):
-        stem, e = os.path.splitext(f)
-        if e == ext and stem.split("-", 1)[-1] == name:
-            return os.path.join(shots_dir, f)
-    sys.exit(f"film_cut: no shot `{name}` ({ext}) in {shots_dir}")
+def find_shot(shots_dirs, name, ext):
+    """`shots_dirs` is one directory or several, searched in order."""
+    for d in shots_dirs:
+        for f in sorted(os.listdir(d)):
+            stem, e = os.path.splitext(f)
+            if e == ext and stem.split("-", 1)[-1] == name:
+                return os.path.join(d, f)
+    sys.exit(f"film_cut: no shot `{name}` ({ext}) in {', '.join(shots_dirs)}")
 
 
 def tracked(draw, xy, text, font, fill, tracking):
@@ -151,7 +167,7 @@ def cut(spec_path):
 
     W, H = spec["size"]
     fps = spec.get("fps", 30)
-    shots = rel(spec["shots"])
+    shots = [rel(d) for d in (spec["shots"] if isinstance(spec["shots"], list) else [spec["shots"]])]
     bank = rel(spec.get("bank", "bank"))
     default_fade = spec.get("fade", 0.3)
     clips = spec["clips"]
@@ -173,24 +189,34 @@ def cut(spec_path):
     prev = None
     for k, c in enumerate(clips):
         src = find_shot(shots, c["shot"], ".mp4")
-        i = add_input("-ss", str(c.get("in", 0.0)), "-t", str(c["len"]), "-i", src)
-        chain = f"[{i}:v]fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},setsar=1"
+        sp = c.get("speed", 1.0)
+        i = add_input("-ss", str(c.get("in", 0.0)), "-t", str(c["len"] * sp), "-i", src)
+        chain = f"[{i}:v]"
+        if sp != 1.0:
+            # Retimed with motion-compensated tweening, so a slowed shot
+            # gains frames rather than holding each one twice.
+            chain += f"setpts=PTS/{sp},"
+            if sp < 1.0:
+                chain += f"minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:vsbmc=1,"
+        chain += f"fps={fps},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},setsar=1"
         if c.get("push"):
             # A slow push-in: scale up over the clip and crop the centre.
             z = c["push"]
             chain += f",scale=w='iw*(1+{z}*t/{c['len']})':h=-2:eval=frame:flags=lanczos,crop={W}:{H}"
-        if c.get("grade"):
-            chain += "," + c["grade"]
+        if c.get("grade", spec.get("grade")):
+            chain += "," + c.get("grade", spec.get("grade"))
         vf.append(chain + f",format=yuv420p,settb=1/{fps}[c{k}]")
         if prev is None:
             prev = f"c{k}"
             starts.append(0.0)
             t = c["len"]
         else:
-            f = c.get("fade", default_fade)
+            kind = c.get("transition", "fade")
+            f = 0 if kind == "cut" else c.get("fade", default_fade)
             if f > 0:
                 off = t - f
-                vf.append(f"[{prev}][c{k}]xfade=transition=fade:duration={f}:offset={off:.4f}[x{k}]")
+                how = {"fade": "fade", "black": "fadeblack", "white": "fadewhite"}[kind]
+                vf.append(f"[{prev}][c{k}]xfade=transition={how}:duration={f}:offset={off:.4f}[x{k}]")
             else:
                 off = t
                 # `concat` hands back the microsecond timebase, which the
@@ -225,6 +251,36 @@ def cut(spec_path):
         t = off + card["len"]
     total = t
 
+    # ---- the finish: the lab's half of the look, over everything but words
+    fin = spec.get("finish", {})
+    if fin.get("halation"):
+        # Only what is near white glows: the blurred copy is cut to the
+        # highlights first, so the blacks stay black.
+        sig = max(4, H // 54)
+        vf.append(f"[{prev}]format=gbrp,split[h0][h1];"
+                  f"[h1]curves=all='0/0 0.62/0 1/1',gblur=sigma={sig},"
+                  f"colorchannelmixer=rr=1:gg=0.62:bb=0.38[h2];"
+                  f"[h0][h2]blend=all_mode=screen:all_opacity={fin['halation']},format=yuv420p[hal]")
+        prev = "hal"
+    post = []
+    if fin.get("vignette"):
+        post.append(f"vignette=angle={fin['vignette']}")
+    if fin.get("grain"):
+        post.append(f"noise=c0s={fin['grain']}:c0f=t+u")
+    if fin.get("letterbox"):
+        bar = max(0, round((H - W / fin["letterbox"]) / 2))
+        post.append(f"drawbox=x=0:y=0:w=iw:h={bar}:color=black:t=fill,"
+                    f"drawbox=x=0:y=ih-{bar}:w=iw:h={bar}:color=black:t=fill")
+    if post:
+        vf.append(f"[{prev}]{','.join(post)}[fin]")
+        prev = "fin"
+    for k, fl in enumerate(spec.get("flashes", [])):
+        a, ln = fl["at"], fl.get("len", 0.2)
+        i = add_input("-f", "lavfi", "-i", f"color=c=white:s={W}x{H}:r={fps}:d={a + ln}")
+        vf.append(f"[{i}:v]format=rgba,fade=t=out:st={a}:d={ln}:alpha=1[fl{k}]")
+        vf.append(f"[{prev}][fl{k}]overlay=0:0:enable='between(t,{a},{a + ln})'[f{k}]")
+        prev = f"f{k}"
+
     # ---- captions, each a still layer faded in and out over the picture
     for k, cap in enumerate(spec.get("captions", [])):
         png = os.path.join(tmp, f"cap{k}.png")
@@ -253,16 +309,23 @@ def cut(spec_path):
         if g <= 0:
             continue
         src = find_shot(shots, c["shot"], ".wav")
-        i = add_input("-ss", str(c.get("in", 0.0)), "-t", str(c["len"]), "-i", src)
+        sp = c.get("speed", 1.0)
+        i = add_input("-ss", str(c.get("in", 0.0)), "-t", str(c["len"] * sp), "-i", src)
         f = min(c.get("fade", default_fade), c["len"] / 3) or 0.05
         ms = int(starts[k] * 1000)
-        af.append(f"[{i}:a]aresample=48000,volume={g},afade=t=in:d={f},"
+        # A slowed clip's sound drops in pitch with it, which is the sound
+        # slow motion makes in every trailer.
+        retime = f"asetrate={int(48000 * sp)},aresample=48000," if sp != 1.0 else ""
+        af.append(f"[{i}:a]aresample=48000,{retime}volume={g},afade=t=in:d={f},"
                   f"afade=t=out:st={c['len'] - f}:d={f},adelay={ms}|{ms}[g{k}]")
         mix.append(f"[g{k}]")
     for k, m in enumerate(spec.get("music", []) + spec.get("sfx", [])):
-        i = add_input("-i", rel(os.path.join(bank, m["src"])) if not os.path.isabs(m["src"]) else m["src"])
+        src = rel(os.path.join(bank, m["src"])) if not os.path.isabs(m["src"]) else m["src"]
+        i = add_input("-ss", str(m.get("in", 0.0)), "-i", src)
         ms = int(m["at"] * 1000)
         chain = f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo,volume={m.get('gain', 1.0)}"
+        if m.get("fade_in"):
+            chain += f",afade=t=in:d={m['fade_in']}"
         if m.get("cut"):
             chain += f",atrim=0:{m['cut']}"
         if m.get("fade_out"):
@@ -283,12 +346,18 @@ def cut(spec_path):
     poster = spec.get("poster")
     if poster:
         frame = os.path.join(tmp, "poster_bg.png")
-        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(poster.get("at", 1.0)),
-             "-i", find_shot(shots, poster["shot"], ".mp4"), "-frames:v", "1", frame])
+        if poster.get("image"):
+            # A still from `gates --film` (`still: true`) rather than a video
+            # frame: full resolution, converged, no motion blur.
+            frame = rel(poster["image"])
+        else:
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(poster.get("at", 1.0)),
+                 "-i", find_shot(shots, poster["shot"], ".mp4"), "-frames:v", "1", frame])
         design = dict(card or {}, **{k: v for k, v in poster.items() if k in ("title", "lines", "dim")})
         design.setdefault("dim", 0.3)
         design["blur"] = False
-        card_png(rel(poster["out"]), W, H, design, frame)
+        PW, PH = poster.get("size", [W, H])
+        card_png(rel(poster["out"]), PW, PH, design, frame)
         print(f"film_cut: {rel(poster['out'])}")
     args += ["-filter_complex", ";".join(vf + af), "-map", "[vout]"]
     if mix:

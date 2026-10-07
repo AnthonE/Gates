@@ -185,11 +185,11 @@ fn main() -> AppExit {
     let mut window = WindowPlugin::default();
     if let Some((script, _)) = &film {
         // The frame is the film's, not the box's: exactly the shot list's
-        // size, and never resized by a window manager.
+        // size (times its supersample), and never resized by a window manager.
+        let (w, h) = script.window();
         window.primary_window = Some(Window {
             title: "gates — film".into(),
-            resolution: bevy::window::WindowResolution::new(script.width, script.height)
-                .with_scale_factor_override(1.0),
+            resolution: bevy::window::WindowResolution::new(w, h).with_scale_factor_override(1.0),
             resizable: false,
             ..default()
         });

@@ -1,0 +1,26 @@
+{
+  "recording": "film/zig.rec",
+  "out": "film/stills",
+  "width": 3840, "height": 2160, "fov": 45, "settle": 24, "hold": 28,
+  "look": {"saturation": 1.08, "contrast": 1.05},
+  "shots": [
+    {"name": "dawn-sea", "at": 20, "still": true, "hour": 0.028, "weather": "clear", "fov": 40,
+     "keys": [{"t": 0, "pos": [1070, 1.2, 785], "look": [826, 13, 494]}],
+     "look": {"exposure": 0.3, "temperature": 0.04, "saturation": 1.14}},
+    {"name": "beach", "at": 20.2, "still": true, "hour": 0.06, "weather": "clear", "fov": 38,
+     "keys": [{"t": 0, "pos": [1062, 1.6, 735], "look": [1150, 7, 905]}],
+     "look": {"exposure": 0.15, "temperature": 0.03}},
+    {"name": "aerial", "at": 20.4, "still": true, "hour": 0.11, "weather": "clear", "fov": 50,
+     "keys": [{"t": 0, "pos": [1480, 150, 1050], "look": [1650, 30, 2300]}],
+     "look": {"saturation": 1.12}},
+    {"name": "zig-sunset", "at": 20.6, "still": true, "hour": 0.84, "weather": "clear", "fov": 30,
+     "keys": [{"t": 0, "pos": [2350, 1.8, 3044], "look": [2496, 24, 3168]}],
+     "look": {"focus": 190, "fstop": 2.0, "exposure": 0.2, "temperature": 0.05, "saturation": 1.16}},
+    {"name": "zig-night", "at": 20.8, "still": true, "hour": 0.935, "weather": "clear", "fov": 46,
+     "keys": [{"t": 0, "pos": [2410, 2.0, 3082], "look": [2496, 22, 3168]}],
+     "look": {"exposure": 0.6, "temperature": -0.04, "saturation": 1.1}},
+    {"name": "lake", "at": 21, "still": true, "hour": 0.842, "weather": "clear", "fov": 44,
+     "keys": [{"t": 0, "pos": [1390, 1.0, 3170], "look": [1645, 5, 3365]}],
+     "look": {"exposure": 0.1, "temperature": 0.05, "saturation": 1.16}}
+  ]
+}
