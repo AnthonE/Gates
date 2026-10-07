@@ -184,8 +184,9 @@ fn noise3(p: Vec3, seed: u32) -> f32 {
     y0 + (y1 - y0) * u.z
 }
 
-/// A rock mesh being built: flat-shaded triangles in world space, with the
-/// attributes the ground material reads.
+/// A rock mesh being built in world space, with the attributes the ground
+/// material reads: flat-shaded triangles ([`RockSoup::tri`]) or shared,
+/// smooth-shaded vertices ([`RockSoup::vertex`], [`RockSoup::face`]).
 #[derive(Default)]
 pub struct RockSoup {
     pos: Vec<[f32; 3]>,
@@ -194,22 +195,33 @@ pub struct RockSoup {
     col: Vec<[f32; 4]>,
     /// `UV_1`: the value multiplier, and dry.
     val: Vec<[f32; 2]>,
+    idx: Vec<u32>,
 }
 
 impl RockSoup {
     pub fn is_empty(&self) -> bool {
-        self.pos.is_empty()
+        self.idx.is_empty()
     }
 
+    /// One flat-shaded triangle, its front the side its winding faces.
     fn tri(&mut self, p: [Vec3; 3], moss: [f32; 3], value: [f32; 3]) {
         let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-        for k in 0..3 {
-            self.pos.push(p[k].to_array());
-            self.nrm.push(n.to_array());
-            let m = moss[k];
-            self.col.push([0.0, m * 0.55, m * 0.45, 1.0 - m]);
-            self.val.push([value[k], 0.0]);
-        }
+        let v = [0, 1, 2].map(|k| self.vertex(p[k], n, moss[k], value[k]));
+        self.face(v[0], v[1], v[2]);
+    }
+
+    /// A vertex, for [`RockSoup::face`] to share.
+    pub fn vertex(&mut self, p: Vec3, n: Vec3, moss: f32, value: f32) -> u32 {
+        self.pos.push(p.to_array());
+        self.nrm.push(n.to_array());
+        self.col.push([0.0, moss * 0.55, moss * 0.45, 1.0 - moss]);
+        self.val.push([value, 0.0]);
+        (self.pos.len() - 1) as u32
+    }
+
+    /// A triangle over three vertices, its front the side its winding faces.
+    pub fn face(&mut self, a: u32, b: u32, c: u32) {
+        self.idx.extend_from_slice(&[a, b, c]);
     }
 
     pub fn mesh(self) -> Mesh {
@@ -246,7 +258,7 @@ impl RockSoup {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
         .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])
         .with_inserted_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; n])
-        .with_inserted_indices(Indices::U32((0..n as u32).collect()))
+        .with_inserted_indices(Indices::U32(self.idx))
     }
 }
 
@@ -265,8 +277,12 @@ pub struct RockShape {
     pub tz: f32,
     /// Variation key.
     pub key: u32,
-    /// Whether moss may grow on its top.
-    pub moss: bool,
+    /// How much moss grows on what faces up: `0` none, `1` patches, more
+    /// for a top grassed nearly over.
+    pub moss: f32,
+    /// How deep the planes that knock off its edges and corners cut,
+    /// metres: `0` leaves the rounded box.
+    pub chisel: f32,
     /// Coarsest the faces may be: 1 draws a chunk, not a block.
     pub min_seg: usize,
     /// The ground material's value multiplier at the rock's top
@@ -276,7 +292,7 @@ pub struct RockShape {
 
 impl RockShape {
     /// A sim block.
-    pub fn of(seed: u64, b: &boulder::Block, moss: bool) -> Self {
+    pub fn of(seed: u64, b: &boulder::Block, moss: f32) -> Self {
         RockShape {
             x: b.x,
             z: b.z,
@@ -289,6 +305,7 @@ impl RockShape {
             tz: b.tz,
             key: (seed as u32) ^ ((b.shape as u32) << 8) ^ (b.yaw as u32).wrapping_mul(0x2545_F491),
             moss,
+            chisel: 0.0,
             min_seg: 2,
             value: ROCK_VALUE,
         }
@@ -328,6 +345,7 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
     let rho = Vec3::new(rw / r.hx, rw / half_h, rw / r.hz).min(Vec3::splat(0.95));
     let taper =
         (ROCK_TAPER * (0.4 + 0.6 * h01(r.key, 9))).min(ROCK_TAPER_MAX_M / r.hx.min(r.hz).max(0.1));
+    let cuts = chisel_planes(r, half_h, chunk);
     // Where a point of the unit box lands, how far it was pushed (for the
     // shading), and its outward direction.
     let place = |u: Vec3| -> (Vec3, f32, Vec3) {
@@ -337,9 +355,21 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         // same in metres on every axis.
         let n = ((u - inner) / rho).normalize_or_zero();
         let p = inner + n * rho;
-        let t = (p.y + 1.0) * 0.5;
-        let shrink = 1.0 - taper * t;
-        let (lx, lz) = (p.x * r.hx * shrink, p.z * r.hz * shrink);
+        let shrink = 1.0 - taper * (p.y + 1.0) * 0.5;
+        // Local metres about the box's middle, then knocked back onto every
+        // chisel plane it stands past: a convex rock cut by planes, its
+        // edges and corners broken off as flat facets.
+        let mut l = Vec3::new(p.x * r.hx * shrink, p.y * half_h, p.z * r.hz * shrink);
+        for _ in 0..CHISEL_PASSES {
+            for (cn, cd) in cuts {
+                let over = cn.dot(l) - cd;
+                if over > 0.0 {
+                    l -= cn * over;
+                }
+            }
+        }
+        let t = (l.y / half_h + 1.0) * 0.5;
+        let (lx, lz) = (l.x, l.z);
         let top = r.y1 + r.tx * lx + r.tz * lz;
         let (wx, wz) = r.world(lx, lz);
         let w = Vec3::new(wx, r.y0 + t * (top - r.y0), wz);
@@ -424,11 +454,15 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
                         d.swap(1, 2);
                     }
                     let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-                    let moss = if r.moss {
-                        let m = ((n.y - 0.6) / 0.3).clamp(0.0, 1.0);
+                    let moss = if r.moss > 0.0 {
+                        // A lusher top holds turf on steeper facets too.
+                        let lush = (r.moss - 1.0).max(0.0);
+                        let lo = 0.6 - 0.15 * lush.min(1.0);
+                        let m = ((n.y - lo) / 0.3).clamp(0.0, 1.0);
                         let c = (p[0] + p[1] + p[2]) / 3.0;
-                        let patch = (noise3(c * 0.22, r.key ^ 0x3c) * 1.8 - 0.5).clamp(0.0, 1.0);
-                        m * m * (3.0 - 2.0 * m) * patch * 0.85
+                        let patch = (noise3(c * 0.22, r.key ^ 0x3c) * 1.8 - 0.5 + 0.9 * lush)
+                            .clamp(0.0, 1.0);
+                        m * m * (3.0 - 2.0 * m) * patch * 0.85 * r.moss.min(1.0)
                     } else {
                         0.0
                     };
@@ -444,6 +478,41 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
             }
         }
     }
+}
+
+/// Chisel planes on one rock: at most this many.
+const CHISEL_CUTS: usize = 6;
+/// Rounds of knocking a point back onto the planes; two planes meeting at an
+/// edge settle in a couple.
+const CHISEL_PASSES: usize = 3;
+
+/// The planes that break a rock's edges, as `(normal, offset)` in its local
+/// metres about the box's middle (`+Y` up, `+Z` its `dir`): each faces up or
+/// out toward an edge or corner and stands `chisel` metres or less inside
+/// the box's own support there. An unused plane never cuts.
+fn chisel_planes(r: &RockShape, half_h: f32, chunk: bool) -> [(Vec3, f32); CHISEL_CUTS] {
+    let mut cuts = [(Vec3::Y, f32::INFINITY); CHISEL_CUTS];
+    if chunk || r.chisel <= 0.0 {
+        return cuts;
+    }
+    let n = 3 + (h01(r.key, 0xc0) * (CHISEL_CUTS - 2) as f32) as usize;
+    for (k, cut) in cuts.iter_mut().take(n.min(CHISEL_CUTS)).enumerate() {
+        let h = |c: u32| h01(r.key ^ 0xc415_e100, k as u32 * 8 + c);
+        let sx = if h(1) < 0.5 { -1.0 } else { 1.0 };
+        let sz = if h(2) < 0.5 { -1.0 } else { 1.0 };
+        // An edge (one horizontal axis near zero) or a corner, leaning up
+        // anywhere from level to steep.
+        let (ax, az) = match (h(3) * 3.0) as u32 {
+            0 => (0.15 * h(4), 1.0),
+            1 => (1.0, 0.15 * h(4)),
+            _ => (0.4 + 0.6 * h(4), 0.4 + 0.6 * h(5)),
+        };
+        let cn = Vec3::new(sx * ax, 0.1 + 1.3 * h(6), sz * az).normalize();
+        let support = cn.x.abs() * r.hx + cn.y.abs() * half_h + cn.z.abs() * r.hz;
+        let depth = r.chisel * (0.35 + 0.65 * h(7));
+        *cut = (cn, support - depth);
+    }
+    cuts
 }
 
 /// Loose stones around a seated block's foot: a handful to a dozen, a hand
@@ -479,7 +548,8 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
                 tx: (h(7) - 0.5) * 0.6,
                 tz: (h(8) - 0.5) * 0.6,
                 key: r.key ^ (k as u32 + 1).wrapping_mul(0x9E37_79B9),
-                moss: false,
+                moss: 0.0,
+                chisel: 0.0,
                 min_seg: 1,
                 value: ROCK_VALUE,
             },
@@ -495,7 +565,7 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
         // the treeline.
         let h0 = terrain::height(seed, b.x, b.z);
         let moss = h0 > terrain::BEACH_MAX_H + 1.5 && h0 < terrain::TREELINE_H;
-        let mut r = RockShape::of(seed, b, moss);
+        let mut r = RockShape::of(seed, b, if moss { 1.0 } else { 0.0 });
         if b.on == ON_GROUND {
             rock_block(&mut soup, &r);
             talus(&mut soup, seed, &r);

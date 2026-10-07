@@ -45,6 +45,7 @@ pub mod bodies;
 pub mod boot;
 pub mod boulders;
 pub mod capture;
+pub mod cliff_skin;
 pub mod cliffs;
 pub mod deck;
 // The trailer camera: a recorded session through a scripted lens, encoded as
