@@ -74,6 +74,11 @@ render = [
 # frames nobody can reproduce. `ci/gates.sh` builds `render`; a human running
 # `--features hot` is opting into a dev build.
 hot = ["render", "bevy/file_watcher"]
+# The browser module for a page with WebGPU (`ci/build_web.sh` builds it
+# beside the WebGL2 one and `web/app.js` picks). Bevy drops every WebGL
+# workaround under it, so it is a second module rather than a runtime switch;
+# `build.rs` turns its absence on wasm32 into `cfg(webgl2)`.
+webgpu = ["bevy?/webgpu"]
 # The web asset variant (`src/webassets.rs`, `src/bin/web_assets.rs`): the
 # KTX2 transcoder and a PNG encoder, and deliberately NOT Bevy — a build
 # script pays a minute for this instead of the renderer's ten. Native only:
@@ -235,6 +240,13 @@ required-features = ["render"]
 [[test]]
 name = "quality"
 path = "tests/quality.rs"
+required-features = ["render"]
+
+# The device's texture budget (`render::quality::GpuCaps`): its own binary,
+# because the caps are set once per process.
+[[test]]
+name = "gpu_caps"
+path = "tests/gpu_caps.rs"
 required-features = ["render"]
 
 # The pipeline prewarm: that every material gets a draw, that the draw wears
@@ -778,6 +790,13 @@ agentkey = { path = "../agentkey", optional = true }
 # contained its browser path before anything asked it to.
 # ---------------------------------------------------------------------------
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The same wgpu Bevy resolves (one entry in Cargo.lock), named so the WebGPU
+# module can hand the device an error handler: Bevy re-exports neither
+# `wgpu::Error` nor the handler trait (`render/web.rs`, `watch_gpu`).
+# ⚠ `default-features = false` is load-bearing: wgpu's defaults include its
+# `webgpu` backend, which would quietly land in the WebGL2 module too
+# (`ci/gates.sh` checks the resolution).
+wgpu = { version = "27", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

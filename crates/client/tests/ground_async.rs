@@ -50,8 +50,7 @@ fn arrays() -> GroundArrays {
     // gated), so a fixture without it would measure the wait and not the ring.
     GroundArrays {
         albedo: Handle::default(),
-        normal: Handle::default(),
-        rough_ao: Handle::default(),
+        data: Handle::default(),
     }
 }
 

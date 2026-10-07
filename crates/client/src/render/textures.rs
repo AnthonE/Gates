@@ -36,7 +36,8 @@ use bevy::image::{
 };
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    Extent3d, TextureDataOrder, TextureDimension, TextureViewDescriptor, TextureViewDimension,
+    Extent3d, TextureDataOrder, TextureDimension, TextureFormat, TextureViewDescriptor,
+    TextureViewDimension,
 };
 
 /// One material's three maps, as the ground and the props want them.
@@ -277,51 +278,66 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
 
 // ── The ground's arrays ─────────────────────────────────────────────────────
 
-/// The ground's sixteen maps as three `texture_2d_array`s — what
+/// The ground's twenty maps as two `texture_2d_array`s — what
 /// `ground_splat::GroundSplat` binds.
 ///
-/// **Why arrays and not sixteen textures.** How many sampled textures a
-/// fragment stage may hold is a hard limit with a floor of 16 on a downlevel
-/// adapter, and WebGL2 IS that floor (`downlevel_webgl2_defaults`:
-/// `max_sampled_textures_per_shader_stage = 16`). It is counted per STAGE and
-/// summed over every bind group in the pipeline layout — the view's shadow and
-/// environment maps, `StandardMaterial`'s six slots, and ours — so sixteen
-/// ground textures put the material group alone at 22 and the browser refused
-/// the pipeline before it drew a frame (2026-09-11). A layer costs no
-/// binding: four albedo maps are one texture here where they were four, and
-/// roughness and AO — same size, same format, same sampler — share one array
-/// ([`AO_LAYER0`]), so the whole ground is THREE sampled textures. The
-/// sampler argument in `ground_splat.rs` stands: it is still one for all of
-/// them.
+/// **Why arrays and not twenty textures.** How many sampled textures a
+/// fragment stage may hold is a hard limit with a floor of 16, counted per
+/// STAGE and summed over every bind group in the pipeline layout — the view's
+/// shadow and environment maps, `StandardMaterial`'s six slots, and ours.
+/// WebGL2 IS that floor (`downlevel_webgl2_defaults`), and sixteen ground
+/// textures put the material group alone at 22: the browser refused the
+/// pipeline before it drew a frame (2026-09-11). A layer costs no binding.
+/// WebGPU guarantees the same 16 and the atmosphere's transmittance LUT takes
+/// one of them, so three arrays was 17 there
+/// (`render::quality::FRAGMENT_TEXTURES`); the ground is now TWO sampled
+/// textures — the sRGB albedo, and every linear map in one
+/// [`GroundArrays::data`], roughness and AO packed as two channels of one
+/// layer ([`pack_rg`]). The sampler argument in `ground_splat.rs` stands: one
+/// for all of them.
 ///
 /// **The desktop draws the same texels.** A layer of a `2d_array` samples
 /// exactly as the standalone texture did — same filter, same chain, same
 /// anisotropy, same bytes ([`stack`] copies them) — so this is one shader for
-/// both targets rather than a web variant, and the native before/after
-/// capture is what says so (`findings/web-build-20260909.md` §15).
+/// both targets rather than a web variant. Packing is per channel and so
+/// exact too. The one exception is bounded and stated at [`lift`]: roughness
+/// and AO ship at 512² beside 1024² normals and gain a top level to share
+/// their array, which only a tap that magnified them ever reads.
+///
+/// **VRAM**, chains included: albedo 28.0 MB, data 55.9 MB — 83.9 MB, against
+/// 69.9 MB for the three arrays this replaced (whose 512² rough/AO array was
+/// 14.0 MB). The +14 MB is the lift; packing is what holds it there rather
+/// than at +42 MB for separate roughness and AO layers.
 ///
 /// `RENDER_WORLD` only: an array's one job is to be uploaded, and the CPU
 /// copy it was built from is the sources' — which are dropped with
 /// [`GroundMaps`] once this exists.
 #[derive(Resource, Clone)]
 pub struct GroundArrays {
-    /// `Rgba8UnormSrgb`, five layers: the four identities in
+    /// `Rgba8UnormSrgb`, [`FAMILY_LAYERS`] layers: the four identities in
     /// `terrain::splat`'s order, then the road's aggregate.
     pub albedo: Handle<Image>,
-    /// `Rgba8Unorm`, five layers, the same order.
-    pub normal: Handle<Image>,
-    /// `Rgba8Unorm`, ten layers: roughness at `0..5`, AO at
-    /// [`AO_LAYER0`]`..10`, each in that order.
-    pub rough_ao: Handle<Image>,
+    /// `Rgba8Unorm`, two families of [`FAMILY_LAYERS`] in that same order:
+    /// tangent-space normals at `0..5`, then roughness-and-AO at
+    /// [`ROUGH_AO_LAYER0`]`..10` — roughness in R, AO in G, B a constant 0 and
+    /// A a constant 255 ([`pack_rg`]). One format, one tiling sampler, all
+    /// data (`is_srgb = false`), which is what lets them share an array;
+    /// albedo cannot join, because its sRGB decode happens before the filter.
+    pub data: Handle<Image>,
 }
 
-/// The first AO layer of [`GroundArrays::rough_ao`]; roughness is the five
-/// below it. The shader indexes these as literals and `tests/ground_tiling.rs`
-/// holds them to this constant.
-pub const AO_LAYER0: u32 = 5;
-// The layer list `stack_ground` builds puts AO after five roughness layers;
-// this is the one place the two are tied together.
-const _: () = assert!(AO_LAYER0 == 5);
+/// Layers per map family: the four identities, then the road's aggregate.
+pub const FAMILY_LAYERS: u32 = 5;
+/// The first roughness-and-AO layer of [`GroundArrays::data`]; the normals
+/// are the five below it.
+///
+/// The shader mirrors it as a WGSL const and indexes its planar taps by
+/// literal; `tests/ground_tiling.rs` holds both to this.
+pub const ROUGH_AO_LAYER0: u32 = FAMILY_LAYERS;
+// The layer list `stack_ground` builds is five normals, then five packed
+// roughness/AO layers; this is the one place that order and these numbers are
+// tied together.
+const _: () = assert!(FAMILY_LAYERS == 5 && ROUGH_AO_LAYER0 == 5);
 
 /// Whether a source image may be a layer yet: it has the chain
 /// `mipmap::drain` gives it, or it is one that pass will never touch.
@@ -373,7 +389,9 @@ pub fn layer_bytes(w: u32, h: u32, mips: u32, bpp: usize) -> usize {
 /// through a different transfer function from the rest; a set that disagrees
 /// is refused whole rather than resampled, because "fits" here is a fact about
 /// the FILES (`assets/textures/MANIFEST.md`) and the fix is to re-source the
-/// set, not to stretch one member of it.
+/// set, not to stretch one member of it. ([`lift`] is the one sanctioned
+/// exception, applied before this to the data array's packed roughness/AO
+/// layers and nothing else.)
 ///
 /// **Layer-major is wgpu's default and it is what a concatenation of chains
 /// IS**: `Layer0Mip0 Layer0Mip1 … Layer1Mip0 …`, exactly the order
@@ -455,24 +473,174 @@ pub fn stack(layers: &[&Image]) -> Result<Image, StackError> {
     Ok(image)
 }
 
-/// One family's slot in [`Stacking`], its name for the panic message, and the
-/// handles of its layers in order.
-type Family<'a> = (
-    &'a mut Option<Handle<Image>>,
-    &'static str,
-    &'a [&'a Handle<Image>],
-);
+/// One plane of linear `Rgba8Unorm`: what [`pack_rg`] and [`lift`] work on.
+fn linear_plane(image: &Image) -> bool {
+    let d = &image.texture_descriptor;
+    d.format == TextureFormat::Rgba8Unorm
+        && d.dimension == TextureDimension::D2
+        && d.size.depth_or_array_layers == 1
+}
 
-/// What [`stack_ground`] has built so far. `Local` state: three slots, filled
+/// Two greyscale maps as one layer: `r`'s R channel in R, `g`'s R channel in
+/// G, B a constant 0 and A a constant 255 — every level of both chains.
+///
+/// **Exact, because filtering is per channel.** The GPU filters R and G of a
+/// texel independently, and `mipmap::chain` reduced each source's levels per
+/// channel too (`Filter::Linear`, a plain average), so the packed chain is
+/// the two original chains interleaved byte for byte and one tap reads both
+/// maps at the value two taps read before. Roughness and AO are always read
+/// at the same UV and layer, so packing them halves their taps. A greyscale
+/// JPEG loads as `r = g = b` (`bevy_image` widens Luma8 to RGBA8), so R is the
+/// whole of each source; B and A are constants so nothing can mistake them
+/// for data.
+///
+/// `None` unless both are one plane of LINEAR `Rgba8Unorm` with matching size,
+/// mip count, sampler and bytes.
+pub fn pack_rg(r: &Image, g: &Image) -> Option<Image> {
+    let (dr, dg) = (&r.texture_descriptor, &g.texture_descriptor);
+    if !linear_plane(r)
+        || !linear_plane(g)
+        || dr.size != dg.size
+        || dr.mip_level_count != dg.mip_level_count
+        || r.sampler != g.sampler
+    {
+        return None;
+    }
+    let (rb, gb) = (r.data.as_ref()?, g.data.as_ref()?);
+    let want = layer_bytes(dr.size.width, dr.size.height, dr.mip_level_count, 4);
+    if rb.len() != want || gb.len() != want {
+        return None;
+    }
+    let data: Vec<u8> = rb
+        .chunks_exact(4)
+        .zip(gb.chunks_exact(4))
+        .flat_map(|(a, b)| [a[0], b[0], 0, 255])
+        .collect();
+    let mut packed = Image::new_uninit(dr.size, TextureDimension::D2, dr.format, r.asset_usage);
+    packed.texture_descriptor.mip_level_count = dr.mip_level_count;
+    packed.data = Some(data);
+    packed.sampler = r.sampler.clone();
+    Some(packed)
+}
+
+/// `image` at twice its size: a new level 0 upsampled from its own, over the
+/// chain it already has. What lets a packed 512² roughness/AO map be a layer
+/// of the 1024² data array without changing what the GPU reads. Per channel,
+/// so a constant channel (the packed B and A) stays exactly that constant.
+///
+/// **The chain is kept, not rebuilt**, so new level `k + 1` IS old level `k`,
+/// byte for byte, and doubling the size moves the hardware's LOD up by exactly
+/// one: every tap that MINIFIED the old map — the whole ground past a few
+/// metres — reads the same texels at the same trilinear weights. Only a tap
+/// that magnified it reaches the new level 0, which is the old map's own
+/// bilinear surface sampled at the new texel centres (¼ and ¾ between old
+/// ones, wrapped, because every ground map tiles): the GPU's bilinear over it
+/// equals the old one where both coordinates are ¼–¾ between old centres and
+/// elsewhere cuts the corner by at most an eighth of the local second
+/// difference per axis (plus half a byte of rounding). Pixel replication would
+/// have kept no region exact.
+///
+/// The price is VRAM: a lifted layer is 4× the bytes of its source (+14 MB
+/// over the five packed layers). Native 1024² roughness and AO would remove
+/// both this and the corner.
+///
+/// `None` unless `image` is one plane of LINEAR `Rgba8Unorm` whose bytes match
+/// its descriptor — an sRGB map would have to be upsampled in linear light,
+/// and nothing lifted here is one.
+pub fn lift(image: &Image) -> Option<Image> {
+    let d = &image.texture_descriptor;
+    if !linear_plane(image) {
+        return None;
+    }
+    let (w, h) = (d.size.width as usize, d.size.height as usize);
+    let src = image.data.as_ref()?;
+    if w == 0
+        || h == 0
+        || src.len() != layer_bytes(d.size.width, d.size.height, d.mip_level_count, 4)
+    {
+        return None;
+    }
+    // New texel `x2`'s centre sits at old coordinate `x2 / 2 − ¼`: an even one
+    // ¼ before old texel `x2 / 2`, an odd one ¼ after. The nearer old texel
+    // takes ¾ and its neighbour on that side ¼.
+    let taps = |x2: usize, n: usize| {
+        let i = x2 / 2;
+        (
+            i,
+            if x2.is_multiple_of(2) {
+                (i + n - 1) % n
+            } else {
+                (i + 1) % n
+            },
+        )
+    };
+    let mut data = Vec::with_capacity(4 * w * h * 4 + src.len());
+    for y2 in 0..2 * h {
+        let (yn, yf) = taps(y2, h);
+        for x2 in 0..2 * w {
+            let (xn, xf) = taps(x2, w);
+            let at = |x: usize, y: usize, c: usize| u32::from(src[(y * w + x) * 4 + c]);
+            for c in 0..4 {
+                // 9/16 · 3/16 · 3/16 · 1/16, rounded: integer, so exact and
+                // the same on every target.
+                let v = 9 * at(xn, yn, c) + 3 * at(xf, yn, c) + 3 * at(xn, yf, c) + at(xf, yf, c);
+                data.push(((v + 8) / 16) as u8);
+            }
+        }
+    }
+    data.extend_from_slice(src);
+    let mut lifted = Image::new_uninit(
+        Extent3d {
+            width: d.size.width * 2,
+            height: d.size.height * 2,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        d.format,
+        image.asset_usage,
+    );
+    lifted.texture_descriptor.mip_level_count = d.mip_level_count + 1;
+    lifted.data = Some(data);
+    lifted.sampler = image.sampler.clone();
+    Some(lifted)
+}
+
+/// One layer of a family as [`stack_ground`] names it: a source image as it
+/// is, or two greyscale sources [`pack_rg`]ed into one — and [`lift`]ed when
+/// they are half the family's size, which only a packed layer ever may be.
+enum Layer<'a> {
+    One(&'a Handle<Image>),
+    Pack(&'a Handle<Image>, &'a Handle<Image>),
+}
+
+impl Layer<'_> {
+    fn handles(&self) -> impl Iterator<Item = &Handle<Image>> {
+        let (a, b) = match *self {
+            Layer::One(h) => (h, None),
+            Layer::Pack(r, g) => (r, Some(g)),
+        };
+        std::iter::once(a).chain(b)
+    }
+}
+
+/// One family's slot in [`Stacking`], its name for the panic message, and its
+/// layers in order.
+type Family<'a> = (&'a mut Option<Handle<Image>>, &'static str, &'a [Layer<'a>]);
+
+/// What [`stack_ground`] has built so far. `Local` state: two slots, filled
 /// one a frame.
 #[derive(Default)]
 pub struct Stacking {
     albedo: Option<Handle<Image>>,
-    normal: Option<Handle<Image>>,
-    rough_ao: Option<Handle<Image>>,
+    data: Option<Handle<Image>>,
 }
 
 /// Stack one family if all its layers are ready. `None` while any is not.
+///
+/// A [`Layer::Pack`] is packed, then lifted if it is exactly half layer 0's
+/// size. A [`Layer::One`] is never resampled, so a half-size map anywhere else
+/// (a normal map re-sourced at 512, say) is still the mismatch below rather
+/// than something quietly upsampled.
 ///
 /// # Panics
 ///
@@ -481,22 +649,50 @@ pub struct Stacking {
 /// and drawing the island untextured over it would look like a lighting bug.
 /// Saying so at boot is the same posture `GroundSplat::new` took for a missing
 /// AO map.
-fn try_stack(
-    images: &mut Assets<Image>,
-    family: &str,
-    layers: &[&Handle<Image>],
-) -> Option<Handle<Image>> {
+fn try_stack(images: &mut Assets<Image>, family: &str, layers: &[Layer]) -> Option<Handle<Image>> {
     // The wait costs no allocation: only a frame that builds collects.
     if !layers
         .iter()
-        .all(|h| images.get(*h).is_some_and(layer_ready))
+        .flat_map(Layer::handles)
+        .all(|h| images.get(h).is_some_and(layer_ready))
     {
         return None;
     }
-    let refs: Vec<&Image> = layers.iter().filter_map(|h| images.get(*h)).collect();
-    let image = stack(&refs).unwrap_or_else(|e| {
+    let get = |h: &Handle<Image>| images.get(h).expect("checked ready above");
+    let (w, h) = match layers.first() {
+        Some(Layer::One(first)) => (get(first).width(), get(first).height()),
+        Some(Layer::Pack(first, _)) => (get(first).width(), get(first).height()),
+        None => (0, 0),
+    };
+    let built: Vec<Option<Image>> = layers
+        .iter()
+        .enumerate()
+        .map(|(k, layer)| {
+            let Layer::Pack(r, g) = *layer else {
+                return None;
+            };
+            let packed = pack_rg(get(r), get(g)).unwrap_or_else(|| {
+                panic!(
+                    "the ground's {family} layer {k} cannot pack its two maps: both must be one plane of linear Rgba8Unorm with one size, mip count and sampler — re-source the SET (assets/textures/MANIFEST.md)"
+                )
+            });
+            // A lift that cannot happen leaves the layer half-size, which
+            // `stack` refuses below with the size in the message.
+            let half = packed.width() * 2 == w && packed.height() * 2 == h;
+            Some(half.then(|| lift(&packed)).flatten().unwrap_or(packed))
+        })
+        .collect();
+    let fitted: Vec<&Image> = layers
+        .iter()
+        .zip(&built)
+        .map(|(layer, b)| match (layer, b) {
+            (_, Some(img)) => img,
+            (Layer::One(src), None) | (Layer::Pack(src, _), None) => get(src),
+        })
+        .collect();
+    let image = stack(&fitted).unwrap_or_else(|e| {
         panic!(
-            "the ground's {family} maps cannot be one texture array: {e:?}. Every layer must share one size, format, mip count and sampler — re-source the SET (assets/textures/MANIFEST.md), never one identity of it"
+            "the ground's {family} maps cannot be one texture array: {e:?}. Every layer must share one size, format, mip count and sampler (packed roughness/AO may be exactly half the normals' size) — re-source the SET (assets/textures/MANIFEST.md), never one identity of it"
         )
     });
     Some(images.add(image))
@@ -507,9 +703,10 @@ fn try_stack(
 ///
 /// Runs after `mipmap::drain` in the same frame, so a chain finished this
 /// frame is stacked this frame. **One family a frame, deliberately**: the
-/// albedo array alone is ~22 MB of texels copied, and `CLAUDE.md`'s stream-in
-/// rule is that a frame pays for one of those, never three. Every frame after
-/// the sources are dropped is one `Option` read.
+/// albedo array alone is ~28 MB of texels copied (the data array ~56 MB,
+/// five of its layers packed and lifted), and `CLAUDE.md`'s stream-in rule is that a frame
+/// pays for one of those, never both. Every frame after the sources are
+/// dropped is one `Option` read.
 pub fn stack_ground(
     mut commands: Commands,
     maps: Option<Res<GroundMaps>>,
@@ -539,28 +736,26 @@ pub fn stack_ground(
             )
         })
     };
-    let albedo = sets.map(|m| &m.albedo);
-    let normal = sets.map(|m| &m.normal);
-    // Roughness first, AO from `AO_LAYER0` — the layer order the shader
-    // indexes by literal.
-    let rough_ao = [
-        &sets[0].rough,
-        &sets[1].rough,
-        &sets[2].rough,
-        &sets[3].rough,
-        &sets[4].rough,
-        ao(0),
-        ao(1),
-        ao(2),
-        ao(3),
-        ao(4),
+    let albedo = sets.map(|m| Layer::One(&m.albedo));
+    // Normals, then roughness-in-R/AO-in-G from `ROUGH_AO_LAYER0` — the layer
+    // order the shader indexes by literal.
+    let data = [
+        Layer::One(&sets[0].normal),
+        Layer::One(&sets[1].normal),
+        Layer::One(&sets[2].normal),
+        Layer::One(&sets[3].normal),
+        Layer::One(&sets[4].normal),
+        Layer::Pack(&sets[0].rough, ao(0)),
+        Layer::Pack(&sets[1].rough, ao(1)),
+        Layer::Pack(&sets[2].rough, ao(2)),
+        Layer::Pack(&sets[3].rough, ao(3)),
+        Layer::Pack(&sets[4].rough, ao(4)),
     ];
 
     let s = &mut *stacking;
-    let families: [Family; 3] = [
+    let families: [Family; 2] = [
         (&mut s.albedo, "albedo", &albedo),
-        (&mut s.normal, "normal", &normal),
-        (&mut s.rough_ao, "rough/AO", &rough_ao),
+        (&mut s.data, "normal/rough/AO", &data),
     ];
     for (slot, family, layers) in families {
         if slot.is_some() {
@@ -575,15 +770,9 @@ pub fn stack_ground(
         // One a frame.
         break;
     }
-    let (Some(albedo), Some(normal), Some(rough_ao)) =
-        (s.albedo.clone(), s.normal.clone(), s.rough_ao.clone())
-    else {
+    let (Some(albedo), Some(data)) = (s.albedo.clone(), s.data.clone()) else {
         return;
     };
-    commands.insert_resource(GroundArrays {
-        albedo,
-        normal,
-        rough_ao,
-    });
+    commands.insert_resource(GroundArrays { albedo, data });
     commands.remove_resource::<GroundMaps>();
 }

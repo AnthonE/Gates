@@ -40,7 +40,7 @@ use client::render::terrain_mesh::{
     GRAIN_SHARE, GROUND_TILE_M, GROUND_TILE_MAX_M, GROUND_TILE_MIN_M,
     SAND_GRAIN_SHARE_AT_PUBLISHED, UV_PER_M,
 };
-use client::render::textures::AO_LAYER0;
+use client::render::textures::{FAMILY_LAYERS, ROUGH_AO_LAYER0};
 
 const SHADER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -262,9 +262,12 @@ fn the_multiplier_puts_each_identity_at_its_own_tile() {
 /// **The identity is a LAYER now, not a texture name** (2026-09-12): every
 /// planar tap is `textureSample(<family>_maps, ground_sampler, uvK, K)`, so the
 /// thing to hold is that the layer literal and the UV agree — and, for the
-/// rough/AO array, that AO sits at `AO_LAYER0 + K` and never at `K`, because
-/// an AO tap at layer 0–3 reads ROUGHNESS and the island goes dark only where
-/// a surface is smooth, which does not look like a wrong layer. The wall taps
+/// data array (2026-10-07), that roughness/AO sits at `ROUGH_AO_LAYER0 + K`
+/// and never at `K`, because a roughness/AO tap at the wrong offset reads a
+/// NORMAL and the island goes dark where a surface is tilted, which does not
+/// look like a wrong layer. Roughness and AO are R and G of ONE tap, so each
+/// identity's rough/AO layer must be sampled exactly once — a second tap of
+/// it is the cost packing removed. The wall taps
 /// live in `wall_plane`, which takes the layer and the tile as arguments, so
 /// there the thing to hold is that each call hands identity K its own tile,
 /// and that every tap inside reads the tiled UV and both tiled gradients.
@@ -284,18 +287,15 @@ fn every_tap_uses_its_identitys_uv() {
 
     // `(family, identity)` → planar taps seen; every family × identity must
     // be sampled exactly once.
-    let mut planar = [[0u32; 4]; 4];
+    let mut planar = [[0u32; 4]; FAMILIES.len()];
     let mut checked = 0;
-    let mut road = [0u32; 4];
+    let mut road = [0u32; FAMILIES.len()];
     for tap in taps(&planar_src) {
         let (family, layer, args) = classify(&tap);
-        // The slot within its family: AO counts from `AO_LAYER0`, and slot 4
-        // of every family is the road's aggregate, which is no identity.
-        let k = if family == 3 {
-            layer - AO_LAYER0
-        } else {
-            layer
-        } as usize;
+        // The slot within its family: roughness/AO counts from
+        // `ROUGH_AO_LAYER0`, and slot 4 of every family is the road's
+        // aggregate, which is no identity.
+        let k = (layer - LAYER0[family]) as usize;
         let role = if k < 4 { ROLES[k] } else { "aggregate" };
         match args.as_slice() {
             // textureSample(maps, sampler, uv, layer)
@@ -335,16 +335,17 @@ fn every_tap_uses_its_identitys_uv() {
         }
     }
     assert_eq!(
-        road, [1; 4],
+        road,
+        [1; FAMILIES.len()],
         "road aggregate needs every channel registered: {road:?}"
     );
     assert!(
         wgsl.contains("let uv_road = in.uv * splat.tile.w * splat.pavement.w;"),
         "road projection must have fixed world scale, independent of coverage"
     );
-    // 4 identities × (albedo + normal + rough + ao) = 16 planar taps, plus the
+    // 4 identities × (albedo + normal + rough/AO) = 12 planar taps, plus the
     // road's 4. A drop below this is the scrape going blind.
-    assert_eq!(checked, 20, "16 terrain + 4 road taps");
+    assert_eq!(checked, 15, "12 terrain + 3 road taps");
 
     // The wall: each identity hands `wall_tap` its own layer and tile, once.
     for (k, c) in comp.iter().enumerate() {
@@ -387,17 +388,17 @@ fn every_tap_uses_its_identitys_uv() {
              gradients (`{args}`)"
         );
     }
-    let ao0 = wgsl
+    let ra0 = wgsl
         .lines()
-        .find_map(|l| l.trim().strip_prefix("const AO_LAYER0: i32 = "))
+        .find_map(|l| l.trim().strip_prefix("const ROUGH_AO_LAYER0: i32 = "))
         .and_then(|v| v.trim_end_matches(';').parse::<u32>().ok())
-        .expect("no `const AO_LAYER0: i32 = <literal>;` in the shader");
+        .expect("no `const ROUGH_AO_LAYER0: i32 = <literal>;` in the shader");
     assert_eq!(
-        ao0, AO_LAYER0,
-        "the shader's AO_LAYER0 is {ao0}, `textures::AO_LAYER0` is {AO_LAYER0}: \
-         the wall's AO taps would read another layer"
+        ra0, ROUGH_AO_LAYER0,
+        "the shader's ROUGH_AO_LAYER0 is {ra0}, `textures::ROUGH_AO_LAYER0` is \
+         {ROUGH_AO_LAYER0}: the wall's roughness/AO taps would read a normal map"
     );
-    let mut wall = [0u32; 4];
+    let mut wall = [0u32; FAMILIES.len()];
     for tap in taps(&wall_fn) {
         match args_of(&tap).as_slice() {
             // textureSampleGrad(maps, sampler, uv, layer, ddx, ddy)
@@ -412,9 +413,8 @@ fn every_tap_uses_its_identitys_uv() {
                 );
                 let family = match (*maps, *layer) {
                     ("albedo_maps", "layer") => 0,
-                    ("normal_maps", "layer") => 1,
-                    ("rough_ao_maps", "layer") => 2,
-                    ("rough_ao_maps", "layer + AO_LAYER0") => 3,
+                    ("data_maps", "layer") => 1,
+                    ("data_maps", "layer + ROUGH_AO_LAYER0") => 2,
                     _ => panic!("a wall tap this scrape cannot classify: {tap}"),
                 };
                 wall[family] += 1;
@@ -423,7 +423,8 @@ fn every_tap_uses_its_identitys_uv() {
         }
     }
     assert_eq!(
-        wall, [1; 4],
+        wall,
+        [1; FAMILIES.len()],
         "`wall_plane` must read every family exactly once: {wall:?}"
     );
 }
@@ -449,7 +450,10 @@ fn split_wall_tap(wgsl: &str) -> (String, String) {
 }
 
 /// The families in the order [`classify`] numbers them.
-const FAMILIES: [&str; 4] = ["albedo", "normal", "rough", "ao"];
+const FAMILIES: [&str; 3] = ["albedo", "normal", "rough/AO"];
+/// Each family's first layer in its array: albedo has its own, and normal and
+/// the packed roughness/AO share `data_maps`.
+const LAYER0: [u32; 3] = [0, 0, ROUGH_AO_LAYER0];
 
 /// Every `textureSample…(` call in the fragment, as its text through the
 /// matching close paren. Comments are dropped first so a tap in prose is not
@@ -511,8 +515,8 @@ fn args_of(tap: &str) -> Vec<&str> {
 
 /// One tap as `(family index, layer, args)`: the family from the array the
 /// tap names, the layer from its literal, and the arguments split at the
-/// call's own depth. Roughness and AO share `rough_ao_maps` and are told
-/// apart by the layer against `AO_LAYER0`.
+/// call's own depth. Normal and roughness/AO share `data_maps` and are told
+/// apart by the layer against `ROUGH_AO_LAYER0`.
 fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
     let args = args_of(tap);
     let layer: u32 = args
@@ -522,21 +526,14 @@ fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
         .unwrap_or_else(|e| panic!("the layer of `{tap}` is not a literal: {e}"));
     let family = match args[0] {
         "albedo_maps" => 0,
-        "normal_maps" => 1,
-        "rough_ao_maps" if layer < AO_LAYER0 => 2,
-        "rough_ao_maps" => 3,
+        "data_maps" if layer < ROUGH_AO_LAYER0 => 1,
+        "data_maps" => 2,
         other => panic!("a tap of `{other}` this scrape cannot classify: {tap}"),
     };
-    // Albedo and normal carry as many layers as roughness does: the four
-    // identities and the road's aggregate.
+    // Every family carries the four identities and the road's aggregate.
     assert!(
-        layer
-            < if family >= 2 {
-                2 * AO_LAYER0
-            } else {
-                AO_LAYER0
-            },
-        "{tap}: layer {layer} is past the end of its array"
+        layer < LAYER0[family] + FAMILY_LAYERS,
+        "{tap}: layer {layer} is past the end of its family"
     );
     (family, layer, args)
 }

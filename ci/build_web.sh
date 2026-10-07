@@ -66,16 +66,49 @@ have="$(wasm-bindgen --version | awk '{print $2}')"
 # `WEB_PROFILE=release` keeps the function names for the day a browser stack
 # is the thing being read (findings §16); the default is what ships.
 profile="${WEB_PROFILE:-web}"
-echo "== building client-web for wasm32-unknown-unknown (profile: $profile)"
-cargo build -p client-web --profile "$profile" --target wasm32-unknown-unknown
 
-echo "== generating the JS glue into $out"
-rm -rf "$out"
-mkdir -p "$out"
-wasm-bindgen --target web --no-typescript \
-  --remove-producers-section \
-  --out-dir "$out" \
-  "target/wasm32-unknown-unknown/$profile/client_web.wasm"
+# ── the game, twice: WebGPU and WebGL2 ──────────────────────────────────────
+# Bevy picks its GPU API at COMPILE time (`crates/client/build.rs`): under
+# `webgpu` every WebGL workaround in the engine is gone, so one module cannot
+# serve both. The page asks the browser for a WebGPU adapter before it
+# downloads anything and fetches the module that browser can draw with
+# (`web/app.js`, `pickModule`): `client_web_gpu*` — the desktop's frame,
+# atmosphere and all — or `client_web*`, the WebGL2 fallback. Both builds
+# write the same `client_web.wasm` under `target/`, so each is bound into the
+# page before the next one is built. `WEB_MODULES=webgl2` builds one (a dev
+# loop; `publish_web.sh` refuses a page without both).
+modules="${WEB_MODULES:-webgl2 webgpu}"
+first=1
+for m in $modules; do
+  case "$m" in
+    webgl2) stem=client_web; features=() ;;
+    webgpu) stem=client_web_gpu; features=(--features webgpu) ;;
+    *) echo "WEB_MODULES: unknown module '$m' (webgl2, webgpu)" >&2; exit 1 ;;
+  esac
+  echo "== building client-web ($m) for wasm32-unknown-unknown (profile: $profile)"
+  cargo build -p client-web --profile "$profile" --target wasm32-unknown-unknown \
+    ${features[@]+"${features[@]}"}
+  if [ "$first" = 1 ]; then
+    rm -rf "$out"
+    mkdir -p "$out"
+    first=0
+  fi
+  echo "== generating the JS glue ($stem) into $out"
+  wasm-bindgen --target web --no-typescript \
+    --remove-producers-section \
+    --out-name "$stem" \
+    --out-dir "$out" \
+    "target/wasm32-unknown-unknown/$profile/client_web.wasm"
+  # **Prove which one was bound.** Only wgpu's WebGPU backend imports
+  # `requestAdapter`; a module that has it under the WebGL2 name (a feature
+  # unified in from somewhere) or lacks it under the WebGPU one is the wrong
+  # page, and it would load and draw nothing rather than fail here.
+  if grep -qa '__wbg_requestAdapter_' "$out/${stem}_bg.wasm"; then got=webgpu; else got=webgl2; fi
+  [ "$got" = "$m" ] || {
+    echo "$stem: bound a $got module where the page expects $m" >&2
+    exit 1
+  }
+done
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 # The menu's face is the game's (`render/ui.rs` embeds the same two files), and
 # the page's CSP is `font-src 'self'`, so they ship beside it with their licence.
@@ -189,7 +222,8 @@ cargo run -q -p client --features webassets --bin web_assets -- "$out/assets/mod
 opt="${WASM_OPT:-$(command -v wasm-opt || true)}"
 if [ -n "$opt" ] && [ -x "$opt" ]; then
   echo "== wasm-opt -Os ($opt)"
-  for m in client_web_bg sound_worklet_bg; do
+  for m in client_web_bg client_web_gpu_bg sound_worklet_bg; do
+    [ -f "$out/$m.wasm" ] || continue
     before=$(stat -c%s "$out/$m.wasm")
     "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
       --enable-mutable-globals --enable-sign-ext --enable-reference-types \
@@ -205,7 +239,23 @@ fi
 # is the standing warning that a web build does not beat a depot on bytes — it
 # beats it on ceremony — and this number is the headless floor, with no
 # renderer and no assets in it.
-raw=$(stat -c%s "$out/client_web_bg.wasm")
+# Each game module's size goes into `build.json` under its name, and the page
+# reads the one it is about to fetch.
+mods=""
+for m in client_web client_web_gpu; do
+  [ -f "$out/${m}_bg.wasm" ] || continue
+  gzip -9 -n -c "$out/${m}_bg.wasm" > "$out/${m}_bg.wasm.gz"
+  mraw=$(stat -c%s "$out/${m}_bg.wasm")
+  mgz=$(stat -c%s "$out/${m}_bg.wasm.gz")
+  name=$([ "$m" = client_web_gpu ] && echo webgpu || echo webgl2)
+  # The pair's own hash: the page asks for glue and module by it, so a
+  # cached glue from the last publish never meets this one's module
+  # (wasm-bindgen hashes the import names, and a mismatch is a LinkError).
+  sha=$(cat "$out/$m.js" "$out/${m}_bg.wasm" | sha256sum | cut -c1-64)
+  printf "   %s_bg.wasm  %d bytes raw, %d gzipped (%s)\n" "$m" "$mraw" "$mgz" "$name"
+  mods="$mods${mods:+,}\"$name\":{\"js\":\"$m.js\",\"wasm\":\"${m}_bg.wasm\",\"wasm_bytes\":$mraw,\"wasm_gz_bytes\":$mgz,\"sha256\":\"$sha\"}"
+done
+raw=$(stat -c%s "$out/client_web_bg.wasm" 2>/dev/null || echo 0)
 # Written beside the module rather than measured and thrown away: the
 # origin's `gzip_static` (`scry-forge/deploy/nginx/elopros.com.conf`, the
 # `/games/gates/` block) serves this file to a browser that accepts gzip —
@@ -216,10 +266,8 @@ raw=$(stat -c%s "$out/client_web_bg.wasm")
 # other unchanged file. Without it the origin falls back to compressing on
 # the fly; without either, measured 2026-09-12, the module went over the
 # wire raw.
-gzip -9 -n -c "$out/client_web_bg.wasm" > "$out/client_web_bg.wasm.gz"
 gzip -9 -n -c "$out/sound_worklet_bg.wasm" > "$out/sound_worklet_bg.wasm.gz"
-gz=$(stat -c%s "$out/client_web_bg.wasm.gz")
-printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$raw" "$gz"
+gz=$(stat -c%s "$out/client_web_bg.wasm.gz" 2>/dev/null || echo 0)
 
 # What the menu reads before the module arrives: the download bar's
 # denominator (with gzip on the wire Content-Length is the compressed size, and
@@ -227,7 +275,7 @@ printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" 
 version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 proto="$(sed -n 's/^pub const PROTO_VER: u16 = \([0-9]*\);$/\1/p' crates/protocol/src/lib.rs)"
 commit="${GATES_GIT_SHA:-$(git rev-parse --short=9 HEAD 2>/dev/null || echo unknown)}"
-printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d}\n' \
-  "$version" "$commit" "${proto:-null}" "$raw" "$gz" > "$out/build.json"
+printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d,"modules":{%s}}\n' \
+  "$version" "$commit" "${proto:-null}" "$raw" "$gz" "$mods" > "$out/build.json"
 echo "   build.json: $(cat "$out/build.json")"
 echo "== done: python3 -m http.server 8080 --directory $out"

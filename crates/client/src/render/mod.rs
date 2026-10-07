@@ -198,7 +198,7 @@ pub mod underwater;
 pub mod water;
 pub mod weather;
 // What a browser build does where the desktop has a window and a menu: the
-// surface fitted under WebGL2's 2048 cap, and the page taking over where
+// surface fitted under the module's cap (WebGL2's 2048, WebGPU's 8192), and the page taking over where
 // `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
 pub mod web;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
@@ -1373,14 +1373,14 @@ impl Plugin for GatesRenderPlugin {
                 .before(quality::reband_trees)
                 .run_if(world_running),
         )
-        // A browser's tree LOD, by hand: WebGL2 cannot bind the table
+        // WebGL2's tree LOD, by hand: it cannot bind the table
         // `VisibilityRange` dithers by, so no tree part carries one there and
         // this swaps the near pair for the hull by distance (`tree::band`).
         .add_systems(
             Update,
             tree::swap_by_distance
                 .after(tree::cap_swap)
-                .run_if(|| cfg!(target_arch = "wasm32"))
+                .run_if(|| cfg!(webgl2))
                 .run_if(world_running),
         )
         // Input writes what the sim reads, so it runs on the two screens where
@@ -1854,6 +1854,43 @@ impl Plugin for GatesRenderPlugin {
                 PostUpdate,
                 film::roll.after(audio_out::flush).run_if(world_running),
             );
+        }
+    }
+
+    /// The device exists from here (`RenderPlugin::finish` put it in the
+    /// main world), so what it can bind is read now: before `rig::setup`
+    /// spawns the camera and `quality::apply` resolves a tier against it.
+    fn finish(&self, app: &mut App) {
+        let Some(device) = app
+            .world()
+            .get_resource::<bevy::render::renderer::RenderDevice>()
+        else {
+            return;
+        };
+        use bevy::render::render_resource::WgpuFeatures;
+        let limits = device.limits();
+        let features = device.features();
+        let caps = quality::GpuCaps {
+            sampled_textures: limits.max_sampled_textures_per_shader_stage,
+            storage_textures: limits.max_storage_textures_per_shader_stage,
+            float32_filterable: features.contains(WgpuFeatures::FLOAT32_FILTERABLE),
+            rg11b10_renderable: features.contains(WgpuFeatures::RG11B10UFLOAT_RENDERABLE),
+            dual_source_blending: features.contains(WgpuFeatures::DUAL_SOURCE_BLENDING),
+        };
+        quality::set_gpu_caps(caps);
+        let tier = quality::effective(quality::default_gfx());
+        info!(
+            "gpu: {caps:?}; the default tier draws ao {:?}, taa {}, bloom {}",
+            tier.ao, tier.taa, tier.bloom
+        );
+        #[cfg(all(target_arch = "wasm32", not(webgl2)))]
+        web::watch_gpu(device.wgpu_device());
+        // A browser keeps no settings file, so its default IS the session:
+        // resolved again against the caps, the screen names the preset it
+        // is on rather than reading CUSTOM.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(mut s) = app.world_mut().get_resource_mut::<Settings>() {
+            s.gfx = quality::effective(s.gfx);
         }
     }
 }

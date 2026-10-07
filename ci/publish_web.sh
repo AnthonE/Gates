@@ -26,8 +26,8 @@
 # What serves it: `scry-forge/deploy/nginx/elopros.com.conf`, `location ^~
 # /games/gates/`, whose `alias` is `<root>/current/` and whose CSP is the
 # reason the page works there at all ('wasm-unsafe-eval', and the shard in
-# `connect-src`, and `gzip_static` for the `client_web_bg.wasm.gz` the build
-# writes beside the module — 34 MB raw is 8.6 MB on the wire that way). After
+# `connect-src`, and `gzip_static` for the `client_web_bg.wasm.gz` and
+# `client_web_gpu_bg.wasm.gz` the build writes beside the two modules — 34 MB raw is 8.6 MB on the wire that way). After
 # the first publish the store's play button is ONE
 # field away — `play_url` on the Gates listing, set from the dev desk or in
 # `watchtower/listings/listings.json` — and it is deliberately not set before
@@ -78,7 +78,7 @@ OUT="${OUT:-target/webdist}"
 if [ "$BUILD" = 1 ]; then
   ./ci/build_web.sh "$OUT"
 fi
-for f in index.html app.js client_web.js client_web_bg.wasm; do
+for f in index.html app.js client_web.js client_web_bg.wasm client_web_gpu.js client_web_gpu_bg.wasm; do
   [ -f "$OUT/$f" ] || { echo "$OUT/$f is missing — run ./ci/build_web.sh" >&2; exit 1; }
 done
 
@@ -100,9 +100,11 @@ junk="$(find "$OUT" \( -name '*.rlib' -o -name '*.rmeta' -o -name '*.d' \
 
 # The same id the depot carries, from the same function, so the two never
 # name one commit two ways.
-# The module is the "binary" here: on a dirty tree the id carries its content
-# hash, so two different builds cannot share one directory name.
-ID="$(OUT="$OUT" python3 -c 'import os, sys, pathlib; sys.path.insert(0, "ci"); import depot; print(depot.build_id(pathlib.Path(os.environ["OUT"]) / "client_web_bg.wasm"))')"
+# `build.json` is the "binary" here: on a dirty tree the id carries its
+# content hash, and it holds the hash of BOTH modules — a dirty change to
+# WebGPU-only code leaves `client_web_bg.wasm` byte-identical, and keyed on
+# that the id would repeat and rsync would rewrite the live directory.
+ID="$(OUT="$OUT" python3 -c 'import os, sys, pathlib; sys.path.insert(0, "ci"); import depot; print(depot.build_id(pathlib.Path(os.environ["OUT"]) / "build.json"))')"
 DEST="$ROOT/$ID"
 echo "== build $ID"
 echo "   $(du -sh "$OUT" | cut -f1) staged, $(find "$OUT" -type f | wc -l) files"

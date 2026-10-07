@@ -28,11 +28,7 @@ use super::weather::WeatherNow;
 pub const SHADER: &str = "shaders/rain.wgsl";
 
 /// Drops in the mesh — the most a storm draws.
-pub const DROPS: u32 = if cfg!(target_arch = "wasm32") {
-    2_500
-} else {
-    6_000
-};
+pub const DROPS: u32 = if cfg!(webgl2) { 2_500 } else { 6_000 };
 /// Half the box the drops fall in around the eye, metres.
 pub const BOX_HALF: Vec3 = Vec3::new(14.0, 9.0, 14.0);
 /// How fast a drop falls, m/s — a raindrop's terminal speed.

@@ -11,18 +11,22 @@
 // they were the cheapest: they had been loaded, uploaded and resident since the
 // day the set landed, and nothing sampled them.
 //
-// **Three `texture_2d_array`s, not sixteen textures** (2026-09-12). A
-// fragment stage may hold 16 sampled textures on WebGL2, counted across EVERY
-// bind group in the pipeline — the view's shadow and environment maps,
-// `StandardMaterial`'s six slots, and this material — and sixteen ground maps
-// put this group alone at 22; the browser refused the pipeline layout. A layer
-// costs no binding, so each identity is a layer of its family's array, in
-// `terrain::splat`'s order, and the road's aggregate rides behind them as a
-// fifth: albedo (5 layers), normal (5), and roughness with AO behind it (10:
-// roughness 0–4, AO 5–9, `textures::AO_LAYER0`). A layer
-// samples exactly as the standalone texture did — same filter, same chain,
-// same bytes — so this is one shader for the desktop and the browser, and
-// the native before/after capture is what says the desktop frame did not move.
+// **Two `texture_2d_array`s, not twenty textures** (arrays since 2026-09-12,
+// two since 2026-10-07). A fragment stage may hold 16 sampled textures on WebGL2 and on
+// WebGPU, counted across EVERY bind group in the pipeline — the view's shadow
+// and environment maps, the atmosphere's LUT, `StandardMaterial`'s six slots,
+// and this material (`render::quality::FRAGMENT_TEXTURES`). Sixteen ground maps
+// put this group alone at 22, and three arrays were 17 under WebGPU's
+// atmosphere. A layer costs no binding, so each identity is a layer of its
+// family's array, in `terrain::splat`'s order, and the road's aggregate rides
+// behind them as a fifth: albedo (5 layers, sRGB), and every linear map in one
+// data array (10: normals 0–4, then roughness in R and AO in G at
+// `ROUGH_AO_LAYER0`, 5–9). A layer samples exactly as the standalone texture
+// did — same filter, same chain, same bytes, and filtering is per channel so
+// packing two maps into one texel moves neither — so this is one shader for
+// the desktop and the browser, and one tap now reads both maps. (Roughness and
+// AO are 512² lifted into a 1024² array — `textures::lift` — which changes
+// nothing a minified tap reads.)
 //
 // **Why the maps contribute LUMINANCE and never colour.** `ART.md` §7 bounds a
 // mean-placing correction: a sourced map's colour deviation may not be
@@ -135,15 +139,16 @@ struct GroundSplat {
 // the cheap axis here until WebGL2 said 16 of those too (the header), which is
 // why the maps are arrays now and this is still one sampler.
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var ground_sampler: sampler;
-// The tangent-space normal maps, same layer order, aggregate at 4.
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var normal_maps: texture_2d_array<f32>;
-// Roughness at layers 0–4 and ambient occlusion at 5–9 (`textures::AO_LAYER0`).
-// Both greyscale and loaded `is_srgb = false` because a roughness map is DATA —
-// decoding one as sRGB would bend every value toward the dark end and the
-// ground would read uniformly glossy. AO is `ART.md` §4's MEDIUM scale, the
-// one occlusion term a light rig cannot supply; all four shipped in every depot
-// and were sampled by nothing until 2026-08-25.
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var rough_ao_maps: texture_2d_array<f32>;
+// Every linear map, two families of five in the same layer order (aggregate
+// last in each): tangent-space normals at 0–4, then at `ROUGH_AO_LAYER0` (5–9)
+// roughness in R and ambient occlusion in G (`textures::pack_rg`; B is 0 and
+// A is 255, read by nothing). All loaded `is_srgb = false` because they are
+// DATA — decoding roughness as sRGB would bend every value toward the dark end
+// and the ground would read uniformly glossy — which is also why the albedo
+// cannot share this array. AO is `ART.md` §4's MEDIUM scale, the one occlusion
+// term a light rig cannot supply; all four shipped in every depot and were
+// sampled by nothing until 2026-08-25.
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var data_maps: texture_2d_array<f32>;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
@@ -340,9 +345,10 @@ fn value3(p: vec3<f32>) -> f32 {
 
 // --- The wall planes ----------------------------------------------------------
 
-// `rough_ao_maps`' first AO layer — `textures::AO_LAYER0`, which
-// `tests/ground_tiling.rs` holds this to.
-const AO_LAYER0: i32 = 5;
+// `data_maps`' first roughness/AO layer (R roughness, G AO) —
+// `textures::ROUGH_AO_LAYER0`, which `tests/ground_tiling.rs` holds this to.
+// The normals are layers 0–4.
+const ROUGH_AO_LAYER0: i32 = 5;
 
 // The vertical planes a steep face reads its maps off: four, at fixed
 // bearings 45° apart (`wall_axis`), of which a pixel blends the two nearest
@@ -377,7 +383,8 @@ fn wall_axis(k: i32) -> vec2<f32> {
     return axes[k];
 }
 
-// One identity's four maps, read off the wall planes.
+// One identity's four maps, read off the wall planes (three taps: roughness
+// and AO share one).
 struct WallTap {
     albedo: vec4<f32>,
     // The photograph's relief as a world-space offset, not yet laid in the
@@ -387,20 +394,21 @@ struct WallTap {
     ao: f32,
 }
 
-// One plane's four maps, weighted by its share. Explicit-gradient samples
-// only: this runs under the non-uniform wall branch, where an implicit
-// derivative is undefined.
+// One plane's four maps in three taps, weighted by its share.
+// Explicit-gradient samples only: this runs under the non-uniform wall
+// branch, where an implicit derivative is undefined.
 fn wall_plane(uv0: vec2<f32>, dx0: vec2<f32>, dy0: vec2<f32>, axis: vec2<f32>, layer: i32, tile: f32, k: f32) -> WallTap {
     let uv = uv0 * tile;
     let dx = dx0 * tile;
     let dy = dy0 * tile;
     var t: WallTap;
     t.albedo = k * textureSampleGrad(albedo_maps, ground_sampler, uv, layer, dx, dy);
-    let g = to_gradient(unpack_normal(textureSampleGrad(normal_maps, ground_sampler, uv, layer, dx, dy)));
+    let g = to_gradient(unpack_normal(textureSampleGrad(data_maps, ground_sampler, uv, layer, dx, dy)));
     // u runs along the plane's axis and the image's up is world up.
     t.relief = k * vec3<f32>(g.x * axis.x, g.y, g.x * axis.y);
-    t.rough = k * textureSampleGrad(rough_ao_maps, ground_sampler, uv, layer, dx, dy).r;
-    t.ao = k * textureSampleGrad(rough_ao_maps, ground_sampler, uv, layer + AO_LAYER0, dx, dy).r;
+    let ra = textureSampleGrad(data_maps, ground_sampler, uv, layer + ROUGH_AO_LAYER0, dx, dy);
+    t.rough = k * ra.r;
+    t.ao = k * ra.g;
     return t;
 }
 
@@ -448,9 +456,9 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // now, and a road is aggregate.
     let uv_road = in.uv * splat.tile.w * splat.pavement.w;
     let road_albedo = textureSample(albedo_maps, ground_sampler, uv_road, 4);
-    let road_normal = textureSample(normal_maps, ground_sampler, uv_road, 4);
-    let road_rough = textureSample(rough_ao_maps, ground_sampler, uv_road, 4).r;
-    let road_ao = textureSample(rough_ao_maps, ground_sampler, uv_road, 9).r;
+    let road_normal = textureSample(data_maps, ground_sampler, uv_road, 4);
+    // Roughness in R, AO in G: one tap for both.
+    let road_ra = textureSample(data_maps, ground_sampler, uv_road, 9);
     var a0 = textureSample(albedo_maps, ground_sampler, uv0, 0);
     var a1 = textureSample(albedo_maps, ground_sampler, uv1, 1);
     var a2 = textureSample(albedo_maps, ground_sampler, uv2, 2);
@@ -807,14 +815,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // level for a map to move — the map is the only measurement in the room.
     // `ground_splat::ROUGH_MEAN` records what the four now measure and the gate
     // re-measures it, so a source swap changes the surface loudly.
-    // Each identity's wall taps take their share here as they did the albedo's.
+    // Layers 5–8 of the data array, `ROUGH_AO_LAYER0` plus the identity:
+    // roughness in R and AO in G, so these four taps serve the occlusion
+    // below too. Each identity's wall taps take their share here as they did
+    // the albedo's.
+    let ra0 = textureSample(data_maps, ground_sampler, uv0, 5);
+    let ra1 = textureSample(data_maps, ground_sampler, uv1, 6);
+    let ra2 = textureSample(data_maps, ground_sampler, uv2, 7);
+    let ra3 = textureSample(data_maps, ground_sampler, uv3, 8);
     let rough_map = mix(
-        vec4<f32>(
-            textureSample(rough_ao_maps, ground_sampler, uv0, 0).r,
-            textureSample(rough_ao_maps, ground_sampler, uv1, 1).r,
-            textureSample(rough_ao_maps, ground_sampler, uv2, 2).r,
-            textureSample(rough_ao_maps, ground_sampler, uv3, 3).r,
-        ),
+        vec4<f32>(ra0.r, ra1.r, ra2.r, ra3.r),
         vec4<f32>(t0.rough, t1.rough, t2.rough, t3.rough),
         wm,
     );
@@ -833,17 +843,17 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // drift `CLAUDE.md` names twice. `tests/ground_splat.rs` holds our knob
     // clear of it instead, which is the half that IS ours.
     let wet_keep = 1.0 - wet * (1.0 - splat.blend.z);
-    pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_rough) * wet_keep;
+    pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_ra.r) * wet_keep;
 
     // The relief, blended as gradients. The planar taps' share is applied on
     // the mesh's own written tangent frame; each wall tap's is already a world
     // offset on its plane's axes, laid in the surface by removing its component
     // along the normal — so a steep face carries the photograph's relief, and
     // not a planar tap's streak of it.
-    let g = to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv0, 0))) * (bw.x * (1.0 - wm.x))
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv1, 1))) * (bw.y * (1.0 - wm.y))
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv2, 2))) * (bw.z * (1.0 - wm.z))
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * (bw.w * (1.0 - wm.w));
+    let g = to_gradient(unpack_normal(textureSample(data_maps, ground_sampler, uv0, 0))) * (bw.x * (1.0 - wm.x))
+        + to_gradient(unpack_normal(textureSample(data_maps, ground_sampler, uv1, 1))) * (bw.y * (1.0 - wm.y))
+        + to_gradient(unpack_normal(textureSample(data_maps, ground_sampler, uv2, 2))) * (bw.z * (1.0 - wm.z))
+        + to_gradient(unpack_normal(textureSample(data_maps, ground_sampler, uv3, 3))) * (bw.w * (1.0 - wm.w));
     // Binder flattens loose aggregate relief. Blend gradients from fixed
     // projections so the verge retains the ground's original relief.
     let road_g = to_gradient(unpack_normal(road_normal));
@@ -877,22 +887,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // diffuse one reused" — applying this to specular is visibly wrong at
     // grazing angles. `pbr_input.specular_occlusion` is left as Bevy computed
     // it from SSAO.
-    // Layers 5–8 of the rough/AO array: `textures::AO_LAYER0` plus the
-    // identity, and `tests/ground_tiling.rs` holds these literals to it.
+    // The G channel of the roughness taps above: AO rides in the same texel.
     let ao = dot(
         bw,
         mix(
-            vec4<f32>(
-                textureSample(rough_ao_maps, ground_sampler, uv0, 5).r,
-                textureSample(rough_ao_maps, ground_sampler, uv1, 6).r,
-                textureSample(rough_ao_maps, ground_sampler, uv2, 7).r,
-                textureSample(rough_ao_maps, ground_sampler, uv3, 8).r,
-            ),
+            vec4<f32>(ra0.g, ra1.g, ra2.g, ra3.g),
             vec4<f32>(t0.ao, t1.ao, t2.ao, t3.ao),
             wm,
         ),
     );
-    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ao));
+    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ra.g));
 
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
