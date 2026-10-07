@@ -96,7 +96,7 @@ fn die(w: &mut World) {
 fn a_fresh_spawn_and_a_respawn_both_hold_a_rock_and_a_torch() {
     let c = shipped();
     let mut w = shipped_world(&c);
-    let rock = c.item_index("item.rock").expect("the rock is shipped");
+    let rock = c.item_index("item.bat").expect("the rock is shipped");
     let torch = c.item_index("item.torch").expect("the torch is shipped");
     let want = vec![(rock, 1u16), (torch, 1u16)];
 
@@ -140,7 +140,7 @@ fn a_fresh_spawn_and_a_respawn_both_hold_a_rock_and_a_torch() {
 /// gather table did not answer to would be a naked spawn wearing a kit — and
 /// nothing in `sim-core` could tell, because a zero yield is legal content.
 ///
-/// Proven red by deleting the `"item.rock"` row from any node in
+/// Proven red by deleting the `"item.bat"` row from any node in
 /// `content/gatherables.toml`: that node then pays the rock its (absent, so
 /// zero) hand row and the loop fails on it by name.
 #[test]
@@ -148,7 +148,7 @@ fn the_kit_s_rock_is_a_live_tool_and_a_live_weapon() {
     let c = shipped();
     let gc = c.bake_gather().expect("gather bakes");
     let combat = c.bake_combat().expect("weapons bake");
-    let rock = c.item_index("item.rock").expect("the rock is shipped");
+    let rock = c.item_index("item.bat").expect("the rock is shipped");
 
     let mut swung = 0;
     for (i, node) in gc.nodes.iter().enumerate() {
@@ -301,7 +301,7 @@ fn a_dev_kit_resolves_against_shipped_content_and_refuses_the_rest() {
     for (bad, phrase) in [
         (spec(&[("item.jetpack", 1)]), "no such item"),
         (spec(&[("item.wood", 0)]), "grants 0"),
-        (spec(&[("item.rock", 99)]), "past its own stack size"),
+        (spec(&[("item.bat", 99)]), "past its own stack size"),
         (spec(&[("item.wood", 1), ("item.wood", 1)]), "granted twice"),
     ] {
         // `match`, not `expect_err`: `SpawnKit` is deliberately not `Debug`

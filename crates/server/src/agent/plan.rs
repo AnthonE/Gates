@@ -164,7 +164,7 @@ mod tests {
     fn core() -> Box<ClientCore> {
         let mut core = Box::new(ClientCore::new(1, 1, 0));
         let names = [
-            "Rock",
+            "Bat",
             "Animal Fat",
             "Cloth",
             "Low Grade Fuel",

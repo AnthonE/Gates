@@ -101,6 +101,8 @@ pub mod ziggurat;
 // Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
 // rows and the viewmodel's two-primitive stand-in tool.
 pub mod heldgen;
+// The right hand's finger bones, closed on what it holds.
+pub mod fingers;
 // **Desktop only.** This module reaches a local elo launcher over a unix
 // socket / fetches over a blocking one / owns a tokio runtime — none of
 // which a page has. In a browser the PAGE is the menu: it owns the shard
@@ -1255,6 +1257,7 @@ impl Plugin for GatesRenderPlugin {
                 // it walks up to and the `Live` record it writes are both
                 // `bodies::stream`'s, spawned inside that set.
                 bodies::bind_hands.after(Stream),
+                fingers::bind,
                 anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
@@ -1286,6 +1289,15 @@ impl Plugin for GatesRenderPlugin {
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate)
                 .before(bow::draw_arm)
+                .run_if(world_running),
+        )
+        // The fingers, in the same window: no clip animates them, so this is
+        // their only writer.
+        .add_systems(
+            PostUpdate,
+            fingers::pose
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running),
         )
         .add_systems(

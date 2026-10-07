@@ -94,8 +94,8 @@ fn meet(
 fn a_rushed_survivor_fights_back_at_equal_gear() {
     let a = meet(
         Temperament::Opportunist,
-        "item.rock",
-        Some("item.rock"),
+        "item.bat",
+        Some("item.bat"),
         false,
         true,
     );
@@ -128,7 +128,7 @@ fn a_spear_beats_a_rock() {
     let a = meet(
         Temperament::Opportunist,
         "item.spear_wood",
-        Some("item.rock"),
+        Some("item.bat"),
         true,
         true,
     );
@@ -152,7 +152,7 @@ fn a_spear_beats_a_rock() {
 /// takes, and a defensive body leaves alone.
 #[test]
 fn an_opportunist_takes_an_opening_a_defender_does_not() {
-    let a = meet(Temperament::Opportunist, "item.rock", None, true, false);
+    let a = meet(Temperament::Opportunist, "item.bat", None, true, false);
     println!("opportunist: {}", a.explain());
     let it = a.player(RUSHER);
     assert!(a.bot.stats.landed > 0, "{}", a.explain());
@@ -160,7 +160,7 @@ fn an_opportunist_takes_an_opening_a_defender_does_not() {
     assert_eq!(a.bot.stats.hurts, 0);
     assert_eq!(a.heap_ops, 0);
     let a = {
-        let mut a = meet(Temperament::Defensive, "item.rock", None, true, false);
+        let mut a = meet(Temperament::Defensive, "item.bat", None, true, false);
         a.until(20 * TICK_HZ, |_| false);
         a
     };
@@ -214,7 +214,7 @@ fn a_foe_that_cannot_be_reached_is_let_go() {
     let content = content();
     let mut a = Arena::new(Temperament::Opportunist);
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
-    let rock = stack(&content, "item.rock");
+    let rock = stack(&content, "item.bat");
     a.stage(ID, |p| {
         p.inv[0] = rock;
         p.hp = p.hp_max;
@@ -258,7 +258,7 @@ fn a_swing_beside_me_is_not_an_attack() {
     const ASIDE_M: f32 = 0.8;
     let content = content();
     let mut a = Arena::new(Temperament::Defensive);
-    let rock = stack(&content, "item.rock");
+    let rock = stack(&content, "item.bat");
     assert!(a.shard.connect(1, RUSHER));
     a.step();
     a.stage(RUSHER, |p| p.inv[0] = rock);
@@ -467,7 +467,7 @@ fn hunt(weapon: &str, round: &str, rounds: u16, off: f32) -> (Arena, usize) {
         .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_PIG)
         .unwrap();
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
-    let (rock, gun) = (stack(&content, "item.rock"), stack(&content, weapon));
+    let (rock, gun) = (stack(&content, "item.bat"), stack(&content, weapon));
     let mut ammo = stack(&content, round);
     ammo.count = rounds;
     a.stage(ID, |p| {
@@ -623,7 +623,7 @@ fn the_agent_heals_after_a_fight() {
         at.qx as f32 * POS_XZ_Q + fx * 8.0,
         at.qz as f32 * POS_XZ_Q + fz * 8.0,
     );
-    let rock = stack(&content, "item.rock");
+    let rock = stack(&content, "item.bat");
     let body = Body::at(SEED, &a.haven, x, z);
     a.stage(RUSHER, |p| {
         p.body = body;
@@ -743,7 +743,7 @@ fn an_archer_is_sidestepped_then_run_from_to_cover() {
 #[test]
 fn a_bow_carried_my_way_is_not_an_attack() {
     let content = content();
-    for mine in ["item.bow", "item.rock"] {
+    for mine in ["item.bow", "item.bat"] {
         let mind = Mind::inline(Sentry, MindConfig::default()).unwrap();
         let opts = server::explorer::SurvivorOpts {
             temperament: Temperament::Defensive,

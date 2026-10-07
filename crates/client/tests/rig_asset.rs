@@ -772,10 +772,28 @@ fn the_hands_are_curled_out_of_their_bind_pose_splay() {
             o
         };
 
-        // The vertices this bone alone owns. It is a leaf, so their skinned
-        // position depends on nothing else in the character.
+        // The vertices this hand owns: the bone and its finger bones
+        // (`ci/rig_fingers.py`, `RightHandIndex1` and on). The fingers are
+        // bound where the curl put them, so at rest every one of these sits
+        // where the hand's own inverse bind says.
+        let own: Vec<usize> = bones
+            .iter()
+            .enumerate()
+            .filter(|(_, &n)| {
+                glb.json["nodes"][n]["name"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with(hand))
+            })
+            .map(|(i, _)| i)
+            .collect();
         let hand_v: Vec<[f32; 3]> = (0..pos.len())
-            .filter(|&k| (0..4).any(|c| joints[k][c] as usize == slot && weights[k][c] > 0.5))
+            .filter(|&k| {
+                (0..4)
+                    .filter(|&c| own.contains(&(joints[k][c] as usize)))
+                    .map(|c| weights[k][c])
+                    .sum::<f32>()
+                    > 0.5
+            })
             .map(|k| to_bone(&pos[k]))
             .collect();
         assert!(
@@ -828,5 +846,56 @@ fn the_hands_are_curled_out_of_their_bind_pose_splay() {
              `ci/curl_hands.py` on it (see `assets/models/MANIFEST.md` for \
              where it goes in the pipeline)."
         );
+    }
+}
+
+#[test]
+fn every_finger_bone_the_grip_turns_is_in_the_skin_under_the_hand() {
+    // `render::fingers` binds the right hand's finger bones by NAME as the
+    // scene spawns, and a name the asset stopped carrying is not an error
+    // there — the grip just never closes, and the hand goes back to resting
+    // on the handle with nothing failing. So the names it parses are held to
+    // the shipped file here: each one a joint of the skin, each chain three
+    // deep, and each first bone a child of the hand.
+    use client::render::fingers::{parse, DIGITS};
+    let glb = Glb::open(&asset_path(RIG));
+    let nodes = glb.json["nodes"].as_array().expect("nodes");
+    let joints: Vec<usize> = glb.json["skins"][0]["joints"]
+        .as_array()
+        .expect("the rig has no skin")
+        .iter()
+        .map(|j| j.as_u64().unwrap() as usize)
+        .collect();
+    let index = |name: &str| nodes.iter().position(|n| n["name"].as_str() == Some(name));
+    let children = |i: usize| -> Vec<usize> {
+        nodes[i]["children"]
+            .as_array()
+            .map(|c| c.iter().map(|x| x.as_u64().unwrap() as usize).collect())
+            .unwrap_or_default()
+    };
+    let hand = index("RightHand").expect("the rig has a RightHand");
+    for (d, digit) in DIGITS.iter().enumerate() {
+        let mut parent = hand;
+        for j in 0..3 {
+            let name = format!("RightHand{digit}{}", j + 1);
+            assert_eq!(
+                parse(&name),
+                Some((d, j)),
+                "{name} does not parse as itself"
+            );
+            let at = index(&name).unwrap_or_else(|| {
+                panic!("{RIG}: no {name} — re-run ci/rig_fingers.py (assets/models/MANIFEST.md)")
+            });
+            assert!(
+                joints.contains(&at),
+                "{RIG}: {name} is not a joint of the skin"
+            );
+            assert!(
+                children(parent).contains(&at),
+                "{RIG}: {name} does not hang under {}",
+                nodes[parent]["name"]
+            );
+            parent = at;
+        }
     }
 }

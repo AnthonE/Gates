@@ -856,7 +856,7 @@ pub struct Gear {
 
 impl Gear {
     pub const ROCK: Gear = Gear {
-        item: "item.rock",
+        item: "item.bat",
         rounds: None,
     };
     pub const SPEAR: Gear = Gear {
@@ -870,7 +870,7 @@ impl Gear {
 
     pub fn name(self) -> &'static str {
         match self.item {
-            "item.rock" => "rock",
+            "item.bat" => "rock",
             "item.spear_wood" => "spear",
             "item.bow" => "bow",
             other => other,
