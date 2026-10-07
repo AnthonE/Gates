@@ -337,6 +337,13 @@ pub fn resolve(
             aimed.0 = swipe;
         }
     }
+    // A work's terminal (`ARC.md` F1), the same way.
+    if aimed.0.is_none() {
+        let work = interact::resolve_work(x, y, z, core.haven(), &core.arc);
+        if work.verb != interact::Verb::None {
+            aimed.0 = work;
+        }
+    }
     // Down, the only prompt worth drawing is a door's (wounded v0): every
     // other `E` would be refused.
     if core.wounded && !crate::ui::wounded::allows(aimed.0.verb) {
@@ -876,6 +883,18 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Vendor;
                     ui.vendor = pick.handle as u8;
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
+        // A work's terminal opens its panel and sends nothing; DEPOSIT and
+        // FUEL send (`panels::arc::clicks`).
+        Verb::Work => {
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Work;
+                    ui.work = pick.handle as u8;
                     ui.status.clear();
                     ui.dirty = true;
                 }

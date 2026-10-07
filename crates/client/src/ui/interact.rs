@@ -132,6 +132,10 @@ pub enum Verb {
     /// [`resolve_pick`], beside `Crate`'s [`resolve_open`], and folded into
     /// the pick the same way.
     Pick,
+    /// A work's terminal (`sim_core::works`, `ARC.md` F1): `handle` is the
+    /// work. Resolved by nearness from the work's own spot (`sim_core::spot`),
+    /// like `Trade` — the terminal is a place you walk up to.
+    Work,
 }
 
 impl Verb {
@@ -178,6 +182,7 @@ impl Verb {
             Verb::Trade => 12,
             Verb::Swipe => 13,
             Verb::Pick => 14,
+            Verb::Work => 15,
         }
     }
 
@@ -204,6 +209,7 @@ impl Verb {
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
             Verb::Pick => "PLANT",
+            Verb::Work => "WORK",
         }
     }
 }
@@ -384,6 +390,7 @@ impl Pick {
             Verb::Pick if self.occupant == Occupant::Hemp as u8 => "[E] PICK HEMP".to_string(),
             Verb::Pick => "[E] PICK BERRIES".to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
+            Verb::Work => "[E] THE WORK".to_string(),
             Verb::Swipe if self.lit => "[E] OPEN DOOR".to_string(),
             Verb::Swipe => format!(
                 "[E] SWIPE {} KEYCARD",
@@ -446,6 +453,41 @@ pub fn resolve_trade(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
     match best {
         Some((k, d2)) => Pick {
             verb: Verb::Trade,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The work terminal `E` would open, or a `None` pick: the nearest whose row
+/// has arrived, within the sim's own `WORK_REACH_M` and `spot::within`'s
+/// storey.
+pub fn resolve_work(
+    x: f32,
+    y: f32,
+    z: f32,
+    haven: &sim_core::terrain::Haven,
+    arc: &client_core::arc::ArcView,
+) -> Pick {
+    let reach = sim_core::works::WORK_REACH_M;
+    let mut best: Option<(usize, f32)> = None;
+    for (k, w) in arc.known() {
+        if !sim_core::spot::within(haven, &w.def.spot, x, y, z, reach) {
+            continue;
+        }
+        let Some((wx, _, wz)) = sim_core::spot::world(haven, &w.def.spot) else {
+            continue;
+        };
+        let d2 = (wx - x) * (wx - x) + (wz - z) * (wz - z);
+        if best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Work,
             handle: k as u32,
             d2,
             ..Pick::default()

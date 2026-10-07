@@ -1,0 +1,48 @@
+# Gates · content/arc.toml — the arc (`ARC.md`): the works the whole server
+# switches back on, the unlocks they hold, and the effects those turn on.
+#
+# A work is sealed until `opens_hour`, then takes deposits toward its quota.
+# Met, it lights: its floor unlock holds for the rest of the wipe, and its
+# tank fills, so its ceiling unlock holds while there is fuel. Unpaid, it
+# lights itself at `fallback_hour` with an empty tank: the floor is
+# guaranteed, the ceiling is contested (`WORLD.md` §4.3).
+#
+# Hours count from the wipe (the world's tick 0). Quotas are first cuts, to
+# be tuned on a real shard (`ARC.md` §7).
+
+[arc]
+# Tanks burn at quiet_burn_pct with this many online or fewer, at full rate
+# from busy_players up, linear between (Rust's fuse decay, Oct 2026).
+quiet_players = 10
+busy_players = 100
+quiet_burn_pct = 25
+
+# THE CRUCIBLE — the first work, act II. No gunpowder exists on the island
+# until it burns, so the first days of a wipe are bows and spears. Its
+# terminal is a cold forge under the anvil rock nearest the island's middle.
+[[work]]
+id = "work.crucible"
+name = "THE CRUCIBLE"
+site = "anvil"
+nth = 0
+at = [-3.0, 0.0, 8.0]
+act = 2
+opens_hour = 12
+fallback_hour = 72
+floor_unlock = "unlock.gunpowder"
+ceiling_unlock = "unlock.smelting"
+fuel = "item.lowgrade"
+fuel_max = 5000
+burn_per_hour = 100
+inputs = [
+    { item = "item.stone", count = 60000 },
+    { item = "item.metal_ore", count = 15000 },
+    { item = "item.charcoal", count = 5000 },
+]
+
+# While the Crucible's tank burns, every furnace on the island smelts twice
+# as fast.
+[[effect]]
+unlock = "unlock.smelting"
+knob = "smelt_pct"
+pct = 200

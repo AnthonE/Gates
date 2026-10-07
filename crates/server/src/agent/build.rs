@@ -848,6 +848,7 @@ pub fn recipe_for(core: &ClientCore, item: u16, has: &Stations) -> Option<(u16, 
         let usable = def.out_count > 0
             && def.output == item
             && has.usable(def.station)
+            && core.arc.holds(def.unlock)
             && (!def.blueprint || (r < 64 && known & (1 << r) != 0));
         usable.then_some((r as u16, def.ticks, def.station))
     })
@@ -4056,6 +4057,7 @@ mod tests {
             ticks: 10,
             station: STATION_NONE,
             blueprint: false,
+            unlock: 0,
             n_inputs: 1,
             inputs: [(5, 100), (0, 0), (0, 0), (0, 0)],
         };
@@ -4122,6 +4124,7 @@ mod tests {
             ticks: 10,
             station: STATION_WORKBENCH1,
             blueprint: false,
+            unlock: 0,
             n_inputs: 1,
             inputs: [(5, 100), (0, 0), (0, 0), (0, 0)],
         };

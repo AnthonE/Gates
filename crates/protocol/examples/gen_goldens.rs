@@ -130,6 +130,22 @@ fn main() {
     let (qx, qy, qz, until) = goldens::event_fire();
     let len = protocol::encode_event_fire(qx, qy, qz, until, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[137], &buf[..len]);
+    // The arc (v95).
+    let (wc, name, floor, ceiling) = goldens::event_work_def();
+    let len = protocol::encode_event_work_def(&wc, 1, name, floor, ceiling, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[138], &buf[..len]);
+    let (index, work, n, mine, unlocks) = goldens::event_work_state();
+    let len = protocol::encode_event_work_state(index, &work, n, mine, unlocks, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[139], &buf[..len]);
+    let (index, what, by) = goldens::event_work();
+    let len = protocol::encode_event_work(index, what, by, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[140], &buf[..len]);
+    let (code, op, target) = goldens::event_arc_refused();
+    let len = protocol::encode_event_arc_refused(code, op, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[141], &buf[..len]);
+    let (op, target, arg) = goldens::action_arc();
+    let len = protocol::encode_action_arc(op, target, arg, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[142], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

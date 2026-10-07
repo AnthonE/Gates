@@ -80,6 +80,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Consume { .. } | ActionMsg::Drink => Kind::Mouth,
         ActionMsg::Vend { .. } => Kind::Move,
         ActionMsg::Swipe { .. } => Kind::Move,
+        // A deposit moves a pack's worth of items, like a trade.
+        ActionMsg::Arc { .. } => Kind::Move,
         ActionMsg::Use { .. } => Kind::Use,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,

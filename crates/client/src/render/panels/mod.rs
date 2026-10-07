@@ -46,8 +46,10 @@ use crate::ui::craft::{Cat, Facts};
 use crate::ui::slots::Drag;
 use sim_core::gather::ItemStack;
 
+pub mod arc;
 pub mod craft;
 pub mod inv;
+pub mod kit;
 pub mod ring;
 pub mod tech;
 pub mod vendor;
@@ -80,6 +82,10 @@ pub enum Panel {
     Tech,
     /// A town kiosk's offers (`E` at a kiosk, `vendor.rs`).
     Vendor,
+    /// A work's terminal (`E` at one, `arc.rs`): its quota, its tank.
+    Work,
+    /// The island's works and the act (`O`, `arc.rs`).
+    Island,
 }
 
 impl Panel {
@@ -97,7 +103,12 @@ impl Panel {
             Panel::None => Page::Closed,
             Panel::Inventory => Page::Inventory,
             Panel::Craft => Page::Crafting,
-            Panel::Wheel | Panel::Hammer | Panel::Tech | Panel::Vendor => Page::Other,
+            Panel::Wheel
+            | Panel::Hammer
+            | Panel::Tech
+            | Panel::Vendor
+            | Panel::Work
+            | Panel::Island => Page::Other,
         }
     }
 
@@ -187,6 +198,8 @@ pub struct Ui {
     pub tech_tab: u8,
     /// The kiosk (= vendor index) the vendor panel shows.
     pub vendor: u8,
+    /// The work the work panel shows.
+    pub work: u8,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -250,6 +263,9 @@ pub(crate) struct Seen {
     /// line would keep saying PRESS BEGIN over a table that had begun and
     /// a fire's switch would keep saying TURN ON over a fire that burns.
     pub cont_lit: bool,
+    /// `ClientCore::arc.gen` at the last redraw: a work's row or state
+    /// arriving (the work and island screens draw from it).
+    pub arc_gen: u32,
 }
 
 impl Default for Ui {
@@ -272,6 +288,7 @@ impl Default for Ui {
             tech_sel: None,
             tech_tier: 1,
             vendor: 0,
+            work: 0,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -689,6 +706,7 @@ pub fn register(app: &mut App) {
                 tech::clicks,
                 tech::scroll,
                 vendor::clicks,
+                arc::clicks,
                 wheel::track,
                 sync_refusals,
                 inv::table_clock,
@@ -714,7 +732,12 @@ pub fn register(app: &mut App) {
         // rebuild, so the sentence is on the board drawn this frame.
         .add_systems(
             Update,
-            (tech::sync_status, craft::sync_status, vendor::sync_status)
+            (
+                tech::sync_status,
+                craft::sync_status,
+                vendor::sync_status,
+                arc::sync_status,
+            )
                 .after(super::feed::drain)
                 .before(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
@@ -842,6 +865,20 @@ pub fn keys(
     } else if !typing && keyboard.just_pressed(KeyCode::KeyQ) {
         want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Crafting));
     }
+    // `O`: the island (`ARC.md` F4). A toggle, and it takes over from any
+    // other screen the way `Tab` takes over from the tree.
+    if !typing && keyboard.just_pressed(KeyCode::KeyO) {
+        ui.panel = if ui.panel == Panel::Island {
+            Panel::None
+        } else {
+            Panel::Island
+        };
+        ui.drag = None;
+        ui.search_focus = false;
+        ui.status.clear();
+        ui.dirty = true;
+        want = None;
+    }
     if let Some(to) = want.and_then(Panel::of_page) {
         if to != ui.panel {
             ui.panel = to;
@@ -920,7 +957,7 @@ pub fn keys(
     // opens, which is how every kiosk in THE GATE stayed shut.
     if !matches!(
         ui.panel,
-        Panel::Inventory | Panel::Craft | Panel::Tech | Panel::Vendor
+        Panel::Inventory | Panel::Craft | Panel::Tech | Panel::Vendor | Panel::Work | Panel::Island
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1019,6 +1056,11 @@ pub fn keys(
         ui.tech_sel = None;
         ui.dirty = true;
         toast.warn("workbench out of reach");
+    }
+    // A work's terminal, the same way.
+    if ui.panel == Panel::Work && !arc::work_in_reach(core, ui.work) {
+        ui.panel = Panel::None;
+        ui.dirty = true;
     }
 }
 
@@ -1120,6 +1162,8 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             vendor::build_screen(&mut commands, &ui, core, icons)
         }
+        Panel::Work => arc::build_work(&mut commands, &ui, core),
+        Panel::Island => arc::build_island(&mut commands, &ui, core),
     }
 }
 
@@ -1151,6 +1195,7 @@ fn detect_changes(
             || cont_lit != ui.seen.cont_lit
             || core.skins_owned != ui.seen.skins_owned
             || core.skins_gen != ui.seen.skins_have
+            || core.arc.gen != ui.seen.arc_gen
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -1173,6 +1218,7 @@ fn detect_changes(
             ui.seen.cont_lit = cont_lit;
             ui.seen.skins_owned = core.skins_owned;
             ui.seen.skins_have = core.skins_gen;
+            ui.seen.arc_gen = core.arc.gen;
             ui.dirty = true;
         }
     }

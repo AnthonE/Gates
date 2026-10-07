@@ -70,15 +70,17 @@ offer = [
     { pay = "item.stone", pay_n = 1000, get = "item.junk", get_n = 5 },
 ]
 
+# ARMS keeps its guns and rounds under the counter until THE CRUCIBLE burns
+# (`content/arc.toml`): no gunpowder, no guns, for anyone (`ARC.md` §1.3).
 [[vendor]]
 name = "ARMS"
 offer = [
     { pay = "item.junk", pay_n = 20, get = "item.bow", get_n = 1 },
     { pay = "item.junk", pay_n = 5, get = "item.arrow_wood", get_n = 10 },
     { pay = "item.junk", pay_n = 15, get = "item.arrow_metal", get_n = 10 },
-    { pay = "item.junk", pay_n = 30, get = "item.pistol_ammo", get_n = 10 },
+    { pay = "item.junk", pay_n = 30, get = "item.pistol_ammo", get_n = 10, unlock = "unlock.gunpowder" },
     { pay = "item.junk", pay_n = 60, get = "item.armor_roadsign_body", get_n = 1 },
-    { pay = "item.junk", pay_n = 200, get = "item.revolver", get_n = 1 },
+    { pay = "item.junk", pay_n = 200, get = "item.revolver", get_n = 1, unlock = "unlock.gunpowder" },
 ]
 
 # THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost turrets,

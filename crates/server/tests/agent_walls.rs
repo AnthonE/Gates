@@ -255,6 +255,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Vend { .. } => "vend",
         ActionMsg::Swipe { .. } => "swipe",
         ActionMsg::Pick { .. } => "pick",
+        ActionMsg::Arc { .. } => "arc",
     }
 }
 
@@ -576,6 +577,20 @@ impl Harness {
     }
 
     /// Stage the same server-side scene change in both shards.
+    /// Light every work (`ARC.md` F1) in both shards, as a world past its
+    /// fallback hours would be: what a test that stages gunpowder needs,
+    /// now that the world gates it.
+    fn light_works(&mut self) {
+        for core in [&mut self.shard, &mut self.replay] {
+            let w = &mut core.world;
+            for k in 0..w.works_def.count as usize {
+                w.works.w[k].state = sim_core::works::WORK_LIT;
+            }
+            let def = w.works_def;
+            w.works.refresh(&def);
+        }
+    }
+
     fn stage(&mut self, f: impl Fn(&mut sim_core::world::Player)) {
         for core in [&mut self.shard, &mut self.replay] {
             let p = core
@@ -2545,6 +2560,9 @@ fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
             p.inv[HOTBAR_SLOTS + i] = *s;
         }
     });
+    // Gunpowder waits on THE CRUCIBLE; this test is about the bench and the
+    // tree, so the island has already lit it.
+    h.light_works();
     let id = |name: &str| content.item_index(name).unwrap();
     let vest = id("item.armor_roadsign_body");
     let done = h.until(400_000, |b| {

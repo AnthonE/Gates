@@ -89,6 +89,8 @@ pub enum Refused {
     /// hand (*a rock takes no magazine*, *no ammunition left for your
     /// Revolver*).
     Reload,
+    /// An arc verb at a work (`sim_core::works::REFUSE_A_*`).
+    Arc,
 }
 
 /// One frame's blows from **one direction**, as [`Feed::hurt_from`] hands
@@ -239,6 +241,10 @@ pub struct Feed {
     n_learned: usize,
     traded: [(u8, u8); FEED_CAP],
     n_traded: usize,
+    /// Works that changed this frame (`EventMsg::Work`, wire v95): (work,
+    /// `sim_core::works::WORK_EV_*`, who). Broadcast, like `knocks`.
+    work_events: [(u8, u8, u32); FEED_CAP],
+    n_work_events: usize,
     /// Eats that landed this frame: (item index, the slot it was spent
     /// from). Own-fact; the refused half rides `refusals` as
     /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
@@ -485,6 +491,11 @@ impl Feed {
         &self.removed.0[..self.n_removed]
     }
 
+    /// `(work, what, who)` per work that changed this frame, oldest first.
+    pub fn work_events(&self) -> &[(u8, u8, u32)] {
+        &self.work_events[..self.n_work_events]
+    }
+
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
@@ -500,6 +511,7 @@ impl Feed {
         self.n_spills = 0;
         self.n_learned = 0;
         self.n_traded = 0;
+        self.n_work_events = 0;
         self.n_consumed = 0;
         self.reloaded = 0;
         self.n_knocks = 0;
@@ -604,6 +616,18 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_traded;
             feed.traded[n] = (offer, times);
             feed.n_traded += 1;
+        }
+    }
+    while let Some((code, _op, target)) = core.pop_arc_refused() {
+        feed.push_refusal(Refused::Arc, code, target as u16);
+    }
+    while let Some(ev) = core.pop_work_event() {
+        if feed.n_work_events >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_work_events;
+            feed.work_events[n] = ev;
+            feed.n_work_events += 1;
         }
     }
     while let Some(code) = core.pop_research_refusal() {

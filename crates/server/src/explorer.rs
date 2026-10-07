@@ -5730,6 +5730,7 @@ mod tests {
             ticks: 10,
             station: STATION_NONE,
             blueprint: false,
+            unlock: 0,
             n_inputs: 1,
             inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
         };
@@ -5837,6 +5838,7 @@ mod tests {
             ticks: 10,
             station: STATION_NONE,
             blueprint: false,
+            unlock: 0,
             n_inputs: 1,
             inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
         };
@@ -5907,6 +5909,7 @@ mod tests {
                 ticks: 1,
                 station: STATION_NONE,
                 blueprint: false,
+                unlock: 0,
                 n_inputs: 1,
                 inputs: [(5, 1), (0, 0), (0, 0), (0, 0)],
             };

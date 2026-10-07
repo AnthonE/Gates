@@ -1442,6 +1442,14 @@ pub struct ClientCore {
     /// The ziggurat's card doors open now (`SUB_CARD_DOORS`): prediction
     /// walks through an open door exactly as the sim does.
     pub card_doors: u32,
+    /// The arc (wire v95): every work's row, names and state, and the
+    /// unlocks held (`arc.rs`).
+    pub arc: crate::arc::ArcView,
+    /// `(work, sim_core::works::WORK_EV_*, by)` per work that changed, and
+    /// `(code, op, target)` per refused arc verb — drop-oldest, read once
+    /// in `render/feed.rs`.
+    work_events: crate::arc::Ring<(u8, u8, u32), TOAST_RING>,
+    arc_refusals: crate::arc::Ring<(u8, u8, u8), REFUSAL_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
@@ -2062,6 +2070,9 @@ impl ClientCore {
             vend_result_head: 0,
             vend_result_len: 0,
             card_doors: 0,
+            arc: crate::arc::ArcView::default(),
+            work_events: Default::default(),
+            arc_refusals: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
@@ -2348,6 +2359,50 @@ impl ClientCore {
             EventMsg::Vend { offer, times } => self.push_vend((false, 0, offer, times)),
             EventMsg::VendRefused { code, offer } => self.push_vend((true, code, offer, 0)),
             EventMsg::CardDoors { bits } => self.card_doors = bits as u32,
+            EventMsg::WorkDef {
+                total,
+                index,
+                def,
+                name,
+                name_len,
+                floor_name,
+                floor_len,
+                ceiling_name,
+                ceiling_len,
+            } => {
+                self.arc.count = total.min(sim_core::limits::MAX_WORKS as u8);
+                if let Some(w) = self.arc.works.get_mut(index as usize) {
+                    w.known = true;
+                    w.def = def;
+                    w.name = name;
+                    w.name_len = name_len;
+                    w.floor_name = floor_name;
+                    w.floor_len = floor_len;
+                    w.ceiling_name = ceiling_name;
+                    w.ceiling_len = ceiling_len;
+                }
+                self.arc.gen = self.arc.gen.wrapping_add(1);
+            }
+            EventMsg::WorkState {
+                index,
+                state,
+                fuel,
+                n: _,
+                got,
+                mine,
+                unlocks,
+            } => {
+                if let Some(w) = self.arc.works.get_mut(index as usize) {
+                    w.state = state;
+                    w.fuel = fuel;
+                    w.got = got;
+                    w.mine = mine;
+                }
+                self.arc.unlocks = unlocks;
+                self.arc.gen = self.arc.gen.wrapping_add(1);
+            }
+            EventMsg::Work { index, what, by } => self.work_events.push((index, what, by)),
+            EventMsg::ArcRefused { code, op, target } => self.arc_refusals.push((code, op, target)),
             EventMsg::Hostile { until } => self.hostile_until = until,
             EventMsg::SwipeRefused { code, door } => {
                 if self.swipe_refusal_len == REFUSAL_RING {
@@ -3856,6 +3911,16 @@ impl ClientCore {
         self.vend_result_head = (self.vend_result_head + 1) % REFUSAL_RING;
         self.vend_result_len -= 1;
         Some(r)
+    }
+
+    /// Oldest work change: `(work, sim_core::works::WORK_EV_*, by)`.
+    pub fn pop_work_event(&mut self) -> Option<(u8, u8, u32)> {
+        self.work_events.pop()
+    }
+
+    /// Oldest refused arc verb: `(code, op, target)`.
+    pub fn pop_arc_refused(&mut self) -> Option<(u8, u8, u8)> {
+        self.arc_refusals.pop()
     }
 
     /// Oldest swipe refusal: `(code, door)`.

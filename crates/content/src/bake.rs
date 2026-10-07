@@ -262,8 +262,15 @@ impl Content {
                     r.id
                 ));
             }
+            let unlock = match &r.unlock {
+                None => sim_core::works::NO_UNLOCK,
+                Some(u) => self.unlock_code(u).ok_or_else(|| {
+                    format!("bake: `{}` needs `{u}`, which no work unlocks", r.id)
+                })?,
+            };
             let mut def = RecipeDef {
                 blueprint: r.blueprint,
+                unlock,
                 output: self
                     .item_index(&r.output)
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
@@ -1622,12 +1629,19 @@ impl Content {
                 if n == MAX_VEND_OFFERS {
                     return Err(format!("sites: more than {MAX_VEND_OFFERS} offers"));
                 }
+                let unlock = match &o.unlock {
+                    None => sim_core::works::NO_UNLOCK,
+                    Some(u) => self.unlock_code(u).ok_or_else(|| {
+                        format!("sites: {}: `{u}` is not unlocked by any work", vendor.name)
+                    })?,
+                };
                 vc.offers[n] = sim_core::vend::VendOffer {
                     vendor: v as u8,
                     pay,
                     pay_n: o.pay_n,
                     get,
                     get_n: o.get_n,
+                    unlock,
                 };
                 n += 1;
             }
@@ -1692,6 +1706,185 @@ impl Content {
                 .ok_or_else(|| format!("monument: door {d} takes `{}`, not an item", door.card))?;
         }
         Ok(out)
+    }
+
+    /// Every unlock id a work grants, floor or ceiling, sorted: an unlock's
+    /// code is its rank + 1 (`sim_core::works::NO_UNLOCK` is 0).
+    pub fn unlock_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .works
+            .iter()
+            .flat_map(|w| [w.floor_unlock.clone(), w.ceiling_unlock.clone()])
+            .flatten()
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// The code of unlock `id`: rank + 1 among [`Self::unlock_ids`].
+    pub fn unlock_code(&self, id: &str) -> Option<u8> {
+        self.unlock_ids()
+            .iter()
+            .position(|u| u == id)
+            .map(|i| i as u8 + 1)
+    }
+
+    /// Each unlock's display name, code order (code 1 first): the id after
+    /// `unlock.`, upper case, underscores as spaces.
+    pub fn bake_unlock_names(&self) -> Vec<String> {
+        self.unlock_ids()
+            .iter()
+            .map(|u| {
+                u.trim_start_matches("unlock.")
+                    .replace('_', " ")
+                    .to_uppercase()
+            })
+            .collect()
+    }
+
+    /// Each work's name, file order.
+    pub fn bake_work_names(&self) -> Vec<String> {
+        self.works.iter().map(|w| w.name.clone()).collect()
+    }
+
+    /// The works and their effects (`sim_core::works`, `content/arc.toml`).
+    /// Hours become ticks and metres centimetres here; every reference is
+    /// resolved or the boot is refused.
+    pub fn bake_arc(&self) -> Result<sim_core::works::WorksContent, String> {
+        use sim_core::limits::{MAX_ARC_EFFECTS, MAX_UNLOCKS, MAX_WORKS, MAX_WORK_INPUTS, TICK_HZ};
+        use sim_core::works::{ArcEffect, WorkDef, WorkInput, WorksContent};
+        let ids = self.unlock_ids();
+        if ids.len() > MAX_UNLOCKS {
+            return Err(format!(
+                "arc: {} unlocks, the sim holds {MAX_UNLOCKS}",
+                ids.len()
+            ));
+        }
+        if self.works.len() > MAX_WORKS {
+            return Err(format!(
+                "arc: {} works, the sim holds {MAX_WORKS}",
+                self.works.len()
+            ));
+        }
+        if self.arc_effects.len() > MAX_ARC_EFFECTS {
+            return Err(format!("arc: more than {MAX_ARC_EFFECTS} effects"));
+        }
+        let a = &self.arc;
+        if a.quiet_burn_pct > 100 || a.busy_players < a.quiet_players {
+            return Err("arc: quiet_burn_pct is 0..=100 and busy_players ≥ quiet_players".into());
+        }
+        let mut wc = WorksContent::EMPTY;
+        wc.quiet_players = a.quiet_players;
+        wc.busy_players = a.busy_players;
+        wc.quiet_burn_pct = a.quiet_burn_pct;
+        let hour = 3600 * TICK_HZ as u64;
+        let code = |u: &Option<String>, w: &str| -> Result<u8, String> {
+            match u {
+                None => Ok(sim_core::works::NO_UNLOCK),
+                Some(u) if u.starts_with("unlock.") => Ok(self.unlock_code(u).expect("own id")),
+                Some(u) => Err(format!("arc: {w}: `{u}` must start `unlock.`")),
+            }
+        };
+        for (k, w) in self.works.iter().enumerate() {
+            if !w.id.starts_with("work.") || w.name.is_empty() || w.name.len() > 24 {
+                return Err(format!(
+                    "arc: work {k}: id must start `work.`, name 1..=24 bytes"
+                ));
+            }
+            if !(1..=4).contains(&w.act) {
+                return Err(format!("arc: {}: act is 1..=4", w.id));
+            }
+            if w.opens_hour > w.fallback_hour || w.fallback_hour > 24 * 90 {
+                return Err(format!(
+                    "arc: {}: opens_hour ≤ fallback_hour ≤ 90 days",
+                    w.id
+                ));
+            }
+            if w.inputs.is_empty() || w.inputs.len() > MAX_WORK_INPUTS {
+                return Err(format!("arc: {}: 1..={MAX_WORK_INPUTS} inputs", w.id));
+            }
+            let site = match w.site.as_str() {
+                "town" => sim_core::spot::SITE_TOWN,
+                "ziggurat" => sim_core::spot::SITE_ZIGGURAT,
+                kind => {
+                    let k = [
+                        "mast", "ruin", "tower", "stones", "yard", "anvil", "arch", "spires",
+                    ]
+                    .iter()
+                    .position(|n| *n == kind)
+                    .ok_or_else(|| format!("arc: {}: no site `{kind}`", w.id))?;
+                    sim_core::spot::SITE_LANDMARK0 + k as u8
+                }
+            };
+            let cm = |m: f32| -> Result<i16, String> {
+                if !(-300.0..=300.0).contains(&m) {
+                    return Err(format!("arc: {}: `at` is within 300 m of the site", w.id));
+                }
+                Ok((m * 100.0).round() as i16)
+            };
+            let fuel = self
+                .item_index(&w.fuel)
+                .ok_or_else(|| format!("arc: {}: fuel `{}` is not an item", w.id, w.fuel))?;
+            let mut def = WorkDef {
+                spot: sim_core::spot::Spot {
+                    site,
+                    nth: w.nth,
+                    x_cm: cm(w.at[0])?,
+                    y_cm: cm(w.at[1])?,
+                    z_cm: cm(w.at[2])?,
+                },
+                act: w.act,
+                opens_at: w.opens_hour as u64 * hour,
+                fallback_at: w.fallback_hour as u64 * hour,
+                floor: code(&w.floor_unlock, &w.id)?,
+                ceiling: code(&w.ceiling_unlock, &w.id)?,
+                fuel,
+                fuel_max: w.fuel_max,
+                burn_per_hour: w.burn_per_hour,
+                n_inputs: w.inputs.len() as u8,
+                inputs: [WorkInput::default(); MAX_WORK_INPUTS],
+            };
+            if w.burn_per_hour > 1_000_000 || w.fuel_max > 1_000_000 {
+                return Err(format!(
+                    "arc: {}: fuel_max and burn_per_hour ≤ 1,000,000",
+                    w.id
+                ));
+            }
+            for (i, s) in w.inputs.iter().enumerate() {
+                let item = self
+                    .item_index(&s.item)
+                    .ok_or_else(|| format!("arc: {}: input `{}` is not an item", w.id, s.item))?;
+                if s.count == 0 || s.count > 10_000_000 {
+                    return Err(format!("arc: {}: input counts are 1..=10,000,000", w.id));
+                }
+                def.inputs[i] = WorkInput {
+                    item,
+                    need: s.count,
+                };
+            }
+            wc.defs[k] = def;
+        }
+        wc.count = self.works.len() as u8;
+        for (i, e) in self.arc_effects.iter().enumerate() {
+            let unlock = self
+                .unlock_code(&e.unlock)
+                .ok_or_else(|| format!("arc: effect {i}: no work unlocks `{}`", e.unlock))?;
+            let knob = match e.knob.as_str() {
+                "smelt_pct" => sim_core::works::KNOB_SMELT_PCT,
+                k => return Err(format!("arc: effect {i}: no knob `{k}`")),
+            };
+            if e.pct == 0 || e.pct > 1000 {
+                return Err(format!("arc: effect {i}: pct is 1..=1000"));
+            }
+            wc.effects[i] = ArcEffect {
+                unlock,
+                knob,
+                pct: e.pct,
+            };
+        }
+        wc.n_effects = self.arc_effects.len() as u8;
+        Ok(wc)
     }
 
     /// Each vendor's name, kiosk order, for the wire's offer catalog.

@@ -155,6 +155,13 @@ pub fn build_screen(
                         icon(row, core, icons, o.pay, o.pay_n);
                         row.spawn((Text::new("→"), font_bold(16.0), TextColor(TEXT_DIM)));
                         icon(row, core, icons, o.get, o.get_n);
+                        // Under the counter until the island can make it
+                        // (`ARC.md` §1.3): the row says which work must burn
+                        // instead of offering a press the sim would refuse.
+                        if let Some(why) = crate::ui::arc::locked_line(&core.arc, o.unlock) {
+                            row.spawn((Text::new(why), font_bold(11.0), TextColor(TEXT_SHORT)));
+                            return;
+                        }
                         for times in [1u8, 5, 20] {
                             let afford = have(o.pay) >= o.pay_n as u32 * times as u32;
                             let bg = if afford { CELL_FULL } else { CELL_BG };

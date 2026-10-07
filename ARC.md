@@ -35,7 +35,8 @@ What this supersedes is named, so nobody fights it later.
    only makes it come sooner. Whoever holds a work gets a bonus on top, never
    a lockout. (`WORLD.md` §4.3, generalised from extraction to every work.)
 3. **Guns are gated by the world, not the tech tree.** Gunpowder cannot be
-   made until the Crucible is lit. The revolver leaves the ARMS kiosk.
+   made until the Crucible is lit, and the ARMS kiosk keeps the revolver and
+   its rounds under the counter until then.
 4. **Powers are loot.** Strange gear arrives late: it is droppable, runs on a
    charge that only comes from below, and is never on the character sheet.
    This **supersedes `WORLD.md` §7.1** ("player gear stays crude forever").
@@ -64,7 +65,7 @@ What this supersedes is named, so nobody fights it later.
 | **III · The Gate** | 10–20 | the war effort | one server-wide quota at the Severed Gate, carried there by hand. Countdown, then it opens: sealed doors unseal, things leak out and roam, strange gear starts dropping | the Gate opens |
 | **IV · Descent** | 20–28 | the island at its worst | raid the labs under the island; the finale at the Ziggurat pad is a launch, and the launch is the wipe | the wipe |
 
-Days are the 4-week shape. Every number lives in `content/works.toml` and
+Days are the 4-week shape. Every number lives in `content/arc.toml` and
 `shard.toml`, not here.
 
 ---
@@ -87,7 +88,7 @@ eat what is otherwise worthless late.
 Each framework ships with **one** content row that proves it. The meat is more
 rows. Code paths are where each one lives.
 
-### F1 · Works and the arc clock *(sim)*
+### F1 · Works and the arc clock *(sim)* — built
 The world-state table `WORLD.md` §5.4 specified. A bounded array of **works**
 in `World` (`sim-core/src/works.rs`, `limits::MAX_WORKS`). Each work has:
 - **a state:** sealed, open, lit or dark;
@@ -95,40 +96,53 @@ in `World` (`sim-core/src/works.rs`, `limits::MAX_WORKS`). Each work has:
 - **a condition:** fuel that decays every hour, scaled by population;
 - **its timing:** an opening hour and a fallback hour.
 
-The arc clock is ticks since the wipe began. Rows live in
-`content/works.toml`. Lighting a work sets its **unlock flags**, and each work
-has two:
+The arc clock is the world's tick (a wipe is a fresh world at tick 0). Rows
+live in `content/arc.toml`. A work stands at a **spot** (`sim-core/src/spot.rs`):
+a site (town, ziggurat or a landmark kind, nearest the middle first) plus an
+offset, resolved from the seed on both sides. A seed without that site has no
+terminal, and the work lights only at its fallback hour
+(`content` test `every_shipped_work_stands_on_the_public_island`). Lighting a
+work sets its **unlock flags**, and each work has two:
 - **a floor flag:** set once and kept for the wipe;
 - **a ceiling flag:** held only while the work's condition is above zero.
 
-Everything is in `state_hash` and the world save. First row: **THE CRUCIBLE**
-(floor flag: gunpowder; ceiling flag: faster smelting).
+Everything is in `state_hash` and the world save (format 21). Ceiling effects
+are `[[effect]]` rows turning a knob code (`works::KNOB_*`); the first knob is
+furnace speed. First row: **THE CRUCIBLE** at the anvil rock (floor:
+`unlock.gunpowder`; ceiling: `unlock.smelting`, furnaces ×2).
 
-### F2 · Unlock gates *(sim + content)*
+### F2 · Unlock gates *(sim + content)* — built
 A recipe or a vendor offer can name `unlock = "unlock.x"`, which is refused
-until the flag is set. `craft.rs` and `vend.rs` each check it in one place,
-and the client mirrors the lock in the craft panel. First rows: gunpowder
-needs `unlock.gunpowder`, and the ARMS kiosk loses the revolver.
+until the flag is set (`craft::REFUSE_WORLD`, `vend::REFUSE_V_LOCKED`). Both
+ride the wire (six bits on a recipe row and an offer), and the craft panel and
+the kiosk name the work that must burn. First rows: gunpowder, and ARMS's
+revolver and pistol rounds. Loot tables are not gated yet: a revolver can
+still drop from a crate before the Crucible burns.
 
-### F3 · Contributions *(sim)*
-Depositing at a work's terminal is a player command, validated for proximity.
-Each work keeps a bounded **ledger** of what each player gave, which feeds the
-island panel's credits and later the rewards. Per-player rewards shrink with
-repeats (AQ's signets), and quotas open in time-boxed windows so a clan cannot
-pre-hoard and trigger at 1 a.m.
+### F3 · Contributions *(sim)* — built: deposits and the ledger
+Depositing at a work's terminal is `Command::Arc` (one wire action, `ACT_ARC`,
+with an op, so every later arc verb rides it too), validated for proximity.
+Each work keeps a bounded **ledger** (`MAX_WORK_CREDITS`) of each giver's share
+in basis points of the quota; each player sees their own share. Still owed:
+per-player rewards that shrink with repeats (AQ's signets), and quota windows
+so a clan cannot pre-hoard and trigger at 1 a.m.
 
-### F4 · The UI kit and the new screens *(client)*
-- **The kit:** shared widgets (frame, header, tab bar, progress bar, button,
-  list row) in `render/panels/kit.rs`, so a new screen is composition and
-  nobody hand-rolls one.
+### F4 · The UI kit and the new screens *(client)* — WORK, ISLAND, banner built
+- **The kit:** shared widgets (card over scrim, header, section, progress bar,
+  button, row, hint) in `render/panels/kit.rs`, so a new screen is
+  composition. The old panels move onto it when next touched. Still owed: one
+  palette (the menu, panel and HUD colours disagree), a focus/Escape stack,
+  and a panel trait instead of the eight match sites a new `Panel` touches.
 - **New screens:**
-  - **ISLAND:** the act, every work's bar, and its credits.
-  - **WORK:** a terminal's inputs, with DEPOSIT.
+  - **ISLAND** (`O`): the act, every work's bar, what it gives, your share.
+  - **WORK** (`E` at a terminal): its inputs with DEPOSIT, its tank with FUEL.
   - **TALK:** a speaker's lines and replies.
   - **READ:** an inscription, its glyphs rendered as far as you know them.
   - **JOURNAL:** the glyphs you know, what you have read, your notes.
-- **The HUD banner:** top centre, the act and the nearest bar, plus a world
-  notice when a work changes state.
+- **The HUD banner** (`render/arc_hud.rs`): top centre under the compass, the
+  act and the work that matters most now; a toast to everyone when a work
+  opens, lights or goes to embers. Terminals are drawn in the world
+  (`render/works.rs`): a black plinth, a fire bowl, a gold ring.
 - Models stay in `crate::ui` and are tested headless (`tests/ui.rs`); drawing
   goes in `render/panels`.
 
@@ -211,7 +225,7 @@ A month-long wipe with mid-wipe tuning needs all of it.
 
 ## 7 · Open — the operator's
 
-- Act lengths and quota sizes. Defaults ship in `content/works.toml` and get
+- Act lengths and quota sizes. Defaults ship in `content/arc.toml` and get
   tuned on a real shard.
 - Which act-II works M1 carries, and what each one's ceiling buys.
 - The names of the speakers, and how many.

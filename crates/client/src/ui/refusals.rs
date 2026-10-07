@@ -43,7 +43,7 @@
 // nothing outside this client renders them.
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
-pub const CRAFT: [&str; 7] = [
+pub const CRAFT: [&str; 8] = [
     "no such recipe",
     "bad count",
     "needs a station",
@@ -59,6 +59,9 @@ pub const CRAFT: [&str; 7] = [
     // Skins v0: a skin you do not own, or that does not fit this item. The
     // fix is the store, so the sentence says where it is.
     "not your skin for this item — skins are sold in the ITEM STORE",
+    // The world's gate (`ARC.md` F2): nothing the crafter can do fixes it
+    // except the island lighting a work, so the sentence says where to look.
+    "nobody on the island can make this yet — see the works on [O] ISLAND",
 ];
 
 /// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the
@@ -239,7 +242,24 @@ pub fn vend(code: u8) -> String {
         sim_core::vend::REFUSE_V_REACH => "step up to the counter to trade".into(),
         sim_core::vend::REFUSE_V_FUNDS => "you cannot pay for that".into(),
         sim_core::vend::REFUSE_V_FULL => "no room in your pack for that".into(),
+        sim_core::vend::REFUSE_V_LOCKED => {
+            "kept under the counter until the island can make it".into()
+        }
         _ => "that trade is not on offer".into(),
+    }
+}
+
+/// Why an arc verb did nothing (`sim_core::works::REFUSE_A_*`).
+pub fn arc(code: u8) -> String {
+    use sim_core::works::*;
+    match code as u32 {
+        REFUSE_A_REACH => "step up to the work".into(),
+        REFUSE_A_SEALED => "it is sealed — it opens later in the wipe".into(),
+        REFUSE_A_NOTHING => "you carry nothing it still needs".into(),
+        REFUSE_A_LIT => "it already burns — it takes fuel now".into(),
+        REFUSE_A_COLD => "it is cold — fill its quota first".into(),
+        REFUSE_A_FULL => "its tank is full".into(),
+        _ => "it does not answer".into(),
     }
 }
 

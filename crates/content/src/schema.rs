@@ -173,6 +173,10 @@ pub struct Recipe {
     /// gate you cannot apply by accident.
     #[serde(default)]
     pub blueprint: bool,
+    /// A world unlock it needs (`content/arc.toml`, `ARC.md` F2): nobody may
+    /// craft it until a work holding that unlock is lit.
+    #[serde(default)]
+    pub unlock: Option<String>,
 }
 
 /// One row of `content/research.toml`: an item you can take to a table,
@@ -1060,4 +1064,64 @@ pub struct Offer {
     pub pay_n: u16,
     pub get: String,
     pub get_n: u16,
+    /// A world unlock the offer waits on (`content/arc.toml`).
+    #[serde(default)]
+    pub unlock: Option<String>,
+}
+
+/// `content/arc.toml` `[arc]`: how a quiet shard's works burn
+/// (`sim_core::works`, `ARC.md` F1).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArcGlobals {
+    /// At or below this many players online a tank burns at
+    /// `quiet_burn_pct`; at or above `busy_players`, at full rate.
+    pub quiet_players: u16,
+    pub busy_players: u16,
+    pub quiet_burn_pct: u16,
+}
+
+/// One work (`[[work]]`): a broken machine the server pays to light.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Work {
+    pub id: String,
+    /// What the island panel and the terminal call it.
+    pub name: String,
+    /// `town`, `ziggurat`, or a landmark kind (`mast`, `ruin`, `tower`,
+    /// `stones`, `yard`, `anvil`, `arch`, `spires`).
+    pub site: String,
+    /// Which of that landmark kind, nearest the island's middle first.
+    #[serde(default)]
+    pub nth: u8,
+    /// The terminal, metres in the site's own frame: [x, y, z].
+    pub at: [f32; 3],
+    /// The act it belongs to (`ARC.md` §2), 1..=4.
+    pub act: u8,
+    /// The hour of the wipe deposits open.
+    pub opens_hour: u32,
+    /// The hour it lights itself if nobody paid.
+    pub fallback_hour: u32,
+    /// Set for the rest of the wipe once lit (an `unlock.` id).
+    #[serde(default)]
+    pub floor_unlock: Option<String>,
+    /// Held only while its tank has fuel.
+    #[serde(default)]
+    pub ceiling_unlock: Option<String>,
+    /// What the tank burns, how much it holds, and how much an hour.
+    pub fuel: String,
+    pub fuel_max: u32,
+    pub burn_per_hour: u32,
+    /// The quota.
+    pub inputs: Vec<Stack>,
+}
+
+/// One effect (`[[effect]]`): while `unlock` is held, `knob` runs at `pct`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArcEffect {
+    pub unlock: String,
+    /// A knob the sim knows: `smelt_pct`.
+    pub knob: String,
+    pub pct: u16,
 }

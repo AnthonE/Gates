@@ -361,6 +361,11 @@ pub struct ClientNetState {
     /// The open card doors this client last heard (wire v86); `None` owes
     /// it the set.
     pub last_doors: Option<u8>,
+    /// Next work row the drip sends (wire v95).
+    pub work_cursor: usize,
+    /// Each work's state as this client last heard it (wire v95); `None`
+    /// owes it that work.
+    pub last_works: [Option<WorkSeen>; sim_core::limits::MAX_WORKS],
     /// The owned skin set this client last heard (`SUB_SKINS_OWNED`), so the
     /// drip sends it when the sim's copy moves and never otherwise.
     pub last_skins: Option<sim_core::skin::SkinSet>,
@@ -459,6 +464,8 @@ impl ClientNetState {
             skins_cursor: 0,
             vend_cursor: 0,
             last_doors: None,
+            work_cursor: 0,
+            last_works: [None; sim_core::limits::MAX_WORKS],
             last_skins: None,
             tags_owed: TAGS_ALL,
             skins_pending: None,
@@ -484,6 +491,8 @@ impl ClientNetState {
         self.skins_cursor = 0;
         self.vend_cursor = 0;
         self.last_doors = None;
+        self.work_cursor = 0;
+        self.last_works = [None; sim_core::limits::MAX_WORKS];
         self.last_skins = None;
         self.tags_owed = TAGS_ALL;
         self.recipes_cursor = 0;
@@ -1085,4 +1094,16 @@ mod tests {
         c.on_acks(2, 0); // stale ack finds no ring entry
         assert!(c.baseline(4).is_none());
     }
+}
+
+/// One work as a client last heard it (`SUB_WORK_STATE`): what the drip
+/// compares, so a work moves on the wire only when what this player would
+/// see of it moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkSeen {
+    pub state: u8,
+    pub fuel: u32,
+    pub got: [u32; sim_core::limits::MAX_WORK_INPUTS],
+    pub mine: u32,
+    pub unlocks: u32,
 }

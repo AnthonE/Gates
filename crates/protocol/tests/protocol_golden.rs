@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 138] = [
+const GOLDEN: [&[u8]; 143] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -201,6 +201,11 @@ const GOLDEN: [&[u8]; 138] = [
     include_bytes!("golden/event_lodged_sync.bin"),
     include_bytes!("golden/event_ammo.bin"),
     include_bytes!("golden/event_fire.bin"),
+    include_bytes!("golden/event_work_def.bin"),
+    include_bytes!("golden/event_work_state.bin"),
+    include_bytes!("golden/event_work.bin"),
+    include_bytes!("golden/event_arc_refused.bin"),
+    include_bytes!("golden/action_arc.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -435,8 +440,14 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 136);
     // Where a fire arrow's fire burns (v94).
     g!(seen, golden_event, 137);
+    // The arc (v95).
+    g!(seen, golden_event, 138);
+    g!(seen, golden_event, 139);
+    g!(seen, golden_event, 140);
+    g!(seen, golden_event, 141);
+    g!(seen, golden_action, 142);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 138, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 143, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -539,6 +550,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_pick(cell, &mut buf).unwrap()
+        }
+        "action_arc.bin" => {
+            let (op, target, arg) = protocol::goldens::action_arc();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Arc { op, target, arg },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_arc(op, target, arg, &mut buf).unwrap()
         }
         "action_swipe.bin" => {
             let door = protocol::goldens::action_swipe();
@@ -1882,6 +1902,65 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_sentry_lock(sentry, target, &mut buf).unwrap()
+        }
+        "event_work_def.bin" => {
+            let (wc, name, floor, ceiling) = protocol::goldens::event_work_def();
+            match decode_event(fixture).unwrap() {
+                EventMsg::WorkDef {
+                    total,
+                    index,
+                    def,
+                    name: n,
+                    name_len,
+                    floor_name,
+                    floor_len,
+                    ceiling_name,
+                    ceiling_len,
+                } => {
+                    assert_eq!((total, index), (2, 1), "{name:?}: index");
+                    assert_eq!(def, wc.defs[1], "work def: decode mismatch");
+                    assert_eq!(&n[..name_len as usize], name);
+                    assert_eq!(&floor_name[..floor_len as usize], floor);
+                    assert_eq!(&ceiling_name[..ceiling_len as usize], ceiling);
+                }
+                other => panic!("work def: decoded {other:?}"),
+            }
+            protocol::encode_event_work_def(&wc, 1, name, floor, ceiling, &mut buf).unwrap()
+        }
+        "event_work_state.bin" => {
+            let (index, work, n, mine, unlocks) = protocol::goldens::event_work_state();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::WorkState {
+                    index,
+                    state: work.state,
+                    fuel: work.fuel,
+                    n,
+                    got: work.got,
+                    mine,
+                    unlocks,
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_work_state(index, &work, n, mine, unlocks, &mut buf).unwrap()
+        }
+        "event_work.bin" => {
+            let (index, what, by) = protocol::goldens::event_work();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Work { index, what, by },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_work(index, what, by, &mut buf).unwrap()
+        }
+        "event_arc_refused.bin" => {
+            let (code, op, target) = protocol::goldens::event_arc_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::ArcRefused { code, op, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_arc_refused(code, op, target, &mut buf).unwrap()
         }
         "event_fire.bin" => {
             let (qx, qy, qz, until) = protocol::goldens::event_fire();

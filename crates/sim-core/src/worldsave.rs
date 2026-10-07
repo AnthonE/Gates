@@ -206,7 +206,15 @@ use crate::worldcont::WorldContRec;
 /// which way (nine bytes after its host's life). And the fires fire arrows
 /// left burning: a twelfth section count, after the loose stacks', and their
 /// records after the loose stacks.
-pub const WORLD_SAVE_FORMAT: u16 = 20;
+///
+/// **21 — the works** (`works.rs`, `ARC.md` F1): every work slot's state,
+/// fuel, burn remainder, lit tick, quota progress and credits, after the
+/// weather record and before the section counts.
+pub const WORLD_SAVE_FORMAT: u16 = 21;
+
+/// The head's works block: every slot, written whether or not content
+/// names a work there, so the head stays a fixed size.
+pub const WORKS_SAVE_BYTES: usize = crate::limits::MAX_WORKS * crate::works::WORK_BYTES;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -224,7 +232,8 @@ pub const ENV_BYTES: usize = 1 + 8 + 6 * 2 + 1 + 4;
 /// with anything about the head. A hand-copied offset is a silent
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
-pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + SECTION_COUNTS;
+pub const HEAD_BYTES: usize =
+    2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + WORKS_SAVE_BYTES + SECTION_COUNTS;
 /// Twelve `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
@@ -441,6 +450,8 @@ pub enum WorldSaveError {
     BadExposure,
     /// A harvested slot claims to be felled and regrowing at once.
     BadSlotLife,
+    /// A work slot names a state past lit.
+    BadWork,
 }
 
 impl WorldSaveError {
@@ -466,6 +477,7 @@ impl WorldSaveError {
             Self::BadEnv => "the weather record names an impossible sky or clock",
             Self::BadExposure => "a body is wetter or colder than a body can be",
             Self::BadSlotLife => "a felled slot claims to be regrowing too",
+            Self::BadWork => "a work claims a state past lit",
         }
     }
 }
@@ -560,6 +572,9 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     }
     o.u8(e.from.wind_dir);
     o.u32(e.day_offset);
+    for work in w.works.w.iter() {
+        o.bytes(&work.to_bytes());
+    }
 
     // Bodies. Everyone in the file is written as a sleeper *by the loader*,
     // not here — see `decode_into`. What is written is who was in the world.
@@ -975,6 +990,17 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     env.day_offset = r.u32()?;
     if !env.valid() {
         return Err(WorldSaveError::BadEnv);
+    }
+    let mut works = crate::works::Works::default();
+    for work in works.w.iter_mut() {
+        let raw: &[u8; crate::works::WORK_BYTES] = r
+            .take(crate::works::WORK_BYTES)?
+            .try_into()
+            .map_err(|_| WorldSaveError::Truncated)?;
+        *work = crate::works::Work::from_bytes(raw);
+        if work.state > crate::works::WORK_LIT {
+            return Err(WorldSaveError::BadWork);
+        }
     }
 
     let n_players = r.count(MAX_PLAYERS)?;
@@ -1760,6 +1786,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.sweep_support = sweep_support;
     w.evictions = evictions;
     w.env = env;
+    *w.works = works;
+    w.works.refresh(&w.works_def);
     w.players = players;
     w.pieces
         .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
@@ -1884,7 +1912,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 92                    // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20)
+        let by_hand = 1_380                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21)
             + 100 * 485                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
@@ -1909,8 +1937,11 @@ mod tests {
                             // derivable one is a second place for it to be
                             // wrong. 64 -> 90 at format 15: the admin's sky and
                             // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
-                            // fires' count.
-        assert_eq!(HEAD_BYTES, 92);
+                            // fires' count. 92 -> 1380 at format 21: the
+                            // works, every slot whether or not content
+                            // names one (`MAX_WORKS` × `WORK_BYTES`).
+        assert_eq!(crate::works::WORK_BYTES, 161);
+        assert_eq!(HEAD_BYTES, 1_380);
         // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
         assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
@@ -2001,9 +2032,10 @@ mod tests {
         // 3_549_966 → 3_556_110 at format 20: a stuck arrow's direction,
         // three bytes on each of 512 loose stacks, and where in its body
         // an arrow went in, nine on each of 512 stopped arrows. Then
-        // 3_557_904: 64 fires × 28 and their count.
+        // 3_557_904: 64 fires × 28 and their count. 3_559_192 at format
+        // 21: the works block in the head, 8 × 161.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_557_904,
+            WORLD_SAVE_MAX_BYTES, 3_559_192,
             "the world save ceiling moved"
         );
     }

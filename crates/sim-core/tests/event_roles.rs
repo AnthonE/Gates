@@ -107,6 +107,7 @@ use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
     TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
+use sim_core::world::{EV_ARC_REFUSED, EV_WORK};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
@@ -4275,9 +4276,11 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 54] = [
+    const COVERED: [(&str, u8); 56] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
+        ("EV_WORK", EV_WORK),
+        ("EV_ARC_REFUSED", EV_ARC_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
         ("EV_PIECE_PLACED", EV_PIECE_PLACED),
@@ -5600,6 +5603,7 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
         pay_n: 3,
         get: 2,
         get_n: 4,
+        unlock: 0,
     };
     w.vend.count = 1;
     w.tick(&[Command::Join { id: BUILDER }]);
@@ -5632,6 +5636,74 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
     let inv = &w.players[0].inv;
     assert_eq!(sim_core::craft::inv_count(inv, 1), 0, "paid 3 × 2");
     assert_eq!(sim_core::craft::inv_count(inv, 2), 8, "got 4 × 2");
+}
+
+/// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`, and
+/// `EV_WORK: a = work, b = what, c = who` — a deposit while the work is
+/// sealed, its opening (nobody did it), a deposit out of reach, then the
+/// whole quota at the terminal, which lights it in the depositor's name.
+#[test]
+fn a_work_names_itself_what_happened_and_who() {
+    use sim_core::works::{
+        WorksContent, ARG_ALL, OP_DEPOSIT, REFUSE_A_REACH, REFUSE_A_SEALED, WORKS_PERIOD_TICKS,
+        WORK_EV_LIT, WORK_EV_OPENED, WORK_LIT, WORK_OPEN,
+    };
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.works_def = WorksContent::probe_fixture();
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let spot = w.works_def.defs[0].spot;
+    let (x, _, z) = sim_core::spot::world(&w.haven, &spot).expect("the fixture seed has a town");
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 6,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: 1,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+    let deposit = Command::Arc {
+        id: BUILDER,
+        op: OP_DEPOSIT,
+        target: 0,
+        arg: ARG_ALL,
+    };
+    if w.works.w[0].state != WORK_OPEN {
+        w.tick(&[deposit]);
+        let ev = only(&w, EV_ARC_REFUSED);
+        assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_A_SEALED, 0));
+    }
+    let mut opened = false;
+    for _ in 0..WORKS_PERIOD_TICKS {
+        if w.works.w[0].state == WORK_OPEN {
+            break;
+        }
+        w.tick(&[]);
+        if count(&w, EV_WORK) > 0 {
+            let ev = only(&w, EV_WORK);
+            assert_eq!((ev.a, ev.b, ev.c), (0, WORK_EV_OPENED, 0));
+            opened = true;
+        }
+    }
+    assert!(opened, "the work opened within a period");
+
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 40.0, z);
+    w.tick(&[deposit]);
+    let ev = only(&w, EV_ARC_REFUSED);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_A_REACH, 0));
+
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.tick(&[deposit]);
+    let ev = only(&w, EV_WORK);
+    assert_eq!((ev.a, ev.b, ev.c), (0, WORK_EV_LIT, BUILDER));
+    assert_eq!(w.works.w[0].state, WORK_LIT);
+    assert_eq!(w.works.unlocks, 0b11, "floor and ceiling both held");
+    assert_eq!(w.works.w[0].points_of(BUILDER), 20_000, "two whole lines");
 }
 
 /// `EV_SWIPE_REFUSED: a = player, b = reason, c = door`, then `EV_SWIPE:

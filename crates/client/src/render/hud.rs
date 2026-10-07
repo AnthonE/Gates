@@ -2342,7 +2342,17 @@ pub fn feedback(
                 };
                 crate::ui::refusals::reload(code, &held)
             }
+            super::feed::Refused::Arc => crate::ui::refusals::arc(code),
         });
+    }
+
+    // A work changed (`ARC.md`): the whole island hears it, because what a
+    // work gives it gives everybody.
+    for &(index, what, by) in feed.work_events() {
+        let who = (by != 0).then(|| crate::ui::names::label(core.tag(by), by));
+        if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
+            toast.say(line);
+        }
     }
 
     // A blueprint learned — the research verbs' LANDED half, whose refused

@@ -385,6 +385,11 @@ pub struct SimTables {
     pub vendor_names: Vec<String>,
     /// The keycard each ziggurat door takes (`monument::DOORS`).
     pub cards: [u16; sim_core::monument::CARD_DOORS],
+    /// The arc (`content/arc.toml`): the works, and the names the work drip
+    /// carries.
+    pub works: sim_core::works::WorksContent,
+    pub work_names: Vec<String>,
+    pub unlock_names: Vec<String>,
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -413,6 +418,9 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         vend: content.bake_vend()?,
         vendor_names: content.bake_vendor_names(),
         cards: content.bake_cards()?,
+        works: content.bake_arc()?,
+        work_names: content.bake_work_names(),
+        unlock_names: content.bake_unlock_names(),
         combat,
         gather,
         survival,
@@ -3098,6 +3106,9 @@ fn sim_thread(
         vend,
         vendor_names,
         cards,
+        works,
+        work_names,
+        unlock_names,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -3119,6 +3130,10 @@ fn sim_thread(
     core.world.vend = vend;
     core.vendor_names = vendor_names;
     core.world.cards = cards;
+    core.world.works_def = works;
+    core.world.works.refresh(&core.world.works_def);
+    core.work_names = work_names;
+    core.unlock_names = unlock_names;
     core.install_admins(admins);
     core.trust = trust;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).

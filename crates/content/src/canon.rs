@@ -101,6 +101,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(r.seconds);
         h.u(r.blueprint as u32);
         h.stacks(&r.inputs);
+        h.s(r.unlock.as_deref().unwrap_or(""));
     }
 
     h.s("building");
@@ -442,6 +443,39 @@ pub fn hash(c: &Content) -> u64 {
         ex.hurt_hp_per_min,
     ] {
         h.u(v);
+    }
+
+    // The arc (`arc.toml`). Works hash in **file order**, not sorted: a
+    // work's index is its row, and the world save files progress under that
+    // index, so a reorder must read as different content.
+    h.s("arc");
+    h.u(c.arc.quiet_players as u32);
+    h.u(c.arc.busy_players as u32);
+    h.u(c.arc.quiet_burn_pct as u32);
+    h.u(c.works.len() as u32);
+    for w in &c.works {
+        h.s(&w.id);
+        h.s(&w.name);
+        h.s(&w.site);
+        h.u(w.nth as u32);
+        for m in w.at {
+            h.u(m.to_bits());
+        }
+        h.u(w.act as u32);
+        h.u(w.opens_hour);
+        h.u(w.fallback_hour);
+        h.s(w.floor_unlock.as_deref().unwrap_or(""));
+        h.s(w.ceiling_unlock.as_deref().unwrap_or(""));
+        h.s(&w.fuel);
+        h.u(w.fuel_max);
+        h.u(w.burn_per_hour);
+        h.stacks(&w.inputs);
+    }
+    h.u(c.arc_effects.len() as u32);
+    for e in &c.arc_effects {
+        h.s(&e.unlock);
+        h.s(&e.knob);
+        h.u(e.pct as u32);
     }
 
     h.0.digest()

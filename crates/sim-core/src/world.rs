@@ -846,7 +846,16 @@ pub const EV_AMMO: u8 = 53;
 /// into it, so everyone in the world should see it.
 pub const EV_FIRE: u8 = 54;
 
-pub const EV_MAX: u8 = EV_FIRE;
+/// EV_WORK: a = the work (`works.rs`), b = `works::WORK_EV_*`, c = the
+/// player who lit or rekindled it, 0 otherwise. **Broadcast**: a work
+/// opening, lighting or going to embers changes the shard for everybody.
+pub const EV_WORK: u8 = 55;
+
+/// EV_ARC_REFUSED: a = player id, b = `works::REFUSE_A_*`, c = op << 8 |
+/// target. Own-fact.
+pub const EV_ARC_REFUSED: u8 = 56;
+
+pub const EV_MAX: u8 = EV_ARC_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1848,6 +1857,15 @@ pub enum Command {
         id: u32,
         door: u8,
     },
+    /// One arc verb (`works.rs`, `ARC.md`): `op` on `target` with `arg` —
+    /// a deposit toward a work's quota, or fuel into its tank. The sim
+    /// checks reach, the work's state and what is carried.
+    Arc {
+        id: u32,
+        op: u8,
+        target: u8,
+        arg: u8,
+    },
     /// Drink from the water under your own feet (survival.rs). No target
     /// and no position: the heightfield is a pure function of the seed,
     /// so the sim asks it where the body already is.
@@ -1921,6 +1939,12 @@ pub struct World {
     pub skins: crate::skin::SkinContent,
     /// The town's vendor offers (`content/sites.toml`, `vend.rs`).
     pub vend: crate::vend::VendContent,
+    /// The works and their effects (`works.rs`, `content/arc.toml`).
+    /// Construction input; `EMPTY` holds no works and gates nothing.
+    pub works_def: crate::works::WorksContent,
+    /// The works' state and the unlocks they hold — sim state, hashed once
+    /// any work moves and saved. Boxed for `mobs`' stack reason.
+    pub works: Box<crate::works::Works>,
     /// The keycard item each card door takes (`monument::DOORS`), baked
     /// from content; `NO_ITEM` opens nothing.
     pub cards: [u16; crate::monument::CARD_DOORS],
@@ -2150,6 +2174,8 @@ impl World {
             research: crate::research::ResearchContent::EMPTY,
             skins: crate::skin::SkinContent::EMPTY,
             vend: crate::vend::VendContent::EMPTY,
+            works_def: crate::works::WorksContent::EMPTY,
+            works: Box::default(),
             cards: [crate::gather::NO_ITEM; crate::monument::CARD_DOORS],
             card_doors: [0; crate::monument::CARD_DOORS],
             card_door_bits: 0,
@@ -4442,6 +4468,7 @@ impl World {
                     craft::enqueue(
                         &self.craft,
                         &self.skins,
+                        self.works.unlocks,
                         &self.deploy,
                         &self.deploys,
                         self.tick,
@@ -4880,10 +4907,31 @@ impl World {
                     crate::vend::trade(
                         &self.vend,
                         &self.gather,
+                        self.works.unlocks,
                         &town,
                         &mut self.players[slot],
                         offer as usize,
                         times,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Arc {
+                id,
+                op,
+                target,
+                arg,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::works::act(
+                        &self.works_def,
+                        &mut self.works,
+                        &self.haven,
+                        self.tick,
+                        &mut self.players[slot],
+                        op,
+                        target,
+                        arg,
                         &mut self.events,
                     );
                 }
@@ -6241,6 +6289,11 @@ impl World {
             &self.gather,
             &mut self.deploys,
             tick,
+            crate::works::knob_pct(
+                &self.works_def,
+                self.works.unlocks,
+                crate::works::KNOB_SMELT_PCT,
+            ),
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point
@@ -6248,6 +6301,22 @@ impl World {
         // tick has already spent its period, as an oven has, and its
         // contents spill uncharged when it does.
         crate::research::table_sweep(&self.research, &mut self.deploys, tick, &mut self.events);
+        // The works open, light themselves at their fallback hour and burn
+        // (`works.rs`), once a period, off their own phase.
+        if self.works_def.count > 0 {
+            let online = self
+                .players
+                .iter()
+                .filter(|p| p.active && !p.sleeping)
+                .count() as u32;
+            crate::works::sweep(
+                &self.works_def,
+                &mut self.works,
+                tick,
+                online,
+                &mut self.events,
+            );
+        }
         // The structural backstop, after the sweep that can create work for
         // it: anything a capped cascade left hanging in the air comes down
         // here, one piece and its own cascade per tick (build.rs).
@@ -6991,6 +7060,14 @@ impl World {
             buf[21] = f.wind_dir;
             buf[22..26].copy_from_slice(&e.day_offset.to_le_bytes());
             h.update(&buf);
+        }
+        // The works (`works.rs`), skip-if-fresh like the heli: a world whose
+        // works never moved hashes as it did before they existed. `unlocks`
+        // is derived from the table and not folded twice.
+        if !self.works.is_fresh() {
+            for w in self.works.w.iter() {
+                h.update(&w.to_bytes());
+            }
         }
         h.digest()
     }

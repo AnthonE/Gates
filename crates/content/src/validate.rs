@@ -28,6 +28,25 @@ fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
 }
 
 pub fn structural(c: &Content) -> Result<(), String> {
+    // The arc refuses here as well as at the bake, so a content set with a
+    // broken work never loads at all (`ARC.md` F1).
+    c.bake_arc()?;
+    for r in &c.recipes {
+        if let Some(u) = &r.unlock {
+            if c.unlock_code(u).is_none() {
+                return Err(format!("recipe `{}`: no work unlocks `{u}`", r.id));
+            }
+        }
+    }
+    for v in &c.vendors {
+        for o in &v.offer {
+            if let Some(u) = &o.unlock {
+                if c.unlock_code(u).is_none() {
+                    return Err(format!("vendor `{}`: no work unlocks `{u}`", v.name));
+                }
+            }
+        }
+    }
     // Ids: well-formed, and unique across the whole set.
     let mut seen = BTreeSet::new();
     let mut unique = |id: &str| -> Result<(), String> {
