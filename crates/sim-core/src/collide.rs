@@ -2898,9 +2898,11 @@ mod tests {
             "ramp top {top_y} should reach the next storey {}",
             base + LEVEL_H_M
         );
-        // And past the cell it drops back to terrain (nothing up there).
+        // And past the cell it drops back to terrain (nothing up there) —
+        // the CARVED ground a body stands on, not the raw height, which a
+        // road or a site may have cut or filled here.
         let (x, y, z) = pos(&b);
-        let terr = terrain::height(SEED, x, z);
+        let terr = terrain::ground(SEED, hv(), x, z);
         assert!(z > (CZ + 1) as f32 * BUILD_CELL_M, "never crested the ramp");
         assert!(
             b.grounded && fabs(y - terr) <= STEP_UP,

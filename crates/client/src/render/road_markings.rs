@@ -98,9 +98,11 @@ pub struct RoadChartBuilder {
 }
 
 impl RoadChartBuilder {
-    pub fn new(seed: u64, mesh_step: f32) -> Self {
+    /// `ring` is the BUILT road (`Haven::ring`), the width the paint is laid
+    /// on — not `solve_ring`'s, which is the solver's narrower question.
+    pub fn new(ring: terrain::RingPath, mesh_step: f32) -> Self {
         Self {
-            ring: terrain::solve_ring(seed),
+            ring,
             nodes: vec![Node::default(); ROAD_CHART_SAMPLES],
             cursor: 0,
             mesh_step,
@@ -209,8 +211,8 @@ impl RoadChartBuilder {
 }
 
 impl RoadChart {
-    pub fn build(seed: u64, mesh_step: f32) -> Self {
-        let mut builder = RoadChartBuilder::new(seed, mesh_step);
+    pub fn build(ring: &terrain::RingPath, mesh_step: f32) -> Self {
+        let mut builder = RoadChartBuilder::new(*ring, mesh_step);
         loop {
             if let Some(chart) = builder.advance() {
                 return chart;
@@ -361,7 +363,7 @@ mod tests {
 
     #[test]
     fn steep_triangle_cannot_skip_more_than_half_a_dash_cycle() {
-        let chart = RoadChart::build(20260731, 1.0);
+        let chart = RoadChart::build(&terrain::haven(20260731).ring, 1.0);
         // Before the phase-rate bound this actual 1 m mesh diagonal advanced
         // 4.238 m along a 6 m dash cycle, reversing interpolated dash/gap.
         assert!(chart.at(346.0, 562.0).is_none() || chart.at(347.0, 561.0).is_none());
@@ -380,10 +382,11 @@ mod tests {
     #[test]
     fn chart_centres_and_edges_remain_in_authoritative_ring() {
         for seed in [20260731, 42, 0xDEAD_BEEF] {
-            let chart = RoadChart::build(seed, 1.0);
-            // The AUTHORITATIVE ring is the solved path — the raw predicate
-            // was it until ring path v0, and the two disagree by design.
-            let ring = terrain::solve_ring(seed);
+            // The AUTHORITATIVE ring is the built path — the raw predicate
+            // was it until ring path v0, and `solve_ring` alone is the
+            // solver's 4 m question, not the laid road.
+            let ring = terrain::haven(seed).ring;
+            let chart = RoadChart::build(&ring, 1.0);
             let mut checked = 0;
             for i in 0..ROAD_CHART_SAMPLES {
                 let n = chart.nodes[i];

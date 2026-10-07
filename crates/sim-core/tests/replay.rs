@@ -526,7 +526,11 @@ const TICKS: u64 = 900;
 /// digest folds is eight bytes (its skin joins it), craft jobs hash their
 /// skin and each player its owned set. No command in the script names a
 /// skin, so every one of those fields is zero.
-const GOLDEN_FINAL_HASH: u64 = 0x648A_1F38_16B5_002C;
+/// **Moved → `0xFAEB_87E1_0504_F20B` at the 8 m ring** (2026-10-06), merged
+/// over main's slope-sunk rocks (`0x648A_1F38_16B5_002C`): the island the
+/// script plays on has a wider road and its junk piles, so what the bots
+/// walk past and smash moved.
+const GOLDEN_FINAL_HASH: u64 = 0xFAEB_87E1_0504_F20B;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -626,7 +630,8 @@ const GOLDEN_FINAL_HASH: u64 = 0x648A_1F38_16B5_002C;
 /// the script's walkers mount and leave its foundations a few ticks
 /// differently. The end state holds, and the wall-plane rule that landed
 /// with it moves nothing here.
-const GOLDEN_TRACE_HASH: u64 = 0x2390_29F0_4E9D_EAB3;
+/// **Moved → `0x9E70_29A8_C726_FA3D` at the 8 m ring**, with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x9E70_29A8_C726_FA3D;
 
 /// Fold a stamped trace into one number.
 ///

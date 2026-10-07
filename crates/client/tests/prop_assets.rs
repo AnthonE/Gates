@@ -420,6 +420,76 @@ fn each_model_is_the_volume_the_sim_blocks() {
     }
 }
 
+/// The roadside junk's models (`props::ROADSIDE_GLB`) fit what the sim
+/// blocks the same way. The sign and the wreck are box tables, so their
+/// broad-phase radius is only a ceiling; the drum, box and tyres are their
+/// volume and are held to it from both sides.
+#[test]
+fn each_roadside_model_is_the_volume_the_sim_blocks() {
+    for (o, rel) in client::render::props::ROADSIDE_GLB {
+        let g = glb_of(rel);
+        assert_eq!(g.primitives().len(), 1, "{rel}: one primitive");
+        let (peak, radius) = g.peak_and_radius();
+        let top = archetype_lift(o) + peak;
+        let base = archetype_lift(o) + g.min_y();
+        let (r_pub, top_pub) = (OCCUPANT_R_M[o as usize], OCCUPANT_TOP_M[o as usize]);
+        assert!(
+            radius <= r_pub + PROP_OVER_M,
+            "{o:?} ({rel}) draws out to {radius:.4} m against {r_pub:.4}"
+        );
+        assert!(
+            top <= top_pub + PROP_OVER_M,
+            "{o:?} ({rel}) draws up to {top:.4} m against {top_pub:.4}"
+        );
+        assert!(
+            top_pub - top <= PROP_SHORT_M,
+            "{o:?} ({rel}) draws to {top:.4} m under a blocked top of {top_pub:.4}"
+        );
+        let table: &[[f32; 6]] = match o {
+            Occupant::RoadSign => &sim_core::terrain::ROAD_SIGN_BOXES,
+            Occupant::CarWreck => &sim_core::terrain::CAR_WRECK_BOXES,
+            _ => &[],
+        };
+        if table.is_empty() {
+            assert!(
+                r_pub - radius <= PROP_SHORT_M,
+                "{o:?} ({rel}) draws to {radius:.4} m inside a blocked radius of {r_pub:.4}"
+            );
+        } else {
+            // Inside the box table's footprint, give or take a lamp lens.
+            const OVER: f32 = 0.02;
+            let lo_x = table
+                .iter()
+                .map(|b| b[0] - b[3] * 0.5)
+                .fold(f32::MAX, f32::min);
+            let hi_x = table
+                .iter()
+                .map(|b| b[0] + b[3] * 0.5)
+                .fold(f32::MIN, f32::max);
+            let lo_z = table
+                .iter()
+                .map(|b| b[2] - b[5] * 0.5)
+                .fold(f32::MAX, f32::min);
+            let hi_z = table
+                .iter()
+                .map(|b| b[2] + b[5] * 0.5)
+                .fold(f32::MIN, f32::max);
+            for v in g.positions() {
+                assert!(
+                    v[0] >= lo_x - OVER
+                        && v[0] <= hi_x + OVER
+                        && v[2] >= lo_z - OVER
+                        && v[2] <= hi_z + OVER,
+                    "{o:?} ({rel}) has a vertex at ({:.3}, {:.3}) outside its box table",
+                    v[0],
+                    v[2]
+                );
+            }
+        }
+        assert!(base <= SINK_M, "{o:?} ({rel}) floats {base:+.4} m");
+    }
+}
+
 #[test]
 fn nothing_floats_and_nothing_is_buried_whole() {
     for (o, rel) in shipped() {

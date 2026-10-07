@@ -68,6 +68,23 @@ pub const GATHERABLE_KINDS: usize = 5;
 /// a barrel still wins the swing.
 const BARREL_TARGET: usize = GATHERABLE_KINDS;
 
+/// Everything a swing smashes into loot, in scan-target order from
+/// `BARREL_TARGET`: the occupant and the `loot::LOOT_*` table it rolls.
+/// A road sign and an oil barrel are barrels with their own tables.
+const SMASHABLES: [(Occupant, usize); 3] = [
+    (Occupant::BarrelSlot, LOOT_BARREL),
+    (Occupant::OilBarrel, crate::loot::LOOT_OIL_BARREL),
+    (Occupant::RoadSign, crate::loot::LOOT_ROADSIGN),
+];
+
+/// The smashable at scan target `target`, or `None` for a node.
+#[inline]
+fn smashable(target: usize) -> Option<(Occupant, usize)> {
+    target
+        .checked_sub(BARREL_TARGET)
+        .and_then(|i| SMASHABLES.get(i).copied())
+}
+
 /// Tool rows one node archetype can carry (alpha data uses ≤ 4 + hand;
 /// bake refuses past this). Structural cap, not a knob.
 pub const MAX_TOOLS_PER_NODE: usize = 8;
@@ -440,8 +457,10 @@ pub(crate) fn target_index(o: Occupant) -> Option<usize> {
     match node_index(o) {
         Some(_) if o == Occupant::Bush => None,
         Some(ni) => Some(ni),
-        None if o == Occupant::BarrelSlot => Some(BARREL_TARGET),
-        None => None,
+        None => SMASHABLES
+            .iter()
+            .position(|(so, _)| *so == o)
+            .map(|i| BARREL_TARGET + i),
     }
 }
 
@@ -452,10 +471,9 @@ pub(crate) fn target_index(o: Occupant) -> Option<usize> {
 /// ordinal minus one anyway.
 #[inline]
 fn occupant_of(target: usize) -> u32 {
-    if target == BARREL_TARGET {
-        Occupant::BarrelSlot as u32
-    } else {
-        target as u32 + 1
+    match smashable(target) {
+        Some((o, _)) => o as u32,
+        None => target as u32 + 1,
     }
 }
 
@@ -480,6 +498,8 @@ pub enum Swing {
     /// position — the sim sims on the values it transmits, so the
     /// container stands exactly where the client drew the barrel.
     Smashed {
+        /// The `loot::LOOT_*` table the smashed thing rolls.
+        table: u8,
         cx: u16,
         cz: u16,
         qx: i32,
@@ -969,8 +989,8 @@ pub fn land(
     let oz = pz - slot.z;
     let d2 = ox * ox + oz * oz;
 
-    if ni == BARREL_TARGET {
-        return smash(lc, seed, tick, cx, cz, pos, lives, events, p);
+    if smashable(ni).is_some() {
+        return smash(lc, seed, tick, ni, cx, cz, pos, lives, events, p);
     }
 
     let def = &gc.nodes[ni];
@@ -1334,6 +1354,7 @@ fn smash(
     lc: &LootContent,
     seed: u64,
     tick: u64,
+    target: usize,
     cx: u16,
     cz: u16,
     spos: (f32, f32, f32),
@@ -1341,7 +1362,10 @@ fn smash(
     events: &mut EventQueue,
     p: &mut Player,
 ) -> Swing {
-    let hits = lc.hits(LOOT_BARREL);
+    let Some((_, table)) = smashable(target) else {
+        return Swing::Absorbed;
+    };
+    let hits = lc.hits(table);
     if hits == 0 {
         return Swing::Absorbed; // inert loot content: the barrel takes the thunk and stands
     }
@@ -1360,14 +1384,10 @@ fn smash(
     }
     let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
     life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
-    life.occ = occupant_of(BARREL_TARGET) as u8;
-    events.push(
-        EV_SLOT_HARVESTED,
-        cell_key(cx, cz),
-        occupant_of(BARREL_TARGET),
-        0,
-    );
+    life.occ = occupant_of(target) as u8;
+    events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), occupant_of(target), 0);
     Swing::Smashed {
+        table: table as u8,
         cx,
         cz,
         qx: quant_xz(spos.0),

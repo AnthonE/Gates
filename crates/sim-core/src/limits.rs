@@ -729,7 +729,7 @@ pub const MAX_BOXES: usize = 256;
 /// dropping one and re-minting it on the next open would re-roll the loot
 /// immediately, which turns the cap into a dupe rather than a limit.
 /// Proposed default, DECISIONS.md §open (world containers v0).
-pub const MAX_WORLD_CONTS: usize = 64;
+pub const MAX_WORLD_CONTS: usize = 256;
 
 /// Vendor offers on the island, all kiosks together (`vend.rs`). Refused
 /// past at bake.
@@ -881,7 +881,7 @@ const _: () = assert!(MAX_SKINS.is_multiple_of(64), "a SkinSet is whole u64 word
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a
 /// knob: the index is code (`loot::LOOT_*`), so a table the sim has no
 /// verb for is a bake error rather than a silent extra row.
-pub const MAX_LOOT_TABLES: usize = 8;
+pub const MAX_LOOT_TABLES: usize = 12;
 
 /// Weighted rows one loot table may carry (the shipped crate table uses
 /// 9). The bake refuses past it. Structural cap like `MAX_RECIPE_INPUTS`,
