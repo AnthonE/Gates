@@ -1049,7 +1049,9 @@ pub struct WaterParams {
     pub sun: Vec4,
     /// xyz the dusk glow toward a low sun, cd/m²; w spare.
     pub glow: Vec4,
-    /// xyz the night floor, cd/m²; w spare.
+    /// xyz the night floor, cd/m²; w 1 where the atmosphere lays the sky
+    /// over the deck per channel (dual-source blending), 0 where through its
+    /// mean (`sky::deck_hue`, `quality::GpuCaps::dual_source_blending`).
     pub night: Vec4,
     /// The hour's light on the clear sky: x the sun's share of daylight
     /// (`WeatherNow::sun_lux`); y the height of the noon sun (`to_sun`'s y at
@@ -1071,6 +1073,11 @@ impl WaterParams {
         let [zenith, horizon, glow, floor] = sky;
         let noon_y = super::rig::to_sun(super::rig::CAPTURE_DAY_FRAC).y;
         let clear = if super::sky::BAKE_BACKDROP { 0.0 } else { 1.0 };
+        let per_channel = if super::quality::gpu_caps().dual_source_blending {
+            1.0
+        } else {
+            0.0
+        };
         Self {
             optics: Vec4::new(EXTINCT[0], EXTINCT[1], EXTINCT[2], ALPHA_MAX),
             scatter: Vec4::new(
@@ -1086,7 +1093,7 @@ impl WaterParams {
                 .normalize_or(Vec3::Y)
                 .extend(super::sky::CLOUD_NITS * super::sky::DECK_GAIN),
             glow: Vec4::new(glow[0], glow[1], glow[2], 0.0),
-            night: Vec4::new(floor[0], floor[1], floor[2], 0.0),
+            night: Vec4::new(floor[0], floor[1], floor[2], per_channel),
             hour: Vec4::new(light, noon_y, TWILIGHT_SKY, SKY_FALLOFF),
             shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, phase),
             glint: Vec4::new(water_f0(), GLINT_A2_NEAR, GLINT_A2_FAR, GLINT_FAR_M),

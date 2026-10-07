@@ -391,3 +391,23 @@ fn the_stars_are_a_mesh_above_the_horizon() {
         "{bright} of {STARS} stars are bright"
     );
 }
+
+/// Without dual-source blending the atmosphere lays the sky over the deck
+/// through the MEAN of its transmittance, so the deck's lift there is one
+/// number in all three channels: it evens the brightness and tints nothing.
+#[test]
+fn a_grey_composite_gets_a_grey_lift() {
+    for i in 0..=20 {
+        let y = i as f32 / 20.0;
+        let g = client::render::sky::deck_hue_for(y, false);
+        assert!(g[0].is_finite() && g[0] > 0.0, "lift {g:?} at y {y}");
+        assert_eq!(g[0], g[1]);
+        assert_eq!(g[1], g[2]);
+        // And the per-channel lift is a hue: blue lifted most, red least.
+        let h = client::render::sky::deck_hue_for(y, true);
+        assert!(
+            h[2] >= h[1] && h[1] >= h[0],
+            "per-channel lift {h:?} at y {y}"
+        );
+    }
+}

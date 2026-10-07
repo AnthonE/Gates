@@ -1832,6 +1832,7 @@ impl Plugin for GatesRenderPlugin {
             storage_textures: limits.max_storage_textures_per_shader_stage,
             float32_filterable: features.contains(WgpuFeatures::FLOAT32_FILTERABLE),
             rg11b10_renderable: features.contains(WgpuFeatures::RG11B10UFLOAT_RENDERABLE),
+            dual_source_blending: features.contains(WgpuFeatures::DUAL_SOURCE_BLENDING),
         };
         quality::set_gpu_caps(caps);
         let tier = quality::effective(quality::default_gfx());

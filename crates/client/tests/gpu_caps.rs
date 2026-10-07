@@ -16,6 +16,7 @@ fn caps(sampled: u32, storage: u32) -> GpuCaps {
         storage_textures: storage,
         float32_filterable: true,
         rg11b10_renderable: true,
+        dual_source_blending: true,
     }
 }
 

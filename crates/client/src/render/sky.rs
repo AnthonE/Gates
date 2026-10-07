@@ -680,9 +680,27 @@ impl ComposeParams {
 /// deck is 1.4 km up, under little of that column. This takes the hue of
 /// `T` out of a cloud and leaves its dimming: distant cloud still goes dark
 /// toward the horizon, which is the aerial perspective the cube is there to
-/// get, and not orange. The desktop's alone — a browser has no atmosphere.
+/// get, and not orange. Wherever the atmosphere draws — not under WebGL2,
+/// which has none.
+///
+/// **Per channel only where the device blends per channel.** `render_sky`
+/// multiplies by `T` channel by channel through dual-source blending, and
+/// by `T`'s MEAN on a device without it (Bevy's own fallback, and the case
+/// for some browsers' WebGPU). Lifted against a grey multiply, a deck keeps
+/// the blue it was given to cancel the red and every cloud comes out
+/// periwinkle — measured 26 levels bluer than the desktop's in a SwiftShader
+/// browser. There this only evens the brightness: `grey / mean(T)`, the same
+/// in all three channels, so a cloud lands as bright as on the desktop and
+/// as grey. [`super::quality::GpuCaps::dual_source_blending`] says which.
 pub fn deck_hue(y: f32) -> [f32; 3] {
-    static LUT: std::sync::OnceLock<Box<[[f32; 3]]>> = std::sync::OnceLock::new();
+    deck_hue_for(y, super::quality::gpu_caps().dual_source_blending)
+}
+
+/// [`deck_hue`] for a composite through `T` per channel (`per_channel`) or
+/// through its mean.
+pub fn deck_hue_for(y: f32, per_channel: bool) -> [f32; 3] {
+    type Lift = ([f32; 3], f32);
+    static LUT: std::sync::OnceLock<Box<[Lift]>> = std::sync::OnceLock::new();
     let lut = LUT.get_or_init(|| {
         let tau = zenith_depth(&super::rig::island_medium());
         (0..HUE_STEPS)
@@ -693,14 +711,20 @@ pub fn deck_hue(y: f32) -> [f32; 3] {
                 // a grey as the weakest channel can be lifted to.
                 let least = t[0].min(t[1]).min(t[2]);
                 let grey = super::fill::luminance(t).min(HUE_MAX * least);
-                core::array::from_fn(|c| grey / t[c])
+                let mean = (t[0] + t[1] + t[2]) / 3.0;
+                (core::array::from_fn(|c| grey / t[c]), grey / mean)
             })
             .collect()
     });
     let x = y.clamp(0.0, 1.0) * (HUE_STEPS - 1) as f32;
     let i = (x as usize).min(HUE_STEPS - 2);
     let f = x - i as f32;
-    core::array::from_fn(|c| lut[i][c] + (lut[i + 1][c] - lut[i][c]) * f)
+    let (a, b) = (lut[i], lut[i + 1]);
+    if per_channel {
+        core::array::from_fn(|c| a.0[c] + (b.0[c] - a.0[c]) * f)
+    } else {
+        [a.1 + (b.1 - a.1) * f; 3]
+    }
 }
 
 /// Air masses along a ray `y` above the horizon, over straight up (Kasten

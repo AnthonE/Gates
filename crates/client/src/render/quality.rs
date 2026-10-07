@@ -233,6 +233,10 @@ pub struct GpuCaps {
     /// `Features::RG11B10UFLOAT_RENDERABLE`: bloom's mip chain is
     /// `Rg11b10Ufloat` and Bevy never checks that it can draw into one.
     pub rg11b10_renderable: bool,
+    /// `Features::DUAL_SOURCE_BLENDING`: without it Bevy's atmosphere lays
+    /// the sky over the cloud deck through the MEAN of its transmittance,
+    /// not per channel, so `sky::deck_hue` must not tint the deck against it.
+    pub dual_source_blending: bool,
 }
 
 /// The worst main-pass pipeline's sampled textures with no prepass: see
@@ -247,6 +251,7 @@ impl GpuCaps {
         storage_textures: u32::MAX,
         float32_filterable: true,
         rg11b10_renderable: true,
+        dual_source_blending: true,
     };
 
     /// Prepass textures the main pass can still bind.

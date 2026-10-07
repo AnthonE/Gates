@@ -56,7 +56,8 @@ struct Water {
     sun: vec4<f32>,
     // xyz the dusk glow toward a low sun, cd/m²; w spare.
     glow: vec4<f32>,
-    // xyz the night floor, cd/m²; w spare.
+    // xyz the night floor, cd/m²; w 1 where the atmosphere lays the sky over
+    // the deck per channel, 0 where through its transmittance's mean.
     night: vec4<f32>,
     // x the sun's share of daylight, y the noon sun's height, z `TWILIGHT_SKY`,
     // w `SKY_FALLOFF`.
@@ -161,7 +162,11 @@ fn sky_radiance(r: vec3<f32>, rd: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
     // dusk's). Multiplying by the same LUT's T is the sky's own composite. A
     // browser's deck is already the finished sky.
 #ifdef ATMOSPHERE
-    let deck = raw * lighting::sample_transmittance_lut(ground_r(), max(rd.y, 0.0));
+    // Through `T` as the sky pass lays it: per channel with dual-source
+    // blending, its mean without (`water.night.w`) — the deck's lift was
+    // made for whichever this device does (`sky::deck_hue`).
+    let t = lighting::sample_transmittance_lut(ground_r(), max(rd.y, 0.0));
+    let deck = raw * mix(vec3<f32>((t.r + t.g + t.b) / 3.0), t, water.night.w);
 #else
     let deck = raw;
 #endif
