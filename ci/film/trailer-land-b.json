@@ -19,6 +19,8 @@
   "shots": [
     {"name": "aerial-zig", "at": 20, "len": 7.5, "hour": 0.3, "weather": "clear", "fov": 48, "keys": [{"t": 0, "pos": [2150, 140, 2650], "look": [2496, 20, 3168]}, {"t": 7.5, "pos": [2215, 120, 2760], "look": [2496, 20, 3168]}], "look": {"shutter": 0.35, "saturation": 1.1}},
     {"name": "zig-crown", "at": 30, "len": 7.0, "hour": [0.798, 0.803], "weather": "clear", "fov": 30, "ease": true, "keys": [{"t": 0, "pos": [2331, 0.9, 3073], "look": [2496, 24, 3168]}, {"t": 7, "pos": [2327, 5.0, 3071], "look": [2496, 23, 3168]}], "look": {"focus": 190, "fstop": 2.0, "exposure": 0.25, "temperature": 0.05, "saturation": 1.15, "fringe": 0.003, "shake": 0.06}},
-    {"name": "zig-dusk", "at": 40, "len": 6.5, "hour": [0.888, 0.895], "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [2405, 2.0, 3075], "look": [2496, 22, 3168]}, {"t": 6.5, "pos": [2416, 2.4, 3089], "look": [2496, 22, 3168]}], "look": {"exposure": 1.6, "temperature": -0.03, "saturation": 1.1}}
+    {"name": "zig-dusk", "at": 40, "len": 6.5, "hour": [0.888, 0.895], "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [2405, 2.0, 3075], "look": [2496, 22, 3168]}, {"t": 6.5, "pos": [2416, 2.4, 3089], "look": [2496, 22, 3168]}], "look": {"exposure": 3.5, "temperature": -0.03, "saturation": 1.1}},
+    {"name": "zig-night", "at": 50, "len": 6.5, "hour": 0.93, "weather": "clear", "fov": 46, "keys": [{"t": 0, "pos": [2405, 2.0, 3075], "look": [2496, 22, 3168]}, {"t": 6.5, "pos": [2416, 2.4, 3089], "look": [2496, 22, 3168]}], "look": {"exposure": 5.5, "temperature": -0.06, "saturation": 1.05}},
+    {"name": "base-night", "at": 520, "len": 6.0, "hour": 0.93, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [2326, 2.0, 3093], "look": [2356, 7, 3110]}, {"t": 6, "pos": [2328, 2.2, 3097], "look": [2356, 7, 3110]}], "look": {"exposure": 5.5, "temperature": -0.06, "saturation": 1.05}}
   ]
 }

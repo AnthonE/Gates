@@ -672,9 +672,13 @@ impl Film {
         1000.0 / self.script.fps as f64
     }
 
-    fn stem(&self) -> PathBuf {
+    /// `NN-name.ext`. Not `with_extension`, which would cut a name with a
+    /// dot in it.
+    fn file(&self, ext: &str) -> PathBuf {
         let s = self.cur();
-        self.script.out.join(format!("{:02}-{}", self.shot, s.name))
+        self.script
+            .out
+            .join(format!("{:02}-{}.{ext}", self.shot, s.name))
     }
 
     /// The shot's look over the script's.
@@ -1264,14 +1268,13 @@ pub fn roll(
 fn start_shot(film: &mut Film) -> Result<(), String> {
     std::fs::create_dir_all(&film.script.out)
         .map_err(|e| format!("{}: {e}", film.script.out.display()))?;
-    let stem = film.stem();
     let s = &film.script;
     let (out, drawn) = ((s.width, s.height), s.window());
     let enc = if film.cur().still {
-        Encoder::open(&stem.with_extension("png"), drawn, out, None)?
+        Encoder::open(&film.file("png"), drawn, out, None)?
     } else {
-        let enc = Encoder::open(&stem.with_extension("mp4"), drawn, out, Some(s.fps))?;
-        film.wav = Some(Wav::create(&stem.with_extension("wav"))?);
+        let enc = Encoder::open(&film.file("mp4"), drawn, out, Some(s.fps))?;
+        film.wav = Some(Wav::create(&film.file("wav"))?);
         enc
     };
     film.encoders.push(Arc::new(Mutex::new(enc)));
