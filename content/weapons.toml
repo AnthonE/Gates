@@ -161,7 +161,9 @@ limb_pct = 50
 # Rust's hunting bow looses every 1.25 s (its repeat delay; the nock is
 # inside it), against the 2 s this was. 48 a minute is 37 ticks, 1.23 s.
 rate_per_min = 48
-ammo = ["item.arrow_wood"]
+# Rust's kinds a hunting bow fires, in the order it falls back through
+# when the one picked (`R`) runs out.
+ammo = ["item.arrow_wood", "item.arrow_hv", "item.arrow_bone"]
 # The draw: hold the right mouse this long before a shot will loose
 # (`reference/PROJECTILES.md` §6 — the hunting bow's ~1 s draw). The
 # crossbow carries none: it is cocked, and fires from the hip.
@@ -267,12 +269,8 @@ blast_m = 3
 # weapon that is unreachable at any values: the bow decides how fast its
 # arrow flies, so every arrow it fires flies the same.
 #
-# What this table does NOT yet carry is a damage column. Theirs scales the
-# weapon's damage by the round's (a high-velocity arrow is −20 %), and that
-# multiplier is a number nobody has spoken — `DECISIONS.md` §open, not this
-# file. So damage stays on the weapon and every round out of one bow hits
-# equally hard, which is the honest half-way house and is stated rather
-# than hidden.
+# A round's `damage_pct` scales its weapon's `damage`, as theirs does (a
+# high-velocity arrow is −20 %); absent is 100.
 #
 # `speed_mps` has a hard ceiling the bake enforces and it is not a taste
 # call: an arrow faster than `ARROW_STEP_MM × MAX_ARROW_SUBSTEPS` per tick
@@ -288,3 +286,18 @@ drop_mps2 = 7
 id = "item.arrow_metal"
 speed_mps = 75
 drop_mps2 = 7
+
+# Rust's high-velocity arrow: 80 m/s at half gravity, 40 a hit off the bow
+# (80 %). Their half gravity is 4.9; 5 bakes to the sim's nearest, 5.4.
+[[ammo]]
+id = "item.arrow_hv"
+speed_mps = 80
+drop_mps2 = 5
+damage_pct = 80
+
+# Rust's bone arrow: 45 m/s at the wooden arrow's 0.75 g, 40 a hit.
+[[ammo]]
+id = "item.arrow_bone"
+speed_mps = 45
+drop_mps2 = 7
+damage_pct = 80

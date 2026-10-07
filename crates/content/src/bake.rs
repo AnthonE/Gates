@@ -891,7 +891,9 @@ impl Content {
                     w.id, w.draw_ms
                 )
             })?;
-        let mag_slot = if magazine > 0 {
+        // A bow takes a slot too, with no magazine in it: `Player::mag_round`
+        // there is the kind of arrow it looses, the one `R` picks.
+        let mag_slot = if magazine > 0 || w.kind == WeaponKind::Bow {
             // Refused rather than wrapped or dropped. A weapon that lost
             // its slot would fall back to spending straight out of the
             // pack — the mechanic silently gone, with every gate green,
@@ -1013,6 +1015,8 @@ impl Content {
         cc.ammo[idx] = AmmoDef {
             speed_mmpt,
             drop_mmpt2,
+            // 1..=200 by `validate`.
+            damage_pct: a.damage_pct as u16,
         };
         Ok(())
     }

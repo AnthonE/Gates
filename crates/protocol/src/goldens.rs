@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 136] = [
+pub const FIXTURES: [&str; 137] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -247,8 +247,9 @@ pub const FIXTURES: [&str; 136] = [
     "action_respawn_gate.bin",
     // Another body's hands, heard (v93).
     "event_heard.bin",
-    // The arrows standing in bodies (v94).
+    // The arrows standing in bodies (v94), and which arrow a bow looses.
     "event_lodged_sync.bin",
+    "event_ammo.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1691,6 +1692,12 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
         };
     }
     (true, recs)
+}
+
+/// Which arrow a bow looses: two item ids in two 16-bit fields, distinct
+/// so a swap reddens.
+pub fn event_ammo() -> (u16, u16) {
+    (3, 260)
 }
 
 /// A full batch of arrows in bodies with `reset` set: players and animals

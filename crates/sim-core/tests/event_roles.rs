@@ -95,17 +95,17 @@ use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFU
 use sim_core::terrain;
 use sim_core::trust::TrustRow;
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_MAX, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
-    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
-    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
-    EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
-    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND,
-    EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE,
-    PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR,
-    TRUST_VERB_MAX,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
+    EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
+    EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
+    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL,
+    EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
+    EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
+    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
+    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -556,6 +556,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
         drop_mmpt2: DROP_MMPT2,
+        damage_pct: 100,
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -675,6 +676,67 @@ const RL_PACK: u16 = 10;
 /// Past `rate_ticks`, so "the arm is busy for a reload" is a different
 /// number from "the arm is busy for a shot".
 const RL_RELOAD_TICKS: u16 = 20;
+
+/// **EV_AMMO names the archer, then the bow and the arrow it now looses.**
+///
+/// A bow with two kinds in the pack: holding it states the first kind, and
+/// `R` moves it to the second. Bow and arrow are distinct item ids in the
+/// two halves of `b`, so the halves cannot swap unseen.
+#[test]
+fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
+    const BOW: u16 = 5;
+    const WOOD: u16 = 6;
+    const HV: u16 = 7;
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [WOOD, HV, NO_ITEM, NO_ITEM],
+        rate_ticks: 37,
+        hitscan: false,
+        range_mm: 60_000,
+        structure: 0,
+        head_pct: 150,
+        limb_pct: 50,
+        magazine: 0,
+        reload_ticks: 0,
+        // A bow's slot holds the kind it looses, with no magazine in it.
+        mag_slot: 0,
+        draw_ticks: 30,
+    };
+    for round in [WOOD, HV] {
+        w.combat.ammo[round as usize] = AmmoDef {
+            speed_mmpt: 1_666,
+            drop_mmpt2: 8,
+            damage_pct: 100,
+        };
+    }
+    for (i, item) in [(0, BOW), (1, WOOD), (2, HV)] {
+        w.players[0].inv[i] = ItemStack {
+            item,
+            count: if item == BOW { 1 } else { 5 },
+            cond: 0,
+            skin: 0,
+        };
+    }
+    w.tick(&[]);
+    let ev = only(&w, EV_AMMO);
+    assert_eq!(ev.a, ATTACKER, "EV_AMMO.a is whose bow it is");
+    assert_eq!(
+        ev.b,
+        (BOW as u32) << 16 | WOOD as u32,
+        "EV_AMMO.b is the bow above the arrow it looses — the first kind \
+         carried, before any pick"
+    );
+    assert_eq!(ev.c, 0);
+
+    w.tick(&[Command::Reload { id: ATTACKER }]);
+    let ev = only(&w, EV_AMMO);
+    assert_eq!(
+        ev.b,
+        (BOW as u32) << 16 | HV as u32,
+        "`R` moves the bow to the next kind carried"
+    );
+}
 
 /// **EV_RELOAD names the filler, the magazine's new state and what the
 /// fill cost the pack.**
@@ -924,6 +986,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,
         drop_mmpt2: 22,
+        damage_pct: 100,
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -4126,7 +4189,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 52] = [
+    const COVERED: [(&str, u8); 53] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4179,6 +4242,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_SWIPE", EV_SWIPE),
         ("EV_SWIPE_REFUSED", EV_SWIPE_REFUSED),
         ("EV_SENTRY_LOCK", EV_SENTRY_LOCK),
+        ("EV_AMMO", EV_AMMO),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

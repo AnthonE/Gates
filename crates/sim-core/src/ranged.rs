@@ -135,8 +135,8 @@ use crate::rewind::{Rewind, RewindPose};
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD, EV_RELOAD_REFUSED,
-    EV_SHOT,
+    EventQueue, Player, EV_AMMO, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_SHOT,
 };
 use crate::yaw_lut::yaw_dir;
 
@@ -231,10 +231,13 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     };
-    // A bow. `magazine == 0` is read as exactly that and never as "unset":
-    // `draw` keeps spending out of the quiver, so the arrow path did not
-    // move for reload v1 and the refusal names the hand rather than
-    // pretending a bow has an empty cylinder.
+    // A bow: `R` picks the next kind of arrow it carries (Rust holds `R`
+    // for a wheel of the kinds you carry; one press a kind is the same
+    // choice). A bow spends straight out of the quiver, so there is no
+    // cylinder to fill — `magazine == 0` is read as exactly that.
+    if def.magazine == 0 && !def.hitscan && (def.mag_slot as usize) < MAX_MAGS {
+        return switch_round(tick, cc, events, p, &def);
+    }
     if def.magazine == 0 || def.mag_slot as usize >= MAX_MAGS {
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
@@ -655,6 +658,91 @@ impl Default for Arrows {
     }
 }
 
+/// The rounds `def` lists that the archer carries and that fly, in the
+/// list's order.
+fn carried_rounds<'a>(
+    cc: &'a CombatContent,
+    p: &'a Player,
+    def: &'a crate::combat::RangedDef,
+) -> impl Iterator<Item = u16> + 'a {
+    def.ammo
+        .iter()
+        .copied()
+        .take_while(|&a| a != NO_ITEM)
+        .filter(move |&a| inv_count(&p.inv, a) > 0 && cc.ammo_def(a).is_some())
+}
+
+/// The round a bow will loose: the one picked (`Player::mag_round` in the
+/// bow's slot) while it is still carried, else the first carried in the
+/// weapon's list — and the pick follows, announced (`EV_AMMO`) when it
+/// moves, so the readout is never stale. `None` when none is carried.
+fn keep_round(
+    cc: &CombatContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    def: &crate::combat::RangedDef,
+) -> Option<u16> {
+    let slot = def.mag_slot as usize;
+    if slot >= MAX_MAGS {
+        // A slotless bow (test fixtures, an unarmed row): the list's first.
+        return carried_rounds(cc, p, def).next();
+    }
+    let picked = p.mag_round[slot];
+    if picked != NO_ITEM && carried_rounds(cc, p, def).any(|r| r == picked) {
+        return Some(picked);
+    }
+    let next = carried_rounds(cc, p, def).next();
+    let now = next.unwrap_or(NO_ITEM);
+    if now != picked {
+        p.mag_round[slot] = now;
+        events.push(
+            EV_AMMO,
+            p.id,
+            u32::from(held_item(p)) << 16 | u32::from(now),
+            0,
+        );
+    }
+    next
+}
+
+/// `R` on a bow: the next kind of arrow along the weapon's list that the
+/// archer carries becomes the one it looses, and the draw starts again —
+/// a crossbow's reload — as Rust's does on a switch. With one kind or
+/// none it stays, and is said again, so the key is never silent.
+fn switch_round(
+    tick: u64,
+    cc: &CombatContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    def: &crate::combat::RangedDef,
+) -> bool {
+    let slot = def.mag_slot as usize;
+    let current = keep_round(cc, events, p, def).unwrap_or(NO_ITEM);
+    let mut after = false;
+    let mut next = None;
+    for r in carried_rounds(cc, p, def).chain(carried_rounds(cc, p, def)) {
+        if after && r != current {
+            next = Some(r);
+            break;
+        }
+        after |= r == current;
+    }
+    let held = u32::from(held_item(p)) << 16;
+    let Some(next) = next else {
+        events.push(EV_AMMO, p.id, held | u32::from(current), 0);
+        return false;
+    };
+    p.mag_round[slot] = next;
+    let rearm = if def.draw_ticks > 0 {
+        1 + u64::from(def.draw_ticks)
+    } else {
+        def.rate_ticks.max(1) as u64
+    };
+    p.next_swing = p.next_swing.max(tick + rearm);
+    events.push(EV_AMMO, p.id, held | u32::from(next), 0);
+    true
+}
+
 /// Draw, and fire if everything is in hand. Returns whether the **weapon
 /// took the arm** — not whether an arrow left it.
 ///
@@ -692,6 +780,11 @@ pub fn draw(
     if def.hitscan {
         return true;
     }
+    // Which arrow the bow will loose, kept to one it carries — told to the
+    // archer whenever it changes, so the readout names it before the shot
+    // (the kind they picked, or the next one along when it runs out: Rust's
+    // auto-switch).
+    let round = keep_round(cc, events, p, &def);
     // **A bow looses only from a full draw** (`reference/PROJECTILES.md`
     // §6): the aim held for `draw_ticks`. Relaxed, it keeps its earliest
     // shot a whole draw away, so the draw's clock starts when the aim does;
@@ -710,24 +803,11 @@ pub fn draw(
     // a refused shot must not be re-attempted every tick.
     p.next_swing = tick + def.rate_ticks.max(1) as u64;
 
-    // The first round in the weapon's preference order the shooter is
-    // actually carrying — and it must have ballistics to fly by, which
-    // `validate` guarantees for every listed round, so the `find_map` is a
-    // re-check rather than the first check.
-    //
-    // Walking the list here rather than baking one round is the whole of
-    // §9.3's payoff at the sim end: a bow with wooden and high-velocity
-    // arrows listed fires wood until the wood runs out and then keeps
-    // firing, at the other arrow's speed and drop. There is no verb to
-    // choose, so the list order is the choice.
-    let Some((round, ball)) = def
-        .ammo
-        .iter()
-        .copied()
-        .take_while(|&a| a != NO_ITEM)
-        .filter(|&a| inv_count(&p.inv, a) > 0)
-        .find_map(|a| cc.ammo_def(a).map(|b| (a, b)))
-    else {
+    // The round `keep_round` settled on: the kind the archer picked (`R`),
+    // or the first in the weapon's list they carry. Ballistics belong to
+    // the round (§9.3's payoff at the sim end), so a bow switched to
+    // high-velocity arrows flies them at their own speed and drop.
+    let Some((round, ball)) = round.and_then(|r| cc.ammo_def(r).map(|b| (r, b))) else {
         // An empty quiver says so, as the gun's dry click does: a loose
         // that went quiet read as a dropped input. Bounded by the cadence
         // paid above; `c` is 0, a bow having no magazine to state.
@@ -770,7 +850,9 @@ pub fn draw(
         owner: p.id,
         item: held_item(p),
         round,
-        damage: def.damage,
+        // The round's share of the bow's blow (Rust's high-velocity arrow
+        // hits for 40 off the bow that puts 50 into a wooden one).
+        damage: (u32::from(def.damage) * u32::from(ball.damage_pct) / 100) as u16,
         structure: def.structure,
         head_pct: def.head_pct,
         limb_pct: def.limb_pct,

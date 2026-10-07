@@ -68,6 +68,7 @@ STONE = ("#b8b2aa", "#625d57")
 STEEL = ("#dde2e8", "#7c8591")
 DARK_STEEL = ("#a7aeb8", "#4c535d")
 FLAME = ("#ffd35c", "#e0501c")
+BONE = ("#f6efdc", "#b8a782")
 PAINT = {
     "wood": dict(c=WOOD),
     "cloth": dict(c=("#e2d3ae", "#a8936a")),
@@ -109,6 +110,9 @@ PAINT = {
     "burlap_hood": dict(c=("#d2b985", "#8b7044")),
     "burlap_tunic": dict(c=("#d2b985", "#8b7044")),
     "metal_arrow": dict(c=STEEL, metal=True),
+    "high_velocity_arrow": dict(c=("#d4e6f4", "#55799a"), metal=True),
+    "bone_arrow": dict(c=WOOD, zone=dict(c=BONE, box=(0.44, 0.44, 1.0, 1.0))),
+    "bone_fragments": dict(c=BONE),
     "crossbow": dict(c=WOOD),
     "revolver": dict(c=DARK_STEEL, metal=True),
     "pistol_round": dict(c=("#f3d27a", "#a47a1e"), metal=True),

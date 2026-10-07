@@ -820,7 +820,13 @@ pub const EV_SWIPE_REFUSED: u8 = 51;
 /// interest — the beep before it fires — and the target's warning.
 pub const EV_SENTRY_LOCK: u8 = 52;
 
-pub const EV_MAX: u8 = EV_SENTRY_LOCK;
+/// EV_AMMO: a = player id, b = the held weapon's item << 16 | the round it
+/// now looses (`NO_ITEM` when it carries none), c = 0. Own-fact: which
+/// arrow a bow fires — the one the archer picked with `R`, or the next one
+/// along once that runs out (Rust's ammo pick and its auto-switch).
+pub const EV_AMMO: u8 = 53;
+
+pub const EV_MAX: u8 = EV_AMMO;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

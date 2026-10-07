@@ -697,11 +697,11 @@ pub fn structural(c: &Content) -> Result<(), String> {
     let mags = c
         .weapons
         .iter()
-        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .filter(|w| w.magazine.unwrap_or(0) > 0 || w.kind == WeaponKind::Bow)
         .count();
     if mags > sim_core::limits::MAX_MAGS {
         return Err(format!(
-            "{mags} weapons carry a magazine, over MAX_MAGS ({})",
+            "{mags} weapons carry a magazine or pick a round, over MAX_MAGS ({})",
             sim_core::limits::MAX_MAGS
         ));
     }
@@ -724,6 +724,15 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         // Zero drop is legal and means a flat round — the schema has no
         // opinion about gravity, only about a round that cannot fly.
+        //
+        // A round that hits for nothing, or for more than twice what its
+        // weapon says, is a typo rather than a balance call.
+        if a.damage_pct == 0 || a.damage_pct > 200 {
+            return Err(format!(
+                "ammo `{}`: damage_pct {} is outside 1..=200",
+                a.id, a.damage_pct
+            ));
+        }
     }
 
     // Armor: item-backed, worn in the slot the item declares, sane range.

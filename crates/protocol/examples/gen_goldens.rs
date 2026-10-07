@@ -124,6 +124,9 @@ fn main() {
     let (reset, recs) = goldens::event_lodged_sync();
     let len = protocol::encode_event_lodged_sync(reset, &recs, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[135], &buf[..len]);
+    let (weapon, round) = goldens::event_ammo();
+    let len = protocol::encode_event_ammo(weapon, round, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[136], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

@@ -286,13 +286,17 @@ fn test_content() {
         "item.keycard_green",
         "item.keycard_blue",
         "item.keycard_red",
+        // Rust's other arrows and the bone that points one.
+        "item.arrow_hv",
+        "item.arrow_bone",
+        "item.bone_frags",
     ];
     for id in fittings {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
         (40..=60).contains(&(c.items.len() - fittings.len())),
-        "alpha core plus the window fittings and keycards, got {} items",
+        "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
     // The catalog ships looks (skins v0); what is for sale is the price,
@@ -1538,14 +1542,14 @@ fn the_magazine_rules_refuse_what_they_name() {
     // would be a number nothing reads — the shape `fuse_s` is refused in.
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
-        "ammo = [\"item.arrow_wood\"]\nmagazine = 4",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]\nmagazine = 4",
         "only firearms carry a magazine",
     );
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
-        "ammo = [\"item.arrow_wood\"]\nreload_ms = 1000",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]\nreload_ms = 1000",
         "only a weapon with a magazine carries a reload_ms",
     );
 }
@@ -1590,10 +1594,11 @@ fn the_ninth_magazine_is_refused_at_the_bake() {
         .find(|w| w.magazine.unwrap_or(0) > 0)
         .expect("the shipped set carries a weapon with a magazine")
         .clone();
+    // A bow takes a slot too: the kind of arrow it looses (`R`).
     let already = shipped
         .weapons
         .iter()
-        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .filter(|w| w.magazine.unwrap_or(0) > 0 || w.kind == WeaponKind::Bow)
         .count();
 
     // Item ids that exist and carry no weapon row today — a duplicate row
@@ -2887,7 +2892,7 @@ fn a_firearm_whose_round_has_ballistics_is_refused() {
     refuses(
         "weapons.toml",
         "ammo = [\"item.pistol_ammo\"]",
-        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
         "it is a projectile",
     );
 }
@@ -2924,7 +2929,7 @@ fn a_round_that_outruns_the_collision_sampler_is_refused() {
 fn a_bow_whose_round_has_no_ballistics_is_refused() {
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
         "ammo = [\"item.cloth\"]",
         "no [[ammo]] row",
     );
@@ -2939,7 +2944,7 @@ fn a_bow_whose_round_has_no_ballistics_is_refused() {
 fn a_weapon_that_lists_a_round_twice_is_refused() {
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
         "ammo = [\"item.arrow_wood\", \"item.arrow_wood\"]",
         "listed twice",
     );
@@ -2963,50 +2968,39 @@ fn a_round_that_cannot_fly_is_refused() {
 /// Ballistics live on the round, and the whole point is that a second round
 /// on one bow flies by its own numbers.
 ///
-/// The shipped data lists one round per bow, so nothing in `weapons.toml`
-/// exercises the list — this builds a two-round bow and proves the bake
-/// keeps both, in order, with each round's own speed. Without this, §9.3's
-/// capacity is asserted by a comment and nothing else.
+/// The shipped bow lists Rust's three kinds a hunting bow fires — wooden,
+/// high velocity, bone — and the bake keeps all three, in order, each with
+/// its own speed, drop and share of the bow's damage (§9.3's capacity, now
+/// shipped rather than asserted by a fixture).
 #[test]
 fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
-    let mut src = sources();
-    let w = src
-        .iter_mut()
-        .find(|(n, _)| *n == "weapons.toml")
-        .expect("weapons.toml is a source");
-    w.1 = w.1.replace(
-        "ammo = [\"item.arrow_wood\"]",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_metal\"]",
-    );
-    let c = build(&src).expect("a bow with two rounds is legal content");
+    let c = build(&sources()).expect("shipped content builds");
     let cc = c.bake_combat().expect("and it bakes");
 
     let bow = c.item_index("item.bow").expect("the bow is an item");
-    let wood = c.item_index("item.arrow_wood").expect("wood is an item");
-    let metal = c.item_index("item.arrow_metal").expect("metal is an item");
+    let ids = ["item.arrow_wood", "item.arrow_hv", "item.arrow_bone"]
+        .map(|id| c.item_index(id).expect("a listed round is an item"));
     let baked = cc.ranged[bow as usize];
-
     assert_eq!(
-        [baked.ammo[0], baked.ammo[1]],
-        [wood, metal],
-        "the bow keeps both rounds in declared order"
+        [baked.ammo[0], baked.ammo[1], baked.ammo[2]],
+        ids,
+        "the bow keeps its rounds in declared order"
     );
-    let a = cc.ammo_def(wood).expect("wood is armed");
-    let b = cc.ammo_def(metal).expect("metal is armed");
-    assert_ne!(
-        a.speed_mmpt, b.speed_mmpt,
-        "the two rounds must differ, or this proves nothing about per-round ballistics"
-    );
-    // And they fly to different places: an arrow flies until something
-    // stops it, so its reach is the round's (`v²/g` on flat ground) — the
-    // reason neither a flight time nor a range could stay on the weapon.
+    let [wood, hv, bone] = ids.map(|i| cc.ammo_def(i).expect("each round is armed"));
+    // And they fly differently: an arrow flies until something stops it,
+    // so its reach is the round's (`v²/g` on flat ground) — the reason
+    // neither a flight time nor a range could stay on the weapon.
     let reach = |d: sim_core::combat::AmmoDef| {
         u32::from(d.speed_mmpt) * u32::from(d.speed_mmpt) / u32::from(d.drop_mmpt2).max(1)
     };
-    assert_ne!(
-        reach(a),
-        reach(b),
-        "one bow's two rounds must not share a reach"
+    assert!(
+        reach(hv) > reach(wood) && reach(wood) > reach(bone),
+        "high velocity outflies wood, which outflies bone"
+    );
+    assert_eq!(
+        (wood.damage_pct, hv.damage_pct, bone.damage_pct),
+        (100, 80, 80),
+        "Rust's 50 / 40 / 40 off one bow"
     );
 }
 
@@ -3278,13 +3272,13 @@ fn the_shipped_pig_bakes() {
     // because this is the pair that produces the behaviour.
     assert!(pig.roam_cm > pig.spook_cm);
 
-    // Drops resolve to real item indices, in file order, and the tail is
-    // `NO_ITEM` rather than a zero-count row nothing distinguishes.
-    for i in 0..3 {
+    // Drops resolve to real item indices, in file order — meat, fat, cloth
+    // and bone, which fills every row the table has.
+    assert_eq!(pig.loot.len(), 4);
+    for i in 0..4 {
         assert_ne!(pig.loot[i].item, sim_core::gather::NO_ITEM);
         assert!(pig.loot[i].count > 0);
     }
-    assert_eq!(pig.loot[3].item, sim_core::gather::NO_ITEM);
     assert_ne!(pig.loot[0].item, pig.loot[1].item);
 }
 

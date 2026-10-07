@@ -447,7 +447,11 @@ const SUB_HEARD: u32 = 75;
 /// client draws them on the players and animals it can see. A walk like the
 /// loose stacks', restarted whenever an arrow goes in or comes out.
 const SUB_LODGED_SYNC: u32 = 76;
-const SUB_MAX: u32 = SUB_LODGED_SYNC;
+/// Which arrow your bow looses (own-fact, wire v94): the weapon and the
+/// round, `NO_ITEM` for none carried — the kind `R` picked, or the next one
+/// along once that runs out (`sim_core::world::EV_AMMO`).
+const SUB_AMMO: u32 = 77;
+const SUB_MAX: u32 = SUB_AMMO;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1470,6 +1474,9 @@ pub enum EventMsg {
     /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
     /// for a meal the item. A sound and nothing else.
     Heard { body: u32, deed: u8, item: u16 },
+    /// Which arrow your bow looses (wire v94): the weapon it is for and the
+    /// round, `NO_ITEM` when you carry none of its kinds.
+    Ammo { weapon: u16, round: u16 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
     /// charges in it; one hour's charge until wire v89). The third column
@@ -3094,6 +3101,14 @@ pub fn encode_event_heard(
     Ok(w.finish())
 }
 
+/// Which arrow your bow looses — see `EventMsg::Ammo`.
+pub fn encode_event_ammo(weapon: u16, round: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_AMMO)?;
+    w.write(weapon as u32, 16)?;
+    w.write(round as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// Your swipe was refused.
 pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if code == 0
@@ -4656,6 +4671,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 item: r.read(16)? as u16,
             }
         }
+        SUB_AMMO => EventMsg::Ammo {
+            weapon: r.read(16)? as u16,
+            round: r.read(16)? as u16,
+        },
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
             let door = r.read(2)? as u8;

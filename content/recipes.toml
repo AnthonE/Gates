@@ -78,6 +78,30 @@ inputs = [
     { item = "item.stone", count = 10 },
 ]
 
+# Rust's other two arrows anyone knows (its item pages): bone, three to a
+# craft from a carcass's fragments, and high velocity at a workbench.
+[[recipe]]
+id = "recipe.arrow_bone"
+output = "item.arrow_bone"
+count = 3
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.wood", count = 25 },
+    { item = "item.bone_frags", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.arrow_hv"
+output = "item.arrow_hv"
+count = 2
+station = "workbench1"
+seconds = 5
+inputs = [
+    { item = "item.wood", count = 20 },
+    { item = "item.metal_frags", count = 5 },
+]
+
 [[recipe]]
 id = "recipe.bandage"
 output = "item.bandage"

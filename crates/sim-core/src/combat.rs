@@ -400,6 +400,10 @@ pub struct AmmoDef {
     /// Gravity in **millimetres per tick squared**, from `drop_mps2`,
     /// subtracted from the vertical velocity once per tick.
     pub drop_mmpt2: u16,
+    /// The round's share of its weapon's damage, in percent (100 the
+    /// identity): Rust's high-velocity, bone and fire arrows are 80 % of
+    /// the wooden one.
+    pub damage_pct: u16,
 }
 
 /// **Not wearable.** `ArmorDef::slot` is one-based so that a zeroed table
@@ -548,6 +552,7 @@ impl CombatContent {
         ammo: [AmmoDef {
             speed_mmpt: 0,
             drop_mmpt2: 0,
+            damage_pct: 100,
         }; MAX_ITEM_DEFS],
         armor: [ArmorDef {
             reduction_pct: 0,

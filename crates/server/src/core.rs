@@ -10,15 +10,15 @@ use crate::slot::MAX_CONNS;
 use crate::stats::{self, ShardStats, FAVOUR_DISAGREE_BAND_TICKS};
 use crate::store::PlayerKey;
 use protocol::{
-    encode_event_assist, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
-    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_catalog,
-    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
-    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_heard, encode_event_hit,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_ammo, encode_event_assist, encode_event_auth, encode_event_bag_dropped,
+    encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
+    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
+    encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
     encode_event_known, encode_event_lodged_sync, encode_event_move_refused, encode_event_moved,
     encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
@@ -50,12 +50,12 @@ use sim_core::mob;
 use sim_core::persist::PlayerSave;
 use sim_core::survival::REFUSE_C_MAX;
 use sim_core::world::{
-    Command, Player, World, DEATH_BY_CLOCK, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
-    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
-    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
-    EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
+    Command, Player, World, DEATH_BY_CLOCK, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
+    EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
+    EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
+    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL,
+    EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
+    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
     EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED,
     EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
@@ -1973,6 +1973,28 @@ impl ShardCore {
                             } else {
                                 // A lost toast is cosmetic, but the resync
                                 // costs nothing when nothing else was lost.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_AMMO => {
+                    // Which arrow the archer's bow looses — theirs alone,
+                    // the readout's statement (`world.rs`'s role line).
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    let (weapon, round) = ((ev.b >> 16) as u16, ev.b as u16);
+                    match encode_event_ammo(weapon, round, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // A level with one statement, the reload's
+                                // reason: a lost one would leave the readout
+                                // naming the wrong arrow.
                                 self.clients[slot].ev_resync();
                                 ShardStats::bump(&stats.ev_resyncs);
                             }

@@ -280,6 +280,7 @@ fn world_with_bow() -> Box<World> {
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1666,
         drop_mmpt2: 11,
+        damage_pct: 100,
     };
     w.combat = c;
     // Long enough a life that nothing here races the despawn.

@@ -198,6 +198,7 @@ fn fixture() -> CombatContent {
     c.ammo[ARROW as usize] = sim_core::combat::AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 0,
+        damage_pct: 100,
     };
     c
 }

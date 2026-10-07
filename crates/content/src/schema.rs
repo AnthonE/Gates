@@ -314,6 +314,15 @@ pub struct Ammo {
     pub id: String,
     pub speed_mps: u32,
     pub drop_mps2: u32,
+    /// The round's share of the weapon's `damage`, in percent: Rust's
+    /// high-velocity, bone and fire arrows hit for 40 where its wooden
+    /// arrow hits for 50. Absent is the identity, 100.
+    #[serde(default = "hundred")]
+    pub damage_pct: u32,
+}
+
+fn hundred() -> u32 {
+    100
 }
 
 #[derive(Debug, Clone, Deserialize)]

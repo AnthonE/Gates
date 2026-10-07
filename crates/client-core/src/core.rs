@@ -1483,6 +1483,9 @@ pub struct ClientCore {
     /// they disagree, so a stale level is unreachable rather than
     /// unwritten.
     mag_item: u16,
+    /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
+    /// v94): the weapon it was said for, and the round.
+    bow_ammo: (u16, u16),
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -2053,6 +2056,7 @@ impl ClientCore {
             reload_toast_len: 0,
             mag: (0, 0),
             mag_item: NO_ITEM,
+            bow_ammo: (NO_ITEM, NO_ITEM),
             gather_refusal_head: 0,
             gather_refusal_len: 0,
             research_refusal_head: 0,
@@ -2610,6 +2614,10 @@ impl ClientCore {
                         self.applied2 |= APPLIED2_GITEMS;
                     }
                 }
+            }
+            EventMsg::Ammo { weapon, round } => {
+                // A level the HUD reads every frame (`bow_round`); no flag.
+                self.bow_ammo = (weapon, round);
             }
             EventMsg::LodgedSync { reset, recs, count } => {
                 if reset {
@@ -3849,6 +3857,13 @@ impl ClientCore {
             return (0, 0);
         }
         self.mag
+    }
+
+    /// The arrow the bow in hand looses, if the sim has said one for it —
+    /// `None` for any other hand, and for a bow with no arrow it can fire.
+    pub fn bow_round(&self) -> Option<u16> {
+        let (weapon, round) = self.bow_ammo;
+        (weapon == self.held_item() && round != NO_ITEM).then_some(round)
     }
 
     /// Rust's safe zone: standing in THE GATE with a weapon in hand, which
