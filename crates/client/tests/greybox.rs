@@ -32,13 +32,13 @@ use sim_core::terrain::{
 /// Every occupant the sim can place. Written out rather than derived so §C can
 /// prove the list is complete — a new variant that nobody adds here is caught
 /// by the count assert, not by nothing.
-const ALL: [Occupant; 15] = [
+const ALL: [Occupant; 22] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
     Occupant::MetalNode,
     Occupant::SulfurNode,
-    Occupant::Bush,
+    Occupant::BerryBush,
     Occupant::Rock,
     Occupant::BarrelSlot,
     Occupant::CrateSlot,
@@ -48,6 +48,13 @@ const ALL: [Occupant; 15] = [
     Occupant::GreenCrate,
     Occupant::BlueCrate,
     Occupant::EliteCrate,
+    Occupant::OilBarrel,
+    Occupant::RoadSign,
+    Occupant::FoodCrate,
+    Occupant::CarWreck,
+    Occupant::TireStack,
+    Occupant::Hemp,
+    Occupant::Shrub,
 ];
 
 /// `boxes_mesh` emits six faces a box, two triangles each, three unshared
@@ -214,8 +221,11 @@ fn excused(o: Occupant) -> Option<&'static str> {
             "limbs are passable by design; the TRUNK is held to OCCUPANT_R_M \
              at 1 mm by tree.rs::the_blocked_cylinder_is_the_trunk_the_client_draws",
         ),
-        // `OCCUPANT_R_M`'s row 5 is 0.0 on purpose — you walk through a bush.
-        Occupant::Bush => Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0"),
+        // `OCCUPANT_R_M`'s plant rows are 0.0 on purpose — you walk through a
+        // bush, and a plant is a pool of leaves and wood (`plants.rs`).
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
+            Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0")
+        }
         _ => None,
     }
 }

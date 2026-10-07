@@ -107,7 +107,7 @@ fn main() {
 
     // Occupancy over the biome map: one dot per live slot.
     let mut occ_img = biome_img.clone();
-    let mut counts = [0u32; 13];
+    let mut counts = [0u32; terrain::OCCUPANT_R_M.len()];
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
@@ -122,7 +122,9 @@ fn main() {
             }
             let c: [u8; 3] = match s.occupant {
                 Occupant::Tree => [40, 255, 90],
-                Occupant::Bush => [190, 230, 60],
+                Occupant::BerryBush => [230, 60, 90],
+                Occupant::Hemp => [190, 230, 60],
+                Occupant::Shrub => [120, 170, 70],
                 Occupant::Rock => [220, 220, 220],
                 Occupant::StoneNode => [120, 160, 255],
                 Occupant::MetalNode => [255, 170, 60],
@@ -418,14 +420,14 @@ fn main() {
                     edge_cells += 1;
                     match s.occupant {
                         Occupant::Tree => edge_tree += 1,
-                        Occupant::Bush => edge_bush += 1,
+                        o if o.is_plant() => edge_bush += 1,
                         _ => {}
                     }
                 } else if b > a * 4.0 {
                     core_cells += 1;
                     match s.occupant {
                         Occupant::Tree => core_tree += 1,
-                        Occupant::Bush => core_bush += 1,
+                        o if o.is_plant() => core_bush += 1,
                         _ => {}
                     }
                 }

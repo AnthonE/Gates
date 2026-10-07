@@ -32,13 +32,14 @@
 //! already lists.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::gather::cell_key;
 use sim_core::terrain::{self, Occupant};
 
 use super::fresnel;
+use super::plants::{self, PLANT_POOL};
 use super::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use super::tree;
 use super::{Eye, Net, WorldId};
@@ -152,10 +153,20 @@ pub struct PropAssets {
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
     stump: Handle<Mesh>,
-    bush: Handle<Mesh>,
     barrel: Handle<Mesh>,
     crate_box: Handle<Mesh>,
     cache_box: Handle<Mesh>,
+    /// The roadside junk (Rust's roadside spawns): the sign, the food box,
+    /// the wrecked car and the tyre stack. The oil barrel is `barrel` in red.
+    road_sign: Handle<Mesh>,
+    food_box: Handle<Mesh>,
+    car_wreck: Handle<Mesh>,
+    tire_stack: Handle<Mesh>,
+    /// Untextured, white: the sign and the car carry their own albedo in
+    /// their vertices (`boxes_mesh_with(.., linear, ..)`).
+    painted: Handle<StandardMaterial>,
+    oil_red: Handle<StandardMaterial>,
+    rubber: Handle<StandardMaterial>,
     shelter: Handle<Mesh>,
     canopy: Handle<Mesh>,
     /// The two authored sites' materials. They are fields rather than a reach
@@ -178,20 +189,56 @@ pub struct PropAssets {
     small_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     /// The keycard crates' own models, where they loaded ([`TIER_CRATE_GLB`]).
     tier_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
+    /// The roadside junk's models, row for row with [`ROADSIDE_GLB`].
+    roadside_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 5],
     /// The ziggurat's green, blue and elite crates: the supply crate's shape
     /// in painted steel, so a tier reads at a glance.
     tier_crates: [Handle<StandardMaterial>; 3],
     foliage: [Handle<StandardMaterial>; TINT_POOL],
-    /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
-    bush_cards: Vec<Handle<Mesh>>,
-    /// The tall bush ([`tall_bush`]): its stretched mass and its leaves, the
-    /// leaves indexed by yaw like `bush_cards`.
-    bush_tall: Handle<Mesh>,
-    bush_tall_cards: Vec<Handle<Mesh>>,
-    /// …and their material: alpha-MASKED, wearing the leaf atlas. Separate
-    /// from `foliage` for the reason `needle` is separate from `bark` — one
-    /// `StandardMaterial` has one `alpha_mode`.
+    /// The plants (`plants.rs`), each a pool indexed by yaw like the
+    /// conifers. A shrub's leaves and wood run short then tall
+    /// ([`tall_bush`]); a berry bush's fruit runs red then blue
+    /// ([`red_berries`]).
+    shrub_leaves: Vec<Handle<Mesh>>,
+    shrub_wood: Vec<Handle<Mesh>>,
+    berry_leaves: Vec<Handle<Mesh>>,
+    berry_wood: Vec<Handle<Mesh>>,
+    berry_fruit: Vec<Handle<Mesh>>,
+    hemp_leaves: Vec<Handle<Mesh>>,
+    hemp_stalk: Vec<Handle<Mesh>>,
+    /// What a shrub cell grows besides the leafy shrub (`plants::Scenery`),
+    /// a pool each, indexed by yaw like the rest. A clump of wildflowers'
+    /// stems and heads run `PLANT_POOL` to a palette.
+    fern_leaves: Vec<Handle<Mesh>>,
+    fern_wood: Vec<Handle<Mesh>>,
+    juniper_leaves: Vec<Handle<Mesh>>,
+    juniper_wood: Vec<Handle<Mesh>>,
+    dead_wood: Vec<Handle<Mesh>>,
+    flower_heads: Vec<Handle<Mesh>>,
+    flower_base: Vec<Handle<Mesh>>,
+    /// The shrub's and the berry bush's leaf material: alpha-MASKED, wearing
+    /// the leaf atlas. Separate from `foliage` for the reason `needle` is
+    /// separate from `bark` — one `StandardMaterial` has one `alpha_mode`.
     bush_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// Hemp's leaf material: the same masked shape, wearing the drawn hemp
+    /// leaf (`plants::hemp_leaf_image`).
+    hemp_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A shrub's or a berry bush's twigs, untextured, their colour in their
+    /// vertices.
+    plant_wood: Handle<StandardMaterial>,
+    /// Hemp's stalk: the same surface, its own handle so it sways on hemp's
+    /// bend with hemp's leaves (`foliage::Kind::HempStem`).
+    hemp_wood: Handle<StandardMaterial>,
+    /// The berries': the same, with the gloss that makes them read as fruit.
+    berry: Handle<StandardMaterial>,
+    /// A fern clump's fronds: the clutter ferns' photographed atlas
+    /// (`clutter::FERN_ATLAS`), alpha-masked like the bush's leaves.
+    fern_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A low pine's sprays: the conifers' needle card, on its own handle so
+    /// it sways as a ground-rooted plant and not as a tree's crown.
+    juniper_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// Wildflower stems and petals, their colour in their vertices.
+    flower: Handle<StandardMaterial>,
     /// The needle card's material: alpha-MASKED, not blended. A canopy is
     /// hundreds of overlapping cards, and blending them would need a per-card
     /// depth sort that changes with the camera — masked cards write depth and
@@ -285,18 +332,34 @@ pub struct Topple {
     pub t: f32,
 }
 
-/// A tree part that regrows (tree growth v0), and the size it is drawn at
-/// full-grown. Its own component for [`Topple`]'s reason: `audio::fell`
-/// change-detects [`Fellable`], and a growth write there would be a
-/// tree-fall cue.
+/// A part of a slot that regrows (tree growth v0; a picked plant too), and
+/// the size it is drawn at full-grown. Its own component for [`Topple`]'s
+/// reason: `audio::fell` change-detects [`Fellable`], and a growth write
+/// there would be a tree-fall cue.
 #[derive(Component)]
 pub struct Grow {
     pub base: f32,
+    /// How long the slot takes to grow back, ticks (`gather::grow_span`).
+    pub span: u64,
+    /// A berry bush's berries: none until the bush is grown.
+    pub fruit: bool,
+}
+
+impl Grow {
+    /// A tree's part, at `base`.
+    pub fn tree(base: f32) -> Self {
+        Self {
+            base,
+            span: sim_core::gather::TREE_GROW_TICKS,
+            fruit: false,
+        }
+    }
 }
 
 /// Draw every regrowing tree at its size — a sapling where the stump was,
 /// full height an hour later (`sim_core::gather::grow_pm`, the server's own
-/// sizing, in its sixteen steps). Twice a second, or at once when the
+/// sizing, in its sixteen steps) — and every picked plant, a sprout grown in
+/// three minutes and only then fruiting. Twice a second, or at once when the
 /// harvested set moved or a tree streamed in: the steps are minutes apart.
 pub fn grow(
     net: NonSend<Net>,
@@ -318,11 +381,17 @@ pub fn grow(
         if f.felled {
             continue;
         }
-        let pm = core
-            .harvested
-            .growth(f.key)
-            .map_or(1000, |at| sim_core::gather::grow_pm(at as u64, now));
-        let want = g.base * pm as f32 * 0.001;
+        let pm = core.harvested.growth(f.key).map_or(1000, |at| {
+            sim_core::gather::grow_pm_over(at as u64, now, g.span)
+        });
+        // Berries come when the bush is grown. Not a zero scale: a singular
+        // transform has no inverse for the normals.
+        let share = if g.fruit && pm < 1000 {
+            0.001
+        } else {
+            pm as f32 * 0.001
+        };
+        let want = g.base * share;
         if (t.scale.x - want).abs() > 1e-4 {
             t.scale = Vec3::splat(want);
             // A stump stands on its own lift, which is to its size.
@@ -1029,193 +1098,45 @@ fn squash(seed: u32) -> Vec3 {
 }
 
 // ---------------------------------------------------------------------------
-// The bush's leaves — a photograph, on crossed cards over the blob.
+// The plants' leaves — a photograph, on cards. The builders are `plants.rs`.
 // ---------------------------------------------------------------------------
 
-/// The bush card atlas: four composed leaf clusters, 2×2 cells of 512×512.
+/// The bush card atlas: four composed leaf clusters, 2×2 cells of 512×512,
+/// worn by the shrub's and the berry bush's leaf cards (`plants::card`).
 ///
-/// **This closes a defect this file already names.** `archetype_mesh`'s own
-/// comment says the bush "wants a ragged outline (`ART.md` rule 6) and 320
-/// smooth [triangles do not give one]" — an icosphere is the least ragged
-/// shape there is, and no subdivision count fixes that, because the problem is
-/// that the silhouette is a circle. A leaf cluster's silhouette is measured
-/// off real leaves and is ragged by construction.
-///
-/// **The blob stays.** It is the interior mass a bush needs to not read as a
-/// flat billboard from the side, and it is what the leaves are seen against;
-/// the cards break its outline rather than replacing it. Two children, because
-/// the blob is opaque and the leaves are alpha-masked, and one
-/// `StandardMaterial` has one `alpha_mode` — the same split the conifer's bark
-/// and needles already pay for the same reason.
+/// A leaf cluster's silhouette is measured off real leaves and is ragged by
+/// construction, which is the outline an icosphere could never give a bush.
 ///
 /// Baked by `ci/bake_bush_atlas.py` from Poly Haven `shrub_01` (CC0);
 /// `assets/textures/MANIFEST.md` carries the provenance row.
 pub const BUSH_CARD_ATLAS: &str = "textures/bush_card_albedo.png";
 pub const BUSH_CARD_COLS: u32 = 2;
 pub const BUSH_CARD_ROWS: u32 = 2;
-/// Cells in the atlas — the count [`bush_card_mesh`] hashes into.
+/// Cells in the atlas — the count `plants::cluster` hashes into.
 pub const BUSH_CARD_CELLS: u32 = BUSH_CARD_COLS * BUSH_CARD_ROWS;
-
-/// Quads per bush. Three at 60°, for `clutter::CARDS_PER_TUFT`'s reason: two
-/// cross at 90° and present their thinnest pair of edges 45° from either.
-pub const BUSH_CARDS: u32 = 3;
-
-/// Distinct card meshes, indexed by yaw exactly as the conifer pool is.
-///
-/// **One shared mesh would make every bush on the island identical**, which is
-/// rule 7's forbidden case — and unlike the grass, a bush cannot hash per
-/// instance inside its own builder, because a prop's mesh is an asset handle
-/// chosen at spawn rather than geometry baked per tile.
-pub const BUSH_CARD_POOL: usize = 4;
-
-/// Half-extent of a card at `scale` 1, metres. **Square, and that is forced
-/// rather than chosen.**
-///
-/// A card samples a whole atlas CELL, and the cells are square, so any quad
-/// that is not square stretches every leaf on it by the ratio. The first cut
-/// used 0.78 × 0.64 — a bush-shaped quad — which drew the leaves 22% wide;
-/// caught by measuring the baked cell against the constant rather than by
-/// looking, because a 22% fat leaf reads as a different plant and not as a
-/// bug. `tests/bush_card.rs` pins the two together.
-///
-/// The bush is still wider than tall: the BAKED CLUSTER is (it fills ~94% of
-/// its cell across and ~86% down), which is where that shape belongs — in the
-/// photograph, not in the quad.
-///
-/// 0.80 puts the leaf mass at ~1.51 m across and ~1.38 m tall against a blob
-/// that reaches 1.4 m, so leaves break the sphere's outline horizontally and
-/// just cover its crown.
-pub const BUSH_CARD_HALF: f32 = 0.80;
 
 /// The alpha a bush card's cutout is tested against — `render::mipmap::
 /// MASK_CUT` as a 0..1 value, pinned to it by `tests/bush_card.rs`.
 pub const BUSH_CARD_ALPHA_CUT: f32 = 0.5;
 
-/// How far a card's normals are pulled from its own facet toward a sphere
-/// centred on the bush.
-///
-/// **Nearly all the way, and for the opposite reason a chip keeps its facets.**
-/// `clutter::CHIP_VOLUME_BLEND` keeps 45% of a pebble's facing because a pebble
-/// IS angular. A leaf mass is not: light entering a bush scatters between
-/// leaves and comes out as if off a rough sphere, so three flat quads taking
-/// three different sun cosines would read as three plates — the "pile of foil"
-/// `BLADE_TIP_BLEND` names. A little facet is kept so the cards do not shade
-/// identically to each other from every angle.
-pub const BUSH_CARD_VOLUME: f32 = 0.88;
-
-/// One bush's leaves: [`BUSH_CARDS`] crossed, alpha-masked, photographed quads
-/// centred on the origin — the same local frame `blob_mesh` builds in, so both
-/// children of a bush slot take the identical transform.
-pub fn bush_card_mesh(variant: u32) -> Mesh {
-    let mut s = Soup::default();
-    let seed = 0x8f31_u32 ^ variant.wrapping_mul(2_654_435_761);
-    bush_cluster(&mut s, seed, Vec3::ZERO, 1.0, BUSH_CARDS, Vec3::ZERO);
-    s.mesh()
-}
-
-/// Share of bushes drawn tall — taller than a standing player, the reference
+/// Share of shrubs drawn tall — taller than a standing player, the reference
 /// game's Glaucous Willow and Spicebush: *"taller than the player, which means
 /// you should be able to use them as cover and hide within the canopy"*
-/// (devblog 198). A bush is passable already (`terrain::occupant_volume`), so
+/// (devblog 198). A shrub is passable already (`terrain::occupant_volume`), so
 /// height is the whole of what hiding in one needs. **(knob)**
 pub const TALL_BUSH_SHARE: f32 = 0.5;
-/// How much the tall bush's interior mass is stretched upward, narrowed, and
-/// how far its centre rises, in the blob's frame. Narrower than the leaves on
-/// purpose: stretched to the leaves' own size it read as a tall green potato
-/// with leaves stuck on (the first capture).
-pub const TALL_BUSH_STRETCH: f32 = 1.3;
-pub const TALL_BUSH_NARROW: f32 = 0.78;
-pub const TALL_BUSH_RISE: f32 = 0.35;
-/// The tall bush's interior mass is the SHADED inside of a leaf mass, so it
-/// is drawn darker than the blob it is made from.
-pub const TALL_BUSH_SHADE: f32 = 0.55;
-/// The upper tier of leaves above the blob's centre, metres. With the base
-/// tier's `BUSH_CARD_HALF` this puts the crown at ~2.1 m over the ground.
-pub const TALL_BUSH_TIER_M: f32 = 0.95;
 
-/// Whether the bush in the scatter cell `key` is a tall one. Off the cell key
-/// so every client grows the same bush in the same place.
+/// Whether the shrub in the scatter cell `key` is a tall one. Off the cell key
+/// so every client grows the same shrub in the same place.
 pub fn tall_bush(key: u32) -> bool {
     hash01(key, 0x7a11_b05e) < TALL_BUSH_SHARE
 }
 
-/// The tall bush's interior mass: the bush blob, stretched up.
-pub fn tall_bush_mesh() -> Mesh {
-    let mut m = archetype_mesh(Occupant::Bush)
-        .expect("bush mesh")
-        .transformed_by(
-            Transform::from_xyz(0.0, TALL_BUSH_RISE, 0.0).with_scale(Vec3::new(
-                TALL_BUSH_NARROW,
-                TALL_BUSH_STRETCH,
-                TALL_BUSH_NARROW,
-            )),
-        );
-    if let Some(VertexAttributeValues::Float32x4(c)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
-        for v in c.iter_mut() {
-            for ch in &mut v[..3] {
-                *ch *= TALL_BUSH_SHADE;
-            }
-        }
-    }
-    m
-}
-
-/// A tall bush's leaves: the ordinary bush's cluster, a smaller one stacked
-/// on it, and two side clusters, all photographed cards in the blob's frame.
-pub fn tall_bush_card_mesh(variant: u32) -> Mesh {
-    let mut s = Soup::default();
-    let seed = 0x5a77_u32 ^ variant.wrapping_mul(2_654_435_761);
-    let dome = Vec3::new(0.0, TALL_BUSH_RISE, 0.0);
-    bush_cluster(&mut s, seed, Vec3::ZERO, 1.0, BUSH_CARDS, dome);
-    let lean = (hash01(seed, 101) - 0.5) * 0.3;
-    let crown = Vec3::new(lean, TALL_BUSH_TIER_M, (hash01(seed, 103) - 0.5) * 0.3);
-    bush_cluster(&mut s, seed ^ 0x51, crown, 0.88, BUSH_CARDS + 1, dome);
-    let a = hash01(seed, 107) * std::f32::consts::TAU;
-    for (k, side) in [(0u32, 1.0f32), (1, -1.0)] {
-        let r = 0.55 + 0.15 * hash01(seed, 109 + k);
-        let at = Vec3::new(a.sin() * r * side, TALL_BUSH_RISE, a.cos() * r * side);
-        bush_cluster(&mut s, seed ^ (0x77 + k), at, 0.78, 2, dome);
-    }
-    s.mesh()
-}
-
-/// `cards` crossed photographed quads of `half_k × BUSH_CARD_HALF`, centred
-/// on `centre`, normals pulled toward a sphere about `dome`.
-fn bush_cluster(s: &mut Soup, seed: u32, centre: Vec3, half_k: f32, cards: u32, dome: Vec3) {
-    for i in 0..cards {
-        // Evenly spread, then jittered, so the pool's four variants do not all
-        // present a card at the same yaw.
-        let a = i as f32 * std::f32::consts::PI / cards as f32 + hash01(seed, i) * 0.7;
-        let side = Vec3::new(a.sin(), 0.0, a.cos());
-        // One jitter for both axes, so a card stays square and the leaves on
-        // it stay unstretched — see `BUSH_CARD_HALF`.
-        let half = half_k * BUSH_CARD_HALF * (0.86 + 0.28 * hash01(seed, i + 11));
-        let (hw, hh) = (half, half);
-        let cell = (hash01(seed, i + 41) * BUSH_CARD_CELLS as f32) as u32 % BUSH_CARD_CELLS;
-        let (du, dv) = (1.0 / BUSH_CARD_COLS as f32, 1.0 / BUSH_CARD_ROWS as f32);
-        let (cu, cv) = (
-            (cell % BUSH_CARD_COLS) as f32 * du,
-            (cell / BUSH_CARD_COLS) as f32 * dv,
-        );
-
-        let b0 = centre - side * hw - Vec3::Y * hh;
-        let b1 = centre + side * hw - Vec3::Y * hh;
-        let t0 = centre - side * hw + Vec3::Y * hh;
-        let t1 = centre + side * hw + Vec3::Y * hh;
-        // V grows downward in image space: the card's TOP takes the cell's
-        // smallest v. `tests/bush_card.rs` asserts it rather than trusting it.
-        let (uv_b0, uv_b1) = ([cu, cv + dv], [cu + du, cv + dv]);
-        let (uv_t0, uv_t1) = ([cu, cv], [cu + du, cv]);
-
-        let v = 0.88 + 0.24 * hash01(seed, i + 59);
-        let col = move |_: Vec3| [v, v, v, 1.0];
-        // A sphere centred on the bush, so every leaf's normal points out of
-        // the mass it belongs to. See `BUSH_CARD_VOLUME`.
-        let dome = Some(dome);
-        let blend = |_: Vec3| BUSH_CARD_VOLUME;
-        s.tri_uv([(b0, uv_b0), (t0, uv_t0), (b1, uv_b1)], col, dome, blend);
-        s.tri_uv([(b1, uv_b1), (t0, uv_t0), (t1, uv_t1)], col, dome, blend);
-    }
+/// Whether the berry bush in the scatter cell `key` carries red berries
+/// rather than blue ones. Cosmetic — both pay the same berries — and off the
+/// cell key for [`tall_bush`]'s reason.
+pub fn red_berries(key: u32) -> bool {
+    hash01(key, 0xbe44_7ed0) < 0.6
 }
 
 /// A rock, built by subdividing an icosahedron and displacing it.
@@ -1239,10 +1160,10 @@ fn bush_cluster(s: &mut Soup, seed: u32, centre: Vec3, half_k: f32, cards: u32, 
 ///     now, and leaving the old amplitude on would read as the patchwork it
 ///     always was, only with a texture behind it.
 ///
-/// `textured` picks which of two jobs the vertex colour is doing. For a rock
-/// it is a mean-1 field over a photograph (`tint1`); for the bush — which
-/// shares this builder and must stay green — it is still the colour itself.
-fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize, textured: bool) -> Mesh {
+/// The vertex colour is a mean-1 field over a photograph (`tint1`). It was
+/// the colour itself for the bush, the one untextured blob, until the bush
+/// became leaves all the way through (`plants.rs`).
+fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize) -> Mesh {
     // Icosahedron vertices.
     let t = (1.0 + 5.0f32.sqrt()) * 0.5;
     let raw = [
@@ -1321,7 +1242,7 @@ fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize, textured
     // Tiles per metre. A granite map repeating every ~1.5 m puts its grain
     // under 5 cm at this radius, which is rule 1's near-field scale.
     let mut s = Soup::tiling(0.68);
-    let base = if textured { tint1(hex) } else { linear(hex) };
+    let base = tint1(hex);
     for (fi, f) in faces.iter().enumerate() {
         // Still a per-facet break-up, and still for rule 1 — but a sixth of
         // the amplitude, because the photograph is doing this job now and two
@@ -1524,6 +1445,9 @@ pub struct PropModels {
     /// The keycard crates' models ([`TIER_CRATE_GLB`]), green, blue, elite.
     /// Empty on a headless build, which then draws the painted crate.
     tier: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// The roadside junk's models, row for row with [`ROADSIDE_GLB`]. Empty
+    /// on a headless build, which then draws the box massing.
+    roadside: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
 
 /// The ziggurat's green, blue and elite crates, built by `ci/prop_kit.py`:
@@ -1535,6 +1459,18 @@ pub const TIER_CRATE_GLB: [&str; 3] = [
     "models/prop/crate_green.glb",
     "models/prop/crate_blue.glb",
     "models/prop/crate_elite.glb",
+];
+
+/// The roadside junk, built by `ci/prop_kit.py` and kept out of
+/// [`prop_models`] for the keycard crates' reason: painted, not
+/// photogrammetry. The barrel, box and tyres are centred like their massing;
+/// the sign and the wreck stand on 0 over their sim box tables.
+pub const ROADSIDE_GLB: [(Occupant, &str); 5] = [
+    (Occupant::OilBarrel, "models/prop/oil_barrel.glb"),
+    (Occupant::RoadSign, "models/prop/road_sign.glb"),
+    (Occupant::FoodCrate, "models/prop/food_crate.glb"),
+    (Occupant::CarWreck, "models/prop/car_wreck.glb"),
+    (Occupant::TireStack, "models/prop/tire_stack.glb"),
 ];
 
 fn load_model(
@@ -1570,7 +1506,7 @@ impl PropModels {
     /// draw path; the cost is that a node transform is dropped at load, which
     /// is why `ci/import_meshy.py` bakes its scale into the vertices.
     pub fn load(server: &AssetServer) -> Self {
-        let n = Occupant::EliteCrate as usize + 1;
+        let n = OCCUPANTS.iter().map(|o| *o as usize).max().unwrap_or(0) + 1;
         let pools = (0..n)
             .map(|i| match OCCUPANTS.iter().find(|o| **o as usize == i) {
                 Some(o) => prop_models(*o)
@@ -1584,7 +1520,21 @@ impl PropModels {
             .iter()
             .map(|path| load_model(server, path))
             .collect();
-        Self { pools, tier }
+        let roadside = ROADSIDE_GLB
+            .iter()
+            .map(|(_, path)| load_model(server, path))
+            .collect();
+        Self {
+            pools,
+            tier,
+            roadside,
+        }
+    }
+
+    /// The roadside model for `o`, or `None` for the massing.
+    pub fn roadside(&self, o: Occupant) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        let i = ROADSIDE_GLB.iter().position(|(r, _)| *r == o)?;
+        self.roadside.get(i).cloned()
     }
 
     /// Keycard crate `tier`'s model, or `None` for the painted massing.
@@ -1601,13 +1551,13 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 15] = [
+pub const OCCUPANTS: [Occupant; 22] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
     Occupant::MetalNode,
     Occupant::SulfurNode,
-    Occupant::Bush,
+    Occupant::BerryBush,
     Occupant::Rock,
     Occupant::BarrelSlot,
     Occupant::CrateSlot,
@@ -1617,7 +1567,18 @@ pub const OCCUPANTS: [Occupant; 15] = [
     Occupant::GreenCrate,
     Occupant::BlueCrate,
     Occupant::EliteCrate,
+    Occupant::OilBarrel,
+    Occupant::RoadSign,
+    Occupant::FoodCrate,
+    Occupant::CarWreck,
+    Occupant::TireStack,
+    Occupant::Hemp,
+    Occupant::Shrub,
 ];
+
+/// The roadside junk's colours, row for row with the sim's box tables.
+pub const ROAD_SIGN_HEX: [u32; 2] = [0x5f5f5c, 0xb8901f];
+pub const CAR_WRECK_HEX: [u32; 3] = [0x6e3519, 0x5a2c16, 0x4a2412];
 
 /// The mesh the client draws for one occupant, as a pure function.
 ///
@@ -1630,18 +1591,22 @@ pub const OCCUPANTS: [Occupant; 15] = [
 /// counts vertices, which is the arithmetic `CLAUDE.md` says a frame may be
 /// gated on.
 ///
-/// `None` for the two rows that are not one mesh: `Occupant::None`, and
-/// `Tree`, whose `CONIFER_POOL` variants are generated and gated one by one
-/// in `tests/tree.rs` already.
+/// `None` for the rows that are not one mesh: `Occupant::None`, `Tree`,
+/// whose `CONIFER_POOL` variants are generated and gated one by one in
+/// `tests/tree.rs` already, and the three plants, each a pool of leaves and
+/// wood (`plants.rs`) with no volume to fit.
 pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
     Some(match o {
-        Occupant::None | Occupant::Tree => return None,
+        Occupant::None
+        | Occupant::Tree
+        | Occupant::BerryBush
+        | Occupant::Hemp
+        | Occupant::Shrub => return None,
         // One blob serves all three ore nodes; they differ by material only.
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => {
-            blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2, true)
+            blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2)
         }
-        Occupant::Bush => blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false),
-        Occupant::Rock => blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true),
+        Occupant::Rock => blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3),
         // The measured drum: 0.585 m across by 0.88 tall, so a radius of
         // 0.2925 and a full height of 0.88 — 1.5x taller than wide, which is
         // what a 55-gallon drum is. It drew 0.9 across by 0.95 tall until
@@ -1663,6 +1628,23 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         Occupant::WaystationCanopy => {
             boxes_mesh(&authored(&terrain::WAYSTATION_CANOPY_BOXES, &CANOPY_HEX))
         }
+        // The barrel's drum, painted red where it is drawn.
+        Occupant::OilBarrel => Cylinder::new(0.2925, 0.88).mesh().resolution(10).build(),
+        Occupant::RoadSign => boxes_mesh_with(
+            &authored(&terrain::ROAD_SIGN_BOXES, &ROAD_SIGN_HEX),
+            linear,
+            1.0,
+        ),
+        Occupant::FoodCrate => boxes_mesh(&[([0., 0., 0.], [0.5, 0.2, 0.3], 0x8a6a3e)]),
+        Occupant::CarWreck => boxes_mesh_with(
+            &authored(&terrain::CAR_WRECK_BOXES, &CAR_WRECK_HEX),
+            linear,
+            1.0,
+        ),
+        Occupant::TireStack => Cylinder::new(0.42, terrain::TIRE_STACK_TOP_M)
+            .mesh()
+            .resolution(14)
+            .build(),
     })
 }
 
@@ -1677,7 +1659,6 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
 pub fn archetype_lift(o: Occupant) -> f32 {
     match o {
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 0.5,
-        Occupant::Bush => 0.45,
         Occupant::Rock => 0.55,
         // The half-height, so the drum's base is the slot's ground and its
         // top is its own 0.88 m. It was 0.5 against a half-height of 0.475.
@@ -1686,9 +1667,17 @@ pub fn archetype_lift(o: Occupant) -> f32 {
             0.4
         }
         Occupant::CacheSlot => 0.275,
+        Occupant::OilBarrel => 0.44,
+        Occupant::FoodCrate => 0.2,
+        Occupant::TireStack => terrain::TIRE_STACK_TOP_M * 0.5,
+        // The box tables put ground at y = 0, like the authored structures.
+        Occupant::RoadSign | Occupant::CarWreck => 0.0,
         // The two authored structures and the tree stand on their own base:
         // their tables put ground at y = 0 rather than centring the mesh.
         Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
+        // So do the plants (`plants.rs` builds them ground-rooted), which is
+        // also the root height the foliage shader bends them from.
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => 0.0,
         Occupant::None => 0.0,
     }
 }
@@ -1811,6 +1800,8 @@ pub fn assets(
     // `Handle::default()` — an unresolved handle, exactly as `MapSet::default`
     // documents for the same reason.
     bush_card: Handle<Image>,
+    // The fern atlas the scenery ferns wear, `bush_card`'s way.
+    fern_card: Handle<Image>,
     // The two authored sites' generated models, or `Default` for the box
     // massing — same reason as `bush_card` one line up.
     models: PropModels,
@@ -1886,6 +1877,25 @@ pub fn assets(
         .collect();
     let needle_map = images.add(tree::needle_image());
     let leaf_map = images.add(tree::leaf_image());
+    let hemp_map = images.add(plants::hemp_leaf_image());
+    let hemp: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (stalk, leaves) = plants::hemp(v);
+            (meshes.add(stalk), meshes.add(leaves))
+        })
+        .collect();
+    let ferns: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (wood, leaves) = plants::fern(v);
+            (meshes.add(wood), meshes.add(leaves))
+        })
+        .collect();
+    let junipers: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (wood, leaves) = plants::juniper(v);
+            (meshes.add(wood), meshes.add(leaves))
+        })
+        .collect();
     // Hoisted out of the literal below because the two site rows fall back to
     // them: a `photo(...)` written twice would be two materials wearing one
     // photograph, and the second would be invisible to `tests/fresnel.rs`'s
@@ -1911,18 +1921,30 @@ pub fn assets(
         blob: meshes.add(archetype_mesh(Occupant::StoneNode).expect("node mesh")),
         boulder: meshes.add(archetype_mesh(Occupant::Rock).expect("boulder mesh")),
         stump: meshes.add(stump_mesh()),
-        // The bush keeps its colour in its vertices: it is the one blob that
-        // wears the untextured `foliage` material, and there is no leaf map in
-        // `assets/` to give it (`tree::needle_image` is generated, and it is a
-        // needle sprig rather than broadleaf).
-        // One subdivision, not two, and the higher jitter that goes with it: a
-        // bush wants a ragged outline (`ART.md` rule 6) and 320 smooth
-        // triangles gave it a green dome. 80 is enough to stop reading as a
-        // die and few enough that the lobes stay visible.
-        bush: meshes.add(archetype_mesh(Occupant::Bush).expect("bush mesh")),
         barrel: meshes.add(archetype_mesh(Occupant::BarrelSlot).expect("barrel mesh")),
         crate_box: meshes.add(archetype_mesh(Occupant::CrateSlot).expect("crate mesh")),
         cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
+        road_sign: meshes.add(archetype_mesh(Occupant::RoadSign).expect("sign mesh")),
+        food_box: meshes.add(archetype_mesh(Occupant::FoodCrate).expect("food box mesh")),
+        car_wreck: meshes.add(archetype_mesh(Occupant::CarWreck).expect("car mesh")),
+        tire_stack: meshes.add(archetype_mesh(Occupant::TireStack).expect("tyre mesh")),
+        painted: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.8,
+            metallic: 0.3,
+            ..default()
+        }),
+        oil_red: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.55, 0.09, 0.06),
+            perceptual_roughness: 0.55,
+            metallic: 0.5,
+            ..default()
+        }),
+        rubber: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.035, 0.035, 0.04),
+            perceptual_roughness: 0.92,
+            ..default()
+        }),
         // Both authored structures fall back to the sim's own box tables —
         // see the `authored` block above for what mirroring them by hand
         // cost, and `site_asset` for why the massing stays rather than being
@@ -1957,6 +1979,7 @@ pub fn assets(
             models.pool(Occupant::CacheSlot).first().cloned(),
         ],
         tier_models: [0, 1, 2].map(|i| models.tier_crate(i)),
+        roadside_models: ROADSIDE_GLB.map(|(o, _)| models.roadside(o)),
         tier_crates: [
             Color::srgb(0.22, 0.55, 0.28),
             Color::srgb(0.20, 0.36, 0.78),
@@ -1971,13 +1994,110 @@ pub fn assets(
             })
         }),
         foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
-        bush_cards: (0..BUSH_CARD_POOL as u32)
-            .map(|v| meshes.add(bush_card_mesh(v)))
+        shrub_leaves: [false, true]
+            .into_iter()
+            .flat_map(|tall| (0..PLANT_POOL as u32).map(move |v| (v, tall)))
+            .map(|(v, tall)| meshes.add(plants::shrub_leaves(v, tall)))
             .collect(),
-        bush_tall: meshes.add(tall_bush_mesh()),
-        bush_tall_cards: (0..BUSH_CARD_POOL as u32)
-            .map(|v| meshes.add(tall_bush_card_mesh(v)))
+        shrub_wood: [false, true]
+            .into_iter()
+            .flat_map(|tall| (0..PLANT_POOL as u32).map(move |v| (v, tall)))
+            .map(|(v, tall)| meshes.add(plants::shrub_wood(v, tall)))
             .collect(),
+        berry_leaves: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::berry_leaves(v)))
+            .collect(),
+        berry_wood: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::berry_wood(v)))
+            .collect(),
+        berry_fruit: [true, false]
+            .into_iter()
+            .flat_map(|red| (0..PLANT_POOL as u32).map(move |v| (v, red)))
+            .map(|(v, red)| meshes.add(plants::berries(v, red)))
+            .collect(),
+        hemp_leaves: hemp.iter().map(|(_, l)| l.clone()).collect(),
+        hemp_stalk: hemp.iter().map(|(s, _)| s.clone()).collect(),
+        fern_leaves: ferns.iter().map(|(_, l)| l.clone()).collect(),
+        fern_wood: ferns.iter().map(|(w, _)| w.clone()).collect(),
+        juniper_leaves: junipers.iter().map(|(_, l)| l.clone()).collect(),
+        juniper_wood: junipers.iter().map(|(w, _)| w.clone()).collect(),
+        dead_wood: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::dead_scrub(v)))
+            .collect(),
+        flower_heads: (0..plants::FLOWER_PALETTES as u32)
+            .flat_map(|p| (0..PLANT_POOL as u32).map(move |v| (v, p)))
+            .map(|(v, p)| meshes.add(plants::wildflowers(v, p).0))
+            .collect(),
+        flower_base: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::wildflowers(v, 0).1))
+            .collect(),
+        fern_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(fern_card.clone()),
+                perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                alpha_mode: AlphaMode::Mask(super::clutter::CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        juniper_leaf: tint_pool().map(|v| {
+            // The needle card's mean-1 photograph, as `needle` wears it.
+            let v = v * tree::NEEDLE_MAP_GAIN;
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(needle_map.clone()),
+                perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        flower: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.6,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
+        hemp_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(hemp_map.clone()),
+                perceptual_roughness: 0.8,
+                reflectance: fresnel::DIELECTRIC,
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        plant_wood: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.85,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
+        hemp_wood: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.8,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
+        berry: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.32,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
         bush_leaf: tint_pool().map(|v| {
             materials.add(StandardMaterial {
                 // The tint is a mean-1 grey over the photograph's own colour,
@@ -2125,6 +2245,8 @@ pub fn stream(
     let fresh = store.is_none();
     let a = store.get_or_insert_with(|| {
         let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
+        let fern =
+            server.load_with_settings(super::clutter::FERN_ATLAS, super::textures::atlas(true));
         let models = PropModels::load(&server);
         assets(
             &mut meshes,
@@ -2132,6 +2254,7 @@ pub fn stream(
             &mut images,
             &maps,
             card,
+            fern,
             models,
         )
     });
@@ -2152,11 +2275,20 @@ pub fn stream(
                 (&a.needle, Kind::Needle),
                 (&a.leaf, Kind::Leaf),
                 (&a.bush_leaf, Kind::BushLeaf),
+                (&a.hemp_leaf, Kind::HempLeaf),
+                // A fern's fronds are soft, on hemp's bend; a low pine is a
+                // woody mound, on the shrub's.
+                (&a.fern_leaf, Kind::HempLeaf),
+                (&a.juniper_leaf, Kind::BushLeaf),
             ] {
                 for h in pool {
                     f.register(h, kind);
                 }
             }
+            f.register(&a.plant_wood, Kind::Stem);
+            f.register(&a.hemp_wood, Kind::HempStem);
+            f.register(&a.berry, Kind::Stem);
+            f.register(&a.flower, Kind::HempStem);
         }
     }
 
@@ -2211,7 +2343,7 @@ pub fn stream(
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
                     let cell_z = key.1 * cells + iz;
-                    let mut slot = terrain::scatter_memo(
+                    let slot = terrain::scatter_memo(
                         &mut lat,
                         world.seed,
                         &world.table,
@@ -2222,12 +2354,11 @@ pub fn stream(
                     if slot.occupant == Occupant::None {
                         continue;
                     }
-                    slot.y -= slope_sink(&mut lat, &world, &slot);
                     // `cell_key` is `sim_core::gather`'s own, not a second
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
                     let key = cell_key(cell_x as u16, cell_z as u16);
-                    spawn_slot(&mut commands, parent, a, &slot, key, &lod);
+                    spawn_slot(&mut commands, parent, a, world.seed, &slot, key, &lod);
                 }
             }
             ring.built.insert(key, parent);
@@ -2421,7 +2552,7 @@ pub fn spawn_outer_tree(
     if let Some((meshes, mats)) = &a.cards {
         commands.entity(parent).with_child((
             fellable,
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(meshes[variant % meshes.len()].clone()),
             MeshMaterial3d(mats[tint_of(key)].clone()),
             transform,
@@ -2430,29 +2561,11 @@ pub fn spawn_outer_tree(
     }
     commands.entity(parent).with_child((
         fellable,
-        Grow { base: slot.scale },
+        Grow::tree(slot.scale),
         Mesh3d(a.impostors[variant].clone()),
         MeshMaterial3d(a.foliage[tint_of(key)].clone()),
         transform,
     ));
-}
-
-/// How far a rock or an ore node is drawn below its slot on a slope: the
-/// ground's fall across its footprint (the slope times its radius), so its
-/// downhill edge meets the hillside instead of floating over it — the
-/// ranges put most of the ore on slopes, where `SINK_M` alone left a gap
-/// under every node. Capped at a third of its height, so a node on a cliff
-/// still reads as a node. Drawn only: the sim's volume stays the slot's.
-pub fn slope_sink(lat: &mut terrain::Lattice, world: &WorldId, slot: &terrain::Slot) -> f32 {
-    if !matches!(
-        slot.occupant,
-        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock
-    ) {
-        return 0.0;
-    }
-    let (r, top) = terrain::occupant_volume(slot.occupant);
-    let slope = terrain::ground_slope_memo(lat, world.seed, &world.haven, slot.x, slot.z);
-    (slope * r * slot.scale).min(top * slot.scale / 3.0)
 }
 
 /// Draw one scatter slot as a child of its chunk.
@@ -2470,6 +2583,7 @@ pub fn spawn_slot(
     commands: &mut Commands,
     parent: Entity,
     a: &PropAssets,
+    seed: u64,
     slot: &terrain::Slot,
     key: u32,
     lod: &tree::TreeLod,
@@ -2486,6 +2600,8 @@ pub fn spawn_slot(
     // the number the draw uses and the number `tests/greybox.rs` checks
     // against `OCCUPANT_TOP_M` are the same number.
     let lift = archetype_lift(slot.occupant);
+    // What a shrub cell grows, off its biome (`plants::scenery`).
+    let scenery = plants::scenery(seed, slot, key);
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = species_variant(slot, a.pines.len());
@@ -2509,16 +2625,15 @@ pub fn spawn_slot(
             Some(m) => m.clone(),
             None => (a.blob.clone(), a.ore_sulfur.clone()),
         },
-        Occupant::Bush => {
-            // Indexed exactly as the conifer pool is, so two bushes side by
-            // side do not present the same three cards.
-            variant = (slot.yaw as usize) % a.bush_cards.len();
-            let mass = if tall_bush(key) {
-                &a.bush_tall
-            } else {
-                &a.bush
-            };
-            (mass.clone(), a.foliage[tint].clone())
+        // A plant's wood (twigs, the hemp stalk, the berries) is the primary
+        // entity and its leaves ride beside it, below. Indexed by yaw exactly
+        // as the conifer pool is, so two plants side by side differ.
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
+            variant = (slot.yaw as usize) % PLANT_POOL;
+            match a.plant(slot.occupant, key, variant, tint, scenery) {
+                Some(p) => (p.wood.clone(), p.wood_mat.clone()),
+                None => return,
+            }
         }
         // **Indexed by species then yaw, exactly as the conifer pool is** —
         // `reference/ROCKS.md` §9.1, "the biome row picks the mesh family,
@@ -2552,6 +2667,26 @@ pub fn spawn_slot(
         },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
+        Occupant::OilBarrel
+        | Occupant::RoadSign
+        | Occupant::FoodCrate
+        | Occupant::CarWreck
+        | Occupant::TireStack => {
+            let i = ROADSIDE_GLB
+                .iter()
+                .position(|(o, _)| *o == slot.occupant)
+                .unwrap_or(0);
+            match &a.roadside_models[i] {
+                Some(m) => m.clone(),
+                None => match slot.occupant {
+                    Occupant::OilBarrel => (a.barrel.clone(), a.oil_red.clone()),
+                    Occupant::RoadSign => (a.road_sign.clone(), a.painted.clone()),
+                    Occupant::FoodCrate => (a.food_box.clone(), a.wood.clone()),
+                    Occupant::CarWreck => (a.car_wreck.clone(), a.painted.clone()),
+                    _ => (a.tire_stack.clone(), a.rubber.clone()),
+                },
+            }
+        }
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             let tier = slot.occupant as usize - Occupant::GreenCrate as usize;
             match &a.tier_models[tier] {
@@ -2573,23 +2708,30 @@ pub fn spawn_slot(
         scale: Vec3::splat(slot.scale),
     };
     // **Every gatherable node carries the harvested bit, not just trees.**
-    // `gather::node_index` covers `Occupant` 1..=5 and a barrel shares the same
-    // `SlotLives` entry and the same `EV_SLOT_HARVESTED`, so a smashed barrel
-    // and a mined ore node are as gone as a felled pine. Tagging only trees
-    // left both standing on screen after the server had removed them.
+    // `gather::node_index` covers the nodes and the two picked plants, and a
+    // barrel shares the same `SlotLives` entry and the same
+    // `EV_SLOT_HARVESTED`, so a smashed barrel and a mined ore node are as
+    // gone as a felled pine. Tagging only trees left both standing on screen
+    // after the server had removed them. A shrub is scenery and never goes.
     let harvestable = matches!(
         slot.occupant,
         Occupant::Tree
             | Occupant::StoneNode
             | Occupant::MetalNode
             | Occupant::SulfurNode
-            | Occupant::Bush
+            | Occupant::BerryBush
+            | Occupant::Hemp
             | Occupant::Rock
             | Occupant::BarrelSlot
+            | Occupant::OilBarrel
+            | Occupant::RoadSign
     );
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
     let is_tree = slot.occupant == Occupant::Tree;
+    // A picked plant grows back (`gather::grow_span`); a tree's parts carry
+    // their own `Grow` below.
+    let regrow = sim_core::gather::grow_span(slot.occupant as u8).filter(|_| !is_tree);
     // One constructor for all three parts: every field but `part` is the same
     // for the trunk, the canopy and the stump, and writing them out three
     // times is how the trunk and the canopy would eventually disagree about
@@ -2603,11 +2745,15 @@ pub fn spawn_slot(
         felled: false,
     };
     // What a mark lands on (`skin`): the trunk (below) and every solid prop,
-    // never the bush (no mark) or the two authored structures (their volume
+    // never a plant (no mark) or the two authored structures (their volume
     // is their boxes, already exact).
     let skin = (!matches!(
         slot.occupant,
-        Occupant::Bush | Occupant::HavenShelter | Occupant::WaystationCanopy
+        Occupant::BerryBush
+            | Occupant::Hemp
+            | Occupant::Shrub
+            | Occupant::HavenShelter
+            | Occupant::WaystationCanopy
     ))
     .then_some(super::skin::Skin { tree: false });
     let mut e = commands.entity(parent);
@@ -2620,7 +2766,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Trunk),
             Topple { t: -1.0 },
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(mesh),
             MeshMaterial3d(material),
             tree::lod_band(&lod.near),
@@ -2645,6 +2791,16 @@ pub fn spawn_slot(
         if let Some(skin) = skin {
             c.entity(id).insert(skin);
         }
+        if let Some(span) = regrow {
+            c.entity(id).insert(Grow {
+                base: slot.scale,
+                span,
+                fruit: false,
+            });
+        }
+        if slot.occupant.is_plant() {
+            plants::fade(&mut c.entity(id));
+        }
         e.add_child(id);
     } else {
         let mut c = e.commands();
@@ -2654,25 +2810,49 @@ pub fn spawn_slot(
         if let Some(skin) = skin {
             c.entity(id).insert(skin);
         }
+        if slot.occupant.is_plant() {
+            plants::fade(&mut c.entity(id));
+        }
         e.add_child(id);
     }
-    // The bush's leaves, as a second child of the same slot — the blob above
-    // is the mass, this is the outline (see [`BUSH_CARD_ATLAS`]). Same
-    // `transform`, because `bush_card_mesh` builds in `blob_mesh`'s frame; and
-    // the same `FellPart::Vanish` the blob took, or picking a bush would leave
-    // its leaves standing in the air.
-    if slot.occupant == Occupant::Bush {
-        let leaves = if tall_bush(key) {
-            &a.bush_tall_cards
-        } else {
-            &a.bush_cards
-        };
-        e.with_child((
-            fellable(FellPart::Vanish),
-            Mesh3d(leaves[variant].clone()),
-            MeshMaterial3d(a.bush_leaf[tint].clone()),
-            transform,
-        ));
+    // A plant's leaves (and a berry bush's berries), as more children of the
+    // same slot: the wood above is opaque and matte, the leaves alpha-masked
+    // and the berries glossy, and one `StandardMaterial` has one of each.
+    // Same `transform`, because `plants.rs` builds them all in one frame; and
+    // the same `FellPart::Vanish` the wood took, or picking a berry bush would
+    // leave its leaves standing in the air.
+    if let Some(p) = a.plant(slot.occupant, key, variant, tint, scenery) {
+        let leaves = p.leaves.map(|(m, mat)| (m, mat, false));
+        let fruit = p.fruit.map(|m| (m, &a.berry, true));
+        for (mesh, mat, is_fruit) in leaves.into_iter().chain(fruit) {
+            if harvestable {
+                let mut c = e.commands();
+                let id = c
+                    .spawn((
+                        fellable(FellPart::Vanish),
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(mat.clone()),
+                        transform,
+                    ))
+                    .id();
+                if let Some(span) = regrow {
+                    c.entity(id).insert(Grow {
+                        base: slot.scale,
+                        span,
+                        fruit: is_fruit,
+                    });
+                }
+                plants::fade(&mut c.entity(id));
+                e.add_child(id);
+            } else {
+                e.with_child((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    transform,
+                    super::plants::fade_band(),
+                ));
+            }
+        }
     }
     // The stump, spawned WITH the tree and hidden until the cut lands.
     //
@@ -2688,7 +2868,7 @@ pub fn spawn_slot(
             fellable(FellPart::Stump),
             // Hidden while the tree stands, it grows with the sapling, so a
             // sapling felled leaves a sapling's stump — not a full tree's.
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(a.stump.clone()),
             MeshMaterial3d(a.wood.clone()),
             Transform {
@@ -2718,7 +2898,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(a.needles[variant].clone()),
             // The card is the species' — a sprig on a conifer, a leaf
             // cluster on a broadleaf. Chosen in one place so a gate can ask.
@@ -2748,7 +2928,7 @@ pub fn spawn_slot(
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
-                Grow { base: slot.scale },
+                Grow::tree(slot.scale),
                 Mesh3d(meshes[variant % meshes.len()].clone()),
                 MeshMaterial3d(mats[tint].clone()),
                 tree::lod_band(&lod.far),
@@ -2758,7 +2938,7 @@ pub fn spawn_slot(
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
-                Grow { base: slot.scale },
+                Grow::tree(slot.scale),
                 Mesh3d(a.impostors[variant].clone()),
                 MeshMaterial3d(a.foliage[tint].clone()),
                 tree::lod_band(&lod.far),
@@ -3116,7 +3296,83 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
     }
 }
 
+/// One plant's meshes and the materials it wears ([`PropAssets::plant`]).
+struct Plant<'a> {
+    wood: &'a Handle<Mesh>,
+    wood_mat: &'a Handle<StandardMaterial>,
+    /// Its leaves and their material — none on a dead scrub.
+    leaves: Option<(&'a Handle<Mesh>, &'a Handle<StandardMaterial>)>,
+    /// A berry bush's berries, worn with `PropAssets::berry`.
+    fruit: Option<&'a Handle<Mesh>>,
+}
+
 impl PropAssets {
+    /// A plant's meshes for the slot at `key`, or `None` for anything that is
+    /// not a plant. `scenery` is what a shrub cell grows (`plants::scenery`).
+    /// The one place the pools are indexed, so `spawn_slot`'s children cannot
+    /// disagree.
+    fn plant(
+        &self,
+        o: Occupant,
+        key: u32,
+        variant: usize,
+        tint: usize,
+        scenery: plants::Scenery,
+    ) -> Option<Plant<'_>> {
+        use plants::Scenery;
+        let v = variant % PLANT_POOL;
+        let plant = |wood, wood_mat, leaves| Plant {
+            wood,
+            wood_mat,
+            leaves,
+            fruit: None,
+        };
+        Some(match (o, scenery) {
+            (Occupant::Shrub, Scenery::Fern) => plant(
+                &self.fern_wood[v],
+                &self.plant_wood,
+                Some((&self.fern_leaves[v], &self.fern_leaf[tint])),
+            ),
+            (Occupant::Shrub, Scenery::Juniper) => plant(
+                &self.juniper_wood[v],
+                &self.plant_wood,
+                Some((&self.juniper_leaves[v], &self.juniper_leaf[tint])),
+            ),
+            (Occupant::Shrub, Scenery::DeadScrub) => {
+                plant(&self.dead_wood[v], &self.plant_wood, None)
+            }
+            (Occupant::Shrub, Scenery::Flowers) => {
+                let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
+                    % plants::FLOWER_PALETTES;
+                plant(
+                    &self.flower_heads[palette * PLANT_POOL + v],
+                    &self.flower,
+                    Some((&self.flower_base[v], &self.bush_leaf[tint])),
+                )
+            }
+            (Occupant::Shrub, Scenery::Shrub) => {
+                let i = v + if tall_bush(key) { PLANT_POOL } else { 0 };
+                plant(
+                    &self.shrub_wood[i],
+                    &self.plant_wood,
+                    Some((&self.shrub_leaves[i], &self.bush_leaf[tint])),
+                )
+            }
+            (Occupant::BerryBush, _) => Plant {
+                wood: &self.berry_wood[v],
+                wood_mat: &self.plant_wood,
+                leaves: Some((&self.berry_leaves[v], &self.bush_leaf[tint])),
+                fruit: Some(&self.berry_fruit[v + if red_berries(key) { 0 } else { PLANT_POOL }]),
+            },
+            (Occupant::Hemp, _) => plant(
+                &self.hemp_stalk[v],
+                &self.hemp_wood,
+                Some((&self.hemp_leaves[v], &self.hemp_leaf[tint])),
+            ),
+            _ => return None,
+        })
+    }
+
     /// Every material this pool builds, by name.
     ///
     /// **Exists for `tests/fresnel.rs` and for nothing else.** Every
@@ -3135,6 +3391,10 @@ impl PropAssets {
         let mut out: Vec<(&'static str, &Handle<StandardMaterial>)> = Vec::new();
         for (name, pool) in [
             ("foliage", &self.foliage),
+            ("bush_leaf", &self.bush_leaf),
+            ("hemp_leaf", &self.hemp_leaf),
+            ("fern_leaf", &self.fern_leaf),
+            ("juniper_leaf", &self.juniper_leaf),
             ("needle", &self.needle),
             ("leaf", &self.leaf),
             ("rock", &self.rock),
@@ -3150,6 +3410,13 @@ impl PropAssets {
             ("wood", &self.wood),
             ("metal", &self.metal),
             ("stone", &self.stone),
+            ("plant_wood", &self.plant_wood),
+            ("hemp_wood", &self.hemp_wood),
+            ("berry", &self.berry),
+            ("flower", &self.flower),
+            ("painted", &self.painted),
+            ("oil_red", &self.oil_red),
+            ("rubber", &self.rubber),
         ]);
         out
     }

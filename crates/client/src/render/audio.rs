@@ -599,9 +599,75 @@ pub fn steps(
     let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
+    let core = &net.session.core;
+    if let Some(depth) = in_leaves(&world, pos, |key| plant_size(core, key)) {
+        sound.play(Request::own(Cue::Brush).with_gain(step.gain * brush_gain(depth)));
+    }
     if let Some(mut fx) = fx {
         super::fx::world::footstep(&mut fx, cue, Vec3::from(pos), step.gain);
     }
+}
+
+/// A body's half-width for brushing a plant, metres: its legs and shoulders
+/// are in the leaves before its axis is.
+pub const BRUSH_BODY_M: f32 = 0.25;
+
+/// A stride's brush gain at `depth` into a plant: a graze at its edge, the
+/// whole plant dragged along you at its stem.
+fn brush_gain(depth: f32) -> f32 {
+    0.55 + 0.45 * depth
+}
+
+/// How deep in a plant's leaves a body standing at `pos` is: 0 at their edge,
+/// 1 at the stem, `None` in the open. Off the scatter, cold, like
+/// [`picked_plant`] (a stride is a rare event), over the 3×3 cells round
+/// `pos`, since a plant near a cell's edge reaches into its neighbour.
+/// `size` is a plant's drawn size by cell key: 0 picked, 1 grown.
+pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -> Option<f32> {
+    use sim_core::terrain::{scatter, CELLS_PER_SIDE, CELL_SIZE};
+    let cell = |v: f32| (v / CELL_SIZE).floor() as i32;
+    let (cx, cz) = (cell(pos[0]), cell(pos[2]));
+    let mut deepest: Option<f32> = None;
+    for x in cx - 1..=cx + 1 {
+        for z in cz - 1..=cz + 1 {
+            if !(0..CELLS_PER_SIDE).contains(&x) || !(0..CELLS_PER_SIDE).contains(&z) {
+                continue;
+            }
+            let slot = scatter(w.seed, &w.table, &w.haven, x, z);
+            let key = sim_core::gather::cell_key(x as u16, z as u16);
+            if !slot.occupant.is_plant() {
+                continue;
+            }
+            let scenery = super::plants::scenery(w.seed, &slot, key);
+            let Some(r) = super::plants::leaf_reach(slot.occupant, key, scenery) else {
+                continue;
+            };
+            let grown = size(key);
+            if grown <= 0.0 {
+                continue;
+            }
+            let reach = r * slot.scale * grown + BRUSH_BODY_M;
+            let d = Vec2::new(pos[0] - slot.x, pos[2] - slot.z).length();
+            if d < reach {
+                let depth = 1.0 - d / reach;
+                deepest = Some(deepest.map_or(depth, |was: f32| was.max(depth)));
+            }
+        }
+    }
+    deepest
+}
+
+/// A plant's drawn size by cell key, as `props::grow` draws it: 0 while it is
+/// picked, growing back toward 1.
+fn plant_size(core: &client_core::core::ClientCore, key: u32) -> f32 {
+    if core.harvested.contains(key) {
+        return 0.0;
+    }
+    core.harvested.growth(key).map_or(1.0, |at| {
+        let now = core.clock.server_est.max(0.0) as u64;
+        let span = sim_core::gather::PLANT_GROW_TICKS;
+        sim_core::gather::grow_pm_over(at as u64, now, span) as f32 * 0.001
+    })
 }
 
 /// A crouched step's gain against a standing one at the same speed (v83):
@@ -677,8 +743,10 @@ pub struct RemoteSteps(pub Steps);
 /// One honest gap, the wire's: a teleport (death, respawn) reads as ground
 /// covered, which the odometer's own hitch cap bounds at ONE step. A
 /// sleeper stands still and the speed floor keeps it silent for free.
+#[allow(clippy::too_many_arguments)]
 pub fn remote_steps(
     world: Res<super::WorldId>,
+    net: Option<NonSend<Net>>,
     time: Res<Time>,
     rig: Res<super::anim::Rig>,
     mut bodies: Query<
@@ -708,6 +776,18 @@ pub fn remote_steps(
         let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
         let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));
         sound.play(Request::at(cue, pos).with_gain(step.gain));
+        // Only within earshot: the leaves are nine scatter lookups, and a
+        // body across the valley would be culled by the mixer anyway.
+        if t.translation.distance(eye.pos) <= Cue::RemoteBrush.def().radius_m {
+            let size = |key| {
+                net.as_deref()
+                    .map_or(1.0, |n| plant_size(&n.session.core, key))
+            };
+            if let Some(depth) = in_leaves(&world, pos, size) {
+                let gain = step.gain * brush_gain(depth);
+                sound.play(Request::at(Cue::RemoteBrush, pos).with_gain(gain));
+            }
+        }
         if let Some(fx) = fx.as_deref_mut() {
             if t.translation.distance(eye.pos) <= super::fx::world::STEP_FX_M {
                 super::fx::world::footstep(fx, cue, t.translation, step.gain);
@@ -1267,9 +1347,14 @@ pub fn fell(
         // inferred: the trunk speaks for the tree, a `Vanish` node speaks for
         // itself, and the canopy and the stump are silent because they are
         // parts of something that already made a sound.
+        let plant = if matches!(f.part, super::props::FellPart::Vanish) {
+            picked_plant(world.as_deref(), f.key)
+        } else {
+            None
+        };
         let cue = match f.part {
             super::props::FellPart::Trunk => Cue::TreeFall,
-            super::props::FellPart::Vanish if is_bush(world.as_deref(), f.key) => {
+            super::props::FellPart::Vanish if plant.is_some() => {
                 if picked[..n_picked].contains(&f.key) {
                     continue;
                 }
@@ -1277,9 +1362,8 @@ pub fn fell(
                     picked[n_picked] = f.key;
                     n_picked += 1;
                 }
-                let at = t.translation()
-                    + Vec3::Y
-                        * super::impact::strike_height(sim_core::terrain::Occupant::Bush as u8);
+                let high = super::impact::strike_height(plant.map_or(0, |o| o as u8));
+                let at = t.translation() + Vec3::Y * high;
                 fx.impact(
                     &super::impact::Contact {
                         at,
@@ -1307,14 +1391,14 @@ pub fn fell(
     }
 }
 
-/// Whether the slot at cell key `key` is a bush — the scatter's answer, cold
-/// (`terrain::scatter`), which is fine on the one frame a slot goes away.
-fn is_bush(world: Option<&super::WorldId>, key: u32) -> bool {
-    world.is_some_and(|w| {
-        let (cx, cz) = ((key >> 16) as i32, (key & 0xFFFF) as i32);
-        sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant
-            == sim_core::terrain::Occupant::Bush
-    })
+/// The plant a hand picks standing at cell key `key` (a berry bush or hemp),
+/// or `None` — the scatter's answer, cold (`terrain::scatter`), which is fine
+/// on the one frame a slot goes away.
+fn picked_plant(world: Option<&super::WorldId>, key: u32) -> Option<sim_core::terrain::Occupant> {
+    let w = world?;
+    let (cx, cz) = ((key >> 16) as i32, (key & 0xFFFF) as i32);
+    let o = sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant;
+    sim_core::gather::pickable(o).then_some(o)
 }
 
 /// Something new in your hand (`Cue::Equip`): the hotbar moved to a slot

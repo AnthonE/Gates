@@ -39,7 +39,7 @@
 
 use bevy::prelude::*;
 use client::render::bodies::{flame_pose, hand_pose, hand_wants, RETIRED_BODY_PALM};
-use client::render::viewmodel::{grip, VIEWMODEL_PALM};
+use client::render::viewmodel::{flame_at, grip, VIEWMODEL_PALM};
 use client::ui::hold::{HELD_MODELS, TORCH_LIGHT};
 use client_core::interp::RemoteState;
 use protocol::ItemCatalog;
@@ -233,13 +233,11 @@ fn the_grip_lands_in_the_fist_at_any_rig_scale() {
     }
 }
 
-/// The flame's offset uses the same grip, and it is derived from the mesh
-/// rather than typed — so a regenerated torch moves the light with it.
-/// Asserted against the row's own `flame_m`, which is the number
-/// `viewmodel::apply_hand_light` uses for the first-person hand: **one flame
-/// height, one grip, two hands.**
+/// The flame's offset uses the same grip and the same point the first-person
+/// hand burns at (`viewmodel::flame_at`, the crown of the posed mesh): **one
+/// flame, one grip, two hands.**
 #[test]
-fn the_flame_sits_above_the_fist_by_the_rows_own_lift() {
+fn the_flame_sits_on_the_head_of_the_torch_in_the_hand() {
     let i = row("torch");
     let def = &HELD_MODELS[i];
     assert!(def.light.is_some(), "the torch is the row with a light");
@@ -252,26 +250,23 @@ fn the_flame_sits_above_the_fist_by_the_rows_own_lift() {
         let mut g = grip(Some(def));
         g.translation /= scale;
         g.scale /= scale;
-        let t = flame_pose(Some(i), def.flame_m(), scale);
-        // Back into the hold frame: the lift is straight up its +Y and
-        // nothing else.
+        let t = flame_pose(Some(i), scale);
+        // Back into the hold frame, where the mesh is posed.
         let in_hold = g
             .rotation
             .inverse()
             .mul_vec3((t.translation - g.translation) / g.scale.x);
         assert!(
-            (in_hold - Vec3::Y * def.flame_m()).length() < 1e-4,
-            "the flame sits at {in_hold:?} in the hold frame, not {:?} up it \
-             (scale {scale})",
-            def.flame_m()
+            (in_hold - flame_at(def)).length() < 1e-4,
+            "the flame sits at {in_hold:?} in the hold frame, not on the \
+             torch's crown at {:?} (scale {scale})",
+            flame_at(def)
         );
-        assert!(def.flame_m() > 0.0, "a flame above the fist, not in it");
     }
     // An unlit hand parks the emitter back at the fist rather than leaving
-    // it where the last flame was — `update_hand` passes a zero lift.
-    let mut g = grip(None);
-    g.translation /= 1.0;
-    assert_eq!(flame_pose(None, 0.0, 1.0).translation, g.translation);
+    // it where the last flame was.
+    let g = grip(None);
+    assert_eq!(flame_pose(None, 1.0).translation, g.translation);
 }
 
 /// The retired constant is kept, and it is kept for one reason.

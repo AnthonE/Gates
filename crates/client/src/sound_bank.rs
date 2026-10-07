@@ -143,6 +143,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::Drink, takes!("freesound", "drink", 0 1 2)),
     (Cue::Bandage, takes!("freesound", "bandage", 0 1)),
     (Cue::BushPick, takes!("freesound", "bush_pick", 0 1 2)),
+    (Cue::Brush, takes!("freesound", "brush", 0 1 2 3)),
     (Cue::Snort, takes!("freesound", "snort", 0 1 2)),
     (Cue::Bird, takes!("freesound", "bird", 0 1 2 3 4 5)),
     (Cue::MusicOpenCalm, whole!("vsco", "music_open_calm")),
@@ -176,6 +177,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteLand => Cue::Land,
         Cue::RemoteSplash => Cue::Splash,
         Cue::RemoteBowDraw => Cue::BowDraw,
+        Cue::RemoteBrush => Cue::Brush,
         c => c,
     }
 }
@@ -203,7 +205,8 @@ pub fn synth_takes(cue: Cue) -> u8 {
         | Cue::StepLitter
         | Cue::StepWater
         | Cue::Eat
-        | Cue::BushPick => 3,
+        | Cue::BushPick
+        | Cue::Brush => 3,
         Cue::Blast | Cue::Collapse => 2,
         _ => 1,
     }

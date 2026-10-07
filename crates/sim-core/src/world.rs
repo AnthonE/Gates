@@ -18,7 +18,7 @@ use crate::limits::{
     MAX_EVENTS_PER_TICK, MAX_MAGS, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
     WEAR_SLOTS,
 };
-use crate::loot::{LootContent, LOOT_BARREL};
+use crate::loot::LootContent;
 use crate::melee;
 use crate::mob;
 use crate::movement::{self, quant_xz, quant_y, Body, POS_XZ_Q, POS_Y_Q};
@@ -1767,10 +1767,11 @@ pub enum Command {
         id: u32,
         cont: u32,
     },
-    /// Pick the bush at cell key `cell` (`gather::cell_key`) by hand — the
-    /// `E` verb (`gather::pick`). `OpenWorldCont`'s shape: the cell is a
-    /// claim, the sim re-derives what stands there through the scatter memo
-    /// and refuses anything that is not a standing bush in reach.
+    /// Pick the berry bush or hemp at cell key `cell` (`gather::cell_key`) by
+    /// hand — the `E` verb (`gather::pick`). `OpenWorldCont`'s shape: the
+    /// cell is a claim, the sim re-derives what stands there through the
+    /// scatter memo and refuses anything that is not a standing plant a hand
+    /// picks, in reach.
     Pick {
         id: u32,
         cell: u32,
@@ -2137,7 +2138,7 @@ impl World {
             evictions: 0,
             env: crate::weather::Env::default(),
             slot_lives: SlotLives::new(),
-            slot_cache: Box::new(crate::occupy::SlotCache::new()),
+            slot_cache: Box::new(crate::occupy::SlotCache::shard()),
             arrows: Box::new(ranged::Arrows::new()),
             spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
@@ -5477,7 +5478,15 @@ impl World {
                 &mut self.events,
                 &mut spill,
             );
-            if let Swing::Smashed { cx, cz, qx, qy, qz } = swung {
+            if let Swing::Smashed {
+                table,
+                cx,
+                cz,
+                qx,
+                qy,
+                qz,
+            } = swung
+            {
                 // The barrel is already gone (gather.rs marked the slot and
                 // announced it). What falls out is decided here, because
                 // this is where the container store lives: gather owns the
@@ -5500,7 +5509,7 @@ impl World {
                 let mut items = [ItemStack::default(); INV_SLOTS];
                 let key = cell_key(cx, cz);
                 self.loot
-                    .roll_into(LOOT_BARREL, &self.gather, seed, key, tick, &mut items);
+                    .roll_into(table as usize, &self.gather, seed, key, tick, &mut items);
                 let _ = qy;
                 self.ground_items.scatter(
                     &self.backpack,

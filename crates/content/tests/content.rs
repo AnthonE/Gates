@@ -326,7 +326,12 @@ fn hash_moves_with_values() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    g.1 = g.1.replace("per_hit = 5", "per_hit = 4");
+    // The tree's mushrooms, since the bush's berries became its primary.
+    assert!(g.1.contains("output = \"item.mushrooms\"\nper_hit = 1"));
+    g.1 = g.1.replace(
+        "output = \"item.mushrooms\"\nper_hit = 1",
+        "output = \"item.mushrooms\"\nper_hit = 2",
+    );
     assert_ne!(
         base,
         build(&srcs).unwrap().hash(),
@@ -979,7 +984,7 @@ fn bake_refuses_duplicate_archetype() {
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
     entry.1.push_str(
-        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"bush\"\n\
+        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"berry_bush\"\n\
          output = \"item.cloth\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 10\n",
     );
@@ -2093,8 +2098,8 @@ fn a_clock_with_no_answer_is_refused() {
     // Take the berries off the bush: hunger drains, nothing pays food.
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.berries\"",
-        "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
+        "archetype = \"berry_bush\"\noutput = \"item.berries\"",
+        "archetype = \"berry_bush\"\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
     // The honest version of the same defect — the rows simply absent. All
@@ -2110,7 +2115,9 @@ fn a_clock_with_no_answer_is_refused() {
         .unwrap();
     for row in [
         "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n",
-        "\n[gatherable.secondary]\noutput = \"item.berries\"\nper_hit = 5\n",
+        "\n[[gatherable]]\nid = \"gather.bush\"\narchetype = \"berry_bush\"\n\
+         output = \"item.berries\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 5\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2130,6 +2137,7 @@ fn a_clock_with_no_answer_is_refused() {
         "test fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(corn_row, "");
+    strip_food_box(&mut srcs);
     let err = build(&srcs).expect_err("a foodless island must be refused");
     assert!(
         err.contains("the clock has no answer"),
@@ -2183,6 +2191,8 @@ fn a_clock_with_no_answer_is_refused() {
             );
         }
     }
+    // The food box's cooked meat waters too.
+    strip_food_box(&mut srcs);
     let err = build(&srcs).expect_err("a dry island with a disarmed drink must be refused");
     assert!(
         err.contains("the clock has no answer"),
@@ -2214,14 +2224,14 @@ fn a_drink_that_is_not_a_trade_is_refused() {
 fn a_secondary_that_pays_nothing_is_refused() {
     refuses(
         "gatherables.toml",
-        "output = \"item.berries\"\nper_hit = 5",
-        "output = \"item.berries\"\nper_hit = 0",
+        "output = \"item.mushrooms\"\nper_hit = 1",
+        "output = \"item.mushrooms\"\nper_hit = 0",
         "pays nothing",
     );
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.berries\"",
-        "[gatherable.secondary]\noutput = \"item.cloth\"",
+        "[gatherable.secondary]\noutput = \"item.mushrooms\"",
+        "[gatherable.secondary]\noutput = \"item.wood\"",
         "repeats the primary output",
     );
 }
@@ -3527,6 +3537,19 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
 /// verb that puts an item in a hand. The clock wall (`validate.rs`) only
 /// asks that SOMETHING answers hunger, so berries alone kept it green —
 /// this asks the per-row question the wall deliberately does not.
+/// Take the roadside food box's table out of `loot.toml`, for the mutants
+/// that strand one food: the box pays every food, so it would answer them.
+fn strip_food_box(srcs: &mut [(&str, String)]) {
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let start =
+        l.1.find("[[loot_table]]\nid = \"loot.food\"")
+            .expect("fixture rot: the food box's table moved");
+    let end = l.1[start + 1..]
+        .find("[[loot_table]]")
+        .map_or(l.1.len(), |e| start + 1 + e);
+    l.1.replace_range(start..end, "");
+}
+
 #[test]
 fn every_consumable_the_content_ships_is_reachable() {
     let c = build(&sources()).expect("shipped content builds");
@@ -3558,6 +3581,7 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the tree's mushroom row moved"
     );
     g.1 = g.1.replace(row, "\n");
+    strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
@@ -3573,6 +3597,7 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(row, "");
+    strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — the bush and the tree keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),

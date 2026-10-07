@@ -40,15 +40,17 @@ fn center() -> f32 {
 }
 
 /// Every occupant a scatter cell can actually hand back.
-const SCATTERED: [Occupant; 8] = [
+const SCATTERED: [Occupant; 10] = [
     Occupant::Tree,
     Occupant::StoneNode,
     Occupant::MetalNode,
     Occupant::SulfurNode,
-    Occupant::Bush,
+    Occupant::BerryBush,
     Occupant::Rock,
     Occupant::BarrelSlot,
     Occupant::CrateSlot,
+    Occupant::Hemp,
+    Occupant::Shrub,
 ];
 
 /// A slot standing at the origin at unit scale, for the predicate's own
@@ -80,12 +82,14 @@ const OCCUPANT_CORNER_SQ: f32 = terrain::SHELTER_CORNER_R_M * terrain::SHELTER_C
 #[test]
 fn the_two_zeros_are_the_two_stated_zeros() {
     // Deliberately passable: a bush you cannot push through is a wall you
-    // cannot see over.
-    assert_eq!(
-        OCCUPANT_R_M[Occupant::Bush as usize],
-        0.0,
-        "the bush has grown a radius — it is authored passable on purpose"
-    );
+    // cannot see over — and so is every other plant the bush column grows.
+    for o in [Occupant::BerryBush, Occupant::Hemp, Occupant::Shrub] {
+        assert!(o.is_plant());
+        assert_eq!(
+            OCCUPANT_R_M[o as usize], 0.0,
+            "{o:?} has grown a radius — a plant is authored passable on purpose"
+        );
+    }
 
     // Not a sim occupant at all: index 8 is the client's felled-pine stump,
     // and the enum skips the discriminant so the two tables stay aligned by
@@ -119,7 +123,7 @@ fn the_two_zeros_are_the_two_stated_zeros() {
     // And nothing else is zero. This is the half that makes the two above
     // mean something.
     for o in SCATTERED {
-        if o == Occupant::Bush {
+        if o.is_plant() {
             continue;
         }
         assert!(
@@ -294,15 +298,9 @@ fn scale_moves_the_reach_and_the_top_together() {
         ),
         "a body standing on the small boulder was still blocked by it"
     );
+    // A short volume: a body steps up the 0.31 m between the two tops.
     assert!(
-        terrain::slot_blocks(
-            &large,
-            0.0,
-            0.0,
-            top * 0.9,
-            CAPSULE_RADIUS_M,
-            CAPSULE_HEIGHT_M
-        ),
+        terrain::slot_blocks(&large, 0.0, 0.0, top * 0.9, CAPSULE_RADIUS_M, 0.1),
         "the large boulder's extra height did not block"
     );
     // A slot's ground is its own, not sea level: a node on a hill blocks at

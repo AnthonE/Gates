@@ -569,6 +569,8 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::RemoteLand => render_take(Cue::Land, take),
         Cue::RemoteSplash => render_take(Cue::Splash, take),
         Cue::RemoteBowDraw => render_take(Cue::BowDraw, take),
+        Cue::Brush => brush(&mut r),
+        Cue::RemoteBrush => render_take(Cue::Brush, take),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1281,6 +1283,44 @@ fn rustle(r: &mut Rng) -> Vec<f32> {
     let at = samples(0.09 + 0.03 * r.unit());
     for (o, v) in out[at..].iter_mut().zip(snap) {
         *o += v * 0.6;
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A body pushing through a plant: leaves dragged along cloth, a swell and a
+/// settle with no snap in it — [`rustle`]'s leaves without the stem, longer
+/// and darker, because it is a whole body moving and not a hand.
+fn brush(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.44);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    for (k, amp) in [0.75f32, 1.0, 0.8, 0.5].into_iter().enumerate() {
+        let from = samples(k as f32 * 0.07 + 0.025 * r.unit());
+        let len = samples(0.16 + 0.08 * r.unit());
+        let lp_hz = 3_000.0 + 1_800.0 * r.unit();
+        let (mut lp, mut hp, mut gate) = (Lp::new(lp_hz), Lp::new(450.0), 0.0f32);
+        for j in 0..len {
+            let i = from + j;
+            if i >= n {
+                break;
+            }
+            let t = j as f32 / sr;
+            let u = j as f32 / len as f32;
+            let mut x = r.noise();
+            // Sparser crackle than a pick: leaves sliding, not torn.
+            if r.unit() < 0.015 {
+                gate = 1.0;
+            }
+            gate *= 0.997;
+            x *= 0.4 + 0.6 * gate;
+            let l = lp.run(x);
+            let band = l - hp.run(l);
+            let env = (PI * u).sin().max(0.0) * attack(t, 0.012);
+            out[i] += band * env * amp;
+        }
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);

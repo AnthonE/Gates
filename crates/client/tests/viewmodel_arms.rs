@@ -47,8 +47,8 @@
 
 use client::render::bodies::RETIRED_BODY_PALM;
 use client::render::viewmodel::{
-    bash_pose, bump, carried, carry_of, item_rest_dir, lift_at, palm_rig, rig_transform,
-    stroke_pose, stroke_snap, swing_apex_s, swing_phases, swing_pose, tap_pose, thrust_pose,
+    bash_pose, bump, carried, carry_of, item_rest_dir, palm_rig, rig_transform, stroke_pose,
+    stroke_snap, swing_apex_s, swing_phases, swing_pose, swipe_pose, tap_pose, thrust_pose,
     thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M,
     VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M,
     VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_PALM, VIEWMODEL_SWING_ATTACK,
@@ -56,7 +56,7 @@ use client::render::viewmodel::{
     VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
 };
 use client::render::viewmodel::{
-    hand_fit, hand_rest, hand_set, item_pose, VIEWMODEL_SEAT, VIEWMODEL_SEAT_DIR,
+    flame_at, hand_fit, hand_rest, hand_set, item_pose, VIEWMODEL_SEAT, VIEWMODEL_SEAT_DIR,
 };
 use client::ui::hold::{HeldModelDef, Stroke, HELD_MODELS};
 
@@ -867,13 +867,19 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
         .collect();
 
     // Over the frames a stroke is actually drawn in: the bare derivation, the
-    // carry every chopping row takes, and the carry with a torch's raise. The
-    // tap and the bash are held to the frame and the dead arm too; only the
-    // chop owes the floors below.
-    let strokes: [(&str, Pose); 3] = [("chop", swing_pose), ("tap", tap_pose), ("bash", bash_pose)];
+    // carry every chopping row takes, and — for the torch's own stroke — the
+    // carry with a torch's raise. The tap, the bash and the swipe are held to
+    // the frame and the dead arm too; only the chop owes the floors below.
+    let strokes: [(&str, Pose); 4] = [
+        ("chop", swing_pose),
+        ("tap", tap_pose),
+        ("bash", bash_pose),
+        ("swipe", swipe_pose),
+    ];
     for ((name, pose), (carry, lift)) in strokes
         .into_iter()
         .flat_map(|p| [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)].map(|f| (p, f)))
+        .filter(|((name, _), (_, lift))| *lift == 0.0 || *name == "swipe")
     {
         let mut path = 0.0f32;
         let mut prev: Option<V3> = None;
@@ -881,7 +887,7 @@ fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
         for i in 0..=N {
             let s = i as f32 / N as f32;
             let (rot, off) = pose(s);
-            let rig = carried(carry, lift_at(lift, s), rot, off);
+            let rig = carried(carry, lift, rot, off);
             let place = |p: V3| {
                 let v = rig.transform_point(bevy::math::Vec3::new(p[0], p[1], p[2]));
                 [v.x, v.y, v.z]
@@ -1159,7 +1165,7 @@ fn the_hold_clip_never_animates_the_hidden_bones_pose() {
 fn drawn(def: &HeldModelDef, s: f32) -> bevy::prelude::Transform {
     let (rot, off) = stroke_pose(def.stroke, s);
     let lit = if def.light.is_some() { 1.0 } else { 0.0 };
-    carried(carry_of(Some(def)), lift_at(lit, s), rot, off)
+    carried(carry_of(Some(def)), lit, rot, off)
 }
 
 /// A row's crown — the end `ahead_m` past the fist — in view space at `s`,
@@ -1243,8 +1249,7 @@ fn the_chop_comes_down_through_the_crosshair() {
         for i in 1..=N {
             let s = peak + (apex - peak) * i as f32 / N as f32;
             let y = ndc_of(crown_at(def, s)).1;
-            // A hair of slack for a lit row: its raise comes back up under
-            // the last few frames of the strike (`lift_at`).
+            // A hair of slack, for float noise at the turn of the strike.
             assert!(
                 y <= prev + 0.01,
                 "{}: the crown rises from ndc y {prev:.3} to {y:.3} at s={s:.3}, on \
@@ -1258,6 +1263,58 @@ fn the_chop_comes_down_through_the_crosshair() {
         rows >= 4,
         "only {rows} rows chop — this gate checked little"
     );
+}
+
+/// The torch's stroke (`Stroke::Swipe`): the chop's strike from a short draw
+/// up and out. It lands where the chop lands, and — the reason it exists —
+/// the head never leaves the frame, where the chop's heave over the shoulder
+/// took the whole raised torch off the top of it (operator, 2026-10-07:
+/// *"this can be swung like rust"*). The ceiling leaves the flame over the
+/// head room on screen.
+#[test]
+fn the_swipe_lands_on_the_crosshair_and_keeps_the_torch_in_frame() {
+    use bevy::prelude::Vec3;
+    let apex = apex_progress();
+    let ray = Vec3::new(
+        0.0,
+        -VIEWMODEL_SWING_DROP.sin(),
+        -VIEWMODEL_SWING_DROP.cos(),
+    );
+    let mut rows = 0;
+    for def in HELD_MODELS.iter().filter(|d| d.stroke == Stroke::Swipe) {
+        rows += 1;
+        let tip = crown_at(def, apex);
+        let along = tip.dot(ray);
+        let miss = (tip - ray * along).length();
+        assert!(
+            along > 0.0 && miss < 0.01,
+            "{}: at the apex the crown is {:.1} mm off the aim ray",
+            def.key,
+            miss * 1000.0
+        );
+        let rest = ndc_of(crown_at(def, 0.0));
+        let mut top = f32::MIN;
+        for i in 0..=60 {
+            let s = i as f32 / 60.0;
+            let (x, y) = ndc_of(crown_at(def, s));
+            top = top.max(y);
+            assert!(
+                x.abs() < 0.9 && y.abs() < 0.75,
+                "{}: the head is at ndc ({x:.2}, {y:.2}) at s={s:.2} — the swipe \
+                 takes the torch, or the flame over it, out of the frame",
+                def.key
+            );
+        }
+        assert!(
+            top > rest.1 + 0.1 && rest.1 - ndc_of(tip).1 > 0.3,
+            "{}: the head goes from ndc y {:.2} up to {top:.2} and down to {:.2} \
+             — that is not a swing",
+            def.key,
+            rest.1,
+            ndc_of(tip).1
+        );
+    }
+    assert!(rows > 0, "no row swipes");
 }
 
 #[test]
@@ -1668,9 +1725,11 @@ fn the_carry_draws_the_hand_bigger_and_out_to_the_side() {
 }
 
 #[test]
-fn a_lit_item_is_held_up_with_its_head_in_the_top_right() {
-    // The torch, held the reference game's way: up by the head, flame in the
-    // top-right of the frame, not down in the fist's corner.
+fn a_lit_item_is_held_with_its_flame_in_the_top_right_and_on_screen() {
+    // The torch, held the reference game's way: up beside the head, flame in
+    // the upper right of the frame — and ON it. Raised by 0.15 rad more, the
+    // head sat at ndc y 0.95 and the flame burned off the top of the frame
+    // (operator, 2026-10-07).
     use bevy::math::Vec3;
     let torch = HELD_MODELS
         .iter()
@@ -1678,19 +1737,28 @@ fn a_lit_item_is_held_up_with_its_head_in_the_top_right() {
         .expect("a row that casts light");
     let head = palm_rig()
         + tilt() * item_rest_dir(torch) * (torch.height_m * torch.scale * (1.0 - torch.grip_frac));
+    let flame = palm_rig() + tilt() * (flame_at(torch) - VIEWMODEL_PALM);
     let at = |lift: f32, p: Vec3| {
         let v = carried(1.0, lift, bevy::prelude::Quat::IDENTITY, Vec3::ZERO).transform_point(p);
         ndc([v.x, v.y, v.z]).expect("in front of the camera")
     };
     let (low, up) = (at(0.0, head), at(1.0, head));
     assert!(
-        up.1 > 0.5 && up.1 <= 1.0 && up.0 > 0.3 && up.0 <= 1.0,
-        "the raised {} has its head at ndc {up:?} — not in the top right",
+        up.1 > 0.15 && up.0 > 0.3 && up.0 < 0.9,
+        "the raised {} has its head at ndc {up:?} — not in the upper right",
         torch.key
     );
+    let fire = at(1.0, flame);
     assert!(
-        up.1 > low.1 + 0.4,
-        "the raise lifts the head only from {low:?} to {up:?}"
+        fire.1 < 0.6,
+        "the raised {}'s flame starts at ndc y {:.2} — it climbs a third of the \
+         frame's height again over that, off the top",
+        torch.key,
+        fire.1
+    );
+    assert!(
+        up.0 > low.0 + 0.05,
+        "the raise carries the head out only from {low:?} to {up:?}"
     );
 }
 

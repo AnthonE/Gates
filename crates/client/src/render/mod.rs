@@ -45,7 +45,9 @@ pub mod bodies;
 pub mod boot;
 pub mod boulders;
 pub mod capture;
+pub mod cliff_skin;
 pub mod cliffs;
+pub mod deck;
 // The trailer camera: a recorded session through a scripted lens, encoded as
 // it renders. Native only — it pipes frames to an `ffmpeg` process.
 #[cfg(not(target_arch = "wasm32"))]
@@ -131,6 +133,7 @@ pub mod heli;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod menu;
 pub mod mobs;
+pub mod moon;
 /// The app's state machine and the resources that carry it — shared by every
 /// screen, and by targets that have no screens at all. See the module docs.
 pub mod screen;
@@ -153,6 +156,8 @@ pub mod render_scale;
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod presence;
+// The plants the bush column grows: shrubs, berry bushes and hemp.
+pub mod plants;
 pub mod props;
 pub mod rig;
 pub mod settings;
@@ -558,9 +563,13 @@ impl Plugin for GatesRenderPlugin {
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
+        // The moon (`moon.rs`), and a browser's sky drawn per pixel (`deck.rs`).
+        app.add_plugins(MaterialPlugin::<moon::MoonMaterial>::default());
+        app.add_plugins(MaterialPlugin::<deck::DeckMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
             .insert_resource(weather_pin)
+            .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
@@ -1147,7 +1156,6 @@ impl Plugin for GatesRenderPlugin {
                 // on an emitter that outlives every swap. Both read the same
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
-                viewmodel::hand_flame.after(viewmodel::spawn_item),
                 // A deployable held as a blueprint: it rides the sway and
                 // bob `animate` just stepped.
                 sheet::spawn,
@@ -1226,6 +1234,15 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
         )
+        // The fire on the torch in your own hand, in the hand's frame: the
+        // same slot for the same reason, and the viewmodel's conditions.
+        .add_systems(
+            PostUpdate,
+            viewmodel::hand_fire
+                .after(bevy::transform::TransformSystems::Propagate)
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
         // The rig. `build` runs until the glTF is in and then costs one
         // branch; `bind` catches every `AnimationPlayer` the scene spawner
         // adds, and runs AFTER `Stream` because the body it walks up to is
@@ -1296,6 +1313,10 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
         // After the deck: the stars hide behind its field.
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
+        .add_systems(
+            OnEnter(Screen::Loading),
+            (moon::setup, deck::setup).after(sky::setup),
+        )
         .add_systems(
             OnEnter(Screen::Loading),
             underwater::setup.after(rig::setup),
@@ -1520,6 +1541,8 @@ impl Plugin for GatesRenderPlugin {
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     (
                         structures::fire_lights,
+                        // Another player's torch, under the same night eye.
+                        bodies::light_flames.after(bodies::stream),
                         town::dress,
                         town::lamps,
                         town_signs::build,
@@ -1642,6 +1665,14 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             rig::day_night.after(feed::drain).run_if(world_running),
+        )
+        .add_systems(
+            Update,
+            (
+                moon::drive.after(sky::compose),
+                deck::drive.after(rig::day_night),
+            )
+                .run_if(world_running),
         )
         // The weather (weather v0): read after the drain and before the rig
         // lights the frame from it; the deck is composed after both.

@@ -152,14 +152,17 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             //
             // At zero slope since 2026-09-28: the mesh carries the biome
             // weights and the shader decides the cliff per pixel.
-            let mut w = terrain::splat_from(y, terrain::moisture(seed, x, z), 0.0);
+            let mut w = terrain_mesh::relief_splat(
+                terrain::splat_from(y, terrain::moisture(seed, x, z), 0.0),
+                r,
+            );
             // …and the road, on the same guard the shipped path applies it
             // under. `road_band` is the published law rather than a rebuild of
             // it: what this side is proving is that the optimised path asks it
             // at the right POINT and under the right condition, which is the
             // failure `lattice.rs` records — a naive side that re-derives the
             // law from the function under test proves nothing about either.
-            if step <= terrain::ROAD_HALF_W {
+            if step <= terrain::SIDE_ROAD_HALF_W {
                 w = terrain::splat_road(w, terrain::road_band(seed, haven, x, z));
             }
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);

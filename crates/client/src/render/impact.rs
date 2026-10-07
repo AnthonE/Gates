@@ -201,7 +201,9 @@ impl Matter {
     pub fn of_occupant(o: u8) -> Matter {
         match o {
             x if x == Occupant::Tree as u8 => Matter::Wood,
-            x if x == Occupant::Bush as u8 => Matter::Plant,
+            x if x == Occupant::BerryBush as u8 => Matter::Plant,
+            x if x == Occupant::Hemp as u8 => Matter::Plant,
+            x if x == Occupant::Shrub as u8 => Matter::Plant,
             x if x == Occupant::StoneNode as u8 => Matter::Stone,
             x if x == Occupant::MetalNode as u8 => Matter::Metal,
             x if x == Occupant::SulfurNode as u8 => Matter::Stone,
@@ -209,6 +211,10 @@ impl Matter {
             x if x == Occupant::Rock as u8 => Matter::Stone,
             x if x == Occupant::CrateSlot as u8 => Matter::Wood,
             x if x == Occupant::CacheSlot as u8 => Matter::Wood,
+            x if x == Occupant::OilBarrel as u8 => Matter::Metal,
+            x if x == Occupant::RoadSign as u8 => Matter::Metal,
+            x if x == Occupant::FoodCrate as u8 => Matter::Wood,
+            x if x == Occupant::CarWreck as u8 => Matter::Metal,
             _ => Matter::Dirt,
         }
     }
@@ -267,8 +273,11 @@ pub enum Weapon {
 pub fn strike_height(occupant: u8) -> f32 {
     match occupant {
         x if x == Occupant::Tree as u8 => 1.20,
-        x if x == Occupant::Bush as u8 => 0.55,
+        x if x == Occupant::BerryBush as u8 => 0.55,
+        x if x == Occupant::Hemp as u8 => 0.7,
         x if x == Occupant::BarrelSlot as u8 => 0.80,
+        x if x == Occupant::OilBarrel as u8 => 0.80,
+        x if x == Occupant::RoadSign as u8 => 1.20,
         _ => 0.45,
     }
 }
@@ -497,6 +506,9 @@ pub fn skin_radius(occupant: u8) -> f32 {
         x if x == Occupant::MetalNode as u8 => Occupant::MetalNode,
         x if x == Occupant::SulfurNode as u8 => Occupant::SulfurNode,
         x if x == Occupant::BarrelSlot as u8 => Occupant::BarrelSlot,
+        x if x == Occupant::OilBarrel as u8 => Occupant::OilBarrel,
+        // The post, not the plate's broad phase.
+        x if x == Occupant::RoadSign as u8 => return terrain::ROAD_SIGN_BOXES[0][3] * 0.5,
         _ => return 0.0,
     };
     terrain::occupant_volume(o).0

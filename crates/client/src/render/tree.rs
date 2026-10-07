@@ -1227,7 +1227,7 @@ fn photo_card(png: &[u8]) -> Image {
 /// mip chain, the descriptor that carries it, and the trilinear sampler.
 /// Shared by both species' cards, because a second card that built its own
 /// chain would be the first place the two drifted.
-fn alpha_card(data: Vec<u8>, size: u32) -> Image {
+pub fn alpha_card(data: Vec<u8>, size: u32) -> Image {
     // Levels 1..n, coverage-preserved: an alpha-tested card draws the share of
     // texels over the cut, and a plain box filter loses that share at every
     // level (`mipmap::Filter::Mask`).

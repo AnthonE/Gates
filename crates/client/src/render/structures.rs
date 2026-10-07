@@ -3329,6 +3329,7 @@ pub fn spawn_deploy(
                     h * 0.5 + drop - FIRE_LIGHT_LIFT_M + 0.05
                 },
                 scale: 1.0,
+                tongues: super::fx::world::Tongues::Pit,
             },
         ));
     }
@@ -3433,7 +3434,11 @@ const FIRE_LIGHT_LIFT_M: f32 = 0.35;
 ///
 /// No per-frame allocation: the address rides the marker and `LitOvens::is_lit`
 /// is a linear scan of a bounded array.
-pub fn fire_lights(net: NonSend<super::Net>, q: Query<(&FireLight, &mut PointLight)>) {
+pub fn fire_lights(
+    net: NonSend<super::Net>,
+    gain: Res<super::rig::FlameGain>,
+    q: Query<(&FireLight, &mut PointLight)>,
+) {
     if q.is_empty() {
         return;
     }
@@ -3442,17 +3447,23 @@ pub fn fire_lights(net: NonSend<super::Net>, q: Query<(&FireLight, &mut PointLig
     // the same reason, and `LitOvens` is the authority exactly as
     // `HarvestedSet` is there.
     let ovens = net.session.core.ovens();
-    apply_fire_lights(q, &|cx, cz, level, loc| ovens.is_lit(cx, cz, level, loc));
+    apply_fire_lights(
+        q,
+        &|cx, cz, level, loc| ovens.is_lit(cx, cz, level, loc),
+        gain.0,
+    );
 }
 
-/// [`fire_lights`] with the lit set as a predicate. The half a gate can drive.
+/// [`fire_lights`] with the lit set as a predicate and the night eye's gain
+/// (`rig::flame_gain`) as a number. The half a gate can drive.
 pub fn apply_fire_lights(
     mut q: Query<(&FireLight, &mut PointLight)>,
     lit: &dyn Fn(u16, u16, u8, u8) -> bool,
+    gain: f32,
 ) {
     for (fire, mut light) in q.iter_mut() {
         let want = if lit(fire.cx, fire.cz, fire.level, fire.loc) {
-            FIRE_LUMENS
+            FIRE_LUMENS * gain
         } else {
             0.0
         };

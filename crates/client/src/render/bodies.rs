@@ -176,14 +176,16 @@ pub fn hand_pose(row: usize, scale: f32) -> Transform {
     grip(Some(row), scale) * super::viewmodel::pose(&HELD_MODELS[row], VIEWMODEL_PALM)
 }
 
-/// The flame's transform in the same frame, `lift` metres up the hold frame's
-/// own +Y — `viewmodel::apply_hand_light`'s offset, on the other hand.
+/// The flame's transform in the same frame: on the crown of the row's model
+/// (`viewmodel::flame_at`, the first-person flame's point exactly), or at
+/// the fist for an unlit hand.
 ///
 /// Its own function rather than a branch inside [`hand_pose`] because the two
 /// are written on different transitions (`Live::held` and `Live::lit`), which
 /// is the whole reason there are two entities.
-pub fn flame_pose(row: Option<usize>, lift: f32, scale: f32) -> Transform {
-    grip(row, scale) * Transform::from_translation(Vec3::Y * lift)
+pub fn flame_pose(row: Option<usize>, scale: f32) -> Transform {
+    let at = row.map_or(Vec3::ZERO, |r| super::viewmodel::flame_at(&HELD_MODELS[r]));
+    grip(row, scale) * Transform::from_translation(at)
 }
 
 /// [`viewmodel::grip`](super::viewmodel::grip) with the body root's own scale
@@ -441,9 +443,11 @@ pub fn stream(
                             // a torch's size.
                             super::fx::world::FireFx {
                                 flames: true,
-                                flame_dy: 0.0,
+                                // Out of the head, under the light.
+                                flame_dy: -crate::ui::hold::FLAME_LIFT_M,
                                 smoke_dy: 0.15,
                                 scale: super::fx::world::TORCH_FIRE_SCALE,
+                                tongues: super::fx::world::Tongues::Torch,
                             },
                             Transform::IDENTITY,
                         ))
@@ -729,31 +733,52 @@ fn update_hand(
         live.held = want;
     }
     if live.lit != want_lit {
-        let (lumens, range, lift) = match want_lit.and_then(|row| {
-            HELD_MODELS[row]
-                .light
-                .map(|l| (l, HELD_MODELS[row].flame_m()))
-        }) {
-            Some((l, flame)) => (l.lumens, l.range_m, flame),
-            None => (0.0, 0.0, 0.0),
-        };
+        let range = want_lit
+            .and_then(|row| HELD_MODELS[row].light)
+            .map_or(0.0, |l| l.range_m);
         commands.entity(live.flame).insert((
             PointLight {
                 color: super::structures::FIRE_COLOR,
-                intensity: lumens,
+                // [`light_flames`] brings it up to the row's lumens under
+                // the night eye's gain, every frame the gain moves.
+                intensity: 0.0,
                 range,
                 shadows_enabled: false,
                 ..default()
             },
-            // Up the HOLD frame's own +Y from the fist — the first-person
-            // flame's offset exactly (`viewmodel::apply_hand_light`), which
-            // is what makes one `flame_m` mean one height on two hands. An
-            // unlit hand parks the emitter back at the fist rather than
-            // leaving it where the last flame was: a zero-intensity light is
-            // invisible, but a stale transform is a value a later reader
-            // could trust.
-            flame_pose(want_lit, lift, scale),
+            // On the crown of the torch in this hand — the first-person
+            // flame's point exactly (`viewmodel::flame_at`), so one torch
+            // burns at one place on two hands. An unlit hand parks the
+            // emitter back at the fist rather than leaving it where the
+            // last flame was: a zero-intensity light is invisible, but a
+            // stale transform is a value a later reader could trust.
+            flame_pose(want_lit, scale),
         ));
         live.lit = want_lit;
+    }
+}
+
+/// Keep every burning hand's light at its row's lumens times the night
+/// eye's gain (`rig::flame_gain`), which moves through dusk and dawn.
+/// Written only on a change, `update_hand`'s reason.
+pub fn light_flames(
+    store: Res<Bodies>,
+    gain: Res<super::rig::FlameGain>,
+    mut q: Query<&mut PointLight, With<BodyFlame>>,
+) {
+    for live in store.live.values() {
+        let Some(lumens) = live
+            .lit
+            .and_then(|row| HELD_MODELS[row].light)
+            .map(|l| l.lumens)
+        else {
+            continue;
+        };
+        if let Ok(mut light) = q.get_mut(live.flame) {
+            let want = lumens * gain.0;
+            if light.intensity != want {
+                light.intensity = want;
+            }
+        }
     }
 }

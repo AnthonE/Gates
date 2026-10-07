@@ -363,6 +363,8 @@ fn bat_mesh() -> Mesh {
 
 /// A tapered wooden shaft and layered cloth winding. The existing crown,
 /// grip and light socket stay in place; the silhouette now has round edges.
+/// A tapered wooden shaft and a cloth-wrapped head. The crown, grip and
+/// light socket stay in place; the silhouette has round edges.
 fn torch_mesh() -> Mesh {
     let mut s = Soup::tiling(3.0);
     turned(
@@ -392,25 +394,8 @@ fn torch_mesh() -> Mesh {
         ],
         [0.16, 0.14, 0.12],
     );
-    // The wrap's overlapping edges catch light independently of the core.
-    for (y, r) in [
-        (0.370, 0.023),
-        (0.390, 0.027),
-        (0.412, 0.029),
-        (0.434, 0.027),
-    ] {
-        turned(
-            &mut s,
-            Vec3::ZERO,
-            &[
-                (y, r - 0.003),
-                (y + 0.003, r),
-                (y + 0.012, r - 0.001),
-                (y + 0.013, r - 0.004),
-            ],
-            [0.24, 0.21, 0.17],
-        );
-    }
+    // No raised lips on the wrap: a lit torch's light sits a few centimetres
+    // over it, and every upward edge burned as a thin neon ring.
     s.mesh()
 }
 

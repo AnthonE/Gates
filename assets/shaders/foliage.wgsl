@@ -68,10 +68,7 @@ fn vertex(in: Vertex) -> VertexOutput {
 }
 
 @fragment
-fn fragment(
-    vertex_output: VertexOutput,
-    @builtin(front_facing) is_front: bool,
-) -> FragmentOutput {
+fn fragment(vertex_output: VertexOutput) -> FragmentOutput {
     var in = vertex_output;
     // First, while every invocation is still live: it takes derivatives.
     let keep = grazing_keep(in.world_position.xyz);
@@ -80,7 +77,14 @@ fn fragment(
     visibility_range_dither(in.position, in.visibility_range_dither);
 #endif
 
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // Every face lit as the front: no foliage normal is a facet's. A card's
+    // is pulled toward its plant's volume (`plants::LEAF_VOLUME`, the
+    // canopies' lobes, `clutter::BLADE_TIP_BLEND`), which is the same normal
+    // seen from either side, so flipping it for the back face would light
+    // the far side of a bush from inside. Bevy 0.18 happens not to flip a
+    // mesh with tangents, which every soup has; that is its accident, and
+    // this is the rule. The wood is single-sided and never sees a back face.
+    var pbr_input = pbr_input_from_standard_material(in, true);
     // An opaque material ignores alpha in `alpha_discard`, so the bark that
     // shares this shader is never cut.
     pbr_input.material.base_color.a *= keep;

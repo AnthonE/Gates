@@ -80,6 +80,9 @@ pub struct Fx {
     pub flashes: [Flash; FLASH_LIGHTS],
     glow_mesh: Handle<Mesh>,
     soft_mesh: Handle<Mesh>,
+    /// The additive pool's material, for a pool drawn somewhere else (the
+    /// torch in your own hand burns in its own frame, `viewmodel::hand_fire`).
+    pub glow_mat: Handle<StandardMaterial>,
 }
 
 impl Default for Fx {
@@ -90,6 +93,7 @@ impl Default for Fx {
             flashes: [Flash::default(); FLASH_LIGHTS],
             glow_mesh: Handle::default(),
             soft_mesh: Handle::default(),
+            glow_mat: Handle::default(),
         }
     }
 }
@@ -179,6 +183,7 @@ pub fn setup(
         cull_mode: None,
         ..default()
     });
+    fx.glow_mat = glow.clone();
     let soft = standard.add(StandardMaterial {
         base_color: Color::WHITE,
         base_color_texture: Some(sheet),

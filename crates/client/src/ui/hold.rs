@@ -511,7 +511,7 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
         scale: 1.0,
         lay: 0.0,
         pose_yaw: 0.0,
-        stroke: Stroke::Chop,
+        stroke: Stroke::Swipe,
         light: Some(TORCH_LIGHT),
         grip_roll: Some(GRIP_ROLL_CARRIED),
     },
@@ -706,11 +706,18 @@ pub const HAFTED_YAW: f32 = -0.663;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stroke {
     /// Wound up over the shoulder and brought down through the crosshair, the
-    /// head landing just under it — a hatchet, a pickaxe, a torch.
+    /// head landing just under it — a hatchet, a pickaxe.
     /// `render::viewmodel::swing_pose` for the arm, `chop_snap` for the wrist.
     Chop,
     /// The chop, short: a hammer's repair knock. `render::viewmodel::tap_pose`.
     Tap,
+    /// The chop's strike with barely a wind-up — a torch, which is already
+    /// carried up by the head and comes down across the crosshair from
+    /// there, the reference's torch swing. The chop's draw over the shoulder
+    /// took the whole torch off the top of the frame for a tenth of a second
+    /// (operator, 2026-10-07: *"this can be swung like rust"*).
+    /// `render::viewmodel::swipe_pose`, and the chop's wrist.
+    Swipe,
     /// Drawn back and punched in toward the crosshair — a rock, an empty fist,
     /// anything small carried upright. `render::viewmodel::bash_pose`.
     Bash,
@@ -852,8 +859,7 @@ pub struct HeldLight {
     pub lumens: f32,
     /// Where the light is cut off, metres. **(knob)** Past this the fragment
     /// is not touched at all; it is a budget, not a look, and it wants to be
-    /// set where the contribution has already fallen under the night ambient
-    /// — see [`pool_radius_m`].
+    /// set where the contribution has already fallen to black.
     pub range_m: f32,
 }
 
@@ -862,67 +868,26 @@ pub struct HeldLight {
 /// **Priced ordinally, which is what the emission rule in
 /// `.claude/skills/threejs-procedural-vfx` actually asks for**: its numbers
 /// "are evidence of relative hierarchy inside that scene, not universal
-/// exposure-independent constants… preserve the relationship." The ladder
-/// this client has is `sun 100 000 lx → campfire 900 lm → torch → night
-/// ambient 60 lux`, and the torch's whole job is to sit between the last
-/// two. So it is **600 lm — deliberately under `structures::FIRE_LUMENS`**,
-/// because a hand torch that out-lit a fire pit standing next to one is the
-/// inverted hierarchy that rule exists to forbid, and no amount of "it
-/// reads better" is allowed to buy it.
+/// exposure-independent constants… preserve the relationship." So it is
+/// **600 lm — deliberately under `structures::FIRE_LUMENS`**, because a hand
+/// torch that out-lit a fire pit standing next to one is the inverted
+/// hierarchy that rule exists to forbid. A large pitch torch is ~250 lm by
+/// the candle chain (4π lm a candle, ~0.16 lm/W for a sooting flame).
 ///
-/// **What it buys, in metres.** [`pool_radius_m`] is where the source stops
-/// beating the ambient: 600 lm against 60 lux is **0.89 m**. The flame is
-/// carried about 1.4 m up, so the ground at the player's feet takes ~24 lux
-/// of orange on top of 60 lux of blue-white — a 1.4× warm pool with an
-/// inverse-square edge, against an ambient that is direction-free and has
-/// no edge at all. The chroma is doing as much work as the ratio:
-/// `rig`'s night ambient is `srgb(0.80, 0.85, 0.95)` and this is
-/// `structures::FIRE_COLOR`.
+/// **What it buys is set by the night eye, not by this number.** The
+/// camera's exposure is daylight's and fixed, so 600 lm alone drew the
+/// ground under a lit torch at 1/255; `render::rig::flame_gain` opens every
+/// flame by up to 1000× in the dark, the way an eye adapts, which puts the
+/// ground at the player's feet about a twentieth of the way to white and
+/// leaves it black by 8 m (`tests/hand_light.rs` holds both).
 ///
-/// **The photometry says 600 is already generous and the ambient is the
-/// real problem.** Nobody has ever put a torch in an integrating sphere;
-/// the defensible chain is a candle at 4π ≈ 12.6 lm and ~0.16 lm/W for a
-/// sooting flame, giving a large pitch torch **~250 lm**. We are 2.4× that
-/// — and `rig::NIGHT_AMBIENT_LUX` is **240× moonlight**, by its own
-/// admission. Fixing that ratio properly is one owner over `rig`'s coupled
-/// set (`CLAUDE.md` §traps: tonemap, sky, exposure and fog are one owner),
-/// not a bigger number here. `NOW.md` §0tl carries it.
-///
-/// **The exposure trap in that skill pack does not apply to us, and saying
-/// so is the point.** It warns that a torch filling an unmasked 64×36
-/// luminance meter pulls exposure down and darkens the world *because* you
-/// lit a torch. This client has no meter: `rig` runs a fixed
-/// `Exposure { ev100: 14.2 }`. So the failure mode is absent — and so is
-/// the recovery, which is why the ambient has to carry night rather than an
-/// adaptation curve.
-///
-/// Range matches the campfire's 6 m for the same reason it has one: past
-/// there the contribution is a rounding error on the ambient (5 lux at 3 m,
-/// 1.3 at 6) and all a longer reach buys is fragments touched.
+/// Range matches the campfire's 6 m: past there even the opened flame is a
+/// rounding error on black, and all a longer reach buys is fragments
+/// touched.
 pub const TORCH_LIGHT: HeldLight = HeldLight {
     lumens: 600.0,
     range_m: 6.0,
 };
-
-/// Where a light of `lumens` stops beating a uniform `ambient_lux`, metres.
-///
-/// A point light of `L` lumens radiates `L / 4π` candela, so its
-/// illuminance at `d` metres is `L / (4π d²)`; set that equal to the ambient
-/// and solve. **This is the number that decides whether a held light is a
-/// mechanic or a decoration**, and it is a function rather than a comment
-/// so a gate can read it — `tests/hand_light.rs` binds it to the
-/// renderer's own `NIGHT_AMBIENT_LUX`, which is the coupling a written
-/// constant would lose the moment night changed.
-///
-/// Returns 0.0 for a non-positive ambient rather than an infinity: an
-/// ambient of zero means every radius beats it, which is true and is not a
-/// radius.
-pub fn pool_radius_m(lumens: f32, ambient_lux: f32) -> f32 {
-    if ambient_lux <= 0.0 || lumens <= 0.0 {
-        return 0.0;
-    }
-    (lumens / (4.0 * core::f32::consts::PI * ambient_lux)).sqrt()
-}
 
 impl HeldModelDef {
     /// A swung tool: full scale, laid forward.
@@ -1074,16 +1039,16 @@ impl HeldModelDef {
     }
 }
 
-/// How far the flame sits above the model's crown, metres. **(knob)**
+/// How far the flame's light sits above the model's crown, metres — in the
+/// body of the flame, which climbs about twice this off the head.
+/// **(knob)**
 ///
 /// Not zero, and the reason is the one thing a point light cannot do: it
 /// does not light the surface it is standing on. At the crown exactly, the
 /// torch's own wrapped head is at the light's origin and stays black while
-/// everything around it brightens — a lamp with a dark bulb. Four
-/// centimetres up puts the head *below* the source, so it is lit from above
-/// like anything else the torch lights, and the player sees where the light
-/// is coming from without a flame mesh existing yet (`NOW.md` §0tl).
-pub const FLAME_LIFT_M: f32 = 0.04;
+/// everything around it brightens — a lamp with a dark bulb. Up in the
+/// flame the head is lit from above like anything else the torch lights.
+pub const FLAME_LIFT_M: f32 = 0.06;
 
 /// Which [`HELD_MODELS`] row an item draws, or `None` for an empty hand and
 /// for everything we have no model for.

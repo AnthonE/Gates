@@ -378,11 +378,18 @@ pub enum Cue {
     RemoteSplash,
     /// Somebody else drawing a bow.
     RemoteBowDraw,
+    /// Pushing through a plant: leaves dragged along you, once a stride while
+    /// you are in a shrub, a berry bush or hemp (`render/audio.rs::steps`).
+    /// Your own body, so non-positional.
+    Brush,
+    /// Somebody else pushing through one, at their body: in Rust a bush you
+    /// cannot see into still tells you someone is moving in it.
+    RemoteBrush,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 90;
+pub const CUE_COUNT: usize = 92;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -481,6 +488,8 @@ impl Cue {
         Cue::RemoteLand,
         Cue::RemoteSplash,
         Cue::RemoteBowDraw,
+        Cue::Brush,
+        Cue::RemoteBrush,
     ];
 
     /// Is this cue a piece of music?
@@ -600,6 +609,8 @@ impl Cue {
             | Cue::RemoteLand
             | Cue::RemoteSplash
             | Cue::RemoteBowDraw => 0.07,
+            // A different handful of leaves every stride.
+            Cue::Brush | Cue::RemoteBrush => 0.12,
             // A fire never crackles the same twice, and a bullet's whiz is
             // its speed and its miss distance.
             Cue::FireCrackle | Cue::Flyby => 0.10,
@@ -981,6 +992,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A bow coming back is the shot a moment before it: ranked with the
     // reload, carried a little less far than the loose itself.
     row(GAME, 18.0, 0.35,  60, 4, true),   // bow drawn, somebody else's
+    // Pushing through a plant: a footstep's register, and the remote one a
+    // footstep's reach — the leaves give a body away about as far as its
+    // boots do, and from inside cover where its boots are all you have.
+    row(GAME,  0.0, 0.42,  90, 1, false),  // brush
+    row(GAME, 24.0, 0.42,  40, 2, true),   // brush, somebody else's
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

@@ -120,10 +120,10 @@ fn foliage_alpha_discard(in: VertexOutput, keep: f32) {
 
 #ifdef PREPASS_FRAGMENT
 @fragment
-fn fragment(
-    in: VertexOutput,
-    @builtin(front_facing) is_front: bool,
-) -> prepass_io::FragmentOutput {
+fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
+    // Every face is the front, for `foliage.wgsl`'s reason: a foliage normal
+    // is its plant's volume, the same from either side.
+    let is_front = true;
     let keep = grazing_keep(in.world_position.xyz);
     let flags = pbr_bindings::material.flags;
 

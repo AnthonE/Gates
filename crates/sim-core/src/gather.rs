@@ -52,7 +52,9 @@ pub const REFUSE_G_MAX: u32 = REFUSE_G_BROKEN;
 pub const NO_CELL: u32 = u32::MAX;
 
 /// Occupants that can be gathered: Tree, StoneNode, MetalNode, SulfurNode,
-/// Bush — terrain `Occupant` 1..=5. Rock is not a node and never will be.
+/// BerryBush — terrain `Occupant` 1..=5 — and Hemp, `Occupant` 21, at index
+/// 5 ([`node_index`]). Rock is not a node and never will be, and neither is
+/// a `Shrub`: it is scenery.
 ///
 /// BarrelSlot is not a node either, and is now swingable anyway: it takes
 /// hits and exhausts on the same `SlotLives` bit and the same respawn
@@ -60,13 +62,30 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 5;
+pub const GATHERABLE_KINDS: usize = 6;
 
 /// Scan-target index for a barrel slot — one past the gatherable range,
 /// so the 3×3 scan ranks nodes and barrels against each other by distance
 /// with one comparison. One arm, one target: a tree standing nearer than
 /// a barrel still wins the swing.
 const BARREL_TARGET: usize = GATHERABLE_KINDS;
+
+/// Everything a swing smashes into loot, in scan-target order from
+/// `BARREL_TARGET`: the occupant and the `loot::LOOT_*` table it rolls.
+/// A road sign and an oil barrel are barrels with their own tables.
+const SMASHABLES: [(Occupant, usize); 3] = [
+    (Occupant::BarrelSlot, LOOT_BARREL),
+    (Occupant::OilBarrel, crate::loot::LOOT_OIL_BARREL),
+    (Occupant::RoadSign, crate::loot::LOOT_ROADSIGN),
+];
+
+/// The smashable at scan target `target`, or `None` for a node.
+#[inline]
+fn smashable(target: usize) -> Option<(Occupant, usize)> {
+    target
+        .checked_sub(BARREL_TARGET)
+        .and_then(|i| SMASHABLES.get(i).copied())
+}
 
 /// Tool rows one node archetype can carry (alpha data uses ≤ 4 + hand;
 /// bake refuses past this). Structural cap, not a knob.
@@ -120,16 +139,41 @@ pub const SAPLING_PM: u16 = 150;
 /// predictor and the server agree about a sapling's trunk exactly.
 pub const GROW_STAGES: u64 = 16;
 
+/// A picked plant grows back the same way, quicker: a berry bush or a hemp
+/// plant comes back as a sprout where it was picked and is grown three
+/// minutes later — and only then can be picked again, so a berry bush comes
+/// back bare and fruits when it is grown.
+pub const PLANT_GROW_TICKS: u64 = 5_400;
+
+/// How long a slot that stood `occ` (`terrain::Occupant as u8`, as
+/// [`SlotLife::occ`] keeps it) takes to grow back once its timer runs out,
+/// or `None` for one that comes back whole: a node, a barrel, a crate.
+pub const fn grow_span(occ: u8) -> Option<u64> {
+    if occ == Occupant::Tree as u8 {
+        Some(TREE_GROW_TICKS)
+    } else if occ == Occupant::BerryBush as u8 || occ == Occupant::Hemp as u8 {
+        Some(PLANT_GROW_TICKS)
+    } else {
+        None
+    }
+}
+
 /// How big a tree growing until `grown_at` is at `now`, per mille of full
 /// size, in `GROW_STAGES` steps. `grown_at == 0` (not growing) or a tick
 /// past it is a full tree.
 #[inline]
 pub fn grow_pm(grown_at: u64, now: u64) -> u16 {
-    if grown_at == 0 || now >= grown_at {
+    grow_pm_over(grown_at, now, TREE_GROW_TICKS)
+}
+
+/// [`grow_pm`] for something that takes `span` ticks to grow.
+#[inline]
+pub fn grow_pm_over(grown_at: u64, now: u64, span: u64) -> u16 {
+    if grown_at == 0 || now >= grown_at || span == 0 {
         return 1000;
     }
-    let left = (grown_at - now).min(TREE_GROW_TICKS);
-    let stage = (TREE_GROW_TICKS - left) * GROW_STAGES / TREE_GROW_TICKS;
+    let left = (grown_at - now).min(span);
+    let stage = (span - left) * GROW_STAGES / span;
     SAPLING_PM + ((1000 - SAPLING_PM) as u64 * stage / GROW_STAGES) as u16
 }
 
@@ -249,7 +293,8 @@ impl NodeDef {
 /// pins the content hash it was baked from (CONTENT.md §0).
 #[derive(Clone, Copy, Debug)]
 pub struct GatherContent {
-    /// Indexed by `Occupant as usize - 1` (Tree..Bush).
+    /// Indexed by [`node_index`]: `Occupant as usize - 1` for Tree..BerryBush,
+    /// then Hemp.
     pub nodes: [NodeDef; GATHERABLE_KINDS],
     pub stack_max: [u16; MAX_ITEM_DEFS],
     /// Maximum condition per item, hundredths of a point (content
@@ -390,7 +435,8 @@ impl GatherContent {
             (1, 5, 6, 50, 40, 0, 11, 5),     // StoneNode
             (2, 6, 3, 25, 0, 0, 9, 3),       // MetalNode: pays evenly
             (3, 6, 3, 75, 10, 1, 9, 2),      // SulfurNode
-            (4, 1, 10, 0, 0, NO_ITEM, 0, 0), // Bush: one-hit pickup, no mark
+            (4, 1, 10, 0, 0, NO_ITEM, 0, 0), // BerryBush: one-hit pickup, no mark
+            (5, 1, 8, 0, 0, NO_ITEM, 0, 0),  // Hemp: the same pickup, its own item
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -420,42 +466,80 @@ impl GatherContent {
     }
 }
 
-/// Gatherable index of an occupant, or None for Rock/Barrel/None.
+/// Gatherable index of an occupant, or None for Rock/Barrel/Shrub/None.
+///
+/// Written out rather than `o as usize - 1`: hemp arrived at `Occupant` 16,
+/// past the crates, so the arithmetic stopped being the map, and a `match`
+/// is what makes the next plant a compile error instead of a wrong row.
 #[inline]
-pub fn node_index(o: Occupant) -> Option<usize> {
-    let i = o as usize;
-    if (1..=GATHERABLE_KINDS).contains(&i) {
-        Some(i - 1)
-    } else {
-        None
+pub const fn node_index(o: Occupant) -> Option<usize> {
+    match o {
+        Occupant::Tree => Some(0),
+        Occupant::StoneNode => Some(1),
+        Occupant::MetalNode => Some(2),
+        Occupant::SulfurNode => Some(3),
+        Occupant::BerryBush => Some(4),
+        Occupant::Hemp => Some(5),
+        Occupant::None
+        | Occupant::Rock
+        | Occupant::BarrelSlot
+        | Occupant::CrateSlot
+        | Occupant::HavenShelter
+        | Occupant::CacheSlot
+        | Occupant::WaystationCanopy
+        | Occupant::GreenCrate
+        | Occupant::BlueCrate
+        | Occupant::EliteCrate
+        | Occupant::OilBarrel
+        | Occupant::RoadSign
+        | Occupant::FoodCrate
+        | Occupant::CarWreck
+        | Occupant::TireStack
+        | Occupant::Shrub => None,
     }
 }
 
+/// Whether `E` picks this occupant by hand ([`pick`]): the berry bush and
+/// hemp. A shrub is scenery and has nothing to pick.
+#[inline]
+pub const fn pickable(o: Occupant) -> bool {
+    matches!(o, Occupant::BerryBush | Occupant::Hemp)
+}
+
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
-/// `None` for Rock, empty cells and the bush — the things a swing passes
-/// through. A bush is picked by hand with `E` ([`pick`], `Command::Pick`),
-/// never swung at (operator, 2026-10-02).
+/// `None` for Rock, empty cells and every plant — the things a swing passes
+/// through. A berry bush or hemp is picked by hand with `E` ([`pick`],
+/// `Command::Pick`), never swung at (operator, 2026-10-02).
 #[inline]
 pub(crate) fn target_index(o: Occupant) -> Option<usize> {
     match node_index(o) {
-        Some(_) if o == Occupant::Bush => None,
+        Some(_) if pickable(o) => None,
         Some(ni) => Some(ni),
-        None if o == Occupant::BarrelSlot => Some(BARREL_TARGET),
-        None => None,
+        None => SMASHABLES
+            .iter()
+            .position(|(so, _)| *so == o)
+            .map(|i| BARREL_TARGET + i),
     }
 }
 
 /// Terrain occupant ordinal of a scan target — the value
 /// `EV_SLOT_HARVESTED` names in field `b`. The event says *what* stopped
 /// standing there, not which row of the gather table it came from: a
-/// barrel has no row, and "gatherable index" was only ever the occupant
-/// ordinal minus one anyway.
+/// barrel has no row. [`node_index`] backwards.
 #[inline]
 fn occupant_of(target: usize) -> u32 {
-    if target == BARREL_TARGET {
-        Occupant::BarrelSlot as u32
-    } else {
-        target as u32 + 1
+    match smashable(target) {
+        Some((o, _)) => o as u32,
+        None => {
+            (match target {
+                0 => Occupant::Tree,
+                1 => Occupant::StoneNode,
+                2 => Occupant::MetalNode,
+                3 => Occupant::SulfurNode,
+                4 => Occupant::BerryBush,
+                _ => Occupant::Hemp,
+            }) as u32
+        }
     }
 }
 
@@ -480,6 +564,8 @@ pub enum Swing {
     /// position — the sim sims on the values it transmits, so the
     /// container stands exactly where the client drew the barrel.
     Smashed {
+        /// The `loot::LOOT_*` table the smashed thing rolls.
+        table: u8,
         cx: u16,
         cz: u16,
         qx: i32,
@@ -713,7 +799,11 @@ impl SlotLives {
         match self.find(cx, cz) {
             None => 1000,
             Some(e) if e.respawn_at != 0 => 0,
-            Some(e) => grow_pm(e.grown_at, self.now),
+            Some(e) => grow_pm_over(
+                e.grown_at,
+                self.now,
+                grow_span(e.occ).unwrap_or(TREE_GROW_TICKS),
+            ),
         }
     }
 
@@ -812,11 +902,12 @@ impl SlotLives {
     /// via `events` (EV_SLOT_RESPAWNED). Swap-remove keeps the store
     /// dense; the order it produces is deterministic like everything else.
     ///
-    /// A tree does not come back whole (tree growth v0): its timer turns the
-    /// stump into a sapling that stays in the store, growing until
-    /// `grown_at`, and is retired then — or kept as a damaged tree if it was
-    /// hit while it grew. The event says which: `b` the grown-by tick's low
-    /// 32 bits and `c` 1 for a sapling, both 0 for anything else.
+    /// A tree does not come back whole (tree growth v0), nor does a picked
+    /// plant: its timer turns the stump into a sapling (the plant into a
+    /// sprout) that stays in the store, growing until `grown_at`, and is
+    /// retired then — or kept as a damaged tree if it was hit while it grew.
+    /// The event says which: `b` the grown-by tick's low 32 bits and `c` 1
+    /// for a sapling, both 0 for anything else.
     pub fn respawn_due(&mut self, tick: u64, events: &mut EventQueue) {
         self.respawn_due_unless(tick, events, &|_, _| false);
     }
@@ -840,8 +931,8 @@ impl SlotLives {
                     i += 1;
                     continue;
                 }
-                if e.occ == crate::terrain::Occupant::Tree as u8 {
-                    let grown_at = tick + TREE_GROW_TICKS;
+                if let Some(span) = grow_span(e.occ) {
+                    let grown_at = tick + span;
                     self.entries[i] = SlotLife {
                         hits: 0,
                         respawn_at: 0,
@@ -969,8 +1060,8 @@ pub fn land(
     let oz = pz - slot.z;
     let d2 = ox * ox + oz * oz;
 
-    if ni == BARREL_TARGET {
-        return smash(lc, seed, tick, cx, cz, pos, lives, events, p);
+    if smashable(ni).is_some() {
+        return smash(lc, seed, tick, ni, cx, cz, pos, lives, events, p);
     }
 
     let def = &gc.nodes[ni];
@@ -1213,24 +1304,25 @@ pub fn land(
     Swing::Absorbed // the node took it
 }
 
-/// How far a hand reaches a bush to pick it, metres: the container arm
+/// How far a hand reaches a plant to pick it, metres: the container arm
 /// (`backpack::LOOT_REACH_M`), measured from the eye to the nearest point of
-/// the bush's swing volume (`melee::swing_volume`, plus the probe). The
-/// client's `[E] PICK BUSH` prompt casts a ray this long at that same volume,
-/// so whatever it offers is inside what this accepts.
+/// the plant's swing volume (`melee::swing_volume`, plus the probe). The
+/// client's `[E] PICK` prompt casts a ray this long at that same volume, so
+/// whatever it offers is inside what this accepts.
 pub const PICK_REACH_M: f32 = crate::backpack::LOOT_REACH_M;
 
-/// Pick the bush at `(cx, cz)` by hand — `Command::Pick`, the `E` verb.
+/// Pick the berry bush or hemp at `(cx, cz)` by hand — `Command::Pick`, the
+/// `E` verb.
 ///
 /// `slot` is what the world's scatter memo says stands in that cell; the
 /// cell itself came off the wire and is only a **claim**. Anything that is
-/// not a standing bush, or is out of reach of the picker's eye, does nothing
-/// and returns `false`.
+/// not a standing [`pickable`] plant, or is out of reach of the picker's
+/// eye, does nothing and returns `false`.
 ///
-/// The payout is `land`'s for the bush row, in one go: the whole node is
-/// spent (a bush is `hits = 1`, so one pick exhausts it), the respawn timer
+/// The payout is `land`'s for the plant's row, in one go: the whole node is
+/// spent (a plant is `hits = 1`, so one pick exhausts it), the respawn timer
 /// is set exactly as `land` sets it, `output` × the hand yield (× hits)
-/// goes into the inventory and the `secondary` beside it, both announced
+/// goes into the inventory and any `secondary` beside it, both announced
 /// with `EV_GATHER`, and `EV_SLOT_HARVESTED` says it is gone. No
 /// `EV_IMPACT`, no tool wear, no weak-spot chase: picking is not chopping.
 /// What will not fit lands in `spill` for the caller to drain.
@@ -1247,11 +1339,12 @@ pub fn pick(
     cz: u16,
     slot: &crate::terrain::Slot,
 ) -> bool {
-    if slot.occupant != Occupant::Bush || lives.standing_pm(cx, cz) == 0 {
+    // Picked, or a sprout still growing back: nothing to pick yet.
+    if !pickable(slot.occupant) || lives.standing_pm(cx, cz) != 1000 {
         return false;
     }
-    // Reach: eye to the nearest point of the bush's (probed) swing volume.
-    let (r, top) = crate::melee::swing_volume(Occupant::Bush);
+    // Reach: eye to the nearest point of the plant's (probed) swing volume.
+    let (r, top) = crate::melee::swing_volume(slot.occupant);
     let rr = r * slot.scale + crate::melee::MELEE_PROBE_M;
     let px = p.body.qx as f32 * POS_XZ_Q;
     let pz = p.body.qz as f32 * POS_XZ_Q;
@@ -1265,7 +1358,7 @@ pub fn pick(
     if planar * planar + vertical * vertical > PICK_REACH_M * PICK_REACH_M {
         return false;
     }
-    let Some(ni) = node_index(Occupant::Bush) else {
+    let Some(ni) = node_index(slot.occupant) else {
         return false;
     };
     let def = &gc.nodes[ni];
@@ -1281,7 +1374,7 @@ pub fn pick(
     let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
     life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
     life.grown_at = 0;
-    life.occ = Occupant::Bush as u8;
+    life.occ = slot.occupant as u8;
 
     let pay = (def.hand_yield as u32 * hits as u32).min(u16::MAX as u32) as u16;
     let added = inv_add_spilling(
@@ -1311,12 +1404,7 @@ pub fn pick(
         );
         events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
     }
-    events.push(
-        EV_SLOT_HARVESTED,
-        cell_key(cx, cz),
-        Occupant::Bush as u32,
-        0,
-    );
+    events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), slot.occupant as u32, 0);
     true
 }
 
@@ -1334,6 +1422,7 @@ fn smash(
     lc: &LootContent,
     seed: u64,
     tick: u64,
+    target: usize,
     cx: u16,
     cz: u16,
     spos: (f32, f32, f32),
@@ -1341,7 +1430,10 @@ fn smash(
     events: &mut EventQueue,
     p: &mut Player,
 ) -> Swing {
-    let hits = lc.hits(LOOT_BARREL);
+    let Some((_, table)) = smashable(target) else {
+        return Swing::Absorbed;
+    };
+    let hits = lc.hits(table);
     if hits == 0 {
         return Swing::Absorbed; // inert loot content: the barrel takes the thunk and stands
     }
@@ -1360,14 +1452,10 @@ fn smash(
     }
     let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
     life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
-    life.occ = occupant_of(BARREL_TARGET) as u8;
-    events.push(
-        EV_SLOT_HARVESTED,
-        cell_key(cx, cz),
-        occupant_of(BARREL_TARGET),
-        0,
-    );
+    life.occ = occupant_of(target) as u8;
+    events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), occupant_of(target), 0);
     Swing::Smashed {
+        table: table as u8,
         cx,
         cz,
         qx: quant_xz(spos.0),
