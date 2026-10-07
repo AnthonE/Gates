@@ -4,8 +4,8 @@
   "width": 3840,
   "height": 2160,
   "fov": 45,
-  "settle": 24,
-  "hold": 28,
+  "settle": 16,
+  "hold": 20,
   "look": {
     "saturation": 1.08,
     "contrast": 1.05
