@@ -27,7 +27,7 @@
     {"shot": "zig-dusk", "in": 2.0, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "base-storm", "in": 1.5, "len": 2.666, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.08:saturation=0.72:gamma=1.05,colorbalance=rs=-0.03:bs=0.04"},
     {"shot": "raid-plant", "in": 1.0, "len": 2.667, "game": 0.7, "transition": "cut"},
-    {"shot": "raid-blast", "in": 0.767, "len": 5.333, "game": 1.0, "transition": "cut"},
+    {"shot": "raid-blast", "in": 0.62, "len": 5.333, "game": 1.0, "transition": "cut"},
     {"shot": "raid-wide", "in": 2.8, "len": 2.667, "game": 0.9, "transition": "cut"},
     {"shot": "aftermath", "in": 0.5, "len": 5.333, "game": 0.8, "transition": "cut"},
     {"shot": "base-night", "in": 1.0, "len": 3.267, "game": 0.5, "transition": "black", "fade": 0.6}
