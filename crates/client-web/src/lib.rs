@@ -336,8 +336,8 @@ impl Gates {
         let seed = session.welcome.seed;
 
         // The backing store: the viewport in device pixels, scaled down
-        // uniformly under WebGL2's 2048 cap — `client::render::web::fit`,
-        // and its header for why the canvas is then STRETCHED back over the
+        // uniformly under the module's surface cap (WebGL2's 2048, WebGPU's
+        // 8192) — `client::render::web::fit_within`, and its header for why the canvas is then STRETCHED back over the
         // viewport with a CSS transform rather than sized to it. Read here,
         // before the window exists, because the first `configure_surface`
         // is the one that must not exceed the cap: winit's `ResizeObserver`
@@ -345,7 +345,12 @@ impl Gates {
         // so the scale override below has to be that ratio for the box Bevy
         // asks for (`physical / override`) to come back as `physical`.
         let (css_w, css_h, dpr) = client::render::web::viewport().unwrap_or((1280.0, 720.0, 1.0));
-        let fit = client::render::web::fit(css_w, css_h, dpr);
+        let fit = client::render::web::fit_within(
+            css_w,
+            css_h,
+            dpr,
+            client::render::web::surface_cap_px(),
+        );
         let (pw, ph) = fit.physical;
         client::render::web::stretch_canvas(&canvas, fit.stretch);
 

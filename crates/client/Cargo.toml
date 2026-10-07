@@ -74,6 +74,11 @@ render = [
 # frames nobody can reproduce. `ci/gates.sh` builds `render`; a human running
 # `--features hot` is opting into a dev build.
 hot = ["render", "bevy/file_watcher"]
+# The browser module for a page with WebGPU (`ci/build_web.sh` builds it
+# beside the WebGL2 one and `web/app.js` picks). Bevy drops every WebGL
+# workaround under it, so it is a second module rather than a runtime switch;
+# `build.rs` turns its absence on wasm32 into `cfg(webgl2)`.
+webgpu = ["bevy?/webgpu"]
 # The web asset variant (`src/webassets.rs`, `src/bin/web_assets.rs`): the
 # KTX2 transcoder and a PNG encoder, and deliberately NOT Bevy — a build
 # script pays a minute for this instead of the renderer's ten. Native only:

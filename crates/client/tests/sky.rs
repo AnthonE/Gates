@@ -75,10 +75,11 @@ fn the_desktop_deck_leaves_every_clear_texel_zero() {
     );
 }
 
-/// The default bake is the target's: zero texels here, a sky in a browser.
+/// The default bake is the target's: zero texels wherever the atmosphere
+/// draws (here, and the browser's WebGPU module), a sky under WebGL2.
 #[test]
 fn the_default_bake_is_the_targets() {
-    assert_eq!(BAKE_BACKDROP, cfg!(target_arch = "wasm32"));
+    assert_eq!(BAKE_BACKDROP, cfg!(webgl2));
     // And `cloud_cubemap` goes through the switch rather than one arm — read
     // off the source, because a `cfg!` cannot be flipped from a test.
     let src =

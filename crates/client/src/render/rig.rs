@@ -28,12 +28,12 @@ use bevy::core_pipeline::Skybox;
 use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
 use bevy::pbr::DistanceFog;
 use bevy::pbr::ScatteringMedium;
-// Both follow their one use site off wasm32 — see the inserts in `setup`.
-#[cfg(not(target_arch = "wasm32"))]
+// Both follow their one use site off WebGL2 — see the inserts in `setup`.
+#[cfg(not(webgl2))]
 use bevy::pbr::{Atmosphere, AtmosphereSettings};
-// Follows its one use site off wasm32 — see the insert below for why a
-// browser must never receive this component.
-#[cfg(not(target_arch = "wasm32"))]
+// Follows its one use site off WebGL2 — see the insert below for why that
+// module must never receive this component.
+#[cfg(not(webgl2))]
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -204,9 +204,9 @@ pub fn setup(
     let medium = media.add(island_medium());
     // Built on every target because the handle is one asset and the
     // alternative is `cfg`-ing a system parameter, which changes the system's
-    // arity per target for no gain. Nothing consumes it in a browser — see
+    // arity per target for no gain. Nothing consumes it under WebGL2 — see
     // the atmosphere insert below for why that component cannot be there.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     let _ = medium;
 
     let eye = commands
@@ -368,13 +368,12 @@ pub fn setup(
     // `Atmosphere::earthlike` is what reddens the sun on its way down and what
     // `ART.md` §1's "distant hills lighten, desaturate and go blue" describes
     // the output of. Without it the sky is `fill.rs`'s hemisphere and the
-    // haze is gone, so a browser frame is flatter than a desktop one on
-    // purpose. Restoring it needs WebGPU (compute), which is a second build
-    // artifact and a later decision — `bevy/webgpu` is NOT a switch to flip
-    // here, because every WebGL workaround in the engine is spelled
-    // `not(feature = "webgpu")` and enabling it disables all of them with no
-    // runtime fallback.
-    #[cfg(not(target_arch = "wasm32"))]
+    // haze is gone, so a WebGL2 frame is flatter than a desktop one on
+    // purpose. The WebGPU module has compute and takes the desktop's path:
+    // it is a second module rather than a switch, because every WebGL
+    // workaround in the engine is spelled `not(feature = "webgpu")` and
+    // enabling it disables all of them with no runtime fallback (`build.rs`).
+    #[cfg(not(webgl2))]
     commands.entity(eye).insert((
         Atmosphere::earthlike(medium),
         AtmosphereSettings {
@@ -387,7 +386,7 @@ pub fn setup(
         },
     ));
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(webgl2))]
     commands.entity(eye).insert(
         // **AO is how the fill's cost gets paid back.** Raising the ambient to
         // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
@@ -430,16 +429,16 @@ pub fn setup(
     // first mark, where the compile failure had been a logged line. So the
     // prepass stays off and the mark pool is empty on this target
     // (`decal::setup`); the depth would feed nothing a browser draws.
-    // What a browser gains instead of the atmosphere: a haze made of the same
+    // What WebGL2 gains instead of the atmosphere: a haze made of the same
     // air, and the only haze on that target (`sky::browser_haze`). `day_night`
     // dims it with the deck.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     commands.entity(eye).insert(super::sky::browser_haze(1.0));
     // The desktop's weather fog, inserted ONCE at zero density rather than
     // added when it first rains: `DistanceFog` is a shader variant, and
     // adding or removing it re-specializes every pipeline mid-frame.
     // `day_night` owns its fields from here (weather v0).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(webgl2))]
     commands
         .entity(eye)
         .insert(super::sky::weather_fog(1.0, 0.0, 0.0));

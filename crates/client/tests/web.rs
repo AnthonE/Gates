@@ -163,8 +163,9 @@ fn leaving_the_world_hands_control_to_the_page_on_wasm() {
     ))
     .unwrap();
     assert!(
-        play.contains("web::fit("),
-        "`Gates::play` does not size the window through `web::fit`"
+        play.contains("web::fit_within(") && play.contains("web::surface_cap_px()"),
+        "`Gates::play` does not size the window through `web::fit_within` at the \
+         module's own cap"
     );
     assert!(
         play.contains("web::Canvas("),

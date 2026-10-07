@@ -1340,14 +1340,14 @@ impl Plugin for GatesRenderPlugin {
                 .before(quality::reband_trees)
                 .run_if(world_running),
         )
-        // A browser's tree LOD, by hand: WebGL2 cannot bind the table
+        // WebGL2's tree LOD, by hand: it cannot bind the table
         // `VisibilityRange` dithers by, so no tree part carries one there and
         // this swaps the near pair for the hull by distance (`tree::band`).
         .add_systems(
             Update,
             tree::swap_by_distance
                 .after(tree::cap_swap)
-                .run_if(|| cfg!(target_arch = "wasm32"))
+                .run_if(|| cfg!(webgl2))
                 .run_if(world_running),
         )
         // Input writes what the sim reads, so it runs on the two screens where

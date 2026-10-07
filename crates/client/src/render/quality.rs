@@ -157,9 +157,8 @@ pub const MEDIUM_TREE_LOD_SWAP_M: f32 = 55.0;
 ///
 /// `bevy_pbr::render::light::MAX_CASCADES_PER_LIGHT` is 4 — and **1** under
 /// `all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu"))`,
-/// which is exactly what this client builds for the browser: `bevy`'s
-/// `default_platform` feature set turns on `webgl2`, we take it, and we do not
-/// take `webgpu`.
+/// which is exactly the browser's WebGL2 module (`cfg(webgl2)`, `build.rs`).
+/// The WebGPU module draws all four.
 ///
 /// **This was a shipped bug and it is the reason this slice exists.** The
 /// browser tier asked for two cascades from a `first_cascade_far_bound` of
@@ -176,11 +175,11 @@ pub const MEDIUM_TREE_LOD_SWAP_M: f32 = 55.0;
 /// coarser shadow than four over 200 m; no shadow at all past 12 m is not a
 /// shadow system.
 pub const fn max_cascades() -> usize {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     {
         1
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(webgl2))]
     {
         4
     }
@@ -189,18 +188,18 @@ pub const fn max_cascades() -> usize {
 /// The largest shadow map this target is guaranteed to be able to allocate,
 /// texels a side.
 ///
-/// 2048 in a browser because that is WebGL 2's own floor for
-/// `MAX_TEXTURE_SIZE` — most machines do far better, but a setting that
+/// 2048 under WebGL2 because that is WebGL 2's own floor for
+/// `MAX_TEXTURE_SIZE` (WebGPU guarantees 8192) — most machines do far better, but a setting that
 /// works on the operator's laptop and fails to allocate on a player's is the
 /// worst shape this file can ship, and the rung above buys 13.8 cm of texel
 /// against 27.5 (see [`far_texel_m`]) rather than anything anyone would call
 /// the difference between a game and not.
 pub const fn max_shadow_map_px() -> usize {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     {
         2048
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(webgl2))]
     {
         4096
     }
@@ -257,7 +256,7 @@ pub fn preset(q: Quality) -> Gfx {
             // **The one value in this table that differs by target, and it is
             // not a second opinion about the tier — it is the same budget
             // spent where the target left it.** `Low` asks for two cascades
-            // at 1024; a browser is given ONE whatever it asks
+            // at 1024; WebGL2 is given ONE whatever it asks
             // ([`max_cascades`]), so half that allocation is handed back, and
             // a single cascade covering the whole 90 m is the one place where
             // the map size is the ONLY resolution lever left. 1024 over 90 m
@@ -268,9 +267,9 @@ pub fn preset(q: Quality) -> Gfx {
             // budget and not a capability, so a browser player who wants the
             // 12 MiB back can still step this row down to 1024 — which a
             // clamp would have taken away from them.
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(webgl2)]
             shadow_map_px: 2048,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(webgl2))]
             shadow_map_px: 1024,
             tree_lod_swap_m: 35.0,
         },
@@ -279,7 +278,8 @@ pub fn preset(q: Quality) -> Gfx {
 
 /// What a fresh install gets **on this target**.
 ///
-/// Native takes the top rung, which is the frame that shipped. A browser
+/// Native takes the top rung, which is the frame that shipped, and so does
+/// the browser's WebGPU module, which draws the same frame. The WebGL2 module
 /// takes the bottom one, which is what it has been drawing since the page
 /// existed. **Which RUNG a target opens on is decided here and nowhere
 /// else**; `preset`'s `Low` row carries one `cfg` of its own, and that one is
@@ -296,9 +296,9 @@ pub fn preset(q: Quality) -> Gfx {
 /// (`Settings::with_preset`, `Knob::Quality`, `gfx_from_file`), which is what
 /// makes that true rather than nearly true.
 pub fn default_gfx() -> Gfx {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     let g = preset(Quality::Low);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(webgl2))]
     let g = preset(Quality::default());
     effective(g)
 }
@@ -366,11 +366,18 @@ pub fn effective(g: Gfx) -> Gfx {
     // WebGL2", and in Chrome on MEDIUM/HIGH it blew the moon into a white
     // glow over half the night sky. The browser's sparks and glows are
     // already drawn to read without it (`fx/pool.rs`, `fx/atlas.rs`).
-    #[cfg(target_arch = "wasm32")]
+    //
+    // All three are WebGL2's walls, not the browser's: the WebGPU module has
+    // storage buffers and compute and takes every one of them.
+    #[cfg(webgl2)]
     let g = Gfx {
         ao: Ao::Off,
         taa: false,
         bloom: false,
+        ..g
+    };
+    #[cfg(target_arch = "wasm32")]
+    let g = Gfx {
         tree_lod_swap_m: g.tree_lod_swap_m.max(MEDIUM_TREE_LOD_SWAP_M),
         ..g
     };

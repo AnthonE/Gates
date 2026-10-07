@@ -534,26 +534,85 @@ function counted(res) {
   return new Response(body, { status: 200, headers: { "Content-Type": "application/wasm" } });
 }
 
+/* ── which module ──────────────────────────────────────────────────────────
+   The game is built twice (`ci/build_web.sh`): once drawing through WebGPU,
+   which is the desktop's frame — the atmosphere, ambient occlusion, bloom,
+   four shadow cascades — and once through WebGL2 for every browser without
+   it. Bevy picks its GPU API when it is COMPILED and has no fallback at run
+   time, so the page picks, before the download: a browser that hands back a
+   WebGPU adapter gets the WebGPU module. `?gfx=webgl2` or `?gfx=webgpu`
+   forces one. An older `build.json` that names no modules is the WebGL2
+   module alone. */
+const MODULES = {
+  webgl2: { js: "./client_web.js", wasm: "client_web_bg.wasm", name: "WebGL2" },
+  webgpu: { js: "./client_web_gpu.js", wasm: "client_web_gpu_bg.wasm", name: "WebGPU" },
+};
+async function pickModule(built) {
+  const has = (k) => k === "webgl2" || !!(built && built[k]);
+  const forced = q.get("gfx");
+  if ((forced === "webgl2" || forced === "webgpu") && has(forced)) return forced;
+  if (!has("webgpu") || !navigator.gpu) return "webgl2";
+  try {
+    /* A blocklisted GPU answers null; a wedged one may never answer. */
+    const adapter = await Promise.race([
+      navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
+      new Promise((r) => setTimeout(() => r(null), 3000)),
+    ]);
+    return adapter ? "webgpu" : "webgl2";
+  } catch (err) {
+    return "webgl2";
+  }
+}
+
+async function load(gfx, sizes) {
+  const m = MODULES[gfx];
+  dl.got = 0;
+  dl.want = sizes && Number(sizes.wasm_bytes) > 0 ? Number(sizes.wasm_bytes) : 0;
+  paintDownload();
+  const mod = await import(m.js);
+  const res = fetch(new URL(m.wasm, import.meta.url)).then(counted);
+  /* The module's exports, kept on the window for a person with the console
+     open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
+     the number to read when a tab dies with no message (an out-of-memory
+     abort in wasm is a bare `RuntimeError: unreachable`). `gatesGfx` is
+     which of the two it is. */
+  window.gatesWasm = await mod.default({ module_or_path: res });
+  window.gatesGfx = gfx;
+  return mod;
+}
+
 async function boot() {
+  let built = null;
+  let bits = [];
   try {
     const r = await fetch("build.json", { cache: "no-cache" });
     if (r.ok) {
       const b = await r.json();
-      if (Number(b.wasm_bytes) > 0) dl.want = Number(b.wasm_bytes);
-      const bits = [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean);
-      if (bits.length) $("build").textContent = "Gates " + bits.join(" · ");
+      built = b.modules || null;
+      bits = [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean);
+      if (!built && Number(b.wasm_bytes) > 0) built = { webgl2: { wasm_bytes: b.wasm_bytes } };
     }
   } catch (err) { /* a dev build without it: the bar counts megabytes */ }
+  let gfx = await pickModule(built);
+  const footer = () => {
+    $("build").textContent = "Gates " + [...bits, MODULES[gfx].name].join(" · ");
+  };
+  footer();
   paintDownload();
   try {
-    const mod = await import("./client_web.js");
-    const res = fetch(new URL("client_web_bg.wasm", import.meta.url)).then(counted);
-    /* The module's exports, kept on the window for a person with the console
-       open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
-       the number to read when a tab dies with no message (an out-of-memory
-       abort in wasm is a bare `RuntimeError: unreachable`). */
-    window.gatesWasm = await mod.default({ module_or_path: res });
-    glue = mod;
+    try {
+      glue = await load(gfx, built && built[gfx]);
+    } catch (err) {
+      /* A WebGPU module that will not compile or instantiate here still
+         leaves the WebGL2 one, and a player should get that rather than an
+         error. Anything after instantiation is Bevy's, and fails in the
+         canvas — `?gfx=webgl2` is the way past it. */
+      if (gfx !== "webgpu") throw err;
+      console.warn("gates: the WebGPU module failed, loading WebGL2", err);
+      gfx = "webgl2";
+      footer();
+      glue = await load(gfx, built && built[gfx]);
+    }
     dl.done = true;
   } catch (err) {
     dl.failed = (err && err.message) || String(err);

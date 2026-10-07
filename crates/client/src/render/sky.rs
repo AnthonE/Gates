@@ -64,13 +64,9 @@ use super::rig::{EyeCam, CAPTURE_DAY_FRAC};
 use super::WorldId;
 
 /// Cube face size in texels. 6 × 256² = 393k texels, 1.5 MB of RGBA8 on the
-/// desktop; a quarter of that in a browser, where every re-upload is a
-/// WebGL texture rebuilt.
-pub const SKY_FACE: u32 = if cfg!(target_arch = "wasm32") {
-    128
-} else {
-    256
-};
+/// desktop and under WebGPU; a quarter of that under WebGL2, where every
+/// re-upload is a WebGL texture rebuilt.
+pub const SKY_FACE: u32 = if cfg!(webgl2) { 128 } else { 256 };
 
 /// Cloud-deck altitude, metres. Cumulus bases sit near a kilometre; the exact
 /// value only sets how fast the deck compresses toward the horizon.
@@ -97,12 +93,13 @@ pub const CLOUD_NITS: f32 = 26_000.0;
 const CLOUD_TOP: [f32; 3] = [1.0, 0.99, 0.97];
 const CLOUD_BASE: [f32; 3] = [0.42, 0.45, 0.52];
 
-// ── The browser's sky (browser sky v0 — DECISIONS.md §open) ─────────────────
+// ── The WebGL2 sky (browser sky v0 — DECISIONS.md §open) ───────────────────
 //
 // **Natively the atmosphere paints the sky and every clear texel of this
 // cubemap must stay ZERO** — the skybox pipeline has `blend: None`, so a
-// non-zero clear texel is a second sky added to `AtmosphereNode`'s own. In a
-// browser there is no atmosphere at all (`rig.rs`: `mesh_view_layout_
+// non-zero clear texel is a second sky added to `AtmosphereNode`'s own. The
+// browser's WebGPU module has the atmosphere and is "natively" here. Under
+// WebGL2 there is no atmosphere at all (`rig.rs`: `mesh_view_layout_
 // atmosphere` wants a storage buffer and WebGL2 allows none), so the same
 // zero texel is the CLEAR COLOUR, and the first island a browser drew had
 // white cumulus floating on black (`findings/web-build-20260909.md` §15.7).
@@ -116,8 +113,9 @@ const CLOUD_BASE: [f32; 3] = [0.42, 0.45, 0.52];
 // under a heavy sky and warms it toward a low sun (weather v0).
 
 /// Whether the deck carries a clear sky behind the clouds. Zero texels
-/// natively, for the reason above; a sky in a browser.
-pub const BAKE_BACKDROP: bool = cfg!(target_arch = "wasm32");
+/// wherever the atmosphere draws (the desktop, and the browser's WebGPU
+/// module), for the reason above; a sky under WebGL2, which has none.
+pub const BAKE_BACKDROP: bool = cfg!(webgl2);
 
 /// The horizon's luminance over the zenith's. A clear sky is brightest at
 /// the horizon, where the eye looks through the most air: measured skies
