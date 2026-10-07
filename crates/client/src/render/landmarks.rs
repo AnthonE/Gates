@@ -60,7 +60,7 @@ pub fn landmark_meshes(m: &Landmark) -> Vec<(Surface, Mesh)> {
 /// One landmark's rock parts, in world space.
 pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
     let dir = sim_core::yaw_dir((m.yaw as u16) << 8);
-    let moss = m.y < terrain::TREELINE_H;
+    let moss = if m.y < terrain::TREELINE_H { 1.0 } else { 0.0 };
     for (i, part) in landmark::parts(m.kind).iter().enumerate() {
         if part.mat != Mat::Rock {
             continue;
@@ -87,6 +87,7 @@ pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
                 tz: 0.0,
                 key: (seed as u32) ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9) ^ m.yaw as u32,
                 moss,
+                chisel: 0.0,
                 min_seg: 2,
                 value: boulders::ROCK_VALUE,
             },

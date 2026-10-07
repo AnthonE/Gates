@@ -2463,7 +2463,7 @@ mod tests {
     fn the_odds_read_the_wiki() {
         let book = book();
         let spear = wire("Wooden Spear");
-        let rock = wire("Rock");
+        let rock = wire("Bat");
         let kit = |item: u16, hp: u16| Kit {
             book: &book,
             melee: Some((0, item)),
@@ -2777,7 +2777,7 @@ mod tests {
     #[test]
     fn a_bow_is_aimed_at_me_through_its_lead_and_arc() {
         let book = book();
-        let (bow, rock) = (wire("Hunting Bow"), wire("Rock"));
+        let (bow, rock) = (wire("Hunting Bow"), wire("Bat"));
         let me = [0.0, 0.0, 25.0];
         let mut t = player(Some(bow));
         // 25 m off, the look 2 m to my side and raised for the arc.

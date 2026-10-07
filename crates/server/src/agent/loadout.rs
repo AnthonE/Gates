@@ -23,7 +23,7 @@ pub const MELEE: [&str; 8] = [
     "item.pickaxe_metal",
     "item.hatchet_stone",
     "item.pickaxe_stone",
-    "item.rock",
+    "item.bat",
     "item.torch",
 ];
 /// Bows and guns, best first.
@@ -31,8 +31,8 @@ pub const RANGED: [&str; 3] = ["item.revolver", "item.crossbow", "item.bow"];
 /// Health in a hurry, best first.
 pub const MEDS: [&str; 2] = ["item.medkit", "item.bandage"];
 /// What fells a tree and what breaks rock, best first.
-pub const HATCHETS: [&str; 3] = ["item.hatchet_metal", "item.hatchet_stone", "item.rock"];
-pub const PICKS: [&str; 3] = ["item.pickaxe_metal", "item.pickaxe_stone", "item.rock"];
+pub const HATCHETS: [&str; 3] = ["item.hatchet_metal", "item.hatchet_stone", "item.bat"];
+pub const PICKS: [&str; 3] = ["item.pickaxe_metal", "item.pickaxe_stone", "item.bat"];
 
 /// The first arms the playbook makes once it has stone tools, in order,
 /// with how many it wants and what it must own first: a spear, a bow and
@@ -255,7 +255,7 @@ mod tests {
         }
         let id = |s: &str| book.wire(&rules, s).unwrap();
         let (rock, hatchet, pick, spear, bandage) = (
-            id("item.rock"),
+            id("item.bat"),
             id("item.hatchet_stone"),
             id("item.pickaxe_stone"),
             id("item.spear_wood"),

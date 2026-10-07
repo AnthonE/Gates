@@ -127,9 +127,10 @@ pub enum Verb {
     /// (`sim_core::monument`): `handle` is the door, `lit` true for the
     /// lever. Resolved by nearness, like `Trade`.
     Swipe,
-    /// A bush, picked by hand (`sim_core::gather::pick`): `handle` is its
-    /// cell key. Resolved by [`resolve_pick`], beside `Crate`'s
-    /// [`resolve_open`], and folded into the pick the same way.
+    /// A berry bush or hemp, picked by hand (`sim_core::gather::pick`):
+    /// `handle` is its cell key and `occupant` says which. Resolved by
+    /// [`resolve_pick`], beside `Crate`'s [`resolve_open`], and folded into
+    /// the pick the same way.
     Pick,
 }
 
@@ -202,7 +203,7 @@ impl Verb {
             Verb::Assist => "WOUNDED PLAYER",
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
-            Verb::Pick => "BUSH",
+            Verb::Pick => "PLANT",
         }
     }
 }
@@ -236,6 +237,9 @@ pub struct Pick {
     /// every other dynamic word in a prompt (`open`, `lit`, `locked`).
     pub item: u16,
     pub count: u16,
+    /// What a `Verb::Pick` is picking — the terrain occupant ordinal, so the
+    /// prompt can say berries or hemp. Zero for every other verb.
+    pub occupant: u8,
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
@@ -377,7 +381,8 @@ impl Pick {
             // (tech tree v0), so the prompt names the thing you get.
             Verb::TechTree if self.public => "[E] TECH TREE  ·  PUBLIC WORKBENCH".to_string(),
             Verb::TechTree => "[E] TECH TREE".to_string(),
-            Verb::Pick => "[E] PICK BUSH".to_string(),
+            Verb::Pick if self.occupant == Occupant::Hemp as u8 => "[E] PICK HEMP".to_string(),
+            Verb::Pick => "[E] PICK BERRIES".to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Swipe if self.lit => "[E] OPEN DOOR".to_string(),
             Verb::Swipe => format!(
@@ -1396,17 +1401,17 @@ pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
     }
 }
 
-/// What `E` would PICK in the scatter — a standing bush — or
-/// `Occupant::None` for nothing.
+/// What `E` would PICK in the scatter — a standing berry bush or hemp — or
+/// `Occupant::None` for nothing. A shrub is scenery and is never offered.
 ///
-/// `melee::bush_cast` — [`resolve_open`]'s cast, taking the nearest
-/// occupant only if it is a bush — at the reach the sim checks
+/// `melee::pick_cast` — [`resolve_open`]'s cast, taking the nearest
+/// occupant only if a hand picks it — at the reach the sim checks
 /// (`gather::PICK_REACH_M`, measured from the same eye to the same swing
 /// volume), so the prompt never offers a pick `gather::pick` refuses.
 pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
     let ray = at.ray(sim_core::gather::PICK_REACH_M);
     let seed = island.seed;
-    match melee::bush_cast(seed, &mut island.occupants(), &ray) {
+    match melee::pick_cast(seed, &mut island.occupants(), &ray) {
         Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
         None => SwingPick::default(),
     }

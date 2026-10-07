@@ -259,14 +259,12 @@ async fn main() {
                     );
                 }
                 if !cfg.require_auth {
-                    // The trap this warns about is silent: saves armed,
-                    // admission open, so every joiner is a guest with no key
-                    // to be filed under and the store stays empty forever
-                    // while every gate is green.
+                    // Not a warning since SIWE: a joiner who signs in is
+                    // proved and saved whatever this knob says. It only lets
+                    // guests in, and a guest is filed under nothing.
                     println!(
-                        "saves WARNING: require_auth is false, so joiners have no identity \
-                         to save under — a guest is admitted and remembered by nobody, and \
-                         this shard will write nothing to that file"
+                        "saves: require_auth is false, so guests are admitted and \
+                         remembered by nobody; players who sign in are saved as usual"
                     );
                 }
                 saves

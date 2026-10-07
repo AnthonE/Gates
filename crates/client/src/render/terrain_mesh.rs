@@ -237,6 +237,20 @@ pub fn cliff_relief(
     (mask * (out * lever + cut)).clamp(-RELIEF_DOWN_M, RELIEF_UP_M)
 }
 
+/// The splat a vertex carries once the relief has had its say: bare rock
+/// wherever the relief moves it. A bench the relief cuts into a face is
+/// gentle enough that the per-pixel veto let turf onto it, and turf with no
+/// clutter on a ledge nobody can reach drew as flat dark paint in the rock,
+/// toothed along the triangles; the grass on a cliff is the skin's shelves
+/// (`cliff_skin.rs`).
+pub fn relief_splat(w: [u8; 4], relief: f32) -> [u8; 4] {
+    if relief != 0.0 {
+        [0, 0, 0, 255]
+    } else {
+        w
+    }
+}
+
 /// The relief at a vertex, from the sim's heights `h[j][i]` on the 5×5 stencil
 /// of the mesh's lattice around it (`h[2][2]` is the vertex, pitch `step`).
 ///
@@ -1310,7 +1324,10 @@ pub fn heightfield(
             // normal (`ground_splat::CLIFF_TAN_LO`), because a near-binary
             // weight interpolated across triangles draws the triangles — a
             // grass/rock edge of teeth one vertex step wide.
-            let mut w = terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), 0.0);
+            let mut w = relief_splat(
+                terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), 0.0),
+                r,
+            );
             // …then the coast road worn into it, but only on a mesh fine
             // enough to draw one.
             //

@@ -152,8 +152,8 @@ fn brush_is_drawn_by_the_cutout_material() {
 ///
 /// `card` derives `half_w` from the per-card height (`hj * CARD_ASPECT * 0.5`),
 /// so a taller card is a proportionally wider one and the atlas cell it samples
-/// is never distorted — the defect `props::BUSH_CARD_HALF` exists to refuse on
-/// the scatter bush, avoided here for free by reusing the builder. Asserted
+/// is never distorted — the defect the scatter bush's square cards exist to
+/// refuse (`plants::card`), avoided here for free by reusing the builder. Asserted
 /// rather than assumed, because "reuse the tuft builder at a bigger height" is
 /// exactly the change someone would later replace with an authored quad.
 ///

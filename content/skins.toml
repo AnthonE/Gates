@@ -25,10 +25,10 @@
 # catalog id, so adding, retinting or renaming a look is never a wipe.
 
 [[skin]]
-id = "skin.rock_obsidian"
+id = "skin.bat_obsidian"
 catalog = 1
-name = "Obsidian Rock"
-covers = "item.rock"
+name = "Obsidian Bat"
+covers = "item.bat"
 tint = [70, 62, 84]
 season = "launch"
 

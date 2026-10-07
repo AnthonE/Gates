@@ -242,9 +242,9 @@ pub fn resolve(
                     };
                 }
             }
-            // A bush under the crosshair is picked with `E` (it is never
-            // swung at), folded in exactly as the crate is: it loses to
-            // anything a player built or an authored container.
+            // A berry bush or hemp under the crosshair is picked with `E`
+            // (it is never swung at), folded in exactly as the crate is: it
+            // loses to anything a player built or an authored container.
             if aimed.0.is_none() {
                 let bush = interact::resolve_pick(
                     SwingAim {
@@ -260,6 +260,7 @@ pub fn resolve(
                 if bush.occupant != 0 {
                     aimed.0 = interact::Pick {
                         verb: interact::Verb::Pick,
+                        occupant: bush.occupant,
                         cx: bush.cx,
                         cz: bush.cz,
                         handle: sim_core::gather::cell_key(bush.cx, bush.cz),

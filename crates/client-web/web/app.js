@@ -44,6 +44,33 @@ const SITE = onOrigin ? "" : "https://elopros.com";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const short = (a) => String(a).slice(0, 6) + "…" + String(a).slice(-4);
 
+/* ── inside a post ─────────────────────────────────────────────────────────
+   X's player card loads this page in a frame inside the post, at
+   `?embed=1` (the `twitter:player` meta in index.html). Framed or asked for,
+   the page draws the embed: one PLAY that joins the public server as a guest
+   unless a wallet is already signed in, the wallet as the second choice, and
+   the full page one tab away. A link out of the frame opens a tab rather than
+   navigating the post's frame. */
+const framed = (() => { try { return window.top !== window; } catch (err) { return true; } })();
+const EMBED = framed || q.has("embed");
+if (EMBED) {
+  document.body.classList.add("embed");
+  for (const a of document.querySelectorAll("a:not([target])")) {
+    a.target = "_blank";
+    a.rel = "noopener";
+  }
+}
+/* Tell the game it is inside a post (`client::render::web::in_post`): X
+   sandboxes the frame without `allow-pointer-lock`, so the world is looked
+   around by dragging, and the game opens in the post rather than fullscreen.
+   Only X may frame this page (the origin's frame-ancestors), so framed is
+   that case. */
+if (framed) window.gatesInPost = true;
+/* ...and say so before PLAY, since dragging to look is not what a player
+   expects. On the start screen rather than over the world: a line drawn over
+   the game in its first seconds was measured not always painting. */
+if (framed) $("drag-line").hidden = false;
+
 for (const a of document.querySelectorAll("[data-site]")) a.href = SITE + a.dataset.site;
 
 const status = $("status");
@@ -232,10 +259,15 @@ function rowEl(r, onGo) {
 
 const serverInput = $("server");
 function renderServers() {
-  $("servers").replaceChildren(...rows.map((r) => rowEl(r, () => play())));
+  $("servers").replaceChildren(...rows.map((r) => rowEl(r, () => goPlay())));
   $("watch-servers").replaceChildren(...rows.map((r) => rowEl(r, () => watch())));
   const r = current();
   if (r && document.activeElement !== serverInput) serverInput.value = r.addr;
+  /* The embed has no server list, so it says how busy the island is instead:
+     a count the shard reported, and only while somebody is on. */
+  const n = r && Number.isInteger(r.players) ? r.players : 0;
+  $("pop-line").hidden = !EMBED || n < 1;
+  $("pop-line").textContent = n === 1 ? "1 player on the island now" : `${n} players on the island now`;
 }
 
 /* Typing an address in OPTIONS is a row of its own, picked. */
@@ -450,7 +482,7 @@ function paintAccount() {
     if (wallet.has()) {
       line.textContent = "Sign in with your wallet. Your base, your name and your skins follow the wallet, on every server.";
     } else {
-      line.textContent = "No wallet in this browser. Gates signs you in with one, like MetaMask or Rabby — add one, then reload.";
+      line.textContent = "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
     }
     inBtn.hidden = !wallet.has();
     $("who-get").hidden = wallet.has();
@@ -534,26 +566,190 @@ function counted(res) {
   return new Response(body, { status: 200, headers: { "Content-Type": "application/wasm" } });
 }
 
+/* ── which module ──────────────────────────────────────────────────────────
+   The game is built twice (`ci/build_web.sh`): once drawing through WebGPU,
+   which is the desktop's frame — the atmosphere, ambient occlusion, bloom,
+   four shadow cascades — and once through WebGL2 for every browser without
+   it. Bevy picks its GPU API when it is COMPILED and has no fallback at run
+   time, so the page picks, before the download. A browser gets the WebGPU
+   module when it hands back a hardware adapter with filterable 32-bit
+   floats: Bevy binds the atmosphere's `Rgba32Float` tables as filterable and
+   never checks, so without them the WebGPU frame is lost rather than
+   degraded. A software adapter (`isFallbackAdapter`) gets WebGL2 too — the
+   desktop's frame on a CPU is slower than the cheap one. Everything the
+   device can or cannot bind past that, Rust reads off the device itself
+   (`render::quality::GpuCaps`).
+
+   `?gfx=webgl2` or `?gfx=webgpu` forces one. A WebGPU module that failed on
+   this browser is remembered against that BUILD (`gates.webgpu.failed`), so
+   the next visit goes straight to WebGL2 and a new publish tries again;
+   `?gfx=webgpu` forgets it. An older `build.json` that names no modules is
+   the WebGL2 module alone. */
+const MODULES = {
+  webgl2: { js: "./client_web.js", wasm: "client_web_bg.wasm", name: "WebGL2" },
+  webgpu: { js: "./client_web_gpu.js", wasm: "client_web_gpu_bg.wasm", name: "WebGPU" },
+};
+const GPU_FAILED = "gates.webgpu.failed";
+/* Started at load, beside the `build.json` fetch, rather than after it. */
+const gpuProbe = (async () => {
+  if (!navigator.gpu) return { ok: false, why: "no WebGPU in this browser" };
+  try {
+    /* A blocklisted GPU answers null; a wedged one may never answer. */
+    const adapter = await Promise.race([
+      navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
+      new Promise((r) => setTimeout(() => r(null), 3000)),
+    ]);
+    if (!adapter) return { ok: false, why: "no WebGPU adapter" };
+    const info = adapter.info || {};
+    if (info.isFallbackAdapter || adapter.isFallbackAdapter) return { ok: false, why: "software WebGPU adapter" };
+    if (!adapter.features.has("float32-filterable")) return { ok: false, why: "no float32-filterable" };
+    return { ok: true, why: "WebGPU adapter" };
+  } catch (err) {
+    return { ok: false, why: "WebGPU adapter refused" };
+  }
+})();
+const moduleKey = (sizes) => sizes ? String(sizes.sha256 || sizes.wasm_bytes || "") : "";
+
+async function pickModule(built) {
+  const has = (k) => (built ? !!built[k] : k === "webgl2");
+  const forced = q.get("gfx");
+  if (forced === "webgpu") { try { localStorage.removeItem(GPU_FAILED); } catch (err) { /* private mode */ } }
+  if ((forced === "webgl2" || forced === "webgpu") && has(forced)) return { gfx: forced, why: "forced by ?gfx" };
+  if (!has("webgpu")) return { gfx: "webgl2", why: "this build has no WebGPU module" };
+  if (!has("webgl2")) return { gfx: "webgpu", why: "this build has no WebGL2 module" };
+  try {
+    if (localStorage.getItem(GPU_FAILED) === moduleKey(built.webgpu)) {
+      return { gfx: "webgl2", why: "WebGPU failed here before" };
+    }
+  } catch (err) { /* private mode */ }
+  const probe = await gpuProbe;
+  return { gfx: probe.ok ? "webgpu" : "webgl2", why: probe.why };
+}
+
+/* Back to the page and into the WebGL2 module, once: the failure is written
+   against this build before the reload, and the WebGL2 module has no hook
+   that could send it back, so this cannot loop. The session is spent — a
+   canvas that has held a WebGPU context never takes a WebGL2 one, and
+   Bevy's `run()` does not return — so the way there is a reload. */
+let builtModules = null;
+let playStarted = 0;
+function gpuFallBack(why) {
+  const key = moduleKey(builtModules && builtModules.webgpu);
+  let kept = false;
+  try {
+    localStorage.setItem(GPU_FAILED, key);
+    kept = localStorage.getItem(GPU_FAILED) === key;
+  } catch (err) { /* storage blocked */ }
+  /* Where the flag will not hold — storage refused, or an address that
+     forces WebGPU — the address itself carries the switch, or the reload
+     would land on WebGPU again. */
+  if ((!kept || q.get("gfx") === "webgpu") && builtModules && builtModules.webgl2) {
+    const u = new URL(location.href);
+    u.searchParams.set("gfx", "webgl2");
+    history.replaceState(history.state, "", u);
+  }
+  window.gatesLeft(`${why} — switched to WebGL2`);
+}
+
+/* The WebGPU module's error hook (`render/web.rs`, `watch_gpu`). WebGPU
+   refuses a pipeline quietly and the frame is simply not drawn. A LOST
+   device draws nothing ever again, so that one reloads into WebGL2; a
+   refusal puts a line over the canvas offering it, and is remembered. */
+let gpuTrouble = false;
+window.gatesGpuError = (msg, kind) => {
+  if (window.gatesGfx !== "webgpu") return;
+  if (kind === "lost") { gpuFallBack("the graphics device was lost under WebGPU"); return; }
+  try { localStorage.setItem(GPU_FAILED, moduleKey(builtModules && builtModules.webgpu)); } catch (err) { /* private mode */ }
+  if (gpuTrouble) return;
+  gpuTrouble = true;
+  const bar = document.createElement("div");
+  bar.setAttribute("role", "alert");
+  bar.style.cssText = "position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:50;"
+    + "max-width:min(92vw,640px);padding:10px 14px;border-radius:6px;background:rgba(24,20,16,.92);"
+    + "color:#f2e9dc;font:14px/1.4 var(--sans);box-shadow:0 2px 12px #0008";
+  const link = document.createElement("a");
+  const u = new URL(location.href);
+  u.searchParams.set("gfx", "webgl2");
+  link.href = u.toString();
+  link.textContent = "Reload with WebGL2";
+  link.style.cssText = "color:#ffcf7a;margin-left:8px";
+  /* Leaving is the point of this link: the player's leave-site guard must
+     not ask about it. */
+  link.addEventListener("click", () => {
+    window.removeEventListener("beforeunload", guardLeave);
+    try { sessionStorage.setItem(LEFT, "WebGPU refused part of the frame — switched to WebGL2"); } catch (err) { /* private mode */ }
+  });
+  bar.append("The graphics card refused part of the frame under WebGPU (press Esc to click).", link);
+  bar.title = String(msg).slice(0, 400);
+  document.body.append(bar);
+};
+/* A WebGPU module whose renderer never started: Bevy's "Unable to find a
+   GPU!" and its surface and device requests panic before the hook above
+   exists. `client-web`'s panic hook calls this with the panic's text, and
+   only a panic in Bevy's renderer set-up demotes the build — any other one
+   leaves its message in the console for whoever reads it. */
+window.gatesPanic = (msg) => {
+  const m = String(msg || "");
+  const renderer = /bevy_render[^\n]*renderer|Unable to find a GPU|wgpu surface|request_device/.test(m);
+  if (window.gatesGfx === "webgpu" && renderer && playStarted && performance.now() - playStarted < 30000) {
+    gpuFallBack("WebGPU did not start in this browser");
+  }
+};
+
+async function load(gfx, sizes) {
+  const m = MODULES[gfx];
+  dl.got = 0;
+  dl.want = sizes && Number(sizes.wasm_bytes) > 0 ? Number(sizes.wasm_bytes) : 0;
+  paintDownload();
+  /* The glue and its module are a pair (wasm-bindgen hashes the import
+     names), so both are asked for by the pair's own hash: a cached glue from
+     the last publish cannot meet this publish's module. */
+  const v = sizes && sizes.sha256 ? "?v=" + String(sizes.sha256).slice(0, 12) : "";
+  const mod = await import(m.js + v);
+  const res = fetch(new URL(m.wasm + v, import.meta.url)).then(counted);
+  /* The module's exports, kept on the window for a person with the console
+     open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
+     the number to read when a tab dies with no message (an out-of-memory
+     abort in wasm is a bare `RuntimeError: unreachable`). `gatesGfx` is
+     which of the two it is. */
+  window.gatesWasm = await mod.default({ module_or_path: res });
+  window.gatesGfx = gfx;
+  return mod;
+}
+
 async function boot() {
+  let bits = [];
   try {
     const r = await fetch("build.json", { cache: "no-cache" });
     if (r.ok) {
       const b = await r.json();
-      if (Number(b.wasm_bytes) > 0) dl.want = Number(b.wasm_bytes);
-      const bits = [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean);
-      if (bits.length) $("build").textContent = "Gates " + bits.join(" · ");
+      builtModules = b.modules || null;
+      bits = [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean);
+      if (!builtModules && Number(b.wasm_bytes) > 0) builtModules = { webgl2: { wasm_bytes: b.wasm_bytes } };
     }
   } catch (err) { /* a dev build without it: the bar counts megabytes */ }
+  let { gfx, why } = await pickModule(builtModules);
+  const footer = () => {
+    $("build").textContent = "Gates " + [...bits, MODULES[gfx].name].join(" · ");
+    $("build").title = why;
+  };
+  footer();
   paintDownload();
   try {
-    const mod = await import("./client_web.js");
-    const res = fetch(new URL("client_web_bg.wasm", import.meta.url)).then(counted);
-    /* The module's exports, kept on the window for a person with the console
-       open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
-       the number to read when a tab dies with no message (an out-of-memory
-       abort in wasm is a bare `RuntimeError: unreachable`). */
-    window.gatesWasm = await mod.default({ module_or_path: res });
-    glue = mod;
+    try {
+      glue = await load(gfx, builtModules && builtModules[gfx]);
+    } catch (err) {
+      /* A WebGPU module that will not compile or instantiate here still
+         leaves the WebGL2 one, and a player should get that rather than an
+         error. Failures after this are Bevy's: `gatesPanic` and
+         `gatesGpuError` above. */
+      if (gfx !== "webgpu" || !(builtModules && builtModules.webgl2)) throw err;
+      console.warn("gates: the WebGPU module failed, loading WebGL2", err);
+      gfx = "webgl2";
+      why = "the WebGPU module did not load";
+      footer();
+      glue = await load(gfx, builtModules && builtModules[gfx]);
+    }
     dl.done = true;
   } catch (err) {
     dl.failed = (err && err.message) || String(err);
@@ -650,14 +846,17 @@ function paintButton(btn, fill, sub, idleSub) {
 
 function paintGo() {
   const idle = address ? `as ${(who && who.name) || short(address)}`
-    : wallet.has() ? "signs in with your wallet" : "as a guest";
+    : wallet.has() && !EMBED ? "signs in with your wallet" : "as a guest";
   paintButton($("go"), $("go-fill"), $("go-sub"), idle);
   $("go-label").textContent = busy ? busy.label : dl.failed ? "Reload" : "Play";
   paintButton($("watch-go"), $("watch-fill"), $("watch-sub"), "no wallet needed");
-  /* A guest join is offered where a guest can get in: off the origin (a dev
-     shard) or on a server a link named. The public shard runs `require_auth`
-     (`shard-public.toml`), so on the origin the wallet is the way in. */
-  $("guest").hidden = !!address || !wallet.has() || !!busy || (onOrigin && !q.get("server"));
+  /* The other way in, under PLAY. The public shard takes guests again
+     (`shard-public.toml`, 2026-10-07): a guest plays a fresh character and
+     keeps nothing, a wallet keeps your base. The full page leads with the
+     wallet and offers the guest; the embed leads with the guest. */
+  const other = !address && wallet.has() && !busy;
+  $("guest").hidden = EMBED || !other;
+  $("wallet-in").hidden = !EMBED || !other;
 }
 
 /* Join, and hand the world to Bevy. Both buttons come through here, so the
@@ -725,6 +924,7 @@ async function enter(g, audio, row) {
   await audio;
   /* `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
      loop to requestAnimationFrame and `run()` does not come back. */
+  playStarted = performance.now();
   g.play("#gates");
 }
 
@@ -760,8 +960,11 @@ async function watch() {
   await join("watch", audio, null);
 }
 
-$("go").addEventListener("click", () => play());
+/* PLAY itself: in the embed a guest unless a wallet is already signed in. */
+const goPlay = () => play({ guest: EMBED && !address });
+$("go").addEventListener("click", goPlay);
 $("guest").addEventListener("click", () => play({ guest: true }));
+$("wallet-in").addEventListener("click", () => play());
 $("watch-go").addEventListener("click", () => watch());
 $("watch-who").addEventListener("keydown", (ev) => { if (ev.key === "Enter") watch(); });
 document.addEventListener("keydown", (ev) => {
@@ -769,7 +972,7 @@ document.addEventListener("keydown", (ev) => {
   const t = ev.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.tagName === "A")) return;
   const open = panes.find((p) => !p.hidden);
-  if (open && open.dataset.pane === "play") play();
+  if (open && open.dataset.pane === "play") goPlay();
   if (open && open.dataset.pane === "watch") watch();
 });
 

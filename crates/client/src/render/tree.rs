@@ -1227,7 +1227,7 @@ fn photo_card(png: &[u8]) -> Image {
 /// mip chain, the descriptor that carries it, and the trilinear sampler.
 /// Shared by both species' cards, because a second card that built its own
 /// chain would be the first place the two drifted.
-fn alpha_card(data: Vec<u8>, size: u32) -> Image {
+pub fn alpha_card(data: Vec<u8>, size: u32) -> Image {
     // Levels 1..n, coverage-preserved: an alpha-tested card draws the share of
     // texels over the cut, and a plain box filter loses that share at every
     // level (`mipmap::Filter::Mask`).
@@ -1598,13 +1598,14 @@ impl TreeLod {
 /// `Visibility` by hand instead. Both spawn sites in `props::spawn_slot` go
 /// through this one function so the two targets cannot disagree about which
 /// parts are banded.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(webgl2))]
 pub fn lod_band(range: &VisibilityRange) -> VisibilityRange {
     range.clone()
 }
 
-/// See the desktop half above: a browser tree carries no `VisibilityRange`.
-#[cfg(target_arch = "wasm32")]
+/// See the desktop half above: a WebGL2 tree carries no `VisibilityRange`.
+/// The WebGPU module has storage buffers and takes the desktop's half.
+#[cfg(webgl2)]
 pub fn lod_band(_range: &VisibilityRange) {}
 
 /// The count cap: pull the swap in when more than [`TREE_LOD_CAP`] trees
@@ -1667,7 +1668,7 @@ pub fn cap_swap(
     }
 }
 
-/// The LOD swap a browser does by hand — [`lod_band`] says why it has to.
+/// The LOD swap WebGL2 does by hand — [`lod_band`] says why it has to.
 ///
 /// Every frame in the world, each tree part that would carry a
 /// `VisibilityRange` on the desktop is shown or hidden by its distance from
@@ -1684,7 +1685,7 @@ pub fn cap_swap(
 /// this keeps a felled card hidden rather than fighting it. Written only on a
 /// change, because a `Visibility` write re-extracts the entity.
 ///
-/// Compiled on every target and **gated to wasm32 by its run condition**
+/// Compiled on every target and **gated to WebGL2 by its run condition**
 /// (`render/mod.rs`), so `tests/tree_swap.rs` can drive it natively.
 pub fn swap_by_distance(
     lod: Res<TreeLod>,

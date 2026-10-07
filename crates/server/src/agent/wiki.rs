@@ -572,9 +572,9 @@ mod tests {
             *book.page(content.item_index(&item.id).unwrap())
         };
         assert!(by_name("Hunting Bow").ranged.draw_ticks > 0);
-        assert_eq!(by_name("Rock").class, Class::Tool);
+        assert_eq!(by_name("Bat").class, Class::Tool);
         assert_eq!(by_name("Wooden Spear").class, Class::Melee);
-        assert!(by_name("Wooden Spear").melee.reach_cm > by_name("Rock").melee.reach_cm);
+        assert!(by_name("Wooden Spear").melee.reach_cm > by_name("Bat").melee.reach_cm);
         let bandage = by_name("Bandage");
         assert_eq!((bandage.class, bandage.heal > 0), (Class::Med, true));
         assert_eq!(by_name("Corn").class, Class::Food);

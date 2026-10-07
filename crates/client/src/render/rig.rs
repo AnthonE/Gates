@@ -28,12 +28,12 @@ use bevy::core_pipeline::Skybox;
 use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
 use bevy::pbr::DistanceFog;
 use bevy::pbr::ScatteringMedium;
-// Both follow their one use site off wasm32 — see the inserts in `setup`.
-#[cfg(not(target_arch = "wasm32"))]
+// Both follow their one use site off WebGL2 — see the inserts in `setup`.
+#[cfg(not(webgl2))]
 use bevy::pbr::{Atmosphere, AtmosphereSettings};
-// Follows its one use site off wasm32 — see the insert below for why a
-// browser must never receive this component.
-#[cfg(not(target_arch = "wasm32"))]
+// Follows its one use site off WebGL2 — see the insert below for why that
+// module must never receive this component.
+#[cfg(not(webgl2))]
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -204,9 +204,9 @@ pub fn setup(
     let medium = media.add(island_medium());
     // Built on every target because the handle is one asset and the
     // alternative is `cfg`-ing a system parameter, which changes the system's
-    // arity per target for no gain. Nothing consumes it in a browser — see
+    // arity per target for no gain. Nothing consumes it under WebGL2 — see
     // the atmosphere insert below for why that component cannot be there.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     let _ = medium;
 
     let eye = commands
@@ -368,13 +368,12 @@ pub fn setup(
     // `Atmosphere::earthlike` is what reddens the sun on its way down and what
     // `ART.md` §1's "distant hills lighten, desaturate and go blue" describes
     // the output of. Without it the sky is `fill.rs`'s hemisphere and the
-    // haze is gone, so a browser frame is flatter than a desktop one on
-    // purpose. Restoring it needs WebGPU (compute), which is a second build
-    // artifact and a later decision — `bevy/webgpu` is NOT a switch to flip
-    // here, because every WebGL workaround in the engine is spelled
-    // `not(feature = "webgpu")` and enabling it disables all of them with no
-    // runtime fallback.
-    #[cfg(not(target_arch = "wasm32"))]
+    // haze is gone, so a WebGL2 frame is flatter than a desktop one on
+    // purpose. The WebGPU module has compute and takes the desktop's path:
+    // it is a second module rather than a switch, because every WebGL
+    // workaround in the engine is spelled `not(feature = "webgpu")` and
+    // enabling it disables all of them with no runtime fallback (`build.rs`).
+    #[cfg(not(webgl2))]
     commands.entity(eye).insert((
         Atmosphere::earthlike(medium),
         AtmosphereSettings {
@@ -387,24 +386,28 @@ pub fn setup(
         },
     ));
 
-    #[cfg(not(target_arch = "wasm32"))]
-    commands.entity(eye).insert(
-        // **AO is how the fill's cost gets paid back.** Raising the ambient to
-        // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
-        // the darks — p10 went 41.9 → 64.9 against a reference of 41.0. That
-        // is the documented failure mode of a global fill, and §4 of the art
-        // bible states the fix in one line: raise the fill and put the
-        // darkness back where it belongs. AO removes ambient only where
-        // geometry occludes, which is under every boulder, inside every
-        // canopy, and in the crease where a prop meets the ground.
-        //
-        // Medium, not the `High` default: this renders on a CPU rasterizer in
-        // the gate and High is 18 samples per pixel.
-        // …and Medium is now `Quality::High`'s row rather than a literal
-        // here. `rig::setup` spawns the DEFAULT tier, so a fresh boot draws
-        // exactly what it drew before tiers existed and `quality::apply`
-        // writes nothing until a player moves the knob.
-        ScreenSpaceAmbientOcclusion {
+    // Where the device has room for it ([`super::quality::GpuCaps`]): a
+    // device that cannot bind the prepasses gets no component, because the
+    // `#[require]` would add them whether the plugin ran or not.
+    #[cfg(not(webgl2))]
+    if let Some(quality_level) = super::quality::tier(crate::config::Quality::default()).ssao {
+        commands.entity(eye).insert(
+            // **AO is how the fill's cost gets paid back.** Raising the ambient to
+            // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
+            // the darks — p10 went 41.9 → 64.9 against a reference of 41.0. That
+            // is the documented failure mode of a global fill, and §4 of the art
+            // bible states the fix in one line: raise the fill and put the
+            // darkness back where it belongs. AO removes ambient only where
+            // geometry occludes, which is under every boulder, inside every
+            // canopy, and in the crease where a prop meets the ground.
+            //
+            // Medium, not the `High` default: this renders on a CPU rasterizer in
+            // the gate and High is 18 samples per pixel.
+            // …and Medium is now `Quality::High`'s row rather than a literal
+            // here. `rig::setup` spawns the DEFAULT tier, so a fresh boot draws
+            // exactly what it drew before tiers existed and `quality::apply`
+            // writes nothing until a player moves the knob.
+            //
             // **The DEFAULT tier, not the player's** — a bundle is static
             // and the LOW rung carries no such component at all, so a rig
             // that tried to spawn the current tier could express two of the
@@ -412,12 +415,12 @@ pub fn setup(
             // the frame this camera appears (it watches `Added<EyeCam>` for
             // exactly this), so a persisted LOW is corrected before the first
             // frame is drawn rather than being a bundle shape.
-            quality_level: super::quality::tier(crate::config::Quality::default())
-                .ssao
-                .expect("the default tier carries ambient occlusion"),
-            ..default()
-        },
-    );
+            ScreenSpaceAmbientOcclusion {
+                quality_level,
+                ..default()
+            },
+        );
+    }
     // **No depth prepass in a browser either, and it was tried** (2026-09-12).
     // On the desktop `ScreenSpaceAmbientOcclusion` is `#[require(DepthPrepass,
     // NormalPrepass)]`, so the depth the forward decals read arrives with the
@@ -430,16 +433,16 @@ pub fn setup(
     // first mark, where the compile failure had been a logged line. So the
     // prepass stays off and the mark pool is empty on this target
     // (`decal::setup`); the depth would feed nothing a browser draws.
-    // What a browser gains instead of the atmosphere: a haze made of the same
+    // What WebGL2 gains instead of the atmosphere: a haze made of the same
     // air, and the only haze on that target (`sky::browser_haze`). `day_night`
     // dims it with the deck.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(webgl2)]
     commands.entity(eye).insert(super::sky::browser_haze(1.0));
     // The desktop's weather fog, inserted ONCE at zero density rather than
     // added when it first rains: `DistanceFog` is a shader variant, and
     // adding or removing it re-specializes every pipeline mid-frame.
     // `day_night` owns its fields from here (weather v0).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(webgl2))]
     commands
         .entity(eye)
         .insert(super::sky::weather_fog(1.0, 0.0, 0.0));
@@ -580,16 +583,11 @@ pub const NIGHT_DIP: f32 = 0.35;
 /// Moonlight is ~0.25 lux; this is far brighter because the exposure never
 /// adapts — the number is a look, not a photometric claim.
 ///
-/// ⚠ **It is also the ceiling on every flame in this client, which nobody
-/// had measured until a torch needed one.** A point source stops beating a
-/// uniform ambient at `sqrt(lumens / 4π·ambient)`
-/// (`ui::hold::pool_radius_m`), so against 60 lux the campfire's 900 lm
-/// reaches **1.09 m** and the torch's 600 lm reaches **0.89 m** — both are
-/// pools you stand in rather than lights you see by, and no honest lumen
-/// figure fixes that from the other end: a real pitch torch is ~250 lm and
-/// this one is already 2.4× it. 240× moonlight is where the ratio went.
-/// Changing it is one owner over this file's coupled set (`CLAUDE.md`
-/// §traps) and a look only a person can judge — `NOW.md` §0tl.
+/// Through that exposure it draws the ground at about 1/255 — black — and
+/// so did a flame at its own lumens. Flames are opened by
+/// [`flame_gain`] instead, the eye's adaptation applied to the lights that
+/// matter at night; this term carries the night's look and is not part of
+/// that.
 pub const NIGHT_AMBIENT_LUX: f32 = 60.0;
 
 /// The sun's elevation at a point in the cycle: a sine arch over the day
@@ -698,6 +696,37 @@ pub fn exposure_ev100(frac: f32) -> f32 {
     let set = ((e + 0.12) / 0.09).clamp(0.0, 1.0);
     let s = rise.min(set);
     DAY_EV100 - TWILIGHT_OPEN_STOPS * s * s * (3.0 - 2.0 * s)
+}
+
+/// How many times its own lumens a flame is drawn at, deep in the night.
+///
+/// The exposure is daylight's ([`DAY_EV100`]) and never adapts, so a flame
+/// priced in honest lumens is black at night: the operator's frame under a
+/// lit 600 lm torch read **1/255 on the ground** (2026-10-07, *"i cant see
+/// it lighting the area"*). An eye opens about ten stops from noon to a
+/// moonless night; this is that opening, applied to the lights a player
+/// carries and builds (the torch, a fire) and to nothing that was already
+/// tuned against the dark (the ambient, the sky). By day it is 1, so a lit
+/// torch at noon is still not a second sun.
+pub const FLAME_NIGHT_GAIN: f32 = 1000.0;
+
+/// [`FLAME_NIGHT_GAIN`] at a point in the cycle, under `occ` of cloud: an
+/// eye opens in proportion to the dark, so this is the inverse of the share
+/// of sun that gets through, from 1 at a clear noon up to the night's cap.
+pub fn flame_gain(frac: f32, occ: f32) -> f32 {
+    let lit = sun_lux(frac) * (1.0 - 0.9 * occ);
+    (1.0 / lit.max(1.0 / FLAME_NIGHT_GAIN)).clamp(1.0, FLAME_NIGHT_GAIN)
+}
+
+/// This frame's [`flame_gain`], written by [`day_night`] (the one owner of
+/// the hour) and read by everything that burns.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct FlameGain(pub f32);
+
+impl Default for FlameGain {
+    fn default() -> Self {
+        Self(1.0)
+    }
 }
 
 /// The sun's light as a share of full daylight: `daylight`, with the
@@ -818,11 +847,15 @@ type CamLight = (
 /// the fog and the exposure. The weather (weather v0) arrives as one more input:
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
+// Nine, which clippy counts: the flame gain is the ninth, and it is written
+// here for the reason the sun is — this is the one owner of the hour.
+#[allow(clippy::too_many_arguments)]
 pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
+    mut gain: ResMut<FlameGain>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
     mut cam: Query<CamLight, With<EyeCam>>,
@@ -833,6 +866,10 @@ pub fn day_night(
     let elev = sun_elevation(frac);
     let w = weather.as_deref().copied().unwrap_or_default();
     let occ = w.occlusion();
+    let g = flame_gain(frac, occ);
+    if gain.0 != g {
+        gain.0 = g;
+    }
     if let Ok((mut t, mut d, disk)) = sun.single_mut() {
         t.rotation = sun_rotation_render(frac);
         // The twilight tail lights the sky after sunset; cloud takes the

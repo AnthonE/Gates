@@ -7,12 +7,12 @@
 # --- T0, station none ---------------------------------------------------
 
 [[recipe]]
-id = "recipe.rock"
-output = "item.rock"
+id = "recipe.bat"
+output = "item.bat"
 count = 1
 station = "none"
 seconds = 3
-inputs = [{ item = "item.stone", count = 10 }]
+inputs = [{ item = "item.wood", count = 10 }]
 
 [[recipe]]
 id = "recipe.torch"

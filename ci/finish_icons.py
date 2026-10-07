@@ -83,6 +83,8 @@ PAINT = {
     "tarp": dict(c=("#8ea865", "#4b6232")),
     "junk": dict(c=("#c5cad1", "#6b727c"), metal=True),
     "blueprint": dict(c=("#7cb4f0", "#2d5c9c")),
+    # Triple T's bat: honey-orange varnish, not the pale tool wood.
+    "bat": dict(c=("#e8a25a", "#8f4512")),
     "torch": dict(c=WOOD, zone=dict(c=FLAME, box=(0.5, 0.0, 1.0, 0.45))),
     "wooden_spear": dict(c=WOOD),
     "stone_hatchet": dict(c=WOOD, zone=dict(c=STONE, thick=26, box=(0.0, 0.0, 1.0, 0.55))),

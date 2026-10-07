@@ -114,7 +114,7 @@ pub const STEMS: [&str; 105] = [
     "tarp",
     "junk",
     "blueprint",
-    "rock",
+    "bat",
     "torch",
     "wooden_spear",
     "stone_hatchet",

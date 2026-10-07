@@ -9,7 +9,8 @@
 //! ## The surface, and the number a page cannot exceed
 //!
 //! WebGL2's `max_texture_dimension_2d` is **2048** (`downlevel_webgl2_
-//! defaults`), and wgpu REFUSES `configure_surface` above it — a 1080p
+//! defaults`; WebGPU's is 8192, [`surface_cap_px`]), and wgpu REFUSES
+//! `configure_surface` above it — a 1080p
 //! display at devicePixelRatio 2 asks for 3840 and gets no frame and no error
 //! a player can read (`findings/web-build-20260909.md` §15.8). Bevy passes
 //! the window's resolution straight through with only `.max(1)`.
@@ -64,6 +65,22 @@ use bevy::window::PrimaryWindow;
 /// a page that asks for more draws nothing.
 pub const SURFACE_CAP_PX: u32 = 2048;
 
+/// WebGPU's: `Limits::default().max_texture_dimension_2d`, the 8192 every
+/// WebGPU adapter guarantees. No display a page will meet reaches it, so
+/// under WebGPU the stretch below is 1.0 and the backing store is the
+/// viewport.
+pub const WEBGPU_SURFACE_CAP_PX: u32 = 8192;
+
+/// The cap of the module this is: [`SURFACE_CAP_PX`] under WebGL2,
+/// [`WEBGPU_SURFACE_CAP_PX`] otherwise.
+pub const fn surface_cap_px() -> u32 {
+    if cfg!(webgl2) {
+        SURFACE_CAP_PX
+    } else {
+        WEBGPU_SURFACE_CAP_PX
+    }
+}
+
 /// The canvas the page handed Bevy, as the CSS selector it was named by.
 ///
 /// Inserted by `client-web`'s `Gates::play` so [`follow_viewport`] can find
@@ -88,14 +105,20 @@ pub struct Fit {
     pub stretch: f32,
 }
 
-/// Fit a viewport of `css_w × css_h` CSS pixels at `dpr` inside the cap.
+/// Fit a viewport of `css_w × css_h` CSS pixels at `dpr` inside WebGL2's
+/// cap, [`SURFACE_CAP_PX`]; [`fit_within`] for another.
+pub fn fit(css_w: f32, css_h: f32, dpr: f32) -> Fit {
+    fit_within(css_w, css_h, dpr, SURFACE_CAP_PX)
+}
+
+/// Fit a viewport of `css_w × css_h` CSS pixels at `dpr` inside `cap_px`.
 ///
 /// Uniform: one scale for both axes, the smaller of `dpr` and what each axis
 /// allows, so the aspect is the viewport's. Rounded to whole device pixels
 /// and clamped once more after rounding, so a viewport whose long side is
 /// exactly the cap's worth cannot round past it. A non-finite or
 /// non-positive `dpr` is taken as 1.0 — a page can report one before layout.
-pub fn fit(css_w: f32, css_h: f32, dpr: f32) -> Fit {
+pub fn fit_within(css_w: f32, css_h: f32, dpr: f32, cap_px: u32) -> Fit {
     let css_w = if css_w.is_finite() {
         css_w.max(1.0)
     } else {
@@ -111,13 +134,78 @@ pub fn fit(css_w: f32, css_h: f32, dpr: f32) -> Fit {
     } else {
         1.0
     };
-    let cap = SURFACE_CAP_PX as f32;
+    let cap = cap_px as f32;
     let scale = dpr.min(cap / css_w).min(cap / css_h);
-    let px = |css: f32| ((css * scale).round() as u32).clamp(1, SURFACE_CAP_PX);
+    let px = |css: f32| ((css * scale).round() as u32).clamp(1, cap_px);
     Fit {
         physical: (px(css_w), px(css_h)),
         scale,
         stretch: dpr / scale,
+    }
+}
+
+/// Below this many CSS pixels on its short side, a viewport scales the UI
+/// down with it ([`ui_scale`]).
+pub const UI_FULL_SIZE_PX: f32 = 680.0;
+/// The smallest [`ui_scale`] — past it the HUD's text stops being readable.
+pub const UI_SCALE_MIN: f32 = 0.75;
+
+/// Bevy's `UiScale` for a viewport of `css_w × css_h` CSS pixels.
+///
+/// The UI is laid out in fixed pixels sized for a desktop window, and in an
+/// X post's frame (about 516 CSS pixels square, the player card) the hotbar
+/// runs into the meters. So a short side under [`UI_FULL_SIZE_PX`] shrinks
+/// the whole UI in proportion, never below [`UI_SCALE_MIN`]; anything at or
+/// over it, and a viewport a page reported before layout, is exactly 1.0.
+pub fn ui_scale(css_w: f32, css_h: f32) -> f32 {
+    let short = css_w.min(css_h);
+    if !short.is_finite() || short <= 0.0 {
+        return 1.0;
+    }
+    (short / UI_FULL_SIZE_PX).clamp(UI_SCALE_MIN, 1.0)
+}
+
+/// Say so when WebGPU refuses something, which it does quietly.
+///
+/// Under WebGL2 an invalid pipeline or bind group panics inside wgpu-core
+/// and the page sees a dead module. Under WebGPU the browser logs a warning
+/// (and stops logging after a few) and the frame that held it is not drawn:
+/// Bevy submits a frame in one call, so one refused pipeline is a black or
+/// frozen canvas with nothing a player can read. Bevy installs no handler,
+/// so this one logs every error and hands it to the page
+/// (`window.gatesGpuError(message, kind)`), which decides: `"lost"` means
+/// nothing will draw again and the page reloads into the WebGL2 module,
+/// `"error"` is a refusal the page reports and remembers. A device destroyed
+/// on purpose (the tab unloading) is neither.
+#[cfg(all(target_arch = "wasm32", not(webgl2)))]
+pub fn watch_gpu(device: &wgpu::Device) {
+    device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+        let msg = e.to_string();
+        bevy::log::error!("webgpu: {msg}");
+        gpu_trouble(&msg, "error");
+    }));
+    device.set_device_lost_callback(|reason, msg| {
+        if reason == wgpu::DeviceLostReason::Destroyed {
+            return;
+        }
+        let msg = format!("device lost ({reason:?}): {msg}");
+        bevy::log::error!("webgpu: {msg}");
+        gpu_trouble(&msg, "lost");
+    });
+}
+
+/// `window.gatesGpuError(message, kind)`, if the page installed one.
+#[cfg(all(target_arch = "wasm32", not(webgl2)))]
+fn gpu_trouble(msg: &str, kind: &str) {
+    use wasm_bindgen::{JsCast, JsValue};
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let hook = js_sys::Reflect::get(&window, &JsValue::from_str("gatesGpuError"))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
+    if let Some(f) = hook {
+        let _ = f.call2(&window, &JsValue::from_str(msg), &JsValue::from_str(kind));
     }
 }
 
@@ -151,18 +239,19 @@ pub fn viewport() -> Option<(f32, f32, f32)> {
 pub fn follow_viewport(
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     canvas: Option<Res<Canvas>>,
+    ui: Option<ResMut<UiScale>>,
     mut last: Local<Option<Fit>>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (&mut windows, &canvas, &mut last);
+        let _ = (&mut windows, &canvas, &ui, &mut last);
     }
     #[cfg(target_arch = "wasm32")]
     {
         let Some((w, h, dpr)) = viewport() else {
             return;
         };
-        let want = fit(w, h, dpr);
+        let want = fit_within(w, h, dpr, surface_cap_px());
         if *last == Some(want) {
             return;
         }
@@ -179,6 +268,9 @@ pub fn follow_viewport(
         }
         if let Some(canvas) = canvas.as_deref() {
             stretch_canvas(&canvas.0, want.stretch);
+        }
+        if let Some(mut ui) = ui {
+            ui.0 = ui_scale(w, h);
         }
         // Once per change, so a console can say what the surface did when a
         // frame does not look like the window.
@@ -232,6 +324,36 @@ pub fn hand_back(status: &str) {
         None => {
             let _ = window.location().reload();
         }
+    }
+}
+
+/// Whether the page is playing inside an X post: the player card's frame
+/// (`client-web/web/app.js` EMBED), which the page marks `window.gatesInPost`
+/// when it finds itself framed. Two things follow, and both were measured in
+/// a frame carrying X's own sandbox attributes:
+///
+/// - **The world is looked around by dragging.** The frame is sandboxed
+///   without `allow-pointer-lock`, so the browser refuses every
+///   `requestPointerLock`. Bevy still records the grab it asked for, and the
+///   camera turned whenever the cursor crossed the frame and stopped dead at
+///   its edge. `input::gather` turns the view only while a mouse button is
+///   held, and every owner that takes the pointer back leaves the cursor on
+///   screen.
+/// - **It opens in the post, not fullscreen** (`settings::load`). The frame
+///   may go fullscreen, and the default did so the moment PLAY was pressed.
+///
+/// Always `false` natively.
+pub fn in_post() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsValue;
+        web_sys::window()
+            .and_then(|w| js_sys::Reflect::get(&w, &JsValue::from_str("gatesInPost")).ok())
+            .is_some_and(|v| v.is_truthy())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
     }
 }
 

@@ -1050,6 +1050,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// where in it and which way — so they are drawn on the players and
 /// animals they hit. `SUB_AMMO` (77) tells an archer which arrow their bow
 /// looses, and `SUB_FIRE` (78) where a fire arrow's fire burns and until when.
+/// v94 — the bush column grows three plants (`terrain::plant_of`): a shrub
+/// that is scenery, a berry bush, and hemp (`Occupant` 16). `ACT_PICK`
+/// picks hemp too and `EV_SLOT_HARVESTED` can name it. A v93 client mirrors
+/// every one as a bush and would offer a pick on scenery.
 pub const PROTO_VER: u16 = 94;
 
 /// This game's slug in the elo catalog.
@@ -1852,8 +1856,9 @@ const ACT_VEND: u32 = 25;
 /// Swipe a keycard at a ziggurat door, or pull its lever (wire v87,
 /// `sim_core::monument`): the door.
 const ACT_SWIPE: u32 = 26;
-/// Pick a bush by hand (wire v91, `sim_core::gather::pick`): the bush's
-/// `gather::cell_key`, a claim the sim re-derives and reaches for itself.
+/// Pick a berry bush or hemp by hand (wire v91, hemp since v94,
+/// `sim_core::gather::pick`): the plant's `gather::cell_key`, a claim the sim
+/// re-derives and reaches for itself.
 const ACT_PICK: u32 = 27;
 /// Answer the death screen with THE GATE (wire v92, `Command::RespawnGate`).
 /// No payload: the sim decides whether the point is ready.
@@ -2201,7 +2206,7 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
-    /// Pick the bush at cell key `cell` (wire v91). `Container`'s
+    /// Pick the plant at cell key `cell` (wire v91). `Container`'s
     /// `CONT_WORLD` posture: the cell is a claim, and what stands there and
     /// whether it is in reach are the sim's verdict.
     Pick { cell: u32 },
@@ -2505,7 +2510,7 @@ pub fn encode_action_swipe(door: u8, buf: &mut [u8]) -> Result<usize, WireError>
     Ok(w.finish())
 }
 
-/// `ActionMsg::Pick` — pick the bush at cell key `cell`.
+/// `ActionMsg::Pick` — pick the plant at cell key `cell`.
 /// `ActionMsg::RespawnGate` — payload-free.
 pub fn encode_action_respawn_gate(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);

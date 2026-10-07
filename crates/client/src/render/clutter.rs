@@ -71,8 +71,8 @@ pub const TUFT_H: f32 = 0.40;
 /// and the same grass atlas as a tuft** — which is why this is honestly called
 /// brush and not a shrub. `card` scales width with height (`half_w` is
 /// `hj * CARD_ASPECT * 0.5`), so a taller card is a proportionally wider one
-/// and no leaf on the atlas is stretched — the distortion `BUSH_CARD_HALF`
-/// exists to refuse, avoided here for free. A leafy shrub wants the bush atlas
+/// and no leaf on the atlas is stretched — the distortion the bush's square
+/// cards exist to refuse (`plants::card`), avoided here for free. A leafy shrub wants the bush atlas
 /// and a third material per tile; that is a separate slice, and this one buys
 /// the layer's HEIGHT without it.
 pub const BRUSH_H: f32 = 0.75;
@@ -148,6 +148,10 @@ pub struct ClutterRing {
 pub const RING_TILES: usize = ((2 * CLUTTER_RING + 1) * (2 * CLUTTER_RING + 1)) as usize;
 
 impl ClutterRing {
+    /// The grass cards' material, once the first fill has made it.
+    pub fn card_material(&self) -> Option<Handle<super::foliage::FoliageMaterial>> {
+        self.card_material.clone()
+    }
     pub fn len(&self) -> usize {
         self.built.len()
     }
@@ -248,6 +252,12 @@ pub const CARD_SINK: f32 = 0.04;
 /// photograph's colour and takes only a per-instance value multiplier, or the
 /// authored tint fights the measured one. The root-to-tip value the blade ramp
 /// used to author is in the scan already.
+/// One grass tuft rooted at `at`, `scale` times [`TUFT_H`] tall, for a
+/// population this file does not seed (`cliff_skin.rs`'s shelves).
+pub(super) fn tuft(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, scale: f32) {
+    card(s, at, yaw, seed, TUFT_H * scale);
+}
+
 fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
     let root = at - Vec3::Y * h * CARD_SINK;
     // The ground's own macro break-up under the tuft, so a lighter patch of

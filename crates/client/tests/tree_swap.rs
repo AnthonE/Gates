@@ -197,10 +197,11 @@ fn the_desktop_carries_the_range_and_a_browser_does_not() {
     // it hands back the range itself. The browser half is a `cfg` this test
     // cannot run, so its shape is checked as source instead.
     // This suite is type-checked for wasm32 too (the browser-renderer gate
-    // runs clippy with `--all-targets`), where `lod_band` returns nothing —
-    // so the desktop comparison sits behind the same `cfg` as the desktop
-    // half. `assert!`, not `assert_eq!`: `VisibilityRange` has no `Debug`.
-    #[cfg(not(target_arch = "wasm32"))]
+    // runs clippy with `--all-targets`), where under WebGL2 `lod_band`
+    // returns nothing — so the desktop comparison sits behind the same `cfg`
+    // as the desktop half. `assert!`, not `assert_eq!`: `VisibilityRange` has
+    // no `Debug`.
+    #[cfg(not(webgl2))]
     {
         let lod = TreeLod::default();
         let native = tree::lod_band(&lod.near);
@@ -212,11 +213,9 @@ fn the_desktop_carries_the_range_and_a_browser_does_not() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render/tree.rs"))
         .expect("tree.rs");
     assert!(
-        src.contains(
-            "#[cfg(target_arch = \"wasm32\")]\npub fn lod_band(_range: &VisibilityRange) {}"
-        ),
-        "the wasm32 `lod_band` must hand back nothing — a tree part carrying a \
-         VisibilityRange in a browser is the refused pipeline of findings §15.6"
+        src.contains("#[cfg(webgl2)]\npub fn lod_band(_range: &VisibilityRange) {}"),
+        "the WebGL2 `lod_band` must hand back nothing — a tree part carrying a \
+         VisibilityRange under WebGL2 is the refused pipeline of findings §15.6"
     );
     let props =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/render/props.rs"))

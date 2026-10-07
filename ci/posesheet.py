@@ -95,9 +95,10 @@ GRIP_M = _vec3("VIEWMODEL_GRIP_M")
 SEAT = _vec3("VIEWMODEL_SEAT")
 SEAT_DIR = _vec3("VIEWMODEL_SEAT_DIR")
 _HOLD_RS = os.path.join(ROOT, "crates/client/src/ui/hold.rs")
-_roll = re.search(r"GRIP_ROLL_CARRIED: f32 = (-?[\d.]+)", open(_HOLD_RS).read())
+# The bench's row is the hatchet, so it draws the hafted roll.
+_roll = re.search(r"GRIP_ROLL_HAFTED: f32 = (-?[\d.]+)", open(_HOLD_RS).read())
 if not _roll:
-    raise SystemExit(f"{_HOLD_RS}: no GRIP_ROLL_CARRIED; fix this bench.")
+    raise SystemExit(f"{_HOLD_RS}: no GRIP_ROLL_HAFTED; fix this bench.")
 GRIP_ROLL = float(_roll.group(1))
 # `render::rig::FOV_DEG` and the 16:9 the shipped window and `ci/scene.sh` use.
 FOV_DEG, ASPECT = 75.0, 16 / 9
@@ -149,7 +150,10 @@ def right_hand():
         pos = accessor(gltf, blob, p["attributes"]["POSITION"]).astype(np.float64)
         jnt = accessor(gltf, blob, p["attributes"]["JOINTS_0"]).astype(np.int64)
         wgt = accessor(gltf, blob, p["attributes"]["WEIGHTS_0"]).astype(np.float64)
-        sel = np.where(jnt == h, wgt, 0.0).sum(1) > 0.5
+        # The hand and its finger bones (`ci/rig_fingers.py`), all of which
+        # the hand's inverse bind places at rest.
+        own = [i for i, n in enumerate(names) if n.startswith("RightHand")]
+        sel = np.where(np.isin(jnt, own), wgt, 0.0).sum(1) > 0.5
         v = pos[sel]
         out.append((np.concatenate([v, np.ones((len(v), 1))], 1) @ ib.T)[:, :3])
     return np.concatenate(out)

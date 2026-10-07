@@ -80,12 +80,15 @@ pub enum NodeArchetype {
     StoneNode,
     MetalNode,
     SulfurNode,
-    Bush,
+    /// The berry bush (`terrain::Occupant::BerryBush`), picked by hand.
+    BerryBush,
+    /// Hemp (`terrain::Occupant::Hemp`), picked by hand — cloth's own plant.
+    Hemp,
 }
 
-/// A second thing one node pays, flat — the bush's berries beside its
-/// cloth (DECISIONS.md §open, "food you can get"). Flat on purpose: no
-/// tool row and no weak-spot bonus, because picking is not chopping.
+/// A second thing one node pays, flat — the tree's mushrooms beside its
+/// wood (DECISIONS.md §open, "food you can get"). Flat on purpose: no tool
+/// row and no weak-spot bonus, because picking is not chopping.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Secondary {

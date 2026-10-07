@@ -3,6 +3,8 @@
 # `World` is 87 kB — fixed-capacity by design (wall 4), and
 # (85 kB until fire arrows put their fires on the world;
 # 84 kB until the bow's arrow kinds put a damage share on each round;
+# `World` is 85 kB — fixed-capacity by design (wall 4), and
+# (84 kB until hemp's own gather row met the roadside junk in one merge;
 # 78 kB until THE GATE put the town and the vendor offers on the world;
 # (72 kB until world v2 put the landmarks and their trails on `Haven`;
 # 60 kB until skins v0: every stack grew its skin, each player its owned

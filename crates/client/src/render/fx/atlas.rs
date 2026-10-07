@@ -28,6 +28,8 @@ pub const RING: u8 = 11;
 pub const SPECK: u8 = 12;
 pub const LEAF: u8 = 13;
 pub const SPLINTER: u8 = 14;
+/// A flame tongue, tip up — drawn unrolled, or the fire leans.
+pub const FLAME: u8 = 15;
 
 fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
@@ -127,6 +129,31 @@ fn sprite(cell: u8, u: f32, v: f32) -> (f32, f32) {
         SPLINTER => {
             let e = (u * u + (v * 5.0).powi(2)).sqrt();
             (1.0, smooth(0.95, 0.75, e))
+        }
+        // A flame tongue: a round foot, widest a third of the way up, then a
+        // long taper to a tip that noise bends a little, so overlapping
+        // tongues do not stack into one shape. Brightest low in the middle,
+        // where a flame is hottest.
+        FLAME => {
+            let h = (1.0 - v) * 0.5;
+            let x = u - 0.3 * h * (vnoise(h * 2.5, 0.5, seed) - 0.5);
+            let w = if h < 0.3 {
+                0.46 * (h / 0.3).max(0.0).sqrt()
+            } else {
+                0.46 * ((1.0 - h) / 0.7).max(0.0).powf(1.4)
+            };
+            let body = if w > 1e-3 {
+                smooth(w, w * 0.4, x.abs())
+            } else {
+                0.0
+            };
+            let core = smooth(
+                0.7,
+                0.0,
+                ((x / 0.28).powi(2) + ((h - 0.3) / 0.32).powi(2)).sqrt(),
+            );
+            let n = fbm(u * 2.5, v * 3.0 + 7.0, seed);
+            (0.5 + 0.5 * core, body * (0.75 + 0.25 * n))
         }
         _ => (0.0, 0.0),
     };

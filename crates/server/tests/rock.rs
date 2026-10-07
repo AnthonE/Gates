@@ -89,7 +89,7 @@ fn the_starter_rock_has_a_melee_row_on_the_default_hotbar_cell() {
     let c = shipped();
     let combat = c.bake_combat().expect("weapons bake");
     let kit = c.bake_spawn_kit().expect("the kit bakes");
-    let rock = c.item_index("item.rock").expect("the rock is an item");
+    let rock = c.item_index("item.bat").expect("the rock is an item");
 
     // Slot 0 and not "somewhere in the kit": `InputFrame::sel` defaults to
     // 0 and a fresh client sends that until the player presses a number,
@@ -103,7 +103,7 @@ fn the_starter_rock_has_a_melee_row_on_the_default_hotbar_cell() {
     assert!(kit.stacks[0].count > 0, "the kit's rock cell is empty");
 
     let def = combat.held_melee(rock).expect(
-        "`item.rock` has no melee row in the shipped weapons table — this is \
+        "`item.bat` has no melee row in the shipped weapons table — this is \
          the 2026-08-08 hole again: the starting tool gathers and cannot fight, \
          and every band and fixture check stays green",
     );
@@ -124,7 +124,7 @@ fn the_starter_rock_has_a_melee_row_on_the_default_hotbar_cell() {
 fn a_naked_spawn_can_kill_another_player_with_the_rock_it_woke_holding() {
     let c = shipped();
     let mut w = shipped_world(&c);
-    let rock = c.item_index("item.rock").expect("the rock is an item");
+    let rock = c.item_index("item.bat").expect("the rock is an item");
 
     w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
     assert!(
@@ -189,7 +189,7 @@ fn a_naked_spawn_can_kill_another_player_with_the_rock_it_woke_holding() {
         panic!(
             "30 s of swinging a rock at a man standing 0.6 m away and he is \
              still at {full} hp — the starter tool cannot fight. Check \
-             `weapons.toml` for an `item.rock` row before anything else."
+             `weapons.toml` for an `item.bat` row before anything else."
         )
     });
     println!("first blood at tick {t}");

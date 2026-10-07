@@ -184,12 +184,15 @@ slot = "none"
 # 100 pts, torch 50, stone tools 100, metal tools 400 — per item, never one
 # constant (the 4x stone->metal step IS the tool ladder). Absent means 0
 # means never wears and can never be repaired; a nonzero value requires
-# stack = 1 (validate V7). The rock DOES wear and is unrepairable: worn out,
-# it is re-crafted for 10 stone, which is the reference's own bootstrap
+# stack = 1 (validate V7). The bat DOES wear and is unrepairable: worn out,
+# it is re-crafted for 10 wood, which is the reference's own bootstrap
 # shape. No repair verb exists in v0 -- re-craft is the repair (Q3).
+#
+# The bat is the old rock re-skinned (operator, 2026-10-06: Triple T's bat,
+# "keep the rock stats"): every number the rock had, a wooden bat in hand.
 [[item]]
-id = "item.rock"
-name = "Rock"
+id = "item.bat"
+name = "Bat"
 stack = 1
 tier = 0
 rarity = "common"

@@ -268,9 +268,14 @@ fn test_scatter_density_preserved() {
         let f = build(seed);
         let live: u32 = f.counts[1..].iter().sum();
         println!(
-            "seed {seed}: live {live} (tree {} bush {} rock {} stone {} barrel {} crate {})",
+            "seed {seed}: live {live} (tree {} plant {} [berry {} hemp {}] rock {} stone {} \
+             barrel {} crate {})",
             f.counts[Occupant::Tree as usize],
-            f.counts[Occupant::Bush as usize],
+            f.counts[Occupant::BerryBush as usize]
+                + f.counts[Occupant::Hemp as usize]
+                + f.counts[Occupant::Shrub as usize],
+            f.counts[Occupant::BerryBush as usize],
+            f.counts[Occupant::Hemp as usize],
             f.counts[Occupant::Rock as usize],
             f.counts[Occupant::StoneNode as usize],
             f.counts[Occupant::BarrelSlot as usize],

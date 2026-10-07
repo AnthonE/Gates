@@ -336,8 +336,8 @@ impl Gates {
         let seed = session.welcome.seed;
 
         // The backing store: the viewport in device pixels, scaled down
-        // uniformly under WebGL2's 2048 cap — `client::render::web::fit`,
-        // and its header for why the canvas is then STRETCHED back over the
+        // uniformly under the module's surface cap (WebGL2's 2048, WebGPU's
+        // 8192) — `client::render::web::fit_within`, and its header for why the canvas is then STRETCHED back over the
         // viewport with a CSS transform rather than sized to it. Read here,
         // before the window exists, because the first `configure_surface`
         // is the one that must not exceed the cap: winit's `ResizeObserver`
@@ -345,7 +345,12 @@ impl Gates {
         // so the scale override below has to be that ratio for the box Bevy
         // asks for (`physical / override`) to come back as `physical`.
         let (css_w, css_h, dpr) = client::render::web::viewport().unwrap_or((1280.0, 720.0, 1.0));
-        let fit = client::render::web::fit(css_w, css_h, dpr);
+        let fit = client::render::web::fit_within(
+            css_w,
+            css_h,
+            dpr,
+            client::render::web::surface_cap_px(),
+        );
         let (pw, ph) = fit.physical;
         client::render::web::stretch_canvas(&canvas, fit.stretch);
 
@@ -366,6 +371,11 @@ impl Gates {
                 // for a mixer with nothing in it. The desktop binaries have
                 // disabled it since the seam; this one was missed.
                 .disable::<bevy::audio::AudioPlugin>()
+                // Bevy's panic plugin REPLACES the hook `start` installed
+                // (`console_error_panic_hook`, no chaining), and that hook
+                // is the page's only word that a WebGPU module's renderer
+                // never started (`window.gatesPanic`). Ours logs the same.
+                .disable::<bevy::app::PanicHandlerPlugin>()
                 .set(AssetPlugin {
                     // **No `.meta` probe.** Bevy's default is `Always`, which
                     // fires a second request for `<path>.meta` before every
@@ -486,9 +496,21 @@ fn join_error(e: client::JoinError) -> JsValue {
 /// bug in a browser would present as a module that simply stopped. This is the
 /// same reasoning `bin/gates.rs` gives for installing its panic hook first,
 /// before anything can panic.
+///
+/// It also hands the message to `window.gatesPanic`, if the page installed
+/// one: a WebGPU module that panics before its device exists (Bevy's
+/// "Unable to find a GPU!") has no error hook yet, and the page is the only
+/// thing left that can load the WebGL2 module instead.
 #[wasm_bindgen(start)]
 pub fn start() {
     std::panic::set_hook(Box::new(|info| {
-        web_sys::console::error_1(&JsValue::from_str(&format!("gates: panic: {info}")));
+        let msg = JsValue::from_str(&format!("gates: panic: {info}"));
+        web_sys::console::error_1(&msg);
+        let global = js_sys::global();
+        if let Ok(f) = js_sys::Reflect::get(&global, &JsValue::from_str("gatesPanic")) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&global, &msg);
+            }
+        }
     }));
 }

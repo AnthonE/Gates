@@ -304,6 +304,38 @@ $NICE cargo clippy -p client --no-default-features --features render \
   --target wasm32-unknown-unknown --all-targets -- -D warnings \
   || fail "clippy (browser renderer)"
 
+# **The WebGPU module, the page's second game module** (`ci/build_web.sh`
+# builds both and `web/app.js` picks). Under `--features webgpu` Bevy drops
+# its WebGL workarounds and `crates/client/build.rs` stops setting
+# `cfg(webgl2)`, so every split above compiles its OTHER arm here and
+# nowhere else — the shape of rot this file exists to stop.
+# Which backend each module RESOLVES, before anything compiles (~1 s): wgpu's
+# defaults include `webgpu`, so one crate naming it plainly would put the
+# WebGPU backend in the WebGL2 module and nothing else here would notice.
+# Captured first rather than piped: `grep -q` exiting early can SIGPIPE
+# cargo under `pipefail` and turn a failure into a pass.
+echo "== gate: each browser module resolves its own wgpu backend"
+t=$(cargo tree -q -p client-web --target wasm32-unknown-unknown -e features -i wgpu) \
+  || fail "cargo tree (WebGL2 module)"
+grep -q 'wgpu feature "webgpu"' <<<"$t" && fail "the WebGL2 module resolves wgpu's WebGPU backend"
+t=$(cargo tree -q -p client-web --features webgpu --target wasm32-unknown-unknown -e features -i wgpu) \
+  || fail "cargo tree (WebGPU module)"
+grep -q 'wgpu feature "webgpu"' <<<"$t" || fail "the WebGPU module does not resolve wgpu's WebGPU backend"
+
+echo "== gate: browser renderer, WebGPU module (client --features render,webgpu -> wasm32)"
+$NICE cargo clippy -p client --no-default-features --features render,webgpu \
+  --target wasm32-unknown-unknown --all-targets -- -D warnings \
+  || fail "clippy (browser renderer, WebGPU)"
+$NICE cargo clippy -p client-web --features webgpu --target wasm32-unknown-unknown \
+  --all-targets -- -D warnings \
+  || fail "clippy (browser client, WebGPU)"
+if [ "$TIER" = "all" ]; then
+  $NICE cargo build -p client-web --features webgpu --profile web --target wasm32-unknown-unknown \
+    || fail "browser client build (WebGPU)"
+else
+  echo "   SKIPPED (tier fast): the WebGPU --profile web link — main and nightly run it"
+fi
+
 # The parity probe runs one simulation three times (native, wasm under node,
 # debug) and was 43 minutes of a 90-minute run, so a pull request skips it.
 # It is the last gate, and main and nightly run it on every merge.

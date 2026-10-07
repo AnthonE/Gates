@@ -30,6 +30,7 @@ every item either way, because the painted ones are derived works of it.
 | `animal_fat.png` | `lorc/meat` |
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
+| `bat.png` | `delapouite/baseball-bat` |
 | `berries.png` | `delapouite/berries-bowl` |
 | `blueprint.png` | `lorc/tied-scroll` |
 | `bone_arrow.png` | `lorc/arrowhead` |
@@ -76,7 +77,6 @@ every item either way, because the painted ones are derived works of it.
 | `research_table.png` | `lorc/scroll-unfurled` |
 | `revolver.png` | `delapouite/revolver` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
-| `rock.png` | `lorc/rock` |
 | `rope.png` | `delapouite/rope-coil` |
 | `satchel_charge.png` | `delapouite/dynamite` |
 | `shape_doorway.png` | `delapouite/door` |

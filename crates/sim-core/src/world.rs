@@ -1797,10 +1797,11 @@ pub enum Command {
         id: u32,
         cont: u32,
     },
-    /// Pick the bush at cell key `cell` (`gather::cell_key`) by hand — the
-    /// `E` verb (`gather::pick`). `OpenWorldCont`'s shape: the cell is a
-    /// claim, the sim re-derives what stands there through the scatter memo
-    /// and refuses anything that is not a standing bush in reach.
+    /// Pick the berry bush or hemp at cell key `cell` (`gather::cell_key`) by
+    /// hand — the `E` verb (`gather::pick`). `OpenWorldCont`'s shape: the
+    /// cell is a claim, the sim re-derives what stands there through the
+    /// scatter memo and refuses anything that is not a standing plant a hand
+    /// picks, in reach.
     Pick {
         id: u32,
         cell: u32,

@@ -298,7 +298,8 @@ count = 1
 # DECISIONS.md 2026-08-15). **A rock and a torch** — the reference's own
 # naked spawn, spoken after the operator played the shard: *"we should be
 # starting with a rock and a torch"*, *"you cant smash trees with ur hans
-# lol u need a rock"*.
+# lol u need a rock"*. The rock is a bat now (operator, 2026-10-06: Triple
+# T's bat, same numbers), so a spawn wakes with a bat and a torch.
 #
 # This is no longer scaffolding. It replaces nine entries — plan, hammer,
 # stone hatchet, stone pickaxe, torch, 3 bandages, 900 wood, 500 stone,
@@ -309,16 +310,15 @@ count = 1
 # only way any more: `shard.toml`'s `dev_spawn_kit` re-grants a fat kit on
 # a dev shard, and never on a public one (`crates/server/src/config.rs`).
 #
-# **The rock is the mechanism, which is what `BALANCE.md` §6 asks for.**
-# Bare hands pay nothing on any swung node (gatherables.toml), so the rock
-# is what makes the loop start. It costs 10 stone (recipes.toml) and
-# carries no condition, so a player WITH stone can always re-make one.
+# **The bat is the mechanism, which is what `BALANCE.md` §6 asks for.**
+# Bare hands pay nothing on any swung node (gatherables.toml), so the bat
+# is what makes the loop start. It costs 10 wood (recipes.toml), so a
+# player WITH wood can always re-make one.
 #
-# ⚠ **A player with no stone and no rock is stranded until they die**, and
-# that is a property of the shipped tables rather than a guess: stone comes
-# off `gather.stone_node`, whose only yield rows are the rock and the two
-# pickaxes, and no loot table or mob drop pays `item.stone` or `item.rock`
-# (`grep 'item.stone' content/loot.toml content/mobs.toml` — empty). So the
+# ⚠ **A player with no wood and no bat is stranded until they die**, and
+# that is a property of the shipped tables rather than a guess: wood comes
+# off the trees, whose only yield rows are the bat and the two hatchets,
+# and no loot table or mob drop pays `item.bat`. So the
 # re-grant below is not only a convenience, it is the ONLY route back. The
 # reference has the same shape, which is why it hands you a rock on every
 # spawn, so this is probably right — but it is a consequence nobody spoke,
@@ -330,9 +330,9 @@ count = 1
 # the old kit could not go because 900 wood on every death is an item
 # printer and 10 stone of tools is not. `NOW.md` §0die mechanism 3.
 #
-# The order is the order it lands in: rock on hotbar slot 1, torch on 2.
+# The order is the order it lands in: bat on hotbar slot 1, torch on 2.
 [[spawn_kit]]
-item = "item.rock"
+item = "item.bat"
 count = 1
 
 [[spawn_kit]]

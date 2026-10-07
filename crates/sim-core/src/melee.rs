@@ -99,30 +99,42 @@ use crate::yaw_lut::yaw_dir;
 /// stop on the same plank at the same depth.
 pub const MELEE_PROBE_M: f32 = 0.10;
 
-/// The volume a cast tests a **bush** against, `(radius, top)` metres at
-/// slot scale 1 — because `terrain::occupant_volume` gives the bush none.
+/// The volume a cast tests a **berry bush** against, `(radius, top)` metres
+/// at slot scale 1 — because `terrain::occupant_volume` gives the bush none.
 /// Since 2026-10-02 a swing passes through a bush and only the `E` pick
 /// (`gather::pick`, the client's `resolve_pick`) casts at this volume.
 /// **(knob)** `DECISIONS.md` §open, "melee aim v1".
 ///
 /// A bush blocks no body on purpose (you walk through it), so the movement
 /// volume is zero and a ray through zero hits nothing: the one gatherable
-/// you could always swing at would have become unswingable. These are read
-/// off what the client draws — `render/props.rs`'s leaf cards put the mass
-/// at ~1.5 m across and ~1.4 m tall (`BUSH_CARD_HALF`), so the radius is
-/// three-quarters of that half-width and the top a little under the crown.
+/// you could always swing at would have become unswingable. Read off what
+/// the client draws — `render/plants.rs`'s berry bush is ~1.1 m across and
+/// ~1 m tall — and kept a little generous, so a hand that reaches the
+/// leaves reaches the bush.
 pub const BUSH_SWING_R_M: f32 = 0.55;
 /// See [`BUSH_SWING_R_M`].
 pub const BUSH_SWING_TOP_M: f32 = 1.2;
 
+/// The volume the `E` pick tests a **hemp plant** against, `(radius, top)`
+/// metres at slot scale 1 — the bush's reason: a plant blocks nothing, so it
+/// needs a volume of its own to be aimed at. Read off what the client draws
+/// (`render/props.rs`'s hemp): a stalk ~1.3 m tall with leaves reaching
+/// ~0.35 m out, so the radius takes most of the leaf spread and the top the
+/// stalk below its tip. **(knob)**
+pub const HEMP_PICK_R_M: f32 = 0.3;
+/// See [`HEMP_PICK_R_M`].
+pub const HEMP_PICK_TOP_M: f32 = 1.25;
+
 /// The volume a **swing** tests an occupant against, `(radius, top)` metres
 /// at slot scale 1: `terrain::occupant_volume` — the same cylinder a body
-/// and an arrow collide with — except for the bush, which has a swing volume
-/// and no collision volume. One law with one stated exception, so a tree is
-/// exactly as wide to a hatchet as it is to a shoulder.
+/// and an arrow collide with — except for the two plants a hand picks, which
+/// have a pick volume and no collision volume. One law with one stated
+/// exception, so a tree is exactly as wide to a hatchet as it is to a
+/// shoulder. A shrub has neither: nothing aims at scenery.
 pub const fn swing_volume(o: Occupant) -> (f32, f32) {
     match o {
-        Occupant::Bush => (BUSH_SWING_R_M, BUSH_SWING_TOP_M),
+        Occupant::BerryBush => (BUSH_SWING_R_M, BUSH_SWING_TOP_M),
+        Occupant::Hemp => (HEMP_PICK_R_M, HEMP_PICK_TOP_M),
         other => terrain::occupant_volume(other),
     }
 }
@@ -145,6 +157,9 @@ const _: () = {
     }
     if BUSH_SWING_R_M > widest {
         widest = BUSH_SWING_R_M;
+    }
+    if HEMP_PICK_R_M > widest {
+        widest = HEMP_PICK_R_M;
     }
     assert!(
         REACH_M + widest * SLOT_SCALE_MAX + MELEE_PROBE_M < CELL_SIZE,
@@ -375,13 +390,15 @@ pub fn node_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<NodeHit> {
     })
 }
 
-/// The bush a hand reaching along `ray` would pick (`E`, `gather::pick`):
-/// the nearest occupant the ray enters, if that is a bush — a trunk, a node
-/// or a crate in front of it is in the way. The client's `[E] PICK BUSH`
-/// prompt and the server's agent both ask this, so they agree on which bush.
-pub fn bush_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {
-    occupant_cast(seed, occ, ray, |o| o != Occupant::None)
-        .filter(|h| h.slot.occupant == Occupant::Bush)
+/// The plant a hand reaching along `ray` would pick (`E`, `gather::pick`):
+/// the nearest occupant the ray enters, if that is a grown berry bush or
+/// hemp — a trunk, a node or a crate in front of it is in the way, and a
+/// sprout still growing back has nothing on it yet. The client's `[E] PICK`
+/// prompt and the server's agent both ask this, so they agree on which plant.
+pub fn pick_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {
+    occupant_cast(seed, occ, ray, |o| o != Occupant::None).filter(|h| {
+        gather::pickable(h.slot.occupant) && occ.harvested.standing_pm(h.cx, h.cz) == 1000
+    })
 }
 
 /// The nearest occupant of a kind `want` accepts that the ray enters, over
@@ -679,14 +696,20 @@ mod tests {
         assert!(t_out >= t_in);
     }
 
-    /// The bush is the one occupant whose swing volume is not its collision
-    /// volume, and everything else is the collision volume to the bit.
+    /// The two picked plants are the occupants whose swing volume is not
+    /// their collision volume, and everything else is the collision volume
+    /// to the bit — a shrub included, which is (0, 0) both ways.
     #[test]
-    fn the_swing_volume_is_the_collision_volume_except_for_the_bush() {
-        assert_eq!(terrain::occupant_volume(Occupant::Bush), (0.0, 0.0));
+    fn the_swing_volume_is_the_collision_volume_except_for_the_picked_plants() {
+        assert_eq!(terrain::occupant_volume(Occupant::BerryBush), (0.0, 0.0));
         assert_eq!(
-            swing_volume(Occupant::Bush),
+            swing_volume(Occupant::BerryBush),
             (BUSH_SWING_R_M, BUSH_SWING_TOP_M)
+        );
+        assert_eq!(terrain::occupant_volume(Occupant::Hemp), (0.0, 0.0));
+        assert_eq!(
+            swing_volume(Occupant::Hemp),
+            (HEMP_PICK_R_M, HEMP_PICK_TOP_M)
         );
         for o in [
             Occupant::Tree,
@@ -697,6 +720,7 @@ mod tests {
             Occupant::BarrelSlot,
             Occupant::CrateSlot,
             Occupant::CacheSlot,
+            Occupant::Shrub,
         ] {
             assert_eq!(swing_volume(o), terrain::occupant_volume(o), "{o:?}");
         }
