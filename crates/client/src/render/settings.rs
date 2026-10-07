@@ -625,7 +625,14 @@ pub struct Disk {
 /// path is the defaults with persistence off for the run (`None`).
 pub fn load() -> (Settings, Favourites, Option<Disk>) {
     let Some(path) = config::settings_path() else {
-        return (Settings::default(), Favourites::default(), None);
+        // A browser lands here: no file, so the defaults. Except that inside
+        // an X post the game opens in the post (`web::in_post`); FULLSCREEN
+        // on the settings screen still turns it on.
+        let mut settings = Settings::default();
+        if super::web::in_post() {
+            settings.fullscreen = false;
+        }
+        return (settings, Favourites::default(), None);
     };
     let loaded = config::load(&path, Settings::default().persisted());
     let settings = Settings::from_persisted(loaded.values);

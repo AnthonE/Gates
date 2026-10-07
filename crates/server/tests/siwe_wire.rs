@@ -288,6 +288,79 @@ async fn a_guest_still_plays_where_guests_are_taken() {
         .store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// **Letting guests in does not let impostors in.** On a shard that takes
+/// guests, a joiner who claims an address still has to hold its key. This is
+/// what makes `require_auth = false` safe on a shard that saves players
+/// (`shard-public.toml`): a guest gets a fresh body, never somebody's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signature_under_someone_elses_address_is_refused_where_guests_are_taken() {
+    let handle = shard(false).await;
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+
+    let victim = address_of(&key(1));
+    let attacker = key(2);
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        client_handshake(&mut send, &mut recv, DOMAIN, victim, |text| {
+            Some(wallet_sign(
+                &attacker,
+                std::str::from_utf8(text).expect("utf-8"),
+            ))
+        }),
+    )
+    .await
+    .expect("inside 5 s")
+    .expect_err("impersonation must be refused on a guest shard too");
+    assert!(err.contains("refused"), "{err}");
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 1);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// And a real signature is still admitted there, beside the guests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_signed_join_is_admitted_where_guests_are_taken() {
+    let handle = shard(false).await;
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+
+    let sk = key(8);
+    let welcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        client_handshake(&mut send, &mut recv, DOMAIN, address_of(&sk), |text| {
+            Some(wallet_sign(&sk, std::str::from_utf8(text).expect("utf-8")))
+        }),
+    )
+    .await
+    .expect("inside 5 s")
+    .expect("a real signature must be admitted on a guest shard");
+    assert_ne!(welcome.player_id, 0, "welcomed with no player id");
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 0);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 // ── the browser's half ───────────────────────────────────────────────────────
 //
 // Everything above signs text composed by `server::net::client_handshake`.

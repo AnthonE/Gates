@@ -5,6 +5,25 @@
 <title>Gates</title>
 <meta name="description" content="Gates in your browser. Wake with nothing on a hostile island: gather, craft, build, raid, and go again.">
 <meta name="theme-color" content="#1b1916">
+<!-- The post card. A post on X with this page's link shows card.jpg with a
+     play button, and the play button loads `twitter:player` in a frame inside
+     the post: this same page in embed mode (`app.js`, EMBED). The origin lets
+     x.com frame it (scry-forge nginx, the /games/gates/ block). -->
+<meta name="twitter:card" content="player">
+<meta name="twitter:site" content="@ELOPROS1337">
+<meta name="twitter:title" content="Gates">
+<meta name="twitter:description" content="A survival game you play in your browser. Wake with nothing, gather, build, raid.">
+<meta name="twitter:image" content="https://elopros.com/games/gates/card.jpg?v=1">
+<meta name="twitter:image:alt" content="The Gates island: a beach at dusk.">
+<meta name="twitter:player" content="https://elopros.com/games/gates/?embed=1">
+<meta name="twitter:player:width" content="480">
+<meta name="twitter:player:height" content="480">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Elo Pros">
+<meta property="og:title" content="Gates">
+<meta property="og:description" content="A survival game you can play in your browser. Wake with nothing, gather, build, raid.">
+<meta property="og:url" content="https://elopros.com/games/gates/">
+<meta property="og:image" content="https://elopros.com/games/gates/card.jpg?v=1">
 <link rel="preload" href="fonts/RobotoCondensed-Bold.ttf" as="font" type="font/ttf" crossorigin>
 <style>
   /* The desktop client's front end, redrawn in a page. Every colour and the
@@ -326,6 +345,29 @@
   @media (max-width: 560px) {
     .dl { min-width: 0; width: 100%; }
   }
+
+  /* ── inside a post: the embed ─────────────────────────────────────────────
+     The page in an X post's frame (`app.js`, EMBED): the wordmark, one line,
+     PLAY, and nothing else. The server is the public one, the player is a
+     guest unless a wallet is already signed in, and everything the full page
+     offers is one tab away. */
+  body:not(.embed) .embed-only { display: none !important; }
+  body.embed .full-only, body.embed .nav, body.embed .stage, body.embed .foot,
+  body.embed .acct { display: none !important; }
+  body.embed #menu { height: 100vh; height: 100dvh; justify-content: center; }
+  body.embed .top { justify-content: center; padding: 0 16px 14px; }
+  body.embed .wordmark .word { font-size: 34px; }
+  body.embed .wordmark .mark { width: 28px; height: 28px; }
+  body.embed .body { flex: none; justify-content: center; align-items: center; padding: 0 16px; }
+  body.embed .pane-set { flex: none; justify-content: center; align-items: center; }
+  body.embed .panel { width: min(360px, 100%); flex: none; overflow: visible; gap: 12px; padding: 18px;
+                      border-right: 1px solid var(--rule); }
+  body.embed .status:empty { display: none; }
+  body.embed .panel .blurb { font-size: 15px; color: var(--text); }
+  body.embed .panel .linkish, body.embed #drag-line { align-self: center; }
+  #pop-line::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px;
+                      background: var(--good); box-shadow: 0 0 10px rgba(166,207,109,.8); vertical-align: 1px; }
+  body.embed #scene .wash { background: radial-gradient(ellipse at 50% 55%, rgba(14,13,11,.35) 0%, rgba(14,13,11,.8) 100%); }
 </style>
 
 <div id="scene" aria-hidden="true">
@@ -377,18 +419,19 @@
     <!-- PLAY GAME -->
     <section class="pane-set" data-pane="play">
       <div class="panel">
-        <h2>Play game</h2>
+        <h2 class="full-only">Play game</h2>
         <p class="blurb">Wake with nothing on a hostile island. Gather, craft, build, raid — lose it all, and go again.</p>
+        <p class="fine embed-only" id="pop-line" hidden></p>
 
-        <div class="group">Playing as</div>
-        <div id="who-here" class="who" hidden>
+        <div class="group full-only">Playing as</div>
+        <div id="who-here" class="who full-only" hidden>
           <span class="face" id="who-face" aria-hidden="true">·</span>
           <div class="lines">
             <div class="name" id="who-name">—</div>
             <div class="sub"><span class="num" id="who-addr"></span><span id="who-bal"></span></div>
           </div>
         </div>
-        <div id="who-away" class="away">
+        <div id="who-away" class="away full-only">
           <p id="who-away-line">Sign in with your wallet. Your base, your name and your skins follow the wallet, on every server. Set your name and picture on <a href="/profile.html">your account</a>.</p>
           <button class="btn" id="who-in" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M16 12h2M3 9h13a2 2 0 0 0 2-2V5"/></svg>
@@ -398,16 +441,19 @@
             <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2h6v6M10 2L3 9" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></a>
         </div>
 
-        <div class="group">Server <button class="icon-btn" id="refresh" type="button" title="Refresh the server list" aria-label="Refresh the server list"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></div>
-        <div class="list" id="servers" role="radiogroup" aria-label="Servers"></div>
+        <div class="group full-only">Server <button class="icon-btn" id="refresh" type="button" title="Refresh the server list" aria-label="Refresh the server list"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></div>
+        <div class="list full-only" id="servers" role="radiogroup" aria-label="Servers"></div>
 
-        <div class="spacer"></div>
+        <div class="spacer full-only"></div>
         <button class="go" id="go" type="button">
           <span class="go-fill" id="go-fill"></span>
           <span class="go-label" id="go-label">Play</span>
           <span class="go-sub" id="go-sub"></span>
         </button>
+        <p class="fine embed-only" id="drag-line" hidden>Drag to look around · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move</p>
         <button class="linkish" id="guest" type="button" hidden>or join as a guest</button>
+        <button class="linkish" id="wallet-in" type="button" hidden>or sign in with your wallet</button>
+        <a class="linkish embed-only" id="full" href="./" target="_blank" rel="noopener">Play in a new tab</a>
         <p class="status" id="status" role="status" aria-live="polite"></p>
       </div>
 

@@ -53,8 +53,9 @@ seed = 20260731
 #
 # Identity is SIWE (crates/server/src/auth.rs): a joiner signs a nonce this
 # shard chose with the key behind the address they claim, and the shard
-# recovers the signer — `true` refuses anyone who offers no address or whose
-# signature does not verify. DECISIONS.md §open "siwe identity v1".
+# recovers the signer. A signature that does not verify is refused either
+# way; `true` also refuses anyone who offers no address (a guest).
+# DECISIONS.md §open "siwe identity v1".
 # require_auth = false
 
 # The SIWE domain: what goes in the message players sign, and it MUST be the
@@ -81,10 +82,10 @@ seed = 20260731
 # Set it and players keep their inventory, position, hp, meters and craft
 # queue across a disconnect and a restart. Three things to know before you do:
 #
-#   1. It needs require_auth = true as well. A save is filed under the
-#      identity the admission seam returns, and a guest has none — so with
-#      saves armed and admission open, every joiner is remembered by nobody.
-#      The shard prints a WARNING at boot if you do that.
+#   1. A save is filed under the address a joiner proves by signing in, and
+#      a guest has none. With require_auth = false, players who sign in are
+#      saved and guests are remembered by nobody (the public shard runs
+#      this way); require_auth = true keeps guests out entirely.
 #   2. The file is created if absent and pinned to this shard's SEED and
 #      CONTENT HASH. Change either and the shard REFUSES TO BOOT rather than
 #      hand a hundred players an empty inventory: move the file aside (that

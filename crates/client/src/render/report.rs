@@ -320,7 +320,7 @@ fn release(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>, screen: 
     }
     if let Ok(mut c) = cursor.single_mut() {
         c.grab_mode = CursorGrabMode::Locked;
-        c.visible = false;
+        c.visible = super::web::in_post();
     }
 }
 

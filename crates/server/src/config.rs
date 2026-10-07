@@ -92,8 +92,13 @@ pub struct ShardConfig {
     /// `false` (the shipping default) is a shard that takes guests: a player
     /// with no wallet and no launcher plays anyway, which is the same posture
     /// `elo::Player::Anonymous` has always taken on the client. `true`
-    /// refuses a joiner who offers no address, or whose SIWE signature does
-    /// not verify, with `REFUSE_AUTH` (`auth::verify`).
+    /// refuses a joiner who offers no address with `REFUSE_AUTH`.
+    ///
+    /// **Guests are the only thing it decides.** A joiner who offers an
+    /// address is verified either way (`auth::verify`): refused on a bad
+    /// signature, saved under the address on a good one. So turning it off
+    /// lets guests in without weakening anybody's login (`siwe_wire.rs`
+    /// pins both halves on a guest shard).
     ///
     /// **It is a knob and not a wall because a shard's admission policy is
     /// the operator's**, and the two real cases both exist: a public armed
@@ -137,9 +142,9 @@ pub struct ShardConfig {
     /// do about it.
     ///
     /// Persistence also needs an *identity* to file a save under, which is
-    /// `require_auth`'s business and not this knob's: a guest is admitted and
-    /// remembered by nobody. So a shard that wants players to keep their
-    /// things sets both.
+    /// the signature's business and not this knob's: a player who signs in
+    /// is saved, and a guest (admitted where `require_auth` is off) is
+    /// remembered by nobody.
     /// Proposed default `None`, DECISIONS.md §open ("player persistence v0").
     pub save_file: Option<String>,
     /// Path to the **world** file: bases, boxes, bags, fuses, stumps, and

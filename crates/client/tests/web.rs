@@ -9,7 +9,7 @@
 //! deleting either registration (the source scan goes red).
 #![cfg(feature = "render")]
 
-use client::render::web::{fit, SURFACE_CAP_PX};
+use client::render::web::{fit, ui_scale, SURFACE_CAP_PX, UI_FULL_SIZE_PX, UI_SCALE_MIN};
 
 /// A display under the cap is untouched: the backing store is the viewport
 /// in device pixels, the scale is the ratio, and the canvas is not stretched.
@@ -119,6 +119,20 @@ fn no_viewport_and_no_ratio_ever_asks_for_more_than_the_cap() {
     assert_eq!(f.physical, (1, 1));
     let f = fit(f32::NAN, f32::INFINITY, f32::NAN);
     assert!(f.physical.0 >= 1 && f.physical.1 >= 1);
+}
+
+/// An X post's frame scales the UI down so the hotbar clears the meters; a
+/// desktop window, and a viewport reported before layout, never move it.
+#[test]
+fn a_post_sized_viewport_scales_the_ui_and_a_window_does_not() {
+    let post = ui_scale(516.0, 516.0);
+    assert!((UI_SCALE_MIN..0.8).contains(&post), "516 square: {post}");
+    assert_eq!(ui_scale(1280.0, 720.0), 1.0);
+    assert_eq!(ui_scale(1920.0, 1080.0), 1.0);
+    assert_eq!(ui_scale(UI_FULL_SIZE_PX, 2000.0), 1.0);
+    assert_eq!(ui_scale(200.0, 200.0), UI_SCALE_MIN);
+    assert_eq!(ui_scale(0.0, 0.0), 1.0);
+    assert_eq!(ui_scale(f32::NAN, 720.0), 1.0);
 }
 
 /// The page is the menu: entering `Screen::Menu` and an `AppExit` both hand
