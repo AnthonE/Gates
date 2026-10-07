@@ -567,7 +567,7 @@ const REFUSE_M_BITS: u32 = 4;
 /// encoder and the decoder refuse them — the hotbar selector's posture. A
 /// cause is a *closed* set the sim owns: a ninth way to die is the next
 /// wire change, which is the point of wall 6.
-const DEATH_CAUSE_BITS: u32 = 3;
+const DEATH_CAUSE_BITS: u32 = 4;
 /// **Derived, never restated.** This was the literal `2`, and a literal
 /// here is a copy of a fact that lives in another crate — which is exactly
 /// how the 2026-08-05 FAIL shipped: the sim grew `DEATH_BY_ARROW = 3`, the
@@ -7660,8 +7660,9 @@ mod wire_domains {
             // is what refused a firearm cause at hitscan v0, and it let
             // this one through only because arrow recovery v1 spent the
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
-            // the last value the three bits hold.
-            live_max: 7,
+            // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
+            // the widening to four.
+            live_max: 8,
         },
         Domain {
             what: "move refusal",

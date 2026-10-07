@@ -1127,20 +1127,28 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!("deployable `{}`: insert and socket disagree", d.id));
         }
     }
-    // Exactly one lock row, or none. The sim resolves the item to give
-    // back when a lock is unbolted by scanning for the archetype
-    // (`deploy::lock_row`), so a second row would make that scan pick the
-    // first one and hand back the wrong item — silently, and only on the
-    // take verb.
-    let locks = c
+    // At most one code lock and one key lock. The sim resolves the item to
+    // give back when a lock is unbolted by which kind it was
+    // (`deploy::lock_row`), so a second row of a kind would hand back the
+    // wrong item.
+    for keyed in [false, true] {
+        let locks = c
+            .deployables
+            .iter()
+            .filter(|d| d.archetype == DeployArchetype::Lock && d.keyed == keyed)
+            .count();
+        if locks > 1 {
+            return Err(format!(
+                "deployables: {locks} lock rows with keyed = {keyed}, and the sim can only name one"
+            ));
+        }
+    }
+    if let Some(d) = c
         .deployables
         .iter()
-        .filter(|d| d.archetype == DeployArchetype::Lock)
-        .count();
-    if locks > 1 {
-        return Err(format!(
-            "deployables: {locks} lock rows, and the sim can only name one"
-        ));
+        .find(|d| d.keyed && d.archetype != DeployArchetype::Lock)
+    {
+        return Err(format!("deployable `{}`: only a lock can be keyed", d.id));
     }
 
     // The decay ladder: one rate per material, each a live percent, and

@@ -296,7 +296,7 @@ fn test_content() {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
-        (40..=60).contains(&(c.items.len() - fittings.len())),
+        (40..=70).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -1045,11 +1045,10 @@ fn bake_craft_carries_the_shipped_numbers() {
     assert!(def.inputs[..2].contains(&(stone, 100)));
 
     // Station codes map in schema order.
-    let furnace = c.recipe_index("recipe.furnace").unwrap() as usize;
-    assert_eq!(
-        cc.recipes[furnace].station,
-        sim_core::craft::STATION_WORKBENCH1
-    );
+    let bench = c.recipe_index("recipe.lock_code").unwrap() as usize;
+    assert_eq!(cc.recipes[bench].station, sim_core::craft::STATION_NONE);
+    let wb2 = c.recipe_index("recipe.workbench2").unwrap() as usize;
+    assert_eq!(cc.recipes[wb2].station, sim_core::craft::STATION_WORKBENCH1);
     let frags = c.recipe_index("recipe.metal_frags").unwrap() as usize;
     assert_eq!(cc.recipes[frags].station, sim_core::craft::STATION_FURNACE);
 
@@ -2610,17 +2609,27 @@ fn the_code_lock_bakes_to_the_archetype_the_sim_branches_on() {
         .iter()
         .filter(|d| d.arch == sim_core::deploy::ARCH_LOCK)
         .collect();
-    assert_eq!(rows.len(), 1, "exactly one lock reaches the sim");
     assert_eq!(
-        rows[0].placement,
-        sim_core::deploy::PLACE_DOOR,
-        "the lock's placement class is the one that wants an occupied address"
+        rows.len(),
+        2,
+        "the code lock and the key lock reach the sim"
     );
+    for r in &rows {
+        assert_eq!(
+            r.placement,
+            sim_core::deploy::PLACE_DOOR,
+            "the lock's placement class is the one that wants an occupied address"
+        );
+    }
     assert_eq!(
-        rows[0].item,
-        c.item_index("item.lock_code").expect("the lock is an item"),
-        "the row must resolve to the item the take verb hands back"
+        dc.key_lock_item,
+        c.item_index("item.lock_key")
+            .expect("the key lock is an item"),
+        "the keyed row must resolve to the item the take verb hands back"
     );
+    assert!(rows
+        .iter()
+        .any(|r| r.item == c.item_index("item.lock_code").unwrap()));
     for d in dc.defs[..dc.def_count as usize].iter() {
         assert!(
             d.arch == sim_core::deploy::ARCH_LOCK || d.placement != sim_core::deploy::PLACE_DOOR,

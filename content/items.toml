@@ -225,6 +225,15 @@ tier = 0
 rarity = "common"
 slot = "hand"
 
+# Rust's stone spear: the wooden one with a stone head, no bench.
+[[item]]
+id = "item.spear_stone"
+name = "Stone Spear"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
 [[item]]
 id = "item.hatchet_stone"
 name = "Stone Hatchet"
@@ -284,6 +293,15 @@ slot = "hand"
 [[item]]
 id = "item.box_small"
 name = "Small Box"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# Rust's key lock: wood, no bench, the prim base's first security.
+[[item]]
+id = "item.lock_key"
+name = "Key Lock"
 stack = 1
 tier = 0
 rarity = "common"

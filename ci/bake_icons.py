@@ -149,6 +149,7 @@ ITEMS = {
     "bat": "delapouite/baseball-bat",
     "torch": "delapouite/torch",
     "spear_wood": "lorc/spears",
+    "spear_stone": "lorc/stone-spear",
     "hatchet_stone": "delapouite/hatchet",
     "pickaxe_stone": "delapouite/war-pick",
     "bow": "delapouite/bow-arrow",
@@ -177,6 +178,7 @@ ITEMS = {
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
     "lock_code": "delapouite/dial-padlock",
+    "lock_key": "lorc/padlock",
     "recycler": "lorc/recycle",
     # The blueprint you unroll, not the bench you unroll it on: a table at
     # 44 px is a rectangle, and the thing the verb produces reads.

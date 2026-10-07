@@ -975,8 +975,19 @@ pub const DEATH_BY_BULLET: u8 = 6;
 /// body can hold, wet or in the night or both. The eighth cause and the
 /// last one the three-bit field holds — the next is a widening.
 pub const DEATH_BY_COLD: u8 = 7;
+/// The fall (wire v97, `World::fall`): landed harder than a body takes.
+/// The first cause past three bits; the field is four now.
+pub const DEATH_BY_FALL: u8 = 8;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_COLD;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_FALL;
+
+/// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
+/// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
+/// (20 m/s²) a 4 m drop is free, about 8 m costs half a naked body, and
+/// about 14 m kills. Landing in the sea deeper than `FALL_SEA_CM` costs nothing.
+pub const FALL_SAFE_MPS: f32 = 12.6;
+pub const FALL_HP_PER_MPS: f32 = 9.0;
+pub const FALL_SEA_CM: f32 = 80.0;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -1858,6 +1869,14 @@ pub enum Command {
     Consume {
         id: u32,
         slot: u8,
+    },
+    /// Drop `count` of inventory slot `slot` on the ground (Rust's drop).
+    /// It lands in a bag at your feet, merged into your own bag there if one
+    /// is in reach (`backpack::spill_at`). An empty slot does nothing.
+    Drop {
+        id: u32,
+        slot: u8,
+        count: u16,
     },
     /// Trade at one of the town's kiosks (`vend.rs`): offer `offer`,
     /// `times` over. The sim checks reach, funds and room.
@@ -5012,6 +5031,32 @@ impl World {
                     );
                 }
             }
+            Command::Drop {
+                id,
+                slot: inv,
+                count,
+            } => {
+                let i = inv as usize;
+                if let Some(slot) = self.live_slot_of(id).filter(|_| {
+                    // A disarmed backpack module would destroy the drop.
+                    self.backpack.base_ticks != 0 && i < INV_SLOTS && count > 0
+                }) {
+                    let p = &mut self.players[slot];
+                    let n = count.min(p.inv[i].count);
+                    if n > 0 {
+                        let mut spill = [ItemStack::default(); INV_SLOTS];
+                        spill[0] = ItemStack {
+                            count: n,
+                            ..p.inv[i]
+                        };
+                        p.inv[i].count -= n;
+                        if p.inv[i].count == 0 {
+                            p.inv[i] = ItemStack::default();
+                        }
+                        self.drain_spill(slot, &mut spill);
+                    }
+                }
+            }
             Command::Drink { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     // The one verb that can kill the player who pressed it.
@@ -5186,6 +5231,32 @@ impl World {
         if step == survival::Step::Died {
             let id = self.players[i].id;
             self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            return true;
+        }
+        false
+    }
+
+    /// Fall damage for slot `i`, whose body was `before` ahead of this
+    /// tick's step. True when the landing downed or killed it — the
+    /// caller's `continue`, as for the cold.
+    fn fall(&mut self, i: usize, before: movement::Body) -> bool {
+        let body = self.players[i].body;
+        if before.grounded || !body.grounded {
+            return false;
+        }
+        // The speed going in: last tick's fall plus this tick's gravity.
+        let speed = -(before.qvy as f32 * movement::VEL_Q) + movement::GRAVITY * movement::DT;
+        if speed <= FALL_SAFE_MPS {
+            return false;
+        }
+        let feet = body.qy as f32 * movement::POS_Y_Q;
+        if (crate::terrain::SEA_LEVEL - feet) * 100.0 > FALL_SEA_CM {
+            return false;
+        }
+        let dmg = ((speed - FALL_SAFE_MPS) * FALL_HP_PER_MPS).min(u16::MAX as f32) as u16;
+        let id = self.players[i].id;
+        if survival::fall(&mut self.players[i], dmg, &mut self.events) == survival::Step::Died {
+            self.down_or_die(i, id, DEATH_BY_FALL, NO_ITEM, 0, false);
             return true;
         }
         false
@@ -5631,6 +5702,7 @@ impl World {
             // The verbs below never see it — the older frame's buttons
             // never act, exactly as they never acted when the throttle
             // silently dropped it.
+            let falling = self.players[i].body;
             if let Some(prev) = catchup[i] {
                 movement::step(
                     seed,
@@ -5662,6 +5734,9 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
+            if self.fall(i, falling) {
+                continue;
+            }
             // A drawn bow takes the arm before the gather scan sees it.
             // `gather::swing` searches the 3×3 cell ring for a node and
             // absorbs the swing into it, which is precisely what would eat

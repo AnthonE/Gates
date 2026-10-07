@@ -216,6 +216,7 @@ pub fn hash(c: &Content) -> u64 {
             Some(m) => h.u(1 + m as u32),
         }
         h.u(d.hp);
+        h.u(u32::from(d.keyed));
     }
 
     h.s("loot");

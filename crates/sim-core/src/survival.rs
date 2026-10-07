@@ -612,6 +612,20 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
     Step::Changed
 }
 
+/// A hard landing (`World::fall`): `dmg` hp, unreduced — a plate does not
+/// break a fall — and with no bearing, like the cold. `Died` when it was
+/// lethal; the caller downs the body.
+pub fn fall(p: &mut Player, dmg: u16, events: &mut EventQueue) -> Step {
+    if dmg == 0 || p.hp == 0 {
+        return Step::Quiet;
+    }
+    if crate::combat::hurt_unreduced(p, dmg).died {
+        return Step::Died;
+    }
+    events.push(EV_HEALTH, p.id, p.hp as u32, p.hp_max as u32);
+    Step::Changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

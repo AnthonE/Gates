@@ -83,7 +83,7 @@ use crate::limits::{
     MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
     MAX_SPENT_ARROWS, MAX_WORLD_CONTS, SKIN_WORDS,
 };
-use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
+use crate::lock::{LockRec, CODE_KEY, CODE_MAX, CODE_NONE};
 use crate::movement;
 use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
@@ -1462,7 +1462,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         // content row index is: `lock::apply` compares against it and a
         // hand-edited value would make a door nobody can ever open.
         // `CODE_NONE` is the one legal value above the range.
-        if (code > CODE_MAX && code != CODE_NONE)
+        if (code > CODE_MAX && code != CODE_NONE && code != CODE_KEY)
             || (guest_code > CODE_MAX && guest_code != CODE_NONE)
         {
             return Err(WorldSaveError::BadCode);

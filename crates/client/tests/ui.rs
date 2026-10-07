@@ -5469,6 +5469,55 @@ mod quick {
         );
     }
 
+    /// TAKE ALL plans against its own copy: two stacks of wood and a
+    /// hatchet out of a bag never aim at the same empty slot, the wood
+    /// tops up the pack's pile first, and a full pack stops the plan.
+    #[test]
+    fn take_all_plans_every_stack_into_distinct_room() {
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS] = stack(WOOD, 990);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 30);
+        cont[1] = stack(HATCHET, 1);
+        cont[2] = stack(HATCHET, 1);
+        let moves = client::ui::slots::take_all(
+            CONT_BAG,
+            BAG,
+            &catalog(),
+            &inv,
+            &cont,
+            &[ItemStack::default(); WEAR_SLOTS],
+        );
+        let wood: Vec<_> = moves.iter().filter(|m| m.from_slot == 0).collect();
+        assert_eq!(
+            wood.len(),
+            2,
+            "a top-up of 10, then the rest to a free slot"
+        );
+        assert_eq!(
+            (wood[0].to_slot as usize, wood[0].count),
+            (HOTBAR_SLOTS, 10)
+        );
+        assert_eq!(wood[1].count, 20);
+        let mut targets: Vec<u8> = moves.iter().map(|m| m.to_slot).collect();
+        targets.sort_unstable();
+        let n = targets.len();
+        targets.dedup();
+        assert_eq!(targets.len(), n, "two moves aimed at one slot");
+        assert_eq!(moves.len(), 4);
+
+        let full = [stack(HATCHET, 1); INV_SLOTS];
+        assert!(client::ui::slots::take_all(
+            CONT_BAG,
+            BAG,
+            &catalog(),
+            &full,
+            &cont,
+            &[ItemStack::default(); WEAR_SLOTS],
+        )
+        .is_empty());
+    }
+
     /// Nowhere to put it is a sentence, never silence.
     #[test]
     fn a_full_other_side_says_so() {

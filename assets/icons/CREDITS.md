@@ -56,6 +56,7 @@ every item either way, because the painted ones are derived works of it.
 | `high_velocity_arrow.png` | `lorc/supersonic-arrow` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
 | `junk.png` | `delapouite/hexagonal-nut` |
+| `key_lock.png` | `lorc/padlock` |
 | `large_box.png` | `delapouite/cargo-crate` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_bed.png` | `delapouite/sleeping-bag` |
@@ -95,6 +96,7 @@ every item either way, because the painted ones are derived works of it.
 | `stone.png` | `delapouite/stone-pile` |
 | `stone_hatchet.png` | `delapouite/hatchet` |
 | `stone_pickaxe.png` | `delapouite/war-pick` |
+| `stone_spear.png` | `lorc/stone-spear` |
 | `sulfur.png` | `delapouite/powder-bag` |
 | `sulfur_ore.png` | `lorc/crystal-cluster` |
 | `tarp.png` | `delapouite/camping-tent` |

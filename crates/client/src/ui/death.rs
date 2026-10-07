@@ -45,6 +45,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_CLOCK => "you ran out".to_string(),
         DEATH_BY_SALT => "the sea is salt".to_string(),
         DEATH_BY_COLD => "the cold took you".to_string(),
+        sim_core::world::DEATH_BY_FALL => "you fell too far".to_string(),
         DEATH_BY_HAND if d.killer == d.own_id => "you did it to yourself".to_string(),
         DEATH_BY_HAND => {
             let weapon = match item_name(catalog, d.item) {

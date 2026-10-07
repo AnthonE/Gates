@@ -672,6 +672,60 @@ fn finish(
     }
 }
 
+/// Rust's LOOT ALL: every stack of the open container into the pack, as the
+/// quick-moves a right-click on each would send, planned against a copy of
+/// both sides so two stacks never aim at the same empty slot. Stops at the
+/// first stack with nowhere to go (the pack is full).
+pub fn take_all(
+    cont_kind: u8,
+    cont_handle: u32,
+    catalog: &ItemCatalog,
+    inv: &[ItemStack; INV_SLOTS],
+    cont: &[ItemStack; INV_SLOTS],
+    worn: &[ItemStack],
+) -> Vec<MoveArgs> {
+    let mut out = Vec::new();
+    if !looting(cont_kind) {
+        return out;
+    }
+    let (mut inv, mut cont) = (*inv, *cont);
+    for slot in 0..slots_in(cont_kind) {
+        // A stack can take a merge and then an empty slot: a few moves at
+        // most, and every move carries at least one unit.
+        for _ in 0..INV_SLOTS {
+            if cont[slot].count == 0 {
+                break;
+            }
+            let Quick::Send(a) = quick_move(
+                cont_kind,
+                cont_handle,
+                cont_kind,
+                slot,
+                catalog,
+                &inv,
+                &cont,
+                worn,
+            ) else {
+                return out;
+            };
+            let src = cont[slot];
+            let n = a.count.min(src.count);
+            cont[slot].count -= n;
+            if cont[slot].count == 0 {
+                cont[slot] = ItemStack::default();
+            }
+            let to = &mut inv[a.to_slot as usize];
+            if to.count == 0 {
+                *to = ItemStack { count: n, ..src };
+            } else {
+                to.count += n;
+            }
+            out.push(a);
+        }
+    }
+    out
+}
+
 /// The container panel's title. `CONT_SELF` has no panel, so it is named
 /// for what it means rather than drawn.
 pub fn container_title(kind: u8) -> &'static str {

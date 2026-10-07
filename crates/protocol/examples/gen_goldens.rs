@@ -165,6 +165,10 @@ fn main() {
     write_fixture(goldens::FIXTURES[147], &buf[..len]);
     let len = protocol::encode_event_alphabet(goldens::event_alphabet(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[148], &buf[..len]);
+    // Drop an item (v97).
+    let (slot, count) = goldens::action_drop();
+    let len = protocol::encode_action_drop(slot, count, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[149], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

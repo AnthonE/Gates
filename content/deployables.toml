@@ -107,6 +107,16 @@ archetype = "lock"
 placement = "door"
 hp = 100
 
+# The key lock: locked the moment it is on, to its placer and the base's
+# hearth crew, with no keypad (`lock::LockRec::fresh_key`). `hp` is inert
+# for the code lock's reason.
+[[deployable]]
+id = "item.lock_key"
+archetype = "lock"
+placement = "door"
+hp = 100
+keyed = true
+
 [[deployable]]
 id = "item.door_wood"
 archetype = "door"

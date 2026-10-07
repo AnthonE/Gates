@@ -570,6 +570,11 @@ impl Content {
             .map_err(|_| "bake: inside_decay_pct overflows u16".to_string())?;
         dc.grief_periods = u16::try_from(g.grief_protection_h)
             .map_err(|_| "bake: grief_protection_h overflows u16".to_string())?;
+        if let Some(d) = self.deployables.iter().find(|d| d.keyed) {
+            dc.key_lock_item = self
+                .item_index(&d.id)
+                .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?;
+        }
         Ok(dc)
     }
 

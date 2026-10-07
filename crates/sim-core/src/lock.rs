@@ -97,6 +97,10 @@ pub const CODE_NONE: u16 = u16::MAX;
 /// The highest four-digit code. The space is 0000..=9999, and the wire
 /// range-checks against this before the sim ever sees a value.
 pub const CODE_MAX: u16 = 9_999;
+/// The code a **key lock** carries: no keypad, so no code can match it and
+/// none can be set over it. Out of the wire's range like [`CODE_NONE`], so
+/// only placement ever writes it.
+pub const CODE_KEY: u16 = u16::MAX - 1;
 
 /// What a hand may do at a lock. Ordered by rights, so `>=` is the test.
 pub const GRANT_NONE: u8 = 0;
@@ -199,6 +203,22 @@ impl LockRec {
             auth: AuthList::of(owner),
             ..Self::default()
         }
+    }
+
+    /// A key lock as it comes out of the box: locked at once to `owner`
+    /// (Rust's key lock is shut the moment it is on). Nobody else gets
+    /// through but the base's hearth crew (`deploy::use_door`).
+    pub fn fresh_key(cx: u16, cz: u16, level: u8, loc: u8, owner: u32) -> Self {
+        Self {
+            code: CODE_KEY,
+            locked: true,
+            ..Self::fresh(cx, cz, level, loc, owner)
+        }
+    }
+
+    /// No keypad: a key lock rather than a code lock.
+    pub fn is_key(&self) -> bool {
+        self.code == CODE_KEY
     }
 
     /// What `id` may do here. The one predicate — `deploy::use_door` asks
@@ -415,6 +435,15 @@ pub fn apply(locks: &mut Locks, i: usize, id: u32, op: u8, code: u16, tick: u64)
         return Outcome::BadOp;
     }
     let grant = locks.entries[i].grant(id);
+    // A key lock has no keypad: no code to enter, set or share.
+    if locks.entries[i].is_key()
+        && matches!(
+            op,
+            ACCESS_OP_ENTER | ACCESS_OP_SET_CODE | ACCESS_OP_SET_GUEST
+        )
+    {
+        return Outcome::Denied;
+    }
     match op {
         ACCESS_OP_ENTER => enter(locks, i, id, code, tick),
         // Everything else is a full-rights op. One test, once, rather

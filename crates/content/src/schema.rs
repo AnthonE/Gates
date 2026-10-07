@@ -534,6 +534,10 @@ pub struct Deployable {
     /// Doors only: pairs the door under its material's wall hp.
     pub material: Option<Material>,
     pub hp: u32,
+    /// Locks only: a key lock (no keypad, locked to its placer and the
+    /// base's hearth crew) rather than a code lock.
+    #[serde(default)]
+    pub keyed: bool,
 }
 
 /// What an oven burns (`content/cooking.toml`, `sim-core/oven.rs`).

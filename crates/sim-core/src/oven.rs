@@ -87,10 +87,8 @@
 //! reference's overcook), because a burnt row is a cook row whose input
 //! is a cooked item and the food to demonstrate it does not exist yet;
 //! no spoilage clock; no warmth, comfort or light radius (the sim has no
-//! temperature); no smelting migration — the furnace's ore rows are
-//! still station-gated crafts in `content/recipes.toml`, and moving them
-//! here is a content decision that re-prices the powder chain, not a
-//! code one.
+//! temperature). The furnace smelts ore here (its `cooking.toml` rows) and
+//! the station-gated craft rows in `content/recipes.toml` still work too.
 
 use core::ops::Range;
 
