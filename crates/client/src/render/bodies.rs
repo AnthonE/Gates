@@ -392,6 +392,9 @@ pub fn stream(
                         // What it held and how long it has been in the air,
                         // for the draw and the landing it makes heard.
                         super::audio::RemoteHands::default(),
+                        // How closed the right hand is (`fingers::pose`),
+                        // written on the held row's transitions below.
+                        super::fingers::Grip::default(),
                         // Painted as soon as the scene's meshes exist; until
                         // then the body wears the library's own preview
                         // colours, which is one or two frames.
@@ -718,6 +721,11 @@ fn update_hand(
                 live.held_skin = 0;
             }
         }
+        // The fist closes on a row the hand fits round (`fingers`).
+        let grip = want.is_some_and(|row| HELD_MODELS[row].grip_roll.is_some());
+        commands
+            .entity(live.entity)
+            .insert(super::fingers::Grip(if grip { 1.0 } else { 0.0 }));
         live.held = want;
     }
     if live.lit != want_lit {

@@ -216,6 +216,24 @@ length-to-thickness ratio rather than the fingertip offset it used to use —
 that measure PEAKED at the 85° it shipped at and read a fist as an uncurled
 hand. See `HAND_CURL_MAX`.
 
+**The fingers have bones since 2026-10-06** (operator: *"we just need to work
+on rigging fingers"*). `ci/rig_fingers.py` adds three per digit to both hands
+(`RightHandIndex1..3` and so on, 30 in all), bound exactly where the curl
+above put each point of the digit, so at rest the hand is the curled hand to
+the vertex and nothing that reads the mesh moves. `render::fingers` closes the
+right hand on a held row from there. Run it on the curled file, with the
+original import beside it — it refuses unless bending that original
+reproduces the shipped hands:
+
+```
+git fetch --depth=1 origin 44acd3139b7d4d401617c234290d0c2dc91a81c6
+git show 44acd3139b7d4d401617c234290d0c2dc91a81c6:assets/models/stumpy.glb > /tmp/orig.glb
+ci/rig_fingers.py /tmp/orig.glb assets/models/stumpy.glb assets/models/stumpy.glb
+```
+
+Re-curling means re-rigging: run `curl_hands.py` on an unrigged copy, then
+this.
+
 ## `site/` — the two authored places, and the fit rule they forced
 
 Same rail and same pipeline as `deploy/` above — Meshy, paid plan, commissioned

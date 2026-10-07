@@ -149,7 +149,10 @@ def right_hand():
         pos = accessor(gltf, blob, p["attributes"]["POSITION"]).astype(np.float64)
         jnt = accessor(gltf, blob, p["attributes"]["JOINTS_0"]).astype(np.int64)
         wgt = accessor(gltf, blob, p["attributes"]["WEIGHTS_0"]).astype(np.float64)
-        sel = np.where(jnt == h, wgt, 0.0).sum(1) > 0.5
+        # The hand and its finger bones (`ci/rig_fingers.py`), all of which
+        # the hand's inverse bind places at rest.
+        own = [i for i, n in enumerate(names) if n.startswith("RightHand")]
+        sel = np.where(np.isin(jnt, own), wgt, 0.0).sum(1) > 0.5
         v = pos[sel]
         out.append((np.concatenate([v, np.ones((len(v), 1))], 1) @ ib.T)[:, :3])
     return np.concatenate(out)

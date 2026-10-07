@@ -318,10 +318,10 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     // axe stood up in the lower right, whole in frame, the thumb wrapped round
     // the front of the haft) with *"too big"* and *"we have the hand kinda
     // odd"*, then *"let gravity pull the bat down some and make it a bit
-    // bigger"*. Picked off captures, not reasoned: lay −55° / yaw 150° hangs
-    // it at 67° on screen (the barrel's weight dropping it 23° right of
-    // upright), top tipped 17° away from the eye, which is what keeps the
-    // whole bat in frame.
+    // bigger"*. Picked off captures, not reasoned: lay −60° / yaw 160° hangs
+    // it at 72° on screen (the barrel's weight dropping it 18° right of
+    // upright), top tipped 28° away from the eye, which keeps the whole bat
+    // in frame.
     //
     // **Full size, scale 1.0, and that is not a taste call.** At 0.66 the
     // handle drew 2.2 cm across, thinner than the thumb closed on it
@@ -329,25 +329,26 @@ pub const HELD_MODELS: [HeldModelDef; 37] = [
     // bat"*). At 1.0 it is the 3.4 cm the hand's grip line was measured for
     // (`VIEWMODEL_SEAT`'s 3.2 cm rod), so the fist and the bat agree.
     //
-    // **The roll is the hand fix, and the arm is what limits it.**
-    // `GRIP_ROLL_CARRIED` on an upright bat shows the back of the fist with
-    // the thumb laid up the handle. The pose that shows the curled fingers
-    // full-on (the reference's other half) needs a 127° wrist and a 109°
-    // forearm twist, which `tests/viewmodel_arms.rs` refuses and the frame
-    // showed as a broken arm. −0.8 is the best the arm can do inside its
-    // limits (wrist 44°, forearm −20°, arm 10.1 cm): the thumb side of the
-    // fist faces the eye, the thumb wrapped over the front of the handle.
+    // **The wrist is straight, and that is what the angles were solved
+    // for.** The first full-size carry bent the wrist BACK 41° (operator:
+    // *"his wrist looks bent back too far"*) — the hatchet's own row bends
+    // it back 25°. These angles were swept against `hand_set`'s turn split
+    // into extension and deviation in the hand bone's frame, and picked off
+    // captures among the near-neutral ones: 6° in all, 0° of it extension,
+    // the forearm turned 2° and the arm moved 2.7 cm. The roll is 0 — the
+    // hold clip's own hand, which is why the arm barely moves. The fingers
+    // closing on the handle is `render::fingers`, not this row.
     HeldModelDef {
         key: "bat",
         src: HeldSrc::Gen("bat"),
         height_m: 0.840,
         grip_frac: 0.12,
         scale: 1.0,
-        lay: -0.960,
-        pose_yaw: 2.618,
+        lay: -1.047,
+        pose_yaw: 2.793,
         stroke: Stroke::Chop,
         light: None,
-        grip_roll: Some(-0.8),
+        grip_roll: Some(0.0),
     },
     // A hafted tool is held near the butt, far from the head. 0.25 of the
     // model is **36% up the haft**, which is where the number finally means
