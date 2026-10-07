@@ -540,7 +540,11 @@ function counted(res) {
    four shadow cascades — and once through WebGL2 for every browser without
    it. Bevy picks its GPU API when it is COMPILED and has no fallback at run
    time, so the page picks, before the download: a browser that hands back a
-   WebGPU adapter gets the WebGPU module. `?gfx=webgl2` or `?gfx=webgpu`
+   WebGPU adapter gets the WebGPU module — if it has the two optional
+   features that frame leans on and Bevy never checks for: filterable 32-bit
+   floats (the atmosphere's lookup tables) and an `rg11b10ufloat` render
+   target (bloom). Without either the WebGPU frame would be lost, not
+   degraded, so that browser gets WebGL2. `?gfx=webgl2` or `?gfx=webgpu`
    forces one. An older `build.json` that names no modules is the WebGL2
    module alone. */
 const MODULES = {
@@ -558,11 +562,36 @@ async function pickModule(built) {
       navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
       new Promise((r) => setTimeout(() => r(null), 3000)),
     ]);
-    return adapter ? "webgpu" : "webgl2";
+    const needs = ["float32-filterable", "rg11b10ufloat-renderable"];
+    return adapter && needs.every((f) => adapter.features.has(f)) ? "webgpu" : "webgl2";
   } catch (err) {
     return "webgl2";
   }
 }
+
+/* The WebGPU module's error hook (`render/web.rs`, `watch_gpu`): WebGPU
+   refuses a pipeline quietly and the frame is simply not drawn, so the first
+   refusal puts a line over the canvas offering the WebGL2 module. The join is
+   spent by then, so the way there is a reload. */
+let gpuTrouble = false;
+window.gatesGpuError = (msg) => {
+  if (gpuTrouble || window.gatesGfx !== "webgpu") return;
+  gpuTrouble = true;
+  const bar = document.createElement("div");
+  bar.setAttribute("role", "alert");
+  bar.style.cssText = "position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:50;"
+    + "max-width:min(92vw,640px);padding:10px 14px;border-radius:6px;background:rgba(24,20,16,.92);"
+    + "color:#f2e9dc;font:14px/1.4 'Roboto Condensed',system-ui,sans-serif;box-shadow:0 2px 12px #0008";
+  const link = document.createElement("a");
+  const u = new URL(location.href);
+  u.searchParams.set("gfx", "webgl2");
+  link.href = u.toString();
+  link.textContent = "Reload with WebGL2";
+  link.style.cssText = "color:#ffcf7a;margin-left:8px";
+  bar.append("The graphics card refused part of the frame under WebGPU.", link);
+  bar.title = String(msg).slice(0, 400);
+  document.body.append(bar);
+};
 
 async function load(gfx, sizes) {
   const m = MODULES[gfx];

@@ -777,6 +777,10 @@ agentkey = { path = "../agentkey", optional = true }
 # contained its browser path before anything asked it to.
 # ---------------------------------------------------------------------------
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The same wgpu Bevy resolves (one entry in Cargo.lock), named so the WebGPU
+# module can hand the device an error handler: Bevy re-exports neither
+# `wgpu::Error` nor the handler trait (`render/web.rs`, `watch_gpu`).
+wgpu = { version = "27", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

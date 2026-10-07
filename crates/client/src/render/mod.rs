@@ -1813,6 +1813,41 @@ impl Plugin for GatesRenderPlugin {
             );
         }
     }
+
+    /// The device exists from here (`RenderPlugin::finish` put it in the
+    /// main world), so what it can bind is read now: before `rig::setup`
+    /// spawns the camera and `quality::apply` resolves a tier against it.
+    fn finish(&self, app: &mut App) {
+        let Some(device) = app
+            .world()
+            .get_resource::<bevy::render::renderer::RenderDevice>()
+        else {
+            return;
+        };
+        let limits = device.limits();
+        let caps = quality::GpuCaps {
+            sampled_textures: limits.max_sampled_textures_per_shader_stage,
+            storage_textures: limits.max_storage_textures_per_shader_stage,
+            float32_filterable: device
+                .features()
+                .contains(bevy::render::render_resource::WgpuFeatures::FLOAT32_FILTERABLE),
+        };
+        quality::set_gpu_caps(caps);
+        let tier = quality::effective(quality::default_gfx());
+        info!(
+            "gpu: {caps:?}; the default tier draws ao {:?}, taa {}, bloom {}",
+            tier.ao, tier.taa, tier.bloom
+        );
+        #[cfg(all(target_arch = "wasm32", not(webgl2)))]
+        web::watch_gpu(device.wgpu_device());
+        // A browser keeps no settings file, so its default IS the session:
+        // resolved again against the caps, the screen names the preset it
+        // is on rather than reading CUSTOM.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(mut s) = app.world_mut().get_resource_mut::<Settings>() {
+            s.gfx = quality::effective(s.gfx);
+        }
+    }
 }
 
 /// The splash, the menu and the connect screen — every screen a player sees

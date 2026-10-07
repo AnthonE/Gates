@@ -304,6 +304,23 @@ $NICE cargo clippy -p client --no-default-features --features render \
   --target wasm32-unknown-unknown --all-targets -- -D warnings \
   || fail "clippy (browser renderer)"
 
+# **The WebGPU module, the page's second game module** (`ci/build_web.sh`
+# builds both and `web/app.js` picks). Under `--features webgpu` Bevy drops
+# its WebGL workarounds and `crates/client/build.rs` stops setting
+# `cfg(webgl2)`, so every split above compiles its OTHER arm here and
+# nowhere else — the shape of rot this file exists to stop.
+echo "== gate: browser renderer, WebGPU module (client --features render,webgpu -> wasm32)"
+$NICE cargo clippy -p client --no-default-features --features render,webgpu \
+  --target wasm32-unknown-unknown --all-targets -- -D warnings \
+  || fail "clippy (browser renderer, WebGPU)"
+$NICE cargo clippy -p client-web --features webgpu --target wasm32-unknown-unknown \
+  --all-targets -- -D warnings \
+  || fail "clippy (browser client, WebGPU)"
+if [ "$TIER" = "all" ]; then
+  $NICE cargo build -p client-web --features webgpu --profile web --target wasm32-unknown-unknown \
+    || fail "browser client build (WebGPU)"
+fi
+
 # The parity probe runs one simulation three times (native, wasm under node,
 # debug) and was 43 minutes of a 90-minute run, so a pull request skips it.
 # It is the last gate, and main and nightly run it on every merge.

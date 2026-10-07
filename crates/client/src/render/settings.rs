@@ -798,6 +798,9 @@ fn target_note(s: &Settings) -> String {
     if got.ao != want.ao {
         notes.push(format!("ambient occlusion {}", got.ao.name()));
     }
+    if got.taa != want.taa {
+        notes.push("no temporal AA - SMAA instead".to_string());
+    }
     if got.bloom != want.bloom {
         notes.push("no bloom".to_string());
     }

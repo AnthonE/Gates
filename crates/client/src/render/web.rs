@@ -144,6 +144,44 @@ pub fn fit_within(css_w: f32, css_h: f32, dpr: f32, cap_px: u32) -> Fit {
     }
 }
 
+/// Say so when WebGPU refuses something, which it does quietly.
+///
+/// Under WebGL2 an invalid pipeline or bind group panics inside wgpu-core
+/// and the page sees a dead module. Under WebGPU the browser logs a warning
+/// (and stops logging after a few) and the frame that held it is not drawn:
+/// Bevy submits a frame in one call, so one refused pipeline is a black or
+/// frozen canvas with nothing a player can read. Bevy installs no handler,
+/// so this one logs every error and hands the first to the page
+/// (`window.gatesGpuError`), which offers the WebGL2 module instead.
+#[cfg(all(target_arch = "wasm32", not(webgl2)))]
+pub fn watch_gpu(device: &wgpu::Device) {
+    device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+        let msg = e.to_string();
+        bevy::log::error!("webgpu: {msg}");
+        gpu_trouble(&msg);
+    }));
+    device.set_device_lost_callback(|reason, msg| {
+        let msg = format!("device lost ({reason:?}): {msg}");
+        bevy::log::error!("webgpu: {msg}");
+        gpu_trouble(&msg);
+    });
+}
+
+/// `window.gatesGpuError(message)`, if the page installed one.
+#[cfg(all(target_arch = "wasm32", not(webgl2)))]
+fn gpu_trouble(msg: &str) {
+    use wasm_bindgen::{JsCast, JsValue};
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let hook = js_sys::Reflect::get(&window, &JsValue::from_str("gatesGpuError"))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
+    if let Some(f) = hook {
+        let _ = f.call1(&window, &JsValue::from_str(msg));
+    }
+}
+
 /// The page's viewport this frame: `(css_w, css_h, devicePixelRatio)`.
 #[cfg(target_arch = "wasm32")]
 pub fn viewport() -> Option<(f32, f32, f32)> {

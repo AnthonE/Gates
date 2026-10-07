@@ -386,24 +386,28 @@ pub fn setup(
         },
     ));
 
+    // Where the device has room for it ([`super::quality::GpuCaps`]): a
+    // device that cannot bind the prepasses gets no component, because the
+    // `#[require]` would add them whether the plugin ran or not.
     #[cfg(not(webgl2))]
-    commands.entity(eye).insert(
-        // **AO is how the fill's cost gets paid back.** Raising the ambient to
-        // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
-        // the darks — p10 went 41.9 → 64.9 against a reference of 41.0. That
-        // is the documented failure mode of a global fill, and §4 of the art
-        // bible states the fix in one line: raise the fill and put the
-        // darkness back where it belongs. AO removes ambient only where
-        // geometry occludes, which is under every boulder, inside every
-        // canopy, and in the crease where a prop meets the ground.
-        //
-        // Medium, not the `High` default: this renders on a CPU rasterizer in
-        // the gate and High is 18 samples per pixel.
-        // …and Medium is now `Quality::High`'s row rather than a literal
-        // here. `rig::setup` spawns the DEFAULT tier, so a fresh boot draws
-        // exactly what it drew before tiers existed and `quality::apply`
-        // writes nothing until a player moves the knob.
-        ScreenSpaceAmbientOcclusion {
+    if let Some(quality_level) = super::quality::tier(crate::config::Quality::default()).ssao {
+        commands.entity(eye).insert(
+            // **AO is how the fill's cost gets paid back.** Raising the ambient to
+            // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
+            // the darks — p10 went 41.9 → 64.9 against a reference of 41.0. That
+            // is the documented failure mode of a global fill, and §4 of the art
+            // bible states the fix in one line: raise the fill and put the
+            // darkness back where it belongs. AO removes ambient only where
+            // geometry occludes, which is under every boulder, inside every
+            // canopy, and in the crease where a prop meets the ground.
+            //
+            // Medium, not the `High` default: this renders on a CPU rasterizer in
+            // the gate and High is 18 samples per pixel.
+            // …and Medium is now `Quality::High`'s row rather than a literal
+            // here. `rig::setup` spawns the DEFAULT tier, so a fresh boot draws
+            // exactly what it drew before tiers existed and `quality::apply`
+            // writes nothing until a player moves the knob.
+            //
             // **The DEFAULT tier, not the player's** — a bundle is static
             // and the LOW rung carries no such component at all, so a rig
             // that tried to spawn the current tier could express two of the
@@ -411,12 +415,12 @@ pub fn setup(
             // the frame this camera appears (it watches `Added<EyeCam>` for
             // exactly this), so a persisted LOW is corrected before the first
             // frame is drawn rather than being a bundle shape.
-            quality_level: super::quality::tier(crate::config::Quality::default())
-                .ssao
-                .expect("the default tier carries ambient occlusion"),
-            ..default()
-        },
-    );
+            ScreenSpaceAmbientOcclusion {
+                quality_level,
+                ..default()
+            },
+        );
+    }
     // **No depth prepass in a browser either, and it was tried** (2026-09-12).
     // On the desktop `ScreenSpaceAmbientOcclusion` is `#[require(DepthPrepass,
     // NormalPrepass)]`, so the depth the forward decals read arrives with the
