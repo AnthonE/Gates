@@ -391,13 +391,14 @@ pub fn node_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<NodeHit> {
 }
 
 /// The plant a hand reaching along `ray` would pick (`E`, `gather::pick`):
-/// the nearest occupant the ray enters, if that is a berry bush or hemp — a
-/// trunk, a node or a crate in front of it is in the way. The client's
-/// `[E] PICK` prompt and the server's agent both ask this, so they agree on
-/// which plant.
+/// the nearest occupant the ray enters, if that is a grown berry bush or
+/// hemp — a trunk, a node or a crate in front of it is in the way, and a
+/// sprout still growing back has nothing on it yet. The client's `[E] PICK`
+/// prompt and the server's agent both ask this, so they agree on which plant.
 pub fn pick_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {
-    occupant_cast(seed, occ, ray, |o| o != Occupant::None)
-        .filter(|h| gather::pickable(h.slot.occupant))
+    occupant_cast(seed, occ, ray, |o| o != Occupant::None).filter(|h| {
+        gather::pickable(h.slot.occupant) && occ.harvested.standing_pm(h.cx, h.cz) == 1000
+    })
 }
 
 /// The nearest occupant of a kind `want` accepts that the ray enters, over

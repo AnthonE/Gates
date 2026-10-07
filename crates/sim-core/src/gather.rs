@@ -122,16 +122,41 @@ pub const SAPLING_PM: u16 = 150;
 /// predictor and the server agree about a sapling's trunk exactly.
 pub const GROW_STAGES: u64 = 16;
 
+/// A picked plant grows back the same way, quicker: a berry bush or a hemp
+/// plant comes back as a sprout where it was picked and is grown three
+/// minutes later — and only then can be picked again, so a berry bush comes
+/// back bare and fruits when it is grown.
+pub const PLANT_GROW_TICKS: u64 = 5_400;
+
+/// How long a slot that stood `occ` (`terrain::Occupant as u8`, as
+/// [`SlotLife::occ`] keeps it) takes to grow back once its timer runs out,
+/// or `None` for one that comes back whole: a node, a barrel, a crate.
+pub const fn grow_span(occ: u8) -> Option<u64> {
+    if occ == Occupant::Tree as u8 {
+        Some(TREE_GROW_TICKS)
+    } else if occ == Occupant::BerryBush as u8 || occ == Occupant::Hemp as u8 {
+        Some(PLANT_GROW_TICKS)
+    } else {
+        None
+    }
+}
+
 /// How big a tree growing until `grown_at` is at `now`, per mille of full
 /// size, in `GROW_STAGES` steps. `grown_at == 0` (not growing) or a tick
 /// past it is a full tree.
 #[inline]
 pub fn grow_pm(grown_at: u64, now: u64) -> u16 {
-    if grown_at == 0 || now >= grown_at {
+    grow_pm_over(grown_at, now, TREE_GROW_TICKS)
+}
+
+/// [`grow_pm`] for something that takes `span` ticks to grow.
+#[inline]
+pub fn grow_pm_over(grown_at: u64, now: u64, span: u64) -> u16 {
+    if grown_at == 0 || now >= grown_at || span == 0 {
         return 1000;
     }
-    let left = (grown_at - now).min(TREE_GROW_TICKS);
-    let stage = (TREE_GROW_TICKS - left) * GROW_STAGES / TREE_GROW_TICKS;
+    let left = (grown_at - now).min(span);
+    let stage = (span - left) * GROW_STAGES / span;
     SAPLING_PM + ((1000 - SAPLING_PM) as u64 * stage / GROW_STAGES) as u16
 }
 
@@ -744,7 +769,11 @@ impl SlotLives {
         match self.find(cx, cz) {
             None => 1000,
             Some(e) if e.respawn_at != 0 => 0,
-            Some(e) => grow_pm(e.grown_at, self.now),
+            Some(e) => grow_pm_over(
+                e.grown_at,
+                self.now,
+                grow_span(e.occ).unwrap_or(TREE_GROW_TICKS),
+            ),
         }
     }
 
@@ -843,11 +872,12 @@ impl SlotLives {
     /// via `events` (EV_SLOT_RESPAWNED). Swap-remove keeps the store
     /// dense; the order it produces is deterministic like everything else.
     ///
-    /// A tree does not come back whole (tree growth v0): its timer turns the
-    /// stump into a sapling that stays in the store, growing until
-    /// `grown_at`, and is retired then — or kept as a damaged tree if it was
-    /// hit while it grew. The event says which: `b` the grown-by tick's low
-    /// 32 bits and `c` 1 for a sapling, both 0 for anything else.
+    /// A tree does not come back whole (tree growth v0), nor does a picked
+    /// plant: its timer turns the stump into a sapling (the plant into a
+    /// sprout) that stays in the store, growing until `grown_at`, and is
+    /// retired then — or kept as a damaged tree if it was hit while it grew.
+    /// The event says which: `b` the grown-by tick's low 32 bits and `c` 1
+    /// for a sapling, both 0 for anything else.
     pub fn respawn_due(&mut self, tick: u64, events: &mut EventQueue) {
         self.respawn_due_unless(tick, events, &|_, _| false);
     }
@@ -871,8 +901,8 @@ impl SlotLives {
                     i += 1;
                     continue;
                 }
-                if e.occ == crate::terrain::Occupant::Tree as u8 {
-                    let grown_at = tick + TREE_GROW_TICKS;
+                if let Some(span) = grow_span(e.occ) {
+                    let grown_at = tick + span;
                     self.entries[i] = SlotLife {
                         hits: 0,
                         respawn_at: 0,
@@ -1279,7 +1309,8 @@ pub fn pick(
     cz: u16,
     slot: &crate::terrain::Slot,
 ) -> bool {
-    if !pickable(slot.occupant) || lives.standing_pm(cx, cz) == 0 {
+    // Picked, or a sprout still growing back: nothing to pick yet.
+    if !pickable(slot.occupant) || lives.standing_pm(cx, cz) != 1000 {
         return false;
     }
     // Reach: eye to the nearest point of the plant's (probed) swing volume.

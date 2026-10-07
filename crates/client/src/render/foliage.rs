@@ -133,15 +133,17 @@ pub enum Kind {
     Grass,
     /// A shrub's or a berry bush's leaf cards (`plants.rs`), ground-rooted.
     BushLeaf,
-    /// Hemp's leaf cards: the bush's bend, and a gentler edge-on cut — a hemp
-    /// leaf is a near-horizontal plate, so from a standing eye most of them
-    /// are seen at a grazing angle, and the leaves' full cut would strip the
-    /// plant to its stalk.
+    /// Hemp's leaf cards: hemp's own looser bend, and a gentler edge-on cut —
+    /// a hemp leaf is a near-horizontal plate, so from a standing eye most of
+    /// them are seen at a grazing angle, and the leaves' full cut would strip
+    /// the plant to its stalk.
     HempLeaf,
-    /// A plant's wood — twigs, the hemp stalk, the berries — on the bush's
+    /// A shrub's or a berry bush's wood — twigs and berries — on the bush's
     /// bend so it stays inside its leaves, with no flutter (a berry would
     /// wobble out of round) and no edge-on cut (it is a solid, not a card).
     Stem,
+    /// Hemp's stalk: [`Kind::Stem`] on hemp's bend, so the leaves stay on it.
+    HempStem,
     /// A near tree's trunk: sways with its canopy, never flutters.
     Bark,
     /// A conifer's needle cards.
@@ -158,8 +160,21 @@ const TREE_SWAY: [f32; 3] = [0.22, 6.6, 0.9];
 
 /// A plant's sway, the same way: amplitude at the reference height, the
 /// reference height, the angular frequency. **Shared by a plant's leaves and
-/// its wood**, so the berries and the stalk stay where the leaves are.
+/// its wood**, so the berries and the twigs stay where the leaves are. A
+/// shrub is a woody mass: stiff, and quick when it does move.
 const PLANT_SWAY: [f32; 3] = [0.09, 1.5, 1.7];
+
+/// Hemp's: one soft stalk, so it bends further and swings slower than a
+/// shrub — a clear day's breeze moves its top a hand's width, a storm lays
+/// it over. Shared by the leaves and the stalk for `PLANT_SWAY`'s reason.
+const HEMP_SWAY: [f32; 3] = [0.22, 1.3, 1.15];
+
+/// How far a body moving through a plant parts it: the reach from the body's
+/// axis, metres, and the share of that reach the nearest leaves are pushed
+/// out by (`foliage_common.wgsl`, texels 4..7). A shrub's mass parts wide; a
+/// hemp stalk only bends out of the way.
+const PART_SHRUB: [f32; 2] = [0.85, 0.55];
+const PART_HEMP: [f32; 2] = [0.7, 0.6];
 
 impl Kind {
     /// The uniform for this kind. Static: see the module doc for why it
@@ -167,6 +182,9 @@ impl Kind {
     pub fn params(self) -> FoliageParams {
         let [ta, th, tw] = TREE_SWAY;
         let [pa, ph, pw] = PLANT_SWAY;
+        let [ha, hh, hw] = HEMP_SWAY;
+        let shrub_part = Vec4::new(0.0, PART_SHRUB[0], PART_SHRUB[1], 0.0);
+        let hemp_part = Vec4::new(0.0, PART_HEMP[0], PART_HEMP[1], 0.0);
         let (sway, fade, misc) = match self {
             Kind::Grass => (
                 Vec4::new(0.06, super::clutter::TUFT_H, 2.6, 0.012),
@@ -180,14 +198,15 @@ impl Kind {
             Kind::BushLeaf => (
                 Vec4::new(pa, ph, pw, 0.02),
                 Vec4::new(0.0, 0.0, 1.0, 0.0),
-                Vec4::ZERO,
+                shrub_part,
             ),
             Kind::HempLeaf => (
-                Vec4::new(pa, ph, pw, 0.02),
+                Vec4::new(ha, hh, hw, 0.03),
                 Vec4::new(0.0, 0.0, 0.35, 0.0),
-                Vec4::ZERO,
+                hemp_part,
             ),
-            Kind::Stem => (Vec4::new(pa, ph, pw, 0.0), Vec4::ZERO, Vec4::ZERO),
+            Kind::Stem => (Vec4::new(pa, ph, pw, 0.0), Vec4::ZERO, shrub_part),
+            Kind::HempStem => (Vec4::new(ha, hh, hw, 0.0), Vec4::ZERO, hemp_part),
             Kind::Bark => (Vec4::new(ta, th, tw, 0.0), Vec4::ZERO, Vec4::ZERO),
             Kind::Needle => (
                 Vec4::new(ta, th, tw, 0.025),
@@ -211,7 +230,7 @@ impl Kind {
             Kind::Grass | Kind::BushLeaf | Kind::HempLeaf => 0.3,
             Kind::Needle => 0.25,
             Kind::Leaf => 0.35,
-            Kind::Bark | Kind::Stem => 0.0,
+            Kind::Bark | Kind::Stem | Kind::HempStem => 0.0,
         }
     }
 }
@@ -374,9 +393,18 @@ impl Trample {
 pub struct FoliageUpload {
     pub state: Handle<Image>,
     pub trample: Handle<Image>,
-    pub state_px: [f32; 16],
+    pub state_px: [f32; STATE_FLOATS],
     pub trample_px: Arc<Vec<u8>>,
 }
+
+/// Texels in the per-frame state texture (`foliage_common.wgsl`): the wind,
+/// the trail window, a blast, the downwash, and [`BODIES`] bodies.
+pub const STATE_TEXELS: usize = 4 + BODIES;
+const STATE_FLOATS: usize = STATE_TEXELS * 4;
+
+/// Bodies a plant parts for: you, and the nearest others moving through
+/// plants near you.
+pub const BODIES: usize = 4;
 
 /// Register the material, the textures and the GPU writer.
 pub fn plugin(app: &mut App) {
@@ -396,7 +424,7 @@ pub fn plugin(app: &mut App) {
 pub fn init(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let state = images.add(Image::new_fill(
         Extent3d {
-            width: 4,
+            width: STATE_TEXELS as u32,
             height: 1,
             depth_or_array_layers: 1,
         },
@@ -428,7 +456,7 @@ pub fn init(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.insert_resource(FoliageUpload {
         state: state.clone(),
         trample: trample.clone(),
-        state_px: [0.0; 16],
+        state_px: [0.0; STATE_FLOATS],
         trample_px: Arc::new(vec![0; TRAMPLE_TEXELS * TRAMPLE_TEXELS]),
     });
     commands.insert_resource(Foliages::new(state, trample));
@@ -453,21 +481,59 @@ pub const HELI_WASH: f32 = 2.5;
 pub const HELI_WASH_FULL_M: f32 = 8.0;
 pub const HELI_WASH_GONE_M: f32 = 40.0;
 
+/// Speed at which a body parts a plant fully, m/s — a walk. **(knob)**
+pub const PART_FULL_MPS: f32 = 3.0;
+/// How fast a body's push opens a plant, and how slowly the plant closes
+/// behind it once the body stops, seconds: a bush springs back, it does not
+/// snap.
+pub const PART_OPEN_S: f32 = 0.15;
+pub const PART_CLOSE_S: f32 = 1.4;
+/// Your own push never falls under this, so the leaves of the bush you are
+/// standing in stay off the camera — but it is small, so a bush you have
+/// stopped in closes nearly round you, and a body holding still in cover is
+/// not drawn parting it for everyone else to see.
+pub const PART_EYE_FLOOR: f32 = 0.3;
+/// How far from the eye another body still parts plants, metres.
+pub const PART_NEAR_M: f32 = 40.0;
+
+/// Each body's push through the plants, eased (`update`'s texels 4..7):
+/// this frame's and last frame's, swapped, so the lists keep their capacity.
+#[derive(Default)]
+pub struct Parting {
+    eye: Option<(Vec3, f32)>,
+    others: Vec<(Entity, Vec3, f32)>,
+    last: Vec<(Entity, Vec3, f32)>,
+}
+
+/// Ease a body's push toward how fast it is moving: open quickly, close
+/// slowly. `moved` is how far it went this frame, metres.
+fn ease_part(strength: f32, moved: f32, dt: f32, floor: f32) -> f32 {
+    let want = (moved / dt.max(1e-4) / PART_FULL_MPS).clamp(floor, 1.0);
+    let tau = if want > strength {
+        PART_OPEN_S
+    } else {
+        PART_CLOSE_S
+    };
+    strength + (want - strength) * (dt / tau).min(1.0)
+}
+
 /// This frame's wind, clock and trails, into [`FoliageUpload`] — and the
 /// local gusts Rust's foliage answers to as well as the global wind: a
-/// blast's shock (texel 2) and the helicopter's downwash (texel 3).
+/// blast's shock (texel 2), the helicopter's downwash (texel 3), and the
+/// bodies moving through the plants (texels 4..7).
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     time: Res<Time>,
     eye: Res<Eye>,
     weather: Option<Res<WeatherNow>>,
-    walkers: Query<&GlobalTransform, Walkers>,
+    walkers: Query<(Entity, &GlobalTransform), Walkers>,
     mut trample: ResMut<Trample>,
     mut up: ResMut<FoliageUpload>,
     contacts: Option<Res<super::impact::Contacts>>,
     heli: Query<&GlobalTransform, With<super::heli::HeliBody>>,
     world: Option<Res<super::WorldId>>,
     mut blast: Local<Option<(Vec2, f64)>>,
+    mut parting: Local<Parting>,
 ) {
     let dt = time.delta_secs().min(0.25);
     let w = weather.map(|w| *w).unwrap_or_default();
@@ -486,12 +552,60 @@ pub fn update(
         trample.stamp(feet, dt);
     }
     let reach = TRAMPLE_M * 0.5;
-    for g in &walkers {
+    for (_, g) in &walkers {
         let p = g.translation();
         let at = Vec2::new(p.x, p.z);
         if (at - feet).abs().max_element() < reach {
             trample.stamp(at, dt);
         }
+    }
+
+    // The bodies parting the plants: you, then the three nearest others.
+    let own_feet = eye.pos - Vec3::Y * eye.height;
+    parting.eye = eye.placed.then(|| {
+        let (last, s) = parting.eye.unwrap_or((own_feet, PART_EYE_FLOOR));
+        let moved = (own_feet - last).xz().length();
+        (own_feet, ease_part(s, moved, dt, PART_EYE_FLOOR))
+    });
+    let Parting { others, last, .. } = &mut *parting;
+    std::mem::swap(others, last);
+    others.clear();
+    for (e, g) in &walkers {
+        let p = g.translation();
+        if (p - own_feet).xz().length() > PART_NEAR_M {
+            continue;
+        }
+        let (was, s) = last
+            .iter()
+            .find(|k| k.0 == e)
+            .map_or((p, 0.0), |k| (k.1, k.2));
+        let moved = (p - was).xz().length();
+        others.push((e, p, ease_part(s, moved, dt, 0.0)));
+    }
+    // Insertion into the three nearest, closest first.
+    let mut near: [Option<(f32, Vec3, f32)>; BODIES - 1] = [None; BODIES - 1];
+    for &(_, p, s) in &parting.others {
+        if s < 0.02 {
+            continue;
+        }
+        let mut c = ((p - own_feet).xz().length_squared(), p, s);
+        for slot in near.iter_mut() {
+            match slot {
+                Some(have) if have.0 <= c.0 => {}
+                Some(have) => std::mem::swap(have, &mut c),
+                None => {
+                    *slot = Some(c);
+                    break;
+                }
+            }
+        }
+    }
+    let mut bodies = [[0.0f32; 4]; BODIES];
+    if let Some((p, s)) = parting.eye {
+        bodies[0] = [p.x, p.z, p.y, s];
+    }
+    for (dst, (_, p, s)) in bodies[1..].iter_mut().zip(near.into_iter().flatten()) {
+        *dst = [p.x, p.z, p.y, s];
     }
 
     let clock = (time.elapsed_secs_f64() % CLOCK_WRAP_S) as f32;
@@ -527,24 +641,15 @@ pub fn update(
             [p.x, p.z, HELI_WASH * low, 0.0]
         })
         .unwrap_or([0.0; 4]);
-    up.state_px = [
-        dir.x,
-        dir.y,
-        trample.wind,
-        clock,
-        centre.x,
-        centre.y,
-        TRAMPLE_M,
-        0.0,
-        shock[0],
-        shock[1],
-        shock[2],
-        shock[3],
-        wash[0],
-        wash[1],
-        wash[2],
-        wash[3],
+    let fixed = [
+        [dir.x, dir.y, trample.wind, clock],
+        [centre.x, centre.y, TRAMPLE_M, 0.0],
+        shock,
+        wash,
     ];
+    for (texel, v) in fixed.iter().chain(bodies.iter()).enumerate() {
+        up.state_px[texel * 4..texel * 4 + 4].copy_from_slice(v);
+    }
     let px = Arc::make_mut(&mut up.trample_px);
     for (dst, v) in px.iter_mut().zip(&trample.px) {
         *dst = (v * 255.0 + 0.5) as u8;
@@ -600,7 +705,7 @@ pub fn write_textures(
 ) {
     let Some(up) = up else { return };
     if let Some(img) = images.get(&up.state) {
-        let mut bytes = [0u8; 64];
+        let mut bytes = [0u8; STATE_FLOATS * 4];
         for (i, f) in up.state_px.iter().enumerate() {
             bytes[i * 4..i * 4 + 4].copy_from_slice(&f.to_le_bytes());
         }
@@ -609,11 +714,11 @@ pub fn write_textures(
             &bytes,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(64),
+                bytes_per_row: Some((STATE_FLOATS * 4) as u32),
                 rows_per_image: None,
             },
             Extent3d {
-                width: 4,
+                width: STATE_TEXELS as u32,
                 height: 1,
                 depth_or_array_layers: 1,
             },

@@ -193,6 +193,16 @@ pub struct PropAssets {
     berry_fruit: Vec<Handle<Mesh>>,
     hemp_leaves: Vec<Handle<Mesh>>,
     hemp_stalk: Vec<Handle<Mesh>>,
+    /// What a shrub cell grows besides the leafy shrub (`plants::Scenery`),
+    /// a pool each, indexed by yaw like the rest. A clump of wildflowers'
+    /// stems and heads run `PLANT_POOL` to a palette.
+    fern_leaves: Vec<Handle<Mesh>>,
+    fern_wood: Vec<Handle<Mesh>>,
+    juniper_leaves: Vec<Handle<Mesh>>,
+    juniper_wood: Vec<Handle<Mesh>>,
+    dead_wood: Vec<Handle<Mesh>>,
+    flower_heads: Vec<Handle<Mesh>>,
+    flower_base: Vec<Handle<Mesh>>,
     /// The shrub's and the berry bush's leaf material: alpha-MASKED, wearing
     /// the leaf atlas. Separate from `foliage` for the reason `needle` is
     /// separate from `bark` — one `StandardMaterial` has one `alpha_mode`.
@@ -200,11 +210,22 @@ pub struct PropAssets {
     /// Hemp's leaf material: the same masked shape, wearing the drawn hemp
     /// leaf (`plants::hemp_leaf_image`).
     hemp_leaf: [Handle<StandardMaterial>; TINT_POOL],
-    /// Every plant's wood — twigs, the hemp stalk — untextured, its colour in
-    /// its vertices.
+    /// A shrub's or a berry bush's twigs, untextured, their colour in their
+    /// vertices.
     plant_wood: Handle<StandardMaterial>,
+    /// Hemp's stalk: the same surface, its own handle so it sways on hemp's
+    /// bend with hemp's leaves (`foliage::Kind::HempStem`).
+    hemp_wood: Handle<StandardMaterial>,
     /// The berries': the same, with the gloss that makes them read as fruit.
     berry: Handle<StandardMaterial>,
+    /// A fern clump's fronds: the clutter ferns' photographed atlas
+    /// (`clutter::FERN_ATLAS`), alpha-masked like the bush's leaves.
+    fern_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A low pine's sprays: the conifers' needle card, on its own handle so
+    /// it sways as a ground-rooted plant and not as a tree's crown.
+    juniper_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// Wildflower stems and petals, their colour in their vertices.
+    flower: Handle<StandardMaterial>,
     /// The needle card's material: alpha-MASKED, not blended. A canopy is
     /// hundreds of overlapping cards, and blending them would need a per-card
     /// depth sort that changes with the camera — masked cards write depth and
@@ -298,18 +319,34 @@ pub struct Topple {
     pub t: f32,
 }
 
-/// A tree part that regrows (tree growth v0), and the size it is drawn at
-/// full-grown. Its own component for [`Topple`]'s reason: `audio::fell`
-/// change-detects [`Fellable`], and a growth write there would be a
-/// tree-fall cue.
+/// A part of a slot that regrows (tree growth v0; a picked plant too), and
+/// the size it is drawn at full-grown. Its own component for [`Topple`]'s
+/// reason: `audio::fell` change-detects [`Fellable`], and a growth write
+/// there would be a tree-fall cue.
 #[derive(Component)]
 pub struct Grow {
     pub base: f32,
+    /// How long the slot takes to grow back, ticks (`gather::grow_span`).
+    pub span: u64,
+    /// A berry bush's berries: none until the bush is grown.
+    pub fruit: bool,
+}
+
+impl Grow {
+    /// A tree's part, at `base`.
+    pub fn tree(base: f32) -> Self {
+        Self {
+            base,
+            span: sim_core::gather::TREE_GROW_TICKS,
+            fruit: false,
+        }
+    }
 }
 
 /// Draw every regrowing tree at its size — a sapling where the stump was,
 /// full height an hour later (`sim_core::gather::grow_pm`, the server's own
-/// sizing, in its sixteen steps). Twice a second, or at once when the
+/// sizing, in its sixteen steps) — and every picked plant, a sprout grown in
+/// three minutes and only then fruiting. Twice a second, or at once when the
 /// harvested set moved or a tree streamed in: the steps are minutes apart.
 pub fn grow(
     net: NonSend<Net>,
@@ -331,11 +368,17 @@ pub fn grow(
         if f.felled {
             continue;
         }
-        let pm = core
-            .harvested
-            .growth(f.key)
-            .map_or(1000, |at| sim_core::gather::grow_pm(at as u64, now));
-        let want = g.base * pm as f32 * 0.001;
+        let pm = core.harvested.growth(f.key).map_or(1000, |at| {
+            sim_core::gather::grow_pm_over(at as u64, now, g.span)
+        });
+        // Berries come when the bush is grown. Not a zero scale: a singular
+        // transform has no inverse for the normals.
+        let share = if g.fruit && pm < 1000 {
+            0.001
+        } else {
+            pm as f32 * 0.001
+        };
+        let want = g.base * share;
         if (t.scale.x - want).abs() > 1e-4 {
             t.scale = Vec3::splat(want);
             // A stump stands on its own lift, which is to its size.
@@ -1684,6 +1727,8 @@ pub fn assets(
     // `Handle::default()` — an unresolved handle, exactly as `MapSet::default`
     // documents for the same reason.
     bush_card: Handle<Image>,
+    // The fern atlas the scenery ferns wear, `bush_card`'s way.
+    fern_card: Handle<Image>,
     // The two authored sites' generated models, or `Default` for the box
     // massing — same reason as `bush_card` one line up.
     models: PropModels,
@@ -1764,6 +1809,18 @@ pub fn assets(
         .map(|v| {
             let (stalk, leaves) = plants::hemp(v);
             (meshes.add(stalk), meshes.add(leaves))
+        })
+        .collect();
+    let ferns: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (wood, leaves) = plants::fern(v);
+            (meshes.add(wood), meshes.add(leaves))
+        })
+        .collect();
+    let junipers: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (wood, leaves) = plants::juniper(v);
+            (meshes.add(wood), meshes.add(leaves))
         })
         .collect();
     // Hoisted out of the literal below because the two site rows fall back to
@@ -1865,6 +1922,57 @@ pub fn assets(
             .collect(),
         hemp_leaves: hemp.iter().map(|(_, l)| l.clone()).collect(),
         hemp_stalk: hemp.iter().map(|(s, _)| s.clone()).collect(),
+        fern_leaves: ferns.iter().map(|(_, l)| l.clone()).collect(),
+        fern_wood: ferns.iter().map(|(w, _)| w.clone()).collect(),
+        juniper_leaves: junipers.iter().map(|(_, l)| l.clone()).collect(),
+        juniper_wood: junipers.iter().map(|(w, _)| w.clone()).collect(),
+        dead_wood: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::dead_scrub(v)))
+            .collect(),
+        flower_heads: (0..plants::FLOWER_PALETTES as u32)
+            .flat_map(|p| (0..PLANT_POOL as u32).map(move |v| (v, p)))
+            .map(|(v, p)| meshes.add(plants::wildflowers(v, p).0))
+            .collect(),
+        flower_base: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::wildflowers(v, 0).1))
+            .collect(),
+        fern_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(fern_card.clone()),
+                perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                alpha_mode: AlphaMode::Mask(super::clutter::CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        juniper_leaf: tint_pool().map(|v| {
+            // The needle card's mean-1 photograph, as `needle` wears it.
+            let v = v * tree::NEEDLE_MAP_GAIN;
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(needle_map.clone()),
+                perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        flower: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.6,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
         hemp_leaf: tint_pool().map(|v| {
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
@@ -1880,6 +1988,12 @@ pub fn assets(
         plant_wood: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.85,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
+        hemp_wood: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.8,
             reflectance: fresnel::DIELECTRIC,
             ..default()
         }),
@@ -2036,6 +2150,8 @@ pub fn stream(
     let fresh = store.is_none();
     let a = store.get_or_insert_with(|| {
         let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
+        let fern =
+            server.load_with_settings(super::clutter::FERN_ATLAS, super::textures::atlas(true));
         let models = PropModels::load(&server);
         assets(
             &mut meshes,
@@ -2043,6 +2159,7 @@ pub fn stream(
             &mut images,
             &maps,
             card,
+            fern,
             models,
         )
     });
@@ -2064,13 +2181,19 @@ pub fn stream(
                 (&a.leaf, Kind::Leaf),
                 (&a.bush_leaf, Kind::BushLeaf),
                 (&a.hemp_leaf, Kind::HempLeaf),
+                // A fern's fronds are soft, on hemp's bend; a low pine is a
+                // woody mound, on the shrub's.
+                (&a.fern_leaf, Kind::HempLeaf),
+                (&a.juniper_leaf, Kind::BushLeaf),
             ] {
                 for h in pool {
                     f.register(h, kind);
                 }
             }
             f.register(&a.plant_wood, Kind::Stem);
+            f.register(&a.hemp_wood, Kind::HempStem);
             f.register(&a.berry, Kind::Stem);
+            f.register(&a.flower, Kind::HempStem);
         }
     }
 
@@ -2140,7 +2263,7 @@ pub fn stream(
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
                     let key = cell_key(cell_x as u16, cell_z as u16);
-                    spawn_slot(&mut commands, parent, a, &slot, key, &lod);
+                    spawn_slot(&mut commands, parent, a, world.seed, &slot, key, &lod);
                 }
             }
             ring.built.insert(key, parent);
@@ -2334,7 +2457,7 @@ pub fn spawn_outer_tree(
     if let Some((meshes, mats)) = &a.cards {
         commands.entity(parent).with_child((
             fellable,
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(meshes[variant % meshes.len()].clone()),
             MeshMaterial3d(mats[tint_of(key)].clone()),
             transform,
@@ -2343,7 +2466,7 @@ pub fn spawn_outer_tree(
     }
     commands.entity(parent).with_child((
         fellable,
-        Grow { base: slot.scale },
+        Grow::tree(slot.scale),
         Mesh3d(a.impostors[variant].clone()),
         MeshMaterial3d(a.foliage[tint_of(key)].clone()),
         transform,
@@ -2365,6 +2488,7 @@ pub fn spawn_slot(
     commands: &mut Commands,
     parent: Entity,
     a: &PropAssets,
+    seed: u64,
     slot: &terrain::Slot,
     key: u32,
     lod: &tree::TreeLod,
@@ -2381,6 +2505,8 @@ pub fn spawn_slot(
     // the number the draw uses and the number `tests/greybox.rs` checks
     // against `OCCUPANT_TOP_M` are the same number.
     let lift = archetype_lift(slot.occupant);
+    // What a shrub cell grows, off its biome (`plants::scenery`).
+    let scenery = plants::scenery(seed, slot, key);
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = species_variant(slot, a.pines.len());
@@ -2409,8 +2535,8 @@ pub fn spawn_slot(
         // as the conifer pool is, so two plants side by side differ.
         Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
             variant = (slot.yaw as usize) % PLANT_POOL;
-            match a.plant(slot.occupant, key, variant, tint) {
-                Some(p) => (p.wood.clone(), a.plant_wood.clone()),
+            match a.plant(slot.occupant, key, variant, tint, scenery) {
+                Some(p) => (p.wood.clone(), p.wood_mat.clone()),
                 None => return,
             }
         }
@@ -2486,6 +2612,9 @@ pub fn spawn_slot(
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
     let is_tree = slot.occupant == Occupant::Tree;
+    // A picked plant grows back (`gather::grow_span`); a tree's parts carry
+    // their own `Grow` below.
+    let regrow = sim_core::gather::grow_span(slot.occupant as u8).filter(|_| !is_tree);
     // One constructor for all three parts: every field but `part` is the same
     // for the trunk, the canopy and the stump, and writing them out three
     // times is how the trunk and the canopy would eventually disagree about
@@ -2520,7 +2649,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Trunk),
             Topple { t: -1.0 },
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(mesh),
             MeshMaterial3d(material),
             tree::lod_band(&lod.near),
@@ -2545,6 +2674,16 @@ pub fn spawn_slot(
         if let Some(skin) = skin {
             c.entity(id).insert(skin);
         }
+        if let Some(span) = regrow {
+            c.entity(id).insert(Grow {
+                base: slot.scale,
+                span,
+                fruit: false,
+            });
+        }
+        if slot.occupant.is_plant() {
+            plants::fade(&mut c.entity(id));
+        }
         e.add_child(id);
     } else {
         let mut c = e.commands();
@@ -2554,6 +2693,9 @@ pub fn spawn_slot(
         if let Some(skin) = skin {
             c.entity(id).insert(skin);
         }
+        if slot.occupant.is_plant() {
+            plants::fade(&mut c.entity(id));
+        }
         e.add_child(id);
     }
     // A plant's leaves (and a berry bush's berries), as more children of the
@@ -2562,18 +2704,36 @@ pub fn spawn_slot(
     // Same `transform`, because `plants.rs` builds them all in one frame; and
     // the same `FellPart::Vanish` the wood took, or picking a berry bush would
     // leave its leaves standing in the air.
-    if let Some(p) = a.plant(slot.occupant, key, variant, tint) {
-        let fruit = p.fruit.map(|m| (m, &a.berry));
-        for (mesh, mat) in std::iter::once((p.leaves, p.leaf)).chain(fruit) {
+    if let Some(p) = a.plant(slot.occupant, key, variant, tint, scenery) {
+        let leaves = p.leaves.map(|(m, mat)| (m, mat, false));
+        let fruit = p.fruit.map(|m| (m, &a.berry, true));
+        for (mesh, mat, is_fruit) in leaves.into_iter().chain(fruit) {
             if harvestable {
+                let mut c = e.commands();
+                let id = c
+                    .spawn((
+                        fellable(FellPart::Vanish),
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(mat.clone()),
+                        transform,
+                    ))
+                    .id();
+                if let Some(span) = regrow {
+                    c.entity(id).insert(Grow {
+                        base: slot.scale,
+                        span,
+                        fruit: is_fruit,
+                    });
+                }
+                plants::fade(&mut c.entity(id));
+                e.add_child(id);
+            } else {
                 e.with_child((
-                    fellable(FellPart::Vanish),
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(mat.clone()),
                     transform,
+                    super::plants::fade_band(),
                 ));
-            } else {
-                e.with_child((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), transform));
             }
         }
     }
@@ -2591,7 +2751,7 @@ pub fn spawn_slot(
             fellable(FellPart::Stump),
             // Hidden while the tree stands, it grows with the sapling, so a
             // sapling felled leaves a sapling's stump — not a full tree's.
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(a.stump.clone()),
             MeshMaterial3d(a.wood.clone()),
             Transform {
@@ -2621,7 +2781,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
-            Grow { base: slot.scale },
+            Grow::tree(slot.scale),
             Mesh3d(a.needles[variant].clone()),
             // The card is the species' — a sprig on a conifer, a leaf
             // cluster on a broadleaf. Chosen in one place so a gate can ask.
@@ -2651,7 +2811,7 @@ pub fn spawn_slot(
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
-                Grow { base: slot.scale },
+                Grow::tree(slot.scale),
                 Mesh3d(meshes[variant % meshes.len()].clone()),
                 MeshMaterial3d(mats[tint].clone()),
                 tree::lod_band(&lod.far),
@@ -2661,7 +2821,7 @@ pub fn spawn_slot(
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
-                Grow { base: slot.scale },
+                Grow::tree(slot.scale),
                 Mesh3d(a.impostors[variant].clone()),
                 MeshMaterial3d(a.foliage[tint].clone()),
                 tree::lod_band(&lod.far),
@@ -3019,43 +3179,79 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
     }
 }
 
-/// One plant's meshes and the leaf material it wears ([`PropAssets::plant`]).
+/// One plant's meshes and the materials it wears ([`PropAssets::plant`]).
 struct Plant<'a> {
     wood: &'a Handle<Mesh>,
-    leaves: &'a Handle<Mesh>,
-    leaf: &'a Handle<StandardMaterial>,
+    wood_mat: &'a Handle<StandardMaterial>,
+    /// Its leaves and their material — none on a dead scrub.
+    leaves: Option<(&'a Handle<Mesh>, &'a Handle<StandardMaterial>)>,
     /// A berry bush's berries, worn with `PropAssets::berry`.
     fruit: Option<&'a Handle<Mesh>>,
 }
 
 impl PropAssets {
     /// A plant's meshes for the slot at `key`, or `None` for anything that is
-    /// not a plant. The one place the pools are indexed, so `spawn_slot`'s
-    /// children cannot disagree.
-    fn plant(&self, o: Occupant, key: u32, variant: usize, tint: usize) -> Option<Plant<'_>> {
+    /// not a plant. `scenery` is what a shrub cell grows (`plants::scenery`).
+    /// The one place the pools are indexed, so `spawn_slot`'s children cannot
+    /// disagree.
+    fn plant(
+        &self,
+        o: Occupant,
+        key: u32,
+        variant: usize,
+        tint: usize,
+        scenery: plants::Scenery,
+    ) -> Option<Plant<'_>> {
+        use plants::Scenery;
         let v = variant % PLANT_POOL;
-        Some(match o {
-            Occupant::Shrub => {
-                let i = v + if tall_bush(key) { PLANT_POOL } else { 0 };
-                Plant {
-                    wood: &self.shrub_wood[i],
-                    leaves: &self.shrub_leaves[i],
-                    leaf: &self.bush_leaf[tint],
-                    fruit: None,
-                }
+        let plant = |wood, wood_mat, leaves| Plant {
+            wood,
+            wood_mat,
+            leaves,
+            fruit: None,
+        };
+        Some(match (o, scenery) {
+            (Occupant::Shrub, Scenery::Fern) => plant(
+                &self.fern_wood[v],
+                &self.plant_wood,
+                Some((&self.fern_leaves[v], &self.fern_leaf[tint])),
+            ),
+            (Occupant::Shrub, Scenery::Juniper) => plant(
+                &self.juniper_wood[v],
+                &self.plant_wood,
+                Some((&self.juniper_leaves[v], &self.juniper_leaf[tint])),
+            ),
+            (Occupant::Shrub, Scenery::DeadScrub) => {
+                plant(&self.dead_wood[v], &self.plant_wood, None)
             }
-            Occupant::BerryBush => Plant {
+            (Occupant::Shrub, Scenery::Flowers) => {
+                let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
+                    % plants::FLOWER_PALETTES;
+                plant(
+                    &self.flower_heads[palette * PLANT_POOL + v],
+                    &self.flower,
+                    Some((&self.flower_base[v], &self.bush_leaf[tint])),
+                )
+            }
+            (Occupant::Shrub, Scenery::Shrub) => {
+                let i = v + if tall_bush(key) { PLANT_POOL } else { 0 };
+                plant(
+                    &self.shrub_wood[i],
+                    &self.plant_wood,
+                    Some((&self.shrub_leaves[i], &self.bush_leaf[tint])),
+                )
+            }
+            (Occupant::BerryBush, _) => Plant {
                 wood: &self.berry_wood[v],
-                leaves: &self.berry_leaves[v],
-                leaf: &self.bush_leaf[tint],
+                wood_mat: &self.plant_wood,
+                leaves: Some((&self.berry_leaves[v], &self.bush_leaf[tint])),
                 fruit: Some(&self.berry_fruit[v + if red_berries(key) { 0 } else { PLANT_POOL }]),
             },
-            Occupant::Hemp => Plant {
-                wood: &self.hemp_stalk[v],
-                leaves: &self.hemp_leaves[v],
-                leaf: &self.hemp_leaf[tint],
-                fruit: None,
-            },
+            (Occupant::Hemp, _) => plant(
+                &self.hemp_stalk[v],
+                &self.hemp_wood,
+                Some((&self.hemp_leaves[v], &self.hemp_leaf[tint])),
+            ),
             _ => return None,
         })
     }
@@ -3080,6 +3276,8 @@ impl PropAssets {
             ("foliage", &self.foliage),
             ("bush_leaf", &self.bush_leaf),
             ("hemp_leaf", &self.hemp_leaf),
+            ("fern_leaf", &self.fern_leaf),
+            ("juniper_leaf", &self.juniper_leaf),
             ("needle", &self.needle),
             ("leaf", &self.leaf),
             ("rock", &self.rock),
@@ -3096,7 +3294,9 @@ impl PropAssets {
             ("metal", &self.metal),
             ("stone", &self.stone),
             ("plant_wood", &self.plant_wood),
+            ("hemp_wood", &self.hemp_wood),
             ("berry", &self.berry),
+            ("flower", &self.flower),
         ]);
         out
     }

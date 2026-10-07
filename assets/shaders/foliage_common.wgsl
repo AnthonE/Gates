@@ -19,13 +19,16 @@ struct FoliageParams {
     // w: the mesh's root height in its own frame (local-frame meshes only)
     fade: vec4<f32>,
     // x: trample strength (0 = ignores trails)
+    // y: how far a body parts this plant, metres (0 = bodies pass through)
+    // z: how far it parts, as a share of that reach
     misc: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> foliage: FoliageParams;
-// 4×1 texels written every frame from the CPU: [0] = (wind dir x, wind dir z,
+// 8×1 texels written every frame from the CPU: [0] = (wind dir x, wind dir z,
 // strength, time), [1] = (trail window centre x, z, window edge m, 0),
-// [2] = (blast x, z, push, seconds since), [3] = (helicopter x, z, wash, 0).
+// [2] = (blast x, z, push, seconds since), [3] = (helicopter x, z, wash, 0),
+// [4..7] = (body x, z, feet y, how hard it is pushing through, 0..1).
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var foliage_state: texture_2d<f32>;
 // Trails of flattened grass, world-anchored and wrapping (`foliage::Trample`).
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var trample_map: texture_2d<f32>;
@@ -106,6 +109,35 @@ fn displace(root: vec3<f32>, anchor: vec3<f32>, h: f32, rand: f32) -> vec3<f32> 
             push += p;
         }
     }
+    // Bodies in a plant (texels 4..7, plants only): what is near one leans
+    // away from it, so a bush parts round whoever moves through it and closes
+    // again behind them. Per vertex, so the side you are on opens and the far
+    // side does not; nothing above a body's head is touched, and the root
+    // stays put (`k`).
+    if foliage.misc.y > 0.0 {
+        let k1 = min(k, 1.0);
+        for (var i = 4; i < 8; i++) {
+            let b = textureLoad(foliage_state, vec2<i32>(i, 0), 0);
+            if b.w <= 0.0 {
+                continue;
+            }
+            let rel = root.xz - b.xy;
+            let d = length(rel);
+            if d >= foliage.misc.y {
+                continue;
+            }
+            // Only what stands about the body's own height: not the leaves
+            // over its head, nor a bush a floor below the one it stands on.
+            let up = root.y - b.z;
+            let head = smoothstep(-1.2, -0.6, up) * (1.0 - smoothstep(1.5, 2.2, up));
+            let near = 1.0 - smoothstep(0.15, foliage.misc.y, d);
+            let p = foliage.misc.z * foliage.misc.y * near * head * b.w * k1;
+            let away = rel / max(d, 0.05);
+            off += vec3<f32>(away.x * p, 0.0, away.y * p);
+            push += p;
+        }
+    }
+
     // Bending a stem shortens it: drop the tip so it swings on an arc.
     let swing = abs(bend) + push;
     off.y -= min(swing * swing / max(2.0 * h, 0.05), 0.5 * h);

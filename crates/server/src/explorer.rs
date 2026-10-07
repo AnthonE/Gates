@@ -532,6 +532,14 @@ impl Target {
     fn key(self) -> u32 {
         cell_key(self.cx, self.cz)
     }
+
+    /// Nothing to gather here: harvested, or a picked plant still growing
+    /// back (`gather::pick` refuses a sprout until it is grown).
+    fn gone(self, core: &ClientCore) -> bool {
+        core.harvested.contains(self.key())
+            || (sim_core::gather::pickable(self.slot.occupant)
+                && core.harvested.growth(self.key()).is_some())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1866,7 +1874,7 @@ impl Survivor {
             self.recovery = None;
         }
         if let Some(target) = self.target {
-            if core.harvested.contains(target.key()) {
+            if target.gone(core) {
                 self.target = None;
                 if self.target_gain > 0 {
                     self.stats.targets_completed += 1;
@@ -1884,7 +1892,7 @@ impl Survivor {
             // it in the cone, where the scan acquires it like any other.
             if let Some((seen, at)) = self.recall[kind as usize] {
                 let fresh = tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ
-                    && !core.harvested.contains(seen.key())
+                    && !seen.gone(core)
                     && Some(seen.key()) != self.skipped;
                 let (yaw, _, distance) = aim(body, &seen.slot);
                 let step = if fresh && distance > REACH_M {
@@ -4011,15 +4019,13 @@ impl Survivor {
                 slot,
             };
             if let Some(kind) = Kind::of(slot.occupant) {
-                if !core.harvested.contains(target.key())
-                    && in_view(body, &slot)
-                    && visible(core, &haven, body, target)
+                if !target.gone(core) && in_view(body, &slot) && visible(core, &haven, body, target)
                 {
                     let (d, b) = relative(body, slot.x, slot.z);
                     self.sweep.cells[kind as usize].add(d, b);
                     let nearer = self.recall[kind as usize].is_none_or(|(old, at)| {
                         tick.wrapping_sub(at) >= RECALL_SECS * TICK_HZ
-                            || core.harvested.contains(old.key())
+                            || old.gone(core)
                             || relative(body, old.slot.x, old.slot.z).0 >= d
                     });
                     if nearer && Some(target.key()) != self.skipped {
@@ -4071,9 +4077,7 @@ impl Survivor {
                     continue;
                 }
                 if let Some((t, at)) = self.recall[kind] {
-                    if tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ
-                        && !core.harvested.contains(t.key())
-                    {
+                    if tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ && !t.gone(core) {
                         let (d, b) = relative(body, t.slot.x, t.slot.z);
                         cell.add(d, b);
                     }

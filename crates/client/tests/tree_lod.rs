@@ -71,6 +71,7 @@ fn fixture() -> (App, PropAssets) {
         // Unresolved, like every `MapSet::default()` above it: this tier has no
         // filesystem and a material clones the handle either way.
         Handle::default(),
+        Handle::default(),
         client::render::props::PropModels::default(),
     );
     world.insert_resource(meshes);
@@ -99,7 +100,7 @@ fn spawned(app: &mut App, a: &PropAssets, s: &Slot) -> (Entity, Vec<Entity>) {
         .id();
     {
         let mut commands = app.world_mut().commands();
-        spawn_slot(&mut commands, parent, a, s, KEY, &TreeLod::default());
+        spawn_slot(&mut commands, parent, a, 7, s, KEY, &TreeLod::default());
     }
     app.world_mut().flush();
     let kids = app
@@ -302,14 +303,7 @@ fn exactly_one_part_of_a_tree_speaks_for_the_slot() {
 #[test]
 fn only_a_tree_carries_a_visibility_range() {
     let (mut app, a) = fixture();
-    for occupant in [
-        Occupant::Rock,
-        Occupant::StoneNode,
-        Occupant::BerryBush,
-        Occupant::Hemp,
-        Occupant::Shrub,
-        Occupant::BarrelSlot,
-    ] {
+    for occupant in [Occupant::Rock, Occupant::StoneNode, Occupant::BarrelSlot] {
         let (_, kids) = spawned(&mut app, &a, &slot(occupant));
         for k in kids {
             assert!(
@@ -318,6 +312,26 @@ fn only_a_tree_carries_a_visibility_range() {
                  measured against a 6 k-triangle conifer, and a 1,280-triangle \
                  boulder swapping to nothing at {TREE_LOD_SWAP_M} m is a hole \
                  in the frame, not a saving"
+            );
+        }
+    }
+}
+
+/// A plant's range is its own fade (`plants::fade_band`), on every part, and
+/// never a tree's band — or it pops at the ring's edge, or fades apart from
+/// the rest of it. The desktop's: a browser's plants carry none.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn every_part_of_a_plant_carries_the_plants_fade() {
+    let (mut app, a) = fixture();
+    let fade = client::render::plants::fade_band();
+    for occupant in [Occupant::BerryBush, Occupant::Hemp, Occupant::Shrub] {
+        let (_, kids) = spawned(&mut app, &a, &slot(occupant));
+        assert!(!kids.is_empty());
+        for k in kids {
+            assert!(
+                app.world().entity(k).get::<VisibilityRange>() == Some(&fade),
+                "a part of a {occupant:?} does not carry the plants' fade"
             );
         }
     }

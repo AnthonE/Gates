@@ -19,13 +19,19 @@
 
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
+use client::render::clutter::{CARD_COLS, CARD_ROWS};
 use client::render::mipmap::MASK_CUT;
 use client::render::plants::{
-    berry_leaves, hemp, hemp_leaf_rgba, shrub_leaves, HEMP_LEAF_PX, PLANT_POOL,
+    berry_leaves, dead_scrub, fern, hemp, hemp_leaf_rgba, juniper, scenery_of, shrub_leaves,
+    wildflowers, Scenery, FLOWER_PALETTES, HEMP_LEAF_PX, PLANT_POOL,
 };
 use client::render::props::{
     BUSH_CARD_ALPHA_CUT, BUSH_CARD_ATLAS, BUSH_CARD_CELLS, BUSH_CARD_COLS, BUSH_CARD_ROWS,
 };
+use client::render::{audio::in_leaves, WorldId};
+use sim_core::gather::cell_key;
+use sim_core::terrain::Biome;
+use sim_core::terrain::{scatter, Occupant, CELLS_PER_SIDE};
 
 /// Vertices per leaf card: a 3×3 grid, four quads of two triangles.
 const CARD_VERTS: usize = 24;
@@ -58,6 +64,7 @@ fn atlas_leaves() -> Vec<(String, Mesh)> {
         out.push((format!("shrub {v}"), shrub_leaves(v, false)));
         out.push((format!("tall shrub {v}"), shrub_leaves(v, true)));
         out.push((format!("berry bush {v}"), berry_leaves(v)));
+        out.push((format!("wildflowers' base {v}"), wildflowers(v, 0).1));
     }
     out
 }
@@ -143,7 +150,14 @@ fn the_pools_differ() {
     let hemps: Vec<_> = (0..PLANT_POOL as u32)
         .map(|v| positions(&hemp(v).1))
         .collect();
-    for pool in [&shrubs, &hemps] {
+    let pool = |f: &dyn Fn(u32) -> Mesh| -> Vec<Vec<Vec3>> {
+        (0..PLANT_POOL as u32).map(|v| positions(&f(v))).collect()
+    };
+    let ferns = pool(&|v| fern(v).1);
+    let pines = pool(&|v| juniper(v).1);
+    let dead = pool(&dead_scrub);
+    let flowers = pool(&|v| wildflowers(v, 0).0);
+    for pool in [&shrubs, &hemps, &ferns, &pines, &dead, &flowers] {
         for i in 1..pool.len() {
             assert!(
                 pool[i] != pool[0],
@@ -270,4 +284,128 @@ fn the_hemp_leaf_grows_from_the_bottom_centre() {
         "the leaf covers {:.0}% of its card",
         share * 100.0
     );
+}
+
+/// **A stride in a plant rustles, and only in one.** At a berry bush's stem a
+/// body is deep in its leaves; a couple of metres off it is in the open; and
+/// a picked bush is not there to brush. Off the scatter's own positions, so a
+/// cell scan that looked in the wrong place would be silent everywhere.
+#[test]
+fn a_body_in_a_plant_brushes_it() {
+    let w = WorldId::new(7);
+    let mid = CELLS_PER_SIDE / 2;
+    let (key, slot) = (mid..CELLS_PER_SIDE)
+        .flat_map(|x| (mid..CELLS_PER_SIDE).map(move |z| (x, z)))
+        .map(|(x, z)| {
+            (
+                cell_key(x as u16, z as u16),
+                scatter(w.seed, &w.table, &w.haven, x, z),
+            )
+        })
+        .find(|(_, s)| s.occupant == Occupant::BerryBush)
+        .expect("an island with no berry bush");
+    let at = |dx: f32| [slot.x + dx, slot.y, slot.z];
+    let grown = |_| 1.0;
+    let deep = in_leaves(&w, at(0.0), grown).expect("standing in the bush is silent");
+    assert!(deep > 0.9, "at the stem, only {deep:.2} deep");
+    let edge = in_leaves(&w, at(0.5), grown).expect("at the leaves' edge is silent");
+    assert!(edge < deep, "the edge ({edge:.2}) is as deep as the stem");
+    let picked = |k| if k == key { 0.0 } else { 1.0 };
+    assert_eq!(
+        in_leaves(&w, at(0.0), picked),
+        None,
+        "a picked bush rustles"
+    );
+    assert_eq!(
+        in_leaves(&w, at(2.0), grown),
+        None,
+        "two metres off is in the bush"
+    );
+}
+
+/// **A fern card is one whole fern, upright.** The scenery fern wears the
+/// clutter ferns' atlas, whose cells are twice as wide as they are tall with
+/// the roots on the bottom edge: a card that strayed over a cell boundary
+/// would splice two ferns, and one sampled upside down would hang its fronds
+/// from the sky.
+#[test]
+fn a_fern_card_is_one_fern_and_stands_up() {
+    let (du, dv) = (1.0 / CARD_COLS as f32, 1.0 / CARD_ROWS as f32);
+    for v in 0..PLANT_POOL as u32 {
+        let m = fern(v).1;
+        let (p, uv) = (positions(&m), uvs(&m));
+        for (pc, uc) in p.chunks(CARD_VERTS).zip(uv.chunks(CARD_VERTS)) {
+            let (u0, u1) = uc
+                .iter()
+                .fold((f32::MAX, f32::MIN), |a, t| (a.0.min(t[0]), a.1.max(t[0])));
+            let (v0, v1) = uc
+                .iter()
+                .fold((f32::MAX, f32::MIN), |a, t| (a.0.min(t[1]), a.1.max(t[1])));
+            assert!(
+                (u1 - u0 - du).abs() < 1e-5 && (v1 - v0 - dv).abs() < 1e-5,
+                "fern {v}: a card samples {}x{} of a {du}x{dv} cell",
+                u1 - u0,
+                v1 - v0
+            );
+            let ci = ((u0 + u1) * 0.5 / du).floor();
+            let ri = ((v0 + v1) * 0.5 / dv).floor();
+            assert!(
+                u0 >= ci * du - 1e-5 && v0 >= ri * dv - 1e-5,
+                "fern {v}: off its cell"
+            );
+            let hi = (0..pc.len()).max_by(|&a, &b| pc[a].y.total_cmp(&pc[b].y));
+            let lo = (0..pc.len()).min_by(|&a, &b| pc[a].y.total_cmp(&pc[b].y));
+            let (hi, lo) = (hi.expect("vertices"), lo.expect("vertices"));
+            assert!(uc[hi][1] < uc[lo][1], "fern {v}: a card is upside down");
+            // Twice as wide as tall, as the cell is.
+            let (w, h) = (
+                (pc[CARD_VERTS - 1] - pc[0]).xz().length(),
+                pc[hi].y - pc[lo].y,
+            );
+            assert!(
+                (w / h - 2.0).abs() < 0.25,
+                "fern {v}: a card is {w:.2} by {h:.2}"
+            );
+        }
+    }
+}
+
+/// Every palette of wildflowers is its own colour — a clump drawn in the
+/// wrong palette is a meadow of one flower.
+#[test]
+fn each_palette_is_its_own_colour() {
+    let colours: Vec<Vec<[f32; 4]>> = (0..FLOWER_PALETTES as u32)
+        .map(
+            |p| match wildflowers(0, p).0.attribute(Mesh::ATTRIBUTE_COLOR.id) {
+                Some(VertexAttributeValues::Float32x4(c)) => c.clone(),
+                _ => panic!("the flowers carry no colour"),
+            },
+        )
+        .collect();
+    for i in 1..colours.len() {
+        assert!(
+            colours[i] != colours[0],
+            "palette {i} draws palette 0's colours"
+        );
+    }
+}
+
+/// The scenery is the biome's: a forest grows fern beds and no wildflowers,
+/// a ridge low pines and no ferns, and every biome still grows the leafy
+/// shrub — the shares are `plants::SCENERY_SHARES`, read back off the roll.
+#[test]
+fn the_scenery_is_the_biomes() {
+    let count = |b: Biome, want: Scenery| {
+        (0..4000u32)
+            .filter(|k| scenery_of(b, (k & 1) as u8, k.wrapping_mul(2_654_435_761)) == want)
+            .count()
+    };
+    assert!(count(Biome::Forest, Scenery::Fern) > 1000);
+    assert_eq!(count(Biome::Forest, Scenery::Flowers), 0);
+    assert!(count(Biome::Highland, Scenery::Juniper) > 1000);
+    assert!(count(Biome::Highland, Scenery::Fern) < 200);
+    assert!(count(Biome::Meadow, Scenery::Flowers) > 1000);
+    for b in [Biome::Beach, Biome::Meadow, Biome::Forest, Biome::Highland] {
+        assert!(count(b, Scenery::Shrub) > 400, "{b:?} grows no leafy shrub");
+    }
 }

@@ -21,6 +21,7 @@
 use std::f32::consts::{PI, TAU};
 
 use bevy::prelude::*;
+use sim_core::terrain::{self, Biome, Occupant, Slot};
 
 use super::props::{hash01, Soup, BUSH_CARD_CELLS, BUSH_CARD_COLS, BUSH_CARD_ROWS};
 
@@ -43,6 +44,138 @@ pub const BERRY_BUSH_H: f32 = 1.0;
 
 /// Hemp's height at scale 1, metres: one stalk to about the chest.
 pub const HEMP_H: f32 = 1.3;
+
+/// Where a plant fades out, metres from the eye: dithered across the band,
+/// and gone before the prop ring's nearest edge (`NEAR_RADIUS` chunks of
+/// `CHUNK_M`), so a chunk streaming in or out never pops its plants. **(knob)**
+pub const PLANT_FADE_M: std::ops::Range<f32> = 100.0..125.0;
+const _: () = assert!(
+    PLANT_FADE_M.end < super::terrain_mesh::NEAR_RADIUS as f32 * super::terrain_mesh::CHUNK_M
+);
+
+/// A plant part's fade as the component it carries — `tree::lod_band`'s
+/// shape: the `VisibilityRange` on the desktop, and nothing in a browser,
+/// whose WebGL2 cannot bind the table it dithers by.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn fade_band() -> bevy::camera::visibility::VisibilityRange {
+    bevy::camera::visibility::VisibilityRange {
+        start_margin: 0.0..0.0,
+        end_margin: PLANT_FADE_M,
+        // From the root every part shares, so the leaves, the wood and the
+        // berries dither as one plant.
+        use_aabb: false,
+    }
+}
+
+/// See the desktop half above.
+#[cfg(target_arch = "wasm32")]
+pub fn fade_band() {}
+
+/// Give a plant part spawned on its own its [`fade_band`] — nothing in a
+/// browser. A function rather than an `insert(fade_band())` at each site,
+/// which in a browser would be inserting `()`.
+pub fn fade(e: &mut EntityCommands) {
+    #[cfg(not(target_arch = "wasm32"))]
+    e.insert(fade_band());
+    #[cfg(target_arch = "wasm32")]
+    let _ = e;
+}
+
+/// How far from its stem a plant's leaves reach at scale 1, metres: where a
+/// body starts pushing through them (`audio::in_leaves`). `scenery` is what a
+/// shrub cell grows ([`scenery`]); `None` for any slot that is not a plant.
+pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
+    Some(match (o, scenery) {
+        (Occupant::Shrub, Scenery::Fern) => 0.85,
+        (Occupant::Shrub, Scenery::Juniper) => 0.9,
+        (Occupant::Shrub, Scenery::DeadScrub) => 0.45,
+        (Occupant::Shrub, Scenery::Flowers) => 0.3,
+        (Occupant::Shrub, Scenery::Shrub) if super::props::tall_bush(key) => 0.85,
+        (Occupant::Shrub, Scenery::Shrub) => 0.8,
+        (Occupant::BerryBush, _) => 0.55,
+        (Occupant::Hemp, _) => 0.4,
+        _ => return None,
+    })
+}
+
+/// What a shrub cell grows. The sim knows one passable plant there
+/// (`Occupant::Shrub`), and none of these is picked, collides or stops a
+/// shot, so which one stands is the client's to say: off the biome, painted
+/// in patches by the slot's species (`Slot::species`) so a forest floor grows
+/// fern beds rather than one fern per clearing, and rolled on the cell key so
+/// two players see the same plant.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scenery {
+    /// The leafy shrub, short or tall (`props::tall_bush`).
+    Shrub,
+    /// A bracken clump: photographed fronds, waist high.
+    Fern,
+    /// A low mountain pine: needle sprays in a thigh-high mound.
+    Juniper,
+    /// Bare grey twigs, what the wind leaves on a dune or a ridge.
+    DeadScrub,
+    /// A clump of wildflowers over a leafy base.
+    Flowers,
+}
+
+/// Per biome (`terrain::Biome`'s order) and slot species, per mille of shrub
+/// cells growing `[fern, juniper, dead scrub, wildflowers]`; the rest grow
+/// the leafy shrub. **(knob)**
+pub const SCENERY_SHARES: [[[u16; 4]; 2]; 4] = [
+    // Beach: dead scrub and flowers in the dunes, the odd low pine.
+    [[0, 100, 300, 250], [0, 50, 400, 100]],
+    // Meadow: wildflowers in drifts between the shrubs.
+    [[50, 50, 50, 550], [100, 100, 50, 200]],
+    // Forest: fern beds under the canopy.
+    [[650, 0, 50, 0], [250, 50, 50, 0]],
+    // Highland: low pines and dead scrub on the granite.
+    [[0, 550, 250, 0], [50, 300, 350, 0]],
+];
+
+const _: () = {
+    let mut b = 0;
+    while b < SCENERY_SHARES.len() {
+        let mut k = 0;
+        while k < 2 {
+            let r = SCENERY_SHARES[b][k];
+            assert!(r[0] + r[1] + r[2] + r[3] <= 1000);
+            k += 1;
+        }
+        b += 1;
+    }
+};
+
+/// Which scenery a shrub cell at `key` grows in biome `b`, on slot species
+/// `species`.
+pub fn scenery_of(b: Biome, species: u8, key: u32) -> Scenery {
+    let r = (hash01(key, 0x5ce4_e7a1) * 1000.0) as u16;
+    let shares = SCENERY_SHARES[b as usize][usize::from(species & 1)];
+    let kinds = [
+        Scenery::Fern,
+        Scenery::Juniper,
+        Scenery::DeadScrub,
+        Scenery::Flowers,
+    ];
+    let mut edge = 0;
+    for (share, kind) in shares.into_iter().zip(kinds) {
+        edge += share;
+        if r < edge {
+            return kind;
+        }
+    }
+    Scenery::Shrub
+}
+
+/// The scenery the slot at `key` grows: [`scenery_of`] for a shrub, in the
+/// biome the sim classifies its ground as (`terrain::biome`), and
+/// [`Scenery::Shrub`] — unread — for anything else.
+pub fn scenery(seed: u64, slot: &Slot, key: u32) -> Scenery {
+    if slot.occupant != Occupant::Shrub {
+        return Scenery::Shrub;
+    }
+    let b = terrain::biome(slot.y, terrain::moisture(seed, slot.x, slot.z));
+    scenery_of(b, slot.species, key)
+}
 
 /// How dark the deepest leaves are against the outermost, as a vertex
 /// value. **(knob)** This is the whole of what the old blob was for: the
@@ -757,4 +890,379 @@ pub fn hemp_leaf_rgba(n: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+// ── Scenery species ────────────────────────────────────────────────────────
+//
+// What a shrub cell grows besides the leafy shrub ([`Scenery`]). Each is
+// built from cards this client already ships — the clutter ferns' atlas, the
+// conifers' needle card, the bush atlas — or from plain geometry, so a
+// species costs a mesh pool and no new photograph.
+
+/// A fern clump's card height at scale 1, metres: waist high, twice the
+/// forest floor's own ferns (`clutter::FERN_H`) so a clump reads as bracken
+/// over them, and twice as wide (the fern atlas's cells, `CARD_ASPECT`).
+pub const FERN_CLUMP_H: f32 = 1.0;
+
+/// The dark stems at a fern's crown, linear.
+const FERN_STEM: [f32; 3] = [0.03, 0.026, 0.01];
+
+/// A bracken clump: `(wood, leaves)`. The leaves are the clutter ferns'
+/// photographed atlas (`clutter::FERN_ATLAS`) — five big cards crossed round
+/// the crown, each a whole clump of fronds, leant a little so the planes do
+/// not meet in one line; the wood is the stems at the crown, where the
+/// fronds leave the ground.
+pub fn fern(variant: u32) -> (Mesh, Mesh) {
+    use super::clutter::{CARD_ASPECT, CARD_CELLS, CARD_COLS, CARD_ROWS};
+    let seed = seed_of(0xfe41_c1a9, variant);
+    let mut leaves = Soup::default();
+    // Below the crown, so the fronds' normals lean up: they are plates seen
+    // from above and lit by the sky (`hemp`'s dome, for its reason).
+    let dome = Vec3::new(0.0, -FERN_CLUMP_H * 1.5, 0.0);
+    let shade = Shade {
+        h: FERN_CLUMP_H,
+        r: FERN_CLUMP_H,
+    };
+    let (du, dv) = (1.0 / CARD_COLS as f32, 1.0 / CARD_ROWS as f32);
+    let yaw0 = hash01(seed, 1) * PI;
+    const CARDS: u32 = 5;
+    for i in 0..CARDS {
+        let a = yaw0 + i as f32 * PI / CARDS as f32 + (hash01(seed, 10 + i) - 0.5) * 0.3;
+        let right = Vec3::new(a.cos(), 0.0, -a.sin());
+        let face = Vec3::new(a.sin(), 0.0, a.cos());
+        let h = FERN_CLUMP_H * (0.8 + 0.35 * hash01(seed, 20 + i));
+        let half_w = h * CARD_ASPECT * 0.5;
+        let lean = (hash01(seed, 30 + i) - 0.5) * 0.35;
+        let up = (Vec3::Y * lean.cos() + face * lean.sin()).normalize();
+        let root = face * ((hash01(seed, 40 + i) - 0.5) * 0.12) - Vec3::Y * 0.03;
+        let cell = (hash01(seed, 50 + i) * CARD_CELLS as f32) as u32 % CARD_CELLS;
+        let (cu, cv) = (
+            (cell % CARD_COLS) as f32 * du,
+            (cell / CARD_COLS) as f32 * dv,
+        );
+        let value = 0.9 + 0.2 * hash01(seed, 60 + i);
+        // A 3×3 grid, as the bush cards are, so the bend and the crown's
+        // shade are not interpolated straight across a metre and a half.
+        // V grows downward: the card's top takes the cell's smallest v.
+        let at = |ix: u32, iy: u32| -> (Vec3, [f32; 2]) {
+            let (x, y) = (ix as f32 - 1.0, iy as f32 * 0.5);
+            (
+                root + right * (half_w * x) + up * (h * y),
+                [cu + du * ix as f32 * 0.5, cv + dv * (1.0 - y)],
+            )
+        };
+        let col = move |v: Vec3| {
+            let k = value * shade.at(v);
+            [k, k, k, 1.0]
+        };
+        let blend = |_: Vec3| 0.7;
+        for ix in 0..2 {
+            for iy in 0..2 {
+                let (b0, t0) = (at(ix, iy), at(ix, iy + 1));
+                let (b1, t1) = (at(ix + 1, iy), at(ix + 1, iy + 1));
+                leaves.tri_uv([b0, t0, b1], col, Some(dome), blend);
+                leaves.tri_uv([b1, t0, t1], col, Some(dome), blend);
+            }
+        }
+    }
+    let mut wood = Soup::default();
+    let a0 = hash01(seed, 2) * TAU;
+    for k in 0..6u32 {
+        let a = a0 + k as f32 * TAU / 6.0 + (hash01(seed, 70 + k) - 0.5) * 0.6;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let tip = out * 0.1 + Vec3::Y * (0.12 + 0.08 * hash01(seed, 80 + k));
+        twig(&mut wood, -Vec3::Y * 0.04, tip, 0.008, 0.004, FERN_STEM);
+    }
+    (wood.mesh(), leaves.mesh())
+}
+
+/// A low mountain pine's height and reach at scale 1, metres: a mound to the
+/// thigh, clear of the grass, nearly two metres across.
+pub const JUNIPER_H: f32 = 1.0;
+pub const JUNIPER_R: f32 = 0.95;
+
+/// Its needles at the heart and at the tips, linear: the trees' needle
+/// greens (`tree::NEEDLE_LO`/`NEEDLE_HI`), a little darker. The card is a
+/// mean-1 photograph, so the colour is the vertices', as the trees' is.
+const JUNIPER_LO: [f32; 3] = [0.010, 0.042, 0.011];
+const JUNIPER_HI: [f32; 3] = [0.045, 0.15, 0.035];
+
+/// One needle spray: the conifers' card (`tree::needle_image`) with its stem
+/// end — the image's bottom-centre — at `base`, reaching `2·half` along `up`.
+/// The colour runs from [`JUNIPER_LO`] at the heart to [`JUNIPER_HI`] out and
+/// up, by where each vertex sits in the mound.
+fn sprig(s: &mut Soup, base: Vec3, right: Vec3, up: Vec3, half: f32, value: f32, dome: Vec3) {
+    let at = |i: u32, j: u32| -> (Vec3, [f32; 2]) {
+        let (x, y) = (i as f32 - 1.0, j as f32 * 0.5);
+        (
+            base + right * (half * x) + up * (2.0 * half * y),
+            [i as f32 * 0.5, 1.0 - y],
+        )
+    };
+    let col = move |v: Vec3| {
+        let out = Vec2::new(v.x, v.z).length() / JUNIPER_R;
+        let t = smooth01(0.65 * out + 0.6 * v.y / JUNIPER_H);
+        let c = lerp3(JUNIPER_LO, JUNIPER_HI, t);
+        [c[0] * value, c[1] * value, c[2] * value, 1.0]
+    };
+    let blend = |_: Vec3| 0.75;
+    for i in 0..2 {
+        for j in 0..2 {
+            let (b0, t0, b1, t1) = (at(i, j), at(i, j + 1), at(i + 1, j), at(i + 1, j + 1));
+            s.tri_uv([b0, t0, b1], col, Some(dome), blend);
+            s.tri_uv([b1, t0, t1], col, Some(dome), blend);
+        }
+    }
+}
+
+/// A low mountain pine: `(wood, leaves)`. Three tiers of needle sprays leave
+/// the heart — long and low, then shorter and steeper, then a few nearly
+/// upright — so the mound is widest at the ground, as a krummholz pine is
+/// where the wind keeps it down; a few gnarled stems carry them.
+pub fn juniper(variant: u32) -> (Mesh, Mesh) {
+    let seed = seed_of(0x1a41_9e40, variant);
+    let mut leaves = Soup::default();
+    let dome = Vec3::new(0.0, JUNIPER_H * 0.15, 0.0);
+    // Sprays, then the range of their elevation (radians) and their
+    // length (metres), and the height they leave the heart at.
+    struct Tier {
+        count: u32,
+        elev: (f32, f32),
+        len: (f32, f32),
+        y: f32,
+    }
+    const TIERS: [Tier; 3] = [
+        Tier {
+            count: 8,
+            elev: (0.25, 0.5),
+            len: (0.8, 1.0),
+            y: 0.05,
+        },
+        Tier {
+            count: 8,
+            elev: (0.7, 1.0),
+            len: (0.65, 0.85),
+            y: 0.18,
+        },
+        Tier {
+            count: 6,
+            elev: (1.15, 1.45),
+            len: (0.55, 0.7),
+            y: 0.3,
+        },
+    ];
+    let mut n = 0u32;
+    for (t, tier) in TIERS.iter().enumerate() {
+        let Tier {
+            count,
+            elev: (e0, e1),
+            len: (l0, l1),
+            y,
+        } = *tier;
+        let a0 = hash01(seed, 1 + t as u32) * TAU;
+        for k in 0..count {
+            n += 1;
+            let a = a0 + k as f32 * TAU / count as f32 + (hash01(seed, 10 + n) - 0.5) * 0.5;
+            let out = Vec3::new(a.sin(), 0.0, a.cos());
+            let elev = e0 + (e1 - e0) * hash01(seed, 40 + n);
+            let len = l0 + (l1 - l0) * hash01(seed, 70 + n);
+            let up = (out * elev.cos() + Vec3::Y * elev.sin()).normalize();
+            // Rolled about the spray's own axis, so the cards are not all
+            // plates lying face-up.
+            let flat = Vec3::new(-out.z, 0.0, out.x);
+            let roll = (hash01(seed, 100 + n) - 0.5) * 1.2;
+            let right = (flat * roll.cos() + up.cross(flat) * roll.sin()).normalize();
+            let base = out * 0.06 + Vec3::Y * y;
+            let value = 0.9 + 0.2 * hash01(seed, 130 + n);
+            sprig(&mut leaves, base, right, up, len * 0.5, value, dome);
+        }
+    }
+    let mut wood = Soup::default();
+    twigs(&mut wood, seed ^ 0x0d0d, 4, 0.5, 0.65, 0.022);
+    (wood.mesh(), leaves.mesh())
+}
+
+/// A dead scrub's height at scale 1, metres.
+pub const DEAD_SCRUB_H: f32 = 0.75;
+
+/// Weathered dead wood at the root and at the tips, linear: the grey of
+/// wood the sun and the salt have had for years.
+const DEAD_ROOT: [f32; 3] = [0.05, 0.042, 0.033];
+const DEAD_TIP: [f32; 3] = [0.15, 0.135, 0.115];
+
+/// Dead scrub: bare twigs from the root, each forking twice. Wood only —
+/// there are no leaves left on it.
+pub fn dead_scrub(variant: u32) -> Mesh {
+    let seed = seed_of(0xdead_5c2b, variant);
+    let mut s = Soup::default();
+    let n = 5 + (hash01(seed, 1) * 3.0) as u32;
+    let a0 = hash01(seed, 2) * TAU;
+    for k in 0..n {
+        let a = a0 + k as f32 * TAU / n as f32 + (hash01(seed, 10 + k) - 0.5) * 0.7;
+        let elev = 0.55 + 0.65 * hash01(seed, 20 + k);
+        let len = DEAD_SCRUB_H * (0.4 + 0.25 * hash01(seed, 30 + k));
+        let dir = Vec3::new(a.sin() * elev.cos(), elev.sin(), a.cos() * elev.cos());
+        dead_branch(
+            &mut s,
+            seed ^ (k + 1).wrapping_mul(0x9e37),
+            -Vec3::Y * 0.04,
+            dir,
+            len,
+            0.018,
+            0,
+        );
+    }
+    s.mesh()
+}
+
+/// [`twig`] with six facet-shaded sides: a pale stick's normals pulled toward
+/// its own middle tilt along it at both ends, and two meeting at a joint tilt
+/// opposite ways — a dark band at every joint, which the dark twigs inside a
+/// shrub hide and a bare grey one does not.
+fn stick(s: &mut Soup, a: Vec3, b: Vec3, r0: f32, r1: f32, col: [f32; 3]) {
+    let axis = (b - a).normalize_or_zero();
+    let side = axis.cross(Vec3::X).normalize_or(Vec3::Z);
+    let other = axis.cross(side);
+    let ring = |p: Vec3, r: f32| -> [Vec3; 6] {
+        core::array::from_fn(|i| {
+            let t = i as f32 * TAU / 6.0;
+            p + (side * t.cos() + other * t.sin()) * r
+        })
+    };
+    let (ra, rb) = (ring(a, r0), ring(b, r1.max(0.002)));
+    let c = [col[0], col[1], col[2], 1.0];
+    for i in 0..6 {
+        let j = (i + 1) % 6;
+        s.tri(ra[i], ra[j], rb[i], |_| c, None, 0.0);
+        s.tri(ra[j], rb[j], rb[i], |_| c, None, 0.0);
+    }
+}
+
+/// One dead branch from `a` along `dir`, kinked halfway, forking in two at
+/// its end until `depth` 2.
+fn dead_branch(s: &mut Soup, seed: u32, a: Vec3, dir: Vec3, len: f32, r: f32, depth: u32) {
+    let kink = Vec3::new(
+        hash01(seed, 1) - 0.5,
+        (hash01(seed, 2) - 0.5) * 0.4,
+        hash01(seed, 3) - 0.5,
+    );
+    let mid = a + (dir + kink * 0.5).normalize() * len * 0.5;
+    let end = mid + (dir - kink * 0.3).normalize() * len * 0.5;
+    let col = |y: f32| lerp3(DEAD_ROOT, DEAD_TIP, smooth01(y / DEAD_SCRUB_H));
+    stick(s, a, mid, r, r * 0.8, col(a.y));
+    stick(s, mid, end, r * 0.8, r * 0.6, col(mid.y));
+    if depth >= 2 {
+        return;
+    }
+    let axis = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+    for (k, side) in [(0u32, -1.0f32), (1, 1.0)] {
+        let spread = 0.3 + 0.35 * hash01(seed, 10 + k);
+        let d = (Quat::from_axis_angle(axis, side * spread) * dir + Vec3::Y * 0.12).normalize();
+        let next = seed.wrapping_mul(0x2c1b_3c6d) ^ (k + 1);
+        dead_branch(s, next, end, d, len * 0.62, r * 0.6, depth + 1);
+    }
+}
+
+/// A clump of wildflowers' height at scale 1, metres.
+pub const FLOWERS_H: f32 = 0.55;
+
+/// How many colours a clump of wildflowers comes in ([`wildflowers`]'s
+/// `palette`).
+pub const FLOWER_PALETTES: usize = 5;
+
+/// Wildflower petals, linear: buttercup yellow, daisy white, lupine purple,
+/// cornflower blue, fireweed pink.
+const FLOWER_COLS: [[f32; 3]; FLOWER_PALETTES] = [
+    [0.78, 0.5, 0.02],
+    [0.7, 0.7, 0.62],
+    [0.25, 0.07, 0.42],
+    [0.05, 0.13, 0.52],
+    [0.58, 0.07, 0.21],
+];
+/// A flower's eye, and its stem, linear.
+const FLOWER_EYE: [f32; 3] = [0.5, 0.3, 0.02];
+const FLOWER_STEM: [f32; 3] = [0.04, 0.085, 0.02];
+
+/// A clump of wildflowers: `(stems and heads, base leaves)`. Thin stems with
+/// flat five-petal heads in one colour (`palette`, of
+/// [`FLOWER_PALETTES`]), a few in the next one along, over a low tuft of the
+/// bush atlas's leaves for mass. The heads face up and a little out.
+pub fn wildflowers(variant: u32, palette: u32) -> (Mesh, Mesh) {
+    let seed = seed_of(0xf10e_4e45, variant);
+    let mut heads = Soup::default();
+    // Far below, so both faces of a petal shade as the sky-facing one.
+    let sky = Vec3::new(0.0, -20.0, 0.0);
+    let n = 20 + (hash01(seed, 1) * 10.0) as u32;
+    for k in 0..n {
+        let q = seed ^ (k + 1).wrapping_mul(0x51ed);
+        let a = hash01(q, 1) * TAU;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let root = out * (0.03 + 0.26 * hash01(q, 2)) - Vec3::Y * 0.03;
+        let h = FLOWERS_H * (0.5 + 0.5 * hash01(q, 3));
+        let lean = out * (0.04 + 0.1 * hash01(q, 4)) * h;
+        let mid = root + Vec3::Y * (h * 0.5) + lean * 0.3;
+        let tip = root + Vec3::Y * h + lean;
+        twig(&mut heads, root, mid, 0.0045, 0.0035, FLOWER_STEM);
+        twig(&mut heads, mid, tip, 0.0035, 0.0025, FLOWER_STEM);
+        // One in five a neighbour's colour, so a clump is not flat paint.
+        let p = if hash01(q, 5) < 0.2 {
+            palette + 1
+        } else {
+            palette
+        };
+        let petal = FLOWER_COLS[p as usize % FLOWER_PALETTES];
+        let face = (Vec3::Y + out * 0.5 + (Vec3::new(hash01(q, 6), 0.0, hash01(q, 7)) - 0.5) * 0.4)
+            .normalize();
+        let r = 0.045 + 0.025 * hash01(q, 8);
+        flower_head(&mut heads, tip, face, r, petal, hash01(q, 9) * TAU, sky);
+    }
+    let mut base = Soup::default();
+    let shade = Shade { h: 0.3, r: 0.3 };
+    let dome = Vec3::new(0.0, 0.05, 0.0);
+    cluster(
+        &mut base,
+        seed ^ 0xba5e,
+        Vec3::new(0.0, 0.12, 0.0),
+        0.2,
+        3,
+        0.35,
+        0.85,
+        shade,
+        dome,
+    );
+    ring(
+        &mut base,
+        seed ^ 0xba5f,
+        4,
+        0.16,
+        0.1,
+        0.14,
+        0.9,
+        shade,
+        dome,
+    );
+    (heads.mesh(), base.mesh())
+}
+
+/// One flower head at `c` facing `face`: five petals of radius `r` round an
+/// eye, as a flat star, drawn on both faces with the sky's normal.
+fn flower_head(s: &mut Soup, c: Vec3, face: Vec3, r: f32, petal: [f32; 3], spin: f32, sky: Vec3) {
+    let u = face.cross(Vec3::X).normalize_or(Vec3::Z);
+    let w = face.cross(u);
+    let pt = |ang: f32, rad: f32| c + (u * ang.cos() + w * ang.sin()) * rad;
+    let pc = [petal[0], petal[1], petal[2], 1.0];
+    let ec = [FLOWER_EYE[0], FLOWER_EYE[1], FLOWER_EYE[2], 1.0];
+    let eye = c + face * (r * 0.12);
+    for i in 0..5 {
+        let a = spin + i as f32 * TAU / 5.0;
+        let (l, tip, rr) = (pt(a - 0.55, r * 0.5), pt(a, r), pt(a + 0.55, r * 0.5));
+        for [p, q] in [[l, tip], [tip, rr]] {
+            s.tri(c, p, q, |_| pc, Some(sky), 0.9);
+            s.tri(c, q, p, |_| pc, Some(sky), 0.9);
+        }
+        let lift = face * (r * 0.1);
+        let (e0, e1) = (pt(a, r * 0.28) + lift, pt(a + TAU / 5.0, r * 0.28) + lift);
+        s.tri(eye, e0, e1, |_| ec, Some(sky), 0.9);
+        s.tri(eye, e1, e0, |_| ec, Some(sky), 0.9);
+    }
 }
