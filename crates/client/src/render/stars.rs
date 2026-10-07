@@ -35,11 +35,7 @@ pub const SHADER: &str = "shaders/stars.wgsl";
 
 /// Stars in the sky: enough that a clear night is full of them, and a few
 /// bright enough to find first.
-pub const STARS: u32 = if cfg!(target_arch = "wasm32") {
-    1_200
-} else {
-    2_400
-};
+pub const STARS: u32 = if cfg!(webgl2) { 1_200 } else { 2_400 };
 /// A star's quad at its brightest, pixels across.
 pub const STAR_PX: f32 = 3.0;
 

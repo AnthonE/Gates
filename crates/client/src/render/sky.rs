@@ -64,13 +64,9 @@ use super::rig::{EyeCam, CAPTURE_DAY_FRAC};
 use super::WorldId;
 
 /// Cube face size in texels. 6 × 256² = 393k texels, 1.5 MB of RGBA8 on the
-/// desktop; a quarter of that in a browser, where every re-upload is a
-/// WebGL texture rebuilt.
-pub const SKY_FACE: u32 = if cfg!(target_arch = "wasm32") {
-    128
-} else {
-    256
-};
+/// desktop and under WebGPU; a quarter of that under WebGL2, where every
+/// re-upload is a WebGL texture rebuilt.
+pub const SKY_FACE: u32 = if cfg!(webgl2) { 128 } else { 256 };
 
 /// Cloud-deck altitude, metres. Cumulus bases sit near a kilometre; the exact
 /// value only sets how fast the deck compresses toward the horizon.
@@ -97,12 +93,13 @@ pub const CLOUD_NITS: f32 = 26_000.0;
 const CLOUD_TOP: [f32; 3] = [1.0, 0.99, 0.97];
 const CLOUD_BASE: [f32; 3] = [0.42, 0.45, 0.52];
 
-// ── The browser's sky (browser sky v0 — DECISIONS.md §open) ─────────────────
+// ── The WebGL2 sky (browser sky v0 — DECISIONS.md §open) ───────────────────
 //
 // **Natively the atmosphere paints the sky and every clear texel of this
 // cubemap must stay ZERO** — the skybox pipeline has `blend: None`, so a
-// non-zero clear texel is a second sky added to `AtmosphereNode`'s own. In a
-// browser there is no atmosphere at all (`rig.rs`: `mesh_view_layout_
+// non-zero clear texel is a second sky added to `AtmosphereNode`'s own. The
+// browser's WebGPU module has the atmosphere and is "natively" here. Under
+// WebGL2 there is no atmosphere at all (`rig.rs`: `mesh_view_layout_
 // atmosphere` wants a storage buffer and WebGL2 allows none), so the same
 // zero texel is the CLEAR COLOUR, and the first island a browser drew had
 // white cumulus floating on black (`findings/web-build-20260909.md` §15.7).
@@ -116,8 +113,9 @@ const CLOUD_BASE: [f32; 3] = [0.42, 0.45, 0.52];
 // under a heavy sky and warms it toward a low sun (weather v0).
 
 /// Whether the deck carries a clear sky behind the clouds. Zero texels
-/// natively, for the reason above; a sky in a browser.
-pub const BAKE_BACKDROP: bool = cfg!(target_arch = "wasm32");
+/// wherever the atmosphere draws (the desktop, and the browser's WebGPU
+/// module), for the reason above; a sky under WebGL2, which has none.
+pub const BAKE_BACKDROP: bool = cfg!(webgl2);
 
 /// The horizon's luminance over the zenith's. A clear sky is brightest at
 /// the horizon, where the eye looks through the most air: measured skies
@@ -722,9 +720,27 @@ impl ComposeParams {
 /// deck is 1.4 km up, under little of that column. This takes the hue of
 /// `T` out of a cloud and leaves its dimming: distant cloud still goes dark
 /// toward the horizon, which is the aerial perspective the cube is there to
-/// get, and not orange. The desktop's alone — a browser has no atmosphere.
+/// get, and not orange. Wherever the atmosphere draws — not under WebGL2,
+/// which has none.
+///
+/// **Per channel only where the device blends per channel.** `render_sky`
+/// multiplies by `T` channel by channel through dual-source blending, and
+/// by `T`'s MEAN on a device without it (Bevy's own fallback, and the case
+/// for some browsers' WebGPU). Lifted against a grey multiply, a deck keeps
+/// the blue it was given to cancel the red and every cloud comes out
+/// periwinkle — measured 26 levels bluer than the desktop's in a SwiftShader
+/// browser. There this only evens the brightness: `grey / mean(T)`, the same
+/// in all three channels, so a cloud lands as bright as on the desktop and
+/// as grey. [`super::quality::GpuCaps::dual_source_blending`] says which.
 pub fn deck_hue(y: f32) -> [f32; 3] {
-    static LUT: std::sync::OnceLock<Box<[[f32; 3]]>> = std::sync::OnceLock::new();
+    deck_hue_for(y, super::quality::gpu_caps().dual_source_blending)
+}
+
+/// [`deck_hue`] for a composite through `T` per channel (`per_channel`) or
+/// through its mean.
+pub fn deck_hue_for(y: f32, per_channel: bool) -> [f32; 3] {
+    type Lift = ([f32; 3], f32);
+    static LUT: std::sync::OnceLock<Box<[Lift]>> = std::sync::OnceLock::new();
     let lut = LUT.get_or_init(|| {
         let tau = zenith_depth(&super::rig::island_medium());
         (0..HUE_STEPS)
@@ -735,14 +751,20 @@ pub fn deck_hue(y: f32) -> [f32; 3] {
                 // a grey as the weakest channel can be lifted to.
                 let least = t[0].min(t[1]).min(t[2]);
                 let grey = super::fill::luminance(t).min(HUE_MAX * least);
-                core::array::from_fn(|c| grey / t[c])
+                let mean = (t[0] + t[1] + t[2]) / 3.0;
+                (core::array::from_fn(|c| grey / t[c]), grey / mean)
             })
             .collect()
     });
     let x = y.clamp(0.0, 1.0) * (HUE_STEPS - 1) as f32;
     let i = (x as usize).min(HUE_STEPS - 2);
     let f = x - i as f32;
-    core::array::from_fn(|c| lut[i][c] + (lut[i + 1][c] - lut[i][c]) * f)
+    let (a, b) = (lut[i], lut[i + 1]);
+    if per_channel {
+        core::array::from_fn(|c| a.0[c] + (b.0[c] - a.0[c]) * f)
+    } else {
+        [a.1 + (b.1 - a.1) * f; 3]
+    }
 }
 
 /// Air masses along a ray `y` above the horizon, over straight up (Kasten

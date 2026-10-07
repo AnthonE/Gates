@@ -195,7 +195,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// round a corner, merged over main's slope-sunk rocks
 /// (`0x66EB_1534_8463_B430`); every site stays where it was
 /// (`RingPath::built`).
-const GOLDEN_TERRAIN_HASH: u64 = 0x9FA3_83B2_460B_F5D1;
+/// **Moved → `0x5642_3396_CA8F_82BD` when the bush column split into shrubs,
+/// berry bushes and hemp** (2026-10-06, `terrain::plant_of`), merged over the
+/// ring: every cell that held a bush still holds a plant, and only which
+/// plant moved.
+const GOLDEN_TERRAIN_HASH: u64 = 0x5642_3396_CA8F_82BD;
 
 #[test]
 fn test_terrain_golden() {

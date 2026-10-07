@@ -5,8 +5,8 @@
 //! content crate's bake tests.
 
 use sim_core::gather::{
-    cell_key, weak_mark8, GatherContent, ItemStack, NO_CELL, RESPAWN_MIN_TICKS,
-    RESPAWN_RANGE_TICKS, SWING_INTERVAL_TICKS,
+    cell_key, weak_mark8, GatherContent, ItemStack, NO_CELL, PLANT_GROW_TICKS, RESPAWN_MIN_TICKS,
+    RESPAWN_RANGE_TICKS, SAPLING_PM, SWING_INTERVAL_TICKS,
 };
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement;
@@ -272,7 +272,7 @@ fn swing_pays_exhausts_and_replays() {
 /// the tool ladder move the primary and leave it alone.
 #[test]
 fn a_bush_pays_its_side_yield_flat_and_says_so() {
-    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::Bush);
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::BerryBush);
     let fixture = GatherContent::probe_fixture();
     let bush = &fixture.nodes[4];
     let (sec_item, sec_pay) = bush.secondary;
@@ -330,7 +330,7 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
 /// pick from out of reach does nothing either.
 #[test]
 fn a_swing_passes_through_a_bush_and_a_pick_takes_it() {
-    let (pos, aim, (cx, cz)) = find_isolated(SEED, Occupant::Bush);
+    let (pos, aim, (cx, cz)) = find_isolated(SEED, Occupant::BerryBush);
     let mut w = world_at(pos);
     for t in 0..SWING_INTERVAL_TICKS * 3 {
         w.tick(&[hold_primary(aim, t as u16)]);
@@ -356,7 +356,7 @@ fn a_swing_passes_through_a_bush_and_a_pick_takes_it() {
             EV_GATHER => gathers += 1,
             EV_SLOT_HARVESTED => {
                 assert_eq!(e.a, cell_key(cx as u16, cz as u16));
-                assert_eq!(e.b, Occupant::Bush as u32, "the event names a bush");
+                assert_eq!(e.b, Occupant::BerryBush as u32, "the event names a bush");
                 harvested += 1;
             }
             _ => {}
@@ -369,6 +369,92 @@ fn a_swing_passes_through_a_bush_and_a_pick_takes_it() {
     assert!(
         w.events.entries().iter().all(|e| e.code != EV_GATHER),
         "a picked bush was picked again"
+    );
+}
+
+/// **A picked bush grows back where it stood**: its timer brings it back as
+/// a sprout, not whole; a sprout cannot be picked (a berry bush fruits when
+/// it is grown); and `PLANT_GROW_TICKS` later it can be picked again.
+#[test]
+fn a_picked_bush_comes_back_as_a_sprout_and_is_picked_when_grown() {
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::BerryBush);
+    let (ucx, ucz) = (cx as u16, cz as u16);
+    let mut w = world_at(pos);
+    let paid = |w: &World| w.events.entries().iter().any(|e| e.code == EV_GATHER);
+    w.tick(&[pick_bush(cx, cz)]);
+    assert!(paid(&w), "the bush was not picked");
+
+    w.tick = w.slot_lives.find(ucx, ucz).expect("picked").respawn_at - 1;
+    let mut grown_at = None;
+    for _ in 0..3 {
+        let now = w.tick;
+        w.tick(&[]);
+        if let Some(e) = w
+            .events
+            .entries()
+            .iter()
+            .find(|e| e.code == EV_SLOT_RESPAWNED)
+        {
+            assert_eq!(e.c, 1, "a bush comes back as a sprout, not whole");
+            let at = w.slot_lives.find(ucx, ucz).expect("growing").grown_at;
+            assert_eq!(at - now, PLANT_GROW_TICKS);
+            grown_at = Some(at);
+            break;
+        }
+    }
+    let grown_at = grown_at.expect("the bush never came back");
+    assert_eq!(w.slot_lives.standing_pm(ucx, ucz), SAPLING_PM);
+    w.tick(&[pick_bush(cx, cz)]);
+    assert!(!paid(&w), "a sprout was picked");
+
+    w.tick = grown_at;
+    w.tick(&[]);
+    assert_eq!(w.slot_lives.standing_pm(ucx, ucz), 1000);
+    w.tick(&[pick_bush(cx, cz)]);
+    assert!(paid(&w), "a grown bush could not be picked");
+}
+
+/// **Hemp is its own plant with its own row**, not a side payout of the bush:
+/// a pick pays the hemp row's output and nothing beside it, and the event
+/// names hemp. And a **shrub is scenery** — the same pick aimed at one does
+/// nothing at all, because only the berry bush and hemp are picked.
+#[test]
+fn hemp_pays_its_own_row_and_a_shrub_pays_nothing() {
+    let fixture = GatherContent::probe_fixture();
+    let hemp = &fixture.nodes[sim_core::gather::node_index(Occupant::Hemp).expect("hemp row")];
+    assert_eq!(hemp.secondary.0, sim_core::gather::NO_ITEM);
+
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::Hemp);
+    let mut w = world_at(pos);
+    w.tick(&[pick_bush(cx, cz)]);
+    let mut paid = Vec::new();
+    let mut harvested = 0;
+    for e in w.events.entries() {
+        match e.code {
+            EV_GATHER => paid.push(((e.b >> 16) as u16, e.b & 0xFFFF)),
+            EV_SLOT_HARVESTED => {
+                assert_eq!(e.b, Occupant::Hemp as u32, "the event names hemp");
+                harvested += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        paid,
+        vec![(hemp.output, u32::from(hemp.hand_yield * hemp.hits))],
+        "hemp pays its own row, once, and nothing on the side"
+    );
+    assert_eq!(harvested, 1, "one pick spends the plant");
+
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::Shrub);
+    let mut w = world_at(pos);
+    w.tick(&[pick_bush(cx, cz)]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .all(|e| e.code != EV_GATHER && e.code != EV_SLOT_HARVESTED),
+        "a shrub was picked — it is scenery"
     );
 }
 
@@ -1667,7 +1753,7 @@ fn a_refused_swing_leaves_no_mark() {
 /// happens; only the mark is absent.
 #[test]
 fn a_bush_pays_but_has_no_skin_to_mark() {
-    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::Bush);
+    let (pos, _, (cx, cz)) = find_isolated(SEED, Occupant::BerryBush);
     let mut w = world_at(pos);
     let mut marks = 0;
     let mut gathers = 0;

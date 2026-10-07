@@ -1250,6 +1250,9 @@ pub struct Motion {
     /// This frame's [`hand_set`] — the hand's turn, the forearm's share of
     /// it and the arm's shift — for [`pose_hand`] to write after the clip.
     set: Option<(Quat, f32, Vec3)>,
+    /// How closed the fist is on the row in it, 0..=1, eased with `fit`
+    /// (`fingers::pose`).
+    grip: f32,
 }
 
 /// What the bow's string and arrow are drawn from this frame (`bow::drive`).
@@ -1268,6 +1271,12 @@ pub struct BowPose {
 }
 
 impl Motion {
+    /// How closed the first-person fist is, 0 at the rest curl and 1 on a
+    /// handle (`fingers::pose`).
+    pub fn grip(&self) -> f32 {
+        self.grip
+    }
+
     /// Swing the arm once, for a verb that is a swing without being the
     /// swing button: the hammer's repair (`verbs::keys`).
     pub fn strike(&mut self) {
@@ -2590,15 +2599,25 @@ pub fn animate(
         None => want,
     };
     m.fit = Some(fit);
+    let mut grip = 0.0;
     if let Ok((mut it, in_hand)) = item.single_mut() {
         if in_hand {
             *it = item_pose(Some(fit), snap * aim);
             m.set = Some(hand_set(fit));
+            // The fist closes on a row the hand fits round; a palmed or
+            // stand-in row keeps the rest curl.
+            if def
+                .filter(|_| !holstered)
+                .is_some_and(|d| d.grip_roll.is_some())
+            {
+                grip = 1.0;
+            }
         } else {
             *it = item_pose(None, snap * aim);
             m.set = None;
         }
     }
+    m.grip += (grip - m.grip) * k;
 }
 
 /// Put the first-person arm where [`animate`]'s grip wants it, over the hold

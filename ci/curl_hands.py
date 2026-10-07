@@ -235,6 +235,102 @@ def digits(local, hand_ix, tris):
     return out
 
 
+def plan_digits(local, found, opts):
+    """Everything the bend needs per digit, derived off the UNBENT hand.
+
+    Split out of `main` so `ci/rig_fingers.py` places its knuckle bones with
+    the same arithmetic that bent the vertices: one derivation, two readers.
+    `found` is `digits()`'s output; `local` is the hand in its bone's space.
+    """
+    cent = np.array([local[ix].mean(axis=0) for ix, _ in found])
+    # The axis the four fingers spread on is the one with the LARGER spread
+    # once the outlier is out; the thumb is the outlier on the other. Try
+    # both candidate axes and take the reading that separates one digit
+    # furthest from the rest — on this character it is 9.9 against 5.2.
+    pick = None
+    for spread_ax, palm_ax in ((2, 0), (0, 2)):
+        order = np.argsort(cent[:, palm_ax])
+        for cand in (order[0], order[-1]):
+            rest = [k for k in range(5) if k != cand]
+            gap = abs(cent[cand, palm_ax] - cent[rest, palm_ax].mean())
+            if pick is None or gap > pick[0]:
+                pick = (gap, int(cand), spread_ax, palm_ax)
+    _, thumb, spread_ax, palm_ax = pick
+    rest = [k for k in range(5) if k != thumb]
+    palm_sign = np.sign(cent[thumb, palm_ax] - cent[rest, palm_ax].mean())
+    palm_n = np.zeros(3)
+    palm_n[palm_ax] = palm_sign
+    # The finger the others close toward: the middle of the four on the
+    # spread axis, which is also the longest, so an adduction leaves it
+    # where it is and swings the other three onto it.
+    mid = np.median(cent[rest, spread_ax])
+
+    out = []
+    for k, (sel, base_frac) in enumerate(found):
+        v = local[sel]
+        band = 0.2 * np.ptp(v[:, 1])
+        base = v[v[:, 1] <= v[:, 1].min() + band].mean(axis=0)
+        tipc = v[v[:, 1] >= v[:, 1].max() - band].mean(axis=0)
+        dirv = tipc - base
+        dirv /= np.linalg.norm(dirv)
+        s = (local[sel] - base) @ dirv
+        live = s > 0.0
+        if not live.any():
+            continue
+        sel, s = sel[live], s[live]
+        # The digit's own reach, not the axis sample's: `s` runs over
+        # exactly the vertices about to move, so no vertex can end up past
+        # the end of the bend and be flung down the tangent. That was this
+        # file's first bug and it turned the thumb into a spike.
+        length = s.max()
+        deg = opts["--thumb-degrees"] if k == thumb else opts["--degrees"]
+        n = palm_n - dirv * (palm_n @ dirv)
+        n /= np.linalg.norm(n)
+        axis = np.cross(dirv, n)
+        axis /= np.linalg.norm(axis)
+        swing = None
+        if k != thumb and opts["--adduct"] > 0.0:
+            # Close the spread: swing the digit about the palm normal,
+            # through its own base, toward the middle finger.
+            off = base[spread_ax] - mid
+            swing = -np.arctan2(off, length) * opts["--adduct"]
+        out.append(dict(k=k, sel=sel, s=s, length=length, deg=deg, base=base,
+                        dirv=dirv, n=n, axis=axis, swing=swing, palm_n=palm_n,
+                        base_frac=base_frac, thumb=(k == thumb),
+                        spread=float(cent[k, spread_ax])))
+    return dict(thumb=thumb, palm_sign=palm_sign, palm_ax=palm_ax,
+                spread_ax=spread_ax, palm_n=palm_n, digits=out)
+
+
+def bend(local, d):
+    """One digit's bent vertices in bone space, and the matching normal turn.
+
+    Constant curvature about `axis` through the base, by arclength, then the
+    adduction swing about the palm normal — see the module docstring.
+    """
+    sel, s, length = d["sel"], d["s"], d["length"]
+    base, dirv, n, axis = d["base"], d["dirv"], d["n"], d["axis"]
+    r = local[sel] - base
+    ang = np.radians(d["deg"]) * (s / length)
+    kcurv = np.radians(d["deg"]) / length
+    perp = r - np.outer(s, dirv)
+    arc = (np.outer(np.sin(ang) / kcurv, dirv)
+           + np.outer((1.0 - np.cos(ang)) / kcurv, n))
+    new_local = base + arc + rotate(perp, axis, ang)
+    swing = d["swing"]
+    if swing is not None:
+        sw = np.full(len(sel), swing)
+        new_local = base + rotate(new_local - base, d["palm_n"], sw)
+
+    def rot_n(v):
+        out = rotate(v, axis, ang)
+        if swing is not None:
+            out = rotate(out, d["palm_n"], np.full(len(sel), swing))
+        return out
+
+    return new_local, rot_n
+
+
 def main():
     argv = sys.argv[1:]
     opts = {"--degrees": CURL_DEG, "--thumb-degrees": THUMB_DEG,
@@ -327,74 +423,16 @@ def main():
                 f"a five-digit hand — bending it blind would fold whatever it "
                 f"did find.")
 
-        cent = np.array([local[ix].mean(axis=0) for ix, _ in found])
-        # The axis the four fingers spread on is the one with the LARGER spread
-        # once the outlier is out; the thumb is the outlier on the other. Try
-        # both candidate axes and take the reading that separates one digit
-        # furthest from the rest — on this character it is 9.9 against 5.2.
-        pick = None
-        for spread_ax, palm_ax in ((2, 0), (0, 2)):
-            order = np.argsort(cent[:, palm_ax])
-            for cand in (order[0], order[-1]):
-                rest = [k for k in range(5) if k != cand]
-                gap = abs(cent[cand, palm_ax] - cent[rest, palm_ax].mean())
-                if pick is None or gap > pick[0]:
-                    pick = (gap, int(cand), spread_ax, palm_ax)
-        _, thumb, spread_ax, palm_ax = pick
-        rest = [k for k in range(5) if k != thumb]
-        palm_sign = np.sign(cent[thumb, palm_ax] - cent[rest, palm_ax].mean())
-        palm_n = np.zeros(3)
-        palm_n[palm_ax] = palm_sign
-        # The finger the others close toward: the middle of the four on the
-        # spread axis, which is also the longest, so an adduction leaves it
-        # where it is and swings the other three onto it.
-        mid = np.median(cent[rest, spread_ax])
+        plan = plan_digits(local, found, opts)
+        thumb, palm_sign, palm_ax = plan["thumb"], plan["palm_sign"], plan["palm_ax"]
 
         moved = np.zeros(len(P), dtype=bool)
         bases = []
-        for k, (sel, base_frac) in enumerate(found):
-            v = local[sel]
-            band = 0.2 * np.ptp(v[:, 1])
-            base = v[v[:, 1] <= v[:, 1].min() + band].mean(axis=0)
-            tipc = v[v[:, 1] >= v[:, 1].max() - band].mean(axis=0)
-            dirv = tipc - base
-            dirv /= np.linalg.norm(dirv)
-            r = local[sel] - base
-            s = r @ dirv
-            live = s > 0.0
-            if not live.any():
-                continue
-            sel, r, s = sel[live], r[live], s[live]
-            # The digit's own reach, not the axis sample's: `s` runs over
-            # exactly the vertices about to move, so no vertex can end up past
-            # the end of the bend and be flung down the tangent. That was this
-            # file's first bug and it turned the thumb into a spike.
-            length = s.max()
-            deg = opts["--thumb-degrees"] if k == thumb else opts["--degrees"]
-            ang = np.radians(deg) * (s / length)
-
-            n = palm_n - dirv * (palm_n @ dirv)
-            n /= np.linalg.norm(n)
-            axis = np.cross(dirv, n)
-            axis /= np.linalg.norm(axis)
-            kcurv = np.radians(deg) / length
-            perp = r - np.outer(s, dirv)
-            arc = (np.outer(np.sin(ang) / kcurv, dirv)
-                   + np.outer((1.0 - np.cos(ang)) / kcurv, n))
-            new_local = base + arc + rotate(perp, axis, ang)
-
-            swing = None
-            if k != thumb and opts["--adduct"] > 0.0:
-                # Close the spread: swing the digit about the palm normal,
-                # through its own base, toward the middle finger.
-                off = base[spread_ax] - mid
-                swing = np.full(len(sel), -np.arctan2(off, length) * opts["--adduct"])
-                new_local = base + rotate(new_local - base, palm_n, swing)
-
+        for d in plan["digits"]:
+            sel = d["sel"]
+            new_local, rot_n = bend(local, d)
             P[sel] = (new_local - T) @ Rinv.T
-            nl = rotate(N[sel] @ R.T, axis, ang)
-            if swing is not None:
-                nl = rotate(nl, palm_n, swing)
+            nl = rot_n(N[sel] @ R.T)
             # Normalised in MESH space, which is where they are stored and the
             # only space the length means anything in. Doing it in bone space
             # and then mapping back divides every normal by the armature's
@@ -406,7 +444,7 @@ def main():
             moved[sel] = True
             bent_any[sel] = True
             moved_total += int(len(sel))
-            bases.append(f"{base_frac:.2f}")
+            bases.append(f"{d['base_frac']:.2f}")
 
         print(f"  {bone}: {len(own_ix)} verts, 5 digits, thumb is island "
               f"{thumb}, palm is {'+' if palm_sign > 0 else '-'}"

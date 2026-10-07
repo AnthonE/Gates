@@ -6558,6 +6558,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/boulder.rs"),
         },
         Module {
+            file: "cliff.rs",
+            src: include_str!("../../sim-core/src/cliff.rs"),
+        },
+        Module {
             file: "landmark.rs",
             src: include_str!("../../sim-core/src/landmark.rs"),
         },

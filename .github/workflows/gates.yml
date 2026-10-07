@@ -12,6 +12,11 @@ on:
       - "Cargo.lock"
       - "content/**"
       - "ci/**"
+      # Read by tests: `refusals.rs` scans the page, and the ground and
+      # water tests hold the shaders' bindings and constants.
+      - "crates/client-web/web/**"
+      - "assets/shaders/**"
+      - "assets/textures/**"
       - ".github/workflows/gates.yml"
   push:
     branches: [main]
@@ -21,6 +26,9 @@ on:
       - "Cargo.lock"
       - "content/**"
       - "ci/**"
+      - "crates/client-web/web/**"
+      - "assets/shaders/**"
+      - "assets/textures/**"
       - ".github/workflows/gates.yml"
   workflow_dispatch: {}
 

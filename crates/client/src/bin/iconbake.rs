@@ -79,7 +79,6 @@ const fn s(stem: &'static str, glb: &'static str, turn: [f32; 3]) -> Subject {
 /// Framing is `ci/finish_icons.py`'s, from the pixels, so there is no size
 /// here.
 const SUBJECTS: &[Subject] = &[
-    s("rock", "models/held/rock.glb", [20.0, 0.0, 0.0]),
     s("stone", "models/prop/node_stone.glb", [30.0, 0.0, 0.0]),
     s("metal_ore", "models/prop/node_metal.glb", [30.0, 0.0, 0.0]),
     s(

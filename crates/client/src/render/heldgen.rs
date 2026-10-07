@@ -34,6 +34,8 @@
 //! slice nobody has looked at yet (`NOW.md` §0tl,
 //! `assets/models/MANIFEST.md`).
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use super::props::{tint1, Soup};
@@ -227,6 +229,140 @@ fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
     }
 }
 
+/// Revolve a profile around +Y with SMOOTH normals. `turned` facets every
+/// band, which suits a torch's wrap and not a bat, whose whole read is one
+/// polished taper. `sides + 1` columns so the UV seam closes; a radius of
+/// zero is a pole, and the degenerate half of each quad touching it is
+/// skipped (mikktspace refuses a zero-area triangle).
+fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> [f32; 4]) -> Mesh {
+    let n = profile.len();
+    let cols = sides + 1;
+    let mut pos = Vec::with_capacity(n * cols);
+    let mut nrm = Vec::with_capacity(n * cols);
+    let mut uv = Vec::with_capacity(n * cols);
+    let mut col = Vec::with_capacity(n * cols);
+    for (k, &(y, r)) in profile.iter().enumerate() {
+        // The profile's outward normal in the (r, y) half-plane, from its
+        // neighbours: a central difference, one-sided at the two ends.
+        let (ya, ra) = profile[k.saturating_sub(1)];
+        let (yb, rb) = profile[(k + 1).min(n - 1)];
+        let (dr, dy) = (rb - ra, yb - ya);
+        let len = (dr * dr + dy * dy).sqrt().max(1e-9);
+        let (nr, ny) = (dy / len, -dr / len);
+        for j in 0..cols {
+            let a = j as f32 * std::f32::consts::TAU / sides as f32;
+            let (sin, cos) = a.sin_cos();
+            pos.push([cos * r, y, sin * r]);
+            nrm.push([cos * nr, ny, sin * nr]);
+            uv.push([j as f32 / sides as f32, y * 3.0]);
+            col.push(color(y, r, a));
+        }
+    }
+    let w = cols as u32;
+    let mut idx = Vec::with_capacity((n - 1) * sides * 6);
+    for k in 0..n - 1 {
+        let (r0, r1) = (profile[k].1, profile[k + 1].1);
+        for j in 0..sides as u32 {
+            let a = k as u32 * w + j;
+            let b = a + w;
+            // `turned`'s winding: ring k, ring k+1, ring k+1 one column on.
+            if r1 > 0.0 {
+                idx.extend([a, b, b + 1]);
+            }
+            if r0 > 0.0 {
+                idx.extend([a, b + 1, a + 1]);
+            }
+        }
+    }
+    let mut m = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m.generate_tangents()
+        .expect("a lathe has positions, normals and UVs");
+    m
+}
+
+/// The bat's +Y extent: the tip of the dome. `ui::hold`'s row restates it.
+const BAT_LEN: f32 = 0.840;
+
+/// Triple T's bat (operator, 2026-10-06: *"kind of fatter"*): the club in the
+/// original Tung Tung Tung Sahur picture, measured off it rather than off a
+/// regulation bat. Against a real wood bat it has a handle ~40% thicker
+/// (3.4 cm), a barrel ~30% fatter (8.8 cm), a taper that starts at the hand
+/// and keeps going instead of a long thin handle, and a big rounded dome for
+/// an end. 84 cm, knob at the foot, so the fist closes just above the knob.
+fn bat_mesh() -> Mesh {
+    const HANDLE_R: f32 = 0.017;
+    const BARREL_R: f32 = 0.044;
+    // The taper, handle to barrel, as a smoothstep over this span of y.
+    const TAPER: (f32, f32) = (0.16, 0.74);
+    // Where the barrel stops and the dome starts. The dome is a
+    // superellipse quarter, blunter than a hemisphere and longer than one.
+    const DOME: f32 = 0.790;
+    const DOME_P: f32 = 2.2;
+    // The knob, foot up: a flattened bead flaring into the handle.
+    let mut p: Vec<(f32, f32)> = vec![
+        (0.000, 0.0),
+        (0.001, 0.013),
+        (0.004, 0.020),
+        (0.008, 0.0245),
+        (0.013, 0.0260),
+        (0.018, 0.0255),
+        (0.023, 0.0225),
+        (0.028, 0.0190),
+        (0.034, 0.0172),
+    ];
+    let steps = 48;
+    for i in 1..=steps {
+        let y = 0.034 + (DOME - 0.034) * i as f32 / steps as f32;
+        let t = ((y - TAPER.0) / (TAPER.1 - TAPER.0)).clamp(0.0, 1.0);
+        p.push((
+            y,
+            HANDLE_R + (BARREL_R - HANDLE_R) * t * t * (3.0 - 2.0 * t),
+        ));
+    }
+    let h = BAT_LEN - DOME;
+    for i in 1..=12 {
+        let a = i as f32 / 12.0;
+        let r = if i == 12 {
+            0.0
+        } else {
+            BARREL_R * (1.0 - a.powf(DOME_P)).powf(1.0 / DOME_P)
+        };
+        p.push((DOME + h * a, r));
+    }
+
+    // Honey-amber varnished wood, the picture's colour taken out of its
+    // lamplight. The grain is strong on purpose: a vertex tint is all this
+    // mesh has for a surface, and at the first cut's ±5% the in-game frame
+    // read flat peach plastic (measured ±4 of 255 along the whole bat).
+    // Long streaks with thin dark lines between them, darker where hands
+    // have been.
+    const WOOD: [f32; 3] = [0.58, 0.21, 0.025];
+    lathe(&p, 40, |y, _r, a| {
+        let streak = 0.12 * (7.0 * a + 2.2 * (3.0 * a + 6.0 * y).sin()).sin()
+            + 0.08 * (17.0 * a + 4.0 * y).sin();
+        let line = (11.0 * a + 1.3 * (5.0 * y + 2.0 * a).sin()).sin().max(0.0);
+        let along = 0.05 * (13.0 * y).sin();
+        let grain = 1.0 + streak + along - 0.30 * line.powi(8);
+        let handled = if y < 0.30 {
+            0.72 + 0.28 * (y / 0.30)
+        } else {
+            1.0
+        };
+        let k = grain * handled;
+        [WOOD[0] * k, WOOD[1] * k, WOOD[2] * k, 1.0]
+    })
+}
+
+/// A tapered wooden shaft and layered cloth winding. The existing crown,
+/// grip and light socket stay in place; the silhouette now has round edges.
 /// A tapered wooden shaft and a cloth-wrapped head. The crown, grip and
 /// light socket stay in place; the silhouette has round edges.
 fn torch_mesh() -> Mesh {
@@ -602,6 +738,7 @@ fn crossbow_mesh() -> Mesh {
 /// CI reaches this before a boot does.
 pub fn mesh(name: &str) -> Mesh {
     match name {
+        "bat" => bat_mesh(),
         "torch" => torch_mesh(),
         "revolver" => revolver_mesh(),
         "crossbow" => crossbow_mesh(),
@@ -617,6 +754,13 @@ pub fn mesh(name: &str) -> Mesh {
 /// carries is a `PointLight` on the hand, never a bright material.
 pub fn material(name: &str) -> StandardMaterial {
     match name {
+        // Varnished: the picture's bat carries a clear highlight down its
+        // length, so much smoother than the torch's raw shaft.
+        "bat" => StandardMaterial {
+            perceptual_roughness: 0.38,
+            reflectance: super::fresnel::DIELECTRIC,
+            ..default()
+        },
         "torch" => StandardMaterial {
             perceptual_roughness: 0.85,
             // See `render::fresnel`: 0.14 was F0 0.31%.
@@ -655,6 +799,7 @@ mod tests {
         for m in [
             handle_mesh(),
             head_mesh(),
+            mesh("bat"),
             mesh("torch"),
             mesh("revolver"),
             mesh("crossbow"),

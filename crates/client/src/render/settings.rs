@@ -66,15 +66,16 @@ pub const SENS_STEP: f32 = 0.05;
 
 /// Which preset a fresh install lands on, per target.
 ///
-/// Native is the frame that shipped; a browser is what the page has been
-/// drawing since it existed. Written beside [`quality::default_gfx`] rather
+/// Native is the frame that shipped, and so is the browser's WebGPU module;
+/// the WebGL2 module is what the page has been drawing since it existed.
+/// Written beside [`quality::default_gfx`] rather
 /// than derived from it because the two are a pair — the preset NAME the
 /// screen shows and the VALUES the renderer gets — and `tests/quality.rs`
 /// fails if they stop agreeing.
-#[cfg(target_arch = "wasm32")]
+#[cfg(webgl2)]
 pub const DEFAULT_PRESET: Quality = Quality::Low;
-/// See the wasm32 arm.
-#[cfg(not(target_arch = "wasm32"))]
+/// See the WebGL2 arm.
+#[cfg(not(webgl2))]
 pub const DEFAULT_PRESET: Quality = Quality::High;
 
 /// Volume sliders run 0..1 in tenths — the reference's `audio.master`,
@@ -803,6 +804,12 @@ fn target_note(s: &Settings) -> String {
     }
     if got.ao != want.ao {
         notes.push(format!("ambient occlusion {}", got.ao.name()));
+    }
+    if got.taa != want.taa {
+        notes.push("no temporal AA - SMAA instead".to_string());
+    }
+    if got.bloom != want.bloom {
+        notes.push("no bloom".to_string());
     }
     if got.tree_lod_swap_m != want.tree_lod_swap_m {
         notes.push(format!(

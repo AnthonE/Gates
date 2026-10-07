@@ -592,10 +592,10 @@
      of it is a black canvas.
 
      No width/height attributes and no CSS size: the renderer decides the
-     backing store from the viewport under WebGL2's 2048 ceiling
-     (`client::render::web::fit`) and winit writes both. -->
+     backing store from the viewport under the module's ceiling — WebGL2's
+     2048, WebGPU's 8192 (`client::render::web::fit_within`) — and winit
+     writes both. -->
 <canvas id="gates" hidden></canvas>
-
 
 <!-- The page's own script is a FILE, not an inline block: a Content-Security-
      Policy of `script-src 'self'` — the origin's — refuses an inline module,

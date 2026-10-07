@@ -22,6 +22,11 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# The WebGPU module. `ci/build_web.sh` builds the crate twice, with and
+# without this, and the page loads the one its browser can draw with.
+webgpu = ["client/webgpu"]
+
 # **Nothing is a dependency on a native target, and the source is empty
 # there.** A workspace member cannot opt out of `cargo build --workspace`, so
 # the alternative was excluding this crate from the workspace — which means a

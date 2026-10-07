@@ -858,13 +858,15 @@ fn test_skirt_count_tracks_the_published_footprint() {
         Occupant::StoneNode,
         Occupant::MetalNode,
         Occupant::SulfurNode,
-        Occupant::Bush,
+        Occupant::BerryBush,
         Occupant::Rock,
         Occupant::BarrelSlot,
         Occupant::CrateSlot,
         Occupant::HavenShelter,
         Occupant::CacheSlot,
         Occupant::WaystationCanopy,
+        Occupant::Hemp,
+        Occupant::Shrub,
     ];
     assert_eq!(
         terrain::skirt_count(Occupant::None),

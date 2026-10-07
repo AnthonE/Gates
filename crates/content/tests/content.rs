@@ -228,7 +228,7 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
 fn the_body_part_ladder_refuses_what_it_names() {
     // The rock is the first weapon row in the file and the only one whose
     // `damage = 20` line is unique, so it is where every bait below goes.
-    const ROCK: &str = "id = \"item.rock\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_mult = 2\nlimb_pct = 50";
+    const ROCK: &str = "id = \"item.bat\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_mult = 2\nlimb_pct = 50";
     let bait = |limb: &str| ROCK.replace("limb_pct = 50", &format!("limb_pct = {limb}"));
 
     // Above the band: a leg worth as much as the chest above it.
@@ -326,7 +326,12 @@ fn hash_moves_with_values() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    g.1 = g.1.replace("per_hit = 5", "per_hit = 4");
+    // The tree's mushrooms, since the bush's berries became its primary.
+    assert!(g.1.contains("output = \"item.mushrooms\"\nper_hit = 1"));
+    g.1 = g.1.replace(
+        "output = \"item.mushrooms\"\nper_hit = 1",
+        "output = \"item.mushrooms\"\nper_hit = 2",
+    );
     assert_ne!(
         base,
         build(&srcs).unwrap().hash(),
@@ -708,7 +713,7 @@ fn a_skin_fits_one_carried_item() {
 fn orphan_refs_refused() {
     refuses(
         "recipes.toml",
-        "inputs = [{ item = \"item.stone\", count = 10 }]",
+        "inputs = [{ item = \"item.wood\", count = 10 }]",
         "inputs = [{ item = \"item.unobtanium\", count = 15 }]",
         "not an item",
     );
@@ -947,7 +952,7 @@ fn bake_carries_the_shipped_numbers() {
     // item not in the tool table, so this also pins what a torch or a
     // hammer draws off a tree, which `gather::swing` now refuses on.
     let tree = &gc.nodes[0];
-    let rock = c.item_index("item.rock").unwrap();
+    let rock = c.item_index("item.bat").unwrap();
     assert_eq!(tree.output, wood);
     assert_eq!(tree.hits, 10);
     assert_eq!(
@@ -979,7 +984,7 @@ fn bake_refuses_duplicate_archetype() {
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
     entry.1.push_str(
-        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"bush\"\n\
+        "\n[[gatherable]]\nid = \"gather.bush2\"\narchetype = \"berry_bush\"\n\
          output = \"item.cloth\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 10\n",
     );
@@ -1044,8 +1049,8 @@ fn bake_craft_refuses_out_of_cap_rows() {
     let mut srcs = sources();
     let entry = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
     entry.1 = entry.1.replace(
-        "inputs = [{ item = \"item.stone\", count = 10 }]",
-        "inputs = [\n    { item = \"item.stone\", count = 10 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
+        "inputs = [{ item = \"item.wood\", count = 10 }]",
+        "inputs = [\n    { item = \"item.wood\", count = 10 },\n    { item = \"item.stone\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
     );
     let c = build(&srcs).expect("five inputs is a bake error, not a schema error");
     let err = c.bake_craft().expect_err("five-input recipe baked");
@@ -1719,8 +1724,8 @@ fn the_durability_rules_refuse_what_they_name() {
     // arithmetic only while no merge can ever meet two conditions.
     refuses(
         "items.toml",
-        "name = \"Rock\"\nstack = 1",
-        "name = \"Rock\"\nstack = 3",
+        "name = \"Bat\"\nstack = 1",
+        "name = \"Bat\"\nstack = 3",
         "(V7)",
     );
     // V4, the set check: a condition-carrying tool that pays on a node
@@ -1728,8 +1733,8 @@ fn the_durability_rules_refuse_what_they_name() {
     // leaves a tool that farms the forest free forever.
     refuses(
         "gatherables.toml",
-        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
-        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.hatchet_metal\" = 30",
         "(V4)",
     );
     // V1: the ceiling must fit the sim's u16 hundredths.
@@ -1752,15 +1757,15 @@ fn the_durability_rules_refuse_what_they_name() {
     // unreachable coverage. The torch carries condition and pays nowhere.
     refuses(
         "gatherables.toml",
-        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
-        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30\n\"item.torch\" = 30",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30\n\"item.torch\" = 30",
         "(V3)",
     );
     // V5: a zero loss is an inert row, not a statement.
     refuses(
         "gatherables.toml",
-        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\n# Bush",
-        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\n# Bush",
         "(V5)",
     );
     // V6: a loss row's tool must declare a condition to lose. Strip the
@@ -2093,8 +2098,8 @@ fn a_clock_with_no_answer_is_refused() {
     // Take the berries off the bush: hunger drains, nothing pays food.
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.berries\"",
-        "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
+        "archetype = \"berry_bush\"\noutput = \"item.berries\"",
+        "archetype = \"berry_bush\"\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
     // The honest version of the same defect — the rows simply absent. All
@@ -2110,7 +2115,9 @@ fn a_clock_with_no_answer_is_refused() {
         .unwrap();
     for row in [
         "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n",
-        "\n[gatherable.secondary]\noutput = \"item.berries\"\nper_hit = 5\n",
+        "\n[[gatherable]]\nid = \"gather.bush\"\narchetype = \"berry_bush\"\n\
+         output = \"item.berries\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 5\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2217,14 +2224,14 @@ fn a_drink_that_is_not_a_trade_is_refused() {
 fn a_secondary_that_pays_nothing_is_refused() {
     refuses(
         "gatherables.toml",
-        "output = \"item.berries\"\nper_hit = 5",
-        "output = \"item.berries\"\nper_hit = 0",
+        "output = \"item.mushrooms\"\nper_hit = 1",
+        "output = \"item.mushrooms\"\nper_hit = 0",
         "pays nothing",
     );
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.berries\"",
-        "[gatherable.secondary]\noutput = \"item.cloth\"",
+        "[gatherable.secondary]\noutput = \"item.mushrooms\"",
+        "[gatherable.secondary]\noutput = \"item.wood\"",
         "repeats the primary output",
     );
 }
@@ -3012,7 +3019,7 @@ fn the_spawn_kit_bakes_and_seats() {
     let c = build(&sources()).expect("content builds");
     let kit = c.bake_spawn_kit().expect("the kit bakes");
 
-    let rock = c.item_index("item.rock").expect("the rock is an item");
+    let rock = c.item_index("item.bat").expect("the rock is an item");
     let torch = c.item_index("item.torch").expect("the torch is an item");
     let granted: Vec<(u16, u16)> = kit.stacks[..kit.count as usize]
         .iter()
@@ -3088,14 +3095,14 @@ fn no_spawn_kit_is_a_naked_spawn() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    let anchor = "[gatherable.yield_per_hit]\n\"item.rock\" = 50";
+    let anchor = "[gatherable.yield_per_hit]\n\"item.bat\" = 50";
     assert!(
         g.1.contains(anchor),
         "fixture rot: the tree's rock row moved"
     );
     g.1 = g.1.replace(
         anchor,
-        "[gatherable.yield_per_hit]\nhand = 25\n\"item.rock\" = 50",
+        "[gatherable.yield_per_hit]\nhand = 25\n\"item.bat\" = 50",
     );
     let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
     let cut = entry
@@ -3135,7 +3142,7 @@ fn a_kit_that_cannot_start_the_loop_is_refused() {
     // swung node has a yield row for.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1\n\n",
+        "[[spawn_kit]]\nitem = \"item.bat\"\ncount = 1\n\n",
         "",
         "no tool any swung node pays",
     );
@@ -3147,14 +3154,14 @@ fn a_kit_that_cannot_start_the_loop_is_refused() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    let anchor = "[gatherable.yield_per_hit]\n\"item.rock\" = 50";
+    let anchor = "[gatherable.yield_per_hit]\n\"item.bat\" = 50";
     assert!(
         g.1.contains(anchor),
         "fixture rot: the tree's rock row moved"
     );
     g.1 = g.1.replace(
         anchor,
-        "[gatherable.yield_per_hit]\nhand = 25\n\"item.rock\" = 50",
+        "[gatherable.yield_per_hit]\nhand = 25\n\"item.bat\" = 50",
     );
     let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
     let cut = entry
@@ -3173,31 +3180,31 @@ fn spawn_kit_refusals() {
     // An item the tables do not have.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.rock\"",
+        "[[spawn_kit]]\nitem = \"item.bat\"",
         "[[spawn_kit]]\nitem = \"item.jetpack\"",
         "no such item",
     );
     // A count of zero — a slot that would draw empty.
     refuses(
         "balance.toml",
-        "item = \"item.rock\"\ncount = 1",
-        "item = \"item.rock\"\ncount = 0",
+        "item = \"item.bat\"\ncount = 1",
+        "item = \"item.bat\"\ncount = 0",
         "grants 0",
     );
     // Past the item's own stack size, which for the rock is 1 — so this
     // case is now tighter than it was against the hammer, not looser.
     refuses(
         "balance.toml",
-        "item = \"item.rock\"\ncount = 1",
-        "item = \"item.rock\"\ncount = 99",
+        "item = \"item.bat\"\ncount = 1",
+        "item = \"item.bat\"\ncount = 99",
         "past its own stack size",
     );
     // The same item twice — `grant_kit` writes slots and never merges, so
     // this is a typo that halves what the author meant.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1",
-        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.bat\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.bat\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.bat\"\ncount = 1",
         "granted twice",
     );
 }
@@ -3876,7 +3883,7 @@ fn research_edge_refusals() {
     refuses(
         "research.toml",
         edge,
-        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.rock\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.bat\"",
         "is not researchable",
     );
     // The "same edge twice" case that stood here is DELETED by the
@@ -4102,7 +4109,7 @@ fn bake_combat_arms_the_armor_the_data_prices() {
     }
     // And the table is not simply full: an item nobody armors stays inert,
     // so `slot == WEAR_NONE` still means "not wearable".
-    let rock = c.item_index("item.rock").expect("the rock is an item") as usize;
+    let rock = c.item_index("item.bat").expect("the rock is an item") as usize;
     assert_eq!(
         cc.armor[rock].slot, WEAR_NONE,
         "a rock is wearable — the bake filled rows it was never given"
@@ -4120,7 +4127,7 @@ fn the_shipped_burlap_shirt_costs_an_attacker_a_swing() {
     let rock = c
         .weapons
         .iter()
-        .find(|w| w.id == "item.rock")
+        .find(|w| w.id == "item.bat")
         .expect("the rock is a weapon");
     let shirt = c
         .armors

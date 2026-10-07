@@ -306,7 +306,7 @@ fn the_weak_spot_sits_on_the_skin_facing_its_sector() {
     assert!(at.y < node.y + occupant_volume(Occupant::StoneNode).1 * 1.1);
     // A bush has no skin and the sim never marks one: nothing to draw.
     let bush = Slot {
-        occupant: Occupant::Bush,
+        occupant: Occupant::BerryBush,
         ..slot
     };
     assert!(weak_spot_pose(&bush, 0x40).is_none());

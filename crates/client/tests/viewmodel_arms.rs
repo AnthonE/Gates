@@ -1784,6 +1784,20 @@ fn hand_mesh(glb: &Glb) -> (Vec<bevy::math::Vec3>, Vec<[usize; 3]>) {
         .expect("the hand is a joint of the skin");
     let ibm = glb.floats(skin["inverseBindMatrices"].as_u64().unwrap() as usize)[j].clone();
     let m = Mat4::from_cols_slice(&ibm);
+    // The hand and its finger bones (`ci/rig_fingers.py`): bound where the
+    // curl put them, so at rest the hand's own inverse bind places them all.
+    let own: Vec<usize> = skin["joints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            glb.json["nodes"][n.as_u64().unwrap() as usize]["name"]
+                .as_str()
+                .is_some_and(|s| s.starts_with(HOLD_BONE))
+        })
+        .map(|(i, _)| i)
+        .collect();
     // `char1_arms`: the half the viewmodel draws.
     let prim = &glb.json["meshes"][0]["primitives"][0];
     let at = |k: &str| prim["attributes"][k].as_u64().unwrap() as usize;
@@ -1795,7 +1809,7 @@ fn hand_mesh(glb: &Glb) -> (Vec<bevy::math::Vec3>, Vec<[usize; 3]>) {
     let mut verts = Vec::new();
     for (v, p) in pos.iter().enumerate() {
         let w: f32 = (0..4)
-            .filter(|&c| joints[v][c] as usize == j)
+            .filter(|&c| own.contains(&(joints[v][c] as usize)))
             .map(|c| weights[v][c])
             .sum();
         if w > 0.5 {

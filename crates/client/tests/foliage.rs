@@ -67,6 +67,29 @@ fn a_tree_sways_as_one() {
     assert_eq!(Kind::Bark.params().sway.w, 0.0, "a trunk does not flutter");
 }
 
+/// A plant's leaves and its wood are two meshes too: the same bend and the
+/// same parting, or the berries and the stalk come out of the leaves when the
+/// wind blows or somebody pushes through.
+#[test]
+fn a_plant_sways_and_parts_as_one() {
+    for (leaf, wood) in [
+        (Kind::BushLeaf, Kind::Stem),
+        (Kind::HempLeaf, Kind::HempStem),
+    ] {
+        let (l, w) = (leaf.params(), wood.params());
+        assert_eq!(l.sway.truncate(), w.sway.truncate(), "{leaf:?} / {wood:?}");
+        assert_eq!(l.misc, w.misc, "{leaf:?} / {wood:?}");
+        assert!(l.misc.y > 0.0, "{leaf:?} does not part for a body");
+        assert_eq!(w.sway.w, 0.0, "{wood:?} flutters");
+    }
+    // Hemp is the soft one.
+    assert!(Kind::HempLeaf.params().sway.x > Kind::BushLeaf.params().sway.x);
+    // A tree and the grass do not part (the grass has its trails).
+    for k in [Kind::Grass, Kind::Bark, Kind::Needle, Kind::Leaf] {
+        assert_eq!(k.params().misc.y, 0.0, "{k:?}");
+    }
+}
+
 /// The grass must be gone before the ring's nearest edge, or a tile is seen
 /// streaming in and out — the popping square the fade exists to remove.
 #[test]
@@ -112,6 +135,9 @@ fn transmission_does_not_darken_the_lit_side() {
     for kind in [
         Kind::Grass,
         Kind::BushLeaf,
+        Kind::HempLeaf,
+        Kind::Stem,
+        Kind::HempStem,
         Kind::Needle,
         Kind::Leaf,
         Kind::Bark,
