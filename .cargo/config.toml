@@ -1,6 +1,6 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 88 kB — fixed-capacity by design (wall 4), and
+# `World` is 89 kB — fixed-capacity by design (wall 4), and
 # (87 kB until the arc put the works table on the world;
 # 85 kB until fire arrows put their fires on the world;
 # 84 kB until the bow's arrow kinds put a damage share on each round;
