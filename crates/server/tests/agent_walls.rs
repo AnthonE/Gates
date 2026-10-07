@@ -2002,8 +2002,11 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
             *free = ore;
         }
     });
+    // Smelted, not merely held: a road sign pays fragments too
+    // (`loot.roadsign`), and a body whose base stands by the road can
+    // smash its way to the count with the ore untouched in its pack.
     let smelted = h.until(5 * 60 * TICK_HZ, |b| {
-        b.held("Metal Fragments") >= before + 40
+        b.held("Metal Fragments") >= before + 40 && b.held("Metal Ore") <= 20
     });
     assert!(
         smelted,
