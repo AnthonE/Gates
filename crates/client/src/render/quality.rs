@@ -391,6 +391,7 @@ pub fn default_gfx() -> Gfx {
 /// — which is what lets a preset be stored already-resolved (see
 /// [`default_gfx`]) without the screen then reading it as customized.
 pub fn effective(g: Gfx) -> Gfx {
+    let asked_taa = g.taa;
     let g = Gfx {
         cascades: g.cascades.clamp(1, max_cascades()),
         shadow_map_px: g.shadow_map_px.min(max_shadow_map_px()),
@@ -470,6 +471,10 @@ pub fn effective(g: Gfx) -> Gfx {
         ao,
         taa,
         bloom,
+        // A player who chose TAA chose anti-aliasing: where TAA is refused
+        // (here or under WebGL2) SMAA stands in, even if its own row was
+        // switched off while TAA was replacing it.
+        smaa: g.smaa || (asked_taa && !taa),
         ..g
     }
 }

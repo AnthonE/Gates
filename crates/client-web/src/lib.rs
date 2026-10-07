@@ -371,6 +371,11 @@ impl Gates {
                 // for a mixer with nothing in it. The desktop binaries have
                 // disabled it since the seam; this one was missed.
                 .disable::<bevy::audio::AudioPlugin>()
+                // Bevy's panic plugin REPLACES the hook `start` installed
+                // (`console_error_panic_hook`, no chaining), and that hook
+                // is the page's only word that a WebGPU module's renderer
+                // never started (`window.gatesPanic`). Ours logs the same.
+                .disable::<bevy::app::PanicHandlerPlugin>()
                 .set(AssetPlugin {
                     // **No `.meta` probe.** Bevy's default is `Always`, which
                     // fires a second request for `<path>.meta` before every

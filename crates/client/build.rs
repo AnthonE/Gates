@@ -11,6 +11,9 @@
 //! downgrade that exists because WebGL2 cannot do something is spelled
 //! `cfg(webgl2)` and the WebGPU module takes the desktop's path instead.
 fn main() {
+    // The target and the features already key this unit; without a line
+    // like this cargo reruns the script on every change under the crate.
+    println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rustc-check-cfg=cfg(webgl2)");
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
     let webgpu = std::env::var_os("CARGO_FEATURE_WEBGPU").is_some();

@@ -602,7 +602,20 @@ async function pickModule(built) {
 let builtModules = null;
 let playStarted = 0;
 function gpuFallBack(why) {
-  try { localStorage.setItem(GPU_FAILED, moduleKey(builtModules && builtModules.webgpu)); } catch (err) { /* private mode */ }
+  const key = moduleKey(builtModules && builtModules.webgpu);
+  let kept = false;
+  try {
+    localStorage.setItem(GPU_FAILED, key);
+    kept = localStorage.getItem(GPU_FAILED) === key;
+  } catch (err) { /* storage blocked */ }
+  /* Where the flag will not hold — storage refused, or an address that
+     forces WebGPU — the address itself carries the switch, or the reload
+     would land on WebGPU again. */
+  if ((!kept || q.get("gfx") === "webgpu") && builtModules && builtModules.webgl2) {
+    const u = new URL(location.href);
+    u.searchParams.set("gfx", "webgl2");
+    history.replaceState(history.state, "", u);
+  }
   window.gatesLeft(`${why} — switched to WebGL2`);
 }
 
@@ -628,15 +641,25 @@ window.gatesGpuError = (msg, kind) => {
   link.href = u.toString();
   link.textContent = "Reload with WebGL2";
   link.style.cssText = "color:#ffcf7a;margin-left:8px";
+  /* Leaving is the point of this link: the player's leave-site guard must
+     not ask about it. */
+  link.addEventListener("click", () => {
+    window.removeEventListener("beforeunload", guardLeave);
+    try { sessionStorage.setItem(LEFT, "WebGPU refused part of the frame — switched to WebGL2"); } catch (err) { /* private mode */ }
+  });
   bar.append("The graphics card refused part of the frame under WebGPU (press Esc to click).", link);
   bar.title = String(msg).slice(0, 400);
   document.body.append(bar);
 };
-/* A panic in the first half-minute of a WebGPU module is almost always its
-   device not starting (Bevy's "Unable to find a GPU!" comes before the hook
-   above exists). `client-web`'s panic hook calls this. */
-window.gatesPanic = () => {
-  if (window.gatesGfx === "webgpu" && playStarted && performance.now() - playStarted < 30000) {
+/* A WebGPU module whose renderer never started: Bevy's "Unable to find a
+   GPU!" and its surface and device requests panic before the hook above
+   exists. `client-web`'s panic hook calls this with the panic's text, and
+   only a panic in Bevy's renderer set-up demotes the build — any other one
+   leaves its message in the console for whoever reads it. */
+window.gatesPanic = (msg) => {
+  const m = String(msg || "");
+  const renderer = /bevy_render[^\n]*renderer|Unable to find a GPU|wgpu surface|request_device/.test(m);
+  if (window.gatesGfx === "webgpu" && renderer && playStarted && performance.now() - playStarted < 30000) {
     gpuFallBack("WebGPU did not start in this browser");
   }
 };

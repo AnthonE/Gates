@@ -54,6 +54,14 @@ fn with_room_for_one_the_occlusion_stays_and_taa_goes() {
     assert!(!got.taa, "TAA is the one that does not fit");
     assert!(got.smaa, "SMAA stands in, at no texture cost");
     assert_eq!(effective(got), got, "the clamp is idempotent");
+    // SMAA stands in for a refused TAA even where its own row was switched
+    // off while TAA replaced it: a player who chose TAA chose anti-aliasing.
+    let smaa_off = effective(Gfx {
+        smaa: false,
+        ..high
+    });
+    assert!(!smaa_off.taa && smaa_off.smaa);
+    assert_eq!(effective(smaa_off), smaa_off);
     // A player who turns the occlusion off gets TAA back in its room.
     let no_ao = effective(Gfx {
         ao: Ao::Off,
