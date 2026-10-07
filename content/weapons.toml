@@ -144,8 +144,9 @@ rate_per_min = 48
 range_m = 2
 
 # **Neither bow carries a `range_m`**: an arrow flies until something stops
-# it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) —
-# about 80 m on flat ground for a wooden arrow, lobbed.
+# it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) — a
+# level shot from a standing eye meets flat ground about 33 m out with a
+# wooden arrow and 50 m with the crossbow's, as Rust's do.
 #
 # The bow's 35 is the reference's (`reference/PROJECTILES.md` §4, §9.6),
 # held until arrows came back — they do now, and are seen where they fall —
@@ -242,9 +243,19 @@ blast_m = 3
 # **Ballistics belong to the round, not to the bow that fires it**
 # (`reference/PROJECTILES.md` §9.3; operator, 2026-08-10). These two blocks
 # were `[weapon.ballistic]` on the bow and the crossbow until the schema
-# moved, and the numbers are unchanged in the move — `item.arrow_wood` is
-# the bow's old 40 m/s and `item.arrow_metal` the crossbow's old 55, so no
-# arrow shipped today flies differently than it did before.
+# moved.
+#
+# **The numbers are Rust's** (2026-10, read off the live item data): a
+# wooden arrow leaves a hunting bow at 50 m/s and falls at 0.75 g, and a
+# crossbow throws it half as fast again, 75 m/s. The shipped 40 m/s at a
+# 20 m/s² drop was slower and fell 2.7 times as hard: a level shot hit the
+# dirt 11–16 m out, and a target 20 m away was 2.5 m under the crosshair
+# ("it only flies a few feet"). Their drag (0.005/s) is under 4 % over a
+# whole flight and is not modelled.
+#
+# `drop_mps2` is whole metres per second squared and the sim's step is
+# 0.9 m/s² at 30 Hz, so 7 bakes to the nearest, 7.2 — their 7.36 within
+# 2 %.
 #
 # The reference game hangs these off `ItemModProjectile`, a mod on the ammo
 # item, which is how one bow there fires wooden, bone, high-velocity and
@@ -266,10 +277,10 @@ blast_m = 3
 
 [[ammo]]
 id = "item.arrow_wood"
-speed_mps = 40
-drop_mps2 = 20
+speed_mps = 50
+drop_mps2 = 7
 
 [[ammo]]
 id = "item.arrow_metal"
-speed_mps = 55
-drop_mps2 = 20
+speed_mps = 75
+drop_mps2 = 7

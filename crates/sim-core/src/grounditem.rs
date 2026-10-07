@@ -219,7 +219,8 @@ impl GroundItems {
     }
 
     /// A stuck arrow whose trunk, wall or door has gone falls to `at`
-    /// ([`rest_at`]), or is lost when that is `None`.
+    /// ([`rest_at`]), or is lost when that is `None`. Its despawn starts
+    /// again from `expires`, as Rust's does when an arrow falls out.
     ///
     /// **It comes down as a new stack, with a new id.** The loose-stack
     /// sync is keyed on `(next_id, len)` and a client draws a stack where
@@ -227,7 +228,7 @@ impl GroundItems {
     /// on standing in the air on every screen; a fresh id is a change the
     /// walk already restarts on, and the client's set redraws it where it
     /// fell.
-    pub fn fall(&mut self, i: usize, at: Option<(i32, i32, i32)>) {
+    pub fn fall(&mut self, i: usize, at: Option<(i32, i32, i32)>, expires: u64) {
         if i >= self.len {
             return;
         }
@@ -238,6 +239,7 @@ impl GroundItems {
         let e = &mut self.entries[i];
         (e.qx, e.qy, e.qz) = (qx, qy, qz);
         e.dir = [0; 3];
+        e.expires = expires;
         e.id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
     }

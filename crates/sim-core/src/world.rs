@@ -2832,7 +2832,7 @@ impl World {
             harvested: &self.slot_lives,
             cache: &mut self.slot_cache,
         };
-        let ground = &mut self.ground_items;
+        let (bc, ground) = (&self.backpack, &mut self.ground_items);
         let mut i = 0;
         while i < ground.len() {
             let g = ground.entries()[i];
@@ -2852,7 +2852,8 @@ impl World {
             }
             let to = crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z);
             let before = ground.len();
-            ground.fall(i, to);
+            let expires = tick + u64::from(bc.stack_life_ticks(g.stack.item));
+            ground.fall(i, to, expires);
             // A lost one was swap-removed: this index holds the next.
             if ground.len() == before {
                 i += 1;

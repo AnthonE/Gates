@@ -396,7 +396,8 @@ fn an_arrow_sticks_in_a_trunk_and_falls_when_it_is_felled() {
         g.qy as f32 * POS_Y_Q,
         g.qz as f32 * POS_XZ_Q,
     );
-    let off = ((gx - tree.x).powi(2) + (gz - tree.z).powi(2)).sqrt();
+    let (ox, oz) = (gx - tree.x, gz - tree.z);
+    let off = (ox * ox + oz * oz).sqrt();
     assert!(
         off < 0.6 && gz < tree.z,
         "it is in the bark on the archer's side of the trunk ({off} m off \
@@ -433,7 +434,7 @@ fn an_arrow_sticks_in_a_trunk_and_falls_when_it_is_felled() {
         f.qz as f32 * POS_XZ_Q,
     );
     assert!(
-        (fy - floor).abs() < 0.05,
+        (fy - floor).max(floor - fy) < 0.05,
         "on the ground under where it was (y {fy} m, ground {floor} m)"
     );
     assert_eq!((f.qx, f.qz), (g.qx, g.qz), "straight down");

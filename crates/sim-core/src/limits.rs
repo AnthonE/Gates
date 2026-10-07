@@ -1045,13 +1045,13 @@ pub const MAX_SPENT_ARROWS: usize = 512;
 /// weapon's own derived life. The backstop that makes `MAX_ARROWS` a
 /// bound on *occupancy* rather than a hope: an arrow that somehow misses
 /// terrain, occupants, pieces and bodies still leaves the store within
-/// twelve seconds. No overflow policy — this is a lifetime, not a queue.
+/// eight seconds. No overflow policy — this is a lifetime, not a queue.
 ///
-/// 120 → 360 when arrows took Rust's speeds and real gravity: a lob from
-/// the crossbow is in the air for over ten seconds now, and one still up
-/// at the backstop falls short of where it was aimed. A level shot lands
-/// inside a second, so the store's occupancy barely moves.
-pub const MAX_ARROW_LIFE_TICKS: u16 = 360;
+/// 120 → 240 when arrows took Rust's speeds and drop: eight seconds is
+/// their arrow's own hard lifetime, so a 45° lob outlives it here as it
+/// does there (and falls, rather than vanishing). Any shot aimed at
+/// something lands well inside it — a level shot inside a second.
+pub const MAX_ARROW_LIFE_TICKS: u16 = 240;
 
 /// Millimetres an arrow may advance between two collision samples. Two
 /// separate assumptions pin this number and it is the smaller of them:
@@ -1078,8 +1078,8 @@ pub const ARROW_STEP_MM: i32 = 170;
 /// speed exceeds `ARROW_STEP_MM * MAX_ARROW_SUBSTEPS` mm/tick (2.72 m per
 /// tick, 81.6 m/s) cannot be sampled finely enough to be honest about
 /// what it hits, and `bake_combat` refuses it at boot rather than
-/// shipping a projectile that tunnels. The bow is 1333 mm/tick and the
-/// crossbow 1833, so both sit inside it with room.
+/// shipping a projectile that tunnels. The bow's wooden arrow is 1666
+/// mm/tick and the crossbow's 2500, so both sit inside it.
 /// Overflow policy: none reachable — the bake refusal is what keeps the
 /// clamp from ever binding at tick time.
 /// Proposed default, DECISIONS.md §open (ranged v0).

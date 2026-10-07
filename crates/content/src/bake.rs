@@ -997,8 +997,11 @@ impl Content {
         }
         let speed_mmpt = u16::try_from(speed_mmpt)
             .map_err(|_| format!("bake: ammo `{}` speed overflows u16 mm/tick", a.id))?;
-        // m/s^2 -> mm/tick^2, over the square of the rate.
-        let drop_mmpt2 = u16::try_from(a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
+        // m/s^2 -> mm/tick^2, over the square of the rate, to the nearest:
+        // one step is 0.9 m/s^2 at 30 Hz, and a floor would take 7 m/s^2
+        // to 6.3 where the nearest is 7.2.
+        let rate2 = TICK_HZ * TICK_HZ;
+        let drop_mmpt2 = u16::try_from((a.drop_mps2 * 1000 + rate2 / 2) / rate2)
             .map_err(|_| format!("bake: ammo `{}` drop overflows u16 mm/tick^2", a.id))?;
 
         if cc.ammo[idx].speed_mmpt != 0 {

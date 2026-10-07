@@ -834,7 +834,7 @@ fn band_breaks_refused() {
     // percentage at all, and 101 is the smallest of those.
     refuses(
         "balance.toml",
-        "arrow_break_pct = 15",
+        "arrow_break_pct = 10",
         "arrow_break_pct = 101",
         "arrow_break_pct 101 is not a percentage",
     );
@@ -2689,21 +2689,31 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
                 a.speed_mps * 1000 / TICK_HZ,
                 "`{id}` muzzle speed in mm/tick"
             );
+            let rate2 = TICK_HZ * TICK_HZ;
             assert_eq!(
                 ball.drop_mmpt2 as u32,
-                a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
-                "`{id}` drop in mm/tick^2"
+                (a.drop_mps2 * 1000 + rate2 / 2) / rate2,
+                "`{id}` drop in mm/tick^2, to the nearest"
             );
 
-            // The longest honest shot lands before the backstop: on flat
-            // ground a 45° lob is in the air `√2·v/g` ticks, and one still
-            // up at `MAX_ARROW_LIFE_TICKS` falls short of where it was
-            // aimed. Squared, to stay in integers.
-            let (v, g) = (u64::from(ball.speed_mmpt), u64::from(ball.drop_mmpt2));
-            let life = u64::from(MAX_ARROW_LIFE_TICKS);
+            // Every shot aimed at something lands before the backstop. A
+            // 45° lob outlives it, as Rust's does its own eight seconds
+            // (`MAX_ARROW_LIFE_TICKS`), but the low arc onto flat ground
+            // 200 m out — past any body a bow is loosed at — comes down
+            // inside it.
+            let (v, g) = (f64::from(ball.speed_mmpt), f64::from(ball.drop_mmpt2));
+            let life = f64::from(MAX_ARROW_LIFE_TICKS);
+            let sin_2t = 200_000.0 * g / (v * v);
             assert!(
-                g > 0 && 2 * v * v < life * life * g * g,
-                "`{}` firing `{id}`: a lob on flat ground is still in the air at the backstop",
+                g > 0.0 && sin_2t < 1.0,
+                "`{}` firing `{id}` cannot reach 200 m at all",
+                w.id
+            );
+            let flight = 2.0 * v * (0.5 * sin_2t.asin()).sin() / g;
+            assert!(
+                flight < life,
+                "`{}` firing `{id}`: a shot at 200 m is still in the air at the backstop \
+                 ({flight:.0} ticks)",
                 w.id
             );
 
@@ -2870,7 +2880,7 @@ fn a_firearm_whose_round_has_ballistics_is_refused() {
 fn a_round_that_outruns_the_collision_sampler_is_refused() {
     refuses_bake(
         "weapons.toml",
-        "speed_mps = 40",
+        "speed_mps = 50",
         "speed_mps = 400",
         "collision sampler",
     );
@@ -2917,7 +2927,7 @@ fn a_weapon_that_lists_a_round_twice_is_refused() {
 fn a_round_that_cannot_fly_is_refused() {
     refuses(
         "weapons.toml",
-        "speed_mps = 40",
+        "speed_mps = 50",
         "speed_mps = 0",
         "muzzle speed",
     );
@@ -4256,15 +4266,22 @@ fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
 /// conservative side to measure against.
 ///
 /// A bow carries no `range_m` — its arrow flies until something stops it —
-/// so its reach is its rounds' flight on flat ground, `v²/g`.
+/// so its reach is how far its rounds fly **level** from a standing eye
+/// before they meet flat ground: the shot a bow is aimed with. A lob
+/// carries much further (Rust's do, some 300 m), and that is not a body
+/// anybody is aiming at; the arrow it lands sticks, and every client is
+/// sent the loose stack wherever the archer stood — only the streak of a
+/// lob from outside the band goes undrawn.
 #[test]
 fn no_weapon_outranges_the_interest_band() {
     let c = build(&sources()).expect("shipped content builds");
     let band_m = (sim_core::limits::AOI_ENTER_CM / 100) as u32;
+    let eye_m = sim_core::ranged::ARROW_EYE_MM as f64 / 1000.0;
     let reach = |w: &content::schema::Weapon| {
         let flight = w.ammo.iter().flatten().filter_map(|id| {
             let a = c.ammo.iter().find(|a| &a.id == id)?;
-            Some(a.speed_mps * a.speed_mps / a.drop_mps2.max(1))
+            let fall_s = (2.0 * eye_m / f64::from(a.drop_mps2.max(1))).sqrt();
+            Some((f64::from(a.speed_mps) * fall_s) as u32)
         });
         w.range_m.max(flight.max().unwrap_or(0))
     };

@@ -81,8 +81,10 @@ grief_protection_h = 24
 # is on hold — their ~35 is priced against ammunition that comes back and
 # ours was priced against ammunition that never did. The odds are what
 # turn a spent arrow from a cost into a tax; nothing else in the loop
-# does. Tier 3 in their doc, so approximate by their own warning.
-arrow_break_pct = 15
+# does. Tier 3 in their doc, so approximate by their own warning — and it
+# was: the live item data (wooden, high-velocity and bone arrows alike)
+# breaks 10 % of landings, so 15 → 10.
+arrow_break_pct = 10
 # Seconds an arrow that DEALT DAMAGE lies in its target before it may be
 # taken back; one that missed may be taken the moment it lands. Theirs
 # too (§5, "retrieved after 10 seconds"), and the rule reads arbitrary
