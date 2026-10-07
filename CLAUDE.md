@@ -41,7 +41,8 @@ need to run it locally.
 - Add a test for every change, or mutation-test your tests. Add one when the
   logic is tricky or has broken before.
 - Read the big docs before starting. Grep them when you need an answer:
-  `DESIGN.md` (product), `NETCODE.md`, `TERRAIN.md`, `RENDER.md`, `ART.md`
+  `ARC.md` (the wipe arc and its frameworks: read it before touching works,
+  unlocks, speakers, inscriptions or puzzles), `DESIGN.md` (product), `NETCODE.md`, `TERRAIN.md`, `RENDER.md`, `ART.md`
   (visual bar), `CONTENT.md` (content schemas), `reference/*.md` (how Rust
   the game does a system), `NOW.md` (backlog), `WORLD.md` (the fiction; its
   §11 is a secret shared with Before Colony and never said in game).

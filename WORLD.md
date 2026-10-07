@@ -256,6 +256,9 @@ window as primary; if a cooldown survives at all it should be short.
 
 ## 5 · World states — and the world starts broken
 
+**Spoken 2026-10-07** as `ARC.md`'s works (F1): the world starts broken,
+every unlock is global, and every work has a fallback hour.
+
 The mechanic that changes what kind of game this is. Monuments are not loot
 boxes with a card puzzle; they are **working infrastructure that players can
 switch back on**, and switching one changes the whole shard.
@@ -440,6 +443,11 @@ spend, and the choice collapses to the status quo (free falls) or the
 reference game's version (falls cost hp). Ranked accordingly in §9.
 
 ### 7.1 · The rule this belongs to
+
+**Superseded 2026-10-07 by `ARC.md` §1.4: powers are loot.** Strange gear
+arrives late in the wipe, is droppable, runs on a charge from below and is
+never on the character sheet. The paragraphs below are kept as the reason
+the gear must stay loot. The ancient *world* is still the magnificent part.
 
 **Ancient technology is environmental, never inventory.** Every ancient thing
 is a place you go, a machine you switch on, a route you take — never an item

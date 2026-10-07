@@ -281,6 +281,9 @@ point and it is correct: take more of the math now, tune later.
 
 ## 6 · The standing instruction (rewritten 2026-08-10)
 
+**Narrowed 2026-10-07 by `ARC.md` §1.7:** the arc's own pacing (gun timing,
+work quotas, act lengths, decay) is ours. Everything else below stands.
+
 **Take theirs. That is the default and it does not need an argument.**
 Operator, 2026-08-10: *"I REALLY REALLY REALLY REALLY REALLY WANNA USE
 RUST NUMBERS."* The old wording — "no reason of ours to differ" — read as
