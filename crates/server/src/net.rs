@@ -608,6 +608,7 @@ pub async fn spawn_shard(
         idents: world_idents,
         blob: world_blob,
         interval_ticks: world_interval,
+        clamp: world_clamp,
     } = world_boot;
 
     // The anomaly log, opened before the sim thread that writes to it —
@@ -648,6 +649,7 @@ pub async fn spawn_shard(
                     world_blob,
                     world_idents,
                     world_interval,
+                    world_clamp,
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
@@ -3071,6 +3073,7 @@ fn sim_thread(
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
     world_interval: u64,
+    world_clamp: bool,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
@@ -3166,6 +3169,12 @@ fn sim_thread(
     if !world_blob.is_empty() {
         match core.world.load(&world_blob) {
             Ok(()) => {
+                // A balance edit lowered a ceiling under a saved stack: the
+                // trial load in `bin/shard.rs` clamped its copy, and this is
+                // the world that runs (`worldfile::WorldBoot::clamp`).
+                if world_clamp {
+                    core.world.clamp_conditions();
+                }
                 core.adopt_identities(&world_idents);
                 ShardStats::set(&stats.current_tick, core.world.tick);
             }

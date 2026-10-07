@@ -1230,6 +1230,11 @@ impl Deploys {
         &self.boxes.entries[..self.boxes.len]
     }
 
+    /// Boot-only (`World::clamp_conditions`).
+    pub(crate) fn boxes_mut(&mut self) -> &mut [BoxRec] {
+        &mut self.boxes.entries[..self.boxes.len]
+    }
+
     /// The live code locks. Read by `state_hash` (a code and a remembered
     /// list are sim state as much as a box's contents are), by
     /// `worldsave`, and by the gates.

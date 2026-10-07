@@ -226,6 +226,7 @@ async fn main() {
             Path::new(path),
             cfg.seed,
             content.hash(),
+            content.layout_hash(),
             // For the condition wall (`server::cond`): the one record check
             // the decoder cannot make without the baked ceilings.
             &tables.gather,
@@ -244,6 +245,15 @@ async fn main() {
                          ({path}.1 is the previous run)",
                         found.live,
                         server::store::SAVE_BACKUP_COUNT
+                    );
+                }
+                if found.balance_moved {
+                    // Said once: the file was written under other numbers
+                    // on this layout, and the header now names these.
+                    println!(
+                        "saves: content was rebalanced since the last boot — every save \
+                         kept ({} clamped to a lowered condition ceiling)",
+                        found.clamped
                     );
                 }
                 if found.corrupt > 0 {
@@ -316,6 +326,7 @@ async fn main() {
                 &mut trial,
                 cfg.seed,
                 content.hash(),
+                content.layout_hash(),
                 world_digest,
                 cfg.world_save_interval_ticks,
             ) {
@@ -335,6 +346,13 @@ async fn main() {
                             found.claimable,
                             server::store::SAVE_BACKUP_COUNT
                         );
+                        if found.balance_moved {
+                            println!(
+                                "world: content was rebalanced since the last save — the \
+                                 world kept ({} stacks clamped to a lowered condition ceiling)",
+                                found.clamped
+                            );
+                        }
                         if found.bodies > found.claimable {
                             // Said out loud: a body nobody can claim is
                             // somebody's base standing there as free loot,
