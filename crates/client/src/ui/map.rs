@@ -91,8 +91,8 @@ pub const ROAD_CASING: [f32; 3] = [74.0, 68.0, 61.0];
 /// How much of [`ROAD`] the SHOULDER takes, against the ground it crosses.
 ///
 /// **Not a taste call — it is what makes the ribbon a surface rather than a
-/// drawn line.** The carriageway is `ROAD_HALF_W * 2` = 4 m and the shoulder
-/// 10 m; at this map's 4 m pixel that is one pixel and two and a half. Half,
+/// drawn line.** The ring's carriageway is `ROAD_HALF_W * 2` = 8 m and the shoulder
+/// 14 m; at this map's 4 m pixel that is two pixels and three and a half. Half,
 /// so the two bands the terrain actually has stay legibly different, which is
 /// also what a shoulder is on the ground: road, thinning.
 pub const ROAD_SHOULDER_MIX: f32 = 0.5;

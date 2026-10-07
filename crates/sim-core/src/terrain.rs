@@ -1670,11 +1670,37 @@ pub fn biome(h: f32, moist: f32) -> Biome {
 /// How far inland of the shoreline the road's center line runs, meters
 /// (DECISIONS.md §open: coast road v0; TERRAIN.md §1 stage 7 "~40 m").
 pub const ROAD_INLAND_M: f32 = 40.0;
-/// Carriageway half-width, meters — the cleared surface (TERRAIN.md §6
-/// "roads: 1 coast ring, ~4 m wide").
-pub const ROAD_HALF_W: f32 = 2.0;
-/// Shoulder half-width, meters: the barrel band, outside the carriageway.
-pub const ROAD_SHOULDER_HALF_W: f32 = 5.0;
+/// The coast ring's carriageway half-width, meters — the cleared surface.
+/// Two lanes, 8 m: Rust's ring is two lanes with single-lane branches
+/// (`reference/ROADS.md` §2.1), and the 4 m it was read as a footpath on
+/// the map (operator, 2026-10-06: *"the road on the map was kinda thin"*).
+pub const ROAD_HALF_W: f32 = 4.0;
+/// The ring's shoulder half-width, meters: the barrel band, 3 m either side
+/// of the carriageway.
+pub const ROAD_SHOULDER_HALF_W: f32 = 7.0;
+/// A side road's carriageway half-width, meters: one lane, the branch's
+/// width in Rust, and what fits through a depot gate
+/// (`depot::GATE_HALF_W`).
+pub const SIDE_ROAD_HALF_W: f32 = 2.0;
+/// A side road's shoulder half-width, meters: 3 m either side, as the ring.
+pub const SIDE_ROAD_SHOULDER_HALF_W: f32 = 5.0;
+/// The footprint [`ring_probe`] asks the coastline about, meters — the
+/// SOLVER's question, kept at the 4 m it was tuned on when the built road
+/// widened. "Could a road stand here" decides where the ring and every site
+/// on it go; asked at 8 m, it turned down most of the coast and the haven
+/// fell back to the island centre. The solved road is then built and
+/// drawn at `ROAD_HALF_W`.
+pub const RING_PROBE_HALF_W: f32 = 2.0;
+pub const RING_PROBE_SHOULDER_HALF_W: f32 = 5.0;
+/// Sites on the ring the built road narrows for: the pad and its
+/// waystations, whose containers stand on a ring round a centre the road
+/// runs through. Five crates 72° apart always leave one within 18° of the
+/// road's line, 3.1 m off it on the pad's 10 m ring — inside an 8 m road,
+/// outside a 4 m one.
+pub const RING_NARROWS: usize = 1 + WAYSTATIONS;
+/// How far past a site's own radius the road takes to widen back out,
+/// metres.
+pub const RING_NARROW_TAPER_M: f32 = 16.0;
 /// The radial bracket the ring may live in, meters from island center.
 /// The shoreline sits at CONTINENT_RADIUS ± COAST_WOBBLE modulated by
 /// relief; these bound it with margin, and double as the broad phase.
@@ -1930,7 +1956,7 @@ pub fn side_band_of(r: &SideRoad, x: f32, z: f32) -> RoadBand {
     // **The cheap reject comes first, and it has to**, because `road_band`
     // falls through to here for everything that is not ring carriageway —
     // which is nearly the whole island. Four compares against the chord's box
-    // grown by `SIDE_ROAD_BEND_M + ROAD_SHOULDER_HALF_W`, off which no leg of
+    // grown by `SIDE_ROAD_BEND_M + SIDE_ROAD_SHOULDER_HALF_W`, off which no leg of
     // this road can be within a band: every node is inside the chord's box
     // grown by the ceiling (proved by the const block, gated by
     // `every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling`), so a
@@ -1940,7 +1966,7 @@ pub fn side_band_of(r: &SideRoad, x: f32, z: f32) -> RoadBand {
     // It makes the common case CHEAPER than the two-point version it
     // replaces, which paid a full `seg_dist` and a `sqrt` at every sample on
     // the island.
-    let m = ROAD_SHOULDER_HALF_W + SIDE_ROAD_BEND_M;
+    let m = SIDE_ROAD_SHOULDER_HALF_W + SIDE_ROAD_BEND_M;
     if x < r.px.min(r.rx) - m
         || x > r.px.max(r.rx) + m
         || z < r.pz.min(r.rz) - m
@@ -1953,9 +1979,9 @@ pub fn side_band_of(r: &SideRoad, x: f32, z: f32) -> RoadBand {
     // The band compares are on `d` rather than on `d * d` so the two
     // thresholds keep the meaning `tests/side_road.rs` asserts them with.
     let d = r.dist2(x, z).sqrt();
-    if d <= ROAD_HALF_W {
+    if d <= SIDE_ROAD_HALF_W {
         RoadBand::Carriageway
-    } else if d <= ROAD_SHOULDER_HALF_W {
+    } else if d <= SIDE_ROAD_SHOULDER_HALF_W {
         RoadBand::Shoulder
     } else {
         RoadBand::Off
@@ -2005,19 +2031,19 @@ fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand 
     // crossing can be inside the shoulder window without a grade steeper
     // than ROAD_MAX_GRADE, so most of the island answers in one tap.
     let hp = height_in(co, seed, c + ux * r, c + uz * r);
-    if fabs(hp) > ROAD_SHOULDER_HALF_W * ROAD_MAX_GRADE {
+    if fabs(hp) > RING_PROBE_SHOULDER_HALF_W * ROAD_MAX_GRADE {
         return RoadBand::Off;
     }
 
     // The probe's sign says which way the crossing lies, so the window only
     // costs one more tap per width tested, not two.
     let band = if hp > SEA_LEVEL {
-        let w = ROAD_SHOULDER_HALF_W;
+        let w = RING_PROBE_SHOULDER_HALF_W;
         if height_in(
             co,
             seed,
-            c + ux * (r + ROAD_HALF_W),
-            c + uz * (r + ROAD_HALF_W),
+            c + ux * (r + RING_PROBE_HALF_W),
+            c + uz * (r + RING_PROBE_HALF_W),
         ) <= SEA_LEVEL
         {
             RoadBand::Carriageway
@@ -2027,12 +2053,12 @@ fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand 
             RoadBand::Off
         }
     } else {
-        let w = ROAD_SHOULDER_HALF_W;
+        let w = RING_PROBE_SHOULDER_HALF_W;
         if height_in(
             co,
             seed,
-            c + ux * (r - ROAD_HALF_W),
-            c + uz * (r - ROAD_HALF_W),
+            c + ux * (r - RING_PROBE_HALF_W),
+            c + uz * (r - RING_PROBE_HALF_W),
         ) > SEA_LEVEL
         {
             RoadBand::Carriageway
@@ -2256,6 +2282,15 @@ pub struct RingPath {
     /// queries never resample terrain or feed a carved height to the solver.
     pub y: [f32; RING_BEARINGS],
     pub graded: bool,
+    /// Built: the road as it is laid, `ROAD_HALF_W` wide and narrowed at the
+    /// sites in `narrow`. Unbuilt — while `haven` is still solving — every
+    /// question is asked at the solver's `RING_PROBE_*` footprint, the one
+    /// the whole site search was tuned against, so widening the road moved
+    /// no site.
+    pub built: bool,
+    /// `[x, z, radius]` of each site the built road narrows through; radius
+    /// 0 is an empty row.
+    pub narrow: [[f32; 3]; RING_NARROWS],
 }
 
 impl RingPath {
@@ -2265,7 +2300,30 @@ impl RingPath {
         r: [(ROAD_R_MIN + ROAD_R_MAX) * 0.5; RING_BEARINGS],
         y: [0.0; RING_BEARINGS],
         graded: false,
+        built: false,
+        narrow: [[0.0; 3]; RING_NARROWS],
     };
+
+    /// Carriageway and shoulder half-widths at (x, z), metres.
+    pub fn widths(&self, x: f32, z: f32) -> (f32, f32) {
+        if !self.built {
+            return (RING_PROBE_HALF_W, RING_PROBE_SHOULDER_HALF_W);
+        }
+        let mut t = 1.0f32;
+        for n in &self.narrow {
+            if n[2] <= 0.0 {
+                continue;
+            }
+            let (dx, dz) = (x - n[0], z - n[1]);
+            let d2 = dx * dx + dz * dz;
+            let far = n[2] + RING_NARROW_TAPER_M;
+            if d2 < far * far {
+                t = t.min(((d2.sqrt() - n[2]) / RING_NARROW_TAPER_M).clamp(0.0, 1.0));
+            }
+        }
+        let hw = RING_PROBE_HALF_W + (ROAD_HALF_W - RING_PROBE_HALF_W) * t;
+        (hw, hw + (ROAD_SHOULDER_HALF_W - ROAD_HALF_W))
+    }
 
     /// World position of node `i`, wrapping.
     pub fn node(&self, i: i32) -> (f32, f32) {
@@ -2292,6 +2350,8 @@ impl RingPath {
             return raw;
         }
         let bearing = bearing_index(dx, dz);
+        let shoulder = self.widths(x, z).1;
+        let reach = shoulder + RING_BLEND_M;
         let mut outside = 1.0;
         let mut k = bearing as i32 - RING_SEG_WINDOW;
         while k <= bearing as i32 + RING_SEG_WINDOW {
@@ -2299,7 +2359,7 @@ impl RingPath {
             let (bx, bz) = self.node(k + 1);
             let d2 = seg_dist2(ax, az, bx, bz, x, z);
             if d2 < reach * reach {
-                let t = ((d2.sqrt() - ROAD_SHOULDER_HALF_W) / RING_BLEND_M).clamp(0.0, 1.0);
+                let t = ((d2.sqrt() - shoulder) / RING_BLEND_M).clamp(0.0, 1.0);
                 outside *= t * t * (3.0 - 2.0 * t);
             }
             k += 1;
@@ -2425,9 +2485,13 @@ pub fn ring_band(ring: &RingPath, x: f32, z: f32) -> RoadBand {
         return RoadBand::Off;
     }
     let d = ring.dist2(x, z).sqrt();
-    if d <= ROAD_HALF_W {
+    if d > ROAD_SHOULDER_HALF_W {
+        return RoadBand::Off;
+    }
+    let (hw, sw) = ring.widths(x, z);
+    if d <= hw {
         RoadBand::Carriageway
-    } else if d <= ROAD_SHOULDER_HALF_W {
+    } else if d <= sw {
         RoadBand::Shoulder
     } else {
         RoadBand::Off
@@ -2792,6 +2856,253 @@ const _: () = {
     // constant — the failure mode that looks like a working gate.
     assert!(BAY_SPAN_YAW > 0);
 };
+
+// --- Roadside junk (Rust's roadside spawns) ------------------------------
+//
+// Rust lines its roads with more than barrels: red oil barrels, road signs
+// you smash for metal, food boxes, and junk piles — "1-4 barrels and if
+// you're lucky, a crate" around a wrecked car or a tyre stack, which "only
+// spawn next to roads and powerlines" (changelist 2610, devblog 145). The
+// open shoulder draws the barrel first and these on the bands above it, so
+// a cell that held a barrel still holds it. A junk pile is a 32 m block of
+// road where the shoulder and the verge beside it fill densely with junk.
+
+/// Shoulder chance of a red oil barrel, permille, drawn above the barrel's.
+pub const ROAD_OIL_BARREL_PERMILLE: u16 = 40;
+/// …of a road sign.
+pub const ROAD_SIGN_PERMILLE: u16 = 50;
+/// …of a food box.
+pub const ROAD_FOOD_PERMILLE: u16 = 20;
+
+/// Cells per side of a junk-pile block. Four cells is 32 m of road.
+pub const JUNK_BLOCK_CELLS: i32 = 4;
+/// Chance a block is a junk pile, permille. Only blocks a road crosses
+/// show it.
+pub const JUNK_PILE_PERMILLE: u16 = 120;
+/// How far from a road's centre line a junk pile's debris spreads, metres —
+/// the shoulder and the verge beyond it.
+pub const JUNK_REACH_M: f32 = 12.0;
+/// Chance a debris cell around a pile holds something, permille.
+pub const JUNK_FILL_PERMILLE: u16 = 350;
+/// Where a pile's heart may stand, metres from the road's centre line: the
+/// outer shoulder, so the wreck sits beside the road and the barrels at its
+/// edge.
+pub const JUNK_PILE_D_MIN: f32 = ROAD_HALF_W + 2.0;
+pub const JUNK_PILE_D_MAX: f32 = ROAD_SHOULDER_HALF_W + 1.0;
+/// How far the wreck stands from the pile's heart, metres along each axis.
+/// It and the three cells' junk keep apart by construction: the junk sits
+/// [`JUNK_NEAR_MIN_M`]..[`JUNK_NEAR_MAX_M`] from the heart in the other
+/// three quadrants.
+pub const JUNK_CAR_OFFSET_M: f32 = 2.6;
+pub const JUNK_NEAR_MIN_M: f32 = 0.7;
+pub const JUNK_NEAR_MAX_M: f32 = 1.8;
+
+const CH_JUNK: u32 = 216;
+const CH_JUNK_HEART: u32 = 217;
+
+const _: () = {
+    assert!(
+        ROAD_BAY_BARREL_PERMILLE
+            + ROAD_OIL_BARREL_PERMILLE
+            + ROAD_SIGN_PERMILLE
+            + ROAD_FOOD_PERMILLE
+            < 1000
+    );
+    assert!(JUNK_REACH_M > ROAD_SHOULDER_HALF_W);
+    assert!(JUNK_FILL_PERMILLE < 1000 && JUNK_PILE_PERMILLE < 1000);
+    // Every pile slot stays inside its own cell.
+    assert!(JUNK_CAR_OFFSET_M < CELL_SIZE && JUNK_NEAR_MAX_M < CELL_SIZE);
+    // The wreck, wherever its yaw puts its corners, misses the junk in the
+    // quadrants beside it: the nearest junk is `CAR_OFFSET - NEAR_MAX` across
+    // one axis and `CAR_OFFSET + NEAR_MIN` along the other.
+    assert!(
+        (JUNK_CAR_OFFSET_M - JUNK_NEAR_MAX_M) * (JUNK_CAR_OFFSET_M - JUNK_NEAR_MAX_M)
+            + (JUNK_CAR_OFFSET_M + JUNK_NEAR_MIN_M) * (JUNK_CAR_OFFSET_M + JUNK_NEAR_MIN_M)
+            > (CAR_WRECK_R_M * SLOT_SCALE_MAX + 0.5) * (CAR_WRECK_R_M * SLOT_SCALE_MAX + 0.5)
+    );
+    // The pile's heart is out of the carriageway and the wreck within reach.
+    assert!(JUNK_PILE_D_MIN > ROAD_HALF_W);
+    assert!(JUNK_PILE_D_MAX + JUNK_CAR_OFFSET_M * 1.4143 < JUNK_REACH_M);
+};
+
+/// Is the block holding cell `(cx, cz)` a junk pile?
+pub fn junk_block(seed: u64, cx: i32, cz: i32) -> bool {
+    let h = cell_hash(
+        seed,
+        cx.div_euclid(JUNK_BLOCK_CELLS),
+        cz.div_euclid(JUNK_BLOCK_CELLS),
+        CH_JUNK,
+    );
+    ((h >> 20) % 1000) < JUNK_PILE_PERMILLE as u64
+}
+
+/// What sits at a pile's heart beside the wreck, from a 0..100 pick.
+fn junk_pick(pick: u16) -> Occupant {
+    match pick {
+        0..=44 => Occupant::BarrelSlot,
+        45..=64 => Occupant::OilBarrel,
+        65..=79 => Occupant::TireStack,
+        _ => Occupant::FoodCrate,
+    }
+}
+
+/// What lies scattered round a pile, from a 0..100 pick.
+fn debris_pick(pick: u16) -> Occupant {
+    match pick {
+        0..=49 => Occupant::BarrelSlot,
+        50..=69 => Occupant::OilBarrel,
+        70..=89 => Occupant::TireStack,
+        _ => Occupant::FoodCrate,
+    }
+}
+
+/// The heart of the junk pile in the block holding cell `(cx, cz)`: a cell
+/// CORNER, as lattice indices, and the road's yaw there — or `None` when no
+/// interior corner of the block stands on the outer shoulder.
+///
+/// A corner because four cells meet there, so four slots can stand within
+/// a couple of metres of each other — a pile, where one slot per 8 m cell
+/// only ever made a scatter. The nine interior corners are tried in an
+/// order the block's own hash picks, so which one wins is not always the
+/// north-west.
+fn junk_heart(seed: u64, haven: &Haven, cx: i32, cz: i32) -> Option<(i32, i32, u8)> {
+    let bx = cx.div_euclid(JUNK_BLOCK_CELLS);
+    let bz = cz.div_euclid(JUNK_BLOCK_CELLS);
+    let start = (cell_hash(seed, bx, bz, CH_JUNK_HEART) % 9) as i32;
+    for k in 0..9 {
+        // Stride 2 is coprime to 9, so the walk visits all nine.
+        let i = (start + k * 2) % 9;
+        let gx = bx * JUNK_BLOCK_CELLS + 1 + i % 3;
+        let gz = bz * JUNK_BLOCK_CELLS + 1 + i / 3;
+        let (x, z) = (gx as f32 * CELL_SIZE, gz as f32 * CELL_SIZE);
+        if let Some((d, yaw)) = road_near(haven, x, z, JUNK_PILE_D_MAX) {
+            if d >= JUNK_PILE_D_MIN {
+                return Some((gx, gz, yaw));
+            }
+        }
+    }
+    None
+}
+
+/// Is every corner of a wreck's body at (x, z, yaw), at the widest slot
+/// scale, off every carriageway?
+fn car_corners_clear(seed: u64, haven: &Haven, x: f32, z: f32, yaw: u8) -> bool {
+    let (sn, cs) = crate::yaw_lut::yaw_dir((yaw as u16) << 8);
+    let b = CAR_WRECK_BOXES[0];
+    let (hx, hz) = (b[3] * 0.5 * SLOT_SCALE_MAX, b[5] * 0.5 * SLOT_SCALE_MAX);
+    [(-hx, -hz), (-hx, hz), (hx, -hz), (hx, hz)]
+        .iter()
+        .all(|&(lx, lz)| {
+            // Local +Z is (sin, cos), local +X is (cos, −sin): `boxes_block`'s basis.
+            let wx = x + lx * cs + lz * sn;
+            let wz = z - lx * sn + lz * cs;
+            road_band(seed, haven, wx, wz) != RoadBand::Carriageway
+        })
+}
+
+/// A junk-pile slot for cell `(cx, cz)` if it is one of the four cells round
+/// its block's heart: where it stands, what it is, and its yaw.
+///
+/// The cell farthest from the road takes the wreck, parked along the road;
+/// the other three put a barrel, an oil drum, a tyre stack or a food box
+/// just off the heart. `h` is the cell's scatter hash.
+fn junk_pile_slot(
+    seed: u64,
+    haven: &Haven,
+    cx: i32,
+    cz: i32,
+    h: u64,
+) -> Option<(f32, f32, Occupant, u8)> {
+    let (gx, gz, road_yaw) = junk_heart(seed, haven, cx, cz)?;
+    let (ox, oz) = (gx - cx, gz - cz);
+    if !(0..=1).contains(&ox) || !(0..=1).contains(&oz) {
+        return None;
+    }
+    // From the heart into this cell.
+    let ux = if ox == 0 { 1.0 } else { -1.0 };
+    let uz = if oz == 0 { 1.0 } else { -1.0 };
+    let (px, pz) = (gx as f32 * CELL_SIZE, gz as f32 * CELL_SIZE);
+    let off = |sx: f32, sz: f32| {
+        road_near(
+            haven,
+            px + sx * JUNK_CAR_OFFSET_M,
+            pz + sz * JUNK_CAR_OFFSET_M,
+            JUNK_REACH_M + 4.0,
+        )
+        .map_or(f32::MAX, |(d, _)| d)
+    };
+    let mut car = (1.0f32, 1.0f32);
+    let mut best = f32::MIN;
+    for q in [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+        let d = off(q.0, q.1);
+        if d > best {
+            best = d;
+            car = q;
+        }
+    }
+    if car == (ux, uz) {
+        let x = px + ux * JUNK_CAR_OFFSET_M;
+        let z = pz + uz * JUNK_CAR_OFFSET_M;
+        let yaw = road_yaw
+            .wrapping_add(((h >> 28) & 0x0F) as u8)
+            .wrapping_sub(8)
+            .wrapping_add(if (h >> 32) & 1 == 0 { 0 } else { 128 });
+        // Clear of the nearest centre line, and every corner of the body off
+        // every carriageway — a junction's other road, or a landmark trail,
+        // is not the road the yaw was read off.
+        let car_ok = best >= ROAD_HALF_W + JUNK_CAR_CLEAR_M * SLOT_SCALE_MAX
+            && car_corners_clear(seed, haven, x, z, yaw);
+        let o = if car_ok {
+            Occupant::CarWreck
+        } else {
+            Occupant::TireStack
+        };
+        return Some((x, z, o, yaw));
+    }
+    let span = JUNK_NEAR_MAX_M - JUNK_NEAR_MIN_M;
+    let a = JUNK_NEAR_MIN_M + ((h >> 54) & 0x1F) as f32 * (span / 31.0);
+    let b = JUNK_NEAR_MIN_M + ((h >> 59) & 0x1F) as f32 * (span / 31.0);
+    let o = junk_pick(((h >> 44) % 100) as u16);
+    Some((px + ux * a, pz + uz * b, o, ((h >> 28) & 0xFF) as u8))
+}
+
+/// Distance from (x, z) to the nearest road centre line within `reach`,
+/// and the yaw of that road there, or `None`. The yaw is the road's own
+/// heading as a `yaw_lut` index, so a slot seated with it lies along the
+/// road.
+fn road_near(haven: &Haven, x: f32, z: f32, reach: f32) -> Option<(f32, u8)> {
+    let mut best: Option<(f32, u8)> = None;
+    let c = ISLAND_SIZE * 0.5;
+    let (dx, dz) = (x - c, z - c);
+    let d2 = dx * dx + dz * dz;
+    let lo = ROAD_R_MIN - RING_INLAND_MAX - reach;
+    let hi = ROAD_R_MAX + reach;
+    if d2 >= lo * lo && d2 <= hi * hi {
+        let d = haven.ring.dist2(x, z).sqrt();
+        if d <= reach {
+            let k = bearing_index(dx, dz) as i32;
+            let (ax, az) = haven.ring.node(k - 1);
+            let (bx, bz) = haven.ring.node(k + 1);
+            best = Some((d, bearing_index(bx - ax, bz - az) as u8));
+        }
+    }
+    for road in haven.roads.iter() {
+        if !road.live
+            || x < road.px.min(road.rx) - reach - SIDE_ROAD_BEND_M
+            || x > road.px.max(road.rx) + reach + SIDE_ROAD_BEND_M
+            || z < road.pz.min(road.rz) - reach - SIDE_ROAD_BEND_M
+            || z > road.pz.max(road.rz) + reach + SIDE_ROAD_BEND_M
+        {
+            continue;
+        }
+        let d = road.dist2(x, z).sqrt();
+        if d <= reach && best.is_none_or(|(b, _)| d < b) {
+            let (ex, ez) = (road.rx - road.px, road.rz - road.pz);
+            best = Some((d, bearing_index(ex, ez) as u8));
+        }
+    }
+    best
+}
 
 /// Is this point on a sheltered arc of coast — a bay rather than a headland
 /// or open shore? Pure, two `height` taps, and meaningful only near the ring
@@ -3763,6 +4074,19 @@ pub fn haven(seed: u64) -> Haven {
     // And last, the roads to whatever the ring does not reach. Last because
     // a road is a consequence: it needs both ends to exist, and one of them
     // is a site the loop above just chose.
+    //
+    // Then the ring is BUILT: everything above was solved at the probe's
+    // footprint, and from here on the road is its laid width, narrowed
+    // through the sites that stand on it.
+    pad.ring.built = true;
+    pad.ring.narrow[0] = [pad.x, pad.z, HAVEN_FOOTPRINT.scatter_m];
+    let mut n = 1;
+    for ws in pad.minor.iter() {
+        if ws.live && ws.kind == SiteKind::Waystation && n < RING_NARROWS {
+            pad.ring.narrow[n] = [ws.x, ws.z, WAYSTATION_FOOTPRINT.scatter_m];
+            n += 1;
+        }
+    }
     pad
 }
 
@@ -4299,7 +4623,7 @@ fn solve_ziggurat(seed: u64, pad: &Haven) -> Option<crate::monument::Ziggurat> {
 ///
 /// One thing it deliberately does not sample: the wedge outside a node where
 /// two legs meet. `side_band_of` is a distance to the nearest leg, so the
-/// band rounds that corner with a `ROAD_HALF_W` fillet, and the cross-section
+/// band rounds that corner with a `SIDE_ROAD_HALF_W` fillet, and the cross-section
 /// of neither leg reaches into it. At the turn angles `SIDE_ROAD_BEND_M`
 /// admits it is a sliver of a few cm², and the audit that covers it properly
 /// is `tests/side_road.rs`, which walks the BAND rather than the centre line.
@@ -4320,7 +4644,7 @@ fn road_corridor_clear(seed: u64, pad: &Haven, road: &SideRoad, lat: &mut Lattic
         for i in 0..=n {
             let t = len * i as f32 / n as f32;
             for cross in -2..=2 {
-                let off = cross as f32 * ROAD_HALF_W * 0.5;
+                let off = cross as f32 * SIDE_ROAD_HALF_W * 0.5;
                 let x = ax + dx * t + dz * off;
                 let z = az + dz * t - dx * off;
                 let y = ground_memo(lat, seed, pad, x, z);
@@ -4598,13 +4922,13 @@ pub const DEPOT_ROADS: usize = INLAND_SITES * 2;
 pub const SIDE_ROAD_BEARINGS: i32 = 16;
 
 /// How far apart the walkability samples along a candidate road stand, metres.
-/// Half `ROAD_HALF_W`; five transverse samples span the full carriageway.
-pub const SIDE_ROAD_SAMPLE_M: f32 = ROAD_HALF_W * 0.5;
+/// Half `SIDE_ROAD_HALF_W`; five transverse samples span the full carriageway.
+pub const SIDE_ROAD_SAMPLE_M: f32 = SIDE_ROAD_HALF_W * 0.5;
 
-/// How far the march for the ring steps, metres. `ROAD_HALF_W` is the
-/// carriageway's half-width, so a march at this pitch cannot step over the
-/// surface it is looking for.
-pub const SIDE_ROAD_MARCH_M: f32 = ROAD_HALF_W;
+/// How far the march for the ring steps, metres. Under the carriageway's
+/// half-width, so a march at this pitch cannot step over the surface it is
+/// looking for.
+pub const SIDE_ROAD_MARCH_M: f32 = RING_PROBE_HALF_W;
 
 /// Bearing steps of ring, either side of a candidate junction, that have to
 /// run unbroken before the junction is accepted — **and this is the one
@@ -4783,7 +5107,7 @@ const _: () = {
     assert!(SIDE_ROAD_POINTS == SIDE_ROAD_BENDS + 2);
     // A lateral wider than the shoulder would let a bent road's own band
     // touch the chord it came from, which is one road drawn as two.
-    assert!(SIDE_ROAD_BEND_M > ROAD_SHOULDER_HALF_W);
+    assert!(SIDE_ROAD_BEND_M > SIDE_ROAD_SHOULDER_HALF_W);
     // Wall 4: the ladder is bounded and its last rung is still a real bend.
     assert!(SIDE_ROAD_BEND_TRIES > 0 && SIDE_ROAD_BEND_TRIES < 8);
     // A floor of 0 puts a straight road back in the output by luck, which is
@@ -4949,7 +5273,7 @@ impl SideRoad {
 
 const _: () = {
     assert!(crate::depot::PORT_Z > crate::depot::YARD_HALF_Z);
-    assert!(crate::depot::GATE_HALF_W > ROAD_HALF_W + crate::collide::CAPSULE_RADIUS_M);
+    assert!(crate::depot::GATE_HALF_W > SIDE_ROAD_HALF_W + crate::collide::CAPSULE_RADIUS_M);
     assert!(WAYSTATION_MIN_SEP_M > crate::depot::FOOTPRINT.blend_m * 2.0);
     assert!(INLAND_SITES == 1); // shortlist currently solves one compound
 };
@@ -6122,7 +6446,7 @@ fn ground_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) ->
         // sea-facing road edge. Only this shallow fill bypasses protection.
         if protected < LAND_MIN_H {
             let d = haven.ring.dist2(x, z).sqrt();
-            let t = ((d - ROAD_SHOULDER_HALF_W) / RING_BLEND_M).clamp(0.0, 1.0);
+            let t = ((d - haven.ring.widths(x, z).1) / RING_BLEND_M).clamp(0.0, 1.0);
             if t == 0.0 {
                 LAND_MIN_H
             } else {
@@ -6355,6 +6679,19 @@ pub enum Occupant {
     BlueCrate = 14,
     /// The sanctum's crate: content's `elite`.
     EliteCrate = 15,
+    /// Rust's red oil barrel: smashed like a barrel, pays fuel
+    /// (`loot.oil_barrel`). Roadside and in junk piles.
+    OilBarrel = 16,
+    /// A road sign on a post, smashed for its scrap metal (`loot.roadsign`).
+    /// Volume is `ROAD_SIGN_BOXES`, faced along the road.
+    RoadSign = 17,
+    /// A roadside food box, opened like a cache (`loot.food`).
+    FoodCrate = 18,
+    /// A junk pile's wrecked car: cover you can climb, not loot. Volume is
+    /// `CAR_WRECK_BOXES`, parked along the road.
+    CarWreck = 19,
+    /// A junk pile's stack of tyres: crouch cover.
+    TireStack = 20,
 }
 
 /// How many species a [`Slot`] may be. **The client's own pools must agree
@@ -6895,8 +7232,21 @@ fn scatter_in<C: Corners>(
     // Jittered position first: vetoes apply where the thing would stand.
     let jx = ((h >> 16) & 0x3F) as f32 * (6.0 / 63.0) - 3.0;
     let jz = ((h >> 22) & 0x3F) as f32 * (6.0 / 63.0) - 3.0;
-    let x = cell_x as f32 * CELL_SIZE + 4.0 + jx;
-    let z = cell_z as f32 * CELL_SIZE + 4.0 + jz;
+    let mut x = cell_x as f32 * CELL_SIZE + 4.0 + jx;
+    let mut z = cell_z as f32 * CELL_SIZE + 4.0 + jz;
+    // A junk pile's four heart cells stand their slots round its corner
+    // instead (roadside junk), so the vetoes below judge where they really
+    // stand.
+    let junk = junk_block(seed, cell_x, cell_z);
+    let pile = if junk {
+        junk_pile_slot(seed, haven, cell_x, cell_z, h)
+    } else {
+        None
+    };
+    if let Some((px, pz, _, _)) = pile {
+        x = px;
+        z = pz;
+    }
 
     let hy = ground_in(c, seed, haven, x, z);
     // Split from the slope veto so `sl` can be bound and reused by the mix
@@ -6938,23 +7288,56 @@ fn scatter_in<C: Corners>(
     // carriageway stays clear so the loop is walkable, and the shoulder
     // draws barrels off its own bits so the route is worth walking.
     let mut occupant = Occupant::None;
-    match road_band_in(c, seed, haven, x, z) {
-        RoadBand::Carriageway => return none,
-        RoadBand::Shoulder => {
-            // Same draw, two thresholds: the bay concentrates what the open
-            // coast gives up, so the loop's total pay is unmoved and its
-            // shape is not. The roll is untouched, so which cells change is
-            // decided by the coastline, never by a reshuffle.
-            let rate = if in_bay_in(c, seed, x, z) {
-                ROAD_BAY_BARREL_PERMILLE
-            } else {
-                ROAD_OPEN_BARREL_PERMILLE
-            };
-            if (((h >> 44) % 1000) as u16) < rate {
-                occupant = Occupant::BarrelSlot;
+    // Roadside junk faces along the road; everything else keeps its drawn yaw.
+    let mut yaw = ((h >> 28) & 0xFF) as u8;
+    let band = road_band_in(c, seed, haven, x, z);
+    if band == RoadBand::Carriageway {
+        return none;
+    }
+    let roll = ((h >> 44) % 1000) as u16;
+    // Bits 54..64, which no other draw here reads.
+    let pick = ((h >> 54) % 100) as u16;
+    let debris = if junk && pile.is_none() {
+        road_near(haven, x, z, JUNK_REACH_M)
+    } else {
+        None
+    };
+    if let Some((_, _, o, y)) = pile {
+        occupant = o;
+        yaw = y;
+    } else if debris.is_some() {
+        if roll < JUNK_FILL_PERMILLE {
+            occupant = debris_pick(pick);
+        }
+    } else if band == RoadBand::Shoulder {
+        // Same draw, two thresholds: the bay concentrates what the open
+        // coast gives up, so the loop's total pay is unmoved and its
+        // shape is not. The roll is untouched, so which cells change is
+        // decided by the coastline, never by a reshuffle.
+        let rate = if in_bay_in(c, seed, x, z) {
+            ROAD_BAY_BARREL_PERMILLE
+        } else {
+            ROAD_OPEN_BARREL_PERMILLE
+        };
+        let oil = rate + ROAD_OIL_BARREL_PERMILLE;
+        let sign = oil + ROAD_SIGN_PERMILLE;
+        let food = sign + ROAD_FOOD_PERMILLE;
+        occupant = if roll < rate {
+            Occupant::BarrelSlot
+        } else if roll < oil {
+            Occupant::OilBarrel
+        } else if roll < sign {
+            Occupant::RoadSign
+        } else if roll < food {
+            Occupant::FoodCrate
+        } else {
+            Occupant::None
+        };
+        if occupant == Occupant::RoadSign {
+            if let Some((_, road_yaw)) = road_near(haven, x, z, ROAD_SHOULDER_HALF_W) {
+                yaw = road_yaw.wrapping_add(if (h >> 32) & 1 == 0 { 0 } else { 128 });
             }
         }
-        RoadBand::Off => {}
     }
 
     if occupant == Occupant::None {
@@ -7007,7 +7390,7 @@ fn scatter_in<C: Corners>(
     // Clearing anchors alone leaves shoulder rocks and trunks protruding
     // into the road. Reserve the actual scaled collision volume, with a
     // cheap segment bounding-box reject before the distance calculation.
-    let reach = ROAD_HALF_W + occupant_volume(occupant).0 * scale;
+    let reach = SIDE_ROAD_HALF_W + occupant_volume(occupant).0 * scale;
     // The cheap reject is still the CHORD's box, grown by the widest a node
     // may sit off it. Provable rather than measured — `bend_side_road`'s
     // offset is `amp * bend_taper * bend_unit` with the last two at most 1
@@ -7040,9 +7423,11 @@ fn scatter_in<C: Corners>(
     Slot {
         occupant,
         x,
-        y: hy,
+        // Rocks and nodes sit into the hillside (`slope_sink`), the volume
+        // with them, so the top a body stands on is the top it sees.
+        y: hy - slope_sink(occupant, sl, scale),
         z,
-        yaw: ((h >> 28) & 0xFF) as u8,
+        yaw,
         scale,
         // Bits 20..28 — a byte no other draw in this function reads, so
         // adding species reshuffled nothing: the roll (`h % 1000`), the yaw
@@ -8625,6 +9010,39 @@ pub const WAYSTATION_CANOPY_R_M: f32 = 3.96;
 /// `props.js`'s `WAYSTATION_CANOPY_PEAK`, and `OCCUPANT_TOP_M`'s row 12.
 pub const WAYSTATION_CANOPY_PEAK_M: f32 = 4.1;
 
+/// A road sign, on `SHELTER_BOXES`' terms: a post and the plate on it.
+/// Local +Z is the plate's normal, so a sign seated with the road's own yaw
+/// faces the traffic. The plate's underside is the standing capsule's head
+/// height, so a body walks under it and is stopped only by the post.
+pub const ROAD_SIGN_BOXES: [[f32; 6]; 2] = [
+    [0.0, 1.1, 0.0, 0.08, 2.2, 0.08],  // post
+    [0.0, 1.95, 0.05, 0.9, 0.5, 0.03], // plate
+];
+/// Bounding radius of `ROAD_SIGN_BOXES`: the plate's far corner, rounded up.
+pub const ROAD_SIGN_R_M: f32 = 0.4547;
+/// The plate's top.
+pub const ROAD_SIGN_PEAK_M: f32 = 2.2;
+
+/// A junk pile's wrecked car, wheels gone and sat on the ground. Local +Z is
+/// its length, so a car seated with the road's yaw is parked along it. A
+/// body can climb onto it (`slot_ground` reads the boxes).
+pub const CAR_WRECK_BOXES: [[f32; 6]; 3] = [
+    [0.0, 0.35, 0.0, 1.7, 0.7, 4.0],  // body
+    [0.0, 1.05, -0.2, 1.5, 0.7, 2.1], // cabin
+    [0.0, 1.45, -0.3, 1.4, 0.1, 1.7], // caved-in roof
+];
+/// Bounding radius of `CAR_WRECK_BOXES`: the body's corner, rounded up.
+pub const CAR_WRECK_R_M: f32 = 2.1732;
+/// The roof's top.
+pub const CAR_WRECK_PEAK_M: f32 = 1.5;
+/// How far a wreck's centre must stand off the coast ring's carriageway
+/// edge, metres: its half-width plus what the yaw jitter swings the corners.
+pub const JUNK_CAR_CLEAR_M: f32 = 1.3;
+
+/// A tyre stack's height: over a crouched body (`CROUCH_HEIGHT_M` 1.05),
+/// under a standing one.
+pub const TIRE_STACK_TOP_M: f32 = 1.2;
+
 /// `|v|` in a const context, which `f32::abs` is not. Sign flip only — no
 /// libm, nothing outside the L1 float set.
 const fn abs_const(v: f32) -> f32 {
@@ -8763,7 +9181,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 16] = [
+pub const OCCUPANT_R_M: [f32; 21] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -8804,9 +9222,14 @@ pub const OCCUPANT_R_M: [f32; 16] = [
     // the volume. A canopy is the other shape a radius cannot express: a
     // cylinder here would seal four open bays a player is meant to walk into.
     WAYSTATION_CANOPY_R_M,
-    0.6801, // GreenCrate — the crate's box
-    0.6801, // BlueCrate
-    0.6801, // EliteCrate
+    0.6801,        // GreenCrate — the crate's box
+    0.6801,        // BlueCrate
+    0.6801,        // EliteCrate
+    0.2925,        // OilBarrel — the barrel's drum
+    ROAD_SIGN_R_M, // RoadSign — broad phase; ROAD_SIGN_BOXES is the volume
+    0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
+    CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
+    0.42,          // TireStack — the tyre's outer radius
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -8823,7 +9246,7 @@ pub const OCCUPANT_R_M: [f32; 16] = [
 /// 14 m; the sim cannot tell the species apart, so the shorter one wins and
 /// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 16] = [
+pub const OCCUPANT_TOP_M: [f32; 21] = [
     0.0,  // None
     11.0, // Tree — the broadleaf's drawn height
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -8843,9 +9266,14 @@ pub const OCCUPANT_TOP_M: [f32; 16] = [
     // overhead are inside this interval and a standing body is not; the box
     // loop is what lets a player walk under them.
     WAYSTATION_CANOPY_PEAK_M,
-    0.8, // GreenCrate
-    0.8, // BlueCrate
-    0.8, // EliteCrate
+    0.8,              // GreenCrate
+    0.8,              // BlueCrate
+    0.8,              // EliteCrate
+    0.88,             // OilBarrel
+    ROAD_SIGN_PEAK_M, // RoadSign — the plate's top
+    0.4,              // FoodCrate — lift 0.2 + half-height 0.2
+    CAR_WRECK_PEAK_M, // CarWreck — the roof
+    TIRE_STACK_TOP_M, // TireStack
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -8910,7 +9338,41 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
+        Occupant::OilBarrel => (0.2925, 0.88),
+        Occupant::RoadSign => (ROAD_SIGN_R_M, ROAD_SIGN_PEAK_M),
+        Occupant::FoodCrate => (0.5831, 0.4),
+        Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
+        Occupant::TireStack => (0.42, TIRE_STACK_TOP_M),
     }
+}
+
+/// How far a rock or an ore node stands below the ground at its slot on a
+/// slope: the ground's fall across its footprint, so its downhill edge meets
+/// the hillside instead of floating over it, capped at a third of its height.
+///
+/// In the slot's `y`, not just the draw. Until 2026-10-06 only the client sank
+/// them, so on a hillside the volume stood up to 0.6 m above the drawn rock
+/// and a body walking downhill was stopped on its invisible rim with its feet
+/// above the stone it could see.
+pub fn slope_sink(o: Occupant, slope: f32, scale: f32) -> f32 {
+    match o {
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock => {
+            let (r, top) = occupant_volume(o);
+            (slope * r * scale).min(top * scale / 3.0)
+        }
+        _ => 0.0,
+    }
+}
+
+/// Whether a body walks onto this occupant's top when it is within a step of
+/// its feet, the way it walks onto a formation block, rather than being
+/// stopped by its side. Rocks and nodes: on a hillside their uphill edge is
+/// barely proud of the ground.
+pub const fn steppable(o: Occupant) -> bool {
+    matches!(
+        o,
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock
+    )
 }
 
 const _: () = {
@@ -8918,7 +9380,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 16 && OCCUPANT_TOP_M.len() == 16);
+    assert!(OCCUPANT_R_M.len() == 21 && OCCUPANT_TOP_M.len() == 21);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -8952,6 +9414,16 @@ const _: () = {
     assert!(occupant_volume(Occupant::GreenCrate).1 == OCCUPANT_TOP_M[13]);
     assert!(occupant_volume(Occupant::BlueCrate).1 == OCCUPANT_TOP_M[14]);
     assert!(occupant_volume(Occupant::EliteCrate).1 == OCCUPANT_TOP_M[15]);
+    assert!(occupant_volume(Occupant::OilBarrel).0 == OCCUPANT_R_M[16]);
+    assert!(occupant_volume(Occupant::RoadSign).0 == OCCUPANT_R_M[17]);
+    assert!(occupant_volume(Occupant::FoodCrate).0 == OCCUPANT_R_M[18]);
+    assert!(occupant_volume(Occupant::CarWreck).0 == OCCUPANT_R_M[19]);
+    assert!(occupant_volume(Occupant::TireStack).0 == OCCUPANT_R_M[20]);
+    assert!(occupant_volume(Occupant::OilBarrel).1 == OCCUPANT_TOP_M[16]);
+    assert!(occupant_volume(Occupant::RoadSign).1 == OCCUPANT_TOP_M[17]);
+    assert!(occupant_volume(Occupant::FoodCrate).1 == OCCUPANT_TOP_M[18]);
+    assert!(occupant_volume(Occupant::CarWreck).1 == OCCUPANT_TOP_M[19]);
+    assert!(occupant_volume(Occupant::TireStack).1 == OCCUPANT_TOP_M[20]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who
@@ -8981,6 +9453,18 @@ const _: () = {
         WAYSTATION_CANOPY_R_M
     ));
     assert!(boxes_peak(&WAYSTATION_CANOPY_BOXES) == WAYSTATION_CANOPY_PEAK_M);
+
+    // --- the roadside junk, on the same broad-phase rules ------------------
+    assert!(boxes_corner_fits(&ROAD_SIGN_BOXES, ROAD_SIGN_R_M));
+    assert!(boxes_peak(&ROAD_SIGN_BOXES) == ROAD_SIGN_PEAK_M);
+    assert!(boxes_corner_fits(&CAR_WRECK_BOXES, CAR_WRECK_R_M));
+    assert!(boxes_peak(&CAR_WRECK_BOXES) == CAR_WRECK_PEAK_M);
+    // Every box rests on the ground or on another box: nothing floats.
+    assert!(CAR_WRECK_BOXES[0][1] - CAR_WRECK_BOXES[0][4] * 0.5 == 0.0);
+    assert!(ROAD_SIGN_BOXES[0][1] - ROAD_SIGN_BOXES[0][4] * 0.5 == 0.0);
+    // The car is parked along the road, so its half-width (with the yaw
+    // jitter) is what has to clear the carriageway, not its length.
+    assert!(CAR_WRECK_BOXES[0][3] * 0.5 < JUNK_CAR_CLEAR_M);
 
     // The two tiers are different SHAPES, not one shape at two sizes, and
     // that is the whole point of the second table (`NOW.md` §4b). Scaling
@@ -9067,7 +9551,16 @@ pub fn slot_blocks(
     if r <= 0.0 {
         return false;
     }
-    if feet_y >= slot.y + top * slot.scale || feet_y + capsule_h <= slot.y {
+    let t = slot.y + top * slot.scale;
+    if feet_y >= t || feet_y + capsule_h <= slot.y {
+        return false;
+    }
+    // A body steps up onto a rock top within a step (`slot_ground` holds it
+    // there); a short volume (an arrow) is stopped by any of it.
+    if steppable(slot.occupant)
+        && capsule_h >= crate::movement::STEP_UP
+        && t <= feet_y + crate::movement::STEP_UP
+    {
         return false;
     }
     // Broad phase, and for every occupant but one it is also the answer.
@@ -9092,6 +9585,27 @@ pub fn slot_blocks(
             slot,
             &WAYSTATION_CANOPY_BOXES,
             WAYSTATION_CANOPY_FLOOR_IX,
+            dx,
+            dz,
+            feet_y,
+            capsule_r,
+            capsule_h,
+        ),
+        // No floor row in either: `usize::MAX` skips nothing.
+        Occupant::RoadSign => boxes_block(
+            slot,
+            &ROAD_SIGN_BOXES,
+            usize::MAX,
+            dx,
+            dz,
+            feet_y,
+            capsule_r,
+            capsule_h,
+        ),
+        Occupant::CarWreck => boxes_block(
+            slot,
+            &CAR_WRECK_BOXES,
+            usize::MAX,
             dx,
             dz,
             feet_y,
@@ -9130,6 +9644,8 @@ pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32, capsule_r: f32) -> 
         Occupant::WaystationCanopy => {
             boxes_ground(slot, &WAYSTATION_CANOPY_BOXES, dx, dz, lid, capsule_r)
         }
+        Occupant::RoadSign => boxes_ground(slot, &ROAD_SIGN_BOXES, dx, dz, lid, capsule_r),
+        Occupant::CarWreck => boxes_ground(slot, &CAR_WRECK_BOXES, dx, dz, lid, capsule_r),
         _ => {
             let reach = r * slot.scale + capsule_r;
             if dx * dx + dz * dz >= reach * reach {

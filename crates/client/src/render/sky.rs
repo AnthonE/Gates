@@ -397,20 +397,32 @@ pub const EDGE: f32 = 0.13;
 const BILLOW: f32 = 0.3;
 /// How much a thick cloud's underside darkens at its core: light that came
 /// through a kilometre of cloud, against the thin rim the sun shines through.
-const CORE_SHADE: f32 = 0.55;
+pub const CORE_SHADE: f32 = 0.55;
 /// How much brighter a thin rim reads than the underside, as a share of the
 /// top-to-base step: the silver lining.
-const RIM_GLOW: f32 = 0.45;
+pub const RIM_GLOW: f32 = 0.45;
 /// Below this `d.y` (~20°) the eye starts to see a cloud's lit side rather
 /// than its base, and by [`DECK_CUTOFF`] it sees almost only that.
-const SIDE_VIEW_Y: f32 = 0.34;
-/// The moon's disk, as cosines of its radius (~1.7°) and its soft edge
-/// (~2.3°) — drawn big, the way a person remembers it — and its halo (~8.6°).
-const MOON_COS_IN: f32 = 0.999_55;
-const MOON_COS_OUT: f32 = 0.999_2;
-const HALO_COS: f32 = 0.988_77;
-const MOON_RGB: [f32; 3] = [0.78, 0.8, 0.84];
-const HALO_RGB: [f32; 3] = [0.02, 0.024, 0.032];
+pub const SIDE_VIEW_Y: f32 = 0.34;
+/// The moon's disk, radians (~1.7°) — drawn big, the way a person
+/// remembers it. The sky's moon is `moon.rs`'s, a quad sharp at any
+/// resolution: as texels it was five across in a browser and read as a
+/// smudge with a stepped rim. The cube keeps a smaller soft one only for
+/// the sea to reflect, wholly inside the quad's so it never shows round it.
+pub const MOON_R: f32 = 0.03;
+/// The cube's disk, as cosines of its radius (~0.7°) and soft edge (~1.1°).
+const MOON_COS_IN: f32 = 0.999_93;
+const MOON_COS_OUT: f32 = 0.999_8;
+/// The halo (~8.6°).
+pub const HALO_COS: f32 = 0.988_77;
+pub const MOON_RGB: [f32; 3] = [0.78, 0.8, 0.84];
+pub const HALO_RGB: [f32; 3] = [0.02, 0.024, 0.032];
+/// Moonlight scattered forward through the deck near the moon, deck units
+/// at the moon itself: a thin edge drifting past it lights up silver
+/// instead of passing as a dark smudge.
+const MOON_SCATTER: f32 = 0.06;
+/// How far round the moon that reaches, as a cosine (~20°).
+pub const MOON_SCATTER_COS: f32 = 0.94;
 /// How brightly the moon lights the deck's underside at deep night, as a
 /// share of the sun: dark shapes against the stars rather than nothing.
 const NIGHT_CLOUD_LIGHT: f32 = 0.012;
@@ -429,9 +441,9 @@ const HUE_STEPS: usize = 512;
 /// again. A browser has no atmosphere to undo and needs none.
 pub const DECK_GAIN: f32 = if BAKE_BACKDROP { 1.0 } else { 2.0 };
 /// The browser's night sky floor (the desktop's atmosphere has its own).
-const NIGHT_SKY: [f32; 3] = [0.0015, 0.002, 0.0035];
+pub const NIGHT_SKY: [f32; 3] = [0.0015, 0.002, 0.0035];
 /// The warm glow a low sun puts on the browser's horizon near it.
-const DUSK_GLOW: [f32; 3] = [0.10, 0.045, 0.02];
+pub const DUSK_GLOW: [f32; 3] = [0.10, 0.045, 0.02];
 /// What fog and haze are lit by after dark, so night fog is a dark grey
 /// wall rather than a hole.
 const NIGHT_FOG: [f32; 3] = [0.0025, 0.003, 0.0045];
@@ -509,32 +521,60 @@ impl CloudField {
         self.n
     }
 
-    /// The field as a repeating single-channel texture — what the star
-    /// layer samples to hide a star behind the deck. Texel `i` is noise
-    /// coordinate `i`, as in [`Self::sample`], so a sampler's centre is half
-    /// a texel over (`stars.wgsl` adds it).
+    /// The field as a repeating single-channel texture — what the stars,
+    /// the moon and a browser's per-pixel sky sample the deck from. Texel
+    /// `i` is noise coordinate `i`, as in [`Self::sample`], so a sampler's
+    /// centre is half a texel over (the shaders add it).
+    ///
+    /// **Mipped**, box-filtered and wrapping: toward the horizon a pixel
+    /// spans hundreds of texels, and a sky drawn per pixel from level 0
+    /// there shimmers as the deck drifts.
     pub fn image(&self) -> Image {
-        let data: Vec<u8> = self
+        let mut level: Vec<u8> = self
             .data
             .iter()
             .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
             .collect();
-        let mut image = Image::new(
+        let mut data = level.clone();
+        let mut n = self.n;
+        let mut levels = 1;
+        while n > 1 {
+            let h = n / 2;
+            let mut next = vec![0u8; h * h];
+            for j in 0..h {
+                for i in 0..h {
+                    let at = |x: usize, y: usize| level[(y % n) * n + x % n] as u32;
+                    let sum = at(2 * i, 2 * j)
+                        + at(2 * i + 1, 2 * j)
+                        + at(2 * i, 2 * j + 1)
+                        + at(2 * i + 1, 2 * j + 1);
+                    next[j * h + i] = ((sum + 2) / 4) as u8;
+                }
+            }
+            data.extend_from_slice(&next);
+            level = next;
+            n = h;
+            levels += 1;
+        }
+        // `Image::new` asserts one level's worth of data; the chain follows it.
+        let mut image = Image::new_uninit(
             Extent3d {
                 width: self.n as u32,
                 height: self.n as u32,
                 depth_or_array_layers: 1,
             },
             TextureDimension::D2,
-            data,
             TextureFormat::R8Unorm,
             RenderAssetUsages::RENDER_WORLD,
         );
+        image.data = Some(data);
+        image.texture_descriptor.mip_level_count = levels;
         image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
             address_mode_u: ImageAddressMode::Repeat,
             address_mode_v: ImageAddressMode::Repeat,
             mag_filter: ImageFilterMode::Linear,
             min_filter: ImageFilterMode::Linear,
+            mipmap_filter: ImageFilterMode::Linear,
             ..default()
         });
         image
@@ -748,6 +788,62 @@ pub fn deck_cover(cloud: f32) -> f32 {
     }
 }
 
+/// What a compose lights the deck with, worked out once from its params.
+/// Shared with the browser's per-pixel sky (`deck.rs`), so the two cannot
+/// light one deck two ways.
+pub struct DeckLight {
+    /// Toward the sun, horizontal, unit.
+    pub sun_h: Vec2,
+    /// The light march's step toward the sun, noise units.
+    pub toward: Vec2,
+    /// How strongly a low sun warms the horizon near it, `0..=1`.
+    pub glow: f32,
+    /// A lit top and a grey base, linear, deck units.
+    pub top: [f32; 3],
+    pub base: [f32; 3],
+    /// Moonlit forward scatter at the moon, deck units.
+    pub scatter: [f32; 3],
+    /// What a texel is scaled by before it is stored.
+    pub gain: f32,
+    /// The fog band's colour.
+    pub fog_rgb: [f32; 3],
+    /// The field value a cloud starts at.
+    pub thresh: f32,
+}
+
+impl DeckLight {
+    pub fn new(p: &ComposeParams) -> Self {
+        let sun_h = Vec2::new(p.sun.x, p.sun.z).normalize_or_zero();
+        // A low sun warms what it lights; one under the horizon lights nothing.
+        let dusk = if p.sun.y > -0.1 {
+            ((0.25 - p.sun.y) / 0.25).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let warm = [1.0, 1.0 - 0.35 * dusk, 1.0 - 0.6 * dusk];
+        let cloud_light = p.light.max(NIGHT_CLOUD_LIGHT * p.night);
+        // The moon takes over from the sun as the night deepens.
+        let tint: [f32; 3] = core::array::from_fn(|c| warm[c] + (MOONLIT[c] - warm[c]) * p.night);
+        Self {
+            sun_h,
+            toward: sun_h * LIT_STEP,
+            glow: dusk * ((p.sun.y + 0.1) / 0.1).clamp(0.0, 1.0),
+            top: core::array::from_fn(|c| {
+                CLOUD_TOP[c] * (1.0 - 0.6 * p.dark) * tint[c] * cloud_light
+            }),
+            base: core::array::from_fn(|c| {
+                CLOUD_BASE[c] * (1.0 - 0.7 * p.dark) * tint[c] * cloud_light
+            }),
+            scatter: core::array::from_fn(|c| {
+                MOON_SCATTER * MOONLIT[c] * p.night * (1.0 - 0.7 * p.dark)
+            }),
+            gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
+            fog_rgb: fog_rgb(p.light, p.dark, 1.0),
+            thresh: 1.0 - p.cover,
+        }
+    }
+}
+
 /// Compose texels `range` (flat, face-major indices) of the cube into `out`,
 /// the whole cube's RGBA8.
 pub fn compose_range(
@@ -758,26 +854,17 @@ pub fn compose_range(
     out: &mut [u8],
 ) {
     let lut = srgb_lut();
-    let sun_h = Vec2::new(p.sun.x, p.sun.z).normalize_or_zero();
-    let toward = sun_h * LIT_STEP;
-    // A low sun warms what it lights; one under the horizon lights nothing.
-    let dusk = if p.sun.y > -0.1 {
-        ((0.25 - p.sun.y) / 0.25).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let glow = dusk * ((p.sun.y + 0.1) / 0.1).clamp(0.0, 1.0);
-    let warm = [1.0, 1.0 - 0.35 * dusk, 1.0 - 0.6 * dusk];
-    let cloud_light = p.light.max(NIGHT_CLOUD_LIGHT * p.night);
-    // The moon takes over from the sun as the night deepens.
-    let tint: [f32; 3] = core::array::from_fn(|c| warm[c] + (MOONLIT[c] - warm[c]) * p.night);
-    let top: [f32; 3] =
-        core::array::from_fn(|c| CLOUD_TOP[c] * (1.0 - 0.6 * p.dark) * tint[c] * cloud_light);
-    let base: [f32; 3] =
-        core::array::from_fn(|c| CLOUD_BASE[c] * (1.0 - 0.7 * p.dark) * tint[c] * cloud_light);
-    let gain = if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN };
-    let fog_rgb = fog_rgb(p.light, p.dark, 1.0);
-    let thresh = 1.0 - p.cover;
+    let DeckLight {
+        sun_h,
+        toward,
+        glow,
+        top,
+        base,
+        scatter,
+        gain,
+        fog_rgb,
+        thresh,
+    } = DeckLight::new(p);
     for i in range {
         let d = geo.dir[i];
         // The sky behind the cloud: nothing natively (the atmosphere paints
@@ -836,6 +923,14 @@ pub fn compose_range(
                 });
                 let w = (lit * (1.0 - 0.5 * thick)).max(side * side * (3.0 - 2.0 * side));
                 cloud = core::array::from_fn(|c| under[c] + (top[c] - under[c]) * w);
+                // Moonlight through it, strongest at a thin edge.
+                let s = (d.dot(p.moon) - MOON_SCATTER_COS) / (1.0 - MOON_SCATTER_COS);
+                if s > 0.0 {
+                    let k = s * s * (1.0 - 0.6 * thick);
+                    for c in 0..3 {
+                        cloud[c] += scatter[c] * k;
+                    }
+                }
                 if !p.backdrop {
                     let hue = deck_hue(d.y);
                     for c in 0..3 {
@@ -1012,6 +1107,7 @@ pub struct SkyComposer {
     params: ComposeParams,
     shown: Option<ComposeParams>,
     handle: Handle<Image>,
+    field_image: Handle<Image>,
     next_at: f32,
     composing: bool,
 }
@@ -1020,6 +1116,12 @@ impl SkyComposer {
     /// The deck's noise, for the star layer's occlusion.
     pub fn field(&self) -> &CloudField {
         &self.field
+    }
+
+    /// The same noise on the GPU ([`CloudField::image`]), one upload shared
+    /// by the stars, the moon and a browser's per-pixel sky.
+    pub fn field_image(&self) -> &Handle<Image> {
+        &self.field_image
     }
 
     /// What the deck on screen was composed with — `None` until the first
@@ -1061,6 +1163,7 @@ pub fn setup(
     let mut scratch = vec![0u8; geo.len() * 4];
     compose_range(&field, &geo, &params, 0..geo.len(), &mut scratch);
     let handle = images.add(cube_image(scratch.clone()));
+    let field_image = images.add(field.image());
     commands.entity(cam).insert(Skybox {
         image: handle.clone(),
         brightness: CLOUD_NITS * DECK_GAIN,
@@ -1074,6 +1177,7 @@ pub fn setup(
         params,
         shown: Some(params),
         handle,
+        field_image,
         next_at: 0.0,
         composing: false,
     });

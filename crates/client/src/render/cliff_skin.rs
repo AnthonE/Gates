@@ -20,6 +20,7 @@
 //! [`SKIN_SINK_M`] under the drawn ground and is hidden by it.
 
 use bevy::prelude::*;
+use sim_core::cliff::Crag;
 use sim_core::terrain::{self, Haven};
 
 use super::boulders::RockSoup;
@@ -43,6 +44,8 @@ const SKIN_FADE_M: f32 = 2.0;
 const SKIN_SLOPE_LO: f32 = terrain::CLIFF_SLOPE_RATIO;
 /// …and where it is whole.
 const SKIN_SLOPE_HI: f32 = terrain::CLIFF_SLOPE_RATIO * 1.4;
+/// How far clear of a crag's footprint the skin is whole again, metres.
+pub const CRAG_FADE_M: f32 = 2.0;
 /// How far the shell sinks under the drawn ground where the mask runs out.
 const SKIN_SINK_M: f32 = 0.3;
 /// The buttress-sized facets' lattice, metres…
@@ -218,23 +221,70 @@ pub struct Shell {
 }
 
 /// The rock skin over one cliff cell's steep faces, into `soup`, and the
-/// grass on its shelves into `tufts`.
+/// grass on its shelves into `tufts`. It falls back round every crag in
+/// `crags` (the sim's, `sim_core::cliff`), so a crag stands out of it.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn skin(
     soup: &mut RockSoup,
     tufts: &mut Soup,
     seed: u64,
     haven: &Haven,
+    crags: &[Crag],
     cell_m: f32,
     cx: i32,
     cz: i32,
 ) {
-    if let Some(shell) = shell(seed, haven, cell_m, cx, cz) {
+    if let Some(shell) = shell(seed, haven, crags, cell_m, cx, cz) {
         mesh(soup, tufts, &shell, seed as u32 ^ (seed >> 32) as u32);
     }
 }
 
+/// Whether a cell has ground anywhere near steep enough to carry the skin:
+/// nine taps, so a flat cell costs nothing more.
+pub(super) fn steep_cell(
+    lat: &mut terrain::Lattice,
+    seed: u64,
+    haven: &Haven,
+    cell_m: f32,
+    cx: i32,
+    cz: i32,
+) -> bool {
+    let (x0, z0) = (cx as f32 * cell_m, cz as f32 * cell_m);
+    (0..9).any(|i| {
+        let (x, z) = (
+            x0 + cell_m * (0.17 + 0.33 * (i % 3) as f32),
+            z0 + cell_m * (0.17 + 0.33 * (i / 3) as f32),
+        );
+        terrain::ground_slope_memo(lat, seed, haven, x, z) > terrain::CLIFF_SLOPE_RATIO * 0.8
+    })
+}
+
+/// How much of the skin's push survives at (`x`, `z`) beside the crags,
+/// 0..1: none over a crag's footprint, all of it [`CRAG_FADE_M`] clear.
+fn crag_room(crags: &[Crag], x: f32, z: f32) -> f32 {
+    let mut room = 1.0f32;
+    for c in crags {
+        let reach = c.hx + c.hz + CRAG_FADE_M;
+        if (x - c.x).abs() > reach || (z - c.z).abs() > reach {
+            continue;
+        }
+        let (lx, lz) = c.to_local(x, z);
+        let (ox, oz) = ((lx.abs() - c.hx).max(0.0), (lz.abs() - c.hz).max(0.0));
+        let t = ((ox * ox + oz * oz).sqrt() / CRAG_FADE_M).min(1.0);
+        room = room.min(t * t * (3.0 - 2.0 * t));
+    }
+    room
+}
+
 /// The skin's lattice over one cell; `None` where nothing in it stands out.
-pub fn shell(seed: u64, haven: &Haven, cell_m: f32, cx: i32, cz: i32) -> Option<Shell> {
+pub fn shell(
+    seed: u64,
+    haven: &Haven,
+    crags: &[Crag],
+    cell_m: f32,
+    cx: i32,
+    cz: i32,
+) -> Option<Shell> {
     // The 1 m lattice the near ground is drawn on, over the cell and a point
     // past it, plus a border wide enough for the relief's 5×5 stencil, the
     // 3×3 the mask reads the gentlest slope over, and the search for
@@ -246,19 +296,7 @@ pub fn shell(seed: u64, haven: &Haven, cell_m: f32, cx: i32, cz: i32) -> Option<
     let gx = |k: usize| x0 + (k as i32 - m) as f32;
     let gz = |j: usize| z0 + (j as i32 - m) as f32;
     let mut lat = terrain::Lattice::new();
-    // A cell with no steep ground anywhere costs nine taps.
-    let mut steep = false;
-    for j in 0..3 {
-        for i in 0..3 {
-            let (x, z) = (
-                x0 + cell_m * (0.17 + 0.33 * i as f32),
-                z0 + cell_m * (0.17 + 0.33 * j as f32),
-            );
-            steep |= terrain::ground_slope_memo(&mut lat, seed, haven, x, z)
-                > terrain::CLIFF_SLOPE_RATIO * 0.8;
-        }
-    }
-    if !steep {
+    if !steep_cell(&mut lat, seed, haven, cell_m, cx, cz) {
         return None;
     }
     let mut h = vec![0.0f32; side * side];
@@ -362,7 +400,10 @@ pub fn shell(seed: u64, haven: &Haven, cell_m: f32, cx: i32, cz: i32) -> Option<
                 top + (bot - top) * fz
             };
             let (x, z) = (x0 + u, z0 + w);
-            let fade = lerp(|q| q.1);
+            let mut fade = lerp(|q| q.1);
+            if fade > 0.0 {
+                fade *= crag_room(crags, x, z);
+            }
             let base = vertex_mods(drawn, x, z, 0.0)[0];
             if fade <= 0.0 {
                 pts.push(SkinPoint {
@@ -538,7 +579,7 @@ mod tests {
             .chain((37..41).flat_map(|cz| (28..31).map(move |cx| (cx, cz))));
         for (cx, cz) in cells {
             {
-                let Some(shell) = shell(seed, &haven, 32.0, cx, cz) else {
+                let Some(shell) = shell(seed, &haven, &[], 32.0, cx, cz) else {
                     continue;
                 };
                 for SkinPoint { p, out, .. } in shell.pts {

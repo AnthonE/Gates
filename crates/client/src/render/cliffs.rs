@@ -1,81 +1,69 @@
 //! Cliffs: the rock skin over every face too steep to walk
-//! (`cliff_skin.rs`) and the grass on its shelves, the crags breaking its
-//! lip against the sky, and the scree lying at its foot.
+//! (`cliff_skin.rs`) and the grass on its shelves; the crags — rock ledges
+//! stepping down the faces, and teeth standing in a face just under its lip,
+//! breaking the outline the walkable top draws against the sky; and the
+//! scree lying at the faces' feet.
 //!
 //! A scarp is the smooth heightfield, so from any distance it read as one pale
-//! sheet with a photograph on it (`NOW.md` §0rf items 2–3). Blocks stood in
-//! the face read as bricks on plaster; the skin breaks the whole face into
-//! planes, strata, shelves and overhangs instead.
+//! sheet with a photograph on it (`NOW.md` §0rf items 2–3). The skin breaks
+//! the whole face into planes, strata, shelves and overhangs; the crags are
+//! fractured blocks ([`boulders::rock_block`], on the ground's own material,
+//! so a ledge is the same granite as the face it juts from), and the skin
+//! falls back round each one so it stands out of the face rather than being
+//! swallowed by it.
 //!
-//! The skin cannot touch the walkable top, so the lip's outline against the
-//! sky is broken by low crag teeth standing in the face just under it
-//! ([`boulders::rock_block`], on the ground's own material and chiselled into
-//! facets), every corner of each on ground too steep to walk. They sit on
-//! the DRAWN face (`terrain_mesh::near_drawn_y`), which the cliff relief
-//! moves off the sim's height; the slope tests stay the sim's.
-//!
-//! **Drawn, not decided: nothing here collides.** The skin and the teeth
-//! stand only where the sim already refuses a body. The scree is ankle-high,
-//! like the clutter a body already wades through.
+//! **The sim places and collides the crags** (`sim_core::cliff`, since
+//! 2026-10-07: a player walked through a tooth, because a body may walk down
+//! and along a face). This only draws each crag, its foot buried in the DRAWN
+//! face (`terrain_mesh::near_drawn_y`), which the cliff relief moves off the
+//! sim's height. A ledge is drawn down the face by the relief's offset there,
+//! as the face is, so a body on the face is as far off the ledge as off the
+//! rock beside it; a tooth's top is the lip's, which the relief never moves.
+//! Its edges are chipped by at most [`CRAG_CHISEL_MAX_M`], so what is drawn is
+//! what is stood on. The skin and the scree are the client's alone: the skin
+//! stands out only over faces too steep to climb, and the scree is
+//! ankle-high, like the clutter a body already wades through.
 
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use sim_core::cliff::{self, h01, Spot, CRAG_REACH_M, LEDGE_BURY_M, SPOT_M};
 use sim_core::terrain::{self, Haven};
 
 use super::boulders::{rock_block, RockShape, RockSoup};
-use super::cliff_skin;
+use super::cliff_skin::{self, CRAG_FADE_M};
 use super::clutter::ClutterRing;
 use super::props::Soup;
 use super::terrain_mesh::{near_drawn_y, Ring};
 use super::{Eye, WorldEntity, WorldId};
 
-/// One streamed cell's side, metres.
+/// One streamed cell's side, metres: a whole number of the sim's spots.
 pub const CLIFF_CELL_M: f32 = 32.0;
 /// Cells drawn either side of the eye's: ~220 m.
 pub const CLIFF_RING: i32 = 7;
-/// Candidate spacing inside a cell, metres.
-const STEP_M: f32 = 4.0;
 /// Cells handed to the pool per frame; each is the skin's half-metre lattice
-/// where the cell is steep, and ~64 candidates of a few ground taps.
+/// where the cell is steep, and 64 spots of a few ground taps.
 const QUEUES_PER_FRAME: usize = 2;
 /// Finished cells landed per frame.
 const LANDS_PER_FRAME: usize = 2;
-/// The crag field's wavelength, metres.
-const CRAG_M: f32 = 22.0;
-/// A crag's value against the face's: the same granite, freshly broken.
-const CRAG_VALUE: f32 = 0.92;
-/// How far a tooth's foot is buried below the face, metres.
-const TOOTH_BURY_M: f32 = 0.7;
+/// A ledge's value against the face's: the same granite, freshly broken.
+const LEDGE_VALUE: f32 = 0.92;
 /// Where scree may lie: walkable ground at most this steep…
 const SCREE_SLOPE_MAX: f32 = 0.95;
 /// …with a cliff this many metres uphill of it.
 const SCREE_REACH_M: f32 = 6.0;
-/// The share of foot candidates that carry a pile.
+/// The share of foot spots that carry a pile.
 const SCREE_SHARE: f32 = 0.8;
-/// How far below the lip a crag tooth may stand, metres along the fall line.
-const TOOTH_REACH_M: f32 = 3.5;
-/// The share of candidates under a lip that grow a tooth where the crag
-/// field is full.
-const TOOTH_SHARE: f32 = 0.6;
-/// The gap kept between a tooth's uphill face and the lip, metres.
-const TOOTH_CLEAR_M: f32 = 0.25;
-/// Lowest and highest a tooth's head stands above the lip, metres.
-const TOOTH_RISE_MIN_M: f32 = 0.3;
-const TOOTH_RISE_MAX_M: f32 = 1.5;
-/// Tallest a tooth may be from its buried foot, metres: a face that drops
-/// away faster than this under the lip would make it a free-standing pillar.
-const TOOTH_TALL_MAX_M: f32 = 5.0;
+/// How lush the turf on a mossy crag's top is (`RockShape::moss`).
+const CRAG_MOSS: f32 = 1.5;
+/// Chisel depth as a share of a crag's smallest extent…
+const CRAG_CHISEL_SHARE: f32 = 0.5;
+/// …and never deeper, metres: a crag is solid, and a corner cut off is air a
+/// body stands on.
+const CRAG_CHISEL_MAX_M: f32 = 0.4;
 
-/// The share of teeth in the green band with turf on top.
-const TOOTH_MOSS_SHARE: f32 = 0.8;
-/// How lush that turf is (`RockShape::moss`).
-const TOOTH_MOSS: f32 = 1.7;
-/// Chisel depth as a share of a cliff rock's smallest extent.
-const CHISEL_SHARE: f32 = 0.85;
-/// Deepest a chisel plane cuts into a cliff rock, metres.
-const CHISEL_MAX_M: f32 = 2.0;
+const _: () = assert!(CLIFF_CELL_M % SPOT_M == 0.0);
 
 /// A built cell's two meshes: its rock, and the grass on its shelves.
 type CellMeshes = (Option<Mesh>, Option<Mesh>);
@@ -216,80 +204,59 @@ pub fn teardown(mut ring: ResMut<CliffRing>) {
     *ring = CliffRing::default();
 }
 
-/// Integer hash to [0, 1).
-fn h01(a: u32, b: u32) -> f32 {
-    let mut x = a.wrapping_mul(0x9E37_79B9) ^ b.wrapping_mul(0x85EB_CA6B);
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb_352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846c_a68b);
-    x ^= x >> 16;
-    (x >> 8) as f32 * (1.0 / 16_777_216.0)
-}
-
-/// The ground's height and downhill gradient `(y, gx, gz)` at a point, from
-/// central differences at 1 m — the sim's own `ground_slope` taps.
-fn ground_at(seed: u64, haven: &Haven, x: f32, z: f32) -> (f32, f32, f32) {
-    let y = terrain::ground(seed, haven, x, z);
-    let gx =
-        (terrain::ground(seed, haven, x + 1.0, z) - terrain::ground(seed, haven, x - 1.0, z)) * 0.5;
-    let gz =
-        (terrain::ground(seed, haven, x, z + 1.0) - terrain::ground(seed, haven, x, z - 1.0)) * 0.5;
-    (y, gx, gz)
-}
-
-/// Whether nothing authored owns this ground: sites, the haven and the build
-/// pads keep their carved faces clean.
-fn open_ground(haven: &Haven, x: f32, z: f32) -> bool {
-    !terrain::in_haven(haven, x, z) && terrain::site_sweep(haven, x, z) <= 0.0
-}
-
-/// The skin, the teeth and the scree of one cell, as one rock soup, and the
-/// grass on the skin's shelves.
+/// Every crag and scree pile of one cell and the skin over its faces, as one
+/// rock soup, and the grass on the skin's shelves.
 pub(super) fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> (RockSoup, Soup) {
     let mut soup = RockSoup::default();
     let mut tufts = Soup::default();
-    cliff_skin::skin(&mut soup, &mut tufts, seed, haven, CLIFF_CELL_M, cx, cz);
-    let n = (CLIFF_CELL_M / STEP_M) as i32;
-    let cell_key = (cx as u32).wrapping_mul(73_856_093) ^ (cz as u32).wrapping_mul(19_349_663);
-    let seed_key = seed as u32 ^ (seed >> 32) as u32;
+    let n = (CLIFF_CELL_M / SPOT_M) as i32;
     let mut lat = terrain::Lattice::new();
+    if cliff_skin::steep_cell(&mut lat, seed, haven, CLIFF_CELL_M, cx, cz) {
+        // Every crag that reaches within the skin's fade of the cell, its
+        // neighbours' included, so the skin falls back round a crag on
+        // either side of a cell edge alike.
+        let r = ((CRAG_REACH_M + CRAG_FADE_M) / SPOT_M).ceil() as i32;
+        let mut crags = Vec::new();
+        for j in cz * n - r..(cz + 1) * n + r {
+            for i in cx * n - r..(cx + 1) * n + r {
+                let c = cliff::crag(&mut lat, seed, haven, i, j);
+                if c.is_some() {
+                    crags.push(c);
+                }
+            }
+        }
+        cliff_skin::skin(
+            &mut soup,
+            &mut tufts,
+            seed,
+            haven,
+            &crags,
+            CLIFF_CELL_M,
+            cx,
+            cz,
+        );
+    }
     for j in 0..n {
         for i in 0..n {
-            let k = cell_key ^ ((j * n + i) as u32).wrapping_mul(0x2545_F491) ^ seed_key;
-            let h = |c: u32| h01(k, c);
-            let x = (cx as f32 + (i as f32 + h(1)) / n as f32) * CLIFF_CELL_M;
-            let z = (cz as f32 + (j as f32 + h(2)) / n as f32) * CLIFF_CELL_M;
-            let (y, gx, gz) = ground_at(seed, haven, x, z);
-            if y < terrain::SEA_LEVEL - 0.5 {
-                continue;
-            }
-            let s = (gx * gx + gz * gz).sqrt();
-            if s < 1e-3 {
-                continue;
-            }
-            // Downhill, along the fall line.
-            let (dx, dz) = (-gx / s, -gz / s);
-            if s >= terrain::CLIFF_SLOPE_RATIO {
-                let crag = crag(x, z, seed_key);
-                if !open_ground(haven, x, z) {
-                    continue;
-                }
-                // Just under the lip, a tooth standing above it breaks the
-                // outline the walkable top would otherwise draw.
-                let lip = lip_above(seed, haven, x, z, (dx, dz));
-                if let Some(lip) = lip {
-                    if h(5) < TOOTH_SHARE * crag {
-                        tooth(&mut soup, &mut lat, seed, haven, (x, z), lip, (dx, dz), k);
-                    }
-                }
-            } else if s <= SCREE_SLOPE_MAX && h(4) < SCREE_SHARE {
+            let sp = cliff::spot(&mut lat, seed, haven, cx * n + i, cz * n + j);
+            if sp.crag.is_some() {
+                crag(&mut soup, &mut lat, seed, haven, &sp);
+            } else if sp.s > 0.0 && sp.s <= SCREE_SLOPE_MAX && h01(sp.key, 4) < SCREE_SHARE {
                 // A cliff uphill: the stones that fell off it.
-                let (ux, uz) = (x - dx * SCREE_REACH_M, z - dz * SCREE_REACH_M);
+                let (ux, uz) = (sp.x - sp.dx * SCREE_REACH_M, sp.z - sp.dz * SCREE_REACH_M);
                 if terrain::ground_slope(seed, haven, ux, uz) >= terrain::CLIFF_SLOPE_RATIO
-                    && open_ground(haven, x, z)
+                    && cliff::open_ground(haven, sp.x, sp.z)
                 {
-                    scree(&mut soup, &mut lat, seed, haven, x, z, (dx, dz), k);
+                    scree(
+                        &mut soup,
+                        &mut lat,
+                        seed,
+                        haven,
+                        sp.x,
+                        sp.z,
+                        (sp.dx, sp.dz),
+                        sp.key,
+                    );
                 }
             }
         }
@@ -297,125 +264,53 @@ pub(super) fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> (RockSoup
     (soup, tufts)
 }
 
-/// Turf on a tooth's top, keyed by `h` in [0, 1): most in the green band
-/// carry it, as the rim of a grown-over face does; none on the beach or past
-/// the treeline.
-fn tooth_moss(y: f32, h: f32) -> f32 {
-    if y <= terrain::BEACH_MAX_H + 1.5 || y >= terrain::TREELINE_H || h >= TOOTH_MOSS_SHARE {
-        0.0
-    } else {
-        TOOTH_MOSS
-    }
-}
-
-/// How deep the planes that break a cliff rock's edges cut, metres: a share
-/// of its smallest extent, so a crag loses its corners and not its shape.
-fn chisel_m(hx: f32, hz: f32, face: f32) -> f32 {
-    (CHISEL_SHARE * hx.min(hz).min(face)).min(CHISEL_MAX_M)
-}
-
-/// Where the crags gather, 0..1: smooth value noise at [`CRAG_M`], pushed
-/// toward its ends.
-fn crag(x: f32, z: f32, seed: u32) -> f32 {
-    let (fx, fz) = (x / CRAG_M, z / CRAG_M);
-    let (ix, iz) = (fx.floor(), fz.floor());
-    let (tx, tz) = (fx - ix, fz - iz);
-    let (ux, uz) = (tx * tx * (3.0 - 2.0 * tx), tz * tz * (3.0 - 2.0 * tz));
-    let c = |dx: i32, dz: i32| {
-        h01(
-            ((ix as i32 + dx) as u32).wrapping_mul(73_856_093)
-                ^ ((iz as i32 + dz) as u32).wrapping_mul(83_492_791),
-            seed ^ 0xc2a9,
-        )
+/// The sim's crag at `sp`, drawn with its foot in the drawn face.
+fn crag(soup: &mut RockSoup, lat: &mut terrain::Lattice, seed: u64, haven: &Haven, sp: &Spot) {
+    let c = &sp.crag;
+    let drawn = |lat: &mut terrain::Lattice, lx: f32, lz: f32| {
+        let (x, z) = c.to_world(lx, lz);
+        near_drawn_y(lat, seed, haven, x, z)
     };
-    let a = c(0, 0) + (c(1, 0) - c(0, 0)) * ux;
-    let b = c(0, 1) + (c(1, 1) - c(0, 1)) * ux;
-    let v = a + (b - a) * uz;
-    ((v - 0.25) / 0.5).clamp(0.0, 1.0)
-}
-
-/// The lip above a steep point: the first walkable ground up the fall line
-/// within [`TOOTH_REACH_M`], as `(distance, height)`.
-fn lip_above(seed: u64, haven: &Haven, x: f32, z: f32, (dx, dz): (f32, f32)) -> Option<(f32, f32)> {
-    let mut u = 0.5;
-    while u <= TOOTH_REACH_M {
-        let (px, pz) = (x - dx * u, z - dz * u);
-        if terrain::ground_slope(seed, haven, px, pz) < terrain::CLIFF_SLOPE_RATIO {
-            return Some((u, terrain::ground(seed, haven, px, pz)));
-        }
-        u += 0.5;
-    }
-    None
-}
-
-/// A crag standing in the top of a face, its head above the lip `lip`
-/// (`(distance uphill, height)`) and its whole footprint on ground too steep
-/// to walk, so the outline breaks where nobody can reach it.
-#[allow(clippy::too_many_arguments)]
-fn tooth(
-    soup: &mut RockSoup,
-    lat: &mut terrain::Lattice,
-    seed: u64,
-    haven: &Haven,
-    (x, z): (f32, f32),
-    (ul, y_lip): (f32, f32),
-    (dx, dz): (f32, f32),
-    k: u32,
-) {
-    let h = |c: u32| h01(k, c + 32);
-    // Broad and low: a rocky rim, not a standing stone.
-    let hx = 1.4 + 2.6 * h(1) * h(1);
-    let hz = 0.35 + 0.3 * h(2);
-    // Off the fall line a little, so a row of teeth does not line up.
-    let a = (h(3) - 0.5) * 0.8;
-    let (sa, ca) = a.sin_cos();
-    let (bx, bz) = (dx * ca - dz * sa, dx * sa + dz * ca);
-    // The uphill face keeps clear of the lip.
-    let back = (TOOTH_CLEAR_M + hz - ul).max(0.0);
-    let (cx, cz) = (x + dx * back, z + dz * back);
-    let (ax, az) = (-bz, bx);
-    let corners = [
-        (1.0, 1.0),
-        (1.0, -1.0),
-        (-1.0, 1.0),
-        (-1.0, -1.0),
-        (0.0, -1.0),
-    ];
-    let mut foot = f32::INFINITY;
-    for (u, v) in corners {
-        // `v` runs downhill: `-1` is the uphill side.
-        let (px, pz) = (
-            cx + ax * hx * u + bx * hz * v,
-            cz + az * hx * u + bz * hz * v,
-        );
-        if terrain::ground_slope(seed, haven, px, pz) < terrain::CLIFF_SLOPE_RATIO {
-            return;
-        }
-        foot = foot.min(near_drawn_y(lat, seed, haven, px, pz));
-    }
-    let rise = TOOTH_RISE_MIN_M + (TOOTH_RISE_MAX_M - TOOTH_RISE_MIN_M) * h(4) * h(4) * h(4);
-    if y_lip + rise - (foot - TOOTH_BURY_M) > TOOTH_TALL_MAX_M {
-        return;
-    }
-    let moss = tooth_moss(y_lip, h(5));
+    let (y0, y1) = if c.tooth {
+        // Buried under the lowest of the face beneath it.
+        let corners = [
+            (1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, 1.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+        ];
+        let foot = corners
+            .iter()
+            .map(|&(u, v)| drawn(lat, u * c.hx, v * c.hz))
+            .fold(f32::INFINITY, f32::min);
+        (foot - LEDGE_BURY_M, c.y1)
+    } else {
+        // The face it juts from, and the contour either side of it.
+        let y = drawn(lat, 0.0, c.hz);
+        let yl = drawn(lat, c.hx, c.hz);
+        let yr = drawn(lat, -c.hx, c.hz);
+        let (fx, fz) = c.to_world(0.0, c.hz);
+        let relief = y - terrain::ground(seed, haven, fx, fz);
+        (y.min(yl).min(yr) - LEDGE_BURY_M, c.y1 + relief)
+    };
     rock_block(
         soup,
         &RockShape {
-            x: cx,
-            z: cz,
-            hx,
-            hz,
-            dir: (bx, bz),
-            y0: foot - TOOTH_BURY_M,
-            y1: y_lip + rise,
-            tx: (h(6) - 0.5) * 0.5,
-            // The top falls away toward the drop, as a weathered rim does.
-            tz: -0.1 - 0.25 * h(7),
-            key: k ^ 0x7007_7a11,
-            moss,
-            chisel: chisel_m(hx, hz, y_lip + rise - foot),
+            x: c.x,
+            z: c.z,
+            hx: c.hx,
+            hz: c.hz,
+            dir: c.dir,
+            y0,
+            y1,
+            tx: c.tx,
+            tz: c.tz,
+            key: sp.key ^ if c.tooth { 0x7007_7a11 } else { 0x51ed_270b },
+            moss: if c.moss { CRAG_MOSS } else { 0.0 },
+            chisel: (CRAG_CHISEL_SHARE * c.hx.min(c.hz).min(y1 - y0)).min(CRAG_CHISEL_MAX_M),
             min_seg: 2,
-            value: CRAG_VALUE * (0.85 + 0.3 * h(8)),
+            value: LEDGE_VALUE * (0.85 + 0.3 * h01(sp.key, 40)),
         },
     );
 }
@@ -458,7 +353,7 @@ fn scree(
                 moss: 0.0,
                 chisel: 0.0,
                 min_seg: 1,
-                value: CRAG_VALUE * 0.8,
+                value: LEDGE_VALUE * 0.8,
             },
         );
     }

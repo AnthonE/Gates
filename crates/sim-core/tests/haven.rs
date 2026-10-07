@@ -409,6 +409,10 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
     let mut worst_margin = 0.0f32;
     for seed in SEEDS {
         let shipped = terrain::haven(seed);
+        // The ring the selector searched: unbuilt, at the probe's footprint
+        // (`RingPath::built`). The shipped one is the laid road.
+        let mut ring = shipped.ring;
+        ring.built = false;
         let shipped_score = shipped.relief + HAVEN_HEIGHT_W * (shipped.y - LAND_MIN_H);
         let mut accepted = 0usize;
         let mut best_score = f32::MAX;
@@ -429,7 +433,7 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
             let r = shipped.ring.r[(i as usize * step as usize) % terrain::RING_BEARINGS];
             let (x, z) = (c + dx * r, c + dz * r);
             let y = terrain::height(seed, x, z);
-            if y < LAND_MIN_H || terrain::ring_band(&shipped.ring, x, z) == RoadBand::Off {
+            if y < LAND_MIN_H || terrain::ring_band(&ring, x, z) == RoadBand::Off {
                 continue;
             }
             // The same check chain the selector applies. It has to be here:
@@ -438,11 +442,11 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
             // different argmax. Measured — with the ring rule on one side
             // only, seed 555555 "beats" the shipped pad by 2.06 m with a
             // site whose entire container ring is under the land line.
-            let Some(phase) = ring_phase(&shipped.ring, seed, x, z) else {
+            let Some(phase) = ring_phase(&ring, seed, x, z) else {
                 continue;
             };
             // The selector's third condition, which this test was missing.
-            if !shelter_bearing(&shipped.ring, seed, x, z, phase) {
+            if !shelter_bearing(&ring, seed, x, z, phase) {
                 continue;
             }
             accepted += 1;

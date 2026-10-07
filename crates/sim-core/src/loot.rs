@@ -57,6 +57,14 @@ pub const LOOT_GREEN: usize = 3;
 pub const LOOT_BLUE: usize = 4;
 /// `container = "elite"` — the sanctum (`Occupant::EliteCrate`).
 pub const LOOT_ELITE: usize = 5;
+/// `container = "oil_barrel"` — the road's red drum (`Occupant::OilBarrel`),
+/// smashed like a barrel.
+pub const LOOT_OIL_BARREL: usize = 6;
+/// `container = "roadsign"` — a smashed road sign (`Occupant::RoadSign`).
+pub const LOOT_ROADSIGN: usize = 7;
+/// `container = "food"` — the roadside food box (`Occupant::FoodCrate`),
+/// opened like a cache.
+pub const LOOT_FOOD: usize = 8;
 
 /// One weighted row. Counts are inclusive bounds.
 #[derive(Clone, Copy, Debug)]

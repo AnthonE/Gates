@@ -47,6 +47,7 @@ pub mod boulders;
 pub mod capture;
 pub mod cliff_skin;
 pub mod cliffs;
+pub mod deck;
 // The trailer camera: a recorded session through a scripted lens, encoded as
 // it renders. Native only — it pipes frames to an `ffmpeg` process.
 #[cfg(not(target_arch = "wasm32"))]
@@ -130,6 +131,7 @@ pub mod heli;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod menu;
 pub mod mobs;
+pub mod moon;
 /// The app's state machine and the resources that carry it — shared by every
 /// screen, and by targets that have no screens at all. See the module docs.
 pub mod screen;
@@ -557,6 +559,9 @@ impl Plugin for GatesRenderPlugin {
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
+        // The moon (`moon.rs`), and a browser's sky drawn per pixel (`deck.rs`).
+        app.add_plugins(MaterialPlugin::<moon::MoonMaterial>::default());
+        app.add_plugins(MaterialPlugin::<deck::DeckMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
             .insert_resource(weather_pin)
@@ -1287,6 +1292,10 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
         .add_systems(
             OnEnter(Screen::Loading),
+            (moon::setup, deck::setup).after(sky::setup),
+        )
+        .add_systems(
+            OnEnter(Screen::Loading),
             underwater::setup.after(rig::setup),
         )
         // The beds, from the loading screen's first frame at zero. No camera
@@ -1631,6 +1640,14 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             rig::day_night.after(feed::drain).run_if(world_running),
+        )
+        .add_systems(
+            Update,
+            (
+                moon::drive.after(sky::compose),
+                deck::drive.after(rig::day_night),
+            )
+                .run_if(world_running),
         )
         // The weather (weather v0): read after the drain and before the rig
         // lights the frame from it; the deck is composed after both.

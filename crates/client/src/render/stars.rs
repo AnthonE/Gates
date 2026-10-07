@@ -83,6 +83,12 @@ impl Material for StarMaterial {
         AlphaMode::Add
     }
 
+    /// After a browser's sky (`deck.rs`), which covers what is behind it,
+    /// and before the moon, which covers a star behind its disk.
+    fn depth_bias(&self) -> f32 {
+        super::deck::STARS_ORDER
+    }
+
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -188,7 +194,6 @@ pub fn setup(
     mut commands: Commands,
     composer: Option<Res<sky::SkyComposer>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StarMaterial>>,
 ) {
     let Some(composer) = composer else {
@@ -196,7 +201,7 @@ pub fn setup(
     };
     let material = materials.add(StarMaterial {
         params: StarParams::default(),
-        field: images.add(composer.field().image()),
+        field: composer.field_image().clone(),
     });
     commands.spawn((
         super::WorldEntity,

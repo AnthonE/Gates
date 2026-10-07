@@ -182,6 +182,12 @@ pub struct SlotCache {
     /// Resolved rock formations (`boulder::formation`), keyed by formation
     /// cell. On the heap: the line array above already sits in this struct.
     rocks: Box<[RockLine; ROCK_CACHE_LINES]>,
+    /// Resolved cliff crags (`cliff::crag`), keyed by spot, sized at
+    /// construction (a power of two; `crag_shift` takes the hash's top bits).
+    crags: Box<[CragLine]>,
+    crag_shift: u32,
+    /// The worldgen memo a crag resolves through. It changes no answer.
+    lat: Box<terrain::Lattice>,
 }
 
 /// Formation cells the cache keeps. A body touches at most four; a shard's
@@ -200,8 +206,25 @@ struct RockLine {
     f: crate::boulder::Formation,
 }
 
+#[derive(Clone, Copy)]
+struct CragLine {
+    key: u32,
+    c: crate::cliff::Crag,
+}
+
 impl SlotCache {
+    /// A cache for one body's queries: a client's prediction, a fixture.
     pub fn new() -> Self {
+        Self::with_crag_lines(crate::limits::CRAG_CACHE_LINES_ONE)
+    }
+
+    /// A cache for a whole shard's bodies.
+    pub fn shard() -> Self {
+        Self::with_crag_lines(crate::limits::CRAG_CACHE_LINES)
+    }
+
+    fn with_crag_lines(n: usize) -> Self {
+        assert!(n.is_power_of_two() && n >= 2);
         Self {
             seed: 0,
             resolves: 0,
@@ -213,7 +236,33 @@ impl SlotCache {
                 key: NO_KEY,
                 f: crate::boulder::Formation::EMPTY,
             }),
+            crags: vec![
+                CragLine {
+                    key: NO_KEY,
+                    c: crate::cliff::Crag::NONE,
+                };
+                n
+            ]
+            .into_boxed_slice(),
+            crag_shift: 32 - n.trailing_zeros(),
+            lat: Box::new(terrain::Lattice::new()),
         }
+    }
+
+    /// The crag spot (`gi`, `gj`) grows, resolved once per seed.
+    #[inline]
+    pub fn crag(&mut self, seed: u64, haven: &Haven, gi: i32, gj: i32) -> crate::cliff::Crag {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = ((gi as u32 & 0xFFFF) << 16) | (gj as u32 & 0xFFFF);
+        let ix = (key.wrapping_mul(2_654_435_761) >> self.crag_shift) as usize;
+        if self.crags[ix].key == key {
+            return self.crags[ix].c;
+        }
+        let c = crate::cliff::crag(&mut self.lat, seed, haven, gi, gj);
+        self.crags[ix] = CragLine { key, c };
+        c
     }
 
     /// The formation in rock cell (`bx`, `bz`), resolved once per seed.
@@ -254,6 +303,9 @@ impl SlotCache {
         while i < ROCK_CACHE_LINES {
             self.rocks[i].key = NO_KEY;
             i += 1;
+        }
+        for line in self.crags.iter_mut() {
+            line.key = NO_KEY;
         }
     }
 
@@ -329,14 +381,62 @@ impl Occupants<'_> {
         best
     }
 
+    /// The highest cliff crag top under (`x`, `z`) within a step of
+    /// `feet_y`, the crag grown by `r` — `rock_ground`'s rule.
+    fn crag_ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32) -> f32 {
+        let mut best = crate::collide::NO_SURFACE;
+        let (cache, haven) = (&mut *self.cache, self.haven);
+        let dil = ROCK_SKIN_M.max(r);
+        crate::cliff::spots_near(x, z, dil, |gi, gj| {
+            let c = cache.crag(seed, haven, gi, gj);
+            if !c.is_some() {
+                return;
+            }
+            if let Some(s) = c.top(x, z, dil) {
+                if s <= feet_y + crate::movement::STEP_UP && s > best {
+                    best = s;
+                }
+            }
+        });
+        best
+    }
+
+    /// Whether a cliff crag stops a volume — `rock_blocks`' rule, with no
+    /// underside: a crag is rock down into the face, and nothing passes
+    /// under one.
+    fn crag_blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32, h: f32) -> bool {
+        let mut hit = false;
+        let (cache, haven) = (&mut *self.cache, self.haven);
+        let dil = ROCK_SKIN_M.max(r);
+        crate::cliff::spots_near(x, z, dil, |gi, gj| {
+            if hit {
+                return;
+            }
+            let c = cache.crag(seed, haven, gi, gj);
+            if !c.is_some() {
+                return;
+            }
+            let Some(s) = c.top(x, z, dil) else {
+                return;
+            };
+            if s > feet_y && (h < crate::movement::STEP_UP || s > feet_y + crate::movement::STEP_UP)
+            {
+                hit = true;
+            }
+        });
+        hit
+    }
+
     /// Whether a rock stops a volume of radius `r` and height `h` at
     /// (`x`, `z`) with its bottom at `feet_y`.
     ///
-    /// A body (a volume a step or more tall) is stopped by a side — rock
-    /// above its feet that is steeper than the cliff ratio or more than a
-    /// step up — and walks on a top. Anything smaller (an arrow's probe) is
-    /// stopped by being inside the rock at all. A block overhead, its bottom
-    /// above the volume's top, is passed under.
+    /// A body (a volume a step or more tall) is stopped by rock more than a
+    /// step above its feet and steps up onto anything lower, the rule the
+    /// landmark and kit boxes keep. Until 2026-10-06 a block's side stopped
+    /// it from 5 cm, so a body walking down a hill hung on the buried uphill
+    /// edge of a block whose drawn top rounds into the ground there. Anything
+    /// smaller (an arrow's probe) is stopped by being inside the rock at all.
+    /// A block overhead, its bottom above the volume's top, is passed under.
     fn rock_blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32, h: f32) -> bool {
         let mut hit = false;
         let (cache, haven) = (&mut *self.cache, self.haven);
@@ -347,19 +447,15 @@ impl Occupants<'_> {
             }
             let f = cache.formation(seed, haven, bx, bz);
             for b in f.iter() {
-                let Some((s, slope, bottom)) = crate::boulder::surface(b, x, z, dil) else {
+                let Some((s, _, bottom)) = crate::boulder::surface(b, x, z, dil) else {
                     continue;
                 };
                 if s <= feet_y || feet_y + h <= bottom {
                     continue;
                 }
                 // A short volume is stopped by any rock above its feet; a
-                // body only by a rise it cannot step or a flank too steep
-                // to stand on.
-                if h < crate::movement::STEP_UP
-                    || s > feet_y + crate::movement::STEP_UP
-                    || (s > feet_y + 0.05 && slope > terrain::CLIFF_SLOPE_RATIO)
-                {
+                // body only by a rise it cannot step.
+                if h < crate::movement::STEP_UP || s > feet_y + crate::movement::STEP_UP {
                     hit = true;
                     return;
                 }
@@ -427,6 +523,7 @@ impl Occupants<'_> {
         // within a step of the feet, like any other occupant's lid. Its side
         // is a wall, which `blocks_volume` answers.
         best = best.max(self.rock_ground(seed, x, z, feet_y, r));
+        best = best.max(self.crag_ground(seed, x, z, feet_y, r));
         best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y, r));
         best = best.max(crate::town::ground(&self.haven.town, x, z, feet_y, r));
         best = best.max(crate::monument::ground(
@@ -497,6 +594,9 @@ impl Occupants<'_> {
             return true;
         }
         if self.rock_blocks(seed, x, z, feet_y, r, h) {
+            return true;
+        }
+        if self.crag_blocks(seed, x, z, feet_y, r, h) {
             return true;
         }
         if crate::landmark::blocks(&self.haven.marks, x, z, feet_y, r, h) {

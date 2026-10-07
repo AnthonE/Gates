@@ -1332,7 +1332,8 @@ pub fn heightfield(
             // enough to draw one.
             //
             // **The guard is the whole design and not a micro-optimisation.**
-            // The carriageway is `2 * ROAD_HALF_W` = 4 m wide, so an 8 m
+            // A side road's carriageway is `2 * SIDE_ROAD_HALF_W` = 4 m wide
+            // (the ring's is 8), so an 8 m
             // lattice cannot resolve it: painting the far mesh would sample
             // the ribbon at roughly one vertex in two and draw the island's
             // one navigation landmark as a dashed line — worse than not
@@ -1346,7 +1347,7 @@ pub fn heightfield(
             // point-to-segment tests, with no `height` tap at all, so what
             // keeps the guard is the resolution argument above and nothing
             // else. Do not re-derive a cost claim from this comment.
-            let coverage = if step <= terrain::ROAD_HALF_W {
+            let coverage = if step <= terrain::SIDE_ROAD_HALF_W {
                 // The solved road, matching what `road_band_memo` below
                 // splats with — asking the raw predicate here would paint
                 // coverage onto a ring the sim does not have.
@@ -1471,15 +1472,15 @@ pub fn stream(
         }
         if ring.road_chart.is_none() && ring.road_task.is_none() {
             ring.road_task = Some(pool.spawn(async move {
-                Arc::new(RoadChart::build(seed, CHUNK_M / (NEAR_N - 1) as f32))
+                Arc::new(RoadChart::build(&haven.ring, CHUNK_M / (NEAR_N - 1) as f32))
             }));
         }
     }
     #[cfg(target_arch = "wasm32")]
     if ring.road_chart.is_none() {
-        let builder = ring
-            .road_builder
-            .get_or_insert_with(|| RoadChartBuilder::new(seed, CHUNK_M / (NEAR_N - 1) as f32));
+        let builder = ring.road_builder.get_or_insert_with(|| {
+            RoadChartBuilder::new(haven.ring, CHUNK_M / (NEAR_N - 1) as f32)
+        });
         if let Some(chart) = builder.advance() {
             ring.road_chart = Some(Arc::new(chart));
             ring.road_builder = None;
