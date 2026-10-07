@@ -23,3 +23,41 @@ fn the_ziggurat_kit_file_matches_the_source() {
         "ci/kits/ziggurat.json is stale — regenerate it"
     );
 }
+
+#[test]
+fn the_landmark_kit_files_match_the_source() {
+    use sim_core::landmark::{self, LandmarkKind};
+    let files: [(LandmarkKind, &str); 5] = [
+        (
+            LandmarkKind::Mast,
+            include_str!("../../../ci/kits/mark_mast.json"),
+        ),
+        (
+            LandmarkKind::Ruin,
+            include_str!("../../../ci/kits/mark_ruin.json"),
+        ),
+        (
+            LandmarkKind::Tower,
+            include_str!("../../../ci/kits/mark_tower.json"),
+        ),
+        (
+            LandmarkKind::Stones,
+            include_str!("../../../ci/kits/mark_stones.json"),
+        ),
+        (
+            LandmarkKind::Yard,
+            include_str!("../../../ci/kits/mark_yard.json"),
+        ),
+    ];
+    assert_eq!(files.len(), landmark::DRESSED.len());
+    for (kind, file) in files {
+        assert!(landmark::DRESSED.contains(&kind));
+        let mut out = String::new();
+        landmark::dump(kind, &mut out).unwrap();
+        assert!(
+            file == out,
+            "ci/kits/mark_{}.json is stale — regenerate it",
+            landmark::slug(kind)
+        );
+    }
+}

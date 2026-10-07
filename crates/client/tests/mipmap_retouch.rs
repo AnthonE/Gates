@@ -23,16 +23,19 @@
 use bevy::asset::{AssetEvent, AssetPlugin, Assets, Handle};
 use bevy::ecs::message::MessageCursor;
 use bevy::image::Image;
+use bevy::pbr::ExtendedMaterial;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use client::render::mipmap::{self, binds, Chained, Pending};
+use client::render::weathering::{MonumentMaterial, WeatherParams, Weathering};
 
 fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
     app.init_asset::<Image>();
     app.init_asset::<StandardMaterial>();
+    app.init_asset::<MonumentMaterial>();
     app.init_resource::<Pending>();
     app.init_resource::<Chained>();
     app.add_systems(
@@ -149,6 +152,52 @@ fn a_material_bound_to_a_freshly_chained_image_is_touched_and_only_that_one() {
     assert!(
         modified(&mut app, &mut cursor).is_empty(),
         "a material was touched again on a frame nothing was chained"
+    );
+}
+
+/// The monuments' weathered materials wrap a `StandardMaterial` in another
+/// asset type: the walk has to reach them too, or the ziggurat's normal map
+/// stays one level deep and sparkles at range.
+#[test]
+fn a_weathered_material_bound_to_a_freshly_chained_image_is_touched() {
+    let mut app = app();
+    let image = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(photo(64));
+    let mat = app
+        .world_mut()
+        .resource_mut::<Assets<MonumentMaterial>>()
+        .add(ExtendedMaterial {
+            base: StandardMaterial {
+                normal_map_texture: Some(image.clone()),
+                ..default()
+            },
+            extension: Weathering {
+                params: WeatherParams::default(),
+            },
+        });
+    let mut cursor = app
+        .world()
+        .resource::<Messages<AssetEvent<MonumentMaterial>>>()
+        .get_cursor();
+    app.update();
+    let events = app
+        .world()
+        .resource::<Messages<AssetEvent<MonumentMaterial>>>();
+    assert!(!cursor
+        .read(events)
+        .any(|e| matches!(e, AssetEvent::Modified { .. })));
+    app.world_mut().resource_mut::<Pending>().0.push(image.id());
+    app.update();
+    let events = app
+        .world()
+        .resource::<Messages<AssetEvent<MonumentMaterial>>>();
+    assert!(
+        cursor
+            .read(events)
+            .any(|e| *e == AssetEvent::Modified { id: mat.id() }),
+        "the weathered material was not touched"
     );
 }
 

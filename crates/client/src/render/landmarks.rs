@@ -10,16 +10,25 @@
 //! only once the terrain has streamed, so the rocks are spawned on their own,
 //! when it does.
 //!
+//! **The built kinds are dressed in Blender** (`landmark::DRESSED`:
+//! `ci/site_kit.py gen --kit ci/kits/mark_<slug>.json`): coursed masonry, a
+//! lattice mast, a log cabin, ribbed containers. The boxes draw until a
+//! kind's `assets/models/site/mark_<slug>.glb` loads and stay if it never
+//! does — the town's arrangement, one model per kind shared by every
+//! landmark of it.
+//!
 //! Built once per world and drawn at any distance: a 44 m mast on a summit is
-//! the point of it, and the whole set is a few thousand triangles.
+//! the point of it.
 
 use bevy::prelude::*;
-use sim_core::landmark::{self, Landmark, Mat};
+use sim_core::landmark::{self, Landmark, LandmarkKind, Mat};
 use sim_core::terrain;
 
 use super::boulders::{self, RockShape, RockSoup};
 use super::depot::{self, Surface, SURFACES};
 use super::terrain_mesh::Ring;
+use super::town::dressed_material;
+use super::weathering::{self, Dressed, MonumentMaterial};
 use super::{WorldEntity, WorldId};
 
 #[derive(Component)]
@@ -28,6 +37,23 @@ pub struct LandmarkVisual;
 /// The rock half of the landmarks, spawned apart (see the module note).
 #[derive(Component)]
 pub struct LandmarkRocks;
+
+/// A dressed kind's box stand-in, despawned once its model is in.
+#[derive(Component)]
+pub struct LandmarkFallback(pub LandmarkKind);
+
+/// The dressings still loading, and the surfaces they wear (one material
+/// per surface, shared by every kind).
+#[derive(Resource)]
+pub struct LandmarkModels {
+    pending: Vec<(LandmarkKind, Handle<bevy::gltf::Gltf>)>,
+    mats: Vec<Option<Dressed>>,
+}
+
+/// A dressed kind's model, under `assets/`.
+pub fn model_path(kind: LandmarkKind) -> String {
+    format!("models/site/mark_{}.glb", landmark::slug(kind))
+}
 
 fn surface(mat: Mat) -> (Surface, [f32; 3]) {
     match mat {
@@ -133,17 +159,29 @@ pub fn spawn(
                 Visibility::default(),
             ))
             .id();
+        let mut pending: Vec<(LandmarkKind, Handle<bevy::gltf::Gltf>)> = Vec::new();
         for m in world.haven.marks.iter().filter(|m| m.live) {
             let t = transform(m);
+            let dressed = landmark::DRESSED.contains(&m.kind);
             for (surface, mesh) in landmark_meshes(m) {
-                commands.spawn((
+                let mut e = commands.spawn((
                     ChildOf(root),
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(mats[surface as usize].clone()),
                     t,
                 ));
+                if dressed {
+                    e.insert(LandmarkFallback(m.kind));
+                }
+            }
+            if dressed && !pending.iter().any(|(k, _)| *k == m.kind) {
+                pending.push((m.kind, server.load(model_path(m.kind))));
             }
         }
+        commands.insert_resource(LandmarkModels {
+            pending,
+            mats: vec![None; SURFACES.len()],
+        });
     }
     if rocks.is_empty() {
         let Some(material) = ground.ground_material() else {
@@ -166,4 +204,85 @@ pub fn spawn(
             Transform::IDENTITY,
         ));
     }
+}
+
+/// Swap each dressed kind's boxes for its model once it has loaded: the
+/// model's meshes on every landmark of that kind, then the boxes gone. A
+/// model that fails to load leaves its boxes standing.
+#[allow(clippy::too_many_arguments)]
+pub fn dress(
+    mut commands: Commands,
+    models: Option<ResMut<LandmarkModels>>,
+    world: Res<WorldId>,
+    server: Res<AssetServer>,
+    gltfs: Res<Assets<bevy::gltf::Gltf>>,
+    gmeshes: Res<Assets<bevy::gltf::GltfMesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut weathered: ResMut<Assets<MonumentMaterial>>,
+    root: Query<Entity, With<LandmarkVisual>>,
+    fallback: Query<(Entity, &LandmarkFallback)>,
+) {
+    let Some(mut models) = models else { return };
+    if models.pending.is_empty() {
+        return;
+    }
+    let Ok(root) = root.single() else { return };
+    let LandmarkModels { pending, mats } = &mut *models;
+    pending.retain(|(kind, handle)| {
+        let Some(gltf) = gltfs.get(handle) else {
+            if let Some(bevy::asset::LoadState::Failed(e)) = server.get_load_state(handle) {
+                warn!(
+                    "landmarks: {} did not load ({e}); keeping the boxes",
+                    model_path(*kind)
+                );
+                return false;
+            }
+            return true;
+        };
+        let mut parts = Vec::new();
+        for (name, h) in gltf.named_meshes.iter() {
+            let Some(surface) = Surface::from_role(name) else {
+                warn!(
+                    "landmarks: {} mesh {name:?} names no surface; skipped",
+                    model_path(*kind)
+                );
+                continue;
+            };
+            let Some(gm) = gmeshes.get(h) else {
+                return true;
+            };
+            for prim in &gm.primitives {
+                parts.push((surface, prim.mesh.clone()));
+            }
+        }
+        if parts.is_empty() {
+            return true;
+        }
+        for m in world
+            .haven
+            .marks
+            .iter()
+            .filter(|m| m.live && m.kind == *kind)
+        {
+            let t = transform(m);
+            for (surface, mesh) in &parts {
+                let mat = mats[*surface as usize].get_or_insert_with(|| {
+                    weathering::dress(
+                        *surface,
+                        dressed_material(*surface, &server),
+                        &mut materials,
+                        &mut weathered,
+                    )
+                });
+                mat.insert(&mut commands.spawn((ChildOf(root), Mesh3d(mesh.clone()), t)));
+            }
+        }
+        for (e, f) in fallback.iter() {
+            if f.0 == *kind {
+                commands.entity(e).despawn();
+            }
+        }
+        info!("landmarks: {} dressed", model_path(*kind));
+        false
+    });
 }

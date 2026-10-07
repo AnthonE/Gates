@@ -97,6 +97,8 @@ pub mod lodged;
 pub mod arrow_fire;
 pub mod town;
 pub mod tracer;
+// The monuments' stains and moss (`weathering.wgsl`).
+pub mod weathering;
 pub mod ziggurat;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
@@ -564,6 +566,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<far_trees::TreeCardMaterial>::default());
         // The sea's surface (`water.rs`, `water.wgsl`).
         app.add_plugins(MaterialPlugin::<water::WaterMaterial>::default());
+        weathering::plugin(app);
         foliage::plugin(app);
         app.init_resource::<far_trees::FarForest>();
         app.init_resource::<boulders::RockRing>();
@@ -1569,6 +1572,7 @@ impl Plugin for GatesRenderPlugin {
                         // Another player's torch, under the same night eye.
                         bodies::light_flames.after(bodies::stream),
                         town::dress,
+                        landmarks::dress,
                         town::lamps,
                         town_signs::build,
                         town_signs::shopkeepers,

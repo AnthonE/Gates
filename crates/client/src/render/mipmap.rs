@@ -640,10 +640,17 @@ pub fn binds(mat: &StandardMaterial, id: AssetId<Image>) -> bool {
 /// on one that was, it walks every material once. `touched` is a reused
 /// buffer for the same reason `Chained` is — a `Vec` built per frame would
 /// be a per-frame allocation on the client, which the trap list forbids.
+///
+/// **The monuments' weathered materials too** (`weathering.rs`): they wrap a
+/// `StandardMaterial` in another asset type, which the walk above never saw,
+/// and the ziggurat's polished stone drew its one-level normal map as a
+/// field of sun-coloured sparks at 95 m until this walked them.
 pub fn retouch(
     mut chained: ResMut<Chained>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut monuments: ResMut<Assets<super::weathering::MonumentMaterial>>,
     mut touched: Local<Vec<AssetId<StandardMaterial>>>,
+    mut touched_monuments: Local<Vec<AssetId<super::weathering::MonumentMaterial>>>,
 ) {
     if chained.0.is_empty() {
         return;
@@ -659,6 +666,15 @@ pub fn retouch(
         // what `bevy_pbr` re-prepares on. The material's fields are not
         // changed, and `None` (dropped since `iter`) is simply nothing to do.
         let _ = materials.get_mut(*mat_id);
+    }
+    touched_monuments.clear();
+    for (mat_id, mat) in monuments.iter() {
+        if chained.0.iter().any(|img| binds(&mat.base, *img)) {
+            touched_monuments.push(mat_id);
+        }
+    }
+    for mat_id in touched_monuments.iter() {
+        let _ = monuments.get_mut(*mat_id);
     }
     chained.0.clear();
 }

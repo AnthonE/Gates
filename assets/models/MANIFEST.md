@@ -858,6 +858,24 @@ door can stand aside (`render/ziggurat.rs`).
 |---|---|---|---|
 | `site/ziggurat.glb` | `ci/kits/ziggurat.json` | 15,084 | 1.9 MB |
 
+## `site/mark_*.glb` — the built landmarks, dressed in Blender
+
+**Our own work (CC0)**, the town's pipeline per kind:
+`cargo run -p sim-core --example kit_dump -- mark_<slug> > ci/kits/mark_<slug>.json`,
+then `ci/site_kit.py gen --kit ci/kits/mark_<slug>.json --out
+assets/models/site/mark_<slug>.glb --seed 1 --label ""`. Coursed masonry on
+the jointless `ashlar` maps (each block its own patch), a lattice mast, a log
+cabin, ribbed containers. `ci/site_kit.py look <glb> --out <png>` renders one
+on turf in the game's surfaces. The rock kinds stay `render/boulders.rs`'s.
+
+| file | kind | tris |
+|---|---|---|
+| `site/mark_ruin.glb` | Old Keep | 23,614 |
+| `site/mark_stones.glb` | Standing Stones | 6,384 |
+| `site/mark_mast.glb` | Radio Mast | 3,668 |
+| `site/mark_tower.glb` | Watchtower | 5,448 |
+| `site/mark_yard.glb` | Container Yard | 4,037 |
+
 ## `ci/prop_kit.py` — props modelled in Blender
 
 **Our own work (CC0).** Each object is a recipe in `ci/prop_recipes.py`
