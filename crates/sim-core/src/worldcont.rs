@@ -123,6 +123,7 @@ pub fn occupant_of(table: usize) -> Occupant {
         crate::loot::LOOT_GREEN => Occupant::GreenCrate,
         crate::loot::LOOT_BLUE => Occupant::BlueCrate,
         crate::loot::LOOT_ELITE => Occupant::EliteCrate,
+        crate::loot::LOOT_FOOD => Occupant::FoodCrate,
         _ => Occupant::None,
     }
 }
@@ -137,6 +138,7 @@ pub fn table_of(o: Occupant) -> Option<usize> {
         Occupant::GreenCrate => Some(crate::loot::LOOT_GREEN),
         Occupant::BlueCrate => Some(crate::loot::LOOT_BLUE),
         Occupant::EliteCrate => Some(crate::loot::LOOT_ELITE),
+        Occupant::FoodCrate => Some(crate::loot::LOOT_FOOD),
         _ => None,
     }
 }

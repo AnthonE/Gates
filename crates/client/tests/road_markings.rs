@@ -34,7 +34,7 @@ fn triangle_validity_prevents_false_stripes_at_real_junctions() {
     // — and the same fix: let the seed say where its own road is.
     for seed in [20260731u64, 42] {
         let haven = terrain::haven(seed);
-        let chart = paint::RoadChart::build(seed, 1.0);
+        let chart = paint::RoadChart::build(&haven.ring, 1.0);
         for k in (0..terrain::RING_BEARINGS).step_by(8) {
             let (nx, nz) = haven.ring.node(k as i32);
             let (ox, oz) = ((nx - 6.0).floor(), (nz - 6.0).floor());
@@ -110,7 +110,7 @@ fn triangle_validity_prevents_false_stripes_at_real_junctions() {
 fn adjacent_chunks_share_exact_coordinates_across_the_phase_seam() {
     let seed = 20260731;
     let haven = terrain::haven(seed);
-    let chart = paint::RoadChart::build(seed, 1.0);
+    let chart = paint::RoadChart::build(&haven.ring, 1.0);
     // Walk east from the middle along a chunk line until the ring's paint.
     let z = terrain::ISLAND_SIZE * 0.5;
     let mut live = 0;
@@ -140,7 +140,7 @@ fn adjacent_chunks_share_exact_coordinates_across_the_phase_seam() {
 fn branches_and_coarse_terrain_never_receive_markings() {
     let seed = 20260731;
     let haven = terrain::haven(seed);
-    let chart = paint::RoadChart::build(seed, 1.0);
+    let chart = paint::RoadChart::build(&haven.ring, 1.0);
     let road = haven.roads.iter().find(|r| r.live).unwrap();
     let mut near =
         terrain_mesh::heightfield(seed, &haven, road.rx - 16.0, road.rz - 16.0, 33, 1.0, 0.0);

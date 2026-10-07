@@ -189,10 +189,17 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
 /// height moved; the golden seed's windows hold no rock-channel cell, which
 /// is why the budget had to be hashed rather than seen.
-/// **Moved again when the bush column split into shrubs, berry bushes and
-/// hemp** (2026-10-06, `terrain::plant_of`): every cell that held a bush
-/// still holds a plant, and only which plant moved.
-const GOLDEN_TERRAIN_HASH: u64 = 0x5365_FF69_71A9_7BA3;
+/// **Moved `0xE2A6_201F_1CA7_960E` → `0xCFCA_CCE7_8F3D_FD8D` at roadside junk**:
+/// oil barrels, road signs, food boxes and junk piles along the roads.
+/// **Moved → `0x9FA3_83B2_460B_F5D1` at the 8 m ring** and the junk piles that gather
+/// round a corner, merged over main's slope-sunk rocks
+/// (`0x66EB_1534_8463_B430`); every site stays where it was
+/// (`RingPath::built`).
+/// **Moved → `0x5642_3396_CA8F_82BD` when the bush column split into shrubs,
+/// berry bushes and hemp** (2026-10-06, `terrain::plant_of`), merged over the
+/// ring: every cell that held a bush still holds a plant, and only which
+/// plant moved.
+const GOLDEN_TERRAIN_HASH: u64 = 0x5642_3396_CA8F_82BD;
 
 #[test]
 fn test_terrain_golden() {

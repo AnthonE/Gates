@@ -6255,21 +6255,29 @@ mod tests {
         // away from the first frame, never toward the blow: straight
         // away, or to the nearest cover that lies that way.
         let (ax, az) = yaw_dir(away);
+        // 60° in yaw units: the cone `cover::AHEAD_COS` looks for cover in.
+        const COVER_CONE: u16 = 0x2AAB;
         let mut last = frame.yaw.wrapping_add(1);
         for _ in 0..40 {
             assert_eq!(bot.stats.phase, Phase::Wounded);
             let (wx, wz) = walked(&frame);
-            assert!(wx * ax + wz * az > 120.0, "crawled ({wx}, {wz})");
+            // Inside the cone cover is looked for in (`cover::AHEAD_COS`,
+            // 60°): straight away, or toward cover that lies that way. It
+            // read 120 (19°) until the nearest trunk to this fixture moved.
+            assert!(
+                wx * ax + wz * az > 127.0 * cover::AHEAD_COS,
+                "crawled ({wx}, {wz})"
+            );
             assert_eq!(frame.buttons, 0, "no swing, no sprint");
             let off = (frame.yaw.wrapping_sub(away) as i16).unsigned_abs();
-            if frame.yaw == last && off <= 0x1556 {
+            if frame.yaw == last && off <= COVER_CONE {
                 break;
             }
             last = frame.yaw;
             frame = bot.frame_at(&view, 1, 2, now);
         }
         let off = (frame.yaw.wrapping_sub(away) as i16).unsigned_abs();
-        assert!(off <= 0x1556, "settled {off} off the way away");
+        assert!(off <= COVER_CONE, "settled {off} off the way away");
         // Found once, cover is kept; none found is looked for again only
         // after a while.
         let Some((_, at)) = bot.crawl_to else {

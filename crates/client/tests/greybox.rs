@@ -32,7 +32,7 @@ use sim_core::terrain::{
 /// Every occupant the sim can place. Written out rather than derived so §C can
 /// prove the list is complete — a new variant that nobody adds here is caught
 /// by the count assert, not by nothing.
-const ALL: [Occupant; 17] = [
+const ALL: [Occupant; 22] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -48,6 +48,11 @@ const ALL: [Occupant; 17] = [
     Occupant::GreenCrate,
     Occupant::BlueCrate,
     Occupant::EliteCrate,
+    Occupant::OilBarrel,
+    Occupant::RoadSign,
+    Occupant::FoodCrate,
+    Occupant::CarWreck,
+    Occupant::TireStack,
     Occupant::Hemp,
     Occupant::Shrub,
 ];

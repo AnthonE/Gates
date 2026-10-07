@@ -21,8 +21,8 @@
 
 use sim_core::fmath::fabs;
 use sim_core::terrain::{
-    self, Haven, RoadBand, CLIFF_SLOPE_RATIO, ISLAND_SIZE, LAND_MIN_H, ROAD_HALF_W, ROAD_R_MAX,
-    ROAD_R_MIN, ROAD_SHOULDER_HALF_W,
+    self, Haven, RoadBand, CLIFF_SLOPE_RATIO, ISLAND_SIZE, LAND_MIN_H, ROAD_R_MAX, ROAD_R_MIN,
+    ROAD_SHOULDER_HALF_W, SIDE_ROAD_HALF_W, SIDE_ROAD_SHOULDER_HALF_W,
 };
 
 /// The cheap per-seed checks run the sixteen `tests/haven.rs` sweeps.
@@ -237,9 +237,9 @@ fn naive_dist(r: &terrain::SideRoad, x: f32, z: f32) -> f32 {
 
 /// What the two widths say a distance means.
 fn band_at(d: f32) -> RoadBand {
-    if d <= ROAD_HALF_W {
+    if d <= SIDE_ROAD_HALF_W {
         RoadBand::Carriageway
-    } else if d <= ROAD_SHOULDER_HALF_W {
+    } else if d <= SIDE_ROAD_SHOULDER_HALF_W {
         RoadBand::Shoulder
     } else {
         RoadBand::Off
@@ -293,8 +293,8 @@ fn the_side_band_is_a_road_on_the_line_and_off_it_beside() {
                         let off = step as f32 * 0.5;
                         let (x, z) = (cx + nx * off, cz + nz * off);
                         let d = naive_dist(r, x, z);
-                        if fabs(d - ROAD_HALF_W) < BAND_EDGE_EPS_M
-                            || fabs(d - ROAD_SHOULDER_HALF_W) < BAND_EDGE_EPS_M
+                        if fabs(d - SIDE_ROAD_HALF_W) < BAND_EDGE_EPS_M
+                            || fabs(d - SIDE_ROAD_SHOULDER_HALF_W) < BAND_EDGE_EPS_M
                         {
                             skipped += 1;
                             continue;
@@ -457,7 +457,7 @@ fn every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling() {
 fn the_pair_is_never_one_line_across_the_island() {
     // A road's own width. Under this the two approaches read as one stroke
     // with a yard in the middle, which is what was on the screen.
-    let floor = ROAD_SHOULDER_HALF_W * 2.0;
+    let floor = SIDE_ROAD_SHOULDER_HALF_W * 2.0;
     let mut worst = f32::MAX;
     let mut worst_seed = 0;
     for seed in SEEDS {
@@ -837,7 +837,7 @@ fn a_side_road_joins_more_ring_than_it_is() {
 /// vegetation and shoulder slots across an otherwise valid side carriageway.
 #[test]
 fn a_carriageway_wins_over_the_other_roads_shoulder_at_a_junction() {
-    let step = ROAD_HALF_W / 2.0;
+    let step = SIDE_ROAD_HALF_W / 2.0;
     let span = (ROAD_SHOULDER_HALF_W / step) as i32;
     let mut side_over_ring = 0;
     let mut ring_over_side = 0;
