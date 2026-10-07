@@ -488,6 +488,7 @@ impl Content {
                     DeployArchetype::GarageDoor => ARCH_GARAGE_DOOR,
                     DeployArchetype::WindowGlass => sim_core::deploy::ARCH_WINDOW_GLASS,
                     DeployArchetype::WindowShutter => sim_core::deploy::ARCH_WINDOW_SHUTTER,
+                    DeployArchetype::Barricade => sim_core::deploy::ARCH_BARRICADE,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,

@@ -523,6 +523,7 @@ pub enum DeployArchetype {
     GarageDoor,
     WindowGlass,
     WindowShutter,
+    Barricade,
 }
 
 #[derive(Debug, Clone, Deserialize)]

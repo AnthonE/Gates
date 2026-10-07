@@ -392,6 +392,29 @@ def _door(k, leaf, strap):
     k.torus(0.04, 0.007, (-0.045, -0.33, 0.97), strap, axis="X", n=14, m=5)
 
 
+# Rust's wooden barricade: a row of sharpened logs on two crossbeams,
+# leaning back on a pair of struts. Front toward -Y.
+@recipe("barricade", "models/deploy/barricade.glb", size=(1.8, 1.4, 0.6))
+def barricade(k):
+    lean = -8
+    sa, ca = math.sin(math.radians(-lean)), math.cos(math.radians(lean))
+    for i in range(7):
+        x = -0.78 + i * 0.26
+        h = 1.12 + (0.06 if i % 2 else 0.0)
+        c = (x, -0.10, h / 2)
+        k.cyl(0.085, h, c, "darkwood", rot=(lean, 0, 0), n=10, bevel=0.01)
+        t = h / 2 + 0.12
+        k.cyl(0.085, 0.24, (x, c[1] + t * sa, c[2] + t * ca), "wood", r2=0.0, rot=(lean, 0, 0),
+              n=10, bevel=0.0)
+    for z in (0.32, 0.86):
+        y = -0.10 + (z - 0.56) * sa - 0.09
+        k.cyl(0.06, 1.86, (0, y, z), "wood", axis="X", n=10, bevel=0.01)
+        for i in range(7):
+            k.torus(0.095, 0.012, (-0.78 + i * 0.26, y + 0.09, z), "rope", axis="X", n=12, m=6)
+    for x in (-0.6, 0.6):
+        k.cyl(0.045, 0.85, (x, 0.12, 0.38), "darkwood", rot=(28, 0, 0), n=8, bevel=0.008)
+
+
 @recipe("door", "models/deploy/door.glb", size=(0.12, 2.1, 0.9))
 def door(k):
     _door(k, "planks", "iron")

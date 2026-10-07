@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WINDOW_SHUTTER, BAG_CAP, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_BARRICADE, BAG_CAP, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -705,7 +705,8 @@ const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 /// values are now forgeable, so the decoder range-checks the field — the
 /// same shape `PLACEMENT_BITS` took one version earlier, and for the same
 /// reason: a width with slack is a width that has to be policed.
-const ARCH_BITS: u32 = 4;
+/// Widened 4 → 5 in wire v97 for `ARCH_BARRICADE` = 16.
+const ARCH_BITS: u32 = 5;
 /// Widened 2 → 3 in wire v28: `PLACE_DOOR` is the fifth placement class
 /// (lock v1) and two bits held exactly four. Three of the eight values
 /// are now forgeable, so the decoder range-checks the field, which two
@@ -2665,7 +2666,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_WINDOW_SHUTTER || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_BARRICADE || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -4801,7 +4802,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_WINDOW_SHUTTER
+                if arch > ARCH_BARRICADE
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -7856,9 +7857,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 16,
+            min_members: 17,
             bits: ARCH_BITS,
-            live_max: 15,
+            live_max: 16,
         },
         Domain {
             what: "deploy placement",

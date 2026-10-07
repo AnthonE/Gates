@@ -37,6 +37,14 @@ archetype = "box"
 placement = "foundation"
 hp = 300
 
+# A log wall: stands on the ground or a floor and blocks a body
+# (`deploy::DEPLOY_VOL`). Rust's wooden barricade hp.
+[[deployable]]
+id = "item.barricade_wood"
+archetype = "barricade"
+placement = "any"
+hp = 350
+
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"

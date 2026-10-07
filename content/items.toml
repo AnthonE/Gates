@@ -307,6 +307,15 @@ tier = 0
 rarity = "common"
 slot = "hand"
 
+# Rust's wooden barricade: a log wall that stands anywhere and stops a body.
+[[item]]
+id = "item.barricade_wood"
+name = "Wooden Barricade"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
 [[item]]
 id = "item.fire_pit"
 name = "Fire Pit"

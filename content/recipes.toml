@@ -182,6 +182,14 @@ seconds = 15
 inputs = [{ item = "item.wood", count = 75 }]
 
 [[recipe]]
+id = "recipe.barricade_wood"
+output = "item.barricade_wood"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.wood", count = 200 }]
+
+[[recipe]]
 id = "recipe.fire_pit"
 output = "item.fire_pit"
 count = 1

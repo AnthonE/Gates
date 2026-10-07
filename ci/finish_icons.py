@@ -94,6 +94,7 @@ PAINT = {
     "wooden_arrow": dict(c=WOOD),
     "bandage": dict(c=("#f7f2e8", "#c8bca4")),
     "fire_pit": dict(c=FLAME),
+    "wooden_barricade": dict(c=WOOD),
     "workbench_2": dict(c=DARK_STEEL, metal=True),
     "workbench_3": dict(c=("#f0d488", "#9a7428"), metal=True),
     "metal_hatchet": dict(

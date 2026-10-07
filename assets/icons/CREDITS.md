@@ -118,6 +118,7 @@ every item either way, because the painted ones are derived works of it.
 | `wood.png` | `delapouite/log` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
 | `wooden_arrow.png` | `lorc/arrowhead` |
+| `wooden_barricade.png` | `delapouite/barricade` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |

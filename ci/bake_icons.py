@@ -161,6 +161,7 @@ ITEMS = {
     "sleeping_bag": "delapouite/sleeping-bag",
     "box_small": "delapouite/wooden-crate",
     "fire_pit": "lorc/campfire",
+    "barricade_wood": "delapouite/barricade",
     "workbench1": "lorc/hammer-nails",
     # The bench ladder (bench ladder v0): the glyphs climb with the rungs
     # — hammer-and-nails, the struck anvil, the gear-hammer — so the

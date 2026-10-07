@@ -157,6 +157,9 @@ pub const ARCH_GARAGE_DOOR: u8 = 13;
 pub const ARCH_WINDOW_GLASS: u8 = 14;
 /// A window cover that opens without a lock.
 pub const ARCH_WINDOW_SHUTTER: u8 = 15;
+/// Rust's wooden barricade: a free-standing wall of sharpened logs that
+/// blocks a body (wire v97 widened `ARCH_BITS` to five for it).
+pub const ARCH_BARRICADE: u8 = 16;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -179,7 +182,7 @@ pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 16] = [
+pub const DEPLOY_VOL: [[f32; 3]; 17] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -196,6 +199,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 16] = [
     [0.0, 0.0, 0.0],   // garage door — edge insert
     [0.0, 0.0, 0.0],   // glass — edge insert
     [0.0, 0.0, 0.0],   // shutters — edge insert, not a solid nibble
+    [1.8, 1.4, 0.6],   // 16 barricade — a log wall
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
