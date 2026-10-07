@@ -304,13 +304,13 @@ fn a_stack_that_lands_mid_walk_is_appended_not_restarted() {
     for k in 0..batch + 4 {
         core.world
             .ground_items
-            .drop_one(&bc, (qx + k as i32, qy, qz), stack, tick);
+            .drop_one(&bc, (qx + k as i32, qy, qz), stack, tick, [0; 3]);
     }
     let mut seen = Vec::new();
     pump(&mut core, &stats, &mut clients, &mut seen);
     core.world
         .ground_items
-        .drop_one(&bc, (qx - 5, qy, qz), stack, tick);
+        .drop_one(&bc, (qx - 5, qy, qz), stack, tick, [0; 3]);
     for _ in 0..6 {
         pump(&mut core, &stats, &mut clients, &mut seen);
     }

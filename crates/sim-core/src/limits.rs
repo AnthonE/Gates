@@ -1045,9 +1045,13 @@ pub const MAX_SPENT_ARROWS: usize = 512;
 /// weapon's own derived life. The backstop that makes `MAX_ARROWS` a
 /// bound on *occupancy* rather than a hope: an arrow that somehow misses
 /// terrain, occupants, pieces and bodies still leaves the store within
-/// four seconds. No overflow policy — this is a lifetime, not a queue.
-/// Proposed default, DECISIONS.md §open (ranged v0).
-pub const MAX_ARROW_LIFE_TICKS: u16 = 120;
+/// twelve seconds. No overflow policy — this is a lifetime, not a queue.
+///
+/// 120 → 360 when arrows took Rust's speeds and real gravity: a lob from
+/// the crossbow is in the air for over ten seconds now, and one still up
+/// at the backstop falls short of where it was aimed. A level shot lands
+/// inside a second, so the store's occupancy barely moves.
+pub const MAX_ARROW_LIFE_TICKS: u16 = 360;
 
 /// Millimetres an arrow may advance between two collision samples. Two
 /// separate assumptions pin this number and it is the smaller of them:

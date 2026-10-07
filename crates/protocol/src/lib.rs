@@ -1039,7 +1039,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v93 — `SUB_HEARD` (75): another body's reload, meal, drink, keypad,
 /// container open or bow draw, to the clients in earshot, so those make a
 /// sound at the body that made them. A v92 client has no subtype 75.
-pub const PROTO_VER: u16 = 93;
+/// v94 — an arrow sticks where it went in: `WireGItem` gains a bit after
+/// `count`, and when it is set, the direction the arrow was flying (three
+/// signed bytes), so a client draws it standing in the trunk, the wall or
+/// the dirt at the angle it flew rather than lying on the ground.
+pub const PROTO_VER: u16 = 94;
 
 /// This game's slug in the elo catalog.
 ///

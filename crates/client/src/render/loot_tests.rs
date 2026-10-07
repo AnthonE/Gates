@@ -80,6 +80,7 @@ fn item(id: u32) -> protocol::WireGItem {
         qz: 1000,
         item: 16,
         count: 1,
+        dir: [0; 3],
     }
 }
 

@@ -1674,6 +1674,18 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
             qz: 10_000 + rng.next_bounded(50_000) as i32,
             item: 1 + rng.next_bounded(MAX_ITEM_DEFS as u32 - 1) as u16,
             count: 1 + rng.next_bounded(1_000) as u16,
+            // Every third one is an arrow stuck where it went in (v94),
+            // its direction drawn so the three bytes cannot transpose
+            // unseen; the rest lie on the ground and cost one bit.
+            dir: if i % 3 == 0 {
+                [
+                    (rng.next_bounded(255) as i32 - 127) as i8,
+                    -(1 + rng.next_bounded(127) as i32) as i8,
+                    127,
+                ]
+            } else {
+                [0; 3]
+            },
         };
     }
     (true, recs)

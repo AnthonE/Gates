@@ -199,7 +199,11 @@ use crate::worldcont::WorldContRec;
 /// bytes after `loc`), and a hearth and a container carry the body slot
 /// their record is filed under — a container its pose too, because reach
 /// and warmth are measured to where it stands.
-pub const WORLD_SAVE_FORMAT: u16 = 19;
+///
+/// **20 — an arrow sticks where it went in**: a loose stack carries the
+/// direction a stuck arrow was flying (three bytes after `expires`, zero
+/// for one lying on the ground).
+pub const WORLD_SAVE_FORMAT: u16 = 20;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -331,10 +335,10 @@ const SLOT_LIFE_BYTES: usize = 23;
 /// sense wall 4 means: the sim thread's cost is O(live records) with a
 /// ceiling nothing can exceed, not O(whatever the world grew to).
 /// One loose stack (format 14): 4 id + three `i32` coordinates + an
-/// `ItemStack` + the despawn deadline. The same 32 bytes `state_hash`
-/// folds per record, and deliberately so — a digest and a save that
-/// disagreed about a record's shape is how a reload changes a hash.
-pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8;
+/// `ItemStack` + the despawn deadline, and a stuck arrow's direction
+/// (format 20). The 32 bytes before the direction are what `state_hash`
+/// folds per record, and it folds the direction too whenever it is set.
+pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8 + 3;
 
 /// One stored `ItemStack`: item, count, condition, skin (format 16).
 pub const STACK_BYTES: usize = 8;
@@ -768,6 +772,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.i32(g.qz);
         o.stack(&g.stack);
         o.u64(g.expires);
+        // A stuck arrow's direction (format 20).
+        for d in g.dir {
+            o.u8(d as u8);
+        }
     }
     for s in w.slot_lives.entries() {
         o.u16(s.cx);
@@ -1594,6 +1602,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             ready_at,
             host,
             life,
+            dir: [0; 3],
         };
     }
 
@@ -1624,6 +1633,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cond = r.u16()?;
         let skin = r.u16()?;
         let expires = r.u64()?;
+        let dir = [r.u8()? as i8, r.u8()? as i8, r.u8()? as i8];
         let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
         if i64::from(qx) < 0
             || i64::from(qx) > side_q
@@ -1650,6 +1660,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 skin,
             },
             expires,
+            dir,
         };
     }
 
@@ -1827,7 +1838,7 @@ mod tests {
             + 64 * 261                      // world containers: 21 + 30 eight-byte stacks
             + 64 * 25                       // charges
             + 512 * 34                      // stopped arrows (format 10; host + life at 18)
-            + 512 * 32                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18)
+            + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
             + 131_072 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
                             // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                             // 56 -> 62 at format 10: a tenth count, plus the
@@ -1841,8 +1852,8 @@ mod tests {
                             // wrong. 64 -> 90 at format 15: the admin's sky and
                             // clock (`ENV_BYTES`).
         assert_eq!(HEAD_BYTES, 90);
-        // 4 id + 12 position + 8 stack + 8 deadline.
-        assert_eq!(GROUND_ITEM_BYTES, 32);
+        // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
+        assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
         // host and its life.
         assert_eq!(SPENT_BYTES, 34);
@@ -1926,8 +1937,10 @@ mod tests {
         // stopped arrows (host + life), and 256 more loose stacks × 32.
         // 3_495_502 → 3_499_854 at format 19 (free placement): the pose on
         // 1,024 deploys, the slot on 256 hearths, slot + pose on 256 boxes.
+        // 3_499_854 → 3_501_390 at format 20: a stuck arrow's direction,
+        // three bytes on each of 512 loose stacks.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_499_854,
+            WORLD_SAVE_MAX_BYTES, 3_501_390,
             "the world save ceiling moved"
         );
     }

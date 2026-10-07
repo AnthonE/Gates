@@ -72,6 +72,10 @@ const SPAWN_MAX_SLOPE: f32 = 1.0;
 /// `pub` for that reason and no other.
 pub const SPAWN_CLEAR_M: f32 = 4.5;
 
+/// How often a stuck arrow asks whether it is still in something, in ticks
+/// (`World::unstick_arrows`): once a second.
+const UNSTICK_EVERY_TICKS: u64 = crate::limits::TICK_HZ as u64;
+
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
 /// EV_GATHER: a = player id, b = item index << 16 | units actually added
@@ -2768,9 +2772,10 @@ impl World {
             .harvest(c.cx, c.cz, occ, c.refill_at - 1, &mut self.events);
     }
 
-    /// Lay down the arrows that are due (`spent::settle`): each falls onto
-    /// the surface under it (`grounditem::rest_at`) as a loose stack of its
-    /// round, or is lost in deep water.
+    /// Lay down the arrows that are due (`spent::settle`): one that stuck
+    /// stays where it went in (`grounditem::stick_at`), the rest fall onto
+    /// the surface under them (`grounditem::rest_at`), each a loose stack
+    /// of its round, or lost in deep water.
     fn settle_arrows(&mut self) {
         if self.spent.is_empty() {
             return;
@@ -2791,10 +2796,14 @@ impl World {
             tick,
             &self.players,
             &self.mobs,
-            |round, x, y, z| {
+            |round, x, y, z, dir| {
                 let (x, y, z) = (x as f32 / 1000.0, y as f32 / 1000.0, z as f32 / 1000.0);
-                let Some(at) = crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z)
-                else {
+                let at = if dir == [0; 3] {
+                    crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z)
+                } else {
+                    crate::grounditem::stick_at(x, y, z)
+                };
+                let Some(at) = at else {
                     return;
                 };
                 let stack = ItemStack {
@@ -2803,9 +2812,52 @@ impl World {
                     cond: gc.cond_max_of(round),
                     skin: 0,
                 };
-                ground.drop_one(bc, at, stack, tick);
+                ground.drop_one(bc, at, stack, tick, dir);
             },
         );
+    }
+
+    /// A stuck arrow falls when what it is stuck in goes — a tree felled, a
+    /// wall broken, a door swung open (`ranged::still_stuck`). Each one is
+    /// asked once every `UNSTICK_EVERY_TICKS`, staggered by its id, so a
+    /// volley in one trunk does not all ask on one tick.
+    fn unstick_arrows(&mut self) {
+        let (seed, tick) = (self.seed, self.tick);
+        let haven = &self.haven;
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
+            table: &self.scatter,
+            haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        let ground = &mut self.ground_items;
+        let mut i = 0;
+        while i < ground.len() {
+            let g = ground.entries()[i];
+            if g.dir == [0; 3] || (u64::from(g.id) + tick) % UNSTICK_EVERY_TICKS != 0 {
+                i += 1;
+                continue;
+            }
+            let (x, y, z) = (
+                g.qx as f32 * crate::movement::POS_XZ_Q,
+                g.qy as f32 * crate::movement::POS_Y_Q,
+                g.qz as f32 * crate::movement::POS_XZ_Q,
+            );
+            let at_mm = (x * 1000.0, y * 1000.0, z * 1000.0);
+            if ranged::still_stuck(seed, haven, cols, &mut occ, at_mm, g.dir) {
+                i += 1;
+                continue;
+            }
+            let to = crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z);
+            let before = ground.len();
+            ground.fall(i, to);
+            // A lost one was swap-removed: this index holds the next.
+            if ground.len() == before {
+                i += 1;
+            }
+        }
     }
 
     /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
@@ -5926,6 +5978,7 @@ impl World {
         // After the deaths those arrows caused, so an arrow in a body that
         // just died falls out where it fell.
         self.settle_arrows();
+        self.unstick_arrows();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -6650,6 +6703,11 @@ impl World {
                 buf[16..24].copy_from_slice(&stack_bytes(&g.stack));
                 buf[24..32].copy_from_slice(&g.expires.to_le_bytes());
                 h.update(&buf);
+                // A stuck arrow's angle, only when it has one, so a store
+                // of things lying on the ground folds what it always did.
+                if g.dir != [0; 3] {
+                    h.update(&[g.dir[0] as u8, g.dir[1] as u8, g.dir[2] as u8]);
+                }
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
         }

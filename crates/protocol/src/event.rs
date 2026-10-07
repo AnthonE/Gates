@@ -3167,6 +3167,10 @@ pub struct WireGItem {
     pub qz: i32,
     pub item: u16,
     pub count: u16,
+    /// A stuck arrow's flight direction (`GroundItemRec::dir`, wire v94):
+    /// the position is where it went in, and the client stands it there at
+    /// this angle. Zero for a stack lying on the ground.
+    pub dir: [i8; 3],
 }
 
 impl WireGItem {
@@ -3178,7 +3182,13 @@ impl WireGItem {
             qz: g.qz,
             item: g.stack.item,
             count: g.stack.count,
+            dir: g.dir,
         }
+    }
+
+    /// Whether this is an arrow stuck where it went in.
+    pub fn stuck(&self) -> bool {
+        self.dir != [0; 3]
     }
 }
 
@@ -3207,18 +3217,36 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
     // grows past a packed field cannot silently truncate an id.
     w.write(g.item as u32, 16)?;
     w.write(g.count as u32, 16)?;
+    // A stuck arrow's direction (v94): one bit, and the three bytes only
+    // when it is set, so a lying stack costs one bit more than it did.
+    w.write_bit(g.stuck())?;
+    if g.stuck() {
+        for d in g.dir {
+            w.write(d as u8 as u32, 8)?;
+        }
+    }
     Ok(())
 }
 
 fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
-    let g = WireGItem {
+    let mut g = WireGItem {
         id: r.read(32)?,
         qx: r.read(POS_XZ_BITS)? as i32,
         qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
         qz: r.read(POS_XZ_BITS)? as i32,
         item: r.read(16)? as u16,
         count: r.read(16)? as u16,
+        dir: [0; 3],
     };
+    if r.read_bit()? {
+        for d in g.dir.iter_mut() {
+            *d = r.read(8)? as u8 as i8;
+        }
+        // Set says stuck, and a stuck arrow points somewhere.
+        if !g.stuck() {
+            return Err(WireError::Malformed);
+        }
+    }
     // The client's own door: a zero count would draw a picture of nothing
     // and offer a prompt that takes nothing.
     if g.count == 0 {

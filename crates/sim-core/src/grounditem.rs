@@ -89,6 +89,11 @@ pub struct GroundItemRec {
     pub stack: ItemStack,
     /// Tick at which it despawns.
     pub expires: u64,
+    /// An arrow **stuck** where it went in (`spent::SpentRec::dir`): the
+    /// way it was flying, a byte an axis, and the position is where it
+    /// went in rather than the ground under it. Zero for everything that
+    /// lies on the ground.
+    pub dir: [i8; 3],
 }
 
 /// Every loose stack on the island.
@@ -187,27 +192,54 @@ impl GroundItems {
                 continue;
             }
             let (ix, iy, iz) = rest_spot(seed, haven, key, k, qx, qz);
-            self.push(bc, (ix, iy, iz), *stack, tick);
+            self.push(bc, (ix, iy, iz), *stack, tick, [0; 3]);
             made += 1;
         }
         made
     }
 
     /// Lay one stack down at a spot already found — an arrow falling out
-    /// of the air or out of a body (`spent::settle`, [`rest_at`]). Disarmed
-    /// by inert content exactly as [`scatter`](Self::scatter) is. Returns
-    /// the new record's id, or 0 if nothing was laid.
+    /// of the air or out of a body (`spent::settle`, [`rest_at`]), or one
+    /// stuck where it went in, flying `dir` ([`stick_at`]; zero for one
+    /// that lies). Disarmed by inert content exactly as
+    /// [`scatter`](Self::scatter) is. Returns the new record's id, or 0 if
+    /// nothing was laid.
     pub fn drop_one(
         &mut self,
         bc: &crate::backpack::BackpackContent,
         at: (i32, i32, i32),
         stack: ItemStack,
         tick: u64,
+        dir: [i8; 3],
     ) -> u32 {
         if bc.base_ticks == 0 || stack.count == 0 {
             return 0;
         }
-        self.push(bc, at, stack, tick)
+        self.push(bc, at, stack, tick, dir)
+    }
+
+    /// A stuck arrow whose trunk, wall or door has gone falls to `at`
+    /// ([`rest_at`]), or is lost when that is `None`.
+    ///
+    /// **It comes down as a new stack, with a new id.** The loose-stack
+    /// sync is keyed on `(next_id, len)` and a client draws a stack where
+    /// it first saw it, so a record that moved under its old id would go
+    /// on standing in the air on every screen; a fresh id is a change the
+    /// walk already restarts on, and the client's set redraws it where it
+    /// fell.
+    pub fn fall(&mut self, i: usize, at: Option<(i32, i32, i32)>) {
+        if i >= self.len {
+            return;
+        }
+        let Some((qx, qy, qz)) = at else {
+            self.remove(i);
+            return;
+        };
+        let e = &mut self.entries[i];
+        (e.qx, e.qy, e.qz) = (qx, qy, qz);
+        e.dir = [0; 3];
+        e.id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
     }
 
     /// Append one record, evicting the one nearest its own despawn when
@@ -218,6 +250,7 @@ impl GroundItems {
         (qx, qy, qz): (i32, i32, i32),
         stack: ItemStack,
         tick: u64,
+        dir: [i8; 3],
     ) -> u32 {
         if self.len == MAX_GROUND_ITEMS {
             let mut worst = 0usize;
@@ -239,6 +272,7 @@ impl GroundItems {
             qz,
             stack,
             expires: tick + bc.stack_life_ticks(stack.item) as u64,
+            dir,
         };
         self.len += 1;
         id
@@ -430,6 +464,19 @@ pub fn rest_spot(
 /// Deeper than this under the sea, a thing that falls is lost rather than
 /// left on the seabed.
 pub const SINK_DEPTH_M: f32 = 0.5;
+
+/// Where an arrow stuck at `(x, y, z)` metres is kept, in body quanta: the
+/// point itself, not the ground under it. `None` off the island or in
+/// water deeper than [`SINK_DEPTH_M`], as [`rest_at`].
+pub fn stick_at(x: f32, y: f32, z: f32) -> Option<(i32, i32, i32)> {
+    if !(0.0..terrain::ISLAND_SIZE).contains(&x) || !(0.0..terrain::ISLAND_SIZE).contains(&z) {
+        return None;
+    }
+    if y < terrain::SEA_LEVEL - SINK_DEPTH_M {
+        return None;
+    }
+    Some((quant_xz(x), quant_y(y), quant_xz(z)))
+}
 
 /// Where something let go of at `(x, y, z)` metres comes to rest, in body
 /// quanta: straight down onto the first surface a body could stand on at

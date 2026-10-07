@@ -5634,6 +5634,7 @@ mod take {
             qz: quant_xz(z),
             item,
             count,
+            dir: [0; 3],
         }
     }
 
@@ -5745,6 +5746,7 @@ mod take {
             qz: quant_xz(100.0),
             item: 1,
             count: 1,
+            dir: [0; 3],
         };
         let p = resolve_take(100.0, 100.0, &[one_q]);
         assert_eq!(p.verb, Verb::Take);

@@ -333,6 +333,63 @@ pub const ARROW_R_M: f32 = 0.05;
 /// the collision calls read as unit changes rather than magic scaling.
 pub const MM_PER_M: f32 = 1000.0;
 
+/// How finely the last step of a flight is walked again to find where a
+/// stuck arrow went in: `ARROW_STEP_MM` over this, about 2 cm.
+pub const STICK_STEPS: usize = 8;
+
+/// The probe that asks whether a stuck arrow is still in something: from
+/// this far behind where it went in, millimetres…
+const STICK_BACK_MM: f32 = 100.0;
+/// …this far along the way it flew, in [`STICK_PROBE_STEPS`] samples
+/// (3.75 cm apart, so the shortest chord through the edge of a trunk that
+/// stopped it is still found).
+const STICK_PROBE_MM: f32 = 300.0;
+const STICK_PROBE_STEPS: usize = 8;
+
+/// Is an arrow stuck at `at` (millimetres, where it went in) flying `dir`
+/// (`spent::stick_dir`) still in something — the trunk, the wall, the
+/// ground it stuck in? The same ladder that stopped it, walked through
+/// where it went in, so a felled tree, a broken wall or an opened door
+/// lets it fall (`World::unstick_arrows`).
+pub fn still_stuck(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    at: (f32, f32, f32),
+    dir: [i8; 3],
+) -> bool {
+    let (dx, dy, dz) = (dir[0] as f32, dir[1] as f32, dir[2] as f32);
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len == 0.0 {
+        return false;
+    }
+    let (ux, uy, uz) = (dx / len, dy / len, dz / len);
+    let o = (
+        at.0 - ux * STICK_BACK_MM,
+        at.1 - uy * STICK_BACK_MM,
+        at.2 - uz * STICK_BACK_MM,
+    );
+    let s = (
+        ux * STICK_PROBE_MM,
+        uy * STICK_PROBE_MM,
+        uz * STICK_PROBE_MM,
+    );
+    world_stop(
+        seed,
+        haven,
+        cols,
+        occ,
+        o,
+        s,
+        STICK_PROBE_STEPS,
+        STICK_PROBE_STEPS,
+        ARROW_R_M,
+    )
+    .1
+    .is_some()
+}
+
 /// What an arrow stopped on (`EV_IMPACT`'s surface field) — the ground, a
 /// thing worldgen put there, or a thing a player built.
 ///
@@ -743,7 +800,9 @@ pub fn draw(
 /// with an arrow on the ground pays the same odds. The slot is part of the
 /// key, which is what makes two arrows landing on one tick two independent
 /// draws. The arrow's own position is where it stopped: the caller moves
-/// `a.q*` there first.
+/// `a.q*` there first. `dir` is the way it was flying if it **stuck** in
+/// the world (`SpentRec::dir`), zero if it falls.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn land(
     seed: u64,
@@ -753,6 +812,7 @@ fn land(
     slot: usize,
     a: &Arrow,
     host: Option<(u32, u64)>,
+    dir: [i8; 3],
 ) {
     if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
         return;
@@ -770,6 +830,7 @@ fn land(
         },
         host,
         life,
+        dir,
     });
 }
 
@@ -883,7 +944,7 @@ fn step_in(
             // Falling faster than the sampler can honestly trace — a long
             // drop off a height: it falls from where it is rather than
             // flying on untraced.
-            land(seed, tick, cc, spent, ix, &a, None);
+            land(seed, tick, cc, spent, ix, &a, None, [0; 3]);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -953,7 +1014,7 @@ fn step_in(
                 a.qy = crate::fmath::floor_i32(oy + sy * m.t);
                 a.qz = crate::fmath::floor_i32(oz + sz * m.t);
                 let host = (crate::mob::mob_id(m.slot), q.mobs.m[m.slot].respawn_at);
-                land(seed, tick, cc, spent, ix, &a, Some(host));
+                land(seed, tick, cc, spent, ix, &a, Some(host), [0; 3]);
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -983,7 +1044,7 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * t);
                 a.qy = crate::fmath::floor_i32(oy + sy * t);
                 a.qz = crate::fmath::floor_i32(oz + sz * t);
-                land(seed, tick, cc, spent, ix, &a, None);
+                land(seed, tick, cc, spent, ix, &a, None, [0; 3]);
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -1041,7 +1102,7 @@ fn step_in(
             a.qy = crate::fmath::floor_i32(oy + sy * t);
             a.qz = crate::fmath::floor_i32(oz + sz * t);
             let host = (vid, u64::from(players[j].deaths));
-            land(seed, tick, cc, spent, ix, &a, Some(host));
+            land(seed, tick, cc, spent, ix, &a, Some(host), [0; 3]);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1086,15 +1147,34 @@ fn step_in(
                     n_chips += 1;
                 }
             }
-            // Missed every body, so it rests this tick, under the last
-            // free sample before the stop: the stop sample itself is inside
-            // the trunk, the wall or the hillside, and a point inside a
-            // wall could fall to the wrong side of it.
-            let back = (stop_t - 1.0 / n as f32).max(0.0);
-            a.qx = crate::fmath::floor_i32(ox + sx * back);
-            a.qy = crate::fmath::floor_i32(oy + sy * back);
-            a.qz = crate::fmath::floor_i32(oz + sz * back);
-            land(seed, tick, cc, spent, ix, &a, None);
+            // Missed every body, so it **sticks** where it went in, at the
+            // angle it was flying (Rust's arrows stand in trunks, walls and
+            // dirt). Where it went in is found inside this last step with
+            // the same ladder, `STICK_STEPS` finer, and kept on the free
+            // side: the stop sample itself is inside the trunk, the wall or
+            // the hillside, and a point inside a wall could be on the wrong
+            // side of it when the arrow falls out.
+            let lo = (stop_t - 1.0 / n as f32).max(0.0);
+            let from = (ox + sx * lo, oy + sy * lo, oz + sz * lo);
+            let span = stop_t - lo;
+            let last = (sx * span, sy * span, sz * span);
+            let (t2, _, _) = world_stop(
+                seed,
+                haven,
+                cols,
+                occ,
+                from,
+                last,
+                STICK_STEPS,
+                STICK_STEPS,
+                ARROW_R_M,
+            );
+            let back = (t2 - 1.0 / STICK_STEPS as f32).max(0.0);
+            a.qx = crate::fmath::floor_i32(from.0 + last.0 * back);
+            a.qy = crate::fmath::floor_i32(from.1 + last.1 * back);
+            a.qz = crate::fmath::floor_i32(from.2 + last.2 * back);
+            let dir = crate::spent::stick_dir(dx, dy, dz);
+            land(seed, tick, cc, spent, ix, &a, None, dir);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1107,7 +1187,7 @@ fn step_in(
         if a.life == 0 {
             // Out of flight in the air: it falls to whatever is under it
             // rather than vanishing (`NOW.md` §5 item 2).
-            land(seed, tick, cc, spent, ix, &a, None);
+            land(seed, tick, cc, spent, ix, &a, None, [0; 3]);
         }
         arrows.a[ix] = a;
     }
@@ -1288,6 +1368,26 @@ pub struct BeamStop {
 /// of a miss the shard did not mark (it stops at
 /// [`MAX_HITSCAN_MARK_SAMPLES`] so a decal cannot own the tick). The same
 /// ladder, so the client and the shard cannot disagree about what a trunk
+/// One tick of an arrow's flight against the world, for a client drawing
+/// it (`render/tracer.rs`): the fraction along `o + s` (millimetres) the
+/// world stops it at, or `None` while it flies on. The sim's own ladder at
+/// the sim's own spacing, so the drawn arrow stops in the trunk the real
+/// one stuck in rather than flying on through it. Cosmetic and client-side:
+/// nothing in a tick calls this.
+pub fn flight_stop(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+) -> Option<f32> {
+    let len = (s.0 * s.0 + s.1 * s.1 + s.2 * s.2).sqrt();
+    let n = ((len / ARROW_STEP_MM as f32) as usize + 1).min(MAX_ARROW_SUBSTEPS);
+    let (t, surf, _) = world_stop(seed, haven, cols, occ, o, s, n, n, ARROW_R_M);
+    surf.map(|_| t)
+}
+
 /// is. Cosmetic and client-side: nothing in a tick calls this.
 #[allow(clippy::too_many_arguments)]
 pub fn beam_stop(

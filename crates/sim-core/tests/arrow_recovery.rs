@@ -185,7 +185,7 @@ fn settle(
     mobs: &Mobs,
 ) -> Vec<(u16, i32, i32, i32)> {
     let mut laid = Vec::new();
-    spent::settle(spent, tick, players, mobs, |r, x, y, z| {
+    spent::settle(spent, tick, players, mobs, |r, x, y, z, _dir| {
         laid.push((r, x, y, z))
     });
     laid
@@ -195,9 +195,11 @@ fn settle(
 // The flight, end to end
 // ---------------------------------------------------------------------
 
-/// A miss rests the tick it lands, from above the surface it hit. Mutant:
-/// resting it from the stop sample itself (inside the ground) fails the
-/// height check; lodging it with a host fails the host check.
+/// A miss sticks the tick it lands, where it went in: just above the
+/// surface it hit, pointing the way it flew. Mutant: resting it from the
+/// stop sample itself (inside the ground) fails the height check; skipping
+/// the walk that finds where it went in fails the closeness check; lodging
+/// it with a host fails the host check.
 #[test]
 fn a_missed_arrow_rests_the_tick_it_lands() {
     for seed in [0u64, 1, 7, 12345] {
@@ -207,12 +209,24 @@ fn a_missed_arrow_rests_the_tick_it_lands() {
         assert_eq!(rec.round, ARROW, "seed {seed}: the round, not the bow");
         assert_eq!(rec.host, 0, "seed {seed}: a miss is in nothing");
         assert!(rec.ready_at <= t, "seed {seed}: a miss waits for nothing");
-        let ground_mm = (ground_at(seed, 2048.0, 2048.0) * 1000.0) as i32;
+        let (x, z) = (rec.qx as f32 / 1000.0, rec.qz as f32 / 1000.0);
+        let ground_mm = (ground_at(seed, x, z) * 1000.0) as i32;
         assert!(
             rec.qy >= ground_mm - 1,
-            "seed {seed}: it falls from the last free sample, above the \
-             ground (y {} mm against ground {ground_mm} mm)",
+            "seed {seed}: it stays on the free side of where it went in, above \
+             the ground (y {} mm against ground {ground_mm} mm)",
             rec.qy
+        );
+        assert!(
+            rec.qy - ground_mm <= 40,
+            "seed {seed}: and where it went in, not a step short of it (y {} mm \
+             against ground {ground_mm} mm)",
+            rec.qy
+        );
+        assert_eq!(
+            rec.dir,
+            [0, -127, 0],
+            "seed {seed}: shot straight down, it stands straight up in the dirt"
         );
         let players = Box::new([Player::default(); MAX_PLAYERS]);
         let laid = settle(&mut spent, t, &players, &no_mobs());
@@ -239,7 +253,7 @@ fn a_broken_arrow_leaves_nothing_and_that_is_the_inert_default() {
 /// An arrow that ran out of flight in the air falls instead of vanishing
 /// (`NOW.md` §5 item 2). An arrow flies until something stops it, so the
 /// only one that runs out is one still up at the backstop: shot straight
-/// up, it is just coming back down past the archer's eye at four seconds.
+/// up under a light drop, it is still in the air when the backstop comes.
 /// Mutant: dropping the landing on expiry leaves the store empty.
 #[test]
 fn an_arrow_out_of_flight_falls_instead_of_vanishing() {
@@ -248,7 +262,11 @@ fn an_arrow_out_of_flight_falls_instead_of_vanishing() {
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
     players[0] = archer(1, 2048.0, ground, 2048.0, u8::MAX);
     let life = u64::from(sim_core::limits::MAX_ARROW_LIFE_TICKS);
-    let (spent, t) = fly(seed, &bow(0, 60_000), &mut players, life + 5);
+    // Up and back down past the eye takes `2v/g` ticks; past the backstop.
+    let mut cc = bow(0, 60_000);
+    cc.ammo[ARROW as usize].drop_mmpt2 = 4;
+    assert!(2 * 1333 / 4 > life, "the fixture must outlast the backstop");
+    let (spent, t) = fly(seed, &cc, &mut players, life + 5);
     assert_eq!(
         t, life,
         "straight up, it is still in the air at the backstop"
@@ -353,6 +371,7 @@ fn lodged_in(host: u32, life: u64, at: (i32, i32, i32), ready_at: u64) -> SpentR
         ready_at,
         host,
         life,
+        dir: [0; 3],
     }
 }
 
@@ -550,6 +569,7 @@ fn a_world_that_remembers_its_arrows_saves_them() {
             ready_at: 900 + i as u64,
             host: 0x100 + i as u32,
             life: i as u64,
+            dir: [0; 3],
         });
     }
     for i in 0..MAX_SPENT_ARROWS + 5 {

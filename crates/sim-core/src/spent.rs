@@ -5,8 +5,10 @@
 //! named by `E`'s prompt and taken back by the payload-free
 //! `Command::Pickup`, the same as a barrel's scatter. How it gets there:
 //!
-//!   * One that stopped on the world rests on the surface under where it
-//!     stopped, the same tick.
+//!   * One that stopped on the world **sticks in it** where it went in —
+//!     a trunk, a wall, the dirt — at the angle it flew, as Rust's does,
+//!     the same tick. If what it is stuck in goes (a tree felled, a wall
+//!     broken, a door opened) it falls (`World::unstick_arrows`).
 //!   * One that ran out of flight in the air falls to the surface under it.
 //!   * One that **dealt damage rides the body it is in** for the lodge
 //!     (`content/balance.toml` `arrow_lodge_s`, theirs: 10 s), then falls
@@ -51,6 +53,30 @@ pub struct SpentRec {
     /// `Mob::respawn_at` at the hit — so a host that died and came back
     /// does not carry it on.
     pub life: u64,
+    /// The way it was flying when it **stuck** in the world — a trunk, a
+    /// wall, the dirt — as Rust's does, max-norm quantized
+    /// ([`stick_dir`]). Zero is an arrow that falls: one out of a body, one
+    /// out of flight, one that glanced. Only an arrow with no host is ever
+    /// stuck, and those are laid the tick they stop, so this is zero
+    /// between ticks — which is why neither the save nor `state_hash`
+    /// carries it.
+    pub dir: [i8; 3],
+}
+
+/// A flight direction in a byte an axis: each component over the largest,
+/// times 127. Integer division only, so it is the same bits on every
+/// target; the reader normalizes. Zero only for a zero vector.
+#[inline]
+pub fn stick_dir(dx: i32, dy: i32, dz: i32) -> [i8; 3] {
+    let m = dx
+        .unsigned_abs()
+        .max(dy.unsigned_abs())
+        .max(dz.unsigned_abs()) as i64;
+    if m == 0 {
+        return [0; 3];
+    }
+    let q = |d: i32| (i64::from(d) * 127 / m) as i8;
+    [q(dx), q(dy), q(dz)]
 }
 
 /// The stopped-arrow store — sim state, hashed and saved.
@@ -200,20 +226,24 @@ fn host_feet(
 /// this tick, and the lodged ones whose lodge ran out or whose host is
 /// gone. A lodged arrow whose host still stands follows it.
 ///
-/// `lay(round, x, y, z)` is handed each falling arrow's round and the
-/// point it falls from, in millimetres; `World` finds the surface under it
-/// and makes the loose stack. Returns how many arrows fell.
+/// `lay(round, x, y, z, dir)` is handed each arrow's round and the point
+/// it stopped at, in millimetres, and the way it was flying if it stuck
+/// there (`SpentRec::dir`, zero for one that falls); `World` sticks it or
+/// finds the surface under it, and makes the loose stack. Returns how many
+/// arrows were laid.
 pub fn settle(
     spent: &mut SpentArrows,
     tick: u64,
     players: &[Player; MAX_PLAYERS],
     mobs: &Mobs,
-    mut lay: impl FnMut(u16, i32, i32, i32),
+    mut lay: impl FnMut(u16, i32, i32, i32, [i8; 3]),
 ) -> usize {
     let mut fell = 0usize;
     let mut i = 0;
     while i < spent.len {
         let rec = spent.entries[i];
+        // Only an arrow in nothing can be stuck; one out of a body falls.
+        let dir = if rec.host == 0 { rec.dir } else { [0; 3] };
         let from = if rec.host == 0 {
             Some((rec.qx, rec.qy, rec.qz))
         } else {
@@ -234,7 +264,7 @@ pub fn settle(
         match from {
             Some((x, y, z)) => {
                 spent.take_at(i);
-                lay(rec.round, x, y, z);
+                lay(rec.round, x, y, z, dir);
                 fell += 1;
             }
             None => i += 1,

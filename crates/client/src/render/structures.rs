@@ -556,9 +556,13 @@ const GITEM_COLOR: Color = Color::srgb(0.745, 0.667, 0.545);
 const ARROW_LEN_M: f32 = 0.8;
 const ARROW_RADIUS_M: f32 = 0.012;
 const ARROW_BURY_M: f32 = 0.15;
-/// Lean from upright, radians: 15°–45°, drawn from the stack's id. The
-/// flight's direction is not on the wire.
+/// Lean from upright, radians: 15°–45°, drawn from the stack's id, for an
+/// arrow that fell (out of a body, out of flight). One that stuck carries
+/// the way it flew (wire v94) and stands at that angle instead.
 const ARROW_LEAN: [f32; 2] = [0.26, 0.79];
+/// How much of a stuck arrow is in the trunk, the wall or the dirt: the
+/// head and a little shaft past where the sim says it went in.
+const ARROW_STUCK_M: f32 = 0.1;
 const ARROW_COLOR: Color = Color::srgb(0.71, 0.58, 0.40);
 
 /// A grid address: the key both placed stores are addressed by.
@@ -2930,7 +2934,11 @@ fn sync_loot(
             None if crate::ui::hold::is_arrow(catalog, g.item) => (
                 kit.arrow_mesh.clone(),
                 kit.arrow_mat.clone(),
-                planted_transform(position, g.id),
+                if g.stuck() {
+                    stuck_transform(position, g.dir)
+                } else {
+                    planted_transform(position, g.id)
+                },
             ),
             None => {
                 let transform = super::loot::resting_transform(
@@ -2972,6 +2980,18 @@ fn sync_loot(
         false
     });
     pending
+}
+
+/// Where a stuck arrow's shaft stands: `position` is where it went in (the
+/// sim keeps it on the free side of the trunk, the wall or the dirt), and
+/// the shaft runs back out against the way it flew, with
+/// [`ARROW_STUCK_M`] of it inside.
+pub fn stuck_transform(position: Vec3, dir: [i8; 3]) -> Transform {
+    let flew = Vec3::new(dir[0] as f32, dir[1] as f32, dir[2] as f32).normalize_or(Vec3::NEG_Y);
+    // The cylinder's +Y runs from the head to the nock, as when planted.
+    let rotation = Quat::from_rotation_arc(Vec3::Y, -flew);
+    let translation = position - flew * (ARROW_LEN_M * 0.5 - ARROW_STUCK_M);
+    Transform::from_translation(translation).with_rotation(rotation)
 }
 
 /// Where a landed arrow's shaft stands: planted at `position` (the surface
