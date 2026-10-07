@@ -236,6 +236,13 @@ name = "quality"
 path = "tests/quality.rs"
 required-features = ["render"]
 
+# The device's texture budget (`render::quality::GpuCaps`): its own binary,
+# because the caps are set once per process.
+[[test]]
+name = "gpu_caps"
+path = "tests/gpu_caps.rs"
+required-features = ["render"]
+
 # The pipeline prewarm: that every material gets a draw, that the draw wears
 # the layout the game wears, that it is under a pixel, and that it leaves.
 [[test]]
