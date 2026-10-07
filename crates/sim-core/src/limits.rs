@@ -493,6 +493,16 @@ pub const MAX_SLOT_LIVES: usize = 131_072;
 /// Proposed default, DECISIONS.md §open (occupant collision v0 row).
 pub const SLOT_CACHE_SLOTS: usize = 1_024;
 
+/// Lines in the direct-mapped memo of `cliff::crag` that the occupant query
+/// reads cliff crags through (occupy.rs), on the shard's `World`. A body's
+/// query scans at most 49 spots, so a full shard has `MAX_PLAYERS * 49` live
+/// at once; at 44 B a line this is 1.4 MB. `SLOT_CACHE_SLOTS`'s posture: a
+/// memo of a pure function, so a collision re-resolves (five ground taps off
+/// a cliff) and nothing can be lost. Must stay a power of two.
+pub const CRAG_CACHE_LINES: usize = 32_768;
+/// The same memo for one predicted body (`ClientCore`, fixtures).
+pub const CRAG_CACHE_LINES_ONE: usize = 512;
+
 /// Building-piece definitions the sim preallocates for (the shipped set
 /// is 44 rows — 11 shapes × 4 materials, content/building.toml, since
 /// triangles v0). The content bake refuses a set past this. Structural
