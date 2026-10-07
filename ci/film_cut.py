@@ -334,8 +334,9 @@ def cut(spec_path):
         af.append(chain + f",adelay={ms}|{ms}[m{k}]")
         mix.append(f"[m{k}]")
     if mix:
+        # Padded to the picture's length: the card can outlast every sound.
         af.append(f"{''.join(mix)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
-                  f"atrim=0:{total:.4f},afade=t=out:st={max(total - 1.0, 0):.4f}:d=1,"
+                  f"apad=whole_dur={total:.4f},atrim=0:{total:.4f},afade=t=out:st={max(total - 1.0, 0):.4f}:d=1,"
                   f"loudnorm=I={spec.get('loudness', -14)}:TP=-1.5:LRA=11,aresample=48000[aout]")
 
     out = rel(spec["out"])
