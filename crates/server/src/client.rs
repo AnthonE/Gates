@@ -366,6 +366,15 @@ pub struct ClientNetState {
     /// Each work's state as this client last heard it (wire v95); `None`
     /// owes it that work.
     pub last_works: [Option<WorkSeen>; sim_core::limits::MAX_WORKS],
+    /// The alphabet has gone (wire v96).
+    pub alphabet_sent: bool,
+    /// Next speaker/inscription/mechanism place the drip sends (wire v96).
+    pub arc_cursor: usize,
+    /// Each mechanism's dials and rest as this client last heard them.
+    pub last_dials:
+        [Option<([u8; sim_core::limits::MAX_DIALS], bool)>; sim_core::limits::MAX_MECHS],
+    /// The glyph mask this client last heard.
+    pub last_glyphs: Option<u64>,
     /// The owned skin set this client last heard (`SUB_SKINS_OWNED`), so the
     /// drip sends it when the sim's copy moves and never otherwise.
     pub last_skins: Option<sim_core::skin::SkinSet>,
@@ -466,6 +475,10 @@ impl ClientNetState {
             last_doors: None,
             work_cursor: 0,
             last_works: [None; sim_core::limits::MAX_WORKS],
+            alphabet_sent: false,
+            arc_cursor: 0,
+            last_dials: [None; sim_core::limits::MAX_MECHS],
+            last_glyphs: None,
             last_skins: None,
             tags_owed: TAGS_ALL,
             skins_pending: None,
@@ -493,6 +506,10 @@ impl ClientNetState {
         self.last_doors = None;
         self.work_cursor = 0;
         self.last_works = [None; sim_core::limits::MAX_WORKS];
+        self.alphabet_sent = false;
+        self.arc_cursor = 0;
+        self.last_dials = [None; sim_core::limits::MAX_MECHS];
+        self.last_glyphs = None;
         self.last_skins = None;
         self.tags_owed = TAGS_ALL;
         self.recipes_cursor = 0;

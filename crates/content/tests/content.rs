@@ -4543,6 +4543,35 @@ fn every_shipped_work_stands_on_the_public_island() {
             c.works[k].site
         );
     }
+    // And every speaker, stone and lock (`ARC.md` F5–F7), the same way.
+    let lc = c.bake_lore().expect("the lore bakes");
+    for (k, s) in lc.speakers.iter().take(lc.n_speakers as usize).enumerate() {
+        assert!(
+            sim_core::spot::world(&haven, &s.spot).is_some(),
+            "`{}` stands nowhere on seed {PUBLIC_SEED}",
+            c.speakers[k].id
+        );
+    }
+    for (k, i) in lc
+        .inscriptions
+        .iter()
+        .take(lc.n_inscriptions as usize)
+        .enumerate()
+    {
+        assert!(
+            sim_core::spot::world(&haven, &i.spot).is_some(),
+            "`{}` stands nowhere on seed {PUBLIC_SEED}",
+            c.inscriptions[k].id
+        );
+    }
+    let mc = c.bake_mechs().expect("the mechanisms bake");
+    for (k, m) in mc.defs.iter().take(mc.count as usize).enumerate() {
+        assert!(
+            sim_core::spot::world(&haven, &m.spot).is_some(),
+            "`{}` stands nowhere on seed {PUBLIC_SEED}",
+            c.mechanisms[k].id
+        );
+    }
 }
 
 /// The arc's references refuse when they dangle: a recipe waiting on an
@@ -4556,4 +4585,16 @@ fn the_arc_refuses_what_it_cannot_resolve() {
         "no work unlocks",
     );
     refuses("arc.toml", "site = \"anvil\"", "site = \"moon\"", "no site");
+    refuses(
+        "arc.toml",
+        "{mech.ring_lock}",
+        "{mech.nothing}",
+        "names no mechanism",
+    );
+    refuses(
+        "arc.toml",
+        "teaches = \"0123456789\"",
+        "teaches = \"0123456789!\"",
+        "not in the alphabet",
+    );
 }

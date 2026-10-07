@@ -146,37 +146,59 @@ so a clan cannot pre-hoard and trigger at 1 a.m.
 - Models stay in `crate::ui` and are tested headless (`tests/ui.rs`); drawing
   goes in `render/panels`.
 
-### F5 · Speakers: NPCs that talk *(sim placement + client model)*
-Static people at fixed, deterministic spots: the town first, the landmarks
-later. Dialogue lives in `content/dialogue.toml`:
-- lines grouped by speaker;
-- each line can carry a condition on the arc's state, e.g. "Nobody's lit the
-  Crucible yet";
-- replies that only change the conversation.
+### F5 · Speakers: NPCs that talk *(sim + server + client)* — built
+People at fixed spots (`sim-core/src/lore.rs`), the town first. Each speaker
+in `content/arc.toml` `[[speaker]]` has topics; each topic is a list of lines,
+and the first whose `when` holds is said. A `when` is a condition on the
+works: `sealed:`, `open:`, `lit:`, `burning:` or `embers:` plus a work, or
+`holds:` or `lacks:` plus an unlock.
 
-Speakers never hand out quests or XP. A reply with a gameplay effect is a sim
-command, like any other verb.
+`E` at a speaker opens TALK and asks the first topic.
+- A topic press is `Command::Arc` with `OP_TALK`. The sim checks reach and
+  announces it (`EV_ARC_DID`).
+- The **server** composes the line against the world now and sends it to
+  that player (`SUB_ARC_TEXT`). No string reaches the sim.
 
-### F6 · Inscriptions and glyphs *(sim + client)*
-The ancients' script is **a fixed alphabet** (`content/glyphs.toml`), so
-learning it is lasting mastery. **Messages are seeded per wipe:** the hints
-are what change. Each player has a mask of the glyphs they know (blueprint
-style), learned at bilingual stones. In the READ screen, known glyphs show as
-letters and unknown ones as glyphs. Inscriptions are places, never items in a
-bag (`WORLD.md` §11.3). First row: one stone at THE GATE that teaches three
-glyphs, and one message at a landmark.
+Speakers never hand out quests or XP. First rows: THE GATEKEEPER and THE
+TRADER at THE GATE. Still owed: replies with a gameplay effect, and speakers
+out at the landmarks.
 
-### F7 · Mechanisms: puzzles *(sim)*
-**Devices** (dial, lever, socket, plate) are grouped into a **mechanism**:
-- its solution is derived from the world seed plus a server-only salt, so the
-  client cannot compute it;
-- an inscription somewhere else on the island carries the hint;
-- on a solve, the mechanism fires **effects**: open a door, add progress to a
-  work, set a flag, or spawn a crate.
+### F6 · Inscriptions and glyphs *(sim + server + client)* — built
+The ancients' script is **a fixed alphabet** (`[glyphs]`, A–Z and 0–9), so
+learning it is lasting mastery. Each glyph is drawn as a fixed 3×5 shape
+(`client/src/ui/glyphs.rs`).
+- **The glyph mask** (`Player::glyphs`): bit per glyph, kept across death and
+  in the player file (store format 8).
+- **Teaching:** reading a stone (`OP_READ`) teaches the glyphs it names
+  (`teaches`).
+- **The text:** the server composes it, filling each `{mech.x}` with this
+  wipe's answer, and sends it only to the player at the stone. READ draws a
+  glyph you know as its letter and one you do not as its shape.
+- **The journal:** ISLAND's JOURNAL tab shows the whole alphabet as far as you
+  read it, and every stone you have read.
 
-Device state is shared, so anyone can scramble the dials. Rust's puzzles are
-on YouTube. Ours are re-seeded every wipe, and their hints are written on the
-island. First row: a three-dial lock whose hint is the F6 message.
+Inscriptions are places, never items in a bag (`WORLD.md` §11.3). First rows:
+- the gate stone, which teaches ten common letters;
+- the count stone at the spires, which teaches the digits;
+- the ring word at the arch, which holds the ring lock's answer.
+
+### F7 · Mechanisms: puzzles *(sim + server + client)* — built: dials
+A mechanism (`sim-core/src/mech.rs`) is a row of **dials**. Each press turns
+one notch (`OP_TURN`), and anyone may turn any dial.
+- **The answer** comes from the world seed and a **salt the server draws** for
+  each new world, which it saves and never sends. A client that holds the
+  seed still cannot compute it.
+- **The solve:** the turn that shows the answer pays the turner, rests the
+  lock (`rest_minutes`), scrambles the dials, and tells the whole island
+  (`EV_MECH_SOLVED`).
+
+Rust's puzzles are on YouTube. Ours are re-seeded every wipe, and their hints
+are written on the island. First row: THE RING LOCK at the stone ring, three
+dials of eight, paying a green keycard, which is the Ziggurat's first door.
+
+Still owed:
+- other devices (lever, socket, plate);
+- effects beyond a reward (open a door, add to a work, set a flag).
 
 ### F8 · The wipe itself *(server)*
 - `wipe_days` in `shard.toml`.
@@ -193,7 +215,7 @@ A month-long wipe with mid-wipe tuning needs all of it.
 
 | milestone | what lands | wipe it supports |
 |---|---|---|
-| **M0 · Framework** | F1–F7, each with its one row; the ISLAND panel and HUD banner; the revolver out of town | the current one |
+| **M0 · Framework** | F1–F7, each with its rows; the ISLAND panel and HUD banner; the revolver under the counter. **Built 2026-10-07**, except F8 | the current one |
 | **M1 · Rust but more** | act II in full: three to four works from `WORLD.md` §5.3 (Crucible, Observatory, Wells, Spine); a speaker cast at THE GATE; the first glyph trail; F8 | **two weeks**: the first public expectation |
 | **M2 · The Gate** | the Severed Gate site and the war effort quota; convoys; the countdown; the opening event; the first roaming things, drawn to noisy bases; sealed steel doors planted everywhere | three weeks |
 | **M3 · Descent** | prefab interiors under the terrain behind those doors; the interest grid's vertical layer; strange gear and its charge; extraction at the Gate (A2) | a month |

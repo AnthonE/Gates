@@ -1125,3 +1125,74 @@ pub struct ArcEffect {
     pub knob: String,
     pub pct: u16,
 }
+
+/// `content/arc.toml` `[glyphs]`: the ancients' script, one glyph per
+/// character, fixed forever (`sim_core::lore`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Glyphs {
+    pub alphabet: String,
+}
+
+/// One speaker (`[[speaker]]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Speaker {
+    pub id: String,
+    pub name: String,
+    pub site: String,
+    #[serde(default)]
+    pub nth: u8,
+    pub at: [f32; 3],
+    pub topic: Vec<Topic>,
+}
+
+/// One topic a speaker answers: the first line whose `when` holds is said.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Topic {
+    pub title: String,
+    pub lines: Vec<Line>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line {
+    #[serde(default)]
+    pub when: Option<String>,
+    pub text: String,
+}
+
+/// One inscription (`[[inscription]]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inscription {
+    pub id: String,
+    pub site: String,
+    #[serde(default)]
+    pub nth: u8,
+    pub at: [f32; 3],
+    /// The glyphs reading it teaches, as characters of the alphabet.
+    #[serde(default)]
+    pub teaches: String,
+    /// What it says, in the alphabet and spaces; `{mech.x}` is replaced by
+    /// that mechanism's answer for this wipe.
+    pub text: String,
+}
+
+/// One mechanism (`[[mechanism]]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mechanism {
+    pub id: String,
+    pub name: String,
+    pub site: String,
+    #[serde(default)]
+    pub nth: u8,
+    pub at: [f32; 3],
+    pub dials: u8,
+    pub values: u8,
+    pub reward: String,
+    pub reward_n: u16,
+    pub rest_minutes: u32,
+}

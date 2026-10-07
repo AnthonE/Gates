@@ -154,3 +154,177 @@ impl<T: Copy + Default, const N: usize> Ring<T, N> {
         Some(v)
     }
 }
+
+/// One speaker: where they stand, their name and topic titles, and the last
+/// thing they said to this player (`topic`, the words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpeakerView {
+    pub known: bool,
+    pub spot: sim_core::spot::Spot,
+    pub name: [u8; protocol::ARC_NAME_BYTES],
+    pub name_len: u8,
+    pub n_topics: u8,
+    pub topics: [[u8; protocol::ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
+    pub topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+    pub said_topic: u8,
+    pub said: [u8; protocol::ARC_TEXT_BYTES],
+    pub said_len: u16,
+}
+
+/// One inscription: where it stands, and its text once this player read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InscriptionView {
+    pub known: bool,
+    pub spot: sim_core::spot::Spot,
+    pub text: [u8; protocol::ARC_TEXT_BYTES],
+    pub len: u16,
+}
+
+/// One mechanism: where it stands, its name, and its dials now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MechView {
+    pub known: bool,
+    pub spot: sim_core::spot::Spot,
+    pub name: [u8; protocol::ARC_NAME_BYTES],
+    pub name_len: u8,
+    pub n_dials: u8,
+    pub values: u8,
+    pub dials: [u8; sim_core::limits::MAX_DIALS],
+    pub resting: bool,
+}
+
+impl Default for SpeakerView {
+    fn default() -> Self {
+        SpeakerView {
+            known: false,
+            spot: Default::default(),
+            name: [0; protocol::ARC_NAME_BYTES],
+            name_len: 0,
+            n_topics: 0,
+            topics: [[0; protocol::ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
+            topic_lens: [0; sim_core::lore::MAX_TOPICS],
+            said_topic: 0,
+            said: [0; protocol::ARC_TEXT_BYTES],
+            said_len: 0,
+        }
+    }
+}
+
+impl Default for InscriptionView {
+    fn default() -> Self {
+        InscriptionView {
+            known: false,
+            spot: Default::default(),
+            text: [0; protocol::ARC_TEXT_BYTES],
+            len: 0,
+        }
+    }
+}
+
+fn utf8(b: &[u8]) -> &str {
+    core::str::from_utf8(b).unwrap_or("")
+}
+
+impl SpeakerView {
+    pub fn name(&self) -> &str {
+        utf8(&self.name[..self.name_len as usize])
+    }
+    pub fn topic(&self, t: usize) -> &str {
+        match self.topics.get(t) {
+            Some(b) => utf8(&b[..self.topic_lens[t] as usize]),
+            None => "",
+        }
+    }
+    pub fn said(&self) -> &str {
+        utf8(&self.said[..self.said_len as usize])
+    }
+}
+
+impl InscriptionView {
+    pub fn text(&self) -> &str {
+        utf8(&self.text[..self.len as usize])
+    }
+}
+
+impl MechView {
+    pub fn name(&self) -> &str {
+        utf8(&self.name[..self.name_len as usize])
+    }
+}
+
+/// The people, the stones and the locks, the ancients' alphabet, and the
+/// glyphs this player reads (wire v96). Boxed on the core: ~14 kB.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoreView {
+    pub speakers: [SpeakerView; sim_core::limits::MAX_SPEAKERS],
+    pub n_speakers: u8,
+    pub inscriptions: [InscriptionView; sim_core::limits::MAX_INSCRIPTIONS],
+    pub n_inscriptions: u8,
+    pub mechs: [MechView; sim_core::limits::MAX_MECHS],
+    pub n_mechs: u8,
+    pub alphabet: [u8; sim_core::limits::MAX_GLYPHS],
+    pub alphabet_len: u8,
+    pub glyphs: u64,
+    pub gen: u32,
+}
+
+impl Default for LoreView {
+    fn default() -> Self {
+        LoreView {
+            speakers: [SpeakerView::default(); sim_core::limits::MAX_SPEAKERS],
+            n_speakers: 0,
+            inscriptions: [InscriptionView::default(); sim_core::limits::MAX_INSCRIPTIONS],
+            n_inscriptions: 0,
+            mechs: [MechView::default(); sim_core::limits::MAX_MECHS],
+            n_mechs: 0,
+            alphabet: [0; sim_core::limits::MAX_GLYPHS],
+            alphabet_len: 0,
+            glyphs: 0,
+            gen: 0,
+        }
+    }
+}
+
+impl LoreView {
+    /// The alphabet as the server sent it.
+    pub fn alphabet(&self) -> &[u8] {
+        &self.alphabet[..self.alphabet_len as usize]
+    }
+
+    /// Glyph `ch`'s place in the alphabet, if it is one.
+    pub fn glyph_of(&self, ch: u8) -> Option<usize> {
+        self.alphabet().iter().position(|&a| a == ch)
+    }
+
+    /// Whether this player reads character `ch` (a space always reads).
+    pub fn reads(&self, ch: u8) -> bool {
+        ch == b' '
+            || self
+                .glyph_of(ch)
+                .is_some_and(|g| self.glyphs & (1 << g) != 0)
+    }
+
+    pub fn known_speakers(&self) -> impl Iterator<Item = (usize, &SpeakerView)> {
+        self.speakers
+            .iter()
+            .enumerate()
+            .take(self.n_speakers as usize)
+            .filter(|(_, s)| s.known)
+    }
+
+    pub fn known_inscriptions(&self) -> impl Iterator<Item = (usize, &InscriptionView)> {
+        self.inscriptions
+            .iter()
+            .enumerate()
+            .take(self.n_inscriptions as usize)
+            .filter(|(_, s)| s.known)
+    }
+
+    pub fn known_mechs(&self) -> impl Iterator<Item = (usize, &MechView)> {
+        self.mechs
+            .iter()
+            .enumerate()
+            .take(self.n_mechs as usize)
+            .filter(|(_, s)| s.known)
+    }
+}

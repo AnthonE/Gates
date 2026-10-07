@@ -54,6 +54,7 @@ pub const WORK_EV_MAX: u32 = WORK_EV_REKINDLED;
 pub const OP_DEPOSIT: u8 = 0;
 /// Top up lit work `target`'s tank.
 pub const OP_FUEL: u8 = 1;
+/// The highest op this module answers; `lore.rs` and `mech.rs` own the rest.
 pub const OP_MAX: u8 = OP_FUEL;
 /// `arg` for every input at once.
 pub const ARG_ALL: u8 = 0xFF;
@@ -72,7 +73,9 @@ pub const REFUSE_A_LIT: u32 = 5;
 pub const REFUSE_A_COLD: u32 = 6;
 /// The tank is full.
 pub const REFUSE_A_FULL: u32 = 7;
-pub const REFUSE_A_MAX: u32 = REFUSE_A_FULL;
+/// A mechanism resting after a solve (`mech.rs`).
+pub const REFUSE_A_RESTING: u32 = 8;
+pub const REFUSE_A_MAX: u32 = REFUSE_A_RESTING;
 
 /// How close to a work's terminal a deposit must be, metres.
 pub const WORK_REACH_M: f32 = 4.0;

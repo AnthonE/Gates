@@ -80,6 +80,7 @@ pub mod chat;
 pub mod craft;
 pub mod death;
 pub mod draw;
+pub mod glyphs;
 pub mod hammer;
 pub mod hearth;
 pub mod hold;

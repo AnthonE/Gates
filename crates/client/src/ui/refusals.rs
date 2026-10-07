@@ -259,6 +259,7 @@ pub fn arc(code: u8) -> String {
         REFUSE_A_LIT => "it already burns — it takes fuel now".into(),
         REFUSE_A_COLD => "it is cold — fill its quota first".into(),
         REFUSE_A_FULL => "its tank is full".into(),
+        REFUSE_A_RESTING => "the lock is resting — somebody opened it a while ago".into(),
         _ => "it does not answer".into(),
     }
 }

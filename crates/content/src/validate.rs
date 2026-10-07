@@ -31,6 +31,9 @@ pub fn structural(c: &Content) -> Result<(), String> {
     // The arc refuses here as well as at the bake, so a content set with a
     // broken work never loads at all (`ARC.md` F1).
     c.bake_arc()?;
+    c.bake_lore()?;
+    c.bake_mechs()?;
+    c.bake_arc_text()?;
     for r in &c.recipes {
         if let Some(u) = &r.unlock {
             if c.unlock_code(u).is_none() {

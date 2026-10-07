@@ -2354,6 +2354,17 @@ pub fn feedback(
             toast.say(line);
         }
     }
+    // A lock opened somewhere (`ARC.md` F7): heard across the island.
+    for &(mech, by) in feed.mech_solves() {
+        let name = core
+            .lore
+            .mechs
+            .get(mech as usize)
+            .filter(|m| m.known)
+            .map_or("A LOCK", |m| m.name());
+        let who = crate::ui::names::label(core.tag(by), by);
+        toast.say(format!("{name} OPENED — {who} read the stones"));
+    }
 
     // A blueprint learned — the research verbs' LANDED half, whose refused
     // half is the `Refused::Research` arm above. `Feed::learned` had no reader

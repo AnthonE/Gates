@@ -344,6 +344,13 @@ pub fn resolve(
             aimed.0 = work;
         }
     }
+    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way.
+    if aimed.0.is_none() {
+        let lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        if lore.verb != interact::Verb::None {
+            aimed.0 = lore;
+        }
+    }
     // Down, the only prompt worth drawing is a door's (wounded v0): every
     // other `E` would be refused.
     if core.wounded && !crate::ui::wounded::allows(aimed.0.verb) {
@@ -887,6 +894,45 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                     ui.dirty = true;
                 }
             }
+        }
+        // A speaker opens the talk panel and asks the first topic: they greet
+        // you. The answer is the server's (`SUB_ARC_TEXT`).
+        Verb::Talk => {
+            let k = pick.handle as u8;
+            send(net, toast, "talk", |buf| {
+                protocol::encode_action_arc(sim_core::lore::OP_TALK, k, 0, buf)
+            });
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Talk;
+                    ui.talk = k;
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
+        // A stone sends the read and opens its panel; the text arrives as
+        // the server composes it for this player.
+        Verb::Read => {
+            let k = pick.handle as u8;
+            send(net, toast, "read", |buf| {
+                protocol::encode_action_arc(sim_core::lore::OP_READ, k, 0, buf)
+            });
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Read;
+                    ui.read = k;
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
+        // A dial turns one notch; nothing opens. The dials' drip shows it.
+        Verb::Turn => {
+            let (mech, dial) = ((pick.handle >> 8) as u8, pick.handle as u8);
+            send(net, toast, "turn", |buf| {
+                protocol::encode_action_arc(sim_core::mech::OP_TURN, mech, dial, buf)
+            });
         }
         // A work's terminal opens its panel and sends nothing; DEPOSIT and
         // FUEL send (`panels::arc::clicks`).

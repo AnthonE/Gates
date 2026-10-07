@@ -142,6 +142,9 @@ pub fn shard_with(
     core.world.works_def = t.works;
     core.work_names = t.work_names;
     core.unlock_names = t.unlock_names;
+    core.world.lore_def = t.lore;
+    core.world.mech_def = t.mechs;
+    core.arc_text = t.arc_text;
     if wildlife {
         core.world.mob = t.mobs;
     }

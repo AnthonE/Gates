@@ -245,6 +245,13 @@ pub struct Feed {
     /// `sim_core::works::WORK_EV_*`, who). Broadcast, like `knocks`.
     work_events: [(u8, u8, u32); FEED_CAP],
     n_work_events: usize,
+    /// Answers that arrived this frame (`(kind, index, topic)`, wire v96);
+    /// the words are in `ClientCore::lore`.
+    arc_texts: [(u8, u8, u8); FEED_CAP],
+    n_arc_texts: usize,
+    /// Locks solved this frame: (mechanism, who). Broadcast.
+    mech_solves: [(u8, u32); FEED_CAP],
+    n_mech_solves: usize,
     /// Eats that landed this frame: (item index, the slot it was spent
     /// from). Own-fact; the refused half rides `refusals` as
     /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
@@ -496,6 +503,16 @@ impl Feed {
         &self.work_events[..self.n_work_events]
     }
 
+    /// `(kind, index, topic)` per answer that arrived this frame.
+    pub fn arc_texts(&self) -> &[(u8, u8, u8)] {
+        &self.arc_texts[..self.n_arc_texts]
+    }
+
+    /// `(mechanism, who)` per lock solved this frame.
+    pub fn mech_solves(&self) -> &[(u8, u32)] {
+        &self.mech_solves[..self.n_mech_solves]
+    }
+
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
@@ -512,6 +529,8 @@ impl Feed {
         self.n_learned = 0;
         self.n_traded = 0;
         self.n_work_events = 0;
+        self.n_arc_texts = 0;
+        self.n_mech_solves = 0;
         self.n_consumed = 0;
         self.reloaded = 0;
         self.n_knocks = 0;
@@ -628,6 +647,24 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_work_events;
             feed.work_events[n] = ev;
             feed.n_work_events += 1;
+        }
+    }
+    while let Some(t) = core.pop_arc_text() {
+        if feed.n_arc_texts >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_arc_texts;
+            feed.arc_texts[n] = t;
+            feed.n_arc_texts += 1;
+        }
+    }
+    while let Some(m) = core.pop_mech_solved() {
+        if feed.n_mech_solves >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_mech_solves;
+            feed.mech_solves[n] = m;
+            feed.n_mech_solves += 1;
         }
     }
     while let Some(code) = core.pop_research_refusal() {

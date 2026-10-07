@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 143] = [
+const GOLDEN: [&[u8]; 149] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -206,6 +206,12 @@ const GOLDEN: [&[u8]; 143] = [
     include_bytes!("golden/event_work.bin"),
     include_bytes!("golden/event_arc_refused.bin"),
     include_bytes!("golden/action_arc.bin"),
+    include_bytes!("golden/event_arc_place.bin"),
+    include_bytes!("golden/event_arc_text.bin"),
+    include_bytes!("golden/event_arc_dials.bin"),
+    include_bytes!("golden/event_glyphs.bin"),
+    include_bytes!("golden/event_mech_solved.bin"),
+    include_bytes!("golden/event_alphabet.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -446,8 +452,15 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 140);
     g!(seen, golden_event, 141);
     g!(seen, golden_action, 142);
+    // Speakers, stones and locks (v96).
+    g!(seen, golden_event, 143);
+    g!(seen, golden_event, 144);
+    g!(seen, golden_event, 145);
+    g!(seen, golden_event, 146);
+    g!(seen, golden_event, 147);
+    g!(seen, golden_event, 148);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 143, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 149, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1943,6 +1956,94 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_work_state(index, &work, n, mine, unlocks, &mut buf).unwrap()
+        }
+        "event_arc_place.bin" => {
+            let (kind, index, total, spot, name, topics) = protocol::goldens::event_arc_place();
+            match decode_event(fixture).unwrap() {
+                EventMsg::ArcPlace {
+                    kind: k,
+                    index: i,
+                    total: t,
+                    spot: sp,
+                    name: n,
+                    name_len,
+                    n_topics,
+                    topics: tt,
+                    topic_lens,
+                    ..
+                } => {
+                    assert_eq!((k, i, t, sp), (kind, index, total, spot));
+                    assert_eq!(&n[..name_len as usize], name);
+                    assert_eq!(n_topics, 2);
+                    for j in 0..2 {
+                        assert_eq!(&tt[j][..topic_lens[j] as usize], topics[j]);
+                    }
+                }
+                other => panic!("arc place: decoded {other:?}"),
+            }
+            protocol::encode_event_arc_place(
+                kind, index, total, &spot, name, &topics, 0, 0, &mut buf,
+            )
+            .unwrap()
+        }
+        "event_arc_text.bin" => {
+            let (kind, index, topic, text) = protocol::goldens::event_arc_text();
+            match decode_event(fixture).unwrap() {
+                EventMsg::ArcText {
+                    kind: k,
+                    index: i,
+                    topic: t,
+                    text: x,
+                    len,
+                } => {
+                    assert_eq!((k, i, t), (kind, index, topic));
+                    assert_eq!(&x[..len as usize], text);
+                }
+                other => panic!("arc text: decoded {other:?}"),
+            }
+            protocol::encode_event_arc_text(kind, index, topic, text, &mut buf).unwrap()
+        }
+        "event_arc_dials.bin" => {
+            let (mech, dials, resting) = protocol::goldens::event_arc_dials();
+            let mut all = [0u8; sim_core::limits::MAX_DIALS];
+            all[..3].copy_from_slice(&dials);
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::ArcDials {
+                    mech,
+                    n: 3,
+                    dials: all,
+                    resting
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_arc_dials(mech, &dials, resting, &mut buf).unwrap()
+        }
+        "event_glyphs.bin" => {
+            let mask = protocol::goldens::event_glyphs();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Glyphs { mask },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_glyphs(mask, &mut buf).unwrap()
+        }
+        "event_mech_solved.bin" => {
+            let (mech, by) = protocol::goldens::event_mech_solved();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::MechSolved { mech, by },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_mech_solved(mech, by, &mut buf).unwrap()
+        }
+        "event_alphabet.bin" => {
+            let text = protocol::goldens::event_alphabet();
+            match decode_event(fixture).unwrap() {
+                EventMsg::Alphabet { text: t, len } => assert_eq!(&t[..len as usize], text),
+                other => panic!("alphabet: decoded {other:?}"),
+            }
+            protocol::encode_event_alphabet(text, &mut buf).unwrap()
         }
         "event_work.bin" => {
             let (index, what, by) = protocol::goldens::event_work();

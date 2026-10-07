@@ -356,6 +356,8 @@ fn test_alloc_zero() {
     // One work (`works.rs`): it opens, burns and lights itself on its own
     // sweep, all inside the tick.
     world.works_def = sim_core::works::WorksContent::probe_fixture();
+    world.lore_def = sim_core::lore::LoreContent::probe_fixture();
+    world.mech_def = sim_core::mech::MechContent::probe_fixture();
     let mut rng = Pcg32::new(0xA110C, 3);
     let mut yaws = [0u16; MAX_PLAYERS];
 
@@ -660,7 +662,7 @@ fn test_alloc_zero() {
         // grows on the stack rather than stealing a bot's input slot —
         // `MAX_COMMANDS_PER_TICK` is 256 and this is 113, so they all
         // still apply, and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 15];
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 17];
         all[..MAX_PLAYERS + 7].copy_from_slice(&cmds);
         all[MAX_PLAYERS + 7] = Command::Loot { id: 3 };
         all[MAX_PLAYERS + 8] = Command::Loot { id: 4 };
@@ -698,6 +700,20 @@ fn test_alloc_zero() {
             op: sim_core::works::OP_DEPOSIT,
             target: 0,
             arg: sim_core::works::ARG_ALL,
+        };
+        // A read and a dial turn (`lore.rs`, `mech.rs`), refused or landed
+        // wherever bots 2 and 5 stand: the verbs' whole path, in the window.
+        all[MAX_PLAYERS + 15] = Command::Arc {
+            id: 2,
+            op: sim_core::lore::OP_READ,
+            target: 0,
+            arg: 0,
+        };
+        all[MAX_PLAYERS + 16] = Command::Arc {
+            id: 5,
+            op: sim_core::mech::OP_TURN,
+            target: 0,
+            arg: (t % 3) as u8,
         };
         world.tick(&all);
         let pieces_now = world.pieces.len();

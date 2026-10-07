@@ -749,12 +749,15 @@ mod carried_through_death {
     /// `hostile` is Rust's rule — hostility "persists across death in an
     /// attempt to prevent griefing", so dying is no way back into THE GATE —
     /// and THE GATE's respawn point and its cooldown belong to the person.
-    pub const CARRIED: [&str; 9] = [
+    pub const CARRIED: [&str; 10] = [
         "id",
         "active",
         "frame",
         "deaths",
         "known",
+        // The glyphs a player reads are `known`'s kind of thing: learned,
+        // not carried (`lore.rs`).
+        "glyphs",
         "skins",
         "hostile",
         "gate_spawn",

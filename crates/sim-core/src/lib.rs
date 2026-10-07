@@ -35,6 +35,8 @@ pub mod light;
 pub mod limits;
 pub mod lock;
 pub mod loot;
+pub mod lore;
+pub mod mech;
 pub mod melee;
 pub mod mob;
 pub mod monument;

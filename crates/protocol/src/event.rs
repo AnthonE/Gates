@@ -66,6 +66,14 @@ pub const SKIN_BATCH: usize = 8;
 
 /// Longest work name on the wire (`SUB_WORK_DEF`).
 pub const WORK_NAME_BYTES: usize = 20;
+/// Longest speaker, topic or mechanism name on the wire (`SUB_ARC_PLACE`).
+pub const ARC_NAME_BYTES: usize = 24;
+/// Longest line a speaker says or a stone holds (`SUB_ARC_TEXT`).
+pub const ARC_TEXT_BYTES: usize = 280;
+/// `SUB_ARC_PLACE` kinds.
+pub const ARC_SPEAKER: u8 = 0;
+pub const ARC_INSCRIPTION: u8 = 1;
+pub const ARC_MECH: u8 = 2;
 /// Longest unlock name on the wire.
 pub const UNLOCK_NAME_BYTES: usize = 16;
 
@@ -473,7 +481,22 @@ const SUB_WORK_STATE: u32 = 80;
 const SUB_WORK: u32 = 81;
 /// An arc verb was refused (own-fact, wire v95): why, the op and its target.
 const SUB_ARC_REFUSED: u32 = 82;
-const SUB_MAX: u32 = SUB_ARC_REFUSED;
+/// Where a speaker, an inscription or a mechanism stands, and its name — a
+/// speaker's topics, a mechanism's dials (wire v96), dripped at join.
+const SUB_ARC_PLACE: u32 = 83;
+/// A speaker's answer or an inscription's text (own-fact, wire v96): what the
+/// server composed for the player who stood there and asked.
+const SUB_ARC_TEXT: u32 = 84;
+/// A mechanism's dials and whether it is resting (wire v96): per client,
+/// when they move and to a joiner.
+const SUB_ARC_DIALS: u32 = 85;
+/// The glyphs you read (own-fact, wire v96), when the mask moves.
+const SUB_GLYPHS: u32 = 86;
+/// A mechanism was solved, and by whom (wire v96). Broadcast.
+const SUB_MECH_SOLVED: u32 = 87;
+/// The ancients' alphabet (wire v96), once at join.
+const SUB_ALPHABET: u32 = 88;
+const SUB_MAX: u32 = SUB_ALPHABET;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1537,6 +1560,46 @@ pub enum EventMsg {
     Work { index: u8, what: u8, by: u32 },
     /// Your arc verb was refused (`sim_core::works::REFUSE_A_*`).
     ArcRefused { code: u8, op: u8, target: u8 },
+    /// Arc object `index` of `total` of `kind` (`ARC_SPEAKER`…, wire v96):
+    /// where it stands, its name, a speaker's topic titles, a mechanism's
+    /// dials and notches.
+    ArcPlace {
+        kind: u8,
+        index: u8,
+        total: u8,
+        spot: sim_core::spot::Spot,
+        name: [u8; ARC_NAME_BYTES],
+        name_len: u8,
+        n_topics: u8,
+        topics: [[u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
+        topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+        dials: u8,
+        values: u8,
+    },
+    /// What speaker `index` said on `topic`, or inscription `index`'s text.
+    ArcText {
+        kind: u8,
+        index: u8,
+        topic: u8,
+        text: [u8; ARC_TEXT_BYTES],
+        len: u16,
+    },
+    /// Mechanism `mech`'s first `n` dials, and whether it rests.
+    ArcDials {
+        mech: u8,
+        n: u8,
+        dials: [u8; sim_core::limits::MAX_DIALS],
+        resting: bool,
+    },
+    /// The glyphs you read.
+    Glyphs { mask: u64 },
+    /// Mechanism `mech` was solved by `by`.
+    MechSolved { mech: u8, by: u32 },
+    /// The ancients' alphabet, one character per glyph.
+    Alphabet {
+        text: [u8; sim_core::limits::MAX_GLYPHS],
+        len: u8,
+    },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
     /// charges in it; one hour's charge until wire v89). The third column
@@ -3323,6 +3386,141 @@ pub fn encode_event_arc_refused(
     Ok(w.finish())
 }
 
+/// Arc object `index` of `total` of `kind`: where it stands and what it is
+/// called; `topics` for a speaker, `(dials, values)` for a mechanism.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_event_arc_place(
+    kind: u8,
+    index: u8,
+    total: u8,
+    spot: &sim_core::spot::Spot,
+    name: &[u8],
+    topics: &[&[u8]],
+    dials: u8,
+    values: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if kind > ARC_MECH
+        || index >= 32
+        || total > 32
+        || spot.site > sim_core::spot::SITE_MAX
+        || name.len() > ARC_NAME_BYTES
+        || topics.len() > sim_core::lore::MAX_TOPICS
+        || topics.iter().any(|t| t.len() > ARC_NAME_BYTES)
+        || dials as usize > sim_core::limits::MAX_DIALS
+        || values > sim_core::mech::MAX_VALUES
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_PLACE)?;
+    w.write(kind as u32, 2)?;
+    w.write(index as u32, 5)?;
+    w.write(total as u32, 6)?;
+    w.write(spot.site as u32, 4)?;
+    w.write(spot.nth as u32, 8)?;
+    w.write(spot.x_cm as u16 as u32, 16)?;
+    w.write(spot.y_cm as u16 as u32, 16)?;
+    w.write(spot.z_cm as u16 as u32, 16)?;
+    w.write(name.len() as u32, 5)?;
+    for &b in name {
+        w.write(b as u32, 8)?;
+    }
+    match kind {
+        ARC_SPEAKER => {
+            w.write(topics.len() as u32, 3)?;
+            for t in topics {
+                w.write(t.len() as u32, 5)?;
+                for &b in *t {
+                    w.write(b as u32, 8)?;
+                }
+            }
+        }
+        ARC_MECH => {
+            w.write(dials as u32, 3)?;
+            w.write(values as u32, 4)?;
+        }
+        _ => {}
+    }
+    Ok(w.finish())
+}
+
+/// What a speaker said, or what a stone holds — to the one who asked.
+pub fn encode_event_arc_text(
+    kind: u8,
+    index: u8,
+    topic: u8,
+    text: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if kind > ARC_MECH || index >= 32 || topic >= 8 || text.len() > ARC_TEXT_BYTES {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_TEXT)?;
+    w.write(kind as u32, 2)?;
+    w.write(index as u32, 5)?;
+    w.write(topic as u32, 3)?;
+    w.write(text.len() as u32, 9)?;
+    for &b in text {
+        w.write(b as u32, 8)?;
+    }
+    Ok(w.finish())
+}
+
+/// A mechanism's dials.
+pub fn encode_event_arc_dials(
+    mech: u8,
+    dials: &[u8],
+    resting: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if mech as usize >= sim_core::limits::MAX_MECHS
+        || dials.len() > sim_core::limits::MAX_DIALS
+        || dials.iter().any(|&d| d >= 16)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_DIALS)?;
+    w.write(mech as u32, 3)?;
+    w.write(dials.len() as u32, 3)?;
+    for &d in dials {
+        w.write(d as u32, 4)?;
+    }
+    w.write_bit(resting)?;
+    Ok(w.finish())
+}
+
+/// The glyphs you read.
+pub fn encode_event_glyphs(mask: u64, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_GLYPHS)?;
+    w.write(mask as u32, 32)?;
+    w.write((mask >> 32) as u32, 32)?;
+    Ok(w.finish())
+}
+
+/// A mechanism was solved.
+pub fn encode_event_mech_solved(mech: u8, by: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if mech as usize >= sim_core::limits::MAX_MECHS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_MECH_SOLVED)?;
+    w.write(mech as u32, 3)?;
+    w.write(by, 32)?;
+    Ok(w.finish())
+}
+
+/// The ancients' alphabet.
+pub fn encode_event_alphabet(text: &[u8], buf: &mut [u8]) -> Result<usize, WireError> {
+    if text.len() > sim_core::limits::MAX_GLYPHS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ALPHABET)?;
+    w.write(text.len() as u32, 7)?;
+    for &b in text {
+        w.write(b as u32, 8)?;
+    }
+    Ok(w.finish())
+}
+
 /// Your swipe was refused.
 pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if code == 0
@@ -5010,6 +5208,139 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::ArcRefused { code, op, target }
+        }
+        SUB_ARC_PLACE => {
+            let kind = r.read(2)? as u8;
+            let index = r.read(5)? as u8;
+            let total = r.read(6)? as u8;
+            let spot = sim_core::spot::Spot {
+                site: r.read(4)? as u8,
+                nth: r.read(8)? as u8,
+                x_cm: r.read(16)? as u16 as i16,
+                y_cm: r.read(16)? as u16 as i16,
+                z_cm: r.read(16)? as u16 as i16,
+            };
+            if kind > ARC_MECH || index >= total || spot.site > sim_core::spot::SITE_MAX {
+                return Err(WireError::Malformed);
+            }
+            let mut name = [0u8; ARC_NAME_BYTES];
+            let name_len = r.read(5)? as usize;
+            if name_len > ARC_NAME_BYTES {
+                return Err(WireError::Malformed);
+            }
+            for b in name.iter_mut().take(name_len) {
+                *b = r.read(8)? as u8;
+            }
+            let mut topics = [[0u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS];
+            let mut topic_lens = [0u8; sim_core::lore::MAX_TOPICS];
+            let (mut n_topics, mut dials, mut values) = (0u8, 0u8, 0u8);
+            match kind {
+                ARC_SPEAKER => {
+                    n_topics = r.read(3)? as u8;
+                    if n_topics as usize > sim_core::lore::MAX_TOPICS {
+                        return Err(WireError::Malformed);
+                    }
+                    for (t, len) in topics
+                        .iter_mut()
+                        .zip(topic_lens.iter_mut())
+                        .take(n_topics as usize)
+                    {
+                        let l = r.read(5)? as usize;
+                        if l > ARC_NAME_BYTES {
+                            return Err(WireError::Malformed);
+                        }
+                        for b in t.iter_mut().take(l) {
+                            *b = r.read(8)? as u8;
+                        }
+                        *len = l as u8;
+                    }
+                }
+                ARC_MECH => {
+                    dials = r.read(3)? as u8;
+                    values = r.read(4)? as u8;
+                    if dials as usize > sim_core::limits::MAX_DIALS
+                        || values > sim_core::mech::MAX_VALUES
+                    {
+                        return Err(WireError::Malformed);
+                    }
+                }
+                _ => {}
+            }
+            EventMsg::ArcPlace {
+                kind,
+                index,
+                total,
+                spot,
+                name,
+                name_len: name_len as u8,
+                n_topics,
+                topics,
+                topic_lens,
+                dials,
+                values,
+            }
+        }
+        SUB_ARC_TEXT => {
+            let kind = r.read(2)? as u8;
+            let index = r.read(5)? as u8;
+            let topic = r.read(3)? as u8;
+            let len = r.read(9)? as usize;
+            if kind > ARC_MECH || len > ARC_TEXT_BYTES {
+                return Err(WireError::Malformed);
+            }
+            let mut text = [0u8; ARC_TEXT_BYTES];
+            for b in text.iter_mut().take(len) {
+                *b = r.read(8)? as u8;
+            }
+            EventMsg::ArcText {
+                kind,
+                index,
+                topic,
+                text,
+                len: len as u16,
+            }
+        }
+        SUB_ARC_DIALS => {
+            let mech = r.read(3)? as u8;
+            let n = r.read(3)? as u8;
+            if n as usize > sim_core::limits::MAX_DIALS {
+                return Err(WireError::Malformed);
+            }
+            let mut dials = [0u8; sim_core::limits::MAX_DIALS];
+            for d in dials.iter_mut().take(n as usize) {
+                *d = r.read(4)? as u8;
+            }
+            EventMsg::ArcDials {
+                mech,
+                n,
+                dials,
+                resting: r.read_bit()?,
+            }
+        }
+        SUB_GLYPHS => {
+            let lo = r.read(32)? as u64;
+            let hi = r.read(32)? as u64;
+            EventMsg::Glyphs {
+                mask: lo | hi << 32,
+            }
+        }
+        SUB_MECH_SOLVED => EventMsg::MechSolved {
+            mech: r.read(3)? as u8,
+            by: r.read(32)?,
+        },
+        SUB_ALPHABET => {
+            let len = r.read(7)? as usize;
+            if len > sim_core::limits::MAX_GLYPHS {
+                return Err(WireError::Malformed);
+            }
+            let mut text = [0u8; sim_core::limits::MAX_GLYPHS];
+            for b in text.iter_mut().take(len) {
+                *b = r.read(8)? as u8;
+            }
+            EventMsg::Alphabet {
+                text,
+                len: len as u8,
+            }
         }
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
@@ -7034,6 +7365,14 @@ mod wire_domains {
         Module {
             file: "works.rs",
             src: include_str!("../../sim-core/src/works.rs"),
+        },
+        Module {
+            file: "lore.rs",
+            src: include_str!("../../sim-core/src/lore.rs"),
+        },
+        Module {
+            file: "mech.rs",
+            src: include_str!("../../sim-core/src/mech.rs"),
         },
         Module {
             file: "sentry.rs",

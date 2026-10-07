@@ -50,6 +50,7 @@ pub mod arc;
 pub mod craft;
 pub mod inv;
 pub mod kit;
+pub mod lore;
 pub mod ring;
 pub mod tech;
 pub mod vendor;
@@ -86,6 +87,10 @@ pub enum Panel {
     Work,
     /// The island's works and the act (`O`, `arc.rs`).
     Island,
+    /// A speaker's topics and their answer (`E` at one, `lore.rs`).
+    Talk,
+    /// An inscription in the ancients' glyphs (`E` at one, `lore.rs`).
+    Read,
 }
 
 impl Panel {
@@ -108,7 +113,9 @@ impl Panel {
             | Panel::Tech
             | Panel::Vendor
             | Panel::Work
-            | Panel::Island => Page::Other,
+            | Panel::Island
+            | Panel::Talk
+            | Panel::Read => Page::Other,
         }
     }
 
@@ -200,6 +207,11 @@ pub struct Ui {
     pub vendor: u8,
     /// The work the work panel shows.
     pub work: u8,
+    /// The speaker the talk panel shows, and the stone the read panel does.
+    pub talk: u8,
+    pub read: u8,
+    /// The island page's tab: 0 the works, 1 the journal.
+    pub island_tab: u8,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -266,6 +278,9 @@ pub(crate) struct Seen {
     /// `ClientCore::arc.gen` at the last redraw: a work's row or state
     /// arriving (the work and island screens draw from it).
     pub arc_gen: u32,
+    /// `ClientCore::lore.gen` at the last redraw: a place, an answer, a dial
+    /// or a glyph arriving.
+    pub lore_gen: u32,
 }
 
 impl Default for Ui {
@@ -289,6 +304,9 @@ impl Default for Ui {
             tech_tier: 1,
             vendor: 0,
             work: 0,
+            talk: 0,
+            read: 0,
+            island_tab: 0,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -707,6 +725,8 @@ pub fn register(app: &mut App) {
                 tech::scroll,
                 vendor::clicks,
                 arc::clicks,
+                arc::tabs,
+                lore::clicks,
                 wheel::track,
                 sync_refusals,
                 inv::table_clock,
@@ -737,6 +757,7 @@ pub fn register(app: &mut App) {
                 craft::sync_status,
                 vendor::sync_status,
                 arc::sync_status,
+                lore::sync_status,
             )
                 .after(super::feed::drain)
                 .before(rebuild)
@@ -957,7 +978,14 @@ pub fn keys(
     // opens, which is how every kiosk in THE GATE stayed shut.
     if !matches!(
         ui.panel,
-        Panel::Inventory | Panel::Craft | Panel::Tech | Panel::Vendor | Panel::Work | Panel::Island
+        Panel::Inventory
+            | Panel::Craft
+            | Panel::Tech
+            | Panel::Vendor
+            | Panel::Work
+            | Panel::Island
+            | Panel::Talk
+            | Panel::Read
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1059,6 +1087,17 @@ pub fn keys(
     }
     // A work's terminal, the same way.
     if ui.panel == Panel::Work && !arc::work_in_reach(core, ui.work) {
+        ui.panel = Panel::None;
+        ui.dirty = true;
+    }
+    // A speaker or a stone, the same way.
+    let lore_k = if ui.panel == Panel::Talk {
+        ui.talk
+    } else {
+        ui.read
+    };
+    if matches!(ui.panel, Panel::Talk | Panel::Read) && !lore::lore_in_reach(core, ui.panel, lore_k)
+    {
         ui.panel = Panel::None;
         ui.dirty = true;
     }
@@ -1164,6 +1203,8 @@ pub fn rebuild(
         }
         Panel::Work => arc::build_work(&mut commands, &ui, core),
         Panel::Island => arc::build_island(&mut commands, &ui, core),
+        Panel::Talk => lore::build_talk(&mut commands, &ui, core),
+        Panel::Read => lore::build_read(&mut commands, &ui, core),
     }
 }
 
@@ -1196,6 +1237,7 @@ fn detect_changes(
             || core.skins_owned != ui.seen.skins_owned
             || core.skins_gen != ui.seen.skins_have
             || core.arc.gen != ui.seen.arc_gen
+            || core.lore.gen != ui.seen.lore_gen
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -1219,6 +1261,7 @@ fn detect_changes(
             ui.seen.skins_owned = core.skins_owned;
             ui.seen.skins_have = core.skins_gen;
             ui.seen.arc_gen = core.arc.gen;
+            ui.seen.lore_gen = core.lore.gen;
             ui.dirty = true;
         }
     }

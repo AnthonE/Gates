@@ -156,6 +156,10 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     });
 }
 
+/// An ISLAND tab: 0 the works, 1 the journal.
+#[derive(Component, Clone, Copy)]
+pub struct IslandTab(pub u8);
+
 pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     let arc = &core.arc;
     kit::screen(commands, ISLAND_W, |p| {
@@ -165,53 +169,102 @@ pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
             Some(words::act_title(arc.act())),
             &ui.status,
         );
-        kit::line(
-            p,
-            "The island is broken. The whole server switches it back on, \
-             and what one work gives, it gives everybody.",
-            12.0,
-            TEXT_DIM,
-        );
-        let mut any = false;
-        for (_, w) in arc.known() {
-            any = true;
-            kit::section(p, w.name());
-            kit::strong(p, words::state_line(w, now(core)), 13.0, TEXT);
-            match w.state {
-                WORK_LIT if w.def.fuel_max > 0 => {
-                    kit::bar(p, words::tank_pct(w) * 10, BAR_TANK, None)
-                }
-                WORK_LIT => {}
-                _ => kit::bar(p, w.progress_pm(), BAR_FILL, None),
-            }
-            let gives = words::gives_line(w);
-            if !gives.is_empty() {
-                kit::line(p, format!("gives everyone  {gives}"), 12.0, LINE_HOT);
-            }
-            if let Some(share) = words::share_line(w) {
-                kit::line(p, share, 11.0, TEXT_DIM);
-            }
-        }
-        if !any {
-            kit::line(p, "no work has woken on this island yet", 13.0, TEXT_DIM);
-        }
-        kit::section(p, "THE ISLAND HOLDS");
-        let mut held: Vec<&str> = Vec::new();
-        for (_, w) in arc.known() {
-            if w.def.floor != 0 && arc.holds(w.def.floor) {
-                held.push(w.floor_name());
-            }
-            if w.def.ceiling != 0 && arc.holds(w.def.ceiling) {
-                held.push(w.ceiling_name());
-            }
-        }
-        if held.is_empty() {
-            kit::line(p, "nothing yet — it starts broken", 12.0, TEXT_DIM);
+        kit::row(p, |r| {
+            kit::button(r, "THE WORKS", IslandTab(0), ui.island_tab == 0);
+            kit::button(r, "JOURNAL", IslandTab(1), ui.island_tab == 1);
+        });
+        if ui.island_tab == 1 {
+            journal(p, core);
         } else {
-            kit::strong(p, held.join("  ·  "), 13.0, TEXT);
+            works(p, core);
         }
         kit::hint(p, "[O] OR [ESC] CLOSE");
     });
+}
+
+fn works(p: &mut ChildSpawnerCommands, core: &ClientCore) {
+    let arc = &core.arc;
+    kit::line(
+        p,
+        "The island is broken. The whole server switches it back on, \
+         and what one work gives, it gives everybody.",
+        12.0,
+        TEXT_DIM,
+    );
+    let mut any = false;
+    for (_, w) in arc.known() {
+        any = true;
+        kit::section(p, w.name());
+        kit::strong(p, words::state_line(w, now(core)), 13.0, TEXT);
+        match w.state {
+            WORK_LIT if w.def.fuel_max > 0 => kit::bar(p, words::tank_pct(w) * 10, BAR_TANK, None),
+            WORK_LIT => {}
+            _ => kit::bar(p, w.progress_pm(), BAR_FILL, None),
+        }
+        let gives = words::gives_line(w);
+        if !gives.is_empty() {
+            kit::line(p, format!("gives everyone  {gives}"), 12.0, LINE_HOT);
+        }
+        if let Some(share) = words::share_line(w) {
+            kit::line(p, share, 11.0, TEXT_DIM);
+        }
+    }
+    if !any {
+        kit::line(p, "no work has woken on this island yet", 13.0, TEXT_DIM);
+    }
+    kit::section(p, "THE ISLAND HOLDS");
+    let mut held: Vec<&str> = Vec::new();
+    for (_, w) in arc.known() {
+        if w.def.floor != 0 && arc.holds(w.def.floor) {
+            held.push(w.floor_name());
+        }
+        if w.def.ceiling != 0 && arc.holds(w.def.ceiling) {
+            held.push(w.ceiling_name());
+        }
+    }
+    if held.is_empty() {
+        kit::line(p, "nothing yet — it starts broken", 12.0, TEXT_DIM);
+    } else {
+        kit::strong(p, held.join("  ·  "), 13.0, TEXT);
+    }
+}
+
+/// What this player has learned: the glyphs, and the stones read.
+fn journal(p: &mut ChildSpawnerCommands, core: &ClientCore) {
+    let lore = &*core.lore;
+    kit::section(p, "THE GLYPHS");
+    kit::line(p, super::lore::reading_line(lore), 12.0, TEXT_DIM);
+    let alphabet = core::str::from_utf8(lore.alphabet()).unwrap_or("");
+    // The whole alphabet, spaced: what you read shows its letter.
+    let spaced: String = alphabet.chars().flat_map(|c| [c, ' ']).collect();
+    super::lore::glyph_text(p, spaced.trim_end(), lore);
+    kit::section(p, "STONES YOU HAVE READ");
+    let mut any = false;
+    for (_, ins) in lore.known_inscriptions().filter(|(_, i)| i.len > 0) {
+        any = true;
+        super::lore::glyph_text(p, ins.text(), lore);
+    }
+    if !any {
+        kit::line(p, "none yet — the old stones are out there", 12.0, TEXT_DIM);
+    }
+    let locks: Vec<&str> = lore.known_mechs().map(|(_, m)| m.name()).collect();
+    if !locks.is_empty() {
+        kit::section(p, "LOCKS ON THE ISLAND");
+        kit::line(p, locks.join("  ·  "), 12.0, TEXT);
+    }
+}
+
+/// A tab press switches the island page.
+pub fn tabs(mut ui: ResMut<Ui>, presses: Query<(&Interaction, &IslandTab), Changed<Interaction>>) {
+    if ui.panel != Panel::Island {
+        return;
+    }
+    for (interaction, t) in presses.iter() {
+        if *interaction == Interaction::Pressed && ui.island_tab != t.0 {
+            ui.island_tab = t.0;
+            ui.dirty = true;
+        }
+    }
 }
 
 /// A press sends the verb; the work's bars and the status line answer.

@@ -477,6 +477,24 @@ pub fn hash(c: &Content) -> u64 {
         h.s(&e.knob);
         h.u(e.pct as u32);
     }
+    // What saves point into: a glyph mask is bits over the alphabet, and a
+    // mechanism's dials are filed under its row. File order, the works'
+    // reason. The words themselves never reach a save.
+    h.s(&c.glyphs.alphabet);
+    h.u(c.inscriptions.len() as u32);
+    for i in &c.inscriptions {
+        h.s(&i.id);
+        h.s(&i.teaches);
+    }
+    h.u(c.mechanisms.len() as u32);
+    for m in &c.mechanisms {
+        h.s(&m.id);
+        h.u(m.dials as u32);
+        h.u(m.values as u32);
+        h.s(&m.reward);
+        h.u(m.reward_n as u32);
+        h.u(m.rest_minutes);
+    }
 
     h.0.digest()
 }

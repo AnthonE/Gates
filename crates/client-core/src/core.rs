@@ -1450,6 +1450,13 @@ pub struct ClientCore {
     /// in `render/feed.rs`.
     work_events: crate::arc::Ring<(u8, u8, u32), TOAST_RING>,
     arc_refusals: crate::arc::Ring<(u8, u8, u8), REFUSAL_RING>,
+    /// Speakers, stones and locks, the alphabet and the glyphs read (wire
+    /// v96, `arc.rs`).
+    pub lore: Box<crate::arc::LoreView>,
+    /// `(kind, index, topic)` per answer that arrived, and `(mechanism,
+    /// by)` per lock solved — read once in `render/feed.rs`.
+    arc_texts: crate::arc::Ring<(u8, u8, u8), TOAST_RING>,
+    mech_solves: crate::arc::Ring<(u8, u32), TOAST_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
@@ -2073,6 +2080,9 @@ impl ClientCore {
             arc: crate::arc::ArcView::default(),
             work_events: Default::default(),
             arc_refusals: Default::default(),
+            lore: Box::default(),
+            arc_texts: Default::default(),
+            mech_solves: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
@@ -2403,6 +2413,99 @@ impl ClientCore {
             }
             EventMsg::Work { index, what, by } => self.work_events.push((index, what, by)),
             EventMsg::ArcRefused { code, op, target } => self.arc_refusals.push((code, op, target)),
+            EventMsg::ArcPlace {
+                kind,
+                index,
+                total,
+                spot,
+                name,
+                name_len,
+                n_topics,
+                topics,
+                topic_lens,
+                dials,
+                values,
+            } => {
+                let l = &mut *self.lore;
+                let k = index as usize;
+                match kind {
+                    protocol::ARC_SPEAKER => {
+                        l.n_speakers = total.min(sim_core::limits::MAX_SPEAKERS as u8);
+                        if let Some(s) = l.speakers.get_mut(k) {
+                            s.known = true;
+                            s.spot = spot;
+                            s.name = name;
+                            s.name_len = name_len;
+                            s.n_topics = n_topics;
+                            s.topics = topics;
+                            s.topic_lens = topic_lens;
+                        }
+                    }
+                    protocol::ARC_INSCRIPTION => {
+                        l.n_inscriptions = total.min(sim_core::limits::MAX_INSCRIPTIONS as u8);
+                        if let Some(i) = l.inscriptions.get_mut(k) {
+                            i.known = true;
+                            i.spot = spot;
+                        }
+                    }
+                    _ => {
+                        l.n_mechs = total.min(sim_core::limits::MAX_MECHS as u8);
+                        if let Some(m) = l.mechs.get_mut(k) {
+                            m.known = true;
+                            m.spot = spot;
+                            m.name = name;
+                            m.name_len = name_len;
+                            m.n_dials = dials;
+                            m.values = values;
+                        }
+                    }
+                }
+                l.gen = l.gen.wrapping_add(1);
+            }
+            EventMsg::ArcText {
+                kind,
+                index,
+                topic,
+                text,
+                len,
+            } => {
+                let l = &mut *self.lore;
+                if kind == protocol::ARC_SPEAKER {
+                    if let Some(s) = l.speakers.get_mut(index as usize) {
+                        s.said_topic = topic;
+                        s.said = text;
+                        s.said_len = len;
+                    }
+                } else if let Some(i) = l.inscriptions.get_mut(index as usize) {
+                    i.text = text;
+                    i.len = len;
+                }
+                l.gen = l.gen.wrapping_add(1);
+                self.arc_texts.push((kind, index, topic));
+            }
+            EventMsg::ArcDials {
+                mech,
+                n,
+                dials,
+                resting,
+            } => {
+                if let Some(m) = self.lore.mechs.get_mut(mech as usize) {
+                    m.dials = dials;
+                    m.n_dials = m.n_dials.max(n);
+                    m.resting = resting;
+                }
+                self.lore.gen = self.lore.gen.wrapping_add(1);
+            }
+            EventMsg::Glyphs { mask } => {
+                self.lore.glyphs = mask;
+                self.lore.gen = self.lore.gen.wrapping_add(1);
+            }
+            EventMsg::MechSolved { mech, by } => self.mech_solves.push((mech, by)),
+            EventMsg::Alphabet { text, len } => {
+                self.lore.alphabet = text;
+                self.lore.alphabet_len = len;
+                self.lore.gen = self.lore.gen.wrapping_add(1);
+            }
             EventMsg::Hostile { until } => self.hostile_until = until,
             EventMsg::SwipeRefused { code, door } => {
                 if self.swipe_refusal_len == REFUSAL_RING {
@@ -3921,6 +4024,17 @@ impl ClientCore {
     /// Oldest refused arc verb: `(code, op, target)`.
     pub fn pop_arc_refused(&mut self) -> Option<(u8, u8, u8)> {
         self.arc_refusals.pop()
+    }
+
+    /// Oldest answer that arrived: `(kind, index, topic)`; the words are in
+    /// `lore`.
+    pub fn pop_arc_text(&mut self) -> Option<(u8, u8, u8)> {
+        self.arc_texts.pop()
+    }
+
+    /// Oldest lock solved: `(mechanism, by)`.
+    pub fn pop_mech_solved(&mut self) -> Option<(u8, u32)> {
+        self.mech_solves.pop()
     }
 
     /// Oldest swipe refusal: `(code, door)`.

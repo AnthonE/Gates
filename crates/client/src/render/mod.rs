@@ -120,10 +120,12 @@ pub mod hud;
 // terminals in the world.
 pub mod arc_hud;
 pub mod hurt_flash;
+// Speakers, stones and dials (`ARC.md` F5–F7).
 pub mod impact;
 pub mod input;
 pub mod loading;
 pub mod loot;
+pub mod lore;
 pub mod surface;
 pub mod works;
 // The island map. Painted from the same `terrain::splat_from` the ground
@@ -1575,6 +1577,8 @@ impl Plugin for GatesRenderPlugin {
                         // The works' terminals (`ARC.md` F1): stood up as
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light).chain(),
+                        // Speakers, stones and dials (`ARC.md` F5–F7).
+                        (lore::spawn, lore::dials).chain(),
                     ),
                     (hud::pad_overlay, hud::hearth_overlay),
                 )

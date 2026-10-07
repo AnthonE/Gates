@@ -78,11 +78,13 @@ pub use event::{
     SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
-    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
+    encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
+    encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
+    encode_event_work, encode_event_work_def, encode_event_work_state, ARC_INSCRIPTION, ARC_MECH,
+    ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
-    encode_event_arc_refused, encode_event_work, encode_event_work_def, encode_event_work_state,
-    UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
+    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
@@ -1065,7 +1067,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `SUB_ARC_REFUSED` (82) answers a refused verb. A recipe row and a vendor
 /// offer each carry the world unlock they wait on (six bits after the
 /// blueprint bit, and after `get_n`).
-pub const PROTO_VER: u16 = 95;
+/// v96 — speakers, stones and locks (`ARC.md` F5–F7). `ACT_ARC` grows
+/// three ops (talk, read, turn). `SUB_ARC_PLACE` (83) drips where each
+/// speaker, inscription and mechanism stands, `SUB_ARC_TEXT` (84) answers a
+/// word or a read, `SUB_ARC_DIALS` (85) carries a mechanism's dials,
+/// `SUB_GLYPHS` (86) the glyphs you read, `SUB_MECH_SOLVED` (87) a lock
+/// opening and `SUB_ALPHABET` (88) the ancients' alphabet.
+pub const PROTO_VER: u16 = 96;
 
 /// This game's slug in the elo catalog.
 ///

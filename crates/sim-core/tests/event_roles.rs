@@ -107,7 +107,7 @@ use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
     TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
-use sim_core::world::{EV_ARC_REFUSED, EV_WORK};
+use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_WORK};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
@@ -4276,11 +4276,13 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 56] = [
+    const COVERED: [(&str, u8); 58] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_WORK", EV_WORK),
         ("EV_ARC_REFUSED", EV_ARC_REFUSED),
+        ("EV_ARC_DID", EV_ARC_DID),
+        ("EV_MECH_SOLVED", EV_MECH_SOLVED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
         ("EV_PIECE_PLACED", EV_PIECE_PLACED),
@@ -5704,6 +5706,75 @@ fn a_work_names_itself_what_happened_and_who() {
     assert_eq!(w.works.w[0].state, WORK_LIT);
     assert_eq!(w.works.unlocks, 0b11, "floor and ceiling both held");
     assert_eq!(w.works.w[0].points_of(BUILDER), 20_000, "two whole lines");
+}
+
+/// `EV_ARC_DID: a = player, b = op, c = target << 8 | arg` for a word and a
+/// read (which teaches the stone's glyphs), then for each turn of a dial;
+/// and `EV_MECH_SOLVED: a = mechanism, b = solver` on the turn that shows
+/// this world's answer, which pays the solver and rests the lock.
+#[test]
+fn lore_and_locks_name_the_player_the_op_and_the_solver() {
+    use sim_core::lore::{LoreContent, OP_READ, OP_TALK};
+    use sim_core::mech::{answers, dial_spot, MechContent, OP_TURN};
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.lore_def = LoreContent::probe_fixture();
+    w.mech_def = MechContent::probe_fixture();
+    w.arc.salt = 0xFEED;
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let (x, _, z) = sim_core::spot::world(&w.haven, &w.lore_def.speakers[0].spot)
+        .expect("the fixture seed has a town");
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    let arc = |op, target, arg| Command::Arc {
+        id: BUILDER,
+        op,
+        target,
+        arg,
+    };
+    w.tick(&[arc(OP_TALK, 0, 1)]);
+    let ev = only(&w, EV_ARC_DID);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, OP_TALK as u32, 1));
+    w.tick(&[arc(OP_READ, 0, 0)]);
+    let ev = only(&w, EV_ARC_DID);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, OP_READ as u32, 0));
+    assert_eq!(w.players[0].glyphs, 0b1_0001, "the stone taught its glyphs");
+
+    let def = w.mech_def.defs[0];
+    let want = answers(w.arc.salt, w.seed, 0, &def);
+    let mut solved = false;
+    for (d, &goal) in want.iter().enumerate().take(def.dials as usize) {
+        let (dx, _, dz) = sim_core::spot::world(&w.haven, &dial_spot(&def, d)).unwrap();
+        w.players[0].body = Body::at(SEED, hv(SEED), dx, dz);
+        while w.arc.mechs[0].dials[d] != goal && !solved {
+            w.tick(&[arc(OP_TURN, 0, d as u8)]);
+            let ev = only(&w, EV_ARC_DID);
+            assert_eq!((ev.a, ev.b, ev.c), (BUILDER, OP_TURN as u32, d as u32));
+            if count(&w, EV_MECH_SOLVED) > 0 {
+                let ev = only(&w, EV_MECH_SOLVED);
+                assert_eq!((ev.a, ev.b), (0, BUILDER));
+                solved = true;
+            }
+        }
+    }
+    if !solved {
+        // Every dial already read its answer before the last turn landed:
+        // nudge the last one round once more to land the solve on a turn.
+        let d = def.dials as usize - 1;
+        for _ in 0..def.values {
+            w.tick(&[arc(OP_TURN, 0, d as u8)]);
+            if count(&w, EV_MECH_SOLVED) > 0 {
+                solved = true;
+                break;
+            }
+        }
+    }
+    assert!(solved, "the answer opened the lock");
+    assert!(w.arc.mechs[0].rest_until > w.tick, "the lock rests");
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[0].inv, def.reward),
+        def.reward_n as u32,
+        "the solver was paid"
+    );
 }
 
 /// `EV_SWIPE_REFUSED: a = player, b = reason, c = door`, then `EV_SWIPE:

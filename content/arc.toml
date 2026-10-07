@@ -46,3 +46,105 @@ inputs = [
 unlock = "unlock.smelting"
 knob = "smelt_pct"
 pct = 200
+
+# ── The ancients' script (`ARC.md` F6) ────────────────────────────────────
+# One glyph per character, fixed forever, so learning it is mastery that
+# lasts. A player learns glyphs by reading the stones that teach them; a
+# client draws a known glyph as its letter and an unknown one as the glyph.
+[glyphs]
+alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+# ── Speakers (`ARC.md` F5) ────────────────────────────────────────────────
+# People who talk. Each topic is a list of lines; the first whose `when`
+# holds is said. `when` is one of:
+#   sealed:<work> · open:<work> · lit:<work> · burning:<work> · embers:<work>
+#   holds:<unlock> · lacks:<unlock>
+# and a line with no `when` always holds. Nothing here names what the
+# island is for (`WORLD.md` §11.3).
+
+[[speaker]]
+id = "speaker.gatekeeper"
+name = "THE GATEKEEPER"
+site = "town"
+at = [3.0, 0.0, -27.0]
+
+[[speaker.topic]]
+title = "WHO ARE YOU"
+lines = [
+    { text = "I keep the gate. Some days I think it keeps me. You woke on the sand like the rest of us. It would not take you either." },
+]
+
+[[speaker.topic]]
+title = "THE ISLAND"
+lines = [
+    { when = "sealed:work.crucible", text = "Everything out there was built by people who knew exactly what they were doing. None of it works now. The forge under the anvil rock went cold before any of us woke. It will open, in time. Be ready to feed it." },
+    { when = "open:work.crucible", text = "The forge under the anvil rock is open. It eats stone, ore and charcoal, more than one pair of hands can carry. Feed it together, or wait for it to wake on its own with an empty belly." },
+    { when = "burning:work.crucible", text = "The Crucible burns. Somebody fed it. Powder can be made again, and every furnace on the island runs hot while its tank holds. Keep it fed and it stays that way." },
+    { when = "embers:work.crucible", text = "The Crucible still glows, so the powder stays. But its tank is dry and the furnaces are slow again. Somebody should feed it." },
+]
+
+[[speaker.topic]]
+title = "THE STONES"
+lines = [
+    { text = "There is writing on the old stones. Nobody here reads it. Stand at the one by the gate and some of the marks start to mean something. Do that at enough stones and you will read things the rest of us walk past." },
+]
+
+[[speaker]]
+id = "speaker.trader"
+name = "THE TRADER"
+site = "town"
+at = [0.0, 0.0, 35.0]
+
+[[speaker.topic]]
+title = "GUNS"
+lines = [
+    { when = "lacks:unlock.gunpowder", text = "No powder anywhere on this island until the Crucible burns. I keep the iron under the counter until then. Bows and spears, friend. Everybody is a rat this week." },
+    { text = "Powder is back, so the iron is on the counter. Don't point it at me." },
+]
+
+[[speaker.topic]]
+title = "JUNK"
+lines = [
+    { text = "Junk is money here. Paper, parts, me. Carry it and you can lose it. People say there is a way to send it off the island. I say keep walking." },
+]
+
+# ── Inscriptions (`ARC.md` F6) ────────────────────────────────────────────
+# Writing on the island, in glyphs. `teaches` is the glyphs reading it
+# teaches (a bilingual stone). `{mech.x}` in a text is replaced by that
+# mechanism's answer for this wipe, digit by digit. The server composes it,
+# and only for a player standing at the stone.
+
+[[inscription]]
+id = "inscription.gate_stone"
+site = "town"
+at = [-3.5, 0.0, -27.0]
+teaches = "AEIORSTNHL"
+text = "WHAT IS FED WILL BURN AND WHAT BURNS WILL OPEN"
+
+[[inscription]]
+id = "inscription.count_stone"
+site = "spires"
+at = [-4.0, 0.0, -8.0]
+teaches = "0123456789"
+text = "COUNT THE RINGS 0 1 2 3 4 5 6 7 8 9"
+
+[[inscription]]
+id = "inscription.ring_word"
+site = "arch"
+at = [0.0, 0.0, -6.0]
+text = "AT THE RING OF STONES TURN THE THREE TO {mech.ring_lock}"
+
+# ── Mechanisms (`ARC.md` F7) ──────────────────────────────────────────────
+# A row of dials. Every dial turns one notch per press. Show this wipe's
+# answer and the last hand to turn takes the reward; it then rests.
+
+[[mechanism]]
+id = "mech.ring_lock"
+name = "THE RING LOCK"
+site = "stones"
+at = [0.0, 0.0, -4.5]
+dials = 3
+values = 8
+reward = "item.keycard_green"
+reward_n = 1
+rest_minutes = 45

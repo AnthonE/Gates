@@ -156,6 +156,13 @@ struct ArcFile {
     work: Vec<Work>,
     #[serde(default)]
     effect: Vec<schema::ArcEffect>,
+    glyphs: Glyphs,
+    #[serde(default)]
+    speaker: Vec<Speaker>,
+    #[serde(default)]
+    inscription: Vec<Inscription>,
+    #[serde(default)]
+    mechanism: Vec<Mechanism>,
 }
 
 /// The whole validated content set. Construction is the only way in, so
@@ -199,6 +206,12 @@ pub struct Content {
     pub arc: ArcGlobals,
     pub works: Vec<Work>,
     pub arc_effects: Vec<schema::ArcEffect>,
+    /// The ancients' script, the people who talk, the writing on the stones
+    /// and the locks (`arc.toml`, `ARC.md` F5–F7).
+    pub glyphs: Glyphs,
+    pub speakers: Vec<Speaker>,
+    pub inscriptions: Vec<Inscription>,
+    pub mechanisms: Vec<Mechanism>,
     pub balance: Balance,
     anchors: Anchors,
 }
@@ -295,6 +308,10 @@ impl Content {
             arc: arc.arc,
             works: arc.work,
             arc_effects: arc.effect,
+            glyphs: arc.glyphs,
+            speakers: arc.speaker,
+            inscriptions: arc.inscription,
+            mechanisms: arc.mechanism,
             balance,
             anchors: Anchors::default(),
         };

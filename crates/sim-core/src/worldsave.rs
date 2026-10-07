@@ -210,7 +210,14 @@ use crate::worldcont::WorldContRec;
 /// **21 — the works** (`works.rs`, `ARC.md` F1): every work slot's state,
 /// fuel, burn remainder, lit tick, quota progress and credits, after the
 /// weather record and before the section counts.
-pub const WORLD_SAVE_FORMAT: u16 = 21;
+///
+/// **22 — speakers, stones and locks** (`lore.rs`, `mech.rs`): the world's
+/// salt and every mechanism's dials after the works, and each body's glyph
+/// mask in its `PlayerSave` (+8).
+pub const WORLD_SAVE_FORMAT: u16 = 22;
+
+/// The head's arc block: the salt, then every mechanism slot.
+pub const ARC_SAVE_BYTES: usize = 8 + crate::limits::MAX_MECHS * crate::mech::MECH_BYTES;
 
 /// The head's works block: every slot, written whether or not content
 /// names a work there, so the head stays a fixed size.
@@ -233,7 +240,7 @@ pub const ENV_BYTES: usize = 1 + 8 + 6 * 2 + 1 + 4;
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
 pub const HEAD_BYTES: usize =
-    2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + WORKS_SAVE_BYTES + SECTION_COUNTS;
+    2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + WORKS_SAVE_BYTES + ARC_SAVE_BYTES + SECTION_COUNTS;
 /// Twelve `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
@@ -450,7 +457,8 @@ pub enum WorldSaveError {
     BadExposure,
     /// A harvested slot claims to be felled and regrowing at once.
     BadSlotLife,
-    /// A work slot names a state past lit.
+    /// A work slot names a state past lit, or a mechanism's dial a notch
+    /// past `mech::MAX_VALUES`.
     BadWork,
 }
 
@@ -477,7 +485,7 @@ impl WorldSaveError {
             Self::BadEnv => "the weather record names an impossible sky or clock",
             Self::BadExposure => "a body is wetter or colder than a body can be",
             Self::BadSlotLife => "a felled slot claims to be regrowing too",
-            Self::BadWork => "a work claims a state past lit",
+            Self::BadWork => "a work claims a state past lit, or a dial a notch past ten",
         }
     }
 }
@@ -574,6 +582,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u32(e.day_offset);
     for work in w.works.w.iter() {
         o.bytes(&work.to_bytes());
+    }
+    o.u64(w.arc.salt);
+    for m in w.arc.mechs.iter() {
+        o.bytes(&m.to_bytes());
     }
 
     // Bodies. Everyone in the file is written as a sleeper *by the loader*,
@@ -1002,6 +1014,20 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             return Err(WorldSaveError::BadWork);
         }
     }
+    let mut arc = crate::mech::ArcState {
+        salt: r.u64()?,
+        ..Default::default()
+    };
+    for m in arc.mechs.iter_mut() {
+        let raw: &[u8; crate::mech::MECH_BYTES] = r
+            .take(crate::mech::MECH_BYTES)?
+            .try_into()
+            .map_err(|_| WorldSaveError::Truncated)?;
+        *m = crate::mech::Mech::from_bytes(raw);
+        if m.dials.iter().any(|&d| d >= crate::mech::MAX_VALUES) {
+            return Err(WorldSaveError::BadWork);
+        }
+    }
 
     let n_players = r.count(MAX_PLAYERS)?;
     let n_pieces = r.count(MAX_PIECES)?;
@@ -1110,6 +1136,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             worn: save.worn,
             jobs: save.jobs,
             known: save.known,
+            glyphs: save.glyphs,
             hp: save.hp,
             hp_max: save.hp_max,
             deaths: save.deaths,
@@ -1788,6 +1815,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.env = env;
     *w.works = works;
     w.works.refresh(&w.works_def);
+    *w.arc = arc;
     w.players = players;
     w.pieces
         .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
@@ -1901,8 +1929,9 @@ mod tests {
         // chill and the cold's remainder in the tail (weather v0). 381 →
         // 485 at format 16 (skins v0): eight-byte stacks and six-byte jobs
         // in `PlayerSave` (+72) and the owned set in the tail (+32).
+        // 485 → 493 at format 22: the glyph mask in `PlayerSave`.
         assert_eq!(
-            PLAYER_BYTES, 485,
+            PLAYER_BYTES, 493,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1912,8 +1941,8 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 1_380                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21)
-            + 100 * 485                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
+        let by_hand = 1_516                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22)
+            + 100 * 493                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 256 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
@@ -1941,7 +1970,9 @@ mod tests {
                             // works, every slot whether or not content
                             // names one (`MAX_WORKS` × `WORK_BYTES`).
         assert_eq!(crate::works::WORK_BYTES, 161);
-        assert_eq!(HEAD_BYTES, 1_380);
+        // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
+        assert_eq!(crate::mech::MECH_BYTES, 16);
+        assert_eq!(HEAD_BYTES, 1_516);
         // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
         assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
@@ -2033,9 +2064,10 @@ mod tests {
         // three bytes on each of 512 loose stacks, and where in its body
         // an arrow went in, nine on each of 512 stopped arrows. Then
         // 3_557_904: 64 fires × 28 and their count. 3_559_192 at format
-        // 21: the works block in the head, 8 × 161.
+        // 21: the works block in the head, 8 × 161. 3_560_128 at format 22:
+        // the salt and the mechanisms (136) and a glyph mask on 100 bodies.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_559_192,
+            WORLD_SAVE_MAX_BYTES, 3_560_128,
             "the world save ceiling moved"
         );
     }

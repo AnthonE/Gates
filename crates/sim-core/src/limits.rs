@@ -761,6 +761,15 @@ pub const MAX_UNLOCKS: usize = 32;
 pub const MAX_WORK_CREDITS: usize = 16;
 /// Effect rows (`[[effect]]`): an unlock turning a knob.
 pub const MAX_ARC_EFFECTS: usize = 16;
+/// Speakers on the island (`lore.rs`, `ARC.md` F5).
+pub const MAX_SPEAKERS: usize = 16;
+/// Inscriptions on the island (`lore.rs`, `ARC.md` F6).
+pub const MAX_INSCRIPTIONS: usize = 32;
+/// The ancients' alphabet: the width of `Player::glyphs`.
+pub const MAX_GLYPHS: usize = 64;
+/// Mechanisms on the island (`mech.rs`, `ARC.md` F7), and dials one has.
+pub const MAX_MECHS: usize = 8;
+pub const MAX_DIALS: usize = 4;
 
 /// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
 /// is a place to put things down, not a second inventory, and the whole

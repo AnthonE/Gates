@@ -390,6 +390,11 @@ pub struct SimTables {
     pub works: sim_core::works::WorksContent,
     pub work_names: Vec<String>,
     pub unlock_names: Vec<String>,
+    /// Speakers, inscriptions and mechanisms, and the words the server
+    /// answers with (`ARC.md` F5–F7).
+    pub lore: sim_core::lore::LoreContent,
+    pub mechs: sim_core::mech::MechContent,
+    pub arc_text: content::bake::ArcText,
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -421,6 +426,9 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         works: content.bake_arc()?,
         work_names: content.bake_work_names(),
         unlock_names: content.bake_unlock_names(),
+        lore: content.bake_lore()?,
+        mechs: content.bake_mechs()?,
+        arc_text: content.bake_arc_text()?,
         combat,
         gather,
         survival,
@@ -3109,6 +3117,9 @@ fn sim_thread(
         works,
         work_names,
         unlock_names,
+        lore,
+        mechs,
+        arc_text,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -3134,6 +3145,9 @@ fn sim_thread(
     core.world.works.refresh(&core.world.works_def);
     core.work_names = work_names;
     core.unlock_names = unlock_names;
+    core.world.lore_def = lore;
+    core.world.mech_def = mechs;
+    core.arc_text = arc_text;
     core.install_admins(admins);
     core.trust = trust;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
@@ -3159,6 +3173,13 @@ fn sim_thread(
         }
     }
     drop(world_blob);
+    // A world nobody has salted draws its secret now (`sim_core::mech`): a
+    // fresh world, or one saved before the arc had one. The puzzles' answers
+    // follow from it, so this wipe's are not last wipe's and no client that
+    // holds only the seed can work them out.
+    if core.world.arc.salt == 0 {
+        core.world.arc.salt = fresh_salt();
+    }
     // The town's public stations (`World::seed_authored`), after the load and
     // before the first tick: a saved world already holds them and this is a
     // no-op there.
@@ -3475,6 +3496,15 @@ fn sim_thread(
     // are already written to wait for: the accept loop drains `save_rx`
     // until it is abandoned, and the store thread exits when its own ring is
     // dry and abandoned. Nothing is timed and nothing is guessed.
+}
+
+/// A random `u64` for a world's arc salt, from the OS-seeded hasher keys
+/// std draws per process. Never 0, which means "unsalted".
+fn fresh_salt() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(std::process::id() as u64);
+    h.finish().max(1)
 }
 
 #[cfg(test)]

@@ -855,7 +855,17 @@ pub const EV_WORK: u8 = 55;
 /// target. Own-fact.
 pub const EV_ARC_REFUSED: u8 = 56;
 
-pub const EV_MAX: u8 = EV_ARC_REFUSED;
+/// EV_ARC_DID: a = player id, b = the op (`lore::OP_TALK`, `lore::OP_READ`,
+/// `mech::OP_TURN`), c = target << 8 | arg. Own-fact: the server answers a
+/// word or a read with its text (`lore.rs`); a turn moves the dials the
+/// mechanism drip carries.
+pub const EV_ARC_DID: u8 = 57;
+
+/// EV_MECH_SOLVED: a = the mechanism (`mech.rs`), b = who solved it, c = 0.
+/// **Broadcast**: a lock opening is heard across the island.
+pub const EV_MECH_SOLVED: u8 = 58;
+
+pub const EV_MAX: u8 = EV_MECH_SOLVED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1149,6 +1159,10 @@ pub struct Player {
     /// (research.rs). Sim state, saved with the player, and the reason
     /// `Player` carries a mask rather than a set — one shift on the craft
     /// path, nothing to iterate, nothing to allocate.
+    /// The ancients' glyphs this player can read (`lore.rs`): bit `g` is
+    /// glyph `g` of `content/arc.toml`'s alphabet. Known, like `known`: a
+    /// death does not take it, and the player file keeps it.
+    pub glyphs: u64,
     pub known: u64,
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
@@ -1350,6 +1364,7 @@ impl Default for Player {
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
             known: 0,
+            glyphs: 0,
             hp: 0,
             hp_max: 0,
             deaths: 0,
@@ -1945,6 +1960,13 @@ pub struct World {
     /// The works' state and the unlocks they hold — sim state, hashed once
     /// any work moves and saved. Boxed for `mobs`' stack reason.
     pub works: Box<crate::works::Works>,
+    /// Speakers and inscriptions, and the mechanisms (`lore.rs`, `mech.rs`):
+    /// construction input, `EMPTY` holding none.
+    pub lore_def: crate::lore::LoreContent,
+    pub mech_def: crate::mech::MechContent,
+    /// The world's secret and the mechanisms' dials — sim state, hashed once
+    /// it is not fresh and saved. The salt is never sent to a client.
+    pub arc: Box<crate::mech::ArcState>,
     /// The keycard item each card door takes (`monument::DOORS`), baked
     /// from content; `NO_ITEM` opens nothing.
     pub cards: [u16; crate::monument::CARD_DOORS],
@@ -2176,6 +2198,9 @@ impl World {
             vend: crate::vend::VendContent::EMPTY,
             works_def: crate::works::WorksContent::EMPTY,
             works: Box::default(),
+            lore_def: crate::lore::LoreContent::EMPTY,
+            mech_def: crate::mech::MechContent::EMPTY,
+            arc: Box::default(),
             cards: [crate::gather::NO_ITEM; crate::monument::CARD_DOORS],
             card_doors: [0; crate::monument::CARD_DOORS],
             card_door_bits: 0,
@@ -3495,6 +3520,7 @@ impl World {
             // `dead` by hand — the hand-set version of the same test
             // passed, because it never came through this function.
             known: body.known,
+            glyphs: body.glyphs,
             // Carried for `known`'s reason: what a player owns is not in
             // their pockets, so a death does not take it (`skin.rs`).
             skins: body.skins,
@@ -3701,6 +3727,7 @@ impl World {
             hp_max: hp,
             deaths,
             known,
+            glyphs: body.glyphs,
             // The owned skins survive the new body, as `known` does.
             skins: body.skins,
             // Hostility survives the death (Rust's rule, `die`'s note).
@@ -3876,6 +3903,7 @@ impl World {
                     worn: s.worn,
                     jobs: s.jobs,
                     known: s.known,
+                    glyphs: s.glyphs,
                     hp: s.hp,
                     hp_max: s.hp_max,
                     deaths: s.deaths,
@@ -4923,17 +4951,40 @@ impl World {
                 arg,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    crate::works::act(
-                        &self.works_def,
-                        &mut self.works,
-                        &self.haven,
-                        self.tick,
-                        &mut self.players[slot],
-                        op,
-                        target,
-                        arg,
-                        &mut self.events,
-                    );
+                    match op {
+                        crate::lore::OP_TALK | crate::lore::OP_READ => crate::lore::act(
+                            &self.lore_def,
+                            &self.haven,
+                            &mut self.players[slot],
+                            op,
+                            target,
+                            arg,
+                            &mut self.events,
+                        ),
+                        crate::mech::OP_TURN => crate::mech::act(
+                            &self.mech_def,
+                            &mut self.arc,
+                            &self.haven,
+                            self.seed,
+                            self.tick,
+                            &self.gather,
+                            &mut self.players[slot],
+                            target,
+                            arg,
+                            &mut self.events,
+                        ),
+                        _ => crate::works::act(
+                            &self.works_def,
+                            &mut self.works,
+                            &self.haven,
+                            self.tick,
+                            &mut self.players[slot],
+                            op,
+                            target,
+                            arg,
+                            &mut self.events,
+                        ),
+                    }
                 }
             }
             Command::Swipe { id, door } => {
@@ -7068,6 +7119,19 @@ impl World {
             for w in self.works.w.iter() {
                 h.update(&w.to_bytes());
             }
+        }
+        // The arc's secret and its dials (`mech.rs`), on the same terms.
+        if !self.arc.is_fresh() {
+            h.update(&self.arc.salt.to_le_bytes());
+            for m in self.arc.mechs.iter() {
+                h.update(&m.to_bytes());
+            }
+        }
+        // The glyphs each player reads (`lore.rs`), only where there are
+        // any, so a world nobody has read in hashes as it always did.
+        for p in self.players.iter().filter(|p| p.active && p.glyphs != 0) {
+            h.update(&p.id.to_le_bytes());
+            h.update(&p.glyphs.to_le_bytes());
         }
         h.digest()
     }

@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 143] = [
+pub const FIXTURES: [&str; 149] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -258,6 +258,13 @@ pub const FIXTURES: [&str; 143] = [
     "event_work.bin",
     "event_arc_refused.bin",
     "action_arc.bin",
+    // Speakers, stones and locks (v96).
+    "event_arc_place.bin",
+    "event_arc_text.bin",
+    "event_arc_dials.bin",
+    "event_glyphs.bin",
+    "event_mech_solved.bin",
+    "event_alphabet.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -327,6 +334,60 @@ pub fn event_arc_refused() -> (u8, u8, u8) {
         sim_core::works::OP_FUEL,
         7,
     )
+}
+
+/// Speaker 3 of 5 at the third stone ring, with two topics (wire v96).
+pub fn event_arc_place() -> (
+    u8,
+    u8,
+    u8,
+    sim_core::spot::Spot,
+    &'static [u8],
+    [&'static [u8]; 2],
+) {
+    (
+        protocol_arc_speaker(),
+        3,
+        5,
+        sim_core::spot::Spot {
+            site: sim_core::spot::SITE_LANDMARK0 + 3,
+            nth: 2,
+            x_cm: -450,
+            y_cm: 30,
+            z_cm: 1200,
+        },
+        b"THE GATEKEEPER",
+        [b"WHO ARE YOU", b"THE ISLAND"],
+    )
+}
+
+fn protocol_arc_speaker() -> u8 {
+    crate::ARC_SPEAKER
+}
+
+/// Inscription 7's text.
+pub fn event_arc_text() -> (u8, u8, u8, &'static [u8]) {
+    (crate::ARC_INSCRIPTION, 7, 0, b"TURN THE THREE TO 5 2 7")
+}
+
+/// Mechanism 2's three dials, resting.
+pub fn event_arc_dials() -> (u8, [u8; 3], bool) {
+    (2, [5, 0, 7], true)
+}
+
+/// A glyph mask with bits in both halves.
+pub fn event_glyphs() -> u64 {
+    0x8000_0001_0000_0013
+}
+
+/// Mechanism 4 solved by player 0x0A0B_0C0D.
+pub fn event_mech_solved() -> (u8, u32) {
+    (4, 0x0A0B_0C0D)
+}
+
+/// The shipped alphabet.
+pub fn event_alphabet() -> &'static [u8] {
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 }
 
 /// Deposit everything work 2 takes.
