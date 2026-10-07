@@ -191,7 +191,7 @@ pub mod underwater;
 pub mod water;
 pub mod weather;
 // What a browser build does where the desktop has a window and a menu: the
-// surface fitted under WebGL2's 2048 cap, and the page taking over where
+// surface fitted under the module's cap (WebGL2's 2048, WebGPU's 8192), and the page taking over where
 // `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
 pub mod web;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
