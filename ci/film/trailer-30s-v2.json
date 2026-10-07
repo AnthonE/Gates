@@ -1,0 +1,49 @@
+{
+  "out": "film/ads/gates-trailer-30s-16x9.mp4",
+  "size": [1920, 1080],
+  "fps": 30,
+  "shots": ["film/shots/land-b", "film/shots/land", "film/shots/base", "film/shots/base-b"],
+  "bank": "film/bank",
+  "fade_in": 0.6,
+  "fade_out": 0.8,
+  "loudness": -14,
+  "crf": 16,
+  "maxrate": "9M",
+  "grade": "eq=contrast=1.04:saturation=1.05,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02",
+  "finish": {"halation": 0.12, "vignette": 0.35, "grain": 3, "letterbox": 2.39},
+  "clips": [
+    {"shot": "dawn-sea", "in": 2.0, "len": 4.0, "game": 0.6},
+    {"shot": "zig-crown", "in": 1.5, "len": 4.0, "game": 0.4, "transition": "cut"},
+    {"shot": "build-lapse2", "in": 0.5, "len": 2.667, "game": 0.25, "transition": "cut"},
+    {"shot": "base-golden", "in": 3.8, "len": 2.667, "game": 0.5, "transition": "cut"},
+    {"shot": "base-storm", "in": 1.5, "len": 2.666, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.08:saturation=0.72:gamma=1.05,colorbalance=rs=-0.03:bs=0.04"},
+    {"shot": "raid-blast", "in": 0.62, "len": 5.333, "game": 1.0, "transition": "cut"},
+    {"shot": "aftermath", "in": 0.5, "len": 2.667, "game": 0.8, "transition": "cut"}
+  ],
+  "captions": [
+    {"at": 0.8, "len": 3.0, "text": "A BROKEN PLACE IN TIME", "size": 0.05, "y": 0.78},
+    {"at": 8.3, "len": 2.2, "text": "BUILD", "size": 0.13, "y": 0.5},
+    {"at": 13.6, "len": 2.3, "text": "SURVIVE", "size": 0.13, "y": 0.5},
+    {"at": 17.4, "len": 2.4, "text": "RAID", "size": 0.15, "y": 0.5}
+  ],
+  "flashes": [{"at": 17.3, "len": 0.2}],
+  "music": [
+    {"src": "30_MusicOpenTense.wav", "at": 0.0, "gain": 0.85, "fade_in": 0.8},
+    {"src": "33_MusicTurnTense.wav", "at": 8.0, "gain": 0.85},
+    {"src": "34_MusicTurnCombat.wav", "at": 16.0, "gain": 0.9},
+    {"src": "35_MusicCloseCalm.wav", "at": 24.0, "gain": 0.8, "cut": 7.0, "fade_out": 2.5}
+  ],
+  "sfx": [
+    {"src": "trailer_boom.wav", "at": 4.0, "gain": 0.6},
+    {"src": "trailer_riser.wav", "at": 11.3, "gain": 0.5},
+    {"src": "46_Thunder_0.wav", "at": 13.4, "gain": 0.6},
+    {"src": "trailer_boom.wav", "at": 17.3, "gain": 1.0},
+    {"src": "trailer_reverse.wav", "at": 21.4, "gain": 0.6},
+    {"src": "trailer_braam.wav", "at": 23.95, "gain": 0.9}
+  ],
+  "card": {
+    "len": 6.5, "fade": 0.6, "shot": "zig-crown", "at": 5.5,
+    "title": "GATES",
+    "lines": ["THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER", "PLAY NOW  ·  ELOPROS.COM/GAMES/GATES"]
+  }
+}
