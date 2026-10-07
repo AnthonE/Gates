@@ -56,7 +56,9 @@
 //!
 //! ## The fourth map: ambient occlusion (2026-08-25)
 //!
-//! Layers 4–7 of the rough/AO array (bindings 114–117 until 2026-09-12). All
+//! The G channel of the data array's roughness layers,
+//! `textures::ROUGH_AO_LAYER0`.. (bindings 114–117 until 2026-09-12, then
+//! layers of a rough/AO array until 2026-10-07). All
 //! four ground identities publish an `<role>_ao.jpg`, all four were
 //! git-tracked and staged into every depot by `ci/depot.py`, and **this
 //! shader sampled twelve textures and none of them** — `occlusion_texture`
@@ -79,7 +81,7 @@
 //! diffuse one reused"; applying it to specular is visibly wrong at grazing
 //! angles. `specular_occlusion` is left as Bevy computed it.
 //!
-//! ## Sixteen textures became three arrays (2026-09-12)
+//! ## Sixteen textures became three arrays, then two (2026-09-12, 2026-10-07)
 //!
 //! Bindings 101–117 were sixteen `texture_2d`s and one sampler, and the
 //! sampler paragraph below was right about the axis that binds on a desktop
@@ -89,13 +91,26 @@
 //! maps, `StandardMaterial`'s six slots and ours — and the material group
 //! alone was 22. The browser refused the pipeline layout before a frame.
 //! `textures::GroundArrays` is the answer: the identities (and the road's
-//! aggregate behind them) as layers of one `texture_2d_array` cost one binding, roughness and AO share an array
-//! (same size, format and sampler; `textures::AO_LAYER0`), and the ground is
-//! three sampled textures. **Same texels, same filter, same chain** — a layer
-//! samples exactly as the standalone texture did, which is what lets this stay
-//! ONE shader for both targets rather than a web variant, and the native
-//! before/after capture is the measurement (`findings/web-build-20260909.md`
-//! §15).
+//! aggregate behind them) as layers of one `texture_2d_array` cost one
+//! binding.
+//!
+//! **Three arrays fit WebGL2 and not WebGPU.** WebGPU guarantees the same 16,
+//! and there the atmosphere's transmittance LUT is bound too: the view's
+//! seven, the LUT, `StandardMaterial`'s six and albedo, normal and rough/AO
+//! made 17, and Chrome refuses the pipeline — which under WebGPU loses the
+//! frame, not the mesh. `render::quality::FRAGMENT_TEXTURES` is that budget,
+//! and the ground is now exactly it: TWO arrays, the sRGB albedo and one
+//! linear data array (normals, then roughness in R and AO in G of one layer
+//! at `textures::ROUGH_AO_LAYER0` — one format, one sampler, all data). Albedo
+//! cannot join them because its sRGB decode happens before the filter. The
+//! packing is exact (filtering is per channel; `textures::pack_rg`) and turns
+//! two taps into one: 15 a pixel on flat ground where there were 20.
+//! **Same texels, same filter, same chain** — a layer samples exactly as the
+//! standalone texture did, which is what lets this stay ONE shader for both
+//! targets rather than a web variant (`findings/web-build-20260909.md` §15).
+//! The one bounded exception is `textures::lift`: roughness and AO ship at
+//! 512² beside 1024² normals and gain an upsampled top level to share their
+//! array, read only where the old map was magnified.
 //!
 //! ⚠ **Nothing compiles this shader.** `tests/ground_splat.rs` holds the
 //! bindings equal across the WGSL and the Rust struct — both scraped now,
@@ -634,7 +649,7 @@ pub const WALL_SHARPNESS: f32 = 16.0;
 /// pays for one plane's taps.
 pub const WALL_PLANE_BLEND: f32 = 1.0 / 3.0;
 
-/// Three arrays — albedo, normal, roughness-with-AO — and one sampler.
+/// Two arrays — albedo, and normal/roughness/AO — and one sampler.
 ///
 /// **One sampler for every layer, and that is the constraint that scales.**
 /// Each map wants the identical tiling and anisotropy descriptor
@@ -642,17 +657,19 @@ pub const WALL_PLANE_BLEND: f32 = 1.0 / 3.0;
 /// group at 32 in the fragment stage before `StandardMaterial`'s own were
 /// counted — far over the 16 a downlevel adapter guarantees. That argument
 /// was made about samplers and it turned out to be true of TEXTURES too, on
-/// the one adapter that is exactly the floor (WebGL2; the module header). So
-/// the sixteen maps are three `texture_2d_array`s now, and the count this
-/// material adds to the fragment stage is three textures and one sampler.
+/// the one adapter that is exactly the floor (WebGL2, and WebGPU once the
+/// atmosphere's LUT is counted; the module header). So the twenty maps are two
+/// `texture_2d_array`s now, and the count this material adds to the fragment
+/// stage is two textures and one sampler — `tests/ground_splat.rs` holds the
+/// pipeline to `render::quality::FRAGMENT_TEXTURES`.
 ///
 /// ⚠ **The roughness slice cost no new VRAM and the AO slice DID**, which is
 /// the one place those two otherwise-identical changes differed.
 /// `textures::MapSet::load` had always loaded `<role>_rough.jpg`, so those
 /// four were resident and uploaded from the day the maps landed — paid for and
 /// unread, and binding them was free. `<role>_ao.jpg` was **not** loaded by
-/// anything until 2026-08-25. The arrays reverse that once more: the sixteen
-/// sources are dropped once the three arrays exist (`textures::stack_ground`),
+/// anything until 2026-08-25. The arrays reverse that once more: the twenty
+/// sources are dropped once the two arrays exist (`textures::stack_ground`),
 /// so the ground's residency is the arrays alone.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct GroundSplat {
@@ -666,30 +683,27 @@ pub struct GroundSplat {
     #[texture(101, dimension = "2d_array")]
     #[sampler(102)]
     pub albedo: Handle<Image>,
-    /// The tangent-space normal maps, `Rgba8Unorm`, the same five layers.
-    #[texture(103, dimension = "2d_array")]
-    pub normal: Handle<Image>,
-    /// Roughness at layers `0..5`, ambient occlusion at `AO_LAYER0..10`, both
-    /// greyscale `Rgba8Unorm` — a roughness map is DATA, loaded
-    /// `is_srgb = false`, and so is AO.
+    /// Every linear map, `Rgba8Unorm`, the same five-layer order per family:
+    /// tangent-space normals at `0..5`, then at `textures::ROUGH_AO_LAYER0`
+    /// roughness in R and ambient occlusion in G (B a constant 0, A a
+    /// constant 255) — all DATA, loaded `is_srgb = false`.
     ///
     /// AO is **`ART.md` §4's MEDIUM scale** — the one occlusion term a light
     /// rig cannot supply, indirect only. Every ground role is in
     /// `textures::ROLES_WITH_AO`, and `textures::stack_ground` panics on one
     /// that is not rather than stacking an unresolved handle, which would
     /// sample BLACK and put the whole island in shadow.
-    #[texture(104, dimension = "2d_array")]
-    pub rough_ao: Handle<Image>,
+    #[texture(103, dimension = "2d_array")]
+    pub data: Handle<Image>,
 }
 
 impl GroundSplat {
-    /// Bind the three arrays `textures::stack_ground` built.
+    /// Bind the two arrays `textures::stack_ground` built.
     pub fn new(arrays: &GroundArrays) -> Self {
         Self {
             params: GroundSplatParams::new(),
             albedo: arrays.albedo.clone(),
-            normal: arrays.normal.clone(),
-            rough_ao: arrays.rough_ao.clone(),
+            data: arrays.data.clone(),
         }
     }
 }

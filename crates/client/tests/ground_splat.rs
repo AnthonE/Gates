@@ -2,8 +2,9 @@
 //! GPU boundary.
 //!
 //! Four identities now carry four photographs (`render/ground_splat.rs` +
-//! `assets/shaders/ground_splat.wgsl`) — stacked into three texture arrays
-//! since 2026-09-12 (`tests/ground_arrays.rs` gates the stacking) — which puts
+//! `assets/shaders/ground_splat.wgsl`) — stacked into texture arrays since
+//! 2026-09-12, two since 2026-10-07 (`tests/ground_arrays.rs` gates the
+//! stacking) — which puts
 //! arithmetic in a place no Rust test can execute. So this gate checks the
 //! three things that CAN be checked without a GPU, and each one is a real
 //! failure that has a way of going unnoticed:
@@ -174,14 +175,13 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     // struct declares it. This list is the thing under test — if you add a
     // texture to the struct, this fails until it is added here AND to the
     // shader, which is the point. (Sixteen `texture_2d`s at 101–117 until
-    // 2026-09-12; three `texture_2d_array`s since, for the reason
-    // `the_ground_binds_three_sampled_textures` states.)
+    // 2026-09-12, three `texture_2d_array`s until 2026-10-07, two since, for
+    // the reason `the_ground_fits_the_fragment_texture_budget` states.)
     let want: Vec<(u32, &str)> = vec![
         (100, "splat"),
         (101, "albedo_maps"),
         (102, "ground_sampler"),
-        (103, "normal_maps"),
-        (104, "rough_ao_maps"),
+        (103, "data_maps"),
     ];
 
     // ── And the RUST struct, which this gate never actually read ────────
@@ -266,20 +266,36 @@ fn every_map_shares_one_sampler() {
     );
 }
 
-/// Leg 2c. The ground binds three sampled textures, all of them arrays.
+/// Leg 2c. The ground binds two sampled textures, both arrays, and the
+/// pipeline they land in fits the fragment stage's budget.
 ///
 /// **Textures were "the cheap axis" here until the browser said otherwise.**
-/// `max_sampled_textures_per_shader_stage` is 16 on WebGL2 — counted per
-/// stage and summed over every bind group in the pipeline layout, so the
-/// view's shadow and environment maps and `StandardMaterial`'s six slots are
-/// in the same budget as this material. Sixteen `texture_2d`s put the
-/// material group alone at 22 and wgpu refused the pipeline layout before a
-/// frame (2026-09-11). Three arrays is what fits with margin; a fourth
-/// sampled texture here is the browser question re-opened, and a `texture_2d`
-/// is one identity drawn outside its family's array — either fails here
-/// rather than in a browser nobody on the gate box is running.
+/// `max_sampled_textures_per_shader_stage` is 16 on WebGL2 and the WebGPU
+/// floor — counted per stage and summed over every bind group in the
+/// pipeline layout, so the view's shadow and environment maps, the
+/// atmosphere's transmittance LUT and `StandardMaterial`'s six slots are in
+/// the same budget as this material. Sixteen `texture_2d`s put the material
+/// group alone at 22 (2026-09-11); three arrays were 17 under WebGPU's
+/// atmosphere, one over, and Chrome refuses the pipeline — which loses the
+/// whole frame (2026-10-07). Two arrays — sRGB albedo, and the normals with
+/// roughness/AO packed as R/G beside them — is exactly
+/// `render::quality::FRAGMENT_TEXTURES`, with no margin: a third sampled
+/// texture here is the browser question re-opened, and a `texture_2d` is one
+/// identity drawn outside its family's array. (How many TAPS read those two is
+/// `tests/ground_tiling.rs`'s to hold.) Counted on BOTH sides — the
+/// WGSL's bindings and `GroundSplat`'s `#[texture(` attributes — so neither
+/// can grow alone.
 #[test]
-fn the_ground_binds_three_sampled_textures() {
+fn the_ground_fits_the_fragment_texture_budget() {
+    use client::render::quality::FRAGMENT_TEXTURES;
+    // The rest of the worst main pipeline, with no prepass: the view's
+    // seven, the atmosphere's one, `StandardMaterial`'s six (`#[texture(1, 3,
+    // 5, 7, 9, 11)]` with none of bevy's `pbr_*_textures` features on).
+    // `render::quality` carries the derivation; these are its terms.
+    const VIEW: u32 = 7;
+    const ATMOSPHERE: u32 = 1;
+    const STANDARD_MATERIAL: u32 = 6;
+
     let src = std::fs::read_to_string(SHADER).expect("shader");
     let code = || {
         src.lines()
@@ -295,12 +311,35 @@ fn the_ground_binds_three_sampled_textures() {
         .count();
     assert_eq!(
         (arrays, planes, others),
-        (3, 0, 0),
+        (2, 0, 0),
         "ground_splat.wgsl declares {arrays} texture_2d_array, {planes} \
          texture_2d and {others} other texture bindings — it must be exactly \
-         three arrays and nothing else. WebGL2 holds the whole fragment stage \
-         to 16 sampled textures across every bind group, and three is what \
-         leaves the view's and StandardMaterial's share."
+         two arrays and nothing else."
+    );
+
+    let rust_src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/render/ground_splat.rs"
+    ))
+    .expect("ground_splat.rs is not where this test expects it");
+    let rust_textures = rust_src
+        .lines()
+        .filter(|l| l.trim_start().starts_with("#[texture("))
+        .count();
+    assert_eq!(
+        rust_textures, arrays,
+        "`GroundSplat` declares {rust_textures} textures and the shader binds {arrays}"
+    );
+
+    let total = VIEW + ATMOSPHERE + STANDARD_MATERIAL + rust_textures as u32;
+    assert!(
+        total <= FRAGMENT_TEXTURES,
+        "the ground's pipeline samples {total} textures in the fragment stage \
+         ({VIEW} view + {ATMOSPHERE} atmosphere + {STANDARD_MATERIAL} \
+         StandardMaterial + {rust_textures} ground) against a budget of \
+         {FRAGMENT_TEXTURES} — WebGL2 and a WebGPU adapter at the floor refuse \
+         the pipeline and the browser draws nothing. Fold the new map into an \
+         existing array as a layer."
     );
 }
 
@@ -680,8 +719,9 @@ fn the_wall_planes_are_fixed_axes_with_exact_gradients_outside_any_branch() {
     let plane_fn = body("wall_plane");
     assert_eq!(
         plane_fn.matches("textureSampleGrad(").count(),
-        4,
-        "`wall_plane` does not take each of the four maps once: {plane_fn}"
+        3,
+        "`wall_plane` does not take each of its three layers once (albedo, \
+         normal, and roughness/AO packed as R/G): {plane_fn}"
     );
     assert!(
         !plane_fn.contains("textureSample("),
