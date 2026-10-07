@@ -18,8 +18,8 @@
     "letterbox": 2.39
   },
   "clips": [
-    {"shot": "dawn-sea", "in": 0.3, "len": 8.0, "game": 0.6},
-    {"shot": "beach-push", "in": 0.6, "len": 5.333, "game": 0.7, "transition": "cut", "grade": "eq=gamma=1.18:contrast=1.06:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.04:bh=-0.02"},
+    {"shot": "dawn-sea", "in": 0.0, "len": 7.5, "game": 0.6},
+    {"shot": "beach-push", "in": 0.1, "len": 5.833, "game": 0.7, "transition": "cut", "grade": "eq=gamma=1.18:contrast=1.06:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.04:bh=-0.02"},
     {"shot": "aerial-zig", "in": 1.0, "len": 5.333, "game": 0.3, "transition": "cut"},
     {"shot": "zig-reveal", "in": 1.0, "len": 5.334, "game": 0.4, "transition": "cut", "grade": "eq=gamma=1.15:contrast=1.05:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02"},
     {"shot": "build-lapse2", "in": 0.1, "len": 5.333, "game": 0.25, "transition": "cut"},
@@ -29,7 +29,7 @@
     {"shot": "raid-plant", "in": 1.0, "len": 2.667, "game": 0.7, "transition": "cut"},
     {"shot": "raid-blast", "in": 0.62, "len": 5.333, "game": 1.0, "transition": "cut"},
     {"shot": "raid-wide", "in": 2.8, "len": 2.667, "game": 0.9, "transition": "cut"},
-    {"shot": "aftermath", "in": 0.5, "len": 5.333, "game": 0.8, "transition": "cut"},
+    {"shot": "aftermath", "in": 0.15, "len": 5.333, "game": 0.8, "transition": "cut"},
     {"shot": "lake-sunset", "in": 2.5, "len": 3.267, "game": 0.5, "transition": "cut"}
   ],
   "captions": [

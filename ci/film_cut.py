@@ -59,6 +59,15 @@ def run(cmd):
     return r.stdout
 
 
+def duration(path):
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", path], capture_output=True, text=True)
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
 def find_shot(shots_dirs, name, ext):
     """`shots_dirs` is one directory or several, searched in order."""
     for d in shots_dirs:
@@ -190,6 +199,10 @@ def cut(spec_path):
     for k, c in enumerate(clips):
         src = find_shot(shots, c["shot"], ".mp4")
         sp = c.get("speed", 1.0)
+        have = duration(src) - c.get("in", 0.0)
+        if have + 1e-3 < c["len"] * sp:
+            print(f"film_cut: `{c['shot']}` has {have:.2f} s after `in`, the clip asks "
+                  f"{c['len'] * sp:.2f} s — its last frame is held", file=sys.stderr)
         i = add_input("-ss", str(c.get("in", 0.0)), "-t", str(c["len"] * sp), "-i", src)
         chain = f"[{i}:v]"
         if sp != 1.0:
@@ -205,7 +218,11 @@ def cut(spec_path):
             chain += f",scale=w='iw*(1+{z}*t/{c['len']})':h=-2:eval=frame:flags=lanczos,crop={W}:{H}"
         if c.get("grade", spec.get("grade")):
             chain += "," + c.get("grade", spec.get("grade"))
-        vf.append(chain + f",format=yuv420p,settb=1/{fps}[c{k}]")
+        # Exactly `len` long whatever the source holds: every offset after
+        # this clip is computed from it, and a short clip pulled the end
+        # card's crossfade past the end of the picture.
+        chain += f",tpad=stop_mode=clone:stop_duration={c['len']},trim=duration={c['len']}"
+        vf.append(chain + f",format=yuv420p,setpts=PTS-STARTPTS,settb=1/{fps}[c{k}]")
         if prev is None:
             prev = f"c{k}"
             starts.append(0.0)
