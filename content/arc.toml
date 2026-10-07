@@ -47,6 +47,94 @@ unlock = "unlock.smelting"
 knob = "smelt_pct"
 pct = 200
 
+# THE LAPIS WELLS — act II, second to wake. The well under the old keep went
+# dry with everything else, and the island bleeds slowly without it. Lit, the
+# town's rations stall sells medicine again; while its filters hold charcoal,
+# every heal lands twice as fast (`WORLD.md` §5.3: "healing becomes viable").
+[[work]]
+id = "work.wells"
+name = "THE LAPIS WELLS"
+site = "ruin"
+nth = 0
+at = [0.0, 0.0, 0.0]
+act = 2
+opens_hour = 24
+fallback_hour = 96
+floor_unlock = "unlock.medicine"
+ceiling_unlock = "unlock.springs"
+fuel = "item.charcoal"
+fuel_max = 5000
+burn_per_hour = 100
+inputs = [
+    { item = "item.stone", count = 40000 },
+    { item = "item.wood", count = 60000 },
+    { item = "item.metal_frags", count = 5000 },
+]
+
+[[effect]]
+unlock = "unlock.springs"
+knob = "heal_pct"
+pct = 200
+
+# THE OBSERVATORY — act II. A lens sits in the far spires, where the rock
+# stands tallest. Dark, the island cannot see; lit, it remembers how glass
+# was made, and while its lamps burn on fat every research table studies
+# twice as fast.
+[[work]]
+id = "work.observatory"
+name = "THE OBSERVATORY"
+site = "spires"
+nth = 1
+at = [2.5, 0.0, 0.0]
+act = 2
+opens_hour = 48
+fallback_hour = 144
+floor_unlock = "unlock.optics"
+ceiling_unlock = "unlock.starlight"
+fuel = "item.fat"
+fuel_max = 2000
+burn_per_hour = 40
+inputs = [
+    { item = "item.metal_frags", count = 10000 },
+    { item = "item.gears", count = 40 },
+    { item = "item.cloth", count = 2000 },
+]
+
+[[effect]]
+unlock = "unlock.starlight"
+knob = "research_pct"
+pct = 200
+
+# THE GOLDEN SPINE — act II, last to wake. Where the containers stand is
+# where the Spine ran. Lit, it can lift heavy doors again; while it has
+# fuel, its current runs through every tool on the island and every swing at
+# a node pays half again.
+[[work]]
+id = "work.spine"
+name = "THE GOLDEN SPINE"
+site = "yard"
+nth = 0
+at = [3.5, 0.0, 1.0]
+act = 2
+opens_hour = 72
+fallback_hour = 192
+floor_unlock = "unlock.rails"
+ceiling_unlock = "unlock.current"
+fuel = "item.lowgrade"
+fuel_max = 5000
+burn_per_hour = 120
+inputs = [
+    { item = "item.metal_frags", count = 15000 },
+    { item = "item.wood", count = 80000 },
+    { item = "item.rope", count = 80 },
+    { item = "item.gears", count = 80 },
+]
+
+[[effect]]
+unlock = "unlock.current"
+knob = "gather_pct"
+pct = 150
+
 # ── The ancients' script (`ARC.md` F6) ────────────────────────────────────
 # One glyph per character, fixed forever, so learning it is mastery that
 # lasts. A player learns glyphs by reading the stones that teach them; a
@@ -81,6 +169,16 @@ lines = [
     { when = "open:work.crucible", text = "The forge under the anvil rock is open. It eats stone, ore and charcoal, more than one pair of hands can carry. Feed it together, or wait for it to wake on its own with an empty belly." },
     { when = "burning:work.crucible", text = "The Crucible burns. Somebody fed it. Powder can be made again, and every furnace on the island runs hot while its tank holds. Keep it fed and it stays that way." },
     { when = "embers:work.crucible", text = "The Crucible still glows, so the powder stays. But its tank is dry and the furnaces are slow again. Somebody should feed it." },
+]
+
+[[speaker.topic]]
+title = "THE OLD WORKS"
+lines = [
+    { when = "open:work.wells", text = "There is water under the old keep again, if somebody clears the well. It wants stone, wood and metal. Lit, the rations stall sells medicine again. While its filters hold charcoal, every wound on the island closes twice as fast." },
+    { when = "open:work.observatory", text = "There is a lens in the far spires, and its terminal is open. Feed it metal, gears and cloth. Lit, it remembers how glass is made, and while its lamps burn on fat every research table works twice as fast." },
+    { when = "open:work.spine", text = "The Spine's terminal at the container yard is open. Metal, wood, rope and gears. Lit, it lifts heavy doors again, and while it has fuel every tool on the island bites half again as deep." },
+    { when = "sealed:work.wells", text = "Three more works sleep past the Crucible: a well under the old keep, a lens in the far spires, and the Spine at the container yard. They wake one after another, and each wants more than the last." },
+    { text = "The well, the lens and the Spine have all woken. A work that goes cold keeps what it gave us, but not its strength. Keep them fed." },
 ]
 
 [[speaker.topic]]
@@ -127,6 +225,30 @@ site = "spires"
 at = [-4.0, 0.0, -8.0]
 teaches = "0123456789"
 text = "COUNT THE RINGS 0 1 2 3 4 5 6 7 8 9"
+
+# The glyph trail: one stone at each act-II work teaches the letters the
+# gate stone does not, so a player who walks the works reads the alphabet.
+[[inscription]]
+id = "inscription.well_stone"
+site = "ruin"
+at = [-6.0, 0.0, -6.0]
+teaches = "BCDFGM"
+text = "WHAT WAS DRAWN FROM THE DEEP WATER CLOSED EVERY WOUND"
+
+[[inscription]]
+id = "inscription.lens_stone"
+site = "spires"
+nth = 1
+at = [-5.0, 0.0, 4.0]
+teaches = "KPUVWY"
+text = "FROM THE HIGH PLACE THEY WATCHED THE SKY AND KNEW THE WAY"
+
+[[inscription]]
+id = "inscription.spine_stone"
+site = "yard"
+at = [-8.0, 0.0, -1.0]
+teaches = "JQXZ"
+text = "THE SPINE CARRIED THE QUICK FIRE TO EVERY HAND"
 
 [[inscription]]
 id = "inscription.ring_word"

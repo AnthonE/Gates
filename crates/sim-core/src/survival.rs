@@ -448,7 +448,13 @@ pub fn announce_vitals(sc: &SurvivalContent, p: &Player, events: &mut EventQueue
 /// The slot is the *sender's claim*; this function is the sim's verdict, so
 /// a forged slot index, an empty hand and a stack of wood all land on the
 /// same refusal path rather than on an inventory write.
-pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut EventQueue) -> bool {
+pub fn consume(
+    sc: &SurvivalContent,
+    slot: usize,
+    p: &mut Player,
+    events: &mut EventQueue,
+    heal_pct: u32,
+) -> bool {
     if !sc.armed() || slot >= p.inv.len() {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NOT_FOOD, 0);
         return false;
@@ -501,7 +507,9 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
         let carried = p.heal_rem;
         p.heal_rem = def.health.saturating_add(carried);
         p.heal_total = p.heal_rem;
-        let span = def.seconds as u64 * TICK_HZ as u64;
+        // The Wells' ceiling (`works::KNOB_HEAL_PCT`) shortens the span, so
+        // the same heal lands sooner; 100 is the item's own pace.
+        let span = (def.seconds as u64 * TICK_HZ as u64 * 100 / heal_pct.max(1) as u64).max(1);
         p.heal_span =
             ((p.heal_rem as u64 * span).div_ceil(def.health as u64)).min(u32::MAX as u64) as u32;
         p.heal_acc = 0;
@@ -680,7 +688,10 @@ mod tests {
             skin: 0,
         };
         let mut q = EventQueue::default();
-        assert!(!consume(&sc, 0, &mut p, &mut q), "full meters, no heal");
+        assert!(
+            !consume(&sc, 0, &mut p, &mut q, 100),
+            "full meters, no heal"
+        );
         assert_eq!(p.inv[0].count, 2, "the item is not destroyed");
     }
 
@@ -704,7 +715,7 @@ mod tests {
         let per_item = sc.consumable[0].health as u32;
         let start = p.hp as u32;
         for _ in 0..10 {
-            consume(&sc, 0, &mut p, &mut q);
+            consume(&sc, 0, &mut p, &mut q, 100);
             step(&sc, &mut p, &mut q);
         }
         for _ in 10..span {
@@ -733,7 +744,7 @@ mod tests {
             skin: 0,
         };
         let mut q = EventQueue::default();
-        assert!(consume(&sc, 0, &mut p, &mut q));
+        assert!(consume(&sc, 0, &mut p, &mut q, 100));
         assert_eq!(p.food, 50, "food applied immediately");
         assert_eq!(p.water, 40, "water applied immediately");
         assert_eq!(p.hp, 50, "health has not arrived yet");
@@ -783,7 +794,7 @@ mod tests {
             skin: 0,
         };
         let mut q = EventQueue::default();
-        assert!(consume(&sc, 0, &mut p, &mut q));
+        assert!(consume(&sc, 0, &mut p, &mut q, 100));
         assert_eq!((p.food, p.water), (sc.max_food, sc.max_water));
     }
 

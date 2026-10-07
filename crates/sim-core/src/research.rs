@@ -399,11 +399,16 @@ pub fn begin(
 /// a content swap moved the ground under it, stops and takes nothing.
 /// Either way the table goes quiet with the snuff's own announcement,
 /// `EV_OVEN` with no actor, which is how a panel learns it may be emptied.
+///
+/// `pct` is the Observatory's ceiling (`works::KNOB_RESEARCH_PCT`): a table
+/// lands once `waited × pct` reaches `table_ticks × 100`, so 200 studies in
+/// half the time and 100 is the table's own pace.
 pub fn table_sweep(
     rc: &ResearchContent,
     deploys: &mut Deploys,
     tick: u64,
     events: &mut EventQueue,
+    pct: u32,
 ) {
     let period = OVEN_PERIOD_TICKS;
     let phase = tick % period;
@@ -414,7 +419,7 @@ pub fn table_sweep(
         }
         let waited = states[i].cook[TABLE_ITEM_SLOT].saturating_add(period as u16);
         states[i].cook[TABLE_ITEM_SLOT] = waited;
-        if waited < rc.table_ticks {
+        if (waited as u32) * pct.max(1) < rc.table_ticks as u32 * 100 {
             continue;
         }
         if let Ok(row) = loaded_row(rc, &boxes[i].items) {

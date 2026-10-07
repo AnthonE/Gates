@@ -5044,6 +5044,11 @@ impl World {
                         inv as usize,
                         &mut self.players[slot],
                         &mut self.events,
+                        crate::works::knob_pct(
+                            &self.works_def,
+                            self.works.unlocks,
+                            crate::works::KNOB_HEAL_PCT,
+                        ),
                     );
                 }
             }
@@ -5777,6 +5782,11 @@ impl World {
                             &mut spill,
                             &hit,
                             &ray,
+                            crate::works::knob_pct(
+                                &self.works_def,
+                                self.works.unlocks,
+                                crate::works::KNOB_GATHER_PCT,
+                            ),
                         );
                     }
                     melee::Reached::Body { hit, stop_t } => {
@@ -6386,7 +6396,17 @@ impl World {
         // in the tick (research table v1): a table a raid takes apart this
         // tick has already spent its period, as an oven has, and its
         // contents spill uncharged when it does.
-        crate::research::table_sweep(&self.research, &mut self.deploys, tick, &mut self.events);
+        crate::research::table_sweep(
+            &self.research,
+            &mut self.deploys,
+            tick,
+            &mut self.events,
+            crate::works::knob_pct(
+                &self.works_def,
+                self.works.unlocks,
+                crate::works::KNOB_RESEARCH_PCT,
+            ),
+        );
         // The works open, light themselves at their fallback hour and burn
         // (`works.rs`), once a period, off their own phase.
         if self.works_def.count > 0 {
