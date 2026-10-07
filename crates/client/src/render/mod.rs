@@ -339,6 +339,8 @@ pub struct Eye {
     /// eases. `pos.y - height` is the feet; nothing may assume
     /// [`EYE_HEIGHT`] for that, because a crouched or downed eye is lower.
     pub height: f32,
+    /// Roll about the view axis, radians. Only a film writes it (`film::aim`).
+    pub roll: f32,
 }
 
 /// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
@@ -641,12 +643,21 @@ impl Plugin for GatesRenderPlugin {
             // A film takes the top preset whatever this box's config file
             // says, and never paces itself: every frame is written, however
             // long it took.
-            app.insert_resource(Settings {
+            let s = Settings {
                 fullscreen: false,
                 vsync: false,
                 max_fps: 0,
                 ..Settings::with_preset(crate::config::Quality::High)
-            });
+            };
+            // …and past it: a frame that takes a second anyway can afford
+            // the AO, shadow texels and tree detail no player's GPU is
+            // asked for.
+            #[cfg(not(target_arch = "wasm32"))]
+            let s = Settings {
+                gfx: film::cinematic(s.gfx, app.world().resource::<film::Film>().budget()),
+                ..s
+            };
+            app.insert_resource(s);
         } else if self.capture.is_none() {
             let (settings, favourites, disk) = settings::load();
             app.insert_resource(settings);
@@ -1881,6 +1892,7 @@ impl Plugin for GatesRenderPlugin {
                 (
                     film::feed.before(input::place_eye),
                     film::aim.after(input::place_eye).before(Stream),
+                    film::lens.after(film::aim),
                 )
                     .run_if(world_running),
             )
