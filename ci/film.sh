@@ -8,11 +8,13 @@
 #   ci/film.sh bank DIR                              # the game's music and sfx as WAVs
 #   ci/film.sh sfx DIR                               # trailer hits, risers, whooshes
 #
-# record options: --population N (8) · --spawn x,z (1650,1590) · --walk x,z
-#                 (where the recorder stands, 1672,1612) · --no-charges (the
+# record options: --population N (10) · --spawn x,z (2353,3107) · --walk x,z
+#                 (where the recorder stands, 2336,3086) · --no-charges (the
 #                 raiders are armed by default) · --seed N · --port N
-#                 The defaults are the tape the lists in ci/film/ were shot on:
-#                 a base on the slope above the sunset beach, raided twice.
+#                 The defaults are the tape the lists in ci/film/ were shot on
+#                 (`ci/film.sh record film/zig.rec 1200`): a camp of towers
+#                 150 m down the sunset axis from the Black Ziggurat, raided
+#                 at ~300, ~600 and ~900 s.
 #
 # How it works: `record` joins a live shard as a guest and writes down every
 # datagram and event with the time it arrived (crates/client/src/bin/record.rs).
@@ -43,7 +45,7 @@ record)
   TAPE="${1:?record needs a tape path}"; shift
   SECONDS_=600
   case "${1:-}" in ''|*[!0-9.]*) ;; *) SECONDS_="$1"; shift ;; esac
-  POPULATION=8; SPAWN="1650,1590"; WALK="1672,1612"; CHARGES=1; SEED=20260731; PORT=4433
+  POPULATION=10; SPAWN="2353,3107"; WALK="2336,3086"; CHARGES=1; SEED=20260731; PORT=4433
   while [ $# -gt 0 ]; do
     case "$1" in
       --population) POPULATION="$2"; shift 2 ;;

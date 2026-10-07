@@ -149,8 +149,11 @@ def card_text(W, H, card):
     portrait = H > W
     unit = W if portrait else H
     title = int(unit * (0.22 if portrait else 0.20))
-    lines = [(card["title"], BOLD, title, int(H * 0.42), (255, 255, 255, 255), title * 0.18)]
-    y = int(H * 0.42) + int(title * 0.78)
+    # `y`: where the title sits, a fraction of the height — up in the sky on a
+    # poster whose subject is in the middle of the frame.
+    ty = int(H * card.get("y", 0.42))
+    lines = [(card["title"], BOLD, title, ty, (255, 255, 255, 255), title * 0.18)]
+    y = ty + int(title * 0.78)
     for i, line in enumerate(card.get("lines", [])):
         s = int(unit * (0.055 if portrait else 0.05)) if i == 0 else int(unit * (0.042 if portrait else 0.036))
         face = BOLD if i == 0 else REGULAR
@@ -371,7 +374,7 @@ def cut(spec_path):
         else:
             run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(poster.get("at", 1.0)),
                  "-i", find_shot(shots, poster["shot"], ".mp4"), "-frames:v", "1", frame])
-        design = dict(card or {}, **{k: v for k, v in poster.items() if k in ("title", "lines", "dim")})
+        design = dict(card or {}, **{k: v for k, v in poster.items() if k in ("title", "lines", "dim", "y")})
         design.setdefault("dim", 0.3)
         design["blur"] = False
         PW, PH = poster.get("size", [W, H])

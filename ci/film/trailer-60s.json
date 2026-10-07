@@ -83,10 +83,11 @@
   },
   "poster": {
     "out": "film/ads/gates-key-art.png",
-    "image": "film/stills/03-zig-sunset.png",
+    "image": "film/stills-b/02-camp-crown.png",
     "size": [3840, 2160],
     "title": "GATES",
-    "lines": ["BUILD. RAID. SURVIVE.", "PLAY IN YOUR BROWSER"],
-    "dim": 0.25
+    "lines": ["BUILD. RAID. SURVIVE."],
+    "dim": 0.2,
+    "y": 0.2
   }
 }
