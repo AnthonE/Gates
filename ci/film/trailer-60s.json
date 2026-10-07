@@ -22,7 +22,7 @@
     {"shot": "beach-push", "in": 0.6, "len": 5.333, "game": 0.7, "transition": "cut", "grade": "eq=gamma=1.18:contrast=1.06:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.04:bh=-0.02"},
     {"shot": "aerial-zig", "in": 1.0, "len": 5.333, "game": 0.3, "transition": "cut"},
     {"shot": "zig-crown", "in": 1.0, "len": 5.334, "game": 0.4, "transition": "cut"},
-    {"shot": "build-lapse", "in": 0.0, "len": 5.333, "game": 0.25, "transition": "cut"},
+    {"shot": "build-lapse2", "in": 0.1, "len": 5.333, "game": 0.25, "transition": "cut"},
     {"shot": "base-golden", "in": 3.8, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "zig-dusk", "in": 2.0, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "base-storm", "in": 1.5, "len": 2.666, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.08:saturation=0.72:gamma=1.05,colorbalance=rs=-0.03:bs=0.04"},
