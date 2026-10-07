@@ -1,6 +1,6 @@
 //! Cliffs: the rock skin over every face too steep to walk
-//! (`cliff_skin.rs`), the crags breaking its lip against the sky, and the
-//! scree lying at its foot.
+//! (`cliff_skin.rs`) and the grass on its shelves, the crags breaking its
+//! lip against the sky, and the scree lying at its foot.
 //!
 //! A scarp is the smooth heightfield, so from any distance it read as one pale
 //! sheet with a photograph on it (`NOW.md` §0rf items 2–3). Blocks stood in
@@ -18,12 +18,16 @@
 //! stand only where the sim already refuses a body. The scree is ankle-high,
 //! like the clutter a body already wades through.
 
+use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{self, Haven};
 
 use super::boulders::{rock_block, RockShape, RockSoup};
 use super::cliff_skin;
+use super::clutter::ClutterRing;
+use super::props::Soup;
 use super::terrain_mesh::{near_drawn_y, Ring};
 use super::{Eye, WorldEntity, WorldId};
 
@@ -33,9 +37,11 @@ pub const CLIFF_CELL_M: f32 = 32.0;
 pub const CLIFF_RING: i32 = 7;
 /// Candidate spacing inside a cell, metres.
 const STEP_M: f32 = 4.0;
-/// Cells built per frame; each is a 1 m lattice of the skin where the cell
-/// is steep, and ~64 candidates of a few ground taps.
-const BUILDS_PER_FRAME: usize = 1;
+/// Cells handed to the pool per frame; each is the skin's half-metre lattice
+/// where the cell is steep, and ~64 candidates of a few ground taps.
+const QUEUES_PER_FRAME: usize = 2;
+/// Finished cells landed per frame.
+const LANDS_PER_FRAME: usize = 2;
 /// The crag field's wavelength, metres.
 const CRAG_M: f32 = 22.0;
 /// A crag's value against the face's: the same granite, freshly broken.
@@ -67,27 +73,40 @@ const TOOTH_MOSS_SHARE: f32 = 0.8;
 /// How lush that turf is (`RockShape::moss`).
 const TOOTH_MOSS: f32 = 1.7;
 /// Chisel depth as a share of a cliff rock's smallest extent.
-const CHISEL_SHARE: f32 = 0.6;
+const CHISEL_SHARE: f32 = 0.85;
 /// Deepest a chisel plane cuts into a cliff rock, metres.
-const CHISEL_MAX_M: f32 = 1.6;
+const CHISEL_MAX_M: f32 = 2.0;
+
+/// A built cell's two meshes: its rock, and the grass on its shelves.
+type CellMeshes = (Option<Mesh>, Option<Mesh>);
 
 #[derive(Resource, Default)]
 pub struct CliffRing {
     seed: Option<u64>,
     built: HashMap<(i32, i32), Option<Entity>>,
+    /// Cells being built on the pool.
+    tasks: HashMap<(i32, i32), Task<CellMeshes>>,
 }
 
 /// Keep the cliff cells within [`CLIFF_RING`] of the eye built, nearest
-/// first, and drop the ones that fall out of it.
+/// first, and drop the ones that fall out of it. A cell is built on
+/// `AsyncComputeTaskPool` — a steep one is a few milliseconds of skin — and
+/// landed here.
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<CliffRing>,
     mut meshes: ResMut<Assets<Mesh>>,
     ground: Res<Ring>,
+    clutter: Res<ClutterRing>,
     world: Res<WorldId>,
     eye: Res<Eye>,
 ) {
     let Some(material) = ground.ground_material() else {
+        return;
+    };
+    // The shelves' grass wears the meadow's cards, made by the clutter
+    // ring's first fill.
+    let Some(card_material) = clutter.card_material() else {
         return;
     };
     if ring.seed != Some(world.seed) {
@@ -96,12 +115,16 @@ pub fn stream(
                 commands.entity(e).despawn();
             }
         }
+        // Dropping a `Task` cancels it.
+        ring.tasks.clear();
         ring.seed = Some(world.seed);
     }
     let cx = (eye.pos.x / CLIFF_CELL_M).floor() as i32;
     let cz = (eye.pos.z / CLIFF_CELL_M).floor() as i32;
+    let near =
+        |x: i32, z: i32| (x - cx).abs() <= CLIFF_RING + 1 && (z - cz).abs() <= CLIFF_RING + 1;
     ring.built.retain(|&(x, z), e| {
-        let keep = (x - cx).abs() <= CLIFF_RING + 1 && (z - cz).abs() <= CLIFF_RING + 1;
+        let keep = near(x, z);
         if !keep {
             if let Some(e) = e {
                 commands.entity(*e).despawn();
@@ -109,7 +132,56 @@ pub fn stream(
         }
         keep
     });
-    let mut budget = BUILDS_PER_FRAME;
+    ring.tasks.retain(|&(x, z), _| near(x, z));
+
+    // Cells that finished, a bounded few a frame: `meshes.add` uploads.
+    for _ in 0..LANDS_PER_FRAME {
+        let Some(key) = ring
+            .tasks
+            .iter()
+            .find(|(_, t)| t.is_finished())
+            .map(|(k, _)| *k)
+        else {
+            break;
+        };
+        let Some(mut task) = ring.tasks.remove(&key) else {
+            break;
+        };
+        let Some((rock, grass)) = block_on(future::poll_once(&mut task)) else {
+            // Finished but not ready: put it back, since dropping it would
+            // cancel it.
+            ring.tasks.insert(key, task);
+            break;
+        };
+        let e = rock.map(|rock| {
+            let e = commands
+                .spawn((
+                    WorldEntity,
+                    Mesh3d(meshes.add(rock)),
+                    MeshMaterial3d(material.clone()),
+                    Transform::IDENTITY,
+                ))
+                .id();
+            if let Some(grass) = grass {
+                // No shadow: a masked card in the shadow pass is an alpha
+                // test per texel, as the meadow's far tiles (`clutter.rs`)
+                // say.
+                commands.spawn((
+                    Mesh3d(meshes.add(grass)),
+                    MeshMaterial3d(card_material.clone()),
+                    NotShadowCaster,
+                    Transform::IDENTITY,
+                    ChildOf(e),
+                ));
+            }
+            e
+        });
+        ring.built.insert(key, e);
+    }
+
+    let pool = AsyncComputeTaskPool::get();
+    let (seed, haven) = (world.seed, world.haven);
+    let mut budget = QUEUES_PER_FRAME;
     for r in 0..=CLIFF_RING {
         for dz in -r..=r {
             for dx in -r..=r {
@@ -117,25 +189,19 @@ pub fn stream(
                     continue;
                 }
                 let key = (cx + dx, cz + dz);
-                if ring.built.contains_key(&key) {
+                if ring.built.contains_key(&key) || ring.tasks.contains_key(&key) {
                     continue;
                 }
-                let soup = cell_soup(world.seed, &world.haven, key.0, key.1);
-                let e = if soup.is_empty() {
-                    None
-                } else {
-                    Some(
-                        commands
-                            .spawn((
-                                WorldEntity,
-                                Mesh3d(meshes.add(soup.mesh())),
-                                MeshMaterial3d(material.clone()),
-                                Transform::IDENTITY,
-                            ))
-                            .id(),
-                    )
-                };
-                ring.built.insert(key, e);
+                ring.tasks.insert(
+                    key,
+                    pool.spawn(async move {
+                        let (soup, tufts) = cell_soup(seed, &haven, key.0, key.1);
+                        (
+                            (!soup.is_empty()).then(|| soup.mesh()),
+                            (!tufts.is_empty()).then(|| tufts.mesh()),
+                        )
+                    }),
+                );
                 budget -= 1;
                 if budget == 0 {
                     return;
@@ -178,10 +244,12 @@ fn open_ground(haven: &Haven, x: f32, z: f32) -> bool {
     !terrain::in_haven(haven, x, z) && terrain::site_sweep(haven, x, z) <= 0.0
 }
 
-/// The skin, the teeth and the scree of one cell, as one rock soup.
-pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
+/// The skin, the teeth and the scree of one cell, as one rock soup, and the
+/// grass on the skin's shelves.
+pub(super) fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> (RockSoup, Soup) {
     let mut soup = RockSoup::default();
-    cliff_skin::skin(&mut soup, seed, haven, CLIFF_CELL_M, cx, cz);
+    let mut tufts = Soup::default();
+    cliff_skin::skin(&mut soup, &mut tufts, seed, haven, CLIFF_CELL_M, cx, cz);
     let n = (CLIFF_CELL_M / STEP_M) as i32;
     let cell_key = (cx as u32).wrapping_mul(73_856_093) ^ (cz as u32).wrapping_mul(19_349_663);
     let seed_key = seed as u32 ^ (seed >> 32) as u32;
@@ -226,7 +294,7 @@ pub fn cell_soup(seed: u64, haven: &Haven, cx: i32, cz: i32) -> RockSoup {
             }
         }
     }
-    soup
+    (soup, tufts)
 }
 
 /// Turf on a tooth's top, keyed by `h` in [0, 1): most in the green band

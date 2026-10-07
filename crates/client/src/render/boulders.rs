@@ -184,8 +184,9 @@ fn noise3(p: Vec3, seed: u32) -> f32 {
     y0 + (y1 - y0) * u.z
 }
 
-/// A rock mesh being built: flat-shaded triangles in world space, with the
-/// attributes the ground material reads.
+/// A rock mesh being built in world space, with the attributes the ground
+/// material reads: flat-shaded triangles ([`RockSoup::tri`]) or shared,
+/// smooth-shaded vertices ([`RockSoup::vertex`], [`RockSoup::face`]).
 #[derive(Default)]
 pub struct RockSoup {
     pos: Vec<[f32; 3]>,
@@ -194,28 +195,33 @@ pub struct RockSoup {
     col: Vec<[f32; 4]>,
     /// `UV_1`: the value multiplier, and dry.
     val: Vec<[f32; 2]>,
+    idx: Vec<u32>,
 }
 
 impl RockSoup {
     pub fn is_empty(&self) -> bool {
-        self.pos.is_empty()
+        self.idx.is_empty()
     }
 
     /// One flat-shaded triangle, its front the side its winding faces.
-    pub fn tri(&mut self, p: [Vec3; 3], moss: [f32; 3], value: [f32; 3]) {
+    fn tri(&mut self, p: [Vec3; 3], moss: [f32; 3], value: [f32; 3]) {
         let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-        self.tri_n(p, [n; 3], moss, value);
+        let v = [0, 1, 2].map(|k| self.vertex(p[k], n, moss[k], value[k]));
+        self.face(v[0], v[1], v[2]);
     }
 
-    /// One triangle with a normal per corner.
-    pub fn tri_n(&mut self, p: [Vec3; 3], n: [Vec3; 3], moss: [f32; 3], value: [f32; 3]) {
-        for k in 0..3 {
-            self.pos.push(p[k].to_array());
-            self.nrm.push(n[k].to_array());
-            let m = moss[k];
-            self.col.push([0.0, m * 0.55, m * 0.45, 1.0 - m]);
-            self.val.push([value[k], 0.0]);
-        }
+    /// A vertex, for [`RockSoup::face`] to share.
+    pub fn vertex(&mut self, p: Vec3, n: Vec3, moss: f32, value: f32) -> u32 {
+        self.pos.push(p.to_array());
+        self.nrm.push(n.to_array());
+        self.col.push([0.0, moss * 0.55, moss * 0.45, 1.0 - moss]);
+        self.val.push([value, 0.0]);
+        (self.pos.len() - 1) as u32
+    }
+
+    /// A triangle over three vertices, its front the side its winding faces.
+    pub fn face(&mut self, a: u32, b: u32, c: u32) {
+        self.idx.extend_from_slice(&[a, b, c]);
     }
 
     pub fn mesh(self) -> Mesh {
@@ -252,7 +258,7 @@ impl RockSoup {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
         .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])
         .with_inserted_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; n])
-        .with_inserted_indices(Indices::U32((0..n as u32).collect()))
+        .with_inserted_indices(Indices::U32(self.idx))
     }
 }
 
