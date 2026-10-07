@@ -23,33 +23,30 @@
 //!    rule this pass was designed against — emission is **ordinal**,
 //!    "evidence of relative hierarchy inside that scene, not universal
 //!    exposure-independent constants", so what has to be gated is
-//!    `torch < campfire < sun`, not the literal 600.
-//! 4. **The geometry.** `flame_m` derives the emitter's offset from the
-//!    mesh so it cannot drift when the mesh is regenerated —
-//!    `held_assets.rs` makes exactly that argument about `grip_m`. Here it
-//!    is measured off the built mesh, so a torch whose head moves takes its
-//!    light with it or this goes red.
+//!    `torch < campfire`, not the literal 600 — and what the fixed exposure
+//!    makes of it at night under `rig::flame_gain`, which is the half that
+//!    was black.
+//! 4. **The geometry.** `viewmodel::flame_at` reads the flame off the pose
+//!    the mesh is drawn with, so it cannot drift when the mesh is
+//!    regenerated — `held_assets.rs` makes exactly that argument about
+//!    `grip_m`. Here it is measured off the built mesh in all three axes, so
+//!    a torch whose head moves takes its light with it or this goes red.
 //!
 //! **What is NOT gated, said plainly:** whether any of it looks right.
-//! Nobody has seen a night frame in this repo — `rig::CAPTURE_DAY_FRAC`
-//! pins every capture to noon, so no vantage any visual judge has ever
-//! scored was shot after dark. `CLAUDE.md` makes a person the visual gate
-//! and forbids building a pixel one; `NOW.md` §0tl is that ask.
+//! `gates --capture --hour midnight` shoots the night; `CLAUDE.md` makes a
+//! person the visual gate and forbids building a pixel one.
 
 #![cfg(feature = "render")]
 
+use bevy::camera::Exposure;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::heldgen;
+use client::render::rig;
 use client::render::structures::fire_lumens;
-use client::render::viewmodel::{apply_hand_light, HandLight};
-use client::ui::hold::{pool_radius_m, HeldSrc, HELD_MODELS, TORCH_LIGHT};
-
-/// `rig`'s night, read from the renderer rather than restated. The coupling
-/// is the point: if night gets darker or brighter, every claim below about
-/// what a flame is worth re-reads.
-use client::render::rig::NIGHT_AMBIENT_LUX;
+use client::render::viewmodel::{apply_hand_light, flame_at, pose, HandLight, VIEWMODEL_PALM};
+use client::ui::hold::{HeldSrc, FLAME_LIFT_M, HELD_MODELS, TORCH_LIGHT};
 
 fn torch_row() -> usize {
     HELD_MODELS
@@ -75,21 +72,21 @@ fn app() -> App {
     app
 }
 
-fn read(app: &mut App) -> (f32, f32, f32) {
+fn read(app: &mut App) -> (f32, f32, Vec3) {
     let (light, tf) = app
         .world_mut()
         .query::<(&PointLight, &Transform)>()
         .iter(app.world())
         .next()
         .expect("no hand light");
-    (light.intensity, light.range, tf.translation.y)
+    (light.intensity, light.range, tf.translation)
 }
 
 fn drive(app: &mut App, want: Option<usize>) {
     app.world_mut()
         .run_system_once(
             move |q: Query<(&mut PointLight, &mut Transform), With<HandLight>>| {
-                apply_hand_light(want, q);
+                apply_hand_light(want, 1.0, q);
             },
         )
         .unwrap();
@@ -105,7 +102,7 @@ fn only_the_torch_lights_the_ground() {
     drive(&mut app, None);
     assert_eq!(
         read(&mut app),
-        (0.0, 0.0, 0.0),
+        (0.0, 0.0, Vec3::ZERO),
         "an empty hand is emitting light"
     );
 
@@ -113,7 +110,7 @@ fn only_the_torch_lights_the_ground() {
     let row = &HELD_MODELS[torch];
     assert_eq!(
         read(&mut app),
-        (TORCH_LIGHT.lumens, TORCH_LIGHT.range_m, row.flame_m()),
+        (TORCH_LIGHT.lumens, TORCH_LIGHT.range_m, flame_at(row)),
         "the torch in hand is not lighting the ground, or is lighting it from \
          the wrong place — night is the tenth of every cycle this is the only \
          answer to"
@@ -129,7 +126,7 @@ fn only_the_torch_lights_the_ground() {
         drive(&mut app, Some(i));
         assert_eq!(
             read(&mut app),
-            (0.0, 0.0, 0.0),
+            (0.0, 0.0, Vec3::ZERO),
             "{} is casting light and has no `light` on its row — a rock that \
              glows is worse than a torch that does not",
             m.key
@@ -142,7 +139,7 @@ fn only_the_torch_lights_the_ground() {
     drive(&mut app, None);
     assert_eq!(
         read(&mut app),
-        (0.0, 0.0, 0.0),
+        (0.0, 0.0, Vec3::ZERO),
         "putting the torch away left it burning"
     );
 }
@@ -168,11 +165,19 @@ fn exactly_one_held_row_is_a_light_source() {
     );
 }
 
-/// The ladder. `sun > campfire > torch > night ambient`, which is the rule
-/// the emission skill states and the only thing about these lumens that is
-/// not a taste call.
+/// The ladder, `torch < campfire`, and the question the operator asked of
+/// it (2026-10-07, *"i cant see it lighting the area"*): what the frame makes
+/// of the torch at night.
+///
+/// **Measured against the camera, not against the ambient.** This used to
+/// gate the torch's pool against `rig::NIGHT_AMBIENT_LUX` and passed at
+/// 0.89 m while the frame drew the ground under a lit torch at 1/255: the
+/// exposure is daylight's and fixed (`rig::DAY_EV100`), so 600 lm is black
+/// whatever the ambient says. The night eye (`rig::flame_gain`) is what
+/// brings it into the frame, and this holds the ground under a torch held
+/// at head height inside a band that reads, at deep night and at noon.
 #[test]
-fn the_torch_sits_under_the_campfire_and_over_the_night() {
+fn the_torch_sits_under_the_campfire_and_lights_the_night() {
     // Read through the ROW rather than off `TORCH_LIGHT`. Two reasons: the
     // row is what the client actually drives from, and a comparison between
     // two constants is one clippy folds to a literal `true`, which is an
@@ -183,66 +188,51 @@ fn the_torch_sits_under_the_campfire_and_over_the_night() {
     assert!(lit.lumens > 0.0, "a light source with no lumens in it");
     assert_eq!(
         lit, TORCH_LIGHT,
-        "the torch row is carrying a light that is not `TORCH_LIGHT` — the \
-         knob in `DECISIONS.md` and the number in the table have parted"
+        "the torch row is carrying a light that is not `TORCH_LIGHT`"
     );
     assert!(
         lit.lumens < fire_lumens(),
-        "the torch ({} lm) is brighter than a campfire ({} lm). Physically a \
-         fire pit is many times a burning rag, so this reads as backwards the \
-         moment a player stands next to one — and the emission rule in \
-         `.claude/skills/threejs-procedural-vfx` is that the HIERARCHY is the \
-         invariant, not the numbers",
+        "the torch ({} lm) is brighter than a campfire ({} lm) — the \
+         HIERARCHY is the invariant (`.claude/skills/threejs-procedural-vfx`), \
+         and both burn under the same night gain",
         lit.lumens,
         fire_lumens()
     );
 
-    // The other end of the ladder: it has to beat the ambient somewhere, or
-    // it is a decoration. The radius it beats it at is small — see below —
-    // but it is not zero.
-    let pool = pool_radius_m(lit.lumens, NIGHT_AMBIENT_LUX);
-    assert!(
-        pool > 0.5,
-        "the torch beats night's {NIGHT_AMBIENT_LUX} lux only within {pool:.2} \
-         m of the flame, which does not reach the ground the player stands on"
-    );
-    assert!(
-        pool < 3.0,
-        "the torch beats the night ambient out to {pool:.2} m. That is a \
-         floodlight in a fist, and it would have to be far over the campfire \
-         to do it"
-    );
-}
-
-/// `pool_radius_m` is the arithmetic every number above rests on, so it is
-/// checked against its own DEFINING property rather than against a second
-/// copy of itself: at the radius it returns, the point source's illuminance
-/// equals the ambient. `CLAUDE.md`'s naive-rebuild trap is the reason —
-/// re-deriving `sqrt(L / 4πA)` in the test would carry any mutant the
-/// function carried.
-#[test]
-fn the_pool_radius_is_where_the_flame_equals_the_night() {
-    for (lumens, ambient) in [(600.0f32, 60.0f32), (900.0, 60.0), (12.6, 0.25)] {
-        let r = pool_radius_m(lumens, ambient);
-        // Illuminance of a point source: candela / d², candela = lm / 4π.
-        let at_r = lumens / (4.0 * std::f32::consts::PI) / (r * r);
-        assert!(
-            (at_r - ambient).abs() < ambient * 1e-3,
-            "at the returned {r:.4} m a {lumens} lm source delivers {at_r:.4} \
-             lux, not the {ambient} lux it was solved for"
-        );
-        // Inside is brighter, outside is dimmer. Cheap, and it is what
-        // catches a sign or a reciprocal.
-        let inside = lumens / (4.0 * std::f32::consts::PI) / (0.5 * r * (0.5 * r));
-        assert!(inside > ambient, "the flame is dimmer at half the radius");
+    // Linear frame value of grass (albedo 0.25) `d` metres under the flame,
+    // straight below it, through the fixed exposure.
+    let exposure = Exposure {
+        ev100: rig::DAY_EV100,
     }
-    assert_eq!(
-        pool_radius_m(600.0, 0.0),
-        0.0,
-        "a zero ambient returned a radius rather than the stated 0.0 — an \
-         infinity here would propagate into a range"
+    .exposure();
+    let ground = |lumens: f32, d: f32| {
+        0.25 / std::f32::consts::PI * lumens / (4.0 * std::f32::consts::PI * d * d) * exposure
+    };
+    let midnight = (1.0 + sim_core::limits::DAY_PORTION) * 0.5;
+    let noon = sim_core::limits::DAY_PORTION * 0.5;
+    let night = ground(lit.lumens * rig::flame_gain(midnight, 0.0), 1.8);
+    assert!(
+        night > 0.03,
+        "at midnight the ground under a lit torch is {night:.5} of white — \
+         black on black, the operator's frame"
     );
-    assert_eq!(pool_radius_m(0.0, 60.0), 0.0, "a dark source has a pool");
+    assert!(
+        night < 0.5,
+        "at midnight the ground under a lit torch is {night:.3} of white — a \
+         floodlight in a fist"
+    );
+    // Out past a stride or two it has to fall away, or it is a lamp post.
+    let far = ground(lit.lumens * rig::flame_gain(midnight, 0.0), 8.0);
+    assert!(
+        far < 0.01,
+        "8 m from the torch the ground is still {far:.4}"
+    );
+    assert_eq!(rig::flame_gain(noon, 0.0), 1.0, "the eye opens at noon");
+    let day = ground(lit.lumens * rig::flame_gain(noon, 0.0), 1.8);
+    assert!(
+        day < 0.001,
+        "a torch at noon puts {day:.4} on the ground — a second sun"
+    );
 }
 
 /// The geometry half: the emitter sits above the crown of the mesh it comes
@@ -296,6 +286,31 @@ fn the_flame_sits_above_the_head_it_comes_out_of() {
              no visible cause hanging over the hand",
             m.key
         );
+        // **And ON the head, not beside it** — the half this gate missed
+        // while the fire burned 13 cm off the torch (operator, 2026-10-07:
+        // *"its not near the actual torch"*). The crown's vertices are
+        // posed the way `swap` poses the model, palm offset and all, and the
+        // flame has to sit over their middle.
+        let top: Vec<Vec3> = pos
+            .iter()
+            .map(|p| Vec3::from_array(*p))
+            .filter(|p| p.y * m.scale > crown - 0.03)
+            .collect();
+        let mid = top.iter().copied().sum::<Vec3>() / top.len() as f32;
+        let head = pose(m, VIEWMODEL_PALM).transform_point(mid);
+        let at = flame_at(m);
+        let off = Vec2::new(at.x - head.x, at.z - head.z).length();
+        assert!(
+            off < 0.01,
+            "{}'s flame sits {off:.3} m beside its own head in the hold frame \
+             (flame {at:?}, head {head:?})",
+            m.key
+        );
+        assert!(
+            at.y > head.y && at.y - head.y < FLAME_LIFT_M + 0.03,
+            "{}'s flame is not just over its head (flame {at:?}, head {head:?})",
+            m.key
+        );
     }
 }
 
@@ -336,34 +351,4 @@ fn the_hand_light_is_hung_on_the_hand_and_burns_the_one_flame_colour() {
          `item.spawn` opened — check it is a sibling of the model under \
          `HeldItem`, not a child of it"
     );
-}
-
-/// The flame you can see (`viewmodel::HandFlame`) stands ON the torch head
-/// through its whole flicker: its foot on the crown, taller than wide, and
-/// the hot core inside the mantle. A flame whose foot drifted would float
-/// over the torch or sink into it, and no other value here would move.
-#[test]
-fn the_seen_flame_stands_on_the_torch_head() {
-    use client::render::viewmodel::{hand_flame_pose, FLAME_R_M, FLAME_TALL};
-    use client::ui::hold::FLAME_LIFT_M;
-    for i in 0..400 {
-        let t = i as f32 * 0.013;
-        let mantle = hand_flame_pose(false, t);
-        let core = hand_flame_pose(true, t);
-        for (name, p) in [("mantle", mantle), ("core", core)] {
-            let foot = p.translation.y - p.scale.y;
-            assert!(
-                (foot + FLAME_LIFT_M).abs() < 1e-5,
-                "the {name}'s foot is at {foot} m from the emitter at t={t}, \
-                 not on the crown {FLAME_LIFT_M} m below it"
-            );
-            assert!(p.scale.y > p.scale.x, "the {name} is squat at t={t}");
-            assert!(p.scale.x > 0.0 && p.scale.y > 0.0);
-        }
-        assert!(core.scale.x < mantle.scale.x && core.scale.y < mantle.scale.y);
-        assert!(
-            mantle.scale.y < FLAME_R_M * FLAME_TALL * 1.25,
-            "the flicker is out of hand at t={t}"
-        );
-    }
 }

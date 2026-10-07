@@ -92,7 +92,7 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
     // Nothing lit anywhere.
     app.world_mut()
         .run_system_once(|q: Query<(&FireLight, &mut PointLight)>| {
-            apply_fire_lights(q, &|_, _, _, _| false);
+            apply_fire_lights(q, &|_, _, _, _| false, 1.0);
         })
         .unwrap();
     assert_eq!(
@@ -105,9 +105,11 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
     // This address lit.
     app.world_mut()
         .run_system_once(|q: Query<(&FireLight, &mut PointLight)>| {
-            apply_fire_lights(q, &|cx, cz, level, loc| {
-                (cx, cz, level, loc) == (CX, CZ, LEVEL, 0)
-            });
+            apply_fire_lights(
+                q,
+                &|cx, cz, level, loc| (cx, cz, level, loc) == (CX, CZ, LEVEL, 0),
+                1.0,
+            );
         })
         .unwrap();
     assert_eq!(
@@ -119,9 +121,11 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
     // A DIFFERENT address lit — the fire must not read someone else's state.
     app.world_mut()
         .run_system_once(|q: Query<(&FireLight, &mut PointLight)>| {
-            apply_fire_lights(q, &|cx, cz, level, loc| {
-                (cx, cz, level, loc) == (CX + 1, CZ, LEVEL, 0)
-            });
+            apply_fire_lights(
+                q,
+                &|cx, cz, level, loc| (cx, cz, level, loc) == (CX + 1, CZ, LEVEL, 0),
+                1.0,
+            );
         })
         .unwrap();
     assert_eq!(

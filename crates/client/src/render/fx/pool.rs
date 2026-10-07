@@ -195,6 +195,14 @@ impl Pool {
         self.drawn || self.parts.iter().any(|p| p.left > 0.0)
     }
 
+    /// Move every live particle by `d`: the frame they are simulated in
+    /// moved under them (a flame carried in a hand, `viewmodel::hand_fire`).
+    pub fn shift(&mut self, d: Vec3) {
+        for p in self.parts.iter_mut().filter(|p| p.left > 0.0) {
+            p.pos += d;
+        }
+    }
+
     /// Forget every particle.
     pub fn clear(&mut self) {
         for p in self.parts.iter_mut() {

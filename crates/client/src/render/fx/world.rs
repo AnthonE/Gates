@@ -375,12 +375,149 @@ pub struct FireFx {
     pub flame_dy: f32,
     pub smoke_dy: f32,
     /// How big the fire is: 1 for a fire pit, a fraction for a torch in a
-    /// hand — its tongues' spread, their size and how many there are.
+    /// hand — how far its embers spread.
     pub scale: f32,
+    /// What its flame is made of.
+    pub tongues: Tongues,
 }
 
-/// The torch's fire, as a fraction of a fire pit's.
+/// The flame a burning thing shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tongues {
+    /// A pit's: ragged puffs licking up off the logs.
+    Pit,
+    /// A torch's: small tongues climbing to a tip off its head
+    /// ([`torch_flame`]) — another player's, in the world.
+    Torch,
+    /// Drawn by the emitter's owner in its own frame (your own torch,
+    /// `viewmodel::hand_fire`, with [`torch_flame`] too), so this throws
+    /// only the embers and the smoke. World-space tongues on a fire carried
+    /// half a metre from the eye are left behind by every step and turn.
+    Owned,
+}
+
+/// The torch's embers, as a fraction of a fire pit's spread.
 pub const TORCH_FIRE_SCALE: f32 = 0.35;
+
+/// A torch flame's particles a second: its orange tongues, its yellow heart,
+/// the glow under them, and the smoulder and the embers in the wrap.
+pub const TORCH_TONGUES: f32 = 40.0;
+pub const TORCH_CORES: f32 = 34.0;
+pub const TORCH_GLOWS: f32 = 24.0;
+pub const TORCH_SMOULDER: f32 = 14.0;
+pub const TORCH_EMBERS: f32 = 16.0;
+
+/// `dt` of a torch's flame into `pool`, off a head whose crown is at
+/// `crown`, rising along `up` — in whatever frame those are in: the world's
+/// for another player's torch (`fires`), the hand's for your own
+/// (`viewmodel::hand_fire`). So a torch burns the same in every hand.
+///
+/// Small tongues out of the whole wrap that climb, speed up and meet in a
+/// tip, a hot yellow heart low in the middle, the glow they sit in, and —
+/// with `wrap`, where the head is close enough to see — the cloth itself
+/// smouldering, which a point light on the axis cannot draw: it never
+/// reaches cloth that faces out.
+pub fn torch_flame(pool: &mut Pool, crown: Vec3, up: Vec3, dt: f32, wrap: bool) {
+    for _ in 0..count(pool, TORCH_TONGUES, dt) {
+        let off = Vec3::new(pool.signed(), 0.0, pool.signed()) * 0.018;
+        let life = 0.28 + 0.16 * pool.roll();
+        let dy = 0.01 * pool.roll() - 0.008;
+        let rise = 0.12 + 0.1 * pool.roll();
+        let size = 0.032 + 0.014 * pool.roll();
+        let (roll, spin) = (pool.signed() * 0.14, pool.signed() * 0.5);
+        pool.spawn(Particle {
+            left: life,
+            life,
+            pos: crown + off + Vec3::Y * dy,
+            // Up, and in toward the middle: the tongues meet in a tip.
+            vel: up * rise - off * 1.4,
+            size0: size,
+            size1: 0.014,
+            c0: [1.6, 0.58, 0.11, 1.0],
+            c1: [0.9, 0.16, 0.02, 0.0],
+            // Buoyant: a tongue speeds up as it climbs.
+            drag: -1.0,
+            roll,
+            spin,
+            cell: atlas::FLAME,
+            ..Particle::default()
+        });
+    }
+    for _ in 0..count(pool, TORCH_CORES, dt) {
+        let off = Vec3::new(pool.signed(), 0.0, pool.signed()) * 0.008;
+        let life = 0.16 + 0.1 * pool.roll();
+        let rise = 0.1 + 0.08 * pool.roll();
+        let size = 0.02 + 0.006 * pool.roll();
+        let roll = pool.signed() * 0.1;
+        pool.spawn(Particle {
+            left: life,
+            life,
+            pos: crown + off + Vec3::Y * 0.004,
+            vel: up * rise,
+            size0: size,
+            size1: 0.01,
+            c0: [2.4, 1.55, 0.62, 1.0],
+            c1: [1.8, 0.7, 0.14, 0.0],
+            drag: -1.0,
+            roll,
+            cell: atlas::FLAME,
+            ..Particle::default()
+        });
+    }
+    for _ in 0..count(pool, TORCH_GLOWS, dt) {
+        let life = 0.12 + 0.08 * pool.roll();
+        pool.spawn(Particle {
+            left: life,
+            life,
+            pos: crown + Vec3::Y * 0.012,
+            vel: up * 0.05,
+            size0: 0.05,
+            size1: 0.04,
+            c0: [1.1, 0.48, 0.1, 0.6],
+            c1: [0.7, 0.2, 0.03, 0.0],
+            cell: atlas::GLOW,
+            ..Particle::default()
+        });
+    }
+    if !wrap {
+        return;
+    }
+    for _ in 0..count(pool, TORCH_SMOULDER, dt) {
+        let a = pool.roll() * std::f32::consts::TAU;
+        let y = -0.075 * pool.roll() - 0.006;
+        let life = 0.4 + 0.3 * pool.roll();
+        let size = 0.007 + 0.004 * pool.roll();
+        pool.spawn(Particle {
+            left: life,
+            life,
+            pos: crown + Vec3::new(a.cos() * 0.027, y, a.sin() * 0.027),
+            size0: size,
+            size1: 0.005,
+            c0: [0.8, 0.2, 0.03, 0.45],
+            c1: [0.4, 0.06, 0.01, 0.0],
+            cell: atlas::GLOW,
+            ..Particle::default()
+        });
+    }
+    for _ in 0..count(pool, TORCH_EMBERS, dt) {
+        let a = pool.roll() * std::f32::consts::TAU;
+        let y = -0.085 * pool.roll() - 0.004;
+        let life = 0.5 + 0.5 * pool.roll();
+        let size = 0.003 + 0.002 * pool.roll();
+        pool.spawn(Particle {
+            left: life,
+            life,
+            pos: crown + Vec3::new(a.cos() * 0.026, y, a.sin() * 0.026),
+            vel: up * 0.01,
+            size0: size,
+            size1: 0.0015,
+            c0: [3.2, 1.2, 0.25, 1.0],
+            c1: [1.4, 0.25, 0.03, 0.0],
+            cell: atlas::GLOW,
+            ..Particle::default()
+        });
+    }
+}
 
 /// Fires get flames, embers and smoke within this range, metres.
 pub const FIRE_FX_M: f32 = 40.0;
@@ -431,34 +568,40 @@ pub fn fires(
     let Fx { glow, soft, .. } = &mut *fx;
     for (_, at, f) in near {
         let Some(f) = f else { break };
-        if f.flames {
-            let base = at + Vec3::Y * f.flame_dy;
-            let k = f.scale;
-            for _ in 0..count(glow, FLAME_RATE * k.max(0.5), dt) {
-                let off = Vec3::new(glow.signed() * 0.16 * k, 0.0, glow.signed() * 0.16 * k);
-                let life = 0.35 + 0.3 * glow.roll();
-                let size = (0.14 + 0.08 * glow.roll()) * k;
-                let rise = (0.9 + 0.6 * glow.roll()) * k.sqrt();
-                let roll = glow.roll() * std::f32::consts::TAU;
-                let spin = glow.signed() * 1.5;
-                let cell = atlas::PUFF + ((glow.roll() * 3.0) as u8).min(2);
-                glow.spawn(Particle {
-                    left: life,
-                    life,
-                    pos: base + off,
-                    vel: Vec3::new(-off.x * 0.8, rise, -off.z * 0.8),
-                    size0: size,
-                    size1: size * 0.25,
-                    c0: [2.6, 1.05, 0.28, 0.9],
-                    c1: [0.9, 0.18, 0.03, 0.0],
-                    gravity: -0.6,
-                    drag: 1.2,
-                    roll,
-                    spin,
-                    cell,
-                    ..Particle::default()
-                });
+        match f.tongues {
+            Tongues::Pit if f.flames => {
+                let base = at + Vec3::Y * f.flame_dy;
+                let k = f.scale;
+                for _ in 0..count(glow, FLAME_RATE * k.max(0.5), dt) {
+                    let off = Vec3::new(glow.signed() * 0.16 * k, 0.0, glow.signed() * 0.16 * k);
+                    let life = 0.35 + 0.3 * glow.roll();
+                    let size = (0.14 + 0.08 * glow.roll()) * k;
+                    let rise = (0.9 + 0.6 * glow.roll()) * k.sqrt();
+                    let roll = glow.roll() * std::f32::consts::TAU;
+                    let spin = glow.signed() * 1.5;
+                    let cell = atlas::PUFF + ((glow.roll() * 3.0) as u8).min(2);
+                    glow.spawn(Particle {
+                        left: life,
+                        life,
+                        pos: base + off,
+                        vel: Vec3::new(-off.x * 0.8, rise, -off.z * 0.8),
+                        size0: size,
+                        size1: size * 0.25,
+                        c0: [2.6, 1.05, 0.28, 0.9],
+                        c1: [0.9, 0.18, 0.03, 0.0],
+                        gravity: -0.6,
+                        drag: 1.2,
+                        roll,
+                        spin,
+                        cell,
+                        ..Particle::default()
+                    });
+                }
             }
+            Tongues::Torch if f.flames => {
+                torch_flame(glow, at + Vec3::Y * f.flame_dy, Vec3::Y, dt, false);
+            }
+            _ => {}
         }
         for _ in 0..count(
             glow,
@@ -471,7 +614,10 @@ pub fn fires(
         ) {
             let from = at + Vec3::Y * if f.flames { f.flame_dy } else { f.smoke_dy };
             let life = 1.2 + glow.roll();
-            let pos = from + Vec3::new(glow.signed() * 0.12, 0.0, glow.signed() * 0.12);
+            // Out of the fire, not out of the air round it: a torch's head
+            // is a hand's width, a pit's logs a stride.
+            let spread = 0.12 * f.scale.clamp(0.25, 1.0);
+            let pos = from + Vec3::new(glow.signed() * spread, 0.0, glow.signed() * spread);
             let vel = Vec3::new(
                 glow.signed() * 0.35,
                 1.4 + 1.2 * glow.roll(),

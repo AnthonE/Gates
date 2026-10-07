@@ -559,6 +559,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
             .insert_resource(weather_pin)
+            .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
@@ -1145,7 +1146,6 @@ impl Plugin for GatesRenderPlugin {
                 // on an emitter that outlives every swap. Both read the same
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
-                viewmodel::hand_flame.after(viewmodel::spawn_item),
                 // A deployable held as a blueprint: it rides the sway and
                 // bob `animate` just stepped.
                 sheet::spawn,
@@ -1223,6 +1223,15 @@ impl Plugin for GatesRenderPlugin {
                 .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
+        )
+        // The fire on the torch in your own hand, in the hand's frame: the
+        // same slot for the same reason, and the viewmodel's conditions.
+        .add_systems(
+            PostUpdate,
+            viewmodel::hand_fire
+                .after(bevy::transform::TransformSystems::Propagate)
+                .run_if(world_running)
+                .run_if(move || !plate),
         )
         // The rig. `build` runs until the glTF is in and then costs one
         // branch; `bind` catches every `AnimationPlayer` the scene spawner
@@ -1508,6 +1517,8 @@ impl Plugin for GatesRenderPlugin {
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     (
                         structures::fire_lights,
+                        // Another player's torch, under the same night eye.
+                        bodies::light_flames.after(bodies::stream),
                         town::dress,
                         town::lamps,
                         town_signs::build,
