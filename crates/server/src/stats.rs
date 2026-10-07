@@ -622,6 +622,15 @@ pub struct ShardStats {
     /// exactly when the last byte is written and not a moment that happened
     /// to look long enough.
     pub store_stopped: AtomicBool,
+    /// The wipe clock reached zero (`wipe.rs`): the sim thread raised the
+    /// shutdown flag, and `bin/shard.rs` applies the wipe to the flushed
+    /// files and exits for the supervisor to restart.
+    pub wipe_due: AtomicBool,
+    /// The wipe that came due takes the blueprints.
+    pub wipe_blueprints: AtomicBool,
+    /// When the next wipe is, unix seconds, 0 for none. A gauge the sim
+    /// thread mirrors off its clock, for `status.json`.
+    pub next_wipe: AtomicU64,
     /// A world blob the sim thread refused, which `bin/shard.rs` had
     /// already accepted into a trial world. Unreachable by construction and
     /// counted anyway, because the alternative to counting it is a shard

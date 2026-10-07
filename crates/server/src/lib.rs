@@ -63,6 +63,7 @@ pub mod store;
 pub mod trustlog;
 #[cfg(feature = "watch")]
 pub mod watch;
+pub mod wipe;
 pub mod worldfile;
 /// The client-side snapshot view lives in `client-core` (the native client
 /// and the bots share one implementation); re-exported for the gates.

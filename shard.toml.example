@@ -87,9 +87,11 @@ seed = 20260731
 #      saved and guests are remembered by nobody (the public shard runs
 #      this way); require_auth = true keeps guests out entirely.
 #   2. The file is created if absent and pinned to this shard's SEED and
-#      CONTENT HASH. Change either and the shard REFUSES TO BOOT rather than
-#      hand a hundred players an empty inventory: move the file aside (that
-#      is what a wipe is) or restore the old content set.
+#      CONTENT LAYOUT (the item/recipe/piece/work rows a save points into).
+#      A balance edit (any number in content/*.toml) loads fine. Adding,
+#      removing or renaming a row, or changing the seed, REFUSES TO BOOT
+#      rather than hand a hundred players the wrong items: wipe, or restore
+#      the old content set.
 #   3. The world is NOT in it. Structures, boxes, deployables and hearths
 #      live in `world_file` below — this is your character, not your base.
 #
@@ -113,7 +115,7 @@ seed = 20260731
 #
 # Two things to know:
 #
-#   1. Pinned to this shard's SEED and CONTENT HASH, same as save_file and
+#   1. Pinned to this shard's SEED and CONTENT LAYOUT, same as save_file and
 #      for a sharper reason: every base in it stands at a coordinate, and on
 #      a different seed that coordinate is somewhere else (often sea). The
 #      shard REFUSES TO BOOT rather than start a new island under everyone.
@@ -127,11 +129,36 @@ seed = 20260731
 #      (crates/server/src/trustlog.rs; read it with `trust-log <dir>`). It
 #      has no key of its own because its rows are stamped with the world's
 #      tick, which only continues across a restart when the world does.
-#      Bounded at 256 MiB, oldest segments deleted first. A wipe that deletes
-#      the world file should decide about this directory too.
+#      Bounded at 256 MiB, oldest segments deleted first. A wipe archives it
+#      with the world.
 #
 # DECISIONS.md §open "world persistence v0" and "trust ledger v1".
 # world_file = "island.world"
+
+# THE WIPE (crates/server/src/wipe.rs). Wipes fall every `wipe_days` from
+# `wipe_anchor` (UTC; default 1970-01-01 19:00, a Thursday, so 7 = every
+# Thursday at 19:00 UTC, 14 = every other one, 28 = every fourth). Needs
+# world_file or save_file. Unset = no schedule.
+#
+# What a wipe does: chat counts down from an hour out; then the shard saves,
+# moves the world file, its backups and its trust log into
+# `<world_file>.wipes/<unix>/` (archived, never deleted), copies the player
+# store there, and rewrites it so each player keeps only their blueprints and
+# glyphs and wakes on a beach with the spawn kit. Then it EXITS, and systemd
+# (Restart=always) brings it back on a fresh island with fresh puzzles. A
+# shard that was down at its wipe hour wipes at its next boot. The count and
+# the time of the last wipe live in `<world_file>.wipe` (plain text).
+#
+# Every `blueprint_wipe_every`th wipe clears blueprints too (default 2:
+# blueprints survive one wipe; 0 = never by schedule).
+#
+# Admins: `/wipe 30` (a 30-minute countdown), `/wipe now`, `/wipe 30 bp`
+# (force a blueprint wipe), `/wipe cancel`. Anyone: `/wipe` says when the
+# next one is; players are told on joining.
+#
+# wipe_days = 7
+# wipe_anchor = "2026-10-08 19:00"
+# blueprint_wipe_every = 2
 
 # How often the world is written, in ticks (30 ticks = 1 second). Default
 # 1800 = every 60 seconds; a clean shutdown always writes one regardless, so

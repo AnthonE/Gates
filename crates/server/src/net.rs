@@ -609,6 +609,7 @@ pub async fn spawn_shard(
         blob: world_blob,
         interval_ticks: world_interval,
         clamp: world_clamp,
+        wipe,
     } = world_boot;
 
     // The anomaly log, opened before the sim thread that writes to it —
@@ -650,6 +651,7 @@ pub async fn spawn_shard(
                     world_idents,
                     world_interval,
                     world_clamp,
+                    wipe,
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
@@ -3074,6 +3076,7 @@ fn sim_thread(
     world_idents: crate::worldfile::Identities,
     world_interval: u64,
     world_clamp: bool,
+    wipe: crate::wipe::Clock,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
@@ -3153,6 +3156,7 @@ fn sim_thread(
     core.arc_text = arc_text;
     core.install_admins(admins);
     core.trust = trust;
+    core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
     let mut watch = crate::anomaly::Watch::new();
     // **The load, and this is the only place it may happen**: after the
@@ -3384,6 +3388,20 @@ fn sim_thread(
                 &stats,
             );
         }
+        // The wipe clock, once a second off the wall clock (this loop is the
+        // boundary: the clock read lives here, never in the tick). Before the
+        // tick, so a countdown line rides this tick's chat pump.
+        if core
+            .world
+            .tick
+            .is_multiple_of(sim_core::limits::TICK_HZ as u64)
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            core.wipe_poll(now);
+            ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
+        }
         // Tick + publish. `Ops` is the tick's three side channels (admin
         // v0) — the anomaly log, the kick ring, and `/save`'s flag.
         let mut save_now = false;
@@ -3427,6 +3445,16 @@ fn sim_thread(
         // two (`take_world_save` is still the only writer).
         if save_now {
             next_world_save = core.world.tick;
+        }
+        // The wipe came due: stop the shard the way a SIGTERM does — the
+        // flush below writes the world and every player — and say so to
+        // `bin/shard.rs`, which ends the world on disk once the files close.
+        if let Some(blueprints) = core.take_wipe() {
+            if blueprints {
+                ShardStats::raise(&stats.wipe_blueprints);
+            }
+            ShardStats::raise(&stats.wipe_due);
+            shutdown.store(true, Ordering::Relaxed);
         }
         // The anomaly log's counter sweep, once a second rather than once a
         // tick: a counter that moved is interesting to the second, and the

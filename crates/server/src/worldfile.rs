@@ -175,6 +175,9 @@ pub struct WorldBoot {
     /// thread clamps conditions after its own load, as the trial did
     /// (`World::clamp_conditions`).
     pub clamp: bool,
+    /// When this world ends (`wipe.rs`). Set by `bin/shard.rs` from the
+    /// schedule and the wipe state; off everywhere else.
+    pub wipe: crate::wipe::Clock,
 }
 
 impl WorldBoot {
@@ -187,6 +190,7 @@ impl WorldBoot {
             blob: Vec::new(),
             interval_ticks: u64::MAX,
             clamp: false,
+            wipe: crate::wipe::Clock::off(),
         }
     }
 }
@@ -422,6 +426,7 @@ pub fn open(
                 blob: Vec::new(),
                 interval_ticks,
                 clamp: false,
+                wipe: crate::wipe::Clock::off(),
             },
             WorldLoad {
                 created: true,
@@ -651,6 +656,7 @@ pub fn open(
             blob: blob.to_vec(),
             interval_ticks,
             clamp: balance,
+            wipe: crate::wipe::Clock::off(),
         },
         WorldLoad {
             created: false,

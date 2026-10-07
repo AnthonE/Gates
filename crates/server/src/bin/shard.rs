@@ -211,6 +211,65 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    // **The wipe, before any file is opened** (`server::wipe`). A shard that
+    // was down when its scheduled wipe came applies it now; one meeting a
+    // schedule for the first time starts counting from this boot.
+    let now = unix_now();
+    let wipe_state_path =
+        server::wipe::state_path(cfg.world_file.as_deref(), cfg.save_file.as_deref());
+    let mut wipe_state = match wipe_state_path.as_deref().map(server::wipe::read_state) {
+        None => None,
+        Some(Ok(st)) => st,
+        Some(Err(e)) => {
+            eprintln!("shard: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let (Some(path), Some(sched)) = (wipe_state_path.as_deref(), cfg.wipe) {
+        let missed = match wipe_state {
+            None => false,
+            Some(st) => sched
+                .last_at_or_before(now)
+                .is_some_and(|due| st.last < due),
+        };
+        if missed {
+            let st = wipe_state.unwrap_or_default();
+            let n = st.wipes + 1;
+            let bp = server::wipe::blueprints_due(n, cfg.blueprint_wipe_every);
+            println!(
+                "wipe: the scheduled wipe came while the shard was down — applying wipe {n} now"
+            );
+            end_world(&cfg, now, n, bp);
+            wipe_state = server::wipe::read_state(path).ok().flatten();
+        } else if wipe_state.is_none() {
+            let st = server::wipe::State {
+                wipes: 0,
+                last: now,
+            };
+            if let Err(e) = server::wipe::write_state(path, &st) {
+                eprintln!("shard: wipe state {}: {e}", path.display());
+                std::process::exit(1);
+            }
+            wipe_state = Some(st);
+        }
+    }
+    let wipes_so_far = wipe_state.map_or(0, |s| s.wipes);
+    let wipe_clock =
+        server::wipe::Clock::new(cfg.wipe, cfg.blueprint_wipe_every, wipes_so_far, now);
+    match wipe_clock.next() {
+        Some(p) => println!(
+            "wipe: next {} · wipe {} · {}",
+            server::wipe::fmt_utc(p.at),
+            wipes_so_far + 1,
+            if p.blueprints {
+                "blueprints too"
+            } else {
+                "blueprints kept"
+            }
+        ),
+        None => println!("wipe: no schedule (an admin's /wipe still works)"),
+    }
+
     // The player store, opened and validated before a port is bound — the
     // posture content and the island already take (CLAUDE.md wall 7). It needs
     // the content hash, which is why it is opened HERE and handed over rather
@@ -299,7 +358,7 @@ async fn main() {
         .world_file
         .as_ref()
         .map(|_| sim_core::probe::probe_terrain(cfg.seed));
-    let world_boot = match cfg.world_file.as_deref() {
+    let mut world_boot = match cfg.world_file.as_deref() {
         None => {
             println!("world off: no world_file — the island is generated fresh every boot");
             server::worldfile::WorldBoot::off()
@@ -455,6 +514,7 @@ async fn main() {
             }
         );
     }
+    world_boot.wipe = wipe_clock;
     let handle = match spawn_shard(cfg, tables, saves, world_boot).await {
         Ok(h) => h,
         Err(e) => {
@@ -545,8 +605,25 @@ async fn main() {
 
     let mut report = tokio::time::interval(Duration::from_secs(10));
     report.tick().await; // immediate first tick consumed
+    let mut wipe_watch = tokio::time::interval(Duration::from_millis(500));
     loop {
         tokio::select! {
+            // The sim thread's wipe clock came due and it has already raised
+            // the shutdown flag; wait out the flush like any stop, then end
+            // the world on the closed files and exit for the supervisor to
+            // bring up the fresh island.
+            _ = wipe_watch.tick() => {
+                if !ShardStats::raised(&handle.stats.wipe_due) {
+                    continue;
+                }
+                shutdown(&handle, "WIPE").await;
+                trust_down(trust_log.as_mut()).await;
+                drain(pop.take()).await;
+                let bp = ShardStats::raised(&handle.stats.wipe_blueprints);
+                end_world(&boot_cfg, unix_now(), wipes_so_far + 1, bp);
+                println!("shard: wiped — exiting; the supervisor brings up the new island");
+                return;
+            }
             _ = tokio::signal::ctrl_c() => {
                 shutdown(&handle, "SIGINT").await;
                 trust_down(trust_log.as_mut()).await;
@@ -644,6 +721,62 @@ async fn main() {
                 PopulationStats::get(&g.charges_planted),
                 PopulationStats::get(&g.struct_hits),
             );
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Wipe number `n` on the closed files, then record it. A failure exits
+/// non-zero: the files are as the archive step left them, and the operator
+/// reads the line before the supervisor's restart does anything else.
+fn end_world(cfg: &server::config::ShardConfig, now: u64, n: u32, blueprints: bool) {
+    let world = cfg.world_file.as_deref().map(Path::new);
+    let save = cfg.save_file.as_deref().map(Path::new);
+    if world.is_none() && save.is_none() {
+        // A shard that keeps nothing: the restart is the whole wipe.
+        println!("wipe {n}: nothing on disk — the next boot is a fresh island anyway");
+        return;
+    }
+    match server::wipe::apply(world, save, now, blueprints) {
+        Ok(r) => println!(
+            "wipe {n}: {} · players: {} kept their {}, {} cleared · archived in {}",
+            if r.world_archived {
+                "world archived"
+            } else {
+                "no world file"
+            },
+            r.kept,
+            if blueprints {
+                "nothing (blueprint wipe)"
+            } else {
+                "blueprints and glyphs"
+            },
+            r.cleared,
+            r.archive.display()
+        ),
+        Err(e) => {
+            eprintln!("shard: wipe {n} failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    if let Some(path) =
+        server::wipe::state_path(cfg.world_file.as_deref(), cfg.save_file.as_deref())
+    {
+        let st = server::wipe::State {
+            wipes: n,
+            last: now,
+        };
+        if let Err(e) = server::wipe::write_state(&path, &st) {
+            eprintln!(
+                "shard: wipe {n} done, but its state {}: {e}",
+                path.display()
+            );
+            std::process::exit(1);
         }
     }
 }

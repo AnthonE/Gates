@@ -982,3 +982,88 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
     assert_eq!((found.live, found.clamped, found.corrupt), (3, 0, 0));
     sweep(&path);
 }
+
+/// **A wipe, on disk** (`server::wipe`): the world and its backups and trust
+/// log move into the archive, the player store is copied there and rewritten
+/// — a player who knows a blueprint keeps it and wakes on a beach with
+/// nothing in their pockets, a player who knows nothing starts over — and a
+/// blueprint wipe clears everyone.
+#[test]
+fn a_wipe_archives_the_world_and_keeps_only_what_players_know() {
+    let path = scratch("wipe");
+    let world = PathBuf::from(format!("{}.world", path.display()));
+    let trust = PathBuf::from(format!("{}.trust", world.display()));
+    let _ = std::fs::remove_dir_all(format!("{}.wipes", world.display()));
+    std::fs::write(&world, b"the old island").unwrap();
+    std::fs::write(format!("{}.1", world.display()), b"its backup").unwrap();
+    std::fs::create_dir_all(&trust).unwrap();
+
+    let (scholar, nobody) = (key("scholar"), key("nobody"));
+    {
+        let (mut saves, _) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("creates");
+        let mut rich = PlayerSave::EMPTY;
+        rich.hp = 50;
+        rich.hp_max = 100;
+        rich.known = 0b101;
+        rich.inv[0] = ItemStack {
+            item: 3,
+            count: 500,
+            cond: 0,
+            skin: 0,
+        };
+        let mut poor = rich;
+        poor.known = 0;
+        for (k, s) in [(nobody, poor), (scholar, rich)] {
+            let put = saves.store.put(&k, 1, s);
+            saves.file.write(put.index, &k, 1, &s).unwrap();
+        }
+    }
+
+    let r = server::wipe::apply(Some(&world), Some(&path), 1_000, false).expect("wipes");
+    assert!(r.world_archived);
+    assert_eq!((r.kept, r.cleared), (1, 1));
+    assert!(
+        !world.exists() && !trust.exists(),
+        "the world must be gone from its path"
+    );
+    assert_eq!(
+        std::fs::read_dir(&r.archive).unwrap().count(),
+        4,
+        "the world, its backup, its trust log and a copy of the store"
+    );
+
+    let (saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("reopens");
+    assert_eq!(found.live, 1);
+    assert!(
+        saves.store.find(&nobody).is_none(),
+        "nothing known, nothing kept"
+    );
+    let kept = saves
+        .store
+        .find(&scholar)
+        .expect("a blueprint survives a map wipe");
+    assert_eq!(kept.known, 0b101);
+    assert!(kept.dead && kept.inv.iter().all(|s| s.count == 0));
+
+    // The survivor comes back as a fresh body that remembers.
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core
+        .connect_as(0, id_of(0), Some(scholar), Some(kept))
+        .is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    let p = core.world.players[world_slot(&core, id_of(0))];
+    assert!(!p.dead && p.hp > 0, "woke alive");
+    assert_eq!(p.known, 0b101);
+    assert!(p.inv.iter().all(|s| !(s.item == 3 && s.count == 500)));
+    drop(saves);
+
+    let r = server::wipe::apply(None, Some(&path), 2_000, true).expect("a blueprint wipe");
+    assert_eq!((r.kept, r.cleared), (0, 1));
+    let (_saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("reopens");
+    assert_eq!(found.live, 0, "a blueprint wipe keeps nobody");
+
+    let _ = std::fs::remove_dir_all(format!("{}.wipes", world.display()));
+    let _ = std::fs::remove_dir_all(format!("{}.wipes", path.display()));
+    sweep(&path);
+}

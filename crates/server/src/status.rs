@@ -19,7 +19,7 @@
 //!  "aim_stale_unacked":0,"aim_stale_refused":0,
 //!  "aim_stale_hist":[0,0,0,0,0,0,0,0],
 //!  "favour_granted":0,"favour_sum":0,
-//!  "favour_clamped":0,"favour_disagree":0}
+//!  "favour_clamped":0,"favour_disagree":0,"next_wipe":0}
 //! ```
 //!
 //! (one line on the wire; wrapped here to fit)
@@ -72,6 +72,9 @@
 //!   number. `favour_disagree` is the cross-check: claims corrected down
 //!   to the server's own ack evidence, and the one favour counter that is
 //!   also in `anomaly::WATCHED`.
+//!
+//! - `next_wipe` — unix seconds of the next wipe, 0 for none (`wipe.rs`):
+//!   what a server list prints as "wipes Thu 19:00".
 //!
 //! ## What this thread is allowed to touch
 //!
@@ -228,7 +231,7 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
          \"aim_stale_unacked\":{},\"aim_stale_refused\":{},\
          \"aim_stale_hist\":{},\
          \"favour_granted\":{},\"favour_sum\":{},\
-         \"favour_clamped\":{},\"favour_disagree\":{}}}",
+         \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{}}}",
         ShardStats::get(&stats.players),
         sim_core::limits::MAX_PLAYERS,
         protocol::PROTO_VER,
@@ -251,6 +254,7 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
         ShardStats::get(&stats.favour_sum),
         ShardStats::get(&stats.favour_clamped),
         ShardStats::get(&stats.favour_disagree),
+        ShardStats::get(&stats.next_wipe),
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
