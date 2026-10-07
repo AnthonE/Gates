@@ -3306,10 +3306,11 @@ fn the_shipped_pig_bakes() {
     // because this is the pair that produces the behaviour.
     assert!(pig.roam_cm > pig.spook_cm);
 
-    // Drops resolve to real item indices, in file order — meat, fat, cloth
-    // and bone, which fills every row the table has.
-    assert_eq!(pig.loot.len(), 4);
-    for i in 0..4 {
+    // Drops resolve to real item indices, in file order — meat, fat, cloth,
+    // bone and leather, and the spare row stays empty.
+    assert_eq!(pig.loot.len(), sim_core::mob::MOB_LOOT_ROWS);
+    assert_eq!(pig.loot[5].item, sim_core::gather::NO_ITEM);
+    for i in 0..5 {
         assert_ne!(pig.loot[i].item, sim_core::gather::NO_ITEM);
         assert!(pig.loot[i].count > 0);
     }

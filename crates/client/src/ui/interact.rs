@@ -428,10 +428,10 @@ impl Pick {
             ),
             Verb::Bag if self.species.is_some() => format!(
                 "[E] LOOT {}",
-                if self.species == Some(sim_core::mob::MOB_WOLF) {
-                    "WOLF"
-                } else {
-                    "PIG"
+                match self.species {
+                    Some(sim_core::mob::MOB_WOLF) => "WOLF",
+                    Some(sim_core::mob::MOB_STAG) => "STAG",
+                    _ => "PIG",
                 }
             ),
             v => format!("[E] OPEN {}", v.label()),

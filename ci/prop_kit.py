@@ -119,6 +119,7 @@ SURF = {
     "flame": dict(proc="plain", color=(0.35, 0.10, 0.02), rough=0.9, metal=0.0, wear=0.0, grime=0.0),
     "pighide": dict(proc="fur", color=(0.075, 0.052, 0.036), rough=0.85, metal=0.0, wear=0.0, grime=0.3),
     "wolffur": dict(proc="fur", color=(0.10, 0.085, 0.065), rough=0.9, metal=0.0, wear=0.0, grime=0.3),
+    "staghide": dict(proc="fur", color=(0.16, 0.085, 0.040), rough=0.85, metal=0.0, wear=0.0, grime=0.25),
     "skin": dict(proc="plain", color=(0.45, 0.22, 0.20), rough=0.5, metal=0.0, wear=0.0, grime=0.0),
     "hoof": dict(proc="plain", color=(0.03, 0.025, 0.02), rough=0.5, metal=0.0, wear=0.0, grime=0.0),
     "eye": dict(proc="plain", color=(0.01, 0.008, 0.006), rough=0.1, metal=0.0, wear=0.0, grime=0.0),

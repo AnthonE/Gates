@@ -2237,6 +2237,7 @@ impl Content {
             let which = match m.id.as_str() {
                 "mob.pig" => MOB_PIG as usize,
                 "mob.wolf" => MOB_WOLF as usize,
+                "mob.stag" => sim_core::mob::MOB_STAG as usize,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"

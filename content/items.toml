@@ -703,6 +703,33 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 
+# Rust's leather: what a carcass pays toward hide clothing. Stack 1000, a
+# resource's.
+[[item]]
+id = "item.leather"
+name = "Leather"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+# Rust's prim clothing, no bench: a hide poncho and a bone helmet.
+[[item]]
+id = "item.armor_hide_body"
+name = "Hide Poncho"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "body"
+
+[[item]]
+id = "item.armor_bone_head"
+name = "Bone Helmet"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "head"
+
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.
 [[item]]

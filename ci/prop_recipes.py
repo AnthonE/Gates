@@ -483,6 +483,45 @@ def wolf_leg(k):
     _wolf_leg(k)
 
 
+def _stag_body(k):
+    hide = "staghide"
+    # Barrel, rump (-z) to chest (+z), higher and leaner than the pig's.
+    k.lathe([(0.0, -0.64), (0.10, -0.62), (0.16, -0.52), (0.18, -0.30), (0.18, 0.0), (0.19, 0.20),
+             (0.17, 0.36), (0.0, 0.44)], G(0, 0.88, 0), hide, axis="Y", n=14, scale=(0.92, 1.0, 1.05))
+    # The neck carried up and forward, and the head on top of it.
+    k.tube([G(0, 0.96, 0.32), G(0, 1.08, 0.46), G(0, 1.18, 0.58)], 0.09, hide, n=10, r_end=0.07)
+    k.lathe([(0.0, 0.54), (0.075, 0.58), (0.07, 0.70), (0.05, 0.82), (0.038, 0.89), (0.0, 0.91)],
+            G(0, 0.0, 0.0), hide, axis="Y", n=12, scale=(0.95, 1.0, 1.0)).location = G(0, 1.20, 0)
+    k.ball(0.028, G(0, 1.19, 0.905), "hoof", n=8)
+    for s in (-1, 1):
+        k.ball(0.014, G(s * 0.062, 1.24, 0.70), "eye", n=6)
+        k.slab([(-0.03, 0.0), (0.03, 0.0), (0.0, 0.10)], 0.012, G(s * 0.085, 1.26, 0.60), hide,
+               plane="XZ", rot=(0, s * -55, 0), bevel=0.0)
+        # The antlers: a beam back and out, two tines forward.
+        k.tube([G(s * 0.035, 1.27, 0.64), G(s * 0.09, 1.40, 0.60), G(s * 0.15, 1.52, 0.52),
+                G(s * 0.17, 1.60, 0.46)], 0.018, "bone", n=6, r_end=0.007)
+        k.tube([G(s * 0.075, 1.37, 0.61), G(s * 0.07, 1.45, 0.69)], 0.011, "bone", n=6, r_end=0.004)
+        k.tube([G(s * 0.13, 1.49, 0.54), G(s * 0.15, 1.57, 0.61)], 0.010, "bone", n=6, r_end=0.004)
+    k.tube([G(0, 0.98, -0.62), G(0, 0.93, -0.68)], 0.035, "bone", n=6, r_end=0.015)
+
+
+@recipe("stag_body", "models/mob/stag_body.glb", kind="asis")
+def stag_body(k):
+    _stag_body(k)
+
+
+def _stag_leg(k, at=(0, 0, 0)):
+    x, y, z = at
+    k.lathe([(0.0, 0.10), (0.055, 0.08), (0.06, -0.06), (0.038, -0.24), (0.024, -0.42), (0.021, -0.62),
+             (0.025, -0.665), (0.0, -0.67)], G(x, y, z), "staghide", n=10)
+    k.cyl(0.026, 0.05, G(x, y - 0.695, z), "hoof", n=10, bevel=0.004)
+
+
+@recipe("stag_leg", "models/mob/stag_leg.glb", kind="asis", tex=512)
+def stag_leg(k):
+    _stag_leg(k)
+
+
 # A killed animal on its side (wire v84): body and legs at rest, rolled a
 # quarter turn about its length and lifted onto the ground by the export.
 PIG_HIPS = ((-0.16, 0.32, 0.34), (0.16, 0.32, 0.34), (-0.16, 0.32, -0.34), (0.16, 0.32, -0.34))
@@ -494,6 +533,17 @@ def pig_carcass(k):
     _pig_body(k)
     for h in PIG_HIPS:
         _pig_leg(k, h)
+    k.turn_all((0, -90, 0))
+
+
+STAG_HIPS = ((-0.13, 0.72, 0.36), (0.13, 0.72, 0.36), (-0.13, 0.72, -0.38), (0.13, 0.72, -0.38))
+
+
+@recipe("stag_carcass", "models/mob/stag_carcass.glb", kind="held")
+def stag_carcass(k):
+    _stag_body(k)
+    for h in STAG_HIPS:
+        _stag_leg(k, h)
     k.turn_all((0, -90, 0))
 
 

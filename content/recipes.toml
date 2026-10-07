@@ -128,6 +128,26 @@ inputs = [
     { item = "item.cloth", count = 2 },
 ]
 
+# Prim clothing, no bench (Rust's are hand-crafted too).
+[[recipe]]
+id = "recipe.armor_hide_body"
+output = "item.armor_hide_body"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.leather", count = 20 }]
+
+[[recipe]]
+id = "recipe.armor_bone_head"
+output = "item.armor_bone_head"
+count = 1
+station = "none"
+seconds = 15
+inputs = [
+    { item = "item.bone_frags", count = 30 },
+    { item = "item.leather", count = 5 },
+]
+
 [[recipe]]
 id = "recipe.bandage"
 output = "item.bandage"

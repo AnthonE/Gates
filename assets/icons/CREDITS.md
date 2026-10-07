@@ -35,6 +35,7 @@ every item either way, because the painted ones are derived works of it.
 | `blueprint.png` | `lorc/tied-scroll` |
 | `bone_arrow.png` | `lorc/arrowhead` |
 | `bone_fragments.png` | `lorc/crossed-bones` |
+| `bone_helmet.png` | `lorc/horned-helm` |
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
@@ -53,11 +54,13 @@ every item either way, because the painted ones are derived works of it.
 | `gunpowder.png` | `lorc/powder` |
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
+| `hide_poncho.png` | `delapouite/poncho` |
 | `high_velocity_arrow.png` | `lorc/supersonic-arrow` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
 | `junk.png` | `delapouite/hexagonal-nut` |
 | `key_lock.png` | `lorc/padlock` |
 | `large_box.png` | `delapouite/cargo-crate` |
+| `leather.png` | `delapouite/animal-hide` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_bed.png` | `delapouite/sleeping-bag` |
 | `map_hearth.png` | `delapouite/fireplace` |

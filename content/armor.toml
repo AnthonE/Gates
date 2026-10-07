@@ -92,3 +92,19 @@ reduction_pct = 25
 move_penalty_pct = 5
 # Negative, as theirs is: a sheet of metal draws the cold in.
 cold_pct = -34
+
+# Prim pieces (ours, priced under burlap's body and over its hood): the
+# poncho is the warm one, the helmet the hard one.
+[[armor]]
+id = "item.armor_hide_body"
+slot = "body"
+reduction_pct = 11
+move_penalty_pct = 0
+cold_pct = 35
+
+[[armor]]
+id = "item.armor_bone_head"
+slot = "head"
+reduction_pct = 14
+move_penalty_pct = 0
+cold_pct = 4

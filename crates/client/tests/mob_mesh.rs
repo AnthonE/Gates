@@ -320,6 +320,10 @@ fn a_planted_hoof_does_not_skate() {
     for (hip, full) in [
         (LEG_ANCHORS[0].0[1], PIG_LEG_FULL_MPS),
         (WOLF_LEG_ANCHORS[0].0[1], WOLF_LEG_FULL_MPS),
+        (
+            client::render::mobs::STAG_LEG_ANCHORS[0].0[1],
+            client::render::mobs::STAG_LEG_FULL_MPS,
+        ),
     ] {
         for v in [0.8, 1.5, 2.75, full] {
             let sweep = 2.0 * hip * leg_amp_rad(v, full).sin();
@@ -607,7 +611,22 @@ fn the_draw_path_picks_the_mesh_off_the_slot() {
             material: Handle::default(),
             leg_material: Handle::default(),
         },
+        stag: SpeciesAssets {
+            body: Handle::default(),
+            leg: Handle::default(),
+            anchors: client::render::mobs::STAG_LEG_ANCHORS,
+            material: Handle::default(),
+            leg_material: Handle::default(),
+        },
     };
+    for slot in 0..sim_core::limits::MAX_MOBS {
+        if sim_core::mob::kind_of(slot) == sim_core::mob::MOB_STAG {
+            assert_eq!(
+                herd.of(slot).anchors,
+                client::render::mobs::STAG_LEG_ANCHORS
+            );
+        }
+    }
     let mut seen_wolf = 0;
     let mut seen_pig = 0;
     for slot in 0..sim_core::limits::MAX_MOBS {
@@ -657,4 +676,25 @@ fn a_sleeping_animal_lies_down_and_gets_up() {
     g.settle(false, LIE_S * 2.0);
     assert_eq!(g.lie, 0.0);
     assert!(g.hip > 0.0, "no hip height to lie down from");
+}
+
+/// The stag stands on its own legs, is the size it claims, and faces +Z.
+#[test]
+fn the_stag_stands_on_its_legs_at_its_size() {
+    use client::render::mobs::{stag_leg_mesh, stag_mesh, STAG_H_M, STAG_LEG_ANCHORS, STAG_LEN_M};
+    let (lo, hi) = aabb(&stag_mesh());
+    assert!(
+        lo.y.abs() < 1e-4,
+        "the stag's lowest vertex is {:.4} m",
+        lo.y
+    );
+    assert!(((hi.z - lo.z) - STAG_LEN_M).abs() < 0.05);
+    assert!(((hi.y - lo.y) - STAG_H_M).abs() < 0.05);
+    assert!(hi.z > -lo.z, "the stag's mass runs backwards");
+    let (_, leg_hi) = aabb(&stag_leg_mesh());
+    assert!(
+        leg_hi.y.abs() < 1e-4,
+        "the stag's leg pivot is not at its hip"
+    );
+    assert_eq!(STAG_LEG_ANCHORS.len(), 4);
 }
