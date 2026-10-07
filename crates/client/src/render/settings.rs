@@ -797,6 +797,9 @@ fn target_note(s: &Settings) -> String {
     if got.ao != want.ao {
         notes.push(format!("ambient occlusion {}", got.ao.name()));
     }
+    if got.bloom != want.bloom {
+        notes.push("no bloom".to_string());
+    }
     if got.tree_lod_swap_m != want.tree_lod_swap_m {
         notes.push(format!(
             "far trees held out to {:.0} m",

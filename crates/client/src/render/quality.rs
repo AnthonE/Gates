@@ -361,10 +361,16 @@ pub fn effective(g: Gfx) -> Gfx {
     // on that frame.
     // TAA wants a motion-vector prepass, which is the same storage-buffer
     // layout wall as the AO above.
+    //
+    // Bloom: Bevy's own doc says "Bloom is currently not compatible with
+    // WebGL2", and in Chrome on MEDIUM/HIGH it blew the moon into a white
+    // glow over half the night sky. The browser's sparks and glows are
+    // already drawn to read without it (`fx/pool.rs`, `fx/atlas.rs`).
     #[cfg(target_arch = "wasm32")]
     let g = Gfx {
         ao: Ao::Off,
         taa: false,
+        bloom: false,
         tree_lod_swap_m: g.tree_lod_swap_m.max(MEDIUM_TREE_LOD_SWAP_M),
         ..g
     };
