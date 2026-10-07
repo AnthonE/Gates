@@ -1121,7 +1121,8 @@ pub struct Work {
 #[serde(deny_unknown_fields)]
 pub struct ArcEffect {
     pub unlock: String,
-    /// A knob the sim knows: `smelt_pct`.
+    /// A knob the sim knows: `smelt_pct`, `heal_pct`, `research_pct`,
+    /// `gather_pct` (`sim_core::works::KNOB_*`).
     pub knob: String,
     pub pct: u16,
 }

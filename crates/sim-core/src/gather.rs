@@ -1047,6 +1047,7 @@ pub fn land(
     spill: &mut [ItemStack; INV_SLOTS],
     hit: &crate::melee::NodeHit,
     ray: &crate::melee::Ray,
+    gather_pct: u32,
 ) -> Swing {
     let px = p.body.qx as f32 * POS_XZ_Q;
     let pz = p.body.qz as f32 * POS_XZ_Q;
@@ -1209,7 +1210,10 @@ pub fn land(
     // reference's shape too (their HQM comes only off the final strike).
     // A switch mid-node re-bases the schedule, so the cumulative
     // difference is saturating: a worse tool never claws yield back.
-    let full = def.yield_for(held) as u64;
+    // The Spine's ceiling (`works::KNOB_GATHER_PCT`) scales what a node is
+    // worth, inside the same cumulative schedule, so it can never pay a
+    // swing twice; 100 is the content's own yield.
+    let full = def.yield_for(held) as u64 * gather_pct as u64 / 100;
     let total = full * hits_eff as u64;
     let pool = total * (100 - def.finish_pct as u64) / 100;
     let spent_after = life.hits as u64;

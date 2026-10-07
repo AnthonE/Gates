@@ -1872,6 +1872,9 @@ impl Content {
                 .ok_or_else(|| format!("arc: effect {i}: no work unlocks `{}`", e.unlock))?;
             let knob = match e.knob.as_str() {
                 "smelt_pct" => sim_core::works::KNOB_SMELT_PCT,
+                "heal_pct" => sim_core::works::KNOB_HEAL_PCT,
+                "research_pct" => sim_core::works::KNOB_RESEARCH_PCT,
+                "gather_pct" => sim_core::works::KNOB_GATHER_PCT,
                 k => return Err(format!("arc: effect {i}: no knob `{k}`")),
             };
             if e.pct == 0 || e.pct > 1000 {

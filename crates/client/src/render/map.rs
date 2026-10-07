@@ -298,6 +298,15 @@ pub fn setup(
     // open waits for the next M. The player marker is the one thing `track`
     // moves.
     let core = &net.session.core;
+    // The arc's places: every work, named, and every inscribed stone, as
+    // far as their rows have arrived.
+    let mut arc = map::ArcMarks::default();
+    for (_, w) in core.arc.known() {
+        arc.add_work(w.def.spot, w.name());
+    }
+    for (_, s) in core.lore.known_inscriptions() {
+        arc.add_stone(s.spot);
+    }
     let mut marks = map::Marks::default();
     map::resolve_marks(
         &mut marks,
@@ -308,6 +317,7 @@ pub fn setup(
         core.bags.entries(),
         core.own_bag,
         core.own_bags(),
+        &arc,
     );
 
     commands
@@ -576,6 +586,8 @@ pub fn spawn_mark(
             | MarkKind::Waystation
             | MarkKind::Depot
             | MarkKind::Landmark
+            | MarkKind::Work
+            | MarkKind::Stone
             | MarkKind::BedSpent
     );
     let mut node = Node {
@@ -655,7 +667,7 @@ pub fn spawn_mark(
     // centred row is what puts it under the badge's own axis: a text node
     // sized to its own string would hang off the right of the marker and the
     // two tiers' labels would not line up with each other.
-    if let Some(name) = m.name.or_else(|| m.kind.site_label()) {
+    if let Some(name) = m.label.as_str().or(m.name).or_else(|| m.kind.site_label()) {
         e.with_children(|badge| {
             badge
                 .spawn(Node {

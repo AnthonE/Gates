@@ -68,6 +68,7 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 
 const SEED: u64 = 20_260_807;
 const CONTENT: u64 = 0x0123_4567_89ab_cdef;
+const LAYOUT: u64 = 0x0fed_cba9_8765_4321;
 const INTERVAL: u64 = 1_800;
 /// The island `SEED` actually generates, as `worldfile`'s header pins it.
 /// A literal would be a second copy of a number the sim already computes, and
@@ -175,9 +176,16 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
     let (want_hash, want_body, cell) = {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, found) =
-            worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
-                .expect("a fresh file opens");
+        let (boot, found) = worldfile::open(
+            &path,
+            &mut trial,
+            SEED,
+            CONTENT,
+            LAYOUT,
+            world_digest(),
+            INTERVAL,
+        )
+        .expect("a fresh file opens");
         assert!(found.created, "the first open must create nothing yet");
         let mut file = boot.file;
 
@@ -247,6 +255,7 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
         &mut boot_world,
         SEED,
         CONTENT,
+        LAYOUT,
         world_digest(),
         INTERVAL,
     )
@@ -311,8 +320,16 @@ fn a_body_with_no_identity_beside_it_is_unclaimable() {
 
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
-            .expect("opens");
+        let (boot, _) = worldfile::open(
+            &path,
+            &mut trial,
+            SEED,
+            CONTENT,
+            LAYOUT,
+            world_digest(),
+            INTERVAL,
+        )
+        .expect("opens");
         let mut file = boot.file;
         // A keyless session leaves a body and no name for it — which is
         // exactly what a guest does on a shard with `require_auth = false`.
@@ -402,8 +419,16 @@ fn a_wrong_world_file_is_refused_by_reason() {
     {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
-            .expect("opens");
+        let (boot, _) = worldfile::open(
+            &path,
+            &mut trial,
+            SEED,
+            CONTENT,
+            LAYOUT,
+            world_digest(),
+            INTERVAL,
+        )
+        .expect("opens");
         let mut file = boot.file;
         let stats = ShardStats::default();
         let mut core = armed_core();
@@ -411,11 +436,13 @@ fn a_wrong_world_file_is_refused_by_reason() {
         core.tick_bare(&stats, |_, _, _| true);
         write_world(&core, &mut file);
     }
-    let reopen_with = |seed: u64, content: u64, digest: u64| {
+    let reopen_full = |seed: u64, content: u64, layout: u64, digest: u64| {
         let mut w = World::new(seed);
         install_content(&mut w);
-        worldfile::open(&path, &mut w, seed, content, digest, INTERVAL).map(|(_, f)| f)
+        worldfile::open(&path, &mut w, seed, content, layout, digest, INTERVAL).map(|(_, f)| f)
     };
+    let reopen_with =
+        |seed: u64, content: u64, digest: u64| reopen_full(seed, content, LAYOUT, digest);
     let reopen = |seed: u64, content: u64| reopen_with(seed, content, world_digest());
     assert!(reopen(SEED, CONTENT).is_ok(), "the base file must be legal");
 
@@ -434,10 +461,16 @@ fn a_wrong_world_file_is_refused_by_reason() {
     let e = reopen(SEED + 1, CONTENT).expect_err("a foreign seed must refuse");
     assert!(e.contains("seed"), "{e}");
 
-    // Moved content: item indices shifted, so a box would hand somebody a
+    // Moved rows: item indices shifted, so a box would hand somebody a
     // different item than the one they put in it.
-    let e = reopen(SEED, CONTENT + 1).expect_err("moved content must refuse");
-    assert!(e.contains("content hash"), "{e}");
+    let e = reopen_full(SEED, CONTENT, LAYOUT + 1, world_digest()).expect_err("moved rows refuse");
+    assert!(e.contains("layout"), "{e}");
+    // A balance edit on the same rows loads: tuning mid-wipe keeps the bases.
+    assert!(
+        reopen(SEED, CONTENT + 1)
+            .expect("a balance edit loads")
+            .balance_moved
+    );
 
     // Bent bytes: the checksum catches the torn write a killed shard leaves.
     {
@@ -469,8 +502,16 @@ fn a_refused_file_does_not_half_load_the_world() {
     {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
-            .expect("opens");
+        let (boot, _) = worldfile::open(
+            &path,
+            &mut trial,
+            SEED,
+            CONTENT,
+            LAYOUT,
+            world_digest(),
+            INTERVAL,
+        )
+        .expect("opens");
         let mut file = boot.file;
         let stats = ShardStats::default();
         let mut core = armed_core();
@@ -481,7 +522,16 @@ fn a_refused_file_does_not_half_load_the_world() {
     let mut w = World::new(SEED);
     install_content(&mut w);
     let before = w.state_hash();
-    assert!(worldfile::open(&path, &mut w, SEED + 9, CONTENT, world_digest(), INTERVAL).is_err());
+    assert!(worldfile::open(
+        &path,
+        &mut w,
+        SEED + 9,
+        CONTENT,
+        LAYOUT,
+        world_digest(),
+        INTERVAL
+    )
+    .is_err());
     assert_eq!(w.state_hash(), before, "a refused boot wrote to the world");
     sweep(&path);
 }
@@ -494,8 +544,16 @@ fn a_successful_write_leaves_no_temp_file_behind() {
     let path = scratch("atomic");
     let mut trial = World::new(SEED);
     install_content(&mut trial);
-    let (boot, _) =
-        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
+    let (boot, _) = worldfile::open(
+        &path,
+        &mut trial,
+        SEED,
+        CONTENT,
+        LAYOUT,
+        world_digest(),
+        INTERVAL,
+    )
+    .expect("opens");
     let mut file = boot.file;
     let stats = ShardStats::default();
     let mut core = armed_core();
@@ -553,8 +611,16 @@ fn a_world_carrying_over_ceiling_condition_refuses_the_boot() {
     let me = key("dev-anthone");
     let mut trial = World::new(SEED);
     install_content(&mut trial);
-    let (boot, _) =
-        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
+    let (boot, _) = worldfile::open(
+        &path,
+        &mut trial,
+        SEED,
+        CONTENT,
+        LAYOUT,
+        world_digest(),
+        INTERVAL,
+    )
+    .expect("opens");
     let mut file = boot.file;
 
     let stats = ShardStats::default();
@@ -585,7 +651,15 @@ fn a_world_carrying_over_ceiling_condition_refuses_the_boot() {
 
     let mut reboot = World::new(SEED);
     install_content(&mut reboot);
-    let err = match worldfile::open(&path, &mut reboot, SEED, CONTENT, world_digest(), INTERVAL) {
+    let err = match worldfile::open(
+        &path,
+        &mut reboot,
+        SEED,
+        CONTENT,
+        LAYOUT,
+        world_digest(),
+        INTERVAL,
+    ) {
         Err(e) => e,
         Ok(_) => panic!("a condition past its content ceiling must refuse the boot"),
     };
@@ -609,8 +683,16 @@ fn a_world_bag_with_condition_on_a_conditionless_item_refuses_the_boot() {
     let path = scratch("cond-ghost");
     let mut trial = World::new(SEED);
     install_content(&mut trial);
-    let (boot, _) =
-        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
+    let (boot, _) = worldfile::open(
+        &path,
+        &mut trial,
+        SEED,
+        CONTENT,
+        LAYOUT,
+        world_digest(),
+        INTERVAL,
+    )
+    .expect("opens");
     let mut file = boot.file;
 
     let mut core = armed_core();
@@ -641,7 +723,15 @@ fn a_world_bag_with_condition_on_a_conditionless_item_refuses_the_boot() {
 
     let mut reboot = World::new(SEED);
     install_content(&mut reboot);
-    let err = match worldfile::open(&path, &mut reboot, SEED, CONTENT, world_digest(), INTERVAL) {
+    let err = match worldfile::open(
+        &path,
+        &mut reboot,
+        SEED,
+        CONTENT,
+        LAYOUT,
+        world_digest(),
+        INTERVAL,
+    ) {
         Err(e) => e,
         Ok(_) => panic!("condition on a conditionless item must refuse the boot"),
     };

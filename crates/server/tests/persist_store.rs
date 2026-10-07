@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 const SEED: u64 = 20_260_731;
 const CONTENT: u64 = 0x0123_4567_89ab_cdef;
+const LAYOUT: u64 = 0x0fed_cba9_8765_4321;
 /// The dev shard's own fixture, `dev_spawn`-style: two clients on one point so
 /// a restored position is distinguishable from a spawn-ring one.
 const SPAWN: (f32, f32) = (2048.0, 2048.0);
@@ -103,7 +104,8 @@ fn a_shard_restart_remembers_a_player() {
 
     // --- session one -----------------------------------------------------
     let (want_inv, want_body) = {
-        let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("a fresh file opens");
+        let (saves, found) =
+            store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("a fresh file opens");
         assert!(found.created, "the first open must create the file");
         assert_eq!(found.live, 0, "a new file remembers nobody");
         let mut store = saves.store;
@@ -138,7 +140,8 @@ fn a_shard_restart_remembers_a_player() {
     }; // both halves dropped: the file is closed, the index is gone
 
     // --- session two: a different process, the same file -----------------
-    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("the file reopens");
+    let (saves, found) =
+        store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("the file reopens");
     assert!(!found.created, "the second open must find the file");
     assert_eq!(found.corrupt, 0, "a clean write must read back clean");
     assert_eq!(found.live, 1, "the shard forgot the only player it had");
@@ -484,21 +487,47 @@ fn a_second_disconnect_hands_back_nothing() {
 fn a_mismatched_file_refuses_to_boot_and_says_why() {
     let path = scratch("mismatch");
     {
-        let (_saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
+        let (_saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("creates");
         assert!(found.created);
     }
 
-    let other_seed = store::open(&path, SEED + 1, CONTENT, &gc()).expect_err("another island");
+    let other_seed =
+        store::open(&path, SEED + 1, CONTENT, LAYOUT, &gc()).expect_err("another island");
     assert!(
         other_seed.contains("seed") && other_seed.contains("island"),
         "a seed mismatch must say so: {other_seed}"
     );
 
-    let other_content = store::open(&path, SEED, CONTENT + 1, &gc()).expect_err("moved content");
+    let moved_rows = store::open(&path, SEED, CONTENT, LAYOUT + 1, &gc()).expect_err("moved rows");
     assert!(
-        other_content.contains("content") && other_content.contains("wipe"),
-        "a content mismatch must name the content and the way out: {other_content}"
+        moved_rows.contains("layout") && moved_rows.contains("wipe"),
+        "a layout mismatch must name the layout and the way out: {moved_rows}"
     );
+
+    // **A balance edit is not a refusal**: the same rows under other numbers
+    // load, which is what makes tuning a month-long wipe possible. The
+    // header then names the new numbers, so the next boot is a plain match.
+    let (_saves, found) =
+        store::open(&path, SEED, CONTENT + 1, LAYOUT, &gc()).expect("a balance edit loads");
+    assert!(found.balance_moved);
+    let (_saves, found) =
+        store::open(&path, SEED, CONTENT + 1, LAYOUT, &gc()).expect("and stays loaded");
+    assert!(!found.balance_moved, "the header must have been rewritten");
+
+    // A file from before layouts were pinned (bytes 32..40 zero) holds the
+    // old rule: the exact content hash, then it is pinned in place.
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.seek(SeekFrom::Start(32)).unwrap();
+        f.write_all(&[0u8; 8]).unwrap();
+    }
+    let old = store::open(&path, SEED, CONTENT + 2, LAYOUT, &gc()).expect_err("unpinned");
+    assert!(old.contains("predates"), "{old}");
+    store::open(&path, SEED, CONTENT + 1, LAYOUT, &gc()).expect("its own content loads");
+    let (_saves, found) =
+        store::open(&path, SEED, CONTENT + 2, LAYOUT, &gc()).expect("pinned now, so balance loads");
+    assert!(found.balance_moved);
 
     // Not a save file at all — the first thing checked, so pointing the knob
     // at the wrong path says that instead of misreading bytes as a seed. Both
@@ -507,14 +536,15 @@ fn a_mismatched_file_refuses_to_boot_and_says_why() {
     // what is really a knob pointing at the wrong file.
     let junk = scratch("junk");
     std::fs::write(&junk, b"not a save file, a certificate").expect("write");
-    let too_short = store::open(&junk, SEED, CONTENT, &gc()).expect_err("too short");
+    let too_short = store::open(&junk, SEED, CONTENT, LAYOUT, &gc()).expect_err("too short");
     assert!(
         too_short.contains("too short to be a gates save file"),
         "a short file must say so: {too_short}"
     );
     let junk_long = scratch("junk-long");
     std::fs::write(&junk_long, vec![b'x'; store::SAVE_HEADER_BYTES * 4]).expect("write");
-    let bad_magic = store::open(&junk_long, SEED, CONTENT, &gc()).expect_err("not a save file");
+    let bad_magic =
+        store::open(&junk_long, SEED, CONTENT, LAYOUT, &gc()).expect_err("not a save file");
     assert!(
         bad_magic.contains("not a gates save file"),
         "bad magic must say so: {bad_magic}"
@@ -524,7 +554,7 @@ fn a_mismatched_file_refuses_to_boot_and_says_why() {
     let truncated = scratch("truncated");
     let whole = std::fs::read(&path).expect("read");
     std::fs::write(&truncated, &whole[..whole.len() / 2]).expect("write");
-    let short = store::open(&truncated, SEED, CONTENT, &gc()).expect_err("truncated");
+    let short = store::open(&truncated, SEED, CONTENT, LAYOUT, &gc()).expect_err("truncated");
     assert!(
         short.contains("bytes") && short.contains("header describes"),
         "a truncated file must say so rather than reading records out of it: {short}"
@@ -544,7 +574,7 @@ fn one_corrupt_record_costs_one_player_and_boots() {
     let path = scratch("corrupt");
     let (good, bad) = (key("keeps-theirs"), key("loses-theirs"));
     {
-        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
+        let (saves, _) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("creates");
         let mut store = saves.store;
         let mut file = saves.file;
         for (i, k) in [good, bad].iter().enumerate() {
@@ -565,7 +595,7 @@ fn one_corrupt_record_costs_one_player_and_boots() {
     std::fs::write(&path, &raw).expect("write");
 
     let (saves, found) =
-        store::open(&path, SEED, CONTENT, &gc()).expect("a torn record must still boot");
+        store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("a torn record must still boot");
     assert_eq!(found.corrupt, 1, "the torn record was not counted");
     assert_eq!(found.live, 1, "the intact record was lost with it");
     assert!(
@@ -588,7 +618,7 @@ fn two_keys_never_share_a_save() {
     let path = scratch("two");
     let (a, b) = (key("player-a"), key("player-b"));
     {
-        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
+        let (saves, _) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("creates");
         let mut store = saves.store;
         let mut file = saves.file;
         for (i, k) in [a, b].iter().enumerate() {
@@ -606,7 +636,7 @@ fn two_keys_never_share_a_save() {
                 .expect("writes");
         }
     }
-    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("reopens");
+    let (saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("reopens");
     assert_eq!(found.live, 2);
     assert_eq!(
         saves.store.find(&a).expect("a").inv[0],
@@ -638,7 +668,7 @@ fn the_file_is_a_fixed_size_and_writes_do_not_grow_it() {
     let path = scratch("size");
     let expect = (store::SAVE_HEADER_BYTES + MAX_SAVED_PLAYERS * store::SAVE_RECORD_BYTES) as u64;
     {
-        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
+        let (saves, _) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("creates");
         let mut store = saves.store;
         let mut file = saves.file;
         assert_eq!(
@@ -661,7 +691,7 @@ fn the_file_is_a_fixed_size_and_writes_do_not_grow_it() {
         expect,
         "500 saves grew the file — the record is not being written in place"
     );
-    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("reopens");
+    let (saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("reopens");
     assert_eq!(found.live, 1, "500 saves of one player are one record");
     assert_eq!(
         saves.store.find(&key("busy")).expect("there").body.qx,
@@ -697,7 +727,7 @@ fn boots_rotate_the_backups_oldest_first() {
     // the file held at the end of generation g.
     let mut history: Vec<Vec<u8>> = Vec::new();
     for gen in 1..=4u16 {
-        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("opens");
+        let (saves, _) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("opens");
         let mut store = saves.store;
         let mut file = saves.file;
         let mut save = PlayerSave::EMPTY;
@@ -755,7 +785,7 @@ fn a_boot_survives_a_backup_it_cannot_write() {
     let path = dir.join("players.save");
     // One boot to create the file, then make the directory unwritable so the
     // rotation's rename and copy both fail.
-    store::open(&path, SEED, CONTENT, &gc()).expect("first boot creates");
+    store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("first boot creates");
     let mut perms = std::fs::metadata(&dir).expect("stat").permissions();
     #[cfg(unix)]
     {
@@ -764,7 +794,7 @@ fn a_boot_survives_a_backup_it_cannot_write() {
     }
     std::fs::set_permissions(&dir, perms).expect("chmod");
 
-    let booted = store::open(&path, SEED, CONTENT, &gc());
+    let booted = store::open(&path, SEED, CONTENT, LAYOUT, &gc());
 
     // Restore write permission before asserting, so a failure still cleans up.
     let mut perms = std::fs::metadata(&dir).expect("stat").permissions();
@@ -833,7 +863,8 @@ fn the_save_file_knob_defaults_off_and_refuses_empty() {
 #[test]
 fn an_unopenable_path_is_a_boot_error() {
     let bad = Path::new("/this/directory/does/not/exist/players.save");
-    let err = store::open(bad, SEED, CONTENT, &gc()).expect_err("an unwritable path must refuse");
+    let err =
+        store::open(bad, SEED, CONTENT, LAYOUT, &gc()).expect_err("an unwritable path must refuse");
     assert!(
         err.contains("players.save"),
         "the refusal must name the path: {err}"
@@ -859,6 +890,7 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
     let gather = content.bake_gather().expect("shipped content bakes");
     let hash = content.hash();
+    let layout = content.layout_hash();
 
     // Indices from the shipped table itself: one item that wears, one that
     // carries no condition at all.
@@ -888,7 +920,7 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
         // Written through the store's own writer — the checksum is valid,
         // so what refuses these can only be the wall, not the torn-write
         // detector.
-        let (mut saves, found) = store::open(&path, SEED, hash, &gather).expect("creates");
+        let (mut saves, found) = store::open(&path, SEED, hash, layout, &gather).expect("creates");
         assert!(found.created);
         for (i, (who, save)) in [
             ("over", mk(worn, ceiling + 1)), // (i) above the ceiling
@@ -906,7 +938,7 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
         }
     }
 
-    let (saves, found) = store::open(&path, SEED, hash, &gather)
+    let (saves, found) = store::open(&path, SEED, hash, layout, &gather)
         .expect("a file with forged records still boots — the blast radius is per record");
     assert_eq!(
         found.corrupt, 2,
@@ -926,5 +958,112 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
         Some(ceiling),
         "a tool at exactly its ceiling is mintable and must load"
     );
+    drop(saves);
+
+    // **Across a balance edit the same records are clamped, not refused**:
+    // a lowered ceiling is now the innocent explanation (`cond.rs`). The
+    // clamped records are written back, so the boot after — same content,
+    // where the wall refuses again — finds them legal.
+    let (saves, found) =
+        store::open(&path, SEED, hash ^ 1, layout, &gather).expect("a balance edit boots");
+    assert!(found.balance_moved);
+    assert_eq!((found.live, found.clamped, found.corrupt), (3, 2, 0));
+    assert_eq!(
+        saves.store.find(&key("over")).map(|s| s.inv[0].cond),
+        Some(ceiling)
+    );
+    assert_eq!(
+        saves.store.find(&key("ghost")).map(|s| s.inv[0].cond),
+        Some(0)
+    );
+    drop(saves);
+    let (_saves, found) =
+        store::open(&path, SEED, hash ^ 1, layout, &gather).expect("the same content reboots");
+    assert_eq!((found.live, found.clamped, found.corrupt), (3, 0, 0));
+    sweep(&path);
+}
+
+/// **A wipe, on disk** (`server::wipe`): the world and its backups and trust
+/// log move into the archive, the player store is copied there and rewritten
+/// — a player who knows a blueprint keeps it and wakes on a beach with
+/// nothing in their pockets, a player who knows nothing starts over — and a
+/// blueprint wipe clears everyone.
+#[test]
+fn a_wipe_archives_the_world_and_keeps_only_what_players_know() {
+    let path = scratch("wipe");
+    let world = PathBuf::from(format!("{}.world", path.display()));
+    let trust = PathBuf::from(format!("{}.trust", world.display()));
+    let _ = std::fs::remove_dir_all(format!("{}.wipes", world.display()));
+    std::fs::write(&world, b"the old island").unwrap();
+    std::fs::write(format!("{}.1", world.display()), b"its backup").unwrap();
+    std::fs::create_dir_all(&trust).unwrap();
+
+    let (scholar, nobody) = (key("scholar"), key("nobody"));
+    {
+        let (mut saves, _) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("creates");
+        let mut rich = PlayerSave::EMPTY;
+        rich.hp = 50;
+        rich.hp_max = 100;
+        rich.known = 0b101;
+        rich.inv[0] = ItemStack {
+            item: 3,
+            count: 500,
+            cond: 0,
+            skin: 0,
+        };
+        let mut poor = rich;
+        poor.known = 0;
+        for (k, s) in [(nobody, poor), (scholar, rich)] {
+            let put = saves.store.put(&k, 1, s);
+            saves.file.write(put.index, &k, 1, &s).unwrap();
+        }
+    }
+
+    let r = server::wipe::apply(Some(&world), Some(&path), 1_000, false).expect("wipes");
+    assert!(r.world_archived);
+    assert_eq!((r.kept, r.cleared), (1, 1));
+    assert!(
+        !world.exists() && !trust.exists(),
+        "the world must be gone from its path"
+    );
+    assert_eq!(
+        std::fs::read_dir(&r.archive).unwrap().count(),
+        4,
+        "the world, its backup, its trust log and a copy of the store"
+    );
+
+    let (saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("reopens");
+    assert_eq!(found.live, 1);
+    assert!(
+        saves.store.find(&nobody).is_none(),
+        "nothing known, nothing kept"
+    );
+    let kept = saves
+        .store
+        .find(&scholar)
+        .expect("a blueprint survives a map wipe");
+    assert_eq!(kept.known, 0b101);
+    assert!(kept.dead && kept.inv.iter().all(|s| s.count == 0));
+
+    // The survivor comes back as a fresh body that remembers.
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core
+        .connect_as(0, id_of(0), Some(scholar), Some(kept))
+        .is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    let p = core.world.players[world_slot(&core, id_of(0))];
+    assert!(!p.dead && p.hp > 0, "woke alive");
+    assert_eq!(p.known, 0b101);
+    assert!(p.inv.iter().all(|s| !(s.item == 3 && s.count == 500)));
+    drop(saves);
+
+    let r = server::wipe::apply(None, Some(&path), 2_000, true).expect("a blueprint wipe");
+    assert_eq!((r.kept, r.cleared), (0, 1));
+    let (_saves, found) = store::open(&path, SEED, CONTENT, LAYOUT, &gc()).expect("reopens");
+    assert_eq!(found.live, 0, "a blueprint wipe keeps nobody");
+
+    let _ = std::fs::remove_dir_all(format!("{}.wipes", world.display()));
+    let _ = std::fs::remove_dir_all(format!("{}.wipes", path.display()));
     sweep(&path);
 }

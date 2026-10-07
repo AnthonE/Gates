@@ -43,13 +43,19 @@
 //!
 //! ## Boot validation is a refusal, never a silent wipe
 //!
-//! The header pins the seed and the content hash. A mismatch means the file
-//! describes bodies on another island, or inventories whose item rows have
-//! moved — so the shard **refuses to boot** and says which, rather than
-//! quietly handing a hundred players an empty inventory. Moving the file
-//! aside is the operator's way of saying "wipe", and it is a thing they
-//! already know how to do. This is wall 7's rule ("a replay replays the
-//! content it was played under") applied to a save.
+//! The header pins the seed and the content **layout**
+//! (`Content::layout_hash`): the rows a save indexes through. A mismatch
+//! means the file describes bodies on another island, or inventories whose
+//! item rows have moved — so the shard **refuses to boot** and says which,
+//! rather than quietly handing a hundred players an empty inventory. Moving
+//! the file aside is the operator's way of saying "wipe" (`wipe.rs` does it
+//! on a schedule).
+//!
+//! A **balance edit** is not a layout change and loads: every number on
+//! every row can move under a month-long wipe without costing anybody their
+//! inventory ([`match_content`]). The header also keeps the full content
+//! hash, so a boot knows a balance edit happened and the condition wall
+//! clamps rather than refuses (`cond.rs`).
 
 use sim_core::limits::MAX_PLAYERS;
 use sim_core::persist::{PlayerSave, PLAYER_SAVE_BYTES};
@@ -163,6 +169,12 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// clocks in the scalar head, 361 → 369.
 pub const SAVE_FORMAT: u16 = 8;
 
+/// Header bytes 32..40: the content layout hash. Spent out of the header's
+/// zero padding, so a file written before it reads 0 there and is checked
+/// the old way (exact content hash) and then upgraded in place
+/// ([`match_content`]). No format turn: zero already meant "absent".
+const H_LAYOUT: usize = 32;
+
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
 
@@ -257,6 +269,12 @@ pub struct SaveLoad {
     pub corrupt: usize,
     /// True when the file did not exist and was created empty.
     pub created: bool,
+    /// The file was written under other numbers on the same layout: a
+    /// balance edit, loaded (`match_content`).
+    pub balance_moved: bool,
+    /// Records whose conditions a lowered ceiling clamped (balance edit
+    /// only — `cond.rs`).
+    pub clamped: usize,
 }
 
 /// One table entry. `key: None` ⇒ free.
@@ -359,6 +377,19 @@ impl SaveStore {
             save,
         };
         Put { index, evicted }
+    }
+
+    /// File a record loaded from disk at **its own file index**. `put`
+    /// takes the first free slot, which is a different slot whenever an
+    /// earlier record was empty (a corrupt one, or a wipe's), and the next
+    /// write would then land at the wrong offset and leave the stale record
+    /// on disk to win at the boot after.
+    fn load_at(&mut self, index: usize, key: &PlayerKey, stamp: u64, save: PlayerSave) {
+        self.slots[index] = Entry {
+            key: Some(*key),
+            stamp,
+            save,
+        };
     }
 
     /// How many players this shard remembers.
@@ -472,11 +503,11 @@ impl Saves {
     }
 }
 
-fn record_offset(index: usize) -> u64 {
+pub(crate) fn record_offset(index: usize) -> u64 {
     (SAVE_HEADER_BYTES + index * SAVE_RECORD_BYTES) as u64
 }
 
-fn encode_record(
+pub(crate) fn encode_record(
     rec: &mut [u8; SAVE_RECORD_BYTES],
     key: &PlayerKey,
     stamp: u64,
@@ -500,7 +531,7 @@ fn encode_record(
 /// this file can recompute an xxh3. What protects the *sim* from a
 /// hand-edited record is `PlayerSave::read_le`'s validation, which runs
 /// after it.
-fn decode_record(
+pub(crate) fn decode_record(
     rec: &[u8; SAVE_RECORD_BYTES],
 ) -> Result<Option<(PlayerKey, u64, PlayerSave)>, ()> {
     let key_len = rec[REC_KEY_LEN] as usize;
@@ -532,7 +563,7 @@ fn decode_record(
     Ok(Some((key, stamp, save)))
 }
 
-fn encode_header(seed: u64, content_hash: u64) -> [u8; SAVE_HEADER_BYTES] {
+fn encode_header(seed: u64, content_hash: u64, layout_hash: u64) -> [u8; SAVE_HEADER_BYTES] {
     let mut h = [0u8; SAVE_HEADER_BYTES];
     h[0..8].copy_from_slice(&SAVE_MAGIC);
     h[8..10].copy_from_slice(&SAVE_FORMAT.to_le_bytes());
@@ -540,7 +571,64 @@ fn encode_header(seed: u64, content_hash: u64) -> [u8; SAVE_HEADER_BYTES] {
     h[12..16].copy_from_slice(&(MAX_SAVED_PLAYERS as u32).to_le_bytes());
     h[16..24].copy_from_slice(&seed.to_le_bytes());
     h[24..32].copy_from_slice(&content_hash.to_le_bytes());
+    h[H_LAYOUT..H_LAYOUT + 8].copy_from_slice(&layout_hash.to_le_bytes());
     h
+}
+
+/// How a file's content relates to the content this shard loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentMatch {
+    /// The same set, byte for byte of canonical value.
+    Same,
+    /// The same layout under other numbers: a balance edit. Loads.
+    Balance,
+    /// Written before layouts were pinned, under this exact content: loads,
+    /// and the caller writes the layout into its header.
+    Upgrade,
+}
+
+/// The one content check both save files make (`worldfile.rs` too).
+///
+/// `got_layout == 0` is a file from before layouts were pinned, and it is
+/// held to the old rule — the exact content hash — because nothing in it
+/// says which layout it was written under. Everything else compares
+/// layouts, and a layout that moved is a refusal naming the remedy: rows
+/// were added, removed or renamed, so the indices in the file now name
+/// other things, and that is a wipe.
+pub fn match_content(
+    what: &str,
+    got_content: u64,
+    got_layout: u64,
+    content_hash: u64,
+    layout_hash: u64,
+) -> Result<ContentMatch, String> {
+    if got_layout == 0 {
+        return if got_content == content_hash {
+            Ok(ContentMatch::Upgrade)
+        } else {
+            Err(format!(
+                "{what} was written under content {got_content:016x}; this shard \
+                 loaded {content_hash:016x}, and the file predates layout pinning, so \
+                 there is no telling a balance edit from moved rows. Boot the content \
+                 that wrote it once (that pins its layout), or wipe."
+            ))
+        };
+    }
+    if got_layout != layout_hash {
+        return Err(format!(
+            "{what} was written under content layout {got_layout:016x}; this shard \
+             loaded {layout_hash:016x}. Rows were added, removed, renamed or \
+             reordered (items, recipes, pieces, deployables, works or their inputs, \
+             mechanisms, glyphs), so the indices in the file now name other things. \
+             Restore that content set, or wipe — a balance-only edit would have \
+             loaded."
+        ));
+    }
+    Ok(if got_content == content_hash {
+        ContentMatch::Same
+    } else {
+        ContentMatch::Balance
+    })
 }
 
 /// Rotate the backups: `<path>.1` becomes `.2`, and the file we are about to
@@ -583,13 +671,15 @@ fn rotate_backups(path: &Path) {
 /// `gather` is the baked content this shard runs, and it is here for one
 /// check the decoder cannot make: a record whose condition no command could
 /// have minted (`crate::cond` carries the refuse-not-clamp policy) is
-/// counted corrupt, exactly as a torn write is. `content_hash` already
-/// pinned the content this file was written under, so the ceilings asked of
-/// `gather` are the ceilings the save was played under.
+/// counted corrupt, exactly as a torn write is — unless the header says the
+/// file was written under other numbers on this layout (a balance edit), in
+/// which case a lowered ceiling is the honest explanation and the record is
+/// clamped and written back instead.
 pub fn open(
     path: &Path,
     seed: u64,
     content_hash: u64,
+    layout_hash: u64,
     gather: &sim_core::gather::GatherContent,
 ) -> Result<(Saves, SaveLoad), String> {
     // Before the handle is taken, and before any validation: a file this boot
@@ -616,7 +706,7 @@ pub fn open(
         // First boot on this file: lay down the header and the empty table.
         // Written in full rather than left sparse so a later in-place record
         // write can never land past the end of the file.
-        file.write_all(&encode_header(seed, content_hash))
+        file.write_all(&encode_header(seed, content_hash, layout_hash))
             .map_err(|e| format!("save file {}: writing header: {e}", path.display()))?;
         let blank = [0u8; SAVE_RECORD_BYTES];
         for _ in 0..MAX_SAVED_PLAYERS {
@@ -632,9 +722,8 @@ pub fn open(
                 trust: crate::trustlog::Tap::off(),
             },
             SaveLoad {
-                live: 0,
-                corrupt: 0,
                 created: true,
+                ..SaveLoad::default()
             },
         ));
     }
@@ -697,17 +786,14 @@ pub fn open(
         ));
     }
     let got_content = u64::from_le_bytes(head[24..32].try_into().expect("8 bytes"));
-    if got_content != content_hash {
-        return Err(format!(
-            "save file {} was written under content {got_content:016x}; this \
-             shard loaded {content_hash:016x}. Item and recipe rows are \
-             indices, so restoring these inventories under moved content \
-             would hand players the wrong items. Restore that content set, or \
-             move the file aside — a content change with saves in it is a \
-             wipe, and it is the operator's to declare.",
-            path.display()
-        ));
-    }
+    let got_layout = u64::from_le_bytes(head[H_LAYOUT..H_LAYOUT + 8].try_into().expect("8 bytes"));
+    let matched = match_content(
+        &format!("save file {}", path.display()),
+        got_content,
+        got_layout,
+        content_hash,
+        layout_hash,
+    )?;
     if len != want_len {
         return Err(format!(
             "save file {} is {len} bytes; the header describes {want_len}. \
@@ -717,13 +803,34 @@ pub fn open(
         ));
     }
 
-    let mut found = SaveLoad::default();
+    let balance = matched == ContentMatch::Balance;
+    let mut found = SaveLoad {
+        balance_moved: balance,
+        ..SaveLoad::default()
+    };
     let mut rec = [0u8; SAVE_RECORD_BYTES];
+    // Records a balance edit clamped, written back after the read pass so
+    // the next boot (same content, so the wall refuses) finds them legal.
+    let mut rewrite: Vec<usize> = Vec::new();
     for index in 0..MAX_SAVED_PLAYERS {
         file.read_exact(&mut rec)
             .map_err(|e| format!("save file {}: reading record {index}: {e}", path.display()))?;
         match decode_record(&rec) {
             Ok(None) => {}
+            // A lowered ceiling under a balance edit: the innocent case
+            // `cond.rs` says is otherwise unreachable. Clamped, kept.
+            Ok(Some((key, stamp, mut save)))
+                if balance
+                    && (crate::cond::violation(&save.inv, gather).is_some()
+                        || crate::cond::violation(&save.worn, gather).is_some()) =>
+            {
+                crate::cond::clamp(&mut save.inv, gather);
+                crate::cond::clamp(&mut save.worn, gather);
+                found.live += 1;
+                found.clamped += 1;
+                store.load_at(index, &key, stamp, save);
+                rewrite.push(index);
+            }
             // The condition wall (`crate::cond`): the decoder bounded every
             // field it could see without content; this is the one it could
             // not. Refused as corrupt, never clamped — the module header
@@ -734,15 +841,35 @@ pub fn open(
             }
             Ok(Some((key, stamp, save))) => {
                 found.live += 1;
-                store.put(&key, stamp, save);
+                store.load_at(index, &key, stamp, save);
             }
             Err(()) => found.corrupt += 1,
         }
     }
+    let mut saves = SaveFile { file: Some(file) };
+    for index in rewrite {
+        let e = store.slots[index];
+        let key = e.key.expect("loaded above");
+        saves.write(index, &key, e.stamp, &e.save).map_err(|e| {
+            format!(
+                "save file {}: rewriting record {index}: {e}",
+                path.display()
+            )
+        })?;
+    }
+    // The header now names the content this boot runs, so a balance edit
+    // is reported once and an old file is pinned to its layout.
+    if matched != ContentMatch::Same {
+        let f = saves.file.as_mut().expect("opened above");
+        f.seek(SeekFrom::Start(0))
+            .and_then(|_| f.write_all(&encode_header(seed, content_hash, layout_hash)))
+            .and_then(|_| f.sync_data())
+            .map_err(|e| format!("save file {}: rewriting header: {e}", path.display()))?;
+    }
     Ok((
         Saves {
             store,
-            file: SaveFile { file: Some(file) },
+            file: saves,
             trust: crate::trustlog::Tap::off(),
         },
         found,
@@ -895,7 +1022,7 @@ mod tests {
         // and craft job (skins v0), +72.
         // 433 → 441 at SAVE_FORMAT 8: the glyph mask (`sim_core::lore`).
         assert_eq!(SAVE_RECORD_BYTES, 441);
-        let head = encode_header(7, 0xdead_beef);
+        let head = encode_header(7, 0xdead_beef, 0xfeed);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,
             SAVE_RECORD_BYTES

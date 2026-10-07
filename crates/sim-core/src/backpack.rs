@@ -237,6 +237,11 @@ impl Backpacks {
         &self.entries[..self.len]
     }
 
+    /// Boot-only (`World::clamp_conditions`).
+    pub(crate) fn entries_mut(&mut self) -> &mut [BackpackRec] {
+        &mut self.entries[..self.len]
+    }
+
     pub fn next_id(&self) -> u32 {
         self.next_id
     }

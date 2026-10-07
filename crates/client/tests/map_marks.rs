@@ -29,7 +29,7 @@ use client::ui::map::{Mark, MarkKind};
 
 /// Every kind. A `match` over each one so a kind added without a row here
 /// fails to compile rather than going unspawned.
-const KINDS: [MarkKind; 10] = [
+const KINDS: [MarkKind; 12] = [
     MarkKind::None,
     MarkKind::Haven,
     MarkKind::Town,
@@ -40,6 +40,8 @@ const KINDS: [MarkKind; 10] = [
     MarkKind::BedSpent,
     MarkKind::Hearth,
     MarkKind::Backpack,
+    MarkKind::Work,
+    MarkKind::Stone,
 ];
 
 /// The mark under test, and where the spawn put it — both resources, so the
@@ -79,6 +81,7 @@ fn draw(kind: MarkKind, icons: bool) -> (App, Entity) {
         px: 0.5,
         py: 0.5,
         name: None,
+        label: Default::default(),
     }));
     if icons {
         app.add_systems(Startup, client::render::icons::load);

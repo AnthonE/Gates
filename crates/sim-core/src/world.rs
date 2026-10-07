@@ -4221,6 +4221,41 @@ impl World {
         crate::worldsave::decode_into(self, blob)
     }
 
+    /// Bring every stored stack's condition within its item's ceiling, and
+    /// say how many moved. **Boot-only, and only after a balance edit**: the
+    /// server calls it when the world file was written under other numbers
+    /// on the same content layout, so a lowered `condition_max` is the
+    /// innocent explanation for an over-ceiling stack (`server/src/cond.rs`
+    /// has the policy). Like `load`, it runs before tick 0, so the world it
+    /// leaves is the origin of the run.
+    pub fn clamp_conditions(&mut self) -> u32 {
+        let gc = &self.gather;
+        let mut moved = 0u32;
+        let mut clamp = |stacks: &mut [ItemStack]| {
+            for s in stacks.iter_mut() {
+                let max = gc.cond_max_of(s.item);
+                if s.count > 0 && s.cond > max {
+                    s.cond = max;
+                    moved += 1;
+                }
+            }
+        };
+        for p in self.players.iter_mut().filter(|p| p.active) {
+            clamp(&mut p.inv);
+            clamp(&mut p.worn);
+        }
+        for b in self.deploys.boxes_mut() {
+            clamp(&mut b.items);
+        }
+        for b in self.backpacks.entries_mut() {
+            clamp(&mut b.items);
+        }
+        for c in self.world_conts.entries_mut() {
+            clamp(&mut c.items);
+        }
+        moved
+    }
+
     /// This world as a save blob, into a caller-owned buffer at least
     /// [`crate::worldsave::WORLD_SAVE_MAX_BYTES`] long. A pure read, for
     /// the reason [`Self::save_of`] is one.
@@ -5009,6 +5044,11 @@ impl World {
                         inv as usize,
                         &mut self.players[slot],
                         &mut self.events,
+                        crate::works::knob_pct(
+                            &self.works_def,
+                            self.works.unlocks,
+                            crate::works::KNOB_HEAL_PCT,
+                        ),
                     );
                 }
             }
@@ -5742,6 +5782,11 @@ impl World {
                             &mut spill,
                             &hit,
                             &ray,
+                            crate::works::knob_pct(
+                                &self.works_def,
+                                self.works.unlocks,
+                                crate::works::KNOB_GATHER_PCT,
+                            ),
                         );
                     }
                     melee::Reached::Body { hit, stop_t } => {
@@ -6351,7 +6396,17 @@ impl World {
         // in the tick (research table v1): a table a raid takes apart this
         // tick has already spent its period, as an oven has, and its
         // contents spill uncharged when it does.
-        crate::research::table_sweep(&self.research, &mut self.deploys, tick, &mut self.events);
+        crate::research::table_sweep(
+            &self.research,
+            &mut self.deploys,
+            tick,
+            &mut self.events,
+            crate::works::knob_pct(
+                &self.works_def,
+                self.works.unlocks,
+                crate::works::KNOB_RESEARCH_PCT,
+            ),
+        );
         // The works open, light themselves at their fallback hour and burn
         // (`works.rs`), once a period, off their own phase.
         if self.works_def.count > 0 {

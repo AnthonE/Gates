@@ -93,7 +93,13 @@ pub const NO_UNLOCK: u8 = 0;
 /// Knob codes a ceiling can turn, by per cent (100 = unchanged).
 /// Furnace smelting speed (`oven.rs`).
 pub const KNOB_SMELT_PCT: u8 = 0;
-pub const KNOB_MAX: u8 = KNOB_SMELT_PCT;
+/// How fast a bandage's or medkit's heal lands (`survival::consume`).
+pub const KNOB_HEAL_PCT: u8 = 1;
+/// How fast a research table studies (`research::table_sweep`).
+pub const KNOB_RESEARCH_PCT: u8 = 2;
+/// What a swing at a node pays (`gather::land`).
+pub const KNOB_GATHER_PCT: u8 = 3;
+pub const KNOB_MAX: u8 = KNOB_GATHER_PCT;
 
 /// One quota line: `need` of `item`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -332,6 +332,14 @@ impl Content {
         canon::hash(self)
     }
 
+    /// What a save file pins (`server::store`, `server::worldfile`): the
+    /// rows and orders a save indexes through, and none of the numbers.
+    /// Equal layouts with different [`Self::hash`]es are a balance edit,
+    /// which a save survives (`canon::layout_hash` says what walks).
+    pub fn layout_hash(&self) -> u64 {
+        canon::layout_hash(self)
+    }
+
     pub fn item(&self, id: &str) -> Option<&Item> {
         self.items.iter().find(|i| i.id == id)
     }

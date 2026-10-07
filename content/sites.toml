@@ -18,7 +18,7 @@ offer = [
     { pay = "item.junk", pay_n = 4, get = "item.cooked_meat", get_n = 2 },
     { pay = "item.junk", pay_n = 3, get = "item.berries", get_n = 10 },
     { pay = "item.junk", pay_n = 3, get = "item.bandage", get_n = 1 },
-    { pay = "item.junk", pay_n = 25, get = "item.medkit", get_n = 1 },
+    { pay = "item.junk", pay_n = 25, get = "item.medkit", get_n = 1, unlock = "unlock.medicine" },
     { pay = "item.junk", pay_n = 2, get = "item.torch", get_n = 1 },
 ]
 
