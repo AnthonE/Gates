@@ -2137,7 +2137,7 @@ impl World {
             evictions: 0,
             env: crate::weather::Env::default(),
             slot_lives: SlotLives::new(),
-            slot_cache: Box::new(crate::occupy::SlotCache::new()),
+            slot_cache: Box::new(crate::occupy::SlotCache::shard()),
             arrows: Box::new(ranged::Arrows::new()),
             spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
