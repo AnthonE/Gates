@@ -19,8 +19,7 @@
     {"name": "lake", "at": 21, "still": true, "hour": 0.842, "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [1390, 1.0, 3170], "look": [1645, 5, 3365]}], "look": {"exposure": 0.1, "temperature": 0.05, "saturation": 1.16}},
     {"name": "base-sunset", "at": 200, "still": true, "hour": 0.8, "weather": "clear", "fov": 36, "keys": [{"t": 0, "pos": [2328, 2.4, 3093.5], "look": [2353, 4, 3104]}], "look": {"focus": "look", "fstop": 2.4, "exposure": 0.25, "temperature": 0.05, "saturation": 1.12}},
     {"name": "storm", "at": 250, "still": true, "hour": 0.55, "weather": "storm", "fov": 40, "keys": [{"t": 0, "pos": [2335, 1.3, 3091], "look": [2356, 4, 3108]}], "look": {"focus": "look", "fstop": 2.8, "exposure": 0.2, "temperature": -0.05, "saturation": 0.9, "contrast": 1.12}},
-    {"name": "blast", "at": 311.75, "still": true, "hour": 0.8, "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [2341, 2.1, 3098], "look": [2354, 2.5, 3105]}], "look": {"focus": "look", "fstop": 2.8, "exposure": 0.2, "temperature": 0.04}},
-    {"name": "base-night", "at": 520, "still": true, "hour": 0.93, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [2327, 2.1, 3095], "look": [2356, 7, 3110]}], "look": {"exposure": 8.5, "temperature": -0.06, "saturation": 1.1}}
+    {"name": "blast", "at": 311.75, "still": true, "hour": 0.8, "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [2341, 2.1, 3098], "look": [2354, 2.5, 3105]}], "look": {"focus": "look", "fstop": 2.8, "exposure": 0.2, "temperature": 0.04}}
   ],
   "budget": {
     "ao": 3,

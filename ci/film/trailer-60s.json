@@ -30,7 +30,7 @@
     {"shot": "raid-blast", "in": 0.62, "len": 5.333, "game": 1.0, "transition": "cut"},
     {"shot": "raid-wide", "in": 2.8, "len": 2.667, "game": 0.9, "transition": "cut"},
     {"shot": "aftermath", "in": 0.5, "len": 5.333, "game": 0.8, "transition": "cut"},
-    {"shot": "base-night", "in": 1.0, "len": 3.267, "game": 0.5, "transition": "black", "fade": 0.6}
+    {"shot": "lake-sunset", "in": 2.5, "len": 3.267, "game": 0.5, "transition": "cut"}
   ],
   "captions": [
     {"at": 1.4, "len": 4.6, "text": "A BROKEN PLACE IN TIME", "size": 0.05, "y": 0.78},
