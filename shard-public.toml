@@ -36,8 +36,13 @@
 #             surface to every player.
 #   PERSISTENCE IS ON (operator, 2026-08-07). The island, the bases and the
 #             bodies survive a restart, and players keep what they were
-#             carrying. require_auth is on with them because a save is filed
-#             under the identity the handshake proves, and a guest has none.
+#             carrying. A save is filed under the address the handshake
+#             proves, so a player who signs in keeps everything.
+#   GUESTS ARE BACK (operator, 2026-10-07, for the X embed). require_auth is
+#             off, so a joiner with no wallet plays a fresh character that
+#             nobody remembers. That is all the knob decides: a signature that
+#             does not verify is refused either way (`net.rs`, and
+#             `siwe_wire.rs` pins it on a guest shard).
 #   domain    must match the host players dial — it is in what they sign,
 #             and it is a SINGLE name, so it is a cutover and not a SAN.
 
@@ -54,7 +59,7 @@ seed = 20260731
 cert_pem = "/home/master/gates-certs/fullchain.pem"
 key_pem = "/home/master/gates-certs/privkey.pem"
 
-# Persistence, when it is armed. Both keys, and require_auth with them.
+# Persistence, when it is armed. Both keys.
 #
 #   world_file  bases, boxes, bags, fuses, stumps — and the BODIES standing
 #               in the world. Without it a restart deletes every sleeper on
@@ -91,16 +96,17 @@ key_pem = "/home/master/gates-certs/privkey.pem"
 # reader looking for a content hash change to explain it will not find one.
 min_client = "0.8.0"
 
-require_auth = true
+# Guests in (see the header). Turn it back on before arming the ticket door
+# below: `entitle_origin` refuses to boot without it.
+require_auth = false
 save_file = "/home/master/gates-data/players.save"
 world_file = "/home/master/gates-data/island.world"
 
 # Identity is SIWE (2026-08-07). A joiner signs a nonce this shard chose
 # with the key behind the address they claim, and the shard recovers the
-# signer — so `require_auth = true` now means what it says. The player key is
-# the lowercase 0x address, which is stable across sessions; the session
-# token it replaced was not, and would have handed every returning player a
-# new character.
+# signer. The player key is the lowercase 0x address, which is stable across
+# sessions; the session token it replaced was not, and would have handed
+# every returning player a new character.
 #
 # `domain` is what goes in the signed message and it MUST be the host players
 # dial — that is the whole of the domain binding, and a mismatch refuses
