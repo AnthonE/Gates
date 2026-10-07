@@ -44,6 +44,33 @@ const SITE = onOrigin ? "" : "https://elopros.com";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const short = (a) => String(a).slice(0, 6) + "…" + String(a).slice(-4);
 
+/* ── inside a post ─────────────────────────────────────────────────────────
+   X's player card loads this page in a frame inside the post, at
+   `?embed=1` (the `twitter:player` meta in index.html). Framed or asked for,
+   the page draws the embed: one PLAY that joins the public server as a guest
+   unless a wallet is already signed in, the wallet as the second choice, and
+   the full page one tab away. A link out of the frame opens a tab rather than
+   navigating the post's frame. */
+const framed = (() => { try { return window.top !== window; } catch (err) { return true; } })();
+const EMBED = framed || q.has("embed");
+if (EMBED) {
+  document.body.classList.add("embed");
+  for (const a of document.querySelectorAll("a:not([target])")) {
+    a.target = "_blank";
+    a.rel = "noopener";
+  }
+}
+/* Tell the game it is inside a post (`client::render::web::in_post`): X
+   sandboxes the frame without `allow-pointer-lock`, so the world is looked
+   around by dragging, and the game opens in the post rather than fullscreen.
+   Only X may frame this page (the origin's frame-ancestors), so framed is
+   that case. */
+if (framed) window.gatesInPost = true;
+/* ...and say so before PLAY, since dragging to look is not what a player
+   expects. On the start screen rather than over the world: a line drawn over
+   the game in its first seconds was measured not always painting. */
+if (framed) $("drag-line").hidden = false;
+
 for (const a of document.querySelectorAll("[data-site]")) a.href = SITE + a.dataset.site;
 
 const status = $("status");
@@ -232,10 +259,15 @@ function rowEl(r, onGo) {
 
 const serverInput = $("server");
 function renderServers() {
-  $("servers").replaceChildren(...rows.map((r) => rowEl(r, () => play())));
+  $("servers").replaceChildren(...rows.map((r) => rowEl(r, () => goPlay())));
   $("watch-servers").replaceChildren(...rows.map((r) => rowEl(r, () => watch())));
   const r = current();
   if (r && document.activeElement !== serverInput) serverInput.value = r.addr;
+  /* The embed has no server list, so it says how busy the island is instead:
+     a count the shard reported, and only while somebody is on. */
+  const n = r && Number.isInteger(r.players) ? r.players : 0;
+  $("pop-line").hidden = !EMBED || n < 1;
+  $("pop-line").textContent = n === 1 ? "1 player on the island now" : `${n} players on the island now`;
 }
 
 /* Typing an address in OPTIONS is a row of its own, picked. */
@@ -450,7 +482,7 @@ function paintAccount() {
     if (wallet.has()) {
       line.textContent = "Sign in with your wallet. Your base, your name and your skins follow the wallet, on every server.";
     } else {
-      line.textContent = "No wallet in this browser. Gates signs you in with one, like MetaMask or Rabby — add one, then reload.";
+      line.textContent = "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
     }
     inBtn.hidden = !wallet.has();
     $("who-get").hidden = wallet.has();
@@ -650,14 +682,17 @@ function paintButton(btn, fill, sub, idleSub) {
 
 function paintGo() {
   const idle = address ? `as ${(who && who.name) || short(address)}`
-    : wallet.has() ? "signs in with your wallet" : "as a guest";
+    : wallet.has() && !EMBED ? "signs in with your wallet" : "as a guest";
   paintButton($("go"), $("go-fill"), $("go-sub"), idle);
   $("go-label").textContent = busy ? busy.label : dl.failed ? "Reload" : "Play";
   paintButton($("watch-go"), $("watch-fill"), $("watch-sub"), "no wallet needed");
-  /* A guest join is offered where a guest can get in: off the origin (a dev
-     shard) or on a server a link named. The public shard runs `require_auth`
-     (`shard-public.toml`), so on the origin the wallet is the way in. */
-  $("guest").hidden = !!address || !wallet.has() || !!busy || (onOrigin && !q.get("server"));
+  /* The other way in, under PLAY. The public shard takes guests again
+     (`shard-public.toml`, 2026-10-07): a guest plays a fresh character and
+     keeps nothing, a wallet keeps your base. The full page leads with the
+     wallet and offers the guest; the embed leads with the guest. */
+  const other = !address && wallet.has() && !busy;
+  $("guest").hidden = EMBED || !other;
+  $("wallet-in").hidden = !EMBED || !other;
 }
 
 /* Join, and hand the world to Bevy. Both buttons come through here, so the
@@ -760,8 +795,11 @@ async function watch() {
   await join("watch", audio, null);
 }
 
-$("go").addEventListener("click", () => play());
+/* PLAY itself: in the embed a guest unless a wallet is already signed in. */
+const goPlay = () => play({ guest: EMBED && !address });
+$("go").addEventListener("click", goPlay);
 $("guest").addEventListener("click", () => play({ guest: true }));
+$("wallet-in").addEventListener("click", () => play());
 $("watch-go").addEventListener("click", () => watch());
 $("watch-who").addEventListener("keydown", (ev) => { if (ev.key === "Enter") watch(); });
 document.addEventListener("keydown", (ev) => {
@@ -769,7 +807,7 @@ document.addEventListener("keydown", (ev) => {
   const t = ev.target;
   if (t && (t.tagName === "INPUT" || t.tagName === "BUTTON" || t.tagName === "A")) return;
   const open = panes.find((p) => !p.hidden);
-  if (open && open.dataset.pane === "play") play();
+  if (open && open.dataset.pane === "play") goPlay();
   if (open && open.dataset.pane === "watch") watch();
 });
 

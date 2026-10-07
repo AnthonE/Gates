@@ -121,6 +121,27 @@ pub fn fit(css_w: f32, css_h: f32, dpr: f32) -> Fit {
     }
 }
 
+/// Below this many CSS pixels on its short side, a viewport scales the UI
+/// down with it ([`ui_scale`]).
+pub const UI_FULL_SIZE_PX: f32 = 680.0;
+/// The smallest [`ui_scale`] — past it the HUD's text stops being readable.
+pub const UI_SCALE_MIN: f32 = 0.75;
+
+/// Bevy's `UiScale` for a viewport of `css_w × css_h` CSS pixels.
+///
+/// The UI is laid out in fixed pixels sized for a desktop window, and in an
+/// X post's frame (about 516 CSS pixels square, the player card) the hotbar
+/// runs into the meters. So a short side under [`UI_FULL_SIZE_PX`] shrinks
+/// the whole UI in proportion, never below [`UI_SCALE_MIN`]; anything at or
+/// over it, and a viewport a page reported before layout, is exactly 1.0.
+pub fn ui_scale(css_w: f32, css_h: f32) -> f32 {
+    let short = css_w.min(css_h);
+    if !short.is_finite() || short <= 0.0 {
+        return 1.0;
+    }
+    (short / UI_FULL_SIZE_PX).clamp(UI_SCALE_MIN, 1.0)
+}
+
 /// The page's viewport this frame: `(css_w, css_h, devicePixelRatio)`.
 #[cfg(target_arch = "wasm32")]
 pub fn viewport() -> Option<(f32, f32, f32)> {
@@ -151,11 +172,12 @@ pub fn viewport() -> Option<(f32, f32, f32)> {
 pub fn follow_viewport(
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     canvas: Option<Res<Canvas>>,
+    ui: Option<ResMut<UiScale>>,
     mut last: Local<Option<Fit>>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (&mut windows, &canvas, &mut last);
+        let _ = (&mut windows, &canvas, &ui, &mut last);
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -179,6 +201,9 @@ pub fn follow_viewport(
         }
         if let Some(canvas) = canvas.as_deref() {
             stretch_canvas(&canvas.0, want.stretch);
+        }
+        if let Some(mut ui) = ui {
+            ui.0 = ui_scale(w, h);
         }
         // Once per change, so a console can say what the surface did when a
         // frame does not look like the window.
@@ -232,6 +257,36 @@ pub fn hand_back(status: &str) {
         None => {
             let _ = window.location().reload();
         }
+    }
+}
+
+/// Whether the page is playing inside an X post: the player card's frame
+/// (`client-web/web/app.js` EMBED), which the page marks `window.gatesInPost`
+/// when it finds itself framed. Two things follow, and both were measured in
+/// a frame carrying X's own sandbox attributes:
+///
+/// - **The world is looked around by dragging.** The frame is sandboxed
+///   without `allow-pointer-lock`, so the browser refuses every
+///   `requestPointerLock`. Bevy still records the grab it asked for, and the
+///   camera turned whenever the cursor crossed the frame and stopped dead at
+///   its edge. `input::gather` turns the view only while a mouse button is
+///   held, and every owner that takes the pointer back leaves the cursor on
+///   screen.
+/// - **It opens in the post, not fullscreen** (`settings::load`). The frame
+///   may go fullscreen, and the default did so the moment PLAY was pressed.
+///
+/// Always `false` natively.
+pub fn in_post() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsValue;
+        web_sys::window()
+            .and_then(|w| js_sys::Reflect::get(&w, &JsValue::from_str("gatesInPost")).ok())
+            .is_some_and(|v| v.is_truthy())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        false
     }
 }
 

@@ -77,6 +77,9 @@ wasm-bindgen --target web --no-typescript \
   --out-dir "$out" \
   "target/wasm32-unknown-unknown/$profile/client_web.wasm"
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
+# The image an X post shows for the page's link (`twitter:image` in index.html):
+# a crop of `assets/menu/dusk.jpg`, our own island, with the wordmark on it.
+cp crates/client-web/web/card.jpg "$out/"
 # The menu's face is the game's (`render/ui.rs` embeds the same two files), and
 # the page's CSP is `font-src 'self'`, so they ship beside it with their licence.
 mkdir -p "$out/fonts"

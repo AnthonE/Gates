@@ -226,11 +226,18 @@ pub fn gather(
     if swallowed && clicked {
         mouse.clear_just_pressed(MouseButton::Left);
     }
+    // **Inside an X post the pointer cannot be captured** (`web::in_post`):
+    // the view turns while a button is held, as every web 3D viewer does it,
+    // and the cursor stays on screen to show where a drag starts. The left
+    // button still swings while it drags, so looking without swinging is the
+    // right button.
+    let drag = super::web::in_post();
+    let turning = !drag || mouse.pressed(MouseButton::Left) || mouse.pressed(MouseButton::Right);
     if let Ok(mut c) = cursor.single_mut() {
         match want {
             crate::ui::pointer::Grab::Lock => {
                 c.grab_mode = CursorGrabMode::Locked;
-                c.visible = false;
+                c.visible = drag;
             }
             crate::ui::pointer::Grab::Release => {
                 c.grab_mode = CursorGrabMode::None;
@@ -238,7 +245,7 @@ pub fn gather(
             }
             crate::ui::pointer::Grab::Leave => {}
         }
-        if !look.frozen && !panel_open && c.grab_mode == CursorGrabMode::Locked {
+        if !look.frozen && !panel_open && c.grab_mode == CursorGrabMode::Locked && turning {
             let d = motion.delta;
             // Sensitivity scales the free-running radians BEFORE the
             // quantization below, never the quantization itself — see
