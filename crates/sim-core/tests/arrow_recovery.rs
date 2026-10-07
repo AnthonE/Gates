@@ -61,6 +61,7 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
         damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     c
 }

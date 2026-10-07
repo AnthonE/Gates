@@ -733,6 +733,15 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 a.id, a.damage_pct
             ));
         }
+        // A fire that goes out before it starts, or outlives the wire's
+        // twelve bits of ticks (`world::EV_FIRE`), is a typo.
+        let [lo, hi] = a.fire_s;
+        if a.fire_s != [0, 0] && (lo == 0 || lo > hi || hi > 120) {
+            return Err(format!(
+                "ammo `{}`: fire_s [{lo}, {hi}] is not 1 <= shortest <= longest <= 120",
+                a.id
+            ));
+        }
     }
 
     // Armor: item-backed, worn in the slot the item declares, sane range.

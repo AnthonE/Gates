@@ -238,6 +238,7 @@ ITEMS = {
     # `lorc/broken-bone` draws as a starburst at 44 px.
     "arrow_hv": "lorc/supersonic-arrow",
     "arrow_bone": "lorc/arrowhead",
+    "arrow_fire": "lorc/flaming-arrow",
     "bone_frags": "lorc/crossed-bones",
 }
 

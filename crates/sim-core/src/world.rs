@@ -191,6 +191,20 @@ pub fn impact_parts(a: u32) -> (u8, u8, i32) {
     )
 }
 
+/// Where `EV_FIRE`'s burn time sits in `a`, above `qx`.
+pub const FIRE_TICKS_SHIFT: u32 = 20;
+
+/// `EV_FIRE`'s `a`: ticks it burns << 20 | x quanta. Twelve bits of ticks
+/// is 136 s, past the 120 `content` lets a fire burn.
+pub fn fire_a(ticks: u16, qx: i32) -> u32 {
+    (u32::from(ticks) & 0xFFF) << FIRE_TICKS_SHIFT | (qx as u32 & 0xF_FFFF)
+}
+
+/// The two parts of an `EV_FIRE`'s `a`: (ticks it burns, x).
+pub fn fire_parts(a: u32) -> (u16, i32) {
+    ((a >> FIRE_TICKS_SHIFT) as u16, (a & 0xF_FFFF) as i32)
+}
+
 /// Pack an `EV_HIT` payload: the part above the damage it already scaled.
 #[inline]
 pub fn hit_c(part: crate::collide::Part, damage: u16) -> u32 {
@@ -826,7 +840,13 @@ pub const EV_SENTRY_LOCK: u8 = 52;
 /// along once that runs out (Rust's ammo pick and its auto-switch).
 pub const EV_AMMO: u8 = 53;
 
-pub const EV_MAX: u8 = EV_AMMO;
+/// EV_FIRE: a = [`fire_a`]`(ticks it burns, x)`, b = z, c = y as a signed
+/// `i32` — body quanta, `EV_IMPACT`'s. A fire arrow came down and a fire is
+/// burning there (`fire.rs`). **Broadcast**: a fire hurts whoever walks
+/// into it, so everyone in the world should see it.
+pub const EV_FIRE: u8 = 54;
+
+pub const EV_MAX: u8 = EV_FIRE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1982,6 +2002,9 @@ pub struct World {
     /// Small enough to sit inline (`MAX_LIVE_CHARGES` × 24 B ≈ 1.5 kB)
     /// beside the stores it damages, unlike `backpacks` next door.
     pub charges: crate::charge::Charges,
+    /// Fires fire arrows left burning — sim state, hashed. Inline for
+    /// `charges`' reason, 2 kB.
+    pub fires: crate::fire::Fires,
     /// Death backpacks standing on the ground — sim state, hashed.
     /// Boxed, and for one reason: the store is 38 kB of fixed capacity and
     /// `World` is built on the stack (`ShardCore::new`, every wire test),
@@ -2137,6 +2160,7 @@ impl World {
             pieces: Pieces::new(),
             deploys: Deploys::new(),
             charges: crate::charge::Charges::new(),
+            fires: crate::fire::Fires::new(),
             backpacks: Box::new(Backpacks::new()),
             rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
@@ -2821,6 +2845,124 @@ impl World {
                 ground.drop_one(bc, at, stack, tick, dir);
             },
         );
+    }
+
+    /// Light a fire where each fire round came down this tick: dropped
+    /// onto whatever a body could stand on below it, and not at all in the
+    /// sea (`fire.rs`).
+    fn light_fires(&mut self) {
+        if self.arrows.lit().is_empty() {
+            return;
+        }
+        let (seed, tick) = (self.seed, self.tick);
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        for l in self.arrows.lit() {
+            let (x, y, z) = (
+                l.qx as f32 / 1000.0,
+                l.qy as f32 / 1000.0,
+                l.qz as f32 / 1000.0,
+            );
+            let Some((qx, qy, qz)) =
+                crate::grounditem::rest_at(seed, &self.haven, cols, &mut occ, x, y, z)
+            else {
+                continue;
+            };
+            if (qy as f32 * POS_Y_Q) < terrain::SEA_LEVEL {
+                continue;
+            }
+            self.fires.light(crate::fire::FireRec {
+                qx,
+                qy,
+                qz,
+                until: tick + u64::from(l.ticks),
+                owner: l.owner,
+                item: l.item,
+                range_cm: l.range_cm,
+            });
+            self.events
+                .push(EV_FIRE, fire_a(l.ticks, qx), qz as u32, qy as u32);
+        }
+        self.arrows.clear_lit();
+    }
+
+    /// Every fire takes [`crate::fire::FIRE_HP`] off each player and animal
+    /// in its reach, once a second — the archer's doing, so a death by one is
+    /// theirs, with the bow, from as far as the arrow flew.
+    fn burn_fires(&mut self) {
+        use crate::fire::{FIRE_HP, FIRE_PERIOD_TICKS};
+        if self.fires.is_empty() || !self.tick.is_multiple_of(FIRE_PERIOD_TICKS) {
+            return;
+        }
+        for fi in 0..self.fires.len() {
+            let f = self.fires.entries()[fi];
+            for j in 0..MAX_PLAYERS {
+                let v = &self.players[j];
+                if !v.active || v.dead || v.hp == 0 || combat::protected(v) {
+                    continue;
+                }
+                let (x, y, z) = (
+                    v.body.qx as f32 * POS_XZ_Q,
+                    v.body.qy as f32 * POS_Y_Q,
+                    v.body.qz as f32 * POS_XZ_Q,
+                );
+                let h = crate::collide::hit_height_m(v.crouched());
+                if !f.reaches(x, y, z, crate::collide::CAPSULE_RADIUS_M, h) {
+                    continue;
+                }
+                let from = combat::bearing_sector(
+                    i64::from(f.qx - v.body.qx),
+                    i64::from(f.qz - v.body.qz),
+                );
+                let v = &mut self.players[j];
+                let hurt = combat::hurt(&self.combat, v, FIRE_HP);
+                let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
+                self.events
+                    .push(EV_HURT, vid, u32::from(from), u32::from(FIRE_HP));
+                self.events.push(EV_HEALTH, vid, left, vmax);
+                if hurt.died {
+                    self.down_or_die(j, f.owner, DEATH_BY_ARROW, f.item, f.range_cm, false);
+                }
+            }
+            for slot in 0..self.mobs.m.len() {
+                let m = &self.mobs.m[slot];
+                if !m.alive || m.hp == 0 {
+                    continue;
+                }
+                let def = self.mob.def(m.kind);
+                let (x, y, z) = (
+                    m.body.qx as f32 * POS_XZ_Q,
+                    m.body.qy as f32 * POS_Y_Q,
+                    m.body.qz as f32 * POS_XZ_Q,
+                );
+                let (r, h) = (
+                    f32::from(def.body_r_cm) * 0.01,
+                    f32::from(def.body_h_cm) * 0.01,
+                );
+                if !f.reaches(x, y, z, r, h) {
+                    continue;
+                }
+                let by = self.live_slot_of(f.owner);
+                mob::hurt_slot(
+                    &self.backpack,
+                    &self.mob,
+                    self.tick,
+                    by,
+                    &self.players,
+                    &mut self.mobs,
+                    &mut self.backpacks,
+                    &mut self.events,
+                    slot,
+                    FIRE_HP,
+                );
+            }
+        }
     }
 
     /// Pull the nearest arrow standing in a body out of it, into `slot`'s
@@ -6049,6 +6191,9 @@ impl World {
         // just died falls out where it fell.
         self.settle_arrows();
         self.unstick_arrows();
+        self.light_fires();
+        self.fires.expire_due(tick);
+        self.burn_fires();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -6655,6 +6800,20 @@ impl World {
             // record, so a replay that reproduced the blast while
             // inventing the raider would put a different name on it.
             buf[21..25].copy_from_slice(&c.owner.to_le_bytes());
+            h.update(&buf);
+        }
+        // Fires burning: where, until when, and whose — the death a fire
+        // deals is its archer's.
+        h.update(&(self.fires.len() as u64).to_le_bytes());
+        for f in self.fires.entries() {
+            let mut buf = [0u8; 28];
+            buf[0..4].copy_from_slice(&f.qx.to_le_bytes());
+            buf[4..8].copy_from_slice(&f.qy.to_le_bytes());
+            buf[8..12].copy_from_slice(&f.qz.to_le_bytes());
+            buf[12..20].copy_from_slice(&f.until.to_le_bytes());
+            buf[20..24].copy_from_slice(&f.owner.to_le_bytes());
+            buf[24..26].copy_from_slice(&f.item.to_le_bytes());
+            buf[26..28].copy_from_slice(&f.range_cm.to_le_bytes());
             h.update(&buf);
         }
         // The bag cooldowns, in their own pass rather than widening the

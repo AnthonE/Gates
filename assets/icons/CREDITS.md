@@ -43,6 +43,7 @@ every item either way, because the painted ones are derived works of it.
 | `cooked_meat.png` | `lorc/chicken-leg` |
 | `corn.png` | `delapouite/corn` |
 | `crossbow.png` | `carl-olsen/crossbow` |
+| `fire_arrow.png` | `lorc/flaming-arrow` |
 | `fire_pit.png` | `lorc/campfire` |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |

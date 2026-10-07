@@ -673,6 +673,15 @@ tier = 0
 rarity = "common"
 slot = "none"
 
+# Rust's fire arrow: it leaves a fire where it lands rather than an arrow.
+[[item]]
+id = "item.arrow_fire"
+name = "Fire Arrow"
+stack = 64
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.
 [[item]]

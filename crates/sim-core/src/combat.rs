@@ -404,6 +404,10 @@ pub struct AmmoDef {
     /// identity): Rust's high-velocity, bone and fire arrows are 80 % of
     /// the wooden one.
     pub damage_pct: u16,
+    /// How long the fire this round leaves burns, the shortest and the
+    /// longest, in ticks (`fire.rs`); a round that lights one leaves no
+    /// arrow. Zero for every round that does not.
+    pub fire_ticks: [u16; 2],
 }
 
 /// **Not wearable.** `ArmorDef::slot` is one-based so that a zeroed table
@@ -553,6 +557,7 @@ impl CombatContent {
             speed_mmpt: 0,
             drop_mmpt2: 0,
             damage_pct: 100,
+            fire_ticks: [0; 2],
         }; MAX_ITEM_DEFS],
         armor: [ArmorDef {
             reduction_pct: 0,

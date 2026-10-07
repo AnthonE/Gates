@@ -1017,6 +1017,8 @@ impl Content {
             drop_mmpt2,
             // 1..=200 by `validate`.
             damage_pct: a.damage_pct as u16,
+            // At most 120 s by `validate`, 3600 ticks.
+            fire_ticks: a.fire_s.map(|s| (s * TICK_HZ) as u16),
         };
         Ok(())
     }

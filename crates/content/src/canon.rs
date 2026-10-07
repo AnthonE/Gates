@@ -182,6 +182,8 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.speed_mps);
         h.u(a.drop_mps2);
         h.u(a.damage_pct);
+        h.u(a.fire_s[0]);
+        h.u(a.fire_s[1]);
     }
 
     h.s("armor");

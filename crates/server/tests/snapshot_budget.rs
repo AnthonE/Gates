@@ -1705,6 +1705,7 @@ fn bow_fixture() -> CombatContent {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
         damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     c
 }

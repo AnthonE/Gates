@@ -281,6 +281,7 @@ fn world_with_bow() -> Box<World> {
         speed_mmpt: 1666,
         drop_mmpt2: 11,
         damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     w.combat = c;
     // Long enough a life that nothing here races the despawn.

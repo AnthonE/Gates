@@ -92,6 +92,8 @@ pub mod decal;
 pub mod highlight;
 pub mod landmarks;
 pub mod lodged;
+// The fires fire arrows leave.
+pub mod arrow_fire;
 pub mod town;
 pub mod tracer;
 pub mod ziggurat;
@@ -598,6 +600,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
             .init_resource::<lodged::Lodged>()
+            .init_resource::<arrow_fire::ArrowFires>()
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<impact::Contacts>()
@@ -731,6 +734,8 @@ impl Plugin for GatesRenderPlugin {
                 tracer::setup,
                 // The arrows-in-bodies pool, for the same reason.
                 lodged::setup,
+                // And the fire arrows' fires.
+                arrow_fire::setup,
                 // The mark mesh: one entity, always drawn, so its pipeline
                 // compiles at load rather than on the first shot of a fight.
                 decal::setup,
@@ -1227,6 +1232,7 @@ impl Plugin for GatesRenderPlugin {
             Update,
             (
                 fx::world::built.after(feed::drain).before(decal::fade),
+                arrow_fire::draw.before(fx::world::fires),
                 fx::world::fires,
             )
                 .run_if(world_running)

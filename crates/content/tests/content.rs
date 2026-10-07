@@ -289,6 +289,7 @@ fn test_content() {
         // Rust's other arrows and the bone that points one.
         "item.arrow_hv",
         "item.arrow_bone",
+        "item.arrow_fire",
         "item.bone_frags",
     ];
     for id in fittings {
@@ -1542,14 +1543,14 @@ fn the_magazine_rules_refuse_what_they_name() {
     // would be a number nothing reads — the shape `fuse_s` is refused in.
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]\nmagazine = 4",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]\nmagazine = 4",
         "only firearms carry a magazine",
     );
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]\nreload_ms = 1000",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]\nreload_ms = 1000",
         "only a weapon with a magazine carries a reload_ms",
     );
 }
@@ -2732,21 +2733,25 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
             // 45° lob outlives it, as Rust's does its own eight seconds
             // (`MAX_ARROW_LIFE_TICKS`), but the low arc onto flat ground
             // 200 m out — past any body a bow is loosed at — comes down
-            // inside it.
+            // inside it. A round that cannot reach 200 m (the fire arrow's
+            // is about 160) is held to nine tenths of its own reach, and
+            // none may fall short of 100 m.
             let (v, g) = (f64::from(ball.speed_mmpt), f64::from(ball.drop_mmpt2));
             let life = f64::from(MAX_ARROW_LIFE_TICKS);
-            let sin_2t = 200_000.0 * g / (v * v);
             assert!(
-                g > 0.0 && sin_2t < 1.0,
-                "`{}` firing `{id}` cannot reach 200 m at all",
+                g > 0.0 && v * v / g > 100_000.0,
+                "`{}` firing `{id}` cannot reach 100 m",
                 w.id
             );
+            let target = (0.9 * v * v / g).min(200_000.0);
+            let sin_2t = target * g / (v * v);
             let flight = 2.0 * v * (0.5 * sin_2t.asin()).sin() / g;
             assert!(
                 flight < life,
-                "`{}` firing `{id}`: a shot at 200 m is still in the air at the backstop \
+                "`{}` firing `{id}`: a shot at {:.0} m is still in the air at the backstop \
                  ({flight:.0} ticks)",
-                w.id
+                w.id,
+                target / 1000.0
             );
 
             // And the sampler wall, checked on the shipped rows rather than
@@ -2892,7 +2897,7 @@ fn a_firearm_whose_round_has_ballistics_is_refused() {
     refuses(
         "weapons.toml",
         "ammo = [\"item.pistol_ammo\"]",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
         "it is a projectile",
     );
 }
@@ -2929,7 +2934,7 @@ fn a_round_that_outruns_the_collision_sampler_is_refused() {
 fn a_bow_whose_round_has_no_ballistics_is_refused() {
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
         "ammo = [\"item.cloth\"]",
         "no [[ammo]] row",
     );
@@ -2944,7 +2949,7 @@ fn a_bow_whose_round_has_no_ballistics_is_refused() {
 fn a_weapon_that_lists_a_round_twice_is_refused() {
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
         "ammo = [\"item.arrow_wood\", \"item.arrow_wood\"]",
         "listed twice",
     );
@@ -2968,25 +2973,30 @@ fn a_round_that_cannot_fly_is_refused() {
 /// Ballistics live on the round, and the whole point is that a second round
 /// on one bow flies by its own numbers.
 ///
-/// The shipped bow lists Rust's three kinds a hunting bow fires — wooden,
-/// high velocity, bone — and the bake keeps all three, in order, each with
-/// its own speed, drop and share of the bow's damage (§9.3's capacity, now
-/// shipped rather than asserted by a fixture).
+/// The shipped bow lists Rust's four kinds a hunting bow fires — wooden,
+/// high velocity, bone, fire — and the bake keeps all four, in order, each
+/// with its own speed, drop and share of the bow's damage (§9.3's capacity,
+/// now shipped rather than asserted by a fixture), and only the fire arrow
+/// lights a fire.
 #[test]
 fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
     let c = build(&sources()).expect("shipped content builds");
     let cc = c.bake_combat().expect("and it bakes");
 
     let bow = c.item_index("item.bow").expect("the bow is an item");
-    let ids = ["item.arrow_wood", "item.arrow_hv", "item.arrow_bone"]
-        .map(|id| c.item_index(id).expect("a listed round is an item"));
+    let ids = [
+        "item.arrow_wood",
+        "item.arrow_hv",
+        "item.arrow_bone",
+        "item.arrow_fire",
+    ]
+    .map(|id| c.item_index(id).expect("a listed round is an item"));
     let baked = cc.ranged[bow as usize];
     assert_eq!(
-        [baked.ammo[0], baked.ammo[1], baked.ammo[2]],
-        ids,
+        baked.ammo, ids,
         "the bow keeps its rounds in declared order"
     );
-    let [wood, hv, bone] = ids.map(|i| cc.ammo_def(i).expect("each round is armed"));
+    let [wood, hv, bone, fire] = ids.map(|i| cc.ammo_def(i).expect("each round is armed"));
     // And they fly differently: an arrow flies until something stops it,
     // so its reach is the round's (`v²/g` on flat ground) — the reason
     // neither a flight time nor a range could stay on the weapon.
@@ -2994,14 +3004,22 @@ fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
         u32::from(d.speed_mmpt) * u32::from(d.speed_mmpt) / u32::from(d.drop_mmpt2).max(1)
     };
     assert!(
-        reach(hv) > reach(wood) && reach(wood) > reach(bone),
-        "high velocity outflies wood, which outflies bone"
+        reach(hv) > reach(wood) && reach(wood) > reach(bone) && reach(bone) > reach(fire),
+        "high velocity outflies wood, which outflies bone, which outflies fire"
     );
     assert_eq!(
-        (wood.damage_pct, hv.damage_pct, bone.damage_pct),
-        (100, 80, 80),
-        "Rust's 50 / 40 / 40 off one bow"
+        (
+            wood.damage_pct,
+            hv.damage_pct,
+            bone.damage_pct,
+            fire.damage_pct
+        ),
+        (100, 80, 80, 80),
+        "Rust's 50 / 40 / 40 / 40 off one bow"
     );
+    let tick_hz = sim_core::limits::TICK_HZ as u16;
+    assert_eq!(fire.fire_ticks, [20 * tick_hz, 40 * tick_hz]);
+    assert!([wood, hv, bone].iter().all(|r| r.fire_ticks == [0, 0]));
 }
 
 // ---------------------------------------------------------------------------
@@ -3786,13 +3804,14 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 }
 
 /// **The split is theirs** (operator, 2026-09-22 — `reference/BLUEPRINTS.md`
-/// §1): eleven recipes need a blueprint, each at the item page's research
+/// §1): twelve recipes need a blueprint, each at the item page's research
 /// price, and gunpowder and metal arrows — known from the start there — are
 /// not gated here either.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 11] = [
+    let want: [(&str, u32); 12] = [
+        ("item.arrow_fire", 30),
         ("item.hatchet_metal", 30),
         ("item.pickaxe_metal", 30),
         ("item.medkit", 30),

@@ -1016,6 +1016,12 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
 pub const MAX_LIVE_CHARGES: usize = 64;
 
+/// Fires burning on the ground at once (`fire.rs`) — what fire arrows leave.
+/// A bow looses one every 1.25 s and a fire lasts at most 40 s, so one archer
+/// keeps about 32 alight and two fill it. Overflow policy: the **oldest**
+/// goes out first, because the newest is the one somebody just shot.
+pub const MAX_FIRES: usize = 64;
+
 /// The widest blast any content may declare, centimetres — one build cell
 /// (satchel blast v0). Not a tuning knob: `charge::detonate`'s 3×3 column
 /// ring is *complete* only while a blast cannot reach past one cell from

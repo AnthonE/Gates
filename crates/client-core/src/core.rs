@@ -82,6 +82,20 @@ pub struct Impact {
     pub kind: u8,
 }
 
+/// Fires this client keeps at once (`EventMsg::Fire`) — the sim's own cap,
+/// so a full set here is a full island.
+pub const FIRES: usize = sim_core::limits::MAX_FIRES;
+
+/// A fire burning on the ground: the point in the wire's quanta (`Impact`'s)
+/// and the low 32 bits of the server tick it goes out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fire {
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub until: u32,
+}
+
 /// A piece or deployable that came down (decay, a raid, a hammer), with the
 /// row and plate it stood at — the mirror no longer holds either once it is
 /// gone, and the renderer's dust wants both.
@@ -1486,6 +1500,10 @@ pub struct ClientCore {
     /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
     /// v94): the weapon it was said for, and the round.
     bow_ammo: (u16, u16),
+    /// The fires heard of (`Fire`, wire v94), oldest first; the burnt-out
+    /// ones go when the next is heard.
+    fires: [Fire; FIRES],
+    fire_len: usize,
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -2057,6 +2075,8 @@ impl ClientCore {
             mag: (0, 0),
             mag_item: NO_ITEM,
             bow_ammo: (NO_ITEM, NO_ITEM),
+            fires: [Fire::default(); FIRES],
+            fire_len: 0,
             gather_refusal_head: 0,
             gather_refusal_len: 0,
             research_refusal_head: 0,
@@ -2618,6 +2638,33 @@ impl ClientCore {
             EventMsg::Ammo { weapon, round } => {
                 // A level the HUD reads every frame (`bow_round`); no flag.
                 self.bow_ammo = (weapon, round);
+            }
+            EventMsg::Fire { qx, qy, qz, until } => {
+                // One fire a point: a join or a resync restates the ones
+                // already heard.
+                let same = self.fires[..self.fire_len]
+                    .iter()
+                    .position(|f| (f.qx, f.qy, f.qz) == (qx, qy, qz));
+                if let Some(i) = same {
+                    self.fires[i].until = until;
+                } else {
+                    // Out with the burnt-out, then drop-oldest at the cap.
+                    let now = self.server_tick_u32();
+                    let mut kept = 0;
+                    for i in 0..self.fire_len {
+                        if (self.fires[i].until.wrapping_sub(now) as i32) > 0 {
+                            self.fires[kept] = self.fires[i];
+                            kept += 1;
+                        }
+                    }
+                    self.fire_len = kept;
+                    if self.fire_len == FIRES {
+                        self.fires.copy_within(1..FIRES, 0);
+                        self.fire_len -= 1;
+                    }
+                    self.fires[self.fire_len] = Fire { qx, qy, qz, until };
+                    self.fire_len += 1;
+                }
             }
             EventMsg::LodgedSync { reset, recs, count } => {
                 if reset {
@@ -3864,6 +3911,21 @@ impl ClientCore {
     pub fn bow_round(&self) -> Option<u16> {
         let (weapon, round) = self.bow_ammo;
         (weapon == self.held_item() && round != NO_ITEM).then_some(round)
+    }
+
+    /// The fires burning now, as far as this client has heard — a fire
+    /// arrow's, until the tick it goes out.
+    pub fn fires(&self) -> impl Iterator<Item = &Fire> {
+        let now = self.server_tick_u32();
+        self.fires[..self.fire_len]
+            .iter()
+            .filter(move |f| (f.until.wrapping_sub(now) as i32) > 0)
+    }
+
+    /// The server tick estimate's low 32 bits, the width ticks cross the
+    /// wire at.
+    fn server_tick_u32(&self) -> u32 {
+        self.clock.server_est.max(0.0) as u64 as u32
     }
 
     /// Rust's safe zone: standing in THE GATE with a weapon in hand, which

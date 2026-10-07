@@ -113,6 +113,7 @@ PAINT = {
     "high_velocity_arrow": dict(c=("#d4e6f4", "#55799a"), metal=True),
     "bone_arrow": dict(c=WOOD, zone=dict(c=BONE, box=(0.44, 0.44, 1.0, 1.0))),
     "bone_fragments": dict(c=BONE),
+    "fire_arrow": dict(c=FLAME),
     "crossbow": dict(c=WOOD),
     "revolver": dict(c=DARK_STEEL, metal=True),
     "pistol_round": dict(c=("#f3d27a", "#a47a1e"), metal=True),

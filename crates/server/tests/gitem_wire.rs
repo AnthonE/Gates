@@ -419,3 +419,55 @@ fn an_arrow_in_a_body_reaches_every_client_and_comes_out_of_every_set() {
         );
     }
 }
+
+/// A fire burning when a client joins reaches it (wire v94): each fire is
+/// broadcast once, as it is lit, so a fresh join is owed the ones burning —
+/// and is sent each of them once.
+#[test]
+fn a_fire_burning_when_a_client_joins_reaches_it() {
+    use sim_core::fire::FireRec;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let feet = core.world.players[world_slot(&core, id_of(0))].body;
+    let until = core.world.tick + 600;
+    core.world.fires.light(FireRec {
+        qx: feet.qx + 40,
+        qy: feet.qy,
+        qz: feet.qz,
+        until,
+        owner: id_of(0),
+        item: FILLER,
+        range_cm: 900,
+    });
+
+    assert!(core.connect(1, id_of(1)));
+    clients.push((1, ClientCore::new(SEED, id_of(1), 0)));
+    seen.clear();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let want = client_core::core::Fire {
+        qx: feet.qx + 40,
+        qy: feet.qy,
+        qz: feet.qz,
+        until: until as u32,
+    };
+    assert_eq!(
+        clients[1].1.fires().copied().collect::<Vec<_>>(),
+        vec![want],
+        "the client that joined draws it"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|(s, m)| *s == 1 && matches!(m, EventMsg::Fire { .. }))
+            .count(),
+        1,
+        "sent once"
+    );
+}

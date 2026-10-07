@@ -163,7 +163,7 @@ limb_pct = 50
 rate_per_min = 48
 # Rust's kinds a hunting bow fires, in the order it falls back through
 # when the one picked (`R`) runs out.
-ammo = ["item.arrow_wood", "item.arrow_hv", "item.arrow_bone"]
+ammo = ["item.arrow_wood", "item.arrow_hv", "item.arrow_bone", "item.arrow_fire"]
 # The draw: hold the right mouse this long before a shot will loose
 # (`reference/PROJECTILES.md` §6 — the hunting bow's ~1 s draw). The
 # crossbow carries none: it is cocked, and fires from the hip.
@@ -301,3 +301,12 @@ id = "item.arrow_bone"
 speed_mps = 45
 drop_mps2 = 7
 damage_pct = 80
+
+# Rust's fire arrow: 40 m/s at full gravity, 40 a hit, and where it lands a
+# fire that burns 20 to 40 s (`sim-core/src/fire.rs`). No arrow comes back.
+[[ammo]]
+id = "item.arrow_fire"
+speed_mps = 40
+drop_mps2 = 10
+damage_pct = 80
+fire_s = [20, 40]

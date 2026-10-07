@@ -351,6 +351,9 @@ pub struct ClientNetState {
     /// The sky/clock record as last sent (weather v0). `None` owes the
     /// client the whole of it: a fresh join and a resync both start here.
     pub last_env: Option<sim_core::weather::Env>,
+    /// The fires burning are owed (wire v94): a fresh join and a resync both
+    /// start owing them, since each fire is broadcast once, when it is lit.
+    pub fires_owed: bool,
     /// Next skin-catalog row the drip sends (skins v0).
     pub skins_cursor: usize,
     /// Next vendor offer the drip sends (wire v85).
@@ -452,6 +455,7 @@ impl ClientNetState {
             pace: crate::pace::Pace::default(),
             last_assist: (0, 0, 0),
             last_env: None,
+            fires_owed: true,
             skins_cursor: 0,
             vend_cursor: 0,
             last_doors: None,
@@ -519,6 +523,7 @@ impl ClientNetState {
         self.resync_wear();
         self.last_done_at = u64::MAX;
         self.last_env = None;
+        self.fires_owed = true;
         self.last_expo = None;
         self.last_hostile = None;
         self.last_gate_spawn = None;

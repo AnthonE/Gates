@@ -319,6 +319,11 @@ pub struct Ammo {
     /// arrow hits for 50. Absent is the identity, 100.
     #[serde(default = "hundred")]
     pub damage_pct: u32,
+    /// The fire it leaves where it lands, the shortest and longest it
+    /// burns, in seconds (Rust's fire arrow: 20 to 40). A round with one
+    /// leaves no arrow. Absent, no fire.
+    #[serde(default)]
+    pub fire_s: [u32; 2],
 }
 
 fn hundred() -> u32 {

@@ -592,6 +592,65 @@ pub struct Kill {
     pub head: bool,
 }
 
+/// Where a fire round came down, handed to `World` to light (`fire.rs`) for
+/// [`Kill`]'s reason: a fire needs the ground under it and the fire store,
+/// and this pass holds neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ignite {
+    /// The arrow's last position, millimetres.
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub owner: u32,
+    /// The weapon that shot it, for the death screen.
+    pub item: u16,
+    /// How long it burns, ticks — rolled where it landed.
+    pub ticks: u16,
+    pub range_cm: u16,
+}
+
+/// The fire rounds that came down since `World` last lit them. At most one
+/// per arrow slot a tick, and `World` drains it every tick.
+#[derive(Clone, Copy, Debug)]
+pub struct Lit {
+    e: [Ignite; MAX_ARROWS],
+    n: usize,
+}
+
+impl Lit {
+    const EMPTY: Self = Self {
+        e: [Ignite {
+            qx: 0,
+            qy: 0,
+            qz: 0,
+            owner: 0,
+            item: 0,
+            ticks: 0,
+            range_cm: 0,
+        }; MAX_ARROWS],
+        n: 0,
+    };
+
+    fn push(&mut self, f: Ignite) {
+        if self.n < MAX_ARROWS {
+            self.e[self.n] = f;
+            self.n += 1;
+        }
+    }
+}
+
+/// `CH_*` for how long a fire burns.
+const CH_FIRE_LIFE: u32 = 118;
+
+/// How long a fire lit by slot `slot` on `tick` burns, between the round's
+/// shortest and longest — `spent::breaks`' stateless draw, so a replay rolls
+/// the same fire.
+fn fire_ticks(seed: u64, tick: u64, slot: usize, [lo, hi]: [u16; 2]) -> u16 {
+    let span = u64::from(hi.saturating_sub(lo)) + 1;
+    let h = crate::rng::cell_hash(seed, slot as i32, tick as i32, CH_FIRE_LIFE);
+    lo + (((h >> 32) * span) >> 32) as u16
+}
+
 /// Every arrow in the air on the shard. A flat array with a free-slot scan
 /// rather than a free list: `MAX_ARROWS` is 128, the scan stops at the
 /// first hole, and a free list is one more thing `state_hash` would have to
@@ -599,6 +658,7 @@ pub struct Kill {
 #[derive(Clone, Copy, Debug)]
 pub struct Arrows {
     a: [Arrow; MAX_ARROWS],
+    lit: Lit,
 }
 
 impl Arrows {
@@ -624,6 +684,7 @@ impl Arrows {
             life: 0,
             flown: 0,
         }; MAX_ARROWS],
+        lit: Lit::EMPTY,
     };
 
     pub fn new() -> Self {
@@ -643,6 +704,15 @@ impl Arrows {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// The fire rounds that came down since [`Arrows::clear_lit`].
+    pub fn lit(&self) -> &[Ignite] {
+        &self.lit.e[..self.lit.n]
+    }
+
+    pub fn clear_lit(&mut self) {
+        self.lit.n = 0;
     }
 
     /// The first free slot, or `None` when the store is full — the refusal
@@ -885,6 +955,10 @@ pub fn draw(
 /// `a.q*` there first. `dir` is the way it was flying if it **stuck** —
 /// in the world, or in its host's frame with `off` where in the host it
 /// went in (`SpentRec::dir`, `spent::lodge_pose`) — zero if it falls.
+///
+/// A round that lights a fire leaves no arrow: where it came down goes to
+/// `lit` for `World` to light (`fire.rs`), wherever it came down — in the
+/// world, in a body or out of flight.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn land(
@@ -892,12 +966,26 @@ fn land(
     tick: u64,
     cc: &CombatContent,
     spent: &mut SpentArrows,
+    lit: &mut Lit,
     slot: usize,
     a: &Arrow,
     host: Option<(u32, u64)>,
     dir: [i8; 3],
     off: [i16; 3],
 ) {
+    let burns = cc.ammo_def(a.round).map_or([0; 2], |b| b.fire_ticks);
+    if burns[1] > 0 {
+        lit.push(Ignite {
+            qx: a.qx,
+            qy: a.qy,
+            qz: a.qz,
+            owner: a.owner,
+            item: a.item,
+            ticks: fire_ticks(seed, tick, slot, burns),
+            range_cm: (a.flown / 10).min(u32::from(u16::MAX)) as u16,
+        });
+        return;
+    }
     if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
         return;
     }
@@ -1029,7 +1117,18 @@ fn step_in(
             // Falling faster than the sampler can honestly trace — a long
             // drop off a height: it falls from where it is rather than
             // flying on untraced.
-            land(seed, tick, cc, spent, ix, &a, None, [0; 3], [0; 3]);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                None,
+                [0; 3],
+                [0; 3],
+            );
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1107,7 +1206,18 @@ fn step_in(
                     beast.yaw,
                     (dx, dy, dz),
                 );
-                land(seed, tick, cc, spent, ix, &a, Some(host), dir, off);
+                land(
+                    seed,
+                    tick,
+                    cc,
+                    spent,
+                    &mut arrows.lit,
+                    ix,
+                    &a,
+                    Some(host),
+                    dir,
+                    off,
+                );
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -1137,7 +1247,18 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * t);
                 a.qy = crate::fmath::floor_i32(oy + sy * t);
                 a.qz = crate::fmath::floor_i32(oz + sz * t);
-                land(seed, tick, cc, spent, ix, &a, None, [0; 3], [0; 3]);
+                land(
+                    seed,
+                    tick,
+                    cc,
+                    spent,
+                    &mut arrows.lit,
+                    ix,
+                    &a,
+                    None,
+                    [0; 3],
+                    [0; 3],
+                );
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -1205,7 +1326,18 @@ fn step_in(
                 players[j].frame.yaw,
                 (dx, dy, dz),
             );
-            land(seed, tick, cc, spent, ix, &a, Some(host), dir, off);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                Some(host),
+                dir,
+                off,
+            );
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1277,7 +1409,18 @@ fn step_in(
             a.qy = crate::fmath::floor_i32(from.1 + last.1 * back);
             a.qz = crate::fmath::floor_i32(from.2 + last.2 * back);
             let dir = crate::spent::stick_dir(dx, dy, dz);
-            land(seed, tick, cc, spent, ix, &a, None, dir, [0; 3]);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                None,
+                dir,
+                [0; 3],
+            );
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1290,7 +1433,18 @@ fn step_in(
         if a.life == 0 {
             // Out of flight in the air: it falls to whatever is under it
             // rather than vanishing (`NOW.md` §5 item 2).
-            land(seed, tick, cc, spent, ix, &a, None, [0; 3], [0; 3]);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                None,
+                [0; 3],
+                [0; 3],
+            );
         }
         arrows.a[ix] = a;
     }

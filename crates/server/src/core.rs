@@ -16,11 +16,11 @@ use protocol::{
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
-    encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_lodged_sync, encode_event_move_refused, encode_event_moved,
-    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_fire,
+    encode_event_gather, encode_event_gather_refused, encode_event_gitem_sync, encode_event_health,
+    encode_event_heard, encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv,
+    encode_event_knock, encode_event_known, encode_event_lodged_sync, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
     encode_event_research, encode_event_research_refused, encode_event_research_rows,
@@ -53,12 +53,13 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
     EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
     EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
-    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL,
-    EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
-    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
+    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
+    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
+    EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
+    STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -3230,6 +3231,30 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_FIRE => {
+                    // Broadcast, unfiltered: a fire hurts whoever walks into
+                    // it, so every client should know where one burns before
+                    // it walks there — and until when, so it can put it out.
+                    let (ticks, qx) = sim_core::world::fire_parts(ev.a);
+                    let (qz, qy) = (ev.b as i32, ev.c as i32);
+                    let until = (self.world.tick as u32).wrapping_add(u32::from(ticks));
+                    match encode_event_fire(qx, qy, qz, until, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_PIECE_REMOVED | EV_DEPLOY_REMOVED => {
                     let piece = ev.code == EV_PIECE_REMOVED;
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
@@ -3644,6 +3669,25 @@ impl ShardCore {
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
+        }
+
+        // The fires burning (wire v94), every one, to a fresh join and after
+        // a resync: the broadcast as each was lit reached only who was here.
+        // All again on a full lane; the client keeps one per point.
+        if self.clients[slot].fires_owed {
+            for f in self.world.fires.entries() {
+                match encode_event_fire(f.qx, f.qy, f.qz, f.until as u32, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+            self.clients[slot].fires_owed = false;
         }
 
         // Catalog: names first — toasts and hotbar labels want them early.

@@ -451,7 +451,11 @@ const SUB_LODGED_SYNC: u32 = 76;
 /// round, `NO_ITEM` for none carried — the kind `R` picked, or the next one
 /// along once that runs out (`sim_core::world::EV_AMMO`).
 const SUB_AMMO: u32 = 77;
-const SUB_MAX: u32 = SUB_AMMO;
+/// A fire burning on the ground (wire v94): where, in body quanta like
+/// `SUB_IMPACT`, and the tick it goes out — what a fire arrow leaves
+/// (`sim_core::fire`). Broadcast.
+const SUB_FIRE: u32 = 78;
+const SUB_MAX: u32 = SUB_FIRE;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1477,6 +1481,14 @@ pub enum EventMsg {
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
+    /// A fire burning on the ground (wire v94): its point in body quanta,
+    /// `Impact`'s, and the low 32 bits of the tick it goes out.
+    Fire {
+        qx: i32,
+        qy: i32,
+        qz: i32,
+        until: u32,
+    },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
     /// charges in it; one hour's charge until wire v89). The third column
@@ -3109,6 +3121,29 @@ pub fn encode_event_ammo(weapon: u16, round: u16, buf: &mut [u8]) -> Result<usiz
     Ok(w.finish())
 }
 
+/// A fire burning on the ground — see `EventMsg::Fire`. Refuses a point off
+/// the wire's windows, as `encode_event_impact` does.
+pub fn encode_event_fire(
+    qx: i32,
+    qy: i32,
+    qz: i32,
+    until: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !(0..(1i64 << POS_XZ_BITS)).contains(&(qx as i64))
+        || !(0..(1i64 << POS_XZ_BITS)).contains(&(qz as i64))
+        || !(0..(1i64 << POS_Y_BITS)).contains(&(qy as i64 + POS_Y_BIAS as i64))
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_FIRE)?;
+    w.write(qx as u32, POS_XZ_BITS)?;
+    w.write((qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
+    w.write(qz as u32, POS_XZ_BITS)?;
+    w.write(until, 32)?;
+    Ok(w.finish())
+}
+
 /// Your swipe was refused.
 pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if code == 0
@@ -4674,6 +4709,12 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_AMMO => EventMsg::Ammo {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
+        },
+        SUB_FIRE => EventMsg::Fire {
+            qx: r.read(POS_XZ_BITS)? as i32,
+            qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
+            qz: r.read(POS_XZ_BITS)? as i32,
+            until: r.read(32)?,
         },
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
@@ -6788,6 +6829,10 @@ mod wire_domains {
         Module {
             file: "depot.rs",
             src: include_str!("../../sim-core/src/depot.rs"),
+        },
+        Module {
+            file: "fire.rs",
+            src: include_str!("../../sim-core/src/fire.rs"),
         },
         Module {
             file: "fmath.rs",

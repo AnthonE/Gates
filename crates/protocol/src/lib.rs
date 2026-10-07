@@ -77,7 +77,9 @@ pub use event::{
     MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
     SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
-pub use event::{encode_event_ammo, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH};
+pub use event::{
+    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
+};
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
@@ -1047,7 +1049,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `SUB_LODGED_SYNC` (76) walks the arrows standing in bodies — which body,
 /// where in it and which way — so they are drawn on the players and
 /// animals they hit. `SUB_AMMO` (77) tells an archer which arrow their bow
-/// looses.
+/// looses, and `SUB_FIRE` (78) where a fire arrow's fire burns and until when.
 pub const PROTO_VER: u16 = 94;
 
 /// This game's slug in the elo catalog.

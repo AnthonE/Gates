@@ -102,6 +102,20 @@ inputs = [
     { item = "item.metal_frags", count = 5 },
 ]
 
+# Rust's fire arrow: learned (the workbench 1 tree), a rag and fuel on a shaft.
+[[recipe]]
+id = "recipe.arrow_fire"
+output = "item.arrow_fire"
+blueprint = true
+count = 2
+station = "workbench1"
+seconds = 5
+inputs = [
+    { item = "item.wood", count = 20 },
+    { item = "item.lowgrade", count = 10 },
+    { item = "item.cloth", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.bandage"
 output = "item.bandage"
