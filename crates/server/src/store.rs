@@ -159,7 +159,9 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// 16-bit skin (6 → 8 B) and every craft job the skin it mints in (4 → 6 B),
 /// so the record went 289 → 361. A skinned tool you log off holding is the
 /// skinned tool you log in holding.
-pub const SAVE_FORMAT: u16 = 7;
+/// **8** — the glyph mask (`sim_core::lore`): eight bytes after the crawl's
+/// clocks in the scalar head, 361 → 369.
+pub const SAVE_FORMAT: u16 = 8;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -891,7 +893,8 @@ mod tests {
         // 344 → 361 at SAVE_FORMAT 6: the crawl and its two clocks
         // (wounded v0). 361 → 433 at SAVE_FORMAT 7: a skin on every slot
         // and craft job (skins v0), +72.
-        assert_eq!(SAVE_RECORD_BYTES, 433);
+        // 433 → 441 at SAVE_FORMAT 8: the glyph mask (`sim_core::lore`).
+        assert_eq!(SAVE_RECORD_BYTES, 441);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

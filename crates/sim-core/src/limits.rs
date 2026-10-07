@@ -747,6 +747,30 @@ pub const MAX_VEND_OFFERS: usize = 64;
 /// Vendors: one per town kiosk.
 pub const MAX_VENDORS: usize = crate::town::KIOSKS.len();
 
+/// Works on the island (`works.rs`, `ARC.md` F1): the world-state table
+/// `WORLD.md` §5.4 asked for. The bake refuses a longer `[[work]]` list.
+pub const MAX_WORKS: usize = 8;
+/// Inputs one work's quota names.
+pub const MAX_WORK_INPUTS: usize = 4;
+/// Unlock flags across every work, floor and ceiling: the width of
+/// `Works::unlocks`. A recipe names one as its code, bit + 1.
+pub const MAX_UNLOCKS: usize = 32;
+/// Contributors one work credits. Full, a new giver displaces the smallest
+/// credit only when their deposit alone is bigger; otherwise it goes
+/// uncredited (the work still counts it).
+pub const MAX_WORK_CREDITS: usize = 16;
+/// Effect rows (`[[effect]]`): an unlock turning a knob.
+pub const MAX_ARC_EFFECTS: usize = 16;
+/// Speakers on the island (`lore.rs`, `ARC.md` F5).
+pub const MAX_SPEAKERS: usize = 16;
+/// Inscriptions on the island (`lore.rs`, `ARC.md` F6).
+pub const MAX_INSCRIPTIONS: usize = 32;
+/// The ancients' alphabet: the width of `Player::glyphs`.
+pub const MAX_GLYPHS: usize = 64;
+/// Mechanisms on the island (`mech.rs`, `ARC.md` F7), and dials one has.
+pub const MAX_MECHS: usize = 8;
+pub const MAX_DIALS: usize = 4;
+
 /// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
 /// is a place to put things down, not a second inventory, and the whole
 /// store is sized against this (`MAX_BOXES * BOX_SLOTS` stacks). Both

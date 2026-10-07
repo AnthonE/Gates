@@ -116,12 +116,18 @@ pub mod fingers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
+// The arc's banner under the compass (`ARC.md` F4), and the works'
+// terminals in the world.
+pub mod arc_hud;
 pub mod hurt_flash;
+// Speakers, stones and dials (`ARC.md` F5–F7).
 pub mod impact;
 pub mod input;
 pub mod loading;
 pub mod loot;
+pub mod lore;
 pub mod surface;
+pub mod works;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
@@ -1128,6 +1134,7 @@ impl Plugin for GatesRenderPlugin {
                 hud::setup.after(rig::setup),
                 // Beside the HUD, and like it absent from a plate run.
                 spectate::setup,
+                arc_hud::setup,
             )
                 .run_if(move || !plate),
         )
@@ -1567,6 +1574,11 @@ impl Plugin for GatesRenderPlugin {
                         town_signs::shopkeepers,
                         ziggurat::dress,
                         ziggurat::doors,
+                        // The works' terminals (`ARC.md` F1): stood up as
+                        // their rows arrive, lit by their state.
+                        (works::spawn, works::light).chain(),
+                        // Speakers, stones and dials (`ARC.md` F5–F7).
+                        (lore::spawn, lore::dials).chain(),
                     ),
                     (hud::pad_overlay, hud::hearth_overlay),
                 )
@@ -1657,6 +1669,10 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .after(feed::drain)
                 .run_if(world_running),
+        )
+        .add_systems(
+            Update,
+            arc_hud::update.after(feed::drain).run_if(world_running),
         )
         // The crawl's screen (wounded v0): the vignette and the two numbers.
         // After the drain for `bodies::stream`'s reason — it reads this

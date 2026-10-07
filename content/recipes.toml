@@ -435,6 +435,9 @@ output = "item.gunpowder"
 count = 10
 station = "workbench2"
 seconds = 5
+# Nobody on the island can make it until THE CRUCIBLE burns (`arc.toml`,
+# `ARC.md` §1.3): the world gates guns, not the tech tree.
+unlock = "unlock.gunpowder"
 inputs = [
     { item = "item.charcoal", count = 30 },
     { item = "item.sulfur", count = 20 },

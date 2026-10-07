@@ -20,7 +20,7 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
-pub const FILES: [&str; 15] = [
+pub const FILES: [&str; 16] = [
     "items.toml",
     "gatherables.toml",
     "recipes.toml",
@@ -36,6 +36,7 @@ pub const FILES: [&str; 15] = [
     "skins.toml",
     "balance.toml",
     "sites.toml",
+    "arc.toml",
 ];
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -147,6 +148,23 @@ struct SitesFile {
     sentry: Option<schema::Sentry>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArcFile {
+    arc: ArcGlobals,
+    #[serde(default)]
+    work: Vec<Work>,
+    #[serde(default)]
+    effect: Vec<schema::ArcEffect>,
+    glyphs: Glyphs,
+    #[serde(default)]
+    speaker: Vec<Speaker>,
+    #[serde(default)]
+    inscription: Vec<Inscription>,
+    #[serde(default)]
+    mechanism: Vec<Mechanism>,
+}
+
 /// The whole validated content set. Construction is the only way in, so
 /// holding a `Content` means every check in `validate` and every band in
 /// `balance` passed.
@@ -183,6 +201,17 @@ pub struct Content {
     pub vendors: Vec<Vendor>,
     /// THE GATE's sentry guns (`sites.toml` `[sentry]`), or none.
     pub sentry: Option<schema::Sentry>,
+    /// The arc (`arc.toml`, `ARC.md`): how works burn, the works, and the
+    /// effects their unlocks turn on.
+    pub arc: ArcGlobals,
+    pub works: Vec<Work>,
+    pub arc_effects: Vec<schema::ArcEffect>,
+    /// The ancients' script, the people who talk, the writing on the stones
+    /// and the locks (`arc.toml`, `ARC.md` F5–F7).
+    pub glyphs: Glyphs,
+    pub speakers: Vec<Speaker>,
+    pub inscriptions: Vec<Inscription>,
+    pub mechanisms: Vec<Mechanism>,
     pub balance: Balance,
     anchors: Anchors,
 }
@@ -253,6 +282,7 @@ impl Content {
         let skins: SkinsFile = parse("skins.toml", get("skins.toml")?)?;
         let balance: Balance = parse("balance.toml", get("balance.toml")?)?;
         let sites: SitesFile = parse("sites.toml", get("sites.toml")?)?;
+        let arc: ArcFile = parse("arc.toml", get("arc.toml")?)?;
 
         let mut content = Content {
             items: items.item,
@@ -275,6 +305,13 @@ impl Content {
             skins: skins.skin,
             vendors: sites.vendor,
             sentry: sites.sentry,
+            arc: arc.arc,
+            works: arc.work,
+            arc_effects: arc.effect,
+            glyphs: arc.glyphs,
+            speakers: arc.speaker,
+            inscriptions: arc.inscription,
+            mechanisms: arc.mechanism,
             balance,
             anchors: Anchors::default(),
         };

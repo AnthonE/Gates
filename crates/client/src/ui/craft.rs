@@ -167,6 +167,9 @@ pub struct Row {
     /// for, and hiding it would make the whole verb invisible to a player
     /// who has never seen one.
     pub locked: bool,
+    /// The world unlock the recipe waits on (`sim_core::works`), 0 for
+    /// none. The panel asks `ClientCore::arc` whether the island holds it.
+    pub unlock: u8,
 }
 
 /// Does this recipe belong in `cat`?
@@ -282,6 +285,7 @@ pub fn rows(
             // one shift written once, so a client cannot disagree with the
             // server about what a player knows.
             locked: def.blueprint && !sim_core::research::knows(known, recipe),
+            unlock: def.unlock,
         });
     }
 }
@@ -647,6 +651,7 @@ mod tests {
             station: 0,
             affordable,
             locked,
+            unlock: 0,
         };
         let rows = [
             row(4, 0, false),

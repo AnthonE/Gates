@@ -16,7 +16,7 @@ use sim_core::limits::MAX_ITEM_DEFS;
 
 /// Every content file, as shipped. `content::FILES` is the set; a test
 /// holds the two together.
-pub const SOURCES: [(&str, &str); 15] = [
+pub const SOURCES: [(&str, &str); 16] = [
     ("items.toml", include_str!("../../../../content/items.toml")),
     (
         "gatherables.toml",
@@ -59,6 +59,7 @@ pub const SOURCES: [(&str, &str); 15] = [
         include_str!("../../../../content/balance.toml"),
     ),
     ("sites.toml", include_str!("../../../../content/sites.toml")),
+    ("arc.toml", include_str!("../../../../content/arc.toml")),
 ];
 
 /// What an item is for, as a player sorts a belt.

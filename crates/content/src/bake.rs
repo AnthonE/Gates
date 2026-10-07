@@ -262,8 +262,15 @@ impl Content {
                     r.id
                 ));
             }
+            let unlock = match &r.unlock {
+                None => sim_core::works::NO_UNLOCK,
+                Some(u) => self.unlock_code(u).ok_or_else(|| {
+                    format!("bake: `{}` needs `{u}`, which no work unlocks", r.id)
+                })?,
+            };
             let mut def = RecipeDef {
                 blueprint: r.blueprint,
+                unlock,
                 output: self
                     .item_index(&r.output)
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
@@ -1622,12 +1629,19 @@ impl Content {
                 if n == MAX_VEND_OFFERS {
                     return Err(format!("sites: more than {MAX_VEND_OFFERS} offers"));
                 }
+                let unlock = match &o.unlock {
+                    None => sim_core::works::NO_UNLOCK,
+                    Some(u) => self.unlock_code(u).ok_or_else(|| {
+                        format!("sites: {}: `{u}` is not unlocked by any work", vendor.name)
+                    })?,
+                };
                 vc.offers[n] = sim_core::vend::VendOffer {
                     vendor: v as u8,
                     pay,
                     pay_n: o.pay_n,
                     get,
                     get_n: o.get_n,
+                    unlock,
                 };
                 n += 1;
             }
@@ -1692,6 +1706,449 @@ impl Content {
                 .ok_or_else(|| format!("monument: door {d} takes `{}`, not an item", door.card))?;
         }
         Ok(out)
+    }
+
+    /// Every unlock id a work grants, floor or ceiling, sorted: an unlock's
+    /// code is its rank + 1 (`sim_core::works::NO_UNLOCK` is 0).
+    pub fn unlock_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .works
+            .iter()
+            .flat_map(|w| [w.floor_unlock.clone(), w.ceiling_unlock.clone()])
+            .flatten()
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// The code of unlock `id`: rank + 1 among [`Self::unlock_ids`].
+    pub fn unlock_code(&self, id: &str) -> Option<u8> {
+        self.unlock_ids()
+            .iter()
+            .position(|u| u == id)
+            .map(|i| i as u8 + 1)
+    }
+
+    /// Each unlock's display name, code order (code 1 first): the id after
+    /// `unlock.`, upper case, underscores as spaces.
+    pub fn bake_unlock_names(&self) -> Vec<String> {
+        self.unlock_ids()
+            .iter()
+            .map(|u| {
+                u.trim_start_matches("unlock.")
+                    .replace('_', " ")
+                    .to_uppercase()
+            })
+            .collect()
+    }
+
+    /// Each work's name, file order.
+    pub fn bake_work_names(&self) -> Vec<String> {
+        self.works.iter().map(|w| w.name.clone()).collect()
+    }
+
+    /// The works and their effects (`sim_core::works`, `content/arc.toml`).
+    /// Hours become ticks and metres centimetres here; every reference is
+    /// resolved or the boot is refused.
+    pub fn bake_arc(&self) -> Result<sim_core::works::WorksContent, String> {
+        use sim_core::limits::{MAX_ARC_EFFECTS, MAX_UNLOCKS, MAX_WORKS, MAX_WORK_INPUTS, TICK_HZ};
+        use sim_core::works::{ArcEffect, WorkDef, WorkInput, WorksContent};
+        let ids = self.unlock_ids();
+        if ids.len() > MAX_UNLOCKS {
+            return Err(format!(
+                "arc: {} unlocks, the sim holds {MAX_UNLOCKS}",
+                ids.len()
+            ));
+        }
+        if self.works.len() > MAX_WORKS {
+            return Err(format!(
+                "arc: {} works, the sim holds {MAX_WORKS}",
+                self.works.len()
+            ));
+        }
+        if self.arc_effects.len() > MAX_ARC_EFFECTS {
+            return Err(format!("arc: more than {MAX_ARC_EFFECTS} effects"));
+        }
+        let a = &self.arc;
+        if a.quiet_burn_pct > 100 || a.busy_players < a.quiet_players {
+            return Err("arc: quiet_burn_pct is 0..=100 and busy_players ≥ quiet_players".into());
+        }
+        let mut wc = WorksContent::EMPTY;
+        wc.quiet_players = a.quiet_players;
+        wc.busy_players = a.busy_players;
+        wc.quiet_burn_pct = a.quiet_burn_pct;
+        let hour = 3600 * TICK_HZ as u64;
+        let code = |u: &Option<String>, w: &str| -> Result<u8, String> {
+            match u {
+                None => Ok(sim_core::works::NO_UNLOCK),
+                Some(u) if u.starts_with("unlock.") => Ok(self.unlock_code(u).expect("own id")),
+                Some(u) => Err(format!("arc: {w}: `{u}` must start `unlock.`")),
+            }
+        };
+        for (k, w) in self.works.iter().enumerate() {
+            if !w.id.starts_with("work.") || w.name.is_empty() || w.name.len() > 24 {
+                return Err(format!(
+                    "arc: work {k}: id must start `work.`, name 1..=24 bytes"
+                ));
+            }
+            if !(1..=4).contains(&w.act) {
+                return Err(format!("arc: {}: act is 1..=4", w.id));
+            }
+            if w.opens_hour > w.fallback_hour || w.fallback_hour > 24 * 90 {
+                return Err(format!(
+                    "arc: {}: opens_hour ≤ fallback_hour ≤ 90 days",
+                    w.id
+                ));
+            }
+            if w.inputs.is_empty() || w.inputs.len() > MAX_WORK_INPUTS {
+                return Err(format!("arc: {}: 1..={MAX_WORK_INPUTS} inputs", w.id));
+            }
+            let site = match w.site.as_str() {
+                "town" => sim_core::spot::SITE_TOWN,
+                "ziggurat" => sim_core::spot::SITE_ZIGGURAT,
+                kind => {
+                    let k = [
+                        "mast", "ruin", "tower", "stones", "yard", "anvil", "arch", "spires",
+                    ]
+                    .iter()
+                    .position(|n| *n == kind)
+                    .ok_or_else(|| format!("arc: {}: no site `{kind}`", w.id))?;
+                    sim_core::spot::SITE_LANDMARK0 + k as u8
+                }
+            };
+            let cm = |m: f32| -> Result<i16, String> {
+                if !(-300.0..=300.0).contains(&m) {
+                    return Err(format!("arc: {}: `at` is within 300 m of the site", w.id));
+                }
+                Ok((m * 100.0).round() as i16)
+            };
+            let fuel = self
+                .item_index(&w.fuel)
+                .ok_or_else(|| format!("arc: {}: fuel `{}` is not an item", w.id, w.fuel))?;
+            let mut def = WorkDef {
+                spot: sim_core::spot::Spot {
+                    site,
+                    nth: w.nth,
+                    x_cm: cm(w.at[0])?,
+                    y_cm: cm(w.at[1])?,
+                    z_cm: cm(w.at[2])?,
+                },
+                act: w.act,
+                opens_at: w.opens_hour as u64 * hour,
+                fallback_at: w.fallback_hour as u64 * hour,
+                floor: code(&w.floor_unlock, &w.id)?,
+                ceiling: code(&w.ceiling_unlock, &w.id)?,
+                fuel,
+                fuel_max: w.fuel_max,
+                burn_per_hour: w.burn_per_hour,
+                n_inputs: w.inputs.len() as u8,
+                inputs: [WorkInput::default(); MAX_WORK_INPUTS],
+            };
+            if w.burn_per_hour > 1_000_000 || w.fuel_max > 1_000_000 {
+                return Err(format!(
+                    "arc: {}: fuel_max and burn_per_hour ≤ 1,000,000",
+                    w.id
+                ));
+            }
+            for (i, s) in w.inputs.iter().enumerate() {
+                let item = self
+                    .item_index(&s.item)
+                    .ok_or_else(|| format!("arc: {}: input `{}` is not an item", w.id, s.item))?;
+                if s.count == 0 || s.count > 10_000_000 {
+                    return Err(format!("arc: {}: input counts are 1..=10,000,000", w.id));
+                }
+                def.inputs[i] = WorkInput {
+                    item,
+                    need: s.count,
+                };
+            }
+            wc.defs[k] = def;
+        }
+        wc.count = self.works.len() as u8;
+        for (i, e) in self.arc_effects.iter().enumerate() {
+            let unlock = self
+                .unlock_code(&e.unlock)
+                .ok_or_else(|| format!("arc: effect {i}: no work unlocks `{}`", e.unlock))?;
+            let knob = match e.knob.as_str() {
+                "smelt_pct" => sim_core::works::KNOB_SMELT_PCT,
+                k => return Err(format!("arc: effect {i}: no knob `{k}`")),
+            };
+            if e.pct == 0 || e.pct > 1000 {
+                return Err(format!("arc: effect {i}: pct is 1..=1000"));
+            }
+            wc.effects[i] = ArcEffect {
+                unlock,
+                knob,
+                pct: e.pct,
+            };
+        }
+        wc.n_effects = self.arc_effects.len() as u8;
+        Ok(wc)
+    }
+
+    /// A spot from content's `site`, `nth` and `at` (`sim_core::spot`).
+    fn spot_of(
+        &self,
+        what: &str,
+        site: &str,
+        nth: u8,
+        at: [f32; 3],
+    ) -> Result<sim_core::spot::Spot, String> {
+        let site = match site {
+            "town" => sim_core::spot::SITE_TOWN,
+            "ziggurat" => sim_core::spot::SITE_ZIGGURAT,
+            kind => {
+                let k = [
+                    "mast", "ruin", "tower", "stones", "yard", "anvil", "arch", "spires",
+                ]
+                .iter()
+                .position(|n| *n == kind)
+                .ok_or_else(|| format!("arc: {what}: no site `{kind}`"))?;
+                sim_core::spot::SITE_LANDMARK0 + k as u8
+            }
+        };
+        let cm = |m: f32| -> Result<i16, String> {
+            if !(-300.0..=300.0).contains(&m) {
+                return Err(format!("arc: {what}: `at` is within 300 m of the site"));
+            }
+            Ok((m * 100.0).round() as i16)
+        };
+        Ok(sim_core::spot::Spot {
+            site,
+            nth,
+            x_cm: cm(at[0])?,
+            y_cm: cm(at[1])?,
+            z_cm: cm(at[2])?,
+        })
+    }
+
+    /// The glyph mask of `chars`: bit `g` for each character's place in the
+    /// alphabet.
+    pub fn glyph_mask(&self, what: &str, chars: &str) -> Result<u64, String> {
+        let mut mask = 0u64;
+        for ch in chars.chars() {
+            let g = self
+                .glyphs
+                .alphabet
+                .chars()
+                .position(|a| a == ch)
+                .ok_or_else(|| format!("arc: {what}: `{ch}` is not in the alphabet"))?;
+            mask |= 1 << g;
+        }
+        Ok(mask)
+    }
+
+    /// Speakers and inscriptions (`sim_core::lore`).
+    pub fn bake_lore(&self) -> Result<sim_core::lore::LoreContent, String> {
+        use sim_core::limits::{MAX_GLYPHS, MAX_INSCRIPTIONS, MAX_SPEAKERS};
+        let alphabet = &self.glyphs.alphabet;
+        if alphabet.is_empty() || alphabet.chars().count() > MAX_GLYPHS || !alphabet.is_ascii() {
+            return Err(format!(
+                "arc: the alphabet is 1..={MAX_GLYPHS} ascii characters"
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if !alphabet.chars().all(|c| c != ' ' && seen.insert(c)) {
+            return Err("arc: the alphabet repeats a character or holds a space".into());
+        }
+        if self.speakers.len() > MAX_SPEAKERS || self.inscriptions.len() > MAX_INSCRIPTIONS {
+            return Err(format!(
+                "arc: at most {MAX_SPEAKERS} speakers and {MAX_INSCRIPTIONS} inscriptions"
+            ));
+        }
+        let mut lc = sim_core::lore::LoreContent::EMPTY;
+        for (k, sp) in self.speakers.iter().enumerate() {
+            if !sp.id.starts_with("speaker.") || sp.name.is_empty() || sp.name.len() > 24 {
+                return Err(format!(
+                    "arc: speaker {k}: id `speaker.`, name 1..=24 bytes"
+                ));
+            }
+            if sp.topic.is_empty() || sp.topic.len() > sim_core::lore::MAX_TOPICS {
+                return Err(format!(
+                    "arc: {}: 1..={} topics",
+                    sp.id,
+                    sim_core::lore::MAX_TOPICS
+                ));
+            }
+            for t in &sp.topic {
+                if t.title.is_empty() || t.title.len() > 24 || t.lines.is_empty() {
+                    return Err(format!(
+                        "arc: {}: a topic needs a title of 1..=24 bytes and lines",
+                        sp.id
+                    ));
+                }
+                for l in &t.lines {
+                    if l.text.is_empty() || l.text.len() > ARC_TEXT_BYTES {
+                        return Err(format!(
+                            "arc: {}: a line is 1..={ARC_TEXT_BYTES} bytes",
+                            sp.id
+                        ));
+                    }
+                    if let Some(w) = &l.when {
+                        self.when_of(w)
+                            .map_err(|e| format!("arc: {}: {e}", sp.id))?;
+                    }
+                }
+            }
+            lc.speakers[k] = sim_core::lore::SpeakerDef {
+                spot: self.spot_of(&sp.id, &sp.site, sp.nth, sp.at)?,
+                topics: sp.topic.len() as u8,
+            };
+        }
+        lc.n_speakers = self.speakers.len() as u8;
+        for (k, ins) in self.inscriptions.iter().enumerate() {
+            if !ins.id.starts_with("inscription.") {
+                return Err(format!(
+                    "arc: inscription {k}: id must start `inscription.`"
+                ));
+            }
+            let plain = self.strip_holes(&ins.id, &ins.text)?;
+            if plain.is_empty() || ins.text.len() > ARC_TEXT_BYTES {
+                return Err(format!(
+                    "arc: {}: text is 1..={ARC_TEXT_BYTES} bytes",
+                    ins.id
+                ));
+            }
+            self.glyph_mask(&ins.id, &plain.replace(' ', ""))?;
+            lc.inscriptions[k] = sim_core::lore::InscriptionDef {
+                spot: self.spot_of(&ins.id, &ins.site, ins.nth, ins.at)?,
+                teaches: self.glyph_mask(&ins.id, &ins.teaches)?,
+            };
+        }
+        lc.n_inscriptions = self.inscriptions.len() as u8;
+        Ok(lc)
+    }
+
+    /// `text` with each `{mech.x}` hole checked and removed.
+    fn strip_holes(&self, what: &str, text: &str) -> Result<String, String> {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let close = rest[open..]
+                .find('}')
+                .ok_or_else(|| format!("arc: {what}: an unclosed `{{`"))?;
+            let name = &rest[open + 1..open + close];
+            if !self.mechanisms.iter().any(|m| m.id == name) {
+                return Err(format!("arc: {what}: `{{{name}}}` names no mechanism"));
+            }
+            rest = &rest[open + close + 1..];
+        }
+        out.push_str(rest);
+        Ok(out)
+    }
+
+    /// A speaker line's condition.
+    fn when_of(&self, w: &str) -> Result<When, String> {
+        let (kind, arg) = w
+            .split_once(':')
+            .ok_or_else(|| format!("`{w}` is not `kind:id`"))?;
+        let work = || {
+            self.works
+                .iter()
+                .position(|x| x.id == arg)
+                .map(|k| k as u8)
+                .ok_or_else(|| format!("`{arg}` is not a work"))
+        };
+        let unlock = || {
+            self.unlock_code(arg)
+                .ok_or_else(|| format!("`{arg}` is not an unlock any work grants"))
+        };
+        Ok(match kind {
+            "sealed" => When::Sealed(work()?),
+            "open" => When::Open(work()?),
+            "lit" => When::Lit(work()?),
+            "burning" => When::Burning(work()?),
+            "embers" => When::Embers(work()?),
+            "holds" => When::Holds(unlock()?),
+            "lacks" => When::Lacks(unlock()?),
+            _ => return Err(format!("`{kind}` is not a condition")),
+        })
+    }
+
+    /// Mechanisms (`sim_core::mech`).
+    pub fn bake_mechs(&self) -> Result<sim_core::mech::MechContent, String> {
+        use sim_core::limits::{MAX_DIALS, MAX_MECHS, TICK_HZ};
+        if self.mechanisms.len() > MAX_MECHS {
+            return Err(format!("arc: at most {MAX_MECHS} mechanisms"));
+        }
+        let mut mc = sim_core::mech::MechContent::EMPTY;
+        for (k, m) in self.mechanisms.iter().enumerate() {
+            if !m.id.starts_with("mech.") || m.name.is_empty() || m.name.len() > 24 {
+                return Err(format!("arc: mechanism {k}: id `mech.`, name 1..=24 bytes"));
+            }
+            if m.dials == 0 || m.dials as usize > MAX_DIALS {
+                return Err(format!("arc: {}: 1..={MAX_DIALS} dials", m.id));
+            }
+            if !(2..=sim_core::mech::MAX_VALUES).contains(&m.values) {
+                return Err(format!(
+                    "arc: {}: 2..={} notches",
+                    m.id,
+                    sim_core::mech::MAX_VALUES
+                ));
+            }
+            // Its answer is written in digits, so the alphabet must hold them.
+            for d in 0..m.values {
+                let ch = char::from(b'0' + d);
+                if !self.glyphs.alphabet.contains(ch) {
+                    return Err(format!("arc: {}: the alphabet lacks `{ch}`", m.id));
+                }
+            }
+            let reward = self
+                .item_index(&m.reward)
+                .ok_or_else(|| format!("arc: {}: `{}` is not an item", m.id, m.reward))?;
+            if m.reward_n == 0 || m.rest_minutes > 24 * 60 * 30 {
+                return Err(format!(
+                    "arc: {}: reward_n ≥ 1 and a rest under 30 days",
+                    m.id
+                ));
+            }
+            mc.defs[k] = sim_core::mech::MechDef {
+                spot: self.spot_of(&m.id, &m.site, m.nth, m.at)?,
+                dials: m.dials,
+                values: m.values,
+                reward,
+                reward_n: m.reward_n,
+                rest_ticks: m.rest_minutes * 60 * TICK_HZ,
+            };
+        }
+        mc.count = self.mechanisms.len() as u8;
+        Ok(mc)
+    }
+
+    /// What the server answers a word or a read with (`ARC.md` F5–F6): the
+    /// words never reach the sim.
+    pub fn bake_arc_text(&self) -> Result<ArcText, String> {
+        let mut speakers = Vec::new();
+        for sp in &self.speakers {
+            let mut topics = Vec::new();
+            for t in &sp.topic {
+                let mut lines = Vec::new();
+                for l in &t.lines {
+                    let when = match &l.when {
+                        None => When::Always,
+                        Some(w) => self.when_of(w)?,
+                    };
+                    lines.push((when, l.text.clone()));
+                }
+                topics.push(TopicText {
+                    title: t.title.clone(),
+                    lines,
+                });
+            }
+            speakers.push(SpeakerText {
+                name: sp.name.clone(),
+                topics,
+            });
+        }
+        Ok(ArcText {
+            alphabet: self.glyphs.alphabet.clone(),
+            speakers,
+            inscriptions: self.inscriptions.iter().map(|i| i.text.clone()).collect(),
+            mech_ids: self.mechanisms.iter().map(|m| m.id.clone()).collect(),
+            mech_names: self.mechanisms.iter().map(|m| m.name.clone()).collect(),
+        })
     }
 
     /// Each vendor's name, kiosk order, for the wire's offer catalog.
@@ -1890,5 +2347,105 @@ pub fn station_code(s: Station) -> u8 {
         Station::Workbench2 => STATION_WORKBENCH2,
         Station::Workbench3 => STATION_WORKBENCH3,
         Station::Furnace => STATION_FURNACE,
+    }
+}
+
+/// The longest line a speaker says or a stone holds, bytes (one event).
+pub const ARC_TEXT_BYTES: usize = 280;
+
+/// A speaker line's condition, against the works (`sim_core::works`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum When {
+    Always,
+    Sealed(u8),
+    Open(u8),
+    Lit(u8),
+    Burning(u8),
+    Embers(u8),
+    Holds(u8),
+    Lacks(u8),
+}
+
+impl When {
+    pub fn holds(&self, works: &sim_core::works::Works) -> bool {
+        use sim_core::works::{WORK_LIT, WORK_OPEN, WORK_SEALED};
+        let w = |k: u8| works.w.get(k as usize).copied().unwrap_or_default();
+        match *self {
+            When::Always => true,
+            When::Sealed(k) => w(k).state == WORK_SEALED,
+            When::Open(k) => w(k).state == WORK_OPEN,
+            When::Lit(k) => w(k).state == WORK_LIT,
+            When::Burning(k) => w(k).state == WORK_LIT && w(k).fuel > 0,
+            When::Embers(k) => w(k).state == WORK_LIT && w(k).fuel == 0,
+            When::Holds(u) => sim_core::works::holds(works.unlocks, u),
+            When::Lacks(u) => !sim_core::works::holds(works.unlocks, u),
+        }
+    }
+}
+
+/// One topic's lines, the first that holds is said.
+#[derive(Clone, Debug)]
+pub struct TopicText {
+    pub title: String,
+    pub lines: Vec<(When, String)>,
+}
+
+/// One speaker's name and topics.
+#[derive(Clone, Debug)]
+pub struct SpeakerText {
+    pub name: String,
+    pub topics: Vec<TopicText>,
+}
+
+/// The arc's words, held by the server.
+#[derive(Clone, Debug, Default)]
+pub struct ArcText {
+    pub alphabet: String,
+    pub speakers: Vec<SpeakerText>,
+    /// Each inscription's text, `{mech.x}` holes and all.
+    pub inscriptions: Vec<String>,
+    pub mech_ids: Vec<String>,
+    pub mech_names: Vec<String>,
+}
+
+impl ArcText {
+    /// What speaker `k` says on topic `t` now, if anything holds.
+    pub fn line(&self, k: usize, t: usize, works: &sim_core::works::Works) -> Option<&str> {
+        let topic = self.speakers.get(k)?.topics.get(t)?;
+        topic
+            .lines
+            .iter()
+            .find(|(w, _)| w.holds(works))
+            .map(|(_, s)| s.as_str())
+    }
+
+    /// Inscription `k`'s text for this world: every `{mech.x}` replaced by
+    /// that mechanism's answer, digit by digit.
+    pub fn inscription(
+        &self,
+        k: usize,
+        mc: &sim_core::mech::MechContent,
+        salt: u64,
+        seed: u64,
+    ) -> Option<String> {
+        let text = self.inscriptions.get(k)?;
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let close = rest[open..].find('}')?;
+            let name = &rest[open + 1..open + close];
+            let m = self.mech_ids.iter().position(|id| id == name)?;
+            let def = mc.get(m)?;
+            let answer = sim_core::mech::answers(salt, seed, m, def);
+            let digits: Vec<String> = answer[..def.dials as usize]
+                .iter()
+                .map(|d| d.to_string())
+                .collect();
+            out.push_str(&digits.join(" "));
+            rest = &rest[open + close + 1..];
+        }
+        out.push_str(rest);
+        Some(out)
     }
 }

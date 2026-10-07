@@ -607,6 +607,7 @@ pub fn sweep(
     gather: &GatherContent,
     deploys: &mut Deploys,
     tick: u64,
+    smelt_pct: u32,
     events: &mut EventQueue,
 ) {
     let period = OVEN_PERIOD_TICKS;
@@ -679,7 +680,14 @@ pub fn sweep(
                 ovens[i].cook[s] = 0;
                 continue;
             }
-            ovens[i].cook[s] = ovens[i].cook[s].saturating_add(step);
+            // A furnace cooks faster while a work's ceiling turns the smelt
+            // knob (`works::KNOB_SMELT_PCT`); everything else at its own pace.
+            let cook_step = if arch == crate::deploy::ARCH_FURNACE {
+                (step as u32 * smelt_pct / 100).min(u16::MAX as u32) as u16
+            } else {
+                step
+            };
+            ovens[i].cook[s] = ovens[i].cook[s].saturating_add(cook_step);
             if (ovens[i].cook[s] as u32) < row.ticks {
                 continue;
             }

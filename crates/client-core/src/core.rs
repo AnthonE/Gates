@@ -1442,6 +1442,21 @@ pub struct ClientCore {
     /// The ziggurat's card doors open now (`SUB_CARD_DOORS`): prediction
     /// walks through an open door exactly as the sim does.
     pub card_doors: u32,
+    /// The arc (wire v95): every work's row, names and state, and the
+    /// unlocks held (`arc.rs`).
+    pub arc: crate::arc::ArcView,
+    /// `(work, sim_core::works::WORK_EV_*, by)` per work that changed, and
+    /// `(code, op, target)` per refused arc verb — drop-oldest, read once
+    /// in `render/feed.rs`.
+    work_events: crate::arc::Ring<(u8, u8, u32), TOAST_RING>,
+    arc_refusals: crate::arc::Ring<(u8, u8, u8), REFUSAL_RING>,
+    /// Speakers, stones and locks, the alphabet and the glyphs read (wire
+    /// v96, `arc.rs`).
+    pub lore: Box<crate::arc::LoreView>,
+    /// `(kind, index, topic)` per answer that arrived, and `(mechanism,
+    /// by)` per lock solved — read once in `render/feed.rs`.
+    arc_texts: crate::arc::Ring<(u8, u8, u8), TOAST_RING>,
+    mech_solves: crate::arc::Ring<(u8, u32), TOAST_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
@@ -2062,6 +2077,12 @@ impl ClientCore {
             vend_result_head: 0,
             vend_result_len: 0,
             card_doors: 0,
+            arc: crate::arc::ArcView::default(),
+            work_events: Default::default(),
+            arc_refusals: Default::default(),
+            lore: Box::default(),
+            arc_texts: Default::default(),
+            mech_solves: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
@@ -2348,6 +2369,143 @@ impl ClientCore {
             EventMsg::Vend { offer, times } => self.push_vend((false, 0, offer, times)),
             EventMsg::VendRefused { code, offer } => self.push_vend((true, code, offer, 0)),
             EventMsg::CardDoors { bits } => self.card_doors = bits as u32,
+            EventMsg::WorkDef {
+                total,
+                index,
+                def,
+                name,
+                name_len,
+                floor_name,
+                floor_len,
+                ceiling_name,
+                ceiling_len,
+            } => {
+                self.arc.count = total.min(sim_core::limits::MAX_WORKS as u8);
+                if let Some(w) = self.arc.works.get_mut(index as usize) {
+                    w.known = true;
+                    w.def = def;
+                    w.name = name;
+                    w.name_len = name_len;
+                    w.floor_name = floor_name;
+                    w.floor_len = floor_len;
+                    w.ceiling_name = ceiling_name;
+                    w.ceiling_len = ceiling_len;
+                }
+                self.arc.gen = self.arc.gen.wrapping_add(1);
+            }
+            EventMsg::WorkState {
+                index,
+                state,
+                fuel,
+                n: _,
+                got,
+                mine,
+                unlocks,
+            } => {
+                if let Some(w) = self.arc.works.get_mut(index as usize) {
+                    w.state = state;
+                    w.fuel = fuel;
+                    w.got = got;
+                    w.mine = mine;
+                }
+                self.arc.unlocks = unlocks;
+                self.arc.gen = self.arc.gen.wrapping_add(1);
+            }
+            EventMsg::Work { index, what, by } => self.work_events.push((index, what, by)),
+            EventMsg::ArcRefused { code, op, target } => self.arc_refusals.push((code, op, target)),
+            EventMsg::ArcPlace {
+                kind,
+                index,
+                total,
+                spot,
+                name,
+                name_len,
+                n_topics,
+                topics,
+                topic_lens,
+                dials,
+                values,
+            } => {
+                let l = &mut *self.lore;
+                let k = index as usize;
+                match kind {
+                    protocol::ARC_SPEAKER => {
+                        l.n_speakers = total.min(sim_core::limits::MAX_SPEAKERS as u8);
+                        if let Some(s) = l.speakers.get_mut(k) {
+                            s.known = true;
+                            s.spot = spot;
+                            s.name = name;
+                            s.name_len = name_len;
+                            s.n_topics = n_topics;
+                            s.topics = topics;
+                            s.topic_lens = topic_lens;
+                        }
+                    }
+                    protocol::ARC_INSCRIPTION => {
+                        l.n_inscriptions = total.min(sim_core::limits::MAX_INSCRIPTIONS as u8);
+                        if let Some(i) = l.inscriptions.get_mut(k) {
+                            i.known = true;
+                            i.spot = spot;
+                        }
+                    }
+                    _ => {
+                        l.n_mechs = total.min(sim_core::limits::MAX_MECHS as u8);
+                        if let Some(m) = l.mechs.get_mut(k) {
+                            m.known = true;
+                            m.spot = spot;
+                            m.name = name;
+                            m.name_len = name_len;
+                            m.n_dials = dials;
+                            m.values = values;
+                        }
+                    }
+                }
+                l.gen = l.gen.wrapping_add(1);
+            }
+            EventMsg::ArcText {
+                kind,
+                index,
+                topic,
+                text,
+                len,
+            } => {
+                let l = &mut *self.lore;
+                if kind == protocol::ARC_SPEAKER {
+                    if let Some(s) = l.speakers.get_mut(index as usize) {
+                        s.said_topic = topic;
+                        s.said = text;
+                        s.said_len = len;
+                    }
+                } else if let Some(i) = l.inscriptions.get_mut(index as usize) {
+                    i.text = text;
+                    i.len = len;
+                }
+                l.gen = l.gen.wrapping_add(1);
+                self.arc_texts.push((kind, index, topic));
+            }
+            EventMsg::ArcDials {
+                mech,
+                n,
+                dials,
+                resting,
+            } => {
+                if let Some(m) = self.lore.mechs.get_mut(mech as usize) {
+                    m.dials = dials;
+                    m.n_dials = m.n_dials.max(n);
+                    m.resting = resting;
+                }
+                self.lore.gen = self.lore.gen.wrapping_add(1);
+            }
+            EventMsg::Glyphs { mask } => {
+                self.lore.glyphs = mask;
+                self.lore.gen = self.lore.gen.wrapping_add(1);
+            }
+            EventMsg::MechSolved { mech, by } => self.mech_solves.push((mech, by)),
+            EventMsg::Alphabet { text, len } => {
+                self.lore.alphabet = text;
+                self.lore.alphabet_len = len;
+                self.lore.gen = self.lore.gen.wrapping_add(1);
+            }
             EventMsg::Hostile { until } => self.hostile_until = until,
             EventMsg::SwipeRefused { code, door } => {
                 if self.swipe_refusal_len == REFUSAL_RING {
@@ -3856,6 +4014,27 @@ impl ClientCore {
         self.vend_result_head = (self.vend_result_head + 1) % REFUSAL_RING;
         self.vend_result_len -= 1;
         Some(r)
+    }
+
+    /// Oldest work change: `(work, sim_core::works::WORK_EV_*, by)`.
+    pub fn pop_work_event(&mut self) -> Option<(u8, u8, u32)> {
+        self.work_events.pop()
+    }
+
+    /// Oldest refused arc verb: `(code, op, target)`.
+    pub fn pop_arc_refused(&mut self) -> Option<(u8, u8, u8)> {
+        self.arc_refusals.pop()
+    }
+
+    /// Oldest answer that arrived: `(kind, index, topic)`; the words are in
+    /// `lore`.
+    pub fn pop_arc_text(&mut self) -> Option<(u8, u8, u8)> {
+        self.arc_texts.pop()
+    }
+
+    /// Oldest lock solved: `(mechanism, by)`.
+    pub fn pop_mech_solved(&mut self) -> Option<(u8, u32)> {
+        self.mech_solves.pop()
     }
 
     /// Oldest swipe refusal: `(code, door)`.

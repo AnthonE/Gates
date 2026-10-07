@@ -23,7 +23,10 @@ pub const REFUSE_V_KIND: u32 = 1;
 pub const REFUSE_V_REACH: u32 = 2;
 pub const REFUSE_V_FUNDS: u32 = 3;
 pub const REFUSE_V_FULL: u32 = 4;
-pub const REFUSE_V_MAX: u32 = REFUSE_V_FULL;
+/// The offer waits on a work no one has lit (`works.rs`): THE GATE's
+/// stalls restock as the island comes back.
+pub const REFUSE_V_LOCKED: u32 = 5;
+pub const REFUSE_V_MAX: u32 = REFUSE_V_LOCKED;
 
 /// One offer: at kiosk `vendor`, pay `pay_n` of `pay` for `get_n` of `get`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,6 +36,8 @@ pub struct VendOffer {
     pub pay_n: u16,
     pub get: u16,
     pub get_n: u16,
+    /// The world unlock it waits on, `works::NO_UNLOCK` for none.
+    pub unlock: u8,
 }
 
 /// Every offer on the island, in content order (the wire's offer index).
@@ -50,6 +55,7 @@ impl VendContent {
             pay_n: 0,
             get: 0,
             get_n: 0,
+            unlock: 0,
         }; MAX_VEND_OFFERS],
         count: 0,
     };
@@ -64,6 +70,7 @@ impl VendContent {
 pub fn trade(
     vc: &VendContent,
     gc: &GatherContent,
+    unlocks: u32,
     town: &crate::town::Town,
     p: &mut Player,
     k: usize,
@@ -94,6 +101,10 @@ pub fn trade(
     let (dx, dz) = (px - kx, pz - kz);
     if dx * dx + dz * dz > VEND_REACH_M * VEND_REACH_M {
         refuse(events, REFUSE_V_REACH);
+        return;
+    }
+    if !crate::works::holds(unlocks, o.unlock) {
+        refuse(events, REFUSE_V_LOCKED);
         return;
     }
     let pay = o.pay_n as u32 * times as u32;

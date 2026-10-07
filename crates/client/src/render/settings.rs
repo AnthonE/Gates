@@ -975,7 +975,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is a stance** (v83): slower, lower, quieter, smaller to hit, and
 /// the sneak the animal brain listens for (`sim-core/src/brain.rs`). `Z` is
 /// named beside Ctrl because the browser closes a tab on Ctrl+W.
-pub const BINDS: [(&str, &str); 23] = [
+pub const BINDS: [(&str, &str); 24] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -999,6 +999,10 @@ pub const BINDS: [(&str, &str); 23] = [
         "Tab or I: inventory · Q: crafting  (the same key or Esc closes)",
     ),
     ("MAP", "Hold G"),
+    (
+        "THE ISLAND",
+        "O: the works the whole server is switching back on (the same key or Esc closes)",
+    ),
     ("CHAT", "T or Enter"),
     (
         "EAT / DRINK",

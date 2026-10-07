@@ -73,12 +73,14 @@
 /// (wall 4, applied to a client-driven path).
 pub const MAX_QUERY_CHARS: usize = 32;
 
+pub mod arc;
 pub mod boot;
 pub mod build;
 pub mod chat;
 pub mod craft;
 pub mod death;
 pub mod draw;
+pub mod glyphs;
 pub mod hammer;
 pub mod hearth;
 pub mod hold;

@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 138] = [
+pub const FIXTURES: [&str; 149] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -251,7 +251,149 @@ pub const FIXTURES: [&str; 138] = [
     "event_lodged_sync.bin",
     "event_ammo.bin",
     "event_fire.bin",
+    // The arc (v95): a work's row, its state, a work changing, a refused
+    // verb, and the verb.
+    "event_work_def.bin",
+    "event_work_state.bin",
+    "event_work.bin",
+    "event_arc_refused.bin",
+    "action_arc.bin",
+    // Speakers, stones and locks (v96).
+    "event_arc_place.bin",
+    "event_arc_text.bin",
+    "event_arc_dials.bin",
+    "event_glyphs.bin",
+    "event_mech_solved.bin",
+    "event_alphabet.bin",
 ];
+
+/// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
+/// every axis, three inputs, floor and ceiling unlocks with names.
+pub fn event_work_def() -> (
+    sim_core::works::WorksContent,
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+) {
+    let mut wc = sim_core::works::WorksContent::probe_fixture();
+    wc.count = 2;
+    wc.defs[1] = sim_core::works::WorkDef {
+        spot: sim_core::spot::Spot {
+            site: sim_core::spot::SITE_LANDMARK0 + 5,
+            nth: 1,
+            x_cm: -300,
+            y_cm: -50,
+            z_cm: 800,
+        },
+        act: 3,
+        opens_at: 12 * 3600 * 30,
+        fallback_at: 0xFFFF_FFFF,
+        floor: 1,
+        ceiling: 32,
+        fuel: (MAX_ITEM_DEFS - 1) as u16,
+        fuel_max: 5000,
+        burn_per_hour: (1 << 20) - 1,
+        n_inputs: 3,
+        inputs: [
+            sim_core::works::WorkInput {
+                item: 9,
+                need: 60_000,
+            },
+            sim_core::works::WorkInput {
+                item: (MAX_ITEM_DEFS - 2) as u16,
+                need: (1 << 24) - 1,
+            },
+            sim_core::works::WorkInput { item: 3, need: 1 },
+            sim_core::works::WorkInput::default(),
+        ],
+    };
+    (wc, b"THE CRUCIBLE", b"GUNPOWDER", b"SMELTING")
+}
+
+/// Work 1, open, half its first line in, a tank of 77, a share of 1234 and
+/// two unlocks held.
+pub fn event_work_state() -> (u8, sim_core::works::Work, u8, u32, u32) {
+    let w = sim_core::works::Work {
+        state: sim_core::works::WORK_OPEN,
+        fuel: 77,
+        got: [30_000, 0, (1 << 24) - 1, 0],
+        ..Default::default()
+    };
+    (1, w, 3, 1234, 0x8000_0001)
+}
+
+/// Work 5 lit by player 0x0102_0304.
+pub fn event_work() -> (u8, u8, u32) {
+    (5, sim_core::works::WORK_EV_LIT as u8, 0x0102_0304)
+}
+
+/// Fuel into work 7 refused: the tank is full.
+pub fn event_arc_refused() -> (u8, u8, u8) {
+    (
+        sim_core::works::REFUSE_A_FULL as u8,
+        sim_core::works::OP_FUEL,
+        7,
+    )
+}
+
+/// Speaker 3 of 5 at the third stone ring, with two topics (wire v96).
+pub fn event_arc_place() -> (
+    u8,
+    u8,
+    u8,
+    sim_core::spot::Spot,
+    &'static [u8],
+    [&'static [u8]; 2],
+) {
+    (
+        protocol_arc_speaker(),
+        3,
+        5,
+        sim_core::spot::Spot {
+            site: sim_core::spot::SITE_LANDMARK0 + 3,
+            nth: 2,
+            x_cm: -450,
+            y_cm: 30,
+            z_cm: 1200,
+        },
+        b"THE GATEKEEPER",
+        [b"WHO ARE YOU", b"THE ISLAND"],
+    )
+}
+
+fn protocol_arc_speaker() -> u8 {
+    crate::ARC_SPEAKER
+}
+
+/// Inscription 7's text.
+pub fn event_arc_text() -> (u8, u8, u8, &'static [u8]) {
+    (crate::ARC_INSCRIPTION, 7, 0, b"TURN THE THREE TO 5 2 7")
+}
+
+/// Mechanism 2's three dials, resting.
+pub fn event_arc_dials() -> (u8, [u8; 3], bool) {
+    (2, [5, 0, 7], true)
+}
+
+/// A glyph mask with bits in both halves.
+pub fn event_glyphs() -> u64 {
+    0x8000_0001_0000_0013
+}
+
+/// Mechanism 4 solved by player 0x0A0B_0C0D.
+pub fn event_mech_solved() -> (u8, u32) {
+    (4, 0x0A0B_0C0D)
+}
+
+/// The shipped alphabet.
+pub fn event_alphabet() -> &'static [u8] {
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+}
+
+/// Deposit everything work 2 takes.
+pub fn action_arc() -> (u8, u8, u8) {
+    (sim_core::works::OP_DEPOSIT, 2, sim_core::works::ARG_ALL)
+}
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
 pub fn event_env() -> sim_core::weather::Env {
@@ -1101,6 +1243,9 @@ pub fn event_recipes() -> CraftContent {
             // a fixture where every row agreed would be byte-identical
             // under an encoder that wrote a constant (research v0).
             blueprint: i % 2 == 1,
+            // A world gate on every third row, the top code on one of them
+            // (wire v95).
+            unlock: if i % 3 == 2 { (i as u8 % 32) + 1 } else { 0 },
             n_inputs: inputs.len() as u8,
             inputs: [(0, 0); MAX_RECIPE_INPUTS],
         };
@@ -2064,6 +2209,7 @@ pub fn event_vend_offers() -> (sim_core::vend::VendContent, [&'static [u8]; 6]) 
         pay_n: 3,
         get: 42,
         get_n: 500,
+        unlock: 0,
     };
     vc.offers[1] = sim_core::vend::VendOffer {
         vendor: 0,
@@ -2071,6 +2217,7 @@ pub fn event_vend_offers() -> (sim_core::vend::VendContent, [&'static [u8]; 6]) 
         pay_n: 1000,
         get: 17,
         get_n: 4,
+        unlock: 0,
     };
     vc.offers[2] = sim_core::vend::VendOffer {
         vendor: 5,
@@ -2078,6 +2225,7 @@ pub fn event_vend_offers() -> (sim_core::vend::VendContent, [&'static [u8]; 6]) 
         pay_n: 200,
         get: 55,
         get_n: 1,
+        unlock: 32,
     };
     vc.count = 3;
     (vc, [b"RATIONS", b"", b"", b"", b"", b"ARMS"])

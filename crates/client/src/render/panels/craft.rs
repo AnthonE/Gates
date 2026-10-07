@@ -354,13 +354,18 @@ fn recipe_cell(
     // Locked outranks unaffordable: a blueprint you have not learned
     // cannot be paid for at any price, so the cell must not read as "go
     // and get more wood" (research v0).
-    let can = row.affordable > 0 && !row.locked;
+    // The world's gate outranks both (`ARC.md` F2): nothing the player
+    // learns or carries opens it, only the island lighting a work.
+    let world_locked = !core.arc.holds(row.unlock);
+    let can = row.affordable > 0 && !row.locked && !world_locked;
     let picked = ui.selected == Some(row.recipe);
     let rest = if can { CELL_FULL } else { CELL_BG };
     let name = item_label(&core.catalog, row.output);
     // The name and what stands between the player and it — the cell says
     // the same in grey and a padlock, and this says it in words.
-    let tip = if row.locked {
+    let tip = if world_locked {
+        format!("{name} · the island cannot make this yet")
+    } else if row.locked {
         format!("{name} · not learned yet")
     } else if row.affordable == 0 {
         format!("{name} · need materials")
@@ -420,7 +425,7 @@ fn recipe_cell(
             // actions from the player: one says farm, this says go and
             // learn it. The word it replaces had to be read; a padlock is
             // seen.
-            if row.locked {
+            if row.locked || world_locked {
                 lock(c, icons, 18.0, (CELL_PX - 2.0 - 18.0) * 0.5);
             }
             if ui.favs.contains(&row.recipe) {
@@ -682,6 +687,10 @@ fn detail_body(
     // A locked recipe says where it is learned — the bench tree and the
     // node's price — rather than only that it is locked.
     if let Some(hint) = crate::ui::craft::unlock_hint(&core.research, core.known(), recipe, def) {
+        pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
+    }
+    // And a recipe the island cannot make yet says which work must burn.
+    if let Some(hint) = crate::ui::arc::locked_line(&core.arc, def.unlock) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
 

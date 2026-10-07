@@ -55,6 +55,7 @@ pub fn setup(mut commands: Commands, mut pool: ResMut<ArrowFires>) {
                         flame_dy: -LIFT_M + 0.02,
                         smoke_dy: 0.3,
                         scale: SCALE,
+                        tongues: super::fx::world::Tongues::Pit,
                     },
                 ))
                 .id()

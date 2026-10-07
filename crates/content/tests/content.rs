@@ -238,7 +238,7 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
 fn the_body_part_ladder_refuses_what_it_names() {
     // The rock is the first weapon row in the file and the only one whose
     // `damage = 20` line is unique, so it is where every bait below goes.
-    const ROCK: &str = "id = \"item.bat\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_mult = 2\nlimb_pct = 50";
+    const ROCK: &str = "id = \"item.bat\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_pct = 200\nlimb_pct = 50";
     let bait = |limb: &str| ROCK.replace("limb_pct = 50", &format!("limb_pct = {limb}"));
 
     // Above the band: a leg worth as much as the chest above it.
@@ -4522,5 +4522,79 @@ fn the_card_loop_is_whole() {
     assert!(
         pays(sim_core::loot::LOOT_BLUE, red),
         "the blue room pays the red card"
+    );
+}
+
+/// Every shipped work stands somewhere on the public shard's island
+/// (`shard-public.toml`'s seed): a work whose site the seed lacks can only
+/// light itself at its fallback hour, and nobody could ever pay for it
+/// (`sim_core::spot`, `ARC.md` F1).
+#[test]
+fn every_shipped_work_stands_on_the_public_island() {
+    const PUBLIC_SEED: u64 = 20260731;
+    let c = build(&sources()).expect("shipped content loads");
+    let wc = c.bake_arc().expect("the arc bakes");
+    let haven = sim_core::terrain::haven(PUBLIC_SEED);
+    for (k, def) in wc.defs.iter().take(wc.count as usize).enumerate() {
+        assert!(
+            sim_core::spot::world(&haven, &def.spot).is_some(),
+            "work {k} (`{}`) has no `{}` on seed {PUBLIC_SEED}",
+            c.works[k].id,
+            c.works[k].site
+        );
+    }
+    // And every speaker, stone and lock (`ARC.md` F5–F7), the same way.
+    let lc = c.bake_lore().expect("the lore bakes");
+    for (k, s) in lc.speakers.iter().take(lc.n_speakers as usize).enumerate() {
+        assert!(
+            sim_core::spot::world(&haven, &s.spot).is_some(),
+            "`{}` stands nowhere on seed {PUBLIC_SEED}",
+            c.speakers[k].id
+        );
+    }
+    for (k, i) in lc
+        .inscriptions
+        .iter()
+        .take(lc.n_inscriptions as usize)
+        .enumerate()
+    {
+        assert!(
+            sim_core::spot::world(&haven, &i.spot).is_some(),
+            "`{}` stands nowhere on seed {PUBLIC_SEED}",
+            c.inscriptions[k].id
+        );
+    }
+    let mc = c.bake_mechs().expect("the mechanisms bake");
+    for (k, m) in mc.defs.iter().take(mc.count as usize).enumerate() {
+        assert!(
+            sim_core::spot::world(&haven, &m.spot).is_some(),
+            "`{}` stands nowhere on seed {PUBLIC_SEED}",
+            c.mechanisms[k].id
+        );
+    }
+}
+
+/// The arc's references refuse when they dangle: a recipe waiting on an
+/// unlock no work grants, and a work naming a site that does not exist.
+#[test]
+fn the_arc_refuses_what_it_cannot_resolve() {
+    refuses(
+        "recipes.toml",
+        "unlock = \"unlock.gunpowder\"",
+        "unlock = \"unlock.nothing\"",
+        "no work unlocks",
+    );
+    refuses("arc.toml", "site = \"anvil\"", "site = \"moon\"", "no site");
+    refuses(
+        "arc.toml",
+        "{mech.ring_lock}",
+        "{mech.nothing}",
+        "names no mechanism",
+    );
+    refuses(
+        "arc.toml",
+        "teaches = \"0123456789\"",
+        "teaches = \"0123456789!\"",
+        "not in the alphabet",
     );
 }

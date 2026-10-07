@@ -24,6 +24,7 @@
 //! code the client ships — the load tool cannot drift from the client
 //! it stands in for.
 
+pub mod arc;
 pub mod clock;
 pub mod core;
 pub mod interp;

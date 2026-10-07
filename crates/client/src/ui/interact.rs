@@ -132,6 +132,17 @@ pub enum Verb {
     /// [`resolve_pick`], beside `Crate`'s [`resolve_open`], and folded into
     /// the pick the same way.
     Pick,
+    /// A work's terminal (`sim_core::works`, `ARC.md` F1): `handle` is the
+    /// work. Resolved by nearness from the work's own spot (`sim_core::spot`),
+    /// like `Trade` — the terminal is a place you walk up to.
+    Work,
+    /// A speaker (`sim_core::lore`): `handle` is the speaker. By nearness.
+    Talk,
+    /// An inscription: `handle` is the stone. By nearness.
+    Read,
+    /// A mechanism's dial (`sim_core::mech`): `handle` is mechanism << 8 |
+    /// dial, `item` the notch it shows. By nearness, at the sim's dial reach.
+    Turn,
 }
 
 impl Verb {
@@ -178,6 +189,10 @@ impl Verb {
             Verb::Trade => 12,
             Verb::Swipe => 13,
             Verb::Pick => 14,
+            Verb::Work => 15,
+            Verb::Talk => 16,
+            Verb::Read => 17,
+            Verb::Turn => 18,
         }
     }
 
@@ -204,6 +219,10 @@ impl Verb {
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
             Verb::Pick => "PLANT",
+            Verb::Work => "WORK",
+            Verb::Talk => "SPEAKER",
+            Verb::Read => "INSCRIPTION",
+            Verb::Turn => "DIAL",
         }
     }
 }
@@ -384,6 +403,14 @@ impl Pick {
             Verb::Pick if self.occupant == Occupant::Hemp as u8 => "[E] PICK HEMP".to_string(),
             Verb::Pick => "[E] PICK BERRIES".to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
+            Verb::Work => "[E] THE WORK".to_string(),
+            Verb::Talk => "[E] TALK".to_string(),
+            Verb::Read => "[E] READ THE STONE".to_string(),
+            Verb::Turn => format!(
+                "[E] TURN DIAL {} · SHOWS {}",
+                (self.handle & 0xFF) + 1,
+                self.item
+            ),
             Verb::Swipe if self.lit => "[E] OPEN DOOR".to_string(),
             Verb::Swipe => format!(
                 "[E] SWIPE {} KEYCARD",
@@ -451,6 +478,133 @@ pub fn resolve_trade(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
             ..Pick::default()
         },
         None => Pick::default(),
+    }
+}
+
+/// The work terminal `E` would open, or a `None` pick: the nearest whose row
+/// has arrived, within the sim's own `WORK_REACH_M` and `spot::within`'s
+/// storey.
+pub fn resolve_work(
+    x: f32,
+    y: f32,
+    z: f32,
+    haven: &sim_core::terrain::Haven,
+    arc: &client_core::arc::ArcView,
+) -> Pick {
+    let reach = sim_core::works::WORK_REACH_M;
+    let mut best: Option<(usize, f32)> = None;
+    for (k, w) in arc.known() {
+        if !sim_core::spot::within(haven, &w.def.spot, x, y, z, reach) {
+            continue;
+        }
+        let Some((wx, _, wz)) = sim_core::spot::world(haven, &w.def.spot) else {
+            continue;
+        };
+        let d2 = (wx - x) * (wx - x) + (wz - z) * (wz - z);
+        if best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Work,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The nearest of `spots` within `reach`, by the sim's own `spot::within`.
+fn nearest_spot(
+    x: f32,
+    y: f32,
+    z: f32,
+    haven: &sim_core::terrain::Haven,
+    reach: f32,
+    spots: impl Iterator<Item = (u32, sim_core::spot::Spot)>,
+) -> Option<(u32, f32)> {
+    let mut best: Option<(u32, f32)> = None;
+    for (handle, spot) in spots {
+        if !sim_core::spot::within(haven, &spot, x, y, z, reach) {
+            continue;
+        }
+        let Some((wx, _, wz)) = sim_core::spot::world(haven, &spot) else {
+            continue;
+        };
+        let d2 = (wx - x) * (wx - x) + (wz - z) * (wz - z);
+        if best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((handle, d2));
+        }
+    }
+    best
+}
+
+/// The speaker, stone or dial `E` would use, or a `None` pick: the nearest
+/// within the sim's reach for each, a dial winning a tie (it is the
+/// smallest thing, and you are standing at it on purpose).
+pub fn resolve_lore(
+    x: f32,
+    y: f32,
+    z: f32,
+    haven: &sim_core::terrain::Haven,
+    lore: &client_core::arc::LoreView,
+) -> Pick {
+    let dials = lore.known_mechs().flat_map(|(k, m)| {
+        let def = sim_core::mech::MechDef {
+            spot: m.spot,
+            dials: m.n_dials,
+            ..Default::default()
+        };
+        (0..m.n_dials as usize).map(move |d| {
+            (
+                ((k as u32) << 8) | d as u32,
+                sim_core::mech::dial_spot(&def, d),
+            )
+        })
+    });
+    if let Some((h, d2)) = nearest_spot(x, y, z, haven, sim_core::mech::DIAL_REACH_M, dials) {
+        let m = &lore.mechs[(h >> 8) as usize];
+        return Pick {
+            verb: Verb::Turn,
+            handle: h,
+            item: m.dials[(h & 0xFF) as usize] as u16,
+            d2,
+            ..Pick::default()
+        };
+    }
+    let reach = sim_core::lore::LORE_REACH_M;
+    let talk = nearest_spot(
+        x,
+        y,
+        z,
+        haven,
+        reach,
+        lore.known_speakers().map(|(k, s)| (k as u32, s.spot)),
+    );
+    let read = nearest_spot(
+        x,
+        y,
+        z,
+        haven,
+        reach,
+        lore.known_inscriptions().map(|(k, s)| (k as u32, s.spot)),
+    );
+    match (talk, read) {
+        (Some((h, d2)), r) if r.is_none_or(|(_, rd)| d2 <= rd) => Pick {
+            verb: Verb::Talk,
+            handle: h,
+            d2,
+            ..Pick::default()
+        },
+        (_, Some((h, d2))) => Pick {
+            verb: Verb::Read,
+            handle: h,
+            d2,
+            ..Pick::default()
+        },
+        _ => Pick::default(),
     }
 }
 

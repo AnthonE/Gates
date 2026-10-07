@@ -137,6 +137,14 @@ pub fn shard_with(
     core.world.spawn_kit = t.spawn_kit;
     core.world.loot = t.loot;
     core.world.research = t.research;
+    // The works (`ARC.md` F1): installed so a test can light them, and so
+    // the client view hears the unlocks a gated recipe waits on.
+    core.world.works_def = t.works;
+    core.work_names = t.work_names;
+    core.unlock_names = t.unlock_names;
+    core.world.lore_def = t.lore;
+    core.world.mech_def = t.mechs;
+    core.arc_text = t.arc_text;
     if wildlife {
         core.world.mob = t.mobs;
     }

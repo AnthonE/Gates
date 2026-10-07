@@ -846,7 +846,26 @@ pub const EV_AMMO: u8 = 53;
 /// into it, so everyone in the world should see it.
 pub const EV_FIRE: u8 = 54;
 
-pub const EV_MAX: u8 = EV_FIRE;
+/// EV_WORK: a = the work (`works.rs`), b = `works::WORK_EV_*`, c = the
+/// player who lit or rekindled it, 0 otherwise. **Broadcast**: a work
+/// opening, lighting or going to embers changes the shard for everybody.
+pub const EV_WORK: u8 = 55;
+
+/// EV_ARC_REFUSED: a = player id, b = `works::REFUSE_A_*`, c = op << 8 |
+/// target. Own-fact.
+pub const EV_ARC_REFUSED: u8 = 56;
+
+/// EV_ARC_DID: a = player id, b = the op (`lore::OP_TALK`, `lore::OP_READ`,
+/// `mech::OP_TURN`), c = target << 8 | arg. Own-fact: the server answers a
+/// word or a read with its text (`lore.rs`); a turn moves the dials the
+/// mechanism drip carries.
+pub const EV_ARC_DID: u8 = 57;
+
+/// EV_MECH_SOLVED: a = the mechanism (`mech.rs`), b = who solved it, c = 0.
+/// **Broadcast**: a lock opening is heard across the island.
+pub const EV_MECH_SOLVED: u8 = 58;
+
+pub const EV_MAX: u8 = EV_MECH_SOLVED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1140,6 +1159,10 @@ pub struct Player {
     /// (research.rs). Sim state, saved with the player, and the reason
     /// `Player` carries a mask rather than a set — one shift on the craft
     /// path, nothing to iterate, nothing to allocate.
+    /// The ancients' glyphs this player can read (`lore.rs`): bit `g` is
+    /// glyph `g` of `content/arc.toml`'s alphabet. Known, like `known`: a
+    /// death does not take it, and the player file keeps it.
+    pub glyphs: u64,
     pub known: u64,
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
@@ -1341,6 +1364,7 @@ impl Default for Player {
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
             known: 0,
+            glyphs: 0,
             hp: 0,
             hp_max: 0,
             deaths: 0,
@@ -1848,6 +1872,15 @@ pub enum Command {
         id: u32,
         door: u8,
     },
+    /// One arc verb (`works.rs`, `ARC.md`): `op` on `target` with `arg` —
+    /// a deposit toward a work's quota, or fuel into its tank. The sim
+    /// checks reach, the work's state and what is carried.
+    Arc {
+        id: u32,
+        op: u8,
+        target: u8,
+        arg: u8,
+    },
     /// Drink from the water under your own feet (survival.rs). No target
     /// and no position: the heightfield is a pure function of the seed,
     /// so the sim asks it where the body already is.
@@ -1921,6 +1954,19 @@ pub struct World {
     pub skins: crate::skin::SkinContent,
     /// The town's vendor offers (`content/sites.toml`, `vend.rs`).
     pub vend: crate::vend::VendContent,
+    /// The works and their effects (`works.rs`, `content/arc.toml`).
+    /// Construction input; `EMPTY` holds no works and gates nothing.
+    pub works_def: crate::works::WorksContent,
+    /// The works' state and the unlocks they hold — sim state, hashed once
+    /// any work moves and saved. Boxed for `mobs`' stack reason.
+    pub works: Box<crate::works::Works>,
+    /// Speakers and inscriptions, and the mechanisms (`lore.rs`, `mech.rs`):
+    /// construction input, `EMPTY` holding none.
+    pub lore_def: crate::lore::LoreContent,
+    pub mech_def: crate::mech::MechContent,
+    /// The world's secret and the mechanisms' dials — sim state, hashed once
+    /// it is not fresh and saved. The salt is never sent to a client.
+    pub arc: Box<crate::mech::ArcState>,
     /// The keycard item each card door takes (`monument::DOORS`), baked
     /// from content; `NO_ITEM` opens nothing.
     pub cards: [u16; crate::monument::CARD_DOORS],
@@ -2150,6 +2196,11 @@ impl World {
             research: crate::research::ResearchContent::EMPTY,
             skins: crate::skin::SkinContent::EMPTY,
             vend: crate::vend::VendContent::EMPTY,
+            works_def: crate::works::WorksContent::EMPTY,
+            works: Box::default(),
+            lore_def: crate::lore::LoreContent::EMPTY,
+            mech_def: crate::mech::MechContent::EMPTY,
+            arc: Box::default(),
             cards: [crate::gather::NO_ITEM; crate::monument::CARD_DOORS],
             card_doors: [0; crate::monument::CARD_DOORS],
             card_door_bits: 0,
@@ -3469,6 +3520,7 @@ impl World {
             // `dead` by hand — the hand-set version of the same test
             // passed, because it never came through this function.
             known: body.known,
+            glyphs: body.glyphs,
             // Carried for `known`'s reason: what a player owns is not in
             // their pockets, so a death does not take it (`skin.rs`).
             skins: body.skins,
@@ -3675,6 +3727,7 @@ impl World {
             hp_max: hp,
             deaths,
             known,
+            glyphs: body.glyphs,
             // The owned skins survive the new body, as `known` does.
             skins: body.skins,
             // Hostility survives the death (Rust's rule, `die`'s note).
@@ -3850,6 +3903,7 @@ impl World {
                     worn: s.worn,
                     jobs: s.jobs,
                     known: s.known,
+                    glyphs: s.glyphs,
                     hp: s.hp,
                     hp_max: s.hp_max,
                     deaths: s.deaths,
@@ -4442,6 +4496,7 @@ impl World {
                     craft::enqueue(
                         &self.craft,
                         &self.skins,
+                        self.works.unlocks,
                         &self.deploy,
                         &self.deploys,
                         self.tick,
@@ -4880,12 +4935,56 @@ impl World {
                     crate::vend::trade(
                         &self.vend,
                         &self.gather,
+                        self.works.unlocks,
                         &town,
                         &mut self.players[slot],
                         offer as usize,
                         times,
                         &mut self.events,
                     );
+                }
+            }
+            Command::Arc {
+                id,
+                op,
+                target,
+                arg,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    match op {
+                        crate::lore::OP_TALK | crate::lore::OP_READ => crate::lore::act(
+                            &self.lore_def,
+                            &self.haven,
+                            &mut self.players[slot],
+                            op,
+                            target,
+                            arg,
+                            &mut self.events,
+                        ),
+                        crate::mech::OP_TURN => crate::mech::act(
+                            &self.mech_def,
+                            &mut self.arc,
+                            &self.haven,
+                            self.seed,
+                            self.tick,
+                            &self.gather,
+                            &mut self.players[slot],
+                            target,
+                            arg,
+                            &mut self.events,
+                        ),
+                        _ => crate::works::act(
+                            &self.works_def,
+                            &mut self.works,
+                            &self.haven,
+                            self.tick,
+                            &mut self.players[slot],
+                            op,
+                            target,
+                            arg,
+                            &mut self.events,
+                        ),
+                    }
                 }
             }
             Command::Swipe { id, door } => {
@@ -6241,6 +6340,11 @@ impl World {
             &self.gather,
             &mut self.deploys,
             tick,
+            crate::works::knob_pct(
+                &self.works_def,
+                self.works.unlocks,
+                crate::works::KNOB_SMELT_PCT,
+            ),
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point
@@ -6248,6 +6352,22 @@ impl World {
         // tick has already spent its period, as an oven has, and its
         // contents spill uncharged when it does.
         crate::research::table_sweep(&self.research, &mut self.deploys, tick, &mut self.events);
+        // The works open, light themselves at their fallback hour and burn
+        // (`works.rs`), once a period, off their own phase.
+        if self.works_def.count > 0 {
+            let online = self
+                .players
+                .iter()
+                .filter(|p| p.active && !p.sleeping)
+                .count() as u32;
+            crate::works::sweep(
+                &self.works_def,
+                &mut self.works,
+                tick,
+                online,
+                &mut self.events,
+            );
+        }
         // The structural backstop, after the sweep that can create work for
         // it: anything a capped cascade left hanging in the air comes down
         // here, one piece and its own cascade per tick (build.rs).
@@ -6991,6 +7111,27 @@ impl World {
             buf[21] = f.wind_dir;
             buf[22..26].copy_from_slice(&e.day_offset.to_le_bytes());
             h.update(&buf);
+        }
+        // The works (`works.rs`), skip-if-fresh like the heli: a world whose
+        // works never moved hashes as it did before they existed. `unlocks`
+        // is derived from the table and not folded twice.
+        if !self.works.is_fresh() {
+            for w in self.works.w.iter() {
+                h.update(&w.to_bytes());
+            }
+        }
+        // The arc's secret and its dials (`mech.rs`), on the same terms.
+        if !self.arc.is_fresh() {
+            h.update(&self.arc.salt.to_le_bytes());
+            for m in self.arc.mechs.iter() {
+                h.update(&m.to_bytes());
+            }
+        }
+        // The glyphs each player reads (`lore.rs`), only where there are
+        // any, so a world nobody has read in hashes as it always did.
+        for p in self.players.iter().filter(|p| p.active && p.glyphs != 0) {
+            h.update(&p.id.to_le_bytes());
+            h.update(&p.glyphs.to_le_bytes());
         }
         h.digest()
     }

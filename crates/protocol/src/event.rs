@@ -64,6 +64,19 @@ pub const CATALOG_BATCH: usize = 8;
 /// measures it rather than trusting this sum.
 pub const SKIN_BATCH: usize = 8;
 
+/// Longest work name on the wire (`SUB_WORK_DEF`).
+pub const WORK_NAME_BYTES: usize = 20;
+/// Longest speaker, topic or mechanism name on the wire (`SUB_ARC_PLACE`).
+pub const ARC_NAME_BYTES: usize = 24;
+/// Longest line a speaker says or a stone holds (`SUB_ARC_TEXT`).
+pub const ARC_TEXT_BYTES: usize = 280;
+/// `SUB_ARC_PLACE` kinds.
+pub const ARC_SPEAKER: u8 = 0;
+pub const ARC_INSCRIPTION: u8 = 1;
+pub const ARC_MECH: u8 = 2;
+/// Longest unlock name on the wire.
+pub const UNLOCK_NAME_BYTES: usize = 16;
+
 /// Vendor offers one message carries (`sim_core::vend`, wire v86). A row is
 /// 3 + 4 × 16 + 5 bits plus the vendor's name on its first row (≤ 16
 /// bytes), so eight are well inside `MAX_EVENT_MSG_BYTES`.
@@ -455,7 +468,35 @@ const SUB_AMMO: u32 = 77;
 /// `SUB_IMPACT`, and the tick it goes out — what a fire arrow leaves
 /// (`sim_core::fire`). Broadcast.
 const SUB_FIRE: u32 = 78;
-const SUB_MAX: u32 = SUB_FIRE;
+/// One work's definition (wire v95, `sim_core::works`), dripped at join:
+/// where it stands, its act and hours, its quota and tank, and the names of
+/// it and its unlocks.
+const SUB_WORK_DEF: u32 = 79;
+/// One work's state now (wire v95): sealed, open or lit, its tank, its quota
+/// so far, the receiver's own share, and every unlock the island holds.
+/// Per client, sent when it moves and to a joiner.
+const SUB_WORK_STATE: u32 = 80;
+/// A work changed (wire v95, `EV_WORK`): opened, lit, lit by its fallback
+/// hour, went to embers, rekindled — and by whom. Broadcast.
+const SUB_WORK: u32 = 81;
+/// An arc verb was refused (own-fact, wire v95): why, the op and its target.
+const SUB_ARC_REFUSED: u32 = 82;
+/// Where a speaker, an inscription or a mechanism stands, and its name — a
+/// speaker's topics, a mechanism's dials (wire v96), dripped at join.
+const SUB_ARC_PLACE: u32 = 83;
+/// A speaker's answer or an inscription's text (own-fact, wire v96): what the
+/// server composed for the player who stood there and asked.
+const SUB_ARC_TEXT: u32 = 84;
+/// A mechanism's dials and whether it is resting (wire v96): per client,
+/// when they move and to a joiner.
+const SUB_ARC_DIALS: u32 = 85;
+/// The glyphs you read (own-fact, wire v96), when the mask moves.
+const SUB_GLYPHS: u32 = 86;
+/// A mechanism was solved, and by whom (wire v96). Broadcast.
+const SUB_MECH_SOLVED: u32 = 87;
+/// The ancients' alphabet (wire v96), once at join.
+const SUB_ALPHABET: u32 = 88;
+const SUB_MAX: u32 = SUB_ALPHABET;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1489,6 +1530,76 @@ pub enum EventMsg {
         qz: i32,
         until: u32,
     },
+    /// Work `index` of `total` (wire v95): its baked row, its name and the
+    /// names of its floor and ceiling unlocks.
+    WorkDef {
+        total: u8,
+        index: u8,
+        def: sim_core::works::WorkDef,
+        name: [u8; WORK_NAME_BYTES],
+        name_len: u8,
+        floor_name: [u8; UNLOCK_NAME_BYTES],
+        floor_len: u8,
+        ceiling_name: [u8; UNLOCK_NAME_BYTES],
+        ceiling_len: u8,
+    },
+    /// Work `index` now (wire v95): `sim_core::works::WORK_*`, its tank, the
+    /// first `n` quota lines so far, the receiver's share (basis points of a
+    /// quota, saturating at 20 bits) and every unlock the island holds.
+    WorkState {
+        index: u8,
+        state: u8,
+        fuel: u32,
+        n: u8,
+        got: [u32; sim_core::limits::MAX_WORK_INPUTS],
+        mine: u32,
+        unlocks: u32,
+    },
+    /// Work `index` changed: `sim_core::works::WORK_EV_*`, by player `by`
+    /// (0 when nobody did it).
+    Work { index: u8, what: u8, by: u32 },
+    /// Your arc verb was refused (`sim_core::works::REFUSE_A_*`).
+    ArcRefused { code: u8, op: u8, target: u8 },
+    /// Arc object `index` of `total` of `kind` (`ARC_SPEAKER`…, wire v96):
+    /// where it stands, its name, a speaker's topic titles, a mechanism's
+    /// dials and notches.
+    ArcPlace {
+        kind: u8,
+        index: u8,
+        total: u8,
+        spot: sim_core::spot::Spot,
+        name: [u8; ARC_NAME_BYTES],
+        name_len: u8,
+        n_topics: u8,
+        topics: [[u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
+        topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+        dials: u8,
+        values: u8,
+    },
+    /// What speaker `index` said on `topic`, or inscription `index`'s text.
+    ArcText {
+        kind: u8,
+        index: u8,
+        topic: u8,
+        text: [u8; ARC_TEXT_BYTES],
+        len: u16,
+    },
+    /// Mechanism `mech`'s first `n` dials, and whether it rests.
+    ArcDials {
+        mech: u8,
+        n: u8,
+        dials: [u8; sim_core::limits::MAX_DIALS],
+        resting: bool,
+    },
+    /// The glyphs you read.
+    Glyphs { mask: u64 },
+    /// Mechanism `mech` was solved by `by`.
+    MechSolved { mech: u8, by: u32 },
+    /// The ancients' alphabet, one character per glyph.
+    Alphabet {
+        text: [u8; sim_core::limits::MAX_GLYPHS],
+        len: u8,
+    },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what a day
     /// charges in it; one hour's charge until wire v89). The third column
@@ -2132,6 +2243,12 @@ pub fn encode_event_recipes(
         // "you have not learned this" by a server the player cannot see.
         // The craft panel greys it instead (research v0).
         w.write_bit(def.blueprint)?;
+        // The world gate (wire v95, `sim_core::works`): the unlock code the
+        // recipe waits on, so the panel can say which work must burn.
+        if def.unlock as usize > sim_core::limits::MAX_UNLOCKS {
+            return Err(WireError::Range);
+        }
+        w.write(def.unlock as u32, 6)?;
         w.write(def.n_inputs as u32, N_INPUTS_BITS)?;
         for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
             w.write(item as u32, 16)?;
@@ -2990,6 +3107,10 @@ pub fn encode_event_vend_offers(
         w.write(o.pay_n as u32, 16)?;
         w.write(o.get as u32, 16)?;
         w.write(o.get_n as u32, 16)?;
+        if o.unlock as usize > sim_core::limits::MAX_UNLOCKS {
+            return Err(WireError::Range);
+        }
+        w.write(o.unlock as u32, 6)?;
         let lead = idx == 0 || vc.offers[idx - 1].vendor != o.vendor;
         let name: &[u8] = if lead {
             names.get(o.vendor as usize).copied().unwrap_or(&[])
@@ -3141,6 +3262,262 @@ pub fn encode_event_fire(
     w.write((qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
     w.write(qz as u32, POS_XZ_BITS)?;
     w.write(until, 32)?;
+    Ok(w.finish())
+}
+
+/// Work `k`'s definition, with its name and its unlocks' names.
+pub fn encode_event_work_def(
+    wc: &sim_core::works::WorksContent,
+    k: usize,
+    name: &[u8],
+    floor_name: &[u8],
+    ceiling_name: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let Some(d) = wc.get(k) else {
+        return Err(WireError::Range);
+    };
+    if name.len() > WORK_NAME_BYTES
+        || floor_name.len() > UNLOCK_NAME_BYTES
+        || ceiling_name.len() > UNLOCK_NAME_BYTES
+        || d.spot.site > sim_core::spot::SITE_MAX
+        || d.act > 7
+        || d.opens_at > u32::MAX as u64
+        || d.fallback_at > u32::MAX as u64
+        || d.floor as usize > sim_core::limits::MAX_UNLOCKS
+        || d.ceiling as usize > sim_core::limits::MAX_UNLOCKS
+        || d.fuel_max >= 1 << 20
+        || d.burn_per_hour >= 1 << 20
+        || d.n_inputs as usize > sim_core::limits::MAX_WORK_INPUTS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WORK_DEF)?;
+    w.write(wc.count as u32, 4)?;
+    w.write(k as u32, 3)?;
+    w.write(d.spot.site as u32, 4)?;
+    w.write(d.spot.nth as u32, 8)?;
+    w.write(d.spot.x_cm as u16 as u32, 16)?;
+    w.write(d.spot.y_cm as u16 as u32, 16)?;
+    w.write(d.spot.z_cm as u16 as u32, 16)?;
+    w.write(d.act as u32, 3)?;
+    w.write(d.opens_at as u32, 32)?;
+    w.write(d.fallback_at as u32, 32)?;
+    w.write(d.floor as u32, 6)?;
+    w.write(d.ceiling as u32, 6)?;
+    w.write(d.fuel as u32, 16)?;
+    w.write(d.fuel_max, 20)?;
+    w.write(d.burn_per_hour, 20)?;
+    w.write(d.n_inputs as u32, 3)?;
+    for i in d.inputs.iter().take(d.n_inputs as usize) {
+        if i.need >= 1 << 24 {
+            return Err(WireError::Range);
+        }
+        w.write(i.item as u32, 16)?;
+        w.write(i.need, 24)?;
+    }
+    for text in [name, floor_name, ceiling_name] {
+        w.write(text.len() as u32, 5)?;
+        for &b in text {
+            w.write(b as u32, 8)?;
+        }
+    }
+    Ok(w.finish())
+}
+
+/// Work `index`'s state, as the receiver sees it.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_event_work_state(
+    index: u8,
+    work: &sim_core::works::Work,
+    n_inputs: u8,
+    mine: u32,
+    unlocks: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if index as usize >= sim_core::limits::MAX_WORKS
+        || work.state > sim_core::works::WORK_LIT
+        || n_inputs as usize > sim_core::limits::MAX_WORK_INPUTS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WORK_STATE)?;
+    w.write(index as u32, 3)?;
+    w.write(work.state as u32, 2)?;
+    w.write(work.fuel.min((1 << 20) - 1), 20)?;
+    w.write(n_inputs as u32, 3)?;
+    for g in work.got.iter().take(n_inputs as usize) {
+        w.write((*g).min((1 << 24) - 1), 24)?;
+    }
+    w.write(mine.min((1 << 20) - 1), 20)?;
+    w.write(unlocks, 32)?;
+    Ok(w.finish())
+}
+
+/// A work changed.
+pub fn encode_event_work(index: u8, what: u8, by: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if index as usize >= sim_core::limits::MAX_WORKS
+        || what == 0
+        || what as u32 > sim_core::works::WORK_EV_MAX
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WORK)?;
+    w.write(index as u32, 3)?;
+    w.write(what as u32, 3)?;
+    w.write(by, 32)?;
+    Ok(w.finish())
+}
+
+/// Your arc verb was refused.
+pub fn encode_event_arc_refused(
+    code: u8,
+    op: u8,
+    target: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if code == 0 || code as u32 > sim_core::works::REFUSE_A_MAX || op >= 16 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_REFUSED)?;
+    w.write(code as u32, 4)?;
+    w.write(op as u32, 4)?;
+    w.write(target as u32, 8)?;
+    Ok(w.finish())
+}
+
+/// Arc object `index` of `total` of `kind`: where it stands and what it is
+/// called; `topics` for a speaker, `(dials, values)` for a mechanism.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_event_arc_place(
+    kind: u8,
+    index: u8,
+    total: u8,
+    spot: &sim_core::spot::Spot,
+    name: &[u8],
+    topics: &[&[u8]],
+    dials: u8,
+    values: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if kind > ARC_MECH
+        || index >= 32
+        || total > 32
+        || spot.site > sim_core::spot::SITE_MAX
+        || name.len() > ARC_NAME_BYTES
+        || topics.len() > sim_core::lore::MAX_TOPICS
+        || topics.iter().any(|t| t.len() > ARC_NAME_BYTES)
+        || dials as usize > sim_core::limits::MAX_DIALS
+        || values > sim_core::mech::MAX_VALUES
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_PLACE)?;
+    w.write(kind as u32, 2)?;
+    w.write(index as u32, 5)?;
+    w.write(total as u32, 6)?;
+    w.write(spot.site as u32, 4)?;
+    w.write(spot.nth as u32, 8)?;
+    w.write(spot.x_cm as u16 as u32, 16)?;
+    w.write(spot.y_cm as u16 as u32, 16)?;
+    w.write(spot.z_cm as u16 as u32, 16)?;
+    w.write(name.len() as u32, 5)?;
+    for &b in name {
+        w.write(b as u32, 8)?;
+    }
+    match kind {
+        ARC_SPEAKER => {
+            w.write(topics.len() as u32, 3)?;
+            for t in topics {
+                w.write(t.len() as u32, 5)?;
+                for &b in *t {
+                    w.write(b as u32, 8)?;
+                }
+            }
+        }
+        ARC_MECH => {
+            w.write(dials as u32, 3)?;
+            w.write(values as u32, 4)?;
+        }
+        _ => {}
+    }
+    Ok(w.finish())
+}
+
+/// What a speaker said, or what a stone holds — to the one who asked.
+pub fn encode_event_arc_text(
+    kind: u8,
+    index: u8,
+    topic: u8,
+    text: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if kind > ARC_MECH || index >= 32 || topic >= 8 || text.len() > ARC_TEXT_BYTES {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_TEXT)?;
+    w.write(kind as u32, 2)?;
+    w.write(index as u32, 5)?;
+    w.write(topic as u32, 3)?;
+    w.write(text.len() as u32, 9)?;
+    for &b in text {
+        w.write(b as u32, 8)?;
+    }
+    Ok(w.finish())
+}
+
+/// A mechanism's dials.
+pub fn encode_event_arc_dials(
+    mech: u8,
+    dials: &[u8],
+    resting: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if mech as usize >= sim_core::limits::MAX_MECHS
+        || dials.len() > sim_core::limits::MAX_DIALS
+        || dials.iter().any(|&d| d >= 16)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ARC_DIALS)?;
+    w.write(mech as u32, 3)?;
+    w.write(dials.len() as u32, 3)?;
+    for &d in dials {
+        w.write(d as u32, 4)?;
+    }
+    w.write_bit(resting)?;
+    Ok(w.finish())
+}
+
+/// The glyphs you read.
+pub fn encode_event_glyphs(mask: u64, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_GLYPHS)?;
+    w.write(mask as u32, 32)?;
+    w.write((mask >> 32) as u32, 32)?;
+    Ok(w.finish())
+}
+
+/// A mechanism was solved.
+pub fn encode_event_mech_solved(mech: u8, by: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if mech as usize >= sim_core::limits::MAX_MECHS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_MECH_SOLVED)?;
+    w.write(mech as u32, 3)?;
+    w.write(by, 32)?;
+    Ok(w.finish())
+}
+
+/// The ancients' alphabet.
+pub fn encode_event_alphabet(text: &[u8], buf: &mut [u8]) -> Result<usize, WireError> {
+    if text.len() > sim_core::limits::MAX_GLYPHS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ALPHABET)?;
+    w.write(text.len() as u32, 7)?;
+    for &b in text {
+        w.write(b as u32, 8)?;
+    }
     Ok(w.finish())
 }
 
@@ -4125,9 +4502,11 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let ticks = r.read(RECIPE_TICKS_BITS)?;
                 let station = r.read(STATION_BITS)? as u8;
                 let blueprint = r.read_bit()?;
+                let unlock = r.read(6)? as u8;
                 let n_inputs = r.read(N_INPUTS_BITS)? as u8;
                 if out_count == 0
                     || ticks == 0
+                    || unlock as usize > sim_core::limits::MAX_UNLOCKS
                     || station > STATION_MAX
                     || n_inputs == 0
                     || n_inputs as usize > MAX_RECIPE_INPUTS
@@ -4144,6 +4523,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     ticks,
                     station,
                     blueprint,
+                    unlock,
                     n_inputs,
                     inputs,
                 };
@@ -4633,8 +5013,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     pay_n: r.read(16)? as u16,
                     get: r.read(16)? as u16,
                     get_n: r.read(16)? as u16,
+                    unlock: r.read(6)? as u8,
                 };
                 if vendor as usize >= sim_core::limits::MAX_VENDORS
+                    || o.unlock as usize > sim_core::limits::MAX_UNLOCKS
                     || o.pay as usize >= MAX_ITEM_DEFS
                     || o.get as usize >= MAX_ITEM_DEFS
                     || o.pay_n == 0
@@ -4716,6 +5098,250 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             qz: r.read(POS_XZ_BITS)? as i32,
             until: r.read(32)?,
         },
+        SUB_WORK_DEF => {
+            let total = r.read(4)? as u8;
+            let index = r.read(3)? as u8;
+            let mut def = sim_core::works::WorkDef {
+                spot: sim_core::spot::Spot {
+                    site: r.read(4)? as u8,
+                    nth: r.read(8)? as u8,
+                    x_cm: r.read(16)? as u16 as i16,
+                    y_cm: r.read(16)? as u16 as i16,
+                    z_cm: r.read(16)? as u16 as i16,
+                },
+                act: r.read(3)? as u8,
+                opens_at: r.read(32)? as u64,
+                fallback_at: r.read(32)? as u64,
+                floor: r.read(6)? as u8,
+                ceiling: r.read(6)? as u8,
+                fuel: r.read(16)? as u16,
+                fuel_max: r.read(20)?,
+                burn_per_hour: r.read(20)?,
+                n_inputs: r.read(3)? as u8,
+                ..Default::default()
+            };
+            if total as usize > sim_core::limits::MAX_WORKS
+                || index >= total
+                || def.spot.site > sim_core::spot::SITE_MAX
+                || def.floor as usize > sim_core::limits::MAX_UNLOCKS
+                || def.ceiling as usize > sim_core::limits::MAX_UNLOCKS
+                || def.fuel as usize >= MAX_ITEM_DEFS
+                || def.n_inputs as usize > sim_core::limits::MAX_WORK_INPUTS
+            {
+                return Err(WireError::Malformed);
+            }
+            for i in def.inputs.iter_mut().take(def.n_inputs as usize) {
+                i.item = r.read(16)? as u16;
+                i.need = r.read(24)?;
+                if i.item as usize >= MAX_ITEM_DEFS || i.need == 0 {
+                    return Err(WireError::Malformed);
+                }
+            }
+            let mut name = [0u8; WORK_NAME_BYTES];
+            let mut floor_name = [0u8; UNLOCK_NAME_BYTES];
+            let mut ceiling_name = [0u8; UNLOCK_NAME_BYTES];
+            let mut lens = [0u8; 3];
+            for (j, text) in [&mut name[..], &mut floor_name[..], &mut ceiling_name[..]]
+                .into_iter()
+                .enumerate()
+            {
+                let len = r.read(5)? as usize;
+                if len > text.len() {
+                    return Err(WireError::Malformed);
+                }
+                for b in text.iter_mut().take(len) {
+                    *b = r.read(8)? as u8;
+                }
+                lens[j] = len as u8;
+            }
+            EventMsg::WorkDef {
+                total,
+                index,
+                def,
+                name,
+                name_len: lens[0],
+                floor_name,
+                floor_len: lens[1],
+                ceiling_name,
+                ceiling_len: lens[2],
+            }
+        }
+        SUB_WORK_STATE => {
+            let index = r.read(3)? as u8;
+            let state = r.read(2)? as u8;
+            let fuel = r.read(20)?;
+            let n = r.read(3)? as u8;
+            if state > sim_core::works::WORK_LIT || n as usize > sim_core::limits::MAX_WORK_INPUTS {
+                return Err(WireError::Malformed);
+            }
+            let mut got = [0u32; sim_core::limits::MAX_WORK_INPUTS];
+            for g in got.iter_mut().take(n as usize) {
+                *g = r.read(24)?;
+            }
+            EventMsg::WorkState {
+                index,
+                state,
+                fuel,
+                n,
+                got,
+                mine: r.read(20)?,
+                unlocks: r.read(32)?,
+            }
+        }
+        SUB_WORK => {
+            let index = r.read(3)? as u8;
+            let what = r.read(3)? as u8;
+            if what == 0 || what as u32 > sim_core::works::WORK_EV_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Work {
+                index,
+                what,
+                by: r.read(32)?,
+            }
+        }
+        SUB_ARC_REFUSED => {
+            let code = r.read(4)? as u8;
+            let op = r.read(4)? as u8;
+            let target = r.read(8)? as u8;
+            if code == 0 || code as u32 > sim_core::works::REFUSE_A_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ArcRefused { code, op, target }
+        }
+        SUB_ARC_PLACE => {
+            let kind = r.read(2)? as u8;
+            let index = r.read(5)? as u8;
+            let total = r.read(6)? as u8;
+            let spot = sim_core::spot::Spot {
+                site: r.read(4)? as u8,
+                nth: r.read(8)? as u8,
+                x_cm: r.read(16)? as u16 as i16,
+                y_cm: r.read(16)? as u16 as i16,
+                z_cm: r.read(16)? as u16 as i16,
+            };
+            if kind > ARC_MECH || index >= total || spot.site > sim_core::spot::SITE_MAX {
+                return Err(WireError::Malformed);
+            }
+            let mut name = [0u8; ARC_NAME_BYTES];
+            let name_len = r.read(5)? as usize;
+            if name_len > ARC_NAME_BYTES {
+                return Err(WireError::Malformed);
+            }
+            for b in name.iter_mut().take(name_len) {
+                *b = r.read(8)? as u8;
+            }
+            let mut topics = [[0u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS];
+            let mut topic_lens = [0u8; sim_core::lore::MAX_TOPICS];
+            let (mut n_topics, mut dials, mut values) = (0u8, 0u8, 0u8);
+            match kind {
+                ARC_SPEAKER => {
+                    n_topics = r.read(3)? as u8;
+                    if n_topics as usize > sim_core::lore::MAX_TOPICS {
+                        return Err(WireError::Malformed);
+                    }
+                    for (t, len) in topics
+                        .iter_mut()
+                        .zip(topic_lens.iter_mut())
+                        .take(n_topics as usize)
+                    {
+                        let l = r.read(5)? as usize;
+                        if l > ARC_NAME_BYTES {
+                            return Err(WireError::Malformed);
+                        }
+                        for b in t.iter_mut().take(l) {
+                            *b = r.read(8)? as u8;
+                        }
+                        *len = l as u8;
+                    }
+                }
+                ARC_MECH => {
+                    dials = r.read(3)? as u8;
+                    values = r.read(4)? as u8;
+                    if dials as usize > sim_core::limits::MAX_DIALS
+                        || values > sim_core::mech::MAX_VALUES
+                    {
+                        return Err(WireError::Malformed);
+                    }
+                }
+                _ => {}
+            }
+            EventMsg::ArcPlace {
+                kind,
+                index,
+                total,
+                spot,
+                name,
+                name_len: name_len as u8,
+                n_topics,
+                topics,
+                topic_lens,
+                dials,
+                values,
+            }
+        }
+        SUB_ARC_TEXT => {
+            let kind = r.read(2)? as u8;
+            let index = r.read(5)? as u8;
+            let topic = r.read(3)? as u8;
+            let len = r.read(9)? as usize;
+            if kind > ARC_MECH || len > ARC_TEXT_BYTES {
+                return Err(WireError::Malformed);
+            }
+            let mut text = [0u8; ARC_TEXT_BYTES];
+            for b in text.iter_mut().take(len) {
+                *b = r.read(8)? as u8;
+            }
+            EventMsg::ArcText {
+                kind,
+                index,
+                topic,
+                text,
+                len: len as u16,
+            }
+        }
+        SUB_ARC_DIALS => {
+            let mech = r.read(3)? as u8;
+            let n = r.read(3)? as u8;
+            if n as usize > sim_core::limits::MAX_DIALS {
+                return Err(WireError::Malformed);
+            }
+            let mut dials = [0u8; sim_core::limits::MAX_DIALS];
+            for d in dials.iter_mut().take(n as usize) {
+                *d = r.read(4)? as u8;
+            }
+            EventMsg::ArcDials {
+                mech,
+                n,
+                dials,
+                resting: r.read_bit()?,
+            }
+        }
+        SUB_GLYPHS => {
+            let lo = r.read(32)? as u64;
+            let hi = r.read(32)? as u64;
+            EventMsg::Glyphs {
+                mask: lo | hi << 32,
+            }
+        }
+        SUB_MECH_SOLVED => EventMsg::MechSolved {
+            mech: r.read(3)? as u8,
+            by: r.read(32)?,
+        },
+        SUB_ALPHABET => {
+            let len = r.read(7)? as usize;
+            if len > sim_core::limits::MAX_GLYPHS {
+                return Err(WireError::Malformed);
+            }
+            let mut text = [0u8; sim_core::limits::MAX_GLYPHS];
+            for b in text.iter_mut().take(len) {
+                *b = r.read(8)? as u8;
+            }
+            EventMsg::Alphabet {
+                text,
+                len: len as u8,
+            }
+        }
         SUB_SWIPE_REFUSED => {
             let code = r.read(2)? as u8;
             let door = r.read(2)? as u8;
@@ -5851,6 +6477,8 @@ mod tests {
                 // false would size the batch against a packet the game can
                 // actually send one bit wider (research v0).
                 blueprint: true,
+                // The widest world gate, for the blueprint's reason.
+                unlock: sim_core::limits::MAX_UNLOCKS as u8,
                 n_inputs: MAX_RECIPE_INPUTS as u8,
                 inputs: [(u16::MAX, u16::MAX); MAX_RECIPE_INPUTS],
             };
@@ -6729,6 +7357,22 @@ mod wire_domains {
         Module {
             file: "assist.rs",
             src: include_str!("../../sim-core/src/assist.rs"),
+        },
+        Module {
+            file: "spot.rs",
+            src: include_str!("../../sim-core/src/spot.rs"),
+        },
+        Module {
+            file: "works.rs",
+            src: include_str!("../../sim-core/src/works.rs"),
+        },
+        Module {
+            file: "lore.rs",
+            src: include_str!("../../sim-core/src/lore.rs"),
+        },
+        Module {
+            file: "mech.rs",
+            src: include_str!("../../sim-core/src/mech.rs"),
         },
         Module {
             file: "sentry.rs",

@@ -61,6 +61,7 @@ use sim_core::world::{
     EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
+use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_WORK};
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
 ///
@@ -167,6 +168,13 @@ pub struct ShardCore {
     pub skin_catalog: Box<protocol::SkinCatalog>,
     /// Each vendor's name, kiosk order (wire v85's offer drip carries them).
     pub vendor_names: Vec<String>,
+    /// Each work's name, file order, and each unlock's, code order (code 1
+    /// first): the work drip carries them (wire v95).
+    pub work_names: Vec<String>,
+    pub unlock_names: Vec<String>,
+    /// The words speakers say and stones hold (`content::bake::ArcText`):
+    /// the server composes them; the sim never sees a string.
+    pub arc_text: content::bake::ArcText,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
     /// Deeds other clients should hear this tick (wire v93): (body,
@@ -414,6 +422,9 @@ impl ShardCore {
             catalog: ItemCatalog::EMPTY,
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             vendor_names: Vec::new(),
+            work_names: Vec::new(),
+            unlock_names: Vec::new(),
+            arc_text: content::bake::ArcText::default(),
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
             heard: [(0, 0, 0); MAX_PLAYERS],
             heard_len: 0,
@@ -1410,6 +1421,12 @@ impl ShardCore {
                         times,
                     },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
+                    ActionMsg::Arc { op, target, arg } => Command::Arc {
+                        id: c.id,
+                        op,
+                        target,
+                        arg,
+                    },
                     ActionMsg::Pick { cell } => Command::Pick { id: c.id, cell },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
@@ -2077,6 +2094,106 @@ impl ShardCore {
                 // Every client hears a door through the open-door mirror
                 // (the drip below), so the swipe itself rides no wire.
                 EV_SWIPE => {}
+                EV_ARC_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    match protocol::encode_event_arc_refused(
+                        ev.b as u8,
+                        (ev.c >> 8) as u8,
+                        ev.c as u8,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_ARC_DID => {
+                    // A word or a read: the server answers it with the
+                    // words, composed against the world now, to the one who
+                    // stood there. A turn has no words; the dials ride
+                    // their own drip.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    let (target, arg) = ((ev.c >> 8) as u8, ev.c as u8);
+                    let composed: Option<(u8, String)> = match ev.b as u8 {
+                        sim_core::lore::OP_TALK => self
+                            .arc_text
+                            .line(target as usize, arg as usize, &self.world.works)
+                            .map(|l| (protocol::ARC_SPEAKER, l.to_string())),
+                        sim_core::lore::OP_READ => self
+                            .arc_text
+                            .inscription(
+                                target as usize,
+                                &self.world.mech_def,
+                                self.world.arc.salt,
+                                self.world.seed,
+                            )
+                            .map(|t| (protocol::ARC_INSCRIPTION, t)),
+                        _ => None,
+                    };
+                    let Some((kind, text)) = composed else {
+                        continue;
+                    };
+                    let bytes = &text.as_bytes()[..text.len().min(protocol::ARC_TEXT_BYTES)];
+                    match protocol::encode_event_arc_text(
+                        kind,
+                        target,
+                        arg,
+                        bytes,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_MECH_SOLVED => {
+                    match protocol::encode_event_mech_solved(ev.a as u8, ev.b, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if self.clients[slot].connected
+                                    && send(Lane::Event, slot, &self.ev_buf[..len])
+                                {
+                                    ShardStats::bump(&stats.ev_sent);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_WORK => {
+                    // A work opening, lighting or going to embers changes
+                    // the shard for everybody, so everybody hears it. A
+                    // client that misses one still converges: the work's
+                    // state rides its own per-client drip.
+                    match protocol::encode_event_work(
+                        ev.a as u8,
+                        ev.b as u8,
+                        ev.c,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_RELOAD_REFUSED => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // shooter left this tick
@@ -3744,6 +3861,207 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The works (wire v95): each row once, the vendor drip's shape, then
+        // each work's state whenever what this player sees of it moves —
+        // the quota, the tank, their own share, the unlocks held.
+        let wc = &self.world.works_def;
+        let k = self.clients[slot].work_cursor;
+        if k < wc.count as usize {
+            let def = wc.defs[k];
+            let names = &self.unlock_names;
+            let un = |u: u8| -> &[u8] {
+                match u {
+                    0 => &[],
+                    u => names.get(u as usize - 1).map_or(&[], |n| n.as_bytes()),
+                }
+            };
+            let name = self.work_names.get(k).map_or(&[][..], |n| n.as_bytes());
+            match protocol::encode_event_work_def(
+                wc,
+                k,
+                name,
+                un(def.floor),
+                un(def.ceiling),
+                &mut self.ev_buf,
+            ) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].work_cursor += 1;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    self.clients[slot].work_cursor += 1;
+                }
+            }
+        } else {
+            let id = self.clients[slot].id;
+            for k in 0..wc.count as usize {
+                let w = self.world.works.w[k];
+                let seen = crate::client::WorkSeen {
+                    state: w.state,
+                    fuel: w.fuel,
+                    got: w.got,
+                    mine: w.points_of(id),
+                    unlocks: self.world.works.unlocks,
+                };
+                if self.clients[slot].last_works[k] == Some(seen) {
+                    continue;
+                }
+                match protocol::encode_event_work_state(
+                    k as u8,
+                    &w,
+                    wc.defs[k].n_inputs,
+                    seen.mine,
+                    seen.unlocks,
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            self.clients[slot].last_works[k] = Some(seen);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
+        // The arc's alphabet, once (wire v96).
+        if !self.clients[slot].alphabet_sent && !self.arc_text.alphabet.is_empty() {
+            match protocol::encode_event_alphabet(
+                self.arc_text.alphabet.as_bytes(),
+                &mut self.ev_buf,
+            ) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].alphabet_sent = true;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    self.clients[slot].alphabet_sent = true;
+                }
+            }
+        }
+        // Where every speaker, stone and lock stands (wire v96), one a tick:
+        // speakers, then inscriptions, then mechanisms.
+        let (lc, mc) = (&self.world.lore_def, &self.world.mech_def);
+        let (ns, ni, nm) = (
+            lc.n_speakers as usize,
+            lc.n_inscriptions as usize,
+            mc.count as usize,
+        );
+        let at = self.clients[slot].arc_cursor;
+        if at < ns + ni + nm {
+            let r = if at < ns {
+                let sp = &self.arc_text.speakers[at];
+                let titles: Vec<&[u8]> = sp.topics.iter().map(|t| t.title.as_bytes()).collect();
+                protocol::encode_event_arc_place(
+                    protocol::ARC_SPEAKER,
+                    at as u8,
+                    ns as u8,
+                    &lc.speakers[at].spot,
+                    sp.name.as_bytes(),
+                    &titles,
+                    0,
+                    0,
+                    &mut self.ev_buf,
+                )
+            } else if at < ns + ni {
+                let k = at - ns;
+                protocol::encode_event_arc_place(
+                    protocol::ARC_INSCRIPTION,
+                    k as u8,
+                    ni as u8,
+                    &lc.inscriptions[k].spot,
+                    &[],
+                    &[],
+                    0,
+                    0,
+                    &mut self.ev_buf,
+                )
+            } else {
+                let k = at - ns - ni;
+                let def = &mc.defs[k];
+                protocol::encode_event_arc_place(
+                    protocol::ARC_MECH,
+                    k as u8,
+                    nm as u8,
+                    &def.spot,
+                    self.arc_text.mech_names[k].as_bytes(),
+                    &[],
+                    def.dials,
+                    def.values,
+                    &mut self.ev_buf,
+                )
+            };
+            match r {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].arc_cursor += 1;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    self.clients[slot].arc_cursor += 1;
+                }
+            }
+        }
+        // Each mechanism's dials, whenever they move for anyone.
+        for k in 0..self.world.mech_def.count as usize {
+            let def = self.world.mech_def.defs[k];
+            let m = self.world.arc.mechs[k];
+            let seen = (m.dials, m.rest_until > self.world.tick);
+            if self.clients[slot].last_dials[k] == Some(seen) {
+                continue;
+            }
+            match protocol::encode_event_arc_dials(
+                k as u8,
+                &m.dials[..def.dials as usize],
+                seen.1,
+                &mut self.ev_buf,
+            ) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].last_dials[k] = Some(seen);
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+        // The glyphs this player reads, whenever the mask moves.
+        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+            let mask = self.world.players[wslot].glyphs;
+            if self.clients[slot].last_glyphs != Some(mask) {
+                match protocol::encode_event_glyphs(mask, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            self.clients[slot].last_glyphs = Some(mask);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
             }
         }
 

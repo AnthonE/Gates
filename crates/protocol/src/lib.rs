@@ -78,6 +78,12 @@ pub use event::{
     SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
+    encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
+    encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
+    encode_event_work, encode_event_work_def, encode_event_work_state, ARC_INSCRIPTION, ARC_MECH,
+    ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
+};
+pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
 pub use event::{
@@ -1054,7 +1060,20 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// that is scenery, a berry bush, and hemp (`Occupant` 16). `ACT_PICK`
 /// picks hemp too and `EV_SLOT_HARVESTED` can name it. A v93 client mirrors
 /// every one as a bush and would offer a pick on scenery.
-pub const PROTO_VER: u16 = 94;
+/// v95 — the arc (`ARC.md`, `sim_core::works`). `ACT_ARC` (29) carries
+/// every arc verb as an op, a target and an argument. `SUB_WORK_DEF` (79)
+/// drips each work's row and names at join, `SUB_WORK_STATE` (80) each
+/// work's state per client, `SUB_WORK` (81) broadcasts a work changing and
+/// `SUB_ARC_REFUSED` (82) answers a refused verb. A recipe row and a vendor
+/// offer each carry the world unlock they wait on (six bits after the
+/// blueprint bit, and after `get_n`).
+/// v96 — speakers, stones and locks (`ARC.md` F5–F7). `ACT_ARC` grows
+/// three ops (talk, read, turn). `SUB_ARC_PLACE` (83) drips where each
+/// speaker, inscription and mechanism stands, `SUB_ARC_TEXT` (84) answers a
+/// word or a read, `SUB_ARC_DIALS` (85) carries a mechanism's dials,
+/// `SUB_GLYPHS` (86) the glyphs you read, `SUB_MECH_SOLVED` (87) a lock
+/// opening and `SUB_ALPHABET` (88) the ancients' alphabet.
+pub const PROTO_VER: u16 = 96;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1863,6 +1882,13 @@ const ACT_PICK: u32 = 27;
 /// Answer the death screen with THE GATE (wire v92, `Command::RespawnGate`).
 /// No payload: the sim decides whether the point is ready.
 const ACT_RESPAWN_GATE: u32 = 28;
+/// One arc verb (wire v95, `Command::Arc`, `sim_core::works`): an op, a
+/// target and an argument. **Every arc verb rides this one code** — a
+/// deposit, fuel, and later a word with a speaker, a read or a dial — because
+/// the lane had three codes left.
+const ACT_ARC: u32 = 29;
+/// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
+const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1872,7 +1898,7 @@ const ACT_RESPAWN_GATE: u32 = 28;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_RESPAWN_GATE;
+const ACT_MAX: u32 = ACT_ARC;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2213,6 +2239,9 @@ pub enum ActionMsg {
     /// Wake at THE GATE (wire v92): the town's respawn point, if this
     /// player has been there and it is off its cooldown — else a beach.
     RespawnGate,
+    /// One arc verb (wire v95): `op` (`sim_core::works::OP_*`) on `target`
+    /// with `arg`. Reach, state and what is carried are the sim's verdict.
+    Arc { op: u8, target: u8, arg: u8 },
     /// Learn the blueprint for what is in inventory `slot` (research.rs).
     /// `Consume`'s shape exactly, and for the same reason: the slot is the
     /// sender's claim and the sim is the verdict, so a forged index is a
@@ -2511,6 +2540,20 @@ pub fn encode_action_swipe(door: u8, buf: &mut [u8]) -> Result<usize, WireError>
 }
 
 /// `ActionMsg::Pick` — pick the plant at cell key `cell`.
+/// `ActionMsg::Arc` — one arc verb.
+pub fn encode_action_arc(op: u8, target: u8, arg: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if op as u32 >= 1 << ARC_OP_BITS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_ARC, ACTION_SUB_BITS)?;
+    w.write(op as u32, ARC_OP_BITS)?;
+    w.write(target as u32, 8)?;
+    w.write(arg as u32, 8)?;
+    Ok(w.finish())
+}
+
 /// `ActionMsg::RespawnGate` — payload-free.
 pub fn encode_action_respawn_gate(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
@@ -2906,6 +2949,11 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         }
         ACT_PICK => ActionMsg::Pick { cell: r.read(32)? },
         ACT_RESPAWN_GATE => ActionMsg::RespawnGate,
+        ACT_ARC => ActionMsg::Arc {
+            op: r.read(ARC_OP_BITS)? as u8,
+            target: r.read(8)? as u8,
+            arg: r.read(8)? as u8,
+        },
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
             if index as usize >= sim_core::limits::CRAFT_QUEUE {
@@ -4744,11 +4792,12 @@ mod tests {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
-        // respawn point (v92) 28, leaving three five-bit codes.
-        assert_eq!(ACT_MAX, ACT_RESPAWN_GATE);
+        // respawn point (v92) 28, and the arc's one verb (v95) 29, leaving
+        // two five-bit codes.
+        assert_eq!(ACT_MAX, ACT_ARC);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            3,
+            2,
             "the spare action codes moved — say so where the count is written"
         );
     }
