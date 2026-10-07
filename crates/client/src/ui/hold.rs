@@ -808,12 +808,24 @@ pub struct HeldModelDef {
     pub grip_roll: Option<f32>,
 }
 
-/// The hand's roll about a haft carried head-up — the hatchet's. Turns the
-/// back of the fist toward the eye so the fingers read wrapped round the
-/// haft and the thumb runs up it (operator, 2026-09-01: *"in line with the
-/// thumb"*), at a 35° wrist where the smallest turn is 22°. Shared by every
-/// upright carry, whose +Y is also what the fist closes on.
+/// The hand's roll about a haft carried upright — the torch, the bow, the
+/// small things palmed. Turns the back of the fist toward the eye so the
+/// fingers read wrapped round what they hold. It was the hatchet's too,
+/// chosen so the thumb ran up the haft (operator, 2026-09-01: *"in line
+/// with the thumb"*), until the fingers had bones: see [`GRIP_ROLL_HAFTED`].
 pub const GRIP_ROLL_CARRIED: f32 = -0.52;
+/// The hand's roll on the hafted tools — hatchets, pickaxes, the hammer.
+///
+/// **0, the hold clip's own hand, because anything else bends the wrist
+/// back.** `GRIP_ROLL_CARRIED` put the thumb up the haft at the cost of a
+/// wrist bent BACK 25.5° (35° in all), which is the bat's defect on the
+/// hatchet (operator, 2026-10-07: *"fix the hatchet wrist too"*). At 0 the
+/// same axe, at the same angles on screen — the roll turns the hand about
+/// the haft and never the item — is held with the wrist 4° forward and 21°
+/// toward the little finger, which is a hammer grip, and the forearm turned
+/// 1°. The thumb no longer runs up the haft; since `render::fingers` it
+/// wraps over the front of it, which is the grip the reference frame shows.
+pub const GRIP_ROLL_HAFTED: f32 = 0.0;
 /// The hand's roll for a row laid forward (the spear, the rolled plan): the
 /// fingers come round the near side of the shaft, at a 19° wrist.
 pub const GRIP_ROLL_LAID: f32 = 0.35;
@@ -976,7 +988,7 @@ impl HeldModelDef {
             pose_yaw: HAFTED_YAW,
             stroke: Stroke::Chop,
             light: None,
-            grip_roll: Some(GRIP_ROLL_CARRIED),
+            grip_roll: Some(GRIP_ROLL_HAFTED),
         }
     }
 
