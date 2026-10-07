@@ -6418,6 +6418,14 @@ impl World {
                 h.update(&buf);
                 h.update(&e.ready_at.to_le_bytes());
                 h.update(&e.life.to_le_bytes());
+                // Where in its body and which way, only when it has one, so
+                // a store of arrows without folds what it always did.
+                if e.off != [0; 3] || e.dir != [0; 3] {
+                    for v in e.off {
+                        h.update(&v.to_le_bytes());
+                    }
+                    h.update(&[e.dir[0] as u8, e.dir[1] as u8, e.dir[2] as u8]);
+                }
             }
             h.update(&self.spent.evictions().to_le_bytes());
         }

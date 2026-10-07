@@ -305,6 +305,12 @@ fn an_arrow_flies_until_it_lands() {
 
 /// The shared fixture for a hit: an archer and a target 6 m north, level.
 fn shoot_the_target() -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
+    shoot_the_target_facing(0)
+}
+
+/// [`shoot_the_target`] with the target facing `yaw` — 0 is away from the
+/// archer, so the arrow takes it in the back.
+fn shoot_the_target_facing(yaw: u16) -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
     let seed = 7u64;
     let ground = ground_at(seed, 2048.0, 2048.0);
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
@@ -315,6 +321,10 @@ fn shoot_the_target() -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
         hp: 100,
         hp_max: 100,
         body: body_at(2048.0, ground + ARROW_EYE_MM as f32 / 1000.0 - 1.2, 2054.0),
+        frame: InputFrame {
+            yaw,
+            ..InputFrame::default()
+        },
         ..Player::default()
     };
     let (spent, t) = fly(seed, &bow(0, 60_000), &mut players, 60);
@@ -324,6 +334,43 @@ fn shoot_the_target() -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
          assertion below pass for the wrong reason"
     );
     (players, spent, t)
+}
+
+/// An arrow in a body knows where in it it went in and which way, in the
+/// body's own frame (x right, z ahead), so a client draws it standing out
+/// of the body as it turns. Shot from behind it is in the back and points
+/// ahead; turned round, the same shot is in the chest and points back.
+/// Mutant: a pose in the world frame reads the same both ways round.
+#[test]
+fn an_arrow_in_a_body_knows_where_it_went_in() {
+    let (_, spent, _) = shoot_the_target_facing(0);
+    let back = spent.entries()[0];
+    let (_, spent, _) = shoot_the_target_facing(0x8000);
+    let chest = spent.entries()[0];
+    for (rec, what) in [(back, "back"), (chest, "chest")] {
+        assert!(
+            rec.off[0].abs() <= 5,
+            "{what}: on the body's centre line, {:?}",
+            rec.off
+        );
+        assert!(
+            (80..=130).contains(&rec.off[1]),
+            "{what}: at chest height off the feet, {:?}",
+            rec.off
+        );
+    }
+    assert!(
+        back.off[2] < -10 && back.dir[2] == 127,
+        "in the back, pointing ahead: off {:?} dir {:?}",
+        back.off,
+        back.dir
+    );
+    assert!(
+        chest.off[2] > 10 && chest.dir[2] == -127,
+        "in the chest, pointing back: off {:?} dir {:?}",
+        chest.off,
+        chest.dir
+    );
 }
 
 /// A hit rides the body for exactly the lodge, then falls out at its feet
@@ -372,6 +419,7 @@ fn lodged_in(host: u32, life: u64, at: (i32, i32, i32), ready_at: u64) -> SpentR
         host,
         life,
         dir: [0; 3],
+        off: [0; 3],
     }
 }
 
@@ -569,7 +617,9 @@ fn a_world_that_remembers_its_arrows_saves_them() {
             ready_at: 900 + i as u64,
             host: 0x100 + i as u32,
             life: i as u64,
-            dir: [0; 3],
+            // Where in the body, so the save is shown to carry it.
+            dir: [i as i8, -3, 127],
+            off: [i as i16 - 20, 120 + i as i16, -7],
         });
     }
     for i in 0..MAX_SPENT_ARROWS + 5 {

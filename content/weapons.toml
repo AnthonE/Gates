@@ -159,7 +159,9 @@ damage = 35
 structure = 1
 headshot_mult = 2
 limb_pct = 50
-rate_per_min = 30
+# Rust's hunting bow looses every 1.25 s (its repeat delay; the nock is
+# inside it), against the 2 s this was. 48 a minute is 37 ticks, 1.23 s.
+rate_per_min = 48
 ammo = ["item.arrow_wood"]
 # The draw: hold the right mouse this long before a shot will loose
 # (`reference/PROJECTILES.md` §6 — the hunting bow's ~1 s draw). The
@@ -173,7 +175,8 @@ damage = 35
 structure = 1
 headshot_mult = 2
 limb_pct = 50
-rate_per_min = 20
+# Rust's crossbow reloads in 3.6 s; 17 a minute is 105 ticks, 3.5 s.
+rate_per_min = 17
 ammo = ["item.arrow_metal"]
 
 [[weapon]]

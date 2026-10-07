@@ -120,6 +120,10 @@ fn main() {
     let (body, deed, item) = goldens::event_heard();
     let len = protocol::encode_event_heard(body, deed, item, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[134], &buf[..len]);
+    // The arrows standing in bodies (v94).
+    let (reset, recs) = goldens::event_lodged_sync();
+    let len = protocol::encode_event_lodged_sync(reset, &recs, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[135], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

@@ -327,3 +327,94 @@ fn a_stack_that_lands_mid_walk_is_appended_not_restarted() {
         "the client has every stack, the late one included"
     );
 }
+
+/// An arrow standing in a body reaches every client as the body it is in
+/// and where in it and which way (`SUB_LODGED_SYNC`, wire v94), and when it
+/// comes out every client's set loses it — the same two halves as the loose
+/// stacks above, through real bytes.
+#[test]
+fn an_arrow_in_a_body_reaches_every_client_and_comes_out_of_every_set() {
+    use protocol::WireLodged;
+    use sim_core::spent::SpentRec;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let w1 = world_slot(&core, id_of(1));
+    let host = id_of(1);
+    let life = u64::from(core.world.players[w1].deaths);
+    let tick = core.world.tick;
+    core.world.spent.lodge(SpentRec {
+        host,
+        life,
+        round: FILLER,
+        ready_at: tick + 10_000,
+        off: [-12, 131, 25],
+        dir: [3, -20, -127],
+        ..SpentRec::default()
+    });
+    let want = WireLodged {
+        host,
+        off: [-12, 131, 25],
+        dir: [3, -20, -127],
+    };
+    seen.clear();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    for (slot, c) in &clients {
+        assert_eq!(
+            c.lodged(),
+            &[want][..],
+            "client {slot} draws it in the body"
+        );
+        assert!(
+            seen.iter().any(|(s, m)| *s == *slot
+                && matches!(m, EventMsg::LodgedSync { recs, count: 1, .. } if recs[0] == want)),
+            "and the server put it on client {slot}'s lane"
+        );
+    }
+
+    // It rides the body without a byte: following its host moves nothing
+    // the walk sends.
+    seen.clear();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(
+        !seen
+            .iter()
+            .any(|(_, m)| matches!(m, EventMsg::LodgedSync { .. })),
+        "an arrow riding still costs nothing on the lane"
+    );
+
+    // Out it comes: every client's set loses it.
+    assert!(core.world.spent.take_at(0).is_some());
+    seen.clear();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    for (slot, c) in &clients {
+        assert!(c.lodged().is_empty(), "client {slot} stops drawing it");
+        assert!(
+            seen.iter().any(|(s, m)| *s == *slot
+                && matches!(
+                    m,
+                    EventMsg::LodgedSync {
+                        reset: true,
+                        count: 0,
+                        ..
+                    }
+                )),
+            "told by an empty reset on client {slot}'s lane"
+        );
+    }
+}

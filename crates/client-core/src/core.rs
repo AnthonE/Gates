@@ -12,7 +12,7 @@ use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
-    WireGItem,
+    WireGItem, WireLodged,
 };
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::{ColIndex, Part};
@@ -23,7 +23,7 @@ use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_GROUND_ITEMS, MAX_PIECES, MAX_SLOT_LIVES, WEAR_SLOTS,
+    MAX_GROUND_ITEMS, MAX_PIECES, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -363,6 +363,11 @@ pub const APPLIED2_BAGS: u32 = 1 << 5;
 /// would keep drawing it.
 pub const APPLIED2_GITEMS: u32 = 1 << 6;
 
+/// The arrows standing in bodies changed (`EventMsg::LodgedSync`, wire v94)
+/// — re-read `lodged()`. Raised on a reset too, for `APPLIED2_GITEMS`'
+/// reason: an empty reset is the message that the last one came out.
+pub const APPLIED2_LODGED: u32 = 1 << 11;
+
 /// The world's sky/clock record changed (`EventMsg::Env`, weather v0) —
 /// re-read `env`. A level, not a ring: only the latest record means
 /// anything.
@@ -434,6 +439,40 @@ impl GItemSet {
         self.recs[self.len] = rec;
         self.len += 1;
         true
+    }
+}
+
+/// The arrows standing in bodies, as the server last stated them (wire
+/// v94): bounded like the server's store (`MAX_SPENT_ARROWS`), rebuilt by
+/// every walk rather than diffed — a record has no id, and the walk resends
+/// the whole set whenever an arrow goes in or comes out.
+pub struct LodgedSet {
+    recs: Box<[WireLodged]>,
+    len: usize,
+}
+
+impl LodgedSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![WireLodged::default(); MAX_SPENT_ARROWS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn entries(&self) -> &[WireLodged] {
+        &self.recs[..self.len]
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Dropped past capacity, `GItemSet::insert`'s posture.
+    fn push(&mut self, rec: WireLodged) {
+        if self.len < self.recs.len() {
+            self.recs[self.len] = rec;
+            self.len += 1;
+        }
     }
 }
 
@@ -1659,6 +1698,9 @@ pub struct ClientCore {
     /// Loose stacks on the ground, as the server last stated them
     /// (ground items v0). Read through `ground_items()`.
     pub gitems: GItemSet,
+    /// Arrows standing in bodies, as the server last stated them (wire
+    /// v94). Read through `lodged()`.
+    pub lodged: LodgedSet,
     /// Deployable records the last `on_stream` call added or replaced.
     deploy_changes: [DeployRec; protocol::DEPLOY_SYNC_BATCH],
     n_deploy_changes: usize,
@@ -1937,6 +1979,7 @@ impl ClientCore {
             deploys: DeploySet::new(),
             bags: BagSet::new(),
             gitems: GItemSet::new(),
+            lodged: LodgedSet::new(),
             deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
             n_deploy_changes: 0,
             deploy_defs: DeployContent::EMPTY,
@@ -2040,6 +2083,12 @@ impl ClientCore {
     /// divergence one store over, in a shape a player walks up to.
     pub fn ground_items(&self) -> &[WireGItem] {
         self.gitems.entries()
+    }
+
+    /// The arrows standing in bodies — which body, and where in it and which
+    /// way in its own frame (wire v94).
+    pub fn lodged(&self) -> &[WireLodged] {
+        self.lodged.entries()
     }
 
     /// Whether any own bag's cooldown had lapsed as of the last `Bags`
@@ -2561,6 +2610,15 @@ impl ClientCore {
                         self.applied2 |= APPLIED2_GITEMS;
                     }
                 }
+            }
+            EventMsg::LodgedSync { reset, recs, count } => {
+                if reset {
+                    self.lodged.clear();
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    self.lodged.push(rec);
+                }
+                self.applied2 |= APPLIED2_LODGED;
             }
             EventMsg::ContSync {
                 kind,

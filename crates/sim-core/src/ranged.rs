@@ -800,8 +800,9 @@ pub fn draw(
 /// with an arrow on the ground pays the same odds. The slot is part of the
 /// key, which is what makes two arrows landing on one tick two independent
 /// draws. The arrow's own position is where it stopped: the caller moves
-/// `a.q*` there first. `dir` is the way it was flying if it **stuck** in
-/// the world (`SpentRec::dir`), zero if it falls.
+/// `a.q*` there first. `dir` is the way it was flying if it **stuck** —
+/// in the world, or in its host's frame with `off` where in the host it
+/// went in (`SpentRec::dir`, `spent::lodge_pose`) — zero if it falls.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn land(
@@ -813,6 +814,7 @@ fn land(
     a: &Arrow,
     host: Option<(u32, u64)>,
     dir: [i8; 3],
+    off: [i16; 3],
 ) {
     if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
         return;
@@ -831,6 +833,7 @@ fn land(
         host,
         life,
         dir,
+        off,
     });
 }
 
@@ -944,7 +947,7 @@ fn step_in(
             // Falling faster than the sampler can honestly trace — a long
             // drop off a height: it falls from where it is rather than
             // flying on untraced.
-            land(seed, tick, cc, spent, ix, &a, None, [0; 3]);
+            land(seed, tick, cc, spent, ix, &a, None, [0; 3], [0; 3]);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1013,8 +1016,16 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * m.t);
                 a.qy = crate::fmath::floor_i32(oy + sy * m.t);
                 a.qz = crate::fmath::floor_i32(oz + sz * m.t);
-                let host = (crate::mob::mob_id(m.slot), q.mobs.m[m.slot].respawn_at);
-                land(seed, tick, cc, spent, ix, &a, Some(host), [0; 3]);
+                let beast = &q.mobs.m[m.slot];
+                let host = (crate::mob::mob_id(m.slot), beast.respawn_at);
+                // It stands out of the animal where it went in (Rust's do).
+                let (off, dir) = crate::spent::lodge_pose(
+                    (ox + sx * m.t, oy + sy * m.t, oz + sz * m.t),
+                    crate::spent::feet_mm(&beast.body),
+                    beast.yaw,
+                    (dx, dy, dz),
+                );
+                land(seed, tick, cc, spent, ix, &a, Some(host), dir, off);
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -1044,7 +1055,7 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * t);
                 a.qy = crate::fmath::floor_i32(oy + sy * t);
                 a.qz = crate::fmath::floor_i32(oz + sz * t);
-                land(seed, tick, cc, spent, ix, &a, None, [0; 3]);
+                land(seed, tick, cc, spent, ix, &a, None, [0; 3], [0; 3]);
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -1102,7 +1113,17 @@ fn step_in(
             a.qy = crate::fmath::floor_i32(oy + sy * t);
             a.qz = crate::fmath::floor_i32(oz + sz * t);
             let host = (vid, u64::from(players[j].deaths));
-            land(seed, tick, cc, spent, ix, &a, Some(host), [0; 3]);
+            // It stands out of the body where it went in — `enter`, the
+            // crossing into its radius, not the closest approach `t`, which
+            // is its axis — turning with it (Rust's arrows stay in whoever
+            // they hit).
+            let (off, dir) = crate::spent::lodge_pose(
+                (ox + sx * enter, oy + sy * enter, oz + sz * enter),
+                crate::spent::feet_mm(&players[j].body),
+                players[j].frame.yaw,
+                (dx, dy, dz),
+            );
+            land(seed, tick, cc, spent, ix, &a, Some(host), dir, off);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1174,7 +1195,7 @@ fn step_in(
             a.qy = crate::fmath::floor_i32(from.1 + last.1 * back);
             a.qz = crate::fmath::floor_i32(from.2 + last.2 * back);
             let dir = crate::spent::stick_dir(dx, dy, dz);
-            land(seed, tick, cc, spent, ix, &a, None, dir);
+            land(seed, tick, cc, spent, ix, &a, None, dir, [0; 3]);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1187,7 +1208,7 @@ fn step_in(
         if a.life == 0 {
             // Out of flight in the air: it falls to whatever is under it
             // rather than vanishing (`NOW.md` §5 item 2).
-            land(seed, tick, cc, spent, ix, &a, None, [0; 3]);
+            land(seed, tick, cc, spent, ix, &a, None, [0; 3], [0; 3]);
         }
         arrows.a[ix] = a;
     }

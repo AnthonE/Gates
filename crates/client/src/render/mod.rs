@@ -91,6 +91,7 @@ pub mod ghost;
 pub mod decal;
 pub mod highlight;
 pub mod landmarks;
+pub mod lodged;
 pub mod town;
 pub mod tracer;
 pub mod ziggurat;
@@ -596,6 +597,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
+            .init_resource::<lodged::Lodged>()
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<impact::Contacts>()
@@ -727,6 +729,8 @@ impl Plugin for GatesRenderPlugin {
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
+                // The arrows-in-bodies pool, for the same reason.
+                lodged::setup,
                 // The mark mesh: one entity, always drawn, so its pipeline
                 // compiles at load rather than on the first shot of a fight.
                 decal::setup,
@@ -1206,6 +1210,14 @@ impl Plugin for GatesRenderPlugin {
                 impact::fly.after(impact::strike),
                 fx::flash.after(impact::strike),
             )
+                .run_if(world_running)
+                .run_if(move || !plate || filming),
+        )
+        // The arrows standing in bodies, off the bodies this frame streamed.
+        .add_systems(
+            Update,
+            lodged::draw
+                .after(Stream)
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
         )

@@ -53,14 +53,49 @@ pub struct SpentRec {
     /// `Mob::respawn_at` at the hit — so a host that died and came back
     /// does not carry it on.
     pub life: u64,
-    /// The way it was flying when it **stuck** in the world — a trunk, a
-    /// wall, the dirt — as Rust's does, max-norm quantized
-    /// ([`stick_dir`]). Zero is an arrow that falls: one out of a body, one
-    /// out of flight, one that glanced. Only an arrow with no host is ever
-    /// stuck, and those are laid the tick they stop, so this is zero
-    /// between ticks — which is why neither the save nor `state_hash`
-    /// carries it.
+    /// The way it was flying when it **stuck**, max-norm quantized
+    /// ([`stick_dir`]) — in the world (a trunk, a wall, the dirt) for an
+    /// arrow in nothing, laid the tick it stops; or, for an arrow in a
+    /// body, in that body's own frame ([`lodge_pose`]), so a client draws
+    /// it standing out of the body at the angle it went in as the body
+    /// turns. Zero is an arrow that falls: one out of flight, one that
+    /// glanced.
     pub dir: [i8; 3],
+    /// Where in its host it went in, centimetres from the host's feet in
+    /// the host's own frame: x to its right, y up, z ahead ([`lodge_pose`]).
+    /// Zero for an arrow in nothing.
+    pub off: [i16; 3],
+}
+
+/// Where an arrow that met a body at `hit` (millimetres) went in, and
+/// which way it was flying (`vel`, mm/tick), in that body's own frame: the
+/// body stands at `feet` (millimetres) facing `yaw`, and its frame is the
+/// client's (`render::bodies`) — x to its right, z ahead, so a drawn body's
+/// transform puts the arrow back where it went in whichever way it turns.
+pub fn lodge_pose(
+    hit: (f32, f32, f32),
+    feet: (i32, i32, i32),
+    yaw: u16,
+    vel: (i32, i32, i32),
+) -> ([i16; 3], [i8; 3]) {
+    let (fx, fz) = crate::yaw_lut::yaw_dir(yaw);
+    let local = |x: f32, z: f32| (x * fz - z * fx, x * fx + z * fz);
+    let (dx, dy, dz) = (
+        hit.0 - feet.0 as f32,
+        hit.1 - feet.1 as f32,
+        hit.2 - feet.2 as f32,
+    );
+    let (lx, lz) = local(dx, dz);
+    let cm = |v: f32| {
+        crate::fmath::floor_i32(v / 10.0 + 0.5).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    };
+    let (vx, vz) = local(vel.0 as f32, vel.2 as f32);
+    let dir = stick_dir(
+        crate::fmath::floor_i32(vx),
+        vel.1,
+        crate::fmath::floor_i32(vz),
+    );
+    ([cm(lx), cm(dy), cm(lz)], dir)
 }
 
 /// A flight direction in a byte an axis: each component over the largest,
@@ -92,6 +127,11 @@ pub struct SpentArrows {
     /// How many arrows this store has evicted to make room. Hashed, though
     /// it drives nothing: an eviction's only evidence is an absence.
     evictions: u32,
+    /// Bumped on every lodge and every take — what the server's walk of
+    /// the arrows in bodies keys on (`SUB_LODGED_SYNC`). Not state: it is
+    /// neither hashed nor saved, and a reboot starting it again from zero
+    /// costs a client one resend.
+    stamp: u32,
 }
 
 impl Default for SpentArrows {
@@ -106,7 +146,15 @@ impl SpentArrows {
             entries: crate::boxed_array(SpentRec::default()),
             len: 0,
             evictions: 0,
+            stamp: 0,
         }
+    }
+
+    /// The change counter the lodged-arrow walk keys on ([`Self::stamp`]'s
+    /// field doc).
+    #[inline]
+    pub fn stamp(&self) -> u32 {
+        self.stamp
     }
 
     #[inline]
@@ -136,6 +184,7 @@ impl SpentArrows {
         self.entries[..n].copy_from_slice(&rows[..n]);
         self.len = n;
         self.evictions = evictions;
+        self.stamp = self.stamp.wrapping_add(1);
     }
 
     /// Add a stopped arrow. Never refuses: at capacity it evicts the entry
@@ -143,6 +192,7 @@ impl SpentArrows {
     /// counts it (`MAX_SPENT_ARROWS`). Returns `true` if an eviction paid
     /// for this insert.
     pub fn lodge(&mut self, rec: SpentRec) -> bool {
+        self.stamp = self.stamp.wrapping_add(1);
         if self.len < MAX_SPENT_ARROWS {
             self.entries[self.len] = rec;
             self.len += 1;
@@ -168,6 +218,7 @@ impl SpentArrows {
             return None;
         }
         let rec = self.entries[ix];
+        self.stamp = self.stamp.wrapping_add(1);
         self.len -= 1;
         self.entries[ix] = self.entries[self.len];
         self.entries[self.len] = SpentRec::default();

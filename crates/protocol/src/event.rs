@@ -81,6 +81,13 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// items v0).
 pub const GITEM_SYNC_BATCH: usize = 16;
 
+/// Arrows in bodies one sync message carries (wire v94): the body, where
+/// in it the arrow went in and which way. Thirteen bytes a record, so
+/// sixteen are ~210 B, inside `MAX_EVENT_MSG_BYTES`. Overflow policy: the
+/// next message continues the walk, as the loose stacks' does, and the walk
+/// restarts whenever an arrow goes into a body or comes out of one.
+pub const LODGED_SYNC_BATCH: usize = 16;
+
 /// Recipe rows one recipes message carries (a full row is ~22 B; four
 /// keep the drip well under the message cap).
 pub const RECIPE_BATCH: usize = 4;
@@ -435,7 +442,12 @@ const SUB_GATE_SPAWN: u32 = 74;
 /// is intelligence. That something clicked, at a body you can already see
 /// and close enough to hear, is what Rust plays to everyone near.
 const SUB_HEARD: u32 = 75;
-const SUB_MAX: u32 = SUB_HEARD;
+/// The arrows standing in bodies (wire v94): which body, and where in it
+/// and which way in its own frame (`sim_core::spent::lodge_pose`), so a
+/// client draws them on the players and animals it can see. A walk like the
+/// loose stacks', restarted whenever an arrow goes in or comes out.
+const SUB_LODGED_SYNC: u32 = 76;
+const SUB_MAX: u32 = SUB_LODGED_SYNC;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -657,6 +669,9 @@ const BAG_SYNC_COUNT_BITS: u32 = 5;
 /// drip sends per tick, not what the store holds.
 const GITEM_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
+/// Width of the lodged-arrow batch count — `GITEM_SYNC_COUNT_BITS`' shape.
+const LODGED_SYNC_COUNT_BITS: u32 = 5;
+const _: () = assert!(LODGED_SYNC_BATCH < (1usize << LODGED_SYNC_COUNT_BITS));
 /// Own-bag count (`SUB_BAGS`). `BAG_CAP` is 8 and a *count* of 8 needs
 /// four bits, so 9..15 are forgeable and the decoder refuses them —
 /// `CONT_COUNT_BITS`' posture, written down because "8 fits in three
@@ -1639,6 +1654,14 @@ pub enum EventMsg {
     GItemSync {
         reset: bool,
         recs: [WireGItem; GITEM_SYNC_BATCH],
+        count: u8,
+    },
+    /// One batch of the arrows-in-bodies walk (wire v94). `reset` clears
+    /// the client's set first; the walk restarts whenever an arrow goes
+    /// into a body or comes out of one.
+    LodgedSync {
+        reset: bool,
+        recs: [WireLodged; LODGED_SYNC_BATCH],
         count: u8,
     },
     /// The contents of the container this client has open — the answer to
@@ -3192,6 +3215,60 @@ impl WireGItem {
     }
 }
 
+/// One arrow standing in a body (wire v94): the body's id — a player's, or
+/// an animal's (`sim_core::mob::mob_id`) — and where in it it went in and
+/// which way, in that body's own frame (`sim_core::spent::SpentRec`'s
+/// `off`, centimetres, and `dir`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireLodged {
+    pub host: u32,
+    pub off: [i16; 3],
+    pub dir: [i8; 3],
+}
+
+impl WireLodged {
+    pub fn of(a: &sim_core::spent::SpentRec) -> Self {
+        Self {
+            host: a.host,
+            off: a.off,
+            dir: a.dir,
+        }
+    }
+}
+
+/// An arrow in nothing is not in a body: a zero host is the encoder
+/// inventing one.
+fn write_lodged(w: &mut BitWriter, a: &WireLodged) -> Result<(), WireError> {
+    if a.host == 0 {
+        return Err(WireError::Range);
+    }
+    w.write(a.host, 32)?;
+    for v in a.off {
+        w.write(v as u16 as u32, 16)?;
+    }
+    for d in a.dir {
+        w.write(d as u8 as u32, 8)?;
+    }
+    Ok(())
+}
+
+fn read_lodged(r: &mut BitReader) -> Result<WireLodged, WireError> {
+    let mut a = WireLodged {
+        host: r.read(32)?,
+        ..WireLodged::default()
+    };
+    for v in a.off.iter_mut() {
+        *v = r.read(16)? as u16 as i16;
+    }
+    for d in a.dir.iter_mut() {
+        *d = r.read(8)? as u8 as i8;
+    }
+    if a.host == 0 {
+        return Err(WireError::Malformed);
+    }
+    Ok(a)
+}
+
 /// A loose stack's position rides the same windows a bag's and a body's do
 /// — the same quanta — and a stack outside the island is a server bug
 /// surfacing, refused here rather than drawn in somebody's base. `count`
@@ -3331,6 +3408,25 @@ pub fn encode_event_gitem_sync(
     w.write(recs.len() as u32, GITEM_SYNC_COUNT_BITS)?;
     for g in recs {
         write_gitem(&mut w, g)?;
+    }
+    Ok(w.finish())
+}
+
+/// One batch of the arrows-in-bodies walk — the loose stacks' shape. An
+/// empty batch is legal only as a `reset`: *no arrow is in anybody now*.
+pub fn encode_event_lodged_sync(
+    reset: bool,
+    recs: &[WireLodged],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if recs.len() > LODGED_SYNC_BATCH || (recs.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_LODGED_SYNC)?;
+    w.write_bit(reset)?;
+    w.write(recs.len() as u32, LODGED_SYNC_COUNT_BITS)?;
+    for a in recs {
+        write_lodged(&mut w, a)?;
     }
     Ok(w.finish())
 }
@@ -4915,6 +5011,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 *rec = read_gitem(&mut r)?;
             }
             EventMsg::GItemSync {
+                reset,
+                recs,
+                count: count as u8,
+            }
+        }
+        SUB_LODGED_SYNC => {
+            let reset = r.read_bit()?;
+            let count = r.read(LODGED_SYNC_COUNT_BITS)? as usize;
+            if count > LODGED_SYNC_BATCH || (count == 0 && !reset) {
+                return Err(WireError::Malformed);
+            }
+            let mut recs = [WireLodged::default(); LODGED_SYNC_BATCH];
+            for rec in recs.iter_mut().take(count) {
+                *rec = read_lodged(&mut r)?;
+            }
+            EventMsg::LodgedSync {
                 reset,
                 recs,
                 count: count as u8,
@@ -6598,6 +6710,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
+            file: "cliff.rs",
+            src: include_str!("../../sim-core/src/cliff.rs"),
+        },
+        Module {
             file: "light.rs",
             src: include_str!("../../sim-core/src/light.rs"),
         },
@@ -7497,6 +7613,8 @@ mod wire_domains {
             // the bag batch beside it, and guarded the same way by the
             // compile-time assert at the declaration.
             "GITEM_SYNC_COUNT_BITS",
+            // The lodged-arrow batch (wire v94), the loose stacks' twin.
+            "LODGED_SYNC_COUNT_BITS",
             // A count bounded by `BAG_CAP`, which is a sim-core *cap* and
             // not an enumeration — `INV_COUNT_BITS`' and
             // `STOCK_COUNT_BITS`' shape, so it is classified with them.

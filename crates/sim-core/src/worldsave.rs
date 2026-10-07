@@ -201,7 +201,8 @@ use crate::worldcont::WorldContRec;
 ///
 /// **20 — an arrow sticks where it went in**: a loose stack carries the
 /// direction a stuck arrow was flying (three bytes after `expires`, zero
-/// for one lying on the ground).
+/// for one lying on the ground), and an arrow in a body where in it and
+/// which way (nine bytes after its host's life).
 pub const WORLD_SAVE_FORMAT: u16 = 20;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
@@ -318,9 +319,10 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * STACK_BYTES;
 /// cannot move a crate to the player's feet.
 const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * STACK_BYTES;
 /// One stopped arrow (format 10, `spent.rs`): three millimetre coordinates,
-/// the round it is, the tick it falls out, and (format 18) the body it is
-/// in and which life of it.
-const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8 + 4 + 8;
+/// the round it is, the tick it falls out, (format 18) the body it is in
+/// and which life of it, and (format 20) where in that body it went in and
+/// which way — three centimetre offsets and a direction byte an axis.
+const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8 + 4 + 8 + 6 + 3;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
@@ -754,6 +756,13 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u64(a.ready_at);
         o.u32(a.host);
         o.u64(a.life);
+        // Where in its body, and which way (format 20).
+        for v in a.off {
+            o.u16(v as u16);
+        }
+        for d in a.dir {
+            o.u8(d as u8);
+        }
     }
     // Loose stacks on the ground (format 14, `grounditem.rs`). Saved
     // rather than swept on reboot because they are **hashed**: a save
@@ -1568,6 +1577,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let ready_at = r.u64()?;
         let host = r.u32()?;
         let life = r.u64()?;
+        let off = [r.u16()? as i16, r.u16()? as i16, r.u16()? as i16];
+        let dir = [r.u8()? as i8, r.u8()? as i8, r.u8()? as i8];
         // A save is the one non-command path into `World`, so the file is
         // checked and never trusted. Two claims here and they are not the
         // world container's three, because a spent arrow has no address to
@@ -1600,7 +1611,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             ready_at,
             host,
             life,
-            dir: [0; 3],
+            dir,
+            off,
         };
     }
 
@@ -1835,7 +1847,7 @@ mod tests {
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
             + 64 * 25                       // charges
-            + 512 * 34                      // stopped arrows (format 10; host + life at 18)
+            + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
             + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
             + 131_072 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
                             // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
@@ -1854,7 +1866,7 @@ mod tests {
         assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
         // host and its life.
-        assert_eq!(SPENT_BYTES, 34);
+        assert_eq!(SPENT_BYTES, 43);
         // A world container is 261: 4 cell + 8 quantized position + 1 table
         // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
         // (format 16: item, count, condition, skin).
@@ -1937,10 +1949,11 @@ mod tests {
         // 1,024 deploys, the slot on 256 hearths, slot + pose on 256 boxes.
         // 3_499_854 → 3_549_966 at roadside junk: 192 more world containers
         // × 261, for the roadside food boxes.
-        // 3_549_966 → 3_551_502 at format 20: a stuck arrow's direction,
-        // three bytes on each of 512 loose stacks.
+        // 3_549_966 → 3_556_110 at format 20: a stuck arrow's direction,
+        // three bytes on each of 512 loose stacks, and where in its body
+        // an arrow went in, nine on each of 512 stopped arrows.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_551_502,
+            WORLD_SAVE_MAX_BYTES, 3_556_110,
             "the world save ceiling moved"
         );
     }

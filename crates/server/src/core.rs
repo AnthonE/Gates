@@ -19,17 +19,17 @@ use protocol::{
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
     encode_event_gitem_sync, encode_event_health, encode_event_heard, encode_event_hit,
     encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
-    encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
-    SnapshotEncoder, SnapshotHeader, WireBag, WireError, WireGItem, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_known, encode_event_lodged_sync, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, WireGItem,
+    WireLodged, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    LODGED_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use protocol::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX, DEED_RELOAD,
@@ -4152,6 +4152,49 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Arrows-in-bodies walk (wire v94): the spent store's entries that
+        // have a host, drip-fed like the loose stacks. Keyed on the store's
+        // change stamp: an arrow going into a body or coming out of one
+        // restarts it, and nothing else moves what it sends — an arrow in a
+        // body is drawn off the body, so its riding along costs no bytes.
+        let stamp = self.world.spent.stamp();
+        if self.clients[slot].lodged_seen != stamp {
+            let c = &mut self.clients[slot];
+            c.lodged_seen = stamp;
+            c.lodged_sync_cursor = 0;
+            c.lodged_sync_reset = true;
+        }
+        let c = &self.clients[slot];
+        let spent = self.world.spent.entries();
+        if c.lodged_sync_reset || c.lodged_sync_cursor < spent.len() {
+            let mut batch = [WireLodged::default(); LODGED_SYNC_BATCH];
+            let (mut n, mut at) = (0, c.lodged_sync_cursor.min(spent.len()));
+            while at < spent.len() && n < LODGED_SYNC_BATCH {
+                if spent[at].host != 0 {
+                    batch[n] = WireLodged::of(&spent[at]);
+                    n += 1;
+                }
+                at += 1;
+            }
+            if n > 0 || c.lodged_sync_reset {
+                match encode_event_lodged_sync(c.lodged_sync_reset, &batch[..n], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            let c = &mut self.clients[slot];
+                            c.lodged_sync_reset = false;
+                            c.lodged_sync_cursor = at;
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                self.clients[slot].lodged_sync_cursor = at;
             }
         }
 

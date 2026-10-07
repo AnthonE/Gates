@@ -281,6 +281,13 @@ pub struct ClientNetState {
     /// restarts it at zero and the client re-walks, which is correct
     /// rather than merely harmless.
     pub gitem_seen: (u32, usize),
+    /// Arrows-in-bodies walk (wire v94), the loose stacks' shape: a raw
+    /// index into the spent store, whether the next batch resets, and the
+    /// store's change stamp when the walk last restarted
+    /// (`SpentArrows::stamp`). Cursors, not sim state.
+    pub lodged_sync_cursor: usize,
+    pub lodged_sync_reset: bool,
+    pub lodged_seen: u32,
     /// Which ground container this client has open, or `CONT_SELF` for
     /// none, with `open_cont_handle` naming it (a bag id, or a packed
     /// `box_key`) exactly as `Command::Move` names one.
@@ -431,6 +438,9 @@ impl ClientNetState {
             gitem_sync_cursor: 0,
             gitem_sync_reset: true,
             gitem_seen: (0, 0),
+            lodged_sync_cursor: 0,
+            lodged_sync_reset: true,
+            lodged_seen: 0,
             bag_sync_reset: true,
             open_cont_kind: CONT_SELF,
             open_cont_handle: 0,
@@ -489,6 +499,8 @@ impl ClientNetState {
         self.gitem_sync_cursor = 0;
         self.gitem_sync_reset = true;
         self.gitem_seen = (0, 0);
+        self.lodged_sync_cursor = 0;
+        self.lodged_sync_reset = true;
         // The open container is *closed*, not resynced. Every other line
         // here restarts a walk the client is owed; this one is the only
         // piece of event-lane state the client can hold an opinion about,
