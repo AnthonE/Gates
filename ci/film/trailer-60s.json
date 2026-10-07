@@ -11,15 +11,19 @@
   "crf": 16,
   "maxrate": "9M",
   "grade": "eq=contrast=1.04:saturation=1.05,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02",
-  "finish": {"halation": 0.12, "vignette": 0.35, "grain": 3, "letterbox": 2.39},
+  "finish": {
+    "halation": 0.12,
+    "vignette": 0.35,
+    "grain": 3,
+    "letterbox": 2.39
+  },
   "clips": [
     {"shot": "dawn-sea", "in": 0.3, "len": 8.0, "game": 0.6},
-    {"shot": "beach-push", "in": 0.6, "len": 5.333, "game": 0.7, "transition": "cut",
-     "grade": "eq=gamma=1.18:contrast=1.06:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.04:bh=-0.02"},
+    {"shot": "beach-push", "in": 0.6, "len": 5.333, "game": 0.7, "transition": "cut", "grade": "eq=gamma=1.18:contrast=1.06:saturation=1.1,colorbalance=rs=-0.02:bs=0.03:rh=0.04:bh=-0.02"},
     {"shot": "aerial-zig", "in": 1.0, "len": 5.333, "game": 0.3, "transition": "cut"},
     {"shot": "zig-crown", "in": 1.0, "len": 5.334, "game": 0.4, "transition": "cut"},
     {"shot": "build-lapse", "in": 0.0, "len": 5.333, "game": 0.25, "transition": "cut"},
-    {"shot": "base-golden", "in": 1.0, "len": 2.667, "game": 0.5, "transition": "cut"},
+    {"shot": "base-golden", "in": 3.8, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "zig-dusk", "in": 2.0, "len": 2.667, "game": 0.5, "transition": "cut"},
     {"shot": "base-storm", "in": 1.5, "len": 2.666, "game": 0.9, "transition": "cut"},
     {"shot": "raid-plant", "in": 1.0, "len": 2.667, "game": 0.7, "transition": "cut"},
@@ -40,7 +44,9 @@
     {"at": 41.4, "len": 2.6, "text": "RAID", "size": 0.15, "y": 0.5},
     {"at": 48.4, "len": 3.8, "text": "TRUST NO ONE", "size": 0.09, "y": 0.5}
   ],
-  "flashes": [{"at": 41.3, "len": 0.2}],
+  "flashes": [
+    {"at": 41.3, "len": 0.2}
+  ],
   "music": [
     {"src": "trailer_drone.wav", "at": 0.0, "gain": 0.45},
     {"src": "29_MusicOpenCalm.wav", "at": 0.0, "gain": 0.8, "fade_in": 1.5},
@@ -68,12 +74,19 @@
     {"src": "trailer_braam.wav", "at": 55.95, "gain": 0.9}
   ],
   "card": {
-    "len": 8.0, "fade": 0.6, "shot": "zig-crown", "at": 5.5,
+    "len": 8.0,
+    "fade": 0.6,
+    "shot": "zig-crown",
+    "at": 5.5,
     "title": "GATES",
     "lines": ["THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER", "PLAY NOW  ·  ELOPROS.COM/GAMES/GATES"]
   },
   "poster": {
-    "out": "film/ads/gates-key-art.png", "image": "film/stills/03-zig-sunset.png", "size": [3840, 2160],
-    "title": "GATES", "lines": ["BUILD. RAID. SURVIVE.", "PLAY IN YOUR BROWSER"], "dim": 0.25
+    "out": "film/ads/gates-key-art.png",
+    "image": "film/stills/03-zig-sunset.png",
+    "size": [3840, 2160],
+    "title": "GATES",
+    "lines": ["BUILD. RAID. SURVIVE.", "PLAY IN YOUR BROWSER"],
+    "dim": 0.25
   }
 }

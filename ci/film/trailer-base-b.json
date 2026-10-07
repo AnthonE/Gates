@@ -1,147 +1,24 @@
 {
- "recording": "film/zig.rec",
- "out": "film/shots/base-b",
- "width": 1920,
- "height": 1080,
- "fps": 30,
- "fov": 40,
- "settle": 45,
- "budget": {
-  "ao": 2,
-  "shadow_px": 2048,
-  "shadow_m": 300
- },
- "look": {
-  "shutter": 0.5,
-  "saturation": 1.06,
-  "contrast": 1.05
- },
- "shots": [
-  {
-   "name": "build-lapse2",
-   "at": 20,
-   "len": 5.5,
-   "speed": 6,
-   "hour": [
-    0.58,
-    0.78
-   ],
-   "weather": "clear",
-   "fov": 46,
-   "ease": true,
-   "orbit": {
-    "center": [
-     2356,
-     6,
-     3100
-    ],
-    "radius": 36,
-    "height": [
-     2.5,
-     4.5
-    ],
-    "from": 225,
-    "to": 255
-   },
-   "look": {
-    "shutter": 0.3,
-    "focus": "look",
-    "fstop": 5.6,
-    "saturation": 1.1
-   }
+  "recording": "film/zig.rec",
+  "out": "film/shots/base-b",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "fov": 40,
+  "settle": 45,
+  "budget": {
+    "ao": 2,
+    "shadow_px": 2048,
+    "shadow_m": 300
   },
-  {
-   "name": "raid-wide",
-   "at": 309.2,
-   "len": 5.5,
-   "hour": 0.8,
-   "weather": "clear",
-   "fov": 36,
-   "ease": true,
-   "keys": [
-    {
-     "t": 0,
-     "pos": [
-      2324,
-      3.5,
-      3094
-     ],
-     "look": [
-      2356,
-      5,
-      3107
-     ]
-    },
-    {
-     "t": 5.5,
-     "pos": [
-      2326,
-      5.5,
-      3095
-     ],
-     "look": [
-      2356,
-      5,
-      3107
-     ]
-    }
-   ],
-   "look": {
-    "focus": "look",
-    "fstop": 3.5,
-    "exposure": 0.2,
-    "temperature": 0.05,
-    "saturation": 1.1,
-    "shake": [
-     [
-      0,
-      0.1
-     ],
-     [
-      2.3,
-      0.1
-     ],
-     [
-      2.45,
-      1.0
-     ],
-     [
-      3.5,
-      0.15
-     ]
-    ]
-   }
+  "look": {
+    "shutter": 0.5,
+    "saturation": 1.06,
+    "contrast": 1.05
   },
-  {
-   "name": "aftermath",
-   "at": 316.5,
-   "len": 5.5,
-   "hour": 0.82,
-   "weather": "clear",
-   "fov": 38,
-   "ease": true,
-   "orbit": {
-    "center": [
-     2353,
-     1.5,
-     3104
-    ],
-    "radius": [
-     17,
-     15
-    ],
-    "height": 3,
-    "from": 228,
-    "to": 250
-   },
-   "look": {
-    "focus": "look",
-    "fstop": 2.4,
-    "exposure": 0.15,
-    "temperature": 0.06,
-    "saturation": 1.08,
-    "shake": 0.12
-   }
-  }
- ]
+  "shots": [
+    {"name": "build-lapse2", "at": 20, "len": 5.5, "speed": 6, "hour": [0.58, 0.78], "weather": "clear", "fov": 46, "ease": true, "orbit": {"center": [2356, 6, 3100], "radius": 36, "height": [2.5, 4.5], "from": 225, "to": 255}, "look": {"shutter": 0.3, "focus": "look", "fstop": 5.6, "saturation": 1.1}},
+    {"name": "raid-wide", "at": 309.2, "len": 5.5, "hour": 0.8, "weather": "clear", "fov": 36, "ease": true, "keys": [{"t": 0, "pos": [2324, 3.5, 3094], "look": [2356, 5, 3107]}, {"t": 5.5, "pos": [2326, 5.5, 3095], "look": [2356, 5, 3107]}], "look": {"focus": "look", "fstop": 3.5, "exposure": 0.2, "temperature": 0.05, "saturation": 1.1, "shake": [[0, 0.1], [2.3, 0.1], [2.45, 1.0], [3.5, 0.15]]}},
+    {"name": "aftermath", "at": 316.5, "len": 5.5, "hour": 0.82, "weather": "clear", "fov": 38, "ease": true, "orbit": {"center": [2353, 1.5, 3104], "radius": [17, 15], "height": 3, "from": 228, "to": 250}, "look": {"focus": "look", "fstop": 2.4, "exposure": 0.15, "temperature": 0.06, "saturation": 1.08, "shake": 0.12}}
+  ]
 }
