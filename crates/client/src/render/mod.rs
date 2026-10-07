@@ -1824,13 +1824,14 @@ impl Plugin for GatesRenderPlugin {
         else {
             return;
         };
+        use bevy::render::render_resource::WgpuFeatures;
         let limits = device.limits();
+        let features = device.features();
         let caps = quality::GpuCaps {
             sampled_textures: limits.max_sampled_textures_per_shader_stage,
             storage_textures: limits.max_storage_textures_per_shader_stage,
-            float32_filterable: device
-                .features()
-                .contains(bevy::render::render_resource::WgpuFeatures::FLOAT32_FILTERABLE),
+            float32_filterable: features.contains(WgpuFeatures::FLOAT32_FILTERABLE),
+            rg11b10_renderable: features.contains(WgpuFeatures::RG11B10UFLOAT_RENDERABLE),
         };
         quality::set_gpu_caps(caps);
         let tier = quality::effective(quality::default_gfx());

@@ -151,25 +151,31 @@ pub fn fit_within(css_w: f32, css_h: f32, dpr: f32, cap_px: u32) -> Fit {
 /// (and stops logging after a few) and the frame that held it is not drawn:
 /// Bevy submits a frame in one call, so one refused pipeline is a black or
 /// frozen canvas with nothing a player can read. Bevy installs no handler,
-/// so this one logs every error and hands the first to the page
-/// (`window.gatesGpuError`), which offers the WebGL2 module instead.
+/// so this one logs every error and hands it to the page
+/// (`window.gatesGpuError(message, kind)`), which decides: `"lost"` means
+/// nothing will draw again and the page reloads into the WebGL2 module,
+/// `"error"` is a refusal the page reports and remembers. A device destroyed
+/// on purpose (the tab unloading) is neither.
 #[cfg(all(target_arch = "wasm32", not(webgl2)))]
 pub fn watch_gpu(device: &wgpu::Device) {
     device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
         let msg = e.to_string();
         bevy::log::error!("webgpu: {msg}");
-        gpu_trouble(&msg);
+        gpu_trouble(&msg, "error");
     }));
     device.set_device_lost_callback(|reason, msg| {
+        if reason == wgpu::DeviceLostReason::Destroyed {
+            return;
+        }
         let msg = format!("device lost ({reason:?}): {msg}");
         bevy::log::error!("webgpu: {msg}");
-        gpu_trouble(&msg);
+        gpu_trouble(&msg, "lost");
     });
 }
 
-/// `window.gatesGpuError(message)`, if the page installed one.
+/// `window.gatesGpuError(message, kind)`, if the page installed one.
 #[cfg(all(target_arch = "wasm32", not(webgl2)))]
-fn gpu_trouble(msg: &str) {
+fn gpu_trouble(msg: &str, kind: &str) {
     use wasm_bindgen::{JsCast, JsValue};
     let Some(window) = web_sys::window() else {
         return;
@@ -178,7 +184,7 @@ fn gpu_trouble(msg: &str) {
         .ok()
         .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
     if let Some(f) = hook {
-        let _ = f.call1(&window, &JsValue::from_str(msg));
+        let _ = f.call2(&window, &JsValue::from_str(msg), &JsValue::from_str(kind));
     }
 }
 

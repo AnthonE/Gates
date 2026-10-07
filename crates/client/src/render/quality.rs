@@ -230,6 +230,9 @@ pub struct GpuCaps {
     pub storage_textures: u32,
     /// `Features::FLOAT32_FILTERABLE`: SSAO samples an `R32Float` depth.
     pub float32_filterable: bool,
+    /// `Features::RG11B10UFLOAT_RENDERABLE`: bloom's mip chain is
+    /// `Rg11b10Ufloat` and Bevy never checks that it can draw into one.
+    pub rg11b10_renderable: bool,
 }
 
 /// The worst main-pass pipeline's sampled textures with no prepass: see
@@ -243,6 +246,7 @@ impl GpuCaps {
         sampled_textures: u32::MAX,
         storage_textures: u32::MAX,
         float32_filterable: true,
+        rg11b10_renderable: true,
     };
 
     /// Prepass textures the main pass can still bind.
@@ -461,7 +465,13 @@ pub fn effective(g: Gfx) -> Gfx {
         Ao::Off
     };
     let taa = g.taa && caps.taa(ao != Ao::Off);
-    Gfx { ao, taa, ..g }
+    let bloom = g.bloom && caps.rg11b10_renderable;
+    Gfx {
+        ao,
+        taa,
+        bloom,
+        ..g
+    }
 }
 
 /// What one effective [`Gfx`] asks the renderer for, in Bevy's own types.

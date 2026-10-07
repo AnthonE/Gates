@@ -491,9 +491,21 @@ fn join_error(e: client::JoinError) -> JsValue {
 /// bug in a browser would present as a module that simply stopped. This is the
 /// same reasoning `bin/gates.rs` gives for installing its panic hook first,
 /// before anything can panic.
+///
+/// It also hands the message to `window.gatesPanic`, if the page installed
+/// one: a WebGPU module that panics before its device exists (Bevy's
+/// "Unable to find a GPU!") has no error hook yet, and the page is the only
+/// thing left that can load the WebGL2 module instead.
 #[wasm_bindgen(start)]
 pub fn start() {
     std::panic::set_hook(Box::new(|info| {
-        web_sys::console::error_1(&JsValue::from_str(&format!("gates: panic: {info}")));
+        let msg = JsValue::from_str(&format!("gates: panic: {info}"));
+        web_sys::console::error_1(&msg);
+        let global = js_sys::global();
+        if let Ok(f) = js_sys::Reflect::get(&global, &JsValue::from_str("gatesPanic")) {
+            if let Some(f) = f.dyn_ref::<js_sys::Function>() {
+                let _ = f.call1(&global, &msg);
+            }
+        }
     }));
 }

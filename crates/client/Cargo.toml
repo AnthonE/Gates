@@ -787,6 +787,9 @@ agentkey = { path = "../agentkey", optional = true }
 # The same wgpu Bevy resolves (one entry in Cargo.lock), named so the WebGPU
 # module can hand the device an error handler: Bevy re-exports neither
 # `wgpu::Error` nor the handler trait (`render/web.rs`, `watch_gpu`).
+# ⚠ `default-features = false` is load-bearing: wgpu's defaults include its
+# `webgpu` backend, which would quietly land in the WebGL2 module too
+# (`ci/gates.sh` checks the resolution).
 wgpu = { version = "27", default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
