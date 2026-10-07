@@ -490,7 +490,7 @@ fn the_part_ladder_is_the_swings_too() {
     // Through the sim's own rung table rather than arithmetic of our own:
     // what is under test here is which RUNG the aim selected, and
     // `tests/headshot.rs` is where the multipliers are gated.
-    let rung = |part| sim_core::combat::part_damage(SPEAR_DAMAGE, part, 2, 50);
+    let rung = |part| sim_core::combat::part_damage(SPEAR_DAMAGE, part, 200, 50);
     assert_eq!(
         took_head,
         rung(Part::Head),

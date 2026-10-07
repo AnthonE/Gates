@@ -1691,7 +1691,7 @@ fn bow_fixture() -> CombatContent {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // No magazine: a bow spends straight out of the quiver
         // (`RangedDef::magazine`), so the arrow path is unchanged by
@@ -1704,6 +1704,8 @@ fn bow_fixture() -> CombatContent {
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
+        damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     c
 }
@@ -1935,7 +1937,7 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // A magazine that cannot run out inside forty ticks, so the storm
         // storms. `u16::MAX` and not zero: a hitscan row with no magazine

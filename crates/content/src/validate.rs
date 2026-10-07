@@ -420,8 +420,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if c.item(&w.id).map(|i| i.slot) != Some(EquipSlot::Hand) {
             return Err(format!("weapon `{}`: not a hand item", w.id));
         }
-        if w.damage == 0 || w.headshot_mult == 0 || w.rate_per_min == 0 {
-            return Err(format!("weapon `{}`: zero damage/mult/rate", w.id));
+        if w.damage == 0 || w.rate_per_min == 0 {
+            return Err(format!("weapon `{}`: zero damage/rate", w.id));
+        }
+        // A head worth less than the chest under it would invert `Part`'s
+        // ordering in data, `limb_pct`'s refusal at the other end.
+        if w.headshot_pct < 100 {
+            return Err(format!(
+                "weapon `{}`: headshot_pct is {}, under the identity 100",
+                w.id, w.headshot_pct
+            ));
         }
         // Both ends of the ladder, and the bounds are not symmetric. Zero
         // is a leg hit that costs the body nothing — a hit that announces
@@ -689,11 +697,11 @@ pub fn structural(c: &Content) -> Result<(), String> {
     let mags = c
         .weapons
         .iter()
-        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .filter(|w| w.magazine.unwrap_or(0) > 0 || w.kind == WeaponKind::Bow)
         .count();
     if mags > sim_core::limits::MAX_MAGS {
         return Err(format!(
-            "{mags} weapons carry a magazine, over MAX_MAGS ({})",
+            "{mags} weapons carry a magazine or pick a round, over MAX_MAGS ({})",
             sim_core::limits::MAX_MAGS
         ));
     }
@@ -716,6 +724,24 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         // Zero drop is legal and means a flat round — the schema has no
         // opinion about gravity, only about a round that cannot fly.
+        //
+        // A round that hits for nothing, or for more than twice what its
+        // weapon says, is a typo rather than a balance call.
+        if a.damage_pct == 0 || a.damage_pct > 200 {
+            return Err(format!(
+                "ammo `{}`: damage_pct {} is outside 1..=200",
+                a.id, a.damage_pct
+            ));
+        }
+        // A fire that goes out before it starts, or outlives the wire's
+        // twelve bits of ticks (`world::EV_FIRE`), is a typo.
+        let [lo, hi] = a.fire_s;
+        if a.fire_s != [0, 0] && (lo == 0 || lo > hi || hi > 120) {
+            return Err(format!(
+                "ammo `{}`: fire_s [{lo}, {hi}] is not 1 <= shortest <= longest <= 120",
+                a.id
+            ));
+        }
     }
 
     // Armor: item-backed, worn in the slot the item declares, sane range.

@@ -81,15 +81,18 @@ grief_protection_h = 24
 # is on hold — their ~35 is priced against ammunition that comes back and
 # ours was priced against ammunition that never did. The odds are what
 # turn a spent arrow from a cost into a tax; nothing else in the loop
-# does. Tier 3 in their doc, so approximate by their own warning.
-arrow_break_pct = 15
-# Seconds an arrow that DEALT DAMAGE lies in its target before it may be
-# taken back; one that missed may be taken the moment it lands. Theirs
-# too (§5, "retrieved after 10 seconds"), and the rule reads arbitrary
-# and is not: it stops an archer re-collecting the arrow they just shot
-# someone with *during* the fight, so a bow still runs dry in a sustained
-# engagement while losing almost nothing to a day of hunting.
-arrow_lodge_s = 10
+# does. Tier 3 in their doc, so approximate by their own warning — and it
+# was: the live item data (wooden, high-velocity and bone arrows alike)
+# breaks 10 % of landings, so 15 → 10.
+arrow_break_pct = 10
+# Seconds an arrow that DEALT DAMAGE stays standing in its target before
+# it falls out at the target's feet; it falls at once if the target dies.
+# Until then anyone in reach may pull it out with `E`, the target too.
+# Rust's own (its item code, read 2026-10): an arrow in a body stays there,
+# pinned where it went in, until it is pulled or its five-minute despawn
+# runs — the "retrieved after 10 seconds" this was (§5) is not in their
+# code. 10 → 300.
+arrow_lodge_s = 300
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.
@@ -97,13 +100,17 @@ ttk_melee = [3, 5]
 # A light that also hits (the torch): half a rock's blow, the reference's
 # ratio, lit or not — 10 hits dark, 9 burning.
 ttk_light = [8, 10]
-ttk_bow = [3, 4]
+# Rust's wooden arrow is 50 off the bow and 60 off the crossbow: two body
+# hits on a naked 100.
+ttk_bow = [2, 3]
 ttk_firearm = [4, 6]
-# "headshot × 2" (CONTENT §4) — every banded weapon carries exactly this,
-# so a data edit can't quietly make headshots one-tap past the TTK band.
-headshot_mult = 2
+# The head, in percent: Rust's arrows are ×1.5 on every bow and its guns
+# ×2 (CONTENT §4's "headshot × 2"), so a band rather than one value now.
+# What the exact pin was for is held by a rule instead (`balance.rs`): no
+# banded weapon's headshot kills a naked body in one hit.
+headshot_pct = [150, 200]
 # And "limb ×0.5" (`reference/PROJECTILES.md` §0), as a percent so this file
-# stays integer-only. Exact for `headshot_mult`'s reason at the other end of
+# stays integer-only. Exact for `headshot_pct`'s reason at the other end of
 # the ladder: the TTK band above is measured on **body** hits, so it says
 # nothing about a leg, and a data edit could otherwise take a limb to 100
 # (aim stops mattering downward) or to 1 (a leg hit is a wasted round) with

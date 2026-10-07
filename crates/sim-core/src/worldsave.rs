@@ -76,6 +76,7 @@ use crate::gather::{ItemStack, SlotLife, NO_ITEM};
 use crate::grounditem::GroundItemRec;
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
+use crate::limits::MAX_FIRES;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
     MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_GROUND_ITEMS,
@@ -198,7 +199,14 @@ use crate::worldcont::WorldContRec;
 /// bytes after `loc`), and a hearth and a container carry the body slot
 /// their record is filed under — a container its pose too, because reach
 /// and warmth are measured to where it stands.
-pub const WORLD_SAVE_FORMAT: u16 = 19;
+///
+/// **20 — an arrow sticks where it went in**: a loose stack carries the
+/// direction a stuck arrow was flying (three bytes after `expires`, zero
+/// for one lying on the ground), and an arrow in a body where in it and
+/// which way (nine bytes after its host's life). And the fires fire arrows
+/// left burning: a twelfth section count, after the loose stacks', and their
+/// records after the loose stacks.
+pub const WORLD_SAVE_FORMAT: u16 = 20;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -217,11 +225,11 @@ pub const ENV_BYTES: usize = 1 + 8 + 6 * 2 + 1 + 4;
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
 pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + SECTION_COUNTS;
-/// Eleven `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+/// Twelve `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
 /// The ninth is `world_conts` (format 5), the tenth `spent` (format 10),
-/// the eleventh `ground_items` (format 14).
+/// the eleventh `ground_items` (format 14), the twelfth `fires` (20).
 /// **Public for `HEAD_BYTES`' reason, and it was made public the day that
 /// reason came true a third time.** `tests/worldsave.rs` spelled the offset
 /// of the first section count as a hand-copied `34`, which was right until
@@ -229,7 +237,7 @@ pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + SECTION_CO
 /// the byte-poke landed in the eviction counter and the test failed with
 /// "a player count past MAX_PLAYERS was accepted" rather than with anything
 /// about the head. The offset is `HEAD_BYTES - SECTION_COUNTS` now.
-pub const SECTION_COUNTS: usize = 11 * 2 + 4;
+pub const SECTION_COUNTS: usize = 12 * 2 + 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -314,12 +322,16 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * STACK_BYTES;
 /// cannot move a crate to the player's feet.
 const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * STACK_BYTES;
 /// One stopped arrow (format 10, `spent.rs`): three millimetre coordinates,
-/// the round it is, the tick it falls out, and (format 18) the body it is
-/// in and which life of it.
-const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8 + 4 + 8;
+/// the round it is, the tick it falls out, (format 18) the body it is in
+/// and which life of it, and (format 20) where in that body it went in and
+/// which way — three centimetre offsets and a direction byte an axis.
+const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8 + 4 + 8 + 6 + 3;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
+/// A fire (format 20, `fire.rs`): three body-quanta coordinates, the tick it
+/// goes out, its archer, the bow and the range.
+const FIRE_BYTES: usize = 4 * 3 + 8 + 4 + 2 + 2;
 const SLOT_LIFE_BYTES: usize = 23;
 
 /// The largest blob this world can produce — every store at capacity.
@@ -330,10 +342,10 @@ const SLOT_LIFE_BYTES: usize = 23;
 /// sense wall 4 means: the sim thread's cost is O(live records) with a
 /// ceiling nothing can exceed, not O(whatever the world grew to).
 /// One loose stack (format 14): 4 id + three `i32` coordinates + an
-/// `ItemStack` + the despawn deadline. The same 32 bytes `state_hash`
-/// folds per record, and deliberately so — a digest and a save that
-/// disagreed about a record's shape is how a reload changes a hash.
-pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8;
+/// `ItemStack` + the despawn deadline, and a stuck arrow's direction
+/// (format 20). The 32 bytes before the direction are what `state_hash`
+/// folds per record, and it folds the direction too whenever it is set.
+pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8 + 3;
 
 /// One stored `ItemStack`: item, count, condition, skin (format 16).
 pub const STACK_BYTES: usize = 8;
@@ -350,6 +362,7 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_LIVE_CHARGES * CHARGE_BYTES
     + MAX_SPENT_ARROWS * SPENT_BYTES
     + MAX_GROUND_ITEMS * GROUND_ITEM_BYTES
+    + MAX_FIRES * FIRE_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
@@ -562,6 +575,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u16(w.charges.len() as u16);
     o.u16(w.spent.len() as u16);
     o.u16(w.ground_items.len() as u16);
+    o.u16(w.fires.len() as u16);
     o.u32(w.slot_lives.len() as u32);
 
     for p in w.players.iter().filter(|p| p.active) {
@@ -750,6 +764,13 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u64(a.ready_at);
         o.u32(a.host);
         o.u64(a.life);
+        // Where in its body, and which way (format 20).
+        for v in a.off {
+            o.u16(v as u16);
+        }
+        for d in a.dir {
+            o.u8(d as u8);
+        }
     }
     // Loose stacks on the ground (format 14, `grounditem.rs`). Saved
     // rather than swept on reboot because they are **hashed**: a save
@@ -767,6 +788,19 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.i32(g.qz);
         o.stack(&g.stack);
         o.u64(g.expires);
+        // A stuck arrow's direction (format 20).
+        for d in g.dir {
+            o.u8(d as u8);
+        }
+    }
+    for f in w.fires.entries() {
+        o.i32(f.qx);
+        o.i32(f.qy);
+        o.i32(f.qz);
+        o.u64(f.until);
+        o.u32(f.owner);
+        o.u16(f.item);
+        o.u16(f.range_cm);
     }
     for s in w.slot_lives.entries() {
         o.u16(s.cx);
@@ -954,6 +988,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
     let n_spent = r.count(MAX_SPENT_ARROWS)?;
     let n_gitems = r.count(MAX_GROUND_ITEMS)?;
+    let n_fires = r.count(MAX_FIRES)?;
     let n_slots = r.count32(MAX_SLOT_LIVES)?;
 
     let max_item = crate::limits::MAX_ITEM_DEFS;
@@ -1560,6 +1595,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let ready_at = r.u64()?;
         let host = r.u32()?;
         let life = r.u64()?;
+        let off = [r.u16()? as i16, r.u16()? as i16, r.u16()? as i16];
+        let dir = [r.u8()? as i8, r.u8()? as i8, r.u8()? as i8];
         // A save is the one non-command path into `World`, so the file is
         // checked and never trusted. Two claims here and they are not the
         // world container's three, because a spent arrow has no address to
@@ -1592,6 +1629,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             ready_at,
             host,
             life,
+            dir,
+            off,
         };
     }
 
@@ -1622,6 +1661,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cond = r.u16()?;
         let skin = r.u16()?;
         let expires = r.u64()?;
+        let dir = [r.u8()? as i8, r.u8()? as i8, r.u8()? as i8];
         let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
         if i64::from(qx) < 0
             || i64::from(qx) > side_q
@@ -1648,6 +1688,35 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 skin,
             },
             expires,
+            dir,
+        };
+    }
+
+    // --- fires burning (format 20) ----------------------------------------
+    let mut fires = [crate::fire::FireRec::default(); MAX_FIRES];
+    for f in fires.iter_mut().take(n_fires) {
+        let qx = r.i32()?;
+        let qy = r.i32()?;
+        let qz = r.i32()?;
+        let until = r.u64()?;
+        let owner = r.u32()?;
+        let item = r.u16()?;
+        let range_cm = r.u16()?;
+        let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
+        if !(0..=side_q).contains(&i64::from(qx)) || !(0..=side_q).contains(&i64::from(qz)) {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        if item as usize >= max_item {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        *f = crate::fire::FireRec {
+            qx,
+            qy,
+            qz,
+            until,
+            owner,
+            item,
+            range_cm,
         };
     }
 
@@ -1706,6 +1775,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.world_conts.restore(&conts[..n_conts]);
     w.charges.restore(&charges[..n_charges]);
+    w.fires.restore(&fires[..n_fires]);
     w.spent.restore(&spent[..n_spent], spent_evictions);
     // Cleared and refilled, so a load into a world that already had litter
     // on it is the file's world and not the union of two.
@@ -1814,7 +1884,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 90                    // head (format 15: eleven section counts + the 26 B sky/clock)
+        let by_hand = 92                    // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20)
             + 100 * 485                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
@@ -1824,8 +1894,9 @@ mod tests {
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
             + 64 * 25                       // charges
-            + 512 * 34                      // stopped arrows (format 10; host + life at 18)
-            + 512 * 32                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18)
+            + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
+            + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
+            + 64 * 28                       // fires (format 20)
             + 131_072 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
                             // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                             // 56 -> 62 at format 10: a tenth count, plus the
@@ -1837,13 +1908,14 @@ mod tests {
                             // a bag's, and a head field duplicating a
                             // derivable one is a second place for it to be
                             // wrong. 64 -> 90 at format 15: the admin's sky and
-                            // clock (`ENV_BYTES`).
-        assert_eq!(HEAD_BYTES, 90);
-        // 4 id + 12 position + 8 stack + 8 deadline.
-        assert_eq!(GROUND_ITEM_BYTES, 32);
+                            // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
+                            // fires' count.
+        assert_eq!(HEAD_BYTES, 92);
+        // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
+        assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
         // host and its life.
-        assert_eq!(SPENT_BYTES, 34);
+        assert_eq!(SPENT_BYTES, 43);
         // A world container is 261: 4 cell + 8 quantized position + 1 table
         // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
         // (format 16: item, count, condition, skin).
@@ -1926,8 +1998,12 @@ mod tests {
         // 1,024 deploys, the slot on 256 hearths, slot + pose on 256 boxes.
         // 3_499_854 → 3_549_966 at roadside junk: 192 more world containers
         // × 261, for the roadside food boxes.
+        // 3_549_966 → 3_556_110 at format 20: a stuck arrow's direction,
+        // three bytes on each of 512 loose stacks, and where in its body
+        // an arrow went in, nine on each of 512 stopped arrows. Then
+        // 3_557_904: 64 fires × 28 and their count.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_549_966,
+            WORLD_SAVE_MAX_BYTES, 3_557_904,
             "the world save ceiling moved"
         );
     }

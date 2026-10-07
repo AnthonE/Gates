@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 135] = [
+const GOLDEN: [&[u8]; 138] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -198,6 +198,9 @@ const GOLDEN: [&[u8]; 135] = [
     include_bytes!("golden/event_gate_spawn.bin"),
     include_bytes!("golden/action_respawn_gate.bin"),
     include_bytes!("golden/event_heard.bin"),
+    include_bytes!("golden/event_lodged_sync.bin"),
+    include_bytes!("golden/event_ammo.bin"),
+    include_bytes!("golden/event_fire.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -427,8 +430,13 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 133);
     // Another body's hands, heard (v93).
     g!(seen, golden_event, 134);
+    // The arrows standing in bodies (v94), and which arrow a bow looses.
+    g!(seen, golden_event, 135);
+    g!(seen, golden_event, 136);
+    // Where a fire arrow's fire burns (v94).
+    g!(seen, golden_event, 137);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 135, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 138, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1874,6 +1882,37 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_sentry_lock(sentry, target, &mut buf).unwrap()
+        }
+        "event_fire.bin" => {
+            let (qx, qy, qz, until) = protocol::goldens::event_fire();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Fire { qx, qy, qz, until },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_fire(qx, qy, qz, until, &mut buf).unwrap()
+        }
+        "event_ammo.bin" => {
+            let (weapon, round) = protocol::goldens::event_ammo();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Ammo { weapon, round },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_ammo(weapon, round, &mut buf).unwrap()
+        }
+        "event_lodged_sync.bin" => {
+            let (reset, recs) = protocol::goldens::event_lodged_sync();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::LodgedSync {
+                    reset,
+                    recs,
+                    count: recs.len() as u8,
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_lodged_sync(reset, &recs, &mut buf).unwrap()
         }
         "event_heard.bin" => {
             let (body, deed, item) = protocol::goldens::event_heard();

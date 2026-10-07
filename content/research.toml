@@ -37,7 +37,7 @@ seconds = 10
 #
 # **Which rows exist is the reference's own split** (operator, 2026-09-22:
 # *"It needs to be just like Rust survival game"*, answered "Rust's split").
-# Eleven of our recipes are learned there and nothing else is; every bench,
+# Twelve of our recipes are learned there and nothing else is; every bench,
 # the research table, gunpowder, metal arrows, the crossbow and the large
 # box are KNOWN from the start there, and so here (`reference/BLUEPRINTS.md`
 # §1, 42 item pages fetched whole). What the tree gates is the NEXT tool —
@@ -102,6 +102,12 @@ requires = "item.hatchet_metal"
 item = "item.window_bars_metal"
 cost = 30
 requires = "item.window_shutters"
+
+# Their fire arrow is a node of the workbench 1 tree too, behind nothing we
+# ship.
+[[research]]
+item = "item.arrow_fire"
+cost = 30
 
 # --- workbench 2 --------------------------------------------------------
 

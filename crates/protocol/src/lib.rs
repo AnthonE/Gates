@@ -78,6 +78,9 @@ pub use event::{
     SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
+    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
+};
+pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
 };
@@ -1039,6 +1042,14 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v93 — `SUB_HEARD` (75): another body's reload, meal, drink, keypad,
 /// container open or bow draw, to the clients in earshot, so those make a
 /// sound at the body that made them. A v92 client has no subtype 75.
+/// v94 — an arrow sticks where it went in: `WireGItem` gains a bit after
+/// `count`, and when it is set, the direction the arrow was flying (three
+/// signed bytes), so a client draws it standing in the trunk, the wall or
+/// the dirt at the angle it flew rather than lying on the ground. And
+/// `SUB_LODGED_SYNC` (76) walks the arrows standing in bodies — which body,
+/// where in it and which way — so they are drawn on the players and
+/// animals they hit. `SUB_AMMO` (77) tells an archer which arrow their bow
+/// looses, and `SUB_FIRE` (78) where a fire arrow's fire burns and until when.
 /// v94 — the bush column grows three plants (`terrain::plant_of`): a shrub
 /// that is scenery, a berry bush, and hemp (`Occupant` 16). `ACT_PICK`
 /// picks hemp too and `EV_SLOT_HARVESTED` can name it. A v93 client mirrors

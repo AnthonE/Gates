@@ -45,9 +45,11 @@
 
 use bevy::prelude::*;
 
+use super::bodies::Body;
 use super::feed::Feed;
-use super::Net;
+use super::{Net, WorldId};
 use sim_core::limits::TICK_HZ;
+use sim_core::occupy::{Occupants, SlotCache};
 use sim_core::ranged::ARROW_EYE_MM;
 use sim_core::{pitch_dir, yaw_dir};
 
@@ -70,6 +72,13 @@ const LEN_M: f32 = 0.55;
 /// The shaft's radius, metres.
 const RADIUS_M: f32 = 0.022;
 
+/// How long a tracer stays where the world stopped it, seconds — the gap
+/// until the stuck arrow itself (a loose stack, `render::structures`)
+/// arrives on the wire, so the arrow does not blink out of the trunk.
+const LINGER_S: f32 = 0.25;
+/// How much of a stopped tracer is in what stopped it, metres.
+const STUCK_M: f32 = 0.1;
+
 /// One pooled tracer entity and the flight it is currently drawing.
 #[derive(Default, Clone, Copy)]
 struct Flight {
@@ -85,6 +94,11 @@ struct Flight {
     /// Ticks of flight left; zero means this slot is free. Same convention
     /// as `sim_core::ranged::Arrow::life`, so the two read alike.
     life: u16,
+    /// Who loosed it — the one body it does not stop on.
+    shooter: u32,
+    /// Seconds left standing where the world stopped it; zero while it
+    /// flies.
+    linger: f32,
     /// Fractional ticks carried between frames. The sim steps at `TICK_HZ`
     /// and the client renders at whatever the monitor does, so a frame is
     /// some non-integer number of ticks; this is the remainder, and keeping
@@ -146,16 +160,18 @@ impl Tracers {
         speed_mmpt: u16,
         drop_mmpt2: u16,
     ) -> bool {
-        self.claim_from(feet, ARROW_EYE_MM, yaw, pitch, speed_mmpt, drop_mmpt2)
+        self.claim_from(feet, ARROW_EYE_MM, 0, yaw, pitch, speed_mmpt, drop_mmpt2)
     }
 
     /// [`Self::claim`] from an eye `eye_mm` over the feet — a crouched
     /// shooter's arrow leaves `ranged::CROUCH_EYE_MM` (v83), as the sim's
-    /// does.
+    /// does — for `shooter`, whose own body it never stops on.
+    #[allow(clippy::too_many_arguments)]
     pub fn claim_from(
         &mut self,
         feet: [f32; 3],
         eye_mm: i32,
+        shooter: u32,
         yaw: u16,
         pitch: u8,
         speed_mmpt: u16,
@@ -182,6 +198,8 @@ impl Tracers {
             // the store's backstop behind that (`ranged::draw`), so the
             // streak comes down where the arrow does.
             life: sim_core::limits::MAX_ARROW_LIFE_TICKS,
+            shooter,
+            linger: 0.0,
             carry: 0.0,
         };
         true
@@ -268,6 +286,7 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
         pool.claim_from(
             feet,
             sim_core::ranged::eye_mm(crouched),
+            shooter,
             yaw,
             pitch,
             speed_mmpt,
@@ -277,12 +296,25 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
 }
 
 /// Fly every live tracer and write its transform.
+///
+/// Each tick of flight asks the world the sim's own question
+/// (`ranged::flight_stop`) and the drawn bodies and animals the one
+/// `fx::gun` asks of a bullet, so a tracer stops in the trunk the arrow
+/// stuck in, or at the body it hit, instead of flying on through both and
+/// into the ground for the rest of its four seconds.
+#[allow(clippy::too_many_arguments)]
 pub fn fly(
     mut pool: ResMut<Tracers>,
     time: Res<Time>,
+    net: Option<NonSend<Net>>,
+    world: Option<Res<WorldId>>,
+    bodies: Query<(&Body, &GlobalTransform)>,
+    animals: Query<&GlobalTransform, With<super::mobs::Animal>>,
+    mut cache: Local<Box<SlotCache>>,
     mut q: Query<(&mut Transform, &mut Visibility)>,
 ) {
-    let ticks = time.delta_secs() * TICK_HZ as f32;
+    let dt = time.delta_secs();
+    let ticks = dt * TICK_HZ as f32;
     // Disjoint field borrows rather than a per-frame clone of the entity list.
     let Tracers { entities, slots } = &mut *pool;
     for (ix, entity) in entities.iter().enumerate() {
@@ -297,13 +329,77 @@ pub fn fly(
             continue;
         }
 
+        if f.linger > 0.0 {
+            // Standing where it stopped: its transform is already written.
+            f.linger -= dt;
+            if f.linger <= 0.0 {
+                f.life = 0;
+                *vis = Visibility::Hidden;
+            }
+            continue;
+        }
+
         // Whole ticks this frame, remainder carried. Integer steps only —
         // the same arithmetic the sim runs, so the curve cannot diverge.
         f.carry += ticks;
         let mut steps = f.carry as u32;
         f.carry -= steps as f32;
+        let mut stopped = None;
         while steps > 0 && f.life > 0 {
             f.vy -= f.drop as i32;
+            let o = (f.qx as f32, f.qy as f32, f.qz as f32);
+            let s = (f.vx as f32, f.vy as f32, f.vz as f32);
+            let wall = match (&net, &world) {
+                (Some(net), Some(world)) => {
+                    let core = &net.session.core;
+                    let mut occ = Occupants {
+                        doors: core.card_doors,
+                        table: &world.table,
+                        haven: &world.haven,
+                        harvested: &core.harvested,
+                        cache: &mut cache,
+                    };
+                    sim_core::ranged::flight_stop(
+                        world.seed,
+                        &world.haven,
+                        core.pieces.cols(),
+                        &mut occ,
+                        o,
+                        s,
+                    )
+                }
+                _ => None,
+            };
+            let from = Vec3::new(o.0, o.1, o.2) / MM_PER_M;
+            let to = from + Vec3::new(s.0, s.1, s.2) / MM_PER_M;
+            let len = from.distance(to).max(1e-6);
+            let flesh = super::fx::gun::first_in_line(
+                from,
+                to,
+                bodies
+                    .iter()
+                    .filter(|(b, _)| b.0 != f.shooter)
+                    .map(|(_, gt)| (gt.translation() + Vec3::Y * 1.0, 0.5))
+                    .chain(
+                        animals
+                            .iter()
+                            .map(|gt| (gt.translation() + Vec3::Y * 0.4, 0.6)),
+                    ),
+            )
+            .map(|d| d / len);
+            let hit = match (wall, flesh) {
+                (Some(w), Some(b)) if b < w => Some((b, false)),
+                (Some(w), _) => Some((w, true)),
+                (None, Some(b)) => Some((b, false)),
+                (None, None) => None,
+            };
+            if let Some((t, in_world)) = hit {
+                f.qx = (o.0 + s.0 * t) as i32;
+                f.qy = (o.1 + s.1 * t) as i32;
+                f.qz = (o.2 + s.2 * t) as i32;
+                stopped = Some(in_world);
+                break;
+            }
             f.qx += f.vx;
             f.qy += f.vy;
             f.qz += f.vz;
@@ -311,11 +407,21 @@ pub fn fly(
             steps -= 1;
         }
 
-        if f.life == 0 {
-            *vis = Visibility::Hidden;
-            continue;
+        match stopped {
+            // Into a body: the arrow is in them now, and nothing of it shows.
+            Some(false) => {
+                f.life = 0;
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            Some(true) => f.linger = LINGER_S,
+            None if f.life == 0 => {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            None => {}
         }
-        let pos = Vec3::new(
+        let mut pos = Vec3::new(
             f.qx as f32 / MM_PER_M,
             f.qy as f32 / MM_PER_M,
             f.qz as f32 / MM_PER_M,
@@ -323,10 +429,14 @@ pub fn fly(
         // Point the shaft along travel. A cylinder's axis is +Y, so the
         // rotation is from +Y onto the velocity — an arrow drawn upright
         // while flying flat is the tell that this was skipped.
-        let dir = Vec3::new(f.vx as f32, f.vy as f32, f.vz as f32);
+        let dir = Vec3::new(f.vx as f32, f.vy as f32, f.vz as f32).normalize_or_zero();
+        if stopped == Some(true) {
+            // Head in the trunk, shaft out behind it, as it will stand.
+            pos -= dir * (LEN_M * 0.5 - STUCK_M);
+        }
         tf.translation = pos;
-        if dir.length_squared() > 0.0 {
-            tf.rotation = Quat::from_rotation_arc(Vec3::Y, dir.normalize());
+        if dir != Vec3::ZERO {
+            tf.rotation = Quat::from_rotation_arc(Vec3::Y, dir);
         }
         if *vis != Visibility::Visible {
             *vis = Visibility::Visible;

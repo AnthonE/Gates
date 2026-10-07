@@ -58,7 +58,7 @@ fn in_town(lx: f32, lz: f32) -> (Box<World>, usize) {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: 0,
         reload_ticks: 0,

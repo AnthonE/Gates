@@ -155,10 +155,20 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             let lit = hits_to_kill(hp, w.damage + extra, 0);
             in_band(lit, band, &format!("ttk `{}` alight", w.id))?;
         }
-        if w.headshot_mult != bands.headshot_mult {
+        in_band(
+            w.headshot_pct,
+            bands.headshot_pct,
+            &format!("headshot pct `{}`", w.id),
+        )?;
+        // What the band used to pin exactly: a headshot that kills a naked
+        // body outright is a data edit no TTK band (measured on the chest)
+        // would see.
+        let head = w.damage * w.headshot_pct / 100;
+        if head >= hp {
             return Err(format!(
-                "band break: headshot mult on `{}` is {}, the band says exactly {}",
-                w.id, w.headshot_mult, bands.headshot_mult
+                "band break: a headshot from `{}` does {head} and kills a naked {hp}-hp \
+                 body in one hit",
+                w.id
             ));
         }
         if w.limb_pct != bands.limb_pct {

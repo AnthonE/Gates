@@ -223,6 +223,16 @@ ITEMS = {
     # loudly and *meat* not at all; it lost on that.)
     "raw_meat": "delapouite/steak",
     "cooked_meat": "lorc/chicken-leg",
+    # The bow's other rounds. The high velocity arrow is the one that says
+    # FAST: an arrow through its own shock rings. The bone arrow is Rust's
+    # own picture of it, the wooden arrow with a bone head, so it shares the
+    # wooden arrow's glyph and `finish_icons.py` paints the head. Bone
+    # fragments are the crossed bones, the universal bone mark;
+    # `lorc/broken-bone` draws as a starburst at 44 px.
+    "arrow_hv": "lorc/supersonic-arrow",
+    "arrow_bone": "lorc/arrowhead",
+    "arrow_fire": "lorc/flaming-arrow",
+    "bone_frags": "lorc/crossed-bones",
 }
 
 # The three vitals, bottom right, in every frame of play.
@@ -357,6 +367,13 @@ VITALS = {
 OURS = {
     "burnt_meat": "burnt_meat",
 }
+# Items another script paints straight into the depot, so this one only counts
+# and credits them.
+ELSEWHERE = {
+    "keycard_green": "keycards.py",
+    "keycard_blue": "keycards.py",
+    "keycard_red": "keycards.py",
+}
 
 # Ours, and NOT an item — so it cannot live in `OURS`, which is held equal to
 # `content/items.toml` the same way `ITEMS` is. `map_player` is the marker the
@@ -382,10 +399,10 @@ OURS_SRC = ROOT / "ci/icons"
 ITEMS_TOML = (ROOT / "content/items.toml").read_text()
 PAIRS = re.findall(r'id = "item\.([a-z0-9_]+)"\s*\n(?:.*\n)*?name = "([^"]+)"', ITEMS_TOML)
 BY_ID = {i: n for i, n in PAIRS}
-if len(BY_ID) != len(ITEMS) + len(OURS):
+if len(BY_ID) != len(ITEMS) + len(OURS) + len(ELSEWHERE):
     sys.exit(
         f"content has {len(BY_ID)} items, the maps have "
-        f"{len(ITEMS)} archive + {len(OURS)} ours"
+        f"{len(ITEMS)} archive + {len(OURS)} ours + {len(ELSEWHERE)} elsewhere"
     )
 
 
@@ -393,7 +410,7 @@ def norm(s):
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
 
-unknown = sorted((set(ITEMS) | set(OURS)) - set(BY_ID))
+unknown = sorted((set(ITEMS) | set(OURS) | set(ELSEWHERE)) - set(BY_ID))
 if unknown:
     sys.exit(f"map names items the content does not have: {unknown}")
 
@@ -485,7 +502,12 @@ credits.write_text(
     "the archive was unreachable — that was true for one day and is not any\n"
     "more (`ci/bake_icons.py` fetches from GitHub).\n\n"
     "| file | source |\n|---|---|\n"
-    + "".join(f"| `{k}.png` | `ci/icons/{v}.svg` (ours) |\n" for k, v in sorted(MINE.items()))
+    + "".join(
+        sorted(
+            [f"| `{k}.png` | `ci/icons/{v}.svg` (ours) |\n" for k, v in MINE.items()]
+            + [f"| `{norm(BY_ID[i])}.png` | `ci/icons/{v}` (ours) |\n" for i, v in ELSEWHERE.items()]
+        )
+    )
 )
 
 print(f"baked {len(todo)} archive + {len(todo_mine)} own icons at {PX}px into {OUT}")

@@ -656,3 +656,41 @@ tier = 2
 rarity = "rare"
 slot = "none"
 condition_max = 200
+
+# Rust's arrow kinds beside the wooden one; `weapons.toml`'s `[[ammo]]`
+# says how each flies and hits, and `R` on the bow picks between them.
+# Stack 64, the class's (RIPLIST §1e).
+[[item]]
+id = "item.arrow_hv"
+name = "High Velocity Arrow"
+stack = 64
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+[[item]]
+id = "item.arrow_bone"
+name = "Bone Arrow"
+stack = 64
+tier = 0
+rarity = "common"
+slot = "none"
+
+# Rust's fire arrow: it leaves a fire where it lands rather than an arrow.
+[[item]]
+id = "item.arrow_fire"
+name = "Fire Arrow"
+stack = 64
+tier = 1
+rarity = "uncommon"
+slot = "none"
+
+# What a carcass pays besides meat and fat — Rust's bone fragments, the
+# bone arrow's point. Stack 1000, a resource's.
+[[item]]
+id = "item.bone_frags"
+name = "Bone Fragments"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"

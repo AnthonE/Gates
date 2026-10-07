@@ -75,7 +75,7 @@ fn refuses_bake(file: &str, from: &str, to: &str, phrase: &str) {
 /// was written to avoid — a column nothing bakes is a number that looks
 /// tuned and does nothing.
 ///
-/// It used to cite `headshot_mult` as the live instance of that. **It is
+/// It used to cite `headshot_pct` as the live instance of that. **It is
 /// not one any more** (headshot v0): `bake_ranged` carries it and
 /// `the_headshot_column_reaches_the_sim` below is its own version of this
 /// check. The example moved, the rule did not.
@@ -100,7 +100,7 @@ fn the_arrow_recovery_globals_reach_the_sim() {
 }
 
 /// **The headshot column reaches the sim**, which it did not for the whole
-/// life of this crate: `headshot_mult` was parsed, pinned to exactly the
+/// life of this crate: `headshot_pct` was parsed, pinned to exactly the
 /// band and folded into the content hash while `bake_ranged` dropped it one
 /// line before `RangedDef` could hold it (`reference/PROJECTILES.md` §9.4).
 /// A number that is validated, banded and hashed *looks* enforced from
@@ -117,7 +117,7 @@ fn the_arrow_recovery_globals_reach_the_sim() {
 /// such field and `sim-core`'s `tests/headshot.rs` is where that decision
 /// is written down and gated.
 ///
-/// Mutant watched red: `headshot_mult: 1` hard-coded at the bake.
+/// Mutant watched red: `head_pct: 100` hard-coded at the bake.
 #[test]
 fn the_headshot_column_reaches_the_sim() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
@@ -129,12 +129,12 @@ fn the_headshot_column_reaches_the_sim() {
             continue; // melee or a throwable: no ranged row to carry it
         }
         assert_eq!(
-            u32::from(cc.ranged[idx].headshot_mult),
-            w.headshot_mult,
-            "`{}` declares headshot_mult {} and the sim's table says {}",
+            u32::from(cc.ranged[idx].head_pct),
+            w.headshot_pct,
+            "`{}` declares headshot_pct {} and the sim's table says {}",
             w.id,
-            w.headshot_mult,
-            cc.ranged[idx].headshot_mult
+            w.headshot_pct,
+            cc.ranged[idx].head_pct
         );
         assert_eq!(
             u32::from(cc.ranged[idx].limb_pct),
@@ -160,7 +160,7 @@ fn the_headshot_column_reaches_the_sim() {
 /// exists as a second check rather than a comment: `hits_to_kill` is
 /// measured on *body* hits, so `[bands] ttk_firearm` is green whether a
 /// leg is worth 100% or 1% of the column. `balance.rs` refuses a row that
-/// disagrees with `[bands] headshot_mult` / `limb_pct`, and this asserts
+/// disagrees with `[bands] headshot_pct` / `limb_pct`, and this asserts
 /// the two the shipped file actually carries — so the values are here in
 /// one place rather than spread over eleven rows nobody diffs.
 ///
@@ -180,25 +180,35 @@ fn the_headshot_column_reaches_the_sim() {
 fn the_body_part_ladder_is_the_band_on_every_row() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let b = &c.balance.bands;
-    assert_eq!(b.headshot_mult, 2, "the head is the reference's x2");
+    assert_eq!(
+        b.headshot_pct,
+        [150, 200],
+        "the head is Rust's: x1.5 for an arrow, x2 for the rest"
+    );
     assert_eq!(b.limb_pct, 50, "and the leg its x0.5, as a percent");
     let mut banded = 0;
     let mut opted_out = 0;
     for w in &c.weapons {
         if matches!(w.kind, WeaponKind::Throwable) {
             assert_eq!(
-                (w.headshot_mult, w.limb_pct),
-                (1, 100),
+                (w.headshot_pct, w.limb_pct),
+                (100, 100),
                 "`{}` is a throwable and must carry both identities",
                 w.id
             );
             opted_out += 1;
             continue;
         }
+        // Rust's arrows are x1.5 on every bow; everything else is x2.
+        let head = if matches!(w.kind, WeaponKind::Bow) {
+            150
+        } else {
+            200
+        };
         assert_eq!(
-            (w.headshot_mult, w.limb_pct),
-            (b.headshot_mult, b.limb_pct),
-            "`{}` is off the band",
+            (w.headshot_pct, w.limb_pct),
+            (head, b.limb_pct),
+            "`{}` is off the ladder",
             w.id
         );
         banded += 1;
@@ -241,12 +251,26 @@ fn the_body_part_ladder_refuses_what_it_names() {
     refuses("weapons.toml", ROCK, &bait("101"), "outside 1..=100");
     // And a leg hit that costs the body nothing.
     refuses("weapons.toml", ROCK, &bait("0"), "outside 1..=100");
-    // The head's twin, which had no refusal test of its own either.
+    // The head's twin, which had no refusal test of its own either: past
+    // the band, under the identity, and a head that kills a naked body in
+    // one blow while still inside the band.
     refuses(
         "weapons.toml",
         ROCK,
-        &ROCK.replace("headshot_mult = 2", "headshot_mult = 3"),
-        "band break: headshot mult",
+        &ROCK.replace("headshot_pct = 200", "headshot_pct = 300"),
+        "band break: headshot pct",
+    );
+    refuses(
+        "weapons.toml",
+        ROCK,
+        &ROCK.replace("headshot_pct = 200", "headshot_pct = 90"),
+        "under the identity 100",
+    );
+    refuses(
+        "weapons.toml",
+        "damage = 50\nstructure = 1\nheadshot_pct = 150",
+        "damage = 70\nstructure = 1\nheadshot_pct = 150",
+        "kills a naked",
     );
 }
 
@@ -262,13 +286,18 @@ fn test_content() {
         "item.keycard_green",
         "item.keycard_blue",
         "item.keycard_red",
+        // Rust's other arrows and the bone that points one.
+        "item.arrow_hv",
+        "item.arrow_bone",
+        "item.arrow_fire",
+        "item.bone_frags",
     ];
     for id in fittings {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
         (40..=60).contains(&(c.items.len() - fittings.len())),
-        "alpha core plus the window fittings and keycards, got {} items",
+        "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
     // The catalog ships looks (skins v0); what is for sale is the price,
@@ -826,11 +855,11 @@ fn band_breaks_refused() {
         "reduction_pct = 60",
         "band break: `item.armor_roadsign_body`",
     );
-    // Headshot: ×5 would one-tap past the TTK band; ×2 exactly, banded.
+    // Headshot: ×5 would one-tap past the TTK band; [×1.5, ×2], banded.
     refuses(
         "weapons.toml",
-        "headshot_mult = 2",
-        "headshot_mult = 5",
+        "headshot_pct = 200",
+        "headshot_pct = 500",
         "band break: headshot",
     );
     // A break chance is a percentage, and BOTH ends of it are legal — 0 is
@@ -839,7 +868,7 @@ fn band_breaks_refused() {
     // percentage at all, and 101 is the smallest of those.
     refuses(
         "balance.toml",
-        "arrow_break_pct = 15",
+        "arrow_break_pct = 10",
         "arrow_break_pct = 101",
         "arrow_break_pct 101 is not a percentage",
     );
@@ -1519,14 +1548,14 @@ fn the_magazine_rules_refuse_what_they_name() {
     // would be a number nothing reads — the shape `fuse_s` is refused in.
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
-        "ammo = [\"item.arrow_wood\"]\nmagazine = 4",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]\nmagazine = 4",
         "only firearms carry a magazine",
     );
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
-        "ammo = [\"item.arrow_wood\"]\nreload_ms = 1000",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]\nreload_ms = 1000",
         "only a weapon with a magazine carries a reload_ms",
     );
 }
@@ -1571,10 +1600,11 @@ fn the_ninth_magazine_is_refused_at_the_bake() {
         .find(|w| w.magazine.unwrap_or(0) > 0)
         .expect("the shipped set carries a weapon with a magazine")
         .clone();
+    // A bow takes a slot too: the kind of arrow it looses (`R`).
     let already = shipped
         .weapons
         .iter()
-        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .filter(|w| w.magazine.unwrap_or(0) > 0 || w.kind == WeaponKind::Bow)
         .count();
 
     // Item ids that exist and carry no weapon row today — a duplicate row
@@ -2699,22 +2729,36 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
                 a.speed_mps * 1000 / TICK_HZ,
                 "`{id}` muzzle speed in mm/tick"
             );
+            let rate2 = TICK_HZ * TICK_HZ;
             assert_eq!(
                 ball.drop_mmpt2 as u32,
-                a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
-                "`{id}` drop in mm/tick^2"
+                (a.drop_mps2 * 1000 + rate2 / 2) / rate2,
+                "`{id}` drop in mm/tick^2, to the nearest"
             );
 
-            // The longest honest shot lands before the backstop: on flat
-            // ground a 45° lob is in the air `√2·v/g` ticks, and one still
-            // up at `MAX_ARROW_LIFE_TICKS` falls short of where it was
-            // aimed. Squared, to stay in integers.
-            let (v, g) = (u64::from(ball.speed_mmpt), u64::from(ball.drop_mmpt2));
-            let life = u64::from(MAX_ARROW_LIFE_TICKS);
+            // Every shot aimed at something lands before the backstop. A
+            // 45° lob outlives it, as Rust's does its own eight seconds
+            // (`MAX_ARROW_LIFE_TICKS`), but the low arc onto flat ground
+            // 200 m out — past any body a bow is loosed at — comes down
+            // inside it. A round that cannot reach 200 m (the fire arrow's
+            // is about 160) is held to nine tenths of its own reach, and
+            // none may fall short of 100 m.
+            let (v, g) = (f64::from(ball.speed_mmpt), f64::from(ball.drop_mmpt2));
+            let life = f64::from(MAX_ARROW_LIFE_TICKS);
             assert!(
-                g > 0 && 2 * v * v < life * life * g * g,
-                "`{}` firing `{id}`: a lob on flat ground is still in the air at the backstop",
+                g > 0.0 && v * v / g > 100_000.0,
+                "`{}` firing `{id}` cannot reach 100 m",
                 w.id
+            );
+            let target = (0.9 * v * v / g).min(200_000.0);
+            let sin_2t = target * g / (v * v);
+            let flight = 2.0 * v * (0.5 * sin_2t.asin()).sin() / g;
+            assert!(
+                flight < life,
+                "`{}` firing `{id}`: a shot at {:.0} m is still in the air at the backstop \
+                 ({flight:.0} ticks)",
+                w.id,
+                target / 1000.0
             );
 
             // And the sampler wall, checked on the shipped rows rather than
@@ -2860,7 +2904,7 @@ fn a_firearm_whose_round_has_ballistics_is_refused() {
     refuses(
         "weapons.toml",
         "ammo = [\"item.pistol_ammo\"]",
-        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
         "it is a projectile",
     );
 }
@@ -2880,7 +2924,7 @@ fn a_firearm_whose_round_has_ballistics_is_refused() {
 fn a_round_that_outruns_the_collision_sampler_is_refused() {
     refuses_bake(
         "weapons.toml",
-        "speed_mps = 40",
+        "speed_mps = 50",
         "speed_mps = 400",
         "collision sampler",
     );
@@ -2897,7 +2941,7 @@ fn a_round_that_outruns_the_collision_sampler_is_refused() {
 fn a_bow_whose_round_has_no_ballistics_is_refused() {
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
         "ammo = [\"item.cloth\"]",
         "no [[ammo]] row",
     );
@@ -2912,7 +2956,7 @@ fn a_bow_whose_round_has_no_ballistics_is_refused() {
 fn a_weapon_that_lists_a_round_twice_is_refused() {
     refuses(
         "weapons.toml",
-        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
         "ammo = [\"item.arrow_wood\", \"item.arrow_wood\"]",
         "listed twice",
     );
@@ -2927,7 +2971,7 @@ fn a_weapon_that_lists_a_round_twice_is_refused() {
 fn a_round_that_cannot_fly_is_refused() {
     refuses(
         "weapons.toml",
-        "speed_mps = 40",
+        "speed_mps = 50",
         "speed_mps = 0",
         "muzzle speed",
     );
@@ -2936,51 +2980,53 @@ fn a_round_that_cannot_fly_is_refused() {
 /// Ballistics live on the round, and the whole point is that a second round
 /// on one bow flies by its own numbers.
 ///
-/// The shipped data lists one round per bow, so nothing in `weapons.toml`
-/// exercises the list — this builds a two-round bow and proves the bake
-/// keeps both, in order, with each round's own speed. Without this, §9.3's
-/// capacity is asserted by a comment and nothing else.
+/// The shipped bow lists Rust's four kinds a hunting bow fires — wooden,
+/// high velocity, bone, fire — and the bake keeps all four, in order, each
+/// with its own speed, drop and share of the bow's damage (§9.3's capacity,
+/// now shipped rather than asserted by a fixture), and only the fire arrow
+/// lights a fire.
 #[test]
 fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
-    let mut src = sources();
-    let w = src
-        .iter_mut()
-        .find(|(n, _)| *n == "weapons.toml")
-        .expect("weapons.toml is a source");
-    w.1 = w.1.replace(
-        "ammo = [\"item.arrow_wood\"]",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_metal\"]",
-    );
-    let c = build(&src).expect("a bow with two rounds is legal content");
+    let c = build(&sources()).expect("shipped content builds");
     let cc = c.bake_combat().expect("and it bakes");
 
     let bow = c.item_index("item.bow").expect("the bow is an item");
-    let wood = c.item_index("item.arrow_wood").expect("wood is an item");
-    let metal = c.item_index("item.arrow_metal").expect("metal is an item");
+    let ids = [
+        "item.arrow_wood",
+        "item.arrow_hv",
+        "item.arrow_bone",
+        "item.arrow_fire",
+    ]
+    .map(|id| c.item_index(id).expect("a listed round is an item"));
     let baked = cc.ranged[bow as usize];
-
     assert_eq!(
-        [baked.ammo[0], baked.ammo[1]],
-        [wood, metal],
-        "the bow keeps both rounds in declared order"
+        baked.ammo, ids,
+        "the bow keeps its rounds in declared order"
     );
-    let a = cc.ammo_def(wood).expect("wood is armed");
-    let b = cc.ammo_def(metal).expect("metal is armed");
-    assert_ne!(
-        a.speed_mmpt, b.speed_mmpt,
-        "the two rounds must differ, or this proves nothing about per-round ballistics"
-    );
-    // And they fly to different places: an arrow flies until something
-    // stops it, so its reach is the round's (`v²/g` on flat ground) — the
-    // reason neither a flight time nor a range could stay on the weapon.
+    let [wood, hv, bone, fire] = ids.map(|i| cc.ammo_def(i).expect("each round is armed"));
+    // And they fly differently: an arrow flies until something stops it,
+    // so its reach is the round's (`v²/g` on flat ground) — the reason
+    // neither a flight time nor a range could stay on the weapon.
     let reach = |d: sim_core::combat::AmmoDef| {
         u32::from(d.speed_mmpt) * u32::from(d.speed_mmpt) / u32::from(d.drop_mmpt2).max(1)
     };
-    assert_ne!(
-        reach(a),
-        reach(b),
-        "one bow's two rounds must not share a reach"
+    assert!(
+        reach(hv) > reach(wood) && reach(wood) > reach(bone) && reach(bone) > reach(fire),
+        "high velocity outflies wood, which outflies bone, which outflies fire"
     );
+    assert_eq!(
+        (
+            wood.damage_pct,
+            hv.damage_pct,
+            bone.damage_pct,
+            fire.damage_pct
+        ),
+        (100, 80, 80, 80),
+        "Rust's 50 / 40 / 40 / 40 off one bow"
+    );
+    let tick_hz = sim_core::limits::TICK_HZ as u16;
+    assert_eq!(fire.fire_ticks, [20 * tick_hz, 40 * tick_hz]);
+    assert!([wood, hv, bone].iter().all(|r| r.fire_ticks == [0, 0]));
 }
 
 // ---------------------------------------------------------------------------
@@ -3251,13 +3297,13 @@ fn the_shipped_pig_bakes() {
     // because this is the pair that produces the behaviour.
     assert!(pig.roam_cm > pig.spook_cm);
 
-    // Drops resolve to real item indices, in file order, and the tail is
-    // `NO_ITEM` rather than a zero-count row nothing distinguishes.
-    for i in 0..3 {
+    // Drops resolve to real item indices, in file order — meat, fat, cloth
+    // and bone, which fills every row the table has.
+    assert_eq!(pig.loot.len(), 4);
+    for i in 0..4 {
         assert_ne!(pig.loot[i].item, sim_core::gather::NO_ITEM);
         assert!(pig.loot[i].count > 0);
     }
-    assert_eq!(pig.loot[3].item, sim_core::gather::NO_ITEM);
     assert_ne!(pig.loot[0].item, pig.loot[1].item);
 }
 
@@ -3765,13 +3811,14 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 }
 
 /// **The split is theirs** (operator, 2026-09-22 — `reference/BLUEPRINTS.md`
-/// §1): eleven recipes need a blueprint, each at the item page's research
+/// §1): twelve recipes need a blueprint, each at the item page's research
 /// price, and gunpowder and metal arrows — known from the start there — are
 /// not gated here either.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 11] = [
+    let want: [(&str, u32); 12] = [
+        ("item.arrow_fire", 30),
         ("item.hatchet_metal", 30),
         ("item.pickaxe_metal", 30),
         ("item.medkit", 30),
@@ -4281,15 +4328,22 @@ fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
 /// conservative side to measure against.
 ///
 /// A bow carries no `range_m` — its arrow flies until something stops it —
-/// so its reach is its rounds' flight on flat ground, `v²/g`.
+/// so its reach is how far its rounds fly **level** from a standing eye
+/// before they meet flat ground: the shot a bow is aimed with. A lob
+/// carries much further (Rust's do, some 300 m), and that is not a body
+/// anybody is aiming at; the arrow it lands sticks, and every client is
+/// sent the loose stack wherever the archer stood — only the streak of a
+/// lob from outside the band goes undrawn.
 #[test]
 fn no_weapon_outranges_the_interest_band() {
     let c = build(&sources()).expect("shipped content builds");
     let band_m = (sim_core::limits::AOI_ENTER_CM / 100) as u32;
+    let eye_m = sim_core::ranged::ARROW_EYE_MM as f64 / 1000.0;
     let reach = |w: &content::schema::Weapon| {
         let flight = w.ammo.iter().flatten().filter_map(|id| {
             let a = c.ammo.iter().find(|a| &a.id == id)?;
-            Some(a.speed_mps * a.speed_mps / a.drop_mps2.max(1))
+            let fall_s = (2.0 * eye_m / f64::from(a.drop_mps2.max(1))).sqrt();
+            Some((f64::from(a.speed_mps) * fall_s) as u32)
         });
         w.range_m.max(flight.max().unwrap_or(0))
     };

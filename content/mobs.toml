@@ -167,6 +167,7 @@ drops = [
   { item = "item.raw_meat", count = 5 },
   { item = "item.fat", count = 15 },
   { item = "item.cloth", count = 10 },
+  { item = "item.bone_frags", count = 20 },
 ]
 
 # ---------------------------------------------------------------------------
@@ -310,12 +311,12 @@ fire_fear_m = 8
 # you, not because the corpse is worth the walk. No cloth at all (a wolf is
 # not where a sleeping bag comes from), and half the fat.
 #
-# No new item is introduced here on purpose. Their wolf pays bone and hide,
-# we have neither, and inventing two items to dress one animal would drag
-# recipes, icons and `ui::icons::STEMS` into a slice about the roster.
+# Their wolf pays bone and hide. Bone came with the bone arrow, which gave
+# it a use; hide still has none, so no hide.
 drops = [
   { item = "item.raw_meat", count = 4 },
   { item = "item.fat", count = 8 },
+  { item = "item.bone_frags", count = 15 },
 ]
 
 # ── The attack helicopter ──────────────────────────────────────────────────

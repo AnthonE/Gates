@@ -72,6 +72,10 @@ const SPAWN_MAX_SLOPE: f32 = 1.0;
 /// `pub` for that reason and no other.
 pub const SPAWN_CLEAR_M: f32 = 4.5;
 
+/// How often a stuck arrow asks whether it is still in something, in ticks
+/// (`World::unstick_arrows`): once a second.
+const UNSTICK_EVERY_TICKS: u64 = crate::limits::TICK_HZ as u64;
+
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
 /// EV_GATHER: a = player id, b = item index << 16 | units actually added
@@ -185,6 +189,20 @@ pub fn impact_parts(a: u32) -> (u8, u8, i32) {
         ((a >> IMPACT_KIND_SHIFT) & 0xF) as u8,
         (a & 0xF_FFFF) as i32,
     )
+}
+
+/// Where `EV_FIRE`'s burn time sits in `a`, above `qx`.
+pub const FIRE_TICKS_SHIFT: u32 = 20;
+
+/// `EV_FIRE`'s `a`: ticks it burns << 20 | x quanta. Twelve bits of ticks
+/// is 136 s, past the 120 `content` lets a fire burn.
+pub fn fire_a(ticks: u16, qx: i32) -> u32 {
+    (u32::from(ticks) & 0xFFF) << FIRE_TICKS_SHIFT | (qx as u32 & 0xF_FFFF)
+}
+
+/// The two parts of an `EV_FIRE`'s `a`: (ticks it burns, x).
+pub fn fire_parts(a: u32) -> (u16, i32) {
+    ((a >> FIRE_TICKS_SHIFT) as u16, (a & 0xF_FFFF) as i32)
 }
 
 /// Pack an `EV_HIT` payload: the part above the damage it already scaled.
@@ -816,7 +834,19 @@ pub const EV_SWIPE_REFUSED: u8 = 51;
 /// interest — the beep before it fires — and the target's warning.
 pub const EV_SENTRY_LOCK: u8 = 52;
 
-pub const EV_MAX: u8 = EV_SENTRY_LOCK;
+/// EV_AMMO: a = player id, b = the held weapon's item << 16 | the round it
+/// now looses (`NO_ITEM` when it carries none), c = 0. Own-fact: which
+/// arrow a bow fires — the one the archer picked with `R`, or the next one
+/// along once that runs out (Rust's ammo pick and its auto-switch).
+pub const EV_AMMO: u8 = 53;
+
+/// EV_FIRE: a = [`fire_a`]`(ticks it burns, x)`, b = z, c = y as a signed
+/// `i32` — body quanta, `EV_IMPACT`'s. A fire arrow came down and a fire is
+/// burning there (`fire.rs`). **Broadcast**: a fire hurts whoever walks
+/// into it, so everyone in the world should see it.
+pub const EV_FIRE: u8 = 54;
+
+pub const EV_MAX: u8 = EV_FIRE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1973,6 +2003,9 @@ pub struct World {
     /// Small enough to sit inline (`MAX_LIVE_CHARGES` × 24 B ≈ 1.5 kB)
     /// beside the stores it damages, unlike `backpacks` next door.
     pub charges: crate::charge::Charges,
+    /// Fires fire arrows left burning — sim state, hashed. Inline for
+    /// `charges`' reason, 2 kB.
+    pub fires: crate::fire::Fires,
     /// Death backpacks standing on the ground — sim state, hashed.
     /// Boxed, and for one reason: the store is 38 kB of fixed capacity and
     /// `World` is built on the stack (`ShardCore::new`, every wire test),
@@ -2128,6 +2161,7 @@ impl World {
             pieces: Pieces::new(),
             deploys: Deploys::new(),
             charges: crate::charge::Charges::new(),
+            fires: crate::fire::Fires::new(),
             backpacks: Box::new(Backpacks::new()),
             rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
@@ -2769,9 +2803,10 @@ impl World {
             .harvest(c.cx, c.cz, occ, c.refill_at - 1, &mut self.events);
     }
 
-    /// Lay down the arrows that are due (`spent::settle`): each falls onto
-    /// the surface under it (`grounditem::rest_at`) as a loose stack of its
-    /// round, or is lost in deep water.
+    /// Lay down the arrows that are due (`spent::settle`): one that stuck
+    /// stays where it went in (`grounditem::stick_at`), the rest fall onto
+    /// the surface under them (`grounditem::rest_at`), each a loose stack
+    /// of its round, or lost in deep water.
     fn settle_arrows(&mut self) {
         if self.spent.is_empty() {
             return;
@@ -2792,10 +2827,14 @@ impl World {
             tick,
             &self.players,
             &self.mobs,
-            |round, x, y, z| {
+            |round, x, y, z, dir| {
                 let (x, y, z) = (x as f32 / 1000.0, y as f32 / 1000.0, z as f32 / 1000.0);
-                let Some(at) = crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z)
-                else {
+                let at = if dir == [0; 3] {
+                    crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z)
+                } else {
+                    crate::grounditem::stick_at(x, y, z)
+                };
+                let Some(at) = at else {
                     return;
                 };
                 let stack = ItemStack {
@@ -2804,9 +2843,221 @@ impl World {
                     cond: gc.cond_max_of(round),
                     skin: 0,
                 };
-                ground.drop_one(bc, at, stack, tick);
+                ground.drop_one(bc, at, stack, tick, dir);
             },
         );
+    }
+
+    /// Light a fire where each fire round came down this tick: dropped
+    /// onto whatever a body could stand on below it, and not at all in the
+    /// sea (`fire.rs`).
+    fn light_fires(&mut self) {
+        if self.arrows.lit().is_empty() {
+            return;
+        }
+        let (seed, tick) = (self.seed, self.tick);
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        for l in self.arrows.lit() {
+            let (x, y, z) = (
+                l.qx as f32 / 1000.0,
+                l.qy as f32 / 1000.0,
+                l.qz as f32 / 1000.0,
+            );
+            let Some((qx, qy, qz)) =
+                crate::grounditem::rest_at(seed, &self.haven, cols, &mut occ, x, y, z)
+            else {
+                continue;
+            };
+            if (qy as f32 * POS_Y_Q) < terrain::SEA_LEVEL {
+                continue;
+            }
+            self.fires.light(crate::fire::FireRec {
+                qx,
+                qy,
+                qz,
+                until: tick + u64::from(l.ticks),
+                owner: l.owner,
+                item: l.item,
+                range_cm: l.range_cm,
+            });
+            self.events
+                .push(EV_FIRE, fire_a(l.ticks, qx), qz as u32, qy as u32);
+        }
+        self.arrows.clear_lit();
+    }
+
+    /// Every fire takes [`crate::fire::FIRE_HP`] off each player and animal
+    /// in its reach, once a second — the archer's doing, so a death by one is
+    /// theirs, with the bow, from as far as the arrow flew.
+    fn burn_fires(&mut self) {
+        use crate::fire::{FIRE_HP, FIRE_PERIOD_TICKS};
+        if self.fires.is_empty() || !self.tick.is_multiple_of(FIRE_PERIOD_TICKS) {
+            return;
+        }
+        for fi in 0..self.fires.len() {
+            let f = self.fires.entries()[fi];
+            for j in 0..MAX_PLAYERS {
+                let v = &self.players[j];
+                if !v.active || v.dead || v.hp == 0 || combat::protected(v) {
+                    continue;
+                }
+                let (x, y, z) = (
+                    v.body.qx as f32 * POS_XZ_Q,
+                    v.body.qy as f32 * POS_Y_Q,
+                    v.body.qz as f32 * POS_XZ_Q,
+                );
+                let h = crate::collide::hit_height_m(v.crouched());
+                if !f.reaches(x, y, z, crate::collide::CAPSULE_RADIUS_M, h) {
+                    continue;
+                }
+                let from = combat::bearing_sector(
+                    i64::from(f.qx - v.body.qx),
+                    i64::from(f.qz - v.body.qz),
+                );
+                let v = &mut self.players[j];
+                let hurt = combat::hurt(&self.combat, v, FIRE_HP);
+                let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
+                self.events
+                    .push(EV_HURT, vid, u32::from(from), u32::from(FIRE_HP));
+                self.events.push(EV_HEALTH, vid, left, vmax);
+                if hurt.died {
+                    self.down_or_die(j, f.owner, DEATH_BY_ARROW, f.item, f.range_cm, false);
+                }
+            }
+            for slot in 0..self.mobs.m.len() {
+                let m = &self.mobs.m[slot];
+                if !m.alive || m.hp == 0 {
+                    continue;
+                }
+                let def = self.mob.def(m.kind);
+                let (x, y, z) = (
+                    m.body.qx as f32 * POS_XZ_Q,
+                    m.body.qy as f32 * POS_Y_Q,
+                    m.body.qz as f32 * POS_XZ_Q,
+                );
+                let (r, h) = (
+                    f32::from(def.body_r_cm) * 0.01,
+                    f32::from(def.body_h_cm) * 0.01,
+                );
+                if !f.reaches(x, y, z, r, h) {
+                    continue;
+                }
+                let by = self.live_slot_of(f.owner);
+                mob::hurt_slot(
+                    &self.backpack,
+                    &self.mob,
+                    self.tick,
+                    by,
+                    &self.players,
+                    &mut self.mobs,
+                    &mut self.backpacks,
+                    &mut self.events,
+                    slot,
+                    FIRE_HP,
+                );
+            }
+        }
+    }
+
+    /// Pull the nearest arrow standing in a body out of it, into `slot`'s
+    /// pack — when one is in reach (`LOOT_REACH_M`, planar, to the body's
+    /// feet; your own body is at none) and no loose stack is nearer, which
+    /// is what `E` takes then. `true` when an arrow came out.
+    fn pull_arrow(&mut self, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) -> bool {
+        use crate::backpack::LOOT_REACH_M;
+        use crate::movement::POS_XZ_Q;
+        let p = &self.players[slot];
+        let (px, pz) = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
+        let mut best: Option<(usize, f32)> = None;
+        for (i, a) in self.spent.entries().iter().enumerate() {
+            if a.host == 0 {
+                continue;
+            }
+            let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
+            let d2 = dx * dx + dz * dz;
+            if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((i, d2));
+            }
+        }
+        let Some((i, d2)) = best else {
+            return false;
+        };
+        if let Some(g) = self.ground_items.nearest(p) {
+            let g = self.ground_items.entries()[g];
+            let (dx, dz) = (g.qx as f32 * POS_XZ_Q - px, g.qz as f32 * POS_XZ_Q - pz);
+            if dx * dx + dz * dz <= d2 {
+                return false;
+            }
+        }
+        let Some(rec) = self.spent.take_at(i) else {
+            return false;
+        };
+        let gc = &self.gather;
+        let p = &mut self.players[slot];
+        let took = gather::inv_add_spilling_skinned(
+            &mut p.inv,
+            spill,
+            rec.round,
+            1,
+            gc.stack_max_of(rec.round),
+            gc.cond_max_of(rec.round),
+            0,
+        );
+        // `take_nearest`'s announcement: into the pack, or to the feet.
+        self.events
+            .push(EV_GATHER, p.id, ((rec.round as u32) << 16) | took as u32, 0);
+        true
+    }
+
+    /// A stuck arrow falls when what it is stuck in goes — a tree felled, a
+    /// wall broken, a door swung open (`ranged::still_stuck`). Each one is
+    /// asked once every `UNSTICK_EVERY_TICKS`, staggered by its id, so a
+    /// volley in one trunk does not all ask on one tick.
+    fn unstick_arrows(&mut self) {
+        let (seed, tick) = (self.seed, self.tick);
+        let haven = &self.haven;
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
+            table: &self.scatter,
+            haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        let (bc, ground) = (&self.backpack, &mut self.ground_items);
+        let mut i = 0;
+        while i < ground.len() {
+            let g = ground.entries()[i];
+            if g.dir == [0; 3] || (u64::from(g.id) + tick) % UNSTICK_EVERY_TICKS != 0 {
+                i += 1;
+                continue;
+            }
+            let (x, y, z) = (
+                g.qx as f32 * crate::movement::POS_XZ_Q,
+                g.qy as f32 * crate::movement::POS_Y_Q,
+                g.qz as f32 * crate::movement::POS_XZ_Q,
+            );
+            let at_mm = (x * 1000.0, y * 1000.0, z * 1000.0);
+            if ranged::still_stuck(seed, haven, cols, &mut occ, at_mm, g.dir) {
+                i += 1;
+                continue;
+            }
+            let to = crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z);
+            let before = ground.len();
+            let expires = tick + u64::from(bc.stack_life_ticks(g.stack.item));
+            ground.fall(i, to, expires);
+            // A lost one was swap-removed: this index holds the next.
+            if ground.len() == before {
+                i += 1;
+            }
+        }
     }
 
     /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
@@ -4697,15 +4948,20 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     // The nearest loose stack in reach — a barrel's scatter
                     // or a landed arrow, which is a loose stack the tick it
-                    // comes to rest (`spent.rs`), so the prompt `E` draws
-                    // names exactly what this takes.
+                    // comes to rest (`spent.rs`) — or an arrow standing in a
+                    // body in reach, your own included, when that is nearer:
+                    // Rust's can be pulled out by anyone, and a player clears
+                    // their own with `E`. The prompt `E` draws names exactly
+                    // what this takes.
                     let mut spill = [ItemStack::default(); INV_SLOTS];
-                    self.ground_items.take_nearest(
-                        &self.gather,
-                        &mut self.players[slot],
-                        &mut spill,
-                        &mut self.events,
-                    );
+                    if !self.pull_arrow(slot, &mut spill) {
+                        self.ground_items.take_nearest(
+                            &self.gather,
+                            &mut self.players[slot],
+                            &mut spill,
+                            &mut self.events,
+                        );
+                    }
                     // A take into a full pack spills at the feet, the same
                     // drain every other payout uses — six producers, one
                     // drain (`backpack.rs`).
@@ -5935,6 +6191,10 @@ impl World {
         // After the deaths those arrows caused, so an arrow in a body that
         // just died falls out where it fell.
         self.settle_arrows();
+        self.unstick_arrows();
+        self.light_fires();
+        self.fires.expire_due(tick);
+        self.burn_fires();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -6365,6 +6625,14 @@ impl World {
                 h.update(&buf);
                 h.update(&e.ready_at.to_le_bytes());
                 h.update(&e.life.to_le_bytes());
+                // Where in its body and which way, only when it has one, so
+                // a store of arrows without folds what it always did.
+                if e.off != [0; 3] || e.dir != [0; 3] {
+                    for v in e.off {
+                        h.update(&v.to_le_bytes());
+                    }
+                    h.update(&[e.dir[0] as u8, e.dir[1] as u8, e.dir[2] as u8]);
+                }
             }
             h.update(&self.spent.evictions().to_le_bytes());
         }
@@ -6535,6 +6803,23 @@ impl World {
             buf[21..25].copy_from_slice(&c.owner.to_le_bytes());
             h.update(&buf);
         }
+        // Fires burning: where, until when, and whose — the death a fire
+        // deals is its archer's. Only when there are any, so a world without
+        // one hashes as it did before fire arrows.
+        if !self.fires.is_empty() {
+            h.update(&(self.fires.len() as u64).to_le_bytes());
+        }
+        for f in self.fires.entries() {
+            let mut buf = [0u8; 28];
+            buf[0..4].copy_from_slice(&f.qx.to_le_bytes());
+            buf[4..8].copy_from_slice(&f.qy.to_le_bytes());
+            buf[8..12].copy_from_slice(&f.qz.to_le_bytes());
+            buf[12..20].copy_from_slice(&f.until.to_le_bytes());
+            buf[20..24].copy_from_slice(&f.owner.to_le_bytes());
+            buf[24..26].copy_from_slice(&f.item.to_le_bytes());
+            buf[26..28].copy_from_slice(&f.range_cm.to_le_bytes());
+            h.update(&buf);
+        }
         // The bag cooldowns, in their own pass rather than widening the
         // buffer above — they live in a parallel array precisely so the
         // wire's mirror of `DeployRec` does not carry them (deploy.rs), and
@@ -6659,6 +6944,11 @@ impl World {
                 buf[16..24].copy_from_slice(&stack_bytes(&g.stack));
                 buf[24..32].copy_from_slice(&g.expires.to_le_bytes());
                 h.update(&buf);
+                // A stuck arrow's angle, only when it has one, so a store
+                // of things lying on the ground folds what it always did.
+                if g.dir != [0; 3] {
+                    h.update(&[g.dir[0] as u8, g.dir[1] as u8, g.dir[2] as u8]);
+                }
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
         }

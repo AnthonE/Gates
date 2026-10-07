@@ -40,15 +40,15 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, HitFact, Impact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
+    ClientCore, Fire, HitFact, Impact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
     APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_impact,
-    encode_event_move_refused, encode_event_moved, encode_event_respawn, encode_event_shot,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, InvSlot, WireBag,
-    MAX_EVENT_MSG_BYTES,
+    encode_event_cont_sync, encode_event_death, encode_event_fire, encode_event_hit,
+    encode_event_impact, encode_event_move_refused, encode_event_moved, encode_event_respawn,
+    encode_event_shot, encode_event_struct_hit, encode_event_swing, encode_event_vitals, InvSlot,
+    WireBag, MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::collide::Part;
@@ -916,4 +916,27 @@ fn the_swing_ring_is_bounded_and_says_so() {
         got, want,
         "drop-oldest: the ring must keep the NEWEST swings, in order"
     );
+}
+
+/// Wire v94: a fire arrow's fire crosses whole, the same fire restated (a
+/// join, a resync) stays one fire, and one already out is not listed.
+#[test]
+fn a_fire_crosses_whole_and_a_restated_one_stays_one() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let want = Fire {
+        qx: 0x9C41,
+        qy: -207,
+        qz: 0x3A17,
+        until: 5_000,
+    };
+    let len = encode_event_fire(want.qx, want.qy, want.qz, want.until, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    feed(&mut c, &buf[..len]);
+    assert_eq!(c.fires().copied().collect::<Vec<_>>(), vec![want]);
+
+    // Its deadline is the server tick this core starts at: out already.
+    let len = encode_event_fire(100, 0, 200, 0, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(c.fires().count(), 1, "a burnt-out fire is not drawn");
 }

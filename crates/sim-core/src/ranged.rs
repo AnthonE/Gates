@@ -57,7 +57,7 @@
 //! of this header to outlive its truth, after the bow and after the wall
 //! chip. A head is a band off the top of the body cylinder
 //! (`collide::HEAD_BAND_M`) and a hit whose line crosses it pays the
-//! weapon's `headshot_mult`, which had been priced, banded and
+//! weapon's `head_pct`, which had been priced, banded and
 //! content-hashed since the content crate and dropped at the bake every
 //! time (`reference/PROJECTILES.md` §9.4). The rule is §7's — the most
 //! significant part **along the segment**, so `nearest_body` carries the
@@ -135,8 +135,8 @@ use crate::rewind::{Rewind, RewindPose};
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD, EV_RELOAD_REFUSED,
-    EV_SHOT,
+    EventQueue, Player, EV_AMMO, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_SHOT,
 };
 use crate::yaw_lut::yaw_dir;
 
@@ -231,10 +231,13 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     };
-    // A bow. `magazine == 0` is read as exactly that and never as "unset":
-    // `draw` keeps spending out of the quiver, so the arrow path did not
-    // move for reload v1 and the refusal names the hand rather than
-    // pretending a bow has an empty cylinder.
+    // A bow: `R` picks the next kind of arrow it carries (Rust holds `R`
+    // for a wheel of the kinds you carry; one press a kind is the same
+    // choice). A bow spends straight out of the quiver, so there is no
+    // cylinder to fill — `magazine == 0` is read as exactly that.
+    if def.magazine == 0 && !def.hitscan && (def.mag_slot as usize) < MAX_MAGS {
+        return switch_round(tick, cc, events, p, &def);
+    }
     if def.magazine == 0 || def.mag_slot as usize >= MAX_MAGS {
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
@@ -332,6 +335,63 @@ pub const ARROW_R_M: f32 = 0.05;
 /// Millimetres in a metre — the one conversion this module makes, named so
 /// the collision calls read as unit changes rather than magic scaling.
 pub const MM_PER_M: f32 = 1000.0;
+
+/// How finely the last step of a flight is walked again to find where a
+/// stuck arrow went in: `ARROW_STEP_MM` over this, about 2 cm.
+pub const STICK_STEPS: usize = 8;
+
+/// The probe that asks whether a stuck arrow is still in something: from
+/// this far behind where it went in, millimetres…
+const STICK_BACK_MM: f32 = 100.0;
+/// …this far along the way it flew, in [`STICK_PROBE_STEPS`] samples
+/// (3.75 cm apart, so the shortest chord through the edge of a trunk that
+/// stopped it is still found).
+const STICK_PROBE_MM: f32 = 300.0;
+const STICK_PROBE_STEPS: usize = 8;
+
+/// Is an arrow stuck at `at` (millimetres, where it went in) flying `dir`
+/// (`spent::stick_dir`) still in something — the trunk, the wall, the
+/// ground it stuck in? The same ladder that stopped it, walked through
+/// where it went in, so a felled tree, a broken wall or an opened door
+/// lets it fall (`World::unstick_arrows`).
+pub fn still_stuck(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    at: (f32, f32, f32),
+    dir: [i8; 3],
+) -> bool {
+    let (dx, dy, dz) = (dir[0] as f32, dir[1] as f32, dir[2] as f32);
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len == 0.0 {
+        return false;
+    }
+    let (ux, uy, uz) = (dx / len, dy / len, dz / len);
+    let o = (
+        at.0 - ux * STICK_BACK_MM,
+        at.1 - uy * STICK_BACK_MM,
+        at.2 - uz * STICK_BACK_MM,
+    );
+    let s = (
+        ux * STICK_PROBE_MM,
+        uy * STICK_PROBE_MM,
+        uz * STICK_PROBE_MM,
+    );
+    world_stop(
+        seed,
+        haven,
+        cols,
+        occ,
+        o,
+        s,
+        STICK_PROBE_STEPS,
+        STICK_PROBE_STEPS,
+        ARROW_R_M,
+    )
+    .1
+    .is_some()
+}
 
 /// What an arrow stopped on (`EV_IMPACT`'s surface field) — the ground, a
 /// thing worldgen put there, or a thing a player built.
@@ -441,8 +501,8 @@ pub struct Arrow {
     /// chips a wall by the same amount — the same rule already in force
     /// for flesh.
     pub structure: u16,
-    /// What this arrow is multiplied by if its line crosses the head band
-    /// — the bow's `headshot_mult`, copied at the draw beside `damage` and
+    /// What this arrow is worth, in percent, if its line crosses the head band
+    /// — the bow's `head_pct`, copied at the draw beside `damage` and
     /// `structure`, for the same reason those two are copied: an arrow
     /// already in the air should not change what it does because content
     /// was rebaked under it.
@@ -451,10 +511,10 @@ pub struct Arrow {
     /// round's. `weapons.toml`'s `[[ammo]]` rows carry ballistics and
     /// nothing else; a high-velocity arrow flies flatter and hits for what
     /// the bow says.
-    pub head_mult: u16,
+    pub head_pct: u16,
     /// What this arrow is multiplied by, in **percent**, if its line
     /// reached nothing above the leg band — the bow's `limb_pct`, copied
-    /// at the draw for [`Arrow::head_mult`]'s reason word for word: an
+    /// at the draw for [`Arrow::head_pct`]'s reason word for word: an
     /// arrow already in the air must not change what it does because
     /// content was rebaked under it.
     pub limb_pct: u16,
@@ -532,6 +592,65 @@ pub struct Kill {
     pub head: bool,
 }
 
+/// Where a fire round came down, handed to `World` to light (`fire.rs`) for
+/// [`Kill`]'s reason: a fire needs the ground under it and the fire store,
+/// and this pass holds neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ignite {
+    /// The arrow's last position, millimetres.
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub owner: u32,
+    /// The weapon that shot it, for the death screen.
+    pub item: u16,
+    /// How long it burns, ticks — rolled where it landed.
+    pub ticks: u16,
+    pub range_cm: u16,
+}
+
+/// The fire rounds that came down since `World` last lit them. At most one
+/// per arrow slot a tick, and `World` drains it every tick.
+#[derive(Clone, Copy, Debug)]
+pub struct Lit {
+    e: [Ignite; MAX_ARROWS],
+    n: usize,
+}
+
+impl Lit {
+    const EMPTY: Self = Self {
+        e: [Ignite {
+            qx: 0,
+            qy: 0,
+            qz: 0,
+            owner: 0,
+            item: 0,
+            ticks: 0,
+            range_cm: 0,
+        }; MAX_ARROWS],
+        n: 0,
+    };
+
+    fn push(&mut self, f: Ignite) {
+        if self.n < MAX_ARROWS {
+            self.e[self.n] = f;
+            self.n += 1;
+        }
+    }
+}
+
+/// `CH_*` for how long a fire burns.
+const CH_FIRE_LIFE: u32 = 118;
+
+/// How long a fire lit by slot `slot` on `tick` burns, between the round's
+/// shortest and longest — `spent::breaks`' stateless draw, so a replay rolls
+/// the same fire.
+fn fire_ticks(seed: u64, tick: u64, slot: usize, [lo, hi]: [u16; 2]) -> u16 {
+    let span = u64::from(hi.saturating_sub(lo)) + 1;
+    let h = crate::rng::cell_hash(seed, slot as i32, tick as i32, CH_FIRE_LIFE);
+    lo + (((h >> 32) * span) >> 32) as u16
+}
+
 /// Every arrow in the air on the shard. A flat array with a free-slot scan
 /// rather than a free list: `MAX_ARROWS` is 128, the scan stops at the
 /// first hole, and a free list is one more thing `state_hash` would have to
@@ -539,6 +658,7 @@ pub struct Kill {
 #[derive(Clone, Copy, Debug)]
 pub struct Arrows {
     a: [Arrow; MAX_ARROWS],
+    lit: Lit,
 }
 
 impl Arrows {
@@ -557,13 +677,14 @@ impl Arrows {
             damage: 0,
             structure: 0,
             // The identity, so an unfilled slot cannot delete a hit.
-            head_mult: 1,
+            head_pct: 100,
             // The identity at the other end, and the same sentence: a
             // percent of zero on an unfilled slot would delete one.
             limb_pct: 100,
             life: 0,
             flown: 0,
         }; MAX_ARROWS],
+        lit: Lit::EMPTY,
     };
 
     pub fn new() -> Self {
@@ -585,6 +706,15 @@ impl Arrows {
         self.len() == 0
     }
 
+    /// The fire rounds that came down since [`Arrows::clear_lit`].
+    pub fn lit(&self) -> &[Ignite] {
+        &self.lit.e[..self.lit.n]
+    }
+
+    pub fn clear_lit(&mut self) {
+        self.lit.n = 0;
+    }
+
     /// The first free slot, or `None` when the store is full — the refusal
     /// `MAX_ARROWS` documents. Checked before the ammo is spent.
     fn free(&mut self) -> Option<usize> {
@@ -596,6 +726,91 @@ impl Default for Arrows {
     fn default() -> Self {
         Self::EMPTY
     }
+}
+
+/// The rounds `def` lists that the archer carries and that fly, in the
+/// list's order.
+fn carried_rounds<'a>(
+    cc: &'a CombatContent,
+    p: &'a Player,
+    def: &'a crate::combat::RangedDef,
+) -> impl Iterator<Item = u16> + 'a {
+    def.ammo
+        .iter()
+        .copied()
+        .take_while(|&a| a != NO_ITEM)
+        .filter(move |&a| inv_count(&p.inv, a) > 0 && cc.ammo_def(a).is_some())
+}
+
+/// The round a bow will loose: the one picked (`Player::mag_round` in the
+/// bow's slot) while it is still carried, else the first carried in the
+/// weapon's list — and the pick follows, announced (`EV_AMMO`) when it
+/// moves, so the readout is never stale. `None` when none is carried.
+fn keep_round(
+    cc: &CombatContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    def: &crate::combat::RangedDef,
+) -> Option<u16> {
+    let slot = def.mag_slot as usize;
+    if slot >= MAX_MAGS {
+        // A slotless bow (test fixtures, an unarmed row): the list's first.
+        return carried_rounds(cc, p, def).next();
+    }
+    let picked = p.mag_round[slot];
+    if picked != NO_ITEM && carried_rounds(cc, p, def).any(|r| r == picked) {
+        return Some(picked);
+    }
+    let next = carried_rounds(cc, p, def).next();
+    let now = next.unwrap_or(NO_ITEM);
+    if now != picked {
+        p.mag_round[slot] = now;
+        events.push(
+            EV_AMMO,
+            p.id,
+            u32::from(held_item(p)) << 16 | u32::from(now),
+            0,
+        );
+    }
+    next
+}
+
+/// `R` on a bow: the next kind of arrow along the weapon's list that the
+/// archer carries becomes the one it looses, and the draw starts again —
+/// a crossbow's reload — as Rust's does on a switch. With one kind or
+/// none it stays, and is said again, so the key is never silent.
+fn switch_round(
+    tick: u64,
+    cc: &CombatContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    def: &crate::combat::RangedDef,
+) -> bool {
+    let slot = def.mag_slot as usize;
+    let current = keep_round(cc, events, p, def).unwrap_or(NO_ITEM);
+    let mut after = false;
+    let mut next = None;
+    for r in carried_rounds(cc, p, def).chain(carried_rounds(cc, p, def)) {
+        if after && r != current {
+            next = Some(r);
+            break;
+        }
+        after |= r == current;
+    }
+    let held = u32::from(held_item(p)) << 16;
+    let Some(next) = next else {
+        events.push(EV_AMMO, p.id, held | u32::from(current), 0);
+        return false;
+    };
+    p.mag_round[slot] = next;
+    let rearm = if def.draw_ticks > 0 {
+        1 + u64::from(def.draw_ticks)
+    } else {
+        def.rate_ticks.max(1) as u64
+    };
+    p.next_swing = p.next_swing.max(tick + rearm);
+    events.push(EV_AMMO, p.id, held | u32::from(next), 0);
+    true
 }
 
 /// Draw, and fire if everything is in hand. Returns whether the **weapon
@@ -635,6 +850,11 @@ pub fn draw(
     if def.hitscan {
         return true;
     }
+    // Which arrow the bow will loose, kept to one it carries — told to the
+    // archer whenever it changes, so the readout names it before the shot
+    // (the kind they picked, or the next one along when it runs out: Rust's
+    // auto-switch).
+    let round = keep_round(cc, events, p, &def);
     // **A bow looses only from a full draw** (`reference/PROJECTILES.md`
     // §6): the aim held for `draw_ticks`. Relaxed, it keeps its earliest
     // shot a whole draw away, so the draw's clock starts when the aim does;
@@ -653,24 +873,11 @@ pub fn draw(
     // a refused shot must not be re-attempted every tick.
     p.next_swing = tick + def.rate_ticks.max(1) as u64;
 
-    // The first round in the weapon's preference order the shooter is
-    // actually carrying — and it must have ballistics to fly by, which
-    // `validate` guarantees for every listed round, so the `find_map` is a
-    // re-check rather than the first check.
-    //
-    // Walking the list here rather than baking one round is the whole of
-    // §9.3's payoff at the sim end: a bow with wooden and high-velocity
-    // arrows listed fires wood until the wood runs out and then keeps
-    // firing, at the other arrow's speed and drop. There is no verb to
-    // choose, so the list order is the choice.
-    let Some((round, ball)) = def
-        .ammo
-        .iter()
-        .copied()
-        .take_while(|&a| a != NO_ITEM)
-        .filter(|&a| inv_count(&p.inv, a) > 0)
-        .find_map(|a| cc.ammo_def(a).map(|b| (a, b)))
-    else {
+    // The round `keep_round` settled on: the kind the archer picked (`R`),
+    // or the first in the weapon's list they carry. Ballistics belong to
+    // the round (§9.3's payoff at the sim end), so a bow switched to
+    // high-velocity arrows flies them at their own speed and drop.
+    let Some((round, ball)) = round.and_then(|r| cc.ammo_def(r).map(|b| (r, b))) else {
         // An empty quiver says so, as the gun's dry click does: a loose
         // that went quiet read as a dropped input. Bounded by the cadence
         // paid above; `c` is 0, a bow having no magazine to state.
@@ -713,9 +920,11 @@ pub fn draw(
         owner: p.id,
         item: held_item(p),
         round,
-        damage: def.damage,
+        // The round's share of the bow's blow (Rust's high-velocity arrow
+        // hits for 40 off the bow that puts 50 into a wooden one).
+        damage: (u32::from(def.damage) * u32::from(ball.damage_pct) / 100) as u16,
         structure: def.structure,
-        head_mult: def.headshot_mult,
+        head_pct: def.head_pct,
         limb_pct: def.limb_pct,
         life,
         flown: 0,
@@ -743,17 +952,40 @@ pub fn draw(
 /// with an arrow on the ground pays the same odds. The slot is part of the
 /// key, which is what makes two arrows landing on one tick two independent
 /// draws. The arrow's own position is where it stopped: the caller moves
-/// `a.q*` there first.
+/// `a.q*` there first. `dir` is the way it was flying if it **stuck** —
+/// in the world, or in its host's frame with `off` where in the host it
+/// went in (`SpentRec::dir`, `spent::lodge_pose`) — zero if it falls.
+///
+/// A round that lights a fire leaves no arrow: where it came down goes to
+/// `lit` for `World` to light (`fire.rs`), wherever it came down — in the
+/// world, in a body or out of flight.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn land(
     seed: u64,
     tick: u64,
     cc: &CombatContent,
     spent: &mut SpentArrows,
+    lit: &mut Lit,
     slot: usize,
     a: &Arrow,
     host: Option<(u32, u64)>,
+    dir: [i8; 3],
+    off: [i16; 3],
 ) {
+    let burns = cc.ammo_def(a.round).map_or([0; 2], |b| b.fire_ticks);
+    if burns[1] > 0 {
+        lit.push(Ignite {
+            qx: a.qx,
+            qy: a.qy,
+            qz: a.qz,
+            owner: a.owner,
+            item: a.item,
+            ticks: fire_ticks(seed, tick, slot, burns),
+            range_cm: (a.flown / 10).min(u32::from(u16::MAX)) as u16,
+        });
+        return;
+    }
     if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
         return;
     }
@@ -770,6 +1002,8 @@ fn land(
         },
         host,
         life,
+        dir,
+        off,
     });
 }
 
@@ -883,7 +1117,18 @@ fn step_in(
             // Falling faster than the sampler can honestly trace — a long
             // drop off a height: it falls from where it is rather than
             // flying on untraced.
-            land(seed, tick, cc, spent, ix, &a, None);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                None,
+                [0; 3],
+                [0; 3],
+            );
             arrows.a[ix].life = 0;
             continue;
         }
@@ -952,8 +1197,27 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * m.t);
                 a.qy = crate::fmath::floor_i32(oy + sy * m.t);
                 a.qz = crate::fmath::floor_i32(oz + sz * m.t);
-                let host = (crate::mob::mob_id(m.slot), q.mobs.m[m.slot].respawn_at);
-                land(seed, tick, cc, spent, ix, &a, Some(host));
+                let beast = &q.mobs.m[m.slot];
+                let host = (crate::mob::mob_id(m.slot), beast.respawn_at);
+                // It stands out of the animal where it went in (Rust's do).
+                let (off, dir) = crate::spent::lodge_pose(
+                    (ox + sx * m.t, oy + sy * m.t, oz + sz * m.t),
+                    crate::spent::feet_mm(&beast.body),
+                    beast.yaw,
+                    (dx, dy, dz),
+                );
+                land(
+                    seed,
+                    tick,
+                    cc,
+                    spent,
+                    &mut arrows.lit,
+                    ix,
+                    &a,
+                    Some(host),
+                    dir,
+                    off,
+                );
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -983,7 +1247,18 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * t);
                 a.qy = crate::fmath::floor_i32(oy + sy * t);
                 a.qz = crate::fmath::floor_i32(oz + sz * t);
-                land(seed, tick, cc, spent, ix, &a, None);
+                land(
+                    seed,
+                    tick,
+                    cc,
+                    spent,
+                    &mut arrows.lit,
+                    ix,
+                    &a,
+                    None,
+                    [0; 3],
+                    [0; 3],
+                );
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -1000,7 +1275,7 @@ fn step_in(
             // Hoisted, because the rung is now a fact the shooter is told
             // and not only a multiplier: `EV_HIT` carries it (v58).
             let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
-            let dmg = crate::combat::part_damage(a.damage, part, a.head_mult, a.limb_pct);
+            let dmg = crate::combat::part_damage(a.damage, part, a.head_pct, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
             let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
@@ -1041,7 +1316,28 @@ fn step_in(
             a.qy = crate::fmath::floor_i32(oy + sy * t);
             a.qz = crate::fmath::floor_i32(oz + sz * t);
             let host = (vid, u64::from(players[j].deaths));
-            land(seed, tick, cc, spent, ix, &a, Some(host));
+            // It stands out of the body where it went in — `enter`, the
+            // crossing into its radius, not the closest approach `t`, which
+            // is its axis — turning with it (Rust's arrows stay in whoever
+            // they hit).
+            let (off, dir) = crate::spent::lodge_pose(
+                (ox + sx * enter, oy + sy * enter, oz + sz * enter),
+                crate::spent::feet_mm(&players[j].body),
+                players[j].frame.yaw,
+                (dx, dy, dz),
+            );
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                Some(host),
+                dir,
+                off,
+            );
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1086,15 +1382,45 @@ fn step_in(
                     n_chips += 1;
                 }
             }
-            // Missed every body, so it rests this tick, under the last
-            // free sample before the stop: the stop sample itself is inside
-            // the trunk, the wall or the hillside, and a point inside a
-            // wall could fall to the wrong side of it.
-            let back = (stop_t - 1.0 / n as f32).max(0.0);
-            a.qx = crate::fmath::floor_i32(ox + sx * back);
-            a.qy = crate::fmath::floor_i32(oy + sy * back);
-            a.qz = crate::fmath::floor_i32(oz + sz * back);
-            land(seed, tick, cc, spent, ix, &a, None);
+            // Missed every body, so it **sticks** where it went in, at the
+            // angle it was flying (Rust's arrows stand in trunks, walls and
+            // dirt). Where it went in is found inside this last step with
+            // the same ladder, `STICK_STEPS` finer, and kept on the free
+            // side: the stop sample itself is inside the trunk, the wall or
+            // the hillside, and a point inside a wall could be on the wrong
+            // side of it when the arrow falls out.
+            let lo = (stop_t - 1.0 / n as f32).max(0.0);
+            let from = (ox + sx * lo, oy + sy * lo, oz + sz * lo);
+            let span = stop_t - lo;
+            let last = (sx * span, sy * span, sz * span);
+            let (t2, _, _) = world_stop(
+                seed,
+                haven,
+                cols,
+                occ,
+                from,
+                last,
+                STICK_STEPS,
+                STICK_STEPS,
+                ARROW_R_M,
+            );
+            let back = (t2 - 1.0 / STICK_STEPS as f32).max(0.0);
+            a.qx = crate::fmath::floor_i32(from.0 + last.0 * back);
+            a.qy = crate::fmath::floor_i32(from.1 + last.1 * back);
+            a.qz = crate::fmath::floor_i32(from.2 + last.2 * back);
+            let dir = crate::spent::stick_dir(dx, dy, dz);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                None,
+                dir,
+                [0; 3],
+            );
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1107,7 +1433,18 @@ fn step_in(
         if a.life == 0 {
             // Out of flight in the air: it falls to whatever is under it
             // rather than vanishing (`NOW.md` §5 item 2).
-            land(seed, tick, cc, spent, ix, &a, None);
+            land(
+                seed,
+                tick,
+                cc,
+                spent,
+                &mut arrows.lit,
+                ix,
+                &a,
+                None,
+                [0; 3],
+                [0; 3],
+            );
         }
         arrows.a[ix] = a;
     }
@@ -1288,6 +1625,26 @@ pub struct BeamStop {
 /// of a miss the shard did not mark (it stops at
 /// [`MAX_HITSCAN_MARK_SAMPLES`] so a decal cannot own the tick). The same
 /// ladder, so the client and the shard cannot disagree about what a trunk
+/// One tick of an arrow's flight against the world, for a client drawing
+/// it (`render/tracer.rs`): the fraction along `o + s` (millimetres) the
+/// world stops it at, or `None` while it flies on. The sim's own ladder at
+/// the sim's own spacing, so the drawn arrow stops in the trunk the real
+/// one stuck in rather than flying on through it. Cosmetic and client-side:
+/// nothing in a tick calls this.
+pub fn flight_stop(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+) -> Option<f32> {
+    let len = (s.0 * s.0 + s.1 * s.1 + s.2 * s.2).sqrt();
+    let n = ((len / ARROW_STEP_MM as f32) as usize + 1).min(MAX_ARROW_SUBSTEPS);
+    let (t, surf, _) = world_stop(seed, haven, cols, occ, o, s, n, n, ARROW_R_M);
+    surf.map(|_| t)
+}
+
 /// is. Cosmetic and client-side: nothing in a tick calls this.
 #[allow(clippy::too_many_arguments)]
 pub fn beam_stop(
@@ -2032,7 +2389,7 @@ fn hitscan_in(
             // Hoisted for the same reason as the arrow's: the rung reaches
             // the shooter's screen now, not just their damage number.
             let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
-            let dmg = crate::combat::part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
+            let dmg = crate::combat::part_damage(def.damage, part, def.head_pct, def.limb_pct);
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day
             // armor lands" for exactly one day).

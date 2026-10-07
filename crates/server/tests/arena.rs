@@ -808,9 +808,15 @@ const LOADOUTS: [(Gear, Gear); 5] = [
 /// Melee at equal gear against the rusher and the strafer, no lag:
 /// measured 42/48 when pinned.
 const FLOOR_MELEE_PCT: u32 = 80;
-/// Bow against bow, the rusher: measured 9/12. (The strafer outshoots it:
-/// its aim is perfect and its eyes have no lag; reported, not floored.)
-const FLOOR_BOW_PCT: u32 = 60;
+/// Bow against bow, the rusher: measured 9/12, then 8/12, then 7/12 once
+/// arrows flew at Rust's speeds and drop (2026-10) — both sides' arrows
+/// land more and the 15 m bouts flipped to the rusher — and 7/12 again at
+/// Rust's damage and cadence, once the agent duels from 26 m (`DUEL_M`)
+/// rather than walking in under fire. Floored at half: it wins the bow
+/// fight at least as often as it loses it. (The strafer
+/// outshoots it: its aim is perfect and its eyes have no lag; reported,
+/// not floored.)
+const FLOOR_BOW_PCT: u32 = 50;
 /// Melee at equal gear against the strafer, ~100 ms round trip: measured
 /// 10/12. (The rusher at 100 ms is reported, not floored: a body with no
 /// lag at all walking into a lagged one wins most first blows, as it

@@ -195,7 +195,11 @@ pub const DRAW_SLACK_TICKS: u32 = 2;
 pub const HUNT_SHOT_M: f32 = 16.0;
 /// A player is shot at from no further than this, where a lead is short
 /// enough to hold across a strafe; and at the head from inside this.
-pub const DUEL_M: f32 = 14.0;
+///
+/// 14 → 26 when arrows took Rust's 50 m/s and two-hit kills: closing to
+/// 14 m under a foe's flatter arrows cost the arena's 30 m bouts all four,
+/// and from 26 m a shaft is half a second in the air.
+pub const DUEL_M: f32 = 26.0;
 pub const HEAD_SHOT_M: f32 = 12.0;
 /// A foe that turned back across my line of sight this recently, crossing
 /// it at least this fast, is weaving, and an arrow waits for its next turn:
@@ -2307,7 +2311,7 @@ pub fn odds(t: &Track, kit: &Kit, others: u32) -> Odds {
     let mine_page = kit.melee.map_or(&Page::EMPTY, |(_, item)| book.page(item));
     // A level swing from the eye crosses a standing body's head band: at
     // melee range between two people, a blow is a head blow.
-    let head = |page: &Page| u32::from(page.melee.headshot_mult.max(1));
+    let head = |page: &Page| u32::from(page.melee.head_pct.max(100));
     let (my_damage, my_reach, my_cadence) = match (kit.melee, kit.ranged) {
         // Nothing to swing: the sum is on what I shoot, aimed at the
         // chest, a shot a draw and a cadence apart.
@@ -2329,8 +2333,9 @@ pub fn odds(t: &Track, kit: &Kit, others: u32) -> Odds {
                 * if t.species == Species::Player && !t.wounded {
                     head(mine_page)
                 } else {
-                    1
-                },
+                    100
+                }
+                / 100,
             {
                 let reach = f32::from(mine_page.melee.reach_cm) * 0.01;
                 match t.species {
@@ -2352,7 +2357,7 @@ pub fn odds(t: &Track, kit: &Kit, others: u32) -> Odds {
                     (u32::from(page.ranged.damage), gap.max(1))
                 } else if page.swings() {
                     (
-                        u32::from(page.melee.damage) * head(page),
+                        u32::from(page.melee.damage) * head(page) / 100,
                         u32::from(page.melee.cadence_ticks).max(1),
                     )
                 } else {

@@ -135,6 +135,7 @@ fn an_arrow_in_you_falls_out_at_your_feet_when_the_lodge_ends() {
         ready_at: ready,
         host: w.players[P].id,
         life: u64::from(w.players[P].deaths),
+        ..SpentRec::default()
     });
     w.tick(&[]);
     assert_eq!(w.spent.len(), 1, "still in the body");
@@ -169,6 +170,7 @@ fn an_arrow_in_a_body_that_dies_falls_out_at_once() {
         ready_at: w.tick + 10_000,
         host: w.players[P].id,
         life: u64::from(w.players[P].deaths),
+        ..SpentRec::default()
     });
     w.tick(&[]);
     assert_eq!(w.spent.len(), 1, "riding");
@@ -243,4 +245,258 @@ fn a_resting_arrow_is_in_body_quanta() {
         (y - feet).max(feet - y) < 0.05,
         "{y} m against feet at {feet} m"
     );
+}
+
+// ---------------------------------------------------------------------
+// Stuck where it went in
+// ---------------------------------------------------------------------
+
+/// The bow, at an index of its own.
+const BOW: u16 = 3;
+
+/// A world whose player holds a bow and five arrows, and whose arrows
+/// never break — the trunk below is the thing under test, not the odds.
+fn world_with_bow() -> Box<World> {
+    use sim_core::combat::{AmmoDef, CombatContent, RangedDef, NO_MAG};
+    use sim_core::gather::NO_ITEM;
+    let mut w = world_with_archer();
+    let mut c = CombatContent::EMPTY;
+    c.player_hp = 100;
+    c.arrow_break_pct = 0;
+    c.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        range_mm: 60_000,
+        structure: 0,
+        head_pct: 200,
+        limb_pct: 50,
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
+        draw_ticks: 0,
+    };
+    c.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: 1666,
+        drop_mmpt2: 11,
+        damage_pct: 100,
+        fire_ticks: [0; 2],
+    };
+    w.combat = c;
+    // Long enough a life that nothing here races the despawn.
+    w.backpack.base_ticks = 10_000;
+    w.players[P].inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[P].inv[7] = ItemStack {
+        item: ARROW,
+        count: QUIVER,
+        cond: 0,
+        skin: 0,
+    };
+    w
+}
+
+/// The first tree whose trunk a level shot from five metres south of it
+/// meets at chest height over open ground: the tree, its cell, and where
+/// that archer stands.
+fn a_tree_to_shoot(w: &World) -> (sim_core::terrain::Slot, (u16, u16), f32, f32) {
+    use sim_core::terrain::{self, Occupant};
+    let span = (terrain::ISLAND_SIZE / terrain::CELL_SIZE) as i32;
+    let (_, top) = terrain::occupant_volume(Occupant::Tree);
+    // The cells the five metres south of a trunk cross.
+    let reach = (6.0 / terrain::CELL_SIZE) as i32 + 1;
+    for cz in reach..span {
+        for cx in 0..span {
+            let s = terrain::scatter(w.seed, &w.scatter, &w.haven, cx, cz);
+            if s.occupant != Occupant::Tree {
+                continue;
+            }
+            let (x, z) = (s.x, s.z - 5.0);
+            let eye = terrain::ground(w.seed, &w.haven, x, z) + 1.6;
+            if eye < s.y + 1.0 || eye > s.y + top * s.scale - 1.0 {
+                continue;
+            }
+            // Nothing on the line but air: no ground within a metre of the
+            // flight, no other occupant in the cells it crosses.
+            let clear = (1..20).all(|i| {
+                let zi = z + i as f32 * 0.25;
+                terrain::ground(w.seed, &w.haven, x, zi) < eye - 1.0
+            }) && (cz - reach..cz).all(|oz| {
+                (cx - 1..=cx + 1).all(|ox| {
+                    terrain::scatter(w.seed, &w.scatter, &w.haven, ox, oz).occupant
+                        == Occupant::None
+                })
+            });
+            let (dx, dz) = (s.x - w.haven.x, s.z - w.haven.z);
+            if clear && dx * dx + dz * dz > 80.0 * 80.0 {
+                return (s, (cx as u16, cz as u16), x, z);
+            }
+        }
+    }
+    panic!("this island drew no tree to shoot");
+}
+
+fn loose(w: &mut World) {
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    let frame = InputFrame {
+        buttons: BTN_PRIMARY,
+        // Yaw 0 flies +z; just over level.
+        yaw: 0,
+        pitch: 128,
+        sel: 0,
+        ..InputFrame::default()
+    };
+    w.tick(&[Command::Input {
+        id: 1,
+        frame,
+        favour: 0,
+    }]);
+    // Let go, or the held button looses again at the bow's cadence.
+    let frame = InputFrame {
+        buttons: 0,
+        seq: 1,
+        ..frame
+    };
+    w.tick(&[Command::Input {
+        id: 1,
+        frame,
+        favour: 0,
+    }]);
+    for _ in 0..60 {
+        if w.arrows.is_empty() {
+            break;
+        }
+        w.tick(&[]);
+    }
+    assert!(w.arrows.is_empty(), "the arrow never stopped");
+}
+
+/// Shot into a trunk, an arrow stays in the trunk — at the bark, up off the
+/// ground, pointing the way it flew — and falls to the ground under it when
+/// the tree is felled. Mutant: laying a stuck arrow with `rest_at` puts it
+/// on the ground at once; dropping `unstick_arrows` leaves it in the air
+/// where the trunk was.
+#[test]
+fn an_arrow_sticks_in_a_trunk_and_falls_when_it_is_felled() {
+    use sim_core::movement::Body;
+    use sim_core::terrain::{self, Occupant};
+    let mut w = world_with_bow();
+    let (tree, (cx, cz), x, z) = a_tree_to_shoot(&w);
+    w.players[P].body = Body::at(w.seed, &w.haven, x, z);
+    loose(&mut w);
+
+    assert_eq!(w.ground_items.len(), 1, "the arrow is a loose stack");
+    let g = w.ground_items.entries()[0];
+    assert_eq!(g.stack.item, ARROW);
+    let (gx, gy, gz) = (
+        g.qx as f32 * POS_XZ_Q,
+        g.qy as f32 * POS_Y_Q,
+        g.qz as f32 * POS_XZ_Q,
+    );
+    let (ox, oz) = (gx - tree.x, gz - tree.z);
+    let off = (ox * ox + oz * oz).sqrt();
+    assert!(
+        off < 0.6 && gz < tree.z,
+        "it is in the bark on the archer's side of the trunk ({off} m off \
+         the axis, z {gz} against the trunk's {})",
+        tree.z
+    );
+    let ground = terrain::ground(w.seed, &w.haven, gx, gz);
+    assert!(
+        gy > ground + 0.5,
+        "it is up in the trunk, not on the ground (y {gy} m, ground {ground} m)"
+    );
+    assert_ne!(g.dir, [0; 3], "a stuck arrow carries the way it flew");
+    assert_eq!(g.dir[2], 127, "flying +z, and mostly so");
+    assert!(g.dir[1] <= 0 && g.dir[0].abs() < 10, "{:?}", g.dir);
+
+    // Felled: within a second it is on the ground, a new stack.
+    assert!(
+        w.slot_lives
+            .harvest(cx, cz, Occupant::Tree, u64::MAX / 2, &mut w.events),
+        "the fixture fells the tree"
+    );
+    for _ in 0..31 {
+        w.tick(&[]);
+    }
+    assert_eq!(w.ground_items.len(), 1, "it fell, it was not lost");
+    let f = w.ground_items.entries()[0];
+    assert_eq!(f.dir, [0; 3], "it lies now");
+    assert_ne!(f.id, g.id, "as a new stack, so every client redraws it");
+    let fy = f.qy as f32 * POS_Y_Q;
+    let floor = terrain::ground(
+        w.seed,
+        &w.haven,
+        f.qx as f32 * POS_XZ_Q,
+        f.qz as f32 * POS_XZ_Q,
+    );
+    assert!(
+        (fy - floor).max(floor - fy) < 0.05,
+        "on the ground under where it was (y {fy} m, ground {floor} m)"
+    );
+    assert_eq!((f.qx, f.qz), (g.qx, g.qz), "straight down");
+}
+
+/// A stuck arrow whose trunk still stands stays put, however long it is
+/// asked. Mutant: inverting `still_stuck` drops every stuck arrow at its
+/// first check.
+#[test]
+fn an_arrow_in_a_standing_trunk_stays_there() {
+    use sim_core::movement::Body;
+    let mut w = world_with_bow();
+    let (_, _, x, z) = a_tree_to_shoot(&w);
+    w.players[P].body = Body::at(w.seed, &w.haven, x, z);
+    loose(&mut w);
+    let g = w.ground_items.entries()[0];
+    for _ in 0..95 {
+        w.tick(&[]);
+    }
+    assert_eq!(
+        w.ground_items.entries(),
+        &[g][..],
+        "three checks later it is the same stack in the same place"
+    );
+}
+
+/// An arrow standing in you comes out with `E`, into your pack — Rust's
+/// can be pulled by anyone, the body's own player too — and a loose stack
+/// as near as it is taken first, because that is what `E` names. Mutant:
+/// skipping `pull_arrow` leaves the arrow in the body and the pack empty.
+#[test]
+fn an_arrow_in_you_comes_out_with_e() {
+    let mut w = world_with_archer();
+    let (x, y, z) = feet_mm(&w.players[P].body);
+    let ready_at = w.tick + 10_000;
+    w.spent.lodge(SpentRec {
+        qx: x,
+        qy: y,
+        qz: z,
+        round: ARROW,
+        ready_at,
+        host: w.players[P].id,
+        life: u64::from(w.players[P].deaths),
+        off: [0, 120, 20],
+        dir: [0, 0, -127],
+    });
+    stop(&mut w, 0);
+    w.tick(&[]);
+    assert_eq!(w.spent.len(), 1, "it stands in the body");
+    assert_eq!(w.ground_items.len(), 1, "with a loose stack at its feet");
+
+    w.tick(&[Command::Pickup { id: 1 }]);
+    assert!(
+        w.ground_items.is_empty(),
+        "the loose stack, as near, goes first"
+    );
+    assert_eq!(w.spent.len(), 1, "and the arrow stays in");
+
+    w.tick(&[Command::Pickup { id: 1 }]);
+    assert!(w.spent.is_empty(), "then it comes out");
+    assert_eq!(carried(&w, ARROW), 2, "both in the pack");
+    assert_eq!(gathers(&w), vec![(ARROW, 1)], "announced as a gather");
 }

@@ -19,8 +19,8 @@
 use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
-    SnapshotHeader, Welcome, WireBag, WireGItem, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    GITEM_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
+    SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
+    GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 135] = [
+pub const FIXTURES: [&str; 138] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -247,6 +247,10 @@ pub const FIXTURES: [&str; 135] = [
     "action_respawn_gate.bin",
     // Another body's hands, heard (v93).
     "event_heard.bin",
+    // The arrows standing in bodies (v94), and which arrow a bow looses.
+    "event_lodged_sync.bin",
+    "event_ammo.bin",
+    "event_fire.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1674,6 +1678,54 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
             qz: 10_000 + rng.next_bounded(50_000) as i32,
             item: 1 + rng.next_bounded(MAX_ITEM_DEFS as u32 - 1) as u16,
             count: 1 + rng.next_bounded(1_000) as u16,
+            // Every third one is an arrow stuck where it went in (v94),
+            // its direction drawn so the three bytes cannot transpose
+            // unseen; the rest lie on the ground and cost one bit.
+            dir: if i % 3 == 0 {
+                [
+                    (rng.next_bounded(255) as i32 - 127) as i8,
+                    -(1 + rng.next_bounded(127) as i32) as i8,
+                    127,
+                ]
+            } else {
+                [0; 3]
+            },
+        };
+    }
+    (true, recs)
+}
+
+/// A fire: a point below datum (a riverbank), x and z far apart so a swap
+/// reddens, and a deadline past 16 bits.
+pub fn event_fire() -> (i32, i32, i32, u32) {
+    (0x0000_9C41, -207, 0x0000_3A17, 0x0012_D687)
+}
+
+/// Which arrow a bow looses: two item ids in two 16-bit fields, distinct
+/// so a swap reddens.
+pub fn event_ammo() -> (u16, u16) {
+    (3, 260)
+}
+
+/// A full batch of arrows in bodies with `reset` set: players and animals
+/// (the high bit), every offset and direction drawn — negative ones too,
+/// so a sign lost on either axis reddens here.
+pub fn event_lodged_sync() -> (bool, [WireLodged; LODGED_SYNC_BATCH]) {
+    let mut rng = Pcg32::new(0x004C_4F44_4745, 24);
+    let mut recs = [WireLodged::default(); LODGED_SYNC_BATCH];
+    for (i, r) in recs.iter_mut().enumerate() {
+        let mut d = || rng.next_bounded(255) as i32 - 127;
+        let dir = [d() as i8, d() as i8, 127];
+        let mut o = || rng.next_bounded(400) as i32 - 200;
+        *r = WireLodged {
+            host: if i % 4 == 0 {
+                sim_core::mob::mob_id(i)
+            } else {
+                300 + i as u32
+            },
+            item: 1 + (i as u16 * 37) % (MAX_ITEM_DEFS as u16 - 1),
+            off: [o() as i16, 40 + o() as i16, o() as i16],
+            dir,
         };
     }
     (true, recs)

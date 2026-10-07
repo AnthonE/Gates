@@ -12,7 +12,7 @@ use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
-    WireGItem,
+    WireGItem, WireLodged,
 };
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::{ColIndex, Part};
@@ -23,7 +23,7 @@ use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_GROUND_ITEMS, MAX_PIECES, MAX_SLOT_LIVES, WEAR_SLOTS,
+    MAX_GROUND_ITEMS, MAX_PIECES, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -80,6 +80,20 @@ pub struct Impact {
     pub qz: i32,
     pub surf: u8,
     pub kind: u8,
+}
+
+/// Fires this client keeps at once (`EventMsg::Fire`) — the sim's own cap,
+/// so a full set here is a full island.
+pub const FIRES: usize = sim_core::limits::MAX_FIRES;
+
+/// A fire burning on the ground: the point in the wire's quanta (`Impact`'s)
+/// and the low 32 bits of the server tick it goes out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fire {
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub until: u32,
 }
 
 /// A piece or deployable that came down (decay, a raid, a hammer), with the
@@ -363,6 +377,11 @@ pub const APPLIED2_BAGS: u32 = 1 << 5;
 /// would keep drawing it.
 pub const APPLIED2_GITEMS: u32 = 1 << 6;
 
+/// The arrows standing in bodies changed (`EventMsg::LodgedSync`, wire v94)
+/// — re-read `lodged()`. Raised on a reset too, for `APPLIED2_GITEMS`'
+/// reason: an empty reset is the message that the last one came out.
+pub const APPLIED2_LODGED: u32 = 1 << 11;
+
 /// The world's sky/clock record changed (`EventMsg::Env`, weather v0) —
 /// re-read `env`. A level, not a ring: only the latest record means
 /// anything.
@@ -434,6 +453,40 @@ impl GItemSet {
         self.recs[self.len] = rec;
         self.len += 1;
         true
+    }
+}
+
+/// The arrows standing in bodies, as the server last stated them (wire
+/// v94): bounded like the server's store (`MAX_SPENT_ARROWS`), rebuilt by
+/// every walk rather than diffed — a record has no id, and the walk resends
+/// the whole set whenever an arrow goes in or comes out.
+pub struct LodgedSet {
+    recs: Box<[WireLodged]>,
+    len: usize,
+}
+
+impl LodgedSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![WireLodged::default(); MAX_SPENT_ARROWS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn entries(&self) -> &[WireLodged] {
+        &self.recs[..self.len]
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Dropped past capacity, `GItemSet::insert`'s posture.
+    fn push(&mut self, rec: WireLodged) {
+        if self.len < self.recs.len() {
+            self.recs[self.len] = rec;
+            self.len += 1;
+        }
     }
 }
 
@@ -1444,6 +1497,13 @@ pub struct ClientCore {
     /// they disagree, so a stale level is unreachable rather than
     /// unwritten.
     mag_item: u16,
+    /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
+    /// v94): the weapon it was said for, and the round.
+    bow_ammo: (u16, u16),
+    /// The fires heard of (`Fire`, wire v94), oldest first; the burnt-out
+    /// ones go when the next is heard.
+    fires: [Fire; FIRES],
+    fire_len: usize,
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -1659,6 +1719,9 @@ pub struct ClientCore {
     /// Loose stacks on the ground, as the server last stated them
     /// (ground items v0). Read through `ground_items()`.
     pub gitems: GItemSet,
+    /// Arrows standing in bodies, as the server last stated them (wire
+    /// v94). Read through `lodged()`.
+    pub lodged: LodgedSet,
     /// Deployable records the last `on_stream` call added or replaced.
     deploy_changes: [DeployRec; protocol::DEPLOY_SYNC_BATCH],
     n_deploy_changes: usize,
@@ -1937,6 +2000,7 @@ impl ClientCore {
             deploys: DeploySet::new(),
             bags: BagSet::new(),
             gitems: GItemSet::new(),
+            lodged: LodgedSet::new(),
             deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
             n_deploy_changes: 0,
             deploy_defs: DeployContent::EMPTY,
@@ -2010,6 +2074,9 @@ impl ClientCore {
             reload_toast_len: 0,
             mag: (0, 0),
             mag_item: NO_ITEM,
+            bow_ammo: (NO_ITEM, NO_ITEM),
+            fires: [Fire::default(); FIRES],
+            fire_len: 0,
             gather_refusal_head: 0,
             gather_refusal_len: 0,
             research_refusal_head: 0,
@@ -2040,6 +2107,12 @@ impl ClientCore {
     /// divergence one store over, in a shape a player walks up to.
     pub fn ground_items(&self) -> &[WireGItem] {
         self.gitems.entries()
+    }
+
+    /// The arrows standing in bodies — which body, and where in it and which
+    /// way in its own frame (wire v94).
+    pub fn lodged(&self) -> &[WireLodged] {
+        self.lodged.entries()
     }
 
     /// Whether any own bag's cooldown had lapsed as of the last `Bags`
@@ -2561,6 +2634,46 @@ impl ClientCore {
                         self.applied2 |= APPLIED2_GITEMS;
                     }
                 }
+            }
+            EventMsg::Ammo { weapon, round } => {
+                // A level the HUD reads every frame (`bow_round`); no flag.
+                self.bow_ammo = (weapon, round);
+            }
+            EventMsg::Fire { qx, qy, qz, until } => {
+                // One fire a point: a join or a resync restates the ones
+                // already heard.
+                let same = self.fires[..self.fire_len]
+                    .iter()
+                    .position(|f| (f.qx, f.qy, f.qz) == (qx, qy, qz));
+                if let Some(i) = same {
+                    self.fires[i].until = until;
+                } else {
+                    // Out with the burnt-out, then drop-oldest at the cap.
+                    let now = self.server_tick_u32();
+                    let mut kept = 0;
+                    for i in 0..self.fire_len {
+                        if (self.fires[i].until.wrapping_sub(now) as i32) > 0 {
+                            self.fires[kept] = self.fires[i];
+                            kept += 1;
+                        }
+                    }
+                    self.fire_len = kept;
+                    if self.fire_len == FIRES {
+                        self.fires.copy_within(1..FIRES, 0);
+                        self.fire_len -= 1;
+                    }
+                    self.fires[self.fire_len] = Fire { qx, qy, qz, until };
+                    self.fire_len += 1;
+                }
+            }
+            EventMsg::LodgedSync { reset, recs, count } => {
+                if reset {
+                    self.lodged.clear();
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    self.lodged.push(rec);
+                }
+                self.applied2 |= APPLIED2_LODGED;
             }
             EventMsg::ContSync {
                 kind,
@@ -3791,6 +3904,28 @@ impl ClientCore {
             return (0, 0);
         }
         self.mag
+    }
+
+    /// The arrow the bow in hand looses, if the sim has said one for it —
+    /// `None` for any other hand, and for a bow with no arrow it can fire.
+    pub fn bow_round(&self) -> Option<u16> {
+        let (weapon, round) = self.bow_ammo;
+        (weapon == self.held_item() && round != NO_ITEM).then_some(round)
+    }
+
+    /// The fires burning now, as far as this client has heard — a fire
+    /// arrow's, until the tick it goes out.
+    pub fn fires(&self) -> impl Iterator<Item = &Fire> {
+        let now = self.server_tick_u32();
+        self.fires[..self.fire_len]
+            .iter()
+            .filter(move |f| (f.until.wrapping_sub(now) as i32) > 0)
+    }
+
+    /// The server tick estimate's low 32 bits, the width ticks cross the
+    /// wire at.
+    fn server_tick_u32(&self) -> u32 {
+        self.clock.server_est.max(0.0) as u64 as u32
     }
 
     /// Rust's safe zone: standing in THE GATE with a weapon in hand, which

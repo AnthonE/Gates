@@ -1886,10 +1886,23 @@ pub fn update(
     // re-derived by every reader.
     if let Ok(mut text) = ammo.single_mut() {
         let (loaded, ceiling) = core.mag();
-        let want = if ceiling == 0 {
-            String::new()
-        } else {
+        let want = if ceiling != 0 {
             format!("{loaded} / {ceiling}")
+        } else if let Some(round) = core.bow_round() {
+            // A bow's readout is the arrow it looses and how many of it
+            // the pack holds — `R` picks the next kind (Rust's ammo pick).
+            let n: u32 = core
+                .inv
+                .iter()
+                .filter(|s| s.count > 0 && s.item == round)
+                .map(|s| u32::from(s.count))
+                .sum();
+            format!(
+                "{} {n}",
+                crate::ui::craft::item_label(&core.catalog, round).to_uppercase()
+            )
+        } else {
+            String::new()
         };
         // Written only when it changed: `Text` is change-detected and the
         // hotbar counts beside it take the same care, because a string

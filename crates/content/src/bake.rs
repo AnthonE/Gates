@@ -750,14 +750,14 @@ impl Content {
             // columns every melee row has carried since the content crate
             // existed — priced, banded and content-hashed — finally reach
             // the sim. Validate already bounded both; `u16` for the
-            // ranged row's reason (`RangedDef::headshot_mult`).
+            // ranged row's reason (`RangedDef::head_pct`).
             let lit_bonus = u16::try_from(w.lit_damage.unwrap_or(0))
                 .map_err(|_| format!("bake: `{}` lit_damage overflows u16", w.id))?;
             cc.melee[idx] = MeleeDef {
                 damage,
                 structure,
                 reach_cm,
-                headshot_mult: w.headshot_mult as u16,
+                head_pct: w.headshot_pct as u16,
                 limb_pct: w.limb_pct as u16,
                 lit_bonus,
             };
@@ -893,7 +893,9 @@ impl Content {
                     w.id, w.draw_ms
                 )
             })?;
-        let mag_slot = if magazine > 0 {
+        // A bow takes a slot too, with no magazine in it: `Player::mag_round`
+        // there is the kind of arrow it looses, the one `R` picks.
+        let mag_slot = if magazine > 0 || w.kind == WeaponKind::Bow {
             // Refused rather than wrapped or dropped. A weapon that lost
             // its slot would fall back to spending straight out of the
             // pack — the mechanic silently gone, with every gate green,
@@ -937,7 +939,7 @@ impl Content {
             // before the sim could read it. `RangedDef::structure` says
             // what that cost.
             structure,
-            // And the last of them, on the same terms. `headshot_mult` has
+            // And the last of them, on the same terms. `headshot_pct` has
             // been parsed, banded and content-hashed since this crate was
             // written and dropped here every bake — `reference/
             // PROJECTILES.md` §9.4 named it as the outstanding case of
@@ -945,11 +947,11 @@ impl Content {
             // `combat::headshot` multiplies in `u32` and saturates; the
             // band is 2 and `validate` refuses a zero, so a shipped row
             // cannot arrive here as a hit that deals nothing.
-            headshot_mult: w.headshot_mult as u16,
+            head_pct: w.headshot_pct as u16,
             // The other end of the ladder, and the first column in this
             // block that was never "armed and unread": it was parsed,
             // banded, hashed, baked and read by `ranged::part_crossed` in
-            // one commit. `u16` for `headshot_mult`'s reason —
+            // one commit. `u16` for `headshot_pct`'s reason —
             // `combat::limb` multiplies in `u32` and divides by 100, and
             // `validate` holds the value in `1..=100`, so the product
             // cannot overflow and the quotient cannot exceed the raw.
@@ -1002,8 +1004,11 @@ impl Content {
         }
         let speed_mmpt = u16::try_from(speed_mmpt)
             .map_err(|_| format!("bake: ammo `{}` speed overflows u16 mm/tick", a.id))?;
-        // m/s^2 -> mm/tick^2, over the square of the rate.
-        let drop_mmpt2 = u16::try_from(a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
+        // m/s^2 -> mm/tick^2, over the square of the rate, to the nearest:
+        // one step is 0.9 m/s^2 at 30 Hz, and a floor would take 7 m/s^2
+        // to 6.3 where the nearest is 7.2.
+        let rate2 = TICK_HZ * TICK_HZ;
+        let drop_mmpt2 = u16::try_from((a.drop_mps2 * 1000 + rate2 / 2) / rate2)
             .map_err(|_| format!("bake: ammo `{}` drop overflows u16 mm/tick^2", a.id))?;
 
         if cc.ammo[idx].speed_mmpt != 0 {
@@ -1012,6 +1017,10 @@ impl Content {
         cc.ammo[idx] = AmmoDef {
             speed_mmpt,
             drop_mmpt2,
+            // 1..=200 by `validate`.
+            damage_pct: a.damage_pct as u16,
+            // At most 120 s by `validate`, 3600 ticks.
+            fire_ticks: a.fire_s.map(|s| (s * TICK_HZ) as u16),
         };
         Ok(())
     }

@@ -12,22 +12,21 @@
 # exceed every melee weapon's — the raid tool stays the raid tool. The
 # raid-ratio anchor divides wall hp by the satchel's `structure`.
 #
-# `headshot_mult` and `limb_pct` are the two ends of the body-part ladder
+# `headshot_pct` and `limb_pct` are the two ends of the body-part ladder
 # (`reference/PROJECTILES.md` §0: head ×2, chest ×1, limbs ×0.5, with a
-# per-weapon override). The head is a multiplier and the limb a **percent**
-# because one integer column cannot say both "double" and "half"; 100 and 1
-# respectively are the identities, and the satchel carries both because a
-# blast has no anatomy to aim at. `[bands]` pins each to exactly one value
-# on every non-throwable row, so the ladder is a shape rather than a per-row
-# taste call until a weapon earns an override — which is what the columns
-# are for and why they are per-row and not two globals.
+# per-weapon override), both in **percent**, 100 the identity at each end.
+# The satchel carries both identities because a blast has no anatomy to aim
+# at. The head was an integer multiplier until Rust's arrows took ×1.5
+# (every bow; guns stay ×2, Facepunch's own item pages), which a multiplier
+# cannot say. `[bands]` holds the head to [150, 200] and to never killing a
+# naked body in one hit, and pins the limb to one value.
 #
 # **Every row reaches the sim now** (melee aim v1, 2026-09-05). The melee
 # rows carried both columns priced for a mechanic that did not exist — a
 # swing was resolved feet-to-feet in a plane, so there was no height to
 # test — and `bake_combat` dropped them one line before `MeleeDef` could
 # hold them. A swing is a cast along the look ray since `melee.rs`, so a
-# spear crossing a skull pays `headshot_mult` and one that reaches only the
+# spear crossing a skull pays `headshot_pct` and one that reaches only the
 # shins pays `limb_pct`, exactly as an arrow does (`combat::strike_body`).
 
 # --- tools that are also weapons ---------------------------------------
@@ -60,7 +59,7 @@ id = "item.bat"
 kind = "melee"
 damage = 20
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -76,7 +75,7 @@ kind = "melee"
 damage = 10
 lit_damage = 2
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -86,7 +85,7 @@ id = "item.hatchet_stone"
 kind = "melee"
 damage = 25
 structure = 2
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -96,7 +95,7 @@ id = "item.pickaxe_stone"
 kind = "melee"
 damage = 25
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -106,7 +105,7 @@ id = "item.hatchet_metal"
 kind = "melee"
 damage = 30
 structure = 3
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -116,7 +115,7 @@ id = "item.pickaxe_metal"
 kind = "melee"
 damage = 30
 structure = 2
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -128,7 +127,7 @@ id = "item.spear_wood"
 kind = "melee"
 damage = 20
 structure = 3
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 2
@@ -138,41 +137,49 @@ id = "item.spear_metal"
 kind = "melee"
 damage = 30
 structure = 4
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 2
 
 # **Neither bow carries a `range_m`**: an arrow flies until something stops
-# it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) —
-# about 80 m on flat ground for a wooden arrow, lobbed.
+# it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) — a
+# level shot from a standing eye meets flat ground about 33 m out with a
+# wooden arrow and 50 m with the crossbow's, as Rust's do.
 #
-# The bow's 35 is the reference's (`reference/PROJECTILES.md` §4, §9.6),
-# held until arrows came back — they do now, and are seen where they fall —
-# and taken with the draw, which costs every first shot a second. 3 body
-# hits, inside `ttk_bow`.
+# The bow's 50 is Rust's wooden arrow off a hunting bow (its live item
+# data): two body hits on a naked body, a 75 to the head, which does not
+# one-shot one. It was held at 35 until arrows came back — they do now, are
+# seen where they fall and stand in what they hit.
 [[weapon]]
 id = "item.bow"
 kind = "bow"
-damage = 35
+damage = 50
 structure = 1
-headshot_mult = 2
+headshot_pct = 150
 limb_pct = 50
-rate_per_min = 30
-ammo = ["item.arrow_wood"]
+# Rust's hunting bow looses every 1.25 s (its repeat delay; the nock is
+# inside it), against the 2 s this was. 48 a minute is 37 ticks, 1.23 s.
+rate_per_min = 48
+# Rust's kinds a hunting bow fires, in the order it falls back through
+# when the one picked (`R`) runs out.
+ammo = ["item.arrow_wood", "item.arrow_hv", "item.arrow_bone", "item.arrow_fire"]
 # The draw: hold the right mouse this long before a shot will loose
 # (`reference/PROJECTILES.md` §6 — the hunting bow's ~1 s draw). The
 # crossbow carries none: it is cocked, and fires from the hip.
 draw_ms = 1000
 
+# Rust's crossbow hits 1.2 times as hard as the bow with the same arrow:
+# 60, 90 to the head.
 [[weapon]]
 id = "item.crossbow"
 kind = "bow"
-damage = 35
+damage = 60
 structure = 1
-headshot_mult = 2
+headshot_pct = 150
 limb_pct = 50
-rate_per_min = 20
+# Rust's crossbow reloads in 3.6 s; 17 a minute is 105 ticks, 3.5 s.
+rate_per_min = 17
 ammo = ["item.arrow_metal"]
 
 [[weapon]]
@@ -180,7 +187,7 @@ id = "item.revolver"
 kind = "firearm"
 damage = 20
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 150
 range_m = 50
@@ -206,7 +213,7 @@ id = "item.satchel_charge"
 kind = "throwable"
 damage = 475
 structure = 125
-headshot_mult = 1
+headshot_pct = 100
 limb_pct = 100
 rate_per_min = 10
 range_m = 10
@@ -242,9 +249,19 @@ blast_m = 3
 # **Ballistics belong to the round, not to the bow that fires it**
 # (`reference/PROJECTILES.md` §9.3; operator, 2026-08-10). These two blocks
 # were `[weapon.ballistic]` on the bow and the crossbow until the schema
-# moved, and the numbers are unchanged in the move — `item.arrow_wood` is
-# the bow's old 40 m/s and `item.arrow_metal` the crossbow's old 55, so no
-# arrow shipped today flies differently than it did before.
+# moved.
+#
+# **The numbers are Rust's** (2026-10, read off the live item data): a
+# wooden arrow leaves a hunting bow at 50 m/s and falls at 0.75 g, and a
+# crossbow throws it half as fast again, 75 m/s. The shipped 40 m/s at a
+# 20 m/s² drop was slower and fell 2.7 times as hard: a level shot hit the
+# dirt 11–16 m out, and a target 20 m away was 2.5 m under the crosshair
+# ("it only flies a few feet"). Their drag (0.005/s) is under 4 % over a
+# whole flight and is not modelled.
+#
+# `drop_mps2` is whole metres per second squared and the sim's step is
+# 0.9 m/s² at 30 Hz, so 7 bakes to the nearest, 7.2 — their 7.36 within
+# 2 %.
 #
 # The reference game hangs these off `ItemModProjectile`, a mod on the ammo
 # item, which is how one bow there fires wooden, bone, high-velocity and
@@ -252,12 +269,8 @@ blast_m = 3
 # weapon that is unreachable at any values: the bow decides how fast its
 # arrow flies, so every arrow it fires flies the same.
 #
-# What this table does NOT yet carry is a damage column. Theirs scales the
-# weapon's damage by the round's (a high-velocity arrow is −20 %), and that
-# multiplier is a number nobody has spoken — `DECISIONS.md` §open, not this
-# file. So damage stays on the weapon and every round out of one bow hits
-# equally hard, which is the honest half-way house and is stated rather
-# than hidden.
+# A round's `damage_pct` scales its weapon's `damage`, as theirs does (a
+# high-velocity arrow is −20 %); absent is 100.
 #
 # `speed_mps` has a hard ceiling the bake enforces and it is not a taste
 # call: an arrow faster than `ARROW_STEP_MM × MAX_ARROW_SUBSTEPS` per tick
@@ -266,10 +279,34 @@ blast_m = 3
 
 [[ammo]]
 id = "item.arrow_wood"
-speed_mps = 40
-drop_mps2 = 20
+speed_mps = 50
+drop_mps2 = 7
 
 [[ammo]]
 id = "item.arrow_metal"
-speed_mps = 55
-drop_mps2 = 20
+speed_mps = 75
+drop_mps2 = 7
+
+# Rust's high-velocity arrow: 80 m/s at half gravity, 40 a hit off the bow
+# (80 %). Their half gravity is 4.9; 5 bakes to the sim's nearest, 5.4.
+[[ammo]]
+id = "item.arrow_hv"
+speed_mps = 80
+drop_mps2 = 5
+damage_pct = 80
+
+# Rust's bone arrow: 45 m/s at the wooden arrow's 0.75 g, 40 a hit.
+[[ammo]]
+id = "item.arrow_bone"
+speed_mps = 45
+drop_mps2 = 7
+damage_pct = 80
+
+# Rust's fire arrow: 40 m/s at full gravity, 40 a hit, and where it lands a
+# fire that burns 20 to 40 s (`sim-core/src/fire.rs`). No arrow comes back.
+[[ammo]]
+id = "item.arrow_fire"
+speed_mps = 40
+drop_mps2 = 10
+damage_pct = 80
+fire_s = [20, 40]

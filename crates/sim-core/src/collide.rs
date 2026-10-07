@@ -62,7 +62,7 @@ pub const CAPSULE_RADIUS_M: f32 = 0.4;
 pub const CAPSULE_HEIGHT_M: f32 = 1.7;
 /// The head, as a band off the **top** of that same cylinder: a hit whose
 /// line crosses `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above
-/// the feet is worth the weapon's `headshot_mult` (`DECISIONS.md` §open,
+/// the feet is worth the weapon's `head_pct` (`DECISIONS.md` §open,
 /// headshot v0; `reference/PROJECTILES.md` §9.4 is the design).
 ///
 /// **A band and not a second collider**, because the body is one cylinder

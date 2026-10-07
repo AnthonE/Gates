@@ -92,6 +92,9 @@ pub mod ghost;
 pub mod decal;
 pub mod highlight;
 pub mod landmarks;
+pub mod lodged;
+// The fires fire arrows leave.
+pub mod arrow_fire;
 pub mod town;
 pub mod tracer;
 pub mod ziggurat;
@@ -602,6 +605,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
+            .init_resource::<lodged::Lodged>()
+            .init_resource::<arrow_fire::ArrowFires>()
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<impact::Contacts>()
@@ -733,6 +738,10 @@ impl Plugin for GatesRenderPlugin {
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
+                // The arrows-in-bodies pool, for the same reason.
+                lodged::setup,
+                // And the fire arrows' fires.
+                arrow_fire::setup,
                 // The mark mesh: one entity, always drawn, so its pipeline
                 // compiles at load rather than on the first shot of a fight.
                 decal::setup,
@@ -1214,12 +1223,21 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
         )
+        // The arrows standing in bodies, off the bodies this frame streamed.
+        .add_systems(
+            Update,
+            lodged::draw
+                .after(Stream)
+                .run_if(world_running)
+                .run_if(move || !plate || filming),
+        )
         // The world's own effects: pieces going up and coming down (off the
         // drained feed, before the mark mesh is rewritten), and fires.
         .add_systems(
             Update,
             (
                 fx::world::built.after(feed::drain).before(decal::fade),
+                arrow_fire::draw.before(fx::world::fires),
                 fx::world::fires,
             )
                 .run_if(world_running)

@@ -95,17 +95,17 @@ use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFU
 use sim_core::terrain;
 use sim_core::trust::TrustRow;
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_MAX, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
-    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
-    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
-    EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
-    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND,
-    EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE,
-    PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR,
-    TRUST_VERB_MAX,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
+    EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
+    EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
+    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
+    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
+    EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
+    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
+    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -543,7 +543,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // No magazine: a bow spends straight out of the quiver
         // (`RangedDef::magazine`), so the arrow path is unchanged by
@@ -556,6 +556,8 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
         drop_mmpt2: DROP_MMPT2,
+        damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -639,7 +641,7 @@ fn gun_world() -> World {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: RL_MAG,
         reload_ticks: RL_RELOAD_TICKS,
@@ -675,6 +677,68 @@ const RL_PACK: u16 = 10;
 /// Past `rate_ticks`, so "the arm is busy for a reload" is a different
 /// number from "the arm is busy for a shot".
 const RL_RELOAD_TICKS: u16 = 20;
+
+/// **EV_AMMO names the archer, then the bow and the arrow it now looses.**
+///
+/// A bow with two kinds in the pack: holding it states the first kind, and
+/// `R` moves it to the second. Bow and arrow are distinct item ids in the
+/// two halves of `b`, so the halves cannot swap unseen.
+#[test]
+fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
+    const BOW: u16 = 5;
+    const WOOD: u16 = 6;
+    const HV: u16 = 7;
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [WOOD, HV, NO_ITEM, NO_ITEM],
+        rate_ticks: 37,
+        hitscan: false,
+        range_mm: 60_000,
+        structure: 0,
+        head_pct: 150,
+        limb_pct: 50,
+        magazine: 0,
+        reload_ticks: 0,
+        // A bow's slot holds the kind it looses, with no magazine in it.
+        mag_slot: 0,
+        draw_ticks: 30,
+    };
+    for round in [WOOD, HV] {
+        w.combat.ammo[round as usize] = AmmoDef {
+            speed_mmpt: 1_666,
+            drop_mmpt2: 8,
+            damage_pct: 100,
+            fire_ticks: [0; 2],
+        };
+    }
+    for (i, item) in [(0, BOW), (1, WOOD), (2, HV)] {
+        w.players[0].inv[i] = ItemStack {
+            item,
+            count: if item == BOW { 1 } else { 5 },
+            cond: 0,
+            skin: 0,
+        };
+    }
+    w.tick(&[]);
+    let ev = only(&w, EV_AMMO);
+    assert_eq!(ev.a, ATTACKER, "EV_AMMO.a is whose bow it is");
+    assert_eq!(
+        ev.b,
+        (BOW as u32) << 16 | WOOD as u32,
+        "EV_AMMO.b is the bow above the arrow it looses — the first kind \
+         carried, before any pick"
+    );
+    assert_eq!(ev.c, 0);
+
+    w.tick(&[Command::Reload { id: ATTACKER }]);
+    let ev = only(&w, EV_AMMO);
+    assert_eq!(
+        ev.b,
+        (BOW as u32) << 16 | HV as u32,
+        "`R` moves the bow to the next kind carried"
+    );
+}
 
 /// **EV_RELOAD names the filler, the magazine's new state and what the
 /// fill cost the pack.**
@@ -801,7 +865,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         hitscan: true,
         range_mm: RANGE_MM,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // The shipped revolver's magazine (`content/weapons.toml`): eight
         // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
@@ -911,7 +975,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // No magazine: a bow spends straight out of the quiver
         // (`RangedDef::magazine`), so the arrow path is unchanged by
@@ -924,6 +988,8 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,
         drop_mmpt2: 22,
+        damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -1000,6 +1066,89 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         "EV_IMPACT.c is the impact's Y in POS_Y_Q quanta ({ground_q} is \
          the ground here), got {got_y}. A y read off the wrong axis, or \
          read unsigned where the ground is below datum, lands here."
+    );
+}
+
+/// **EV_FIRE names how long the fire burns and its x, then z, then y** —
+/// `EV_IMPACT`'s point, at the foot of a fire arrow dropped straight down.
+#[test]
+fn fire_names_its_burn_and_x_then_z_then_y() {
+    const DOWN: u8 = 0;
+    const BOW: u16 = 5;
+    const FIRE_ARROW: u16 = 6;
+    /// Fifteen seconds, both ends, a number no coordinate here can be.
+    const BURN: u16 = 450;
+
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [FIRE_ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        range_mm: 60_000,
+        structure: 0,
+        head_pct: 150,
+        limb_pct: 50,
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
+        draw_ticks: 0,
+    };
+    w.combat.ammo[FIRE_ARROW as usize] = AmmoDef {
+        speed_mmpt: 1_333,
+        drop_mmpt2: 22,
+        damage_pct: 80,
+        fire_ticks: [BURN, BURN],
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: FIRE_ARROW,
+        count: 5,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[1].dead = true;
+    w.players[1].active = false;
+    let (want_x, want_z) = (w.players[0].body.qx, w.players[0].body.qz);
+    assert_ne!(want_x, want_z, "a diagonal would hide a swap");
+
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: YAW,
+            pitch: DOWN,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+        favour: 0,
+    }]);
+    until(&mut w, EV_FIRE);
+    let ev = only(&w, EV_FIRE);
+    let (burn, got_x) = sim_core::world::fire_parts(ev.a);
+    assert_eq!(burn, BURN, "EV_FIRE.a's high bits are the ticks it burns");
+    assert!(
+        (got_x - want_x).abs() <= 1,
+        "EV_FIRE.a's low 20 bits are the fire's X ({want_x}), got {got_x}"
+    );
+    assert!(
+        (ev.b as i32 - want_z).abs() <= 1,
+        "EV_FIRE.b is the fire's Z ({want_z}), got {}",
+        ev.b as i32
+    );
+    let feet_y = w.players[0].body.qy;
+    assert!(
+        (ev.c as i32 - feet_y).abs() <= 3,
+        "EV_FIRE.c is the fire's Y, on the ground the archer stands on \
+         ({feet_y}), got {}",
+        ev.c as i32
     );
 }
 
@@ -4126,7 +4275,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 52] = [
+    const COVERED: [(&str, u8); 54] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4179,6 +4328,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_SWIPE", EV_SWIPE),
         ("EV_SWIPE_REFUSED", EV_SWIPE_REFUSED),
         ("EV_SENTRY_LOCK", EV_SENTRY_LOCK),
+        ("EV_AMMO", EV_AMMO),
+        ("EV_FIRE", EV_FIRE),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

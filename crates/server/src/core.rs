@@ -10,26 +10,26 @@ use crate::slot::MAX_CONNS;
 use crate::stats::{self, ShardStats, FAVOUR_DISAGREE_BAND_TICKS};
 use crate::store::PlayerKey;
 use protocol::{
-    encode_event_assist, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
-    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_catalog,
-    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
-    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_heard, encode_event_hit,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
-    encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
-    SnapshotEncoder, SnapshotHeader, WireBag, WireError, WireGItem, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_ammo, encode_event_assist, encode_event_auth, encode_event_bag_dropped,
+    encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
+    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_fire,
+    encode_event_gather, encode_event_gather_refused, encode_event_gitem_sync, encode_event_health,
+    encode_event_heard, encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv,
+    encode_event_knock, encode_event_known, encode_event_lodged_sync, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, WireGItem,
+    WireLodged, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    LODGED_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use protocol::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX, DEED_RELOAD,
@@ -50,15 +50,16 @@ use sim_core::mob;
 use sim_core::persist::PlayerSave;
 use sim_core::survival::REFUSE_C_MAX;
 use sim_core::world::{
-    Command, Player, World, DEATH_BY_CLOCK, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
-    EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
-    EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
-    EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
+    Command, Player, World, DEATH_BY_CLOCK, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
+    EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
+    EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
+    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
+    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
+    EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
+    STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -1980,6 +1981,28 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_AMMO => {
+                    // Which arrow the archer's bow looses — theirs alone,
+                    // the readout's statement (`world.rs`'s role line).
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    let (weapon, round) = ((ev.b >> 16) as u16, ev.b as u16);
+                    match encode_event_ammo(weapon, round, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // A level with one statement, the reload's
+                                // reason: a lost one would leave the readout
+                                // naming the wrong arrow.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_RELOAD => {
                     // A fill is heard by whoever is near; the count is not.
                     if ev.c > 0 {
@@ -3208,6 +3231,30 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_FIRE => {
+                    // Broadcast, unfiltered: a fire hurts whoever walks into
+                    // it, so every client should know where one burns before
+                    // it walks there — and until when, so it can put it out.
+                    let (ticks, qx) = sim_core::world::fire_parts(ev.a);
+                    let (qz, qy) = (ev.b as i32, ev.c as i32);
+                    let until = (self.world.tick as u32).wrapping_add(u32::from(ticks));
+                    match encode_event_fire(qx, qy, qz, until, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_PIECE_REMOVED | EV_DEPLOY_REMOVED => {
                     let piece = ev.code == EV_PIECE_REMOVED;
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
@@ -3622,6 +3669,25 @@ impl ShardCore {
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
+        }
+
+        // The fires burning (wire v94), every one, to a fresh join and after
+        // a resync: the broadcast as each was lit reached only who was here.
+        // All again on a full lane; the client keeps one per point.
+        if self.clients[slot].fires_owed {
+            for f in self.world.fires.entries() {
+                match encode_event_fire(f.qx, f.qy, f.qz, f.until as u32, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+            self.clients[slot].fires_owed = false;
         }
 
         // Catalog: names first — toasts and hotbar labels want them early.
@@ -4152,6 +4218,49 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Arrows-in-bodies walk (wire v94): the spent store's entries that
+        // have a host, drip-fed like the loose stacks. Keyed on the store's
+        // change stamp: an arrow going into a body or coming out of one
+        // restarts it, and nothing else moves what it sends — an arrow in a
+        // body is drawn off the body, so its riding along costs no bytes.
+        let stamp = self.world.spent.stamp();
+        if self.clients[slot].lodged_seen != stamp {
+            let c = &mut self.clients[slot];
+            c.lodged_seen = stamp;
+            c.lodged_sync_cursor = 0;
+            c.lodged_sync_reset = true;
+        }
+        let c = &self.clients[slot];
+        let spent = self.world.spent.entries();
+        if c.lodged_sync_reset || c.lodged_sync_cursor < spent.len() {
+            let mut batch = [WireLodged::default(); LODGED_SYNC_BATCH];
+            let (mut n, mut at) = (0, c.lodged_sync_cursor.min(spent.len()));
+            while at < spent.len() && n < LODGED_SYNC_BATCH {
+                if spent[at].host != 0 {
+                    batch[n] = WireLodged::of(&spent[at]);
+                    n += 1;
+                }
+                at += 1;
+            }
+            if n > 0 || c.lodged_sync_reset {
+                match encode_event_lodged_sync(c.lodged_sync_reset, &batch[..n], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            let c = &mut self.clients[slot];
+                            c.lodged_sync_reset = false;
+                            c.lodged_sync_cursor = at;
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                self.clients[slot].lodged_sync_cursor = at;
             }
         }
 

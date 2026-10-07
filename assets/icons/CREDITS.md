@@ -33,6 +33,8 @@ every item either way, because the painted ones are derived works of it.
 | `bat.png` | `delapouite/baseball-bat` |
 | `berries.png` | `delapouite/berries-bowl` |
 | `blueprint.png` | `lorc/tied-scroll` |
+| `bone_arrow.png` | `lorc/arrowhead` |
+| `bone_fragments.png` | `lorc/crossed-bones` |
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
@@ -42,6 +44,7 @@ every item either way, because the painted ones are derived works of it.
 | `cooked_meat.png` | `lorc/chicken-leg` |
 | `corn.png` | `delapouite/corn` |
 | `crossbow.png` | `carl-olsen/crossbow` |
+| `fire_arrow.png` | `lorc/flaming-arrow` |
 | `fire_pit.png` | `lorc/campfire` |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |
@@ -50,6 +53,7 @@ every item either way, because the painted ones are derived works of it.
 | `gunpowder.png` | `lorc/powder` |
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
+| `high_velocity_arrow.png` | `lorc/supersonic-arrow` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
 | `junk.png` | `delapouite/hexagonal-nut` |
 | `large_box.png` | `delapouite/cargo-crate` |
@@ -128,11 +132,11 @@ more (`ci/bake_icons.py` fetches from GitHub).
 
 | file | source |
 |---|---|
+| `blue_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
 | `green_keycard.png` | `ci/icons/keycards.py` (ours) |
-| `blue_keycard.png` | `ci/icons/keycards.py` (ours) |
-| `red_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `map_player.png` | `ci/icons/map_player.svg` (ours) |
+| `red_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `shape_foundation_steps.png` | `ci/icons/shape_foundation_steps.svg` (ours) |
 | `shape_half_wall.png` | `ci/icons/shape_half_wall.svg` (ours) |
 | `shape_low_wall.png` | `ci/icons/shape_low_wall.svg` (ours) |

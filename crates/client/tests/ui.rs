@@ -5653,6 +5653,7 @@ mod take {
             qz: quant_xz(z),
             item,
             count,
+            dir: [0; 3],
         }
     }
 
@@ -5764,6 +5765,7 @@ mod take {
             qz: quant_xz(100.0),
             item: 1,
             count: 1,
+            dir: [0; 3],
         };
         let p = resolve_take(100.0, 100.0, &[one_q]);
         assert_eq!(p.verb, Verb::Take);
@@ -5795,9 +5797,9 @@ fn the_loose_stacks_reach_the_renderer_and_the_key() {
     );
     let verbs = std::fs::read_to_string("src/render/verbs.rs").expect("render/verbs.rs");
     assert!(
-        verbs.contains("resolve_take("),
+        verbs.contains("resolve_take_or_pull("),
         "`verbs.rs` never resolves the take pick, so the prompt can never \
-         name a stack"
+         name a stack — or an arrow standing in a body"
     );
     assert!(
         verbs.contains("Verb::Take => {"),

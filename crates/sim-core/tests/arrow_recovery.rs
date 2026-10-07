@@ -50,7 +50,7 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
         hitscan: false,
         range_mm,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: 0,
         reload_ticks: 0,
@@ -60,6 +60,8 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
+        damage_pct: 100,
+        fire_ticks: [0; 2],
     };
     c
 }
@@ -185,7 +187,7 @@ fn settle(
     mobs: &Mobs,
 ) -> Vec<(u16, i32, i32, i32)> {
     let mut laid = Vec::new();
-    spent::settle(spent, tick, players, mobs, |r, x, y, z| {
+    spent::settle(spent, tick, players, mobs, |r, x, y, z, _dir| {
         laid.push((r, x, y, z))
     });
     laid
@@ -195,9 +197,11 @@ fn settle(
 // The flight, end to end
 // ---------------------------------------------------------------------
 
-/// A miss rests the tick it lands, from above the surface it hit. Mutant:
-/// resting it from the stop sample itself (inside the ground) fails the
-/// height check; lodging it with a host fails the host check.
+/// A miss sticks the tick it lands, where it went in: just above the
+/// surface it hit, pointing the way it flew. Mutant: resting it from the
+/// stop sample itself (inside the ground) fails the height check; skipping
+/// the walk that finds where it went in fails the closeness check; lodging
+/// it with a host fails the host check.
 #[test]
 fn a_missed_arrow_rests_the_tick_it_lands() {
     for seed in [0u64, 1, 7, 12345] {
@@ -207,12 +211,24 @@ fn a_missed_arrow_rests_the_tick_it_lands() {
         assert_eq!(rec.round, ARROW, "seed {seed}: the round, not the bow");
         assert_eq!(rec.host, 0, "seed {seed}: a miss is in nothing");
         assert!(rec.ready_at <= t, "seed {seed}: a miss waits for nothing");
-        let ground_mm = (ground_at(seed, 2048.0, 2048.0) * 1000.0) as i32;
+        let (x, z) = (rec.qx as f32 / 1000.0, rec.qz as f32 / 1000.0);
+        let ground_mm = (ground_at(seed, x, z) * 1000.0) as i32;
         assert!(
             rec.qy >= ground_mm - 1,
-            "seed {seed}: it falls from the last free sample, above the \
-             ground (y {} mm against ground {ground_mm} mm)",
+            "seed {seed}: it stays on the free side of where it went in, above \
+             the ground (y {} mm against ground {ground_mm} mm)",
             rec.qy
+        );
+        assert!(
+            rec.qy - ground_mm <= 40,
+            "seed {seed}: and where it went in, not a step short of it (y {} mm \
+             against ground {ground_mm} mm)",
+            rec.qy
+        );
+        assert_eq!(
+            rec.dir,
+            [0, -127, 0],
+            "seed {seed}: shot straight down, it stands straight up in the dirt"
         );
         let players = Box::new([Player::default(); MAX_PLAYERS]);
         let laid = settle(&mut spent, t, &players, &no_mobs());
@@ -239,7 +255,7 @@ fn a_broken_arrow_leaves_nothing_and_that_is_the_inert_default() {
 /// An arrow that ran out of flight in the air falls instead of vanishing
 /// (`NOW.md` §5 item 2). An arrow flies until something stops it, so the
 /// only one that runs out is one still up at the backstop: shot straight
-/// up, it is just coming back down past the archer's eye at four seconds.
+/// up under a light drop, it is still in the air when the backstop comes.
 /// Mutant: dropping the landing on expiry leaves the store empty.
 #[test]
 fn an_arrow_out_of_flight_falls_instead_of_vanishing() {
@@ -248,7 +264,11 @@ fn an_arrow_out_of_flight_falls_instead_of_vanishing() {
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
     players[0] = archer(1, 2048.0, ground, 2048.0, u8::MAX);
     let life = u64::from(sim_core::limits::MAX_ARROW_LIFE_TICKS);
-    let (spent, t) = fly(seed, &bow(0, 60_000), &mut players, life + 5);
+    // Up and back down past the eye takes `2v/g` ticks; past the backstop.
+    let mut cc = bow(0, 60_000);
+    cc.ammo[ARROW as usize].drop_mmpt2 = 4;
+    assert!(2 * 1333 / 4 > life, "the fixture must outlast the backstop");
+    let (spent, t) = fly(seed, &cc, &mut players, life + 5);
     assert_eq!(
         t, life,
         "straight up, it is still in the air at the backstop"
@@ -287,6 +307,12 @@ fn an_arrow_flies_until_it_lands() {
 
 /// The shared fixture for a hit: an archer and a target 6 m north, level.
 fn shoot_the_target() -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
+    shoot_the_target_facing(0)
+}
+
+/// [`shoot_the_target`] with the target facing `yaw` — 0 is away from the
+/// archer, so the arrow takes it in the back.
+fn shoot_the_target_facing(yaw: u16) -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
     let seed = 7u64;
     let ground = ground_at(seed, 2048.0, 2048.0);
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
@@ -297,6 +323,10 @@ fn shoot_the_target() -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
         hp: 100,
         hp_max: 100,
         body: body_at(2048.0, ground + ARROW_EYE_MM as f32 / 1000.0 - 1.2, 2054.0),
+        frame: InputFrame {
+            yaw,
+            ..InputFrame::default()
+        },
         ..Player::default()
     };
     let (spent, t) = fly(seed, &bow(0, 60_000), &mut players, 60);
@@ -306,6 +336,43 @@ fn shoot_the_target() -> (Box<[Player; MAX_PLAYERS]>, SpentArrows, u64) {
          assertion below pass for the wrong reason"
     );
     (players, spent, t)
+}
+
+/// An arrow in a body knows where in it it went in and which way, in the
+/// body's own frame (x right, z ahead), so a client draws it standing out
+/// of the body as it turns. Shot from behind it is in the back and points
+/// ahead; turned round, the same shot is in the chest and points back.
+/// Mutant: a pose in the world frame reads the same both ways round.
+#[test]
+fn an_arrow_in_a_body_knows_where_it_went_in() {
+    let (_, spent, _) = shoot_the_target_facing(0);
+    let back = spent.entries()[0];
+    let (_, spent, _) = shoot_the_target_facing(0x8000);
+    let chest = spent.entries()[0];
+    for (rec, what) in [(back, "back"), (chest, "chest")] {
+        assert!(
+            rec.off[0].abs() <= 5,
+            "{what}: on the body's centre line, {:?}",
+            rec.off
+        );
+        assert!(
+            (80..=130).contains(&rec.off[1]),
+            "{what}: at chest height off the feet, {:?}",
+            rec.off
+        );
+    }
+    assert!(
+        back.off[2] < -10 && back.dir[2] == 127,
+        "in the back, pointing ahead: off {:?} dir {:?}",
+        back.off,
+        back.dir
+    );
+    assert!(
+        chest.off[2] > 10 && chest.dir[2] == -127,
+        "in the chest, pointing back: off {:?} dir {:?}",
+        chest.off,
+        chest.dir
+    );
 }
 
 /// A hit rides the body for exactly the lodge, then falls out at its feet
@@ -353,6 +420,8 @@ fn lodged_in(host: u32, life: u64, at: (i32, i32, i32), ready_at: u64) -> SpentR
         ready_at,
         host,
         life,
+        dir: [0; 3],
+        off: [0; 3],
     }
 }
 
@@ -550,6 +619,9 @@ fn a_world_that_remembers_its_arrows_saves_them() {
             ready_at: 900 + i as u64,
             host: 0x100 + i as u32,
             life: i as u64,
+            // Where in the body, so the save is shown to carry it.
+            dir: [i as i8, -3, 127],
+            off: [i as i16 - 20, 120 + i as i16, -7],
         });
     }
     for i in 0..MAX_SPENT_ARROWS + 5 {
