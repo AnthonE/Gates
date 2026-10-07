@@ -363,6 +363,7 @@ fn an_arrow_in_a_body_reaches_every_client_and_comes_out_of_every_set() {
     });
     let want = WireLodged {
         host,
+        item: FILLER,
         off: [-12, 131, 25],
         dir: [3, -20, -127],
     };

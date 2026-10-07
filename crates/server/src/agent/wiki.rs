@@ -91,7 +91,7 @@ pub struct Melee {
     pub reach_cm: u16,
     /// Ticks between swings while primary is held; one shared number.
     pub cadence_ticks: u16,
-    pub headshot_mult: u16,
+    pub head_pct: u16,
     pub limb_pct: u16,
 }
 
@@ -117,7 +117,7 @@ pub struct Ranged {
     /// Rounds loaded at once; 0 spends straight from the pack.
     pub magazine: u16,
     pub reload_ticks: u16,
-    pub headshot_mult: u16,
+    pub head_pct: u16,
     pub limb_pct: u16,
 }
 
@@ -133,7 +133,7 @@ impl Ranged {
         drop_mmpt2: 0,
         magazine: 0,
         reload_ticks: 0,
-        headshot_mult: 1,
+        head_pct: 100,
         limb_pct: 100,
     };
 }
@@ -173,7 +173,7 @@ impl Page {
             structure: 0,
             reach_cm: 0,
             cadence_ticks: 0,
-            headshot_mult: 1,
+            head_pct: 100,
             limb_pct: 100,
         },
         ranged: Ranged::NONE,
@@ -289,7 +289,7 @@ impl Rules {
                     structure: m.structure,
                     reach_cm: m.reach_cm,
                     cadence_ticks: SWING_INTERVAL_TICKS as u16,
-                    headshot_mult: m.headshot_mult,
+                    head_pct: m.head_pct,
                     limb_pct: m.limb_pct,
                 };
             }
@@ -308,7 +308,7 @@ impl Rules {
                     drop_mmpt2: flight.map_or(0, |a| a.drop_mmpt2),
                     magazine: r.magazine,
                     reload_ticks: r.reload_ticks,
-                    headshot_mult: r.headshot_mult,
+                    head_pct: r.head_pct,
                     limb_pct: r.limb_pct,
                 };
             }

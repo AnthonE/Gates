@@ -50,7 +50,7 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
         hitscan: false,
         range_mm,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: 0,
         reload_ticks: 0,

@@ -57,7 +57,7 @@
 //! of this header to outlive its truth, after the bow and after the wall
 //! chip. A head is a band off the top of the body cylinder
 //! (`collide::HEAD_BAND_M`) and a hit whose line crosses it pays the
-//! weapon's `headshot_mult`, which had been priced, banded and
+//! weapon's `head_pct`, which had been priced, banded and
 //! content-hashed since the content crate and dropped at the bake every
 //! time (`reference/PROJECTILES.md` §9.4). The rule is §7's — the most
 //! significant part **along the segment**, so `nearest_body` carries the
@@ -498,8 +498,8 @@ pub struct Arrow {
     /// chips a wall by the same amount — the same rule already in force
     /// for flesh.
     pub structure: u16,
-    /// What this arrow is multiplied by if its line crosses the head band
-    /// — the bow's `headshot_mult`, copied at the draw beside `damage` and
+    /// What this arrow is worth, in percent, if its line crosses the head band
+    /// — the bow's `head_pct`, copied at the draw beside `damage` and
     /// `structure`, for the same reason those two are copied: an arrow
     /// already in the air should not change what it does because content
     /// was rebaked under it.
@@ -508,10 +508,10 @@ pub struct Arrow {
     /// round's. `weapons.toml`'s `[[ammo]]` rows carry ballistics and
     /// nothing else; a high-velocity arrow flies flatter and hits for what
     /// the bow says.
-    pub head_mult: u16,
+    pub head_pct: u16,
     /// What this arrow is multiplied by, in **percent**, if its line
     /// reached nothing above the leg band — the bow's `limb_pct`, copied
-    /// at the draw for [`Arrow::head_mult`]'s reason word for word: an
+    /// at the draw for [`Arrow::head_pct`]'s reason word for word: an
     /// arrow already in the air must not change what it does because
     /// content was rebaked under it.
     pub limb_pct: u16,
@@ -614,7 +614,7 @@ impl Arrows {
             damage: 0,
             structure: 0,
             // The identity, so an unfilled slot cannot delete a hit.
-            head_mult: 1,
+            head_pct: 100,
             // The identity at the other end, and the same sentence: a
             // percent of zero on an unfilled slot would delete one.
             limb_pct: 100,
@@ -772,7 +772,7 @@ pub fn draw(
         round,
         damage: def.damage,
         structure: def.structure,
-        head_mult: def.headshot_mult,
+        head_pct: def.head_pct,
         limb_pct: def.limb_pct,
         life,
         flown: 0,
@@ -1072,7 +1072,7 @@ fn step_in(
             // Hoisted, because the rung is now a fact the shooter is told
             // and not only a multiplier: `EV_HIT` carries it (v58).
             let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
-            let dmg = crate::combat::part_damage(a.damage, part, a.head_mult, a.limb_pct);
+            let dmg = crate::combat::part_damage(a.damage, part, a.head_pct, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
             let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
@@ -2153,7 +2153,7 @@ fn hitscan_in(
             // Hoisted for the same reason as the arrow's: the rung reaches
             // the shooter's screen now, not just their damage number.
             let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
-            let dmg = crate::combat::part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
+            let dmg = crate::combat::part_damage(def.damage, part, def.head_pct, def.limb_pct);
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day
             // armor lands" for exactly one day).

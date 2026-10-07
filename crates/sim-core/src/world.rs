@@ -2817,6 +2817,56 @@ impl World {
         );
     }
 
+    /// Pull the nearest arrow standing in a body out of it, into `slot`'s
+    /// pack — when one is in reach (`LOOT_REACH_M`, planar, to the body's
+    /// feet; your own body is at none) and no loose stack is nearer, which
+    /// is what `E` takes then. `true` when an arrow came out.
+    fn pull_arrow(&mut self, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) -> bool {
+        use crate::backpack::LOOT_REACH_M;
+        use crate::movement::POS_XZ_Q;
+        let p = &self.players[slot];
+        let (px, pz) = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
+        let mut best: Option<(usize, f32)> = None;
+        for (i, a) in self.spent.entries().iter().enumerate() {
+            if a.host == 0 {
+                continue;
+            }
+            let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
+            let d2 = dx * dx + dz * dz;
+            if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((i, d2));
+            }
+        }
+        let Some((i, d2)) = best else {
+            return false;
+        };
+        if let Some(g) = self.ground_items.nearest(p) {
+            let g = self.ground_items.entries()[g];
+            let (dx, dz) = (g.qx as f32 * POS_XZ_Q - px, g.qz as f32 * POS_XZ_Q - pz);
+            if dx * dx + dz * dz <= d2 {
+                return false;
+            }
+        }
+        let Some(rec) = self.spent.take_at(i) else {
+            return false;
+        };
+        let gc = &self.gather;
+        let p = &mut self.players[slot];
+        let took = gather::inv_add_spilling_skinned(
+            &mut p.inv,
+            spill,
+            rec.round,
+            1,
+            gc.stack_max_of(rec.round),
+            gc.cond_max_of(rec.round),
+            0,
+        );
+        // `take_nearest`'s announcement: into the pack, or to the feet.
+        self.events
+            .push(EV_GATHER, p.id, ((rec.round as u32) << 16) | took as u32, 0);
+        true
+    }
+
     /// A stuck arrow falls when what it is stuck in goes — a tree felled, a
     /// wall broken, a door swung open (`ranged::still_stuck`). Each one is
     /// asked once every `UNSTICK_EVERY_TICKS`, staggered by its id, so a
@@ -4749,15 +4799,20 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     // The nearest loose stack in reach — a barrel's scatter
                     // or a landed arrow, which is a loose stack the tick it
-                    // comes to rest (`spent.rs`), so the prompt `E` draws
-                    // names exactly what this takes.
+                    // comes to rest (`spent.rs`) — or an arrow standing in a
+                    // body in reach, your own included, when that is nearer:
+                    // Rust's can be pulled out by anyone, and a player clears
+                    // their own with `E`. The prompt `E` draws names exactly
+                    // what this takes.
                     let mut spill = [ItemStack::default(); INV_SLOTS];
-                    self.ground_items.take_nearest(
-                        &self.gather,
-                        &mut self.players[slot],
-                        &mut spill,
-                        &mut self.events,
-                    );
+                    if !self.pull_arrow(slot, &mut spill) {
+                        self.ground_items.take_nearest(
+                            &self.gather,
+                            &mut self.players[slot],
+                            &mut spill,
+                            &mut self.events,
+                        );
+                    }
                     // A take into a full pack spills at the feet, the same
                     // drain every other payout uses — six producers, one
                     // drain (`backpack.rs`).

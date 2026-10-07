@@ -543,7 +543,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // No magazine: a bow spends straight out of the quiver
         // (`RangedDef::magazine`), so the arrow path is unchanged by
@@ -639,7 +639,7 @@ fn gun_world() -> World {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: RL_MAG,
         reload_ticks: RL_RELOAD_TICKS,
@@ -801,7 +801,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         hitscan: true,
         range_mm: RANGE_MM,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // The shipped revolver's magazine (`content/weapons.toml`): eight
         // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
@@ -911,7 +911,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // No magazine: a bow spends straight out of the quiver
         // (`RangedDef::magazine`), so the arrow path is unchanged by

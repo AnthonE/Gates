@@ -12,22 +12,21 @@
 # exceed every melee weapon's — the raid tool stays the raid tool. The
 # raid-ratio anchor divides wall hp by the satchel's `structure`.
 #
-# `headshot_mult` and `limb_pct` are the two ends of the body-part ladder
+# `headshot_pct` and `limb_pct` are the two ends of the body-part ladder
 # (`reference/PROJECTILES.md` §0: head ×2, chest ×1, limbs ×0.5, with a
-# per-weapon override). The head is a multiplier and the limb a **percent**
-# because one integer column cannot say both "double" and "half"; 100 and 1
-# respectively are the identities, and the satchel carries both because a
-# blast has no anatomy to aim at. `[bands]` pins each to exactly one value
-# on every non-throwable row, so the ladder is a shape rather than a per-row
-# taste call until a weapon earns an override — which is what the columns
-# are for and why they are per-row and not two globals.
+# per-weapon override), both in **percent**, 100 the identity at each end.
+# The satchel carries both identities because a blast has no anatomy to aim
+# at. The head was an integer multiplier until Rust's arrows took ×1.5
+# (every bow; guns stay ×2, Facepunch's own item pages), which a multiplier
+# cannot say. `[bands]` holds the head to [150, 200] and to never killing a
+# naked body in one hit, and pins the limb to one value.
 #
 # **Every row reaches the sim now** (melee aim v1, 2026-09-05). The melee
 # rows carried both columns priced for a mechanic that did not exist — a
 # swing was resolved feet-to-feet in a plane, so there was no height to
 # test — and `bake_combat` dropped them one line before `MeleeDef` could
 # hold them. A swing is a cast along the look ray since `melee.rs`, so a
-# spear crossing a skull pays `headshot_mult` and one that reaches only the
+# spear crossing a skull pays `headshot_pct` and one that reaches only the
 # shins pays `limb_pct`, exactly as an arrow does (`combat::strike_body`).
 
 # --- tools that are also weapons ---------------------------------------
@@ -60,7 +59,7 @@ id = "item.rock"
 kind = "melee"
 damage = 20
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -76,7 +75,7 @@ kind = "melee"
 damage = 10
 lit_damage = 2
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -86,7 +85,7 @@ id = "item.hatchet_stone"
 kind = "melee"
 damage = 25
 structure = 2
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -96,7 +95,7 @@ id = "item.pickaxe_stone"
 kind = "melee"
 damage = 25
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -106,7 +105,7 @@ id = "item.hatchet_metal"
 kind = "melee"
 damage = 30
 structure = 3
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -116,7 +115,7 @@ id = "item.pickaxe_metal"
 kind = "melee"
 damage = 30
 structure = 2
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
@@ -128,7 +127,7 @@ id = "item.spear_wood"
 kind = "melee"
 damage = 20
 structure = 3
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 2
@@ -138,7 +137,7 @@ id = "item.spear_metal"
 kind = "melee"
 damage = 30
 structure = 4
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 2
@@ -148,16 +147,16 @@ range_m = 2
 # level shot from a standing eye meets flat ground about 33 m out with a
 # wooden arrow and 50 m with the crossbow's, as Rust's do.
 #
-# The bow's 35 is the reference's (`reference/PROJECTILES.md` §4, §9.6),
-# held until arrows came back — they do now, and are seen where they fall —
-# and taken with the draw, which costs every first shot a second. 3 body
-# hits, inside `ttk_bow`.
+# The bow's 50 is Rust's wooden arrow off a hunting bow (its live item
+# data): two body hits on a naked body, a 75 to the head, which does not
+# one-shot one. It was held at 35 until arrows came back — they do now, are
+# seen where they fall and stand in what they hit.
 [[weapon]]
 id = "item.bow"
 kind = "bow"
-damage = 35
+damage = 50
 structure = 1
-headshot_mult = 2
+headshot_pct = 150
 limb_pct = 50
 # Rust's hunting bow looses every 1.25 s (its repeat delay; the nock is
 # inside it), against the 2 s this was. 48 a minute is 37 ticks, 1.23 s.
@@ -168,12 +167,14 @@ ammo = ["item.arrow_wood"]
 # crossbow carries none: it is cocked, and fires from the hip.
 draw_ms = 1000
 
+# Rust's crossbow hits 1.2 times as hard as the bow with the same arrow:
+# 60, 90 to the head.
 [[weapon]]
 id = "item.crossbow"
 kind = "bow"
-damage = 35
+damage = 60
 structure = 1
-headshot_mult = 2
+headshot_pct = 150
 limb_pct = 50
 # Rust's crossbow reloads in 3.6 s; 17 a minute is 105 ticks, 3.5 s.
 rate_per_min = 17
@@ -184,7 +185,7 @@ id = "item.revolver"
 kind = "firearm"
 damage = 20
 structure = 1
-headshot_mult = 2
+headshot_pct = 200
 limb_pct = 50
 rate_per_min = 150
 range_m = 50
@@ -210,7 +211,7 @@ id = "item.satchel_charge"
 kind = "throwable"
 damage = 475
 structure = 125
-headshot_mult = 1
+headshot_pct = 100
 limb_pct = 100
 rate_per_min = 10
 range_m = 10

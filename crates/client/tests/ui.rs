@@ -5778,9 +5778,9 @@ fn the_loose_stacks_reach_the_renderer_and_the_key() {
     );
     let verbs = std::fs::read_to_string("src/render/verbs.rs").expect("render/verbs.rs");
     assert!(
-        verbs.contains("resolve_take("),
+        verbs.contains("resolve_take_or_pull("),
         "`verbs.rs` never resolves the take pick, so the prompt can never \
-         name a stack"
+         name a stack — or an arrow standing in a body"
     );
     assert!(
         verbs.contains("Verb::Take => {"),

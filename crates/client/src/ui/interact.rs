@@ -511,14 +511,56 @@ pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pic
         }
     }
     match best {
-        Some((i, _)) => Pick {
+        Some((i, d2)) => Pick {
             verb: Verb::Take,
             handle: items[i].id,
             item: items[i].item,
             count: items[i].count,
+            d2,
             ..Pick::default()
         },
         None => Pick::default(),
+    }
+}
+
+/// What `E` takes once an arrow standing in a body may be in reach too: the
+/// nearer of [`resolve_take`]'s loose stack and that arrow, ties to the
+/// loose stack — the sim's own rule (`World::pull_arrow`). `body_at` puts a
+/// body's feet in world XZ, or `None` for one this client is not drawing;
+/// the player's own body stands where they do.
+pub fn resolve_take_or_pull(
+    x: f32,
+    z: f32,
+    items: &[protocol::event::WireGItem],
+    lodged: &[protocol::WireLodged],
+    mut body_at: impl FnMut(u32) -> Option<(f32, f32)>,
+) -> Pick {
+    let take = resolve_take(x, z, items);
+    let take_d2 = if take.verb == Verb::Take {
+        take.d2
+    } else {
+        f32::INFINITY
+    };
+    let mut best: Option<(u16, f32)> = None;
+    for a in lodged {
+        let Some((bx, bz)) = body_at(a.host) else {
+            continue;
+        };
+        let (dx, dz) = (bx - x, bz - z);
+        let d2 = dx * dx + dz * dz;
+        if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((a.item, d2));
+        }
+    }
+    match best {
+        Some((item, d2)) if d2 < take_d2 => Pick {
+            verb: Verb::Take,
+            item,
+            count: 1,
+            d2,
+            ..Pick::default()
+        },
+        _ => take,
     }
 }
 

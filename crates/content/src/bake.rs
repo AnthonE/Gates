@@ -748,14 +748,14 @@ impl Content {
             // columns every melee row has carried since the content crate
             // existed — priced, banded and content-hashed — finally reach
             // the sim. Validate already bounded both; `u16` for the
-            // ranged row's reason (`RangedDef::headshot_mult`).
+            // ranged row's reason (`RangedDef::head_pct`).
             let lit_bonus = u16::try_from(w.lit_damage.unwrap_or(0))
                 .map_err(|_| format!("bake: `{}` lit_damage overflows u16", w.id))?;
             cc.melee[idx] = MeleeDef {
                 damage,
                 structure,
                 reach_cm,
-                headshot_mult: w.headshot_mult as u16,
+                head_pct: w.headshot_pct as u16,
                 limb_pct: w.limb_pct as u16,
                 lit_bonus,
             };
@@ -935,7 +935,7 @@ impl Content {
             // before the sim could read it. `RangedDef::structure` says
             // what that cost.
             structure,
-            // And the last of them, on the same terms. `headshot_mult` has
+            // And the last of them, on the same terms. `headshot_pct` has
             // been parsed, banded and content-hashed since this crate was
             // written and dropped here every bake — `reference/
             // PROJECTILES.md` §9.4 named it as the outstanding case of
@@ -943,11 +943,11 @@ impl Content {
             // `combat::headshot` multiplies in `u32` and saturates; the
             // band is 2 and `validate` refuses a zero, so a shipped row
             // cannot arrive here as a hit that deals nothing.
-            headshot_mult: w.headshot_mult as u16,
+            head_pct: w.headshot_pct as u16,
             // The other end of the ladder, and the first column in this
             // block that was never "armed and unread": it was parsed,
             // banded, hashed, baked and read by `ranged::part_crossed` in
-            // one commit. `u16` for `headshot_mult`'s reason —
+            // one commit. `u16` for `headshot_pct`'s reason —
             // `combat::limb` multiplies in `u32` and divides by 100, and
             // `validate` holds the value in `1..=100`, so the product
             // cannot overflow and the quotient cannot exceed the raw.

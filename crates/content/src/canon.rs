@@ -118,7 +118,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.kind as u32);
         h.u(w.damage);
         h.u(w.structure);
-        h.u(w.headshot_mult);
+        h.u(w.headshot_pct);
         h.u(w.limb_pct);
         h.u(w.rate_per_min);
         h.u(w.range_m);
@@ -330,7 +330,8 @@ pub fn hash(c: &Content) -> u64 {
         h.u(pair[0]);
         h.u(pair[1]);
     }
-    h.u(b.headshot_mult);
+    h.u(b.headshot_pct[0]);
+    h.u(b.headshot_pct[1]);
     h.u(b.limb_pct);
     h.u(b.armor_extra_hits_max);
     h.u(b.wall_breach_swings_min);

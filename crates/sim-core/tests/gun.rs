@@ -105,7 +105,7 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // The shipped revolver's magazine (`content/weapons.toml`): eight
         // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
@@ -715,7 +715,7 @@ fn the_shot_stops_at_the_weapons_declared_reach() {
     // victim's **head**. `LEVEL` is half a step above level (its own doc),
     // so a 50 m barrel climbs 0.277 m over 45 of them: the muzzle leaves
     // 1.2 m above the target's feet and gets there at 1.477, inside
-    // `collide::HEAD_BAND_M`'s [1.45, 1.70]. `headshot_mult = 2` on the
+    // `collide::HEAD_BAND_M`'s [1.45, 1.70]. `head_pct = 200` on the
     // fixture, so 20 becomes 40. At 10 m — every other check in this file
     // — the same climb is 0.062 m and the hit is a body hit at 1.262.
     //
@@ -1038,7 +1038,7 @@ fn the_head_band_is_measured_off_the_feet_the_scan_resolved() {
     );
     assert_eq!(
         head, 40,
-        "1.56 m above the RECORDED feet is a headshot: 20 × the revolver's headshot_mult of 2"
+        "1.56 m above the RECORDED feet is a headshot: 20 × the revolver's head_pct of 200 %"
     );
 }
 

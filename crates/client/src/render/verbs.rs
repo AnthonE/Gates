@@ -316,7 +316,7 @@ pub fn resolve(
     // you walked to on purpose, and a sack is the thing you are standing
     // in.
     if aimed.0.is_none() {
-        let take = interact::resolve_take(x, z, core.ground_items());
+        let take = take_or_pull(core, x, z);
         if take.verb != interact::Verb::None {
             aimed.0 = take;
         }
@@ -675,7 +675,7 @@ pub fn keys(
         // with no event at all.
         let core = &net.session.core;
         let [x, _, z] = core.predict.render_position();
-        if interact::resolve_take(x, z, core.ground_items()).verb == Verb::None {
+        if take_or_pull(core, x, z).verb == Verb::None {
             toast.warn("nothing to pick up here");
         } else {
             send(&net, &mut toast, "pick up", protocol::encode_action_pickup);
@@ -1359,4 +1359,19 @@ pub fn hearth_close(
     {
         hearth.0 = None;
     }
+}
+
+/// The pick `E` takes from where the player stands: a loose stack, or an
+/// arrow standing in a body in reach — their own, where they stand, or one
+/// they can see, where it is drawn.
+fn take_or_pull(core: &client_core::core::ClientCore, x: f32, z: f32) -> interact::Pick {
+    let at = core.render_tick();
+    let mut rs = client_core::interp::RemoteState::default();
+    interact::resolve_take_or_pull(x, z, core.ground_items(), core.lodged(), |id| {
+        if id == core.player_id {
+            Some((x, z))
+        } else {
+            core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
+        }
+    })
 }

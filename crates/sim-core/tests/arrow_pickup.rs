@@ -270,7 +270,7 @@ fn world_with_bow() -> Box<World> {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: 0,
         reload_ticks: 0,
@@ -459,4 +459,42 @@ fn an_arrow_in_a_standing_trunk_stays_there() {
         &[g][..],
         "three checks later it is the same stack in the same place"
     );
+}
+
+/// An arrow standing in you comes out with `E`, into your pack — Rust's
+/// can be pulled by anyone, the body's own player too — and a loose stack
+/// as near as it is taken first, because that is what `E` names. Mutant:
+/// skipping `pull_arrow` leaves the arrow in the body and the pack empty.
+#[test]
+fn an_arrow_in_you_comes_out_with_e() {
+    let mut w = world_with_archer();
+    let (x, y, z) = feet_mm(&w.players[P].body);
+    let ready_at = w.tick + 10_000;
+    w.spent.lodge(SpentRec {
+        qx: x,
+        qy: y,
+        qz: z,
+        round: ARROW,
+        ready_at,
+        host: w.players[P].id,
+        life: u64::from(w.players[P].deaths),
+        off: [0, 120, 20],
+        dir: [0, 0, -127],
+    });
+    stop(&mut w, 0);
+    w.tick(&[]);
+    assert_eq!(w.spent.len(), 1, "it stands in the body");
+    assert_eq!(w.ground_items.len(), 1, "with a loose stack at its feet");
+
+    w.tick(&[Command::Pickup { id: 1 }]);
+    assert!(
+        w.ground_items.is_empty(),
+        "the loose stack, as near, goes first"
+    );
+    assert_eq!(w.spent.len(), 1, "and the arrow stays in");
+
+    w.tick(&[Command::Pickup { id: 1 }]);
+    assert!(w.spent.is_empty(), "then it comes out");
+    assert_eq!(carried(&w, ARROW), 2, "both in the pack");
+    assert_eq!(gathers(&w), vec![(ARROW, 1)], "announced as a gather");
 }

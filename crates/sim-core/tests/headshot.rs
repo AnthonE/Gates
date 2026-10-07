@@ -63,7 +63,7 @@
 //! can never fire, because *shipped content agrees with the band* — which
 //! is the whole point of shipping it. Proving a refusal needs a row that
 //! disagrees, so `the_body_part_ladder_refuses_what_it_names` hands the
-//! loader one; it did not exist for `headshot_mult` either, in the eleven
+//! loader one; it did not exist for `head_pct` either, in the eleven
 //! days that column had a band.
 //!
 //! The first survivor is correct and wanted: the band is a knob
@@ -168,7 +168,7 @@ fn fixture() -> CombatContent {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // The shipped revolver's magazine (`content/weapons.toml`): eight
         // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
@@ -185,7 +185,7 @@ fn fixture() -> CombatContent {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // No magazine: a bow spends straight out of the quiver
         // (`RangedDef::magazine`), so the arrow path is unchanged by
@@ -399,7 +399,7 @@ fn the_three_runs_are_the_ladder_measured_off_the_body() {
     assert!(
         limb_n > 0,
         "and on a leg somewhere: no halved run means `limb_pct` never \
-         reached the sim, which is the `headshot_mult` bug one column over"
+         reached the sim, which is the `head_pct` bug one column over"
     );
     assert!(
         limb_i < body_i,
@@ -595,13 +595,13 @@ fn the_rungs_are_distinct_and_ordered_the_way_the_marker_merges_them() {
 /// off the bow at the draw.
 ///
 /// **Fired through `draw` rather than by writing an `Arrow`**, because the
-/// copy at the draw is the link this checks: `Arrow::head_mult` is
+/// copy at the draw is the link this checks: `Arrow::head_pct` is
 /// denormalized exactly like `damage` and `structure`, and a bow whose
 /// column never reached the shaft is the same class of drop one hop later.
 /// The two placements come from the bullet's own sweep, so the two weapons
 /// are answered about the same two points on the same body.
 ///
-/// Mutant watched red: `draw` writing `1` instead of `def.headshot_mult`
+/// Mutant watched red: `draw` writing `100` instead of `def.head_pct`
 /// — 30 where 60 is wanted.
 #[test]
 fn an_arrow_carries_the_bows_multiplier_off_the_string() {
@@ -635,8 +635,8 @@ fn an_arrow_carries_the_bows_multiplier_off_the_string() {
         );
         assert_eq!(arrows.len(), 1, "and actually fire");
         assert_eq!(
-            arrows.entries().next().unwrap().head_mult,
-            2,
+            arrows.entries().next().unwrap().head_pct,
+            200,
             "the shaft must carry the bow's column, not a default"
         );
         assert_eq!(
@@ -918,7 +918,7 @@ fn a_stop_before_the_head_is_not_a_headshot() {
 
 // `a_swing_has_no_head_to_find` stood here until melee aim v1 (2026-09-05)
 // and asserted the ABSENCE of a melee head — a compile-time claim, since
-// `MeleeDef` had no `headshot_mult`. It has one now: a swing is a cast along
+// `MeleeDef` had no `head_pct`. It has one now: a swing is a cast along
 // the look ray (`sim-core/src/melee.rs`) and pays the same ladder a shot
 // pays. The decision that test said had to be re-made here was re-made by
 // the operator, and the positive claims live in `tests/melee_aim.rs`.
@@ -926,7 +926,7 @@ fn a_stop_before_the_head_is_not_a_headshot() {
 /// The multiplier saturates rather than wrapping, so a hit can never heal.
 ///
 /// Unreachable with shipped content — `balance.toml` caps a body at three
-/// digits and the band is 2 — and asserted anyway, because the reason it is
+/// digits and the band is [150, 200] — and asserted anyway, because the reason it is
 /// unreachable is a *content* fact and this is a *code* guarantee. A wrap
 /// here is a headshot that restores hp, which is the worst shape the bug
 /// could take.
@@ -935,11 +935,16 @@ fn a_stop_before_the_head_is_not_a_headshot() {
 /// product truncates in `u16` instead of saturating.
 #[test]
 fn the_multiplier_saturates_and_never_wraps() {
-    assert_eq!(combat::headshot(20, 2), 40);
-    assert_eq!(combat::headshot(20, 1), 20, "the identity is the identity");
-    assert_eq!(combat::headshot(0, 2), 0, "nothing doubled is nothing");
+    assert_eq!(combat::headshot(20, 200), 40);
+    assert_eq!(combat::headshot(50, 150), 75, "an arrow's x1.5, Rust's");
     assert_eq!(
-        combat::headshot(40_000, 2),
+        combat::headshot(20, 100),
+        20,
+        "the identity is the identity"
+    );
+    assert_eq!(combat::headshot(0, 200), 0, "nothing doubled is nothing");
+    assert_eq!(
+        combat::headshot(40_000, 200),
         u16::MAX,
         "and 80 000 saturates rather than becoming 14 464"
     );
@@ -997,15 +1002,15 @@ fn the_leg_percent_floors_and_never_wraps() {
 ///
 /// Mutants watched red: `Part::Chest` routed to `limb` (a chest hit is
 /// halved), `Part::Limb` routed to `headshot` (a leg hit is doubled by a
-/// percent read as a multiplier — 20 × 50 = 1000), and the `head_mult` and
+/// percent read as a multiplier — 20 × 50 = 1000), and the `head_pct` and
 /// `limb_pct` arguments transposed.
 #[test]
 fn the_ladder_is_one_door_and_the_chest_is_the_identity() {
     for (part, expect) in [(Part::Head, 40u16), (Part::Chest, 20), (Part::Limb, 10)] {
         assert_eq!(
-            combat::part_damage(20, part, 2, 50),
+            combat::part_damage(20, part, 200, 50),
             expect,
-            "{part:?} on a 20-damage weapon at ×2 / 50%"
+            "{part:?} on a 20-damage weapon at 200% / 50%"
         );
     }
     // The identities together: a weapon that opts out of the ladder at
@@ -1013,7 +1018,7 @@ fn the_ladder_is_one_door_and_the_chest_is_the_identity() {
     // satchel's row says in content.
     for part in [Part::Head, Part::Chest, Part::Limb] {
         assert_eq!(
-            combat::part_damage(20, part, 1, 100),
+            combat::part_damage(20, part, 100, 100),
             20,
             "{part:?} with both identities must be the raw column"
         );

@@ -10,11 +10,11 @@
 //!     the same tick. If what it is stuck in goes (a tree felled, a wall
 //!     broken, a door opened) it falls (`World::unstick_arrows`).
 //!   * One that ran out of flight in the air falls to the surface under it.
-//!   * One that **dealt damage rides the body it is in** for the lodge
-//!     (`content/balance.toml` `arrow_lodge_s`, theirs: 10 s), then falls
-//!     out at that body's feet. The lodge is the reference's rule and the
-//!     reason for it holds: an archer cannot re-collect the arrow they just
-//!     shot someone with *during* the fight. It falls at once if its host
+//!   * One that **dealt damage stands in the body it is in**, drawn where
+//!     it went in, for the lodge (`content/balance.toml` `arrow_lodge_s`,
+//!     Rust's five-minute despawn), then falls out at that body's feet.
+//!     Anyone in reach may pull it out with `E` before then, the body's own
+//!     player included (`World::pull_arrow`). It falls at once if its host
 //!     dies, and where the host last stood if the host is gone.
 //!   * ~15 % of landings break instead (`arrow_break_pct`), rolled by
 //!     `ranged` at the stop.

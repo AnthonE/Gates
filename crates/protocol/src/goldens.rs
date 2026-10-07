@@ -1709,6 +1709,7 @@ pub fn event_lodged_sync() -> (bool, [WireLodged; LODGED_SYNC_BATCH]) {
             } else {
                 300 + i as u32
             },
+            item: 1 + (i as u16 * 37) % (MAX_ITEM_DEFS as u16 - 1),
             off: [o() as i16, 40 + o() as i16, o() as i16],
             dir,
         };

@@ -420,8 +420,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if c.item(&w.id).map(|i| i.slot) != Some(EquipSlot::Hand) {
             return Err(format!("weapon `{}`: not a hand item", w.id));
         }
-        if w.damage == 0 || w.headshot_mult == 0 || w.rate_per_min == 0 {
-            return Err(format!("weapon `{}`: zero damage/mult/rate", w.id));
+        if w.damage == 0 || w.rate_per_min == 0 {
+            return Err(format!("weapon `{}`: zero damage/rate", w.id));
+        }
+        // A head worth less than the chest under it would invert `Part`'s
+        // ordering in data, `limb_pct`'s refusal at the other end.
+        if w.headshot_pct < 100 {
+            return Err(format!(
+                "weapon `{}`: headshot_pct is {}, under the identity 100",
+                w.id, w.headshot_pct
+            ));
         }
         // Both ends of the ladder, and the bounds are not symmetric. Zero
         // is a leg hit that costs the body nothing — a hit that announces

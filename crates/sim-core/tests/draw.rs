@@ -26,7 +26,7 @@ fn bow(draw_ticks: u16) -> CombatContent {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         magazine: 0,
         reload_ticks: 0,

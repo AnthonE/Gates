@@ -81,9 +81,9 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// items v0).
 pub const GITEM_SYNC_BATCH: usize = 16;
 
-/// Arrows in bodies one sync message carries (wire v94): the body, where
-/// in it the arrow went in and which way. Thirteen bytes a record, so
-/// sixteen are ~210 B, inside `MAX_EVENT_MSG_BYTES`. Overflow policy: the
+/// Arrows in bodies one sync message carries (wire v94): the body, the
+/// round, where in it the arrow went in and which way. Fifteen bytes a
+/// record, so sixteen are ~240 B, inside `MAX_EVENT_MSG_BYTES`. Overflow policy: the
 /// next message continues the walk, as the loose stacks' does, and the walk
 /// restarts whenever an arrow goes into a body or comes out of one.
 pub const LODGED_SYNC_BATCH: usize = 16;
@@ -3216,12 +3216,14 @@ impl WireGItem {
 }
 
 /// One arrow standing in a body (wire v94): the body's id — a player's, or
-/// an animal's (`sim_core::mob::mob_id`) — and where in it it went in and
-/// which way, in that body's own frame (`sim_core::spent::SpentRec`'s
-/// `off`, centimetres, and `dir`).
+/// an animal's (`sim_core::mob::mob_id`) — the round it is, so `E` can name
+/// what it pulls out, and where in it it went in and which way, in that
+/// body's own frame (`sim_core::spent::SpentRec`'s `off`, centimetres, and
+/// `dir`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WireLodged {
     pub host: u32,
+    pub item: u16,
     pub off: [i16; 3],
     pub dir: [i8; 3],
 }
@@ -3230,6 +3232,7 @@ impl WireLodged {
     pub fn of(a: &sim_core::spent::SpentRec) -> Self {
         Self {
             host: a.host,
+            item: a.round,
             off: a.off,
             dir: a.dir,
         }
@@ -3239,10 +3242,11 @@ impl WireLodged {
 /// An arrow in nothing is not in a body: a zero host is the encoder
 /// inventing one.
 fn write_lodged(w: &mut BitWriter, a: &WireLodged) -> Result<(), WireError> {
-    if a.host == 0 {
+    if a.host == 0 || a.item as usize >= MAX_ITEM_DEFS {
         return Err(WireError::Range);
     }
     w.write(a.host, 32)?;
+    w.write(a.item as u32, 16)?;
     for v in a.off {
         w.write(v as u16 as u32, 16)?;
     }
@@ -3255,6 +3259,7 @@ fn write_lodged(w: &mut BitWriter, a: &WireLodged) -> Result<(), WireError> {
 fn read_lodged(r: &mut BitReader) -> Result<WireLodged, WireError> {
     let mut a = WireLodged {
         host: r.read(32)?,
+        item: r.read(16)? as u16,
         ..WireLodged::default()
     };
     for v in a.off.iter_mut() {

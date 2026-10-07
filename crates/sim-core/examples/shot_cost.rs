@@ -120,7 +120,7 @@ fn main() {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
-        headshot_mult: 2,
+        head_pct: 200,
         limb_pct: 50,
         // The shipped revolver's magazine (`content/weapons.toml`): eight
         // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this

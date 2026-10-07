@@ -75,7 +75,7 @@ fn refuses_bake(file: &str, from: &str, to: &str, phrase: &str) {
 /// was written to avoid — a column nothing bakes is a number that looks
 /// tuned and does nothing.
 ///
-/// It used to cite `headshot_mult` as the live instance of that. **It is
+/// It used to cite `headshot_pct` as the live instance of that. **It is
 /// not one any more** (headshot v0): `bake_ranged` carries it and
 /// `the_headshot_column_reaches_the_sim` below is its own version of this
 /// check. The example moved, the rule did not.
@@ -100,7 +100,7 @@ fn the_arrow_recovery_globals_reach_the_sim() {
 }
 
 /// **The headshot column reaches the sim**, which it did not for the whole
-/// life of this crate: `headshot_mult` was parsed, pinned to exactly the
+/// life of this crate: `headshot_pct` was parsed, pinned to exactly the
 /// band and folded into the content hash while `bake_ranged` dropped it one
 /// line before `RangedDef` could hold it (`reference/PROJECTILES.md` §9.4).
 /// A number that is validated, banded and hashed *looks* enforced from
@@ -117,7 +117,7 @@ fn the_arrow_recovery_globals_reach_the_sim() {
 /// such field and `sim-core`'s `tests/headshot.rs` is where that decision
 /// is written down and gated.
 ///
-/// Mutant watched red: `headshot_mult: 1` hard-coded at the bake.
+/// Mutant watched red: `head_pct: 100` hard-coded at the bake.
 #[test]
 fn the_headshot_column_reaches_the_sim() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
@@ -129,12 +129,12 @@ fn the_headshot_column_reaches_the_sim() {
             continue; // melee or a throwable: no ranged row to carry it
         }
         assert_eq!(
-            u32::from(cc.ranged[idx].headshot_mult),
-            w.headshot_mult,
-            "`{}` declares headshot_mult {} and the sim's table says {}",
+            u32::from(cc.ranged[idx].head_pct),
+            w.headshot_pct,
+            "`{}` declares headshot_pct {} and the sim's table says {}",
             w.id,
-            w.headshot_mult,
-            cc.ranged[idx].headshot_mult
+            w.headshot_pct,
+            cc.ranged[idx].head_pct
         );
         assert_eq!(
             u32::from(cc.ranged[idx].limb_pct),
@@ -160,7 +160,7 @@ fn the_headshot_column_reaches_the_sim() {
 /// exists as a second check rather than a comment: `hits_to_kill` is
 /// measured on *body* hits, so `[bands] ttk_firearm` is green whether a
 /// leg is worth 100% or 1% of the column. `balance.rs` refuses a row that
-/// disagrees with `[bands] headshot_mult` / `limb_pct`, and this asserts
+/// disagrees with `[bands] headshot_pct` / `limb_pct`, and this asserts
 /// the two the shipped file actually carries — so the values are here in
 /// one place rather than spread over eleven rows nobody diffs.
 ///
@@ -180,25 +180,35 @@ fn the_headshot_column_reaches_the_sim() {
 fn the_body_part_ladder_is_the_band_on_every_row() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let b = &c.balance.bands;
-    assert_eq!(b.headshot_mult, 2, "the head is the reference's x2");
+    assert_eq!(
+        b.headshot_pct,
+        [150, 200],
+        "the head is Rust's: x1.5 for an arrow, x2 for the rest"
+    );
     assert_eq!(b.limb_pct, 50, "and the leg its x0.5, as a percent");
     let mut banded = 0;
     let mut opted_out = 0;
     for w in &c.weapons {
         if matches!(w.kind, WeaponKind::Throwable) {
             assert_eq!(
-                (w.headshot_mult, w.limb_pct),
-                (1, 100),
+                (w.headshot_pct, w.limb_pct),
+                (100, 100),
                 "`{}` is a throwable and must carry both identities",
                 w.id
             );
             opted_out += 1;
             continue;
         }
+        // Rust's arrows are x1.5 on every bow; everything else is x2.
+        let head = if matches!(w.kind, WeaponKind::Bow) {
+            150
+        } else {
+            200
+        };
         assert_eq!(
-            (w.headshot_mult, w.limb_pct),
-            (b.headshot_mult, b.limb_pct),
-            "`{}` is off the band",
+            (w.headshot_pct, w.limb_pct),
+            (head, b.limb_pct),
+            "`{}` is off the ladder",
             w.id
         );
         banded += 1;
@@ -228,7 +238,7 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
 fn the_body_part_ladder_refuses_what_it_names() {
     // The rock is the first weapon row in the file and the only one whose
     // `damage = 20` line is unique, so it is where every bait below goes.
-    const ROCK: &str = "id = \"item.rock\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_mult = 2\nlimb_pct = 50";
+    const ROCK: &str = "id = \"item.rock\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_pct = 200\nlimb_pct = 50";
     let bait = |limb: &str| ROCK.replace("limb_pct = 50", &format!("limb_pct = {limb}"));
 
     // Above the band: a leg worth as much as the chest above it.
@@ -241,12 +251,26 @@ fn the_body_part_ladder_refuses_what_it_names() {
     refuses("weapons.toml", ROCK, &bait("101"), "outside 1..=100");
     // And a leg hit that costs the body nothing.
     refuses("weapons.toml", ROCK, &bait("0"), "outside 1..=100");
-    // The head's twin, which had no refusal test of its own either.
+    // The head's twin, which had no refusal test of its own either: past
+    // the band, under the identity, and a head that kills a naked body in
+    // one blow while still inside the band.
     refuses(
         "weapons.toml",
         ROCK,
-        &ROCK.replace("headshot_mult = 2", "headshot_mult = 3"),
-        "band break: headshot mult",
+        &ROCK.replace("headshot_pct = 200", "headshot_pct = 300"),
+        "band break: headshot pct",
+    );
+    refuses(
+        "weapons.toml",
+        ROCK,
+        &ROCK.replace("headshot_pct = 200", "headshot_pct = 90"),
+        "under the identity 100",
+    );
+    refuses(
+        "weapons.toml",
+        "damage = 50\nstructure = 1\nheadshot_pct = 150",
+        "damage = 70\nstructure = 1\nheadshot_pct = 150",
+        "kills a naked",
     );
 }
 
@@ -821,11 +845,11 @@ fn band_breaks_refused() {
         "reduction_pct = 60",
         "band break: `item.armor_roadsign_body`",
     );
-    // Headshot: ×5 would one-tap past the TTK band; ×2 exactly, banded.
+    // Headshot: ×5 would one-tap past the TTK band; [×1.5, ×2], banded.
     refuses(
         "weapons.toml",
-        "headshot_mult = 2",
-        "headshot_mult = 5",
+        "headshot_pct = 200",
+        "headshot_pct = 500",
         "band break: headshot",
     );
     // A break chance is a percentage, and BOTH ends of it are legal — 0 is

@@ -36,7 +36,7 @@
 //! headshots **for a swing** — ⚠ **retired 2026-09-05 and kept here because
 //! the clause moved twice**: it was true of the whole crate, then only of the
 //! swing when headshot v0 gave `ranged` a head, and melee aim v1 made the
-//! swing a ray, so `MeleeDef` carries `headshot_mult` and `limb_pct` and a
+//! swing a ray, so `MeleeDef` carries `head_pct` and `limb_pct` and a
 //! spear pays the same rungs a bullet does — no per-weapon cadence (every swing rides gather's one
 //! interval, which is the melee rows' own rate), and no corpse: death drops what you carried into a
 //! backpack where you fell. That last clause is about the SIM and stays
@@ -103,15 +103,15 @@ pub struct MeleeDef {
     pub structure: u16,
     pub reach_cm: u16,
     /// What a head is worth, as a multiplier on `damage` — the
-    /// `headshot_mult` column, which every melee row has carried, priced
+    /// `head_pct` column, which every melee row has carried, priced
     /// and content-hashed, since the content crate existed, and which the
     /// bake dropped one line before this struct could hold it. Read since
     /// melee aim v1 (2026-09-05): a swing has a line to cross now
     /// (`melee::cast`), so it pays the same ladder a shot pays
     /// (`part_damage`). 1 is the identity.
-    pub headshot_mult: u16,
+    pub head_pct: u16,
     /// What a leg is worth, in **percent** of `damage` — the `limb_pct`
-    /// column, `headshot_mult`'s other end. 100 is the identity.
+    /// column, `head_pct`'s other end. 100 is the identity.
     pub limb_pct: u16,
     /// Extra body damage while the hand is alight (`light::is_lit`) — the
     /// torch's heat on top of its blow, `weapons.toml`'s `lit_damage`. Zero
@@ -249,9 +249,9 @@ pub struct RangedDef {
     /// it as exactly that rather than as "unset": `ranged.rs` skips the
     /// damage write, and the shot still stops and still draws its impact.
     pub structure: u16,
-    /// What a hit that crossed the head band is multiplied by — the
-    /// `headshot_mult` column of `content/weapons.toml`, `= 2` on every
-    /// banded row.
+    /// What a hit that crossed the head band is worth, in percent — the
+    /// `headshot_pct` column of `content/weapons.toml`: 150 on a bow,
+    /// Rust's arrows, and 200 on everything else.
     ///
     /// **The third column to arrive here armed and unread**, after the bow
     /// itself and `structure`, and the longest-standing of the three: it
@@ -269,14 +269,14 @@ pub struct RangedDef {
     /// hit model rather than the same one, and the band on a melee row
     /// stays what it has always been — content priced for a mechanic that
     /// does not exist yet, which `balance.rs:122` says in the file.
-    pub headshot_mult: u16,
+    pub head_pct: u16,
     /// What a hit that reached nothing above the leg band is multiplied
     /// by, in **percent** — the `limb_pct` column of
     /// `content/weapons.toml`, `= 50` on every banded row.
     ///
     /// **The fourth column to arrive here, and the first that did not
     /// arrive armed and unread.** The bow, `structure` and
-    /// `headshot_mult` were each parsed, banded and content-hashed for
+    /// `head_pct` were each parsed, banded and content-hashed for
     /// months before a line of sim read them (this struct's three doc
     /// comments above say so in order). This one landed in the same
     /// commit as the code that reads it, which is the shape the next
@@ -286,7 +286,7 @@ pub struct RangedDef {
     /// multiplier cannot say a half ([`limb`]). 100 is the identity and
     /// is a weapon that does not discount a leg at all.
     ///
-    /// `MeleeDef` has no twin, for [`RangedDef::headshot_mult`]'s reason
+    /// `MeleeDef` has no twin, for [`RangedDef::head_pct`]'s reason
     /// word for word: `strike` is resolved feet-to-feet in a plane, so
     /// there is no height to test and no band to miss. The column is on
     /// the melee rows in content and stays priced for a mechanic that
@@ -376,7 +376,7 @@ impl Default for RangedDef {
             hitscan: false,
             range_mm: 0,
             structure: 0,
-            headshot_mult: 1,
+            head_pct: 100,
             limb_pct: 100,
             magazine: 0,
             reload_ticks: 0,
@@ -511,7 +511,7 @@ impl CombatContent {
             damage: 0,
             structure: 0,
             reach_cm: 0,
-            headshot_mult: 1,
+            head_pct: 100,
             limb_pct: 100,
             lit_bonus: 0,
         }; MAX_ITEM_DEFS],
@@ -531,7 +531,7 @@ impl CombatContent {
             structure: 0,
             // One, not zero: the empty row's multiplier is the identity, so
             // a table nothing baked cannot silently delete a hit.
-            headshot_mult: 1,
+            head_pct: 100,
             // A hundred for the same reason at the other end of the
             // ladder: a percent of zero would make the empty row delete a
             // leg hit outright, which is the same defect spelled the other
@@ -588,7 +588,7 @@ impl CombatContent {
                 // with a club as well as with a bullet — a fixture row
                 // nothing reaches rides the parity surface while covering
                 // nothing (item 6's own lesson, below).
-                headshot_mult: 2,
+                head_pct: 200,
                 limb_pct: 50,
                 lit_bonus: 0,
             };
@@ -641,7 +641,7 @@ impl CombatContent {
         //   damage 25 — four shots to kill against `player_hp`, so a
         //     gunfight resolves inside 256 ticks without one-shotting the
         //     melee brawl out of the digest;
-        //   headshot_mult 2 — nonzero and not 1, so `part_crossed`'s head
+        //   head_pct 200 — not the identity 100, so `part_crossed`'s head
         //     band changes an outcome rather than being computed and
         //     discarded;
         //   rate_ticks 8 — faster than the shared swing cadence, so holding
@@ -675,7 +675,7 @@ impl CombatContent {
             magazine: 6,
             reload_ticks: 2,
             mag_slot: 0,
-            headshot_mult: 2,
+            head_pct: 200,
             //   limb_pct 50 — the reference's ×0.5 rather than the
             //     identity, so a leg hit is a *different* number in the
             //     digest and not a chest hit spelled twice. **And the
@@ -709,7 +709,7 @@ impl CombatContent {
                 damage: 0,
                 structure: 1,
                 reach_cm: 200,
-                headshot_mult: 1,
+                head_pct: 100,
                 limb_pct: 100,
                 lit_bonus: 0,
             };
@@ -877,8 +877,10 @@ pub struct Hurt {
 ///
 /// Wall 1: `min`, `saturating_add` and one `u16` subtraction that cannot
 /// underflow because `dealt <= before`. No float, no clock, no allocation.
-/// The head multiplier, applied to the **raw** damage before the funnel
-/// sees it.
+/// The head multiplier — `pct` percent of the raw damage, floored —
+/// applied to the **raw** damage before the funnel sees it. A percent
+/// since Rust's arrows took ×1.5 (guns stay ×2): an integer multiplier
+/// cannot say a half more.
 ///
 /// **Before armor and not after, and the order is a decision.** `reduce`
 /// takes a percentage, so scaling first and scaling last differ only by
@@ -900,23 +902,22 @@ pub struct Hurt {
 /// unreachable with shipped content, and the alternative is a headshot
 /// that heals.
 ///
-/// Wall 1: two `u32` multiplies and a `min`. No float, no allocation.
+/// Wall 1: one `u32` multiply, one integer divide and a `min`. No float,
+/// no allocation.
 #[inline]
-pub fn headshot(raw: u16, mult: u16) -> u16 {
-    (raw as u32 * mult as u32).min(u16::MAX as u32) as u16
+pub fn headshot(raw: u16, pct: u16) -> u16 {
+    (raw as u32 * pct as u32 / 100).min(u16::MAX as u32) as u16
 }
 
 /// What a hit that reached nothing above the leg band is worth: `pct`
 /// percent of the raw damage, floored.
 ///
-/// **A percent and not a multiplier, and the asymmetry with
-/// [`headshot`] is the point.** The reference's ladder is ×2 head, ×1
-/// chest, ×0.5 limbs (`reference/PROJECTILES.md` §0), and a `u16`
-/// multiplier cannot say a half. Widening `headshot_mult` into a percent
-/// would move a shipped, banded, content-hashed column on eleven rows to
-/// buy nothing the second column does not, so the two live side by side:
-/// one says how much *more* a skull is worth and one how much *less* a
-/// shin is.
+/// **A percent, as [`headshot`] is.** The reference's ladder is ×2 head,
+/// ×1 chest, ×0.5 limbs (`reference/PROJECTILES.md` §0), and a `u16`
+/// multiplier cannot say a half. The head was a multiplier beside this
+/// percent until Rust's arrows needed ×1.5, which a multiplier cannot say
+/// either; one says how much *more* a skull is worth and one how much
+/// *less* a shin is.
 ///
 /// **Floored, and the floor is reachable in principle and not in
 /// content.** `1 × 50 / 100` is 0, a hit that costs a body nothing —
@@ -928,7 +929,7 @@ pub fn headshot(raw: u16, mult: u16) -> u16 {
 /// `pct == 100` is the identity by construction rather than by a branch,
 /// which is what lets a weapon opt out of the ladder in *data*: a
 /// `limb_pct` of 100 is a weapon whose legs are worth a chest, exactly as
-/// `headshot_mult = 1` is one whose skull is worth a chest. The satchel
+/// `headshot_pct = 100` is one whose skull is worth a chest. The satchel
 /// charge already carries the second and now carries the first.
 ///
 /// Wall 1: one `u32` multiply, one integer divide, one `min`. No float,
@@ -951,9 +952,9 @@ pub fn limb(raw: u16, pct: u16) -> u16 {
 ///
 /// Wall 1: a match and one of [`headshot`]/[`limb`]. No float.
 #[inline]
-pub fn part_damage(raw: u16, part: Part, head_mult: u16, limb_pct: u16) -> u16 {
+pub fn part_damage(raw: u16, part: Part, head_pct: u16, limb_pct: u16) -> u16 {
     match part {
-        Part::Head => headshot(raw, head_mult),
+        Part::Head => headshot(raw, head_pct),
         Part::Chest => raw,
         Part::Limb => limb(raw, limb_pct),
     }
@@ -1298,7 +1299,7 @@ pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
 /// **The ladder is the shot's** (melee aim v1): `part_crossed` over the span
 /// the ray spent inside the body, clipped at `stop_t` where the world would
 /// have stopped it, then `part_damage` with the melee row's own
-/// `headshot_mult` and `limb_pct`. A swing that crosses the crown pays the
+/// `head_pct` and `limb_pct`. A swing that crosses the crown pays the
 /// head, one that reaches only the shins pays the legs, and the attacker's
 /// hitmarker says which (`EV_HIT`'s packed part).
 ///
@@ -1349,7 +1350,7 @@ pub fn strike_body(
         hit.exit.min(stop_t),
         hit.crouched,
     );
-    let dmg = part_damage(def.body_damage(lit), part, def.headshot_mult, def.limb_pct);
+    let dmg = part_damage(def.body_damage(lit), part, def.head_pct, def.limb_pct);
     // The death screen's range: the PLANAR distance to the victim's axis at
     // the closest approach, centimetres — `Strike::Killed`'s documented
     // meaning, kept. `hit.t` is the planar closest-approach fraction, so it
@@ -1460,27 +1461,17 @@ mod tests {
     fn the_fixture_melee_rows_carry_the_ladder_and_empty_carries_the_identity() {
         let cc = CombatContent::probe_fixture();
         let spear = cc.held_melee(0).expect("item 0 is the fixture's spear");
-        assert_eq!((spear.headshot_mult, spear.limb_pct), (2, 50));
+        assert_eq!((spear.head_pct, spear.limb_pct), (200, 50));
         assert_eq!(
-            part_damage(
-                spear.damage,
-                Part::Head,
-                spear.headshot_mult,
-                spear.limb_pct
-            ),
+            part_damage(spear.damage, Part::Head, spear.head_pct, spear.limb_pct),
             spear.damage * 2
         );
         assert_eq!(
-            part_damage(
-                spear.damage,
-                Part::Limb,
-                spear.headshot_mult,
-                spear.limb_pct
-            ),
+            part_damage(spear.damage, Part::Limb, spear.head_pct, spear.limb_pct),
             spear.damage / 2
         );
         let e = CombatContent::EMPTY.melee[0];
-        assert_eq!((e.headshot_mult, e.limb_pct), (1, 100));
+        assert_eq!((e.head_pct, e.limb_pct), (100, 100));
     }
 
     #[test]

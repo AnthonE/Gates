@@ -54,7 +54,7 @@ use super::Cue;
 /// row at 20–35 damage against `player_hp = 100` (its own §comment states the
 /// band), so a third of the bar puts the heaviest ordinary swing at the
 /// ceiling, spreads the rest of the table across the live part of the curve,
-/// and leaves headshots — `headshot_mult` doubles — pinned at full.
+/// and leaves headshots — `head_pct` raises them — pinned at full.
 pub const HURT_FULL_FRAC: f32 = 0.35;
 
 /// The quietest a hurt is allowed to get, as a share of the cue's own gain.
