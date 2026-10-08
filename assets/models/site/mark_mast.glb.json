@@ -1,0 +1,17 @@
+{
+  "kit": "ci/kits/mark_mast.json",
+  "seed": 1,
+  "label": "",
+  "blender": "4.5.14 LTS",
+  "python": "3.11.17",
+  "script_sha256": "0956aa9c4862bf9c7acc34a17e1f5b140e9b06c032a64129179f03363432f58d",
+  "kit_sha256": "124d29295badda88045f2ce983bec8e528dd390ab864dc02ce9115688758c20a",
+  "triangles": 3668,
+  "meshes": [
+    "bulb",
+    "concrete",
+    "steel",
+    "yard"
+  ],
+  "bytes": 432456
+}

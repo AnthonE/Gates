@@ -1,0 +1,16 @@
+{
+  "kit": "ci/kits/mark_tower.json",
+  "seed": 1,
+  "label": "",
+  "blender": "4.5.14 LTS",
+  "python": "3.11.17",
+  "script_sha256": "0956aa9c4862bf9c7acc34a17e1f5b140e9b06c032a64129179f03363432f58d",
+  "kit_sha256": "c22eff6178e1a0b26e47e1b3c618654429e5e207e225a0f81aa22ccfa6c3992c",
+  "triangles": 5448,
+  "meshes": [
+    "ashlar",
+    "steel",
+    "timber"
+  ],
+  "bytes": 672508
+}

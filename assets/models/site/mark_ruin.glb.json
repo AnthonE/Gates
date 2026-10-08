@@ -1,0 +1,14 @@
+{
+  "kit": "ci/kits/mark_ruin.json",
+  "seed": 1,
+  "label": "",
+  "blender": "4.5.14 LTS",
+  "python": "3.11.17",
+  "script_sha256": "0956aa9c4862bf9c7acc34a17e1f5b140e9b06c032a64129179f03363432f58d",
+  "kit_sha256": "7e74384e5f2236f816b402aeef187aba242957cf0f93c2bee91ba7ccf8650385",
+  "triangles": 23614,
+  "meshes": [
+    "ashlar"
+  ],
+  "bytes": 2824756
+}

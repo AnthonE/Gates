@@ -377,6 +377,21 @@ pub struct Capture {
     /// somewhere the walk cannot fix shoots its vantages anyway rather than
     /// burning the run. Wall 4's habit applied to a camera.
     clearing: u32,
+    /// `GATES_CAPTURE_AIM="x,y,z;x,y,z"`: world points to photograph from
+    /// where the probe stands, `aim-<n>.png` each, **instead of** the
+    /// vantages and the passes — a portrait run for art work (a monument
+    /// from `dev_spawn`), never a citable frame. Empty for every normal run.
+    aim: Vec<Vec3>,
+}
+
+/// Parse `GATES_CAPTURE_AIM`: `;`-separated `x,y,z` world points.
+fn aim_points(spec: &str) -> Vec<Vec3> {
+    spec.split(';')
+        .filter_map(|p| {
+            let v: Vec<f32> = p.split(',').filter_map(|c| c.trim().parse().ok()).collect();
+            (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2]))
+        })
+        .collect()
 }
 
 impl Capture {
@@ -399,6 +414,9 @@ impl Capture {
             last_hp: 0,
             cleared: false,
             clearing: 0,
+            aim: std::env::var("GATES_CAPTURE_AIM")
+                .map(|s| aim_points(&s))
+                .unwrap_or_default(),
         }
     }
 
@@ -583,7 +601,8 @@ pub fn drive(
             // meant "broken renderer" or "broken disk". That is the worst bug
             // class in this repo's trap list: a pass it did not earn.
             let mut missing = Vec::new();
-            for (idx, (label, _, _)) in VANTAGES.iter().enumerate() {
+            let vantages: &[_] = if cap.aim.is_empty() { &VANTAGES } else { &[] };
+            for (idx, (label, _, _)) in vantages.iter().enumerate() {
                 let path = cap.dir.join(format!("{idx}-{label}.png"));
                 // `is_file()` as well as non-empty: a directory reports a
                 // non-zero length, so a size check alone would accept one.
@@ -625,6 +644,23 @@ pub fn drive(
 
     let phase = (cap.since_built - WARM_FRAMES) % FRAMES_PER_SHOT;
     let idx = ((cap.since_built - WARM_FRAMES) / FRAMES_PER_SHOT) as usize;
+    if !cap.aim.is_empty() {
+        let Some(&at) = cap.aim.get(idx) else {
+            cap.finished_at = Some(cap.frame);
+            return;
+        };
+        let (dx, dy, dz) = (at.x - eye.pos.x, at.y - eye.pos.y, at.z - eye.pos.z);
+        let flat = (dx * dx + dz * dz).sqrt();
+        if flat > 0.01 {
+            look.yaw = bearing_to(dx, dz);
+            look.pitch = dy.atan2(flat);
+        }
+        if phase == FRAMES_PER_SHOT - 1 {
+            let path = cap.dir.join(format!("aim-{idx}.png"));
+            cap.shoot(&mut commands, path, true);
+        }
+        return;
+    }
     if idx >= VANTAGES.len() {
         // The vantages are shot. Everything past here photographs a VERB,
         // which is the half a fixed camera cannot reach: a swing, and the
@@ -1460,6 +1496,13 @@ mod tests {
     /// a compile error. Asserted against the LUT's own resolution: 256
     /// headings is 1.4° apart, so the worst honest miss is 0.7°, whose
     /// cosine is 0.99992.
+    #[test]
+    fn aim_points_parse_and_skip_junk() {
+        let a = aim_points("1,2,3; 4.5, 5, -6 ;oops;7,8");
+        assert_eq!(a, vec![Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.5, 5.0, -6.0)]);
+        assert!(aim_points("").is_empty());
+    }
+
     #[test]
     fn the_probe_faces_what_it_walks_at() {
         for (dx, dz) in [

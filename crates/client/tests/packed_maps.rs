@@ -74,14 +74,20 @@ const PATCHY_AS_SHIPPED: &[(&str, f64)] = &[];
 const PIN_TOL: f64 = 0.01;
 
 /// The packed models with no normal map: the character, whose delivery
-/// carried an albedo only (`assets/models/MANIFEST.md`), and the two
-/// Blender-dressed sites, which carry no images at all — the client lays the
-/// depot's photographed surfaces on them (`render::town`, `render::ziggurat`).
-/// Named so the census below cannot pass by skipping a file nobody listed.
+/// carried an albedo only (`assets/models/MANIFEST.md`), and the
+/// Blender-dressed sites and landmarks, which carry no images at all — the
+/// client lays the depot's photographed surfaces on them (`render::town`,
+/// `render::ziggurat`, `render::landmarks`). Named so the census below
+/// cannot pass by skipping a file nobody listed.
 const NO_NORMAL_MAP: &[&str] = &[
     "models/stumpy.glb",
     "models/site/town.glb",
     "models/site/ziggurat.glb",
+    "models/site/mark_mast.glb",
+    "models/site/mark_ruin.glb",
+    "models/site/mark_stones.glb",
+    "models/site/mark_tower.glb",
+    "models/site/mark_yard.glb",
 ];
 
 fn asset_path(rel: &str) -> PathBuf {
@@ -301,6 +307,16 @@ fn python_const(name: &str) -> f64 {
         .find(|l| l.starts_with(&format!("{name} = ")))
         .unwrap_or_else(|| panic!("{name} is not defined at top level in ci/measure_glb.py"));
     line.split('=').nth(1).unwrap().trim().parse().unwrap()
+}
+
+/// The landmark list above is the client's own: one model per dressed kind.
+#[test]
+fn every_dressed_landmark_is_named() {
+    for k in sim_core::landmark::DRESSED {
+        let p = client::render::landmarks::model_path(k);
+        assert!(NO_NORMAL_MAP.contains(&p.as_str()), "{p} is not named");
+        assert!(asset_path(&p).is_file(), "{p} does not ship");
+    }
 }
 
 #[test]

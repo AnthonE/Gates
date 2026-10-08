@@ -1,0 +1,14 @@
+{
+  "kit": "ci/kits/mark_stones.json",
+  "seed": 1,
+  "label": "",
+  "blender": "4.5.14 LTS",
+  "python": "3.11.17",
+  "script_sha256": "0956aa9c4862bf9c7acc34a17e1f5b140e9b06c032a64129179f03363432f58d",
+  "kit_sha256": "03b947dd1da0985031ec076836c7063adc47f6dd4e42515c7cab1b37e5bde66e",
+  "triangles": 6384,
+  "meshes": [
+    "ashlar"
+  ],
+  "bytes": 754872
+}

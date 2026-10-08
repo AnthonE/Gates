@@ -70,9 +70,12 @@ pub enum Surface {
     Lapis,
     /// Lamp bulbs and string lights.
     Bulb,
+    /// Dressed masonry — the landmarks' Blender blocks (`ci/site_kit.py`):
+    /// the building tier's jointless stone, because the joints are geometry.
+    Ashlar,
 }
 
-pub const SURFACES: [Surface; 14] = [
+pub const SURFACES: [Surface; 15] = [
     Surface::Yard,
     Surface::Concrete,
     Surface::Sheet,
@@ -87,6 +90,7 @@ pub const SURFACES: [Surface; 14] = [
     Surface::Canvas,
     Surface::Lapis,
     Surface::Bulb,
+    Surface::Ashlar,
 ];
 
 impl Surface {
@@ -98,6 +102,7 @@ impl Surface {
             }
             Self::Timber => super::structures::tier(sim_core::build::MAT_WOOD).tiles_per_m,
             Self::Stone | Self::Obsidian => 1.0 / DEPOT_CONCRETE_TILE_M,
+            Self::Ashlar => super::structures::tier(sim_core::build::MAT_STONE).tiles_per_m,
             _ => DEPOT_SHEET_TILES_PER_M,
         }
     }
@@ -108,6 +113,7 @@ impl Surface {
             Self::Concrete | Self::Paint | Self::Canvas | Self::Lapis | Self::Bulb => "concrete",
             Self::Timber => "wood",
             Self::Stone | Self::Obsidian => "stone",
+            Self::Ashlar => "ashlar",
             _ => "metal",
         }
     }
@@ -127,6 +133,7 @@ impl Surface {
             "lapis" => Self::Lapis,
             "bulb" => Self::Bulb,
             "stone" => Self::Stone,
+            "ashlar" => Self::Ashlar,
             _ => return None,
         })
     }
@@ -198,6 +205,7 @@ pub fn spawn(
     server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut weathered: ResMut<Assets<super::weathering::MonumentMaterial>>,
     drawn: Query<(), With<DepotVisual>>,
 ) {
     if !drawn.is_empty() {
@@ -205,7 +213,13 @@ pub fn spawn(
     }
     let groups: Vec<_> = depot_meshes()
         .into_iter()
-        .map(|(surface, mesh)| (meshes.add(mesh), materials.add(material(surface, &server))))
+        .map(|(surface, mesh)| {
+            let base = material(surface, &server);
+            (
+                meshes.add(mesh),
+                super::weathering::dress(surface, base, &mut materials, &mut weathered),
+            )
+        })
         .collect();
     let root = commands
         .spawn((
@@ -222,12 +236,11 @@ pub fn spawn(
         .filter(|site| layout::is_depot(site))
     {
         for (mesh, material) in &groups {
-            commands.spawn((
+            material.insert(&mut commands.spawn((
                 ChildOf(root),
                 Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
                 site_transform(site),
-            ));
+            )));
         }
     }
 }

@@ -38,7 +38,13 @@ import sys
 # ── bpy-free arithmetic (self-tested) ───────────────────────────────────────
 
 ROLES = ("yard", "concrete", "sheet", "cargo", "timber", "steel", "obsidian",
-         "gilt", "canvas", "lapis", "bulb")
+         "gilt", "canvas", "lapis", "bulb", "ashlar")
+# A landmark kit's boxes also name the old masonry and natural rock; neither
+# is a mesh role (`stone` dresses to `ashlar`, `rock` is the client's).
+KIT_MATS = ROLES + ("stone", "rock")
+# Roles whose pieces each take their own patch of the photograph, so a wall
+# reads as many stones and a deck as many boards rather than one sheet.
+PATCHED = ("ashlar", "timber")
 ROOF, DECOR, STACK = 1, 2, 4
 CONTAINER_L, CONTAINER_H = 6.06, 2.6
 # Above this nobody's head reaches, so a drawn-only piece cannot be walked into.
@@ -110,6 +116,13 @@ def glyph_cells(text):
                 if row & (1 << (4 - k)):
                     cells.append((i * 6 + k, j))
     return cells
+
+
+def patch_offset(piece):
+    """A piece's own patch of a tiling photograph, metres: a hash of its id,
+    spread over 20 m so no two neighbours share one."""
+    h = (piece * 2654435761) & 0xFFFFFFFF
+    return ((h & 0xFFFF) / 65536.0 * 20.0, (h >> 16) / 65536.0 * 20.0)
 
 
 def awning_uv(b, u, v):
@@ -194,7 +207,7 @@ def parse(text):
     for p in kit["parts"]:
         b = p["b"]
         assert b[0] < b[3] and b[1] < b[4] and b[2] < b[5], p
-        assert p["mat"] in ROLES, p
+        assert p["mat"] in KIT_MATS, p
     return kit
 
 
@@ -208,11 +221,19 @@ class Soup:
         self.bpy, self.bmesh = bpy, bmesh
         self.bm = {r: bmesh.new() for r in ROLES}
         self.tint = {r: self.bm[r].loops.layers.float_color.new("tint") for r in ROLES}
+        self.pid = {r: self.bm[r].faces.layers.int.new("piece") for r in ROLES}
+        self.piece = 0
+
+    def new_piece(self):
+        """Start a new piece: its faces share one patch of the photograph."""
+        self.piece += 1
+        return self.piece
 
     def face(self, role, pts, tint=(1, 1, 1)):
         bm = self.bm[role]
         vs = [bm.verts.new(kit_to_blender(p)) for p in pts]
         f = bm.faces.new(vs)
+        f[self.pid[role]] = self.piece
         lay = self.tint[role]
         for loop in f.loops:
             loop[lay] = (tint[0], tint[1], tint[2], 1.0)
@@ -222,6 +243,7 @@ class Soup:
         x0, y0, z0, x1, y1, z1 = b
         if x1 - x0 <= 1e-4 or y1 - y0 <= 1e-4 or z1 - z0 <= 1e-4:
             return
+        self.new_piece()
         bm = self.bm[role]
         c = [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1),
              (x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)]
@@ -234,6 +256,7 @@ class Soup:
         lay = self.tint[role]
         for q in quads:
             f = bm.faces.new([vs[i] for i in q])
+            f[self.pid[role]] = self.piece
             for loop in f.loops:
                 loop[lay] = (tint[0], tint[1], tint[2], 1.0)
             faces.append(f)
@@ -277,6 +300,11 @@ class Soup:
                 bm.free()
                 continue
             self.bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+            # Log ends and stains are n-gons; the exporter's tangents want
+            # triangles and quads.
+            ngons = [f for f in bm.faces if len(f.verts) > 4]
+            if ngons:
+                self.bmesh.ops.triangulate(bm, faces=ngons)
             mesh = bpy.data.meshes.new(role)
             bm.to_mesh(mesh)
             bm.free()
@@ -634,6 +662,9 @@ def terraces(s, rng):
 
 
 def dress(s, kit, rng, label):
+    if kit["name"] in MARKS:
+        MARKS[kit["name"]](s, kit, rng)
+        return
     parts = kit["parts"]
     # The town's broken ring is fitted from its gilt decor; elsewhere gilt
     # decor (the ziggurat's crown) is shards, drawn as boxes.
@@ -692,7 +723,952 @@ def dress(s, kit, rng, label):
         terraces(s, rng)
 
 
-def bake_ao(bpy, objs, samples):
+# ── the landmarks ───────────────────────────────────────────────────────────
+#
+# `sim_core::landmark`'s built kinds (`mark_ruin`, `mark_stones`, `mark_mast`,
+# `mark_tower`, `mark_yard`). The site law holds: below head height the
+# dressing stays on its part's faces (±5 cm), and only what is out of reach
+# leaves a box. A landmark's base is its centre's ground and the slope around
+# it runs a few metres either way, so nothing is laid on y = 0 outside a part
+# either: a part runs down to its footing, and a pebble beside it would float
+# on the downhill side.
+
+STONE = (0.80, 0.77, 0.72)
+MORTAR = (0.42, 0.40, 0.37)
+JOINT_M = 0.035
+GALV = (0.58, 0.60, 0.61)
+# A cast slab on the fine-grained yard surface, lifted from its gravel tint.
+SLAB = (0.92, 0.91, 0.88)
+MAST_RED = (0.62, 0.16, 0.12)
+MAST_WHITE = (0.86, 0.85, 0.80)
+CRANE = (0.78, 0.60, 0.16)
+
+
+def tangents(axis, sign):
+    """The two in-plane axes of the face `axis` = ±, ordered so t1 × t2 is
+    the outward normal: a (u, v) quad listed counter-clockwise is front-facing."""
+    return {(0, 1): (1, 2), (0, -1): (2, 1), (1, 1): (2, 0), (1, -1): (0, 2),
+            (2, 1): (0, 1), (2, -1): (1, 0)}[(axis, sign)]
+
+
+def course_lines(rng, y0=-1.5, y1=24.0, lo=0.6, hi=0.9):
+    """One set of bed joints for a whole kit, so walls that meet share them.
+    Below `y0` a footing is one deep course: only a steep slope shows it."""
+    out, y = [y0], y0
+    while y < y1:
+        y += rng.uniform(lo, hi)
+        out.append(y)
+    return out
+
+
+def courses(lines, y0, y1, least=0.3):
+    """The courses of a part from `y0` to `y1` on the kit's bed joints; a
+    sliver at either end joins its neighbour."""
+    ys = [y0] + [y for y in lines if y0 + least < y < y1 - least] + [y1]
+    return list(zip(ys, ys[1:]))
+
+
+def joints(lo, hi, rng, short=0.8, long=1.9):
+    """Head joints along one course: blocks of random length, the last one
+    stretched or merged so none is a sliver."""
+    xs, x = [lo], lo + rng.uniform(0.2, 1.0) * short
+    while x < hi - short * 0.6:
+        xs.append(x)
+        x += rng.uniform(short, long)
+    xs.append(hi)
+    return list(zip(xs, xs[1:]))
+
+
+def pillow(s, role, axis, sign, plane, r, box_edge, tint, chamfer=0.06, proud=0.0):
+    """One dressed block's face on the plane `axis` = `plane` (outward
+    `sign`): a face `proud` of the plane, chamfered down to joints sunk
+    `JOINT_M` — except along a box edge, where it meets the next face flush.
+    `r[a]` is the block's span on in-plane axis `a`, `box_edge[a]` whether
+    its low and high sides lie on the box's edge."""
+    t1, t2 = tangents(axis, sign)
+    (u0, u1), (v0, v1) = r[t1], r[t2]
+    c = min(chamfer, (u1 - u0) * 0.3, (v1 - v0) * 0.3)
+    eu, ev = box_edge[t1], box_edge[t2]
+
+    def at(u, v, d):
+        p = [0.0, 0.0, 0.0]
+        p[axis] = plane + sign * d
+        p[t1], p[t2] = u, v
+        return tuple(p)
+
+    def rim(iu, iv):
+        # A corner on a box edge is flush; any other sits in the joint.
+        flush = (eu[iu] or ev[iv])
+        return at((u0, u1)[iu], (v0, v1)[iv], 0.0 if flush else -JOINT_M)
+
+    o = [rim(0, 0), rim(1, 0), rim(1, 1), rim(0, 1)]
+    inner = [at(u0 + c, v0 + c, proud), at(u1 - c, v0 + c, proud),
+             at(u1 - c, v1 - c, proud), at(u0 + c, v1 - c, proud)]
+    s.new_piece()
+    s.face(role, inner, tint)
+    for i in range(4):
+        j = (i + 1) % 4
+        s.face(role, [o[i], o[j], inner[j], inner[i]], tint)
+
+
+def stone_tint(rng, base=STONE):
+    k = rng.uniform(0.74, 1.12)
+    w = rng.uniform(-0.05, 0.05)
+    return (base[0] * k * (1 + w), base[1] * k, base[2] * k * (1 - w))
+
+
+def masonry(s, b, lines, rng, faces="xzt", slits=()):
+    """A box of coursed rubble-faced blocks: a mortar core sunk behind every
+    joint, and a pillow per block on each face named in `faces` (`x`, `z`:
+    both of that axis's faces; `t`: the top). `slits` are (axis, sign, u, y)
+    arrow slits: a block's width left as a dark slot."""
+    x0, y0, z0, x1, y1, z1 = b
+    k = JOINT_M + 0.005
+    s.box("ashlar", (x0 + k, y0, z0 + k, x1 - k, y1 - k, z1 - k), MORTAR)
+    cs = courses(lines, y0, y1)
+    rows = [joints(*((x0, x1) if (x1 - x0) >= (z1 - z0) else (z0, z1)), rng) for _ in cs]
+    along = 0 if (x1 - x0) >= (z1 - z0) else 2
+    for axis in (0, 2):
+        if "xz"[axis // 2] not in faces:
+            continue
+        other = 2 - axis
+        lo, hi = b[other], b[other + 3]
+        for sign in (-1, 1):
+            plane = b[axis] if sign < 0 else b[axis + 3]
+            for k_, (c0, c1) in enumerate(cs):
+                # Through-stones on the long faces share a course's joints;
+                # an end face is one block a course.
+                if other == along:
+                    spans = rows[k_]
+                elif hi - lo <= 1.6:
+                    spans = [(lo, hi)]
+                else:
+                    spans = joints(lo, hi, rng)
+                for a0, a1 in spans:
+                    slot = next((sl for sl in slits if sl[0] == axis and sl[1] == sign
+                                 and a0 + 0.2 < sl[2] < a1 - 0.2 and c0 <= sl[3] < c1), None)
+                    r = {other: (a0, a1), 1: (c0, c1)}
+                    edge = {other: (abs(a0 - lo) < 1e-6, abs(a1 - hi) < 1e-6),
+                            1: (k_ == 0, k_ == len(cs) - 1)}
+                    if slot is None:
+                        pillow(s, "ashlar", axis, sign, plane, r, edge, stone_tint(rng),
+                               proud=rng.uniform(0.0, 0.025))
+                    else:
+                        slit(s, axis, sign, plane, r, edge, slot[2], rng)
+    if "t" in faces:
+        across = 2 - along
+        lo, hi = b[along], b[along + 3]
+        clo, chi = b[across], b[across + 3]
+        cuts = [(clo, chi)] if chi - clo <= 1.6 else joints(clo, chi, rng)
+        for a0, a1 in rows[-1]:
+            for c0, c1 in cuts:
+                r = {along: (a0, a1), across: (c0, c1), 1: (y1, y1)}
+                edge = {along: (abs(a0 - lo) < 1e-6, abs(a1 - hi) < 1e-6),
+                        across: (abs(c0 - clo) < 1e-6, abs(c1 - chi) < 1e-6)}
+                pillow(s, "ashlar", 1, 1, y1, r, edge, stone_tint(rng), proud=rng.uniform(0.0, 0.02))
+
+
+def slit(s, axis, sign, plane, r, edge, u, rng, w=0.16, depth=0.4):
+    """A block with an arrow slit up its middle: two half-pillows and a dark
+    slot between them, sunk into the wall (a slot a hand cannot enter, so
+    the box stays the law)."""
+    other = 2 - axis
+    (a0, a1), (c0, c1) = r[other], r[1]
+    left = {other: (a0, u - w / 2), 1: (c0, c1)}
+    right = {other: (u + w / 2, a1), 1: (c0, c1)}
+    pillow(s, "ashlar", axis, sign, plane, left, {other: (edge[other][0], False), 1: edge[1]},
+           stone_tint(rng))
+    pillow(s, "ashlar", axis, sign, plane, right, {other: (False, edge[other][1]), 1: edge[1]},
+           stone_tint(rng))
+    dark = (0.06, 0.06, 0.06)
+    t1, t2 = tangents(axis, sign)
+
+    def at(o, y, d):
+        p = [0.0, 0.0, 0.0]
+        p[axis] = plane - sign * d
+        p[other], p[1] = o, y
+        return tuple(p)
+
+    lo, hi = u - w / 2, u + w / 2
+    yb, yt = c0 + 0.04, c1 - 0.04
+    # The slot's back and its four reveals, facing out of the wall.
+    back = [at(lo, yb, depth), at(hi, yb, depth), at(hi, yt, depth), at(lo, yt, depth)]
+    front = [at(lo, yb, -JOINT_M), at(hi, yb, -JOINT_M), at(hi, yt, -JOINT_M), at(lo, yt, -JOINT_M)]
+    if (t1, t2) != (other, 1):
+        back.reverse()
+        front.reverse()
+    s.new_piece()
+    s.face("ashlar", back, dark)
+    for i in range(4):
+        j = (i + 1) % 4
+        s.face("ashlar", [front[j], front[i], back[i], back[j]], (0.25, 0.24, 0.22))
+
+
+def rough(s, role, b, tint, rng, amp=0.08, cell=0.45, taper=0.0, crown=0.0, out=0.03):
+    """A rough stone filling box `b`: its faces gridded at `cell` and every
+    vertex moved along its outward normal by noise in [-amp, out], harder at
+    an edge (a worn arris) — plus an optional `taper` toward the top and a
+    rounded `crown`. Shared vertices, so it stays closed."""
+    from mathutils import Vector, noise
+    x0, y0, z0, x1, y1, z1 = b
+    n = [max(1, round((b[a + 3] - b[a]) / cell)) for a in range(3)]
+    seed = Vector((rng.uniform(-500, 500), rng.uniform(-500, 500), rng.uniform(-500, 500)))
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    verts = {}
+
+    def vert(i, j, k):
+        key = (i, j, k)
+        if key in verts:
+            return verts[key]
+        u, v, w = i / n[0], j / n[1], k / n[2]
+        p = [x0 + (x1 - x0) * u, y0 + (y1 - y0) * v, z0 + (z1 - z0) * w]
+        nrm = [(-1 if i == 0 else 1 if i == n[0] else 0),
+               (-1 if j == 0 else 1 if j == n[1] else 0),
+               (-1 if k == 0 else 1 if k == n[2] else 0)]
+        edges = sum(1 for c in nrm if c)
+        ln = math.sqrt(edges)
+        q = Vector(p) * 0.9 + seed
+        d = amp * (0.5 + 0.5 * noise.noise(q)) + 0.4 * amp * noise.noise(q * 3.1)
+        d = -d * (1.0 + 0.6 * (edges - 1))
+        d = min(out, d + out)
+        for a in range(3):
+            p[a] += nrm[a] / ln * d
+        # Taper from the ground up: a standing stone narrows as it rises.
+        g = max(y0, 0.0)
+        t = max(0.0, (p[1] - g) / (y1 - g))
+        sx = 1.0 - taper * t ** 1.4
+        p[0] = cx + (p[0] - cx) * sx
+        p[2] = cz + (p[2] - cz) * sx
+        if crown and j == n[1]:
+            rx = (p[0] - cx) / ((x1 - x0) / 2)
+            rz = (p[2] - cz) / ((z1 - z0) / 2)
+            p[1] -= crown * min(1.0, rx * rx + rz * rz)
+        bm = s.bm[role]
+        verts[key] = bm.verts.new(kit_to_blender(tuple(p)))
+        return verts[key]
+
+    bm = s.bm[role]
+    lay = s.tint[role]
+    s.new_piece()
+    for axis in range(3):
+        for sign in (-1, 1):
+            t1, t2 = tangents(axis, sign)
+            fixed = 0 if sign < 0 else n[axis]
+            for a in range(n[t1]):
+                for c in range(n[t2]):
+                    quad = []
+                    for (da, dc) in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                        idx = [0, 0, 0]
+                        idx[axis] = fixed
+                        idx[t1], idx[t2] = a + da, c + dc
+                        quad.append(vert(*idx))
+                    f = bm.faces.new(quad)
+                    f[s.pid[role]] = s.piece
+                    for loop in f.loops:
+                        loop[lay] = (tint[0], tint[1], tint[2], 1.0)
+
+
+def log(s, role, a, b, r, tint, sides=8):
+    """A capped log from `a` to `b` (the prism's tube plus its two ends)."""
+    s.new_piece()
+    s.prism(role, a, b, r, sides, tint)
+    ax, ay, az = a
+    bx, by, bz = b
+    d = (bx - ax, by - ay, bz - az)
+    ln = math.sqrt(sum(x * x for x in d))
+    d = tuple(x / ln for x in d)
+    up = (0, 1, 0) if abs(d[1]) < 0.9 else (1, 0, 0)
+    u = (d[1] * up[2] - d[2] * up[1], d[2] * up[0] - d[0] * up[2], d[0] * up[1] - d[1] * up[0])
+    un = math.sqrt(sum(x * x for x in u))
+    u = tuple(x / un for x in u)
+    v = (d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0])
+    ring = [tuple(r * (math.cos(2 * math.pi * k / sides) * u[i] + math.sin(2 * math.pi * k / sides) * v[i])
+                  for i in range(3)) for k in range(sides)]
+    end = (tint[0] * 1.15, tint[1] * 1.05, tint[2] * 0.9)
+    s.face(role, [tuple(a[i] + p[i] for i in range(3)) for p in reversed(ring)], end)
+    s.face(role, [tuple(b[i] + p[i] for i in range(3)) for p in ring], end)
+
+
+def touches(parts, me, p):
+    """Whether another part's box holds point `p` (a wall end's neighbour)."""
+    return any(q is not me and q["mat"] not in ("rock",) and
+               q["b"][0] - 1e-3 <= p[0] <= q["b"][3] + 1e-3 and
+               q["b"][1] - 1e-3 <= p[1] <= q["b"][4] + 1e-3 and
+               q["b"][2] - 1e-3 <= p[2] <= q["b"][5] + 1e-3 for q in parts)
+
+
+def ragged_crown(s, p, parts, rng, lines):
+    """A broken wall's top: what is left of the courses above the box, out
+    of reach, stepping down toward a free end."""
+    x0, y0, z0, x1, y1, z1 = p["b"]
+    along = 0 if (x1 - x0) >= (z1 - z0) else 2
+    lo, hi = p["b"][along], p["b"][along + 3]
+    mid = [(x0 + x1) / 2, y1 - 0.5, (z0 + z1) / 2]
+    free = []
+    for end, step in ((lo, -0.3), (hi, 0.3)):
+        q = list(mid)
+        q[along] = end + step
+        free.append(not touches(parts, p, q))
+    level = rng.uniform(0.0, 2.0)
+    for a0, a1 in joints(lo, hi, rng, 0.8, 1.7):
+        level = min(2.4, max(0.0, level + rng.uniform(-0.9, 0.9)))
+        t = (a0 - lo) / (hi - lo)
+        cap = 2.4
+        if free[0]:
+            cap = min(cap, 3.0 * t)
+        if free[1]:
+            cap = min(cap, 3.0 * (1 - t))
+        layers = int(min(level, cap))
+        y = y1
+        for k in range(layers):
+            h = rng.uniform(0.5, 0.75)
+            inset = 0.03 + 0.05 * k + rng.uniform(0, 0.05)
+            bb = [x0 + inset, y, z0 + inset, x1 - inset, y + h, z1 - inset]
+            bb[along], bb[along + 3] = a0 + 0.02, a1 - 0.02
+            s.box("ashlar", tuple(bb), stone_tint(rng), bevel=0.06)
+            y += h
+
+
+def dress_ruin(s, kit, rng):
+    parts = kit["parts"]
+    lines = course_lines(rng)
+    for p in parts:
+        b = p["b"]
+        x0, y0, z0, x1, y1, z1 = b
+        h = y1 - max(y0, 0.0)
+        wide = min(x1 - x0, z1 - z0)
+        if y1 <= 1.5:
+            fallen(s, b, rng)
+        elif y0 > 2.0 and h <= 1.0:
+            parapet(s, b, rng, lines)
+        elif wide >= 4.0:
+            # The tower: masonry on its four faces, slits up two of them.
+            cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+            slits = [(0, -1, cz, 4.0), (0, -1, cz, 9.0), (2, 1, cx, 6.5), (2, 1, cx, 11.0),
+                     (0, 1, cz, 6.5), (2, -1, cx, 9.0)]
+            ys = [c0 for c0, _ in courses(lines, y0, y1)]
+            slits = [(a, sg, u, max(y for y in ys if y <= yy)) for a, sg, u, yy in slits]
+            masonry(s, b, lines, rng, faces="xz", slits=slits)
+        else:
+            masonry(s, b, lines, rng)
+            if y1 >= 2.0:
+                ragged_crown(s, p, parts, rng, lines)
+
+
+def fallen(s, b, rng):
+    """Fallen blocks: one squared stone settled into its box's footing and a
+    second, smaller, tipped against it — both inside the box."""
+    x0, y0, z0, x1, y1, z1 = b
+    along = 0 if (x1 - x0) >= (z1 - z0) else 2
+    lo, hi = b[along], b[along + 3]
+    cut = lo + (hi - lo) * rng.uniform(0.55, 0.68)
+    big = list(b)
+    big[along + 3] = cut
+    rough(s, "ashlar", tuple(big), stone_tint(rng), rng, amp=0.06, cell=0.5, crown=0.06)
+    small = list(b)
+    small[along] = cut + 0.04
+    small[4] = y1 - rng.uniform(0.15, 0.35)
+    k = 0.12
+    small[2 - along] += k
+    small[5 - along] -= k
+    rough(s, "ashlar", tuple(small), stone_tint(rng), rng, amp=0.08, cell=0.45, crown=0.1)
+
+
+def parapet(s, b, rng, lines):
+    """The tower's cap: corbels under the overhang, the cap's own blocks, and
+    merlons along its rim, two of them fallen."""
+    x0, y0, z0, x1, y1, z1 = b
+    masonry(s, b, [y0, y1], rng, faces="xzt")
+    # Corbels: the cap overhangs the tower by 0.4 m; a bracket every 0.8 m.
+    for axis in (0, 2):
+        other = 2 - axis
+        for sign in (-1, 1):
+            face = b[axis] if sign < 0 else b[axis + 3]
+            a = b[other] + 0.6
+            while a < b[other + 3] - 0.6:
+                cb = [0.0] * 6
+                cb[axis], cb[axis + 3] = (face, face + 0.38) if sign < 0 else (face - 0.38, face)
+                cb[other], cb[other + 3] = a - 0.17, a + 0.17
+                cb[1], cb[4] = y0 - 0.45, y0
+                s.box("ashlar", tuple(cb), stone_tint(rng), bevel=0.04)
+                a += 0.8
+    # Merlons round the rim.
+    depth = 0.55
+    gone = set(rng.sample(range(24), 3))
+    i = 0
+    for axis in (0, 2):
+        other = 2 - axis
+        for sign in (-1, 1):
+            face = b[axis] if sign < 0 else b[axis + 3]
+            a = b[other] + 0.1
+            while a + 0.9 <= b[other + 3] - 0.1 + 1e-6:
+                if i not in gone:
+                    mb = [0.0] * 6
+                    mb[axis], mb[axis + 3] = (face, face + depth) if sign < 0 else (face - depth, face)
+                    mb[other], mb[other + 3] = a, a + 0.9
+                    mb[1], mb[4] = y1, y1 + rng.uniform(0.8, 1.0)
+                    s.box("ashlar", tuple(mb), stone_tint(rng), bevel=0.05)
+                i += 1
+                a += 1.5
+
+
+def dress_stones(s, kit, rng):
+    parts = kit["parts"]
+    for p in parts:
+        x0, y0, z0, x1, y1, z1 = p["b"]
+        # An upright carrying a lintel keeps a flat top to carry it on.
+        carries = any(q is not p and q["b"][1] <= y1 + 1e-3 and q["b"][1] > y1 - 0.5
+                      and q["b"][0] < x1 and q["b"][3] > x0 and q["b"][2] < z1 and q["b"][5] > z0
+                      for q in parts)
+        if y0 > 2.0:
+            # The lintel: a slab across two stones, rough and sagging at its ends.
+            rough(s, "ashlar", p["b"], stone_tint(rng, (0.70, 0.69, 0.66)), rng,
+                  amp=0.1, cell=0.5, crown=0.08)
+        elif y1 <= 1.5:
+            # The altar: a slab on a plinth, both inside its box.
+            rough(s, "ashlar", (x0 + 0.15, y0, z0 + 0.15, x1 - 0.15, y1 - 0.22, z1 - 0.15),
+                  stone_tint(rng, (0.66, 0.64, 0.60)), rng, amp=0.05, cell=0.5)
+            rough(s, "ashlar", (x0, y1 - 0.26, z0, x1, y1, z1),
+                  stone_tint(rng, (0.74, 0.72, 0.68)), rng, amp=0.04, cell=0.45, crown=0.03)
+        else:
+            # A standing stone: tapering above the head, its crown worn round.
+            rough(s, "ashlar", p["b"], stone_tint(rng, (0.70, 0.69, 0.66)), rng,
+                  amp=0.08, cell=0.42, taper=0.06 if carries else 0.28,
+                  crown=0.0 if carries else 0.35)
+
+
+def lattice_face(s, a, b, y0, y1, bay, tint_at, r=0.035):
+    """X-bracing between two legs' inner corners `a` and `b` (x, z), bays of
+    `bay` metres from `y0` to `y1`, with a strut at every bay line."""
+    n = max(1, round((y1 - y0) / bay))
+    h = (y1 - y0) / n
+    for i in range(n + 1):
+        y = y0 + i * h
+        s.prism("steel", (a[0], y, a[1]), (b[0], y, b[1]), r, 4, tint_at(y))
+        if i < n:
+            s.prism("steel", (a[0], y, a[1]), (b[0], y + h, b[1]), r, 4, tint_at(y + h / 2))
+            s.prism("steel", (b[0], y, b[1]), (a[0], y + h, a[1]), r, 4, tint_at(y + h / 2))
+
+
+def dish(s, centre, facing, radius, depth=0.28, rings=5, segs=16):
+    """A parabolic dish at `centre` opening along the unit (x, z) `facing`,
+    its feed on a tripod in front of it."""
+    fx, fz = facing
+    ux, uz = -fz, fx  # horizontal, across the dish
+
+    def at(rr, t, d):
+        cx = centre[0] + ux * rr * math.cos(t) + fx * d
+        cy = centre[1] + rr * math.sin(t)
+        cz = centre[2] + uz * rr * math.cos(t) + fz * d
+        return (cx, cy, cz)
+
+    s.new_piece()
+    for i in range(rings):
+        r0, r1 = radius * i / rings, radius * (i + 1) / rings
+        d0, d1 = depth * (i / rings) ** 2, depth * ((i + 1) / rings) ** 2
+        for k in range(segs):
+            t0, t1 = 2 * math.pi * k / segs, 2 * math.pi * (k + 1) / segs
+            q = [at(r0, t0, d0), at(r1, t0, d1), at(r1, t1, d1), at(r0, t1, d0)]
+            s.face("steel", q, MAST_WHITE)
+    feed = at(0, 0, depth + radius * 0.7)
+    for k in range(3):
+        t = 2 * math.pi * k / 3 + 0.5
+        s.prism("steel", at(radius * 0.9, t, depth), feed, 0.018, 4, GALV)
+    s.box("steel", (feed[0] - 0.07, feed[1] - 0.07, feed[2] - 0.07,
+                    feed[0] + 0.07, feed[1] + 0.07, feed[2] + 0.07), (0.3, 0.3, 0.3))
+
+
+def dress_mast(s, kit, rng):
+    parts = kit["parts"]
+    legs = [p for p in parts if p["mat"] == "steel" and p["b"][4] - p["b"][1] > 20
+            and p["b"][3] - p["b"][0] < 1.0]
+    band = lambda y: MAST_RED if y > 12 and int((y - 12) // 6) % 2 == 0 else (
+        MAST_WHITE if y > 12 else GALV)
+    top = max(p["b"][4] for p in legs)
+    # Each leg an angle section in its box's outer corner, painted in bands.
+    for p in legs:
+        x0, y0, z0, x1, y1, z1 = p["b"]
+        sx = 1 if x0 + x1 > 0 else -1
+        sz = 1 if z0 + z1 > 0 else -1
+        t = 0.06
+        y = y0
+        while y < y1 - 1e-3:
+            ye = min(y1, (math.floor(y / 6.0) + 1) * 6.0)
+            tint = band((y + ye) / 2)
+            xo = (x1 - t, x1) if sx > 0 else (x0, x0 + t)
+            zo = (z1 - t, z1) if sz > 0 else (z0, z0 + t)
+            s.box("steel", (xo[0], y, z0, xo[1], ye, z1), tint)
+            s.box("steel", (x0, y, zo[0], x1, ye, zo[1]), tint)
+            y = ye
+    # The four faces' bracing, from above head height to the top.
+    inner = [((p["b"][0] + p["b"][3]) / 2, (p["b"][2] + p["b"][5]) / 2) for p in legs]
+    xs = sorted({round(c[0], 3) for c in inner})
+    zs = sorted({round(c[1], 3) for c in inner})
+    if len(xs) == 2 and len(zs) == 2:
+        corners = [(xs[0], zs[0]), (xs[1], zs[0]), (xs[1], zs[1]), (xs[0], zs[1])]
+        for i in range(4):
+            lattice_face(s, corners[i], corners[(i + 1) % 4], 2.4, top, 3.0, band)
+    for p in parts:
+        b = p["b"]
+        x0, y0, z0, x1, y1, z1 = b
+        dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+        if p in legs:
+            continue
+        if p["mat"] == "concrete" and dy < 6 and y1 < 1.0 and max(dx, dz) > 6:
+            slab(s, b, rng)
+        elif p["mat"] == "concrete" and y1 < 1.0:
+            guy_anchor(s, b, top, rng)
+        elif p["mat"] == "concrete":
+            hut(s, b, rng)
+        elif p["mat"] == "steel" and y0 > 2.0 and y0 < 3.6 and dy < 0.5:
+            hut_roof(s, b)
+        elif p["mat"] == "steel" and dx < 0.6 and dz < 0.6 and y0 >= top - 1:
+            # The antenna: a tapered pole with two cross-arms.
+            cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+            n = 6
+            for i in range(n):
+                ya, yb = y0 + dy * i / n, y0 + dy * (i + 1) / n
+                r = 0.19 * (1 - 0.6 * i / n)
+                s.prism("steel", (cx, ya, cz), (cx, yb, cz), r, 8, MAST_RED if i % 2 == 0 else MAST_WHITE)
+            for y in (y0 + dy * 0.35, y0 + dy * 0.7):
+                s.prism("steel", (cx - 1.2, y, cz), (cx + 1.2, y, cz), 0.03, 4, GALV)
+                s.prism("steel", (cx, y, cz - 1.2), (cx, y, cz + 1.2), 0.03, 4, GALV)
+            s.box("bulb", (cx - 0.12, y1, cz - 0.12, cx + 0.12, y1 + 0.25, cz + 0.12))
+        elif p["mat"] == "steel" and min(dx, dz) <= 0.45 and dy >= 1.0:
+            # A dish: its box is the dish's disc, thin along the way it faces.
+            thin_x = dx < dz
+            c = ((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)
+            facing = ((1 if c[0] > 0 else -1), 0) if thin_x else (0, (1 if c[2] > 0 else -1))
+            back = (x0 if facing[0] > 0 else x1) if thin_x else (z0 if facing[1] > 0 else z1)
+            base = (back, c[1], c[2]) if thin_x else (c[0], c[1], back)
+            dish(s, base, facing, min(dy, dz if thin_x else dx) / 2)
+        elif p["mat"] == "steel" and dy <= 0.35 and dx > 4.5 and dz > 4.5:
+            platform(s, b, rail=True)
+        elif p["mat"] == "steel" and dy <= 0.35 and dx > 3 and dz > 3:
+            platform(s, b, rail=False)
+        elif p["mat"] == "steel":
+            # A girder between two legs: a channel, flanges top and bottom.
+            s.box("steel", (x0, y0, z0, x1, y0 + 0.05, z1), GALV)
+            s.box("steel", (x0, y1 - 0.05, z0, x1, y1, z1), GALV)
+            wide_x = dx >= dz
+            if wide_x:
+                zc = (z0 + z1) / 2
+                s.box("steel", (x0, y0, zc - 0.02, x1, y1, zc + 0.02), GALV)
+            else:
+                xc = (x0 + x1) / 2
+                s.box("steel", (xc - 0.02, y0, z0, xc + 0.02, y1, z1), GALV)
+        else:
+            s.box(p["mat"], b, (1, 1, 1))
+
+
+def slab(s, b, rng, joint=3.0, lines=()):
+    """A cast slab: its box with a chamfered top edge and sawn joints every
+    `joint` metres, flush to the top within a few millimetres."""
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("yard", b, SLAB, bevel=0.04)
+    dark = (0.3, 0.3, 0.29)
+    y = y1 + 0.004
+    x = x0 + joint
+    while x < x1 - 0.5:
+        s.face("yard", [(x - 0.012, y, z0 + 0.05), (x - 0.012, y, z1 - 0.05),
+                            (x + 0.012, y, z1 - 0.05), (x + 0.012, y, z0 + 0.05)], dark)
+        x += joint
+    z = z0 + joint
+    while z < z1 - 0.5:
+        s.face("yard", [(x0 + 0.05, y, z - 0.012), (x1 - 0.05, y, z - 0.012),
+                            (x1 - 0.05, y, z + 0.012), (x0 + 0.05, y, z + 0.012)][::-1], dark)
+        z += joint
+    # Stains: the slab's oil and rust, flat on its top.
+    for _ in range(int((x1 - x0) * (z1 - z0) / 30)):
+        cx, cz = rng.uniform(x0 + 1, x1 - 1), rng.uniform(z0 + 1, z1 - 1)
+        r = rng.uniform(0.3, 0.9)
+        k = rng.uniform(0.45, 0.7)
+        pts = [(cx + r * math.cos(t) * rng.uniform(0.7, 1.0), y + 0.002,
+                cz + r * math.sin(t) * rng.uniform(0.7, 1.0))
+               for t in [2 * math.pi * i / 9 for i in range(9)]]
+        s.face("yard", pts[::-1], (SLAB[0] * k, SLAB[1] * k * 0.95, SLAB[2] * k * 0.9))
+    for (a, b2, c) in lines:
+        s.face("yard", [(a[0], y + 0.003, a[1]), (b2[0], y + 0.003, b2[1]),
+                            (c[0], y + 0.003, c[1]), (a[0] + c[0] - b2[0], y + 0.003, a[1] + c[1] - b2[1])][::-1],
+               (1.0, 0.8, 0.25))
+
+
+def guy_anchor(s, b, top, rng):
+    """A deadman block, its eye plate, and two guy wires up to the mast — the
+    wires leave the block's footprint only once they are out of reach."""
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("concrete", b, (0.8, 0.79, 0.76), bevel=0.06)
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    s.box("steel", (cx - 0.08, y1, cz - 0.03, cx + 0.08, y1 + 0.18, cz + 0.03), (0.35, 0.3, 0.26))
+    ln = math.hypot(cx, cz)
+    ux, uz = cx / ln, cz / ln
+    for h in (top * 0.55, top * 0.92):
+        s.prism("steel", (cx, y1 + 0.15, cz), (ux * 1.75, h, uz * 1.75), 0.014, 4, (0.4, 0.4, 0.4))
+
+
+def hut(s, b, rng):
+    """The equipment hut: rendered block walls on a plinth, a steel door
+    facing the mast, louvres, and a drip line under the roof."""
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("concrete", b, (0.88, 0.87, 0.84))
+    s.box("concrete", (x0 - 0.04, y0, z0 - 0.04, x1 + 0.04, 0.35, z1 + 0.04), (0.6, 0.6, 0.58), bevel=0.02)
+    door_x = x1 if abs(x1) < abs(x0) else x0
+    out = 1 if door_x == x1 else -1
+    cz = (z0 + z1) / 2
+    fx = door_x + out * 0.035
+    frame = (0.33, 0.35, 0.36)
+    s.box("steel", (min(door_x, fx), 0.35, cz - 0.6, max(door_x, fx), 2.45, cz - 0.52), frame)
+    s.box("steel", (min(door_x, fx), 0.35, cz + 0.52, max(door_x, fx), 2.45, cz + 0.6), frame)
+    s.box("steel", (min(door_x, fx), 2.37, cz - 0.6, max(door_x, fx), 2.45, cz + 0.6), frame)
+    fd = door_x + out * 0.02
+    s.box("steel", (min(door_x, fd), 0.37, cz - 0.52, max(door_x, fd), 2.37, cz + 0.52), (0.42, 0.47, 0.44))
+    # Louvres on the two long faces.
+    for zf, sg in ((z0, -1), (z1, 1)):
+        zl = zf + sg * 0.03
+        s.box("steel", ((x0 + x1) / 2 - 0.5, 2.0, min(zf, zl), (x0 + x1) / 2 + 0.5, 2.6, max(zf, zl)), frame)
+        for i in range(5):
+            y = 2.05 + i * 0.11
+            zl2 = zf + sg * 0.06
+            s.box("steel", ((x0 + x1) / 2 - 0.46, y, min(zf, zl2), (x0 + x1) / 2 + 0.46, y + 0.04,
+                            max(zf, zl2)), (0.25, 0.26, 0.27))
+
+
+def hut_roof(s, b):
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("steel", b, (0.4, 0.42, 0.43), bevel=0.02)
+    # An air conditioner and the cable tray out to the mast, both up here.
+    cx = (x0 + x1) / 2
+    s.box("steel", (cx - 0.6, y1, z0 + 0.8, cx + 0.6, y1 + 0.8, z0 + 1.6), (0.7, 0.71, 0.7), bevel=0.03)
+    near = x1 if abs(x1) < abs(x0) else x0
+    leg = -1.7 if near < 0 else 1.7
+    a, c = min(near, leg), max(near, leg)
+    ty = y1 + 0.15
+    s.box("steel", (a, ty, -0.15, c, ty + 0.06, 0.15), GALV)
+    for k in (-0.15, 0.15):
+        s.box("steel", (a, ty, k - 0.01, c, ty + 0.14, k + 0.01), GALV)
+
+
+def platform(s, b, rail):
+    """A grated service platform on its frame, railed round when `rail`."""
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("steel", (x0, y1 - 0.05, z0, x1, y1, z1), (0.38, 0.39, 0.4))
+    for (a, c) in (((x0, z0), (x1, z0 + 0.12)), ((x0, z1 - 0.12), (x1, z1)),
+                   ((x0, z0), (x0 + 0.12, z1)), ((x1 - 0.12, z0), (x1, z1))):
+        s.box("steel", (a[0], y0, a[1], c[0], y1 - 0.05, c[1]), GALV)
+    x = x0 + 0.3
+    while x < x1:
+        s.box("steel", (x - 0.012, y1, z0 + 0.12, x + 0.012, y1 + 0.006, z1 - 0.12), (0.25, 0.25, 0.26))
+        x += 0.3
+    if not rail:
+        return
+    yr = y1 + 1.1
+    corners = [(x0 + 0.05, z0 + 0.05), (x1 - 0.05, z0 + 0.05), (x1 - 0.05, z1 - 0.05), (x0 + 0.05, z1 - 0.05)]
+    for i in range(4):
+        a, c = corners[i], corners[(i + 1) % 4]
+        for y in (y1 + 0.55, yr):
+            s.prism("steel", (a[0], y, a[1]), (c[0], y, c[1]), 0.025, 6, MAST_WHITE)
+        n = max(1, round(math.hypot(c[0] - a[0], c[1] - a[1]) / 1.4))
+        for k in range(n):
+            t = k / n
+            p = (a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t)
+            s.prism("steel", (p[0], y1, p[1]), (p[0], yr, p[1]), 0.025, 6, MAST_WHITE)
+
+
+TIMBER = (0.92, 0.88, 0.82)
+
+
+def dress_tower(s, kit, rng):
+    parts = kit["parts"]
+    posts = [p for p in parts if p["b"][4] - p["b"][1] > 8 and p["b"][3] - p["b"][0] < 1.0]
+    plank_tint = lambda: tuple(c * rng.uniform(0.8, 1.05) for c in TIMBER)
+    for p in posts:
+        s.box("timber", p["b"], plank_tint(), bevel=0.03)
+    cs = [((p["b"][0] + p["b"][3]) / 2, (p["b"][2] + p["b"][5]) / 2) for p in posts]
+    xs = sorted({round(c[0], 3) for c in cs})
+    zs = sorted({round(c[1], 3) for c in cs})
+    deck = next((p for p in parts if p["b"][1] > 5 and p["b"][4] - p["b"][1] < 0.5
+                 and p["b"][3] - p["b"][0] > 4 and p["b"][4] < 11), None)
+    if deck and len(xs) == 2 and len(zs) == 2:
+        top = deck["b"][1]
+        corners = [(xs[0], zs[0]), (xs[1], zs[0]), (xs[1], zs[1]), (xs[0], zs[1])]
+        y0 = 3.3
+        mid = (y0 + top) / 2
+        for i in range(4):
+            a, c = corners[i], corners[(i + 1) % 4]
+            for (ya, yb) in ((y0, mid), (mid, top - 0.25)):
+                s.new_piece()
+                s.prism("timber", (a[0], ya, a[1]), (c[0], yb, c[1]), 0.09, 4, plank_tint())
+                s.new_piece()
+                s.prism("timber", (c[0], ya, c[1]), (a[0], yb, a[1]), 0.09, 4, plank_tint())
+            s.box("timber", (min(a[0], c[0]) - 0.04, mid - 0.1, min(a[1], c[1]) - 0.04,
+                             max(a[0], c[0]) + 0.04, mid + 0.1, max(a[1], c[1]) + 0.04), plank_tint(), bevel=0.02)
+    for p in parts:
+        if p in posts:
+            continue
+        b = p["b"]
+        x0, y0, z0, x1, y1, z1 = b
+        dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+        if p is deck:
+            # Joists under, boards across.
+            for x in (x0 + 0.3, (x0 + x1) / 2, x1 - 0.3):
+                s.box("timber", (x - 0.08, y0 - 0.22, z0, x + 0.08, y0, z1), plank_tint(), bevel=0.01)
+            planks(s, b, rng)
+        elif y0 > 5 and dy <= 1.2 and min(dx, dz) < 0.4:
+            # A rail: boards on end, gaps a finger wide, a cap along the top.
+            along_x = dx >= dz
+            n = max(1, int((dx if along_x else dz) / 0.16))
+            w = (dx if along_x else dz) / n
+            for i in range(n):
+                g = 0.008
+                if along_x:
+                    s.box("timber", (x0 + i * w + g, y0, z0, x0 + (i + 1) * w - g, y1 - 0.08, z1), plank_tint())
+                else:
+                    s.box("timber", (x0, y0, z0 + i * w + g, x1, y1 - 0.08, z0 + (i + 1) * w - g), plank_tint())
+            s.box("timber", (x0 - 0.03, y1 - 0.08, z0 - 0.03, x1 + 0.03, y1, z1 + 0.03), plank_tint(), bevel=0.02)
+        elif y0 > 10 and dx > 4:
+            hip_roof(s, b, parts, rng)
+        elif y0 > 10:
+            continue  # the roof's cap: drawn by the hip roof's peak
+        elif dy < 0.5 and y0 > 2:
+            if dx > 4 and dz > 4:
+                gable_roof(s, b, rng)
+            else:
+                s.box("timber", b, plank_tint(), bevel=0.02)  # a brace
+        elif dy > 2 and dx > 4:
+            cabin(s, b, rng)
+        elif y1 <= 1.5:
+            woodpile(s, b, rng)
+        else:
+            planks(s, b, rng)
+
+
+def hip_roof(s, b, parts, rng):
+    """A pyramid of boards over the deck, from the roof box's eaves up past
+    its cap, with fascia and a finial."""
+    x0, y0, z0, x1, y1, z1 = b
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    peak = max(p["b"][4] for p in parts) + 0.3
+    apex = (cx, peak, cz)
+    eave = [(x0, y0 + 0.1, z0), (x1, y0 + 0.1, z0), (x1, y0 + 0.1, z1), (x0, y0 + 0.1, z1)]
+    # The underside, then each face as courses of overlapping boards.
+    s.box("timber", (x0 + 0.1, y0, z0 + 0.1, x1 - 0.1, y0 + 0.1, z1 - 0.1), (0.55, 0.52, 0.48))
+    rows = 7
+    for i in range(4):
+        a, c = eave[i], eave[(i + 1) % 4]
+        for k in range(rows):
+            t0, t1 = k / rows, (k + 1) / rows
+            lift = 0.035
+            p = lambda q, t: tuple(q[j] + (apex[j] - q[j]) * t for j in range(3))
+            lo = [p(a, t0), p(c, t0)]
+            lo = [(v[0], v[1] + lift, v[2]) for v in lo]
+            q = [lo[0], p(a, t1), p(c, t1), lo[1]]
+            s.new_piece()
+            s.face("timber", q, tuple(cc * rng.uniform(0.62, 0.8) for cc in TIMBER))
+        s.new_piece()
+        s.prism("timber", a, c, 0.06, 4, TIMBER)
+        s.prism("timber", a, apex, 0.07, 4, TIMBER)
+    s.prism("timber", apex, (cx, peak + 0.6, cz), 0.06, 6, (0.4, 0.38, 0.35))
+
+
+def gable_roof(s, b, rng):
+    """A ridged board roof over the cabin, its ridge along the long axis and
+    the gable ends boarded, all above the eaves the box sets."""
+    x0, y0, z0, x1, y1, z1 = b
+    along_x = (x1 - x0) >= (z1 - z0)
+    half = ((z1 - z0) if along_x else (x1 - x0)) / 2
+    ridge = y0 + 0.12 + half * 0.55
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    shade = lambda: tuple(cc * rng.uniform(0.6, 0.78) for cc in TIMBER)
+    rows = 6
+    for side in (-1, 1):
+        for k in range(rows):
+            t0, t1 = k / rows, (k + 1) / rows
+            if along_x:
+                e0 = (z1 if side > 0 else z0)
+                za, zb = e0 + (cz - e0) * t0, e0 + (cz - e0) * t1
+                ya, yb = y0 + 0.1 + (ridge - y0 - 0.1) * t0, y0 + 0.1 + (ridge - y0 - 0.1) * t1
+                q = [(x0, ya + 0.03, za), (x1, ya + 0.03, za), (x1, yb, zb), (x0, yb, zb)]
+            else:
+                e0 = (x1 if side > 0 else x0)
+                xa, xb = e0 + (cx - e0) * t0, e0 + (cx - e0) * t1
+                ya, yb = y0 + 0.1 + (ridge - y0 - 0.1) * t0, y0 + 0.1 + (ridge - y0 - 0.1) * t1
+                q = [(xa, ya + 0.03, z1), (xa, ya + 0.03, z0), (xb, yb, z0), (xb, yb, z1)]
+                if side < 0:
+                    q = q[::-1]
+            s.new_piece()
+            s.face("timber", q, shade())
+    s.box("timber", (x0, y0, z0, x1, y0 + 0.12, z1), (0.6, 0.57, 0.52))
+    # Gable ends, set in from the overhang, and the ridge board.
+    inset = 0.4
+    for e in ((x0 + inset, x1 - inset) if along_x else (z0 + inset, z1 - inset)):
+        if along_x:
+            tri = [(e, y0 + 0.12, z0 + inset), (e, y0 + 0.12, z1 - inset), (e, ridge - 0.25, cz)]
+            if e > cx:
+                tri = tri[::-1]
+        else:
+            tri = [(x1 - inset, y0 + 0.12, e), (x0 + inset, y0 + 0.12, e), (cx, ridge - 0.25, e)]
+            if e > cz:
+                tri = tri[::-1]
+        s.new_piece()
+        s.face("timber", tri, TIMBER)
+    if along_x:
+        s.box("timber", (x0, ridge - 0.08, cz - 0.1, x1, ridge + 0.08, cz + 0.1), TIMBER, bevel=0.02)
+        s.box("ashlar", (x1 - 1.6, ridge - 0.6, cz - 0.35, x1 - 1.0, ridge + 0.9, cz + 0.35), STONE, bevel=0.03)
+    else:
+        s.box("timber", (cx - 0.1, ridge - 0.08, z0, cx + 0.1, ridge + 0.08, z1), TIMBER, bevel=0.02)
+
+
+def cabin(s, b, rng):
+    """A log cabin filling its box: a stone sill down to the footing, logs
+    flush to the faces and interleaved at the corners, a plank door toward
+    the tower and a shuttered window."""
+    x0, y0, z0, x1, y1, z1 = b
+    masonry(s, (x0, y0, z0, x1, 0.3, z1), [y0, -1.0, -0.4, 0.3], rng, faces="xz")
+    s.box("timber", (x0 + 0.2, 0.3, z0 + 0.2, x1 - 0.2, y1, z1 - 0.2), (0.25, 0.23, 0.2))
+    r = 0.15
+    y = 0.3 + r
+    k = 0
+    tint = lambda: (0.62 * rng.uniform(0.85, 1.1), 0.52 * rng.uniform(0.85, 1.1), 0.42 * rng.uniform(0.85, 1.1))
+    while y + r <= y1 + 1e-3:
+        if k % 2 == 0:
+            for zc in (z0 + r, z1 - r):
+                log(s, "timber", (x0, y, zc), (x1, y, zc), r, tint())
+        else:
+            for xc in (x0 + r, x1 - r):
+                log(s, "timber", (xc, y, z0), (xc, y, z1), r, tint())
+        y += r * 0.95
+        k += 1
+    door_x = x0 if abs(x0) < abs(x1) else x1
+    out = -1 if door_x == x0 else 1
+    cz = (z0 + z1) / 2
+    fx = door_x + out * 0.04
+    for i in range(5):
+        za = cz - 0.5 + i * 0.2
+        s.box("timber", (min(door_x, fx), 0.3, za + 0.006, max(door_x, fx), 2.2, za + 0.194), (0.5, 0.42, 0.33))
+    fx2 = door_x + out * 0.05
+    for yb in (0.6, 1.9):
+        s.box("timber", (min(door_x, fx2), yb, cz - 0.48, max(door_x, fx2), yb + 0.14, cz + 0.48), (0.45, 0.38, 0.3))
+    s.box("steel", (min(door_x, fx2), 1.1, cz + 0.3, max(door_x, fx2) + 0.01, 1.16, cz + 0.4), (0.2, 0.2, 0.2))
+    # A shuttered window on the face toward +z.
+    cx = (x0 + x1) / 2
+    for sx in (-1, 1):
+        s.box("timber", (cx + sx * 0.02 if sx > 0 else cx - 0.55, 1.2, z1, cx + 0.55 if sx > 0 else cx - 0.02, 2.1,
+                         z1 + 0.04), (0.42, 0.36, 0.28))
+    s.box("timber", (cx - 0.65, 1.12, z1, cx + 0.65, 1.2, z1 + 0.05), (0.5, 0.43, 0.34))
+
+
+def woodpile(s, b, rng):
+    """Split logs stacked along the pile's long axis, inside its box."""
+    x0, y0, z0, x1, y1, z1 = b
+    along_x = (x1 - x0) >= (z1 - z0)
+    r = 0.12
+    w = (z1 - z0) if along_x else (x1 - x0)
+    n = int(w / (2 * r))
+    y = max(y0, 0.0) + r
+    row = 0
+    s.box("timber", (x0 + 0.1, y0, z0 + 0.1, x1 - 0.1, 0.1, z1 - 0.1), (0.3, 0.27, 0.23))
+    while y + r <= y1 + 1e-3 and n - row > 0:
+        m = n - (row % 2)
+        off = (w - m * 2 * r) / 2
+        for i in range(m):
+            c = off + r + i * 2 * r
+            t = (0.66 * rng.uniform(0.85, 1.1), 0.55 * rng.uniform(0.85, 1.1), 0.42 * rng.uniform(0.85, 1.1))
+            j = rng.uniform(-0.06, 0.0)
+            if along_x:
+                log(s, "timber", (x0 - j, y, z0 + c), (x1 + j, y, z0 + c), r * rng.uniform(0.85, 1.0), t, 7)
+            else:
+                log(s, "timber", (x0 + c, y, z0 - j), (x0 + c, y, z1 + j), r * rng.uniform(0.85, 1.0), t, 7)
+        y += 2 * r * 0.87
+        row += 1
+
+
+def dress_yard(s, kit, rng):
+    parts = kit["parts"]
+    slab_p = next((p for p in parts if p["mat"] == "concrete"), None)
+    floor = slab_p["b"][4] if slab_p else 0.0
+    cols = [p for p in parts if p["mat"] == "steel" and p["b"][4] - p["b"][1] > 6]
+    for p in parts:
+        b = p["b"]
+        x0, y0, z0, x1, y1, z1 = b
+        if p is slab_p:
+            # Painted bay lines along the long axis, between the stacks.
+            lines = []
+            for z in (-4.6, 4.0):
+                lines.append(((x0 + 1.5, z - 0.06), (x1 - 1.5, z - 0.06), (x1 - 1.5, z + 0.06)))
+            slab(s, b, rng, joint=4.0, lines=lines)
+        elif p["mat"] == "cargo":
+            if y0 < floor:
+                b = (x0, floor, z0, x1, y1, z1)
+            container(s, b, rng)
+        elif p in cols:
+            # An I-section column in the crane's yellow.
+            ib = (x0, max(y0, floor - 0.2), z0, x1, y1, z1)
+            ibeam(s, ib, vertical=True)
+        elif p["mat"] == "steel":
+            ibeam(s, b, vertical=False)
+            # A trolley and its hook block hanging off the beam, out of reach.
+            cz = (z0 + z1) / 2 + 2.0
+            cx = (x0 + x1) / 2
+            s.box("steel", (cx - 0.35, y0 - 0.5, cz - 0.5, cx + 0.35, y0, cz + 0.5), CRANE, bevel=0.03)
+            for dz in (-0.12, 0.12):
+                s.prism("steel", (cx, y0 - 0.5, cz + dz), (cx, 4.6, cz + dz), 0.015, 4, (0.25, 0.25, 0.25))
+            s.box("steel", (cx - 0.2, 4.1, cz - 0.25, cx + 0.2, 4.6, cz + 0.25), CRANE, bevel=0.03)
+            s.box("steel", (cx - 0.05, 3.75, cz - 0.05, cx + 0.05, 4.1, cz + 0.05), (0.2, 0.2, 0.2))
+            # Knee braces between the beam and the columns.
+            for c in cols:
+                ccz = (c["b"][2] + c["b"][5]) / 2
+                inward = -1 if ccz > 0 else 1
+                s.prism("steel", (cx, y0 - 1.6, ccz), (cx, y0, ccz + inward * 1.6), 0.06, 4, CRANE)
+        else:
+            s.box(p["mat"], b, (1, 1, 1))
+
+
+def ibeam(s, b, vertical):
+    """An I-section filling `b`: two flanges and a web, in crane yellow."""
+    x0, y0, z0, x1, y1, z1 = b
+    t = 0.05
+    if vertical:
+        wide_x = (x1 - x0) >= (z1 - z0)
+        if wide_x:
+            s.box("steel", (x0, y0, z0, x1, y1, z0 + t), CRANE)
+            s.box("steel", (x0, y0, z1 - t, x1, y1, z1), CRANE)
+            xc = (x0 + x1) / 2
+            s.box("steel", (xc - 0.02, y0, z0 + t, xc + 0.02, y1, z1 - t), CRANE)
+        else:
+            s.box("steel", (x0, y0, z0, x0 + t, y1, z1), CRANE)
+            s.box("steel", (x1 - t, y0, z0, x1, y1, z1), CRANE)
+            zc = (z0 + z1) / 2
+            s.box("steel", (x0 + t, y0, zc - 0.02, x1 - t, y1, zc + 0.02), CRANE)
+        # A base plate at the slab.
+        s.box("steel", (x0 - 0.12, y0, z0 - 0.12, x1 + 0.12, y0 + 0.25, z1 + 0.12), (0.4, 0.4, 0.4))
+    else:
+        s.box("steel", (x0, y0, z0, x1, y0 + t, z1), CRANE)
+        s.box("steel", (x0, y1 - t, z0, x1, y1, z1), CRANE)
+        xc = (x0 + x1) / 2
+        s.box("steel", (xc - 0.025, y0, z0, xc + 0.025, y1, z1), CRANE)
+
+
+MARKS = {"mark_ruin": dress_ruin, "mark_stones": dress_stones, "mark_mast": dress_mast,
+         "mark_tower": dress_tower, "mark_yard": dress_yard}
+
+
+# Rising damp: how a wall darkens and greens toward the ground it stands in,
+# so it sits IN the turf rather than on it (`ART.md` §2 rule 2). The band's
+# top wanders with the ground's wet, and a landmark's ground is y = 0 at its
+# centre, so on a slope it reads a little high on one side — as damp does.
+DAMP_TINT = (0.56, 0.6, 0.44)
+DAMP_M = 1.4
+
+
+def damp(co):
+    """The rising-damp weight at a Blender-space point (z up)."""
+    from mathutils import Vector, noise
+    top = DAMP_M + 0.6 * noise.noise(Vector((co.x * 0.45, co.y * 0.45, 3.7)))
+    t = min(1.0, max(0.0, (top - co.z) / top))
+    return t ** 1.6
+
+
+def bake_ao(bpy, objs, samples, rising=False):
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -705,7 +1681,7 @@ def bake_ao(bpy, objs, samples):
         obj.select_set(True)
         bpy.context.view_layer.objects.active = obj
         bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")
-    # Combine: Col = tint × (0.35 + 0.65 × ao).
+    # Combine: Col = tint × (0.35 + 0.65 × ao), and the damp at the foot.
     for obj in objs:
         mesh = obj.data
         n = len(mesh.loops)
@@ -713,6 +1689,12 @@ def bake_ao(bpy, objs, samples):
         aov = [0.0] * (n * 4)
         mesh.attributes["tint"].data.foreach_get("color", tint)
         mesh.attributes["ao"].data.foreach_get("color", aov)
+        if rising:
+            wet = [damp(v.co) for v in mesh.vertices]
+            for i, loop in enumerate(mesh.loops):
+                w = wet[loop.vertex_index]
+                for c in range(3):
+                    tint[i * 4 + c] *= 1.0 + (DAMP_TINT[c] - 1.0) * w
         col = mesh.color_attributes.new("Col", "FLOAT_COLOR", "CORNER")
         out = [0.0] * (n * 4)
         # Per-corner AO smears into triangles across a face tens of metres
@@ -739,10 +1721,13 @@ def uv_metres(bpy, objs):
         bm = bmesh.new()
         bm.from_mesh(obj.data)
         uv = bm.loops.layers.uv.new("UVMap")
+        pid = bm.faces.layers.int.get("piece")
         vertical_ribs = obj.name in ("sheet", "cargo", "steel")
+        patched = obj.name in PATCHED and pid is not None
         for f in bm.faces:
             n = f.normal
             ax, ay, az = abs(n.x), abs(n.y), abs(n.z)
+            du, dv = patch_offset(f[pid]) if patched else (0.0, 0.0)
             for loop in f.loops:
                 co = loop.vert.co  # Blender space: z is up
                 if az >= ax and az >= ay:
@@ -753,7 +1738,7 @@ def uv_metres(bpy, objs):
                     u, v = co.x, co.z
                 if vertical_ribs and not (az >= ax and az >= ay):
                     u, v = v, u
-                loop[uv].uv = (u, v)
+                loop[uv].uv = (u + du, v + dv)
         bm.to_mesh(obj.data)
         bm.free()
 
@@ -777,7 +1762,7 @@ def gen(args):
         for poly in obj.data.polygons:
             poly.use_smooth = False
     if args.ao_samples > 0:
-        bake_ao(bpy, objs, args.ao_samples)
+        bake_ao(bpy, objs, args.ao_samples, rising=kit["name"] in MARKS)
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.select_set(True)
@@ -805,6 +1790,138 @@ def gen(args):
     return 0
 
 
+# The client's surfaces, for `look`: mesh role → (map set, tiles per metre,
+# metallic, roughness). Mirrors `render/depot.rs` `Surface`.
+LOOK_SURFACES = {
+    "ashlar": ("ashlar", 0.55, 0.0, 0.8), "stone": ("stone", 1 / 3, 0.0, 1.0),
+    "obsidian": ("stone", 1 / 3, 0.0, 0.42), "concrete": ("concrete", 1 / 3, 0.0, 1.0),
+    "timber": ("wood", 1.0, 0.0, 0.88), "yard": ("gravel", 1.0, 0.0, 1.0),
+    "steel": ("metal", 0.55, 0.0, 1.0), "sheet": ("metal", 0.55, 0.0, 1.0),
+    "cargo": ("metal", 0.55, 0.0, 1.0), "gilt": ("metal", 0.55, 0.9, 0.38),
+    "canvas": ("concrete", 1 / 3, 0.0, 1.0), "lapis": (None, 1.0, 0.0, 0.6),
+    "bulb": (None, 1.0, 0.0, 0.6),
+}
+
+
+def look(args):
+    """Render a dressed GLB on turf under a sun, wearing the game's own
+    photographed surfaces the way the client binds them — a preview for
+    the eye, not a gate."""
+    import bpy
+    from mathutils import Vector
+    tex = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "textures")
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    sc = bpy.context.scene
+    bpy.ops.import_scene.gltf(filepath=args.glb)
+    obs = [o for o in sc.objects if o.type == "MESH"]
+    for o in obs:
+        role = o.data.name.split(".")[0]
+        if role not in LOOK_SURFACES:
+            role = o.name.split(".")[0]
+        maps, tiles, metal, rough_ = LOOK_SURFACES.get(role, (None, 1.0, 0.0, 0.8))
+        m = bpy.data.materials.new(role)
+        m.use_nodes = True
+        nt = m.node_tree
+        bsdf = nt.nodes["Principled BSDF"]
+        bsdf.inputs["Metallic"].default_value = metal
+        bsdf.inputs["Roughness"].default_value = rough_
+        vc = nt.nodes.new("ShaderNodeVertexColor")
+        cols = o.data.color_attributes
+        vc.layer_name = cols[0].name if len(cols) else ""
+        if maps:
+            uv = nt.nodes.new("ShaderNodeTexCoord")
+            sc_ = nt.nodes.new("ShaderNodeMapping")
+            sc_.inputs["Scale"].default_value = (tiles, tiles, 1)
+            nt.links.new(uv.outputs["UV"], sc_.inputs["Vector"])
+            alb = nt.nodes.new("ShaderNodeTexImage")
+            alb.image = bpy.data.images.load(os.path.join(tex, f"{maps}_albedo.jpg"))
+            nt.links.new(sc_.outputs["Vector"], alb.inputs["Vector"])
+            mix = nt.nodes.new("ShaderNodeMix")
+            mix.data_type = "RGBA"
+            mix.blend_type = "MULTIPLY"
+            mix.inputs["Factor"].default_value = 1.0
+            src = alb.outputs["Color"]
+            if role == "obsidian":
+                src = None
+            if src is not None:
+                nt.links.new(src, mix.inputs[6])
+            else:
+                mix.inputs[6].default_value = (0.13, 0.13, 0.15, 1)
+            nt.links.new(vc.outputs["Color"], mix.inputs[7])
+            nt.links.new(mix.outputs[2], bsdf.inputs["Base Color"])
+            nrm = nt.nodes.new("ShaderNodeTexImage")
+            nrm.image = bpy.data.images.load(os.path.join(tex, f"{maps}_normal.jpg"))
+            nrm.image.colorspace_settings.name = "Non-Color"
+            nt.links.new(sc_.outputs["Vector"], nrm.inputs["Vector"])
+            nm = nt.nodes.new("ShaderNodeNormalMap")
+            nt.links.new(nrm.outputs["Color"], nm.inputs["Color"])
+            nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+            if role == "gilt":
+                bsdf.inputs["Base Color"].default_value = (1.0, 0.6, 0.15, 1)
+        else:
+            nt.links.new(vc.outputs["Color"], bsdf.inputs["Base Color"])
+            bsdf.inputs["Emission Color"].default_value = (0.6, 1.4, 4.0, 1) if role == "lapis" else (6, 4.5, 2.2, 1)
+            bsdf.inputs["Emission Strength"].default_value = 1.0
+        o.data.materials.clear()
+        o.data.materials.append(m)
+    v = [o.matrix_world @ x.co for o in obs for x in o.data.vertices]
+    lo = Vector((min(p.x for p in v), min(p.y for p in v), max(min(p.z for p in v), -0.5)))
+    hi = Vector((max(p.x for p in v), max(p.y for p in v), max(p.z for p in v)))
+    c = (lo + hi) / 2
+    rad = (hi - lo).length / 2
+    # Turf: the grass photograph on a plane at the kit's floor.
+    bpy.ops.mesh.primitive_plane_add(size=400, location=(c.x, c.y, 0.0))
+    g = sc.objects[-1] if sc.objects[-1].type == "MESH" else bpy.context.active_object
+    gm = bpy.data.materials.new("turf")
+    gm.use_nodes = True
+    gt = gm.node_tree
+    gi = gt.nodes.new("ShaderNodeTexImage")
+    gi.image = bpy.data.images.load(os.path.join(tex, "grass_albedo.jpg"))
+    gtc = gt.nodes.new("ShaderNodeTexCoord")
+    gmp = gt.nodes.new("ShaderNodeMapping")
+    gmp.inputs["Scale"].default_value = (0.4, 0.4, 0.4)
+    gt.links.new(gtc.outputs["Object"], gmp.inputs["Vector"])
+    gt.links.new(gmp.outputs["Vector"], gi.inputs["Vector"])
+    gt.links.new(gi.outputs["Color"], gt.nodes["Principled BSDF"].inputs["Base Color"])
+    gt.nodes["Principled BSDF"].inputs["Roughness"].default_value = 1.0
+    bpy.context.active_object.data.materials.append(gm)
+    cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam"))
+    sc.collection.objects.link(cam)
+    cam.data.lens = args.lens
+    yaw = math.radians(args.yaw)
+    elev = math.radians(args.elev)
+    d = Vector((math.cos(yaw) * math.cos(elev), math.sin(yaw) * math.cos(elev), math.sin(elev)))
+    dist = rad / math.tan(cam.data.angle / 2) * args.dist
+    aim = Vector((c.x, c.y, lo.z + (hi.z - lo.z) * 0.4))
+    cam.location = aim + d * dist
+    cam.rotation_euler = (-d).to_track_quat("-Z", "Y").to_euler()
+    sc.camera = cam
+    sun = bpy.data.objects.new("sun", bpy.data.lights.new("sun", "SUN"))
+    sun.data.energy = 4.0
+    sun.data.angle = math.radians(2.0)
+    sun.rotation_euler = (math.radians(55), 0, yaw + math.radians(70))
+    sc.collection.objects.link(sun)
+    w = bpy.data.worlds.new("w")
+    w.use_nodes = True
+    w.node_tree.nodes["Background"].inputs["Color"].default_value = (0.5, 0.62, 0.8, 1)
+    w.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.9
+    sc.world = w
+    sc.render.engine = "CYCLES"
+    sc.cycles.device = "CPU"
+    sc.cycles.samples = args.samples
+    try:
+        sc.cycles.use_denoising = True
+        sc.cycles.denoiser = "OPENIMAGEDENOISE"
+    except Exception:
+        pass
+    sc.render.resolution_x, sc.render.resolution_y = args.size
+    sc.view_settings.view_transform = "AgX"
+    sc.render.filepath = os.path.abspath(args.out)
+    bpy.ops.render.render(write_still=True)
+    print(f"look -> {args.out}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--self-test", action="store_true", help="prove the bpy-free arithmetic")
@@ -815,13 +1932,24 @@ def main():
     g.add_argument("--seed", type=int, default=1)
     g.add_argument("--label", default="THE GATE")
     g.add_argument("--ao-samples", type=int, default=24)
+    lk = sub.add_parser("look", help="render a dressed GLB on turf in the game's surfaces")
+    lk.add_argument("glb")
+    lk.add_argument("--out", required=True)
+    lk.add_argument("--yaw", type=float, default=-55.0, help="camera bearing, degrees")
+    lk.add_argument("--elev", type=float, default=14.0, help="camera elevation, degrees")
+    lk.add_argument("--dist", type=float, default=1.1, help="distance, × the framing radius")
+    lk.add_argument("--lens", type=float, default=35.0)
+    lk.add_argument("--samples", type=int, default=24)
+    lk.add_argument("--size", type=int, nargs=2, default=(960, 600))
     args = ap.parse_args()
     if args.self_test:
         self_test()
         return 0
     if args.cmd == "gen":
         return gen(args)
-    ap.error("a command (gen) or --self-test")
+    if args.cmd == "look":
+        return look(args)
+    ap.error("a command (gen, look) or --self-test")
 
 
 if __name__ == "__main__":

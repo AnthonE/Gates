@@ -11,6 +11,7 @@ use sim_core::kit::{KitMat, KitPart};
 use sim_core::town::{self, Town};
 
 use super::depot::{self, Surface, SURFACES};
+use super::weathering::{self, Dressed, MonumentMaterial};
 use super::{WorldEntity, WorldId};
 
 #[derive(Component)]
@@ -55,6 +56,18 @@ pub fn surface(mat: KitMat, index: usize) -> (Surface, [f32; 3]) {
         KitMat::Canvas => (Surface::Canvas, [0.78, 0.66, 0.48]),
         KitMat::Lapis => (Surface::Lapis, [1.0; 3]),
     }
+}
+
+/// A surface as a Blender dressing wears it (`ci/site_kit.py`): the
+/// photographed maps at the surface's tile over the model's metre UVs, and
+/// both sides lit — sheets, awnings and trim are single faces seen from
+/// both sides, and a back face lights with its normal flipped.
+pub fn dressed_material(surface: Surface, server: &AssetServer) -> StandardMaterial {
+    let mut m = depot::material(surface, server);
+    m.uv_transform = bevy::math::Affine2::from_scale(Vec2::splat(surface.tiles()));
+    m.double_sided = true;
+    m.cull_mode = None;
+    m
 }
 
 /// A kit's boxes in its own frame, grouped by surface.
@@ -155,6 +168,7 @@ pub fn dress(
     gltfs: Res<Assets<bevy::gltf::Gltf>>,
     gmeshes: Res<Assets<bevy::gltf::GltfMesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut weathered: ResMut<Assets<MonumentMaterial>>,
     mut glow: Option<ResMut<TownGlow>>,
     root: Query<Entity, With<TownVisual>>,
     fallback: Query<Entity, With<TownFallback>>,
@@ -189,24 +203,21 @@ pub fn dress(
     }
     model.done = true;
     let tf = transform(&world.haven.town);
-    let mut mats: Vec<Option<Handle<StandardMaterial>>> = vec![None; SURFACES.len()];
+    let mut mats: Vec<Option<Dressed>> = vec![None; SURFACES.len()];
     for (surface, mesh) in parts {
-        let mat = mats[surface as usize]
-            .get_or_insert_with(|| {
-                let mut m = depot::material(surface, &server);
-                m.uv_transform = bevy::math::Affine2::from_scale(Vec2::splat(surface.tiles()));
-                // Sheets, awnings and trim are single faces seen from both sides;
-                // a back face lights with its normal flipped.
-                m.double_sided = true;
-                m.cull_mode = None;
-                let h = materials.add(m);
-                if let Some(glow) = glow.as_mut() {
-                    glow.track(surface, &h);
-                }
-                h
-            })
-            .clone();
-        commands.spawn((ChildOf(root), Mesh3d(mesh), MeshMaterial3d(mat), tf));
+        let mat = mats[surface as usize].get_or_insert_with(|| {
+            let d = weathering::dress(
+                surface,
+                dressed_material(surface, &server),
+                &mut materials,
+                &mut weathered,
+            );
+            if let (Some(glow), Some(h)) = (glow.as_mut(), d.plain()) {
+                glow.track(surface, h);
+            }
+            d
+        });
+        mat.insert(&mut commands.spawn((ChildOf(root), Mesh3d(mesh), tf)));
     }
     let mut gone = 0;
     for e in fallback.iter() {

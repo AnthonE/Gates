@@ -81,6 +81,21 @@ pub enum Mat {
     Rock = 5,
 }
 
+impl Mat {
+    /// The material role name the Blender dressing and the client share
+    /// (`kit::KitMat::role`'s vocabulary).
+    pub const fn role(self) -> &'static str {
+        match self {
+            Mat::Stone => "stone",
+            Mat::Concrete => "concrete",
+            Mat::Steel => "steel",
+            Mat::Timber => "timber",
+            Mat::Cargo => "cargo",
+            Mat::Rock => "rock",
+        }
+    }
+}
+
 /// One box of a kit, in the landmark's own frame: `[x0, y0, z0, x1, y1, z1]`
 /// metres, `y` from the landmark's base.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -185,8 +200,11 @@ const TOWER_CRATES: &[Anchor] = &[
 ];
 
 const STONES: &[Part] = &[
-    // Eight stones on a 12 m ring, two carrying a lintel.
-    p(-0.8, F, 11.0, 0.8, 5.8, 12.2, Mat::Stone),
+    // Eight places on a 12 m ring; the north one a trilithon — two uprights
+    // side by side carrying a lintel. (It was one stone under a lintel
+    // reaching for a neighbour 45° round the ring, its far end on air.)
+    p(-2.6, F, 11.0, -1.0, 5.8, 12.2, Mat::Stone),
+    p(1.0, F, 11.0, 2.6, 5.6, 12.2, Mat::Stone),
     p(7.6, F, 7.6, 9.0, 4.6, 8.8, Mat::Stone),
     p(11.0, F, -0.8, 12.2, 6.4, 0.8, Mat::Stone),
     p(7.6, F, -9.0, 9.0, 3.8, -7.6, Mat::Stone),
@@ -194,7 +212,7 @@ const STONES: &[Part] = &[
     p(-9.0, F, -9.0, -7.6, 4.9, -7.6, Mat::Stone),
     p(-12.2, F, -0.8, -11.0, 6.1, 0.8, Mat::Stone),
     p(-9.0, F, 7.6, -7.6, 2.4, 9.0, Mat::Stone),
-    p(-1.2, 5.8, 10.8, 9.4, 6.6, 12.4, Mat::Stone),
+    p(-3.0, 5.6, 10.8, 3.0, 6.5, 12.4, Mat::Stone),
     // The altar.
     p(-1.8, F, -1.0, 1.8, 1.0, 1.0, Mat::Stone),
 ];
@@ -299,6 +317,62 @@ pub const fn anchors(kind: LandmarkKind) -> &'static [Anchor] {
         LandmarkKind::Arch => ARCH_CRATES,
         LandmarkKind::Spires => SPIRES_CRATES,
     }
+}
+
+/// The built kinds — the ones `ci/site_kit.py` dresses into
+/// `assets/models/site/mark_<slug>.glb`. The rock kinds are drawn by the
+/// boulders' builder instead.
+pub const DRESSED: [LandmarkKind; 5] = [
+    LandmarkKind::Mast,
+    LandmarkKind::Ruin,
+    LandmarkKind::Tower,
+    LandmarkKind::Stones,
+    LandmarkKind::Yard,
+];
+
+/// A kind's file-name stem.
+pub const fn slug(kind: LandmarkKind) -> &'static str {
+    match kind {
+        LandmarkKind::Mast => "mast",
+        LandmarkKind::Ruin => "ruin",
+        LandmarkKind::Tower => "tower",
+        LandmarkKind::Stones => "stones",
+        LandmarkKind::Yard => "yard",
+        LandmarkKind::Anvil => "anvil",
+        LandmarkKind::Arch => "arch",
+        LandmarkKind::Spires => "spires",
+    }
+}
+
+/// A kind's boxes and crate anchors as the Blender dresser's kit JSON
+/// (`kit::dump`'s shape), named `mark_<slug>`; `ci/kits/mark_<slug>.json`.
+pub fn dump(kind: LandmarkKind, w: &mut impl core::fmt::Write) -> core::fmt::Result {
+    write!(w, "{{\"name\":\"mark_{}\",\"parts\":[", slug(kind))?;
+    for (i, p) in parts(kind).iter().enumerate() {
+        if i > 0 {
+            w.write_str(",")?;
+        }
+        let b = p.b;
+        write!(
+            w,
+            "\n{{\"b\":[{},{},{},{},{},{}],\"mat\":\"{}\",\"flags\":0,\"door\":0}}",
+            b[0],
+            b[1],
+            b[2],
+            b[3],
+            b[4],
+            b[5],
+            p.mat.role()
+        )?;
+    }
+    w.write_str("],\"anchors\":[")?;
+    for (i, (x, z, _)) in anchors(kind).iter().enumerate() {
+        if i > 0 {
+            w.write_str(",")?;
+        }
+        write!(w, "\n{{\"kind\":\"crate\",\"at\":[{x},0,{z}]}}")?;
+    }
+    w.write_str("]}\n")
 }
 
 /// A kind's name, for the map.
