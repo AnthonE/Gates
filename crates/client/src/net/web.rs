@@ -28,7 +28,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{
     ReadableStream, ReadableStreamDefaultReader, WebTransport, WebTransportDatagramDuplexStream,
-    WritableStreamDefaultWriter,
+    WritableStream, WritableStreamDefaultWriter,
 };
 
 use super::Wire;
@@ -93,7 +93,8 @@ pub struct WebWire {
 impl WebWire {
     pub(crate) fn new(transport: &WebTransport) -> Result<Self, String> {
         let datagrams = transport.datagrams();
-        let writer = WritableStreamDefaultWriter::new(&datagrams.writable())
+        let writer = datagram_writable(&datagrams)?
+            .get_writer()
             .map_err(|e| js_err("datagram writer", &e))?;
         Ok(Self {
             transport: transport.clone(),
@@ -103,6 +104,30 @@ impl WebWire {
             backpressured: Cell::new(0),
         })
     }
+}
+
+/// The datagram send stream: `createWritable()` where the browser has it,
+/// else the deprecated `writable` attribute. Safari ships only the former, so
+/// reading `writable` there hands back `undefined`.
+fn datagram_writable(
+    datagrams: &WebTransportDatagramDuplexStream,
+) -> Result<WritableStream, String> {
+    let create = js_sys::Reflect::get(datagrams, &JsValue::from_str("createWritable"))
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+    let stream = match create {
+        Some(f) => f
+            .call0(datagrams)
+            .map_err(|e| js_err("datagram createWritable", &e))?,
+        None => js_sys::Reflect::get(datagrams, &JsValue::from_str("writable"))
+            .map_err(|e| js_err("datagram writable", &e))?,
+    };
+    // Not `dyn_into`: an `instanceof` check is the kind of test a platform
+    // stream can fail across realms, and `getWriter` checks for itself.
+    if !stream.is_object() {
+        return Err("datagram writer: this browser exposes no datagram stream".to_string());
+    }
+    Ok(stream.unchecked_into())
 }
 
 impl Wire for WebWire {
@@ -127,8 +152,10 @@ impl Wire for WebWire {
     /// "should never fire" is exactly what was said about it for a year while
     /// nothing checked.
     fn send_datagram(&self, payload: &[u8]) {
+        // `0` is a browser without `maxDatagramSize` (the getter coerces
+        // `undefined`), not a zero MTU: skip the clamp rather than refuse all.
         let max = self.datagrams.max_datagram_size() as usize;
-        if payload.len() > max {
+        if max != 0 && payload.len() > max {
             self.over_mtu.set(self.over_mtu.get() + 1);
             return;
         }
