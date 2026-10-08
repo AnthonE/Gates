@@ -162,6 +162,12 @@ pub struct PropAssets {
     food_box: Handle<Mesh>,
     car_wreck: Handle<Mesh>,
     tire_stack: Handle<Mesh>,
+    /// The ground pickups (`Occupant::StonePile` …): one small blob for the
+    /// stone and ore lumps (their ore materials tell them apart), a stack of
+    /// logs, and a cluster of mushrooms.
+    pile: Handle<Mesh>,
+    wood_pile: Handle<Mesh>,
+    mushrooms: Handle<Mesh>,
     /// Untextured, white: the sign and the car carry their own albedo in
     /// their vertices (`boxes_mesh_with(.., linear, ..)`).
     painted: Handle<StandardMaterial>,
@@ -1551,7 +1557,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 22] = [
+pub const OCCUPANTS: [Occupant; 27] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1574,6 +1580,11 @@ pub const OCCUPANTS: [Occupant; 22] = [
     Occupant::TireStack,
     Occupant::Hemp,
     Occupant::Shrub,
+    Occupant::StonePile,
+    Occupant::WoodPile,
+    Occupant::MetalPile,
+    Occupant::SulfurPile,
+    Occupant::MushroomPatch,
 ];
 
 /// The roadside junk's colours, row for row with the sim's box tables.
@@ -1645,6 +1656,30 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
             .mesh()
             .resolution(14)
             .build(),
+        // The ground pickups: knee-high and passable. One lump for the
+        // stone and the two ores, which differ by material like the nodes.
+        Occupant::StonePile | Occupant::MetalPile | Occupant::SulfurPile => {
+            blob_mesh(0.32, 0.4, 0x2c41_9e07, 0x9c968a, 1)
+        }
+        // Three logs, two under and one across the top.
+        Occupant::WoodPile => boxes_mesh(&[
+            ([0.0, 0.0, -0.13], [0.45, 0.11, 0.11], 0x7a5a3a),
+            ([0.0, 0.0, 0.13], [0.45, 0.11, 0.11], 0x6e5034),
+            ([0.0, 0.2, 0.0], [0.42, 0.1, 0.1], 0x80603e),
+        ]),
+        // Stems and caps.
+        Occupant::MushroomPatch => boxes_mesh_with(
+            &[
+                ([0.0, 0.0, 0.0], [0.025, 0.06, 0.025], 0xe8e0cc),
+                ([0.0, 0.07, 0.0], [0.08, 0.025, 0.08], 0x9a5a2e),
+                ([0.14, -0.02, 0.06], [0.02, 0.04, 0.02], 0xe8e0cc),
+                ([0.14, 0.03, 0.06], [0.06, 0.02, 0.06], 0xa8643a),
+                ([-0.1, -0.03, 0.1], [0.018, 0.03, 0.018], 0xe8e0cc),
+                ([-0.1, 0.01, 0.1], [0.05, 0.018, 0.05], 0x8e5028),
+            ],
+            linear,
+            1.0,
+        ),
     })
 }
 
@@ -1678,6 +1713,10 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         // So do the plants (`plants.rs` builds them ground-rooted), which is
         // also the root height the foliage shader bends them from.
         Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => 0.0,
+        // Centred meshes sat on the ground.
+        Occupant::StonePile | Occupant::MetalPile | Occupant::SulfurPile => 0.1,
+        Occupant::WoodPile => 0.11,
+        Occupant::MushroomPatch => 0.06,
         Occupant::None => 0.0,
     }
 }
@@ -1928,6 +1967,9 @@ pub fn assets(
         food_box: meshes.add(archetype_mesh(Occupant::FoodCrate).expect("food box mesh")),
         car_wreck: meshes.add(archetype_mesh(Occupant::CarWreck).expect("car mesh")),
         tire_stack: meshes.add(archetype_mesh(Occupant::TireStack).expect("tyre mesh")),
+        pile: meshes.add(archetype_mesh(Occupant::StonePile).expect("pile mesh")),
+        wood_pile: meshes.add(archetype_mesh(Occupant::WoodPile).expect("wood pile mesh")),
+        mushrooms: meshes.add(archetype_mesh(Occupant::MushroomPatch).expect("mushroom mesh")),
         painted: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.8,
@@ -2667,6 +2709,11 @@ pub fn spawn_slot(
         },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
+        Occupant::StonePile => (a.pile.clone(), a.ore_stone.clone()),
+        Occupant::MetalPile => (a.pile.clone(), a.ore_metal.clone()),
+        Occupant::SulfurPile => (a.pile.clone(), a.ore_sulfur.clone()),
+        Occupant::WoodPile => (a.wood_pile.clone(), a.wood.clone()),
+        Occupant::MushroomPatch => (a.mushrooms.clone(), a.painted.clone()),
         Occupant::OilBarrel
         | Occupant::RoadSign
         | Occupant::FoodCrate
@@ -2725,6 +2772,11 @@ pub fn spawn_slot(
             | Occupant::BarrelSlot
             | Occupant::OilBarrel
             | Occupant::RoadSign
+            | Occupant::StonePile
+            | Occupant::WoodPile
+            | Occupant::MetalPile
+            | Occupant::SulfurPile
+            | Occupant::MushroomPatch
     );
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();

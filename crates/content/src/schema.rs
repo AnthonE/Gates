@@ -84,6 +84,12 @@ pub enum NodeArchetype {
     BerryBush,
     /// Hemp (`terrain::Occupant::Hemp`), picked by hand — cloth's own plant.
     Hemp,
+    /// Ground pickups (`terrain::Occupant::StonePile` …), picked by hand.
+    StonePile,
+    WoodPile,
+    MetalPile,
+    SulfurPile,
+    MushroomPatch,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its

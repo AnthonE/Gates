@@ -400,8 +400,16 @@ impl Pick {
             // (tech tree v0), so the prompt names the thing you get.
             Verb::TechTree if self.public => "[E] TECH TREE  ·  PUBLIC WORKBENCH".to_string(),
             Verb::TechTree => "[E] TECH TREE".to_string(),
-            Verb::Pick if self.occupant == Occupant::Hemp as u8 => "[E] PICK HEMP".to_string(),
-            Verb::Pick => "[E] PICK BERRIES".to_string(),
+            Verb::Pick => match self.occupant {
+                o if o == Occupant::Hemp as u8 => "[E] PICK HEMP",
+                o if o == Occupant::StonePile as u8 => "[E] PICK UP STONE",
+                o if o == Occupant::WoodPile as u8 => "[E] PICK UP WOOD",
+                o if o == Occupant::MetalPile as u8 => "[E] PICK UP METAL ORE",
+                o if o == Occupant::SulfurPile as u8 => "[E] PICK UP SULFUR ORE",
+                o if o == Occupant::MushroomPatch as u8 => "[E] PICK MUSHROOMS",
+                _ => "[E] PICK BERRIES",
+            }
+            .to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => "[E] TALK".to_string(),

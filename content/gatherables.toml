@@ -220,3 +220,60 @@ weak_spot_bonus_pct = 0
 
 [gatherable.yield_per_hit]
 hand = 10
+
+# Rust's collectibles: what lies on the ground for a naked spawn to pick up
+# with `E` before it has a tool — loose stone, a wood pile, a lump of ore, a
+# patch of mushrooms (`terrain::plant_of` places them out of the bush
+# column). Rust's stone and wood collectibles pay 50; the ore lumps less.
+[[gatherable]]
+id = "gather.stone_pile"
+archetype = "stone_pile"
+output = "item.stone"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 50
+
+[[gatherable]]
+id = "gather.wood_pile"
+archetype = "wood_pile"
+output = "item.wood"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 50
+
+[[gatherable]]
+id = "gather.metal_pile"
+archetype = "metal_pile"
+output = "item.metal_ore"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 35
+
+[[gatherable]]
+id = "gather.sulfur_pile"
+archetype = "sulfur_pile"
+output = "item.sulfur_ore"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 30
+
+# The forest-floor food NOW.md §5 owed: mushrooms you can find without
+# felling a tree.
+[[gatherable]]
+id = "gather.mushroom_patch"
+archetype = "mushroom_patch"
+output = "item.mushrooms"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 3
+

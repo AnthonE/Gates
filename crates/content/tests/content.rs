@@ -2147,6 +2147,9 @@ fn a_clock_with_no_answer_is_refused() {
         "\n[[gatherable]]\nid = \"gather.bush\"\narchetype = \"berry_bush\"\n\
          output = \"item.berries\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 5\n",
+        "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
+         output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 3\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -3643,6 +3646,15 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the tree's mushroom row moved"
     );
     g.1 = g.1.replace(row, "\n");
+    let patch =
+        "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
+                 output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+                 [gatherable.yield_per_hit]\nhand = 3\n";
+    assert!(
+        g.1.contains(patch),
+        "fixture rot: the mushroom patch row moved"
+    );
+    g.1 = g.1.replace(patch, "\n");
     strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
     assert_eq!(
