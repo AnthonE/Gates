@@ -351,11 +351,12 @@ fn a_blow_on_an_animal_is_a_different_store_from_a_blow_on_a_player() {
 /// against the other numbers that describe the same animal.
 #[test]
 fn the_flank_a_blow_lands_on_is_inside_the_animal() {
-    use client::render::mobs::{flank_h_of, PIG_H_M, WOLF_H_M};
+    use client::render::mobs::{flank_h_of, PIG_H_M, STAG_H_M, WOLF_H_M};
     for slot in 0..sim_core::limits::MAX_MOBS {
         let h = flank_h_of(slot);
         let stand = match sim_core::mob::kind_of(slot) {
             sim_core::mob::MOB_WOLF => WOLF_H_M,
+            sim_core::mob::MOB_STAG => STAG_H_M,
             _ => PIG_H_M,
         };
         assert!(

@@ -32,7 +32,7 @@ use sim_core::terrain::{
 /// Every occupant the sim can place. Written out rather than derived so §C can
 /// prove the list is complete — a new variant that nobody adds here is caught
 /// by the count assert, not by nothing.
-const ALL: [Occupant; 22] = [
+const ALL: [Occupant; 27] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -55,6 +55,11 @@ const ALL: [Occupant; 22] = [
     Occupant::TireStack,
     Occupant::Hemp,
     Occupant::Shrub,
+    Occupant::StonePile,
+    Occupant::WoodPile,
+    Occupant::MetalPile,
+    Occupant::SulfurPile,
+    Occupant::MushroomPatch,
 ];
 
 /// `boxes_mesh` emits six faces a box, two triangles each, three unshared
@@ -226,6 +231,8 @@ fn excused(o: Occupant) -> Option<&'static str> {
         Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
             Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0")
         }
+        // The ground pickups are knee-high piles you walk over.
+        o if o.is_pickup() => Some("a ground pickup, passable: OCCUPANT_R_M and _TOP_M are 0"),
         _ => None,
     }
 }
