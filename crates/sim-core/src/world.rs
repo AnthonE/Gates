@@ -975,8 +975,19 @@ pub const DEATH_BY_BULLET: u8 = 6;
 /// body can hold, wet or in the night or both. The eighth cause and the
 /// last one the three-bit field holds — the next is a widening.
 pub const DEATH_BY_COLD: u8 = 7;
+/// The fall (wire v97, `World::fall`): landed harder than a body takes.
+/// The first cause past three bits; the field is four now.
+pub const DEATH_BY_FALL: u8 = 8;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_COLD;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_FALL;
+
+/// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
+/// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
+/// (20 m/s²) a 4 m drop is free, about 8 m costs half a naked body, and
+/// about 14 m kills. Landing in the sea deeper than `FALL_SEA_CM` costs nothing.
+pub const FALL_SAFE_MPS: f32 = 12.6;
+pub const FALL_HP_PER_MPS: f32 = 9.0;
+pub const FALL_SEA_CM: f32 = 80.0;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -1859,6 +1870,14 @@ pub enum Command {
         id: u32,
         slot: u8,
     },
+    /// Drop `count` of inventory slot `slot` on the ground (Rust's drop).
+    /// It lands in a bag at your feet, merged into your own bag there if one
+    /// is in reach (`backpack::spill_at`). An empty slot does nothing.
+    Drop {
+        id: u32,
+        slot: u8,
+        count: u16,
+    },
     /// Trade at one of the town's kiosks (`vend.rs`): offer `offer`,
     /// `times` over. The sim checks reach, funds and room.
     Vend {
@@ -1896,6 +1915,15 @@ pub enum Command {
     Respawn {
         id: u32,
         on_bag: bool,
+    },
+    /// Answer the death screen with one of your bags by address (wire v97):
+    /// that bag if it is yours and ready, else the nearest ready one, else
+    /// a beach — `Respawn`'s promise, with the player's pick first.
+    RespawnAt {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
     },
     /// Answer the death screen with THE GATE: wake in the town's market
     /// street (Rust's Outpost spawn point), if this player has been there
@@ -3659,7 +3687,7 @@ impl World {
     /// A new body: at THE GATE when asked and ready (Rust's Outpost spawn
     /// point — a request it cannot fill is a beach, never a refusal), else
     /// on the nearest own ready bag when asked, else on the ring.
-    fn wake(&mut self, slot: usize, on_bag: bool, at_gate: bool) {
+    fn wake(&mut self, slot: usize, on_bag: bool, at_gate: bool, pick: Option<(u16, u16, u8)>) {
         let body = self.players[slot];
         let (id, deaths, frame) = (body.id, body.deaths, body.frame);
         let gate = at_gate && self.gate_spawn_ready(&body);
@@ -3668,14 +3696,17 @@ impl World {
         // cooldown walks the player's other bags and then the ring. Asked
         // only when the player asked: a bag the beach button did not want
         // must not be spent, or the choice would cost the same either way.
+        let (fx, fz) = (
+            body.body.qx as f32 * movement::POS_XZ_Q,
+            body.body.qz as f32 * movement::POS_XZ_Q,
+        );
         let bag = if on_bag && !gate {
-            self.deploys.claim_bag(
-                &self.deploy,
-                id,
-                body.body.qx as f32 * movement::POS_XZ_Q,
-                body.body.qz as f32 * movement::POS_XZ_Q,
-                self.tick,
-            )
+            match pick {
+                Some(at) => self
+                    .deploys
+                    .claim_bag_at(&self.deploy, id, at, fx, fz, self.tick),
+                None => self.deploys.claim_bag(&self.deploy, id, fx, fz, self.tick),
+            }
         } else {
             None
         };
@@ -3990,7 +4021,7 @@ impl World {
                     // everything this function would have, so it is the
                     // exit and not a step (`PlayerSave::dead` says why the
                     // corpse itself is not restorable).
-                    self.wake(slot, false, false);
+                    self.wake(slot, false, false, None);
                     return;
                 }
             }
@@ -4099,7 +4130,7 @@ impl World {
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
-            self.wake(slot, false, false);
+            self.wake(slot, false, false, None);
             return;
         }
         // The craft queue survived the sleep; its completion tick did not
@@ -5052,6 +5083,32 @@ impl World {
                     );
                 }
             }
+            Command::Drop {
+                id,
+                slot: inv,
+                count,
+            } => {
+                let i = inv as usize;
+                if let Some(slot) = self.live_slot_of(id).filter(|_| {
+                    // A disarmed backpack module would destroy the drop.
+                    self.backpack.base_ticks != 0 && i < INV_SLOTS && count > 0
+                }) {
+                    let p = &mut self.players[slot];
+                    let n = count.min(p.inv[i].count);
+                    if n > 0 {
+                        let mut spill = [ItemStack::default(); INV_SLOTS];
+                        spill[0] = ItemStack {
+                            count: n,
+                            ..p.inv[i]
+                        };
+                        p.inv[i].count -= n;
+                        if p.inv[i].count == 0 {
+                            p.inv[i] = ItemStack::default();
+                        }
+                        self.drain_spill(slot, &mut spill);
+                    }
+                }
+            }
             Command::Drink { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     // The one verb that can kill the player who pressed it.
@@ -5170,7 +5227,7 @@ impl World {
                 // `Respawn`'s authority exactly: only a corpse may ask.
                 if let Some(slot) = self.slot_of(id) {
                     if self.players[slot].dead {
-                        self.wake(slot, false, true);
+                        self.wake(slot, false, true, None);
                     }
                 }
             }
@@ -5183,7 +5240,16 @@ impl World {
                 // live player to a beach.
                 if let Some(slot) = self.slot_of(id) {
                     if self.players[slot].dead {
-                        self.wake(slot, on_bag, false);
+                        self.wake(slot, on_bag, false, None);
+                    }
+                }
+            }
+            Command::RespawnAt { id, cx, cz, level } => {
+                // `Respawn`'s authority: only a corpse may ask, and the bag
+                // named must be its own (`claim_bag_at`).
+                if let Some(slot) = self.slot_of(id) {
+                    if self.players[slot].dead {
+                        self.wake(slot, true, false, Some((cx, cz, level)));
                     }
                 }
             }
@@ -5226,6 +5292,32 @@ impl World {
         if step == survival::Step::Died {
             let id = self.players[i].id;
             self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            return true;
+        }
+        false
+    }
+
+    /// Fall damage for slot `i`, whose body was `before` ahead of this
+    /// tick's step. True when the landing downed or killed it — the
+    /// caller's `continue`, as for the cold.
+    fn fall(&mut self, i: usize, before: movement::Body) -> bool {
+        let body = self.players[i].body;
+        if before.grounded || !body.grounded {
+            return false;
+        }
+        // The speed going in: last tick's fall plus this tick's gravity.
+        let speed = -(before.qvy as f32 * movement::VEL_Q) + movement::GRAVITY * movement::DT;
+        if speed <= FALL_SAFE_MPS {
+            return false;
+        }
+        let feet = body.qy as f32 * movement::POS_Y_Q;
+        if (crate::terrain::SEA_LEVEL - feet) * 100.0 > FALL_SEA_CM {
+            return false;
+        }
+        let dmg = ((speed - FALL_SAFE_MPS) * FALL_HP_PER_MPS).min(u16::MAX as f32) as u16;
+        let id = self.players[i].id;
+        if survival::fall(&mut self.players[i], dmg, &mut self.events) == survival::Step::Died {
+            self.down_or_die(i, id, DEATH_BY_FALL, NO_ITEM, 0, false);
             return true;
         }
         false
@@ -5671,6 +5763,7 @@ impl World {
             // The verbs below never see it — the older frame's buttons
             // never act, exactly as they never acted when the throttle
             // silently dropped it.
+            let falling = self.players[i].body;
             if let Some(prev) = catchup[i] {
                 movement::step(
                     seed,
@@ -5702,6 +5795,9 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
+            if self.fall(i, falling) {
+                continue;
+            }
             // A drawn bow takes the arm before the gather scan sees it.
             // `gather::swing` searches the 3×3 cell ring for a node and
             // absorbs the swing into it, which is precisely what would eat

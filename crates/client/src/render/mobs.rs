@@ -193,6 +193,44 @@ pub const WOLF_LEG_FULL_MPS: f32 = 4.675;
 pub const WOLF_LEN_M: f32 = 1.6;
 pub const WOLF_H_M: f32 = 0.85;
 
+/// The stag (Rust's deer), as a box massing facing **+Z**: long-legged,
+/// the head carried high on the neck. 1.6 m nose to tail and 1.3 m to the
+/// top of the head; the antlers are the model's alone and stand above the
+/// hit volume, as a rack does.
+const STAG_BODY: &[([f32; 3], [f32; 3], u32)] = &[
+    // Barrel.
+    ([0.0, 0.88, 0.0], [0.17, 0.18, 0.45], 0x8a6a48),
+    // Chest and withers.
+    ([0.0, 0.95, 0.25], [0.18, 0.17, 0.20], 0x7d5f40),
+    // Rump.
+    ([0.0, 0.92, -0.45], [0.17, 0.16, 0.20], 0x7d5f40),
+    // Neck, head and muzzle.
+    ([0.0, 1.08, 0.50], [0.08, 0.16, 0.10], 0x8a6a48),
+    ([0.0, 1.22, 0.70], [0.07, 0.08, 0.12], 0x8a6a48),
+    ([0.0, 1.16, 0.86], [0.045, 0.045, 0.05], 0x5a4632),
+    // Tail.
+    ([0.0, 0.94, -0.66], [0.04, 0.07, 0.03], 0xd8ccb4),
+];
+
+/// One stag leg, hip at the origin, hanging to y = −0.72.
+const STAG_LEG: &[([f32; 3], [f32; 3], u32)] =
+    &[([0.0, -0.36, 0.0], [0.045, 0.36, 0.045], 0x6e543a)];
+
+/// The stag's four hips, diagonal pairs in phase like the others.
+pub const STAG_LEG_ANCHORS: [([f32; 3], f32); 4] = [
+    ([-0.13, 0.72, 0.36], 0.0),
+    ([0.13, 0.72, 0.36], std::f32::consts::PI),
+    ([-0.13, 0.72, -0.38], std::f32::consts::PI),
+    ([0.13, 0.72, -0.38], 0.0),
+];
+
+/// The stag's flight gait: `flee_pct` 85 of the player's 5.5 m/s sprint.
+pub const STAG_LEG_FULL_MPS: f32 = 4.675;
+
+/// What the stag massing claims, read off the mesh by the gate.
+pub const STAG_LEN_M: f32 = 1.6;
+pub const STAG_H_M: f32 = 1.3;
+
 /// One species' meshes. Body and leg are separate because the legs move and
 /// the body does not.
 pub struct SpeciesAssets {
@@ -213,17 +251,25 @@ pub const PIG_BODY_GLB: &str = "models/mob/pig_body.glb";
 pub const PIG_LEG_GLB: &str = "models/mob/pig_leg.glb";
 pub const WOLF_BODY_GLB: &str = "models/mob/wolf_body.glb";
 pub const WOLF_LEG_GLB: &str = "models/mob/wolf_leg.glb";
+pub const STAG_BODY_GLB: &str = "models/mob/stag_body.glb";
+pub const STAG_LEG_GLB: &str = "models/mob/stag_leg.glb";
 /// Killed animals lying on their side, indexed by species.
-pub const CARCASS_GLB: [&str; mob::MOB_KINDS] =
-    ["models/mob/pig_carcass.glb", "models/mob/wolf_carcass.glb"];
+pub const CARCASS_GLB: [&str; mob::MOB_KINDS] = [
+    "models/mob/pig_carcass.glb",
+    "models/mob/wolf_carcass.glb",
+    "models/mob/stag_carcass.glb",
+];
 /// Every model this file loads — what `tests/packed_maps.rs` censuses.
-pub const MOB_GLBS: [&str; 6] = [
+pub const MOB_GLBS: [&str; 9] = [
     PIG_BODY_GLB,
     PIG_LEG_GLB,
     WOLF_BODY_GLB,
     WOLF_LEG_GLB,
+    STAG_BODY_GLB,
+    STAG_LEG_GLB,
     CARCASS_GLB[0],
     CARCASS_GLB[1],
+    CARCASS_GLB[2],
 ];
 
 /// A model's single primitive and its material — `build_kit`'s loading
@@ -256,6 +302,7 @@ pub fn model(assets: &AssetServer, path: &'static str) -> (Handle<Mesh>, Handle<
 pub struct HerdAssets {
     pub pig: SpeciesAssets,
     pub wolf: SpeciesAssets,
+    pub stag: SpeciesAssets,
 }
 
 impl HerdAssets {
@@ -270,6 +317,7 @@ impl HerdAssets {
     pub fn of(&self, slot: usize) -> &SpeciesAssets {
         match mob::kind_of(slot) {
             mob::MOB_WOLF => &self.wolf,
+            mob::MOB_STAG => &self.stag,
             _ => &self.pig,
         }
     }
@@ -278,10 +326,10 @@ impl HerdAssets {
 /// The hip height of the species in `slot`, metres — off the same anchor
 /// tables its legs hang from.
 fn hip_of(slot: usize) -> f32 {
-    if mob::kind_of(slot) == mob::MOB_WOLF {
-        WOLF_LEG_ANCHORS[0].0[1]
-    } else {
-        LEG_ANCHORS[0].0[1]
+    match mob::kind_of(slot) {
+        mob::MOB_WOLF => WOLF_LEG_ANCHORS[0].0[1],
+        mob::MOB_STAG => STAG_LEG_ANCHORS[0].0[1],
+        _ => LEG_ANCHORS[0].0[1],
     }
 }
 
@@ -289,6 +337,7 @@ fn hip_of(slot: usize) -> f32 {
 pub fn full_mps_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
         mob::MOB_WOLF => WOLF_LEG_FULL_MPS,
+        mob::MOB_STAG => STAG_LEG_FULL_MPS,
         _ => PIG_LEG_FULL_MPS,
     }
 }
@@ -321,6 +370,7 @@ pub fn full_mps_of(slot: usize) -> f32 {
 pub fn flank_h_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
         mob::MOB_WOLF => WOLF_BODY[0].0[1],
+        mob::MOB_STAG => STAG_BODY[0].0[1],
         _ => PIG_BODY[0].0[1],
     }
 }
@@ -328,6 +378,7 @@ pub fn flank_h_of(slot: usize) -> f32 {
 pub fn voice_h_of(slot: usize) -> f32 {
     let stand = match mob::kind_of(slot) {
         mob::MOB_WOLF => WOLF_H_M,
+        mob::MOB_STAG => STAG_H_M,
         _ => PIG_H_M,
     };
     stand * 0.6
@@ -393,6 +444,26 @@ pub fn wolf_leg_mesh() -> Mesh {
     boxes_mesh_with(WOLF_LEG, linear, 1.0)
 }
 
+/// The whole stag at rest, assembled from the shipped tables.
+pub fn stag_mesh() -> Mesh {
+    let mut parts: Vec<([f32; 3], [f32; 3], u32)> = STAG_BODY.to_vec();
+    for (anchor, _) in STAG_LEG_ANCHORS {
+        for (c, h, hex) in STAG_LEG {
+            parts.push((
+                [c[0] + anchor[0], c[1] + anchor[1], c[2] + anchor[2]],
+                *h,
+                *hex,
+            ));
+        }
+    }
+    boxes_mesh_with(&parts, linear, 1.0)
+}
+
+/// One stag leg, hip at the origin.
+pub fn stag_leg_mesh() -> Mesh {
+    boxes_mesh_with(STAG_LEG, linear, 1.0)
+}
+
 pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
     let species = |body, leg, anchors| {
         let (body, material) = model(&assets, body);
@@ -408,6 +479,7 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
     commands.insert_resource(HerdAssets {
         pig: species(PIG_BODY_GLB, PIG_LEG_GLB, LEG_ANCHORS),
         wolf: species(WOLF_BODY_GLB, WOLF_LEG_GLB, WOLF_LEG_ANCHORS),
+        stag: species(STAG_BODY_GLB, STAG_LEG_GLB, STAG_LEG_ANCHORS),
     });
 }
 

@@ -149,6 +149,7 @@ ITEMS = {
     "bat": "delapouite/baseball-bat",
     "torch": "delapouite/torch",
     "spear_wood": "lorc/spears",
+    "spear_stone": "lorc/stone-spear",
     "hatchet_stone": "delapouite/hatchet",
     "pickaxe_stone": "delapouite/war-pick",
     "bow": "delapouite/bow-arrow",
@@ -160,6 +161,9 @@ ITEMS = {
     "sleeping_bag": "delapouite/sleeping-bag",
     "box_small": "delapouite/wooden-crate",
     "fire_pit": "lorc/campfire",
+    "waterskin": "delapouite/water-flask",
+    "waterskin_full": "delapouite/water-flask",
+    "barricade_wood": "delapouite/palisade",
     "workbench1": "lorc/hammer-nails",
     # The bench ladder (bench ladder v0): the glyphs climb with the rungs
     # — hammer-and-nails, the struck anvil, the gear-hammer — so the
@@ -177,6 +181,7 @@ ITEMS = {
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
     "lock_code": "delapouite/dial-padlock",
+    "lock_key": "lorc/padlock",
     "recycler": "lorc/recycle",
     # The blueprint you unroll, not the bench you unroll it on: a table at
     # 44 px is a rectangle, and the thing the verb produces reads.
@@ -200,6 +205,9 @@ ITEMS = {
     "hammer": "lorc/claw-hammer",
     "armor_burlap_head": "lorc/hood",
     "armor_burlap_body": "lorc/leather-vest",
+    "armor_hide_body": "delapouite/poncho",
+    "armor_bone_head": "lorc/horned-helm",
+    "leather": "delapouite/animal-hide",
     "arrow_metal": "lorc/broadhead-arrow",
     "crossbow": "carl-olsen/crossbow",
     "revolver": "delapouite/revolver",

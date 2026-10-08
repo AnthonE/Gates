@@ -486,6 +486,10 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
         } => encode_action_move(cont, from_kind, from_slot, to_kind, to_slot, count, buf),
         Command::Loot { .. } => encode_action_loot(buf),
         Command::Pickup { .. } => encode_action_pickup(buf),
+        Command::Drop { slot, count, .. } => protocol::encode_action_drop(slot, count, buf),
+        Command::RespawnAt { cx, cz, level, .. } => {
+            protocol::encode_action_respawn_at(cx, cz, level, buf)
+        }
         Command::Pick { cell, .. } => encode_action_pick(cell, buf),
         // Not a raid step — the reload lane's, and here because this is the
         // one table in this file that turns a `Command` into the bytes a

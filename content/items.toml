@@ -225,6 +225,15 @@ tier = 0
 rarity = "common"
 slot = "hand"
 
+# Rust's stone spear: the wooden one with a stone head, no bench.
+[[item]]
+id = "item.spear_stone"
+name = "Stone Spear"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
 [[item]]
 id = "item.hatchet_stone"
 name = "Stone Hatchet"
@@ -284,6 +293,43 @@ slot = "hand"
 [[item]]
 id = "item.box_small"
 name = "Small Box"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# Rust's key lock: wood, no bench, the prim base's first security.
+[[item]]
+id = "item.lock_key"
+name = "Key Lock"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# Rust's wooden barricade: a log wall that stands anywhere and stops a body.
+[[item]]
+id = "item.barricade_wood"
+name = "Wooden Barricade"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# A water vessel, empty and full: H at fresh water with the empty one in
+# hand fills it, and drinking the full one gives the empty one back
+# (balance.toml `[survival]` vessel, `survival::drink`).
+[[item]]
+id = "item.waterskin"
+name = "Waterskin"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.waterskin_full"
+name = "Full Waterskin"
 stack = 1
 tier = 0
 rarity = "common"
@@ -684,6 +730,33 @@ stack = 64
 tier = 1
 rarity = "uncommon"
 slot = "none"
+
+# Rust's leather: what a carcass pays toward hide clothing. Stack 1000, a
+# resource's.
+[[item]]
+id = "item.leather"
+name = "Leather"
+stack = 1000
+tier = 0
+rarity = "common"
+slot = "none"
+
+# Rust's prim clothing, no bench: a hide poncho and a bone helmet.
+[[item]]
+id = "item.armor_hide_body"
+name = "Hide Poncho"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "body"
+
+[[item]]
+id = "item.armor_bone_head"
+name = "Bone Helmet"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "head"
 
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.

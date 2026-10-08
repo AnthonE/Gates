@@ -37,6 +37,14 @@ archetype = "box"
 placement = "foundation"
 hp = 300
 
+# A log wall: stands on the ground or a floor and blocks a body
+# (`deploy::DEPLOY_VOL`). Rust's wooden barricade hp.
+[[deployable]]
+id = "item.barricade_wood"
+archetype = "barricade"
+placement = "any"
+hp = 350
+
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"
@@ -106,6 +114,16 @@ id = "item.lock_code"
 archetype = "lock"
 placement = "door"
 hp = 100
+
+# The key lock: locked the moment it is on, to its placer and the base's
+# hearth crew, with no keypad (`lock::LockRec::fresh_key`). `hp` is inert
+# for the code lock's reason.
+[[deployable]]
+id = "item.lock_key"
+archetype = "lock"
+placement = "door"
+hp = 100
+keyed = true
 
 [[deployable]]
 id = "item.door_wood"

@@ -60,6 +60,25 @@ output = "item.burnt_meat"
 station = "fire"
 seconds = 20
 
+# --- the furnace ----------------------------------------------------------
+#
+# Rust's smelt: ore goes into the furnace with wood, you light it, and every
+# slot holding ore smelts in parallel. 5 s a unit per slot, so a furnace with
+# five or six ore stacks runs about one ore a second, roughly Rust's small
+# furnace. The craft-menu rows in `recipes.toml` still work beside a furnace
+# (the bots use them); this is the way a Rust player reaches for first.
+[[cook]]
+input = "item.metal_ore"
+output = "item.metal_frags"
+station = "furnace"
+seconds = 5
+
+[[cook]]
+input = "item.sulfur_ore"
+output = "item.sulfur"
+station = "furnace"
+seconds = 5
+
 # --- the recycler -------------------------------------------------------
 #
 # `station = "recycler"` is the third converter (recycler v0). It burns

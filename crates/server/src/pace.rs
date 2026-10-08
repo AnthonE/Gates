@@ -90,7 +90,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         }
         ActionMsg::Demolish { .. } => Kind::Demolish,
         ActionMsg::Deploy { .. } => Kind::Deploy,
-        ActionMsg::Move { .. } => Kind::Move,
+        ActionMsg::Move { .. } | ActionMsg::Drop { .. } => Kind::Move,
         ActionMsg::Container { .. }
         | ActionMsg::Loot
         | ActionMsg::Pickup
@@ -105,6 +105,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Feed { .. }
         | ActionMsg::Reload
         | ActionMsg::Respawn { .. }
+        | ActionMsg::RespawnAt { .. }
         | ActionMsg::RespawnGate
         | ActionMsg::Assist { .. } => Kind::Free,
     }

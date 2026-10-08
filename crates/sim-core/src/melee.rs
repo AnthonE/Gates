@@ -124,6 +124,9 @@ pub const BUSH_SWING_TOP_M: f32 = 1.2;
 pub const HEMP_PICK_R_M: f32 = 0.3;
 /// See [`HEMP_PICK_R_M`].
 pub const HEMP_PICK_TOP_M: f32 = 1.25;
+/// A ground pickup's pick volume: about the pile it is drawn as.
+pub const PICKUP_PICK_R_M: f32 = 0.35;
+pub const PICKUP_PICK_TOP_M: f32 = 0.4;
 
 /// The volume a **swing** tests an occupant against, `(radius, top)` metres
 /// at slot scale 1: `terrain::occupant_volume` — the same cylinder a body
@@ -135,6 +138,8 @@ pub const fn swing_volume(o: Occupant) -> (f32, f32) {
     match o {
         Occupant::BerryBush => (BUSH_SWING_R_M, BUSH_SWING_TOP_M),
         Occupant::Hemp => (HEMP_PICK_R_M, HEMP_PICK_TOP_M),
+        // A ground pickup: a knee-high pile you bend to.
+        o if o.is_pickup() => (PICKUP_PICK_R_M, PICKUP_PICK_TOP_M),
         other => terrain::occupant_volume(other),
     }
 }

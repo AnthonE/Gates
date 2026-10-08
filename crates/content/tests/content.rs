@@ -296,7 +296,7 @@ fn test_content() {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
-        (40..=60).contains(&(c.items.len() - fittings.len())),
+        (40..=70).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -1099,11 +1099,10 @@ fn bake_craft_carries_the_shipped_numbers() {
     assert!(def.inputs[..2].contains(&(stone, 100)));
 
     // Station codes map in schema order.
-    let furnace = c.recipe_index("recipe.furnace").unwrap() as usize;
-    assert_eq!(
-        cc.recipes[furnace].station,
-        sim_core::craft::STATION_WORKBENCH1
-    );
+    let bench = c.recipe_index("recipe.lock_code").unwrap() as usize;
+    assert_eq!(cc.recipes[bench].station, sim_core::craft::STATION_NONE);
+    let wb2 = c.recipe_index("recipe.workbench2").unwrap() as usize;
+    assert_eq!(cc.recipes[wb2].station, sim_core::craft::STATION_WORKBENCH1);
     let frags = c.recipe_index("recipe.metal_frags").unwrap() as usize;
     assert_eq!(cc.recipes[frags].station, sim_core::craft::STATION_FURNACE);
 
@@ -2202,6 +2201,9 @@ fn a_clock_with_no_answer_is_refused() {
         "\n[[gatherable]]\nid = \"gather.bush\"\narchetype = \"berry_bush\"\n\
          output = \"item.berries\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 5\n",
+        "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
+         output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 3\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2664,17 +2666,27 @@ fn the_code_lock_bakes_to_the_archetype_the_sim_branches_on() {
         .iter()
         .filter(|d| d.arch == sim_core::deploy::ARCH_LOCK)
         .collect();
-    assert_eq!(rows.len(), 1, "exactly one lock reaches the sim");
     assert_eq!(
-        rows[0].placement,
-        sim_core::deploy::PLACE_DOOR,
-        "the lock's placement class is the one that wants an occupied address"
+        rows.len(),
+        2,
+        "the code lock and the key lock reach the sim"
     );
+    for r in &rows {
+        assert_eq!(
+            r.placement,
+            sim_core::deploy::PLACE_DOOR,
+            "the lock's placement class is the one that wants an occupied address"
+        );
+    }
     assert_eq!(
-        rows[0].item,
-        c.item_index("item.lock_code").expect("the lock is an item"),
-        "the row must resolve to the item the take verb hands back"
+        dc.key_lock_item,
+        c.item_index("item.lock_key")
+            .expect("the key lock is an item"),
+        "the keyed row must resolve to the item the take verb hands back"
     );
+    assert!(rows
+        .iter()
+        .any(|r| r.item == c.item_index("item.lock_code").unwrap()));
     for d in dc.defs[..dc.def_count as usize].iter() {
         assert!(
             d.arch == sim_core::deploy::ARCH_LOCK || d.placement != sim_core::deploy::PLACE_DOOR,
@@ -3351,10 +3363,11 @@ fn the_shipped_pig_bakes() {
     // because this is the pair that produces the behaviour.
     assert!(pig.roam_cm > pig.spook_cm);
 
-    // Drops resolve to real item indices, in file order — meat, fat, cloth
-    // and bone, which fills every row the table has.
-    assert_eq!(pig.loot.len(), 4);
-    for i in 0..4 {
+    // Drops resolve to real item indices, in file order — meat, fat, cloth,
+    // bone and leather, and the spare row stays empty.
+    assert_eq!(pig.loot.len(), sim_core::mob::MOB_LOOT_ROWS);
+    assert_eq!(pig.loot[5].item, sim_core::gather::NO_ITEM);
+    for i in 0..5 {
         assert_ne!(pig.loot[i].item, sim_core::gather::NO_ITEM);
         assert!(pig.loot[i].count > 0);
     }
@@ -3600,6 +3613,12 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         if have.contains(c.fuel.item.as_str()) {
             grew |= have.insert(c.fuel.byproduct.as_str());
         }
+        // The drink verb fills a vessel you hold at fresh water.
+        if let (Some(e), Some(f)) = (&c.balance.survival.vessel, &c.balance.survival.vessel_full) {
+            if have.contains(e.as_str()) {
+                grew |= have.insert(f.as_str());
+            }
+        }
         for k in &c.cooks {
             if have.contains(k.input.as_str()) {
                 grew |= have.insert(k.output.as_str());
@@ -3681,6 +3700,15 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the tree's mushroom row moved"
     );
     g.1 = g.1.replace(row, "\n");
+    let patch =
+        "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
+                 output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+                 [gatherable.yield_per_hit]\nhand = 3\n";
+    assert!(
+        g.1.contains(patch),
+        "fixture rot: the mushroom patch row moved"
+    );
+    g.1 = g.1.replace(patch, "\n");
     strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
     assert_eq!(
@@ -4515,9 +4543,10 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 9,
-        "expected exactly nine solid rows — the hearth, the box (twice), the \
-         furnace, the three benches, the recycler and the research table — \
+        seen, 10,
+        "expected exactly ten solid rows — the hearth, the box (twice), the \
+         furnace, the three benches, the recycler, the research table and \
+         the barricade — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \

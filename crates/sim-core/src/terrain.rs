@@ -6709,14 +6709,35 @@ pub enum Occupant {
     /// lands on. Most of what the bush column grows, because in the
     /// reference most bushes are cover and only the berry bush is food.
     Shrub = 22,
+    /// Rust's collectibles: loose stone, a wood pile, a lump of metal or
+    /// sulfur ore, a patch of mushrooms. Picked by hand with `E` like hemp,
+    /// passable, drawn by the bush column's roll ([`plant_of`]).
+    StonePile = 23,
+    WoodPile = 24,
+    MetalPile = 25,
+    SulfurPile = 26,
+    MushroomPatch = 27,
 }
 
 impl Occupant {
-    /// Whether this is one of the three things the bush column grows
-    /// ([`plant_of`]): a shrub, a berry bush or a hemp plant. Every one is
-    /// passable and none blocks a swing, an arrow or a body.
+    /// Whether this is one of the things the bush column grows
+    /// ([`plant_of`]): a shrub, a berry bush, a hemp plant or a ground
+    /// pickup. Every one is passable and none blocks a swing, an arrow or a
+    /// body.
     pub const fn is_plant(self) -> bool {
-        matches!(self, Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub)
+        matches!(self, Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub) || self.is_pickup()
+    }
+
+    /// A ground pickup — loose stone, wood, ore, mushrooms ([`plant_of`]).
+    pub const fn is_pickup(self) -> bool {
+        matches!(
+            self,
+            Occupant::StonePile
+                | Occupant::WoodPile
+                | Occupant::MetalPile
+                | Occupant::SulfurPile
+                | Occupant::MushroomPatch
+        )
     }
 }
 
@@ -6778,16 +6799,62 @@ const _: () = {
 /// so the roll that put a plant there and the roll that says which plant are
 /// independent, and every cell that held a bush still holds a plant.
 pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
-    let r = (cell_hash(seed, cell_x, cell_z, CH_PLANT) % 1000) as u16;
+    let h = cell_hash(seed, cell_x, cell_z, CH_PLANT);
+    let r = (h % 1000) as u16;
     let [berry, hemp] = PLANT_SHARES[b as usize];
+    let pickup = PICKUP_SHARES[b as usize];
     if r < berry {
         Occupant::BerryBush
     } else if r < berry + hemp {
         Occupant::Hemp
+    } else if r < berry + hemp + pickup {
+        // Which pickup: the same hash's high bits, an independent roll.
+        let k = ((h >> 32) % 100) as u8;
+        let w = PICKUP_KINDS[b as usize];
+        let mut acc = 0u8;
+        let mut i = 0;
+        while i < w.len() {
+            acc += w[i];
+            if k < acc {
+                break;
+            }
+            i += 1;
+        }
+        [
+            Occupant::StonePile,
+            Occupant::WoodPile,
+            Occupant::MetalPile,
+            Occupant::SulfurPile,
+            Occupant::MushroomPatch,
+        ][i.min(4)]
     } else {
         Occupant::Shrub
     }
 }
+
+/// How much of the bush column is a ground pickup, per biome, per mille of
+/// the column's draws (taken out of what was scenery). **(knob)**
+pub const PICKUP_SHARES: [u16; 4] = [120, 120, 150, 200];
+
+/// Which pickup, per biome, percent: `[stone, wood, metal, sulfur,
+/// mushrooms]`. Driftwood and stone on the beach, mushrooms under the trees,
+/// ore up high.
+pub const PICKUP_KINDS: [[u8; 5]; 4] = [
+    [50, 30, 10, 10, 0],  // Beach
+    [35, 25, 20, 10, 10], // Meadow
+    [20, 35, 10, 0, 35],  // Forest
+    [40, 0, 30, 30, 0],   // Highland
+];
+
+const _: () = {
+    let mut b = 0;
+    while b < 4 {
+        assert!(PLANT_SHARES[b][0] + PLANT_SHARES[b][1] + PICKUP_SHARES[b] <= 1000);
+        let w = PICKUP_KINDS[b];
+        assert!(w[0] as u16 + w[1] as u16 + w[2] as u16 + w[3] as u16 + w[4] as u16 == 100);
+        b += 1;
+    }
+};
 
 /// Per-biome scatter weights in per-mille of a cell draw, order
 /// [Tree, Stone, Metal, Sulfur, Bush, Rock, Barrel]; remainder is None.
@@ -9247,7 +9314,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 23] = [
+pub const OCCUPANT_R_M: [f32; 28] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -9298,6 +9365,11 @@ pub const OCCUPANT_R_M: [f32; 23] = [
     0.42,          // TireStack — the tyre's outer radius
     0.0,           // Hemp — passable, like the bush
     0.0,           // Shrub — passable, like the bush
+    0.0,           // StonePile — a pickup, passable
+    0.0,           // WoodPile
+    0.0,           // MetalPile
+    0.0,           // SulfurPile
+    0.0,           // MushroomPatch
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -9314,7 +9386,7 @@ pub const OCCUPANT_R_M: [f32; 23] = [
 /// 14 m; the sim cannot tell the species apart, so the shorter one wins and
 /// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 23] = [
+pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.0,  // None
     11.0, // Tree — the broadleaf's drawn height
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -9344,6 +9416,11 @@ pub const OCCUPANT_TOP_M: [f32; 23] = [
     TIRE_STACK_TOP_M, // TireStack
     0.0,              // Hemp
     0.0,              // Shrub
+    0.0,              // StonePile
+    0.0,              // WoodPile
+    0.0,              // MetalPile
+    0.0,              // SulfurPile
+    0.0,              // MushroomPatch
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -9414,6 +9491,11 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
         Occupant::TireStack => (0.42, TIRE_STACK_TOP_M),
         Occupant::Hemp | Occupant::Shrub => (0.0, 0.0),
+        Occupant::StonePile
+        | Occupant::WoodPile
+        | Occupant::MetalPile
+        | Occupant::SulfurPile
+        | Occupant::MushroomPatch => (0.0, 0.0),
     }
 }
 
@@ -9451,7 +9533,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 23 && OCCUPANT_TOP_M.len() == 23);
+    assert!(OCCUPANT_R_M.len() == 28 && OCCUPANT_TOP_M.len() == 28);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);

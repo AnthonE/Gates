@@ -199,7 +199,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// berry bushes and hemp** (2026-10-06, `terrain::plant_of`), merged over the
 /// ring: every cell that held a bush still holds a plant, and only which
 /// plant moved.
-const GOLDEN_TERRAIN_HASH: u64 = 0x5642_3396_CA8F_82BD;
+const GOLDEN_TERRAIN_HASH: u64 = 0xB809_63DF_1450_C6C7;
 
 #[test]
 fn test_terrain_golden() {

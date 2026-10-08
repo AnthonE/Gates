@@ -718,7 +718,7 @@ pub fn register(app: &mut App) {
                 inv::drag_pointer,
                 inv::skin_keys,
                 inv::table_clicks,
-                inv::fire_clicks,
+                (inv::fire_clicks, inv::take_all_clicks).chain(),
                 craft::clicks,
                 craft::scroll,
                 tech::clicks,

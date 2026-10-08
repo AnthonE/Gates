@@ -84,6 +84,12 @@ pub enum NodeArchetype {
     BerryBush,
     /// Hemp (`terrain::Occupant::Hemp`), picked by hand — cloth's own plant.
     Hemp,
+    /// Ground pickups (`terrain::Occupant::StonePile` …), picked by hand.
+    StonePile,
+    WoodPile,
+    MetalPile,
+    SulfurPile,
+    MushroomPatch,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its
@@ -523,6 +529,7 @@ pub enum DeployArchetype {
     GarageDoor,
     WindowGlass,
     WindowShutter,
+    Barricade,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -534,6 +541,10 @@ pub struct Deployable {
     /// Doors only: pairs the door under its material's wall hp.
     pub material: Option<Material>,
     pub hp: u32,
+    /// Locks only: a key lock (no keypad, locked to its placer and the
+    /// base's hearth crew) rather than a code lock.
+    #[serde(default)]
+    pub keyed: bool,
 }
 
 /// What an oven burns (`content/cooking.toml`, `sim-core/oven.rs`).
@@ -967,7 +978,7 @@ pub struct StarterBase {
 /// design speaks; `bake_survival` converts them to ticks once so the sim
 /// never multiplies a clock. Proposed defaults, DECISIONS.md §open
 /// ("survival clock v0").
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Survival {
     pub max_food: u32,
@@ -985,6 +996,13 @@ pub struct Survival {
     /// requires a gatherable to answer thirst instead.
     pub drink_water: u32,
     pub drink_hp_cost: u32,
+    /// The water vessel (`survival::drink`): holding `vessel` at fresh
+    /// water, the drink verb fills it into `vessel_full` instead, and
+    /// drinking `vessel_full` (a consumable) hands `vessel` back.
+    #[serde(default)]
+    pub vessel: Option<String>,
+    #[serde(default)]
+    pub vessel_full: Option<String>,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,

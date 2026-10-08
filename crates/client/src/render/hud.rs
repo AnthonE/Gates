@@ -2425,7 +2425,10 @@ pub fn feedback(
         // says nothing about hp rather than saying `-0`.
         let water = core.last_drink >> 16;
         let cost = core.last_drink & 0xffff;
-        toast.say(if cost > 0 {
+        toast.say(if water == 0 && cost == 0 {
+            // The fill (`survival::drink`): an empty vessel in hand.
+            "filled your waterskin".to_string()
+        } else if cost > 0 {
             format!("drank: +{water} water, -{cost} hp")
         } else {
             format!("drank: +{water} water")

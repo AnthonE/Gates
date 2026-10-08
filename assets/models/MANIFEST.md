@@ -898,4 +898,4 @@ with `ci/prop_kit.py sheet <names…>`.
 | `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
 | `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
 | `prop/oil_barrel`, `road_sign`, `food_crate`, `tire_stack`, `car_wreck` | the roadside junk (`props::ROADSIDE_GLB`); the sign and the wreck are authored as-is over the sim's box tables |
-| `mob/pig_body`, `pig_leg`, `wolf_body`, `wolf_leg`, `pig_carcass`, `wolf_carcass` | the animals, authored in `render/mobs.rs`'s frame (+Z forward, a leg's hip at its origin) and exported as-is; the box tables there stay the measured truth |
+| `mob/pig_body`, `pig_leg`, `wolf_body`, `wolf_leg`, `stag_body`, `stag_leg`, `pig_carcass`, `wolf_carcass`, `stag_carcass` | the animals, authored in `render/mobs.rs`'s frame (+Z forward, a leg's hip at its origin) and exported as-is; the box tables there stay the measured truth |

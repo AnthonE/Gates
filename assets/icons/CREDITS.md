@@ -35,6 +35,7 @@ every item either way, because the painted ones are derived works of it.
 | `blueprint.png` | `lorc/tied-scroll` |
 | `bone_arrow.png` | `lorc/arrowhead` |
 | `bone_fragments.png` | `lorc/crossed-bones` |
+| `bone_helmet.png` | `lorc/horned-helm` |
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
@@ -46,6 +47,7 @@ every item either way, because the painted ones are derived works of it.
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
 | `fire_pit.png` | `lorc/campfire` |
+| `full_waterskin.png` | `delapouite/water-flask` |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |
 | `gears.png` | `lorc/gears` |
@@ -53,10 +55,13 @@ every item either way, because the painted ones are derived works of it.
 | `gunpowder.png` | `lorc/powder` |
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
+| `hide_poncho.png` | `delapouite/poncho` |
 | `high_velocity_arrow.png` | `lorc/supersonic-arrow` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
 | `junk.png` | `delapouite/hexagonal-nut` |
+| `key_lock.png` | `lorc/padlock` |
 | `large_box.png` | `delapouite/cargo-crate` |
+| `leather.png` | `delapouite/animal-hide` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_bed.png` | `delapouite/sleeping-bag` |
 | `map_hearth.png` | `delapouite/fireplace` |
@@ -95,6 +100,7 @@ every item either way, because the painted ones are derived works of it.
 | `stone.png` | `delapouite/stone-pile` |
 | `stone_hatchet.png` | `delapouite/hatchet` |
 | `stone_pickaxe.png` | `delapouite/war-pick` |
+| `stone_spear.png` | `lorc/stone-spear` |
 | `sulfur.png` | `delapouite/powder-bag` |
 | `sulfur_ore.png` | `lorc/crystal-cluster` |
 | `tarp.png` | `delapouite/camping-tent` |
@@ -110,9 +116,11 @@ every item either way, because the painted ones are derived works of it.
 | `vital_food.png` | `delapouite/hot-meal` |
 | `vital_hp.png` | `sbed/health-normal` |
 | `vital_water.png` | `sbed/water-drop` |
+| `waterskin.png` | `delapouite/water-flask` |
 | `wood.png` | `delapouite/log` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
 | `wooden_arrow.png` | `lorc/arrowhead` |
+| `wooden_barricade.png` | `delapouite/palisade` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |

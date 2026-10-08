@@ -1073,7 +1073,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// word or a read, `SUB_ARC_DIALS` (85) carries a mechanism's dials,
 /// `SUB_GLYPHS` (86) the glyphs you read, `SUB_MECH_SOLVED` (87) a lock
 /// opening and `SUB_ALPHABET` (88) the ancients' alphabet.
-pub const PROTO_VER: u16 = 96;
+/// v97 — drop an item. `ACT_DROP` (30) carries an inventory slot and a
+/// count; the sim drops it in a bag at your feet.
+pub const PROTO_VER: u16 = 97;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1887,6 +1889,9 @@ const ACT_RESPAWN_GATE: u32 = 28;
 /// deposit, fuel, and later a word with a speaker, a read or a dial — because
 /// the lane had three codes left.
 const ACT_ARC: u32 = 29;
+/// Drop `count` of an inventory slot on the ground (wire v97,
+/// `Command::Drop`).
+const ACT_DROP: u32 = 30;
 /// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
 const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
@@ -1898,7 +1903,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_ARC;
+const ACT_MAX: u32 = ACT_DROP;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2225,6 +2230,9 @@ pub enum ActionMsg {
     /// wood, and a full pair of meters all come back as a consume-refused
     /// event rather than as a wire error.
     Consume { slot: u8 },
+    /// Drop `count` of inventory slot `slot` on the ground (wire v97). The
+    /// slot is shape-checked here; an empty one is the sim's no-op.
+    Drop { slot: u8, count: u16 },
     /// Trade at a town kiosk (wire v86): offer `offer` of the vendor
     /// catalog, `times` over (1..=`VEND_TIMES_MAX`). Everything past the
     /// shape is the sim's verdict.
@@ -2275,6 +2283,10 @@ pub enum ActionMsg {
     /// hold an opinion about: whether to go back to the fight you just lost
     /// or leave it. Sent by a live body it does nothing (world.rs).
     Respawn { on_bag: bool },
+    /// The death screen's pick of one bag by address (wire v97): rides
+    /// `ACT_RESPAWN` with its "named" bit set. Whether the bag is the
+    /// sender's and ready is the sim's verdict (`claim_bag_at`).
+    RespawnAt { cx: u16, cz: u16, level: u8 },
     /// Move `count` items from one slot to another (`inventory.rs`).
     ///
     /// **The one action that carries a target id**, and the exception is
@@ -2393,6 +2405,31 @@ pub fn encode_action_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, Wire
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_RESPAWN, ACTION_SUB_BITS)?;
     w.write_bit(on_bag)?;
+    w.write_bit(false)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::RespawnAt` — wake on the bag at this address (wire v97).
+pub fn encode_action_respawn_at(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESPAWN, ACTION_SUB_BITS)?;
+    w.write_bit(true)?;
+    w.write_bit(true)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
     Ok(w.finish())
 }
 
@@ -2455,6 +2492,18 @@ pub fn encode_action_consume(slot: u8, buf: &mut [u8]) -> Result<usize, WireErro
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_CONSUME, ACTION_SUB_BITS)?;
     w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
+pub fn encode_action_drop(slot: u8, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS || count == 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_DROP, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    w.write(count as u32, MOVE_COUNT_BITS)?;
     Ok(w.finish())
 }
 
@@ -3152,6 +3201,14 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             ActionMsg::Consume { slot }
         }
+        ACT_DROP => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            let count = r.read(MOVE_COUNT_BITS)? as u16;
+            if slot as usize >= sim_core::limits::INV_SLOTS || count == 0 {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Drop { slot, count }
+        }
         ACT_RESEARCH => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
             if slot as usize >= sim_core::limits::INV_SLOTS {
@@ -3171,9 +3228,24 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_ASSIST => ActionMsg::Assist {
             target: r.read(32)?,
         },
-        ACT_RESPAWN => ActionMsg::Respawn {
-            on_bag: r.read_bit()?,
-        },
+        ACT_RESPAWN => {
+            let on_bag = r.read_bit()?;
+            if r.read_bit()? {
+                let cx = r.read(BUILD_CELL_BITS)? as u16;
+                let cz = r.read(BUILD_CELL_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                if !on_bag
+                    || cx as usize >= sim_core::limits::MAX_BUILD_COORD
+                    || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+                    || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+                {
+                    return Err(WireError::Malformed);
+                }
+                ActionMsg::RespawnAt { cx, cz, level }
+            } else {
+                ActionMsg::Respawn { on_bag }
+            }
+        }
         ACT_MOVE => {
             let cont = r.read(32)?;
             let from_kind = r.read(CONT_KIND_BITS)? as u8;
@@ -4792,14 +4864,29 @@ mod tests {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
-        // respawn point (v92) 28, and the arc's one verb (v95) 29, leaving
-        // two five-bit codes.
-        assert_eq!(ACT_MAX, ACT_ARC);
+        // respawn point (v92) 28, the arc's one verb (v95) 29 and drop
+        // (v97) 30, leaving one five-bit code.
+        assert_eq!(ACT_MAX, ACT_DROP);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            2,
+            1,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    #[test]
+    fn drop_roundtrips_and_refuses_a_zero_count() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let n = encode_action_drop(5, 300, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::Drop {
+                slot: 5,
+                count: 300
+            })
+        );
+        assert!(encode_action_drop(5, 0, &mut buf).is_err());
+        assert!(encode_action_drop(sim_core::limits::INV_SLOTS as u8, 1, &mut buf).is_err());
     }
 
     #[test]

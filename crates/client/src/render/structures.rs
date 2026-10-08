@@ -395,7 +395,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 16] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 17] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -527,6 +527,8 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 16] = [
         0.5,
         0.0,
     ),
+    // 16 · wooden barricade: a row of sharpened logs, `DEPLOY_VOL`'s row.
+    ([1.8, 1.4, 0.6], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2227,6 +2229,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None,                                     // 13 garage door — shared insert geometry
     None,                                     // 14 glass — shared insert geometry
     None,                                     // 15 shutters — shared insert geometry
+    Some("models/deploy/barricade.glb"),      // 16 barricade
 ];
 
 /// The locked door: `door.glb`'s geometry built under iron surfaces by

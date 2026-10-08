@@ -34,6 +34,18 @@ station = "none"
 seconds = 10
 inputs = [{ item = "item.wood", count = 300 }]
 
+# Rust's own: a wooden spear and 20 stone.
+[[recipe]]
+id = "recipe.spear_stone"
+output = "item.spear_stone"
+count = 1
+station = "none"
+seconds = 10
+inputs = [
+    { item = "item.spear_wood", count = 1 },
+    { item = "item.stone", count = 20 },
+]
+
 [[recipe]]
 id = "recipe.hatchet_stone"
 output = "item.hatchet_stone"
@@ -116,6 +128,26 @@ inputs = [
     { item = "item.cloth", count = 2 },
 ]
 
+# Prim clothing, no bench (Rust's are hand-crafted too).
+[[recipe]]
+id = "recipe.armor_hide_body"
+output = "item.armor_hide_body"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.leather", count = 20 }]
+
+[[recipe]]
+id = "recipe.armor_bone_head"
+output = "item.armor_bone_head"
+count = 1
+station = "none"
+seconds = 15
+inputs = [
+    { item = "item.bone_frags", count = 30 },
+    { item = "item.leather", count = 5 },
+]
+
 [[recipe]]
 id = "recipe.bandage"
 output = "item.bandage"
@@ -139,6 +171,31 @@ count = 1
 station = "none"
 seconds = 10
 inputs = [{ item = "item.wood", count = 100 }]
+
+# Rust's own price: 75 wood, no bench.
+[[recipe]]
+id = "recipe.lock_key"
+output = "item.lock_key"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.wood", count = 75 }]
+
+[[recipe]]
+id = "recipe.barricade_wood"
+output = "item.barricade_wood"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.wood", count = 200 }]
+
+[[recipe]]
+id = "recipe.waterskin"
+output = "item.waterskin"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.leather", count = 10 }]
 
 [[recipe]]
 id = "recipe.fire_pit"
@@ -245,11 +302,13 @@ inputs = [
 
 # --- T1, station workbench1 ---------------------------------------------
 
+# No bench, as Rust's: ore has to be smeltable before the first workbench,
+# which is itself priced in fragments.
 [[recipe]]
 id = "recipe.furnace"
 output = "item.furnace"
 count = 1
-station = "workbench1"
+station = "none"
 seconds = 30
 inputs = [
     { item = "item.stone", count = 200 },
@@ -326,7 +385,7 @@ inputs = [
 id = "recipe.box_large"
 output = "item.box_large"
 count = 1
-station = "workbench1"
+station = "none"
 seconds = 20
 inputs = [
     { item = "item.wood", count = 250 },
@@ -337,7 +396,7 @@ inputs = [
 id = "recipe.armor_burlap_head"
 output = "item.armor_burlap_head"
 count = 1
-station = "workbench1"
+station = "none"
 seconds = 10
 inputs = [{ item = "item.cloth", count = 10 }]
 
@@ -345,7 +404,7 @@ inputs = [{ item = "item.cloth", count = 10 }]
 id = "recipe.armor_burlap_body"
 output = "item.armor_burlap_body"
 count = 1
-station = "workbench1"
+station = "none"
 seconds = 10
 inputs = [{ item = "item.cloth", count = 20 }]
 
@@ -489,7 +548,7 @@ inputs = [
 id = "recipe.lock_code"
 output = "item.lock_code"
 count = 1
-station = "workbench1"
+station = "none"
 seconds = 20
 inputs = [{ item = "item.metal_frags", count = 100 }]
 

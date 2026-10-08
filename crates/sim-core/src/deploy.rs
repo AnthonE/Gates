@@ -157,6 +157,9 @@ pub const ARCH_GARAGE_DOOR: u8 = 13;
 pub const ARCH_WINDOW_GLASS: u8 = 14;
 /// A window cover that opens without a lock.
 pub const ARCH_WINDOW_SHUTTER: u8 = 15;
+/// Rust's wooden barricade: a free-standing wall of sharpened logs that
+/// blocks a body (wire v97 widened `ARCH_BITS` to five for it).
+pub const ARCH_BARRICADE: u8 = 16;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -179,7 +182,7 @@ pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 16] = [
+pub const DEPLOY_VOL: [[f32; 3]; 17] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -196,6 +199,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 16] = [
     [0.0, 0.0, 0.0],   // garage door — edge insert
     [0.0, 0.0, 0.0],   // glass — edge insert
     [0.0, 0.0, 0.0],   // shutters — edge insert, not a solid nibble
+    [1.8, 1.4, 0.6],   // 16 barricade — a log wall
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -632,7 +636,14 @@ pub struct DeployContent {
     /// ([`grieve`], upkeep v2). Zero is the content pricing none, and no
     /// death buys anything — v1's game.
     pub grief_periods: u16,
+    /// The key lock's item ([`NO_KEY_LOCK`] when content ships none). A
+    /// lock placed from this item is keyed (`lock::LockRec::fresh_key`);
+    /// any other lock item is a code lock.
+    pub key_lock_item: u16,
 }
+
+/// `DeployContent::key_lock_item` when no key lock exists.
+pub const NO_KEY_LOCK: u16 = u16::MAX;
 
 impl DeployContent {
     /// Inert: no deployable exists, every request refuses, nothing
@@ -648,6 +659,7 @@ impl DeployContent {
         upkeep_step_count: 0,
         inside_decay_pct: 0,
         grief_periods: 0,
+        key_lock_item: NO_KEY_LOCK,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -1702,6 +1714,35 @@ impl Deploys {
         self.bag_ready[i] = tick.saturating_add(BAG_COOLDOWN_TICKS);
         Some(self.entries[i])
     }
+
+    /// [`Self::claim_bag`], asked for one bag by address first: the death
+    /// screen's pick. A bag that is not the owner's, not a bag, or not ready
+    /// falls back to the nearest ready one, so a stale or forged pick is
+    /// never a way onto somebody else's bag.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_bag_at(
+        &mut self,
+        dc: &DeployContent,
+        owner: u32,
+        at: (u16, u16, u8),
+        x: f32,
+        z: f32,
+        tick: u64,
+    ) -> Option<DeployRec> {
+        let (cx, cz, level) = at;
+        let hit = self.entries[..self.len].iter().position(|d| {
+            d.cx == cx
+                && d.cz == cz
+                && d.level == level
+                && d.owner == owner
+                && dc.defs[d.row as usize].arch == ARCH_BAG
+        });
+        if let Some(i) = hit.filter(|&i| self.bag_ready[i] <= tick) {
+            self.bag_ready[i] = tick.saturating_add(BAG_COOLDOWN_TICKS);
+            return Some(self.entries[i]);
+        }
+        self.claim_bag(dc, owner, x, z, tick)
+    }
 }
 
 impl Default for Deploys {
@@ -2607,9 +2648,12 @@ pub fn place_deploy(
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
             return;
         }
-        deploys
-            .locks
-            .insert(LockRec::fresh(cx, cz, level, loc, p.id));
+        let rec = if def.item == dc.key_lock_item {
+            LockRec::fresh_key(cx, cz, level, loc, p.id)
+        } else {
+            LockRec::fresh(cx, cz, level, loc, p.id)
+        };
+        deploys.locks.insert(rec);
         inv_take(&mut p.inv, def.item, 1);
         // Bolted on, not armed: a fresh lock has no code and lets
         // everyone through until `ACCESS_OP_SET_CODE` gives it one, which
@@ -2621,7 +2665,7 @@ pub fn place_deploy(
             .find_index(cx, cz, level, loc)
             .expect("the support check just found the lock's target");
         deploys.entries[di].has_lock = true;
-        deploys.entries[di].locked = false;
+        deploys.entries[di].locked = rec.locked;
         announce_door(deploys, di, p.id, events);
         return;
     }
@@ -2892,7 +2936,9 @@ pub fn use_door(
     events: &mut EventQueue,
 ) -> Option<u32> {
     let i = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events)?;
-    if !deploys.lock_passes(cx, cz, level, loc, p.id) {
+    if !deploys.lock_passes(cx, cz, level, loc, p.id)
+        && !key_crew_passes(pieces, deploys, cx, cz, level, loc, p.id)
+    {
         // Knocking is the whole reason a refusal here is not silent
         // (`DOORS.md` §4): it is the only channel a locked-out player has
         // to the person inside, and it costs one broadcast. Both go out —
@@ -2918,6 +2964,33 @@ pub fn use_door(
     );
     announce_door(deploys, i, p.id, events);
     Some(deploys.entries[i].owner)
+}
+
+/// A key lock also opens for the base's hearth crew: anyone the building
+/// is authorized to (inside a hearth's claim and on every crew there).
+/// Rust shares a key lock by crafting keys; the crew is ours.
+fn key_crew_passes(
+    pieces: &Pieces,
+    deploys: &Deploys,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    id: u32,
+) -> bool {
+    if !deploys
+        .locks
+        .find(cx, cz, level, loc)
+        .is_some_and(|l| l.is_key())
+    {
+        return false;
+    }
+    let Some(d) = deploys.find(cx, cz, level, loc) else {
+        return false;
+    };
+    let (x, z) = d.xz();
+    crate::claim::any_claim(pieces, deploys, x, z)
+        && !crate::claim::foreign_claim(pieces, deploys, x, z, id)
 }
 
 /// Apply one lock request (`Command::Access`): run `op` against the code
@@ -2958,6 +3031,7 @@ pub fn lock_op(
     // (`Outcome::Removed`) and the owner would then be a field of a record
     // that no longer stands.
     let owner = deploys.locks.entries[li].owner;
+    let keyed = deploys.locks.entries[li].is_key();
     match lock::apply(&mut deploys.locks, li, p.id, op, code, tick) {
         Outcome::Done { relock } => {
             deploys.entries[di].locked = relock;
@@ -2971,8 +3045,7 @@ pub fn lock_op(
             // — which stopped being true the moment the other gives took
             // the spill. It falls at the unbolter's feet now, so a player
             // carrying a full load can still take a lock off *and* keep it.
-            if let Some(r) = lock_row(dc) {
-                let item = dc.defs[r].item;
+            if let Some(item) = lock_item(dc, keyed) {
                 lock::give_back(
                     &mut p.inv,
                     spill,
@@ -3145,9 +3218,8 @@ pub fn pick_up(
     // A door's lock comes up with it, as a second item: it is a separate
     // thing bolted on (`DOORS.md` §1 fact 1), so it is separately
     // returned rather than destroyed with the frame.
-    if deploys.locks.find(cx, cz, level, loc).is_some() {
-        if let Some(r) = lock_row(dc) {
-            let item = dc.defs[r].item;
+    if let Some(l) = deploys.locks.find(cx, cz, level, loc) {
+        if let Some(item) = lock_item(dc, l.is_key()) {
             lock::give_back(
                 &mut p.inv,
                 spill,
@@ -3317,10 +3389,14 @@ pub fn crew_op(
 /// nothing — the same posture every other verb here takes toward the
 /// `EMPTY` default (a shard booted without locks plays the game it played
 /// before, wall 7).
-fn lock_row(dc: &DeployContent) -> Option<usize> {
+fn lock_item(dc: &DeployContent, keyed: bool) -> Option<u16> {
+    if keyed {
+        return (dc.key_lock_item != NO_KEY_LOCK).then_some(dc.key_lock_item);
+    }
     dc.defs[..dc.def_count as usize]
         .iter()
-        .position(|d| d.arch == ARCH_LOCK)
+        .find(|d| d.arch == ARCH_LOCK && d.item != dc.key_lock_item)
+        .map(|d| d.item)
 }
 
 /// The rate a **piece** of this material rots at, from the baked ladder.
@@ -4610,6 +4686,54 @@ mod tests {
                 .claim_bag(&dc, 7, x, z, 0)
                 .map(|d| (d.cx, d.cz, d.level)),
             Some((CX, CZ, 0))
+        );
+    }
+
+    /// A named bag wakes you there even when another is nearer; naming a
+    /// stranger's bag falls back to your own nearest.
+    #[test]
+    fn a_named_bag_beats_the_nearest_and_a_foreign_name_does_not() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        for (owner, cx) in [(7u32, CX), (7, CX + 4), (8, CX + 8)] {
+            let mut p = player_at_cell(cx, CZ, &[(5, 20)]);
+            p.id = owner;
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut deploys,
+                &mut p,
+                0,
+                3,
+                cx,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        }
+        let (fx, fz) = cell_center(CX + 4, CZ);
+        assert_eq!(
+            deploys
+                .claim_bag_at(&dc, 7, (CX, CZ, 0), fx, fz, 0)
+                .map(|d| (d.cx, d.cz)),
+            Some((CX, CZ)),
+            "the pick lost to the nearest bag"
+        );
+        assert_eq!(
+            deploys
+                .claim_bag_at(&dc, 7, (CX + 8, CZ, 0), fx, fz, 0)
+                .map(|d| (d.cx, d.cz)),
+            Some((CX + 4, CZ)),
+            "a stranger's bag was named and taken"
         );
     }
 
@@ -6478,6 +6602,126 @@ mod tests {
         assert_eq!(deploys.locks().len(), 0, "the lock record came off with it");
         assert_eq!(crate::craft::inv_count(&p.inv, 7), locks_held + 1);
         assert_eq!(crate::craft::inv_count(&p.inv, 9), boxes_held + 1);
+    }
+
+    /// A key lock is locked the moment it is on, answers to its placer,
+    /// has no keypad, and comes off as the key lock it went on as.
+    #[test]
+    fn a_key_lock_shuts_the_door_at_once_and_has_no_keypad() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.key_lock_item = 7;
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        let d = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        assert!(d.has_lock && d.locked, "a key lock is shut on placement");
+
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open);
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut stranger,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::deploy::ACCESS_OP_ENTER,
+            1234,
+            0,
+            &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
+        assert_eq!(
+            deploys.locks().iter().next().unwrap().grant(stranger.id),
+            crate::lock::GRANT_NONE,
+            "no code opens a key lock"
+        );
+        // Nor can its owner turn it into a code lock.
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::deploy::ACCESS_OP_SET_CODE,
+            1234,
+            0,
+            &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
+        assert!(deploys.locks().iter().next().unwrap().is_key());
+
+        use_door(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert!(
+            deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open,
+            "owner opens"
+        );
+
+        let held = crate::craft::inv_count(&p.inv, 7);
+        lock_op(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::deploy::ACCESS_OP_TAKE,
+            crate::lock::CODE_NONE,
+            0,
+            &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
+        assert_eq!(deploys.locks().len(), 0);
+        assert_eq!(crate::craft::inv_count(&p.inv, 7), held + 1);
     }
 
     /// The guest tier stops at the door verb (`DOORS.md` §2.2, Devblog

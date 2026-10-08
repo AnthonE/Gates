@@ -1512,6 +1512,17 @@ impl ShardCore {
                     ActionMsg::Loot => Command::Loot { id: c.id },
                     ActionMsg::Pickup => Command::Pickup { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
+                    ActionMsg::RespawnAt { cx, cz, level } => Command::RespawnAt {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                    },
+                    ActionMsg::Drop { slot, count } => Command::Drop {
+                        id: c.id,
+                        slot,
+                        count,
+                    },
                     ActionMsg::Vend { offer, times } => Command::Vend {
                         id: c.id,
                         offer,

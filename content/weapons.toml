@@ -132,6 +132,17 @@ limb_pct = 50
 rate_per_min = 48
 range_m = 2
 
+# The stone head: between the wooden spear and the metal one.
+[[weapon]]
+id = "item.spear_stone"
+kind = "melee"
+damage = 25
+structure = 3
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 48
+range_m = 2
+
 [[weapon]]
 id = "item.spear_metal"
 kind = "melee"

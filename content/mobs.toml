@@ -168,6 +168,7 @@ drops = [
   { item = "item.fat", count = 15 },
   { item = "item.cloth", count = 10 },
   { item = "item.bone_frags", count = 20 },
+  { item = "item.leather", count = 5 },
 ]
 
 # ---------------------------------------------------------------------------
@@ -311,12 +312,13 @@ fire_fear_m = 8
 # you, not because the corpse is worth the walk. No cloth at all (a wolf is
 # not where a sleeping bag comes from), and half the fat.
 #
-# Their wolf pays bone and hide. Bone came with the bone arrow, which gave
-# it a use; hide still has none, so no hide.
+# Their wolf pays bone and hide: bone for the bone arrow and helmet, hide
+# (leather) for the poncho.
 drops = [
   { item = "item.raw_meat", count = 4 },
   { item = "item.fat", count = 8 },
   { item = "item.bone_frags", count = 15 },
+  { item = "item.leather", count = 8 },
 ]
 
 # ── The attack helicopter ──────────────────────────────────────────────────
@@ -351,3 +353,45 @@ burst = 8
 rate_ms = 100
 burst_gap_ms = 1800
 spread_cm_per_10m = 18
+
+# ---------------------------------------------------------------------------
+
+[[mob]]
+id = "mob.stag"
+name = "Stag"
+
+# **Prey that only runs** — Rust's deer: the easy fat, leather and meat a
+# naked spawn can go and get without being charged. `attack = 0` is the whole
+# behaviour: a species with no bite has no courage to test, so every rousing
+# is a flight (`brain.rs`). 80 hp, the roster table the pig's tie was broken
+# on (`reference/BALANCE.md` §6).
+hp = 80
+walk_pct = 50
+# Faster than the pig's run: a sprinting player gains on it slowly, so it is
+# a bow's animal more than a spear's.
+flee_pct = 85
+flee_seconds = 5
+attack = 0
+attack_range_m = 0
+attack_seconds = 0
+brave_pct = 0
+# Skittish: it hears you further out than a pig does, day and night.
+roam_m = 80
+spook_m = 20
+night_spook_m = 20
+respawn_seconds = 300
+# Rust's `stag.population` is 3 per km², in meadow and woods.
+per_km2 = 3.0
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.3 }
+# 1.6 m long, 1.3 m to the top of the head (`render/mobs.rs` STAG_*).
+body_r_cm = 55
+body_h_cm = 130
+sight_deg = 240
+pack_m = 0
+fire_fear_m = 0
+drops = [
+  { item = "item.raw_meat", count = 6 },
+  { item = "item.fat", count = 8 },
+  { item = "item.bone_frags", count = 15 },
+  { item = "item.leather", count = 10 },
+]

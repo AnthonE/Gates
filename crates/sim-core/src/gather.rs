@@ -62,7 +62,7 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 6;
+pub const GATHERABLE_KINDS: usize = 11;
 
 /// Scan-target index for a barrel slot — one past the gatherable range,
 /// so the 3×3 scan ranks nodes and barrels against each other by distance
@@ -437,6 +437,11 @@ impl GatherContent {
             (3, 6, 3, 75, 10, 1, 9, 2),      // SulfurNode
             (4, 1, 10, 0, 0, NO_ITEM, 0, 0), // BerryBush: one-hit pickup, no mark
             (5, 1, 8, 0, 0, NO_ITEM, 0, 0),  // Hemp: the same pickup, its own item
+            (1, 1, 20, 0, 0, NO_ITEM, 0, 0), // StonePile
+            (0, 1, 20, 0, 0, NO_ITEM, 0, 0), // WoodPile
+            (2, 1, 15, 0, 0, NO_ITEM, 0, 0), // MetalPile
+            (3, 1, 10, 0, 0, NO_ITEM, 0, 0), // SulfurPile
+            (4, 1, 3, 0, 0, NO_ITEM, 0, 0),  // MushroomPatch
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -480,6 +485,11 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
         Occupant::SulfurNode => Some(3),
         Occupant::BerryBush => Some(4),
         Occupant::Hemp => Some(5),
+        Occupant::StonePile => Some(6),
+        Occupant::WoodPile => Some(7),
+        Occupant::MetalPile => Some(8),
+        Occupant::SulfurPile => Some(9),
+        Occupant::MushroomPatch => Some(10),
         Occupant::None
         | Occupant::Rock
         | Occupant::BarrelSlot
@@ -503,7 +513,7 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
 /// hemp. A shrub is scenery and has nothing to pick.
 #[inline]
 pub const fn pickable(o: Occupant) -> bool {
-    matches!(o, Occupant::BerryBush | Occupant::Hemp)
+    matches!(o, Occupant::BerryBush | Occupant::Hemp) || o.is_pickup()
 }
 
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
@@ -537,7 +547,12 @@ fn occupant_of(target: usize) -> u32 {
                 2 => Occupant::MetalNode,
                 3 => Occupant::SulfurNode,
                 4 => Occupant::BerryBush,
-                _ => Occupant::Hemp,
+                5 => Occupant::Hemp,
+                6 => Occupant::StonePile,
+                7 => Occupant::WoodPile,
+                8 => Occupant::MetalPile,
+                9 => Occupant::SulfurPile,
+                _ => Occupant::MushroomPatch,
             }) as u32
         }
     }

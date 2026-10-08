@@ -81,19 +81,21 @@ use crate::yaw_lut::yaw_dir;
 /// worldgen and worldgen is shared.
 pub const MOB_PIG: u8 = 0;
 pub const MOB_WOLF: u8 = 1;
+/// The stag: prey that only ever runs (`attack = 0`), Rust's deer.
+pub const MOB_STAG: u8 = 2;
 /// The content species — the rows `content/mobs.toml` bakes.
-pub const MOB_KINDS: usize = 2;
+pub const MOB_KINDS: usize = 3;
 /// The attack helicopter (`heli.rs`), in [`HELI_SLOT`]. **Not a content
 /// species**: past [`MOB_KINDS`], so `MobContent::def` hands back
 /// `MobDef::INERT` for it (no hit volume, no hp, no loot) and nothing here
 /// steps it — the slot is never homed. It rides the roster for the wire's
 /// sake alone.
-pub const MOB_HELI: u8 = 2;
+pub const MOB_HELI: u8 = 3;
 pub use crate::heli::HELI_SLOT;
 /// THE GATE's sentry guns (`sentry.rs`), in the slots just below the heli's.
 /// Not a content species either: the slots are never homed and have no hit
 /// volume, and they ride the roster for the wire's sake alone.
-pub const MOB_SENTRY: u8 = 3;
+pub const MOB_SENTRY: u8 = 4;
 
 /// One roster slot in this many is a predator (`DECISIONS.md` §open,
 /// "predator v0"): 256 slots at 1-in-4 is room for 64 wolves (the site
@@ -107,6 +109,8 @@ pub const MOB_SENTRY: u8 = 3;
 /// they live — `home_of` draws per slot — so two shards agree on how many
 /// wolves exist and on nothing else about them.
 pub(crate) const WOLF_SLOT_EVERY: usize = 4;
+/// The stags take the slots two past each wolf's: one in four as well.
+pub(crate) const STAG_SLOT_PHASE: usize = 2;
 
 /// Which species a roster slot holds.
 ///
@@ -131,6 +135,8 @@ pub const fn kind_of(slot: usize) -> u8 {
         MOB_SENTRY
     } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
+    } else if slot % WOLF_SLOT_EVERY == STAG_SLOT_PHASE {
+        MOB_STAG
     } else {
         MOB_PIG
     }
@@ -294,7 +300,7 @@ pub fn guard_leash_cm(slot: usize) -> Option<i64> {
 
 /// Item rows one species may drop. Structural cap, not a knob: the bake
 /// refuses a longer table rather than truncating one.
-pub const MOB_LOOT_ROWS: usize = 4;
+pub const MOB_LOOT_ROWS: usize = 6;
 
 /// Noise channels. Disjoint from every channel `terrain.rs` and `world.rs`
 /// spend, which is the only property that matters about them.
@@ -782,40 +788,37 @@ pub fn targets(mc: &MobContent, survey: &Survey) -> [usize; MOB_KINDS] {
     out
 }
 
-/// Sentry slots that fall on the wolves' stride.
-const SENTRIES_ON_STRIDE: usize = {
+/// Slots the roster has for a species, guards aside: every slot
+/// [`kind_of`] answers it for (the heli and the sentries answer their own).
+pub const fn capacity(kind: u8) -> usize {
     let mut n = 0;
-    let mut k = 0;
-    while k < crate::sentry::SENTRIES {
-        if (crate::sentry::SENTRY_SLOT0 + k).is_multiple_of(WOLF_SLOT_EVERY) {
+    let mut s = 0;
+    while s < MAX_MOBS {
+        if kind_of(s) == kind {
             n += 1;
         }
-        k += 1;
+        s += 1;
     }
-    n
-};
-
-/// Slots the roster has for a species, guards aside.
-pub const fn capacity(kind: u8) -> usize {
-    let wolf_slots = MAX_MOBS.div_ceil(WOLF_SLOT_EVERY);
     if kind == MOB_WOLF {
-        wolf_slots - SITE_GUARDS - SENTRIES_ON_STRIDE
+        n - SITE_GUARDS
     } else {
-        // Every other slot, less the heli's and the sentries'.
-        MAX_MOBS - wolf_slots - 1 - (crate::sentry::SENTRIES - SENTRIES_ON_STRIDE)
+        n
     }
 }
 
 /// A slot's place among its species' free slots, in slot order — which is
-/// the order they enrol in. `None` for a guard, a sentry and the heli.
+/// the order they enrol in. `None` for a guard, a sentry and the heli. The
+/// sentries and the heli sit at the top of the roster, so no free slot has
+/// one below it.
 pub const fn ordinal(slot: usize) -> Option<usize> {
     if slot == HELI_SLOT || crate::sentry::is_sentry_slot(slot) || guard_site_of(slot).is_some() {
         return None;
     }
-    if slot.is_multiple_of(WOLF_SLOT_EVERY) {
-        Some(slot / WOLF_SLOT_EVERY - SITE_GUARDS)
-    } else {
-        Some(slot - slot / WOLF_SLOT_EVERY - 1)
+    match kind_of(slot) {
+        MOB_WOLF => Some(slot / WOLF_SLOT_EVERY - SITE_GUARDS),
+        MOB_STAG => Some(slot / WOLF_SLOT_EVERY),
+        // The odd slots.
+        _ => Some(slot / 2),
     }
 }
 

@@ -21,8 +21,8 @@
 //! for `viewmodel_arms.rs`'s reason: a number typed into a gate is a second
 //! copy of the thing under test.
 
-use client::render::mobs::{PIG_H_M, PIG_LEN_M, WOLF_H_M, WOLF_LEN_M};
-use sim_core::mob::{MOB_PIG, MOB_WOLF};
+use client::render::mobs::{PIG_H_M, PIG_LEN_M, STAG_H_M, STAG_LEN_M, WOLF_H_M, WOLF_LEN_M};
+use sim_core::mob::{MOB_PIG, MOB_STAG, MOB_WOLF};
 
 /// The baked roster, off `content/`.
 fn mobs() -> sim_core::mob::MobContent {
@@ -46,6 +46,7 @@ fn the_hit_cylinder_is_the_animal_the_client_draws() {
     for (kind, name, h_m, len_m) in [
         (MOB_PIG, "pig", PIG_H_M, PIG_LEN_M),
         (MOB_WOLF, "wolf", WOLF_H_M, WOLF_LEN_M),
+        (MOB_STAG, "stag", STAG_H_M, STAG_LEN_M),
     ] {
         let def = mc.def(kind);
         let h = f32::from(def.body_h_cm) * 0.01;
@@ -80,7 +81,7 @@ fn the_hit_cylinder_is_the_animal_the_client_draws() {
 #[test]
 fn no_shipped_species_is_a_ghost() {
     let mc = mobs();
-    for (kind, name) in [(MOB_PIG, "pig"), (MOB_WOLF, "wolf")] {
+    for (kind, name) in [(MOB_PIG, "pig"), (MOB_WOLF, "wolf"), (MOB_STAG, "stag")] {
         let def = mc.def(kind);
         assert!(
             def.body_r_cm > 0 && def.body_h_cm > 0,

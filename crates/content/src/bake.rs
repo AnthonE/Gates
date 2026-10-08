@@ -83,6 +83,11 @@ fn node_slot(a: NodeArchetype) -> usize {
         NodeArchetype::SulfurNode => sim_core::terrain::Occupant::SulfurNode,
         NodeArchetype::BerryBush => sim_core::terrain::Occupant::BerryBush,
         NodeArchetype::Hemp => sim_core::terrain::Occupant::Hemp,
+        NodeArchetype::StonePile => sim_core::terrain::Occupant::StonePile,
+        NodeArchetype::WoodPile => sim_core::terrain::Occupant::WoodPile,
+        NodeArchetype::MetalPile => sim_core::terrain::Occupant::MetalPile,
+        NodeArchetype::SulfurPile => sim_core::terrain::Occupant::SulfurPile,
+        NodeArchetype::MushroomPatch => sim_core::terrain::Occupant::MushroomPatch,
     };
     sim_core::gather::node_index(o).expect("every archetype is a gather node")
 }
@@ -488,6 +493,7 @@ impl Content {
                     DeployArchetype::GarageDoor => ARCH_GARAGE_DOOR,
                     DeployArchetype::WindowGlass => sim_core::deploy::ARCH_WINDOW_GLASS,
                     DeployArchetype::WindowShutter => sim_core::deploy::ARCH_WINDOW_SHUTTER,
+                    DeployArchetype::Barricade => sim_core::deploy::ARCH_BARRICADE,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -570,6 +576,11 @@ impl Content {
             .map_err(|_| "bake: inside_decay_pct overflows u16".to_string())?;
         dc.grief_periods = u16::try_from(g.grief_protection_h)
             .map_err(|_| "bake: grief_protection_h overflows u16".to_string())?;
+        if let Some(d) = self.deployables.iter().find(|d| d.keyed) {
+            dc.key_lock_item = self
+                .item_index(&d.id)
+                .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?;
+        }
         Ok(dc)
     }
 
@@ -1179,6 +1190,18 @@ impl Content {
         sc.dehydrate_hp_per_min = u16f(s.dehydrate_hp_per_min, "dehydrate_hp_per_min")?;
         sc.drink_water = u16f(s.drink_water, "drink_water")?;
         sc.drink_hp_cost = u16f(s.drink_hp_cost, "drink_hp_cost")?;
+        match (&s.vessel, &s.vessel_full) {
+            (Some(e), Some(f)) => {
+                let idx = |id: &str| {
+                    self.item_index(id)
+                        .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
+                };
+                sc.vessel = idx(e)?;
+                sc.vessel_full = idx(f)?;
+            }
+            (None, None) => {}
+            _ => return Err("bake: survival names one half of the vessel pair".to_string()),
+        }
         let span = |min: u32, what: &str| {
             min.checked_mul(TICKS_PER_MIN)
                 .ok_or_else(|| format!("bake: survival {what} {min} min overflows the tick span"))
@@ -1249,6 +1272,11 @@ impl Content {
                 seconds,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
+        }
+        if sc.vessel_full != sim_core::gather::NO_ITEM
+            && sc.consumable[sc.vessel_full as usize].water == 0
+        {
+            return Err("bake: survival vessel_full holds no water".to_string());
         }
         Ok(sc)
     }
@@ -2235,6 +2263,7 @@ impl Content {
             let which = match m.id.as_str() {
                 "mob.pig" => MOB_PIG as usize,
                 "mob.wolf" => MOB_WOLF as usize,
+                "mob.stag" => sim_core::mob::MOB_STAG as usize,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"

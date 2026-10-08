@@ -216,6 +216,7 @@ pub fn hash(c: &Content) -> u64 {
             Some(m) => h.u(1 + m as u32),
         }
         h.u(d.hp);
+        h.u(u32::from(d.keyed));
     }
 
     h.s("loot");
@@ -422,6 +423,8 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.water_minutes_to_empty);
     h.u(sv.starve_hp_per_min);
     h.u(sv.dehydrate_hp_per_min);
+    h.s(sv.vessel.as_deref().unwrap_or(""));
+    h.s(sv.vessel_full.as_deref().unwrap_or(""));
 
     let ex = &c.balance.exposure;
     h.s("exposure");

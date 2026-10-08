@@ -258,8 +258,66 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         grid(col, core, icons, kind, 0, n, container_cols(kind), NO_SEL);
         if converter {
             controls(col, open_cont_lit(core), Val::Auto);
+        } else {
+            take_all_button(col);
         }
     });
+}
+
+/// The TAKE ALL button under a plain container (Rust's LOOT ALL).
+#[derive(Component)]
+pub struct TakeAll;
+
+fn take_all_button(parent: &mut ChildSpawnerCommands) {
+    let (rest, hot) = (CELL_BG, CELL_HOVER);
+    parent
+        .spawn((
+            Button,
+            TakeAll,
+            Node {
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(5.0)),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(rest),
+            super::Hover { rest, hot },
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new("TAKE ALL"),
+                font_bold(13.0),
+                TextColor(TEXT),
+                Pickable::IGNORE,
+            ));
+        });
+}
+
+/// TAKE ALL: one quick-move per stack, planned up front
+/// (`ui::slots::take_all`). The lane paces them (`server::pace`).
+pub fn take_all_clicks(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    button: Query<&Interaction, (Changed<Interaction>, With<TakeAll>)>,
+) {
+    if ui.panel != Panel::Inventory || !button.iter().any(|i| *i == Interaction::Pressed) {
+        return;
+    }
+    let core = &net.session.core;
+    let moves = crate::ui::slots::take_all(
+        core.cont_kind,
+        core.cont_handle,
+        &core.catalog,
+        &core.inv,
+        &core.cont,
+        &core.worn,
+    );
+    if moves.is_empty() {
+        ui.say("nothing to take, or no room for it");
+        return;
+    }
+    for args in moves {
+        send_move(&mut ui, &net, args);
+    }
 }
 
 /// The open container's archetype, if it is a furnace or a recycler — a
@@ -1409,6 +1467,8 @@ pub fn drag_pointer(
         &mut BackgroundColor,
     )>,
     ghosts: Query<Entity, With<GhostRoot>>,
+    // Where the cells are, so a release well clear of all of them drops.
+    rects: Query<(&ComputedNode, &UiGlobalTransform), With<SlotCell>>,
     // `Option` for `rebuild`'s reason: `icons::load` is a `Startup` system,
     // and a ghost asked for before it has run draws the label it drew before
     // rather than an empty tile.
@@ -1560,10 +1620,19 @@ pub fn drag_pointer(
     }
 
     let Some(target) = over else {
-        // Released over the world. Nothing is sent — dropping an item on the
-        // ground is a verb the sim does not have yet (`MENUS.md` §4), and
-        // inventing one here would be the client deciding.
-        ui.say("released over nothing - the item stayed put");
+        // Released clear of every cell: Rust's drop. Between two cells is
+        // not clear, so a slipped release does not throw a stack away.
+        let clear = window
+            .single()
+            .ok()
+            .and_then(|w| w.cursor_position())
+            .is_some_and(|p| clear_of_cells(&rects, p));
+        if drag.kind == CONT_SELF && clear {
+            let held = cell_stack(core, drag.kind, drag.slot).count;
+            drop_item(&mut ui, &net, drag.slot, drag.grab.units(held));
+        } else {
+            ui.say("released over nothing - the item stayed put");
+        }
         return;
     };
 
@@ -1704,6 +1773,50 @@ pub fn drag_pointer(
     };
 
     send_move(&mut ui, &net, args);
+}
+
+/// How far outside the cells' bounding box a release must land to drop,
+/// logical px.
+const DROP_CLEAR_PX: f32 = 24.0;
+
+/// Whether `cursor` (logical px) is outside the box around every slot cell,
+/// by [`DROP_CLEAR_PX`].
+fn clear_of_cells(
+    rects: &Query<(&ComputedNode, &UiGlobalTransform), With<SlotCell>>,
+    cursor: Vec2,
+) -> bool {
+    let mut lo = Vec2::splat(f32::MAX);
+    let mut hi = Vec2::splat(f32::MIN);
+    for (node, at) in rects.iter() {
+        // Layout is in physical px; the cursor is logical.
+        let k = node.inverse_scale_factor();
+        let centre = at.translation * k;
+        let half = node.size() * k * 0.5;
+        lo = lo.min(centre - half);
+        hi = hi.max(centre + half);
+    }
+    if lo.x > hi.x {
+        return false;
+    }
+    let pad = Vec2::splat(DROP_CLEAR_PX);
+    let (lo, hi) = (lo - pad, hi + pad);
+    cursor.x < lo.x || cursor.x > hi.x || cursor.y < lo.y || cursor.y > hi.y
+}
+
+/// Drop `count` of inventory `slot` at your feet (`ACT_DROP`). Whether it
+/// lands is the sim's; the inventory redraws when it does.
+fn drop_item(ui: &mut Ui, net: &super::super::Net, slot: usize, count: u16) {
+    let (Ok(slot), true) = (u8::try_from(slot), count > 0) else {
+        return;
+    };
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_drop(slot, count, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.say("dropped"),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the drop would not encode ({e:?})")),
+    }
 }
 
 /// Put a validated move on the wire. **One call site for `MoveArgs::encode`

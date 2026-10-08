@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 149] = [
+const GOLDEN: [&[u8]; 151] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -212,6 +212,8 @@ const GOLDEN: [&[u8]; 149] = [
     include_bytes!("golden/event_glyphs.bin"),
     include_bytes!("golden/event_mech_solved.bin"),
     include_bytes!("golden/event_alphabet.bin"),
+    include_bytes!("golden/action_drop.bin"),
+    include_bytes!("golden/action_respawn_at.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -459,8 +461,11 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 146);
     g!(seen, golden_event, 147);
     g!(seen, golden_event, 148);
+    // Drop an item (v97).
+    g!(seen, golden_action, 149);
+    g!(seen, golden_action, 150);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 149, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 151, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -554,6 +559,24 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_respawn_gate(&mut buf).unwrap()
+        }
+        "action_respawn_at.bin" => {
+            let (cx, cz, level) = protocol::goldens::action_respawn_at();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::RespawnAt { cx, cz, level },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_respawn_at(cx, cz, level, &mut buf).unwrap()
+        }
+        "action_drop.bin" => {
+            let (slot, count) = protocol::goldens::action_drop();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Drop { slot, count },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_drop(slot, count, &mut buf).unwrap()
         }
         "action_pick.bin" => {
             let cell = protocol::goldens::action_pick();

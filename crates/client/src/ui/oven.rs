@@ -63,14 +63,10 @@ pub fn converter_open(
     })
 }
 
-/// `REFUSE_M_OVEN` in words, for the converter that said it. A Rust player
-/// drags ore into the furnace first, and smelting here is a recipe made
-/// beside it, so the furnace's sentence points there.
+/// `REFUSE_M_OVEN` in words, for the converter that said it.
 pub fn oven_refusal(arch: u8) -> &'static str {
     match arch {
-        sim_core::deploy::ARCH_FURNACE => {
-            "a furnace burns wood - smelt ore in the crafting menu (Q) beside it"
-        }
+        sim_core::deploy::ARCH_FURNACE => "a furnace takes wood and ore",
         sim_core::deploy::ARCH_RECYCLER => "the recycler only takes what it can break down",
         _ => refusal_text(REFUSE_M_OVEN as u8),
     }

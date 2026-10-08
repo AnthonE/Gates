@@ -227,6 +227,9 @@ starve_hp_per_min = 3
 dehydrate_hp_per_min = 5
 drink_water = 25
 drink_hp_cost = 2
+# The water vessel: H at fresh water with the empty skin in hand fills it.
+vessel = "item.waterskin"
+vessel_full = "item.waterskin_full"
 
 # Wet and cold (weather v0, `sim_core::exposure`) — the reference's exposure:
 # rain soaks you unless something is overhead (their `weather.wetness_rain`),
