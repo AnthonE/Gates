@@ -178,6 +178,11 @@ impl WorldConts {
         &self.entries[..self.len]
     }
 
+    /// Boot-only (`World::clamp_conditions`).
+    pub(crate) fn entries_mut(&mut self) -> &mut [WorldContRec] {
+        &mut self.entries[..self.len]
+    }
+
     /// Replace the store from a decoded world save. Boot-only
     /// (`worldsave.rs`).
     pub(crate) fn restore(&mut self, recs: &[WorldContRec]) {

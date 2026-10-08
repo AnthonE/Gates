@@ -174,6 +174,16 @@ pub struct ShardConfig {
     /// Proposed default 1800 ticks = 60 s at 30 Hz, DECISIONS.md §open
     /// ("world persistence v0").
     pub world_save_interval_ticks: u64,
+    /// The posted wipe schedule (`wipe.rs`, `ARC.md` F8): `wipe_days = 7`
+    /// wipes every seven days from `wipe_anchor` (default 1970-01-01 19:00
+    /// UTC, a Thursday — so 7 is every Thursday at 19:00 UTC). Unset ⇒ no
+    /// schedule; an admin's `/wipe` still works. Needs `world_file` or
+    /// `save_file`, because a wipe of a shard that keeps nothing is a restart.
+    pub wipe: Option<crate::wipe::Schedule>,
+    /// Every Nth wipe also clears blueprints (and glyphs). 2 ⇒ blueprints
+    /// survive one wipe (`DESIGN.md` §2); 0 ⇒ never by schedule (`/wipe N bp`
+    /// still forces one).
+    pub blueprint_wipe_every: u32,
     /// Where the status endpoint listens (`status.rs`): a plain HTTP
     /// responder answering `GET /status.json` with integers read off
     /// `ShardStats` atomics — `players`, `max_players`, `tick` — on its own
@@ -366,6 +376,8 @@ impl ShardConfig {
             save_file: None,
             world_file: None,
             world_save_interval_ticks: DEFAULT_WORLD_SAVE_INTERVAL_TICKS,
+            wipe: None,
+            blueprint_wipe_every: 2,
             status_addr: None,
             domain: "127.0.0.1".into(),
             entitle: crate::entitle::Config::off(),
@@ -453,6 +465,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut save_file: Option<String> = None;
     let mut world_file: Option<String> = None;
     let mut world_save_interval_ticks: u64 = DEFAULT_WORLD_SAVE_INTERVAL_TICKS;
+    let mut wipe_days: Option<u32> = None;
+    let mut wipe_anchor: Option<u64> = None;
+    let mut blueprint_wipe_every: u32 = 2;
     let mut status_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     let mut entitle_origin: Option<String> = None;
@@ -712,6 +727,35 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ));
                 }
                 world_save_interval_ticks = v;
+            }
+            "wipe_days" => {
+                let v: u32 = value
+                    .parse()
+                    .ok()
+                    .filter(|d| (1..=365).contains(d))
+                    .ok_or_else(|| {
+                        format!(
+                            "shard.toml line {}: wipe_days must be 1..=365 — omit the key \
+                             for no schedule",
+                            n + 1
+                        )
+                    })?;
+                wipe_days = Some(v);
+            }
+            "wipe_anchor" => {
+                wipe_anchor = Some(
+                    crate::wipe::parse_anchor(value)
+                        .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
+                );
+            }
+            "blueprint_wipe_every" => {
+                blueprint_wipe_every = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: blueprint_wipe_every must be a whole \
+                         number (0 = never)",
+                        n + 1
+                    )
+                })?;
             }
             // A `SocketAddr` like `bind`, and refused when it does not parse
             // — an empty value fails the same parse, so the "a line the
@@ -1039,7 +1083,21 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    if wipe_anchor.is_some() && wipe_days.is_none() {
+        return Err("shard.toml: wipe_anchor without wipe_days — the anchor of no schedule".into());
+    }
+    if wipe_days.is_some() && save_file.is_none() && world_file.is_none() {
+        return Err(
+            "shard.toml: wipe_days needs world_file or save_file — a shard that keeps \
+             nothing has nothing to wipe"
+                .into(),
+        );
+    }
     Ok(ShardConfig {
+        wipe: wipe_days.map(|d| {
+            crate::wipe::Schedule::days(d, wipe_anchor.unwrap_or(crate::wipe::DEFAULT_ANCHOR))
+        }),
+        blueprint_wipe_every,
         congestion: congestion.unwrap_or_default(),
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
@@ -1167,6 +1225,33 @@ mod tests {
     /// boot failure rather than a silent fallback** — the failure mode this
     /// refuses is a `shard.toml` reading `cc = "bbr2"` while the shard runs
     /// CUBIC and the operator reads the measurement as BBR's.
+    #[test]
+    fn the_wipe_schedule_parses_or_refuses() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\nworld_file = \"w\"\n";
+        let cfg = parse_shard_toml(base).unwrap();
+        assert_eq!((cfg.wipe, cfg.blueprint_wipe_every), (None, 2));
+        let cfg =
+            parse_shard_toml(&format!("{base}wipe_days = 14\nblueprint_wipe_every = 0\n")).unwrap();
+        assert_eq!(
+            cfg.wipe,
+            Some(crate::wipe::Schedule::days(14, crate::wipe::DEFAULT_ANCHOR))
+        );
+        assert_eq!(cfg.blueprint_wipe_every, 0);
+        let cfg = parse_shard_toml(&format!(
+            "{base}wipe_days = 7\nwipe_anchor = \"2026-10-08 19:00\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.wipe.unwrap().anchor, 1_791_486_000);
+        for bad in [
+            format!("{base}wipe_days = 0\n"),
+            format!("{base}wipe_anchor = \"2026-10-08 19:00\"\n"),
+            format!("{base}wipe_days = 7\nwipe_anchor = \"Thursday\"\n"),
+            "bind = \"127.0.0.1:0\"\nseed = 1\nwipe_days = 7\n".to_string(),
+        ] {
+            assert!(parse_shard_toml(&bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn the_congestion_knob_parses_or_refuses_but_never_guesses() {
         let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";

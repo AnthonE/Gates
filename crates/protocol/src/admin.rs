@@ -73,6 +73,14 @@ pub enum AdminCmd {
     /// Move the day clock to a point in the day, per mille of `day_frac`
     /// (0 dawn, `DAY_PORTION` dusk) — the reference's `env.time`.
     Time { frac_pm: u16 },
+    /// `/wipe <minutes>|now [bp]`: end this world `minutes` from now, with
+    /// a countdown in chat (`server::wipe`). `bp` makes it a blueprint wipe
+    /// whatever the cadence says.
+    Wipe { minutes: u16, blueprints: bool },
+    /// `/wipe cancel`: drop an admin's pending wipe (the schedule stays).
+    WipeCancel,
+    /// Bare `/wipe`: anyone may ask when the next one is.
+    WipeWhen,
     /// Not an admin verb: anyone may file one. The tick and the filer's
     /// position are stamped by the server, so the note is all a player
     /// has to type (`ALPHA.md` §4).
@@ -137,6 +145,27 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
             (count > 0).then_some(AdminCmd::Give { item, count })
         }
         "save" => Some(AdminCmd::SaveNow),
+        "wipe" => match parts.next() {
+            None => Some(AdminCmd::WipeWhen),
+            Some("cancel") => (parts.next().is_none()).then_some(AdminCmd::WipeCancel),
+            Some(when) => {
+                // A day out at most: a countdown longer than that is a
+                // schedule, and the schedule is `shard.toml`'s.
+                let minutes: u16 = match when {
+                    "now" => 0,
+                    m => m.parse().ok().filter(|&m| m <= 24 * 60)?,
+                };
+                let blueprints = match parts.next() {
+                    None => false,
+                    Some("bp") => true,
+                    Some(_) => return None,
+                };
+                (parts.next().is_none()).then_some(AdminCmd::Wipe {
+                    minutes,
+                    blueprints,
+                })
+            }
+        },
         "weather" => {
             use sim_core::weather::*;
             let mode = match parts.next()? {
@@ -190,6 +219,29 @@ mod tests {
 
     fn text(s: &str) -> ChatText {
         ChatText::sanitize(s.as_bytes()).expect("a legal chat line")
+    }
+
+    #[test]
+    fn wipe_parses() {
+        assert_eq!(parse(&text("/wipe")), Some(AdminCmd::WipeWhen));
+        assert_eq!(parse(&text("/wipe cancel")), Some(AdminCmd::WipeCancel));
+        assert_eq!(
+            parse(&text("/wipe 10")),
+            Some(AdminCmd::Wipe {
+                minutes: 10,
+                blueprints: false
+            })
+        );
+        assert_eq!(
+            parse(&text("/wipe now bp")),
+            Some(AdminCmd::Wipe {
+                minutes: 0,
+                blueprints: true
+            })
+        );
+        for bad in ["/wipe 1441", "/wipe soon", "/wipe 5 maybe", "/wipe 5 bp x"] {
+            assert_eq!(parse(&text(bad)), None, "{bad}");
+        }
     }
 
     #[test]

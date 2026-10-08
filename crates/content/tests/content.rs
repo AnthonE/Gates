@@ -337,6 +337,60 @@ fn test_content() {
     );
 }
 
+/// A save pins the layout, not the hash (`store.rs`, `worldfile.rs`): a
+/// balance edit moves the hash and must leave the layout alone, or every
+/// tuning pass mid-wipe discards everyone's inventory. A new item row moves
+/// every rank after it, and a reordered work input moves where its progress
+/// is filed, so both must move the layout.
+#[test]
+fn layout_holds_through_a_balance_edit_and_moves_with_a_row() {
+    let base = build(&sources()).unwrap();
+    let edit = |file: &str, from: &str, to: &str| {
+        let mut srcs = sources();
+        let e = srcs.iter_mut().find(|(n, _)| *n == file).unwrap();
+        assert!(e.1.contains(from), "fixture rot: `{from}` not in {file}");
+        e.1 = e.1.replacen(from, to, 1);
+        build(&srcs).unwrap()
+    };
+
+    let tuned = edit("items.toml", "stack = 1000", "stack = 999");
+    assert_ne!(base.hash(), tuned.hash());
+    assert_eq!(
+        base.layout_hash(),
+        tuned.layout_hash(),
+        "a stack size is balance"
+    );
+    let tuned = edit("arc.toml", "count = 60000", "count = 40000");
+    assert_ne!(base.hash(), tuned.hash());
+    assert_eq!(
+        base.layout_hash(),
+        tuned.layout_hash(),
+        "a quota is balance"
+    );
+
+    let grown = edit(
+        "items.toml",
+        "[[item]]\nid = \"item.wood\"",
+        "[[item]]\nid = \"item.aaa_new\"\nname = \"New\"\nstack = 1\ntier = 0\n\
+         rarity = \"common\"\nslot = \"none\"\n\n[[item]]\nid = \"item.wood\"",
+    );
+    assert_ne!(
+        base.layout_hash(),
+        grown.layout_hash(),
+        "a new item moves every rank"
+    );
+    let swapped = edit(
+        "arc.toml",
+        "    { item = \"item.stone\", count = 60000 },\n    { item = \"item.metal_ore\", count = 15000 },",
+        "    { item = \"item.metal_ore\", count = 15000 },\n    { item = \"item.stone\", count = 60000 },",
+    );
+    assert_ne!(
+        base.layout_hash(),
+        swapped.layout_hash(),
+        "a work's progress is filed per input slot"
+    );
+}
+
 #[test]
 fn hash_moves_with_values() {
     let base = build(&sources()).unwrap().hash();

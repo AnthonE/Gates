@@ -35,6 +35,13 @@
 //!    fully-repaired tool — repair is deliberately v1 (re-craft is the
 //!    repair), so the clamp would be the only free repair in the game.
 //!
+//! **Except across a balance edit.** Since saves pin the content *layout*
+//! rather than its hash (`store::match_content`), a file written under
+//! other numbers loads, and then reason 1 fails: a ceiling the operator
+//! lowered is exactly the innocent explanation. So on that boot, and only
+//! that one, an over-ceiling stack is [`clamp`]ed to the new ceiling, and
+//! the clamped state is what the next save writes.
+//!
 //! Per-path policy, stated where each is implemented: the **player store**
 //! counts the record as corrupt (`SaveLoad::corrupt` — one player starts
 //! over, the file boots); the **world file** refuses the boot whole
@@ -71,6 +78,21 @@ pub fn violation(stacks: &[ItemStack], gather: &GatherContent) -> Option<CondVio
             max,
         })
     })
+}
+
+/// Bring every occupied stack within its item's ceiling, and say how many
+/// moved. The balance-edit door only (the module header says why the
+/// same-content door refuses instead).
+pub fn clamp(stacks: &mut [ItemStack], gather: &GatherContent) -> usize {
+    let mut moved = 0;
+    for s in stacks.iter_mut() {
+        let max = gather.cond_max_of(s.item);
+        if s.count > 0 && s.cond > max {
+            s.cond = max;
+            moved += 1;
+        }
+    }
+    moved
 }
 
 #[cfg(test)]

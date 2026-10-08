@@ -499,7 +499,8 @@ const _: () = assert!(
 /// assert above's reason: two of the three terms are other crates'
 /// constants.
 const _: () = assert!(
-    3 + MINOR_SITES + sim_core::landmark::LANDMARKS + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    3 + MINOR_SITES + sim_core::landmark::LANDMARKS + sim_core::limits::MAX_WORKS + 1 + BAG_CAP
+        <= MAP_MARKS_MAX,
     "the own tier outgrew the marker cap — a player's own bed would be dropped"
 );
 
@@ -539,6 +540,11 @@ pub enum MarkKind {
     Hearth,
     /// A standing death backpack: where your stuff is.
     Backpack,
+    /// A work's terminal (`ARC.md` F1): where the island is fed. Named by
+    /// the work ([`Mark::label`]).
+    Work,
+    /// An inscribed stone (`ARC.md` F6): where glyphs are learned.
+    Stone,
 }
 
 impl MarkKind {
@@ -569,6 +575,10 @@ impl MarkKind {
             MarkKind::Bed | MarkKind::BedSpent => [127.0, 179.0, 255.0],
             MarkKind::Hearth => [255.0, 157.0, 92.0],
             MarkKind::Backpack => [232.0, 215.0, 106.0],
+            // Amber: a fire the island keeps.
+            MarkKind::Work => [250.0, 176.0, 64.0],
+            // Jade: the ancients' writing.
+            MarkKind::Stone => [110.0, 220.0, 200.0],
         }
     }
 
@@ -611,6 +621,8 @@ impl MarkKind {
             MarkKind::Bed | MarkKind::BedSpent => Some("map_bed"),
             MarkKind::Hearth => Some("map_hearth"),
             MarkKind::Backpack => Some("backpack"),
+            MarkKind::Work => Some("ui_star"),
+            MarkKind::Stone => Some("map_site"),
         }
     }
 
@@ -634,9 +646,13 @@ impl MarkKind {
             MarkKind::Monument => Some("BLACK ZIGGURAT"),
             MarkKind::Waystation => Some("WAYSTATION"),
             MarkKind::Depot => Some("DEPOT"),
-            // A landmark's name is its own, on the mark (`Mark::name`).
+            // A landmark's name is its own, on the mark (`Mark::name`), and
+            // a work's is the work's (`Mark::label`). A stone is unnamed:
+            // there are many, and what one says is the reason to walk there.
             MarkKind::None
             | MarkKind::Landmark
+            | MarkKind::Work
+            | MarkKind::Stone
             | MarkKind::Bed
             | MarkKind::BedSpent
             | MarkKind::Hearth
@@ -656,6 +672,65 @@ pub struct Mark {
     pub py: f32,
     /// A landmark's own name; every other mark is named by its kind.
     pub name: Option<&'static str>,
+    /// A name that arrived over the wire (a work's), which `name` cannot
+    /// hold. Empty for every other mark.
+    pub label: MarkLabel,
+}
+
+/// A short name carried by value, so a [`Mark`] stays `Copy` and [`Marks`]
+/// stays fixed storage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MarkLabel {
+    bytes: [u8; 24],
+    len: u8,
+}
+
+impl MarkLabel {
+    /// `s`, cut at a character boundary to fit.
+    pub fn new(s: &str) -> Self {
+        let mut l = Self::default();
+        let mut n = s.len().min(l.bytes.len());
+        while !s.is_char_boundary(n) {
+            n -= 1;
+        }
+        l.bytes[..n].copy_from_slice(&s.as_bytes()[..n]);
+        l.len = n as u8;
+        l
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        (self.len > 0)
+            .then(|| core::str::from_utf8(&self.bytes[..self.len as usize]).ok())
+            .flatten()
+    }
+}
+
+/// The arc's places a map marks (`ARC.md`): every work's terminal, named,
+/// and every inscribed stone. Filled by the render layer off what the
+/// client has been told (`ClientCore::arc`, `ClientCore::lore`); fixed
+/// storage, so a resolve allocates nothing.
+#[derive(Clone, Copy, Default)]
+pub struct ArcMarks {
+    pub works: [(sim_core::spot::Spot, MarkLabel); sim_core::limits::MAX_WORKS],
+    pub n_works: usize,
+    pub stones: [sim_core::spot::Spot; sim_core::limits::MAX_INSCRIPTIONS],
+    pub n_stones: usize,
+}
+
+impl ArcMarks {
+    pub fn add_work(&mut self, spot: sim_core::spot::Spot, name: &str) {
+        if self.n_works < self.works.len() {
+            self.works[self.n_works] = (spot, MarkLabel::new(name));
+            self.n_works += 1;
+        }
+    }
+
+    pub fn add_stone(&mut self, spot: sim_core::spot::Spot) {
+        if self.n_stones < self.stones.len() {
+            self.stones[self.n_stones] = spot;
+            self.n_stones += 1;
+        }
+    }
 }
 
 /// A reusable marker set: fixed storage, a live count, and the overflow
@@ -694,6 +769,7 @@ impl Marks {
             px,
             py,
             name: None,
+            label: MarkLabel::default(),
         };
         self.count += 1;
     }
@@ -746,6 +822,7 @@ pub fn resolve_marks(
     bags: &[WireBag],
     own_bag: u32,
     own_beds: &[BagAnchor],
+    arc: &ArcMarks,
 ) {
     out.count = 0;
     out.dropped = 0;
@@ -771,6 +848,18 @@ pub fn resolve_marks(
         out.push(MarkKind::Landmark, m.x, m.z);
         if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Landmark {
             out.a[out.count - 1].name = Some(sim_core::landmark::name(m.kind));
+        }
+    }
+    // The works, named: the island's shared projects, authored like the
+    // sites, so inside the tier the cap can never reach (the assert above
+    // `MarkKind`). A work on a seed without its site stands nowhere and is
+    // not drawn (`sim_core::spot`).
+    for (spot, label) in arc.works.iter().take(arc.n_works) {
+        if let Some((x, _, z)) = sim_core::spot::world(haven, spot) {
+            out.push(MarkKind::Work, x, z);
+            if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Work {
+                out.a[out.count - 1].label = *label;
+            }
         }
     }
 
@@ -808,6 +897,12 @@ pub fn resolve_marks(
             rec.cx as f32 * BUILD_CELL_M + half,
             rec.cz as f32 * BUILD_CELL_M + half,
         );
+    }
+    // The stones, behind what is yours and ahead of strangers' things.
+    for spot in arc.stones.iter().take(arc.n_stones) {
+        if let Some((x, _, z)) = sim_core::spot::world(haven, spot) {
+            out.push(MarkKind::Stone, x, z);
+        }
     }
     for bag in bags {
         if own_bag != 0 && bag.id == own_bag {
@@ -1135,6 +1230,50 @@ mod tests {
         }
     }
 
+    /// A work lands in the authored tier, named, where `sim_core::spot` puts
+    /// its terminal; a stone lands behind what is yours; a work on a site the
+    /// seed lacks is not drawn.
+    #[test]
+    fn works_and_stones_are_marked_where_the_sim_stands_them() {
+        use sim_core::spot::{Spot, SITE_TOWN};
+        let haven = terrain::haven(20_260_731);
+        let (defs, have) = defs_with(&[]);
+        let at_town = Spot {
+            site: SITE_TOWN,
+            ..Spot::default()
+        };
+        let nowhere = Spot {
+            site: sim_core::spot::SITE_LANDMARK0, // a mast: this seed has none
+            ..Spot::default()
+        };
+        let mut arc = ArcMarks::default();
+        arc.add_work(at_town, "THE CRUCIBLE");
+        arc.add_work(nowhere, "THE LOST");
+        arc.add_stone(at_town);
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[], &arc);
+
+        let works: Vec<&Mark> = out.a[..out.count]
+            .iter()
+            .filter(|m| m.kind == MarkKind::Work)
+            .collect();
+        assert_eq!(works.len(), 1, "the work with no site is not drawn");
+        assert_eq!(works[0].label.as_str(), Some("THE CRUCIBLE"));
+        let (x, _, z) = sim_core::spot::world(&haven, &at_town).unwrap();
+        let (px, py) = world_to_map(x, z, 1);
+        assert_eq!((works[0].px, works[0].py), (px, py));
+        assert_eq!(
+            out.a[authored(&haven)].kind,
+            MarkKind::Work,
+            "in the authored tier"
+        );
+        assert_eq!(out.a[out.count - 1].kind, MarkKind::Stone);
+        assert_eq!(
+            MarkLabel::new("ÉÉÉÉÉÉÉÉÉÉÉÉÉ").as_str().map(str::len),
+            Some(24)
+        );
+    }
+
     /// The authored tier is real, first, and lands where the terrain says the
     /// pad is — through the SAME projection everything else uses. This is the
     /// `NOW.md` §0a item: the one authored destination was unfindable.
@@ -1143,7 +1282,17 @@ mod tests {
         let haven = terrain::haven(42);
         let (defs, have) = defs_with(&[]);
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &[],
+            &defs,
+            have,
+            &[],
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
 
         assert_eq!(
             out.count,
@@ -1199,7 +1348,17 @@ mod tests {
             kind: 0,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            have,
+            &bags,
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
 
         assert_eq!(out.count, authored(&haven) + 3);
         let half = BUILD_CELL_M * 0.5;
@@ -1226,7 +1385,17 @@ mod tests {
         let (defs, have) = defs_with(&[ARCH_BOX, ARCH_DOOR, ARCH_FIRE]);
         let deploys = [rec_at(10, 10, 0), rec_at(11, 10, 1), rec_at(12, 10, 2)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            have,
+            &[],
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
         assert_eq!(out.count, authored(&haven), "only the authored tier");
     }
 
@@ -1240,7 +1409,17 @@ mod tests {
         let (defs, _) = defs_with(&[ARCH_BAG]);
         let deploys = [rec_at(10, 10, 0)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            0,
+            &[],
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
         assert_eq!(out.count, authored(&haven), "an unknown row must not mark");
     }
 
@@ -1261,14 +1440,34 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &[],
+            &defs,
+            have,
+            &bags,
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, authored(&haven) + over);
         assert_eq!(out.a[0].kind, MarkKind::Haven, "authored is never dropped");
         // A second resolve on the same `Marks` starts clean — the reuse bug
         // the browser gated (an accumulating set draws yesterday's bags).
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &[],
+            &defs,
+            have,
+            &[],
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
         assert_eq!(out.count, authored(&haven));
         assert_eq!(out.dropped, 0);
     }
@@ -1295,7 +1494,17 @@ mod tests {
             kind: 0,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            have,
+            &bags,
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(
@@ -1336,7 +1545,17 @@ mod tests {
             kind: 0,
         });
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, 0, &bags, 7, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &[],
+            &defs,
+            0,
+            &bags,
+            7,
+            &[],
+            &ArcMarks::default(),
+        );
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         let (px, py) = world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1);
@@ -1364,7 +1583,17 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &[],
+            &defs,
+            have,
+            &bags,
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, authored(&haven) + 1, "the overflow is counted");
@@ -1399,7 +1628,17 @@ mod tests {
         let (px, py) = world_to_map(500.0 * BUILD_CELL_M + half, 400.0 * BUILD_CELL_M + half, 1);
 
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            have,
+            &[],
+            0,
+            &own,
+            &ArcMarks::default(),
+        );
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(
             out.a[..out.count]
@@ -1419,7 +1658,17 @@ mod tests {
 
         // The same shard with no tag: drop-newest eats exactly this bed —
         // the defect this test exists to hold closed.
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            have,
+            &[],
+            0,
+            &[],
+            &ArcMarks::default(),
+        );
         assert!(
             !out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
             "untagged, the newest bed is the first mark the cap eats"
@@ -1440,7 +1689,17 @@ mod tests {
         let mut deploys = [rec_at(11, 20, 0), rec_at(10, 20, 0), rec_at(10, 20, 1)];
         let own = [anchor(10, 20, true), anchor(900, 900, true)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            have,
+            &[],
+            0,
+            &own,
+            &ArcMarks::default(),
+        );
 
         assert_eq!(out.count, authored(&haven) + 3, "re-ranked, not duplicated");
         assert_eq!(
@@ -1473,7 +1732,17 @@ mod tests {
         // An undripped row cannot be tagged either — the INERT-reads-as-bag
         // guard holds inside the own tier too.
         deploys[0].row = 1; // hearth row, but pretend the drip is behind
-        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &own);
+        resolve_marks(
+            &mut out,
+            &haven,
+            &deploys,
+            &defs,
+            0,
+            &[],
+            0,
+            &own,
+            &ArcMarks::default(),
+        );
         assert_eq!(out.count, authored(&haven), "an unknown row must not mark");
     }
 
@@ -1501,6 +1770,8 @@ mod tests {
             MarkKind::BedSpent,
             MarkKind::Hearth,
             MarkKind::Backpack,
+            MarkKind::Work,
+            MarkKind::Stone,
         ] {
             let f = kind.fill();
             for g in grounds {
@@ -1658,7 +1929,7 @@ mod tests {
 
     /// Every kind. The `match` is what keeps it honest: a kind added without
     /// a row here fails to compile rather than going unchecked.
-    fn all_kinds() -> [MarkKind; 11] {
+    fn all_kinds() -> [MarkKind; 13] {
         let all = [
             MarkKind::None,
             MarkKind::Haven,
@@ -1671,6 +1942,8 @@ mod tests {
             MarkKind::BedSpent,
             MarkKind::Hearth,
             MarkKind::Backpack,
+            MarkKind::Work,
+            MarkKind::Stone,
         ];
         for k in all {
             match k {
@@ -1684,7 +1957,9 @@ mod tests {
                 | MarkKind::Bed
                 | MarkKind::BedSpent
                 | MarkKind::Hearth
-                | MarkKind::Backpack => {}
+                | MarkKind::Backpack
+                | MarkKind::Work
+                | MarkKind::Stone => {}
             }
         }
         all
@@ -1810,6 +2085,7 @@ mod tests {
             &[],
             0,
             &[],
+            &ArcMarks::default(),
         );
         let bed = island.a[..island.count]
             .iter()

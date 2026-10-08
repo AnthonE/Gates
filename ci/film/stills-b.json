@@ -1,0 +1,23 @@
+{
+  "recording": "film/zig.rec",
+  "out": "film/stills-b",
+  "width": 3840,
+  "height": 2160,
+  "fov": 45,
+  "settle": 16,
+  "hold": 20,
+  "look": {
+    "saturation": 1.08,
+    "contrast": 1.05
+  },
+  "budget": {
+    "ao": 3,
+    "shadow_px": 4096,
+    "shadow_m": 300
+  },
+  "shots": [
+    {"name": "island", "at": 20, "still": true, "hour": 0.3, "weather": "clear", "fov": 48, "keys": [{"t": 0, "pos": [2190, 128, 2720], "look": [2496, 20, 3168]}], "look": {"saturation": 1.1}},
+    {"name": "beach-morning", "at": 20.2, "still": true, "hour": 0.1, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [1070, 1.4, 760], "look": [1150, 7, 905]}], "look": {"exposure": 0.2, "temperature": 0.03, "saturation": 1.1}},
+    {"name": "camp-crown", "at": 55, "still": true, "hour": 0.79, "weather": "clear", "fov": 46, "keys": [{"t": 0, "pos": [2321, 4.5, 3091], "look": [2356, 6, 3100]}], "look": {"focus": "look", "fstop": 5.6, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}}
+  ]
+}

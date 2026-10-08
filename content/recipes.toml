@@ -603,6 +603,8 @@ count = 1
 station = "workbench2"
 seconds = 30
 blueprint = true
+# Nobody can make it until THE GOLDEN SPINE burns (`arc.toml`).
+unlock = "unlock.rails"
 inputs = [
     { item = "item.metal_frags", count = 300 },
     { item = "item.gears", count = 2 },
@@ -616,6 +618,8 @@ count = 1
 station = "workbench2"
 seconds = 15
 blueprint = true
+# Nobody can make it until THE OBSERVATORY burns (`arc.toml`).
+unlock = "unlock.optics"
 inputs = [{ item = "item.metal_frags", count = 50 }]
 
 # https://wiki.facepunch.com/rust/item/shutter.wood.a

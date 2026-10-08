@@ -34,9 +34,10 @@
 //! - **wrong format** — the blob layout moved under a running deployment.
 //! - **wrong seed** — this world was generated on a different island, so
 //!   every base in it stands in a place that is now sea.
-//! - **wrong content hash** — item indices moved, so restoring a box would
+//! - **wrong content layout** — item indices moved, so restoring a box would
 //!   hand somebody a different item than the one they put in it. Exactly
-//!   the refusal `store.rs` makes for the same reason.
+//!   the refusal `store.rs` makes for the same reason, through the same
+//!   function (`store::match_content`): a balance-only edit loads.
 //! - **wrong world digest** — the seed matches and the *island generated
 //!   from it does not*. Worldgen changed under a running deployment, so
 //!   every base stands on ground that has moved. This is the refusal that
@@ -78,12 +79,12 @@ pub const WORLD_MAGIC: [u8; 8] = *b"GATESWLD";
 /// checked; a file that fails either is refused.
 pub const WORLD_FILE_FORMAT: u16 = 2;
 
-/// The header, 58 bytes of fields padded to 64: magic (8), file format (2),
-/// blob format (2), seed (8), content hash (8), tick (8), sleeper count (2),
-/// blob length (4), checksum (8), world digest (8). Padded so a later field
-/// costs no layout change and no version turn for the padding itself — the
-/// world digest is the first field to spend that padding, which is what it
-/// was for.
+/// The header, 64 bytes: magic (8), file format (2), blob format (2), seed
+/// (8), content hash (8), tick (8), sleeper count (2), blob length (4),
+/// checksum (8), world digest (8), content layout (6). Padded so a later
+/// field costs no layout change and no version turn for the padding itself
+/// — the world digest and then the layout spent it, which is what it was
+/// for.
 pub const WORLD_HEADER_BYTES: usize = 64;
 const H_MAGIC: usize = 0;
 const H_FILE_FORMAT: usize = 8;
@@ -111,6 +112,18 @@ const H_SUM: usize = 42;
 /// It costs ~4,100 `height` taps plus a scatter block, computed **once per
 /// boot** by the caller and carried, never per save.
 const H_WORLD: usize = 50;
+/// The content layout (`Content::layout_hash`), its low 48 bits — the last
+/// six bytes of padding. 48 bits catch an operator pointing a shard at the
+/// wrong content set as surely as 64 do; nothing here defends against a
+/// forger, who can recompute any of it. Zero is a file from before layouts
+/// were pinned ([`layout48`] never writes it), held to the exact content
+/// hash by `store::match_content`.
+const H_LAYOUT: usize = 58;
+
+/// What [`H_LAYOUT`] holds for a layout hash: never zero, which means absent.
+fn layout48(layout_hash: u64) -> u64 {
+    (layout_hash & 0xFFFF_FFFF_FFFF).max(1)
+}
 
 /// One `(key, body id)` pair: whose body a saved sleeper is.
 pub const IDENT_RECORD_BYTES: usize = 1 + PLAYER_KEY_MAX_BYTES + 4;
@@ -126,6 +139,11 @@ pub struct WorldLoad {
     pub claimable: usize,
     /// The tick the world resumes at.
     pub tick: u64,
+    /// Written under other numbers on this content layout: a balance edit,
+    /// loaded.
+    pub balance_moved: bool,
+    /// Stacks a lowered condition ceiling clamped (balance edit only).
+    pub clamped: u32,
 }
 
 /// The identity table as the server holds it: index-aligned to nothing,
@@ -153,6 +171,13 @@ pub struct WorldBoot {
     /// Empty ⇒ nothing to resume: persistence off, or a first boot.
     pub blob: Vec<u8>,
     pub interval_ticks: u64,
+    /// The file was written under a balance edit of this layout: the sim
+    /// thread clamps conditions after its own load, as the trial did
+    /// (`World::clamp_conditions`).
+    pub clamp: bool,
+    /// When this world ends (`wipe.rs`). Set by `bin/shard.rs` from the
+    /// schedule and the wipe state; off everywhere else.
+    pub wipe: crate::wipe::Clock,
 }
 
 impl WorldBoot {
@@ -164,6 +189,8 @@ impl WorldBoot {
             idents: Identities::new(),
             blob: Vec::new(),
             interval_ticks: u64::MAX,
+            clamp: false,
+            wipe: crate::wipe::Clock::off(),
         }
     }
 }
@@ -188,9 +215,11 @@ fn rotate_backups(path: &Path) {
     let _ = std::fs::copy(path, at(1));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_header(
     seed: u64,
     content_hash: u64,
+    layout_hash: u64,
     world_digest: u64,
     tick: u64,
     sleepers: usize,
@@ -208,6 +237,7 @@ fn encode_header(
     h[H_BLOB_LEN..H_BLOB_LEN + 4].copy_from_slice(&(blob_len as u32).to_le_bytes());
     h[H_SUM..H_SUM + 8].copy_from_slice(&body_sum.to_le_bytes());
     h[H_WORLD..H_WORLD + 8].copy_from_slice(&world_digest.to_le_bytes());
+    h[H_LAYOUT..H_LAYOUT + 6].copy_from_slice(&layout48(layout_hash).to_le_bytes()[..6]);
     h
 }
 
@@ -221,6 +251,7 @@ pub struct WorldFile {
     path: Option<PathBuf>,
     seed: u64,
     content_hash: u64,
+    layout_hash: u64,
     /// Computed once at boot and carried — see [`H_WORLD`] for why it is not
     /// recomputed per save.
     world_digest: u64,
@@ -232,6 +263,7 @@ impl WorldFile {
             path: None,
             seed: 0,
             content_hash: 0,
+            layout_hash: 0,
             world_digest: 0,
         }
     }
@@ -277,6 +309,7 @@ impl WorldFile {
         let head = encode_header(
             self.seed,
             self.content_hash,
+            self.layout_hash,
             self.world_digest,
             tick,
             idents.len(),
@@ -369,6 +402,7 @@ pub fn open(
     world: &mut sim_core::world::World,
     seed: u64,
     content_hash: u64,
+    layout_hash: u64,
     world_digest: u64,
     interval_ticks: u64,
 ) -> Result<(WorldBoot, WorldLoad), String> {
@@ -381,6 +415,7 @@ pub fn open(
         path: Some(path.to_path_buf()),
         seed,
         content_hash,
+        layout_hash,
         world_digest,
     };
     if !path.exists() {
@@ -390,6 +425,8 @@ pub fn open(
                 idents: Identities::new(),
                 blob: Vec::new(),
                 interval_ticks,
+                clamp: false,
+                wipe: crate::wipe::Clock::off(),
             },
             WorldLoad {
                 created: true,
@@ -466,15 +503,15 @@ pub fn open(
         ));
     }
     let got_content = at64(H_CONTENT);
-    if got_content != content_hash {
-        return Err(format!(
-            "world file {} was written under content hash {got_content:#x}, this \
-             shard baked {content_hash:#x} — item indices have moved, so a box \
-             restored from it would hand somebody a different item than the one \
-             they put in. Restore the content that wrote it, or start a fresh world",
-            path.display()
-        ));
-    }
+    let got_layout = at64(H_LAYOUT - 2) >> 16; // six bytes, read as the top of eight
+    let matched = crate::store::match_content(
+        &format!("world file {}", path.display()),
+        got_content,
+        got_layout,
+        content_hash,
+        layout48(layout_hash),
+    )?;
+    let balance = matched == crate::store::ContentMatch::Balance;
     // Last of the identity checks, and the only one the seed cannot make.
     // Deliberately AFTER the seed test, so the common operator mistake
     // (pointed at the wrong island) reports as itself rather than as this.
@@ -582,6 +619,10 @@ pub fn open(
     // module header says why): a world is loaded whole or not at all, and
     // unlike the player store there is no per-record blast radius to
     // prefer — every store below is everyone's shared world.
+    // After a balance edit a lowered ceiling is the innocent explanation,
+    // so the stack is clamped instead (`cond.rs`), here and again on the
+    // sim thread's own load (`WorldBoot::clamp`).
+    let clamped = if balance { world.clamp_conditions() } else { 0 };
     if let Some((where_, v)) = cond_violation(world) {
         return Err(format!(
             "world file {} carries a condition no command can mint: {where_} \
@@ -614,12 +655,16 @@ pub fn open(
             idents,
             blob: blob.to_vec(),
             interval_ticks,
+            clamp: balance,
+            wipe: crate::wipe::Clock::off(),
         },
         WorldLoad {
             created: false,
             bodies,
             claimable,
             tick,
+            balance_moved: balance,
+            clamped,
         },
     ))
 }
@@ -637,6 +682,7 @@ mod tests {
         let h = encode_header(
             0x1122_3344_5566_7788,
             0x99AA_BBCC_DDEE_FF00,
+            0x7766_5544_3322_1100,
             0x0F1E_2D3C_4B5A_6978,
             4242,
             7,
@@ -669,6 +715,11 @@ mod tests {
             &0x0F1E_2D3C_4B5A_6978u64.to_le_bytes(),
             "world digest at 50 — the field that spends the padding, and the one \
              that makes a worldgen change a refusal instead of bases in the air"
+        );
+        assert_eq!(
+            &h[58..64],
+            &0x5544_3322_1100u64.to_le_bytes()[..6],
+            "content layout's low 48 bits at 58"
         );
         assert_eq!(h.len(), 64, "the header is padded to 64");
     }

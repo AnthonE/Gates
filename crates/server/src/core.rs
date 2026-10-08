@@ -247,6 +247,21 @@ pub struct ShardCore {
     /// The trust ledger's sink (`trustlog.rs`), drained once per tick.
     /// `Tap::off()` unless the shard installed a log.
     pub trust: crate::trustlog::Tap,
+    /// The wipe clock (`wipe.rs`): the posted schedule, or an admin's
+    /// countdown. Polled by the boundary loop with the wall clock
+    /// ([`Self::wipe_poll`]), so this struct still reads no clock itself.
+    pub wipe: crate::wipe::Clock,
+    /// Unix seconds at the last poll: what `/wipe 10` counts from.
+    wipe_now: u64,
+    /// A countdown line owed to everyone, said by the next `pump_chat`.
+    wipe_say: Option<protocol::ChatText>,
+    /// Per slot, the tick from which it is owed the next-wipe line (a join,
+    /// a few seconds after so the client is up; or a bare `/wipe`). 0 = not
+    /// owed.
+    wipe_tell: [u64; MAX_PLAYERS],
+    /// The clock reached zero: `Some(blueprints)` until the boundary loop
+    /// takes it ([`Self::take_wipe`]) and stops the shard.
+    wipe_fired: Option<bool>,
 }
 
 /// One spectator seat's sim-side state.
@@ -437,6 +452,83 @@ impl ShardCore {
             sleepers: SleeperIndex::new(),
             watching: [None; MAX_SPECTATORS],
             trust: crate::trustlog::Tap::off(),
+            wipe: crate::wipe::Clock::off(),
+            wipe_now: 0,
+            wipe_say: None,
+            wipe_tell: [0; MAX_PLAYERS],
+            wipe_fired: None,
+        }
+    }
+
+    /// One poll of the wipe clock, from the boundary loop about once a
+    /// second with the wall clock's unix seconds. A line to say is held for
+    /// the next tick's chat pump; a wipe that came due is held for
+    /// [`Self::take_wipe`].
+    pub fn wipe_poll(&mut self, now: u64) {
+        self.wipe_now = now;
+        match self.wipe.poll(now) {
+            crate::wipe::Tick::Quiet => {}
+            crate::wipe::Tick::Say(line) => self.wipe_say = crate::wipe::chat(&line),
+            crate::wipe::Tick::Wipe { blueprints, line } => {
+                self.wipe_say = crate::wipe::chat(&line);
+                self.wipe_fired = Some(blueprints);
+            }
+        }
+    }
+
+    /// The wipe that came due, once: `Some(blueprints)`.
+    pub fn take_wipe(&mut self) -> Option<bool> {
+        self.wipe_fired.take()
+    }
+
+    /// Say a server line to one connected slot, or to all of them.
+    fn say_server(
+        &mut self,
+        to: Option<usize>,
+        line: &protocol::ChatText,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let len = match protocol::encode_event_chat(0, true, line, &mut self.ev_buf) {
+            Ok(len) => len,
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                return;
+            }
+        };
+        for to_slot in 0..MAX_PLAYERS {
+            if !self.clients[to_slot].connected || to.is_some_and(|t| t != to_slot) {
+                continue;
+            }
+            if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
+                ShardStats::bump(&stats.ev_sent);
+            } else {
+                // `pump_chat`'s policy: a lost line is counted and not
+                // resynced, because no walk would bring it back.
+                ShardStats::bump(&stats.chat_undelivered);
+            }
+        }
+    }
+
+    /// The wipe lines this tick owes: the countdown to everyone, and the
+    /// next-wipe line to whoever joined or asked.
+    fn pump_wipe(&mut self, stats: &ShardStats, send: &mut impl FnMut(Lane, usize, &[u8]) -> bool) {
+        if let Some(line) = self.wipe_say.take() {
+            self.say_server(None, &line, stats, send);
+        }
+        for slot in 0..MAX_PLAYERS {
+            let at = self.wipe_tell[slot];
+            if at == 0 || self.world.tick < at {
+                continue;
+            }
+            self.wipe_tell[slot] = 0;
+            let line = self
+                .wipe
+                .notice()
+                .unwrap_or_else(|| "no wipe is scheduled".into());
+            if let Some(line) = crate::wipe::chat(&line) {
+                self.say_server(Some(slot), &line, stats, send);
+            }
         }
     }
 
@@ -452,6 +544,11 @@ impl ShardCore {
     pub fn tag_join(&mut self, slot: usize, id: u32, key: Option<&PlayerKey>) {
         if slot >= MAX_PLAYERS {
             return;
+        }
+        // The next wipe, said a few seconds after the door so the client is
+        // up to read it (`pump_wipe`).
+        if self.wipe.next().is_some() {
+            self.wipe_tell[slot] = self.world.tick + 5 * sim_core::limits::TICK_HZ as u64;
         }
         let address = key.and_then(|k| protocol::Address::from_hex(k.as_bytes()));
         self.tags[slot] = match address {
@@ -1725,6 +1822,15 @@ impl ShardCore {
             return;
         }
 
+        // A bare `/wipe` is everybody's too: when the island ends is a
+        // posted fact, said only to the asker.
+        if let AdminCmd::WipeWhen = cmd {
+            if from_slot < MAX_PLAYERS {
+                self.wipe_tell[from_slot] = self.world.tick.max(1);
+            }
+            return;
+        }
+
         // Everything else needs the allowlist.
         let allowed = self.keys[from_slot]
             .as_ref()
@@ -1782,26 +1888,25 @@ impl ShardCore {
                 // id no player can hold (ids start at 256), so no client
                 // has to learn a new message shape to render it.
                 let line = admin::server_line(&text);
-                let len = match protocol::encode_event_chat(0, true, &line, &mut self.ev_buf) {
-                    Ok(len) => len,
-                    Err(_) => {
-                        ShardStats::bump(&stats.encode_range_errors);
-                        return;
-                    }
-                };
-                for to_slot in 0..MAX_PLAYERS {
-                    if !self.clients[to_slot].connected {
-                        continue;
-                    }
-                    if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
-                        ShardStats::bump(&stats.ev_sent);
-                    } else {
-                        // `pump_chat`'s policy: a lost line is counted and
-                        // not resynced, because no walk would bring it back.
-                        ShardStats::bump(&stats.chat_undelivered);
-                    }
-                }
+                self.say_server(None, &line, stats, send);
                 logged = logged.note(text.as_bytes());
+            }
+            AdminCmd::Wipe {
+                minutes,
+                blueprints,
+            } => {
+                // The clock says it to everyone on its next poll, so the
+                // admin hears the same line the island does.
+                self.wipe.admin(self.wipe_now, minutes, blueprints);
+                logged = logged.with(minutes as i64, blueprints as i64, 0);
+            }
+            AdminCmd::WipeCancel => {
+                if !self.wipe.cancel(self.wipe_now) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who));
+                    return;
+                }
+                self.wipe_say = crate::wipe::chat("wipe cancelled");
             }
             AdminCmd::Teleport { id } => {
                 let Some(slot) = target_slot(self, id) else {
@@ -1873,7 +1978,7 @@ impl ShardCore {
                 *ops.save_now = true;
             }
             // Handled above, before the allowlist.
-            AdminCmd::Bug { .. } => return,
+            AdminCmd::Bug { .. } | AdminCmd::WipeWhen => return,
         }
         ops.log.push(logged);
     }
@@ -1894,6 +1999,7 @@ impl ShardCore {
         ops: &mut Ops<'_>,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        self.pump_wipe(stats, send);
         for from_slot in 0..MAX_PLAYERS {
             let Some(msg) = self.clients[from_slot].pending_chat.take() else {
                 continue;

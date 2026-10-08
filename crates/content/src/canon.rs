@@ -501,3 +501,71 @@ pub fn hash(c: &Content) -> u64 {
 
     h.0.digest()
 }
+
+/// xxh3 over **what a save holds by position**, and nothing else: the row
+/// ids every index a save carries points through, in index order, plus the
+/// few authored lists whose order a save files state under.
+///
+/// [`hash`] moves with any value, so pinning a save to it made every
+/// balance edit a wipe. A save holds item, recipe, piece and deployable
+/// *ranks* (sorted ids), work and mechanism *rows* (file order), a work's
+/// progress per *input slot*, a hearth's stock per *upkeep material*, a
+/// glyph mask over the *alphabet*. Those move when a row is added, removed
+/// or renamed, and then a save would be read as different things. Every
+/// number on every row can move freely: a save holds none of them.
+///
+/// Conservative where it costs nothing: a piece's shape and material and a
+/// deployable's archetype walk too, because a standing base was placed
+/// under them and changing one is never a tuning pass.
+pub fn layout_hash(c: &Content) -> u64 {
+    let mut h = Canon(Xxh3::new());
+    h.s("layout");
+    h.s("items");
+    for i in sorted(&c.items, |i| &i.id) {
+        h.s(&i.id);
+    }
+    h.s("recipes");
+    for r in sorted(&c.recipes, |r| &r.id) {
+        h.s(&r.id);
+    }
+    h.s("pieces");
+    for p in sorted(&c.pieces, |p| &p.id) {
+        h.s(&p.id);
+        h.u(p.shape as u32);
+        h.u(p.material as u32);
+    }
+    h.s("deployables");
+    for d in sorted(&c.deployables, |d| &d.id) {
+        h.s(&d.id);
+        h.u(d.archetype as u32);
+    }
+    // The hearth's stock rows: distinct build-cost items in rank order,
+    // which is sorted-id order (`bake_deployables`).
+    h.s("upkeep");
+    let mut mats: Vec<&str> = c
+        .pieces
+        .iter()
+        .flat_map(|p| p.cost.iter().map(|s| s.item.as_str()))
+        .collect();
+    mats.sort_unstable();
+    mats.dedup();
+    for m in mats {
+        h.s(m);
+    }
+    h.s("works");
+    for w in &c.works {
+        h.s(&w.id);
+        h.u(w.inputs.len() as u32);
+        for s in &w.inputs {
+            h.s(&s.item);
+        }
+    }
+    h.s("mechanisms");
+    for m in &c.mechanisms {
+        h.s(&m.id);
+        h.u(m.dials as u32);
+    }
+    h.s("glyphs");
+    h.s(&c.glyphs.alphabet);
+    h.0.digest()
+}

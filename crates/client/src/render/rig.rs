@@ -979,4 +979,8 @@ pub fn follow_eye(eye: Res<Eye>, mut cam: Query<&mut Transform, With<EyeCam>>) {
     if eye.down > 0.0 {
         t.rotate_local_z(super::wounded::WOUND_ROLL_RAD * eye.down);
     }
+    // A film's dutch angle and handheld wobble (`film::aim`); zero otherwise.
+    if eye.roll != 0.0 {
+        t.rotate_local_z(eye.roll);
+    }
 }

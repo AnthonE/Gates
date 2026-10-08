@@ -1092,7 +1092,7 @@ fn an_eaten_empty_slot_still_saves_and_loads() {
         skin: 0,
     };
     assert!(
-        sim_core::survival::consume(&sc, 0, &mut p, &mut ev),
+        sim_core::survival::consume(&sc, 0, &mut p, &mut ev, 100),
         "the fixture arms item 0 as food and the default meters are hungry"
     );
     assert_eq!(
