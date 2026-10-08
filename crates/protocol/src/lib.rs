@@ -2283,6 +2283,10 @@ pub enum ActionMsg {
     /// hold an opinion about: whether to go back to the fight you just lost
     /// or leave it. Sent by a live body it does nothing (world.rs).
     Respawn { on_bag: bool },
+    /// The death screen's pick of one bag by address (wire v97): rides
+    /// `ACT_RESPAWN` with its "named" bit set. Whether the bag is the
+    /// sender's and ready is the sim's verdict (`claim_bag_at`).
+    RespawnAt { cx: u16, cz: u16, level: u8 },
     /// Move `count` items from one slot to another (`inventory.rs`).
     ///
     /// **The one action that carries a target id**, and the exception is
@@ -2401,6 +2405,31 @@ pub fn encode_action_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, Wire
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_RESPAWN, ACTION_SUB_BITS)?;
     w.write_bit(on_bag)?;
+    w.write_bit(false)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::RespawnAt` — wake on the bag at this address (wire v97).
+pub fn encode_action_respawn_at(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESPAWN, ACTION_SUB_BITS)?;
+    w.write_bit(true)?;
+    w.write_bit(true)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
     Ok(w.finish())
 }
 
@@ -3199,9 +3228,24 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_ASSIST => ActionMsg::Assist {
             target: r.read(32)?,
         },
-        ACT_RESPAWN => ActionMsg::Respawn {
-            on_bag: r.read_bit()?,
-        },
+        ACT_RESPAWN => {
+            let on_bag = r.read_bit()?;
+            if r.read_bit()? {
+                let cx = r.read(BUILD_CELL_BITS)? as u16;
+                let cz = r.read(BUILD_CELL_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                if !on_bag
+                    || cx as usize >= sim_core::limits::MAX_BUILD_COORD
+                    || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+                    || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+                {
+                    return Err(WireError::Malformed);
+                }
+                ActionMsg::RespawnAt { cx, cz, level }
+            } else {
+                ActionMsg::Respawn { on_bag }
+            }
+        }
         ACT_MOVE => {
             let cont = r.read(32)?;
             let from_kind = r.read(CONT_KIND_BITS)? as u8;

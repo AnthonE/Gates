@@ -1916,6 +1916,15 @@ pub enum Command {
         id: u32,
         on_bag: bool,
     },
+    /// Answer the death screen with one of your bags by address (wire v97):
+    /// that bag if it is yours and ready, else the nearest ready one, else
+    /// a beach — `Respawn`'s promise, with the player's pick first.
+    RespawnAt {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+    },
     /// Answer the death screen with THE GATE: wake in the town's market
     /// street (Rust's Outpost spawn point), if this player has been there
     /// and the point is off its 30-minute cooldown — otherwise a beach,
@@ -3678,7 +3687,7 @@ impl World {
     /// A new body: at THE GATE when asked and ready (Rust's Outpost spawn
     /// point — a request it cannot fill is a beach, never a refusal), else
     /// on the nearest own ready bag when asked, else on the ring.
-    fn wake(&mut self, slot: usize, on_bag: bool, at_gate: bool) {
+    fn wake(&mut self, slot: usize, on_bag: bool, at_gate: bool, pick: Option<(u16, u16, u8)>) {
         let body = self.players[slot];
         let (id, deaths, frame) = (body.id, body.deaths, body.frame);
         let gate = at_gate && self.gate_spawn_ready(&body);
@@ -3687,14 +3696,17 @@ impl World {
         // cooldown walks the player's other bags and then the ring. Asked
         // only when the player asked: a bag the beach button did not want
         // must not be spent, or the choice would cost the same either way.
+        let (fx, fz) = (
+            body.body.qx as f32 * movement::POS_XZ_Q,
+            body.body.qz as f32 * movement::POS_XZ_Q,
+        );
         let bag = if on_bag && !gate {
-            self.deploys.claim_bag(
-                &self.deploy,
-                id,
-                body.body.qx as f32 * movement::POS_XZ_Q,
-                body.body.qz as f32 * movement::POS_XZ_Q,
-                self.tick,
-            )
+            match pick {
+                Some(at) => self
+                    .deploys
+                    .claim_bag_at(&self.deploy, id, at, fx, fz, self.tick),
+                None => self.deploys.claim_bag(&self.deploy, id, fx, fz, self.tick),
+            }
         } else {
             None
         };
@@ -4009,7 +4021,7 @@ impl World {
                     // everything this function would have, so it is the
                     // exit and not a step (`PlayerSave::dead` says why the
                     // corpse itself is not restorable).
-                    self.wake(slot, false, false);
+                    self.wake(slot, false, false, None);
                     return;
                 }
             }
@@ -4118,7 +4130,7 @@ impl World {
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
-            self.wake(slot, false, false);
+            self.wake(slot, false, false, None);
             return;
         }
         // The craft queue survived the sleep; its completion tick did not
@@ -5175,7 +5187,7 @@ impl World {
                 // `Respawn`'s authority exactly: only a corpse may ask.
                 if let Some(slot) = self.slot_of(id) {
                     if self.players[slot].dead {
-                        self.wake(slot, false, true);
+                        self.wake(slot, false, true, None);
                     }
                 }
             }
@@ -5188,7 +5200,16 @@ impl World {
                 // live player to a beach.
                 if let Some(slot) = self.slot_of(id) {
                     if self.players[slot].dead {
-                        self.wake(slot, on_bag, false);
+                        self.wake(slot, on_bag, false, None);
+                    }
+                }
+            }
+            Command::RespawnAt { id, cx, cz, level } => {
+                // `Respawn`'s authority: only a corpse may ask, and the bag
+                // named must be its own (`claim_bag_at`).
+                if let Some(slot) = self.slot_of(id) {
+                    if self.players[slot].dead {
+                        self.wake(slot, true, false, Some((cx, cz, level)));
                     }
                 }
             }

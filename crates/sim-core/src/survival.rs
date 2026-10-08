@@ -141,6 +141,11 @@ pub struct SurvivalContent {
     /// authors no drink still boots.
     pub drink_water: u16,
     pub drink_hp_cost: u16,
+    /// The water vessel, empty and full (`NO_ITEM` for none): holding the
+    /// empty one at fresh water, `drink` fills it instead; drinking the full
+    /// one (a consumable row) hands the empty one back.
+    pub vessel: u16,
+    pub vessel_full: u16,
     /// Wet and cold (weather v0, `exposure.rs`): the other half of the body
     /// the clock keeps, baked from `[exposure]`. `EMPTY` disarms it.
     pub exposure: crate::exposure::ExposureContent,
@@ -163,6 +168,8 @@ impl SurvivalContent {
         dehydrate_hp_per_min: 0,
         drink_water: 0,
         drink_hp_cost: 0,
+        vessel: crate::gather::NO_ITEM,
+        vessel_full: crate::gather::NO_ITEM,
         exposure: crate::exposure::ExposureContent::EMPTY,
     };
 
@@ -473,7 +480,15 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
     }
 
     p.inv[slot].count -= 1;
-    if p.inv[slot].count == 0 {
+    if p.inv[slot].count == 0 && stack.item == sc.vessel_full && sc.vessel != NO_ITEM {
+        // A drunk vessel is an empty one, in the same slot.
+        p.inv[slot] = crate::gather::ItemStack {
+            item: sc.vessel,
+            count: 1,
+            cond: 0,
+            skin: stack.skin,
+        };
+    } else if p.inv[slot].count == 0 {
         // The canonical empty, all three fields — NOT `NO_ITEM`, which
         // `PlayerSave::read_le` refuses twice over (`item >= MAX_ITEM_DEFS`
         // and the canonical-empty rule): eat your last stack, get swept by
@@ -584,6 +599,18 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NO_WATER, 0);
         return Step::Quiet;
     };
+    // An empty vessel in hand at fresh water fills instead of drinking.
+    let sel = p.frame.sel as usize;
+    if !salt
+        && sc.vessel != NO_ITEM
+        && sel < p.inv.len()
+        && p.inv[sel].count == 1
+        && p.inv[sel].item == sc.vessel
+    {
+        p.inv[sel].item = sc.vessel_full;
+        events.push(EV_DRANK, p.id, 0, 0);
+        return Step::Changed;
+    }
     if p.water >= sc.max_water {
         // Refuse rather than charge: a full meter would pay hp for
         // nothing, which is `REFUSE_C_FULL`'s exact case on the eat side.
@@ -799,6 +826,25 @@ mod tests {
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
         assert_eq!((p.food, p.water), (sc.max_food, sc.max_water));
+    }
+
+    /// Drinking a full vessel leaves the empty one in the slot.
+    #[test]
+    fn a_drunk_vessel_comes_back_empty() {
+        let mut sc = SurvivalContent::probe_fixture();
+        sc.vessel = 3;
+        sc.vessel_full = 0;
+        let mut p = player(&sc);
+        p.water = 0;
+        p.inv[2] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        let mut q = EventQueue::default();
+        assert!(consume(&sc, 2, &mut p, &mut q));
+        assert_eq!((p.inv[2].item, p.inv[2].count), (3, 1));
     }
 
     /// Refilling a meter does not bank the partial minute of damage.

@@ -82,6 +82,28 @@ pub struct Answer {
     pub sent: bool,
     /// What was asked for, so the wake can report which anchor answered.
     pub asked: Option<Wake>,
+    /// Which of your bags the bag row wakes on (`ClientCore::own_bags`
+    /// order), cycled with Tab or the arrow keys.
+    pub pick: usize,
+}
+
+/// The bag row's small line, which names the picked bag.
+#[derive(Component)]
+pub struct BagDetail;
+
+/// The bag row's line for pick `pick` of `bags`.
+fn bag_line(bags: &[sim_core::deploy::BagAnchor], pick: usize) -> String {
+    match bags.len() {
+        0 | 1 => crate::ui::death::WAKES[0].2.to_string(),
+        n => {
+            let b = bags[pick % n];
+            format!(
+                "bag {} of {n} - {} - Tab picks another",
+                pick % n + 1,
+                if b.ready { "ready" } else { "cooling down" }
+            )
+        }
+    }
 }
 
 /// What this death can offer: a bag you own, and THE GATE once reached.
@@ -310,10 +332,19 @@ pub fn setup(
                 } else {
                     detail.to_string()
                 };
+                let is_bag = *wake == Wake::Bag;
+                let detail = if is_bag {
+                    bag_line(net.session.core.own_bags(), 0)
+                } else {
+                    detail
+                };
                 root.spawn((ui::row(460.0), WakeRow(*wake)))
                     .with_children(|b| {
                         b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
-                        b.spawn(ui::label(detail, 13.0, ui::DIM));
+                        let mut line = b.spawn(ui::label(detail, 13.0, ui::DIM));
+                        if is_bag {
+                            line.insert(BagDetail);
+                        }
                     });
             }
 
@@ -346,11 +377,34 @@ pub fn click(
     }
 }
 
-pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, net: NonSend<Net>, mut answer: ResMut<Answer>) {
+pub fn keys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    net: NonSend<Net>,
+    mut answer: ResMut<Answer>,
+    mut lines: Query<&mut Text, With<BagDetail>>,
+) {
     if answer.sent {
         return;
     }
     let offer = anchors(&net.session.core);
+    // Which bag: Tab or the arrows walk your bags.
+    let bags = net.session.core.own_bags();
+    if bags.len() > 1 {
+        let step =
+            if keyboard.just_pressed(KeyCode::Tab) || keyboard.just_pressed(KeyCode::ArrowRight) {
+                1
+            } else if keyboard.just_pressed(KeyCode::ArrowLeft) {
+                bags.len() - 1
+            } else {
+                0
+            };
+        if step > 0 {
+            answer.pick = (answer.pick + step) % bags.len();
+            for mut text in lines.iter_mut() {
+                text.0 = bag_line(bags, answer.pick);
+            }
+        }
+    }
 
     // **Digits only, and POSITIONAL.** A digit means the row it is drawn
     // beside — with no bag on the island, `1` is the beach, because `1` is
@@ -395,8 +449,15 @@ pub fn act(
         return;
     }
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    let bags = net.session.core.own_bags();
     let encoded = match wake {
         Wake::Gate => protocol::encode_action_respawn_gate(&mut buf),
+        // A pick among several bags names it; with one there is nothing to
+        // pick and the nearest-ready answer is the same bag.
+        Wake::Bag if bags.len() > 1 => {
+            let b = bags[answer.pick % bags.len()];
+            protocol::encode_action_respawn_at(b.cx, b.cz, b.level, &mut buf)
+        }
         _ => protocol::encode_action_respawn(wake == Wake::Bag, &mut buf),
     };
     match encoded {

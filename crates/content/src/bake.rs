@@ -1185,6 +1185,18 @@ impl Content {
         sc.dehydrate_hp_per_min = u16f(s.dehydrate_hp_per_min, "dehydrate_hp_per_min")?;
         sc.drink_water = u16f(s.drink_water, "drink_water")?;
         sc.drink_hp_cost = u16f(s.drink_hp_cost, "drink_hp_cost")?;
+        match (&s.vessel, &s.vessel_full) {
+            (Some(e), Some(f)) => {
+                let idx = |id: &str| {
+                    self.item_index(id)
+                        .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
+                };
+                sc.vessel = idx(e)?;
+                sc.vessel_full = idx(f)?;
+            }
+            (None, None) => {}
+            _ => return Err("bake: survival names one half of the vessel pair".to_string()),
+        }
         let span = |min: u32, what: &str| {
             min.checked_mul(TICKS_PER_MIN)
                 .ok_or_else(|| format!("bake: survival {what} {min} min overflows the tick span"))
@@ -1255,6 +1267,11 @@ impl Content {
                 seconds,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
+        }
+        if sc.vessel_full != sim_core::gather::NO_ITEM
+            && sc.consumable[sc.vessel_full as usize].water == 0
+        {
+            return Err("bake: survival vessel_full holds no water".to_string());
         }
         Ok(sc)
     }

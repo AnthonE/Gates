@@ -3556,6 +3556,12 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         if have.contains(c.fuel.item.as_str()) {
             grew |= have.insert(c.fuel.byproduct.as_str());
         }
+        // The drink verb fills a vessel you hold at fresh water.
+        if let (Some(e), Some(f)) = (&c.balance.survival.vessel, &c.balance.survival.vessel_full) {
+            if have.contains(e.as_str()) {
+                grew |= have.insert(f.as_str());
+            }
+        }
         for k in &c.cooks {
             if have.contains(k.input.as_str()) {
                 grew |= have.insert(k.output.as_str());

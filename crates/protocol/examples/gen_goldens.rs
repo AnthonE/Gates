@@ -169,6 +169,9 @@ fn main() {
     let (slot, count) = goldens::action_drop();
     let len = protocol::encode_action_drop(slot, count, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[149], &buf[..len]);
+    let (cx, cz, level) = goldens::action_respawn_at();
+    let len = protocol::encode_action_respawn_at(cx, cz, level, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[150], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

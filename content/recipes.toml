@@ -190,6 +190,14 @@ seconds = 15
 inputs = [{ item = "item.wood", count = 200 }]
 
 [[recipe]]
+id = "recipe.waterskin"
+output = "item.waterskin"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.leather", count = 10 }]
+
+[[recipe]]
 id = "recipe.fire_pit"
 output = "item.fire_pit"
 count = 1

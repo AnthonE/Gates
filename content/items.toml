@@ -316,6 +316,25 @@ tier = 0
 rarity = "common"
 slot = "hand"
 
+# A water vessel, empty and full: H at fresh water with the empty one in
+# hand fills it, and drinking the full one gives the empty one back
+# (balance.toml `[survival]` vessel, `survival::drink`).
+[[item]]
+id = "item.waterskin"
+name = "Waterskin"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
+[[item]]
+id = "item.waterskin_full"
+name = "Full Waterskin"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
 [[item]]
 id = "item.fire_pit"
 name = "Fire Pit"

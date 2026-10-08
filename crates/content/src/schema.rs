@@ -972,7 +972,7 @@ pub struct StarterBase {
 /// design speaks; `bake_survival` converts them to ticks once so the sim
 /// never multiplies a clock. Proposed defaults, DECISIONS.md §open
 /// ("survival clock v0").
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Survival {
     pub max_food: u32,
@@ -990,6 +990,13 @@ pub struct Survival {
     /// requires a gatherable to answer thirst instead.
     pub drink_water: u32,
     pub drink_hp_cost: u32,
+    /// The water vessel (`survival::drink`): holding `vessel` at fresh
+    /// water, the drink verb fills it into `vessel_full` instead, and
+    /// drinking `vessel_full` (a consumable) hands `vessel` back.
+    #[serde(default)]
+    pub vessel: Option<String>,
+    #[serde(default)]
+    pub vessel_full: Option<String>,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,

@@ -1709,6 +1709,35 @@ impl Deploys {
         self.bag_ready[i] = tick.saturating_add(BAG_COOLDOWN_TICKS);
         Some(self.entries[i])
     }
+
+    /// [`Self::claim_bag`], asked for one bag by address first: the death
+    /// screen's pick. A bag that is not the owner's, not a bag, or not ready
+    /// falls back to the nearest ready one, so a stale or forged pick is
+    /// never a way onto somebody else's bag.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_bag_at(
+        &mut self,
+        dc: &DeployContent,
+        owner: u32,
+        at: (u16, u16, u8),
+        x: f32,
+        z: f32,
+        tick: u64,
+    ) -> Option<DeployRec> {
+        let (cx, cz, level) = at;
+        let hit = self.entries[..self.len].iter().position(|d| {
+            d.cx == cx
+                && d.cz == cz
+                && d.level == level
+                && d.owner == owner
+                && dc.defs[d.row as usize].arch == ARCH_BAG
+        });
+        if let Some(i) = hit.filter(|&i| self.bag_ready[i] <= tick) {
+            self.bag_ready[i] = tick.saturating_add(BAG_COOLDOWN_TICKS);
+            return Some(self.entries[i]);
+        }
+        self.claim_bag(dc, owner, x, z, tick)
+    }
 }
 
 impl Default for Deploys {
@@ -4652,6 +4681,54 @@ mod tests {
                 .claim_bag(&dc, 7, x, z, 0)
                 .map(|d| (d.cx, d.cz, d.level)),
             Some((CX, CZ, 0))
+        );
+    }
+
+    /// A named bag wakes you there even when another is nearer; naming a
+    /// stranger's bag falls back to your own nearest.
+    #[test]
+    fn a_named_bag_beats_the_nearest_and_a_foreign_name_does_not() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        for (owner, cx) in [(7u32, CX), (7, CX + 4), (8, CX + 8)] {
+            let mut p = player_at_cell(cx, CZ, &[(5, 20)]);
+            p.id = owner;
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut deploys,
+                &mut p,
+                0,
+                3,
+                cx,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        }
+        let (fx, fz) = cell_center(CX + 4, CZ);
+        assert_eq!(
+            deploys
+                .claim_bag_at(&dc, 7, (CX, CZ, 0), fx, fz, 0)
+                .map(|d| (d.cx, d.cz)),
+            Some((CX, CZ)),
+            "the pick lost to the nearest bag"
+        );
+        assert_eq!(
+            deploys
+                .claim_bag_at(&dc, 7, (CX + 8, CZ, 0), fx, fz, 0)
+                .map(|d| (d.cx, d.cz)),
+            Some((CX + 4, CZ)),
+            "a stranger's bag was named and taken"
         );
     }
 

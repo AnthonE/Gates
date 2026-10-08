@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 150] = [
+pub const FIXTURES: [&str; 151] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -267,6 +267,8 @@ pub const FIXTURES: [&str; 150] = [
     "event_alphabet.bin",
     // Drop an item (v97).
     "action_drop.bin",
+    // Wake on a named bag (v97).
+    "action_respawn_at.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2284,6 +2286,11 @@ pub fn event_swipe_refused() -> (u8, u8) {
 /// Swipe at the blue door.
 pub fn action_swipe() -> u8 {
     1
+}
+
+/// Wake on the bag at cell (300, 211), level 2 (wire v97).
+pub fn action_respawn_at() -> (u16, u16, u8) {
+    (300, 211, 2)
 }
 
 /// Drop 250 of inventory slot 9 (wire v97).

@@ -47,6 +47,7 @@ every item either way, because the painted ones are derived works of it.
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
 | `fire_pit.png` | `lorc/campfire` |
+| `full_waterskin.png` | `delapouite/water-flask` |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |
 | `gears.png` | `lorc/gears` |
@@ -115,10 +116,11 @@ every item either way, because the painted ones are derived works of it.
 | `vital_food.png` | `delapouite/hot-meal` |
 | `vital_hp.png` | `sbed/health-normal` |
 | `vital_water.png` | `sbed/water-drop` |
+| `waterskin.png` | `delapouite/water-flask` |
 | `wood.png` | `delapouite/log` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
 | `wooden_arrow.png` | `lorc/arrowhead` |
-| `wooden_barricade.png` | `delapouite/barricade` |
+| `wooden_barricade.png` | `delapouite/palisade` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |

@@ -105,6 +105,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Feed { .. }
         | ActionMsg::Reload
         | ActionMsg::Respawn { .. }
+        | ActionMsg::RespawnAt { .. }
         | ActionMsg::RespawnGate
         | ActionMsg::Assist { .. } => Kind::Free,
     }
