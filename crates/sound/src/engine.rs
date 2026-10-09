@@ -406,7 +406,54 @@ pub fn lp_of(dist_m: f32, radius_m: f32, out_rate: u32) -> u8 {
     (a * 256.0).round().clamp(1.0, 255.0) as u8
 }
 
+/// The cutoff a one-shot heard with the ears under water has, Hz: the top
+/// end goes, which is most of what water does to sound.
+pub const LP_UNDER_HZ: f32 = 700.0;
+/// Where [`lp_under`]'s fade starts, Hz: above anything the bank carries,
+/// so the first step of the fade is already a filter nobody hears.
+const LP_OPEN_HZ: f32 = 20_000.0;
+
+/// The low-pass byte for the ears `t` of the way under water (the snapshot
+/// fade, `Snapshots::t`): 0 above, the [`LP_UNDER_HZ`] one-pole fully under,
+/// the cutoff falling geometrically between so the fade has no step.
+pub fn lp_under(t: f32, out_rate: u32) -> u8 {
+    if t.is_nan() || t <= 0.0 {
+        return 0;
+    }
+    let hz = LP_OPEN_HZ * (LP_UNDER_HZ / LP_OPEN_HZ).powf(t.min(1.0));
+    let a = 1.0 - (-core::f32::consts::TAU * hz / out_rate.max(1) as f32).exp();
+    (a * 256.0).round().clamp(1.0, 255.0) as u8
+}
+
 impl Cmd {
+    /// This start through the lower of its own cutoff and `lp` (0 = none):
+    /// a far source heard under water keeps whichever filter is darker.
+    pub fn muffled(self, lp: u8) -> Cmd {
+        match self {
+            Cmd::Start {
+                cue,
+                take,
+                takes,
+                lp: own,
+                gain_l,
+                gain_r,
+                rate,
+            } => Cmd::Start {
+                cue,
+                take,
+                takes,
+                lp: match (own, lp) {
+                    (0, x) | (x, 0) => x,
+                    (a, b) => a.min(b),
+                },
+                gain_l,
+                gain_r,
+                rate,
+            },
+            other => other,
+        }
+    }
+
     /// This start, playing take `take` of `takes` — the bank's own count
     /// (`render/audio.rs`), so the renderer cuts the cue where it was joined.
     /// Any other command comes back unchanged.

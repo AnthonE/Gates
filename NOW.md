@@ -624,8 +624,8 @@ act):
 ## 0y · The sea is a volume — what it still cannot do *(client lane)*
 
 2. One sea state: a storm is `WAVES` × a scalar the sim would have to publish — wire, not renderer.
-5. The submerged duck is gain/rate/pan: `sound::engine` has a one-pole low-pass now (`lp_of`, distance only); the
-   `Submerged` snapshot does not use it yet.
+5. Under water, one-shots take the engine's one-pole (`engine::lp_under`); beds and loops run unfiltered and are
+   only ducked. Not yet heard by a person.
 6. `Splash` is the only waterline producer: no stroke, no wake, no interactive deformation.
 
 ## 1 · The native pivot — the one visual gap left of it
