@@ -333,6 +333,17 @@ fn hip_of(slot: usize) -> f32 {
     }
 }
 
+/// The hind hips' z, metres (negative: behind the middle) — the point a
+/// lunge or a howl pitches the body about, so the hind feet stay planted.
+fn hind_z_of(slot: usize) -> f32 {
+    let anchors = match mob::kind_of(slot) {
+        mob::MOB_WOLF => WOLF_LEG_ANCHORS,
+        mob::MOB_STAG => STAG_LEG_ANCHORS,
+        _ => LEG_ANCHORS,
+    };
+    anchors.iter().map(|a| a.0[2]).fold(0.0, f32::min)
+}
+
 /// The stride speed at which a slot's species reaches full swing.
 pub fn full_mps_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
@@ -507,6 +518,7 @@ pub fn stream(
     time: Res<Time>,
     assets: Option<Res<HerdAssets>>,
     net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
 ) {
     let Some(assets) = assets else {
         return; // Startup has not run yet.
@@ -547,9 +559,24 @@ pub fn stream(
                     let dt = time.delta_secs();
                     gait.observe(pos, dt);
                     gait.settle(rs.sleeping, dt);
+                    if feed.swings().contains(&id) {
+                        gait.bite();
+                    }
+                    if feed.howls().contains(&id) {
+                        gait.howl();
+                    }
                     let drop = gait.lie * gait.hip * LIE_DROP + (1.0 - gait.lie) * gait.bob();
-                    t.translation = pos - Vec3::Y * drop;
-                    t.rotation = Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
+                    let yaw = Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
+                    let pose = gait.pose(dt);
+                    // Pitched about the hind hips, so the hind feet stay put
+                    // and the front of the animal rises or dips; +X turns +Z
+                    // (the nose) down, so a raised nose is a negative turn.
+                    let pitch = Quat::from_rotation_x(-pose.pitch);
+                    let pivot = Vec3::new(0.0, gait.hip, gait.hind_z);
+                    t.translation = pos - Vec3::Y * drop
+                        + yaw * (pivot - pitch * pivot)
+                        + yaw * Vec3::Z * pose.reach;
+                    t.rotation = yaw * pitch;
                 }
             }
             None => {
@@ -641,6 +668,34 @@ pub struct Gait {
     /// The drawn heading, radians, eased toward the wire's
     /// ([`MOB_TURN_EASE`]). `None` until the first sample.
     pub yaw: Option<f32>,
+    /// Seconds left of a bite's lunge ([`BITE_S`]), set by the animal's
+    /// `EV_SWING` (the sim's bite).
+    pub bite: f32,
+    /// Seconds left of a howl's raised head ([`HOWL_S`]), set by `EV_HOWL`.
+    pub howl: f32,
+    /// The hind hips' z, the pivot of [`Gait::pose`].
+    pub hind_z: f32,
+}
+
+/// How long a bite's lunge takes, seconds: in, snap, back.
+pub const BITE_S: f32 = 0.45;
+/// How far a bite carries the body forward at its peak, in hip heights.
+pub const BITE_REACH: f32 = 0.35;
+/// How far a bite dips the nose at its peak, radians.
+pub const BITE_DIP_RAD: f32 = 0.22;
+/// How long a howl holds the head up, seconds.
+pub const HOWL_S: f32 = 2.2;
+/// How far a howl raises the nose, radians.
+pub const HOWL_RAISE_RAD: f32 = 0.42;
+/// How far a running animal rocks nose-to-tail with its stride, radians.
+pub const RUN_ROCK_RAD: f32 = 0.06;
+
+/// [`Gait::pose`]'s answer: a pitch about the hind hips (positive raises the
+/// nose) and a forward shove along the heading, metres.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pose {
+    pub pitch: f32,
+    pub reach: f32,
 }
 
 /// Seconds an animal takes to lie down or get up.
@@ -668,6 +723,47 @@ impl Gait {
             lie: 0.0,
             hip: hip_of(slot),
             yaw: None,
+            bite: 0.0,
+            howl: 0.0,
+            hind_z: hind_z_of(slot),
+        }
+    }
+
+    /// The sim says this animal bit: lunge.
+    pub fn bite(&mut self) {
+        self.bite = BITE_S;
+    }
+
+    /// The sim says this animal howled: raise the head.
+    pub fn howl(&mut self) {
+        self.howl = HOWL_S;
+    }
+
+    /// Spend `dt` off the bite and howl clocks and answer the frame's pose:
+    /// a bite's lunge (forward and nose-down, out and back), a howl's raised
+    /// head (eased up, held, eased down), and a run's rock with the stride.
+    /// A lying animal holds none of them.
+    pub fn pose(&mut self, dt: f32) -> Pose {
+        use std::f32::consts::PI;
+        self.bite = (self.bite - dt).max(0.0);
+        self.howl = (self.howl - dt).max(0.0);
+        let lunge = if self.bite > 0.0 {
+            (PI * (1.0 - self.bite / BITE_S)).sin()
+        } else {
+            0.0
+        };
+        let up = if self.howl > 0.0 {
+            let t = HOWL_S - self.howl;
+            smooth01(t / 0.35) * smooth01(self.howl / 0.45)
+        } else {
+            0.0
+        };
+        let run = ((self.speed - 0.5 * self.full_mps) / (0.5 * self.full_mps)).clamp(0.0, 1.0);
+        let rock = RUN_ROCK_RAD * run * (2.0 * self.phase).sin();
+        let awake = 1.0 - self.lie;
+        Pose {
+            pitch: awake * (HOWL_RAISE_RAD * up - BITE_DIP_RAD * lunge + rock),
+            reach: awake * BITE_REACH * self.hip * lunge,
         }
     }
 
@@ -728,6 +824,12 @@ impl Gait {
         self.phase =
             (self.phase + d / cycle * std::f32::consts::TAU).rem_euclid(std::f32::consts::TAU);
     }
+}
+
+/// 0 → 1 smoothstep over `[0, 1]`, clamped.
+fn smooth01(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// A leg's swing angle about x, radians. Pure — `tests/mob_mesh.rs` gates

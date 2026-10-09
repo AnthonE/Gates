@@ -1010,7 +1010,8 @@ pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
 /// `gather::swing` used to be this and the whole node pick in one; the pick
 /// is `melee::cast` now and this is what was always exactly-once per swing.
 /// **The arm moved, and that is a fact about a body other people are
-/// drawing.** `EV_SWING` is pushed HERE and nowhere else, because these two
+/// drawing.** A player's `EV_SWING` is pushed HERE and nowhere else (an
+/// animal's bite pushes its own, in `World::tick`'s bite loop), because these two
 /// lines are the cadence gate — the only point in the tree that runs
 /// exactly once per swing regardless of what the swing goes on to find.
 /// Every consequence — a whiff, a refusal, a body, a smashed barrel, a wall
