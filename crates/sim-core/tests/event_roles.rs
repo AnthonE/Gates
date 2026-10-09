@@ -81,7 +81,7 @@ use sim_core::build::{
 };
 use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
-use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
+use sim_core::craft::{CraftContent, REFUSE_CR_INPUTS, REFUSE_CR_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
 use sim_core::gather::{self, cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
@@ -1992,7 +1992,7 @@ fn craft_refused_names_the_player_then_why() {
     refused(
         bad_row,
         BODY,
-        REFUSE_RECIPE,
+        REFUSE_CR_RECIPE,
         "EV_CRAFT_REFUSED (no such recipe)",
     );
 
@@ -2010,7 +2010,7 @@ fn craft_refused_names_the_player_then_why() {
     refused(
         broke,
         BODY,
-        REFUSE_INPUTS,
+        REFUSE_CR_INPUTS,
         "EV_CRAFT_REFUSED (cannot pay the inputs)",
     );
 
@@ -4563,6 +4563,10 @@ fn every_event_code_is_in_range() {
 /// constant the importer was never told about. `use sim_core::world::*` in
 /// a hundred tests would not notice `DEATH_BY_ARROW`; reading the block
 /// does.
+///
+/// This reads `world.rs` alone. A `DEATH_BY_*` declared in any other module
+/// is protocol's catch: its `every_domain_fits_its_wire_field` scrapes the
+/// whole crate and names the stray file against the domain's `home`.
 #[test]
 fn death_causes_are_a_closed_ledger() {
     const SRC: &str = include_str!("../src/world.rs");

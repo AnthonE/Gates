@@ -516,6 +516,8 @@ pub const REFUSE_D_AUTH_FULL: u32 = 18;
 /// inventory that could not hold them would be the worst kind of loss —
 /// silent, and caused by the player's own verb.
 pub const REFUSE_D_NOT_EMPTY: u32 = 19;
+/// The highest deploy refusal; both ends of the wire refuse anything past it.
+pub const REFUSE_D_MAX: u32 = REFUSE_D_NOT_EMPTY;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does

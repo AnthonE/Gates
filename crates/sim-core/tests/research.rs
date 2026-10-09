@@ -25,7 +25,7 @@
 use sim_core::backpack::BackpackContent;
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE};
 use sim_core::combat::CombatContent;
-use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT, STATION_WORKBENCH2};
+use sim_core::craft::{CraftContent, REFUSE_CR_BLUEPRINT, STATION_WORKBENCH2};
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_WORKBENCH2, PLACE_ANY};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::{CONT_BOX, CONT_SELF, REFUSE_M_BUSY, REFUSE_M_TABLE};
@@ -369,7 +369,7 @@ fn a_gated_recipe_is_uncraftable_until_it_is_learned() {
     }]);
     assert_eq!(
         refusal(&t.w, EV_CRAFT_REFUSED),
-        Some(REFUSE_BLUEPRINT),
+        Some(REFUSE_CR_BLUEPRINT),
         "before: refused, and for the blueprint rather than for the station"
     );
 
@@ -410,7 +410,7 @@ fn a_gated_recipe_is_uncraftable_until_it_is_learned() {
     }]);
     assert_ne!(
         refusal(&t.w, EV_CRAFT_REFUSED),
-        Some(REFUSE_BLUEPRINT),
+        Some(REFUSE_CR_BLUEPRINT),
         "after: the blueprint is no longer what stands in the way"
     );
 }
@@ -794,7 +794,7 @@ fn an_ungated_recipe_never_asks_about_a_blueprint() {
     }]);
     assert_ne!(
         refusal(&t.w, EV_CRAFT_REFUSED),
-        Some(REFUSE_BLUEPRINT),
+        Some(REFUSE_CR_BLUEPRINT),
         "an open recipe is craftable by someone who has learned nothing"
     );
 }
@@ -1107,7 +1107,7 @@ fn blueprint_blocks(w: &mut World, id: u32) -> bool {
         count: 1,
         skin: 0,
     }]);
-    refusal(w, EV_CRAFT_REFUSED) == Some(REFUSE_BLUEPRINT)
+    refusal(w, EV_CRAFT_REFUSED) == Some(REFUSE_CR_BLUEPRINT)
 }
 
 #[test]

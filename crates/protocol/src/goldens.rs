@@ -1214,9 +1214,9 @@ pub fn event_craft_done() -> (u16, u16) {
     (12, 3)
 }
 
-/// A refusal carrying `sim_core::craft::REFUSE_INPUTS`.
+/// A refusal carrying `sim_core::craft::REFUSE_CR_INPUTS`.
 pub fn event_craft_refused() -> u8 {
-    sim_core::craft::REFUSE_INPUTS as u8
+    sim_core::craft::REFUSE_CR_INPUTS as u8
 }
 
 /// A six-row recipe table whose first batch is exactly `RECIPE_BATCH`

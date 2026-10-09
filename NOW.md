@@ -549,12 +549,6 @@ act):
 4. `/who` and `/brain` answer the asker in chat. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
    only in the anomaly log, and nothing stops `dev_env` in a public `shard.toml`.
 
-## 4b · The domain gate's one file-local residual
-
-1. `death_causes_are_a_closed_ledger` (`sim-core/tests/event_roles.rs:4507`)
-   scrapes `world.rs` alone; follow `sim-core/tests/domain_ledger.rs`.
-- ⚠ The label `4b` also names the world lane's section (§Labels).
-
 ## 0pop · The inhabitants nobody has run for longer than a test *(server lane)*
 
 1. Run it past a test: set `population = 8` in a real `shard.toml` (commented out
@@ -563,14 +557,6 @@ act):
    (`content/balance.toml`); `bot_smoke.rs` grants the satchel. Judge -18 §B.2.
 3. `DECISIONS.md` §open "shard population v0": the 300 s shift, the 2 s backoff,
    an alpha shard's N, the `index % 2` owner/attacker split.
-
-## 5b · The wire still accepts two refusal reasons the sim can never mean *(server lane)*
-
-1. Craft-refused (`craft.rs` `REFUSE_*`) has no max: `REFUSE_C_MAX` is taken by
-   `survival.rs`'s consume refusals; pick a name the domain scanner tells apart.
-2. Deploy-refused (`deploy.rs:471-518`) has no `REFUSE_D_MAX`.
-3. Add both to `event.rs`'s `DOMAINS` (`every_domain_fits_its_wire_field`).
-- No `PROTO_VER` bump owed: the narrowing rule at `PROTO_VER` (`protocol/src/lib.rs`).
 
 ## The frame, the screens and the client's own hot path *(client lane)*
 
@@ -1035,7 +1021,10 @@ distance low-pass landed in #179; last text `git show 1e046dc:NOW.md`), 2026-09-
 `§0dk` (the body's albedo lift, `BODY_ALBEDO_LIFT`) and `§0cards` (every card a
 photograph), 2026-10-09 — last text `git show 3132e62:NOW.md`; `§0zd` (doors and
 locks: the registry and `reference/DOORS.md` now say the key lock is built), 2026-10-09
-— last text `git show 78bcc36:NOW.md`.
+— last text `git show 78bcc36:NOW.md`; `§5b` (craft and deploy refusals are
+`DOMAINS` rows, refused past `REFUSE_CR_MAX`/`REFUSE_D_MAX` at both ends) and the
+domain gate's `§4b` (protocol's scrape already reads the whole crate), 2026-10-09 —
+last text `git show 7d45e53:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
@@ -1056,6 +1045,6 @@ the old §0aa items and point at `git show 9a069f4:NOW.md`.
 | `0x` | the client's sound *(client)* · the native client's trim *(client)* |
 | `0y` | the sea *(client)* · persistence *(server)* |
 | `0z` | the Bevy-draws rule's gate *(client)* — doors was `§0zd`, closed |
-| `4b` | the world lane *(world)* · the domain gate *(platform)* |
+| `4b` | the world lane *(world)* — the domain gate's `§4b` is closed |
 
 **Renamed**: doors and locks `§0z` → `§0zd`.

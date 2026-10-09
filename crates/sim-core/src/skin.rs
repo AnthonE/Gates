@@ -18,7 +18,7 @@
 //! - **Appearance only.** A row names a catalog id and the item it fits.
 //!   There is nothing else in it to sell (`CONTENT.md` §6).
 
-use crate::craft::{REFUSE_SKIN, REFUSE_STATION, STATION_RADIUS_M, STATION_WORKBENCH1};
+use crate::craft::{REFUSE_CR_SKIN, REFUSE_CR_STATION, STATION_RADIUS_M, STATION_WORKBENCH1};
 use crate::deploy::{DeployContent, Deploys};
 use crate::limits::{INV_SLOTS, MAX_SKINS, SKIN_WORDS};
 use crate::world::{EventQueue, Player, EV_CRAFT_REFUSED};
@@ -161,18 +161,18 @@ pub fn reskin(
 ) {
     let s = slot as usize;
     if s >= INV_SLOTS || p.inv[s].count == 0 {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_SKIN, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_SKIN, 0);
         return;
     }
     let item = p.inv[s].item;
     if skin != NO_SKIN && !sc.may_wear(&p.skins, skin, item) {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_SKIN, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_SKIN, 0);
         return;
     }
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     if !deploys.bench_near(dc, STATION_WORKBENCH1, px, pz, STATION_RADIUS_M) {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_STATION, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_STATION, 0);
         return;
     }
     p.inv[s].skin = skin;
