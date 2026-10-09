@@ -551,13 +551,13 @@ act):
 ## 0pop · The inhabitants nobody has run for longer than a test *(server lane)*
 
 1. Run 2026-10-09 (`shard.toml.example` + `population = 8`, film's starter kit with a
-   satchel, seed 20260731, `ci` build, 4 cores): 20 min, 8/8 live, 32 shifts and 0
-   errored, 0 dropped ticks, 403 pieces / 360 deploys, top storey 2, 96 charges. The
-   anomaly log's one fault (every killing blow counted an encode error) is fixed;
-   `ci/anomaly_verdict.py` reads PASS after. Left from it: **16 structures fell to 96
-   charges and `struct hits` read 0** — the raiders' charges miss most of the time,
-   and the ones that land kill twig outright; and each shift leaves 8 sleepers (24 at
-   20 min, no `save_file`), so a long run walks into `sleepers_evicted`.
+   satchel, seed 20260731, `ci` build, 4 cores): 8/8 live, 0 errored shifts, 0 dropped
+   ticks, `ci/anomaly_verdict.py` PASS (its one fault, every killing blow counting an
+   encode error, is fixed). The line counted broadcasts once per post until it read
+   the shard's own once-per-fact counts: 11 min is 354 pieces / 43 deploys, 12 charges
+   and 9 struct hits — **one satchel per raider per shift**, all on twig that falls to
+   it outright, so no raid shows progress. Each shift leaves 8 sleepers behind (no
+   `save_file`), so a long run walks into `sleepers_evicted`.
 2. Can an inhabitant afford its raid rows? Its kit is a bat and a torch
    (`content/balance.toml`); `bot_smoke.rs` grants the satchel. Judge -18 §B.2.
 3. `DECISIONS.md` §open "shard population v0": the 300 s shift, the 2 s backoff,
