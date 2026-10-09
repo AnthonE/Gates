@@ -9,7 +9,7 @@ use client_core::core::ClientCore;
 use protocol::{ActionMsg, ItemCatalog, SkinCatalog, SkinRow, COIN_ELO, COIN_NONE, COIN_ORBS};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::craft::{CraftContent, REFUSE_SKIN};
+use sim_core::craft::{CraftContent, REFUSE_CR_SKIN};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::skin::{SkinContent, SkinDef, SkinSet};
 
@@ -163,7 +163,7 @@ fn a_skin_is_owned_crafted_carried_and_seen() {
     pump(&mut core, &stats, &mut clients);
     assert_eq!(
         clients[0].1.pop_craft_refusal(),
-        Some(REFUSE_SKIN as u8),
+        Some(REFUSE_CR_SKIN as u8),
         "the crafter hears why"
     );
     assert_eq!(core.world.players[w0].inv[0].count, 4, "nothing was spent");

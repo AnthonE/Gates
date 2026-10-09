@@ -1200,6 +1200,35 @@ fn a_take_plays_its_own_slice_and_the_low_pass_is_one_pole() {
     let far = engine::lp_of(0.95 * 40.0, 40.0, 48_000);
     assert_eq!(near, 0, "a near sound is not filtered");
     assert!(mid > far && far > 0, "{mid} then {far}");
+
+    // Water muffles too, deeper as the fade goes under, and a start keeps
+    // the darker of its two filters.
+    let (above, half, under) = (
+        engine::lp_under(0.0, 48_000),
+        engine::lp_under(0.5, 48_000),
+        engine::lp_under(1.0, 48_000),
+    );
+    assert_eq!(above, 0, "dry ears hear no water");
+    assert!(half > under && under > 0, "{half} then {under}");
+    assert!(under < far, "under water is darker than the far air");
+    let lp_of_start = |c: Cmd| match c {
+        Cmd::Start { lp, .. } => lp,
+        _ => unreachable!(),
+    };
+    let dry = Cmd::Start {
+        cue: Cue::Gather,
+        take: 0,
+        takes: 1,
+        lp: 0,
+        gain_l: 1.0,
+        gain_r: 1.0,
+        rate: 1.0,
+    };
+    assert_eq!(lp_of_start(dry.muffled(under)), under);
+    assert_eq!(lp_of_start(dry.muffled(0)), 0);
+    let distant = dry.muffled(far);
+    assert_eq!(lp_of_start(distant.muffled(under)), under);
+    assert_eq!(lp_of_start(distant.muffled(half)), far.min(half));
 }
 
 // ---------------------------------------------------------------------------

@@ -294,7 +294,7 @@ pub fn rows(
 /// own test (`craft::start`: the furnace by archetype, the bench ladder by
 /// `≥`), asked of the client's mirror of the deploys at the sim's radius.
 /// Quick craft offers only what this says yes to, and the crafting page
-/// dims CRAFT on a no — before the sim answers `REFUSE_STATION` to a click
+/// dims CRAFT on a no — before the sim answers `REFUSE_CR_STATION` to a click
 /// that looked live.
 pub fn station_here(
     def: &RecipeDef,

@@ -224,11 +224,15 @@ fn a_stump_pays_once_and_leaves_the_sapling_alone() {
         cond: w.gather.cond_max_of(tool),
         skin: 0,
     };
-    let (mut swings, mut paid) = (0, 0);
+    let (mut swings, mut paid, mut grubbed) = (0, 0, 0);
     for seq in 0..SWING_INTERVAL_TICKS * 12 {
         w.tick(&[input(aim, 1_000 + seq, BTN_PRIMARY)]);
         for e in w.events.entries() {
             assert_ne!(e.code, EV_SLOT_HARVESTED, "a stump is not a second fell");
+            if e.code == sim_core::world::EV_STUMP_GRUBBED {
+                assert_eq!(e.a, sim_core::gather::cell_key(cx, cz));
+                grubbed += 1;
+            }
             if e.code == EV_GATHER && e.b >> 16 == stump.output as u32 {
                 swings += 1;
                 paid += e.b & 0xFFFF;
@@ -240,6 +244,7 @@ fn a_stump_pays_once_and_leaves_the_sapling_alone() {
         "the stump takes its own row's hits"
     );
     assert_eq!(paid, (stump.hits * per) as u32);
+    assert_eq!(grubbed, 1, "the last swing says the stump is gone, once");
     let life = w.slot_lives.find(cx, cz).expect("still felled");
     assert_eq!(life.hits, sim_core::gather::STUMP_GRUBBED);
     assert_eq!(life.respawn_at, due, "grubbing the stump moved the sapling");

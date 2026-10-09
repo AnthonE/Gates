@@ -679,7 +679,7 @@ async fn test_action_lane_over_socket() {
     .expect("craft verdict inside 10 s");
     assert_eq!(
         refused as u32,
-        sim_core::craft::REFUSE_INPUTS,
+        sim_core::craft::REFUSE_CR_INPUTS,
         "naked spawn crafting a hatchet must refuse on inputs"
     );
     assert_eq!(ShardStats::get(&handle.stats.actions_ok), 1);

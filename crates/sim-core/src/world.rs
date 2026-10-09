@@ -873,7 +873,13 @@ pub const EV_MECH_SOLVED: u8 = 58;
 /// planter is visible from outside the base it is in.
 pub const EV_GROW: u8 = 59;
 
-pub const EV_MAX: u8 = EV_GROW;
+/// EV_STUMP_GRUBBED: a = cell key, b = 0, c = 0. A felled tree's stump was
+/// grubbed out (`gather::STUMP_GRUBBED`): the slot stays harvested until the
+/// sapling, but nothing stands there now. **Broadcast**, `EV_SLOT_HARVESTED`'s
+/// posture: every client stops drawing the stump and offering a swing at it.
+pub const EV_STUMP_GRUBBED: u8 = 60;
+
+pub const EV_MAX: u8 = EV_STUMP_GRUBBED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1713,6 +1719,15 @@ pub enum Command {
         cx: u16,
         cz: u16,
         level: u8,
+    },
+    /// Take stock row `row` back out of the hearth at the address, a feed's
+    /// chunk at a time — its crew only (`deploy::take_stock`).
+    TakeStock {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        row: u8,
     },
     /// Toggle the door at the address open/closed (deploy.rs validates
     /// and refuses by event, never by panic).
@@ -4833,6 +4848,25 @@ impl World {
                     );
                 }
             }
+            Command::TakeStock {
+                id,
+                cx,
+                cz,
+                level,
+                row,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    deploy::take_stock(
+                        &self.deploy,
+                        &self.gather,
+                        &mut self.deploys,
+                        &mut self.players[slot],
+                        (cx, cz, level),
+                        row,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::Use {
                 id,
                 cx,
@@ -6178,6 +6212,7 @@ impl World {
         }
         let mut blast_kills = crate::charge::BlastKills::new();
         let mut blast_mobs = crate::charge::BlastMobs::new();
+        let mut duds = crate::charge::Duds::new();
         crate::charge::tick_fuses(
             seed,
             &self.haven,
@@ -6193,8 +6228,36 @@ impl World {
             &mut blast_kills,
             &self.mobs,
             &mut blast_mobs,
+            &mut duds,
             &mut self.events,
         );
+        // A charge that went out falls where it was planted, a stack of one
+        // to pick up and plant again; lost only to the deep sea.
+        if !duds.entries().is_empty() {
+            let cols = self.pieces.cols();
+            let mut occ = crate::occupy::Occupants {
+                doors: self.card_door_bits,
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            };
+            for &(item, x, y, z) in duds.entries() {
+                let Some(at) =
+                    crate::grounditem::rest_at(seed, &self.haven, cols, &mut occ, x, y, z)
+                else {
+                    continue;
+                };
+                let stack = ItemStack {
+                    item,
+                    count: 1,
+                    cond: self.gather.cond_max_of(item),
+                    skin: 0,
+                };
+                self.ground_items
+                    .drop_one(&self.backpack, at, stack, tick, [0; 3]);
+            }
+        }
         // The blast's dead, laid down after every fuse resolved — the
         // bite buffer's split, for its reason: `die` needs the whole
         // world. The hp is already zero and the events already rang

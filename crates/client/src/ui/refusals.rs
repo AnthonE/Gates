@@ -503,11 +503,11 @@ mod tests {
         );
 
         use sim_core::craft::*;
-        assert_eq!(craft(REFUSE_RECIPE as u8), "no such recipe");
-        assert_eq!(craft(REFUSE_COUNT as u8), "bad count");
-        assert_eq!(craft(REFUSE_STATION as u8), "needs a station");
-        assert_eq!(craft(REFUSE_QUEUE_FULL as u8), "queue full");
-        assert_eq!(craft(REFUSE_INPUTS as u8), "missing ingredients");
+        assert_eq!(craft(REFUSE_CR_RECIPE as u8), "no such recipe");
+        assert_eq!(craft(REFUSE_CR_COUNT as u8), "bad count");
+        assert_eq!(craft(REFUSE_CR_STATION as u8), "needs a station");
+        assert_eq!(craft(REFUSE_CR_QUEUE_FULL as u8), "queue full");
+        assert_eq!(craft(REFUSE_CR_INPUTS as u8), "missing ingredients");
 
         // CONNECT is `protocol`'s table now (see the note above `connect`),
         // and protocol gates its own completeness. What is still this

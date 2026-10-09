@@ -70,7 +70,8 @@ pub const BTN_LIGHT: u8 = 1 << 4;
 pub const BTN_ASSIST: u8 = 1 << 5;
 
 /// **Draw the bow in your hand** (`reference/PROJECTILES.md` §6): the right
-/// mouse held with a weapon that draws (`combat::RangedDef::draw_ticks`).
+/// mouse held with a weapon that draws (`combat::RangedDef::draw_ticks`), or
+/// a gun raised to its sights — for which the sim reads it only as the walk.
 /// A latch like [`BTN_LIGHT`], held for as long as the draw is: the sim
 /// looses only from a full draw, counted off how long this has been held
 /// (`ranged::draw`), and a body drawing a bow cannot sprint

@@ -508,6 +508,30 @@ pub fn keys(
         keypad_keys(&keys, &net, &mut pad, &mut toast);
         return;
     }
+    // **The hearth's panel takes back with the digits** while it is up and
+    // the crew can read it: `1`–`4` each take a feed's worth of that row
+    // into the pack (`deploy::take_stock`), so a misfed stack is never
+    // stuck. Claimed like the keypad's, ahead of the food keys below and of
+    // the hotbar (`input::gather` yields them too).
+    if let Some(at) = hearth
+        .0
+        .filter(|&a| hearth_rows_known(&net.session.core, a))
+    {
+        let rows = (net.session.core.stock_count as usize).min(sim_core::limits::HEARTH_STOCK_ROWS);
+        let mut took = false;
+        for (i, k) in super::input::HOTBAR_KEYS.iter().enumerate().take(rows) {
+            if keys.just_pressed(*k) {
+                let (cx, cz, level) = at;
+                send(&net, &mut toast, "take", |buf| {
+                    protocol::encode_action_take_stock(cx, cz, level, i as u8, buf)
+                });
+                took = true;
+            }
+        }
+        if took {
+            return;
+        }
+    }
     // **A food slot's key eats one** and leaves the hand as it was — the
     // other half of `input::gather`'s hotbar loop, off the same test
     // (`hold::eats_on_key`). Below the keypad's claim, so a code typed into
@@ -1393,6 +1417,12 @@ pub fn close_container(net: &Net, toast: &mut Toast) {
 /// to encode keeps the bug local instead of arriving as a disconnect, and a
 /// full lane means the move was **not** sent (wall 4's stated overflow policy
 /// for the reliable lane is to report, never drop).
+/// Whether the open hearth panel shows its rows — the crew's stock ack names
+/// this hearth — so its digits take back rather than select.
+pub fn hearth_rows_known(core: &client_core::core::ClientCore, at: (u16, u16, u8)) -> bool {
+    core.stock_addr == at && core.stock_count > 0
+}
+
 fn send(
     net: &Net,
     toast: &mut Toast,

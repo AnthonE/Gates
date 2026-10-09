@@ -1389,9 +1389,10 @@ pub fn apply_view(
         return;
     };
     if let Projection::Perspective(p) = &mut *projection {
-        // A drawn bow narrows the view (`viewmodel::DrawZoom`).
-        let z = zoom.map_or(0.0, |z| z.0.clamp(0.0, 1.0));
-        let want = settings.fov_deg.to_radians() * (1.0 - super::viewmodel::DRAW_ZOOM * z);
+        // A drawn bow or a gun at its sights narrows the view
+        // (`viewmodel::DrawZoom`).
+        let z = zoom.map_or(0.0, |z| z.0.clamp(0.0, 0.5));
+        let want = settings.fov_deg.to_radians() * (1.0 - z);
         if (p.fov - want).abs() > f32::EPSILON {
             p.fov = want;
         }

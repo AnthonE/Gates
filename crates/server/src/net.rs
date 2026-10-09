@@ -629,6 +629,13 @@ pub async fn spawn_shard(
         }
         None => crate::anomaly::Sink::off(),
     };
+    // The ban list, read before anyone can knock: a file that does not
+    // parse is a boot failure, never a shard that forgot whom it banned.
+    let bans = match cfg.ban_file.as_deref() {
+        Some(path) => crate::admin::Bans::load(std::path::Path::new(path))
+            .map_err(|e| format!("ban file `{path}`: {e}"))?,
+        None => crate::admin::Bans::new(),
+    };
 
     {
         let stats = stats.clone();
@@ -712,6 +719,7 @@ pub async fn spawn_shard(
             netsim: cfg.netsim,
             spectate: cfg.spectate,
         },
+        bans,
         ctrl_tx,
         skins_tx,
         prices_tx,
@@ -946,6 +954,7 @@ fn ask_face(
 async fn accept_loop(
     endpoint: Endpoint<Server>,
     facts: ShardFacts,
+    mut bans: crate::admin::Bans,
     mut ctrl_tx: rtrb::Producer<Connect>,
     mut skins_tx: rtrb::Producer<crate::slot::SkinsMsg>,
     mut prices_tx: rtrb::Producer<crate::slot::SkinPricesMsg>,
@@ -970,10 +979,6 @@ async fn accept_loop(
     let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
     // The spectator seats' connections and their targets (`SeatSlot`).
     let mut seats: [SeatSlot; MAX_SPECTATORS] = std::array::from_fn(|_| SeatSlot::default());
-    // Wallets banned for this uptime (admin v0). Memory only, and
-    // `admin.rs`' header says why that is stated rather than hidden: a
-    // persisted ban wants its own file with its own format version.
-    let mut bans = crate::admin::Bans::new();
     let mut sweep = tokio::time::interval(Duration::from_millis(100));
     // ---- the roster sweep -------------------------------------------------
     //
@@ -1261,6 +1266,12 @@ async fn accept_loop(
                         if !bans.insert(key) {
                             ShardStats::bump(&stats.admin_refused);
                             continue;
+                        }
+                        // Written whole on each ban: an admin typing, a few
+                        // KiB at most. A failed write keeps the ban for the
+                        // uptime and counts like the player store's.
+                        if bans.save().is_err() {
+                            ShardStats::bump(&stats.save_write_errors);
                         }
                     }
                     // The slot is found by id rather than carried, because

@@ -96,6 +96,11 @@ $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 echo "== gate: shard list (elo-shardlist-v1, docs/LAUNCHER.md §6)"
 $NICE python3 ci/shardlist.py --self-test || fail "shard list"
 
+# The alpha gate's reader (ALPHA.md §6): every counter the anomaly log
+# watches has a class, so a new one cannot pass a verdict unjudged.
+echo "== gate: anomaly verdict (ci/anomaly_verdict.py --self-test)"
+$NICE python3 ci/anomaly_verdict.py --self-test || fail "anomaly verdict"
+
 # The third seam onto elo, and the only one where this repo is the AUTHOR
 # rather than the source of a build. `scry.json` is our store row and our
 # community feed; `scry.sig.json` signs its exact bytes, and elo applies the

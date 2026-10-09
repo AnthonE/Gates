@@ -50,6 +50,8 @@ pub const MAX_EVENT_MSG_BYTES: usize = 320;
 /// message per client per tick — server core). Overflow policy: the next
 /// message continues the walk.
 pub const SLOT_SYNC_BATCH: usize = 64;
+// The slot sync's grubbed bits are one `u64`.
+const _: () = assert!(SLOT_SYNC_BATCH <= 64);
 
 /// Regrowing trees one grow-sync message carries (tree growth v0): eight
 /// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
@@ -506,7 +508,11 @@ const SUB_WORN: u32 = 89;
 /// change, `SUB_OVEN`'s posture; a joiner reads the same byte off the
 /// deploy record.
 const SUB_PLANTER: u32 = 90;
-const SUB_MAX: u32 = SUB_PLANTER;
+/// A felled tree's stump was grubbed out (wire v101, sim
+/// `EV_STUMP_GRUBBED`): the cell, broadcast. A joiner reads the same fact
+/// off the slot sync's per-cell bit.
+const SUB_STUMP_GRUBBED: u32 = 91;
+const SUB_MAX: u32 = SUB_STUMP_GRUBBED;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -638,6 +644,14 @@ const _: () = assert!(
 /// bytes, same width — what changes is that adding an eleventh reason now
 /// has a gate to answer to.
 const REFUSE_B_BITS: u32 = 8;
+/// Craft-refusal reason width (`craft::REFUSE_CR_*`, zero live). A full byte
+/// since v0; both ends refuse anything past `REFUSE_CR_MAX` (NOW.md §5b).
+const REFUSE_CR_BITS: u32 = 8;
+const _: () = assert!(sim_core::craft::REFUSE_CR_MAX < (1 << REFUSE_CR_BITS));
+/// Deploy-refusal reason width (`deploy::REFUSE_D_*`, zero live): the craft
+/// row's posture.
+const REFUSE_D_BITS: u32 = 8;
+const _: () = assert!(sim_core::deploy::REFUSE_D_MAX < (1 << REFUSE_D_BITS));
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
 const SYNC_COUNT_BITS: u32 = 7;
@@ -1180,11 +1194,16 @@ pub enum EventMsg {
         cells: [(u16, u16, u32); GROW_SYNC_BATCH],
         count: u8,
     },
+    /// A felled tree's stump was grubbed out: the cell stays harvested
+    /// until the sapling, with nothing standing in it.
+    StumpGrubbed { cx: u16, cz: u16 },
     /// One batch of the harvested-cell walk. `reset` (first batch of a
-    /// join or an event-lane resync) clears the client's set first.
+    /// join or an event-lane resync) clears the client's set first. Bit `i`
+    /// of `grubbed` says `cells[i]`'s stump is gone (wire v101).
     SlotSync {
         reset: bool,
         cells: [(u16, u16); SLOT_SYNC_BATCH],
+        grubbed: u64,
         count: u8,
     },
     /// Item display names `first..first+count` of a `total`-row table.
@@ -2047,22 +2066,36 @@ pub fn encode_event_slot_grow_sync(
 }
 
 /// A batch may be empty only with `reset` — the "your set is now empty"
-/// resync message; an empty non-reset batch says nothing.
+/// resync message; an empty non-reset batch says nothing. Bit `i` of
+/// `grubbed` rides after `cells[i]`; a bit past the batch is refused.
 pub fn encode_event_slot_sync(
     reset: bool,
     cells: &[(u16, u16)],
+    grubbed: u64,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if cells.len() > SLOT_SYNC_BATCH || (cells.is_empty() && !reset) {
         return Err(WireError::Cap);
     }
+    if cells.len() < 64 && grubbed >> cells.len() != 0 {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_SLOT_SYNC)?;
     w.write_bit(reset)?;
     w.write(cells.len() as u32, SYNC_COUNT_BITS)?;
-    for &(cx, cz) in cells {
+    for (i, &(cx, cz)) in cells.iter().enumerate() {
         w.write(cx as u32, 16)?;
         w.write(cz as u32, 16)?;
+        w.write_bit(grubbed >> i & 1 != 0)?;
     }
+    Ok(w.finish())
+}
+
+/// A felled tree's stump at (`cx`, `cz`) was grubbed out (broadcast).
+pub fn encode_event_stump_grubbed(cx: u16, cz: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_STUMP_GRUBBED)?;
+    w.write(cx as u32, 16)?;
+    w.write(cz as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -2230,8 +2263,11 @@ pub fn encode_event_bags(bags: &[BagAnchor], buf: &mut [u8]) -> Result<usize, Wi
 }
 
 pub fn encode_event_craft_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if reason as u32 > sim_core::craft::REFUSE_CR_MAX {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_CRAFT_REFUSED)?;
-    w.write(reason as u32, 8)?;
+    w.write(reason as u32, REFUSE_CR_BITS)?;
     Ok(w.finish())
 }
 
@@ -2675,8 +2711,11 @@ pub fn encode_event_deploy_sync(
 }
 
 pub fn encode_event_deploy_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if reason as u32 > sim_core::deploy::REFUSE_D_MAX {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_DEPLOY_REFUSED)?;
-    w.write(reason as u32, 8)?;
+    w.write(reason as u32, REFUSE_D_BITS)?;
     Ok(w.finish())
 }
 
@@ -4471,15 +4510,24 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
-            for c in cells.iter_mut().take(count) {
+            let mut grubbed = 0u64;
+            for (i, c) in cells.iter_mut().take(count).enumerate() {
                 *c = (r.read(16)? as u16, r.read(16)? as u16);
+                if r.read_bit()? {
+                    grubbed |= 1 << i;
+                }
             }
             EventMsg::SlotSync {
                 reset,
                 cells,
+                grubbed,
                 count: count as u8,
             }
         }
+        SUB_STUMP_GRUBBED => EventMsg::StumpGrubbed {
+            cx: r.read(16)? as u16,
+            cz: r.read(16)? as u16,
+        },
         SUB_CATALOG => {
             let total = r.read(CATALOG_TOTAL_BITS)? as usize;
             let first = r.read(CATALOG_TOTAL_BITS)? as usize;
@@ -4562,9 +4610,15 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
         },
-        SUB_CRAFT_REFUSED => EventMsg::CraftRefused {
-            reason: r.read(8)? as u8,
-        },
+        SUB_CRAFT_REFUSED => {
+            let reason = r.read(REFUSE_CR_BITS)?;
+            if reason > sim_core::craft::REFUSE_CR_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::CraftRefused {
+                reason: reason as u8,
+            }
+        }
         SUB_RECIPES => {
             let total = r.read(RECIPE_TOTAL_BITS)? as usize;
             let first = r.read(RECIPE_TOTAL_BITS)? as usize;
@@ -4857,9 +4911,15 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
             }
         }
-        SUB_DEPLOY_REFUSED => EventMsg::DeployRefused {
-            reason: r.read(8)? as u8,
-        },
+        SUB_DEPLOY_REFUSED => {
+            let reason = r.read(REFUSE_D_BITS)?;
+            if reason > sim_core::deploy::REFUSE_D_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::DeployRefused {
+                reason: reason as u8,
+            }
+        }
         SUB_DEPLOY_DEFS => {
             let total = r.read(DEPLOY_DEFS_TOTAL_BITS)? as usize;
             let first = r.read(DEPLOY_DEFS_TOTAL_BITS)? as usize;
@@ -6020,25 +6080,32 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let cells: [(u16, u16); SLOT_SYNC_BATCH] =
             core::array::from_fn(|i| (i as u16, (i * 3) as u16));
-        let len = encode_event_slot_sync(true, &cells, &mut buf).unwrap();
+        let len = encode_event_slot_sync(true, &cells, u64::MAX, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::SlotSync {
                 reset,
                 cells: got,
+                grubbed,
                 count,
             } => {
                 assert!(reset);
                 assert_eq!(count as usize, SLOT_SYNC_BATCH);
                 assert_eq!(got, cells);
+                assert_eq!(grubbed, u64::MAX);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         // Empty is only a message when it resets.
-        assert!(encode_event_slot_sync(true, &[], &mut buf).is_ok());
+        assert!(encode_event_slot_sync(true, &[], 0, &mut buf).is_ok());
         assert_eq!(
-            encode_event_slot_sync(false, &[], &mut buf),
+            encode_event_slot_sync(false, &[], 0, &mut buf),
             Err(WireError::Cap)
+        );
+        // A grubbed bit past the batch names no cell.
+        assert_eq!(
+            encode_event_slot_sync(false, &cells[..3], 0b1000, &mut buf),
+            Err(WireError::Range)
         );
     }
 
@@ -7724,7 +7791,7 @@ mod wire_domains {
         },
     ];
 
-    /// All twelve domains this module bounds. Widths are the private consts
+    /// Every domain this module bounds. Widths are the private consts
     /// above, so this table cannot drift from the encoder — it *is* the
     /// encoder's constants.
     ///
@@ -7871,6 +7938,30 @@ mod wire_domains {
             // 15 at wire v92: `REFUSE_B_SAFE`, no charge planted in THE
             // GATE or on its stations.
             live_max: 15,
+        },
+        Domain {
+            what: "craft refusal",
+            sim_site: "craft.rs REFUSE_CR_*",
+            wire_site: "REFUSE_CR_BITS",
+            home: "craft.rs",
+            prefix: "pub const REFUSE_CR_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 8,
+            bits: REFUSE_CR_BITS,
+            live_max: 7,
+        },
+        Domain {
+            what: "deploy refusal",
+            sim_site: "deploy.rs REFUSE_D_*",
+            wire_site: "REFUSE_D_BITS",
+            home: "deploy.rs",
+            prefix: "pub const REFUSE_D_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 20,
+            bits: REFUSE_D_BITS,
+            live_max: 19,
         },
         Domain {
             what: "container kind",
@@ -8193,9 +8284,10 @@ mod wire_domains {
             // 17 -> 18 at wire v59 (reload v1): `REFUSE_RL_BITS` is a
             // field width spent on `ranged::REFUSE_RL_*`, so it owes a
             // row, and this assert is what asked for it. 18 -> 19 at v77:
-            // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`.
+            // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`. 19 -> 21: the
+            // craft and deploy refusals, a byte each since v0 (§5b).
             DOMAINS.len(),
-            19,
+            21,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -8651,6 +8743,44 @@ mod wire_domains {
                     reason: reason as u8
                 }
             );
+        }
+
+        // Craft and deploy refusals: zero is live, so only the tail past
+        // each ledger is forged — refused at both ends.
+        type Enc = fn(u8, &mut [u8]) -> Result<usize, WireError>;
+        type Msg = fn(u8) -> EventMsg;
+        let rows: [(u32, u32, Enc, Msg); 2] = [
+            (
+                SUB_CRAFT_REFUSED,
+                sim_core::craft::REFUSE_CR_MAX,
+                encode_event_craft_refused,
+                |reason| EventMsg::CraftRefused { reason },
+            ),
+            (
+                SUB_DEPLOY_REFUSED,
+                sim_core::deploy::REFUSE_D_MAX,
+                encode_event_deploy_refused,
+                |reason| EventMsg::DeployRefused { reason },
+            ),
+        ];
+        for (sub, max, encode, msg) in rows {
+            for reason in 0..=max {
+                let len = encode(reason as u8, &mut buf).unwrap();
+                assert_eq!(decode_event(&buf[..len]).unwrap(), msg(reason as u8));
+            }
+            assert_eq!(encode((max + 1) as u8, &mut buf), Err(WireError::Range));
+            for reason in (max + 1)..256 {
+                let mut w = BitWriter::new(&mut buf);
+                w.write(KIND_EVENT, KIND_BITS).unwrap();
+                w.write(sub, SUB_BITS).unwrap();
+                w.write(reason, 8).unwrap();
+                let len = w.finish();
+                assert_eq!(
+                    decode_event(&buf[..len]),
+                    Err(WireError::Malformed),
+                    "sub {sub}: reason {reason} is past the ledger and decoded anyway"
+                );
+            }
         }
     }
 

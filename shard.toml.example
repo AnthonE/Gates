@@ -329,6 +329,13 @@ seed = 20260731
 # file after the incident they wanted it for.
 # anomaly_file = "gates-anomaly.jsonl"
 
+# WHERE ADMIN BANS LAST. Unset ⇒ a `/ban` holds until the shard restarts.
+# Text, one wallet a line under a `# gates bans v1` header, written whole on
+# every ban; delete a line with the shard down to lift that ban. Its own
+# file, never the player store, so a wipe does not forget it. A file that
+# does not parse REFUSES THE BOOT.
+# ban_file = "gates-bans.txt"
+
 # HOW MANY RESIDENT INHABITANTS THIS SHARD SEATS ITSELF. Unset ⇒ 0, and a
 # shard seats nobody but the players who dial it.
 #

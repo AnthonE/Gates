@@ -1253,13 +1253,10 @@ pub struct SnapshotDef {
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
 ///
-/// **What `Submerged` cannot do, said plainly.** Real submerged audio is a
-/// steep low-pass: the top end goes, and that is a filter. We have no DSP
-/// stage — the engine gives us gain, rate and a pan — so the substitution is to
-/// duck the game bus and crossfade to a bed that is *generated* dark
-/// (`synth::under`). That is the same kind of substitution as pitch jitter
-/// standing in for a recorded variation bank (`reference/AUDIO.md` §9.5): a
-/// stand-in, not an equal, and it is written down rather than implied.
+/// Real submerged audio is a steep low-pass: the top end goes. One-shots get
+/// it — the engine's one pole, at `engine::lp_under` of the fade — and the
+/// beds and loops, which run unfiltered, are ducked and crossfaded to one
+/// *generated* dark (`synth::under`) instead.
 pub const SNAPSHOTS: [SnapshotDef; 2] = [
     // Above.
     SnapshotDef {

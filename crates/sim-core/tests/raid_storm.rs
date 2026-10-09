@@ -226,6 +226,7 @@ fn storm_combat() -> CombatContent {
         fuse_ticks: 90,
         reach_cm: 200,
         blast_cm: 300,
+        dud_pct: 0,
     };
     c
 }

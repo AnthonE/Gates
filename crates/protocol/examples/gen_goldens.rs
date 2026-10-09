@@ -184,6 +184,14 @@ fn main() {
     let (cx, cz, level, loc, stages) = goldens::event_planter();
     let len = protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[153], &buf[..len]);
+    // A grubbed stump (v101).
+    let (cx, cz) = goldens::event_stump_grubbed();
+    let len = protocol::encode_event_stump_grubbed(cx, cz, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[154], &buf[..len]);
+    // Stock taken back out of a hearth (v101).
+    let (cx, cz, level, row) = goldens::action_take_stock();
+    let len = protocol::encode_action_take_stock(cx, cz, level, row, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[155], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -208,8 +216,8 @@ fn main() {
             .unwrap();
     write_fixture(goldens::FIXTURES[11], &buf[..len]);
 
-    let (reset, cells) = goldens::event_slot_sync();
-    let len = encode_event_slot_sync(reset, &cells, &mut buf).unwrap();
+    let (reset, cells, grubbed) = goldens::event_slot_sync();
+    let len = encode_event_slot_sync(reset, &cells, grubbed, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[12], &buf[..len]);
 
     let (len, took) = encode_event_catalog(&goldens::event_catalog(), 0, &mut buf).unwrap();

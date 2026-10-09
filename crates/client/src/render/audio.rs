@@ -2051,6 +2051,8 @@ pub fn pump(
     // another resource — at most `STARTS_PER_FRAME` of them, on the stack,
     // no allocation.
     let mut chosen = [None::<Start>; crate::sound::STARTS_PER_FRAME];
+    // Ears under water hear every one-shot through the water's low-pass.
+    let under = engine::lp_under(sound.snapshots.t(), out_rate);
     {
         let starts = sound.mixer.tick(dt_ms, listener, live, &mix);
         for (slot, s) in chosen.iter_mut().zip(starts.iter()) {
@@ -2063,7 +2065,11 @@ pub fn pump(
         // The take is the bank's to count and never the last one played.
         let takes = bank.takes(start.cue);
         let take = sound.takes.pick(start.cue, takes);
-        engine.push(engine::start_cmd(&start, listener, right, out_rate).with_take(take, takes));
+        engine.push(
+            engine::start_cmd(&start, listener, right, out_rate)
+                .with_take(take, takes)
+                .muffled(under),
+        );
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence
         // there, counted as `unbanked`, and must not hold a ledger slot for

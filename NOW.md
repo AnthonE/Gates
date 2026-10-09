@@ -15,6 +15,14 @@ end). Item numbers are the original ones, gaps included. A pointer to
 `§LOOK` (questions only a person looking at a frame could settle) is closed:
 the operator played through all of it, 2026-10-09.
 
+**Operator playtest, 2026-10-09: "everything works fine", lag included** — a lot
+of play on a real GPU over a real link, on a build from about ten hours before
+this note (before wire v101). Closed on it: the hardware verdict (`§0gfx`), the
+netcode feel (`§0nc` 1), the building playtest (`§0bl` 1, `§0lock`) and the sound
+device booting (`§0x` 3). Still open where a number, not a feel, is owed
+(`§0lc`'s `favour_clamped`, `§0tx`'s BBR vs CUBIC) and where a taste call was
+asked rather than a verdict (`§0fp` 1).
+
 ---
 
 # Buildable now — a loop can pick any of these
@@ -39,11 +47,6 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
   messages a tick; reserving that half on demand makes it cost the traffic;
   `status.json` does not publish `spectators`; a seat does not see the
   target's open container panel (the container stream is per connection).
-
-## 0gfx · Graphics rows and render scale are built *(client lane)*
-
-- No hardware performance or appearance verdict yet: render scale, SMAA and bloom
-  had only software-GPU smoke checks (`findings/render-scale-20260919.md`).
 
 ## 0wnd · Down, hand revive and medkit recovery are built *(sim+client lane)*
 
@@ -99,8 +102,8 @@ carries no more rock or ore than open highland. What is left:
 
 - In: `gather::STUMP_NODE` (`content/gatherables.toml` `gather.stump`) pays out of the
   felled tree's own `SlotLife` until grubbed (`STUMP_GRUBBED`); the sapling keeps its timer.
-- No wire fact says a stump was grubbed, so the client draws a spent stump until the
-  sapling and still prompts over it (`HarvestedSet::stump_standing`). One event code fixes it.
+- A grub is on the wire (v101: `SUB_STUMP_GRUBBED`, a bit per slot-sync cell); the
+  client stops drawing and prompting the moment it lands.
 - Buy `WANTED.md` §2.2's stump model now that the verb exists.
 
 ## 0kit · The build kit is the one row a generated mesh fights *(client lane)*
@@ -128,8 +131,6 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0nc · Netcode v2 landed — what the overhaul still owes *(client+server lane)*
 
-1. Feel it at the bar: `netsim = "30,10,1"` on a dev shard with two humans — the
-   stop test and the strafing-bro test. Every gate ran at zero RTT; operator's eyes.
 3. The event lane is not shimmed (`DECISIONS.md` §open netsim row has the skew), and
    under netsim the stream lane leads its snapshots by lat_ms.
 4. `RESYNC_AHEAD_TICKS = 3` is still a blind guess; it only matters for the first
@@ -189,8 +190,7 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
    50: the first that should differ decides whether the geometry widens
    (`reference/PROJECTILES.md` §9.4b).
 3. The hit marker changes colour, not shape (the reference pushes ticks out, a
-   `Node` mutation per tick). The number is drawn (`hud::hit_number`, off `Feed`);
-   `Toast::hit_damage` is a dead field.
+   `Node` mutation per tick). The number is drawn (`hud::hit_number`, off `Feed`).
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
@@ -352,8 +352,10 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
 
-2. ADS (RMB) on a firearm: RMB already places, builds, half-grabs, draws a bow (`BTN_AIM`) and lights
-   a torch (`BTN_LIGHT`); a firearm's sights take bit 7, the last free one (`BTN_MASK`, `PROTO_VER` bump).
+2. ADS landed client-side on `BTN_AIM` (no wire change: the sim has no spread, so the sights are a 25 %
+   zoom, a slower look and the drawn bow's walk); the gun comes to the middle with its barrel down the view
+   (`viewmodel::sights_aim`, solved off `SIGHTS_PALM`). Unseen by a person: the pose's one number is where
+   the fist sits. Left: whether a spread worth aiming for belongs in the sim.
 3. Flashlight (`F`): the torch and its right-click `BTN_LIGHT` toggle exist (torch
    fuel v0, `render/input.rs`); `F` itself only nudges the plan's height.
 4. Voice (hold `V`): no capture, codec, `KIND_*` or fan-out; `reference/VOICE.md` §9.
@@ -367,10 +369,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 - The give-backs announce what they dropped (`World::announce_spill`), but name the
   item only, not the amount; one wire field buys it (operator; `DECISIONS.md` §open).
 
-## 0bl · Building catalogue and remaining playtest *(client+sim lane)*
+## 0bl · Building catalogue *(client+sim lane)*
 
-1. Human playtest: snapping, corner posts/aprons, soft-face readability, walking a
-   furnished base (`findings/building-circulation-20260921.md`).
 2. Perf option: memo `col_base_y`'s terrain sampling (volley 1.25 → 3.07 ms/tick).
 3. Diagonal-wall UV stretch: the √2 root scale stretches the slab texture (`ART.md`).
 4. Operator calls (`DECISIONS.md` §open "piece flanks v0"; `reference/BUILDING.md`
@@ -400,14 +400,16 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0rc · The wire raid's two unmeasured differences *(systems lane)*
 
-1. `raid_shape.rs:73`/`botclient.rs:399` say `push_action` drops; server `core.rs:722`
-   and `net.rs:2054` keep it ringed. Settle it before quoting "leans optimistic".
+- Settled 2026-10-09: the shard rings actions, one per tick (`net.rs` pops through
+  `core::wants_action`); a burst lands late, never lost. `raid_shape.rs` says so.
 2. `Client::consume_input` (`server/src/client.rs`) lets one frame's buttons act
    per tick, so `charge_slot` may not be in force when the throw lands.
 
-## 0r · A charge cannot dud or be stopped *(systems lane)*
+## 0r · A charge cannot be stopped *(systems lane)*
 
-2. No dud chance, no defuse verb (`sim-core/src/charge.rs:38`); each its own verb.
+- Duds landed: `dud_pct = 20` on the satchel; a dud falls at the wall as a satchel to
+  pick up and plant again (`charge::dud`); the HUD says so when a clock ends with no
+  blast at it (`hud::FIZZLE_LINE`). Left: no defuse verb.
 
 ## 0wx · Weather and exposure — what #176 left *(systems + client lane)*
 
@@ -435,8 +437,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 1. Heal under upkeep (10 min unattacked, at the decay rate; Devblog 189): a per-piece
    last-hit clock is a `WORLD_SAVE_FORMAT` change and a wipe — ride the next bump.
-3. The hearth panel shows each resource's day and the time left; still owed: a crew
-   HUD vital and withdrawal.
+3. The hearth panel shows each resource's day and the time left, and its crew takes
+   stock back with `1`–`4` (wire v101, `deploy::take_stock`). Still owed: a crew HUD vital.
 4. Door and insert upkeep (Devblog 190): ours charge nothing in a claim.
 5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
 6. No gate runs the inside discount: roof an unpaid piece in the replay (`test_replay`).
@@ -541,36 +543,25 @@ act):
 
 ## 0ad2 · What the admin lane still cannot do *(server lane)*
 
-1. Bans are memory-only (`server/src/admin.rs:179`): persist them in their own file
-   and format version (the player store's header wipes on a seed change).
 2. Nobody has typed a command at a live shard: the `REFUSE_ADMIN` close
    (`net.rs:1284`) is undriven (the disconnected screen does say an admin removed you).
-3. The anomaly log (JSONL) has no reader to give the alpha gate a verdict.
-4. `/who` and `/brain` answer the asker in chat. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
-   only in the anomaly log, and nothing stops `dev_env` in a public `shard.toml`.
-
-## 4b · The domain gate's one file-local residual
-
-1. `death_causes_are_a_closed_ledger` (`sim-core/tests/event_roles.rs:4507`)
-   scrapes `world.rs` alone; follow `sim-core/tests/domain_ledger.rs`.
-- ⚠ The label `4b` also names the world lane's section (§Labels).
+- Bans last in `ban_file` (text, `# gates bans v1`); there is no `/unban` verb, an
+  operator deletes the line with the shard down.
 
 ## 0pop · The inhabitants nobody has run for longer than a test *(server lane)*
 
-1. Run it past a test: set `population = 8` in a real `shard.toml` (commented out
-   at `shard.toml.example:367`), run the shard, read the population line.
+1. Run 2026-10-09 (`shard.toml.example` + `population = 8`, film's starter kit with a
+   satchel, seed 20260731, `ci` build, 4 cores): 8/8 live, 0 errored shifts, 0 dropped
+   ticks, `ci/anomaly_verdict.py` PASS (its one fault, every killing blow counting an
+   encode error, is fixed). The line counted broadcasts once per post until it read
+   the shard's own once-per-fact counts: 11 min is 354 pieces / 43 deploys, 12 charges
+   and 9 struct hits — **one satchel per raider per shift**, all on twig that falls to
+   it outright, so no raid shows progress. Each shift leaves 8 sleepers behind (no
+   `save_file`), so a long run walks into `sleepers_evicted`.
 2. Can an inhabitant afford its raid rows? Its kit is a bat and a torch
    (`content/balance.toml`); `bot_smoke.rs` grants the satchel. Judge -18 §B.2.
 3. `DECISIONS.md` §open "shard population v0": the 300 s shift, the 2 s backoff,
    an alpha shard's N, the `index % 2` owner/attacker split.
-
-## 5b · The wire still accepts two refusal reasons the sim can never mean *(server lane)*
-
-1. Craft-refused (`craft.rs` `REFUSE_*`) has no max: `REFUSE_C_MAX` is taken by
-   `survival.rs`'s consume refusals; pick a name the domain scanner tells apart.
-2. Deploy-refused (`deploy.rs:471-518`) has no `REFUSE_D_MAX`.
-3. Add both to `event.rs`'s `DOMAINS` (`every_domain_fits_its_wire_field`).
-- No `PROTO_VER` bump owed: the narrowing rule at `PROTO_VER` (`protocol/src/lib.rs`).
 
 ## The frame, the screens and the client's own hot path *(client lane)*
 
@@ -641,8 +632,8 @@ act):
 ## 0y · The sea is a volume — what it still cannot do *(client lane)*
 
 2. One sea state: a storm is `WAVES` × a scalar the sim would have to publish — wire, not renderer.
-5. The submerged duck is gain/rate/pan: `sound::engine` has a one-pole low-pass now (`lp_of`, distance only); the
-   `Submerged` snapshot does not use it yet.
+5. Under water, one-shots take the engine's one-pole (`engine::lp_under`); beds and loops run unfiltered and are
+   only ducked. Not yet heard by a person.
 6. `Splash` is the only waterline producer: no stroke, no wake, no interactive deformation.
 
 ## 1 · The native pivot — the one visual gap left of it
@@ -680,10 +671,6 @@ act):
 5. Deployables darken and roughen by damage band (`structures.rs::deploy_hurt`); nothing shows which face was struck.
 6. Props and pieces still take a scalar `perceptual_roughness` (terrain and the depot's surfaces read maps).
 
-## 0lock · Lock placement reaches doors and boxes *(client lane)*
-
-- Check the door-edge and box-plane lock targets together in the building playtest.
-
 ## 0fx · What impact fx v1 left *(client lane)*
 
 2. A deployable's matter is a guess (`surface::arch_matter`: by archetype, a door by hp, else `Wood`): `DeployDef` wants a material byte (`CONTENT.md`).
@@ -693,7 +680,6 @@ act):
 
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
-3. The device path is ungated: cpal opening, the callback and the real rate need a person booting the game.
 3. `--capture` by hand is the only proof most audio systems run; gate world-free ones the `tests/music.rs` way.
 5. No occlusion: it needs the sim's geometry query (`collide.rs`), not a raycast against render meshes.
 
@@ -1035,7 +1021,12 @@ distance low-pass landed in #179; last text `git show 1e046dc:NOW.md`), 2026-09-
 `§0dk` (the body's albedo lift, `BODY_ALBEDO_LIFT`) and `§0cards` (every card a
 photograph), 2026-10-09 — last text `git show 3132e62:NOW.md`; `§0zd` (doors and
 locks: the registry and `reference/DOORS.md` now say the key lock is built), 2026-10-09
-— last text `git show 78bcc36:NOW.md`.
+— last text `git show 78bcc36:NOW.md`; `§5b` (craft and deploy refusals are
+`DOMAINS` rows, refused past `REFUSE_CR_MAX`/`REFUSE_D_MAX` at both ends) and the
+domain gate's `§4b` (protocol's scrape already reads the whole crate), 2026-10-09 —
+last text `git show 7d45e53:NOW.md`. `§0gfx` (the hardware verdict) and `§0lock` (lock
+targets in the building playtest), closed by the operator's playtest 2026-10-09 —
+last text `git show 0edb5f1:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
@@ -1056,6 +1047,6 @@ the old §0aa items and point at `git show 9a069f4:NOW.md`.
 | `0x` | the client's sound *(client)* · the native client's trim *(client)* |
 | `0y` | the sea *(client)* · persistence *(server)* |
 | `0z` | the Bevy-draws rule's gate *(client)* — doors was `§0zd`, closed |
-| `4b` | the world lane *(world)* · the domain gate *(platform)* |
+| `4b` | the world lane *(world)* — the domain gate's `§4b` is closed |
 
 **Renamed**: doors and locks `§0z` → `§0zd`.

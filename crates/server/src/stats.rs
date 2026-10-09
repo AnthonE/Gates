@@ -377,6 +377,15 @@ pub struct ShardStats {
     pub forced_resyncs: AtomicU64,
     /// Event-lane messages accepted by per-connection rings.
     pub ev_sent: AtomicU64,
+    /// What the island did, counted once per sim fact rather than once per
+    /// listener: pieces and deployables placed, charges armed, and blows
+    /// that landed on a structure (the killing one included). The
+    /// population line reads these — a bot hears every broadcast, so its
+    /// own tallies summed over a fleet counted each fact once per bot.
+    pub pieces_placed: AtomicU64,
+    pub deploys_placed: AtomicU64,
+    pub charges_armed: AtomicU64,
+    pub struct_hits: AtomicU64,
     /// Event-lane broadcasts a connection was not sent because it cannot
     /// see what the event is about. **One counter for two predicates**,
     /// because the operational question is the same one: how much of the

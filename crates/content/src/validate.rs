@@ -613,6 +613,13 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 // reach past one cell (`limits::BLAST_MAX_CM`; the const
                 // block in `charge.rs` restates it). A wider blast is a
                 // sim change, not a content edit.
+                if w.dud_pct.unwrap_or(0) > 100 {
+                    return Err(format!(
+                        "weapon `{}`: dud_pct {} is over 100",
+                        w.id,
+                        w.dud_pct.unwrap_or(0)
+                    ));
+                }
                 if w.blast_m.unwrap_or(0) * 100 > sim_core::limits::BLAST_MAX_CM as u32 {
                     return Err(format!(
                         "weapon `{}`: blast_m {} exceeds the sim's one-cell blast scan \
@@ -629,6 +636,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 if w.blast_m.is_some() {
                     return Err(format!(
                         "weapon `{}`: only throwables carry a blast_m",
+                        w.id
+                    ));
+                }
+                if w.dud_pct.is_some() {
+                    return Err(format!(
+                        "weapon `{}`: only throwables carry a dud_pct",
                         w.id
                     ));
                 }

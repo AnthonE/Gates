@@ -316,6 +316,9 @@ pub struct Fellable {
     /// What is currently drawn, so the swap happens on the transition rather
     /// than every frame.
     pub felled: bool,
+    /// The stump was grubbed out (wire v101). Only a [`FellPart::Stump`]
+    /// ever sets it: a trunk that changed here would replay its fall cue.
+    pub grubbed: bool,
 }
 
 /// How far through its topple a trunk or a canopy is, seconds. Negative means
@@ -2584,6 +2587,7 @@ pub fn spawn_outer_tree(
         yaw,
         part: FellPart::Vanish,
         felled: false,
+        grubbed: false,
     };
     let transform = Transform {
         translation: Vec3::new(slot.x, y - SINK_M, slot.z),
@@ -2796,6 +2800,7 @@ pub fn spawn_slot(
         yaw,
         part,
         felled: false,
+        grubbed: false,
     };
     // What a mark lands on (`skin`): the trunk (below) and every solid prop,
     // never a plant (no mark) or the two authored structures (their volume
@@ -3035,7 +3040,8 @@ pub fn harvest(
             m.forget_later(at, r);
         }
     };
-    apply_fell_forgetting(q, &|key| core.harvested.contains(key), &mut forget);
+    let h = &core.harvested;
+    apply_fell_forgetting(q, &|key| (h.contains(key), h.grubbed(key)), &mut forget);
 }
 
 /// The bit that means the harvested set moved — the only thing [`harvest`]
@@ -3091,7 +3097,8 @@ pub fn harvest_new(
         return;
     }
     let core = &net.session.core;
-    apply_fell_added(q, &|key| core.harvested.contains(key));
+    let h = &core.harvested;
+    apply_fell_added(q, &|key| (h.contains(key), h.grubbed(key)));
 }
 
 /// Half a metre of stump lift: the mesh is centred on its own axis while the
@@ -3235,7 +3242,7 @@ pub fn apply_fell(
         &mut Transform,
         &mut Visibility,
     )>,
-    harvested: &dyn Fn(u32) -> bool,
+    harvested: &dyn Fn(u32) -> (bool, bool),
 ) {
     apply_fell_in(q, harvested, &mut |_, _| {});
 }
@@ -3250,7 +3257,7 @@ pub fn apply_fell_forgetting(
         &mut Transform,
         &mut Visibility,
     )>,
-    harvested: &dyn Fn(u32) -> bool,
+    harvested: &dyn Fn(u32) -> (bool, bool),
     forget: &mut dyn FnMut(Vec3, f32),
 ) {
     apply_fell_in(q, harvested, forget);
@@ -3267,7 +3274,7 @@ pub fn apply_fell_added(
         ),
         Added<Fellable>,
     >,
-    harvested: &dyn Fn(u32) -> bool,
+    harvested: &dyn Fn(u32) -> (bool, bool),
 ) {
     apply_fell_in(q, harvested, &mut |_, _| {});
 }
@@ -3282,15 +3289,17 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
         ),
         F,
     >,
-    harvested: &dyn Fn(u32) -> bool,
+    harvested: &dyn Fn(u32) -> (bool, bool),
     forget: &mut dyn FnMut(Vec3, f32),
 ) {
     for (mut f, top, mut t, mut vis) in q.iter_mut() {
-        let felled = harvested(f.key);
-        if felled == f.felled {
+        let (felled, grubbed) = harvested(f.key);
+        let grubbed = grubbed && f.part == FellPart::Stump;
+        if felled == f.felled && grubbed == f.grubbed {
             continue;
         }
         f.felled = felled;
+        f.grubbed = grubbed;
         match f.part {
             // A rock that stops being a rock has nothing to animate.
             FellPart::Vanish | FellPart::Emptied => {
@@ -3308,10 +3317,14 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
             // Revealed by the cut, and revealed INSTANTLY rather than when the
             // trunk lands: the stump is what the saw leaves behind, so it is
             // there from the first frame the trunk starts to lean.
+            // Grubbed out, it goes as a mined node goes, marks and all.
             FellPart::Stump => {
-                *vis = if felled {
+                *vis = if felled && !grubbed {
                     Visibility::Inherited
                 } else {
+                    if grubbed {
+                        forget(t.translation, 0.6 * t.scale.y.max(0.5));
+                    }
                     Visibility::Hidden
                 };
             }

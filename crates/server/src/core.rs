@@ -57,8 +57,8 @@ use sim_core::world::{
     EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
     EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
     EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
-    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
-    EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_STUMP_GRUBBED, EV_SWING,
+    EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK};
@@ -525,6 +525,21 @@ impl ShardCore {
             .filter(|p| p.active)
             .map(|p| p.id);
         crate::admin::brain_line(slot, m, target, d2.sqrt(), w.tick)
+    }
+
+    /// An admin verb's answer, said to the asker alone as a `[server]` line.
+    fn answer(
+        &mut self,
+        to: usize,
+        mut line: String,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        line.truncate(protocol::ChatText::CAP);
+        if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
+            let line = crate::admin::server_line(&text);
+            self.say_server(Some(to), &line, stats, send);
+        }
     }
 
     fn say_server(
@@ -1508,6 +1523,13 @@ impl ShardCore {
                         cz,
                         level,
                     },
+                    ActionMsg::TakeStock { cx, cz, level, row } => Command::TakeStock {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                        row,
+                    },
                     ActionMsg::Use { cx, cz, level, loc } => Command::Use {
                         id: c.id,
                         cx,
@@ -2044,6 +2066,7 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(mode as i64, 0, 0);
+                self.answer(from_slot, admin::weather_line(mode), stats, send);
             }
             AdminCmd::Time { frac_pm } => {
                 if !self.queue(Command::AdminEnv {
@@ -2059,17 +2082,14 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(frac_pm as i64, 0, 0);
+                self.answer(from_slot, admin::time_line(frac_pm), stats, send);
             }
             AdminCmd::SaveNow => {
                 *ops.save_now = true;
             }
             AdminCmd::Brain => {
-                let mut line = self.brain_answer(who);
-                line.truncate(protocol::ChatText::CAP);
-                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
-                    let line = admin::server_line(&text);
-                    self.say_server(Some(from_slot), &line, stats, send);
-                }
+                let line = self.brain_answer(who);
+                self.answer(from_slot, line, stats, send);
             }
             AdminCmd::Who => {
                 let mut line = String::new();
@@ -2079,12 +2099,7 @@ impl ShardCore {
                     line.push(' ');
                     line.push_str(&c.id.to_string());
                 }
-                let mut line = format!("{n} on:{line}");
-                line.truncate(protocol::ChatText::CAP);
-                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
-                    let line = admin::server_line(&text);
-                    self.say_server(Some(from_slot), &line, stats, send);
-                }
+                self.answer(from_slot, format!("{n} on:{line}"), stats, send);
             }
             // Handled above, before the allowlist.
             AdminCmd::Bug { .. } | AdminCmd::WipeWhen => return,
@@ -2586,6 +2601,7 @@ impl ShardCore {
                     }
                 }
                 EV_PIECE_PLACED => {
+                    ShardStats::bump(&stats.pieces_placed);
                     // The address comes off the event; the RECORD comes off
                     // the store. Rebuilding it from the payload alone was
                     // fine while the payload was the whole record — the
@@ -2674,6 +2690,7 @@ impl ShardCore {
                     }
                 }
                 EV_DEPLOY_PLACED => {
+                    ShardStats::bump(&stats.deploys_placed);
                     // Owner (ev.c) stays sim-side: the wire record is
                     // address + row + open + locked (event.rs). Everything
                     // places closed; a door places locked, which is a
@@ -3493,6 +3510,7 @@ impl ShardCore {
                     }
                 }
                 EV_STRUCT_HIT => {
+                    ShardStats::bump(&stats.struct_hits);
                     // A structure still standing after a raid swing: the
                     // address, what it took, what is left. Broadcast like
                     // a placement — the wall is a world fact, and anyone
@@ -3502,6 +3520,14 @@ impl ShardCore {
                     let deploy = ev.b & STRUCT_DEPLOY_BIT != 0;
                     let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
                     let (damage, left) = ((ev.c >> 16) as u16, ev.c as u16);
+                    // The killing blow: the sim announces it (the raid gates
+                    // count it), and the removal right behind it is what the
+                    // wire says. The encoder refuses a zero-hp hit by
+                    // design, so sending it only counted a range error per
+                    // structure destroyed.
+                    if left == 0 {
+                        continue;
+                    }
                     match encode_event_struct_hit(
                         deploy,
                         cx,
@@ -3568,6 +3594,7 @@ impl ShardCore {
                     }
                 }
                 EV_CHARGE_PLACED => {
+                    ShardStats::bump(&stats.charges_armed);
                     // `EV_PIECE_REPAIRED`'s arm, unpacked with the same
                     // shifts because the sim packs the address the same
                     // way. Broadcast, and here that is not merely the
@@ -3765,13 +3792,15 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
-                EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED => {
+                EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED | EV_STUMP_GRUBBED => {
                     let cx = (ev.a >> 16) as u16;
                     let cz = ev.a as u16;
                     // A tree comes back as a sapling (tree growth v0): `c`
                     // says so and `b` is the tick it is grown by.
                     let encoded = if ev.code == EV_SLOT_HARVESTED {
                         encode_event_slot_change(true, cx, cz, &mut self.ev_buf)
+                    } else if ev.code == EV_STUMP_GRUBBED {
+                        protocol::encode_event_stump_grubbed(cx, cz, &mut self.ev_buf)
                     } else {
                         protocol::encode_event_slot_respawned(
                             cx,
@@ -4485,6 +4514,7 @@ impl ShardCore {
         let lives = &self.world.slot_lives;
         if c.sync_reset || c.sync_cursor < lives.len() {
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
+            let mut grubbed = 0u64;
             let mut grows = [(0u16, 0u16, 0u32); protocol::GROW_SYNC_BATCH];
             let mut n_cells = 0usize;
             let mut n_grows = 0usize;
@@ -4498,6 +4528,9 @@ impl ShardCore {
                 let e = entries[c.sync_cursor + scanned];
                 if e.respawn_at != 0 {
                     cells[n_cells] = (e.cx, e.cz);
+                    if e.hits == sim_core::gather::STUMP_GRUBBED {
+                        grubbed |= 1 << n_cells;
+                    }
                     n_cells += 1;
                 } else if e.grown_at != 0 {
                     grows[n_grows] = (e.cx, e.cz, e.grown_at as u32);
@@ -4510,7 +4543,7 @@ impl ShardCore {
             let reset = c.sync_reset;
             let mut said = true;
             if reset || n_cells > 0 {
-                match encode_event_slot_sync(reset, &cells[..n_cells], &mut self.ev_buf) {
+                match encode_event_slot_sync(reset, &cells[..n_cells], grubbed, &mut self.ev_buf) {
                     Ok(len) => {
                         if !send(Lane::Event, slot, &self.ev_buf[..len]) {
                             return;
@@ -6262,6 +6295,35 @@ mod tests {
             ShardStats::get(&stats.encode_range_errors),
             range_before + 2,
             "the in-domain reason is not counted as refused"
+        );
+    }
+
+    /// A killing blow's `EV_STRUCT_HIT` (hp left 0) stays off the wire and
+    /// out of the fault counters: the removal behind it says the piece is
+    /// gone. A hit that leaves hp still crosses.
+    #[test]
+    fn a_killing_struct_hit_is_the_removals_to_say() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let range_before = ShardStats::get(&stats.encode_range_errors);
+        let key = (40 << 16) | 41;
+        core.world.events.push(EV_STRUCT_HIT, key, 0, 10 << 16);
+        core.world
+            .events
+            .push(EV_STRUCT_HIT, key, 0, (10 << 16) | 90);
+        let sent = pumped(&mut core, &stats);
+        let lefts = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::StructHit { left, .. }) => Some(left),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(lefts, vec![90], "only the hit that left hp crossed");
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before,
+            "a destroyed structure is not an encode fault"
         );
     }
 

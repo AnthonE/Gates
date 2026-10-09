@@ -129,29 +129,28 @@ fn unit_ticks(
 
 /// Integer refusal reasons (CLAUDE.md wall 3: integer event codes only),
 /// carried by EV_CRAFT_REFUSED / the craft-refused wire subtype.
-pub const REFUSE_RECIPE: u32 = 0;
-pub const REFUSE_COUNT: u32 = 1;
-pub const REFUSE_STATION: u32 = 2;
-pub const REFUSE_QUEUE_FULL: u32 = 3;
-pub const REFUSE_INPUTS: u32 = 4;
+pub const REFUSE_CR_RECIPE: u32 = 0;
+pub const REFUSE_CR_COUNT: u32 = 1;
+pub const REFUSE_CR_STATION: u32 = 2;
+pub const REFUSE_CR_QUEUE_FULL: u32 = 3;
+pub const REFUSE_CR_INPUTS: u32 = 4;
 /// The recipe is blueprint-gated and this player has not researched it
-/// (`research.rs`). Its own reason rather than `REFUSE_RECIPE`, because
+/// (`research.rs`). Its own reason rather than `REFUSE_CR_RECIPE`, because
 /// the two mean opposite things to a player: one says the recipe does not
 /// exist, and this says *go find one and take it to a table*.
-/// (No `_MAX` beside these, unlike the deployable and research refusals:
-/// the craft-refused subtype writes a full byte and the wire bounds
-/// nothing, which `NOW.md` §5b already carries as the decode-side gap.
-/// A `REFUSE_C_MAX` here would also collide with `survival.rs`'s consume
-/// refusals, whose prefix the domain gate scans crate-wide.)
-pub const REFUSE_BLUEPRINT: u32 = 5;
+pub const REFUSE_CR_BLUEPRINT: u32 = 5;
 /// A skin the player does not own, that does not fit the item, or an empty
 /// slot to put one on (`skin.rs`). One reason for all three, because the
 /// fix a player can act on is the same: pick a skin you own for this item.
-pub const REFUSE_SKIN: u32 = 6;
+pub const REFUSE_CR_SKIN: u32 = 6;
 /// The recipe needs an unlock no work on the island holds yet (`works.rs`,
 /// `ARC.md` F2): a fact about the world, so it is said before anything the
 /// crafter could fix themselves.
-pub const REFUSE_WORLD: u32 = 7;
+pub const REFUSE_CR_WORLD: u32 = 7;
+/// The highest craft refusal; both ends of the wire refuse anything past it.
+/// `CR`, not `C`: `survival.rs`'s consume refusals own `REFUSE_C_*`, and the
+/// domain gate scans the prefix crate-wide.
+pub const REFUSE_CR_MAX: u32 = REFUSE_CR_WORLD;
 
 /// One baked recipe row. `out_count == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,16 +330,16 @@ pub fn enqueue(
     events: &mut EventQueue,
 ) {
     if recipe >= cc.recipe_count {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_RECIPE, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_RECIPE, 0);
         return;
     }
     if count == 0 || count > CRAFT_COUNT_MAX {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_COUNT, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_COUNT, 0);
         return;
     }
     let def = &cc.recipes[recipe as usize];
     if def.out_count == 0 || def.output as usize >= MAX_ITEM_DEFS {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_RECIPE, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_RECIPE, 0);
         return;
     }
     // The blueprint, **before** the station, and the order is a design
@@ -354,18 +353,18 @@ pub fn enqueue(
     // The world's gate first of all: nothing the crafter can do fixes it
     // except the whole server lighting a work.
     if !crate::works::holds(unlocks, def.unlock) {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_WORLD, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_WORLD, 0);
         return;
     }
     if def.blueprint && !crate::research::knows(p.known, recipe) {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_BLUEPRINT, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_BLUEPRINT, 0);
         return;
     }
     // The skin beside the blueprint, and for its reason: not owning one is
     // fixed somewhere else entirely (the store), so it is said before the
     // station a player could fix by walking.
     if skin != crate::skin::NO_SKIN && !sc.may_wear(&p.skins, skin, def.output) {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_SKIN, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_SKIN, 0);
         return;
     }
     if def.station != STATION_NONE {
@@ -383,17 +382,17 @@ pub fn enqueue(
             deploys.bench_near(dc, def.station, px, pz, STATION_RADIUS_M)
         };
         if !ok {
-            events.push(EV_CRAFT_REFUSED, p.id, REFUSE_STATION, 0);
+            events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_STATION, 0);
             return;
         }
     }
     let Some(slot) = p.jobs.iter().position(|j| j.remaining == 0) else {
-        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_QUEUE_FULL, 0);
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_QUEUE_FULL, 0);
         return;
     };
     for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
         if inv_count(&p.inv, item) < per as u32 * count as u32 {
-            events.push(EV_CRAFT_REFUSED, p.id, REFUSE_INPUTS, 0);
+            events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_INPUTS, 0);
             return;
         }
     }
@@ -652,7 +651,7 @@ mod tests {
 
         enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
         assert_eq!(ev.entries()[0].code, EV_CRAFT_REFUSED);
-        assert_eq!(ev.entries()[0].b, REFUSE_SKIN, "not owned");
+        assert_eq!(ev.entries()[0].b, REFUSE_CR_SKIN, "not owned");
         assert_eq!(p.jobs[0].remaining, 0, "nothing queued");
         assert_eq!(inv_count(&p.inv, 1), 2, "nothing spent");
 
@@ -660,7 +659,7 @@ mod tests {
         p.skins.insert(0);
         let mut ev = EventQueue::default();
         enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 0, 1, 7, &mut ev);
-        assert_eq!(ev.entries()[0].b, REFUSE_SKIN, "item 2 is not item 3");
+        assert_eq!(ev.entries()[0].b, REFUSE_CR_SKIN, "item 2 is not item 3");
 
         let mut ev = EventQueue::default();
         enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
@@ -692,7 +691,7 @@ mod tests {
         // Owned, but no bench in reach: the station refusal.
         p.skins.insert(0);
         reskin(&sc, &dc, &Deploys::new(), &mut p, 0, 7, &mut ev);
-        assert_eq!(ev.entries()[0].b, REFUSE_STATION);
+        assert_eq!(ev.entries()[0].b, REFUSE_CR_STATION);
         assert_eq!(p.inv[0].skin, NO_SKIN);
 
         crate::deploy::place_deploy(
@@ -728,7 +727,7 @@ mod tests {
         reskin(&sc, &dc, &benches, &mut p, 0, NO_SKIN, &mut ev);
         assert_eq!(p.inv[0].skin, NO_SKIN, "taking it off needs no ownership");
         reskin(&sc, &dc, &benches, &mut p, 0, 7, &mut ev);
-        assert_eq!(ev.entries()[0].b, REFUSE_SKIN);
+        assert_eq!(ev.entries()[0].b, REFUSE_CR_SKIN);
         assert_eq!(p.inv[0].skin, NO_SKIN);
 
         // An empty slot and a slot past the pack are refusals, not panics.
@@ -736,7 +735,7 @@ mod tests {
         reskin(&sc, &dc, &benches, &mut p, 5, NO_SKIN, &mut ev);
         reskin(&sc, &dc, &benches, &mut p, 200, NO_SKIN, &mut ev);
         assert_eq!(ev.len(), 2);
-        assert!(ev.entries().iter().all(|e| e.b == REFUSE_SKIN));
+        assert!(ev.entries().iter().all(|e| e.b == REFUSE_CR_SKIN));
     }
 
     /// The move verb carries a skin, and two looks of one item never merge.
@@ -820,13 +819,13 @@ mod tests {
         let mut p = player(&[(0, 100), (1, 100), (2, 100)]);
         let mut ev = EventQueue::default();
         let cases: [(u16, u16, u32); 4] = [
-            (99, 1, REFUSE_RECIPE),
-            (0, 0, REFUSE_COUNT),
-            (0, CRAFT_COUNT_MAX + 1, REFUSE_COUNT),
+            (99, 1, REFUSE_CR_RECIPE),
+            (0, 0, REFUSE_CR_COUNT),
+            (0, CRAFT_COUNT_MAX + 1, REFUSE_CR_COUNT),
             // Recipe 2 is gated twice, and the BLUEPRINT is what a
             // player hears — the order `enqueue` states, asserted here so
             // it cannot be swapped back without a red gate.
-            (2, 1, REFUSE_BLUEPRINT),
+            (2, 1, REFUSE_CR_BLUEPRINT),
         ];
         for (recipe, count, reason) in cases {
             enqueue(
@@ -841,12 +840,12 @@ mod tests {
         p.known |= 1 << 2;
         enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
-        assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, REFUSE_STATION));
+        assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, REFUSE_CR_STATION));
         // Missing inputs: recipe 1 wants 2×item1 + 1×item2 per unit.
         let mut poor = player(&[(1, 1)]);
         enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut poor, 1, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
-        assert_eq!(e.b, REFUSE_INPUTS);
+        assert_eq!(e.b, REFUSE_CR_INPUTS);
         assert_eq!(inv_count(&poor.inv, 1), 1, "nothing consumed on refusal");
         assert_eq!(poor.jobs[0], CraftJob::default());
         // Queue full: fill all four, the fifth bounces.
@@ -857,7 +856,7 @@ mod tests {
         assert!(busy.jobs.iter().all(|j| j.remaining == 1));
         let before = ev.len();
         enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
-        assert_eq!(ev.entries()[before].b, REFUSE_QUEUE_FULL);
+        assert_eq!(ev.entries()[before].b, REFUSE_CR_QUEUE_FULL);
     }
 
     #[test]
@@ -996,7 +995,7 @@ mod tests {
         far.body = Body::at(SEED, &hv(SEED), 2048.0 + STATION_RADIUS_M + 2.0, 2048.0);
         enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut far, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
-        assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
+        assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_CR_STATION));
     }
 
     /// The ladder's own gate (bench ladder v0), both directions of the ≥:
@@ -1061,7 +1060,7 @@ mod tests {
         );
         enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
-        assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
+        assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_CR_STATION));
 
         // The tier-2 bench on the next cell arms it.
         crate::deploy::place_deploy(

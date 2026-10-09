@@ -104,6 +104,7 @@ fn raid_world() -> (World, u16, u16) {
         fuse_ticks: 60,
         reach_cm: 200,
         blast_cm: 300,
+        dud_pct: 0,
     };
     w.combat = cc;
 
@@ -421,4 +422,55 @@ fn the_blast_hurts_an_animal_beside_it() {
     let m = &w.mobs.m[pig];
     assert!(!m.alive || m.hp < full, "the pig took the blast");
     assert!(marked, "and the planter got the hitmarker an arrow would");
+}
+
+/// A dud goes out instead of blowing: no blast, the wall untouched, and the
+/// satchel lies at the wall to be picked up and planted again — counted, so
+/// the raid's satchel cost is the same and only its time is not.
+#[test]
+fn a_dud_drops_the_satchel_at_the_wall() {
+    let (mut w, cx, cz) = raid_world();
+    w.combat.throw[SATCHEL as usize].dud_pct = 100;
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    let before = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO);
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
+    let mut blasts = 0;
+    for _ in 0..62 {
+        w.tick(&[]);
+        for e in w.events.entries() {
+            if e.code == sim_core::world::EV_IMPACT
+                && sim_core::world::impact_parts(e.a).1 == sim_core::ranged::IMPACT_BLAST
+            {
+                blasts += 1;
+            }
+        }
+    }
+    assert_eq!(w.charges.len(), 0, "the fuse ran out");
+    assert_eq!(blasts, 0, "a dud does not blow");
+    assert_eq!(
+        piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO),
+        before,
+        "the wall is untouched"
+    );
+    let dropped: Vec<_> = w
+        .ground_items
+        .entries()
+        .iter()
+        .filter(|g| g.stack.item == SATCHEL)
+        .collect();
+    assert_eq!(dropped.len(), 1, "the satchel fell");
+    assert_eq!(dropped[0].stack.count, 1);
+    let wall_x = cx as f32 * sim_core::build::BUILD_CELL_M;
+    let x = dropped[0].qx as f32 * sim_core::movement::POS_XZ_Q;
+    let d = x - wall_x;
+    assert!(d * d < 1.6 * 1.6, "it lies at the wall: {x} vs {wall_x}");
+
+    // The same charge with the chance at zero blows, as every test above.
+    let (mut w, cx, cz) = raid_world();
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
+    wait_out(&mut w);
+    assert!(
+        piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO) < before,
+        "no dud: the wall took it"
+    );
 }

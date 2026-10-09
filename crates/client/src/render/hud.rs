@@ -499,8 +499,6 @@ pub struct Toast {
     /// the two are the same kind of thing: a brief confirmation the player
     /// reads without looking away from the crosshair.
     pub hit_left: f32,
-    /// Damage the last landed hit dealt, drawn beside the marker.
-    pub hit_damage: u16,
     /// The rung that hit landed on (v58), or `None` for a wall — which is
     /// what picks the marker's colour. See [`mark_colour`].
     pub hit_part: Option<Part>,
@@ -523,7 +521,6 @@ impl Default for Toast {
             unseen: 0,
             overflow: String::new(),
             hit_left: 0.0,
-            hit_damage: 0,
             hit_part: None,
             hurts: [HurtArc::default(); HURT_ARCS],
         }
@@ -703,14 +700,14 @@ impl Toast {
         self.dropped
     }
 
-    /// A blow of yours landed, for `damage`, on `part` (`None` = a wall).
+    /// A blow of yours landed on `part` (`None` = a wall). The number it
+    /// did is [`hit_number`]'s, off the feed.
     ///
     /// The rung is latched with the clock and not merged with whatever was
     /// there: the marker is a statement about the shot the player just
     /// took, and a headshot four frames ago must not colour a leg hit now.
-    pub fn hit(&mut self, damage: u16, part: Option<Part>) {
+    pub fn hit(&mut self, part: Option<Part>) {
         self.hit_left = HITMARK_SECS;
-        self.hit_damage = damage;
         self.hit_part = part;
     }
 
@@ -1120,6 +1117,35 @@ pub struct Readout {
     /// blast's own `EV_STRUCT_HIT` takes the surface back over.
     charge: Option<(u16, u16)>,
     charge_secs: f32,
+    /// A clock that ran out, waiting [`FIZZLE_GRACE_S`] for its blast. No
+    /// blast at it by then means the charge went out (a dud,
+    /// `sim_core::charge::dud`) — the one way this side learns it.
+    fizzle: Option<(u16, u16)>,
+    fizzle_secs: f32,
+}
+
+/// How long a run-out clock waits for its blast before calling it a dud:
+/// the fuse's last tick plus a round trip, with room.
+pub const FIZZLE_GRACE_S: f32 = 2.0;
+
+/// What a dud says: why nothing blew, and what to do about it.
+pub const FIZZLE_LINE: &str = "THE CHARGE WENT OUT  ·  PICK IT UP AND PLANT IT AGAIN";
+
+/// Did a blast land at the charge in build cell `(cx, cz)` — within a few
+/// metres of the cell's middle, the room a charge on any of its edges takes?
+pub fn blast_at(impacts: &[client_core::core::Impact], cx: u16, cz: u16) -> bool {
+    let half = sim_core::build::BUILD_CELL_M * 0.5;
+    let (mx, mz) = (
+        cx as f32 * sim_core::build::BUILD_CELL_M + half,
+        cz as f32 * sim_core::build::BUILD_CELL_M + half,
+    );
+    impacts.iter().any(|i| {
+        let (x, z) = (
+            i.qx as f32 * sim_core::movement::POS_XZ_Q,
+            i.qz as f32 * sim_core::movement::POS_XZ_Q,
+        );
+        i.kind == sim_core::ranged::IMPACT_BLAST && (x - mx).powi(2) + (z - mz).powi(2) < 36.0
+    })
 }
 
 /// The crosshair's four ticks. A frame with no crosshair reads as a
@@ -2358,7 +2384,7 @@ pub fn feedback(
 
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
-        toast.hit(feed.damage, feed.hit_part);
+        toast.hit(feed.hit_part);
     }
     // And the same blow from the other end — every direction it came from,
     // not just the last one. `Feed::hurt_from` is a list precisely so that a
@@ -2682,6 +2708,7 @@ pub fn readout(
     feed: Res<super::feed::Feed>,
     time: Res<Time>,
     mut ro: ResMut<Readout>,
+    mut toast: ResMut<Toast>,
     mut lines: Query<(&mut Text, &mut TextColor), With<ReadoutLine>>,
 ) {
     let core = &net.session.core;
@@ -2717,7 +2744,22 @@ pub fn readout(
     }
     ro.charge_secs = (ro.charge_secs - dt).max(0.0);
     if ro.charge_secs == 0.0 {
-        ro.charge = None;
+        if let Some(at) = ro.charge.take() {
+            ro.fizzle = Some(at);
+            ro.fizzle_secs = FIZZLE_GRACE_S;
+        }
+    }
+    // The blast cancels the wait; the wait running out without one is a dud.
+    if let Some((cx, cz)) = ro.fizzle {
+        if blast_at(feed.impacts(), cx, cz) {
+            ro.fizzle = None;
+        } else {
+            ro.fizzle_secs = (ro.fizzle_secs - dt).max(0.0);
+            if ro.fizzle_secs == 0.0 {
+                ro.fizzle = None;
+                toast.warn(FIZZLE_LINE);
+            }
+        }
     }
 
     let Ok((mut text, mut color)) = lines.single_mut() else {
@@ -3189,8 +3231,13 @@ pub fn hearth_overlay(
                         Pickable::IGNORE,
                     ));
                 } else {
-                    for r in crate::ui::hearth::rows(rows) {
-                        let name = crate::ui::craft::item_label(&core.catalog, r.item);
+                    for (i, r) in crate::ui::hearth::rows(rows).into_iter().enumerate() {
+                        // The key that takes this row back (`verbs::keys`).
+                        let name = format!(
+                            "[{}] {}",
+                            i + 1,
+                            crate::ui::craft::item_label(&core.catalog, r.item)
+                        );
                         panel
                             .spawn((
                                 Node {
@@ -4104,14 +4151,39 @@ mod tests {
         assert_eq!(t.row(0).map(Say::text), None);
     }
 
+    /// A blast at the charge's cell cancels the dud wait; a blast a cell
+    /// over, or a bullet at the charge, does not.
+    #[test]
+    fn only_a_blast_at_the_charge_answers_its_clock() {
+        use client_core::core::Impact;
+        let q = |m: f32| (m / sim_core::movement::POS_XZ_Q) as i32;
+        let cell = sim_core::build::BUILD_CELL_M;
+        let at = |x: f32, z: f32, kind| Impact {
+            qx: q(x),
+            qy: 0,
+            qz: q(z),
+            surf: 0,
+            kind,
+        };
+        let blast = sim_core::ranged::IMPACT_BLAST;
+        let (cx, cz) = (100u16, 200u16);
+        let (x, z) = (cx as f32 * cell, cz as f32 * cell + cell * 0.5);
+        assert!(blast_at(&[at(x, z, blast)], cx, cz), "on its edge");
+        assert!(
+            !blast_at(&[at(x + 3.0 * cell, z, blast)], cx, cz),
+            "three cells over"
+        );
+        assert!(!blast_at(&[at(x, z, blast - 1)], cx, cz), "not a blast");
+        assert!(!blast_at(&[], cx, cz));
+    }
+
     /// The hitmarker keeps its own, shorter clock, and a talkative frame
     /// must not extend it — it is confirmation, not a readout.
     #[test]
     fn the_hitmarker_is_not_a_toast() {
         let mut t = Toast::default();
-        t.hit(37, Some(Part::Head));
+        t.hit(Some(Part::Head));
         t.say("+1 × WOOD");
-        assert_eq!(t.hit_damage, 37);
         assert_eq!(t.hit_part, Some(Part::Head));
         t.tick(HITMARK_SECS + 0.01);
         assert_eq!(t.hit_left, 0.0, "the marker is off");

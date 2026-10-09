@@ -510,6 +510,9 @@ pub struct HarvestedSet {
     /// One bit per cell that has an entry in `grow`, so the common answer
     /// (not regrowing) skips the scan.
     growing_bits: Box<[u64]>,
+    /// One bit per felled tree whose stump was grubbed out (wire v101):
+    /// harvested, and nothing standing. Cleared with the harvested bit.
+    grubbed: Box<[u64]>,
     /// The tick growth is measured at: the predictor's, stamped before each
     /// step so a sapling collides here exactly as the server sizes it.
     now: u32,
@@ -541,6 +544,7 @@ impl HarvestedSet {
             grow: vec![(0, 0); MAX_SLOT_LIVES].into_boxed_slice(),
             grow_len: 0,
             growing_bits: vec![0; WORDS].into_boxed_slice(),
+            grubbed: vec![0; WORDS].into_boxed_slice(),
             now: 0,
         }
     }
@@ -617,6 +621,17 @@ impl HarvestedSet {
         test_bit(&self.cells, key)
     }
 
+    /// The felled tree at `key` has had its stump grubbed out.
+    pub fn grubbed(&self, key: u32) -> bool {
+        test_bit(&self.grubbed, key)
+    }
+
+    fn grub(&mut self, key: u32) {
+        if let Some((w, m)) = bit(key) {
+            self.grubbed[w] |= m;
+        }
+    }
+
     fn insert(&mut self, key: u32) {
         let Some((w, m)) = bit(key) else {
             return;
@@ -635,11 +650,13 @@ impl HarvestedSet {
             self.cells[w] &= !m;
             self.len -= 1;
         }
+        self.grubbed[w] &= !m;
     }
 
     fn clear(&mut self) {
         self.cells.fill(0);
         self.growing_bits.fill(0);
+        self.grubbed.fill(0);
         self.len = 0;
         self.grow_len = 0;
     }
@@ -666,11 +683,10 @@ impl Harvested for HarvestedSet {
         }
     }
 
-    /// Every felled tree's stump reads as standing here: no wire fact says a
-    /// stump was grubbed, so the prompt over a spent one is the stump the
-    /// renderer still draws, and the server's swing pays nothing.
+    /// A felled tree's stump stands until the wire says it was grubbed.
     fn stump_standing(&self, cx: u16, cz: u16) -> bool {
-        self.contains(cell_key(cx, cz))
+        let key = cell_key(cx, cz);
+        self.contains(key) && !self.grubbed(key)
     }
 }
 
@@ -2333,17 +2349,25 @@ impl ClientCore {
                 }
                 flags |= APPLIED_SLOTS;
             }
+            EventMsg::StumpGrubbed { cx, cz } => {
+                self.harvested.grub(cell_key(cx, cz));
+                flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
+            }
             EventMsg::SlotSync {
                 reset,
                 cells,
+                grubbed,
                 count,
             } => {
                 if reset {
                     self.harvested.clear();
                     flags |= APPLIED_RESET | self.clear_mark_if(self.mark_cell);
                 }
-                for &(cx, cz) in cells.iter().take(count as usize) {
+                for (i, &(cx, cz)) in cells.iter().take(count as usize).enumerate() {
                     self.harvested.insert(cell_key(cx, cz));
+                    if grubbed >> i & 1 != 0 {
+                        self.harvested.grub(cell_key(cx, cz));
+                    }
                     self.push_change(cell_key(cx, cz), true);
                     flags |= self.clear_mark_if(cell_key(cx, cz));
                 }
@@ -5119,18 +5143,39 @@ mod tests {
         // Sync with reset replaces whatever the client believed.
         let len = encode_event_slot_change(true, 1, 1, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
-        let len = encode_event_slot_sync(true, &[(2, 2), (3, 3)], &mut buf).unwrap();
+        let len = encode_event_slot_sync(true, &[(2, 2), (3, 3)], 0b10, &mut buf).unwrap();
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_eq!(flags, APPLIED_SLOTS | APPLIED_RESET);
         assert!(!c.harvested.contains(cell_key(1, 1)));
         assert!(c.harvested.contains(cell_key(2, 2)));
         assert!(c.harvested.contains(cell_key(3, 3)));
         assert_eq!(c.harvested.len(), 2);
+        // The sync's grubbed bit is the second cell's.
+        assert!(!c.harvested.grubbed(cell_key(2, 2)));
+        assert!(c.harvested.grubbed(cell_key(3, 3)));
 
         // A non-reset batch adds; duplicates stay single entries.
-        let len = encode_event_slot_sync(false, &[(2, 2), (4, 4)], &mut buf).unwrap();
+        let len = encode_event_slot_sync(false, &[(2, 2), (4, 4)], 0, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_SLOTS);
         assert_eq!(c.harvested.len(), 3);
+
+        // A grub takes the stump, the slot stays felled, and a respawn
+        // forgets the grub with the harvest.
+        use sim_core::occupy::Harvested;
+        assert!(c.harvested.stump_standing(4, 4));
+        let len = protocol::encode_event_stump_grubbed(4, 4, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_SLOTS);
+        assert!(c.harvested.contains(cell_key(4, 4)));
+        assert!(!c.harvested.stump_standing(4, 4));
+        let len = encode_event_slot_change(false, 4, 4, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(!c.harvested.grubbed(cell_key(4, 4)));
+        let len = encode_event_slot_change(true, 4, 4, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(
+            c.harvested.stump_standing(4, 4),
+            "a fresh fell leaves a stump"
+        );
     }
 
     #[test]
@@ -5166,7 +5211,7 @@ mod tests {
         // A sync reset clears whatever mark survived.
         let len = encode_event_weak_mark(3, 4, 0x11, false, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
-        let len = encode_event_slot_sync(true, &[], &mut buf).unwrap();
+        let len = encode_event_slot_sync(true, &[], 0, &mut buf).unwrap();
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_ne!(flags & APPLIED_MARK, 0);
         assert_eq!(c.mark_cell, NO_CELL);

@@ -11,7 +11,7 @@ use client_core::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT};
+use sim_core::craft::{CraftContent, REFUSE_CR_BLUEPRINT};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
@@ -201,7 +201,7 @@ fn craft_rides_the_wire() {
     let flags = pump(&mut core, &stats, &mut clients);
     assert_ne!(flags[0] & APPLIED_CRAFT_REFUSED, 0, "refusal never arrived");
     let c0 = &mut clients[0].1;
-    assert_eq!(c0.pop_craft_refusal(), Some(REFUSE_BLUEPRINT as u8));
+    assert_eq!(c0.pop_craft_refusal(), Some(REFUSE_CR_BLUEPRINT as u8));
     assert_eq!(c0.jobs_count, 0, "refused request must not queue");
 
     // The bystander heard the recipe drip but none of the crafter's

@@ -138,6 +138,7 @@ fn part(app: &mut App, a: &PropAssets, part: FellPart) -> Entity {
             yaw: YAW,
             part,
             felled: false,
+            grubbed: false,
         },
         Mesh3d(mesh),
         MeshMaterial3d(a.bark_material(KEY).clone()),
@@ -177,6 +178,11 @@ fn part(app: &mut App, a: &PropAssets, part: FellPart) -> Entity {
 
 /// Run the discrete half — the state change `harvest` drives.
 fn run(app: &mut App, harvested: &dyn Fn(u32) -> bool) {
+    run_grubbed(app, &|k| (harvested(k), false));
+}
+
+/// [`run`] with the stump's grubbed bit (wire v101) beside the harvest.
+fn run_grubbed(app: &mut App, harvested: &dyn Fn(u32) -> (bool, bool)) {
     let world = app.world_mut();
     let mut state = world.query::<(
         &mut Fellable,
@@ -343,6 +349,40 @@ fn the_stump_appears_with_the_cut_and_hides_on_respawn() {
     assert!(
         (after - y).abs() < 1e-6,
         "the stump is not part of the topple — it must not be animated"
+    );
+}
+
+/// A grubbed stump goes and the felled trunk stays as it lies: the grub
+/// is the stump's fact alone, so nothing else is marked changed (the fell
+/// cue fires on a changed trunk).
+#[test]
+fn a_grubbed_stump_goes_and_leaves_the_trunk_alone() {
+    let (mut app, a) = fixture();
+    let stump = part(&mut app, &a, FellPart::Stump);
+    let trunk = part(&mut app, &a, FellPart::Trunk);
+    run(&mut app, &|k| k == KEY);
+    app.world_mut().run_system_cached(count_changed).unwrap();
+
+    run_grubbed(&mut app, &|k| (k == KEY, k == KEY));
+    assert_eq!(
+        *app.world().get::<Visibility>(stump).unwrap(),
+        Visibility::Hidden,
+        "a grubbed stump is not drawn"
+    );
+    assert_eq!(
+        app.world_mut().run_system_cached(count_changed).unwrap(),
+        1,
+        "only the stump moved"
+    );
+    assert!(app.world().get::<Fellable>(trunk).unwrap().felled);
+
+    // The sapling's respawn clears both, and the next fell leaves a stump.
+    run(&mut app, &|_| false);
+    run(&mut app, &|k| k == KEY);
+    assert_eq!(
+        *app.world().get::<Visibility>(stump).unwrap(),
+        Visibility::Inherited,
+        "a fresh fell leaves a fresh stump"
     );
 }
 
