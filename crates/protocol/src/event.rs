@@ -496,7 +496,12 @@ const SUB_GLYPHS: u32 = 86;
 const SUB_MECH_SOLVED: u32 = 87;
 /// The ancients' alphabet (wire v96), once at join.
 const SUB_ALPHABET: u32 = 88;
-const SUB_MAX: u32 = SUB_ALPHABET;
+/// What a player's body is wearing (wire v98): the item in each wear slot,
+/// `NO_ITEM` for none — so other clients draw the hood, the helmet, the
+/// poncho on the body. Ids only, never `count` or `cond`. Sent to everyone
+/// when it changes and in full to a joiner, one per tick (`SUB_TAG`'s drip).
+const SUB_WORN: u32 = 89;
+const SUB_MAX: u32 = SUB_WORN;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1641,6 +1646,9 @@ pub enum EventMsg {
         name: crate::Name,
         pic: u32,
     },
+    /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
+    /// for an empty one. Appearance only, for drawing the body.
+    Worn { id: u32, items: [u16; WEAR_SLOTS] },
     /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
     /// The attacker's fact and the attacker's alone — a hitmarker, not a
     /// health readout; the victim's own `Health` is the truth about the
@@ -3509,6 +3517,23 @@ pub fn encode_event_mech_solved(mech: u8, by: u32, buf: &mut [u8]) -> Result<usi
     Ok(w.finish())
 }
 
+/// What player `id` wears ([`EventMsg::Worn`]). Never an animal's.
+pub fn encode_event_worn(
+    id: u32,
+    items: &[u16; WEAR_SLOTS],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if id & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WORN)?;
+    w.write(id, 32)?;
+    for &item in items {
+        w.write(item as u32, 16)?;
+    }
+    Ok(w.finish())
+}
+
 /// The ancients' alphabet.
 pub fn encode_event_alphabet(text: &[u8], buf: &mut [u8]) -> Result<usize, WireError> {
     if text.len() > sim_core::limits::MAX_GLYPHS {
@@ -5329,6 +5354,17 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             mech: r.read(3)? as u8,
             by: r.read(32)?,
         },
+        SUB_WORN => {
+            let id = r.read(32)?;
+            if id & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            let mut items = [sim_core::gather::NO_ITEM; WEAR_SLOTS];
+            for item in items.iter_mut() {
+                *item = r.read(16)? as u16;
+            }
+            EventMsg::Worn { id, items }
+        }
         SUB_ALPHABET => {
             let len = r.read(7)? as usize;
             if len > sim_core::limits::MAX_GLYPHS {

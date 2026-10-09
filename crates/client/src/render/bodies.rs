@@ -417,6 +417,7 @@ pub fn stream(
                     hand = b
                         .spawn((
                             HeldOnBody,
+                            super::worn::KeepLook,
                             Mesh3d::default(),
                             MeshMaterial3d::<StandardMaterial>::default(),
                             Transform::default(),

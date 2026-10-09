@@ -1198,6 +1198,7 @@ pub fn reshade(
     mut commands: Commands,
     children: Query<&Children>,
     has_mesh: Query<(), With<Mesh3d>>,
+    keep: Query<(), With<super::worn::KeepLook>>,
     pending: Query<(Entity, &Reshade)>,
     waking: Res<BodyShades>,
 ) {
@@ -1217,6 +1218,10 @@ pub fn reshade(
             visited += 1;
             if visited > 256 {
                 break;
+            }
+            // Clothing and the held item keep their own looks.
+            if keep.get(e).is_ok() {
+                continue;
             }
             if has_mesh.get(e).is_ok() {
                 commands.entity(e).insert(MeshMaterial3d(mat.clone()));

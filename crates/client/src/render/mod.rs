@@ -197,6 +197,7 @@ pub mod structures;
 pub mod terrain_mesh;
 pub mod terrain_seam;
 pub mod textures;
+pub mod worn;
 // The ground's four identities, each with its own photograph. The first WGSL
 // in the tree (`RENDER.md` R4).
 pub mod ground_splat;
@@ -750,7 +751,7 @@ impl Plugin for GatesRenderPlugin {
                 textures::load,
                 icons::load,
                 anim::load,
-                (mobs::load, heli::load, sentry::load),
+                (mobs::load, heli::load, sentry::load, worn::load),
                 // The held-item models. Loaded once here rather than per
                 // swap: `AssetServer` dedups, but a `load` still walks and
                 // hashes a path, and `viewmodel::swap` runs every frame.
@@ -1300,6 +1301,8 @@ impl Plugin for GatesRenderPlugin {
                 anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
+                // What other players wear (wire v98), hung on their bones.
+                (worn::bind.after(Stream), worn::dress).chain(),
             )
                 .run_if(world_running),
         )

@@ -70,12 +70,12 @@ pub use event::{
     encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_swipe_refused,
     encode_event_tag, encode_event_vend, encode_event_vend_offers, encode_event_vend_refused,
-    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK,
-    BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    encode_event_vitals, encode_event_weak_mark, encode_event_worn, encode_event_wounded,
+    shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag,
+    WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
@@ -1075,7 +1075,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// opening and `SUB_ALPHABET` (88) the ancients' alphabet.
 /// v97 — drop an item. `ACT_DROP` (30) carries an inventory slot and a
 /// count; the sim drops it in a bag at your feet.
-pub const PROTO_VER: u16 = 97;
+/// v98 — what a body wears. `SUB_WORN` (89) carries a player's id and the
+/// item in each wear slot, so other clients draw what they wear.
+pub const PROTO_VER: u16 = 98;
 
 /// This game's slug in the elo catalog.
 ///
