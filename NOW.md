@@ -189,8 +189,7 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
    50: the first that should differ decides whether the geometry widens
    (`reference/PROJECTILES.md` §9.4b).
 3. The hit marker changes colour, not shape (the reference pushes ticks out, a
-   `Node` mutation per tick). The number is drawn (`hud::hit_number`, off `Feed`);
-   `Toast::hit_damage` is a dead field.
+   `Node` mutation per tick). The number is drawn (`hud::hit_number`, off `Feed`).
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 

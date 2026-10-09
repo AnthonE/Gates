@@ -499,8 +499,6 @@ pub struct Toast {
     /// the two are the same kind of thing: a brief confirmation the player
     /// reads without looking away from the crosshair.
     pub hit_left: f32,
-    /// Damage the last landed hit dealt, drawn beside the marker.
-    pub hit_damage: u16,
     /// The rung that hit landed on (v58), or `None` for a wall — which is
     /// what picks the marker's colour. See [`mark_colour`].
     pub hit_part: Option<Part>,
@@ -523,7 +521,6 @@ impl Default for Toast {
             unseen: 0,
             overflow: String::new(),
             hit_left: 0.0,
-            hit_damage: 0,
             hit_part: None,
             hurts: [HurtArc::default(); HURT_ARCS],
         }
@@ -703,14 +700,14 @@ impl Toast {
         self.dropped
     }
 
-    /// A blow of yours landed, for `damage`, on `part` (`None` = a wall).
+    /// A blow of yours landed on `part` (`None` = a wall). The number it
+    /// did is [`hit_number`]'s, off the feed.
     ///
     /// The rung is latched with the clock and not merged with whatever was
     /// there: the marker is a statement about the shot the player just
     /// took, and a headshot four frames ago must not colour a leg hit now.
-    pub fn hit(&mut self, damage: u16, part: Option<Part>) {
+    pub fn hit(&mut self, part: Option<Part>) {
         self.hit_left = HITMARK_SECS;
-        self.hit_damage = damage;
         self.hit_part = part;
     }
 
@@ -2358,7 +2355,7 @@ pub fn feedback(
 
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
-        toast.hit(feed.damage, feed.hit_part);
+        toast.hit(feed.hit_part);
     }
     // And the same blow from the other end — every direction it came from,
     // not just the last one. `Feed::hurt_from` is a list precisely so that a
@@ -4109,9 +4106,8 @@ mod tests {
     #[test]
     fn the_hitmarker_is_not_a_toast() {
         let mut t = Toast::default();
-        t.hit(37, Some(Part::Head));
+        t.hit(Some(Part::Head));
         t.say("+1 × WOOD");
-        assert_eq!(t.hit_damage, 37);
         assert_eq!(t.hit_part, Some(Part::Head));
         t.tick(HITMARK_SECS + 0.01);
         assert_eq!(t.hit_left, 0.0, "the marker is off");
