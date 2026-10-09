@@ -165,6 +165,8 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             if step <= terrain::SIDE_ROAD_HALF_W {
                 w = terrain::splat_road(w, terrain::road_band(seed, haven, x, z));
             }
+            // …and a landmark's floor, on every mesh, as the shipped path does.
+            w = terrain_mesh::floor_wear(w, sim_core::landmark::floor_sweep(&haven.marks, x, z));
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);
             colors.push(terrain_mesh::vertex_splat(w));
             mods.push(terrain_mesh::vertex_mods(y, x, z, grad));
