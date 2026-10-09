@@ -88,6 +88,8 @@ const NO_NORMAL_MAP: &[&str] = &[
     "models/site/mark_stones.glb",
     "models/site/mark_tower.glb",
     "models/site/mark_yard.glb",
+    "models/site/mark_relay.glb",
+    "models/site/mark_quarry.glb",
 ];
 
 fn asset_path(rel: &str) -> PathBuf {

@@ -87,6 +87,8 @@ pub enum Mat {
     /// Natural rock: the client draws it as a fractured rock
     /// (`render/boulders.rs`), not a box.
     Rock = 5,
+    /// Graded gravel — a worked floor.
+    Gravel = 6,
 }
 
 impl Mat {
@@ -100,6 +102,7 @@ impl Mat {
             Mat::Timber => "timber",
             Mat::Cargo => "cargo",
             Mat::Rock => "rock",
+            Mat::Gravel => "yard",
         }
     }
 }
@@ -301,7 +304,7 @@ const SPIRES_CRATES: &[Anchor] = &[
 
 const QUARRY: &[Part] = &[
     // The cut: a high back face, a bench below it, and the two side walls,
-    // all the hill's own rock.
+    // all the hill's own rock — the dressing works their inner faces.
     p(-16.0, F, 8.0, 16.0, 7.0, 12.0, Mat::Rock),
     p(-14.0, F, 4.0, 14.0, 3.0, 8.0, Mat::Rock),
     p(-18.0, F, -6.0, -14.0, 5.5, 12.0, Mat::Rock),
@@ -317,6 +320,17 @@ const QUARRY: &[Part] = &[
     // The cutters' shed, and its roof.
     p(-14.0, F, -18.0, -6.0, 3.0, -12.0, Mat::Timber),
     p(-14.5, 3.0, -18.5, -5.5, 3.3, -11.5, Mat::Timber),
+    // The worked floor, graded from the faces out past the shed.
+    p(-14.0, F, -19.0, 14.0, 0.15, 4.0, Mat::Gravel),
+    // The crane's winch on its skid, the hopper the conveyor feeds and the
+    // conveyor's trestle, a tipping cart on its rails, drums by the shed and
+    // a floodlight over the floor.
+    p(10.8, F, -11.4, 13.0, 1.5, -9.6, Mat::Steel),
+    p(5.5, 0.15, -9.0, 8.5, 5.0, -6.0, Mat::Steel),
+    p(6.8, 0.15, -0.6, 7.2, 3.9, -0.2, Mat::Steel),
+    p(-12.2, 0.15, -3.0, -10.8, 1.3, -1.2, Mat::Steel),
+    p(-4.8, 0.15, -16.0, -3.6, 1.15, -14.8, Mat::Steel),
+    p(-5.6, 0.15, -11.4, -5.3, 7.0, -11.1, Mat::Steel),
 ];
 const QUARRY_CRATES: &[Anchor] = &[
     (-10.0, -9.0, Occupant::CrateSlot),
@@ -345,6 +359,17 @@ const RELAY: &[Part] = &[
     p(-7.5, 0.25, 2.0, -2.5, 3.0, 7.0, Mat::Concrete),
     p(-7.8, 3.0, 1.7, -2.2, 3.25, 7.3, Mat::Steel),
     p(-7.5, 0.25, -7.0, -5.1, 2.6, -1.0, Mat::Cargo),
+    // What a working compound leaves about: the generator's fuel tank behind
+    // the hut, the cabinets the tower's feeders run from, a pallet of drums,
+    // a cable drum, two floodlights, and barriers either side of the gate.
+    p(-7.6, 0.25, 7.25, -4.0, 1.75, 8.55, Mat::Steel),
+    p(-0.8, 0.25, 2.2, 0.8, 1.9, 2.9, Mat::Steel),
+    p(-4.4, 0.25, -1.4, -3.2, 1.25, -0.2, Mat::Steel),
+    p(6.0, 0.25, -1.4, 7.4, 1.65, -0.6, Mat::Timber),
+    p(8.2, 0.25, 8.2, 8.5, 7.0, 8.5, Mat::Steel),
+    p(-8.5, 0.25, -8.5, -8.2, 7.0, -8.2, Mat::Steel),
+    p(-5.0, F, -11.6, -2.6, 0.85, -11.0, Mat::Concrete),
+    p(2.6, F, -11.6, 5.0, 0.85, -11.0, Mat::Concrete),
 ];
 const RELAY_CRATES: &[Anchor] = &[
     (-4.0, -5.0, Occupant::CrateSlot),
@@ -386,12 +411,14 @@ pub const fn anchors(kind: LandmarkKind) -> &'static [Anchor] {
 /// The built kinds — the ones `ci/site_kit.py` dresses into
 /// `assets/models/site/mark_<slug>.glb`. The rock kinds are drawn by the
 /// boulders' builder instead.
-pub const DRESSED: [LandmarkKind; 5] = [
+pub const DRESSED: [LandmarkKind; 7] = [
     LandmarkKind::Mast,
     LandmarkKind::Ruin,
     LandmarkKind::Tower,
     LandmarkKind::Stones,
     LandmarkKind::Yard,
+    LandmarkKind::Relay,
+    LandmarkKind::Quarry,
 ];
 
 /// A kind's file-name stem.
@@ -787,6 +814,64 @@ fn try_site(
         kind,
         live: true,
     })
+}
+
+/// How far a landmark's worked floor reaches past its edge before the wild
+/// ground has it back, metres — at most; the edge wanders inside it.
+pub const FLOOR_BAND_M: f32 = 4.0;
+/// The lattice the floor's edge wanders on, metres.
+const FLOOR_EDGE_CELL_M: f32 = 3.0;
+const CH_FLOOR_EDGE: u32 = 193;
+
+/// Whether a part is a floor: a slab or graded yard laid on the ground,
+/// broad and low, that a body walks across rather than around.
+pub const fn is_floor(p: &Part) -> bool {
+    matches!(p.mat, Mat::Concrete | Mat::Gravel)
+        && p.b[4] <= 0.5
+        && p.b[3] - p.b[0] >= 4.0
+        && p.b[5] - p.b[2] >= 4.0
+}
+
+/// How much of a landmark's floor the ground at (x, z) is: 1.0 on a floor
+/// part, easing to 0.0 outside it across a band that wanders between a
+/// metre and [`FLOOR_BAND_M`] — the grass on a slab or a quarry's gravel is
+/// grit, not lawn (`terrain::swept_here`), and its edge is not a ruled line.
+pub fn floor_sweep(marks: &[Landmark], x: f32, z: f32) -> f32 {
+    let Some(m) = at(marks, x, z, FLOOR_BAND_M) else {
+        return 0.0;
+    };
+    let (lx, lz) = to_local(m, x, z);
+    let band = FLOOR_BAND_M * (0.25 + 0.75 * edge_noise(m.yaw as u64, x, z));
+    let mut best = 0.0f32;
+    for part in parts(m.kind) {
+        if !is_floor(part) {
+            continue;
+        }
+        let b = part.b;
+        let dx = (b[0] - lx).max(lx - b[3]).max(0.0);
+        let dz = (b[2] - lz).max(lz - b[5]).max(0.0);
+        let d2 = dx * dx + dz * dz;
+        if d2 >= band * band {
+            continue;
+        }
+        let t = 1.0 - d2.sqrt() / band;
+        best = best.max(t * t * (3.0 - 2.0 * t));
+    }
+    best
+}
+
+/// Smooth value noise in [0, 1] on a [`FLOOR_EDGE_CELL_M`] world lattice.
+fn edge_noise(key: u64, x: f32, z: f32) -> f32 {
+    let fx = x * (1.0 / FLOOR_EDGE_CELL_M);
+    let fz = z * (1.0 / FLOOR_EDGE_CELL_M);
+    let (x0, z0) = (floor_i32(fx), floor_i32(fz));
+    let (tx, tz) = (fx - x0 as f32, fz - z0 as f32);
+    let v =
+        |i: i32, j: i32| (cell_hash(key, i, j, CH_FLOOR_EDGE) >> 40) as f32 * (1.0 / 16_777_216.0);
+    let (sx, sz) = (tx * tx * (3.0 - 2.0 * tx), tz * tz * (3.0 - 2.0 * tz));
+    let a = v(x0, z0) + (v(x0 + 1, z0) - v(x0, z0)) * sx;
+    let b = v(x0, z0 + 1) + (v(x0 + 1, z0 + 1) - v(x0, z0 + 1)) * sx;
+    a + (b - a) * sz
 }
 
 /// The landmark whose disc (padded by `pad`) holds (`x`, `z`), if any. Cells

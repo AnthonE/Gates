@@ -62,6 +62,7 @@ fn surface(mat: Mat) -> (Surface, [f32; 3]) {
         Mat::Steel => (Surface::Steel, depot::DEPOT_STEEL_TINT),
         Mat::Timber => (Surface::Timber, [1.0; 3]),
         Mat::Cargo => (Surface::Cargo, [1.0; 3]),
+        Mat::Gravel => (Surface::Yard, depot::DEPOT_YARD_TINT),
     }
 }
 

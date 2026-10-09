@@ -6624,8 +6624,13 @@ fn clutter_slope_at<C: Corners>(
 ///
 /// `/ 256.0` rather than `/ 255.0` so the two ends are exact: at sweep 0.0 no
 /// byte passes, and at sweep 1.0 every byte does.
+///
+/// A landmark's floor sweeps too (`landmark::floor_sweep`), here and not in
+/// `site_sweep`, whose other readers (the cliff veto) are worldgen: the
+/// floor is a picture of the ground, not a change to it.
 fn swept_here(haven: &Haven, x: f32, z: f32, d: u8) -> bool {
-    (d as f32) * (1.0 / 256.0) < site_sweep(haven, x, z)
+    let s = site_sweep(haven, x, z).max(crate::landmark::floor_sweep(&haven.marks, x, z));
+    (d as f32) * (1.0 / 256.0) < s
 }
 
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).

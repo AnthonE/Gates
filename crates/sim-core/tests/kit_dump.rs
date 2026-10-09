@@ -27,7 +27,7 @@ fn the_ziggurat_kit_file_matches_the_source() {
 #[test]
 fn the_landmark_kit_files_match_the_source() {
     use sim_core::landmark::{self, LandmarkKind};
-    let files: [(LandmarkKind, &str); 5] = [
+    let files: [(LandmarkKind, &str); 7] = [
         (
             LandmarkKind::Mast,
             include_str!("../../../ci/kits/mark_mast.json"),
@@ -47,6 +47,14 @@ fn the_landmark_kit_files_match_the_source() {
         (
             LandmarkKind::Yard,
             include_str!("../../../ci/kits/mark_yard.json"),
+        ),
+        (
+            LandmarkKind::Relay,
+            include_str!("../../../ci/kits/mark_relay.json"),
+        ),
+        (
+            LandmarkKind::Quarry,
+            include_str!("../../../ci/kits/mark_quarry.json"),
         ),
     ];
     assert_eq!(files.len(), landmark::DRESSED.len());

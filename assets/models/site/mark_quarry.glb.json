@@ -1,0 +1,20 @@
+{
+  "kit": "ci/kits/mark_quarry.json",
+  "seed": 1,
+  "label": "",
+  "blender": "4.5.14 LTS",
+  "python": "3.11.17",
+  "script_sha256": "2392b812b3104cfce9fd1f3d1e1161fe33e60565fde9707980707147cb9d18e5",
+  "kit_sha256": "c92ea26841854d530b302c691f5919f8d27bf3546f9c1f7bd0138775045a8dc4",
+  "triangles": 25154,
+  "meshes": [
+    "ashlar",
+    "bulb",
+    "concrete",
+    "sheet",
+    "steel",
+    "timber",
+    "yard"
+  ],
+  "bytes": 3336720
+}
