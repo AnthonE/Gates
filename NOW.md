@@ -266,10 +266,10 @@ Two gullied ranges in the 340–1060 m annulus (`MASSIF_R_IN`/`MASSIF_R_OUT`; `T
    move the world digest (`probe_terrain`); shipped together they are one wipe.
 2. **Ore is budgeted per island** (`terrain::ORE_TARGET`, 560 metal / 400
    sulfur; `Haven::ore_pm`), but the scale caps at 1.75× on the Highland row's
-   saturation rail, so rock-poor islands land short. The shortfalls were measured
-   on the old 160/120 budget: re-measure with `test_ore_is_budgeted_per_island
-   -- --nocapture` (its doc comment's ranges are stale too). Lifting them means
-   reshaping the Highland row — the operator's call.
+   saturation rail. Of the gate's eight seeds only 12345 rides the cap, landing
+   532/369 (95%/92%); all eight hold the ±25% band (2026-10-09: metal 502–585,
+   sulfur 354–410). Lifting a capped island means reshaping the Highland row —
+   the operator's call.
 4. **Heights in the ranges still cost ~3.4×** (0.80 µs against 0.23 through a
    memo, `client/examples/frame_cost.rs`). The clutter tile is fixed (0.9–1.0
    ms on a range). A near chunk on a range is unmeasured: native runs it on

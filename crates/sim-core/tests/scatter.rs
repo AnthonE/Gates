@@ -316,9 +316,9 @@ fn test_scatter_density_preserved() {
 /// row, and the interior ranges made rock area the seed's: these eight
 /// islands drew 93–209 metal and 54–147 sulfur, and raiding is priced in
 /// sulfur. `haven` now scales the row per island (`ORE_TARGET`, `ORE_PM_*`);
-/// what remains is the draw's own noise over independent cells, and the two
-/// islands too bare of rock to reach the budget under `ORE_PM_MAX`. Measured
-/// 2026-09-24: metal 131–170, sulfur 101–132.
+/// what remains is the draw's own noise over independent cells, and an island
+/// too bare of rock to reach the budget under `ORE_PM_MAX` (seed 12345 rides
+/// it). Measured 2026-10-09 against 560/400: metal 502–585, sulfur 354–410.
 const ORE_BAND: f32 = 0.25;
 
 #[test]
