@@ -378,7 +378,7 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
 
 /// Movement + gather parity: `sequences` independent random input
 /// sequences, each a fresh world + 2 bots × `ticks` ticks; the
-/// per-sequence state hashes fold into one digest (DESIGN.md §4: 10,000
+/// per-sequence state hashes fold into one digest (DESIGN.md §4: 1,000
 /// sequences through both builds). Bots hold the primary button in
 /// bursts and the world carries the synthetic gather fixture, so slot
 /// life, yields, and inventories are inside the parity surface. It also

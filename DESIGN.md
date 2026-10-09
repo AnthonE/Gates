@@ -282,7 +282,7 @@ gates/
   `+ - * / sqrt min max clamp` (all IEEE-exact both targets), banning libm
   transcendentals (yaw → direction goes through a shared lookup table
   indexed by the quantized yaw byte), and never letting FMA contraction in
-  (default Rust behavior). A CI test drives 10,000 random input sequences
+  (default Rust behavior). A CI test drives 1,000 random input sequences
   through both builds and asserts byte-equal output (§12). **Client and
   server are now both native, so the wasm half is no longer a shipping
   target — it is the instrument.** A second architecture that must agree

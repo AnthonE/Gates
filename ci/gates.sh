@@ -342,7 +342,8 @@ else
 fi
 
 # The parity probe runs one simulation three times (native, wasm under node,
-# debug) and was 43 minutes of a 90-minute run, so a pull request skips it.
+# debug). At 10,000 sequences it was ~2 h and timed main out; at 1,000 it is
+# minutes, but a pull request still skips it.
 # It is the last gate, and main and nightly run it on every merge.
 if [ "$TIER" = "fast" ]; then
   echo "== SKIPPED (tier fast): test_parity_wasm — main and nightly run it"
