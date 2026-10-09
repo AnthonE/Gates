@@ -328,7 +328,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    a wider event and a `PROTO_VER` turn.
 4. Spray paint is a deployable, not a decal (`limits.rs` cap, `worldsave.rs` slot,
    privilege, decay, moderation); decide stencil vs painted first.
-5. Untested: `cell_edges_stop_shot`'s high-face stop names cell+1 (`collide.rs:2449`, `:2451`).
 
 ## 0wc · What world containers v0 still owes *(systems lane)*
 
@@ -445,7 +444,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 ## 0aa · Building rights: the roster's third customer is missing *(systems lane)*
 
 1. No `AutoTurret`: `sim-core/roster.rs` serves only the lock lists and hearth crew.
-- ⚠ `sim-core/{deploy,claim}.rs` doc comments cite §0aa's old item numbers; re-point.
 
 ## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
 
@@ -1046,7 +1044,7 @@ locks: the registry and `reference/DOORS.md` now say the key lock is built), 202
 `client/src/webassets.rs` and `client/src/render/audio.rs`, name work that has
 landed; those numbers now point at other items. `ALPHA.md` cites the wipe as
 "§0q item 2"; it is item 3, and it landed (#238). Doc comments in `sim-core/{deploy,claim}.rs` cite
-"§0aa item 1" / "items 1–2" under numbering that has since moved.
+the old §0aa items and point at `git show 9a069f4:NOW.md`.
 
 **Ambiguous** — these resolve to two or three sections:
 

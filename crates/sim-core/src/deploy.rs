@@ -530,7 +530,7 @@ pub const REFUSE_D_NOT_EMPTY: u32 = 19;
 /// ("deployables v0"). No live path asks it any more: the build verbs
 /// moved to the base's own volume with privilege v1 (`claim.rs`), and
 /// the upkeep sweep followed onto the cached form of the same shape —
-/// the split `NOW.md` §0aa item 1 named is closed. What still reads it
+/// the split old `NOW.md` §0aa item 1 named (`git show 9a069f4:NOW.md`) is closed. What still reads it
 /// is [`Deploys::foreign_claim`], the circle kept as the crew tests'
 /// probe.
 pub const HEARTH_RADIUS_M: f32 = 24.0;
@@ -5152,7 +5152,7 @@ mod tests {
     }
 
     /// The upkeep sweep asks the base's own shape now, not a circle
-    /// (`NOW.md` §0aa item 1). A corridor twenty cells long puts its far
+    /// (old `NOW.md` §0aa item 1, `git show 9a069f4:NOW.md`). A corridor twenty cells long puts its far
     /// end 57 m from the hearth: under `HEARTH_RADIUS_M` that end rotted
     /// with a stocked hearth standing at the near one; under the cached
     /// claim volume every cell is covered, because the structure reaches
@@ -5245,7 +5245,7 @@ mod tests {
         );
     }
 
-    /// The cache-invalidation mutant-killer `NOW.md` §0aa item 2 asks
+    /// The cache-invalidation mutant-killer old `NOW.md` §0aa item 2 asked
     /// for: place, sweep, demolish the corridor, sweep — the second sweep
     /// must see the shrunk shape. Delete any link in the invalidation
     /// chain (the gen bump in `Pieces::remove_at`, the stamp compare, the

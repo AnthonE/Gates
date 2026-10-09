@@ -161,3 +161,35 @@ fn socket_steps_preserve_old_addresses_and_stop_at_the_height_cap() {
     assert_eq!(level_step(0, -1), None);
     assert_eq!(level_step(15, 1), None);
 }
+/// `NOW.md` §0mk item 5: a shot leaving a cell through its HIGH face is
+/// stopped by the wall stored on the next cell's low edge, and the stop
+/// names that cell — `cell_edges_stop_shot`'s `bx + 1` / `bz + 1` rows.
+#[test]
+fn a_high_face_stop_names_the_next_cell() {
+    let haven = terrain::haven(SEED);
+    for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
+        let (wcx, wcz) = if loc == LOC_EDGE_XLO {
+            (CX + 1, CZ)
+        } else {
+            (CX, CZ + 1)
+        };
+        let mut cols = ColIndex::new();
+        cols.add(wcx, wcz, 0, loc, SHAPE_WALL, 0);
+        let y = column_floor_y(SEED, &haven, wcx, wcz, 0) + 1.0;
+        let (x, z) = (wcx as f32 * BUILD_CELL_M, wcz as f32 * BUILD_CELL_M);
+        // From inside (CX, CZ), across the shared face.
+        let (a, b) = if loc == LOC_EDGE_XLO {
+            ((x - 0.4, z + 1.5), (x + 0.4, z + 1.5))
+        } else {
+            ((x + 1.5, z - 0.4), (x + 1.5, z + 0.4))
+        };
+        let hit = collide::shot_stop(SEED, &haven, &cols, a.0, a.1, b.0, b.1, y, 0.0)
+            .expect("the wall on the high face stops the shot");
+        let addr = hit;
+        assert_eq!(
+            (addr.cx, addr.cz, addr.loc),
+            (wcx, wcz, loc),
+            "the stop names the cell the wall is stored on"
+        );
+    }
+}
