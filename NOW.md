@@ -57,7 +57,7 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
 
 1. §LOOK: nobody has booted `assets/models/site/{shelter,canopy}.glb` (only
-   `tests/site_assets.rs`' arithmetic). Do the stated 1.196×/1.291× aspect
+   `tests/prop_assets.rs`' arithmetic). Do the stated 1.196×/1.291× aspect
    stretches read as chunky-rustic or as wrong?
 2. To retire the stretch, fit `SHELTER_BOXES` to the art (prompting for the aspect
    fails). It is sim truth (`test_replay`'s golden, the plinth consts,
@@ -259,16 +259,17 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0mtn · The island has mountains now: what interior massifs v0 left *(sim lane)*
 
-Two gullied ranges in the 170–560 m annulus (`TERRAIN.md` §1 stage 4d,
+Two gullied ranges in the 340–1060 m annulus (`MASSIF_R_IN`/`MASSIF_R_OUT`; `TERRAIN.md` §1 stage 4d,
 `findings/interior-massifs-20260923.md`).
 
 1. **A wipe, the operator's.** The ranges and the ore budget (2026-09-24) both
    move the world digest (`probe_terrain`); shipped together they are one wipe.
-2. **Ore is budgeted per island** (`terrain::ORE_TARGET`, 160 metal / 120
+2. **Ore is budgeted per island** (`terrain::ORE_TARGET`, 560 metal / 400
    sulfur; `Haven::ore_pm`), but the scale caps at 1.75× on the Highland row's
-   saturation rail, so rock-poor islands land short (seeds 42 and 555:
-   147/101 and 138/100). Lifting them means reshaping the Highland row — the
-   operator's call.
+   saturation rail, so rock-poor islands land short. The shortfalls were measured
+   on the old 160/120 budget: re-measure with `test_ore_is_budgeted_per_island
+   -- --nocapture` (its doc comment's ranges are stale too). Lifting them means
+   reshaping the Highland row — the operator's call.
 4. **Heights in the ranges still cost ~3.4×** (0.80 µs against 0.23 through a
    memo, `client/examples/frame_cost.rs`). The clutter tile is fixed (0.9–1.0
    ms on a range). A near chunk on a range is unmeasured: native runs it on
@@ -339,7 +340,7 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    overflowed the storm's event lane, #179); nobody has heard `Cue::RemoteSwing`.
 4. Armor, none blocking: `balance.rs`'s anchor is slot-blind (re-speak
    `armor_extra_hits_max` or re-price); `reference/ARMOR.md` §9.3–9.4 owes damage
-   types, hit areas and worn condition. `move_penalty_pct` (unread, `bake.rs:866`)
+   types, hit areas and worn condition. `move_penalty_pct` (unread, `bake.rs:1055`)
    waits on the operator speaking §9.5 item 4's non-stacking rule.
 5. Lag compensation is on; only the real-link test is left (`§0lc` item 1).
 
@@ -351,7 +352,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    already answers players, animals and walls too.
 3. An animal is one cylinder with no part bands; `reference/ANIMALS.md` has no view.
 4. The weak spot is stance-based (`gather`'s sector) and ignores the look.
-5. `render/anim.rs` draws a remote swing level; the pitch is on the wire.
+5. A remote body's spine, neck and head follow the wire pitch (`render/anim.rs::pose_spine`), but
+   the swing's arm arc does not.
 6. `E` on a world container is a ray now (`resolve_open`), narrower than the sim's
    planar `worldcont::open`. Look first; if stooping reads badly, pad this cast
    rather than add a second rule.
@@ -363,20 +365,19 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    a wider event and a `PROTO_VER` turn.
 4. Spray paint is a deployable, not a decal (`limits.rs` cap, `worldsave.rs` slot,
    privilege, decay, moderation); decide stencil vs painted first.
-5. Untested: `cell_edges_stop_shot`'s high-face stop names cell+1 (`collide.rs:1641`).
+5. Untested: `cell_edges_stop_shot`'s high-face stop names cell+1 (`collide.rs:2449`, `:2451`).
 - `§LOOK`: #179's atlas marks on every surface, desktop and browser, and the
   weak-spot cross are all unseen.
 
 ## 0wc · What world containers v0 still owes *(systems lane)*
 
-1. Nobody has opened one in the running game: anchor per `container_wire.rs:1307`,
-   `dev_spawn` in `shard.toml` (`server/src/config.rs:361`), boot (§0p3).
+1. Nobody has opened one in the running game: anchor per `container_wire.rs`'
+   `a_world_crate_is_drawn_from_the_crate_store`, `dev_spawn` in `shard.toml`
+   (`server/src/config.rs:36`), boot (§0p3).
 1b. `takes_deposits` keys on kind; a fuel slot or vending machine needs it per instance.
 2b. Ground items: no tumble (`reference/LOOT.md` §9.3), most draw as a pouch
-    (`HELD_MODELS`), barrels pay 1–2 stacks (`content/loot.toml`, `ci/haven_prize.mjs`).
+    (`HELD_MODELS`), barrels pay 1–2 rolls plus 2 junk (`content/loot.toml`, `ci/haven_prize.mjs`).
 4. Nobody has fought a guard in the running game (route as item 1).
-5. `inventory.rs:110`'s `slots_in` treats every non-box kind as `INV_SLOTS` wide,
-   untested; add an explicit arm under `container_wire.rs:1359`'s guard.
 
 ## 0pr · What predator v0 still owes *(systems lane)*
 
@@ -389,23 +390,23 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 2. Holding a charge is free. The stag's bellow is a stand-in cut from the howl and a
    growl (`assets/sound/MANIFEST.md`): a CC0 red deer roar replaces it.
-4. `MAX_MOBS = 64` came from the wire budget and has never met a playtest.
+4. `MAX_MOBS = 256` (a u8 slot ceiling; shipped densities fill about a quarter) has never met a playtest.
 5. Should `ttk_melee` widen (rock vs spear)? `DECISIONS.md` §open "tools as weapons".
 7. The brain's numbers are code and shared by every species (`brain.rs`: 2 biters, 3 tries,
    60 s heal, 20 s howl, 7 m orbit, 40 % sleep; `noise.rs`: 100/15/25/200 m hearing); only
-   sight, pack and fire fear are in `content/mobs.toml`.
+   sight, pack, fire fear and courage (`brave_pct`) are in `content/mobs.toml`.
 8. Nothing shows the brain's state: no admin command, overlay or log.
 
 ## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
 
-2. ADS / secondary (RMB): RMB already places, builds and half-grabs; answer the
-   held-item modality before a `BTN_SECONDARY` bit (`PROTO_VER` bump).
+2. ADS (RMB) on a firearm: RMB already places, builds, half-grabs, draws a bow (`BTN_AIM`) and lights
+   a torch (`BTN_LIGHT`); a firearm's sights take bit 7, the last free one (`BTN_MASK`, `PROTO_VER` bump).
 3. Flashlight (`F`): the torch and its right-click `BTN_LIGHT` toggle exist (torch
    fuel v0, `render/input.rs`); `F` itself only nudges the plan's height.
 4. Voice (hold `V`): no capture, codec, `KIND_*` or fan-out; `reference/VOICE.md` §9.
 - ⚠ Bind each key in the commit that gives it a verb. With the plan in hand `R`/`F`
-  nudge foundation height (`ghost::height_keys`); otherwise `R` repairs with a hammer
-  out and reloads with anything else (`verbs.rs`).
+  nudge foundation height (`ghost::height_keys`) or turn a stair; `R` turns a deployable's
+  ghost; otherwise `R` repairs with a hammer out and reloads with anything else (`verbs.rs`).
 - Free look sways the viewmodel (`viewmodel.rs` reads `eye.yaw`); §open "free look v0".
 
 ## 0sp2 · What the spill still cannot say *(systems lane)*
@@ -478,7 +479,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    ITEM STORE entry (`ui/hub.rs`) opens nothing until §0s item 2's `store` link exists.
 2. A look is a flat colour multiply: no per-skin texture or mesh; deployables are refused as targets;
    `season` does nothing.
-3. A ground item carries no skin on the wire, and worn armour is not drawn at all (§0eq item 3).
+3. A ground item carries no skin on the wire, and worn armour draws by id only (`render/worn.rs`, §0eq
+   item 3), with no skin.
 4. A purchase lands at the next ownership check, asked when the inventory or crafting page opens and at
    most every 15 s; a check that fails at join owns nothing until the next.
 5. **Operator:** confirm elo's catalog ids are per title: `/api/items/of/{wallet}` names no title and the
@@ -515,7 +517,7 @@ Next: an operator-provisioned wallet plus a routable spectate shard for a
 public agent (operator acts).
 
 `PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
-is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
+is built (`EV_TRUST` code 39, `World::log_trust`, seven checks in
 `crates/sim-core/tests/event_roles.rs`); walls 1 and 4 are built for the local
 agent (`server/tests/agent_walls.rs`, `sim-core/tests/agent_input.rs`); wall 2
 is not.
@@ -531,7 +533,7 @@ act):
 ## 4 · A payload swap is still not a compile error
 
 1. A payload-role table read by emit site and check, so an a/b swap won't compile
-   (`reference/FINDINGS.md` §1 end; `event_roles.rs:3486`). Bigger than one pass.
+   (`reference/FINDINGS.md` §1 end; `event_roles.rs:4273`). Bigger than one pass.
 
 ## 0q · The gaps nobody has claimed
 
@@ -547,8 +549,8 @@ act):
 ## 0zd · Doors and locks — the key lock's blocker died and nobody re-took it *(systems lane)*
 
 1. The key lock landed (#239: no keypad, locked to its placer and the hearth crew);
-   `reference/DOORS.md` §9.7 and the `DECISIONS.md` 2026-08-08 row still say it is not
-   built.
+   `reference/DOORS.md` §9 items 7 and 10 and the `DECISIONS-ARCHIVE.md` 2026-08-08 row
+   still say it is not built.
 2. `DECISIONS.md` says `L` opens a keypad HUD line, not a panel; the client ships
    `render/hud.rs::pad_overlay`. Fix the registry.
 
@@ -741,7 +743,7 @@ act):
 ## 0dur · Durability: the words, the wearers, the bench *(client lane)*
 
 1. The detail pane says nothing in words: `render/panels/craft.rs::build_detail` never reads `cond`.
-2. Weapons and armour don't wear (`condition_loss` only in `content/gatherables.toml`; no `sim-core/src/armor.rs`):
+2. Weapons and armour don't wear (`condition_loss` only in `content/gatherables.toml` and `mobs.toml`'s `[butcher]`; no `sim-core/src/armor.rs`):
    a research row first (`reference/DURABILITY.md` §5); on-swing wear is `DECISIONS.md` §open "tools as weapons".
 3. Repair is re-craft in v1 (Q3). A repair bench is `Station::Workbench1..3` (`content/src/schema.rs`) + a blueprint
    check, never a new deployable; `DURABILITY.md` §3's 0.20 stays DISPUTED until checked against the in-game price.
@@ -874,7 +876,7 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 2. Blocked, numbers written: **1j** `armor.toml`, re-anchoring `content/tests/content.rs::band_breaks_refused`,
    best inside equipment v0.
-3. No per-material damage resistance: one `structure` column (`content/src/schema.rs:281`) compresses row 2.
+3. No per-material damage resistance: one `structure` column (`Weapon::structure`, `content/src/schema.rs:357`) compresses row 2.
 4. Gather yields, smelt and craft times are still ours; per-hit yields and sub-second precision (row 3a) are schema work.
 5. Logistics friction (~10–30×) beats mob→player damage (~2–5×): threat is trip shape, never a multiplier (rows 5, 6).
 
@@ -892,8 +894,9 @@ Read `reference/MONUMENTS.md` §9 first (§0: the weakest provenance here).
 
 ## 4b · The world lane: what the second tier left open
 
-2. Nothing threatens the walk between sites (guards leash to a `SiteFootprint`). Nav landed with the
-   animal brain (#178: A* on a 1 m grid, round walls, trees and cliffs).
+2. Nothing authored threatens the walk between sites: guards leash to a `SiteFootprint`, and only free wolf
+   packs and the patrol heli roam. Nav landed with the animal brain (#178: A* on a 1 m grid, round walls,
+   trees and cliffs).
 
 ## 7 · Milestones — the arc is `DESIGN.md` §11; the queue adds two gates and one item *(systems lane)*
 
@@ -928,7 +931,7 @@ cardboard and the dust as fog. The rest read as intended on a software GPU; a
 real GPU is still the operator's.
 
 - Ore node beside a boulder (§0rk): node vs boulder at 10 m unprompted? metal seam glint under the game's light? sulfur crust vs paint? does a hillside node float on its downhill edge (expected at today's 0.5 lift; the proposed 0.3 lift is the fix, `DECISIONS.md` scatter art v1)?
-- Depot, looking down its road (§0rd): does the 25–57 m wander go somewhere or look nudged? gate approach square-on at the apron? far end ever hidden by terrain (the case for more than `SIDE_ROAD_BEND_M = 60`)? No-GPU first look: `cargo run -p client --example map_png`.
+- Depot, looking down its road (§0rd): does the wander go somewhere or look nudged (`SIDE_ROAD_BEND_M = 180`, seven bends; the 25–57 m figure was measured at 60 and three)? gate approach square-on at the apron? far end ever hidden by terrain? No-GPU first look: `cargo run -p client --example map_png`.
 - Smash a barrel (§0wc 2b): a loose sack reads as loot, not debris? findable in grass? smaller than a death bag at 10 m? two stacks told apart by the prompt alone?
 - Open a bag and right-click (§0p2, §0wc, §0eq item 5): the inventory page with a container open is body + pack + container in one row (~950 px at 58 px slots) — does it read, and does it fit at 1280?
 - One tree, then a stand (§0t): needles, not fern fronds? dark inside, lit outside? lit top, shaded underside? too much sky through it (fix: card counts in `tree.rs`)? The broadleaf's 11 cm leaves separately (§0t item 7).
@@ -955,8 +958,8 @@ real GPU is still the operator's.
 8. The announce stack (§0tq), live play only (`--capture` can't force five facts): does the 0.52-alpha deepest row read? does `…+N more` shift the sentence?
 9. The tech-tree panel at a bench (§0tt, §0tree): press `E`.
 10. A world crate and a site guard (§0wc 1, 4): `dev_spawn` puts the camera at the pad (§0p3 has the command).
-11. Freehand build and the aimed band on a hillside (§0bl items 5, 8): height changing across one cell — control or twitch (`R`/`F` step it)?
-13. The collapsed off arm and the sleeper tint (§0chr item 6), a spill line (§0sp2), the map's marked set (§0a), a diagonal base (§0ac item 3), the clutter ring's hard edge at ~32–45 m (§0a).
+11. Freehand build and the aimed band on a hillside: height changing across one cell — control or twitch (`R`/`F` step it)?
+13. The collapsed off arm and the sleeper tint (§0chr item 7), a spill line (§0sp2), the map's marked set (§0a), a diagonal base (§0ac item 3), the clutter ring's hard edge at ~32–45 m (§0a).
 
 - Needs a machine, not a look: the Windows build on Windows (§0win).
 
@@ -996,15 +999,16 @@ real GPU is still the operator's.
 
 ## 0a · Is the map's marked set the right one? *(operator — a taste call)*
 
-1. **Operator:** is `MarkKind` (`client/src/ui/map.rs:263`) the right set — haven,
-   waystation, bed, spent bed, hearth, backpack, with boxes and doors unmarked on
-   purpose? Look with the game booted (§LOOK 13) before that ships.
+1. **Operator:** is `MarkKind` (`client/src/ui/map.rs:584`) the right set — haven,
+   town, monument, waystation, depot, landmark, bed, spent bed, hearth, backpack, work
+   and stone, with boxes and doors unmarked on purpose? Look with the game booted (§LOOK 13) before that ships.
 
 ## 0v · The furnace's ore rows want an operator's number *(systems lane)*
 
-- **Operator's number:** the furnace's ore rows (`content/recipes.toml:362–384`)
-  are station crafts; making them `sim-core/oven.rs` conversions (the reference's
-  `BaseOven`) re-prices the powder chain against `CONTENT.md` §4 — a balance pass.
+- Ore smelts in the furnace now (`content/cooking.toml`, 5 s a unit; #239), and the old
+  station crafts stay beside it for the bots (`content/recipes.toml:479–493`, 2 s each).
+- **Operator's number:** keep or drop the station rows, and re-price the powder chain
+  against `CONTENT.md` §4 at the furnace's rate — a balance pass.
 
 ## 0rn · The rename's six loose ends *(operator, mostly)*
 
@@ -1047,8 +1051,9 @@ real GPU is still the operator's.
 
 ## 0rl · The release path — two operator acts, and a tester's question *(platform lane)*
 
-1. **Publish the newest draft release** after reading its assets; only `v0.2.0`
-   is published (check the API, not this line).
+1. **Tag and publish v0.8.0** (the workspace version); `v0.7.0` is the newest published,
+   and the drafts left (v0.6.0, v0.5.0, v0.3.0, v0.1.0) are older than it — delete them
+   (check the API, not this line).
 2. **Raise `min_client` on a live shard only after (1)**; a climbing
    `refused_build` means it was done backwards.
 3. **Tester:** start the macOS and Linux release artifacts — never run; CI only builds them.
@@ -1072,9 +1077,6 @@ real GPU is still the operator's.
    one wallet that owns a copy and one that doesn't; until then all are `entitled: true`.
 2. **Operator: speak the sweep interval** — `DEFAULT_SWEEP_SECS = 120` is how long
    a sold copy keeps playing (`DECISIONS.md` §open "ticket door v0", PROPOSED).
-3. No `prove` call site (`crates/client/src/elo.rs`): every join costs a consent
-   dialog. `Overlay::prove` means the server parses the launcher's EIP-4361
-   message, carried on the wire — `PROTO_VER` bump + goldens; a slice.
 
 ## 0sl · The shard list reaches the game — two operator acts, in order
 
@@ -1107,7 +1109,7 @@ is a browser's only path — never drop that layer (struck §0wt).
    only if one is present or named by `WASM_OPT`.
 4. Where the 2048 cap binds, `stretch` magnifies the UI; a DPR change mid-session
    costs a UI-scale change (`web.rs` header).
-5. No aerial perspective or sun disk in a browser (dusk is coloured, `DUSK_GLOW`); a
+5. No aerial perspective or sun disk under WebGL2 (dusk is coloured, `DUSK_GLOW`); a
    dome shader is next if the sky reads flat on a GPU.
 6. Wasm heap ~700 MB (findings §17.6): every image keeps a main-world copy; first
    cut is `RENDER_WORLD` for model maps and photographs (`web::heap_report`).
@@ -1117,7 +1119,7 @@ is a browser's only path — never drop that layer (struck §0wt).
 8. Headless pointer lock floods ~30k events/s into Bevy's unbounded buffers; if a
    real browser ever does, cap it in winit's coalesced-event loop.
 
-- A browser's sun is pure white (no transmittance), so its lit ground reads cooler.
+- Under WebGL2 a browser's sun is pure white (no transmittance), so its lit ground reads cooler.
 - The launcher relay refuses SIWE (`meter/signin.py::_guard_ask_text`): a key
   held only in the desktop launcher has no web door.
 - Nothing gates that `wtransport rev = a11e6a8e…` holds the #317 fix; the pin is permanent.
