@@ -543,7 +543,6 @@ act):
 
 2. Nobody has typed a command at a live shard: the `REFUSE_ADMIN` close
    (`net.rs:1284`) is undriven (the disconnected screen does say an admin removed you).
-3. The anomaly log (JSONL) has no reader to give the alpha gate a verdict.
 - Bans last in `ban_file` (text, `# gates bans v1`); there is no `/unban` verb, an
   operator deletes the line with the shard down.
 
