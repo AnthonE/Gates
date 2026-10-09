@@ -245,6 +245,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Place { .. } => "place",
         ActionMsg::Deploy { .. } => "deploy",
         ActionMsg::Feed { .. } => "feed",
+        ActionMsg::TakeStock { .. } => "take_stock",
         ActionMsg::Use { .. } => "use",
         ActionMsg::Repair { .. } => "repair",
         ActionMsg::Throw { .. } => "throw",

@@ -119,7 +119,11 @@ pub fn gather(
     cap: Option<Res<super::capture::Capture>>,
     // The door keypad takes the digits while it is up (`verbs::keypad_keys`)
     // and deliberately grabs no pointer, so nothing above sees it.
-    pad: Option<Res<super::verbs::Pad>>,
+    // Paired with the hearth's panel, which claims the digits the same way.
+    (pad, hearth): (
+        Option<Res<super::verbs::Pad>>,
+        Option<Res<super::verbs::HearthView>>,
+    ),
     // The pointer's memory across frames. A `Local` holding a pure type from
     // `ui::` rather than loose booleans, for that module's reason: the defect
     // it fixes is a SEQUENCE, and a sequence inside a system can only be
@@ -390,7 +394,11 @@ pub fn gather(
     // same test). And **not while the door keypad is up**: typing 1234 into
     // a lock used to walk the hand across four slots as well.
     let mut sel = net.sel;
-    let typing = pad.as_ref().is_some_and(|p| p.0.is_open());
+    let typing = pad.as_ref().is_some_and(|p| p.0.is_open())
+        || hearth
+            .as_ref()
+            .and_then(|h| h.0)
+            .is_some_and(|at| super::verbs::hearth_rows_known(&net.session.core, at));
     for (i, k) in HOTBAR_KEYS.iter().enumerate() {
         let core = &net.session.core;
         let food = core

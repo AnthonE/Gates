@@ -1089,7 +1089,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// planter's beds when they change, so every client draws the crop.
 /// v101 — a grubbed stump. `SUB_STUMP_GRUBBED` (91) broadcasts that a felled
 /// tree's stump was grubbed out, and each slot-sync cell carries a bit
-/// saying the same, so no client draws or offers a stump that is gone.
+/// saying the same, so no client draws or offers a stump that is gone. And
+/// the hearth gives back: `ACT_FEED` ends in a take bit, and a set one is
+/// followed by the stock row its crew takes out (`ActionMsg::TakeStock`).
 pub const PROTO_VER: u16 = 101;
 
 /// This game's slug in the elo catalog.
@@ -2121,6 +2123,14 @@ pub enum ActionMsg {
     },
     /// Feed the hearth at the address from the sender's inventory.
     Feed { cx: u16, cz: u16, level: u8 },
+    /// Take stock row `row` back out of the hearth at the address — its
+    /// crew only, refused by the sim (v101, the feed action's take bit).
+    TakeStock {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        row: u8,
+    },
     /// Use the deployable at the address — today that means toggling a
     /// door open/closed. Address only: the wire never carries the state
     /// the client wants, because a toggle raced against another player's
@@ -2744,9 +2754,36 @@ pub fn encode_action_deploy(
 }
 
 pub fn encode_action_feed(cx: u16, cz: u16, level: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    encode_hearth_stock(cx, cz, level, None, buf)
+}
+
+/// Take stock row `row` back out of the hearth at the address (v101): the
+/// feed action with its take bit set and the row after it.
+pub fn encode_action_take_stock(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    row: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    encode_hearth_stock(cx, cz, level, Some(row), buf)
+}
+
+/// Width of a hearth stock row (`limits::HEARTH_STOCK_ROWS`).
+const STOCK_ROW_BITS: u32 = 2;
+const _: () = assert!(sim_core::limits::HEARTH_STOCK_ROWS <= 1 << STOCK_ROW_BITS);
+
+fn encode_hearth_stock(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    take: Option<u8>,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+        || take.is_some_and(|r| r as usize >= sim_core::limits::HEARTH_STOCK_ROWS)
     {
         return Err(WireError::Range);
     }
@@ -2756,6 +2793,10 @@ pub fn encode_action_feed(cx: u16, cz: u16, level: u8, buf: &mut [u8]) -> Result
     w.write(cx as u32, BUILD_CELL_BITS)?;
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write_bit(take.is_some())?;
+    if let Some(row) = take {
+        w.write(row as u32, STOCK_ROW_BITS)?;
+    }
     Ok(w.finish())
 }
 
@@ -3092,11 +3133,20 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 pose,
             }
         }
-        ACT_FEED => ActionMsg::Feed {
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-        },
+        ACT_FEED => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            if r.read_bit()? {
+                let row = r.read(STOCK_ROW_BITS)? as u8;
+                if row as usize >= sim_core::limits::HEARTH_STOCK_ROWS {
+                    return Err(WireError::Malformed);
+                }
+                ActionMsg::TakeStock { cx, cz, level, row }
+            } else {
+                ActionMsg::Feed { cx, cz, level }
+            }
+        }
         // Address only; the sim refuses an address holding no door. The
         // loc is bounded to the deploy store's range — a door never hangs
         // on a diagonal (v40).

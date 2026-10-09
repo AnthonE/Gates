@@ -188,6 +188,10 @@ fn main() {
     let (cx, cz) = goldens::event_stump_grubbed();
     let len = protocol::encode_event_stump_grubbed(cx, cz, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[154], &buf[..len]);
+    // Stock taken back out of a hearth (v101).
+    let (cx, cz, level, row) = goldens::action_take_stock();
+    let len = protocol::encode_action_take_stock(cx, cz, level, row, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[155], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

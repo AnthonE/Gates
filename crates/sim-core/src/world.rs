@@ -1720,6 +1720,15 @@ pub enum Command {
         cz: u16,
         level: u8,
     },
+    /// Take stock row `row` back out of the hearth at the address, a feed's
+    /// chunk at a time — its crew only (`deploy::take_stock`).
+    TakeStock {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        row: u8,
+    },
     /// Toggle the door at the address open/closed (deploy.rs validates
     /// and refuses by event, never by panic).
     Use {
@@ -4835,6 +4844,25 @@ impl World {
                         cx,
                         cz,
                         level,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::TakeStock {
+                id,
+                cx,
+                cz,
+                level,
+                row,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    deploy::take_stock(
+                        &self.deploy,
+                        &self.gather,
+                        &mut self.deploys,
+                        &mut self.players[slot],
+                        (cx, cz, level),
+                        row,
                         &mut self.events,
                     );
                 }

@@ -91,7 +91,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         }
         ActionMsg::Demolish { .. } => Kind::Demolish,
         ActionMsg::Deploy { .. } => Kind::Deploy,
-        ActionMsg::Move { .. } | ActionMsg::Drop { .. } => Kind::Move,
+        // Taking stock back out moves a pack's worth, like a trade.
+        ActionMsg::Move { .. } | ActionMsg::Drop { .. } | ActionMsg::TakeStock { .. } => Kind::Move,
         ActionMsg::Container { .. }
         | ActionMsg::Loot
         | ActionMsg::Pickup

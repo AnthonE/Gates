@@ -3186,8 +3186,13 @@ pub fn hearth_overlay(
                         Pickable::IGNORE,
                     ));
                 } else {
-                    for r in crate::ui::hearth::rows(rows) {
-                        let name = crate::ui::craft::item_label(&core.catalog, r.item);
+                    for (i, r) in crate::ui::hearth::rows(rows).into_iter().enumerate() {
+                        // The key that takes this row back (`verbs::keys`).
+                        let name = format!(
+                            "[{}] {}",
+                            i + 1,
+                            crate::ui::craft::item_label(&core.catalog, r.item)
+                        );
                         panel
                             .spawn((
                                 Node {

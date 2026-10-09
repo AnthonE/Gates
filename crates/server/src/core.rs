@@ -1523,6 +1523,13 @@ impl ShardCore {
                         cz,
                         level,
                     },
+                    ActionMsg::TakeStock { cx, cz, level, row } => Command::TakeStock {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                        row,
+                    },
                     ActionMsg::Use { cx, cz, level, loc } => Command::Use {
                         id: c.id,
                         cx,

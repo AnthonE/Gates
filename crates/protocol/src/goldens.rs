@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 155] = [
+pub const FIXTURES: [&str; 156] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -277,6 +277,8 @@ pub const FIXTURES: [&str; 155] = [
     "event_planter.bin",
     // A grubbed stump (v101).
     "event_stump_grubbed.bin",
+    // Stock taken back out of a hearth (v101).
+    "action_take_stock.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1517,6 +1519,12 @@ pub fn action_deploy() -> (u16, u16, u16, u8, u8, sim_core::footprint::Pose) {
 /// A feed of the hearth at (cx, cz, level).
 pub fn action_feed() -> (u16, u16, u8) {
     (341, 682, 0)
+}
+
+/// Stock taken back out of a hearth (v101): (cx, cz, level, row), the last
+/// row so the field's top bit is read.
+pub fn action_take_stock() -> (u16, u16, u8, u8) {
+    (341, 682, 2, (sim_core::limits::HEARTH_STOCK_ROWS - 1) as u8)
 }
 
 /// The deployable record behind the placed broadcast (owner/hp/uh are

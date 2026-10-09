@@ -436,8 +436,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 1. Heal under upkeep (10 min unattacked, at the decay rate; Devblog 189): a per-piece
    last-hit clock is a `WORLD_SAVE_FORMAT` change and a wipe — ride the next bump.
-3. The hearth panel shows each resource's day and the time left; still owed: a crew
-   HUD vital and withdrawal.
+3. The hearth panel shows each resource's day and the time left, and its crew takes
+   stock back with `1`–`4` (wire v101, `deploy::take_stock`). Still owed: a crew HUD vital.
 4. Door and insert upkeep (Devblog 190): ours charge nothing in a claim.
 5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
 6. No gate runs the inside discount: roof an unpaid piece in the replay (`test_replay`).

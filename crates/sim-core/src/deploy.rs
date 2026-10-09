@@ -2850,6 +2850,64 @@ pub fn feed(
     );
 }
 
+/// Take up to `FEED_CHUNK` of stock row `row` out of the hearth at the
+/// address (`Command::TakeStock`) — what fits in the pack, and no more.
+/// **Crew only**: feeding is a gift anyone may give, taking is the crew's,
+/// and the refusal is the lock's own sentence (`REFUSE_D_OWNER`), the one
+/// every other crew-gated act at a hearth gives. EV_STOCK acks it as it
+/// acks a feed.
+pub fn take_stock(
+    dc: &DeployContent,
+    gc: &crate::gather::GatherContent,
+    deploys: &mut Deploys,
+    p: &mut Player,
+    (cx, cz, level): (u16, u16, u8),
+    row: u8,
+    events: &mut EventQueue,
+) {
+    let Some(h) = deploys.hearths[..deploys.hearth_count]
+        .iter()
+        .position(|h| h.cx == cx && h.cz == cz && h.level == level)
+    else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_HEARTH, 0);
+        return;
+    };
+    let (ax, az) = deploys.hearth_xz(&deploys.hearths[h]);
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
+        return;
+    }
+    if !deploys.hearths[h].crew.contains(p.id) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
+    let m = row as usize;
+    if m >= dc.mat_count as usize {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
+        return;
+    }
+    let item = dc.mats[m];
+    let want = FEED_CHUNK
+        .min(deploys.hearths[h].stock[m])
+        .min(u16::MAX as u32) as u16;
+    let got = crate::gather::inv_add(
+        &mut p.inv,
+        item,
+        want,
+        gc.stack_max_of(item),
+        gc.cond_max_of(item),
+    );
+    deploys.hearths[h].stock[m] -= got as u32;
+    events.push(
+        EV_STOCK,
+        p.id,
+        crate::gather::cell_key(cx, cz),
+        level as u32,
+    );
+}
+
 /// The verb's target at the address, if one of an `accept`ed archetype is
 /// there and the player stands within build reach of its cell center.
 /// Both refusals are pushed here, so the use and lock paths bounce
@@ -4850,6 +4908,79 @@ mod tests {
             pieces.entries()[0].hp,
             bc.pieces[GRADED_FOUNDATION].hp,
             "paid pieces keep hp"
+        );
+    }
+
+    /// The crew takes stock back out, a feed's chunk at a time and only what
+    /// fits; a stranger is refused, and a row past the table is no row.
+    #[test]
+    fn the_crew_takes_stock_back_and_a_stranger_cannot() {
+        let dc = hourly();
+        let gc = crate::gather::GatherContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 600), (1, 80), (2, 1)]);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        feed(&dc, &mut deploys, &mut p, CX, CZ, 0, &mut ev);
+        assert_eq!(deploys.hearths()[0].stock[1], 80);
+        let held = |p: &Player, item| crate::craft::inv_count(&p.inv, item);
+        let before = held(&p, dc.mats[1]);
+
+        take_stock(&dc, &gc, &mut deploys, &mut p, (CX, CZ, 0), 1, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_STOCK);
+        assert_eq!(deploys.hearths()[0].stock[1], 0, "all 80 came back");
+        assert_eq!(held(&p, dc.mats[1]), before + 80);
+
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = p.id + 1;
+        take_stock(
+            &dc,
+            &gc,
+            &mut deploys,
+            &mut stranger,
+            (CX, CZ, 0),
+            0,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_D_OWNER, "only the crew takes");
+        assert_eq!(deploys.hearths()[0].stock[0], FEED_CHUNK);
+
+        take_stock(&dc, &gc, &mut deploys, &mut p, (CX, CZ, 0), 3, &mut ev);
+        assert_eq!(last(&ev).2, REFUSE_D_KIND, "a row past the table");
+
+        // A full pack takes nothing and loses nothing.
+        for s in p.inv.iter_mut() {
+            *s = ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0,
+                skin: 0,
+            };
+        }
+        take_stock(&dc, &gc, &mut deploys, &mut p, (CX, CZ, 0), 0, &mut ev);
+        assert_eq!(
+            deploys.hearths()[0].stock[0],
+            FEED_CHUNK,
+            "nothing left the hearth"
         );
     }
 

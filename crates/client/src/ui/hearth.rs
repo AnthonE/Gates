@@ -16,8 +16,8 @@
 /// at the sim's tick rate. A test pins the two together.
 pub const PERIOD_MINUTES: u64 = 60;
 
-/// The footer: how to close, and what `E` did.
-pub const HINT: &str = "[E] CLOSE  ·  E FEEDS IT UP TO 500 OF EACH FROM YOUR PACK";
+/// The footer: how to close, what `E` did, and how the crew takes back.
+pub const HINT: &str = "[E] CLOSE  ·  E FEEDS UP TO 500 OF EACH  ·  [1]-[4] TAKE 500 BACK";
 
 /// What the panel says when no stock ack names this hearth: the server
 /// reads a hearth out to its crew alone.
