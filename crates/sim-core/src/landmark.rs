@@ -87,6 +87,8 @@ pub enum Mat {
     /// Natural rock: the client draws it as a fractured rock
     /// (`render/boulders.rs`), not a box.
     Rock = 5,
+    /// Graded gravel — a worked floor.
+    Gravel = 6,
 }
 
 impl Mat {
@@ -100,6 +102,7 @@ impl Mat {
             Mat::Timber => "timber",
             Mat::Cargo => "cargo",
             Mat::Rock => "rock",
+            Mat::Gravel => "yard",
         }
     }
 }
@@ -174,6 +177,15 @@ const RUIN: &[Part] = &[
     p(2.0, F, 2.0, 4.5, 1.1, 3.6, Mat::Stone),
     p(12.0, F, 0.0, 14.5, 0.9, 2.2, Mat::Stone),
     p(-4.0, F, -4.5, -2.6, 0.8, -2.0, Mat::Stone),
+    // The court's old flags.
+    p(-8.8, F, -8.8, 8.8, 0.06, 8.8, Mat::Stone),
+    // Spoil: where the north range's upper floor came down with its beams,
+    // in the south-west corner, and outside the west wall.
+    p(-6.0, 0.06, 5.8, -1.0, 0.8, 8.8, Mat::Gravel),
+    p(-8.8, 0.06, -8.8, -5.5, 0.7, -7.2, Mat::Gravel),
+    p(-12.6, F, -6.0, -10.0, 0.7, -1.0, Mat::Gravel),
+    // Somebody's lean-to against the west wall.
+    p(-8.8, 0.06, -2.0, -7.0, 2.2, 1.5, Mat::Timber),
 ];
 const RUIN_CRATES: &[Anchor] = &[
     (-4.0, 4.0, Occupant::CacheSlot),
@@ -223,6 +235,13 @@ const STONES: &[Part] = &[
     p(-3.0, 5.6, 10.8, 3.0, 6.5, 12.4, Mat::Stone),
     // The altar.
     p(-1.8, F, -1.0, 1.8, 1.0, 1.0, Mat::Stone),
+    // The broken stone's top, fallen in toward the altar.
+    p(-7.4, F, 4.2, -5.9, 0.95, 8.2, Mat::Stone),
+    // Cairns between the stones, and the fire ring before the altar.
+    p(10.25, F, -4.85, 11.15, 1.1, -3.95, Mat::Stone),
+    p(-4.85, F, -11.15, -3.95, 1.1, -10.25, Mat::Stone),
+    p(-11.15, F, 3.95, -10.25, 1.1, 4.85, Mat::Stone),
+    p(-0.9, F, -4.4, 0.9, 0.25, -2.6, Mat::Stone),
 ];
 const STONES_CRATES: &[Anchor] = &[
     (0.0, 3.5, Occupant::CrateSlot),
@@ -301,7 +320,7 @@ const SPIRES_CRATES: &[Anchor] = &[
 
 const QUARRY: &[Part] = &[
     // The cut: a high back face, a bench below it, and the two side walls,
-    // all the hill's own rock.
+    // all the hill's own rock — the dressing works their inner faces.
     p(-16.0, F, 8.0, 16.0, 7.0, 12.0, Mat::Rock),
     p(-14.0, F, 4.0, 14.0, 3.0, 8.0, Mat::Rock),
     p(-18.0, F, -6.0, -14.0, 5.5, 12.0, Mat::Rock),
@@ -317,6 +336,27 @@ const QUARRY: &[Part] = &[
     // The cutters' shed, and its roof.
     p(-14.0, F, -18.0, -6.0, 3.0, -12.0, Mat::Timber),
     p(-14.5, 3.0, -18.5, -5.5, 3.3, -11.5, Mat::Timber),
+    // The worked floor, graded from the faces out past the shed: the
+    // ground itself, levelled (`QUARRY_STAMPS`), and the grit on it.
+    p(-14.0, F, -19.0, 14.0, 0.02, 4.0, Mat::Gravel),
+    // The crane's winch on its skid, the hopper the conveyor feeds and the
+    // conveyor's trestle, a tipping cart on its rails, drums by the shed and
+    // a floodlight over the floor.
+    p(10.8, F, -11.4, 13.0, 1.5, -9.6, Mat::Steel),
+    p(5.5, 0.02, -9.0, 8.5, 5.0, -6.0, Mat::Steel),
+    p(6.8, 0.02, -0.6, 7.2, 3.9, -0.2, Mat::Steel),
+    p(-12.2, 0.02, -3.0, -10.8, 1.3, -1.2, Mat::Steel),
+    p(-4.8, 0.02, -16.0, -3.6, 1.15, -14.8, Mat::Steel),
+    p(-5.6, 0.02, -11.4, -5.3, 7.0, -11.1, Mat::Steel),
+    // A wheel loader parked on its own ruts, bucket down toward the faces.
+    p(-2.9, 0.02, -15.6, -0.3, 3.1, -9.0, Mat::Steel),
+    // Steps cut up the bench's face, each a body's step: the way up to it.
+    p(-9.2, F, 0.4, -7.6, 0.5, 4.0, Mat::Stone),
+    p(-9.2, F, 1.0, -7.6, 1.0, 4.0, Mat::Stone),
+    p(-9.2, F, 1.6, -7.6, 1.5, 4.0, Mat::Stone),
+    p(-9.2, F, 2.2, -7.6, 2.0, 4.0, Mat::Stone),
+    p(-9.2, F, 2.8, -7.6, 2.5, 4.0, Mat::Stone),
+    p(-9.2, F, 3.4, -7.6, 3.0, 4.0, Mat::Stone),
 ];
 const QUARRY_CRATES: &[Anchor] = &[
     (-10.0, -9.0, Occupant::CrateSlot),
@@ -345,6 +385,17 @@ const RELAY: &[Part] = &[
     p(-7.5, 0.25, 2.0, -2.5, 3.0, 7.0, Mat::Concrete),
     p(-7.8, 3.0, 1.7, -2.2, 3.25, 7.3, Mat::Steel),
     p(-7.5, 0.25, -7.0, -5.1, 2.6, -1.0, Mat::Cargo),
+    // What a working compound leaves about: the generator's fuel tank behind
+    // the hut, the cabinets the tower's feeders run from, a pallet of drums,
+    // a cable drum, two floodlights, and barriers either side of the gate.
+    p(-7.6, 0.25, 7.25, -4.0, 1.75, 8.55, Mat::Steel),
+    p(-0.8, 0.25, 2.2, 0.8, 1.9, 2.9, Mat::Steel),
+    p(-4.4, 0.25, -1.4, -3.2, 1.25, -0.2, Mat::Steel),
+    p(6.0, 0.25, -1.4, 7.4, 1.65, -0.6, Mat::Timber),
+    p(8.2, 0.25, 8.2, 8.5, 7.0, 8.5, Mat::Steel),
+    p(-8.5, 0.25, -8.5, -8.2, 7.0, -8.2, Mat::Steel),
+    p(-5.0, F, -11.6, -2.6, 0.85, -11.0, Mat::Concrete),
+    p(2.6, F, -11.6, 5.0, 0.85, -11.0, Mat::Concrete),
 ];
 const RELAY_CRATES: &[Anchor] = &[
     (-4.0, -5.0, Occupant::CrateSlot),
@@ -386,12 +437,14 @@ pub const fn anchors(kind: LandmarkKind) -> &'static [Anchor] {
 /// The built kinds — the ones `ci/site_kit.py` dresses into
 /// `assets/models/site/mark_<slug>.glb`. The rock kinds are drawn by the
 /// boulders' builder instead.
-pub const DRESSED: [LandmarkKind; 5] = [
+pub const DRESSED: [LandmarkKind; 7] = [
     LandmarkKind::Mast,
     LandmarkKind::Ruin,
     LandmarkKind::Tower,
     LandmarkKind::Stones,
     LandmarkKind::Yard,
+    LandmarkKind::Relay,
+    LandmarkKind::Quarry,
 ];
 
 /// A kind's file-name stem.
@@ -787,6 +840,203 @@ fn try_site(
         kind,
         live: true,
     })
+}
+
+/// How a landmark reshapes the ground it stands in: a rectangle in its own
+/// frame (`[x0, z0, x1, z1]`), the height it takes the ground to above the
+/// landmark's base, and how far past each side (`[−x, −z, +x, +z]`) the
+/// ground eases back to the wild — `MONUMENTS.md` §3's height stamp, a
+/// profile per side rather than a radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stamp {
+    pub r: [f32; 4],
+    pub y: f32,
+    /// Raise only: the ground comes up to `y` where it is lower and is left
+    /// where it is higher. Otherwise it is levelled to `y` both ways.
+    pub fill: bool,
+    pub band: [f32; 4],
+}
+
+const fn flat(r: [f32; 4], band: [f32; 4]) -> Stamp {
+    Stamp {
+        r,
+        y: 0.0,
+        fill: false,
+        band,
+    }
+}
+
+const fn fill(r: [f32; 4], y: f32, band: [f32; 4]) -> Stamp {
+    Stamp {
+        r,
+        y,
+        fill: true,
+        band,
+    }
+}
+
+/// A side the stamp stops dead at: under a wall, where nothing shows.
+const HARD: f32 = 0.05;
+
+/// The quarry: the hill brought up behind and beside the rock walls to just
+/// under their rims, so they are cut faces and not boxes, then the floor
+/// levelled — tight under the walls, a long apron out of the open side.
+const QUARRY_STAMPS: &[Stamp] = &[
+    fill([-18.0, 8.0, 18.0, 12.0], 6.2, [12.0, HARD, 12.0, 14.0]),
+    fill([-18.0, -6.0, -14.0, 12.0], 4.8, [12.0, 9.0, HARD, HARD]),
+    fill([14.0, -6.0, 18.0, 12.0], 3.8, [HARD, 9.0, 12.0, HARD]),
+    flat([-14.0, -19.0, 14.0, 4.0], [3.5, 8.0, 3.5, 3.5]),
+];
+const RELAY_STAMPS: &[Stamp] = &[flat([-9.0, -9.0, 9.0, 9.0], [6.0; 4])];
+const MAST_STAMPS: &[Stamp] = &[flat([-6.0, -6.0, 6.0, 6.0], [6.0; 4])];
+const YARD_STAMPS: &[Stamp] = &[flat([-16.0, -11.0, 16.0, 11.0], [6.0; 4])];
+const RUIN_STAMPS: &[Stamp] = &[flat([-10.0, -10.0, 10.0, 10.0], [6.0; 4])];
+const STONES_STAMPS: &[Stamp] = &[flat([-13.0, -13.0, 13.0, 13.0], [8.0; 4])];
+
+/// A kind's height stamps, applied in order.
+pub const fn stamps(kind: LandmarkKind) -> &'static [Stamp] {
+    match kind {
+        LandmarkKind::Quarry => QUARRY_STAMPS,
+        LandmarkKind::Relay => RELAY_STAMPS,
+        LandmarkKind::Mast => MAST_STAMPS,
+        LandmarkKind::Yard => YARD_STAMPS,
+        LandmarkKind::Ruin => RUIN_STAMPS,
+        LandmarkKind::Stones => STONES_STAMPS,
+        _ => &[],
+    }
+}
+
+/// How far past the kit's disc a stamp may reach, metres.
+pub const STAMP_REACH_M: f32 = 14.0;
+
+/// The landmarks' carve, as a height delta over `g` (the ground the roads
+/// and sites have already shaped) at (x, z). Like `terrain::site_stamp` it
+/// takes the height and not the seed, so it cannot read the terrain it is
+/// stamping, and the landmark solver reads `height` before any of it.
+pub fn stamp(marks: &[Landmark], g: f32, x: f32, z: f32) -> f32 {
+    let Some(m) = at(marks, x, z, STAMP_REACH_M) else {
+        return 0.0;
+    };
+    let ss = stamps(m.kind);
+    if ss.is_empty() {
+        return 0.0;
+    }
+    let (lx, lz) = to_local(m, x, z);
+    let mut h = g;
+    for s in ss {
+        let tx = if lx < s.r[0] {
+            (s.r[0] - lx) / s.band[0]
+        } else if lx > s.r[2] {
+            (lx - s.r[2]) / s.band[2]
+        } else {
+            0.0
+        };
+        let tz = if lz < s.r[1] {
+            (s.r[1] - lz) / s.band[1]
+        } else if lz > s.r[3] {
+            (lz - s.r[3]) / s.band[3]
+        } else {
+            0.0
+        };
+        let t2 = tx * tx + tz * tz;
+        if t2 >= 1.0 {
+            continue;
+        }
+        let t = 1.0 - t2.sqrt();
+        let w = t * t * (3.0 - 2.0 * t);
+        let target = m.y + s.y;
+        let to = if s.fill { h.max(target) } else { target };
+        h += (to - h) * w;
+    }
+    h - g
+}
+
+const _: () = {
+    // Every stamp inside the cell its landmark owns: `at` finds a landmark by
+    // its own cell, so a band reaching past it would be cut off at the edge.
+    let kinds = [
+        LandmarkKind::Quarry,
+        LandmarkKind::Relay,
+        LandmarkKind::Mast,
+        LandmarkKind::Yard,
+        LandmarkKind::Ruin,
+        LandmarkKind::Stones,
+    ];
+    let mut k = 0;
+    while k < kinds.len() {
+        let ss = stamps(kinds[k]);
+        let mut i = 0;
+        while i < ss.len() {
+            let s = ss[i];
+            let (x0, z0) = (s.r[0] - s.band[0], s.r[1] - s.band[1]);
+            let (x1, z1) = (s.r[2] + s.band[2], s.r[3] + s.band[3]);
+            let reach = LANDMARK_R_M + STAMP_REACH_M;
+            assert!(x0 * x0 + z0 * z0 <= reach * reach && x1 * x1 + z1 * z1 <= reach * reach);
+            assert!(x0 * x0 + z1 * z1 <= reach * reach && x1 * x1 + z0 * z0 <= reach * reach);
+            i += 1;
+        }
+        k += 1;
+    }
+    // The disc and its reach fit in the cell's placement margin.
+    assert!(LANDMARK_R_M + STAMP_REACH_M < LANDMARK_R_M + 40.0);
+};
+
+/// How far a landmark's worked floor reaches past its edge before the wild
+/// ground has it back, metres — at most; the edge wanders inside it.
+pub const FLOOR_BAND_M: f32 = 4.0;
+/// The lattice the floor's edge wanders on, metres.
+const FLOOR_EDGE_CELL_M: f32 = 3.0;
+const CH_FLOOR_EDGE: u32 = 193;
+
+/// Whether a part is a floor: a slab, a graded yard or old flags laid on
+/// the ground, broad and low, that a body walks across rather than around.
+pub const fn is_floor(p: &Part) -> bool {
+    matches!(p.mat, Mat::Concrete | Mat::Gravel | Mat::Stone)
+        && p.b[4] <= 0.5
+        && p.b[3] - p.b[0] >= 4.0
+        && p.b[5] - p.b[2] >= 4.0
+}
+
+/// How much of a landmark's floor the ground at (x, z) is: 1.0 on a floor
+/// part, easing to 0.0 outside it across a band that wanders between a
+/// metre and [`FLOOR_BAND_M`] — the grass on a slab or a quarry's gravel is
+/// grit, not lawn (`terrain::swept_here`), and its edge is not a ruled line.
+pub fn floor_sweep(marks: &[Landmark], x: f32, z: f32) -> f32 {
+    let Some(m) = at(marks, x, z, FLOOR_BAND_M) else {
+        return 0.0;
+    };
+    let (lx, lz) = to_local(m, x, z);
+    let band = FLOOR_BAND_M * (0.25 + 0.75 * edge_noise(m.yaw as u64, x, z));
+    let mut best = 0.0f32;
+    for part in parts(m.kind) {
+        if !is_floor(part) {
+            continue;
+        }
+        let b = part.b;
+        let dx = (b[0] - lx).max(lx - b[3]).max(0.0);
+        let dz = (b[2] - lz).max(lz - b[5]).max(0.0);
+        let d2 = dx * dx + dz * dz;
+        if d2 >= band * band {
+            continue;
+        }
+        let t = 1.0 - d2.sqrt() / band;
+        best = best.max(t * t * (3.0 - 2.0 * t));
+    }
+    best
+}
+
+/// Smooth value noise in [0, 1] on a [`FLOOR_EDGE_CELL_M`] world lattice.
+fn edge_noise(key: u64, x: f32, z: f32) -> f32 {
+    let fx = x * (1.0 / FLOOR_EDGE_CELL_M);
+    let fz = z * (1.0 / FLOOR_EDGE_CELL_M);
+    let (x0, z0) = (floor_i32(fx), floor_i32(fz));
+    let (tx, tz) = (fx - x0 as f32, fz - z0 as f32);
+    let v =
+        |i: i32, j: i32| (cell_hash(key, i, j, CH_FLOOR_EDGE) >> 40) as f32 * (1.0 / 16_777_216.0);
+    let (sx, sz) = (tx * tx * (3.0 - 2.0 * tx), tz * tz * (3.0 - 2.0 * tz));
+    let a = v(x0, z0) + (v(x0 + 1, z0) - v(x0, z0)) * sx;
+    let b = v(x0, z0 + 1) + (v(x0 + 1, z0 + 1) - v(x0, z0 + 1)) * sx;
+    a + (b - a) * sz
 }
 
 /// The landmark whose disc (padded by `pad`) holds (`x`, `z`), if any. Cells

@@ -40,6 +40,11 @@ pub const DEPOT_SAFETY_TINT: [f32; 3] = [1.0, 0.76, 0.28];
 /// Raster depth bias, not a physical displacement. The yard remains exactly
 /// at the sim datum and painted trim stays on the collision envelope.
 pub const DEPOT_SURFACE_DEPTH_BIAS: f32 = 1.0;
+/// The turf photograph's repeat on a dressed site's weeds: fine, because a
+/// blade is a few centimetres across.
+pub const LEAF_TILES_PER_M: f32 = 2.0;
+/// The ivy's card: the broadleaf trees' own sprig.
+const IVY_CARD: &str = "textures/leaf_card_albedo.png";
 /// Dedicated raster bias for the coplanar yard/terrain draw. Bevy forwards
 /// this integer to wgpu's constant depth bias; positive draws toward camera.
 /// Biases 1 and 16 left stripes across independently transformed meshes.
@@ -73,9 +78,15 @@ pub enum Surface {
     /// Dressed masonry — the landmarks' Blender blocks (`ci/site_kit.py`):
     /// the building tier's jointless stone, because the joints are geometry.
     Ashlar,
+    /// Weeds on the dressed sites: the turf's own photograph, the green
+    /// riding the vertex colour.
+    Leaf,
+    /// Ivy on the dressed sites' walls: the trees' leaf card, cut out on its
+    /// alpha, each quad a sprig.
+    Ivy,
 }
 
-pub const SURFACES: [Surface; 15] = [
+pub const SURFACES: [Surface; 17] = [
     Surface::Yard,
     Surface::Concrete,
     Surface::Sheet,
@@ -91,6 +102,8 @@ pub const SURFACES: [Surface; 15] = [
     Surface::Lapis,
     Surface::Bulb,
     Surface::Ashlar,
+    Surface::Leaf,
+    Surface::Ivy,
 ];
 
 impl Surface {
@@ -103,6 +116,9 @@ impl Surface {
             Self::Timber => super::structures::tier(sim_core::build::MAT_WOOD).tiles_per_m,
             Self::Stone | Self::Obsidian => 1.0 / DEPOT_CONCRETE_TILE_M,
             Self::Ashlar => super::structures::tier(sim_core::build::MAT_STONE).tiles_per_m,
+            Self::Leaf => LEAF_TILES_PER_M,
+            // A card's UVs span it once (`ci/site_kit.py` `uv_metres`).
+            Self::Ivy => 1.0,
             _ => DEPOT_SHEET_TILES_PER_M,
         }
     }
@@ -114,6 +130,7 @@ impl Surface {
             Self::Timber => "wood",
             Self::Stone | Self::Obsidian => "stone",
             Self::Ashlar => "ashlar",
+            Self::Leaf | Self::Ivy => "grass",
             _ => "metal",
         }
     }
@@ -134,6 +151,9 @@ impl Surface {
             "bulb" => Self::Bulb,
             "stone" => Self::Stone,
             "ashlar" => Self::Ashlar,
+            "leaf" => Self::Leaf,
+            "ivy" => Self::Ivy,
+            "paint" => Self::Paint,
             _ => return None,
         })
     }
@@ -154,6 +174,15 @@ pub(super) fn kit() -> [Soup; SURFACES.len()] {
 /// The source's linear greyscale roughness occupies G; B cannot introduce
 /// metal because StandardMaterial multiplies it by the explicit zero below.
 pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMaterial {
+    if surface == Surface::Ivy {
+        return StandardMaterial {
+            base_color_texture: Some(server.load(IVY_CARD)),
+            alpha_mode: AlphaMode::Mask(0.5),
+            perceptual_roughness: 0.85,
+            reflectance: super::fresnel::DIELECTRIC,
+            ..default()
+        };
+    }
     let maps = MapSet::load(server, surface.role());
     // THE GATE's surfaces: the same photographed maps, with the three things
     // a map cannot say — how dark the ancient stone is, that gilt is a

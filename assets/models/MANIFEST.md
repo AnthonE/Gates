@@ -865,16 +865,23 @@ door can stand aside (`render/ziggurat.rs`).
 then `ci/site_kit.py gen --kit ci/kits/mark_<slug>.json --out
 assets/models/site/mark_<slug>.glb --seed 1 --label ""`. Coursed masonry on
 the jointless `ashlar` maps (each block its own patch), a lattice mast, a log
-cabin, ribbed containers. `ci/site_kit.py look <glb> --out <png>` renders one
-on turf in the game's surfaces. The rock kinds stay `render/boulders.rs`'s.
+cabin, ribbed containers; a fenced relay compound; a quarry's worked faces,
+derrick, hopper, conveyor and loader; the keep's flags, spoil, fallen beams,
+lean-to and ivy (the trees' own leaf card, cut out, a sprig a quad).
+`ci/site_kit.py look <glb> --out <png>` renders one on turf in the game's
+surfaces (`--kit` stands grey boxes in for the rock parts, `--eye`/`--target`
+put the camera where a player stands). The rock kinds, and the quarry's rock,
+stay `render/boulders.rs`'s.
 
 | file | kind | tris |
 |---|---|---|
-| `site/mark_ruin.glb` | Old Keep | 23,614 |
-| `site/mark_stones.glb` | Standing Stones | 6,384 |
-| `site/mark_mast.glb` | Radio Mast | 3,668 |
+| `site/mark_ruin.glb` | Old Keep | 38,927 |
+| `site/mark_stones.glb` | Standing Stones | 10,921 |
+| `site/mark_mast.glb` | Radio Mast | 4,567 |
 | `site/mark_tower.glb` | Watchtower | 5,448 |
-| `site/mark_yard.glb` | Container Yard | 4,037 |
+| `site/mark_yard.glb` | Container Yard | 6,831 |
+| `site/mark_relay.glb` | Relay Station | 17,955 |
+| `site/mark_quarry.glb` | Stone Quarry | 27,075 |
 
 ## `ci/prop_kit.py` — props modelled in Blender
 

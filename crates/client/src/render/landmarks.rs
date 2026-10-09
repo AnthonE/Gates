@@ -42,6 +42,37 @@ pub struct LandmarkRocks;
 #[derive(Component)]
 pub struct LandmarkFallback(pub LandmarkKind);
 
+/// A landmark floodlight's lamp, dark by day (`town::lamps`' rule).
+#[derive(Component)]
+pub struct LandmarkLamp;
+
+/// A floodlight throws more than a street lamp, and further. **(knob)**
+const FLOOD_LUMENS: f32 = 7000.0;
+const FLOOD_RANGE_M: f32 = 26.0;
+
+/// The landmarks' bulbs, so the night can turn them up and the day down.
+#[derive(Resource, Default)]
+pub struct LandmarkGlow {
+    bulbs: Vec<Handle<StandardMaterial>>,
+    /// The night weight last written, so a still dusk costs nothing.
+    at: Option<f32>,
+}
+
+/// The lamp heads of a landmark's floodlight poles, in its own frame: a
+/// thin steel post standing from the ground to a lamp's height.
+pub fn lamp_heads(kind: LandmarkKind) -> impl Iterator<Item = Vec3> {
+    landmark::parts(kind).iter().filter_map(|p| {
+        let b = p.b;
+        let (dx, dy, dz) = (b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+        (p.mat == Mat::Steel
+            && dx <= 0.35
+            && dz <= 0.35
+            && (5.0..10.0).contains(&dy)
+            && b[1] <= 0.5)
+            .then(|| Vec3::new((b[0] + b[3]) * 0.5, b[4] - 0.25, (b[2] + b[5]) * 0.5))
+    })
+}
+
 /// The dressings still loading, and the surfaces they wear (one material
 /// per surface, shared by every kind).
 #[derive(Resource)]
@@ -62,6 +93,7 @@ fn surface(mat: Mat) -> (Surface, [f32; 3]) {
         Mat::Steel => (Surface::Steel, depot::DEPOT_STEEL_TINT),
         Mat::Timber => (Surface::Timber, [1.0; 3]),
         Mat::Cargo => (Surface::Cargo, [1.0; 3]),
+        Mat::Gravel => (Surface::Yard, depot::DEPOT_YARD_TINT),
     }
 }
 
@@ -177,7 +209,22 @@ pub fn spawn(
             if dressed && !pending.iter().any(|(k, _)| *k == m.kind) {
                 pending.push((m.kind, server.load(model_path(m.kind))));
             }
+            for head in lamp_heads(m.kind) {
+                commands.spawn((
+                    ChildOf(root),
+                    LandmarkLamp,
+                    PointLight {
+                        color: super::town::LAMP_COLOR,
+                        intensity: 0.0,
+                        range: FLOOD_RANGE_M,
+                        shadows_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_translation(t.transform_point(head)),
+                ));
+            }
         }
+        commands.insert_resource(LandmarkGlow::default());
         commands.insert_resource(LandmarkModels {
             pending,
             mats: vec![None; SURFACES.len()],
@@ -219,6 +266,7 @@ pub fn dress(
     gmeshes: Res<Assets<bevy::gltf::GltfMesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut weathered: ResMut<Assets<MonumentMaterial>>,
+    mut glow: Option<ResMut<LandmarkGlow>>,
     root: Query<Entity, With<LandmarkVisual>>,
     fallback: Query<(Entity, &LandmarkFallback)>,
 ) {
@@ -267,12 +315,18 @@ pub fn dress(
             let t = transform(m);
             for (surface, mesh) in &parts {
                 let mat = mats[*surface as usize].get_or_insert_with(|| {
-                    weathering::dress(
+                    let d = weathering::dress(
                         *surface,
                         dressed_material(*surface, &server),
                         &mut materials,
                         &mut weathered,
-                    )
+                    );
+                    if let (Surface::Bulb, Some(h), Some(g)) = (*surface, d.plain(), glow.as_mut())
+                    {
+                        g.bulbs.push(h.clone());
+                        g.at = None;
+                    }
+                    d
                 });
                 mat.insert(&mut commands.spawn((ChildOf(root), Mesh3d(mesh.clone()), t)));
             }
@@ -285,4 +339,46 @@ pub fn dress(
         info!("landmarks: {} dressed", model_path(*kind));
         false
     });
+}
+
+/// Floodlights and bulbs follow the dark, as the town's lamps do, opened by
+/// the night eye's gain as a flame is.
+pub fn lamps(
+    feed: Res<super::feed::Feed>,
+    pin: Res<super::rig::DayPin>,
+    gain: Res<super::rig::FlameGain>,
+    glow: Option<ResMut<LandmarkGlow>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<&mut PointLight, With<LandmarkLamp>>,
+) {
+    let Some(mut glow) = glow else { return };
+    let tick = pin.day_tick(feed.server_tick_est, &feed.env);
+    let w = super::town::night_weight(sim_core::world::day_frac(tick)) * gain.0;
+    if glow.at.is_some_and(|a| (a - w).abs() < 0.01 * w.max(1.0)) {
+        return;
+    }
+    glow.at = Some(w);
+    for mut l in q.iter_mut() {
+        l.intensity = FLOOD_LUMENS * w;
+    }
+    for h in &glow.bulbs {
+        if let Some(m) = materials.get_mut(h) {
+            m.emissive = super::town::BULB_GLOW * w;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relay and the quarry each light their floodlights; nothing else
+    /// a landmark stands up is taken for a lamp post.
+    #[test]
+    fn floodlight_heads_are_found() {
+        assert_eq!(lamp_heads(LandmarkKind::Relay).count(), 2);
+        assert_eq!(lamp_heads(LandmarkKind::Quarry).count(), 1);
+        assert_eq!(lamp_heads(LandmarkKind::Mast).count(), 0);
+        assert_eq!(lamp_heads(LandmarkKind::Yard).count(), 0);
+    }
 }

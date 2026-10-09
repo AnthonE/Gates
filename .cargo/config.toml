@@ -1,7 +1,8 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 90 kB — fixed-capacity by design (wall 4), and
-# (89 kB until the key lock, the stag and the vessel grew their tables;
+# `World` is 91 kB — fixed-capacity by design (wall 4), and
+# (90 kB until the ring's power poles put a side per bearing on `Haven`;
+# 89 kB until the key lock, the stag and the vessel grew their tables;
 # 88 kB until the speakers, stones and locks put the lore on the world;
 # 87 kB until the arc put the works table on the world;
 # 85 kB until fire arrows put their fires on the world;

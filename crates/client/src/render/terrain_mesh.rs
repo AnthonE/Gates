@@ -397,6 +397,22 @@ pub const CHUNK_BUILDS_PER_FRAME: usize = 1;
 /// build on the frame, not to pay twenty-five uploads on one instead.
 pub const CHUNK_LANDS_PER_FRAME: usize = 1;
 
+/// How far a landmark's floor wears the ground under it toward
+/// [`FLOOR_GROUND`]: most of the way, the wild ground's mix still showing.
+const FLOOR_WEAR: f32 = 0.8;
+/// Worked ground, as a splat (sand · grass · litter · rock): trodden dirt —
+/// the road's sand half buried in litter, a little grass left in it.
+const FLOOR_GROUND: [f32; 4] = [105.0, 30.0, 120.0, 0.0];
+
+/// Wear a splat `t` of the way toward [`FLOOR_GROUND`]. Both sum to 255, so
+/// the blend does too, to rounding.
+fn floor_wear(w: [u8; 4], t: f32) -> [u8; 4] {
+    std::array::from_fn(|i| {
+        let v = w[i] as f32 + (FLOOR_GROUND[i] - w[i] as f32) * t;
+        v.round().clamp(0.0, 255.0) as u8
+    })
+}
+
 /// The four ground identities' albedo, LINEAR, in the order `terrain::splat`
 /// returns them: sand · grass · forest litter · rock.
 ///
@@ -1361,6 +1377,14 @@ pub fn heightfield(
             } else {
                 [0.0; 2]
             };
+            // A landmark's floor wears the ground round it the way a road
+            // does, so a slab or a quarry's gravel that the slope half buries
+            // still stands on worked ground and not on lawn. Floors are a
+            // dozen metres and more, so every mesh can draw one.
+            let floor = sim_core::landmark::floor_sweep(&haven.marks, x, z);
+            if floor > 0.0 {
+                w = floor_wear(w, floor * FLOOR_WEAR);
+            }
             roads.push(coverage);
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts
