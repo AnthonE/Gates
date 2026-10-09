@@ -468,8 +468,17 @@ pub fn setup(
                 // protected.) Positions are `resolve_marks`'s fractions —
                 // the same `world_to_map` the player goes through, so the
                 // two cannot disagree about the projection.
-                for m in marks.a[..marks.count].iter().rev() {
-                    spawn_mark(frame, m, icons);
+                // Names that would print over a higher-ranked one are left
+                // off (`clear_labels`); the badge still says what it is.
+                let named = map::clear_labels(
+                    &marks.a[..marks.count],
+                    MAP_DRAW_PX,
+                    MAP_MARK_PX,
+                    SITE_LABEL_PX,
+                    SITE_LABEL_W,
+                );
+                for (i, m) in marks.a[..marks.count].iter().enumerate().rev() {
+                    spawn_mark_named(frame, m, icons, named[i]);
                 }
 
                 // The player. `world_to_map` with size 1 gives a fraction, so
@@ -652,6 +661,17 @@ pub fn spawn_mark(
     m: &map::Mark,
     icons: Option<&super::icons::Icons>,
 ) {
+    spawn_mark_named(frame, m, icons, true);
+}
+
+/// [`spawn_mark`], with its name left off when `named` is false (it would
+/// print over a higher-ranked one, `map::clear_labels`).
+pub fn spawn_mark_named(
+    frame: &mut ChildSpawnerCommands,
+    m: &map::Mark,
+    icons: Option<&super::icons::Icons>,
+    named: bool,
+) {
     let f = m.kind.fill();
     let fill = Color::srgb(f[0] / 255.0, f[1] / 255.0, f[2] / 255.0);
     let px = match m.kind {
@@ -751,7 +771,7 @@ pub fn spawn_mark(
     // centred row is what puts it under the badge's own axis: a text node
     // sized to its own string would hang off the right of the marker and the
     // two tiers' labels would not line up with each other.
-    if let Some(name) = m.label.as_str().or(m.name).or_else(|| m.kind.site_label()) {
+    if let Some(name) = m.label_text().filter(|_| named) {
         e.with_children(|badge| {
             badge
                 .spawn(Node {

@@ -751,6 +751,71 @@ pub struct Mark {
     pub label: MarkLabel,
 }
 
+impl Mark {
+    /// The name drawn under the badge, if this mark carries one: a work's
+    /// wire name, a landmark's own, or the kind's site word.
+    pub fn label_text(&self) -> Option<&str> {
+        self.label
+            .as_str()
+            .or(self.name)
+            .or_else(|| self.kind.site_label())
+    }
+}
+
+/// Which of `marks` keep their name on a map drawn `map_px` square, with
+/// names `label_px` high in a row `label_w` wide hung `badge_px / 2` under
+/// each badge. Walked in resolve order — the rank the cap protects — so when
+/// two names would print over each other the higher-ranked one keeps its
+/// name and the other is left a bare badge. Widths are estimated (half the
+/// type size a character, the condensed face's), which is what a check
+/// before layout can know.
+pub fn clear_labels(
+    marks: &[Mark],
+    map_px: f32,
+    badge_px: f32,
+    label_px: f32,
+    label_w: f32,
+) -> [bool; MAP_MARKS_MAX] {
+    let mut keep = [false; MAP_MARKS_MAX];
+    let mut placed: [(f32, f32, f32, f32); MAP_MARKS_MAX] = [(0.0, 0.0, 0.0, 0.0); MAP_MARKS_MAX];
+    let mut n = 0;
+    // Two passes: every named place first, then the scenery landmarks — a
+    // work's name or THE GATE beats an Old Keep that happens to sit beside
+    // it, whatever their rank under the cap.
+    let order = marks
+        .iter()
+        .enumerate()
+        .take(MAP_MARKS_MAX)
+        .filter(|(_, m)| m.kind != MarkKind::Landmark)
+        .chain(
+            marks
+                .iter()
+                .enumerate()
+                .take(MAP_MARKS_MAX)
+                .filter(|(_, m)| m.kind == MarkKind::Landmark),
+        );
+    for (i, m) in order {
+        let Some(text) = m.label_text() else {
+            continue;
+        };
+        let raw_w = text.chars().count() as f32 * label_px * 0.5;
+        let lines = (raw_w / label_w).ceil().max(1.0);
+        let w = raw_w.min(label_w);
+        let h = lines * label_px * 1.25;
+        let (cx, top) = (m.px * map_px, m.py * map_px + badge_px * 0.5);
+        let r = (cx - w * 0.5, top, cx + w * 0.5, top + h);
+        let hits = placed[..n]
+            .iter()
+            .any(|q| r.0 < q.2 && q.0 < r.2 && r.1 < q.3 && q.1 < r.3);
+        if !hits {
+            keep[i] = true;
+            placed[n] = r;
+            n += 1;
+        }
+    }
+    keep
+}
+
 /// A short name carried by value, so a [`Mark`] stays `Copy` and [`Marks`]
 /// stays fixed storage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1083,6 +1148,33 @@ mod tests {
         // Another island, no marks.
         p.for_seed(8);
         assert!(p.marks().is_empty());
+    }
+
+    #[test]
+    fn two_names_never_print_over_each_other() {
+        let at = |px, py, name| Mark {
+            kind: MarkKind::Landmark,
+            px,
+            py,
+            name: Some(name),
+            label: MarkLabel::default(),
+        };
+        let marks = [
+            at(0.50, 0.50, "THE GATE"),
+            at(0.505, 0.505, "Old Keep"),
+            at(0.80, 0.20, "Arch Rock"),
+        ];
+        let keep = clear_labels(&marks, 640.0, 18.0, 10.0, 84.0);
+        assert_eq!(
+            &keep[..3],
+            &[true, false, true],
+            "the second sits on the first"
+        );
+        // A named work beats a landmark beside it, even ranked after it.
+        let mut work = at(0.505, 0.505, "THE WELLS");
+        work.kind = MarkKind::Work;
+        let keep = clear_labels(&[at(0.50, 0.50, "Old Keep"), work], 640.0, 18.0, 10.0, 84.0);
+        assert_eq!(&keep[..2], &[false, true]);
     }
 
     #[test]

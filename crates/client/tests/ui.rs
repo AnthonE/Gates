@@ -5338,8 +5338,8 @@ mod quick {
         let mut inv = empty();
         inv[4] = stack(WOOD, 5);
         assert_eq!(from_pack(CONT_SELF, &inv, &empty(), 4), Quick::Use(4));
-        // And off the body it does nothing rather than unequipping, which
-        // is a verb nobody has asked for and the wire has no opinion on.
+        // And off the body it takes the piece off into the first empty
+        // slot of the pack (the reference's right-click).
         assert!(matches!(
             quick_move(
                 CONT_SELF,
@@ -5351,7 +5351,7 @@ mod quick {
                 &empty(),
                 &[stack(HATCHET, 1), ItemStack::default()],
             ),
-            Quick::Refused(_)
+            Quick::Send(a) if a.from_kind == CONT_WEAR && a.to_kind == CONT_SELF && a.to_slot == 0
         ));
     }
 

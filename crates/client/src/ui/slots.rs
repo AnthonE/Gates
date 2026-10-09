@@ -545,10 +545,43 @@ pub fn quick_move(
     };
     let src = view(from_kind).get(from_slot).copied().unwrap_or_default();
 
-    // Nothing open: the old gesture, and only out of the pack. A
-    // right-click on a worn piece with no container open stays inert
-    // rather than becoming an unequip nobody asked for.
+    // Nothing open: the old gesture out of the pack — except clothing,
+    // which a right-click puts on (the reference's rule), into the slot its
+    // row names; and a right-click on a worn piece takes it off into the
+    // first empty slot of the pack.
     if !looting(cont_kind) {
+        let wear = catalog.wear_slot(src.item as usize) as usize;
+        if from_kind == CONT_SELF && src.count > 0 && wear > 0 && wear <= WEAR_SLOTS {
+            return move_args(
+                0,
+                CONT_SELF,
+                from_slot,
+                CONT_WEAR,
+                wear - 1,
+                Grab::All,
+                inv,
+                cont,
+                worn,
+            )
+            .map_or(Quick::Refused("that cannot be worn there"), Quick::Send);
+        }
+        if from_kind == CONT_WEAR && src.count > 0 {
+            let Some(to) = (0..INV_SLOTS).find(|&s| inv[s].count == 0) else {
+                return Quick::Refused("no room in your inventory to take that off");
+            };
+            return move_args(
+                0,
+                CONT_WEAR,
+                from_slot,
+                CONT_SELF,
+                to,
+                Grab::All,
+                inv,
+                cont,
+                worn,
+            )
+            .map_or(Quick::Refused("that cannot be taken off"), Quick::Send);
+        }
         return if from_kind == CONT_SELF {
             Quick::Use(from_slot)
         } else {
