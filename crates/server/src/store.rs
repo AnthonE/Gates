@@ -167,7 +167,9 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// skinned tool you log in holding.
 /// **8** — the glyph mask (`sim_core::lore`): eight bytes after the crawl's
 /// clocks in the scalar head, 361 → 369.
-pub const SAVE_FORMAT: u16 = 8;
+/// **9** — the magazine (reload v1): `MAX_MAGS` pairs of `u16` close the
+/// record, 369 → 401. A loaded cylinder you log off with is still loaded.
+pub const SAVE_FORMAT: u16 = 9;
 
 /// Header bytes 32..40: the content layout hash. Spent out of the header's
 /// zero padding, so a file written before it reads 0 there and is checked
@@ -1021,7 +1023,8 @@ mod tests {
         // (wounded v0). 361 → 433 at SAVE_FORMAT 7: a skin on every slot
         // and craft job (skins v0), +72.
         // 433 → 441 at SAVE_FORMAT 8: the glyph mask (`sim_core::lore`).
-        assert_eq!(SAVE_RECORD_BYTES, 441);
+        // 441 → 473 at SAVE_FORMAT 9: the magazine (reload v1).
+        assert_eq!(SAVE_RECORD_BYTES, 473);
         let head = encode_header(7, 0xdead_beef, 0xfeed);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

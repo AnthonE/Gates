@@ -91,3 +91,22 @@ fn no_shipped_species_is_a_ghost() {
         );
     }
 }
+
+/// `NOW.md` §0pr item 4: a wolf you can hear growl has already seen you.
+///
+/// The growl's radius is also the howl→growl switch (`sound::voice::switch_m`),
+/// and it was set inside the wolf's smallest notice radius by hand. The two
+/// numbers live in different crates with `content/mobs.toml` between them, so
+/// read both: a `spook_m`/`night_spook_m` edit below the growl now reddens here.
+#[test]
+fn a_growl_is_never_heard_before_the_wolf_notices() {
+    let def = mobs().def(MOB_WOLF);
+    let narrowest_m = def.spook_cm.min(def.night_spook_cm) as f32 * 0.01;
+    let growl_m = sound::voice::switch_m();
+    assert!(
+        growl_m < narrowest_m,
+        "the wolf growls out to {growl_m} m but notices only inside {narrowest_m} m \
+         (content/mobs.toml `spook_m`/`night_spook_m`, sound CUES' growl row) — \
+         a player would hear a threat from an animal that has not seen them"
+    );
+}

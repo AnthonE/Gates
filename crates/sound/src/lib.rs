@@ -871,11 +871,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // is no third "switch distance" knob to drift.
     //
     // 14 m sits inside the wolf's *smallest* notice radius (15 m, at night),
-    // so in practice a wolf you can hear growl has already seen you. ⚠ **That
-    // relationship is a design intent and nothing enforces it** — the client
-    // has no mob-def lane on the wire and no dependency on the `content`
-    // crate, so the two numbers live in different worlds and a `mobs.toml`
-    // edit will not redden anything here. `NOW.md` §0pr carries the owed gate.
+    // so in practice a wolf you can hear growl has already seen you. The two
+    // numbers live in different crates (no mob-def lane on the wire), so
+    // `client/tests/mob_volume.rs` reads both and a `mobs.toml` edit below
+    // this row reddens it.
     // Priority 5: above the impacts, below the hitmarker — a growl at this
     // range is information a player's life turns on.
     row(GAME, 14.0, 0.65, 200, 5, true),   // growl

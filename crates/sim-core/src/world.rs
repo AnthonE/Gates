@@ -4065,17 +4065,12 @@ impl World {
                     assist_ticks: 0,
                     frame: InputFrame::default(),
                     next_swing: 0,
-                    // Not from the save, and for `next_swing`'s reason one
-                    // line up rather than a new one: `PlayerSave` is the
-                    // store's record of a body that has LEFT the world, and
-                    // reload v1 did not widen it. A player who reconnects
-                    // to a sleeper still standing in the world keeps their
-                    // rounds — that body was never serialized through here
-                    // — and one whose record came back off disk finds the
-                    // cylinder empty and presses reload. Stated rather than
-                    // silent; `NOW.md` §0mag carries the remainder.
-                    mag: [0; MAX_MAGS],
-                    mag_round: [NO_ITEM; MAX_MAGS],
+                    // From the save (store format 9): the rounds were
+                    // debited from the pack at the reload, so a record
+                    // that forgot them would make logging off a way to
+                    // lose a loaded cylinder.
+                    mag: s.mag,
+                    mag_round: s.mag_round,
                     // Dry and warm: the store's record is a body that left
                     // the world, and it comes back the way a body wakes.
                     wet: 0,

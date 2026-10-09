@@ -150,8 +150,6 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0mag · Reload v1 — what the magazine still cannot do *(systems+client lane)*
 
-1. A reconnect off `PlayerSave` finds the cylinder empty: the store's per-player record
-   lacks the magazine the world save carries — a format bump in `server/src/store.rs`.
 2. No unload, no ammo switch (the reference refunds a partial magazine and adopts the
    new round at `StartReload`; ours refuses, `REFUSE_RL_DRY`). Both need `reload` to
    see a stack ceiling: `GatherContent` reaching a `CombatContent` caller.
@@ -343,8 +341,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 ## 0pr · What predator v0 still owes *(systems lane)*
 
 3. No night-only roster variant; the night's cost so far is the cold (`exposure.rs`).
-4. No gate keeps the growl's 14 m (`CUES`' growl row, `crates/sound/src/lib.rs`) inside the wolf's
-   15 m night notice radius; a `mobs.toml` edit reddens nothing.
 
 ## 0m · The pig is in — what the roster still owes *(systems lane)*
 
@@ -677,7 +673,6 @@ act):
 
 ## 0dur · Durability: the words, the wearers, the bench *(client lane)*
 
-1. The detail pane says nothing in words: `render/panels/craft.rs::build_detail` never reads `cond`.
 2. Weapons and armour don't wear (`condition_loss` only in `content/gatherables.toml` and `mobs.toml`'s `[butcher]`; no `sim-core/src/armor.rs`):
    a research row first (`reference/DURABILITY.md` §5); on-swing wear is `DECISIONS.md` §open "tools as weapons".
 3. Repair is re-craft in v1 (Q3). A repair bench is `Station::Workbench1..3` (`content/src/schema.rs`) + a blueprint
