@@ -986,6 +986,18 @@ impl DeploySet {
         }
     }
 
+    /// Apply a planter's beds (crops v1, `EventMsg::Planter`) to its
+    /// record. An address never heard of waits for the deploy walk, which
+    /// carries the same byte.
+    fn set_grow(&mut self, cx: u16, cz: u16, level: u8, loc: u8, stages: u8) {
+        if let Some(r) = self.recs[..self.len]
+            .iter_mut()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+        {
+            r.grow = stages;
+        }
+    }
+
     /// Apply a door announcement to the mirrored record; returns the
     /// record as it now stands, or None when this client has never heard
     /// of that address (the deploy walk will bring it, carrying state).
@@ -3172,6 +3184,16 @@ impl ClientCore {
                 // say about someone else's fire is a UI question, and the
                 // core's job is the fact.
                 self.ovens.set(cx, cz, level, loc, lit);
+                flags |= APPLIED_DEPLOYS;
+            }
+            EventMsg::Planter {
+                cx,
+                cz,
+                level,
+                loc,
+                stages,
+            } => {
+                self.deploys.set_grow(cx, cz, level, loc, stages);
                 flags |= APPLIED_DEPLOYS;
             }
             EventMsg::Vitals {

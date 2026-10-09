@@ -61,7 +61,7 @@ use sim_core::world::{
     EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_WORK};
+use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK};
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
 ///
@@ -3213,6 +3213,38 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_GROW => {
+                    // A planter's beds (crops v1): broadcast, `EV_OVEN`'s
+                    // posture. A client that misses one reads the byte off
+                    // the deploy walk on its resync.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let level = (ev.b >> 16) as u8;
+                    let loc = (ev.b >> 8) as u8;
+                    let stages = ev.b as u8;
+                    match protocol::encode_event_planter(
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        stages,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_SHOT => {
                     // Broadcast **to the interest set**, `EV_SWING`'s
                     // posture and — after this was checked rather than
@@ -4691,6 +4723,16 @@ impl ShardCore {
             for (dst, src) in wire.iter_mut().zip(&deploys[at..][..n]) {
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
+                // A planter's beds (crops v1), off the oven row's mirror.
+                dst.grow = self
+                    .world
+                    .deploys
+                    .oven_index(sim_core::deploy::box_key(
+                        src.cx, src.cz, src.level, src.loc,
+                    ))
+                    .map(|i| self.world.deploys.oven_states()[i])
+                    .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
+                    .map_or(0, |o| o.bank as u8);
             }
             let batch = &wire[..n];
             match encode_event_deploy_sync(c.deploy_sync_reset, batch, &mut self.ev_buf) {

@@ -180,6 +180,10 @@ fn main() {
     let (slot, target) = goldens::action_treat();
     let len = protocol::encode_action_treat(slot, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[152], &buf[..len]);
+    // A planter's beds (v100).
+    let (cx, cz, level, loc, stages) = goldens::event_planter();
+    let len = protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[153], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

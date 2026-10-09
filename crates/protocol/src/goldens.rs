@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 153] = [
+pub const FIXTURES: [&str; 154] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -273,6 +273,8 @@ pub const FIXTURES: [&str; 153] = [
     "event_worn.bin",
     // A syringe on a downed body (v99).
     "action_treat.bin",
+    // A planter's beds (v100).
+    "event_planter.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1528,6 +1530,7 @@ pub fn event_deploy_placed() -> DeployRec {
         open: true,
         locked: true,
         has_lock: true,
+        grow: 0b11_00_10_01,
         ..DeployRec::default()
     }
 }
@@ -1570,6 +1573,7 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
         if !sim_core::deploy::is_edge_loc(rec.loc) {
             rec.pose = pose;
         }
+        rec.grow = rng.next_bounded(256) as u8;
         rec
     });
     (true, recs)
@@ -2088,6 +2092,12 @@ pub fn event_charge_placed_deploy() -> (bool, u16, u16, u8, u8, u8, u16) {
 /// `(cx, cz, level, lit, by)`.
 /// The slot (wire v89) is 5, distinct from the level beside it so a swap
 /// of the two shows.
+/// A planter's beds (v100): every bed a different stage, so a byte read
+/// reversed or shifted cannot match.
+pub fn event_planter() -> (u16, u16, u8, u8, u8) {
+    (71, 905, 2, 6, 0b10_01_11_00)
+}
+
 pub fn event_oven_lit() -> (u16, u16, u8, u8, bool, u32) {
     (64, 900, 3, 5, true, 0x0000_1F07)
 }

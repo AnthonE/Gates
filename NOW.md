@@ -292,8 +292,10 @@ Routing candidates are not shipped roads (`findings/road-network-prototype-20260
 ## 5 · Gameplay still missing, in rough order of what a player notices
 
 Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTILES.md` §9).
-7. Crops v0 grow on a clock alone (the planter box, `content/cooking.toml`): no water,
-   light or genes, and nothing draws a growing plant — the planter is a plain box.
+7. Crops v1 (wire v100): a planter grows by daylight under open sky and on a carried
+   waterskin (`content/cooking.toml` `[planter]`), and each bed draws a cone by stage
+   (`render/structures.rs` `PlanterBed`). Left: genes, a real plant and planter model,
+   and water storage beyond a hand-carried skin.
 
 ## 0pvp · What a fight still cannot do *(systems lane)*
 

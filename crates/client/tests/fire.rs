@@ -170,6 +170,7 @@ fn a_burnable_deployable_spawns_with_a_light_and_a_box_does_not() {
         has_lock: false,
         locked: false,
         dmg: 0,
+        grow: 0,
     };
 
     let spawn = |app: &mut App, arch: u8, cx: u16| -> Entity {

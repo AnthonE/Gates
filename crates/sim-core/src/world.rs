@@ -867,7 +867,13 @@ pub const EV_ARC_DID: u8 = 57;
 /// **Broadcast**: a lock opening is heard across the island.
 pub const EV_MECH_SOLVED: u8 = 58;
 
-pub const EV_MAX: u8 = EV_MECH_SOLVED;
+/// EV_GROW: a = build cell key, b = level << 16 | loc << 8 | stages, c = 0.
+/// A planter's beds changed how they are drawn (crops v1): two bits a bed,
+/// `oven::planter_stages`. **Broadcast**, `EV_OVEN`'s posture: a crop in a
+/// planter is visible from outside the base it is in.
+pub const EV_GROW: u8 = 59;
+
+pub const EV_MAX: u8 = EV_GROW;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

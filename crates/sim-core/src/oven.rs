@@ -95,7 +95,7 @@ use core::ops::Range;
 use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_PLANTER, ARCH_RECYCLER};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
-use crate::world::{EventQueue, EV_OVEN};
+use crate::world::{EventQueue, EV_GROW, EV_OVEN};
 
 /// What an item is to a converter: which of its sections take it. Bits,
 /// because one item can be two things — cooked meat is what a fire makes
@@ -552,6 +552,29 @@ fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16) -> bo
 /// (research table v1): a running research is "lit" on the wire, so the
 /// client's lit set and the one event it already decodes carry the table's
 /// state with nothing new to learn.
+/// A planter's beds as they are drawn: two bits a bed, bed 0 lowest. 0 is
+/// an empty bed (or one holding nothing that grows), 1 a sprout, 2 half
+/// grown, 3 nearly ripe — thirds of the row's `ticks`.
+pub fn planter_stages(
+    cc: &CookContent,
+    items: &[ItemStack; BOX_SLOTS],
+    cook: &[u16; BOX_SLOTS],
+) -> u8 {
+    let mut out = 0u8;
+    for (k, s) in PLANTER_LAYOUT.input_slots().enumerate() {
+        let st = items[s];
+        let Some(row) = cc.row_for(ARCH_PLANTER, st.item) else {
+            continue;
+        };
+        if st.count == 0 || row.ticks == 0 {
+            continue;
+        }
+        let third = (cook[s] as u32 * 3 / row.ticks).min(2) as u8;
+        out |= (1 + third) << (2 * k);
+    }
+    out
+}
+
 pub(crate) fn announce(
     cx: u16,
     cz: u16,
@@ -662,6 +685,23 @@ pub fn sweep(
             continue;
         }
         let arch = ovens[i].arch;
+        // What the beds look like, as of the last step and any hand since
+        // (crops v1): announced on a change, kept on `bank` (a planter
+        // banks no byproduct), and asked before the gates below so a seed
+        // planted at night still shows.
+        if arch == ARCH_PLANTER {
+            let st = planter_stages(cc, &boxes[i].items, &ovens[i].cook);
+            if u16::from(st) != ovens[i].bank {
+                ovens[i].bank = u16::from(st);
+                let b = boxes[i];
+                events.push(
+                    EV_GROW,
+                    crate::gather::cell_key(b.cx, b.cz),
+                    ((b.level as u32) << 16) | ((b.loc as u32) << 8) | st as u32,
+                    0,
+                );
+            }
+        }
         let step = period as u16;
         // The fire's sections (`layout`); the whole box for the rest.
         let (fuel, input, out) = (fuel_slots(arch), input_slots(arch), output_slots(arch));

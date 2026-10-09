@@ -857,6 +857,11 @@ pub struct DeployRec {
     /// deliberately does not maintain this and why it is absent from
     /// `state_hash`. Read it on a client, never on a shard.
     pub dmg: u8,
+    /// A planter's beds as they are drawn (crops v1, wire v100): two bits a
+    /// bed, `oven::planter_stages`. Wire-only and filled at encode, `dmg`'s
+    /// posture — the sim keeps it on the planter's `OvenState::bank` and
+    /// announces a change with `EV_GROW`. Zero for everything else.
+    pub grow: u8,
 }
 
 /// One of your own bags, as the death screen needs to know it: where it
@@ -2482,6 +2487,7 @@ pub fn stand_authored(
         has_lock: false,
         locked: false,
         dmg: 0,
+        grow: 0,
     };
     if !deploys.insert(rec, tick) {
         return false;
@@ -2732,6 +2738,7 @@ pub fn place_deploy(
         locked: false,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
+        grow: 0,
     };
     if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -5212,6 +5219,7 @@ mod tests {
                 has_lock: false,
                 locked: false,
                 dmg: 0,
+                grow: 0,
             },
             0,
         ));

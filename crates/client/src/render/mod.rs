@@ -1593,6 +1593,7 @@ impl Plugin for GatesRenderPlugin {
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     (
                         structures::fire_lights,
+                        structures::planter_beds,
                         // Another player's torch, under the same night eye.
                         bodies::light_flames.after(bodies::stream),
                         town::dress,
