@@ -407,8 +407,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 ## 0r · A charge cannot be stopped *(systems lane)*
 
 - Duds landed: `dud_pct = 20` on the satchel; a dud falls at the wall as a satchel to
-  pick up and plant again (`charge::dud`). Left: no defuse verb, and nothing tells the
-  planter it fizzled (the HUD clock just ends) — a toast wants an event.
+  pick up and plant again (`charge::dud`); the HUD says so when a clock ends with no
+  blast at it (`hud::FIZZLE_LINE`). Left: no defuse verb.
 
 ## 0wx · Weather and exposure — what #176 left *(systems + client lane)*
 
