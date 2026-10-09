@@ -292,6 +292,7 @@ fn blasted_from(dx: f32, dz: f32) -> World {
         fuse_ticks: 60,
         reach_cm: 200,
         blast_cm: 900,
+        dud_pct: 0,
     };
     w.combat = cc;
 

@@ -816,6 +816,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         fuse_ticks: 4,
         reach_cm: (sim_core::build::BUILD_REACH_M * 100.0) as u16,
         blast_cm: 1,
+        dud_pct: 0,
     };
     world.combat = combat;
     world.loot = LootContent::probe_fixture();

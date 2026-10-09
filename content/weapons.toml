@@ -236,6 +236,11 @@ range_m = 10
 # breaking, and the defender gets the same seconds you do.
 # Proposed default, DECISIONS.md §open ("satchel fuse v0").
 fuse_s = 10
+# The reference's satchel duds one time in five, and is relit by hand. Ours
+# falls where it was planted, to be picked up and planted again — the same
+# walk back to the wall, and no satchel lost, so the raid's cost in
+# satchels (`balance.toml` anchor 1) does not move; its time does.
+dud_pct = 20
 # Blast radius in metres — one build cell, so the hole a charge is INTENDED
 # to clear is the cell it was planted on: the wall you stuck it to, the
 # floor under that wall, and whatever shares the cell's corner.

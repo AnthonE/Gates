@@ -181,6 +181,10 @@ pub struct ThrowDef {
     /// claims a field is inert is read as *this is safe to change*, and
     /// nothing in CI compares a doc comment to a call site.
     pub blast_cm: u16,
+    /// Per cent of fuses that go out instead of blowing (the reference's
+    /// satchel duds one time in five). A dud falls where it was planted, to
+    /// be picked up and planted again (`charge::tick_fuses`). Zero never duds.
+    pub dud_pct: u8,
 }
 
 /// One item's ranged row. `damage == 0` ⇒ the item fires nothing, which is
@@ -529,6 +533,7 @@ impl CombatContent {
             fuse_ticks: 0,
             reach_cm: 0,
             blast_cm: 0,
+            dud_pct: 0,
         }; MAX_ITEM_DEFS],
         ranged: [RangedDef {
             damage: 0,
@@ -617,6 +622,7 @@ impl CombatContent {
             fuse_ticks: 4,
             reach_cm: 200,
             blast_cm: 1,
+            dud_pct: 0,
         };
         // Two armor rows, on items 4 and 5 — deliberately *above* the four
         // weapon rows, so no fixture item is both a weapon and a piece of
@@ -733,6 +739,7 @@ impl CombatContent {
                 fuse_ticks: 4,
                 reach_cm: 200,
                 blast_cm: 1,
+                dud_pct: 0,
             };
             i += 1;
         }
@@ -780,6 +787,30 @@ impl CombatContent {
     /// content decision — any `throwable` in `content/weapons.toml` is one
     /// — instead of a name the sim would have to know.
     #[inline]
+    /// The throwable a live charge was planted from, found again by the
+    /// three numbers the charge copied off it — `None` unless exactly one
+    /// row carries them, so a table swapped under a burning fuse, or two
+    /// rows alike, can never name the wrong item.
+    pub fn planted_throw(
+        &self,
+        structure: u16,
+        damage: u16,
+        blast_cm: u16,
+    ) -> Option<(u16, ThrowDef)> {
+        let mut found = None;
+        for (i, d) in self.throw.iter().enumerate() {
+            if d.fuse_ticks > 0
+                && (d.structure, d.damage, d.blast_cm) == (structure, damage, blast_cm)
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some((i as u16, *d));
+            }
+        }
+        found
+    }
+
     pub fn held_throw(&self, held: u16) -> Option<ThrowDef> {
         if held == NO_ITEM || held as usize >= MAX_ITEM_DEFS {
             return None;

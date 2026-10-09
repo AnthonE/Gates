@@ -35,8 +35,16 @@
 //! the fuse ran out **still detonates** (a bomb is not defused by its
 //! excuse disappearing), and standing on a charge is no longer free —
 //! `DEATH_BY_CHARGE` is the sixth cause and the death screen names the
-//! planter. Still not built, each its own verb: no dud chance, no
-//! defusing.
+//! planter.
+//!
+//! **A charge can dud** (`ThrowDef::dud_pct`, the reference's satchel one
+//! time in five). The fuse runs out and nothing blows: the charge falls
+//! where it was planted, a satchel on the ground to pick up and plant again
+//! — the reference's relight, paid in the same walk back to the wall. The
+//! roll is a hash of the charge, so a replay duds the same ones, and it is
+//! made when the fuse ends because the store keeps no item: the planted row
+//! is found again by its copied numbers (`CombatContent::planted_throw`).
+//! Still not built: defusing.
 
 use crate::build::{
     anchor, BuildContent, Pieces, BUILD_REACH_M, REFUSE_B_COST, REFUSE_B_FULL, REFUSE_B_PIECE,
@@ -312,6 +320,64 @@ pub fn place(
     );
 }
 
+/// Noise channel for the dud roll — its own, so a charge's roll is not a
+/// draw any other system takes off the same cell.
+const CH_DUD: u32 = 119;
+
+/// The throwable a charge that went out drops, and where — parked for
+/// `World::tick` to lay on the ground, which needs stores the fuse pass
+/// does not hold. Exactly bounded: one per live charge.
+pub struct Duds {
+    entries: [(u16, f32, f32, f32); MAX_LIVE_CHARGES],
+    len: usize,
+}
+
+impl Default for Duds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Duds {
+    pub const fn new() -> Self {
+        Self {
+            entries: [(0, 0.0, 0.0, 0.0); MAX_LIVE_CHARGES],
+            len: 0,
+        }
+    }
+
+    /// `(item, x, y, z)` per charge that went out, metres.
+    #[inline]
+    pub fn entries(&self) -> &[(u16, f32, f32, f32)] {
+        &self.entries[..self.len]
+    }
+
+    #[inline]
+    fn push(&mut self, item: u16, x: f32, y: f32, z: f32) {
+        if self.len < self.entries.len() {
+            self.entries[self.len] = (item, x, y, z);
+            self.len += 1;
+        }
+    }
+}
+
+/// The item a charge drops instead of blowing, or `None` for a blast: its
+/// row's `dud_pct` against a roll that is a pure function of the charge.
+pub fn dud(seed: u64, cc: &crate::combat::CombatContent, c: &ChargeRec) -> Option<u16> {
+    let (item, def) = cc.planted_throw(c.structure, c.damage, c.blast_cm)?;
+    if def.dud_pct == 0 {
+        return None;
+    }
+    let addr = (c.level as u64) << 8 | c.loc as u64 | (c.deploy as u64) << 16;
+    let roll = crate::rng::splitmix64(
+        crate::rng::cell_hash(seed, c.cx as i32, c.cz as i32, CH_DUD)
+            ^ c.fires_at
+            ^ (c.owner as u64) << 24
+            ^ addr << 56,
+    );
+    (roll % 100 < def.dud_pct as u64).then_some(item)
+}
+
 /// One body the blast finished, parked for `World::tick` to lay down —
 /// `mob::Bites`' split for `mob::Bites`' reason: `die` needs the whole
 /// world and this function holds only its parts.
@@ -432,6 +498,7 @@ pub fn tick_fuses(
     kills: &mut BlastKills,
     mobs: &crate::mob::Mobs,
     hit_mobs: &mut BlastMobs,
+    duds: &mut Duds,
     events: &mut EventQueue,
 ) {
     let mut i = 0;
@@ -439,6 +506,16 @@ pub fn tick_fuses(
         let c = charges.entries[i];
         if c.fires_at > tick {
             i += 1;
+            continue;
+        }
+        if let Some(item) = dud(seed, cc, &c) {
+            // Out, not blown: it falls from where it was stuck.
+            let (x, z) = epicentre(deploys, &c);
+            let y = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
+                + crate::build::level_y(c.level)
+                + 0.8;
+            duds.push(item, x, y, z);
+            charges.remove_at(i);
             continue;
         }
         detonate(

@@ -759,6 +759,8 @@ impl Content {
                     fuse_ticks,
                     reach_cm,
                     blast_cm,
+                    // `validate` bounded it to 100.
+                    dud_pct: w.dud_pct.unwrap_or(0).min(100) as u8,
                 };
                 continue;
             }

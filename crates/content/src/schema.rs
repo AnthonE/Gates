@@ -442,6 +442,9 @@ pub struct Weapon {
     /// standing in it takes, both falling off linearly to zero at this
     /// distance. That consumer does not exist; see `combat::ThrowDef`.
     pub blast_m: Option<u32>,
+    /// Per cent of fuses that go out instead of blowing — only on a
+    /// throwable, at most 100; absent is zero (`combat::ThrowDef::dud_pct`).
+    pub dud_pct: Option<u32>,
     /// Extra body damage while the item is **alight** (the reference's
     /// torch deals heat on top of its blow). Only on a melee row whose item
     /// declares `light_burn` — a bonus for burning on something that cannot

@@ -6184,6 +6184,7 @@ impl World {
         }
         let mut blast_kills = crate::charge::BlastKills::new();
         let mut blast_mobs = crate::charge::BlastMobs::new();
+        let mut duds = crate::charge::Duds::new();
         crate::charge::tick_fuses(
             seed,
             &self.haven,
@@ -6199,8 +6200,36 @@ impl World {
             &mut blast_kills,
             &self.mobs,
             &mut blast_mobs,
+            &mut duds,
             &mut self.events,
         );
+        // A charge that went out falls where it was planted, a stack of one
+        // to pick up and plant again; lost only to the deep sea.
+        if !duds.entries().is_empty() {
+            let cols = self.pieces.cols();
+            let mut occ = crate::occupy::Occupants {
+                doors: self.card_door_bits,
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            };
+            for &(item, x, y, z) in duds.entries() {
+                let Some(at) =
+                    crate::grounditem::rest_at(seed, &self.haven, cols, &mut occ, x, y, z)
+                else {
+                    continue;
+                };
+                let stack = ItemStack {
+                    item,
+                    count: 1,
+                    cond: self.gather.cond_max_of(item),
+                    skin: 0,
+                };
+                self.ground_items
+                    .drop_one(&self.backpack, at, stack, tick, [0; 3]);
+            }
+        }
         // The blast's dead, laid down after every fuse resolved — the
         // bite buffer's split, for its reason: `die` needs the whole
         // world. The hp is already zero and the events already rang
