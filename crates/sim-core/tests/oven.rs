@@ -1089,22 +1089,23 @@ fn each_fire_slot_takes_only_its_own() {
     assert_eq!(w.players[0].inv[13].item, COOKED);
 }
 
-/// **A planter grows, with no fuel and no switch** (crops v0, `NOW.md` §5).
-/// A seed in a bed becomes its crop on the ovens' own sweep, one seed at a
-/// time per bed; the crop lands in the harvest slots; and a press does
-/// nothing, because there is nothing to light.
-#[test]
-fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
+const PLANTER: u16 = 20;
+const SEED_ITEM: u16 = 21;
+const CROP: u16 = 22;
+const SKIN_FULL: u16 = 23;
+const SKIN_EMPTY: u16 = 24;
+
+/// A world with a planter placed beside the fire: its handle and cell.
+fn planter_world() -> (World, u32, u16, u16) {
     use sim_core::deploy::{DeployDef, ARCH_PLANTER, PLACE_ANY};
-    use sim_core::oven::{CookRow, OvenState, PLANTER_LAYOUT};
-    const PLANTER: u16 = 20;
-    const SEED: u16 = 21;
-    const CROP: u16 = 22;
+    use sim_core::oven::CookRow;
     let (mut w, _, cx, cz) = fire_world();
     w.gather.stack_max[PLANTER as usize] = 1;
-    w.gather.stack_max[SEED as usize] = 50;
+    w.gather.stack_max[SEED_ITEM as usize] = 50;
     w.gather.stack_max[CROP as usize] = 50;
-    w.gather.item_count = w.gather.item_count.max(CROP + 1);
+    w.gather.stack_max[SKIN_FULL as usize] = 1;
+    w.gather.stack_max[SKIN_EMPTY as usize] = 1;
+    w.gather.item_count = w.gather.item_count.max(SKIN_EMPTY + 1);
     let row = w.deploy.def_count;
     w.deploy.defs[row as usize] = DeployDef {
         arch: ARCH_PLANTER,
@@ -1117,7 +1118,7 @@ fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
     w.deploy.def_count += 1;
     let n = w.cook.row_count as usize;
     w.cook.rows[n] = CookRow {
-        input: SEED,
+        input: SEED_ITEM,
         output: CROP,
         count: 5,
         ticks: 60,
@@ -1143,7 +1144,18 @@ fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
         loc: LOC_PLANE,
         pose: sim_core::footprint::Pose::CENTRE,
     }]);
-    let key = box_key(pcx, pcz, 0, 0);
+    (w, box_key(pcx, pcz, 0, 0), pcx, pcz)
+}
+
+/// **A planter grows, with no fuel and no switch** (crops v0, `NOW.md` §5).
+/// A seed in a bed becomes its crop on the ovens' own sweep, one seed at a
+/// time per bed; the crop lands in the harvest slots; and a press does
+/// nothing, because there is nothing to light.
+#[test]
+fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
+    use sim_core::oven::{OvenState, PLANTER_LAYOUT};
+    const SEED: u16 = SEED_ITEM;
+    let (mut w, key, pcx, pcz) = planter_world();
     let i = w.deploys.box_index(key).expect("a planter is a container");
     let st = w.deploys.oven_states()[i];
     assert!(
@@ -1169,4 +1181,41 @@ fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
     idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
     assert_eq!(total(&w, key, CROP), 10, "the second followed");
     assert_eq!(slot(&w, key, bed), ItemStack::default(), "the bed is empty");
+}
+
+/// **Crops v1: a planter grows by daylight, and on water** (`NOW.md` §5
+/// item 7). Dry, its bed holds; a full skin in the water slot is drunk and
+/// left empty, and the bed grows; after dusk it holds again.
+#[test]
+fn a_planter_grows_only_on_water_and_by_day() {
+    use sim_core::oven::PLANTER_LAYOUT;
+    let (mut w, key, _, _) = planter_world();
+    w.cook.water_full = SKIN_FULL;
+    w.cook.water_empty = SKIN_EMPTY;
+    w.cook.water_ticks = 600;
+    let bed = PLANTER_LAYOUT.input_slots().start;
+    let water = PLANTER_LAYOUT.fuel_slots().start;
+    load(&mut w, key, bed, SEED_ITEM, 3);
+
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, CROP), 0, "a dry planter grew");
+
+    load(&mut w, key, water, SKIN_FULL, 1);
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, CROP), 5, "a watered planter did not grow");
+    assert_eq!(
+        slot(&w, key, water).item,
+        SKIN_EMPTY,
+        "the skin was not drunk"
+    );
+
+    // Into the night: the second seed waits for the sun.
+    let day = sim_core::limits::DAY_TICKS;
+    let dusk = (sim_core::limits::DAY_PORTION as f64 * day as f64) as u64;
+    let start = w.tick;
+    let phase = (start + sim_core::limits::DAY_PHASE_TICKS) % day;
+    w.tick = start + (dusk + day - phase) % day + 1;
+    assert!(sim_core::world::is_night(w.tick));
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, CROP), 5, "a planter grew in the dark");
 }

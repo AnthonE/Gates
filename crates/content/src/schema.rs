@@ -575,6 +575,17 @@ pub struct Fuel {
     pub byproduct_pct: u32,
 }
 
+/// What waters a planter (crops v1, `sim_core::oven::CookContent::water_full`):
+/// a full `item` in the water slot is left there as `emptied` and buys
+/// `seconds` of growth for every bed.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanterWater {
+    pub item: String,
+    pub emptied: String,
+    pub seconds: u32,
+}
+
 /// Which container runs a cook row. The archetype names of
 /// `content/deployables.toml`, narrowed to the three that convert — a row
 /// that named `box` would be a transformation with no station.

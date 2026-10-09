@@ -200,10 +200,21 @@ seconds = 5
 
 # --- the planter ---------------------------------------------------------
 #
-# Crops v0 (`NOW.md` §5): `station = "planter"` grows. A seed in a bed
-# becomes its crop over `seconds` — no fuel, no switch, one plant to a bed at
-# a time (`oven::PLANTER_LAYOUT`). The waits are ours: long enough that a
-# farm is a thing you come back to, short enough to see one in a session.
+# `station = "planter"` grows. A seed in a bed becomes its crop over
+# `seconds` — no fuel, no switch, one plant to a bed at a time
+# (`oven::PLANTER_LAYOUT`). The waits are ours: long enough that a farm is a
+# thing you come back to, short enough to see one in a session.
+#
+# Crops v1: the beds grow only by daylight under open sky, and only on water.
+# A full waterskin in the planter's water slot is drunk and left there empty;
+# it waters every bed for `seconds` of growth — one corn crop, so a farm is a
+# trip to fresh water per harvest. Rust's planters drink far more and from a
+# pipe; this is the hand-carried version until water storage exists.
+[planter]
+item = "item.waterskin_full"
+emptied = "item.waterskin"
+seconds = 900
+
 [[cook]]
 input = "item.corn_seed"
 output = "item.corn"

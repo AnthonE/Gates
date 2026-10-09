@@ -159,14 +159,17 @@ pub const FIRE_LAYOUT: OvenLayout = OvenLayout {
 
 const _: () = assert!(FIRE_LAYOUT.slots() <= BOX_SLOTS);
 
-/// A planter box (crops v0): four beds that grow, and the rest of the box
-/// for what they yield. A bed with several seeds in it grows them one after
-/// another — one plant to a bed at a time, so beds are what make a planter
-/// worth more than one.
+/// A planter box: a water slot, four beds that grow, and the rest of the
+/// box for what they yield. A bed with several seeds in it grows them one
+/// after another — one plant to a bed at a time, so beds are what make a
+/// planter worth more than one. Crops v1 (`NOW.md` §5 item 7): the beds
+/// grow only by daylight under open sky, and only while the planter has
+/// water — a full waterskin in slot 0 is drunk and left there empty
+/// ([`CookContent::water_full`]).
 pub const PLANTER_LAYOUT: OvenLayout = OvenLayout {
-    fuel: 0,
+    fuel: 1,
     input: 4,
-    output: 8,
+    output: 7,
 };
 
 const _: () = assert!(PLANTER_LAYOUT.slots() <= BOX_SLOTS);
@@ -279,6 +282,12 @@ pub struct CookContent {
     pub byproduct_pct: u16,
     pub rows: [CookRow; MAX_COOK_ROWS],
     pub row_count: u16,
+    /// What waters a planter (crops v1): a `water_full` in its water slot
+    /// is turned into `water_empty` in place and buys `water_ticks` of
+    /// growth. `water_ticks == 0` ⇒ a planter needs no water.
+    pub water_full: u16,
+    pub water_empty: u16,
+    pub water_ticks: u16,
 }
 
 impl CookContent {
@@ -291,6 +300,9 @@ impl CookContent {
         byproduct_pct: 0,
         rows: [CookRow::INERT; MAX_COOK_ROWS],
         row_count: 0,
+        water_full: 0,
+        water_empty: 0,
+        water_ticks: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -375,6 +387,9 @@ impl CookContent {
         if burns && self.fuel_ticks > 0 && item == self.fuel_item {
             roles |= ROLE_FUEL;
         }
+        if arch == ARCH_PLANTER && self.water_ticks > 0 && item == self.water_full {
+            roles |= ROLE_FUEL;
+        }
         if self.row_for(arch, item).is_some() {
             roles |= ROLE_INPUT;
         }
@@ -382,6 +397,7 @@ impl CookContent {
         // that could not be moved back out through its own door would be
         // trapped by the rule meant to keep junk out.
         if (burns && self.byproduct_pct > 0 && item == self.byproduct)
+            || (arch == ARCH_PLANTER && self.water_ticks > 0 && item == self.water_empty)
             || self.rows[..self.row_count as usize]
                 .iter()
                 .any(|r| r.ticks > 0 && r.arch == arch && r.output == item)
@@ -626,12 +642,16 @@ pub fn toggle(
 /// cookable input and convert the ones that finished. The order matters
 /// and is the reference's: an oven that runs dry this step does not also
 /// cook this step.
+///
+/// `sunlit` answers for a planter: does daylight reach it (crops v1)? A
+/// planter in the dark, or dry, holds its beds where they are.
 pub fn sweep(
     cc: &CookContent,
     gather: &GatherContent,
     deploys: &mut Deploys,
     tick: u64,
     smelt_pct: u32,
+    sunlit: &dyn Fn(&crate::deploy::BoxRec) -> bool,
     events: &mut EventQueue,
 ) {
     let period = OVEN_PERIOD_TICKS;
@@ -655,7 +675,7 @@ pub fn sweep(
                 let taken = if cc.fuel_ticks == 0 {
                     false
                 } else {
-                    take_one(&mut boxes[i].items[fuel], cc.fuel_item)
+                    take_one(&mut boxes[i].items[fuel.clone()], cc.fuel_item)
                 };
                 if !taken {
                     ovens[i].lit = false;
@@ -684,6 +704,33 @@ pub fn sweep(
                     // room pays the whole debt (bounded by the accumulator's
                     // own saturating add).
                 }
+            }
+        }
+
+        // 1b. A planter grows by daylight and on water (crops v1). Asked
+        //     only while a bed holds something that grows, so an idle
+        //     planter drinks nothing; a dark or dry one freezes its beds
+        //     (`cook` is kept, as a snuffed fire's is).
+        if arch == ARCH_PLANTER {
+            let growing = input.clone().any(|s| {
+                let st = boxes[i].items[s];
+                st.count > 0 && cc.row_for(arch, st.item).is_some()
+            });
+            if !growing || !sunlit(&boxes[i]) {
+                continue;
+            }
+            if cc.water_ticks > 0 {
+                if ovens[i].burn == 0 {
+                    let Some(w) = boxes[i].items[fuel.clone()]
+                        .iter_mut()
+                        .find(|st| st.count > 0 && st.item == cc.water_full)
+                    else {
+                        continue;
+                    };
+                    w.item = cc.water_empty;
+                    ovens[i].burn = cc.water_ticks;
+                }
+                ovens[i].burn = ovens[i].burn.saturating_sub(step);
             }
         }
 

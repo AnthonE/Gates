@@ -6600,6 +6600,19 @@ impl World {
         // sweeps that can remove the thing it is stepping — an oven that
         // decays this tick has already spent its period, which is the
         // ordering a raid and a decay have to agree on.
+        // A planter grows by day under open sky (crops v1): the shelter
+        // question a body asks of the rain, asked at the planter's feet.
+        let night = is_night(tick);
+        let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let sunlit = |b: &crate::deploy::BoxRec| {
+            if night {
+                return false;
+            }
+            let (x, z) = b.xz();
+            let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
+                + crate::build::level_y(b.level);
+            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, feet)
+        };
         crate::oven::sweep(
             &self.cook,
             &self.gather,
@@ -6610,6 +6623,7 @@ impl World {
                 self.works.unlocks,
                 crate::works::KNOB_SMELT_PCT,
             ),
+            &sunlit,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point

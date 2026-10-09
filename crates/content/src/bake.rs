@@ -1367,6 +1367,23 @@ impl Content {
             };
         }
         cc.row_count = self.cooks.len() as u16;
+        let w = &self.planter;
+        cc.water_full = self
+            .item_index(&w.item)
+            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.item))?;
+        cc.water_empty = self
+            .item_index(&w.emptied)
+            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.emptied))?;
+        cc.water_ticks = w
+            .seconds
+            .checked_mul(TICK_HZ)
+            .and_then(|t| u16::try_from(t).ok())
+            .ok_or_else(|| {
+                format!(
+                    "bake: planter water {} s does not fit a u16 of ticks",
+                    w.seconds
+                )
+            })?;
         Ok(cc)
     }
 
