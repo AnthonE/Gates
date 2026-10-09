@@ -130,9 +130,6 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 1. Feel it at the bar: `netsim = "30,10,1"` on a dev shard with two humans — the
    stop test and the strafing-bro test. Every gate ran at zero RTT; operator's eyes.
-2. NetLine gauges: the F4 net row (`render/hud.rs` `net_line`) shows ping and
-   err/confirm/mispredict; `buffered_depth`, `repeat_count`, `playout_ticks()`, `jitter_ms`,
-   `corrections_minor`, `DgRing::dropped` exist and nothing draws them.
 3. The event lane is not shimmed (`DECISIONS.md` §open netsim row has the skew), and
    under netsim the stream lane leads its snapshots by lat_ms.
 4. `RESYNC_AHEAD_TICKS = 3` is still a blind guess; it only matters for the first
@@ -781,11 +778,6 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 - `crates/client/src/render/capture.rs` writes PNGs only; the visual judge's prompt wants a `manifest.json` of
   what the client logged while shooting.
-
-## 0bd · The tree blocks 0.3 m of ceiling nobody draws *(client+sim lane)*
-
-1. `OCCUPANT_TOP_M[Tree]` is 11.0 now (the broadleaf's apex), but nothing bounds the drawn mesh's height band in
-   `tests/tree.rs`, and `render/props.rs`'s comment beside it is stale. Take the number off the mesh, as for the barrel.
 
 ## Numbers, worldgen and the arc *(content + world lanes)*
 

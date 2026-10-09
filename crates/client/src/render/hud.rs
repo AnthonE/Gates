@@ -2740,11 +2740,23 @@ pub fn net_line(
         .session
         .rtt_ms()
         .map_or_else(|| "ping --".to_string(), |ms| format!("ping {ms:.0} ms"));
+    // The second row is netcode v2's own gauges (`NOW.md` §0nc item 2): the
+    // server's input-buffer depth and starved-tick repeats off the newest
+    // snapshot, the playout delay and arrival jitter the client steers on,
+    // the sub-quantum corrections, and snapshots the ring dropped.
+    let core = &net.session.core;
     text.0 = format!(
-        "{ping} · net {:.2}% ok · {} miss · err {:.2} m",
+        "{ping} · net {:.2}% ok · {} miss · err {:.2} m\n\
+         buf {} · rep {} · playout {:.1} t · jit {:.1} ms · minor {} · drop {}",
         100.0 * p.confirmations as f64 / total as f64,
         p.mispredictions,
         *peak,
+        core.view.buffered_depth,
+        core.view.repeat_count,
+        core.playout_ticks(),
+        core.jitter_ms,
+        p.corrections_minor,
+        net.session.datagrams_dropped(),
     );
     *peak = 0.0;
 }

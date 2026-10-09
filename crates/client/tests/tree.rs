@@ -92,6 +92,25 @@ fn every_variant_fits_the_volume_the_sim_blocks() {
     }
 }
 
+/// `NOW.md` §0bd: the sim blocks a tree to `OCCUPANT_TOP_M[Tree]`, and that
+/// is every species' drawn height at its shortest — the broadleaf's apex. A
+/// species drawn shorter would leave a band of blocked air above it that
+/// nobody can see; a ceiling above the shortest species is that band.
+#[test]
+fn the_blocked_ceiling_is_the_shortest_tree_drawn() {
+    let (_, top) = sim_core::terrain::occupant_volume(sim_core::terrain::Occupant::Tree);
+    let mut shortest = f32::MAX;
+    for v in 0..CONIFER_POOL {
+        let (bark, needles) = conifer(v);
+        shortest = shortest.min(bounds(&[&bark, &needles]).0);
+    }
+    assert!(
+        (top - shortest).abs() < 1e-3,
+        "the sim blocks a tree to {top} m and the shortest drawn tree is \
+         {shortest:.3} m (terrain.rs OCCUPANT_TOP_M, render/tree.rs SPECIES)"
+    );
+}
+
 /// **The arithmetic `world.rs` claimed was closed and was not.**
 ///
 /// `SPAWN_CLEAR_M`'s comment derived itself from the tree's canopy radius, the
