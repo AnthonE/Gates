@@ -573,8 +573,8 @@ act):
 
 1. The grid: no chunk version or subscribe/unsubscribe, so removals stay broadcast
    and a re-arm re-walks the in-range set (`NETCODE.md` §5/§7; a wire change).
-2. Deploys and backpacks are unfiltered (`server/src/core.rs:1975`); their walks
-   restart on a removal (`:2396`, `:2819`) — `reference/NETWORK.md` §9.2.1.
+2. Deploys and backpacks are unfiltered (`server/src/core.rs:2618`, `:2854`); their walks
+   restart on a removal (`:3017`, `:3606`) — `reference/NETWORK.md` §9.2.1.
 3. `test_stream_in` (`NETCODE.md` §11) is unbuilt; per-frame apply/teardown is ungated.
 
 ## 0tx · The transport's three residuals *(server lane)*
@@ -590,7 +590,7 @@ act):
 
 1. The encoder is ~0.43 ms of a 0.83 ms tick (100 clients, one AOI cell). Rank with
    `valgrind --tool=callgrind`; `server/src/bin/profile.rs` must never be a gate.
-2. `World::scatter_clear` (`sim-core/src/world.rs:1541`) resolves cells cold, but a
+2. `World::scatter_clear` (`sim-core/src/world.rs:2367`) resolves cells cold, but a
    memo only pays across repeated picks: measure a respawn storm before `&mut self`.
 3. The soak still owes tick jitter and real bytes (§0q item 4).
 
@@ -598,32 +598,32 @@ act):
 
 1. Should a sleeper block movement? Unanswered; lootable-alive comes after.
 2. Same-window rejoin: a victim reconnecting in its eviction window reads the store
-   before the eviction save is filed (takeover hint: `server/core.rs:487`).
+   before the eviction save is filed (takeover hint: `SleeperIndex`, `server/core.rs:351`).
 3. No WAL yet; `worldsave.rs`'s module header fixes its shape.
 4. Ungated, hand-checked only: the three-thread shutdown path (SIGTERM flushes,
-   SIGKILL leaves no `.tmp`) and `KeySlot`'s id match (`server/net.rs:573`).
+   SIGKILL leaves no `.tmp`) and `KeySlot`'s id match (`server/net.rs:815`).
 
 ## 0ad2 · What the admin lane still cannot do *(server lane)*
 
-1. Bans are memory-only (`server/src/admin.rs:173`): persist them in their own file
+1. Bans are memory-only (`server/src/admin.rs:179`): persist them in their own file
    and format version (the player store's header wipes on a seed change).
 2. Nobody has typed a command at a live shard: the `REFUSE_ADMIN` close
-   (`net.rs:791`) is undriven (the disconnected screen does say an admin removed you).
+   (`net.rs:1284`) is undriven (the disconnected screen does say an admin removed you).
 3. The anomaly log (JSONL) has no reader to give the alpha gate a verdict.
 4. No `/who`. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
    only in the anomaly log, and nothing stops `dev_env` in a public `shard.toml`.
 
 ## 4b · The domain gate's one file-local residual
 
-1. `death_causes_are_a_closed_ledger` (`sim-core/tests/event_roles.rs:3704`)
+1. `death_causes_are_a_closed_ledger` (`sim-core/tests/event_roles.rs:4507`)
    scrapes `world.rs` alone; follow `sim-core/tests/domain_ledger.rs`.
 - ⚠ The label `4b` also names the world lane's section (§Labels).
 
 ## 0pop · The inhabitants nobody has run for longer than a test *(server lane)*
 
 1. Run it past a test: set `population = 8` in a real `shard.toml` (commented out
-   at `shard.toml.example:298`), run the shard, read the population line.
-2. Can an inhabitant afford its raid rows? Its kit is a rock and a torch
+   at `shard.toml.example:367`), run the shard, read the population line.
+2. Can an inhabitant afford its raid rows? Its kit is a bat and a torch
    (`content/balance.toml`); `bot_smoke.rs` grants the satchel. Judge -18 §B.2.
 3. `DECISIONS.md` §open "shard population v0": the 300 s shift, the 2 s backoff,
    an alpha shard's N, the `index % 2` owner/attacker split.
@@ -632,7 +632,7 @@ act):
 
 1. Craft-refused (`craft.rs` `REFUSE_*`) has no max: `REFUSE_C_MAX` is taken by
    `survival.rs`'s consume refusals; pick a name the domain scanner tells apart.
-2. Deploy-refused (`deploy.rs:314-318`) has no `REFUSE_D_MAX`.
+2. Deploy-refused (`deploy.rs:471-518`) has no `REFUSE_D_MAX`.
 3. Add both to `event.rs`'s `DOMAINS` (`every_domain_fits_its_wire_field`).
 - No `PROTO_VER` bump owed: the narrowing rule at `PROTO_VER` (`protocol/src/lib.rs`).
 
@@ -673,15 +673,16 @@ act):
 
 4. No occluder at blade scale: grass cards in the near ring cast shadows now (`GRASS_SHADOW_TILES`), but the
    blade/stand solids and ferns are still `NotShadowCaster` (`clutter.rs`). SSAO is already on (`rig.rs`).
-5. Litter (2.49× grass, `terrain_mesh::GROUND_ALBEDO`) wins every mix; grass needs ≥78.0% to read green, but
-   `ground_where_the_green_goes.rs` asserts only `> 0.66` / `> 2.0×`.
+5. Litter (~1.6× grass, `terrain_mesh::GROUND_ALBEDO`) wins any mix under ~63% grass, but
+   `ground_where_the_green_goes.rs` asserts only `> 0.6` / `> 1.4×`.
 
 ## 0w · The props' remaining gaps — darks, density, unread roughness *(client lane)*
 
-1. Top visual gap: p10 71.0 vs 41.0 (`RENDER.md` §0); the transfer half is left (`RENDER.md` §5 item 6), one owner.
+1. Top visual gap: p10 71.0 vs 41.0 (`RENDER.md` §0); the transfer half is left (§0fill), one owner.
 2. Midground trees are small and sparse: `terrain::scatter` density, conifer scale (the ceiling §0t item 2 prices).
 3. The dirt skirt is nobody's: `props::SINK_M` sinks props; boulder-meets-turf crowding is missing (`ART.md` rule 2).
-5. Ten `assets/textures/*_rough.jpg` are unread, blocked on ORM packing (B is metallic; `render/props.rs:1090`).
+5. Four `assets/textures/*_rough.jpg` are unread (bark, birch, corrugated, twig): props take a scalar
+   (`render/props.rs:1876`); the depot binds greyscale maps directly (`depot.rs:185`), so packing is optional.
 
 ## 0out · The horizon has trees — what the outer ring owes *(client lane)*
 
@@ -693,10 +694,10 @@ act):
    (c) birch bark is in. Treeline 288 m is browser-era; a desktop budget buys `OUTER_RADIUS` 5.
 2. Close the crown: `TREE_MAX_R` 2.9 → 4.0 lifts cover ~20% → >35%, moving `SPAWN_CLEAR_M` 4.5 → ~6.0 (spawn
    search, both goldens), one sim row and an `examples/tree_sweep.rs` sweep (`reference/FORESTS.md` §1.2).
-5. Sub-canopy empty, shrubs one blob (`Occupant::Bush`, `PLANTS.md` §2): ez-tree `bush_*` and a 40% small tree
-   as new `Occupant` variants plus scatter rows.
-7. Canopy grain v0 is unseen (`§LOOK`). Sky through a near crown: raise `TWIGS`/`NEEDLES_PER_TWIG` (not
-   `AXIS_NEEDLES`) and widen `tests/tree.rs::the_cards_hold_the_density_the_forest_was_built_at`. Also: 11 cm
+5. Sub-canopy empty (`PLANTS.md` §2): shrubs are five card species now (`render/plants.rs`, #231), but no
+   ez-tree `bush_*` or 40% small tree exists; each wants a new `Occupant` variant plus scatter rows.
+7. Canopy grain v0 is unseen (`§LOOK`). Sky through a near crown: re-bake the needle card denser
+   (`ci/bake_needle_card.py`) and widen `tests/tree.rs::the_cards_hold_the_density_the_forest_was_built_at`'s band. Also: 11 cm
    leaf vs a birch's 3–7 (`BROADLEAF_MAX_R`, sim); `NEEDLE_HI` luma 111 vs lit grass 59–70; `CANOPY_AO_GAMMA` invented.
 8. The capture probe should walk one chunk before it shoots (`tests/ring_handoff.rs`); the browser's 55 m rung
    (`quality.rs`) rests on its own argument now.
@@ -735,8 +736,8 @@ act):
 
 2. Fire pit: `assets/models/deploy/fire.glb` bakes a lit emissive that `held_assets.rs::nothing_held_glows` refuses;
    needs an unlit variant or a generated `heldgen` row.
-3. Resources, ammo, the lock, the syringe, the seeds and the planter box: no models (not in
-   `ui::hold::HELD_MODELS`); bandage, medkit and food have them.
+3. Resources, ammo, both locks, the syringe, the seeds, the planter box, the barricade, the waterskins, the
+   windows and the garage door: no models (not in `ui::hold::HELD_MODELS`); bandage, medkit and food have them.
 4. The item has been parented to the hand with a re-derived grip since 2026-08-30 (`dress_arms`,
    `tests/viewmodel_arms.rs`); nobody has looked at a mid-swing frame to see if the fist still trails the arc.
 
@@ -752,7 +753,7 @@ act):
 
 1. Damage bands were never staged (one row, hit N times, photographed per band); marks are a plain mesh now, so a capture draws them.
 5. Deployables darken and roughen by damage band (`structures.rs::deploy_hurt`); nothing shows which face was struck.
-6. Roughness maps unwired (scalar `perceptual_roughness`); one ORM packing step serves terrain, props and pieces.
+6. Props and pieces still take a scalar `perceptual_roughness` (terrain and the depot's surfaces read maps).
 
 ## 0lock · Lock placement reaches doors and boxes *(client lane)*
 
@@ -763,7 +764,7 @@ act):
 1. Seen once on lavapipe (2026-10-09, a hatchet on a wall): chips read as flying cardboard at 4.5 cm and the dust
    as fog, so `CHIP_SIZE_M` is 3 cm and dust starts at 0.4 alpha. Still unseen: #179's blood, blast, muzzle
    flash, tracers and fire, and the whoosh's timing.
-2. A deployable's matter is a guess (`struct_point` says `Wood`): `DeployDef` wants a material byte (`CONTENT.md`).
+2. A deployable's matter is a guess (`surface::arch_matter`: by archetype, a door by hp, else `Wood`): `DeployDef` wants a material byte (`CONTENT.md`).
 3. Flesh is heard attacker-side only (§0pvp item 2); no cloud by choice, no mark by design (§0mk).
 4. Sparks and grit bounce once; dust still passes through walls: a collision query, once a person has looked.
 5. `RemoteSwing` (body) and `ImpactWood` (trunk) are two unlinked cues; one sound per blow is a later call.
@@ -787,7 +788,7 @@ act):
 ## 0z · The Bevy-draws rule's missing gate *(client lane)*
 
 1. R-G4: nothing gates the no-gameplay-state-in-the-ECS rule; build the renderer-attached vs detached
-   state-hash equality (`RENDER.md` §5, line 889) under `crates/client/tests/`.
+   state-hash equality (`RENDER.md` §5, R-G4) under `crates/client/tests/`.
 2. Nothing photographs the wait (`render/capture.rs::PLACE_FRAMES`); seeing it is §0p2 item 3's viewer.
 
 ## 0v · Players are people — what the rig still cannot say *(client lane)*
@@ -811,8 +812,8 @@ act):
 its countdown, padlock, notices over the vitals, colour icons).
 
 5. CRAFT dims when short; the community plugin paints it green — a palette knob, `DECISIONS.md` §open.
-6b. 8 of 62 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
-   painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand items 1 and 3).
+6b. 8 of 78 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
+   painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand item 3).
 7. Then one `PROTO_VER` turn (the class byte, §0w item 1; a description column), then fast-track by task id
    (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
 
@@ -837,16 +838,16 @@ its countdown, padlock, notices over the vitals, colour icons).
    vertex shader `render/water.rs` §57 names, after a GPU boot.
 3. Under 50 µs together: `verbs::resolve` (use the 3×3 `ColIndex`), the `bodies`/`mobs::stream` slot scans,
    `audio::fell`'s `GlobalTransform` fetch, `hud::update`'s strings, the ring streamers' full-map probe.
-4. Sea tangent `w` `-1` (`water.rs:947`) vs ground `+1` (`terrain_mesh.rs:711`): one flips the ripple green. Look.
+4. Sea tangent `w` `-1` (`water.rs:1401`) vs ground `+1` (`terrain_mesh.rs:1316`): one flips the ripple green. Look.
 
 ## 0u · the frame budgets are browser numbers and nobody has re-derived them
 
 1. < 300 draw calls / < 1.5 M tris are WebGL-shaped; rationed against them: `CLUTTER_RICH_PER_TILE = 96`
-   (`sim-core/terrain.rs:2919`) and the conifer ring's 1.9 M verdict.
+   (`sim-core/terrain.rs:7668`) and the conifer ring's 1.9 M verdict.
 2. Nothing measures native cost (no `RenderDiagnosticsPlugin`): on a real GPU at the ring's p90 tree count read
    draw calls + frame time (floor: 60 fps on a mid laptop iGPU); propose into `DECISIONS.md` §open, operator renumbers.
 3. `BASE_ANISOTROPY_MAX = 4` was a software-rasterizer choice that does not transfer (now only a comment at
-   `client/src/render/textures.rs:60`).
+   `client/src/render/textures.rs:93`).
 
 ## 0p3 · Photographing a panel — the screen the recipe cannot reach *(client lane)*
 
