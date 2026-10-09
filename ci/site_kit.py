@@ -1429,7 +1429,6 @@ def dress_stones(s, kit, rng):
             # A stone's broken top, fallen and half sunk, its old crown at one end.
             rough(s, "ashlar", p["b"], stone_tint(rng, (0.68, 0.67, 0.64)), rng,
                   amp=0.1, cell=0.45, crown=0.3)
-            lichen(s, p["b"], rng, top=True)
         elif y1 <= 1.5:
             # The altar: a slab on a plinth, both inside its box.
             rough(s, "ashlar", (x0 + 0.15, y0, z0 + 0.15, x1 - 0.15, y1 - 0.22, z1 - 0.15),
@@ -1442,10 +1441,10 @@ def dress_stones(s, kit, rng):
             rough(s, "ashlar", p["b"], stone_tint(rng, (0.70, 0.69, 0.66)), rng,
                   amp=0.08, cell=0.42, taper=0.06 if carries else 0.28,
                   crown=0.0 if carries else 0.35)
-            uprights.append(p["b"])
-    for b in uprights:
-        lichen(s, b, rng)
-        # Moss and grass crowding each stone's foot.
+            uprights.append((p["b"], 0.06 if carries else 0.28))
+    for b, _ in uprights:
+        # Moss and grass crowding each stone's foot. (Lichen is the
+        # weathering pass's: a patch drawn here stood off the tapered face.)
         x0, _, z0, x1, _, z1 = b
         for _ in range(rng.randint(6, 12)):
             side = rng.randrange(4)
@@ -1455,53 +1454,17 @@ def dress_stones(s, kit, rng):
                 x, z = (x0 - 0.06 if side == 2 else x1 + 0.06), rng.uniform(z0, z1)
             tuft(s, x, -0.05, z, rng.uniform(0.2, 0.45), rng)
     # Spirals cut into the faces that look at the altar, on every other stone.
-    for i, b in enumerate(uprights):
+    for i, (b, taper) in enumerate(uprights):
         if i % 2 == 0:
-            spiral(s, b, rng)
+            spiral(s, b, taper, rng)
     if altar is not None:
         offerings(s, altar, rng)
 
 
-def lichen(s, b, rng, top=False):
-    """Pale crusts on a stone's faces, a millimetre proud of the box (the
-    rough stone lies inside it): yellow-grey on the weather side, grey-green
-    elsewhere."""
-    x0, y0, z0, x1, y1, z1 = b
-    base = max(y0, 0.0)
-    for _ in range(rng.randint(4, 9)):
-        axis, sign = rng.choice([(0, -1), (0, 1), (2, -1), (2, 1)]) if not top else (1, 1)
-        r = rng.uniform(0.12, 0.35)
-        tint = rng.choice([(0.78, 0.76, 0.52), (0.62, 0.66, 0.54), (0.8, 0.8, 0.74)])
-        pts = []
-        if axis == 1:
-            cx, cz = rng.uniform(x0 + r, x1 - r) if x1 - x0 > 2 * r else (x0 + x1) / 2, \
-                rng.uniform(z0 + r, z1 - r) if z1 - z0 > 2 * r else (z0 + z1) / 2
-            for k in range(7):
-                a = 2 * math.pi * k / 7
-                pts.append((cx + r * math.cos(a) * rng.uniform(0.6, 1.0), y1 + 0.004, cz + r * math.sin(a) * rng.uniform(0.6, 1.0)))
-            face_out(s, "ashlar", pts, tint, (cx, y1 - 1, cz))
-            continue
-        plane = (x1 if sign > 0 else x0) if axis == 0 else (z1 if sign > 0 else z0)
-        t = 2 if axis == 0 else 0
-        lo, hi = b[t], b[t + 3]
-        if hi - lo < 2 * r + 0.1:
-            continue
-        cu, cy = rng.uniform(lo + r, hi - r), rng.uniform(base + 0.4, y1 - 0.8)
-        for k in range(7):
-            a = 2 * math.pi * k / 7
-            pp = [0.0, cy + r * math.sin(a) * rng.uniform(0.6, 1.0), 0.0]
-            pp[axis] = plane + sign * 0.004
-            pp[t] = cu + r * math.cos(a) * rng.uniform(0.6, 1.0)
-            pts.append(tuple(pp))
-        behind = [0.0, cy, 0.0]
-        behind[axis] = plane - sign
-        behind[t] = cu
-        face_out(s, "ashlar", pts, tint, tuple(behind))
-
-
-def spiral(s, b, rng):
+def spiral(s, b, taper, rng):
     """A spiral pecked into the stone's face toward the ring's middle: a dark
-    groove a hair proud of the face, winding out three turns."""
+    groove on the face where `rough`'s taper has drawn it in to, winding out
+    three turns."""
     x0, y0, z0, x1, y1, z1 = b
     cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
     # The face whose normal points most at the middle.
@@ -1511,6 +1474,12 @@ def spiral(s, b, rng):
     cu = (b[t] + b[t + 3]) / 2
     w = (b[t + 3] - b[t]) / 2 - 0.15
     cy = min(y1 - 0.9, 2.0)
+    # How far the taper has pulled this face in at the spiral's height, and
+    # a little more for the stone's own roughness.
+    g = max(y0, 0.0)
+    half = ((x1 - x0) if axis == 0 else (z1 - z0)) / 2
+    inset = half * taper * max(0.0, (cy - g) / (y1 - g)) ** 1.4 + 0.035
+    plane -= sign * inset
     turns, n = 3.0, 60
     prev = None
     for i in range(n + 1):

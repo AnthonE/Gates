@@ -876,7 +876,7 @@ stay `render/boulders.rs`'s.
 | file | kind | tris |
 |---|---|---|
 | `site/mark_ruin.glb` | Old Keep | 38,927 |
-| `site/mark_stones.glb` | Standing Stones | 11,074 |
+| `site/mark_stones.glb` | Standing Stones | 10,921 |
 | `site/mark_mast.glb` | Radio Mast | 4,567 |
 | `site/mark_tower.glb` | Watchtower | 5,448 |
 | `site/mark_yard.glb` | Container Yard | 6,831 |
