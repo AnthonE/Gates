@@ -1088,3 +1088,85 @@ fn each_fire_slot_takes_only_its_own() {
     );
     assert_eq!(w.players[0].inv[13].item, COOKED);
 }
+
+/// **A planter grows, with no fuel and no switch** (crops v0, `NOW.md` §5).
+/// A seed in a bed becomes its crop on the ovens' own sweep, one seed at a
+/// time per bed; the crop lands in the harvest slots; and a press does
+/// nothing, because there is nothing to light.
+#[test]
+fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
+    use sim_core::deploy::{DeployDef, ARCH_PLANTER, PLACE_ANY};
+    use sim_core::oven::{CookRow, OvenState, PLANTER_LAYOUT};
+    const PLANTER: u16 = 20;
+    const SEED: u16 = 21;
+    const CROP: u16 = 22;
+    let (mut w, _, cx, cz) = fire_world();
+    w.gather.stack_max[PLANTER as usize] = 1;
+    w.gather.stack_max[SEED as usize] = 50;
+    w.gather.stack_max[CROP as usize] = 50;
+    w.gather.item_count = w.gather.item_count.max(CROP + 1);
+    let row = w.deploy.def_count;
+    w.deploy.defs[row as usize] = DeployDef {
+        arch: ARCH_PLANTER,
+        placement: PLACE_ANY,
+        hp: 100,
+        item: PLANTER,
+        n_costs: 0,
+        costs: [(0, 0); 4],
+    };
+    w.deploy.def_count += 1;
+    let n = w.cook.row_count as usize;
+    w.cook.rows[n] = CookRow {
+        input: SEED,
+        output: CROP,
+        count: 5,
+        ticks: 60,
+        arch: ARCH_PLANTER,
+    };
+    w.cook.row_count += 1;
+
+    // Beside the fire, one cell over.
+    let (pcx, pcz) = (cx + 1, cz);
+    w.players[0].inv[3] = ItemStack {
+        item: PLANTER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = 3;
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row,
+        cx: pcx,
+        cz: pcz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let key = box_key(pcx, pcz, 0, 0);
+    let i = w.deploys.box_index(key).expect("a planter is a container");
+    let st = w.deploys.oven_states()[i];
+    assert!(
+        st.is_converter() && !st.burns(),
+        "a planter converts and burns nothing"
+    );
+    assert!(OvenState::arch_always_on(st.arch));
+
+    let bed = PLANTER_LAYOUT.input_slots().start;
+    load(&mut w, key, bed, SEED, 2);
+    press(&mut w, pcx, pcz);
+    assert_eq!(events(&w, EV_OVEN), 0, "a press switched a planter");
+
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, CROP), 5, "the first seed grew");
+    assert_eq!(slot(&w, key, bed).count, 1, "one seed at a time per bed");
+    assert!(
+        PLANTER_LAYOUT
+            .output_slots()
+            .any(|s| slot(&w, key, s).item == CROP),
+        "the crop is in the harvest"
+    );
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, CROP), 10, "the second followed");
+    assert_eq!(slot(&w, key, bed), ItemStack::default(), "the bed is empty");
+}

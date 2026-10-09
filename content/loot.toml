@@ -71,6 +71,8 @@ entries = [
     # bush pickup pays (75) — at the tarp's weight, so the barrel stays
     # components-weighted.
     { item = "item.corn", weight = 8, count_min = 2, count_max = 4 },
+    # Seed for a planter (crops v0): the first handful a farm starts from.
+    { item = "item.corn_seed", weight = 6, count_min = 2, count_max = 4 },
     { item = "item.revolver", weight = 1, count_min = 1, count_max = 1 },
 ]
 

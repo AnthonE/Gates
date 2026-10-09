@@ -296,7 +296,8 @@ fn test_content() {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
-        (40..=70).contains(&(c.items.len() - fittings.len())),
+        // 70 → 80 for crops v0's seeds and planter.
+        (40..=80).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -2338,7 +2339,8 @@ fn the_shipped_loot_tables_bake() {
     let t = lc
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
-    assert_eq!(t.len, 9, "the barrel table lost or gained a row");
+    // 9 → 10 for crops v0's corn seed.
+    assert_eq!(t.len, 10, "the barrel table lost or gained a row");
     assert_eq!(t.rolls_min, 1);
     assert_eq!(t.rolls_max, 2);
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
@@ -3725,6 +3727,14 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(row, "");
+    // The planter grows corn from the barrel's seed (crops v0), so the seed
+    // row goes too — or the corn is still reachable, as it should be.
+    let seed = "    { item = \"item.corn_seed\", weight = 6, count_min = 2, count_max = 4 },\n";
+    assert!(
+        l.1.contains(seed),
+        "fixture rot: the barrel's corn seed row moved"
+    );
+    l.1 = l.1.replace(seed, "");
     strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — the bush and the tree keep the clock answered");
     assert_eq!(
@@ -4544,10 +4554,10 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 10,
-        "expected exactly ten solid rows — the hearth, the box (twice), the \
-         furnace, the three benches, the recycler, the research table and \
-         the barricade — \
+        seen, 11,
+        "expected exactly eleven solid rows — the hearth, the box (twice), the \
+         furnace, the three benches, the recycler, the research table, \
+         the barricade and the planter — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \

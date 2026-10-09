@@ -445,6 +445,9 @@ pub fn hash(c: &Content) -> u64 {
         ex.chill_fall_per_s,
         ex.hurt_at,
         ex.hurt_hp_per_min,
+        ex.cold_food_pct,
+        ex.cold_water_pct,
+        ex.comfort_hp_per_min,
     ] {
         h.u(v);
     }

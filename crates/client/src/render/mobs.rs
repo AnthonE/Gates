@@ -559,6 +559,8 @@ pub fn stream(
                     let dt = time.delta_secs();
                     gait.observe(pos, dt);
                     gait.settle(rs.sleeping, dt);
+                    gait.asleep = rs.sleeping;
+                    gait.hostile = rs.crouched;
                     if feed.swings().contains(&id) {
                         gait.bite();
                     }
@@ -675,6 +677,10 @@ pub struct Gait {
     pub howl: f32,
     /// The hind hips' z, the pivot of [`Gait::pose`].
     pub hind_z: f32,
+    /// The wire's sleeping bit, and its hunt (an animal's `crouched`, v99):
+    /// what `audio::voices` reads to keep a sleeper quiet and voice a hunt.
+    pub asleep: bool,
+    pub hostile: bool,
 }
 
 /// How long a bite's lunge takes, seconds: in, snap, back.
@@ -726,6 +732,8 @@ impl Gait {
             bite: 0.0,
             howl: 0.0,
             hind_z: hind_z_of(slot),
+            asleep: false,
+            hostile: false,
         }
     }
 

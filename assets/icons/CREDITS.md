@@ -44,6 +44,7 @@ every item either way, because the painted ones are derived works of it.
 | `code_lock.png` | `delapouite/dial-padlock` |
 | `cooked_meat.png` | `lorc/chicken-leg` |
 | `corn.png` | `delapouite/corn` |
+| `corn_seed.png` | `delapouite/plant-seed` |
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
 | `fire_pit.png` | `lorc/campfire` |
@@ -55,6 +56,7 @@ every item either way, because the painted ones are derived works of it.
 | `gunpowder.png` | `lorc/powder` |
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
+| `hemp_seed.png` | `delapouite/sesame` |
 | `hide_poncho.png` | `delapouite/poncho` |
 | `high_velocity_arrow.png` | `lorc/supersonic-arrow` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
@@ -78,6 +80,7 @@ every item either way, because the painted ones are derived works of it.
 | `metal_window_bars.png` | `delapouite/window-bars` |
 | `mushrooms.png` | `delapouite/mushrooms` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
+| `planter_box.png` | `lorc/sprout` |
 | `raw_meat.png` | `delapouite/steak` |
 | `recycler.png` | `lorc/recycle` |
 | `research_table.png` | `lorc/scroll-unfurled` |

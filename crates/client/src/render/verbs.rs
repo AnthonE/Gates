@@ -810,6 +810,16 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        Verb::Planter => {
+            // A planter is a box that grows: `E` opens it and the panel is
+            // where the seeds go in and the harvest comes out.
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
         Verb::Recycler => {
             // `E` opens it for the fire's reason exactly — the panel is
             // where the salvage goes — and by the same action, because a

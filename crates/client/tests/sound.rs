@@ -3356,3 +3356,30 @@ fn every_recorded_bed_loops_without_a_seam() {
         );
     }
 }
+
+/// **A charging pig snorts fast, and the hunt's start is an edge** (wire
+/// v99: an animal's `crouched` is its hunt). The pig's near register is its
+/// charge, at `CHARGE_SNORT_PERIOD_S`; `rouse` answers true once, on the
+/// frame the hunt starts, and never for an animal first seen mid-hunt.
+#[test]
+fn a_charging_pig_snorts_fast_and_the_hunt_is_an_edge() {
+    use client::sound::voice::{Voices, CHARGE_SNORT_PERIOD_S, VOICE_JITTER};
+    let pig = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_PIG)
+        .expect("no pig slot");
+    let dt = 0.05f32;
+    let mut s = Voices::default();
+    assert!(!s.rouse(pig, true), "a pig seen mid-charge was announced");
+    s.due(pig, true, dt); // prime
+    let mut t = 0.0f32;
+    while s.due(pig, true, dt).is_none() {
+        t += dt;
+        assert!(
+            t <= CHARGE_SNORT_PERIOD_S * (1.0 + VOICE_JITTER) + dt * 2.0,
+            "a charging pig waited {t:.2}s to snort"
+        );
+    }
+    assert!(!s.rouse(pig, false), "calming down is not a hunt");
+    assert!(s.rouse(pig, true), "the charge's start went unvoiced");
+    assert!(!s.rouse(pig, true), "a held charge announced twice");
+}

@@ -68,6 +68,7 @@ pub fn oven_refusal(arch: u8) -> &'static str {
     match arch {
         sim_core::deploy::ARCH_FURNACE => "a furnace takes wood and ore",
         sim_core::deploy::ARCH_RECYCLER => "the recycler only takes what it can break down",
+        sim_core::deploy::ARCH_PLANTER => "a planter only takes seeds",
         _ => refusal_text(REFUSE_M_OVEN as u8),
     }
 }
@@ -90,6 +91,16 @@ impl Section {
             Section::Fuel => "FUEL",
             Section::Input => "INPUT",
             Section::Output => "OUTPUT",
+        }
+    }
+
+    /// The band's name on a converter of `arch`: a planter's beds and its
+    /// harvest, every other converter's FUEL, INPUT and OUTPUT.
+    pub fn label_for(self, arch: u8) -> &'static str {
+        match (arch, self) {
+            (sim_core::deploy::ARCH_PLANTER, Section::Input) => "PLANTED",
+            (sim_core::deploy::ARCH_PLANTER, Section::Output) => "HARVEST",
+            _ => self.label(),
         }
     }
 
@@ -246,9 +257,12 @@ pub fn fire_quick_move(
         }
     }
     let Some((to_slot, grab)) = pick.or(empty.map(|s| (s, Grab::All))) else {
+        let planter = arch == sim_core::deploy::ARCH_PLANTER;
         return Quick::Refused(match band {
             Section::Fuel => "the fire's fuel slot is full",
+            Section::Input if planter => "every bed is planted",
             Section::Input => "the grill is full",
+            Section::Output if planter => "the harvest is full",
             Section::Output => "the fire's output is full",
         });
     };

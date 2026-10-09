@@ -497,6 +497,7 @@ impl Content {
                     DeployArchetype::WindowGlass => sim_core::deploy::ARCH_WINDOW_GLASS,
                     DeployArchetype::WindowShutter => sim_core::deploy::ARCH_WINDOW_SHUTTER,
                     DeployArchetype::Barricade => sim_core::deploy::ARCH_BARRICADE,
+                    DeployArchetype::Planter => sim_core::deploy::ARCH_PLANTER,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -1237,6 +1238,9 @@ impl Content {
             1000
         };
         ex.hurt_hp_per_min = u16f(e.hurt_hp_per_min, "hurt_hp_per_min")?;
+        ex.cold_food_pct = u16f(e.cold_food_pct, "cold_food_pct")?;
+        ex.cold_water_pct = u16f(e.cold_water_pct, "cold_water_pct")?;
+        ex.comfort_hp_per_min = u16f(e.comfort_hp_per_min, "comfort_hp_per_min")?;
         for a in &self.armors {
             let idx = self
                 .item_index(&a.id)
@@ -1357,6 +1361,7 @@ impl Content {
                     CookStation::Fire => ARCH_FIRE,
                     CookStation::Furnace => ARCH_FURNACE,
                     CookStation::Recycler => ARCH_RECYCLER,
+                    CookStation::Planter => sim_core::deploy::ARCH_PLANTER,
                 },
             };
         }

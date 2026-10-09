@@ -5407,6 +5407,12 @@ impl World {
             self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
             return true;
         }
+        crate::exposure::burn(
+            &self.survival.exposure,
+            self.survival.max_food,
+            self.survival.max_water,
+            &mut self.players[i],
+        );
         false
     }
 
@@ -5463,6 +5469,8 @@ impl World {
             depth_cm,
             fire: self.near_fire(x, z, feet),
             torch: crate::light::is_lit(p, &self.gather),
+            fed: p.food as u32 * 2 >= self.survival.max_food as u32
+                && p.water as u32 * 2 >= self.survival.max_water as u32,
         }
     }
 

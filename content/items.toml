@@ -607,6 +607,33 @@ tier = 0
 rarity = "common"
 slot = "hand"
 
+# Crops v0 (`NOW.md` §5): seeds grow in a planter box (`deployables.toml`,
+# `cooking.toml`'s `planter` rows). Corn seed comes off barrels and crates
+# and out of a corn cob (`recipes.toml`); hemp seed off a picked hemp plant.
+[[item]]
+id = "item.corn_seed"
+name = "Corn Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.hemp_seed"
+name = "Hemp Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.planter"
+name = "Planter Box"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+
 # Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
 # it and nothing could cook it, and both halves stopped being true on one
 # day: the pig pays raw meat (`mobs.toml`) and the campfire turns it into

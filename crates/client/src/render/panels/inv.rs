@@ -119,8 +119,8 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             own_grid(row, core, icons, sel as usize);
             if open_table(core).is_some() {
                 table_grid(row, ui, core, icons);
-            } else if let Some((_, l)) = open_fire(core) {
-                fire_grid(row, core, icons, l);
+            } else if let Some((arch, l)) = open_fire(core) {
+                fire_grid(row, core, icons, arch, l);
             } else if looting(core.cont_kind) {
                 container_grid(row, core, icons);
             } else {
@@ -403,7 +403,13 @@ const SWITCH_TEXT: Color = Color::srgb(0.96, 0.94, 0.89);
 /// container is shaped differently: the slot indices are the sim's
 /// (`oven::FIRE_LAYOUT`), and which band takes what is the sim's too
 /// (`oven::slot_takes`, asked by `drag_pointer`).
-fn fire_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, l: OvenLayout) {
+fn fire_grid(
+    row: &mut ChildSpawnerCommands,
+    core: &ClientCore,
+    icons: &Icons,
+    arch: u8,
+    l: OvenLayout,
+) {
     let lit = open_cont_lit(core);
     let name = container_name(
         CONT_BOX,
@@ -439,11 +445,13 @@ fn fire_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, l
             BackgroundColor(FIRE_WELL),
         ))
         .with_children(|well| {
-            for (k, band) in Section::ALL.into_iter().enumerate() {
+            // A band with no slots is not drawn: a planter has no fuel.
+            let bands = Section::ALL.into_iter().filter(|b| !b.slots(l).is_empty());
+            for (k, band) in bands.enumerate() {
                 if k > 0 {
                     arrow(well);
                 }
-                fire_band(well, core, icons, l, band, lit);
+                fire_band(well, core, icons, arch, l, band, lit);
             }
         });
         // A fire saved before it had sections can hold stacks past them.
@@ -466,7 +474,10 @@ fn fire_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, l
                 NO_SEL,
             );
         }
-        controls(col, lit, Val::Px(FIRE_W_PX));
+        // A planter is always growing: there is no switch to draw.
+        if !sim_core::oven::OvenState::arch_always_on(arch) {
+            controls(col, lit, Val::Px(FIRE_W_PX));
+        }
     });
 }
 
@@ -475,6 +486,7 @@ fn fire_band(
     parent: &mut ChildSpawnerCommands,
     core: &ClientCore,
     icons: &Icons,
+    arch: u8,
     l: OvenLayout,
     band: Section,
     lit: bool,
@@ -487,7 +499,7 @@ fn fire_band(
         })
         .with_children(|b| {
             b.spawn((
-                Text::new(band.label()),
+                Text::new(band.label_for(arch)),
                 font_bold(11.0),
                 TextColor(TEXT_DIM),
                 Pickable::IGNORE,

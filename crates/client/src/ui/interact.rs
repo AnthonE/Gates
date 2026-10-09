@@ -73,6 +73,8 @@ pub enum Verb {
     /// two arms agreeing everywhere the code asks a question about
     /// containers, never as one variant doing both jobs.
     Recycler,
+    /// A planter box (crops v0): a container that grows. `E` opens it.
+    Planter,
     /// A research table (research v0). The one verb here that acts on what
     /// is in your HAND rather than on what is at the address — the table
     /// holds nothing — so the prompt names the held item and `E` spends it.
@@ -193,6 +195,7 @@ impl Verb {
             Verb::Talk => 16,
             Verb::Read => 17,
             Verb::Turn => 18,
+            Verb::Planter => 19,
         }
     }
 
@@ -223,6 +226,7 @@ impl Verb {
             Verb::Talk => "SPEAKER",
             Verb::Read => "INSCRIPTION",
             Verb::Turn => "DIAL",
+            Verb::Planter => "PLANTER",
         }
     }
 }
@@ -926,6 +930,7 @@ pub fn resolve(
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
+            sim_core::deploy::ARCH_PLANTER => Verb::Planter,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
             _ => continue,
@@ -939,6 +944,7 @@ pub fn resolve(
         if verb == Verb::Box
             || verb == Verb::Fire
             || verb == Verb::Recycler
+            || verb == Verb::Planter
             || verb == Verb::Research
         {
             handle = box_key(rec.cx, rec.cz, rec.level, rec.loc);

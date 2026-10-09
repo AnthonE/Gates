@@ -842,6 +842,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err("exposure: a chill that never falls would never warm".to_string());
         }
         let hp = c.balance.globals.player_hp;
+        if e.cold_food_pct > 300 || e.cold_water_pct > 300 {
+            return Err("[exposure]: the cold burns at most 300% more food or water".into());
+        }
+        if e.comfort_hp_per_min > 60 {
+            return Err("[exposure]: comfort heals at most 60 hp a minute".into());
+        }
         if e.hurt_hp_per_min > 0 && hp / e.hurt_hp_per_min < 5 {
             return Err(format!(
                 "exposure: full cold kills {hp} hp in under 5 min ({} hp/min)",
@@ -1707,6 +1713,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
             CookStation::Fire => DeployArchetype::Fire,
             CookStation::Furnace => DeployArchetype::Furnace,
             CookStation::Recycler => DeployArchetype::Recycler,
+            CookStation::Planter => DeployArchetype::Planter,
         };
         if !c.deployables.iter().any(|d| d.archetype == arch) {
             return Err(format!(
@@ -1754,7 +1761,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // so the conflict does not exist there and the rule does not
         // reach — it is scoped rather than global because an over-broad
         // rule with a stale reason is how a comment starts lying.
-        if k.input == f.item && k.station != CookStation::Recycler {
+        if k.input == f.item && matches!(k.station, CookStation::Fire | CookStation::Furnace) {
             return Err(format!(
                 "cook: `{}` is the fuel — it burns, it does not cook",
                 k.input

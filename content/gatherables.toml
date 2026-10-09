@@ -221,6 +221,12 @@ weak_spot_bonus_pct = 0
 [gatherable.yield_per_hit]
 hand = 10
 
+# A picked plant leaves a seed in your hand (crops v0): what a planter grows
+# hemp from.
+[gatherable.secondary]
+output = "item.hemp_seed"
+per_hit = 1
+
 # Rust's collectibles: what lies on the ground for a naked spawn to pick up
 # with `E` before it has a tool — loose stone, a wood pile, a lump of ore, a
 # patch of mushrooms (`terrain::plant_of` places them out of the bush

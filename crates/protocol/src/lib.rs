@@ -1080,7 +1080,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v99 — medicine on a downed body. `ACT_TREAT` (31, the last five-bit
 /// code) carries an inventory slot and the target's id; the sim stands the
 /// body up if the item revives (`Command::Treat`). The item catalog row
-/// grows a `revive` bit after `holster`, so the client offers the verb.
+/// grows a `revive` bit after `holster`, so the client offers the verb. On
+/// an animal's record `crouched` now means the brain's hunt (chase, attack
+/// or orbit), so a client voices a hunting animal and not a grazing one.
 pub const PROTO_VER: u16 = 99;
 
 /// This game's slug in the elo catalog.
@@ -3615,6 +3617,11 @@ pub struct EntityState {
     /// it standing would show a head where no head is. Unconditional beside
     /// [`Self::wounded`], for its reason: a body entering AOI mid-crouch has
     /// to be able to learn it.
+    ///
+    /// **On an animal (v99) it is the brain's hunt** — `AiState::Chase`,
+    /// `Attack` or `Orbit` — because an animal never crouches and the client
+    /// voices a hunting animal differently from a grazing one
+    /// (`sound::voice`). A widened meaning, so the version turned.
     pub crouched: bool,
     pub yaw: u16,
     pub pitch: u8,

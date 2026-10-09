@@ -1568,7 +1568,7 @@ pub fn place(
 /// distance the register turns on and the distance the cue is audible to
 /// are the same arithmetic on the same two positions.
 pub fn voices(
-    herd: Query<(&super::mobs::Animal, &Transform)>,
+    herd: Query<(&super::mobs::Animal, &Transform, &super::mobs::Gait)>,
     eye: Res<Eye>,
     time: Res<Time>,
     feed: Res<super::feed::Feed>,
@@ -1576,7 +1576,7 @@ pub fn voices(
 ) {
     let dt = time.delta_secs();
     let switch = crate::sound::voice::switch_m();
-    for (animal, t) in herd.iter() {
+    for (animal, t, gait) in herd.iter() {
         let Some(slot) = sim_core::mob::slot_of_id(animal.0) else {
             continue;
         };
@@ -1599,8 +1599,25 @@ pub fn voices(
             sound.play(Request::at(cue, at));
             continue;
         }
+        // A sleeping animal says nothing; its clock waits.
+        if gait.asleep {
+            continue;
+        }
+        // The hunt starting (v99): its near voice at once — a pig's charge
+        // snort, a wolf's growl — rather than whenever the clock comes round.
+        if sound.voices.rouse(slot, gait.hostile) {
+            let cue = crate::sound::voice::cue_of(slot, true);
+            sound.voices.called(slot);
+            sound.play(Request::at(cue, at));
+            continue;
+        }
         let d = [at[0] - eye.pos.x, at[1] - eye.pos.y, at[2] - eye.pos.z];
-        let near = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= switch * switch;
+        let close = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= switch * switch;
+        // The register is the brain's now, not the distance alone: a wolf
+        // growls when it is hunting and close enough to hear, and howls
+        // otherwise; a pig snorts fast while it charges.
+        let near =
+            gait.hostile && (close || sim_core::mob::kind_of(slot) != sim_core::mob::MOB_WOLF);
         let Some(cue) = sound.voices.due(slot, near, dt) else {
             continue;
         };

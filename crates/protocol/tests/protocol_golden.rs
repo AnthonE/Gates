@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 152] = [
+const GOLDEN: [&[u8]; 153] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -215,6 +215,7 @@ const GOLDEN: [&[u8]; 152] = [
     include_bytes!("golden/action_drop.bin"),
     include_bytes!("golden/action_respawn_at.bin"),
     include_bytes!("golden/event_worn.bin"),
+    include_bytes!("golden/action_treat.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -467,8 +468,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 150);
     // What a body wears (v98).
     g!(seen, golden_event, 151);
+    // A syringe on a downed body (v99).
+    g!(seen, golden_action, 152);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 152, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 153, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -571,6 +574,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_respawn_at(cx, cz, level, &mut buf).unwrap()
+        }
+        "action_treat.bin" => {
+            let (slot, target) = protocol::goldens::action_treat();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Treat { slot, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_treat(slot, target, &mut buf).unwrap()
         }
         "action_drop.bin" => {
             let (slot, count) = protocol::goldens::action_drop();

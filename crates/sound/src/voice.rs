@@ -78,6 +78,11 @@ pub const GROWL_PERIOD_S: f32 = 2.5;
 /// not to keep a herd in touch. An opening value, like the snort's.
 pub const BELLOW_PERIOD_S: f32 = 24.0;
 
+/// Mean seconds between a charging pig's snorts — its near register, which
+/// the caller picks while the animal hunts (the wire's hunt bit, v99). Fast,
+/// for the growl's reason: it is the animal about to reach you.
+pub const CHARGE_SNORT_PERIOD_S: f32 = 1.4;
+
 /// How far an interval may wander from its mean, as a fraction: each draw
 /// lands in `PERIOD × [1−J, 1+J]`, so 4.5–13.5 s for a snort at the defaults.
 ///
@@ -102,6 +107,9 @@ pub struct Voices {
     /// change can be noticed. Meaningless for a pig, which has one register
     /// and therefore never changes it.
     near: [bool; MAX_MOBS],
+    /// Whether the slot was hunting at the last [`Voices::rouse`], so the
+    /// hunt's start is an edge.
+    hunting: [bool; MAX_MOBS],
 }
 
 impl Default for Voices {
@@ -110,6 +118,7 @@ impl Default for Voices {
             next: [-1.0; MAX_MOBS],
             cycle: [0; MAX_MOBS],
             near: [false; MAX_MOBS],
+            hunting: [false; MAX_MOBS],
         }
     }
 }
@@ -136,7 +145,7 @@ impl Voices {
         if self.next[slot] < 0.0 {
             // First sight: prime silently, phase-offset by the slot's own
             // first draw so a herd walked into does not speak in unison.
-            self.next[slot] = interval(slot, 0, cue);
+            self.next[slot] = interval(slot, 0, cue, near);
             self.cycle[slot] = 1;
             self.near[slot] = near;
             return None;
@@ -150,14 +159,14 @@ impl Voices {
             // call that was nearly due, which is what an unconditional
             // redraw would do.
             self.near[slot] = near;
-            let fresh = interval(slot, self.cycle[slot], cue);
+            let fresh = interval(slot, self.cycle[slot], cue, near);
             self.next[slot] = self.next[slot].min(fresh);
         }
         self.next[slot] -= dt_s;
         if self.next[slot] > 0.0 {
             return None;
         }
-        self.next[slot] = interval(slot, self.cycle[slot], cue);
+        self.next[slot] = interval(slot, self.cycle[slot], cue, near);
         self.cycle[slot] = self.cycle[slot].wrapping_add(1);
         Some(cue)
     }
@@ -169,9 +178,23 @@ impl Voices {
         if slot >= MAX_MOBS {
             return;
         }
-        let cue = cue_of(slot, self.near[slot]);
-        self.next[slot] = interval(slot, self.cycle[slot], cue);
+        let near = self.near[slot];
+        let cue = cue_of(slot, near);
+        self.next[slot] = interval(slot, self.cycle[slot], cue, near);
         self.cycle[slot] = self.cycle[slot].wrapping_add(1);
+    }
+
+    /// Note whether the slot is hunting, and answer true on the frame the
+    /// hunt starts — the moment the caller voices it at once. Not on first
+    /// sight: an animal seen mid-hunt is primed, not announced, as
+    /// [`Voices::due`] primes its clock.
+    pub fn rouse(&mut self, slot: usize, hunting: bool) -> bool {
+        if slot >= MAX_MOBS {
+            return false;
+        }
+        let was = self.hunting[slot];
+        self.hunting[slot] = hunting;
+        hunting && !was && self.next[slot] >= 0.0
     }
 
     /// Forget every clock — leaving a world. A stale countdown carried into
@@ -214,9 +237,18 @@ pub fn switch_m() -> f32 {
 
 /// The slot's `cycle`-th interval for a given call, seconds: the cue's mean
 /// period scaled into `[1−J, 1+J]` by a hash of (slot, cycle).
-fn interval(slot: usize, cycle: u32, cue: Cue) -> f32 {
+fn interval(slot: usize, cycle: u32, cue: Cue, near: bool) -> f32 {
     let h = hash01(slot as u32, cycle);
-    period_s(cue) * (1.0 - VOICE_JITTER + 2.0 * VOICE_JITTER * h)
+    period_of(cue, near) * (1.0 - VOICE_JITTER + 2.0 * VOICE_JITTER * h)
+}
+
+/// The mean seconds between two of this call in this register: the cue's
+/// own period, except a charging pig's snort ([`CHARGE_SNORT_PERIOD_S`]).
+pub fn period_of(cue: Cue, near: bool) -> f32 {
+    match cue {
+        Cue::Snort if near => CHARGE_SNORT_PERIOD_S,
+        _ => period_s(cue),
+    }
 }
 
 /// The mean seconds between two of this call.

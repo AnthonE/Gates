@@ -176,6 +176,10 @@ fn main() {
     let (id, items) = goldens::event_worn();
     let len = protocol::encode_event_worn(id, &items, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[151], &buf[..len]);
+    // A syringe on a downed body (v99).
+    let (slot, target) = goldens::action_treat();
+    let len = protocol::encode_action_treat(slot, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[152], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

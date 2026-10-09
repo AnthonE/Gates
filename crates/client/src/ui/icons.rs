@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 114] = [
+pub const STEMS: [&str; 117] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -166,6 +166,10 @@ pub const STEMS: [&str; 114] = [
     "berries",
     "mushrooms",
     "corn",
+    // Crops v0: the seeds and the bed they grow in.
+    "corn_seed",
+    "hemp_seed",
+    "planter_box",
     // The food loop's states. `burnt_meat` is the one PNG in
     // `assets/icons/` that is not game-icons.net — the archive has none, so
     // it is ours. The other two were briefly ours as well and are archive

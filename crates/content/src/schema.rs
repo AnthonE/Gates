@@ -533,6 +533,9 @@ pub enum DeployArchetype {
     WindowGlass,
     WindowShutter,
     Barricade,
+    /// A planter box (crops v0): a container that grows what is planted in
+    /// it, by `cooking.toml`'s `planter` rows.
+    Planter,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -580,6 +583,8 @@ pub enum CookStation {
     /// Converts without burning (recycler v0). The station that makes this
     /// table the economy's arming point: a row here is a faucet.
     Recycler,
+    /// Grows (crops v0): a seed in a planter's bed becomes a crop.
+    Planter,
 }
 
 /// One transformation a container performs: one unit in, `count` units of
@@ -1064,6 +1069,16 @@ pub struct Exposure {
     /// Past this chill the cold costs hp; this many a minute at full chill.
     pub hurt_at: u32,
     pub hurt_hp_per_min: u32,
+    /// The cold's metabolic cost: percent of the normal food and water drain
+    /// added at full chill, scaled by the chill.
+    #[serde(default)]
+    pub cold_food_pct: u32,
+    #[serde(default)]
+    pub cold_water_pct: u32,
+    /// Comfort: hit points a minute a warm, dry, fed body gets back by a fire
+    /// or under a roof.
+    #[serde(default)]
+    pub comfort_hp_per_min: u32,
 }
 
 /// The declared bands + globals the anchors compute against

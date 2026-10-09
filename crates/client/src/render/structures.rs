@@ -395,7 +395,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 17] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 18] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -529,6 +529,8 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 17] = [
     ),
     // 16 · wooden barricade: a row of sharpened logs, `DEPLOY_VOL`'s row.
     ([1.8, 1.4, 0.6], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
+    // 17 · planter: a raised bed of planks, knee high, `DEPLOY_VOL`'s row.
+    ([1.6, 0.5, 0.8], Color::srgb(0.396, 0.298, 0.200), 0.9, 0.0),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2237,6 +2239,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None,                                     // 14 glass — shared insert geometry
     None,                                     // 15 shutters — shared insert geometry
     Some("models/deploy/barricade.glb"),      // 16 barricade
+    None,                                     // 17 planter — the cuboid until a model
 ];
 
 /// How many looks one (tier, damage band) is drawn in. Four materials where
@@ -3622,7 +3625,10 @@ pub fn is_container(arch: u8) -> bool {
 /// answer and this is the client's read of the same fact; both are the
 /// archetype table, so neither invents anything.
 pub fn is_converter(arch: u8) -> bool {
-    matches!(arch, ARCH_FIRE | ARCH_FURNACE | ARCH_RECYCLER)
+    matches!(
+        arch,
+        ARCH_FIRE | ARCH_FURNACE | ARCH_RECYCLER | sim_core::deploy::ARCH_PLANTER
+    )
 }
 
 /// Which archetypes are craft stations — the proximity tokens `craft.rs`

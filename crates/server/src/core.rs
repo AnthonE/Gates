@@ -5595,7 +5595,14 @@ impl ShardCore {
             sleeping: m.state == sim_core::brain::AiState::Sleep,
             dead: false,
             wounded: false,
-            crouched: false,
+            // The hunt (v99): an animal never crouches, so the bit says it
+            // is after someone, which is what the client's voice reads.
+            crouched: matches!(
+                m.state,
+                sim_core::brain::AiState::Chase
+                    | sim_core::brain::AiState::Attack
+                    | sim_core::brain::AiState::Orbit
+            ),
             yaw: m.yaw,
             pitch: 0,
             // Six of twelve now. A pig has no hotbar, so the hand is
