@@ -541,13 +541,11 @@ act):
 
 ## 0ad2 · What the admin lane still cannot do *(server lane)*
 
-1. Bans are memory-only (`server/src/admin.rs:179`): persist them in their own file
-   and format version (the player store's header wipes on a seed change).
 2. Nobody has typed a command at a live shard: the `REFUSE_ADMIN` close
    (`net.rs:1284`) is undriven (the disconnected screen does say an admin removed you).
 3. The anomaly log (JSONL) has no reader to give the alpha gate a verdict.
-4. `/who` and `/brain` answer the asker in chat. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
-   only in the anomaly log, and nothing stops `dev_env` in a public `shard.toml`.
+- Bans last in `ban_file` (text, `# gates bans v1`); there is no `/unban` verb, an
+  operator deletes the line with the shard down.
 
 ## 0pop · The inhabitants nobody has run for longer than a test *(server lane)*
 

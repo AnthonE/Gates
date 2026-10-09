@@ -253,6 +253,9 @@ pub struct ShardConfig {
     /// Where the anomaly log is appended (`anomaly_file`). `None` ⇒ no log
     /// and every push is a no-op, which is what a test shard runs.
     pub anomaly_file: Option<String>,
+    /// Where admin bans last (`ban_file`, `admin::Bans`). `None` ⇒ a ban
+    /// holds for the uptime only.
+    pub ban_file: Option<String>,
     /// **How many resident inhabitants the shard seats itself**
     /// (`population.rs`). Bots, dialled over this shard's own wire after the
     /// bind, running the raid profile — half owners building and locking,
@@ -386,6 +389,7 @@ impl ShardConfig {
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
+            ban_file: None,
             population: 0,
             spectate: Spectate::OFF,
         }
@@ -474,6 +478,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
     let mut anomaly_file: Option<String> = None;
+    let mut ban_file: Option<String> = None;
     let mut population: Option<usize> = None;
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
@@ -881,6 +886,12 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 anomaly_file = Some(value.to_string());
             }
+            "ban_file" => {
+                if value.is_empty() {
+                    return Err(format!("shard.toml line {}: ban_file is empty", n + 1));
+                }
+                ban_file = Some(value.to_string());
+            }
             "min_client" => {
                 min_client = Some(
                     parse_min_client(value)
@@ -1050,6 +1061,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    // The sky and clock at boot, without an admin wallet: a dev shard's
+    // knob. A shard with a ticket door is a public one, and its sky is the
+    // schedule's (or an admin's, said in chat and logged).
+    if dev_env.is_some() && entitle.armed() {
+        return Err(
+            "shard.toml: dev_env sets the sky and clock with no admin — it is for \
+             dev shards, and this one has a ticket door (entitle_origin)"
+                .into(),
+        );
+    }
     if skins.all && skins.origin.is_some() {
         return Err(
             "shard.toml: skins_all and skins_origin together — the origin would never \
@@ -1128,6 +1149,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         faces,
         admins: admins.unwrap_or_else(crate::admin::Admins::none),
         anomaly_file,
+        ban_file,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         spectate,

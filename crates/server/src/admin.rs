@@ -29,17 +29,17 @@
 //!   both live in the accept loop. They cross on an [`AdminAct`] ring —
 //!   sim → accept, SPSC, `SaveMsg`'s exact shape for `SaveMsg`'s reason.
 //!
-//! ## A ban is a wallet, and the file is not this module's
+//! ## A ban is a wallet, kept in its own file
 //!
 //! The admin types an id because that is what their screen shows; the
 //! server resolves it to the wallet it holds and hands *that* to the
-//! accept loop, because an id is meaningless across a reconnect. Where the
-//! list is persisted is `net.rs`'s business (it owns the store), and at v0
-//! it is **memory only** — a ban holds for the shard's uptime and a
-//! restart forgets it. That is stated rather than hidden: persisting it
-//! wants its own file with its own format version, and a ban list quietly
-//! sharing the player store's header would be wiped by the next seed
-//! change (`store.rs` §the header pins the seed).
+//! accept loop, because an id is meaningless across a reconnect. With
+//! `ban_file` set the list is read at boot and written whole on every new
+//! ban ([`Bans::load`], [`Bans::save`]); without it a ban holds for the
+//! shard's uptime. Its own file with its own header, never the player
+//! store's: that header pins the seed, and a wipe would forget every ban.
+//! The file is text, one wallet a line, so an operator lifts a ban by
+//! deleting its line while the shard is down.
 
 use protocol::admin::AdminCmd;
 use protocol::ChatText;
@@ -177,16 +177,54 @@ pub enum AdminAct {
     Ban { id: u32, key: PlayerKey },
 }
 
-/// The wallets refused at the door for this uptime. Lives in the accept
-/// loop beside the key table it is compared against.
+/// The ban file's first line. Its own format version, bumped if a line's
+/// shape ever changes; a file that does not open with it refuses the boot.
+pub const BAN_FILE_HEADER: &str = "# gates bans v1";
+
+/// The wallets refused at the door. Lives in the accept loop beside the
+/// key table it is compared against; `file`, when set, is where it lasts.
 #[derive(Default)]
 pub struct Bans {
     keys: Vec<PlayerKey>,
+    file: Option<std::path::PathBuf>,
 }
 
 impl Bans {
     pub fn new() -> Self {
-        Self { keys: Vec::new() }
+        Self {
+            keys: Vec::new(),
+            file: None,
+        }
+    }
+
+    /// The list kept in `path`: read now if the file exists, written by
+    /// every [`Bans::save`]. A file that does not parse refuses the boot —
+    /// a shard that came up having forgotten its bans would readmit them.
+    pub fn load(path: &std::path::Path) -> Result<Self, String> {
+        let mut bans = Self::new();
+        match std::fs::read_to_string(path) {
+            Ok(text) => bans.keys = parse_bans(&text)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        bans.file = Some(path.to_path_buf());
+        Ok(bans)
+    }
+
+    /// Write the whole list to its file, through a temp file and a rename
+    /// so a crash mid-write keeps the old one. A no-op with no file.
+    pub fn save(&self) -> std::io::Result<()> {
+        use std::io::Write;
+        let Some(path) = &self.file else {
+            return Ok(());
+        };
+        let tmp = std::path::PathBuf::from(format!("{}.tmp", path.display()));
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(bans_text(&self.keys).as_bytes())?;
+            f.sync_data()?;
+        }
+        std::fs::rename(&tmp, path)
     }
 
     /// Record a ban. `false` ⇒ the list is full and the ban did NOT take —
@@ -213,6 +251,61 @@ impl Bans {
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
+}
+
+/// The file's text: the header, then a wallet a line — as typed when it is
+/// printable ASCII (an address always is), else `hex:` and its bytes.
+fn bans_text(keys: &[PlayerKey]) -> String {
+    let mut text = String::from(BAN_FILE_HEADER);
+    text.push('\n');
+    for k in keys {
+        let b = k.as_bytes();
+        if b.iter().all(|c| c.is_ascii_graphic()) && !b.starts_with(b"hex:") && b[0] != b'#' {
+            text.push_str(std::str::from_utf8(b).unwrap_or_default());
+        } else {
+            text.push_str("hex:");
+            for c in b {
+                text.push_str(&format!("{c:02x}"));
+            }
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// [`bans_text`] read back. Blank lines and `#` comments are skipped, so
+/// an operator may annotate a ban.
+fn parse_bans(text: &str) -> Result<Vec<PlayerKey>, String> {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some(BAN_FILE_HEADER) {
+        return Err(format!(
+            "not a ban file: the first line must be `{BAN_FILE_HEADER}`"
+        ));
+    }
+    let mut keys = Vec::new();
+    for (n, line) in lines.enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let bytes = match line.strip_prefix("hex:") {
+            Some(hex) if hex.len() % 2 == 0 => (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+                .collect::<Result<Vec<u8>, _>>()
+                .map_err(|_| format!("line {}: bad hex", n + 2))?,
+            Some(_) => return Err(format!("line {}: odd hex", n + 2)),
+            None => line.as_bytes().to_vec(),
+        };
+        let key = PlayerKey::new(&bytes).ok_or_else(|| format!("line {}: not a wallet", n + 2))?;
+        if keys.len() >= MAX_BANS {
+            return Err(format!("more than {MAX_BANS} bans"));
+        }
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
 }
 
 /// The line the house says when an admin broadcasts. Prefixed so a player
@@ -265,6 +358,29 @@ pub fn brain_line(
         "{species}#{slot} {state}{status} >{target} hp{} {dist_m:.0}m r{roused_s}s",
         m.hp
     )
+}
+
+/// `/weather`'s answer to the admin: the preset it asked for, by the word
+/// `/weather` takes, and when the sky gets there.
+pub fn weather_line(mode: u8) -> String {
+    use sim_core::weather::*;
+    let word = match mode {
+        MODE_AUTO => return "weather: back to the schedule".to_string(),
+        CLEAR => "clear",
+        OVERCAST => "overcast",
+        FOG => "fog",
+        RAIN_MILD => "rain",
+        RAIN_HEAVY => "heavy",
+        STORM => "storm",
+        _ => "?",
+    };
+    let secs = FORCE_FADE_TICKS / sim_core::limits::TICK_HZ as u64;
+    format!("weather: {word} in {secs} s")
+}
+
+/// `/time`'s answer to the admin: the day fraction the clock moved to.
+pub fn time_line(frac_pm: u16) -> String {
+    format!("time: {}.{:03} of the day", frac_pm / 1000, frac_pm % 1000)
 }
 
 pub fn server_line(text: &ChatText) -> ChatText {
@@ -368,6 +484,48 @@ mod tests {
             !b.insert(PlayerKey::new(b"0xdeadbeef").unwrap()),
             "a full ban list must refuse rather than evict"
         );
+    }
+
+    /// A ban outlives the shard in its own file, read back as written —
+    /// annotations skipped, an unprintable key carried as hex — and a file
+    /// that is not a ban file refuses rather than loading as empty.
+    #[test]
+    fn bans_survive_a_restart_in_their_own_file() {
+        let path = std::env::temp_dir().join(format!("gates-bans-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut b = Bans::load(&path).unwrap();
+        assert!(b.is_empty(), "no file yet is no bans");
+        b.insert(key(A));
+        b.insert(PlayerKey::new(&[0x00, 0xff, b' ']).unwrap());
+        b.save().unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{text}\n# lifted by hand:\n")).unwrap();
+        let back = Bans::load(&path).unwrap();
+        assert_eq!(back.len(), 2);
+        assert!(back.contains(&key(A)));
+        assert!(back.contains(&PlayerKey::new(&[0x00, 0xff, b' ']).unwrap()));
+        assert!(text.contains("hex:00ff20"), "{text}");
+
+        std::fs::write(&path, "0xabc\n").unwrap();
+        assert!(
+            Bans::load(&path).is_err(),
+            "a headerless file is not a ban file"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn env_answers_name_what_changed() {
+        assert_eq!(
+            weather_line(sim_core::weather::STORM),
+            "weather: storm in 20 s"
+        );
+        assert_eq!(
+            weather_line(sim_core::weather::MODE_AUTO),
+            "weather: back to the schedule"
+        );
+        assert_eq!(time_line(250), "time: 0.250 of the day");
     }
 
     /// The house's line is marked, and a long one truncates rather than

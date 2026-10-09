@@ -527,6 +527,21 @@ impl ShardCore {
         crate::admin::brain_line(slot, m, target, d2.sqrt(), w.tick)
     }
 
+    /// An admin verb's answer, said to the asker alone as a `[server]` line.
+    fn answer(
+        &mut self,
+        to: usize,
+        mut line: String,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        line.truncate(protocol::ChatText::CAP);
+        if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
+            let line = crate::admin::server_line(&text);
+            self.say_server(Some(to), &line, stats, send);
+        }
+    }
+
     fn say_server(
         &mut self,
         to: Option<usize>,
@@ -2044,6 +2059,7 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(mode as i64, 0, 0);
+                self.answer(from_slot, admin::weather_line(mode), stats, send);
             }
             AdminCmd::Time { frac_pm } => {
                 if !self.queue(Command::AdminEnv {
@@ -2059,17 +2075,14 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(frac_pm as i64, 0, 0);
+                self.answer(from_slot, admin::time_line(frac_pm), stats, send);
             }
             AdminCmd::SaveNow => {
                 *ops.save_now = true;
             }
             AdminCmd::Brain => {
-                let mut line = self.brain_answer(who);
-                line.truncate(protocol::ChatText::CAP);
-                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
-                    let line = admin::server_line(&text);
-                    self.say_server(Some(from_slot), &line, stats, send);
-                }
+                let line = self.brain_answer(who);
+                self.answer(from_slot, line, stats, send);
             }
             AdminCmd::Who => {
                 let mut line = String::new();
@@ -2079,12 +2092,7 @@ impl ShardCore {
                     line.push(' ');
                     line.push_str(&c.id.to_string());
                 }
-                let mut line = format!("{n} on:{line}");
-                line.truncate(protocol::ChatText::CAP);
-                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
-                    let line = admin::server_line(&text);
-                    self.say_server(Some(from_slot), &line, stats, send);
-                }
+                self.answer(from_slot, format!("{n} on:{line}"), stats, send);
             }
             // Handled above, before the allowlist.
             AdminCmd::Bug { .. } | AdminCmd::WipeWhen => return,
