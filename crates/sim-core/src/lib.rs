@@ -47,6 +47,7 @@ pub mod occupy;
 pub mod oven;
 pub mod persist;
 mod pitch_lut;
+pub mod poles;
 pub mod probe;
 pub mod ranged;
 pub mod research;

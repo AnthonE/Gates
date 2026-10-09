@@ -38,7 +38,7 @@ import sys
 # ── bpy-free arithmetic (self-tested) ───────────────────────────────────────
 
 ROLES = ("yard", "concrete", "sheet", "cargo", "timber", "steel", "obsidian",
-         "gilt", "canvas", "lapis", "bulb", "ashlar")
+         "gilt", "canvas", "lapis", "bulb", "ashlar", "leaf", "paint", "ivy")
 # A landmark kit's boxes also name the old masonry and natural rock; neither
 # is a mesh role (`stone` dresses to `ashlar`, `rock` is the client's).
 KIT_MATS = ROLES + ("stone", "rock")
@@ -1032,11 +1032,16 @@ def ragged_crown(s, p, parts, rng, lines):
 def dress_ruin(s, kit, rng):
     parts = kit["parts"]
     lines = course_lines(rng)
+    floor_p = next((p for p in parts if p["mat"] == "stone" and p["b"][4] <= 0.2
+                    and min(p["b"][3] - p["b"][0], p["b"][5] - p["b"][2]) >= 4), None)
+    walls = [p for p in parts if p["mat"] == "stone" and p["b"][4] >= 2.0 and p["b"][1] < 2.0]
     for p in parts:
         b = p["b"]
         x0, y0, z0, x1, y1, z1 = b
         h = y1 - max(y0, 0.0)
         wide = min(x1 - x0, z1 - z0)
+        if p is floor_p or p["mat"] in ("yard", "timber"):
+            continue
         if y1 <= 1.5:
             fallen(s, b, rng)
         elif y0 > 2.0 and h <= 1.0:
@@ -1053,6 +1058,295 @@ def dress_ruin(s, kit, rng):
             masonry(s, b, lines, rng)
             if y1 >= 2.0:
                 ragged_crown(s, p, parts, rng, lines)
+
+    rest = [p for p in parts if p is not floor_p and p["b"][1] < 2.0]
+    keep = [(p["b"][0], p["b"][2], p["b"][3], p["b"][5]) for p in rest]
+    # A cold fire in the court, near the lean-to's open side.
+    lt = next((p["b"] for p in parts if p["mat"] == "timber"), None)
+    fire = None
+    if lt is not None:
+        fire = (lt[3] + 1.6 if lt[0] < 0 else lt[0] - 1.6, (lt[2] + lt[5]) / 2)
+        keep.append((fire[0] - 0.9, fire[1] - 0.9, fire[0] + 0.9, fire[1] + 0.9))
+    if floor_p is not None:
+        flagstones(s, floor_p["b"], rng, keep)
+    for p in parts:
+        if p["mat"] == "yard":
+            rubble_heap(s, p["b"], rng)
+        elif p["mat"] == "timber":
+            lean_to(s, p["b"], rng)
+    if floor_p is not None:
+        fallen_floor(s, parts, walls, floor_p["b"], rng)
+        if fire is not None:
+            campfire(s, (fire[0], floor_p["b"][4], fire[1]), rng)
+    for w in walls:
+        ivy(s, w["b"], parts, rng)
+
+
+RUBBLE = (0.74, 0.71, 0.66)
+CHAR = (0.22, 0.19, 0.16)
+IVY = [(0.56, 0.74, 0.34), (0.64, 0.8, 0.38), (0.46, 0.64, 0.27), (0.7, 0.82, 0.42)]
+
+
+def flagstones(s, b, rng, keep_out):
+    """Old flags over a floor box: irregular slabs a hair above its dark top
+    (the joints), some lifted or missing to soil, weeds up the joints."""
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("ashlar", (x0, y0, z0, x1, y1, z1), (0.32, 0.31, 0.29))
+    top = y1 + 0.004
+
+    def blocked(ax0, az0, ax1, az1, m=0.02):
+        return any(not (ax1 < k[0] - m or ax0 > k[2] + m or az1 < k[1] - m or az0 > k[3] + m) for k in keep_out)
+
+    z = z0 + 0.02
+    while z < z1 - 0.2:
+        rh = rng.uniform(0.45, 0.8)
+        z2 = min(z1 - 0.02, z + rh)
+        x = x0 + 0.02 + rng.uniform(0, 0.3)
+        while x < x1 - 0.2:
+            w = rng.uniform(0.5, 1.1)
+            x2 = min(x1 - 0.02, x + w)
+            g = 0.018
+            ax0, az0, ax1, az1 = x + g, z + g, x2 - g, z2 - g
+            if not blocked(ax0, az0, ax1, az1):
+                r = rng.random()
+                if r < 0.12:
+                    # Gone: soil and weeds where it was.
+                    face_out(s, "yard", [(ax0, top, az0), (ax1, top, az0), (ax1, top, az1), (ax0, top, az1)],
+                             DIRT, (ax0, top - 1, az0))
+                    for _ in range(rng.randint(1, 3)):
+                        tuft(s, rng.uniform(ax0, ax1), top, rng.uniform(az0, az1), rng.uniform(0.15, 0.4), rng)
+                else:
+                    k = rng.uniform(0.8, 1.05)
+                    tint = (STONE[0] * k, STONE[1] * k * 0.99, STONE[2] * k * 0.97)
+                    lift = 0.0 if r < 0.85 else rng.uniform(0.01, 0.035)
+                    yt = top + 0.012 + lift
+                    s.new_piece()
+                    face_out(s, "ashlar", [(ax0, yt, az0), (ax1, yt, az0), (ax1, yt, az1), (ax0, yt, az1)], tint,
+                             (ax0, yt - 1, az0))
+                    if rng.random() < 0.18:
+                        tuft(s, ax1 + g / 2, top, rng.uniform(az0, az1), rng.uniform(0.1, 0.25), rng)
+            x = x2
+        z = z2
+
+
+def rubble_heap(s, b, rng):
+    """A spoil heap filling its box: a low mound of grit and broken stone,
+    the big pieces low in the middle, the small ones over and round them."""
+    x0, y0, z0, x1, y1, z1 = b
+    base = max(y0, 0.0)
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    hx, hz = (x1 - x0) / 2, (z1 - z0) / 2
+    h = y1 - base
+    rough(s, "yard", (x0 + 0.05, min(y0, base - 0.4), z0 + 0.05, x1 - 0.05, base + h * 0.55, z1 - 0.05),
+          (0.62, 0.58, 0.52), rng, amp=0.12, cell=0.6, crown=h * 0.5)
+    n = int(hx * hz * 14)
+    for i in range(n):
+        u, v = rng.uniform(-1, 1), rng.uniform(-1, 1)
+        rr = max(abs(u), abs(v))
+        px, pz = cx + u * (hx - 0.15), cz + v * (hz - 0.15)
+        mound = base + h * 0.55 * (1 - rr ** 2)
+        sz = rng.uniform(0.12, 0.42) * (1.0 - 0.6 * rr)
+        py = min(y1 - sz * 0.35, mound + sz * 0.2)
+        yaw = rng.uniform(0, math.pi)
+        g = rng.uniform(0.82, 1.05)
+        ybox(s, "ashlar", (px, py, pz), (math.cos(yaw), math.sin(yaw)), sz * rng.uniform(1.0, 1.7), sz * 0.7, sz,
+             (RUBBLE[0] * g, RUBBLE[1] * g, RUBBLE[2] * g))
+    for _ in range(int(hx * hz * 2)):
+        tuft(s, cx + rng.uniform(-hx, hx) * 0.9, base + h * 0.3, cz + rng.uniform(-hz, hz) * 0.9,
+             rng.uniform(0.2, 0.5), rng)
+
+
+def fallen_floor(s, parts, walls, floor_b, rng):
+    """The upper floor that was: joist stubs and empty sockets along the
+    inside of the tallest wall at the old floor's height, and the beams that
+    came down, their feet on the spoil heap under them."""
+    heaps = [p["b"] for p in parts if p["mat"] == "yard" and p["b"][1] >= 0.0]
+    tall = max(walls, key=lambda w: w["b"][4] - max(w["b"][1], 0.0) if min(w["b"][3] - w["b"][0], w["b"][5] - w["b"][2]) < 2 else -1)
+    x0, y0, z0, x1, y1, z1 = tall["b"]
+    along = 0 if (x1 - x0) >= (z1 - z0) else 2
+    # The face toward the court.
+    cc = ((floor_b[0] + floor_b[3]) / 2, (floor_b[2] + floor_b[5]) / 2)
+    if along == 0:
+        face, sg = (z0, -1) if cc[1] < z0 else (z1, 1)
+    else:
+        face, sg = (x0, -1) if cc[0] < x0 else (x1, 1)
+    level = min(y1 - 1.2, 3.6)
+    lo, hi = (x0, x1) if along == 0 else (z0, z1)
+    u = lo + 0.8
+    while u < hi - 0.5:
+        stub = rng.random() < 0.55
+        w = 0.22
+        if stub:
+            ln = rng.uniform(0.25, 0.9)
+            if along == 0:
+                obox(s, "timber", (u, level, face), (u, level - rng.uniform(0, 0.15), face + sg * ln), w, w, CHAR)
+            else:
+                obox(s, "timber", (face, level, u), (face + sg * ln, level - rng.uniform(0, 0.15), u), w, w, CHAR)
+        else:
+            d = 0.006
+            if along == 0:
+                q = [(u - w / 2, level - w / 2, face + sg * d), (u + w / 2, level - w / 2, face + sg * d),
+                     (u + w / 2, level + w / 2, face + sg * d), (u - w / 2, level + w / 2, face + sg * d)]
+                face_out(s, "ashlar", q, (0.12, 0.11, 0.1), (u, level, face - sg))
+            else:
+                q = [(face + sg * d, level - w / 2, u - w / 2), (face + sg * d, level - w / 2, u + w / 2),
+                     (face + sg * d, level + w / 2, u + w / 2), (face + sg * d, level + w / 2, u - w / 2)]
+                face_out(s, "ashlar", q, (0.12, 0.11, 0.1), (face - sg, level, u))
+        u += rng.uniform(1.0, 1.4)
+    # The beams down onto the heap nearest this wall.
+    if not heaps:
+        return
+    hb = min(heaps, key=lambda q: abs(((q[2] + q[5]) / 2 if along == 0 else (q[0] + q[3]) / 2) - face))
+    hx0, hy0, hz0, hx1, hy1, hz1 = hb
+    for i in range(3):
+        if along == 0:
+            bx = rng.uniform(hx0 + 0.6, hx1 - 0.6)
+            top = (bx + rng.uniform(-0.4, 0.4), level + rng.uniform(-0.2, 0.3), face + sg * 0.25)
+            foot_z = hz1 - 0.5 if sg > 0 else hz0 + 0.5
+            foot = (bx, hy1 - 0.15, foot_z)
+        else:
+            bz = rng.uniform(hz0 + 0.6, hz1 - 0.6)
+            top = (face + sg * 0.25, level + rng.uniform(-0.2, 0.3), bz + rng.uniform(-0.4, 0.4))
+            foot_x = hx1 - 0.5 if sg > 0 else hx0 + 0.5
+            foot = (foot_x, hy1 - 0.15, bz)
+        obox(s, "timber", foot, top, 0.22, 0.22, tuple(c * rng.uniform(0.8, 1.3) for c in CHAR))
+    # Two more lying across the heap.
+    for i in range(2):
+        a = (rng.uniform(hx0 + 0.3, hx1 - 0.3), hy1 - 0.25, rng.uniform(hz0 + 0.3, hz1 - 0.3))
+        yaw = rng.uniform(0, math.pi)
+        ln = rng.uniform(1.4, 2.2)
+        e = (a[0] + math.cos(yaw) * ln, a[1] - 0.1, a[2] + math.sin(yaw) * ln)
+        e = (min(max(e[0], hx0 + 0.15), hx1 - 0.15), e[1], min(max(e[2], hz0 + 0.15), hz1 - 0.15))
+        obox(s, "timber", a, e, 0.2, 0.2, CHAR)
+
+
+def lean_to(s, b, rng):
+    """A tarp over two poles against the wall, a bedroll under it, a crate
+    for a table — all inside the box."""
+    x0, y0, z0, x1, y1, z1 = b
+    base = max(y0, 0.0)
+    wall_x, open_x = (x0, x1) if abs(x0) > abs(x1) else (x1, x0)
+    sg = 1 if open_x > wall_x else -1
+    hi, lo = y1 - 0.05, base + 1.15
+    pole_x = open_x - sg * 0.08
+    for z in (z0 + 0.12, z1 - 0.12):
+        cylinder(s, "timber", (pole_x, base, z), (pole_x, lo + 0.05, z), 0.045, 6, TIMBER)
+    # The tarp, sagging between its edges.
+    n, m = 6, 8
+    pts = {}
+    for i in range(n + 1):
+        for k in range(m + 1):
+            fx, fz = i / n, k / m
+            x = wall_x + sg * 0.03 + (pole_x - wall_x - sg * 0.03) * fx
+            y = hi + (lo - hi) * fx - 0.18 * math.sin(math.pi * fx) * math.sin(math.pi * fz)
+            z = z0 + 0.05 + (z1 - z0 - 0.1) * fz
+            pts[(i, k)] = (x, y, z)
+    s.new_piece()
+    tint = (0.42, 0.46, 0.34)
+    for i in range(n):
+        for k in range(m):
+            q = [pts[(i, k)], pts[(i + 1, k)], pts[(i + 1, k + 1)], pts[(i, k + 1)]]
+            face_out(s, "canvas", q, tint, (q[0][0], q[0][1] - 2.0, q[0][2]))
+    # A rope tie and a batten along the wall.
+    s.box("timber", (min(wall_x, wall_x + sg * 0.08), hi - 0.08, z0 + 0.02, max(wall_x, wall_x + sg * 0.08), hi + 0.02, z1 - 0.02),
+          TIMBER)
+    # Bedroll and a crate.
+    bz = z0 + (z1 - z0) * 0.35
+    bx = wall_x + sg * 0.55
+    cylinder(s, "canvas", (bx, base + 0.14, bz - 0.9), (bx, base + 0.14, bz + 0.9), 0.14, 10, (0.5, 0.36, 0.26))
+    cx = wall_x + sg * 0.45
+    cz = z1 - 0.45
+    s.box("timber", (cx - 0.3, base, cz - 0.25, cx + 0.3, base + 0.45, cz + 0.25), (0.62, 0.52, 0.4), bevel=0.02)
+    cylinder(s, "steel", (cx, base + 0.45, cz), (cx, base + 0.6, cz), 0.09, 10, (0.25, 0.25, 0.25))
+
+
+def campfire(s, at, rng):
+    """A cold fire: a ring of stones, charred logs crossed in it, ash."""
+    x, y, z = at
+    pts = [(x + 0.55 * math.cos(a), y + 0.003, z + 0.55 * math.sin(a)) for a in [2 * math.pi * i / 10 for i in range(10)]]
+    face_out(s, "yard", pts, (0.18, 0.17, 0.16), (x, y - 1, z))
+    for i in range(9):
+        a = 2 * math.pi * i / 9 + rng.uniform(-0.1, 0.1)
+        sz = rng.uniform(0.14, 0.22)
+        ybox(s, "ashlar", (x + 0.62 * math.cos(a), y + sz * 0.3, z + 0.62 * math.sin(a)), (math.cos(a + 1.57), math.sin(a + 1.57)),
+             sz * 1.4, sz * 0.75, sz, (0.6, 0.58, 0.55))
+    for i in range(4):
+        a = math.pi * i / 4 + rng.uniform(-0.2, 0.2)
+        r = 0.42
+        obox(s, "timber", (x - r * math.cos(a), y + 0.05, z - r * math.sin(a)),
+             (x + r * math.cos(a), y + 0.08 + 0.04 * i, z + r * math.sin(a)), 0.08, 0.08, CHAR)
+
+
+def ivy(s, b, parts, rng):
+    """Ivy up a wall's faces: strands climbing from the foot, wandering and
+    branching, thinning as they rise, leaves flat to the stone within a few
+    centimetres of it. More on the faces that look away from the court."""
+    x0, y0, z0, x1, y1, z1 = b
+    base = 0.0
+    for axis, sign in ((0, -1), (0, 1), (2, -1), (2, 1)):
+        plane = (x1 if sign > 0 else x0) if axis == 0 else (z1 if sign > 0 else z0)
+        t = 2 if axis == 0 else 0
+        lo, hi = b[t], b[t + 3]
+        width = hi - lo
+        if width < 0.8:
+            continue
+        # A face another part stands against has no air to grow in.
+        probe = [0.0, 1.0, 0.0]
+        probe[axis] = plane + sign * 0.3
+        probe[t] = (lo + hi) / 2
+        if touches(parts, None, probe) and not any(q["mat"] in ("yard", "timber") for q in parts
+                                                   if q["b"][axis] <= probe[axis] <= q["b"][axis + 3]
+                                                   and q["b"][t] <= probe[t] <= q["b"][t + 3]):
+            continue
+        outward = (sign > 0) == ((b[axis] + b[axis + 3]) / 2 > 0)
+        # Ivy keeps to a few colonies per face rather than spreading evenly:
+        # one or two big mats climbing from the foot, the odd strand hanging
+        # from the top.
+        colonies = max(1, int(width / 6.0 * (1.0 if outward else 0.4) * rng.uniform(0.6, 1.4)))
+        starts = []
+        for _ in range(colonies):
+            cu = rng.uniform(lo + 0.6, hi - 0.6)
+            spread = rng.uniform(0.6, 1.8)
+            reach = (y1 - base) * rng.uniform(0.45, 0.98)
+            for _ in range(rng.randint(5, 11)):
+                starts.append((min(hi - 0.1, max(lo + 0.1, cu + rng.gauss(0, spread))), base, reach * rng.uniform(0.5, 1.0), 1))
+            if outward and rng.random() < 0.6:
+                for _ in range(rng.randint(2, 4)):
+                    starts.append((min(hi - 0.1, max(lo + 0.1, cu + rng.gauss(0, spread))), y1 - 0.05,
+                                   y1 - (y1 - base) * rng.uniform(0.2, 0.5), -1))
+        for (u, y, reach, way) in starts:
+            stack = [(u, y, reach)]
+            leaves = 0
+            while stack and leaves < 34:
+                u, y, reach = stack.pop()
+                while (y < reach if way > 0 else y > reach) and leaves < 34:
+                    du = rng.uniform(-0.25, 0.25)
+                    dy = rng.uniform(0.14, 0.28) * way
+                    u = min(hi - 0.05, max(lo + 0.05, u + du))
+                    y += dy
+                    # A sprig or two off the stem here, a card each, leaning
+                    # up and out the way the stem climbs.
+                    for _ in range(rng.randint(1, 2)):
+                        lu = u + rng.uniform(-0.15, 0.15)
+                        ly = y + rng.uniform(-0.1, 0.1)
+                        sz = rng.uniform(0.2, 0.34)
+                        if not (lo + sz * 0.5 < lu < hi - sz * 0.5 and base + 0.05 < ly < y1 - sz * 0.5):
+                            continue
+                        a = rng.uniform(-1.0, 1.0) + (0.0 if way > 0 else math.pi)
+                        off = rng.uniform(0.012, 0.045)
+                        q = []
+                        for (cu, cv) in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                            pu = lu + sz * (cu * math.cos(a) + cv * math.sin(a))
+                            pv = ly + sz * (-cu * math.sin(a) + cv * math.cos(a))
+                            pp = [0.0, pv, 0.0]
+                            pp[axis] = plane + sign * off
+                            pp[t] = pu
+                            q.append(tuple(pp))
+                        s.new_piece()
+                        s.face("ivy", q, rng.choice(IVY))
+                        leaves += 1
+                    if rng.random() < 0.1:
+                        stack.append((u, y, y + (reach - y) * rng.uniform(0.3, 0.8)))
 
 
 def fallen(s, b, rng):
@@ -1114,8 +1408,11 @@ def parapet(s, b, rng, lines):
 
 def dress_stones(s, kit, rng):
     parts = kit["parts"]
+    uprights = []
+    altar = None
     for p in parts:
         x0, y0, z0, x1, y1, z1 = p["b"]
+        dx, dz = x1 - x0, z1 - z0
         # An upright carrying a lintel keeps a flat top to carry it on.
         carries = any(q is not p and q["b"][1] <= y1 + 1e-3 and q["b"][1] > y1 - 0.5
                       and q["b"][0] < x1 and q["b"][3] > x0 and q["b"][2] < z1 and q["b"][5] > z0
@@ -1124,17 +1421,162 @@ def dress_stones(s, kit, rng):
             # The lintel: a slab across two stones, rough and sagging at its ends.
             rough(s, "ashlar", p["b"], stone_tint(rng, (0.70, 0.69, 0.66)), rng,
                   amp=0.1, cell=0.5, crown=0.08)
+        elif y1 <= 0.4:
+            fire_ring(s, p["b"], rng)
+        elif y1 <= 1.5 and max(dx, dz) <= 1.0:
+            cairn(s, p["b"], rng)
+        elif y1 <= 1.2 and max(dx, dz) >= 3.0:
+            # A stone's broken top, fallen and half sunk, its old crown at one end.
+            rough(s, "ashlar", p["b"], stone_tint(rng, (0.68, 0.67, 0.64)), rng,
+                  amp=0.1, cell=0.45, crown=0.3)
+            lichen(s, p["b"], rng, top=True)
         elif y1 <= 1.5:
             # The altar: a slab on a plinth, both inside its box.
             rough(s, "ashlar", (x0 + 0.15, y0, z0 + 0.15, x1 - 0.15, y1 - 0.22, z1 - 0.15),
                   stone_tint(rng, (0.66, 0.64, 0.60)), rng, amp=0.05, cell=0.5)
             rough(s, "ashlar", (x0, y1 - 0.26, z0, x1, y1, z1),
                   stone_tint(rng, (0.74, 0.72, 0.68)), rng, amp=0.04, cell=0.45, crown=0.03)
+            altar = p["b"]
         else:
             # A standing stone: tapering above the head, its crown worn round.
             rough(s, "ashlar", p["b"], stone_tint(rng, (0.70, 0.69, 0.66)), rng,
                   amp=0.08, cell=0.42, taper=0.06 if carries else 0.28,
                   crown=0.0 if carries else 0.35)
+            uprights.append(p["b"])
+    for b in uprights:
+        lichen(s, b, rng)
+        # Moss and grass crowding each stone's foot.
+        x0, _, z0, x1, _, z1 = b
+        for _ in range(rng.randint(6, 12)):
+            side = rng.randrange(4)
+            if side < 2:
+                x, z = rng.uniform(x0, x1), (z0 - 0.06 if side == 0 else z1 + 0.06)
+            else:
+                x, z = (x0 - 0.06 if side == 2 else x1 + 0.06), rng.uniform(z0, z1)
+            tuft(s, x, -0.05, z, rng.uniform(0.2, 0.45), rng)
+    # Spirals cut into the faces that look at the altar, on every other stone.
+    for i, b in enumerate(uprights):
+        if i % 2 == 0:
+            spiral(s, b, rng)
+    if altar is not None:
+        offerings(s, altar, rng)
+
+
+def lichen(s, b, rng, top=False):
+    """Pale crusts on a stone's faces, a millimetre proud of the box (the
+    rough stone lies inside it): yellow-grey on the weather side, grey-green
+    elsewhere."""
+    x0, y0, z0, x1, y1, z1 = b
+    base = max(y0, 0.0)
+    for _ in range(rng.randint(4, 9)):
+        axis, sign = rng.choice([(0, -1), (0, 1), (2, -1), (2, 1)]) if not top else (1, 1)
+        r = rng.uniform(0.12, 0.35)
+        tint = rng.choice([(0.78, 0.76, 0.52), (0.62, 0.66, 0.54), (0.8, 0.8, 0.74)])
+        pts = []
+        if axis == 1:
+            cx, cz = rng.uniform(x0 + r, x1 - r) if x1 - x0 > 2 * r else (x0 + x1) / 2, \
+                rng.uniform(z0 + r, z1 - r) if z1 - z0 > 2 * r else (z0 + z1) / 2
+            for k in range(7):
+                a = 2 * math.pi * k / 7
+                pts.append((cx + r * math.cos(a) * rng.uniform(0.6, 1.0), y1 + 0.004, cz + r * math.sin(a) * rng.uniform(0.6, 1.0)))
+            face_out(s, "ashlar", pts, tint, (cx, y1 - 1, cz))
+            continue
+        plane = (x1 if sign > 0 else x0) if axis == 0 else (z1 if sign > 0 else z0)
+        t = 2 if axis == 0 else 0
+        lo, hi = b[t], b[t + 3]
+        if hi - lo < 2 * r + 0.1:
+            continue
+        cu, cy = rng.uniform(lo + r, hi - r), rng.uniform(base + 0.4, y1 - 0.8)
+        for k in range(7):
+            a = 2 * math.pi * k / 7
+            pp = [0.0, cy + r * math.sin(a) * rng.uniform(0.6, 1.0), 0.0]
+            pp[axis] = plane + sign * 0.004
+            pp[t] = cu + r * math.cos(a) * rng.uniform(0.6, 1.0)
+            pts.append(tuple(pp))
+        behind = [0.0, cy, 0.0]
+        behind[axis] = plane - sign
+        behind[t] = cu
+        face_out(s, "ashlar", pts, tint, tuple(behind))
+
+
+def spiral(s, b, rng):
+    """A spiral pecked into the stone's face toward the ring's middle: a dark
+    groove a hair proud of the face, winding out three turns."""
+    x0, y0, z0, x1, y1, z1 = b
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    # The face whose normal points most at the middle.
+    axis, sign = (0, -1 if cx > 0 else 1) if abs(cx) >= abs(cz) else (2, -1 if cz > 0 else 1)
+    plane = (x1 if sign > 0 else x0) if axis == 0 else (z1 if sign > 0 else z0)
+    t = 2 if axis == 0 else 0
+    cu = (b[t] + b[t + 3]) / 2
+    w = (b[t + 3] - b[t]) / 2 - 0.15
+    cy = min(y1 - 0.9, 2.0)
+    turns, n = 3.0, 60
+    prev = None
+    for i in range(n + 1):
+        f = i / n
+        a = f * turns * 2 * math.pi
+        rr = w * f
+        u, y = cu + rr * math.cos(a), cy + rr * math.sin(a)
+        p = [0.0, y, 0.0]
+        p[axis] = plane + sign * 0.006
+        p[t] = u
+        p = tuple(p)
+        if prev is not None:
+            s.prism("ashlar", prev, p, 0.018, 3, (0.32, 0.31, 0.29))
+        prev = p
+
+
+def cairn(s, b, rng):
+    """Flat stones stacked to a point, each a little smaller and turned."""
+    x0, y0, z0, x1, y1, z1 = b
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    y = max(y0, 0.0) - 0.05
+    w = min(x1 - x0, z1 - z0) / 2
+    while y < y1 - 0.08:
+        h = rng.uniform(0.1, 0.18)
+        a = rng.uniform(0, math.pi)
+        ybox(s, "ashlar", (cx + rng.uniform(-0.05, 0.05), y + h / 2, cz + rng.uniform(-0.05, 0.05)),
+             (math.cos(a), math.sin(a)), w * 1.6, h, w * 1.2, stone_tint(rng, (0.66, 0.65, 0.62)))
+        y += h * 0.92
+        w *= 0.82
+    tuft(s, cx + w, max(y0, 0.0), cz - w, 0.25, rng)
+
+
+def fire_ring(s, b, rng):
+    """A ring of stones round a black hearth, and the half-burnt sticks."""
+    x0, y0, z0, x1, y1, z1 = b
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    r = min(x1 - x0, z1 - z0) / 2
+    pts = [(cx + (r - 0.1) * math.cos(a), 0.02, cz + (r - 0.1) * math.sin(a)) for a in [2 * math.pi * i / 10 for i in range(10)]]
+    face_out(s, "yard", pts, (0.14, 0.13, 0.12), (cx, -1, cz))
+    for i in range(11):
+        a = 2 * math.pi * i / 11
+        sz = rng.uniform(0.18, 0.24)
+        ybox(s, "ashlar", (cx + (r - 0.14) * math.cos(a), sz * 0.45, cz + (r - 0.14) * math.sin(a)),
+             (math.cos(a + 1.57), math.sin(a + 1.57)), sz * 1.4, sz * 0.9, sz, (0.55, 0.53, 0.5))
+    for i in range(5):
+        a = math.pi * i / 5 + rng.uniform(-0.2, 0.2)
+        obox(s, "timber", (cx - 0.45 * math.cos(a), 0.05, cz - 0.45 * math.sin(a)),
+             (cx + 0.45 * math.cos(a), 0.09 + 0.02 * i, cz + 0.45 * math.sin(a)), 0.07, 0.07, CHAR)
+
+
+def offerings(s, b, rng):
+    """What people leave on the altar: candle stubs with wax run down them
+    (their flames are bulbs, lit at night), bowls, a bundle of dry flowers."""
+    x0, y0, z0, x1, y1, z1 = b
+    for _ in range(9):
+        cx, cz = rng.uniform(x0 + 0.25, x1 - 0.25), rng.uniform(z0 + 0.25, z1 - 0.25)
+        h = rng.uniform(0.06, 0.2)
+        cylinder(s, "canvas", (cx, y1, cz), (cx, y1 + h, cz), rng.uniform(0.025, 0.04), 8, (0.9, 0.86, 0.72))
+        cylinder(s, "canvas", (cx, y1, cz), (cx, y1 + 0.012, cz), 0.07, 8, (0.88, 0.84, 0.7))
+        s.box("bulb", (cx - 0.008, y1 + h + 0.005, cz - 0.008, cx + 0.008, y1 + h + 0.04, cz + 0.008))
+    for _ in range(2):
+        cx, cz = rng.uniform(x0 + 0.4, x1 - 0.4), rng.uniform(z0 + 0.35, z1 - 0.35)
+        cylinder(s, "canvas", (cx, y1, cz), (cx, y1 + 0.07, cz), 0.12, 10, (0.5, 0.36, 0.26))
+    cx, cz = (x0 + x1) / 2 + 0.4, (z0 + z1) / 2
+    tuft(s, cx, y1, cz, 0.3, rng, tint=(0.62, 0.5, 0.3))
+    tuft(s, cx + 0.06, y1, cz + 0.04, 0.26, rng, tint=(0.72, 0.36, 0.3))
 
 
 def lattice_face(s, a, b, y0, y1, bay, tint_at, r=0.035):
@@ -1216,6 +1658,9 @@ def dress_mast(s, kit, rng):
             continue
         if p["mat"] == "concrete" and dy < 6 and y1 < 1.0 and max(dx, dz) > 6:
             slab(s, b, rng)
+            keep = [(q["b"][0], q["b"][2], q["b"][3], q["b"][5]) for q in parts
+                    if q is not p and q["b"][1] < 2.0 and q["b"][1] > b[1]]
+            pad_life(s, b, rng, keep, joint=3.0)
         elif p["mat"] == "concrete" and y1 < 1.0:
             guy_anchor(s, b, top, rng)
         elif p["mat"] == "concrete":
@@ -1596,6 +2041,9 @@ def dress_yard(s, kit, rng):
             for z in (-4.6, 4.0):
                 lines.append(((x0 + 1.5, z - 0.06), (x1 - 1.5, z - 0.06), (x1 - 1.5, z + 0.06)))
             slab(s, b, rng, joint=4.0, lines=lines)
+            keep = [(q["b"][0], q["b"][2], q["b"][3], q["b"][5]) for q in parts
+                    if q is not p and q["b"][1] < 2.0]
+            pad_life(s, b, rng, keep, joint=4.0)
         elif p["mat"] == "cargo":
             if y0 < floor:
                 b = (x0, floor, z0, x1, y1, z1)
@@ -2071,7 +2519,7 @@ def tuft(s, x, y, z, h, rng, tint=WEED):
         base = [(x + math.cos(a + 2.1 * i) * w, y, z + math.sin(a + 2.1 * i) * w) for i in range(3)]
         c = tuple((sum(p[i] for p in base) + tip[i]) / 4 for i in range(3))
         for i in range(3):
-            face_out(s, "yard", [base[i], base[(i + 1) % 3], tip], tint, c)
+            face_out(s, "leaf", [base[i], base[(i + 1) % 3], tip], tint, c)
 
 
 def pad_life(s, b, rng, keep_out, joint=3.0, fences=()):
@@ -2455,13 +2903,16 @@ def cut_face(s, axis, sign, plane, lo, hi, v0, v1, rng):
         face_out(s, "ashlar", pts, (QSTONE[0] * g, QSTONE[1] * g, QSTONE[2] * g), behind)
 
 
-def scree(s, axis, sign, plane, lo, hi, top, rng, floor_b):
+def scree(s, axis, sign, plane, lo, hi, top, rng, floor_b, avoid=()):
     """Fans of spoil where a face meets the floor: big pieces against the
-    face, smaller further out, on a darker bed of fines."""
+    face, smaller further out, on a darker bed of fines — kept off `avoid`
+    (x0, z0, x1, z1) boxes."""
     t = 2 if axis == 0 else 0
     fx0, _, fz0, fx1, _, fz1 = floor_b
 
     def on_floor(p):
+        if any(k[0] - 0.2 < p[0] < k[2] + 0.2 and k[1] - 0.2 < p[2] < k[3] + 0.2 for k in avoid):
+            return False
         return fx0 + 0.1 < p[0] < fx1 - 0.1 and fz0 + 0.1 < p[2] < fz1 - 0.1
 
     u = lo + rng.uniform(0.5, 2.5)
@@ -2496,7 +2947,7 @@ def scree(s, axis, sign, plane, lo, hi, top, rng, floor_b):
         u += w + rng.uniform(1.0, 4.0)
 
 
-def cut_wall(s, p, parts, floor_b, centre, rng):
+def cut_wall(s, p, parts, floor_b, centre, rng, avoid=()):
     """One of the quarry's walls. Its body is the hill's rock, which the
     client draws (`render/boulders.rs`); this works the sides that face the
     floor — a skin of fresh stone with its lifts and drill lines, the scree
@@ -2536,7 +2987,7 @@ def cut_wall(s, p, parts, floor_b, centre, rng):
                  sz * 0.7, sz, QWORN)
         cut_face(s, axis, sign, plane, lo + 0.08, hi - 0.08, v0 - 0.08 if v0 <= floor else v0, b[4] - 0.18, rng)
         if v0 <= floor + 0.01:
-            scree(s, axis, sign, plane, lo, hi, floor, rng, floor_b)
+            scree(s, axis, sign, plane, lo, hi, floor, rng, floor_b, avoid)
 
 
 def cut_block(s, b, rng, split=False):
@@ -2590,7 +3041,7 @@ def derrick(s, mast_b, jib_b, winch_b, rng):
     jib with the trolley and a block hanging in its sling, a counter-jib
     and its weight, the king post and its ties, and the winch's rope."""
     x0, y0, z0, x1, y1, z1 = mast_b
-    floor = max(y0, 0.15)
+    floor = max(y0, 0.02)
     cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
     s.box("concrete", (x0, y0, z0, x1, floor + 0.25, z1), (0.75, 0.74, 0.7), bevel=0.03)
     t = 0.07
@@ -2653,7 +3104,7 @@ def derrick(s, mast_b, jib_b, winch_b, rng):
     # The winch: a skid, its drum, an engine box, and the rope rising out
     # of reach before it crosses to the mast.
     wx0, wy0, wz0, wx1, wy1, wz1 = winch_b
-    wf = max(wy0, 0.15)
+    wf = max(wy0, 0.02)
     for zz in (wz0 + 0.1, wz1 - 0.25):
         ibeam_h(s, (wx0, wf, zz, wx1, wf + 0.2, zz + 0.15))
     s.box("steel", (wx0, wf + 0.2, wz0, wx1, wf + 0.26, wz1), (0.35, 0.35, 0.33))
@@ -2904,13 +3355,13 @@ def quarry_shed(s, b, roof_b, toward, rng):
 
 
 def quarry_floor(s, b, rng, keep_out, rails_at, centre):
-    """The floor: gravel over a dry-stone edge, a loader's ruts from the
-    shed to the faces, darker fines in the low spots, weeds along the edges
-    and round anything standing, spoil lying about."""
+    """What lies on the floor: a loader's ruts from the shed to the faces,
+    darker fines in the low spots, rails, weeds along the edges and round
+    anything standing, spoil lying about."""
     x0, y0, z0, x1, y1, z1 = b
+    # No slab: the floor is the levelled ground itself (`landmark::stamp`),
+    # worn and gritted by the client; what lies on it is drawn here.
     top = y1
-    s.box("yard", (x0, 0.0, z0, x1, top, z1), GRAVEL)
-    s.box("ashlar", (x0 + 0.03, y0, z0 + 0.03, x1 - 0.03, 0.0, z1 - 0.03), (0.55, 0.53, 0.5))
 
     def free(x, z, m=0.15):
         if not (x0 + 0.3 < x < x1 - 0.3 and z0 + 0.3 < z < z1 - 0.3):
@@ -2977,6 +3428,139 @@ def quarry_floor(s, b, rng, keep_out, rails_at, centre):
              sz * 0.65, sz, (QSTONE[0] * g, QSTONE[1] * g, QSTONE[2] * g))
 
 
+LOADER = (0.84, 0.62, 0.14)
+
+
+def cut_steps(s, steps, rng):
+    """Steps cut up a face: each tread a crisp stone with a worn front edge
+    and grit in its back corner, and a rope rail on iron pins up one side,
+    the pins inside the treads."""
+    steps = sorted(steps, key=lambda p: p["b"][4])
+    for i, p in enumerate(steps):
+        x0, y0, z0, x1, y1, z1 = p["b"]
+        nxt = steps[i + 1]["b"][2] if i + 1 < len(steps) else z1
+        # The visible tread runs from this step's front to the next riser.
+        k = rng.uniform(0.92, 1.04)
+        rough(s, "ashlar", (x0, max(y0, y1 - 0.9), z0, x1, y1, nxt + 0.02), (QSTONE[0] * k, QSTONE[1] * k, QSTONE[2] * k),
+              rng, amp=0.02, cell=0.5, out=0.01, crown=0.02)
+        if i == 0:
+            rough(s, "ashlar", (x0, y0, z0, x1, y1 - 0.9 if y1 - 0.9 > y0 else y0 + 0.01, z1), QWORN, rng, amp=0.02, cell=0.8)
+        # Wear: a darker hollow in the middle of the tread.
+        cx = (x0 + x1) / 2
+        face_out(s, "ashlar", [(cx - 0.35, y1 + 0.004, z0 + 0.08), (cx + 0.35, y1 + 0.004, z0 + 0.08),
+                               (cx + 0.3, y1 + 0.004, nxt - 0.08), (cx - 0.3, y1 + 0.004, nxt - 0.08)],
+                 (QSTONE[0] * 0.8, QSTONE[1] * 0.78, QSTONE[2] * 0.76), (cx, y1 - 1, (z0 + nxt) / 2))
+        if rng.random() < 0.6:
+            tuft(s, x1 - 0.12, y1, nxt - 0.1, rng.uniform(0.1, 0.25), rng)
+    # Pins and a sagging rope along the open side.
+    side = steps[0]["b"][3] - 0.1 if abs(steps[0]["b"][3]) < abs(steps[0]["b"][0]) else steps[0]["b"][0] + 0.1
+    pins = []
+    for p in steps[::2] + [steps[-1]]:
+        x0, y0, z0, x1, y1, z1 = p["b"]
+        pz = z0 + 0.15
+        cylinder(s, "steel", (side, y1, pz), (side, y1 + 0.95, pz), 0.02, 6, (0.25, 0.22, 0.2))
+        pins.append((side, y1 + 0.9, pz))
+    for a, b in zip(pins, pins[1:]):
+        mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 0.08, (a[2] + b[2]) / 2)
+        s.prism("timber", a, mid, 0.015, 4, (0.6, 0.5, 0.36))
+        s.prism("timber", mid, b, 0.015, 4, (0.6, 0.5, 0.36))
+
+
+def wheel_loader(s, b, centre, rng):
+    """An articulated wheel loader parked with its bucket on the ground: the
+    rear body with the engine and counterweight, the cab, the front frame
+    and lift arms, four big tyres — faded yellow, mud to the axles."""
+    x0, y0, z0, x1, y1, z1 = b
+    along_z = (z1 - z0) >= (x1 - x0)
+    # Work in a frame along the long axis: t from the back to the bucket.
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    fwd = 1 if (centre[1] - cz if along_z else centre[0] - cx) > 0 else -1
+    L = (z1 - z0) if along_z else (x1 - x0)
+    W = (x1 - x0) if along_z else (z1 - z0)
+    base = max(y0, 0.0)
+
+    def P(t, w, y):
+        """t along (0 = back, L = bucket lip), w across from the middle."""
+        a = (cz - fwd * L / 2 + fwd * t) if along_z else (cx - fwd * L / 2 + fwd * t)
+        return (cx + w, y, a) if along_z else (a, y, cz + w)
+
+    def B(t0, t1, w0, w1, ya, yb, role, tint, bevel=0.0):
+        p, q = P(t0, w0, ya), P(t1, w1, yb)
+        s.box(role, (min(p[0], q[0]), min(p[1], q[1]), min(p[2], q[2]), max(p[0], q[0]), max(p[1], q[1]), max(p[2], q[2])),
+              tint, bevel=bevel)
+
+    k = rng.uniform(0.85, 1.0)
+    paint = (LOADER[0] * k, LOADER[1] * k, LOADER[2] * k)
+    mud = (0.38, 0.32, 0.25)
+    r = 0.78
+    tw = 0.5
+    axles = (1.35, L - 2.15)
+    for t in axles:
+        for sw in (-1, 1):
+            w = sw * (W / 2 - tw / 2 - 0.02)
+            a, e = P(t, w - tw / 2, base + r), P(t, w + tw / 2, base + r)
+            cylinder(s, "steel", a, e, r, 16, (0.12, 0.12, 0.12))
+            # The hub, and the tread's blocks as a darker band.
+            a2, e2 = P(t, w - tw / 2 - 0.01, base + r), P(t, w + tw / 2 + 0.01, base + r)
+            cylinder(s, "steel", a2, e2, r * 0.45, 10, paint)
+        B(t - 0.15, t + 0.15, -W / 2 + tw + 0.05, W / 2 - tw - 0.05, base + r - 0.15, base + r + 0.15, "steel", (0.2, 0.2, 0.2))
+    # Rear body: engine hood stepping down to the counterweight at the back.
+    hw = W / 2 - tw - 0.06
+    B(0.0, 0.5, -hw - 0.1, hw + 0.1, base + 0.55, base + 1.6, "paint", paint, bevel=0.06)
+    B(0.3, 2.6, -hw, hw, base + 0.75, base + 1.95, "paint", paint, bevel=0.05)
+    for i in range(5):
+        tt = 0.6 + i * 0.3
+        B(tt, tt + 0.12, -hw - 0.005, hw + 0.005, base + 1.45, base + 1.75, "steel", (0.18, 0.18, 0.17))
+    # Fenders over the tyres.
+    for t in axles:
+        for sw in (-1, 1):
+            w = sw * (W / 2 - tw / 2 - 0.02)
+            B(t - r - 0.05, t + r + 0.05, w - tw / 2 - 0.03, w + tw / 2 + 0.03, base + 2 * r + 0.02, base + 2 * r + 0.07, "steel",
+              paint)
+    # The cab: posts, roof, dark glass.
+    c0, c1 = 2.2, 3.6
+    cy0, cy1 = base + 1.95, min(y1, base + 3.05)
+    for tt in (c0, c1 - 0.08):
+        for sw in (-1, 1):
+            B(tt, tt + 0.08, sw * (hw - 0.04) - 0.04, sw * (hw - 0.04) + 0.04, cy0, cy1, "paint", paint)
+    B(c0 - 0.1, c1 + 0.1, -hw - 0.05, hw + 0.05, cy1 - 0.08, cy1, "paint", paint, bevel=0.02)
+    glass = (0.07, 0.08, 0.09)
+    B(c0 + 0.08, c1 - 0.08, -hw + 0.02, hw - 0.02, cy0 + 0.1, cy1 - 0.1, "steel", glass)
+    # Exhaust and a beacon.
+    e0 = P(0.9, hw - 0.25, base + 1.95)
+    cylinder(s, "steel", e0, (e0[0], e0[1] + 0.7, e0[2]), 0.06, 8, (0.15, 0.15, 0.15))
+    bc = P((c0 + c1) / 2, 0.0, cy1)
+    s.box("bulb", (bc[0] - 0.08, cy1, bc[2] - 0.08, bc[0] + 0.08, cy1 + 0.14, bc[2] + 0.08))
+    # Articulation and the front frame.
+    B(3.6, 4.6, -0.35, 0.35, base + 0.6, base + 1.2, "paint", paint, bevel=0.03)
+    # Lift arms from the front frame down to the bucket.
+    lip = L - 0.05
+    for sw in (-1, 1):
+        a = P(3.9, sw * 0.55, base + 1.7)
+        e = P(lip - 0.9, sw * 0.55, base + 0.75)
+        obox(s, "steel", a, e, 0.16, 0.3, paint)
+    # The bucket, mouth on the ground: a back, a floor, two sides.
+    bw = W / 2 - 0.02
+    t0 = lip - 1.2
+    B(t0, t0 + 0.1, -bw, bw, base + 0.05, base + 1.15, "paint", paint)
+    B(t0, lip, -bw, bw, base, base + 0.08, "steel", (0.3, 0.27, 0.22))
+    for sw in (-1, 1):
+        B(t0, lip, sw * bw - 0.04, sw * bw + 0.04, base + 0.05, base + 0.9, "paint", paint)
+    for i in range(7):
+        w = -bw + 0.2 + i * (2 * bw - 0.4) / 6
+        B(lip - 0.02, lip + 0.04, w - 0.06, w + 0.06, base, base + 0.12, "steel", (0.3, 0.3, 0.3))
+    # Spoil in the bucket, and mud up the body.
+    for _ in range(18):
+        p = P(rng.uniform(t0 + 0.2, lip - 0.15), rng.uniform(-bw + 0.15, bw - 0.15), base + 0.1)
+        sz = rng.uniform(0.1, 0.25)
+        yaw = rng.uniform(0, math.pi)
+        ybox(s, "ashlar", (p[0], p[1] + sz * 0.3, p[2]), (math.cos(yaw), math.sin(yaw)), sz * 1.4, sz * 0.7, sz, QSTONE)
+    for t in axles:
+        for sw in (-1, 1):
+            w = sw * (W / 2 - tw / 2 - 0.02)
+            B(t - r * 0.9, t + r * 0.9, w - tw / 2 - 0.015, w + tw / 2 + 0.015, base, base + 0.35, "steel", mud)
+
+
 def dress_quarry(s, kit, rng):
     parts = kit["parts"]
 
@@ -2988,7 +3572,10 @@ def dress_quarry(s, kit, rng):
     fb = floor_p["b"]
     floor = fb[4]
     walls = [p for p in parts if p["mat"] == "rock"]
-    blocks = [p for p in parts if p["mat"] == "stone"]
+    bench = min((w for w in walls if w["b"][4] <= 3.5), key=lambda w: w["b"][2], default=None)
+    stones = [p for p in parts if p["mat"] == "stone"]
+    steps = [p for p in stones if bench is not None and abs(p["b"][5] - bench["b"][2]) < 0.01]
+    blocks = [p for p in stones if p not in steps]
     steel = [p for p in parts if p["mat"] == "steel"]
     mast = next(p for p in steel if dims(p)[1] > 10)
     jib = next(p for p in steel if p["b"][1] > 8 and p is not mast)
@@ -2997,20 +3584,28 @@ def dress_quarry(s, kit, rng):
     trestle = next(p for p in steel if dims(p)[0] < 0.6 and 2.5 < dims(p)[1] < 5)
     pole = next(p for p in steel if dims(p)[0] < 0.6 and dims(p)[1] > 5 and p is not mast)
     cart = next(p for p in steel if p["b"][4] < 1.5 and max(dims(p)[0], dims(p)[2]) > 1.5 and p is not winch)
-    drums = [p for p in steel if p not in (mast, jib, winch, hop, trestle, pole, cart)]
+    loader = next((p for p in steel if max(dims(p)[0], dims(p)[2]) > 5 and 2 < dims(p)[1] < 4), None)
+    drums = [p for p in steel if p not in (mast, jib, winch, hop, trestle, pole, cart, loader)]
     shed = next(p for p in parts if p["mat"] == "timber" and dims(p)[1] > 2)
     roof = next(p for p in parts if p["mat"] == "timber" and p is not shed)
     # The middle of the worked floor, which the faces look at.
     centre = ((fb[0] + fb[3]) / 2, (max(fb[2], min(w["b"][2] for w in walls)) + fb[5]) / 2)
 
+    stair_box = None
+    if steps:
+        stair_box = (min(p["b"][0] for p in steps), min(p["b"][2] for p in steps),
+                     max(p["b"][3] for p in steps), max(p["b"][5] for p in steps))
     for w in walls:
-        cut_wall(s, w, parts, fb, centre, rng)
+        cut_wall(s, w, parts, fb, centre, rng, avoid=[stair_box] if stair_box else [])
     for i, p in enumerate(blocks):
         cut_block(s, p["b"], rng, split=(i == len(blocks) - 1))
+    if steps:
+        cut_steps(s, steps, rng)
+    if loader is not None:
+        wheel_loader(s, loader["b"], centre, rng)
     derrick(s, mast["b"], jib["b"], winch["b"], rng)
     hopper(s, hop["b"], rng)
     hb = hop["b"]
-    bench = min((w for w in walls if w["b"][4] <= 3.5), key=lambda w: w["b"][2], default=None)
     tx = (trestle["b"][0] + trestle["b"][3]) / 2
     tz = (trestle["b"][2] + trestle["b"][5]) / 2
     if bench is not None:
@@ -3107,6 +3702,14 @@ def uv_metres(bpy, objs):
         pid = bm.faces.layers.int.get("piece")
         vertical_ribs = obj.name in ("sheet", "cargo", "steel")
         patched = obj.name in PATCHED and pid is not None
+        if obj.name == "ivy":
+            # Each card spans its photograph once, corner to corner.
+            for f in bm.faces:
+                for loop, uvc in zip(f.loops, ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))):
+                    loop[uv].uv = uvc
+            bm.to_mesh(obj.data)
+            bm.free()
+            continue
         for f in bm.faces:
             n = f.normal
             ax, ay, az = abs(n.x), abs(n.y), abs(n.z)
@@ -3182,7 +3785,8 @@ LOOK_SURFACES = {
     "steel": ("metal", 0.55, 0.0, 1.0), "sheet": ("metal", 0.55, 0.0, 1.0),
     "cargo": ("metal", 0.55, 0.0, 1.0), "gilt": ("metal", 0.55, 0.9, 0.38),
     "canvas": ("concrete", 1 / 3, 0.0, 1.0), "lapis": (None, 1.0, 0.0, 0.6),
-    "bulb": (None, 1.0, 0.0, 0.6),
+    "bulb": (None, 1.0, 0.0, 0.6), "leaf": ("grass", 2.0, 0.0, 0.9),
+    "paint": ("concrete", 1 / 3, 0.0, 0.7), "ivy": (None, 1.0, 0.0, 0.85),
 }
 
 

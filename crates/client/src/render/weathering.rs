@@ -85,7 +85,9 @@ pub fn params(surface: Surface) -> Option<WeatherParams> {
             (0.14, 0.75, RUST, 0.0, 0.0)
         }
         Surface::Canvas => (0.1, 0.3, GRIME, 0.0, 0.0),
-        Surface::Gilt | Surface::Lapis | Surface::Bulb => return None,
+        Surface::Leaf => (0.12, 0.0, GRIME, 0.0, 0.0),
+        // Cut out on its alpha, which the weathering pass does not carry.
+        Surface::Gilt | Surface::Lapis | Surface::Bulb | Surface::Ivy => return None,
     };
     Some(WeatherParams {
         mottle: Vec4::new(mottle, 0.65, 0.17, 0.0),
@@ -156,7 +158,9 @@ mod tests {
         for s in SURFACES {
             let p = params(s);
             match s {
-                Surface::Gilt | Surface::Lapis | Surface::Bulb => assert!(p.is_none(), "{s:?}"),
+                Surface::Gilt | Surface::Lapis | Surface::Bulb | Surface::Ivy => {
+                    assert!(p.is_none(), "{s:?}")
+                }
                 _ => {
                     let p = p.unwrap_or_else(|| panic!("{s:?} unweathered"));
                     assert!(p.mottle.x > 0.0 && p.mottle.x < 0.25, "{s:?}");

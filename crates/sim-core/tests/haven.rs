@@ -68,6 +68,7 @@ fn no_haven() -> Haven {
         trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
         town: sim_core::town::Town::NONE,
         ziggurat: sim_core::monument::Ziggurat::NONE,
+        poles: sim_core::poles::Poles::NONE,
     }
 }
 
@@ -101,6 +102,7 @@ fn ring_phase(ring: &terrain::RingPath, seed: u64, x: f32, z: f32) -> Option<u8>
             trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
             town: sim_core::town::Town::NONE,
             ziggurat: sim_core::monument::Ziggurat::NONE,
+            poles: sim_core::poles::Poles::NONE,
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -145,6 +147,7 @@ fn shelter_bearing(ring: &terrain::RingPath, seed: u64, x: f32, z: f32, phase: u
         trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
         town: sim_core::town::Town::NONE,
         ziggurat: sim_core::monument::Ziggurat::NONE,
+        poles: sim_core::poles::Poles::NONE,
     };
     for t in 0..HAVEN_CRATES {
         let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
@@ -1054,6 +1057,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
             trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
             town: sim_core::town::Town::NONE,
             ziggurat: sim_core::monument::Ziggurat::NONE,
+            poles: sim_core::poles::Poles::NONE,
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {

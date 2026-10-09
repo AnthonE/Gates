@@ -3686,6 +3686,9 @@ pub struct Haven {
     /// The Black Ziggurat (`monument.rs`), solved after the town and kept
     /// well away from it. No road: it is found, not driven to.
     pub ziggurat: crate::monument::Ziggurat,
+    /// The power poles along the ring (`poles.rs`), solved once the ring is
+    /// built and everything that keeps them off is in place.
+    pub poles: crate::poles::Poles,
 }
 
 /// The altitude a site's floor is cut to — **the level of lowest error over
@@ -3783,6 +3786,7 @@ fn haven_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
             trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
             town: crate::town::Town::NONE,
             ziggurat: crate::monument::Ziggurat::NONE,
+            poles: crate::poles::Poles::NONE,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -3837,6 +3841,7 @@ fn haven_shelter_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) 
         trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
         town: crate::town::Town::NONE,
         ziggurat: crate::monument::Ziggurat::NONE,
+        poles: crate::poles::Poles::NONE,
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -4015,6 +4020,7 @@ pub fn haven(seed: u64) -> Haven {
             trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
             town: crate::town::Town::NONE,
             ziggurat: crate::monument::Ziggurat::NONE,
+            poles: crate::poles::Poles::NONE,
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -4046,6 +4052,7 @@ pub fn haven(seed: u64) -> Haven {
         trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
         town: crate::town::Town::NONE,
         ziggurat: crate::monument::Ziggurat::NONE,
+        poles: crate::poles::Poles::NONE,
     });
     // The pad is resolved before the lesser tier is chosen, and that order is
     // the design: a waystation is defined as "far from the destination", so
@@ -4088,6 +4095,8 @@ pub fn haven(seed: u64) -> Haven {
             n += 1;
         }
     }
+    // The poles on the road as it is laid.
+    pad.poles = crate::poles::solve(seed, &pad);
     pad
 }
 
@@ -6458,10 +6467,13 @@ fn ground_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) ->
         }
     };
     let s = site_stamp(haven, raw, x, z);
-    if s == 0.0 {
-        return raw;
+    let g = if s == 0.0 { raw } else { raw + s };
+    // Then the landmarks' own carve, over what the sites left.
+    let l = crate::landmark::stamp(&haven.marks, g, x, z);
+    if l == 0.0 {
+        return g;
     }
-    raw + s
+    g + l
 }
 
 /// Slope of the carved ground, as `slope` is of the raw.
@@ -7421,6 +7433,10 @@ fn scatter_in<C: Corners>(
     }
     // Nor inside a landmark's walls.
     if crate::landmark::at(&haven.marks, x, z, 2.0).is_some() {
+        return none;
+    }
+    // Nor at the foot of a power pole.
+    if crate::poles::blocks(haven, x, z, crate::poles::POLE_CLEAR_M) {
         return none;
     }
 

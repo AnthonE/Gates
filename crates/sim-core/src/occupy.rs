@@ -614,6 +614,9 @@ impl Occupants<'_> {
         if crate::landmark::blocks(&self.haven.marks, x, z, feet_y, r, h) {
             return true;
         }
+        if crate::poles::blocks(self.haven, x, z, r) {
+            return true;
+        }
         if crate::town::blocks(&self.haven.town, x, z, feet_y, r, h) {
             return true;
         }
@@ -696,6 +699,7 @@ impl Scratch<Barren> {
                 trails: [terrain::SideRoad::NONE; crate::landmark::LANDMARKS],
                 town: crate::town::Town::NONE,
                 ziggurat: crate::monument::Ziggurat::NONE,
+                poles: crate::poles::Poles::NONE,
             },
             harvested: Barren,
             cache: SlotCache::new(),

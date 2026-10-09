@@ -4,16 +4,17 @@
   "label": "",
   "blender": "4.5.14 LTS",
   "python": "3.11.17",
-  "script_sha256": "2392b812b3104cfce9fd1f3d1e1161fe33e60565fde9707980707147cb9d18e5",
+  "script_sha256": "ebe874182aa8752b99da4cb6544937192977dfbfe053d04dc18d4b540cfa47bb",
   "kit_sha256": "d860bad00027d2c55ff2c58012c99f439a1f7165be3d740ba3d6c710c52e146d",
   "triangles": 17955,
   "meshes": [
     "bulb",
     "cargo",
     "concrete",
+    "leaf",
     "steel",
     "timber",
     "yard"
   ],
-  "bytes": 2264296
+  "bytes": 2265312
 }

@@ -93,6 +93,7 @@ pub mod decal;
 pub mod highlight;
 pub mod landmarks;
 pub mod lodged;
+pub mod poles;
 // The fires fire arrows leave.
 pub mod arrow_fire;
 pub mod town;
@@ -1510,6 +1511,7 @@ impl Plugin for GatesRenderPlugin {
                         terrain_mesh::stream,
                         depot::spawn,
                         landmarks::spawn,
+                        poles::spawn,
                         (town::spawn, ziggurat::spawn),
                     ),
                     // The sea re-centres like a ring does, and for the same
@@ -1599,6 +1601,7 @@ impl Plugin for GatesRenderPlugin {
                         town::dress,
                         landmarks::dress,
                         town::lamps,
+                        landmarks::lamps,
                         town_signs::build,
                         town_signs::shopkeepers,
                         ziggurat::dress,

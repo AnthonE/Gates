@@ -232,7 +232,7 @@ pub fn dress(
 pub struct TownLamp;
 
 /// Sodium-ish warm white. **(knob)**
-const LAMP_COLOR: Color = Color::srgb(1.0, 0.78, 0.5);
+pub(super) const LAMP_COLOR: Color = Color::srgb(1.0, 0.78, 0.5);
 /// Lumens at night — a street lamp, brighter than a fire. **(knob)**
 const LAMP_LUMENS: f32 = 2400.0;
 const LAMP_RANGE_M: f32 = 16.0;
@@ -245,7 +245,8 @@ const LAMP_RANGE_M: f32 = 16.0;
 pub struct TownGlow {
     bulbs: Vec<Handle<StandardMaterial>>,
     lapis: Vec<Handle<StandardMaterial>>,
-    /// The night weight last written, so a still dusk costs nothing.
+    /// The lit weight (night × the eye's gain) last written, so a still
+    /// dusk costs nothing.
     at: Option<f32>,
 }
 
@@ -266,7 +267,7 @@ impl TownGlow {
 const LIT_BELOW: f32 = 0.10;
 const LIT_SPAN: f32 = 0.22;
 /// The bulbs' glow at full night (`depot::material`'s value), linear.
-const BULB_GLOW: LinearRgba = LinearRgba::rgb(6.0, 4.5, 2.2);
+pub(super) const BULB_GLOW: LinearRgba = LinearRgba::rgb(6.0, 4.5, 2.2);
 /// The lapis seams by day and at full night, linear. **(knob)**
 const LAPIS_DAY: LinearRgba = LinearRgba::rgb(0.25, 0.55, 1.6);
 const LAPIS_NIGHT: LinearRgba = LinearRgba::rgb(1.0, 2.3, 6.5);
@@ -281,6 +282,7 @@ pub fn night_weight(day_frac: f32) -> f32 {
 pub fn lamps(
     feed: Res<super::feed::Feed>,
     pin: Res<super::rig::DayPin>,
+    gain: Res<super::rig::FlameGain>,
     glow: Option<ResMut<TownGlow>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q: Query<&mut PointLight, With<TownLamp>>,
@@ -288,16 +290,22 @@ pub fn lamps(
     let Some(mut glow) = glow else { return };
     let tick = pin.day_tick(feed.server_tick_est, &feed.env);
     let w = night_weight(sim_core::world::day_frac(tick));
-    if glow.at.is_some_and(|a| (a - w).abs() < 0.01) {
+    // The night eye's gain (`rig::flame_gain`): against the fixed exposure a
+    // lamp at its own lumens draws black after dark, as a flame did.
+    let g = gain.0;
+    if glow
+        .at
+        .is_some_and(|a| (a - w * g).abs() < 0.01 * g.max(1.0))
+    {
         return;
     }
-    glow.at = Some(w);
+    glow.at = Some(w * g);
     for mut l in q.iter_mut() {
-        l.intensity = LAMP_LUMENS * w;
+        l.intensity = LAMP_LUMENS * w * g;
     }
     for h in &glow.bulbs {
         if let Some(m) = materials.get_mut(h) {
-            m.emissive = BULB_GLOW * w;
+            m.emissive = BULB_GLOW * w * g;
         }
     }
     for h in &glow.lapis {

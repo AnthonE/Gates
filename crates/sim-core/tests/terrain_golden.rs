@@ -199,7 +199,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// berry bushes and hemp** (2026-10-06, `terrain::plant_of`), merged over the
 /// ring: every cell that held a bush still holds a plant, and only which
 /// plant moved.
-const GOLDEN_TERRAIN_HASH: u64 = 0xB809_63DF_1450_C6C7;
+/// **Moved → `0x1141_F3F2_1934_8522` when the landmarks carve their ground and the ring
+/// got its power poles** (`landmark::stamp`, `poles.rs`): pads levelled, the
+/// quarry's floor cut and its walls banked into the hill, and nothing grows
+/// at a pole's foot.
+const GOLDEN_TERRAIN_HASH: u64 = 0x1141_F3F2_1934_8522;
 
 #[test]
 fn test_terrain_golden() {

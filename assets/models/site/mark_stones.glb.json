@@ -4,11 +4,14 @@
   "label": "",
   "blender": "4.5.14 LTS",
   "python": "3.11.17",
-  "script_sha256": "0956aa9c4862bf9c7acc34a17e1f5b140e9b06c032a64129179f03363432f58d",
-  "kit_sha256": "03b947dd1da0985031ec076836c7063adc47f6dd4e42515c7cab1b37e5bde66e",
-  "triangles": 6384,
+  "script_sha256": "812a027c3162a8e281c5d44d74b3d28d962aa5f31ee0485ae7e480125ae4c25c",
+  "kit_sha256": "d7b45715d618d616e52896863b0d7e438652b39638cf43899f472a7ae7c3fd11",
+  "triangles": 11074,
   "meshes": [
-    "ashlar"
+    "ashlar",
+    "leaf",
+    "timber",
+    "yard"
   ],
-  "bytes": 754872
+  "bytes": 1387380
 }
