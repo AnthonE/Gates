@@ -979,6 +979,18 @@ impl Session {
         (self.wire.over_mtu.get(), self.wire.backpressured.get())
     }
 
+    /// The transport's round trip in milliseconds, `None` before it has one.
+    /// On a browser each call also starts the next `getStats()` poll, so ask
+    /// at a reading's cadence, not every frame.
+    pub fn rtt_ms(&self) -> Option<f32> {
+        self.wire.rtt_ms()
+    }
+
+    /// Is this session talking to a shard? `false` for a replay (`film`).
+    pub fn live(&self) -> bool {
+        self.wire.live()
+    }
+
     /// Snapshots the ring dropped before a frame drained them — wall 4's
     /// stated drop-oldest policy, as an observable rather than a comment.
     ///

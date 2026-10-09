@@ -2074,8 +2074,74 @@ pub fn hand_light(
     q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
 ) {
     let want = net.as_deref().and_then(lit_in_hand);
-    // The night eye's gain (`rig::flame_gain`) and the flame's own breath.
-    apply_hand_light(want, gain.0 * flame_flicker(time.elapsed_secs()), q);
+    let fuel = net.as_deref().map_or(1.0, fuel_in_hand);
+    let t = time.elapsed_secs();
+    // The night eye's gain (`rig::flame_gain`), the flame's own breath, and
+    // the gutter of the last of the fuel.
+    apply_hand_light(want, gain.0 * flame_flicker(t) * torch_sputter(t, fuel), q);
+}
+
+/// Below this share of its fuel a lit torch gutters: its light dips, deeper
+/// and more often as the last of it goes, which is the warning the player
+/// gets before [`torch_watch`] says it is out.
+pub const TORCH_SPUTTER_FRAC: f32 = 0.10;
+
+/// The light's gain on top of [`flame_flicker`] with `fuel` (0..1) of the
+/// torch left: exactly 1 above [`TORCH_SPUTTER_FRAC`], then dips that grow
+/// toward empty. Never below 0.15, so a guttering torch still lights.
+pub fn torch_sputter(t: f32, fuel: f32) -> f32 {
+    let k = (1.0 - fuel / TORCH_SPUTTER_FRAC).clamp(0.0, 1.0);
+    if k == 0.0 {
+        return 1.0;
+    }
+    let spike = ((t * 2.3).sin() * (t * 5.9 + 1.1).sin()).max(0.0);
+    1.0 - k * (0.15 + 0.7 * spike)
+}
+
+/// The share of its fuel the item in your hand has left, 1.0 for anything
+/// that does not burn (`cond_max` 0) or an empty hand.
+fn fuel_in_hand(n: &Net) -> f32 {
+    let core = &n.session.core;
+    let Some(stack) = core.inv.get(n.sel as usize) else {
+        return 1.0;
+    };
+    let max = core.catalog.cond_max(stack.item as usize);
+    if max == 0 {
+        return 1.0;
+    }
+    stack.cond as f32 / max as f32
+}
+
+/// Say so when the torch in your hand burns out: a hiss (`Cue::TorchOut`)
+/// and a line. Until this the flame just went dark a round trip after the
+/// fuel ran out, with nothing to tell a burn-out from a click.
+///
+/// The edge is "lit last frame, not lit now" with the latch still up, the
+/// same slot selected and the same item in it at zero condition — so
+/// putting it out by hand, switching slots, going down or dropping it say
+/// nothing.
+pub fn torch_watch(
+    net: Option<NonSend<Net>>,
+    mut toast: ResMut<super::hud::Toast>,
+    mut sound: ResMut<super::audio::Sound>,
+    mut was: Local<Option<(u8, u16)>>,
+) {
+    let Some(n) = net.as_deref() else { return };
+    let core = &n.session.core;
+    let now = lit_in_hand(n).and_then(|_| Some((n.sel, core.inv.get(n.sel as usize)?.item)));
+    if let (Some((sel, item)), None) = (*was, now) {
+        let spent = core
+            .inv
+            .get(sel as usize)
+            .is_some_and(|s| s.item == item && s.cond == 0);
+        if n.light && n.sel == sel && spent && !core.wounded && !core.dead {
+            toast.say("your torch burned out");
+            sound.play(crate::sound::mixer::Request::own(
+                crate::sound::Cue::TorchOut,
+            ));
+        }
+    }
+    *was = now;
 }
 
 /// The [`crate::ui::hold::HELD_MODELS`] row burning in your own hand, if

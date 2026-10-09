@@ -68,6 +68,16 @@ pub trait Wire {
     /// Returns nothing on purpose: the caller has no recovery for a datagram
     /// that did not go, and the next tick's input supersedes it anyway.
     fn send_datagram(&self, payload: &[u8]);
+
+    /// The transport's smoothed round trip in milliseconds, or `None` before
+    /// it has one (and for a replay, which has no far end). Never blocks: a
+    /// browser answers its last poll and starts the next.
+    fn rtt_ms(&self) -> Option<f32>;
+
+    /// Is there a far end at all? `false` only for a replay's detached wire.
+    fn live(&self) -> bool {
+        true
+    }
 }
 
 /// The `Wire` this build actually uses.

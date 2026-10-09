@@ -1554,7 +1554,7 @@ impl Plugin for GatesRenderPlugin {
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
-                    hud::net_line,
+                    (hud::net_line, hud::conn_warn),
                     // F3: draw what the SIM blocks over what the client
                     // draws. F4: the two top-left diagnostics. Neither is a
                     // gate or a probe — they do nothing until a person
@@ -1738,6 +1738,10 @@ impl Plugin for GatesRenderPlugin {
                 // sentry's lock, a holstered click. After the drain, for the
                 // lock it reads.
                 hud::gate_watch.after(feed::drain),
+                // Your torch burning out: a hiss and a line.
+                viewmodel::torch_watch.after(feed::drain),
+                // A deployable's damage band, drawn on its material.
+                structures::deploy_hurt.after(structures::stream),
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a
                 // respawned trunk up — before it, a sapling would stand one

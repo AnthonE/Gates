@@ -1655,6 +1655,24 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         Pickable::IGNORE,
     ));
 
+    // The connection warning, top-left, hidden while the link is healthy.
+    commands.spawn((
+        super::WorldEntity,
+        ConnWarn,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(40.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        Text::new(""),
+        super::ui::font(14.0),
+        TextColor(Color::srgb(1.0, 0.72, 0.25)),
+        super::ui::TEXT_SHADOW,
+        Visibility::Hidden,
+        Pickable::IGNORE,
+    ));
+
     // The netcode readout, directly under the build stamp and dimmer still —
     // see [`NetLine`] for why it exists at all.
     commands.spawn((
@@ -2718,13 +2736,84 @@ pub fn net_line(
     if total == 0 {
         return;
     }
+    let ping = net
+        .session
+        .rtt_ms()
+        .map_or_else(|| "ping --".to_string(), |ms| format!("ping {ms:.0} ms"));
     text.0 = format!(
-        "net {:.2}% ok · {} miss · err {:.2} m",
+        "{ping} · net {:.2}% ok · {} miss · err {:.2} m",
         100.0 * p.confirmations as f64 / total as f64,
         p.mispredictions,
         *peak,
     );
     *peak = 0.0;
+}
+
+/// Rust's "connection problem" warning: an amber line top-left, up only
+/// while the link is bad — no fresh snapshot for [`CONN_STALL_S`], or a round
+/// trip past [`CONN_SLOW_MS`]. Always on screen when it applies, unlike the
+/// F4 diagnostics, because it is the one net fact a player has to act on.
+#[derive(Component)]
+pub struct ConnWarn;
+
+/// Seconds without a newly applied snapshot before [`conn_warn`] speaks: 45
+/// ticks, far past any jitter buffer, so a healthy link never trips it.
+pub const CONN_STALL_S: f32 = 1.5;
+/// A round trip past this is called out too.
+pub const CONN_SLOW_MS: f32 = 250.0;
+
+/// What [`ConnWarn`] says, or `None` for a healthy link.
+pub fn conn_warning(stalled_s: f32, rtt_ms: Option<f32>) -> Option<String> {
+    if stalled_s >= CONN_STALL_S {
+        return Some(format!(
+            "CONNECTION PROBLEM  ·  no update for {stalled_s:.0} s"
+        ));
+    }
+    match rtt_ms {
+        Some(ms) if ms >= CONN_SLOW_MS => Some(format!("HIGH PING  ·  {ms:.0} ms")),
+        _ => None,
+    }
+}
+
+/// Keep [`ConnWarn`] current, at [`NET_LINE_PERIOD_S`]'s cadence.
+pub fn conn_warn(
+    net: NonSend<super::Net>,
+    time: Res<Time>,
+    mut seen: Local<(u64, f32, f32)>,
+    mut q: Query<(&mut Text, &mut Visibility), With<ConnWarn>>,
+) {
+    let (applied, stalled, since) = &mut *seen;
+    let dt = time.delta_secs();
+    let now = net.session.core.snapshots_applied;
+    if now != *applied {
+        *applied = now;
+        *stalled = 0.0;
+    } else {
+        *stalled += dt;
+    }
+    *since += dt;
+    if *since < NET_LINE_PERIOD_S {
+        return;
+    }
+    *since = 0.0;
+    let want = if net.session.live() {
+        conn_warning(*stalled, net.session.rtt_ms())
+    } else {
+        None
+    };
+    for (mut text, mut vis) in &mut q {
+        match &want {
+            Some(line) => {
+                if text.0 != *line {
+                    text.0.clone_from(line);
+                }
+                vis.set_if_neq(Visibility::Inherited);
+            }
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
+        }
+    }
 }
 
 /// How often [`net_line`] rebuilds its string. The HUD's own cadence
