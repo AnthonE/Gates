@@ -100,8 +100,10 @@ pub const CHIP_BURST: usize = 8;
 /// Short on purpose: this is a punctuation
 /// mark on an impact, and debris that outlives the blow reads as litter.
 pub const CHIP_LIFE_S: f32 = 0.55;
-/// A chip's edge, metres.
-pub const CHIP_SIZE_M: f32 = 0.045;
+/// A chip's edge, metres. 4.5 cm read as flying cardboard in the first
+/// frames anyone looked at (an untextured cuboid that big is a box, not a
+/// splinter); 3 cm reads as debris.
+pub const CHIP_SIZE_M: f32 = 0.03;
 /// How fast a chip leaves the impact, m/s — the mean; each one is rolled
 /// between half and one and a half of it.
 pub const CHIP_SPEED_MPS: f32 = 3.2;

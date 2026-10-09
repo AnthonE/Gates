@@ -240,7 +240,9 @@ fn spec(layer: Layer) -> Spec {
             life: (0.8, 1.4),
             size: (0.05, 0.08),
             grow: 6.0,
-            c0: [0.95, 0.95, 0.95, 0.55],
+            // 0.55 fogged the view for a second after every swing at a
+            // wall, the first time it was seen; a puff, not a cloud.
+            c0: [0.95, 0.95, 0.95, 0.4],
             c1: [1.05, 1.05, 1.05, 0.0],
             tinted: true,
             spin: 0.8,
