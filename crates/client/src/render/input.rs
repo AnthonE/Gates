@@ -94,7 +94,11 @@ pub fn gather(
     mut net: NonSendMut<Net>,
     mut look: ResMut<Look>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
-    settings: Res<super::settings::Settings>,
+    // Paired with the zoom because this system is at Bevy's sixteen.
+    (settings, zoom): (
+        Res<super::settings::Settings>,
+        Option<Res<super::viewmodel::DrawZoom>>,
+    ),
     aimed: Option<Res<super::verbs::Aimed>>,
     screen: Option<Res<State<super::Screen>>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -260,7 +264,10 @@ pub fn gather(
             // quantization below, never the quantization itself — see
             // `settings`'s header. Invert flips the pitch delta only; a yaw
             // inversion is not a setting any reference offers.
-            let rad = MOUSE_RAD_PER_PX * settings.sensitivity;
+            // A narrowed view turns as much slower as it is narrower, so the
+            // world moves under the crosshair at the same speed on screen.
+            let narrow = zoom.as_deref().map_or(0.0, |z| z.0.clamp(0.0, 0.5));
+            let rad = MOUSE_RAD_PER_PX * settings.sensitivity * (1.0 - narrow);
             if free {
                 // The head. Same sensitivity and the same sign as the body —
                 // `look::free_yaw_after` shares `yaw_after`'s subtraction and
@@ -477,7 +484,13 @@ pub fn gather(
     // byte. Right-click is free with a bow: it opens no wheel and lights
     // nothing. Only with the pointer captured: a right click that frees a
     // window is not a draw.
-    let draws = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some();
+    //
+    // **A gun is aimed down its sights the same way**, on the same bit: the
+    // sim reads `BTN_AIM` only as "walk, do not sprint" for a weapon that
+    // does not draw, which is the reference's own cost of aiming, and the
+    // narrowed view is this side's (`viewmodel::animate`, `ADS_ZOOM`).
+    let draws = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some()
+        || crate::ui::hold::sights_in_hand(&core.catalog, &core.inv, sel);
     if draws && !downed && !holstered && locked && mouse.pressed(MouseButton::Right) {
         buttons |= BTN_AIM;
         buttons &= !BTN_SPRINT;

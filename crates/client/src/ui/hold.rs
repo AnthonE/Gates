@@ -1080,6 +1080,15 @@ pub fn draw_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Option
     (s.count > 0 && row.draws()).then_some((row.draw_ticks, row.nock_ticks))
 }
 
+/// Is the stack in hand a gun aimed down its sights — fired from the hip
+/// ([`Stroke::Shot`]) and not drawn? The revolver and the crossbow. The right
+/// mouse raises them (`render::input`, `BTN_AIM`): the view narrows, and the
+/// body walks as a drawn bow does.
+pub fn sights_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> bool {
+    held_model_in_hand(catalog, inv, sel).is_some_and(|i| HELD_MODELS[i].stroke == Stroke::Shot)
+        && draw_in_hand(catalog, inv, sel).is_none()
+}
+
 /// Does the pack hold any arrows? Asked before the viewmodel draws a loose
 /// the sim would refuse for an empty quiver.
 pub fn carries_arrows(catalog: &ItemCatalog, inv: &[ItemStack]) -> bool {
@@ -1702,6 +1711,29 @@ mod tests {
         assert!(!Held::Other.places() && !Held::Other.repairs());
         // Only the plan previews, because only the plan places.
         assert!(Held::Plan.shows_ghost() && !Held::Hammer.shows_ghost());
+    }
+
+    /// A gun from the hip is aimed down its sights; a bow is drawn instead,
+    /// and a hatchet has neither.
+    #[test]
+    fn a_gun_aims_down_its_sights_and_a_bow_draws() {
+        let mut c = catalog_with(&["Revolver", "Crossbow", "Hunting Bow", "Stone Hatchet"]);
+        c.rows[2] = protocol::ItemRow {
+            draw_ticks: 30,
+            ..protocol::ItemRow::EMPTY
+        };
+        let stack = |item| ItemStack {
+            item,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        let inv = [stack(0), stack(1), stack(2), stack(3)];
+        assert!(sights_in_hand(&c, &inv, 0), "a revolver");
+        assert!(sights_in_hand(&c, &inv, 1), "a crossbow fires from the hip");
+        assert!(!sights_in_hand(&c, &inv, 2), "a bow draws instead");
+        assert!(!sights_in_hand(&c, &inv, 3), "a hatchet is swung");
+        assert!(!sights_in_hand(&c, &[], 0));
     }
 
     /// The draw rides the catalog (wire v82): a bow in hand draws, says how

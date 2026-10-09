@@ -343,6 +343,9 @@ pub const VIEWMODEL_SHOT_CLIMB: f32 = 0.10;
 /// How much a full draw narrows the view: raised, the bow zooms by most of
 /// this; the pull takes the rest.
 pub const DRAW_ZOOM: f32 = 0.15;
+/// How much a gun aimed down its sights narrows the view (75° → 56°, iron
+/// sights' modest zoom). Unseen by a person yet.
+pub const ADS_ZOOM: f32 = 0.25;
 /// How far a raised bow is canted about its arrow, radians: the top limb
 /// tipped in toward the frame's middle, so the limbs and the string read
 /// across the view instead of edge-on. See [`bow_aim`].
@@ -362,8 +365,10 @@ pub const VIEWMODEL_HEAVE_C: f32 = 13.0;
 pub const VIEWMODEL_HEAVE_MAX: f32 = 0.04;
 pub const VIEWMODEL_HEAVE_JOLT_MAX: f32 = 12.0;
 
-/// How far the view is zoomed for a drawn bow, 0..=1 of [`DRAW_ZOOM`] —
-/// written by [`animate`], read by `settings::apply_view`.
+/// How much the view is narrowed, as a fraction of the field of view — a
+/// drawn bow's [`DRAW_ZOOM`] or a gun's [`ADS_ZOOM`]. Written by [`animate`],
+/// read by `settings::apply_view` and by the look's sensitivity
+/// (`input::look`), so a zoomed view turns no faster on screen.
 #[derive(Resource, Default)]
 pub struct DrawZoom(pub f32);
 
@@ -1215,6 +1220,8 @@ pub struct Motion {
     draw: crate::ui::draw::DrawClock,
     /// How far the bow is raised, 0..=1, eased toward the aim.
     raise: f32,
+    /// How far a gun is up at its sights, 0..=1, eased toward the aim.
+    ads: f32,
     /// How far the arm is raised for a lit item, 0..=1 ([`VIEWMODEL_LIFT`]).
     lift: f32,
     /// How much of the carry the row in hand takes, eased ([`carry_of`]).
@@ -2583,7 +2590,14 @@ pub fn animate(
     if m.loose > 0.0 {
         m.loose = (m.loose - dt / VIEWMODEL_LOOSE_S).max(0.0);
     }
-    zoom.0 = m.raise * (0.7 + 0.3 * pull);
+    // A gun at its sights: the aim bit with a weapon that does not draw.
+    let sights = shoots
+        && bow.is_none()
+        && net
+            .as_deref()
+            .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_AIM != 0);
+    m.ads += (f32::from(u8::from(sights)) - m.ads) * (1.0 - (-VIEWMODEL_RAISE_RATE * dt).exp());
+    zoom.0 = (DRAW_ZOOM * m.raise * (0.7 + 0.3 * pull)).max(ADS_ZOOM * m.ads);
     let raise = m.raise;
     let kick = bump(1.0 - m.loose, 0.25);
     let (kick_off, climb) = if shoots {
