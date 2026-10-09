@@ -2601,6 +2601,7 @@ impl ShardCore {
                     }
                 }
                 EV_PIECE_PLACED => {
+                    ShardStats::bump(&stats.pieces_placed);
                     // The address comes off the event; the RECORD comes off
                     // the store. Rebuilding it from the payload alone was
                     // fine while the payload was the whole record — the
@@ -2689,6 +2690,7 @@ impl ShardCore {
                     }
                 }
                 EV_DEPLOY_PLACED => {
+                    ShardStats::bump(&stats.deploys_placed);
                     // Owner (ev.c) stays sim-side: the wire record is
                     // address + row + open + locked (event.rs). Everything
                     // places closed; a door places locked, which is a
@@ -3508,6 +3510,7 @@ impl ShardCore {
                     }
                 }
                 EV_STRUCT_HIT => {
+                    ShardStats::bump(&stats.struct_hits);
                     // A structure still standing after a raid swing: the
                     // address, what it took, what is left. Broadcast like
                     // a placement — the wall is a world fact, and anyone
@@ -3591,6 +3594,7 @@ impl ShardCore {
                     }
                 }
                 EV_CHARGE_PLACED => {
+                    ShardStats::bump(&stats.charges_armed);
                     // `EV_PIECE_REPAIRED`'s arm, unpacked with the same
                     // shifts because the sim packs the address the same
                     // way. Broadcast, and here that is not merely the

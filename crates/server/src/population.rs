@@ -149,12 +149,10 @@ pub struct PopulationStats {
     /// on a healthy shard means the population is fighting its own wire.
     pub shift_errors: AtomicU64,
     // ---- summed off every `BotReport` a finished shift returned -----------
+    // Only what a post did itself. What it HEARD (pieces, charges, hits) is
+    // every post's alike, so the shard counts those once (`ShardStats`).
     pub inputs_sent: AtomicU64,
     pub actions_sent: AtomicU64,
-    pub pieces_placed: AtomicU64,
-    pub deploys_placed: AtomicU64,
-    pub charges_planted: AtomicU64,
-    pub struct_hits: AtomicU64,
     /// The highest storey a finished shift heard a piece placed on — how
     /// high the owners' bases got (`BotReport::top_storey`). A max, not a sum.
     pub top_storey: AtomicU64,
@@ -171,10 +169,6 @@ impl PopulationStats {
         for (c, v) in [
             (&self.inputs_sent, r.inputs_sent),
             (&self.actions_sent, r.actions_sent),
-            (&self.pieces_placed, r.pieces_placed),
-            (&self.deploys_placed, r.deploys_placed),
-            (&self.charges_planted, r.charges_planted),
-            (&self.struct_hits, r.struct_hits),
         ] {
             c.fetch_add(v, Ordering::Relaxed);
         }

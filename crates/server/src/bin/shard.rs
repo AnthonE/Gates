@@ -704,10 +704,13 @@ async fn main() {
         trust_line(s, trust_log.as_ref());
         if let Some(p) = &pop {
             let g = &p.stats;
+            // What was placed, armed and hit is the shard's own count, once
+            // per fact: every post hears every broadcast, so the posts'
+            // tallies summed would count each one once per post.
             println!(
                 "population {}/{} live · shifts {}/{} started/ended, {} errored · \
-                 sent in/act {}/{} · placed pieces/deploys {}/{} · \
-                 top storey {} · charges {} · struct hits {}",
+                 sent in/act {}/{} · top storey {} · on the island: placed \
+                 pieces/deploys {}/{} · charges {} · struct hits {}",
                 p.live(),
                 population,
                 PopulationStats::get(&g.shifts_started),
@@ -715,11 +718,11 @@ async fn main() {
                 PopulationStats::get(&g.shift_errors),
                 PopulationStats::get(&g.inputs_sent),
                 PopulationStats::get(&g.actions_sent),
-                PopulationStats::get(&g.pieces_placed),
-                PopulationStats::get(&g.deploys_placed),
                 PopulationStats::get(&g.top_storey),
-                PopulationStats::get(&g.charges_planted),
-                PopulationStats::get(&g.struct_hits),
+                ShardStats::get(&s.pieces_placed),
+                ShardStats::get(&s.deploys_placed),
+                ShardStats::get(&s.charges_armed),
+                ShardStats::get(&s.struct_hits),
             );
         }
     }
