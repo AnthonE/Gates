@@ -829,9 +829,8 @@ The arc is `DESIGN.md` §11 (M0 landed → M1 → M2 → M3 → M4); `ALPHA.md` 
 
 1. **Anti-ESP occlusion culling**, server-side (none in `crates/server/src/interest.rs` or `sim-core`): the grid
    is a pure function of the seed — bake at worldgen, look up in the tick. After M2.
-2. **`elo_overlay.rs` has no upstream-drift gate** (drift once broke every login for eight days): its `sha256sum`
-   must be in `scry-forge`'s `sdk/SHA256SUMS`, never the `scryward` mirror. Build a nightly fetch-and-compare;
-   derive the launcher's real state from elo, never from this file.
+2. **`elo_overlay.rs`'s drift check is built** (`ci/elo_drift.sh`, nightly job `elo-drift`) and dark until
+   the operator adds the `SCRY_FORGE_TOKEN` secret (read access to `AnthonE/scry-forge`).
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall catches jumps the playtest.
 

@@ -29,7 +29,7 @@
 //! `crates/elo-broker/tests/sdk_parity.rs` — compiles `sdk/rust/…` and calls
 //! it *"what Gates has compiled into its binary byte-for-byte"*, which was a
 //! claim about a file in another repo that nothing checked. So the drift check
-//! is a **command somebody runs**, not a gate either repo owns, and it is one
+//! is `ci/elo_drift.sh`, run nightly (`nightly.yml` `elo-drift`), and it is one
 //! line against a number elo publishes beside the SDK:
 //!
 //! ```text
