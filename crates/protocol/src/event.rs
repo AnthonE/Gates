@@ -7610,6 +7610,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/pitch_lut.rs"),
         },
         Module {
+            file: "poles.rs",
+            src: include_str!("../../sim-core/src/poles.rs"),
+        },
+        Module {
             file: "ranged.rs",
             src: include_str!("../../sim-core/src/ranged.rs"),
         },

@@ -352,7 +352,7 @@ mod tests {
         for (file, prefix, len, name, reserved) in [
             (
                 "crates/sim-core/src/craft.rs",
-                "REFUSE_",
+                "REFUSE_CR_",
                 CRAFT.len(),
                 "CRAFT",
                 0,
@@ -413,6 +413,11 @@ mod tests {
             sim_core::gather::REFUSE_G_MAX as usize + 1,
             "GATHER must cover 0..=REFUSE_G_MAX exactly — the sim refuses any \
              reason above that constant at the encode boundary"
+        );
+        assert_eq!(
+            CRAFT.len(),
+            sim_core::craft::REFUSE_CR_MAX as usize + 1,
+            "CRAFT must cover 0..=REFUSE_CR_MAX exactly"
         );
         assert_eq!(
             CONSUME.len(),
