@@ -95,14 +95,13 @@ carries no more rock or ore than open highland. What is left:
 4. The 2.2 m fine facets vanish past ~20 m by design; whether that second
    lattice walk pays on a real GPU is unprofiled.
 
-## 0stump · A felled pine leaves scenery, not a second harvest *(systems lane)*
+## 0stump · A felled pine's stump is a second harvest — what v0 left *(systems lane)*
 
-- Operator: stumps are collected for wood. Today a stump is only `render/props.rs`'s
-  `FellPart::Stump`: no `content/gatherables.toml` row, no slot, no verb.
-- Cheap shape: a second life on the tree's `SlotLives` entry (no new occupant, no
-  wire byte). Expensive: a real `Occupant` at the skipped discriminant 8
-  (`OCCUPANT_R_M` rows, archetype-table alignment).
-- Buy `WANTED.md` §2.2's stump model after the verb, not before.
+- In: `gather::STUMP_NODE` (`content/gatherables.toml` `gather.stump`) pays out of the
+  felled tree's own `SlotLife` until grubbed (`STUMP_GRUBBED`); the sapling keeps its timer.
+- No wire fact says a stump was grubbed, so the client draws a spent stump until the
+  sapling and still prompts over it (`HarvestedSet::stump_standing`). One event code fixes it.
+- Buy `WANTED.md` §2.2's stump model now that the verb exists.
 
 ## 0kit · The build kit is the one row a generated mesh fights *(client lane)*
 

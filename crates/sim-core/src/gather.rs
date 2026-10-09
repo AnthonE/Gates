@@ -62,7 +62,18 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 11;
+pub const GATHERABLE_KINDS: usize = 12;
+
+/// The felled tree's stump (`NOW.md` §0stump): the last gatherable row, and
+/// the one no `Occupant` names. It is the tree slot's second life — a
+/// harvested tree's `SlotLife` pays it out of `hits`, reset to zero at the
+/// fell, until the stump is grubbed ([`STUMP_GRUBBED`]); the sapling still
+/// comes on the tree's own timer. No new occupant, no wire byte.
+pub const STUMP_NODE: usize = 11;
+
+/// A harvested tree's `SlotLife::hits` once its stump is spent: nothing left
+/// to swing at until the sapling. Not a count any budget reaches.
+pub const STUMP_GRUBBED: u16 = u16::MAX;
 
 /// Scan-target index for a barrel slot — one past the gatherable range,
 /// so the 3×3 scan ranks nodes and barrels against each other by distance
@@ -442,6 +453,7 @@ impl GatherContent {
             (2, 1, 15, 0, 0, NO_ITEM, 0, 0), // MetalPile
             (3, 1, 10, 0, 0, NO_ITEM, 0, 0), // SulfurPile
             (4, 1, 3, 0, 0, NO_ITEM, 0, 0),  // MushroomPatch
+            (0, 3, 0, 0, 0, 1, 5, 4),        // Stump: the tree's tool, a smaller pool
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -552,7 +564,9 @@ fn occupant_of(target: usize) -> u32 {
                 7 => Occupant::WoodPile,
                 8 => Occupant::MetalPile,
                 9 => Occupant::SulfurPile,
-                _ => Occupant::MushroomPatch,
+                10 => Occupant::MushroomPatch,
+                // STUMP_NODE: what stood here was a tree.
+                _ => Occupant::Tree,
             }) as u32
         }
     }
@@ -1140,6 +1154,12 @@ pub fn land(
     let Some(life) = lives.find_or_insert(cx, cz) else {
         return Swing::Absorbed; // store exhausted by harvested entries — refuse the hit
     };
+    // The stump pays out of the felled tree's own entry; a grubbed one is
+    // not a target (`melee::occupant_cast`), so this is a second fence.
+    let stump = ni == STUMP_NODE;
+    if stump && (life.respawn_at == 0 || life.hits == STUMP_GRUBBED) {
+        return Swing::Absorbed;
+    }
     // The weak-spot chase: switching nodes restarts it; the mark only
     // exists after the first landed hit. A hit landed while standing in
     // the current mark's sector spends the content's extra budget;
@@ -1165,7 +1185,11 @@ pub fn land(
     // total exact instead of approximately right.
     // A regrowing tree is worth its size (tree growth v0): fewer hits, the
     // same pay per hit, never less than one.
-    let size = grow_pm(life.grown_at, tick) as u32;
+    let size = if stump {
+        1000
+    } else {
+        grow_pm(life.grown_at, tick) as u32
+    };
     let hits_eff = (def.hits as u32 * size).div_ceil(1000).max(1);
     let budget = hits_eff * HIT_UNIT;
     let want = if weak_hit {
@@ -1173,14 +1197,21 @@ pub fn land(
     } else {
         HIT_UNIT
     };
-    let take = want.min(budget - life.hits as u32);
+    let take = want.min(budget.saturating_sub(life.hits as u32));
     life.hits += take as u16;
+    let spent_after = life.hits as u64;
     let exhausted = life.hits as u32 >= budget;
-    if exhausted {
+    if exhausted && stump {
+        life.hits = STUMP_GRUBBED;
+    } else if exhausted {
         let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
         life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
         life.grown_at = 0;
         life.occ = occupant_of(ni) as u8;
+        // A felled tree leaves its stump standing at a fresh budget.
+        if ni == 0 {
+            life.hits = 0;
+        }
     }
 
     // **The swing has landed, so it leaves the mark an arrow leaves.**
@@ -1232,7 +1263,6 @@ pub fn land(
     let full = def.yield_for(held) as u64 * gather_pct as u64 / 100;
     let total = full * hits_eff as u64;
     let pool = total * (100 - def.finish_pct as u64) / 100;
-    let spent_after = life.hits as u64;
     let spent_before = spent_after - take as u64;
     let budget = budget as u64;
     let mut pay = (pool * spent_after / budget).saturating_sub(pool * spent_before / budget);
@@ -1307,7 +1337,11 @@ pub fn land(
         s.cond = s.cond.saturating_sub(wear);
     }
     if exhausted {
-        events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
+        // A grubbed stump is not a harvest: the slot already is one, and
+        // the client keeps drawing the stump until the sapling.
+        if !stump {
+            events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
+        }
         p.ws_cell = NO_CELL;
         p.ws_hits = 0;
         return Swing::Absorbed;

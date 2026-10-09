@@ -79,6 +79,13 @@ pub trait Harvested {
             1000
         }
     }
+
+    /// A felled tree's stump still has wood in it (`NOW.md` §0stump). Asked
+    /// only of a harvested tree slot. The default knows no stumps, so no
+    /// fixture store grows a swingable one.
+    fn stump_standing(&self, _cx: u16, _cz: u16) -> bool {
+        false
+    }
 }
 
 /// A slot at `pm` per mille of its size — a regrowing sapling is the tree
@@ -126,6 +133,11 @@ impl Harvested for crate::gather::SlotLives {
 
     fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
         crate::gather::SlotLives::standing_pm(self, cx, cz)
+    }
+
+    fn stump_standing(&self, cx: u16, cz: u16) -> bool {
+        self.find(cx, cz)
+            .is_some_and(|e| e.respawn_at != 0 && e.hits != crate::gather::STUMP_GRUBBED)
     }
 }
 

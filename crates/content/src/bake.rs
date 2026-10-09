@@ -80,6 +80,7 @@ pub fn container_index(name: &str) -> Option<usize> {
 /// Gatherable index (`sim_core::gather::node_index`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
     let o = match a {
+        NodeArchetype::Stump => return sim_core::gather::STUMP_NODE,
         NodeArchetype::Tree => sim_core::terrain::Occupant::Tree,
         NodeArchetype::StoneNode => sim_core::terrain::Occupant::StoneNode,
         NodeArchetype::MetalNode => sim_core::terrain::Occupant::MetalNode,

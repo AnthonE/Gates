@@ -90,6 +90,9 @@ pub enum NodeArchetype {
     MetalPile,
     SulfurPile,
     MushroomPatch,
+    /// A felled tree's stump (`sim_core::gather::STUMP_NODE`): no occupant of
+    /// its own, the tree slot's second harvest.
+    Stump,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its

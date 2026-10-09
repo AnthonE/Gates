@@ -665,6 +665,13 @@ impl Harvested for HarvestedSet {
             None => 1000,
         }
     }
+
+    /// Every felled tree's stump reads as standing here: no wire fact says a
+    /// stump was grubbed, so the prompt over a spent one is the stump the
+    /// renderer still draws, and the server's swing pays nothing.
+    fn stump_standing(&self, cx: u16, cz: u16) -> bool {
+        self.contains(cell_key(cx, cz))
+    }
 }
 
 /// The client's mirror of the placed-piece set, keyed by grid address —
