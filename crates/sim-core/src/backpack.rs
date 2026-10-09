@@ -590,13 +590,15 @@ impl Backpacks {
             || !crate::town::safe(town, b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)
     }
 
+    /// Take everything that fits from the nearest bag in reach. `None` when
+    /// no bag is in reach or the safe zone refuses it.
     pub fn loot_nearest(
         &mut self,
         gc: &GatherContent,
         town: &crate::town::Town,
         p: &mut Player,
         events: &mut EventQueue,
-    ) -> Option<u32> {
+    ) -> Option<Looted> {
         let px = p.body.qx as f32 * POS_XZ_Q;
         let pz = p.body.qz as f32 * POS_XZ_Q;
         let mut best: Option<(f32, usize)> = None;
@@ -622,6 +624,8 @@ impl Backpacks {
             return None;
         }
         let id = self.entries[i].id;
+        let owner = self.entries[i].owner;
+        let mut took_any = false;
         for s in 0..INV_SLOTS {
             let stack = self.entries[i].items[s];
             if stack.count == 0 {
@@ -644,6 +648,7 @@ impl Backpacks {
             if took == 0 {
                 continue;
             }
+            took_any = true;
             self.entries[i].items[s].count -= took;
             if self.entries[i].items[s].count == 0 {
                 // Canonical empty is ALL THREE fields — a looted-out slot
@@ -661,8 +666,21 @@ impl Backpacks {
         if self.entries[i].is_empty() {
             self.remove(i, BAG_GONE_EMPTIED, events);
         }
-        Some(id)
+        Some(Looted {
+            id,
+            owner,
+            took: took_any,
+        })
     }
+}
+
+/// What one `loot_nearest` reached: the bag, whose it was (read before an
+/// emptied bag's record leaves), and whether any stack moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Looted {
+    pub id: u32,
+    pub owner: u32,
+    pub took: bool,
 }
 
 impl Default for Backpacks {

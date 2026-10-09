@@ -668,8 +668,9 @@ pub const TRUST_DOOR: u8 = 1;
 /// whichever `Roster` answers it (`reference/BUILDING.md` §1 fact 1).
 pub const TRUST_AUTH: u8 = 2;
 /// A container someone else owns, moved through by this hand — a box, an
-/// oven or a bag (`World::move_item`). A world container has no owner and
-/// is therefore never this: nobody's crate is nobody's trust.
+/// oven or a bag (`World::move_item`), or a bag emptied by `Command::Loot`.
+/// A world container has no owner and is therefore never this: nobody's
+/// crate is nobody's trust.
 pub const TRUST_CONT: u8 = 3;
 /// The highest verb above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a value domain, exactly as `DEATH_BY_MAX` is.
@@ -5133,12 +5134,20 @@ impl World {
             Command::Loot { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
-                    self.backpacks.loot_nearest(
+                    let looted = self.backpacks.loot_nearest(
                         &self.gather,
                         &town,
                         &mut self.players[slot],
                         &mut self.events,
                     );
+                    // A bag is a container someone else owns (`TRUST_CONT`):
+                    // emptying it with `Loot` is the act `move_item` logs for
+                    // one stack, so it mints the same row. Nothing taken is
+                    // nothing moved, and `log_trust` drops your own bag and a
+                    // carcass's.
+                    if let Some(l) = looted.filter(|l| l.took) {
+                        self.log_trust(seat, id, l.owner, TRUST_CONT);
+                    }
                 }
             }
             Command::Pickup { id } => {

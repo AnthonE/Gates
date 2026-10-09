@@ -299,6 +299,10 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
             cond: 0,
             skin: 0,
         }; INV_SLOTS];
+        // Carcasses' bags, not the flooders' own: every flooder stands on
+        // one spot, so `Loot` takes whichever bag is lowest in the store, and
+        // a player's bag taken by another player is a trust row (§5d). An
+        // animal's is nobody's, so the flood stays event-only.
         for f in 0..FLOODERS {
             let id = FIRST_FLOODER + f;
             let b = w.players[slot_of(w, id)].body;
@@ -309,7 +313,7 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
                     b.qx,
                     b.qy,
                     b.qz,
-                    id,
+                    sim_core::mob::mob_id(f as usize),
                     &full,
                     tick,
                     &mut w.events,
