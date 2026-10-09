@@ -1337,9 +1337,11 @@ pub fn land(
         s.cond = s.cond.saturating_sub(wear);
     }
     if exhausted {
-        // A grubbed stump is not a harvest: the slot already is one, and
-        // the client keeps drawing the stump until the sapling.
-        if !stump {
+        // A grubbed stump is not a harvest — the slot already is one — so
+        // it says only that the stump is gone.
+        if stump {
+            events.push(crate::world::EV_STUMP_GRUBBED, ck, 0, 0);
+        } else {
             events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
         }
         p.ws_cell = NO_CELL;

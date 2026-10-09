@@ -88,6 +88,7 @@ fn trunk_at(app: &mut App, x: f32, z: f32) -> Entity {
                 yaw: 0.0,
                 part: FellPart::Trunk,
                 felled: false,
+                grubbed: false,
             },
             GlobalTransform::from_xyz(x, 0.0, z),
             Visibility::Inherited,

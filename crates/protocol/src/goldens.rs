@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 154] = [
+pub const FIXTURES: [&str; 155] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -275,6 +275,8 @@ pub const FIXTURES: [&str; 154] = [
     "action_treat.bin",
     // A planter's beds (v100).
     "event_planter.bin",
+    // A grubbed stump (v101).
+    "event_stump_grubbed.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1074,12 +1076,18 @@ pub fn event_slot_grow_sync() -> [(u16, u16, u32); crate::GROW_SYNC_BATCH] {
 }
 
 /// A full sync batch with the reset bit set — the join-sync first message
-/// at its cap.
-pub fn event_slot_sync() -> (bool, [(u16, u16); SLOT_SYNC_BATCH]) {
+/// at its cap — and a scatter of grubbed stumps (v101), the top cell's
+/// among them so the mask's last bit is read.
+pub fn event_slot_sync() -> (bool, [(u16, u16); SLOT_SYNC_BATCH], u64) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 17);
     let cells =
         core::array::from_fn(|_| (rng.next_bounded(256) as u16, rng.next_bounded(256) as u16));
-    (true, cells)
+    (true, cells, 0x8000_0400_0021_0005)
+}
+
+/// A grubbed stump (v101): (cx, cz), distinct halves.
+pub fn event_stump_grubbed() -> (u16, u16) {
+    (0x00A1, 0x00B2)
 }
 
 /// A weak-mark message with the weak-hit bit set: (cx, cz, mark8, weak_hit).

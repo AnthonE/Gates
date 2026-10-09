@@ -53,6 +53,7 @@ fn part(app: &mut App, part: FellPart, x: f32) -> Entity {
                 yaw: 0.0,
                 part,
                 felled: false,
+                grubbed: false,
             },
             GlobalTransform::from_xyz(x, 0.0, 0.0),
             Visibility::Inherited,

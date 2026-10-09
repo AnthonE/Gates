@@ -107,7 +107,7 @@ use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
     TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_WORK};
+use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
@@ -1463,6 +1463,33 @@ fn slot_harvested_on_a_node_names_the_occupant_not_the_table_row() {
         ev.a,
         cell_key(cx, cz),
         "EV_SLOT_HARVESTED.a is the cell key"
+    );
+}
+
+/// `EV_STUMP_GRUBBED: a = cell key, b = c = 0`, on the stump a fell left.
+#[test]
+fn stump_grubbed_names_the_cell() {
+    let mut w = duel_world();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    until(&mut w, EV_SLOT_HARVESTED);
+    let (tool, _) = w.gather.nodes[gather::STUMP_NODE].tools[0];
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: w.gather.cond_max_of(tool),
+        skin: 0,
+    };
+    // The stump is shin-high under the swinger's feet: look straight down.
+    until_looking(&mut w, EV_STUMP_GRUBBED, 0);
+    let ev = only(&w, EV_STUMP_GRUBBED);
+    assert_eq!(ev.a, cell_key(cx, cz), "EV_STUMP_GRUBBED.a is the cell key");
+    assert_eq!(ev.b, 0, "EV_STUMP_GRUBBED.b is reserved and must stay zero");
+    assert_eq!(ev.c, 0, "EV_STUMP_GRUBBED.c is reserved and must stay zero");
+    assert_eq!(
+        count(&w, EV_SLOT_HARVESTED),
+        0,
+        "a grub is not a second fell"
     );
 }
 
@@ -4335,7 +4362,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 59] = [
+    const COVERED: [(&str, u8); 60] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_WORK", EV_WORK),
@@ -4343,6 +4370,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_ARC_DID", EV_ARC_DID),
         ("EV_MECH_SOLVED", EV_MECH_SOLVED),
         ("EV_GROW", EV_GROW),
+        ("EV_STUMP_GRUBBED", EV_STUMP_GRUBBED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
         ("EV_PIECE_PLACED", EV_PIECE_PLACED),

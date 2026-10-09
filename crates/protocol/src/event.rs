@@ -50,6 +50,8 @@ pub const MAX_EVENT_MSG_BYTES: usize = 320;
 /// message per client per tick — server core). Overflow policy: the next
 /// message continues the walk.
 pub const SLOT_SYNC_BATCH: usize = 64;
+// The slot sync's grubbed bits are one `u64`.
+const _: () = assert!(SLOT_SYNC_BATCH <= 64);
 
 /// Regrowing trees one grow-sync message carries (tree growth v0): eight
 /// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
@@ -506,7 +508,11 @@ const SUB_WORN: u32 = 89;
 /// change, `SUB_OVEN`'s posture; a joiner reads the same byte off the
 /// deploy record.
 const SUB_PLANTER: u32 = 90;
-const SUB_MAX: u32 = SUB_PLANTER;
+/// A felled tree's stump was grubbed out (wire v101, sim
+/// `EV_STUMP_GRUBBED`): the cell, broadcast. A joiner reads the same fact
+/// off the slot sync's per-cell bit.
+const SUB_STUMP_GRUBBED: u32 = 91;
+const SUB_MAX: u32 = SUB_STUMP_GRUBBED;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1188,11 +1194,16 @@ pub enum EventMsg {
         cells: [(u16, u16, u32); GROW_SYNC_BATCH],
         count: u8,
     },
+    /// A felled tree's stump was grubbed out: the cell stays harvested
+    /// until the sapling, with nothing standing in it.
+    StumpGrubbed { cx: u16, cz: u16 },
     /// One batch of the harvested-cell walk. `reset` (first batch of a
-    /// join or an event-lane resync) clears the client's set first.
+    /// join or an event-lane resync) clears the client's set first. Bit `i`
+    /// of `grubbed` says `cells[i]`'s stump is gone (wire v101).
     SlotSync {
         reset: bool,
         cells: [(u16, u16); SLOT_SYNC_BATCH],
+        grubbed: u64,
         count: u8,
     },
     /// Item display names `first..first+count` of a `total`-row table.
@@ -2055,22 +2066,36 @@ pub fn encode_event_slot_grow_sync(
 }
 
 /// A batch may be empty only with `reset` — the "your set is now empty"
-/// resync message; an empty non-reset batch says nothing.
+/// resync message; an empty non-reset batch says nothing. Bit `i` of
+/// `grubbed` rides after `cells[i]`; a bit past the batch is refused.
 pub fn encode_event_slot_sync(
     reset: bool,
     cells: &[(u16, u16)],
+    grubbed: u64,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if cells.len() > SLOT_SYNC_BATCH || (cells.is_empty() && !reset) {
         return Err(WireError::Cap);
     }
+    if cells.len() < 64 && grubbed >> cells.len() != 0 {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_SLOT_SYNC)?;
     w.write_bit(reset)?;
     w.write(cells.len() as u32, SYNC_COUNT_BITS)?;
-    for &(cx, cz) in cells {
+    for (i, &(cx, cz)) in cells.iter().enumerate() {
         w.write(cx as u32, 16)?;
         w.write(cz as u32, 16)?;
+        w.write_bit(grubbed >> i & 1 != 0)?;
     }
+    Ok(w.finish())
+}
+
+/// A felled tree's stump at (`cx`, `cz`) was grubbed out (broadcast).
+pub fn encode_event_stump_grubbed(cx: u16, cz: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_STUMP_GRUBBED)?;
+    w.write(cx as u32, 16)?;
+    w.write(cz as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -4485,15 +4510,24 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
-            for c in cells.iter_mut().take(count) {
+            let mut grubbed = 0u64;
+            for (i, c) in cells.iter_mut().take(count).enumerate() {
                 *c = (r.read(16)? as u16, r.read(16)? as u16);
+                if r.read_bit()? {
+                    grubbed |= 1 << i;
+                }
             }
             EventMsg::SlotSync {
                 reset,
                 cells,
+                grubbed,
                 count: count as u8,
             }
         }
+        SUB_STUMP_GRUBBED => EventMsg::StumpGrubbed {
+            cx: r.read(16)? as u16,
+            cz: r.read(16)? as u16,
+        },
         SUB_CATALOG => {
             let total = r.read(CATALOG_TOTAL_BITS)? as usize;
             let first = r.read(CATALOG_TOTAL_BITS)? as usize;
@@ -6046,25 +6080,32 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let cells: [(u16, u16); SLOT_SYNC_BATCH] =
             core::array::from_fn(|i| (i as u16, (i * 3) as u16));
-        let len = encode_event_slot_sync(true, &cells, &mut buf).unwrap();
+        let len = encode_event_slot_sync(true, &cells, u64::MAX, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::SlotSync {
                 reset,
                 cells: got,
+                grubbed,
                 count,
             } => {
                 assert!(reset);
                 assert_eq!(count as usize, SLOT_SYNC_BATCH);
                 assert_eq!(got, cells);
+                assert_eq!(grubbed, u64::MAX);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         // Empty is only a message when it resets.
-        assert!(encode_event_slot_sync(true, &[], &mut buf).is_ok());
+        assert!(encode_event_slot_sync(true, &[], 0, &mut buf).is_ok());
         assert_eq!(
-            encode_event_slot_sync(false, &[], &mut buf),
+            encode_event_slot_sync(false, &[], 0, &mut buf),
             Err(WireError::Cap)
+        );
+        // A grubbed bit past the batch names no cell.
+        assert_eq!(
+            encode_event_slot_sync(false, &cells[..3], 0b1000, &mut buf),
+            Err(WireError::Range)
         );
     }
 

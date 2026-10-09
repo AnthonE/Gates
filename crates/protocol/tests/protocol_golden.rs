@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 154] = [
+const GOLDEN: [&[u8]; 155] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -217,6 +217,7 @@ const GOLDEN: [&[u8]; 154] = [
     include_bytes!("golden/event_worn.bin"),
     include_bytes!("golden/action_treat.bin"),
     include_bytes!("golden/event_planter.bin"),
+    include_bytes!("golden/event_stump_grubbed.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -473,8 +474,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 152);
     // A planter's beds (v100).
     g!(seen, golden_event, 153);
+    // A grubbed stump (v101).
+    g!(seen, golden_event, 154);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 154, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 155, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1139,20 +1142,31 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_slot_grow_sync(&cells, &mut buf).unwrap()
         }
         "event_slot_sync.bin" => {
-            let (reset, cells) = event_slot_sync();
+            let (reset, cells, grubbed) = event_slot_sync();
             match decode_event(fixture).unwrap() {
                 EventMsg::SlotSync {
                     reset: got_r,
                     cells: got,
+                    grubbed: got_g,
                     count,
                 } => {
                     assert_eq!(got_r, reset, "{name}: reset mismatch");
                     assert_eq!(count as usize, SLOT_SYNC_BATCH);
                     assert_eq!(got, cells, "{name}: decode mismatch");
+                    assert_eq!(got_g, grubbed, "{name}: grubbed mismatch");
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
             }
-            encode_event_slot_sync(reset, &cells, &mut buf).unwrap()
+            encode_event_slot_sync(reset, &cells, grubbed, &mut buf).unwrap()
+        }
+        "event_stump_grubbed.bin" => {
+            let (cx, cz) = protocol::goldens::event_stump_grubbed();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::StumpGrubbed { cx, cz },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_stump_grubbed(cx, cz, &mut buf).unwrap()
         }
         "event_catalog.bin" => {
             let cat = event_catalog();

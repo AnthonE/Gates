@@ -57,8 +57,8 @@ use sim_core::world::{
     EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
     EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
     EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
-    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
-    EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
+    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_STUMP_GRUBBED, EV_SWING,
+    EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK};
@@ -3765,13 +3765,15 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
-                EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED => {
+                EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED | EV_STUMP_GRUBBED => {
                     let cx = (ev.a >> 16) as u16;
                     let cz = ev.a as u16;
                     // A tree comes back as a sapling (tree growth v0): `c`
                     // says so and `b` is the tick it is grown by.
                     let encoded = if ev.code == EV_SLOT_HARVESTED {
                         encode_event_slot_change(true, cx, cz, &mut self.ev_buf)
+                    } else if ev.code == EV_STUMP_GRUBBED {
+                        protocol::encode_event_stump_grubbed(cx, cz, &mut self.ev_buf)
                     } else {
                         protocol::encode_event_slot_respawned(
                             cx,
@@ -4485,6 +4487,7 @@ impl ShardCore {
         let lives = &self.world.slot_lives;
         if c.sync_reset || c.sync_cursor < lives.len() {
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
+            let mut grubbed = 0u64;
             let mut grows = [(0u16, 0u16, 0u32); protocol::GROW_SYNC_BATCH];
             let mut n_cells = 0usize;
             let mut n_grows = 0usize;
@@ -4498,6 +4501,9 @@ impl ShardCore {
                 let e = entries[c.sync_cursor + scanned];
                 if e.respawn_at != 0 {
                     cells[n_cells] = (e.cx, e.cz);
+                    if e.hits == sim_core::gather::STUMP_GRUBBED {
+                        grubbed |= 1 << n_cells;
+                    }
                     n_cells += 1;
                 } else if e.grown_at != 0 {
                     grows[n_grows] = (e.cx, e.cz, e.grown_at as u32);
@@ -4510,7 +4516,7 @@ impl ShardCore {
             let reset = c.sync_reset;
             let mut said = true;
             if reset || n_cells > 0 {
-                match encode_event_slot_sync(reset, &cells[..n_cells], &mut self.ev_buf) {
+                match encode_event_slot_sync(reset, &cells[..n_cells], grubbed, &mut self.ev_buf) {
                     Ok(len) => {
                         if !send(Lane::Event, slot, &self.ev_buf[..len]) {
                             return;

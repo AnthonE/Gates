@@ -873,7 +873,13 @@ pub const EV_MECH_SOLVED: u8 = 58;
 /// planter is visible from outside the base it is in.
 pub const EV_GROW: u8 = 59;
 
-pub const EV_MAX: u8 = EV_GROW;
+/// EV_STUMP_GRUBBED: a = cell key, b = 0, c = 0. A felled tree's stump was
+/// grubbed out (`gather::STUMP_GRUBBED`): the slot stays harvested until the
+/// sapling, but nothing stands there now. **Broadcast**, `EV_SLOT_HARVESTED`'s
+/// posture: every client stops drawing the stump and offering a swing at it.
+pub const EV_STUMP_GRUBBED: u8 = 60;
+
+pub const EV_MAX: u8 = EV_STUMP_GRUBBED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
