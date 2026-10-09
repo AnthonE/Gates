@@ -47,13 +47,12 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
 
 ## 0wnd · Down, hand revive and medkit recovery are built *(sim+client lane)*
 
-1. Medicine on a downed body (`reference/WOUNDED.md` §9): `Command::Consume` with a
-   target. Content prices bandages and medkits but has no syringe row yet.
 2. Refusals while down: the client says `HANDS_LINE`, but the sim still sends no
    event from `live_slot_of`; the fix is each refused verb's own `REFUSE_*`.
 3. No drag clip or voice: a remote crawl slides `Death01`'s pose (`render/anim.rs`)
    and the fall reuses `Cue::Death`.
-5. §LOOK: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the vignette — never seen.
+5. §LOOK: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the vignette, the syringe's
+   `[E] INJECT` — never seen.
 
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
 
@@ -178,8 +177,7 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 - Visual gap 3 (`pass-20260815-042118-11`: no structure, character or viewmodel in
   a frame) is partly open: the panels-off rule and the missing hands.
 - From the judge's gap 2, larger than a pass: a world event (a timed, announced
-  window at the pad; the heli is scheduled, not announced) and a guard loot tier
-  (§0wc item 3).
+  window at the pad; the heli is scheduled, not announced).
 
 ## 0h3 · The other flaky dial: `connection closed by peer: 261` *(server lane)*
 
@@ -330,10 +328,8 @@ Routing candidates are not shipped roads (`findings/road-network-prototype-20260
 
 Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTILES.md` §9).
 1. Nobody has watched a wall come down, a bench fall or a raid decal draw (`§LOOK`).
-4. A farming lane (`server/tests/farmwalk.rs` isn't one); forest-floor pickups are in
-   (the mushroom patch and the piles, `content/gatherables.toml`).
-6. Crops. Night has its reasons now (the cold costs hp, `exposure.rs`; a torch keeps
-   wolves off) and its sky (moon, stars, `/time`); nothing in `content/` grows.
+7. Crops v0 grow on a clock alone (the planter box, `content/cooking.toml`): no water,
+   light or genes, and nothing draws a growing plant — the planter is a plain box.
 
 ## 0pvp · What a fight still cannot do *(systems lane)*
 
@@ -378,9 +374,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 1b. `takes_deposits` keys on kind; a fuel slot or vending machine needs it per instance.
 2b. Ground items: no tumble (`reference/LOOT.md` §9.3), most draw as a pouch
     (`HELD_MODELS`), barrels pay 1–2 stacks (`content/loot.toml`, `ci/haven_prize.mjs`).
-3. The guard pays a wolf's loot (`guard.rs`, pinned by `tests/guard.rs`). The stag is
-   the third species now, so a guard tier is a row away; meanwhile the stag's voice
-   falls back to the snort (`sound/voice.rs`) and `ui/death.rs` names it a pig.
 4. Nobody has fought a guard in the running game (route as item 1).
 5. `inventory.rs:110`'s `slots_in` treats every non-box kind as `INV_SLOTS` wide,
    untested; add an explicit arm under `container_wire.rs:1359`'s guard.
@@ -394,12 +387,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0m · The pig is in — what the roster still owes *(systems lane)*
 
-1. A butchering verb (tool-gated) on the body: no `ui::interact::Verb` arm; output
-   goes to the corpse bag (`mob::strike`). Research: `reference/ANIMALS.md` §9.5.
-2. Wolves howl on finding you (#178), and a bite lunges and growls or snorts for
-   everyone near (the sim's `EV_SWING` with the animal's id); pigs still owe an aggro
-   cue, and holding a charge is free. Voices still run on a timer, not the brain's state
-   (`sound/voice.rs`: near growls, far howls).
+2. Holding a charge is free. The stag's bellow is a stand-in cut from the howl and a
+   growl (`assets/sound/MANIFEST.md`): a CC0 red deer roar replaces it.
 4. `MAX_MOBS = 64` came from the wire budget and has never met a playtest.
 5. Should `ttk_melee` widen (rock vs spear)? `DECISIONS.md` §open "tools as weapons".
 7. The brain's numbers are code and shared by every species (`brain.rs`: 2 biters, 3 tries,
@@ -476,8 +465,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0wx · Weather and exposure — what #176 left *(systems + client lane)*
 
-1. Exposure is wet and cold only: no overheating (no desert, so the Dust preset was dropped), no comfort
-   regen, and the cold burns no extra food or water. Burlap is the only warm clothing (`content/armor.toml`).
+1. Exposure is wet and cold only: no overheating (no desert, so the Dust preset was dropped; heat is what
+   burns water in the reference). Burlap is the only warm clothing (`content/armor.toml`).
 2. Lightning is a 0.35 s brightening: no bolt, no directional flash; `weather::Bolt::bearing` is never read.
 3. WET and COLD say what, not why, and nothing confirms a roof or a fire is working (FREEZING now says
    what fixes it, `render/hud.rs`).
@@ -534,11 +523,6 @@ is not.
 Remains, in order (the trust ledger — `sim-core/trust.rs`, `server/trustlog.rs`
 — is built; the public shard logs once a build with it is deployed, an operator
 act):
-- **`Command::Loot` mints no trust row.** Emptying another player's bag
-  with `Loot` is silent, while taking one stack of it with `Move` logs
-  `TRUST_CONT`, so the record depends on which button was pressed. Decide
-  whether a corpse bag is trust (`TRUST_CONT`'s doc says bags are), then
-  re-measure `loot_storm.rs`'s counts in the same commit.
 - `TRUST_GIVE` waits on the give verb; there is still no player-to-player give.
 - Then the social verbs for agents (`give`, `authorize`, `speak`): human client
   first, and `agent_walls.rs` keeps the agent's set a subset. Entry price and
@@ -749,7 +733,8 @@ act):
 
 2. Fire pit: `assets/models/deploy/fire.glb` bakes a lit emissive that `held_assets.rs::nothing_held_glows` refuses;
    needs an unlit variant or a generated `heldgen` row.
-3. Resources, ammo and the lock: no models (not in `ui::hold::HELD_MODELS`); bandage, medkit and food have them.
+3. Resources, ammo, the lock, the syringe, the seeds and the planter box: no models (not in
+   `ui::hold::HELD_MODELS`); bandage, medkit and food have them.
 4. The item has been parented to the hand with a re-derived grip since 2026-08-30 (`dress_arms`,
    `tests/viewmodel_arms.rs`); nobody has looked at a mid-swing frame to see if the fist still trails the arc.
 
@@ -897,11 +882,12 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 Read `reference/MONUMENTS.md` §9 first (§0: the weakest provenance here).
 
-1. Next (eight landmark kits are in, `sim-core/src/landmark.rs`): quarry and relay kits with distinct terrain needs, then the roster together. Re-derive placement (600 m
-   separation, 300 m inland search; `INLAND_SITES` alone can't) and rewards as one (caches 4 vs Haven's 5; the
-   depot has no loot or guards). Coast-ring continuity is §0rd.
+1. Next (ten landmark kits are in, `sim-core/src/landmark.rs`, quarry and relay last): the roster together.
+   Re-derive placement (600 m separation, 300 m inland search; `INLAND_SITES` alone can't) and rewards as one
+   (caches 4 vs Haven's 5; the depot has no loot or guards). Coast-ring continuity is §0rd.
 3. Whether a sleeper blocks is unanswered (§0y item 1) — a design call.
-4. Art rows (`DECISIONS.md` §open): the shelter's posts stand 1.2 m proud of its roof; swept ground reads as shards.
+4. Art rows (`DECISIONS.md` §open): the shelter's posts stand 1.2 m proud of its roof; swept ground reads as shards;
+   the quarry and the relay draw as plain surfaced boxes, with no model for either.
 5. Then §9.4: per-entity interest ranges (nav landed, #178); vertical AOI layers are premature, moving monuments refused.
 
 ## 4b · The world lane: what the second tier left open
@@ -955,6 +941,7 @@ real GPU is still the operator's.
 - Chop a tree, hit ground and a wall (§0mk): do #179's atlas marks read per material — holes, gashes, dents, scorch?
 - Weather and night (#176): storm, fog, rain, dusk, stars and moon on a real GPU and in a browser, and the rain and thunder beds. Does a roof read as shelter (rain cleared, wind and rain quieter)? `ci/scene.sh --hour … --weather …` pins a frame.
 - The animals (§0pr, §0m, §0anim): a pig asleep lies down; a pack circles both ways; an animal shot at range turns on its shooter. Does any of it read at 30 m?
+- Wire v99's verbs (§0m, §0wnd, §5 item 7, §0n2), headless only: swing a hatchet at a pig's carcass (prompt, cut rate, wear); inject a downed friend; plant corn and wait 15 min; find a relay by a road and a quarry in the foothills; hear the stag's stand-in bellow.
 - Sea vs ground ripple (§0pf item 4): tangent `w` is −1 on the sea and +1 on the ground for the same XZ mapping — which flips the green channel? Look, don't guess.
 
 0. The blow, whole (§0fx, §0mk): one whoosh per arm swing when spammed? pick sparks a shower or a firework? dust weight or smoke? contact thock/crunch/clank; the weak-spot cross brightening on `WEAK SPOT` (numbers: `DECISIONS.md` §open). And #179's blood, blast, muzzle flash and tracers, and its recorded Kenney takes against the synth.
