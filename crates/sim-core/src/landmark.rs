@@ -734,10 +734,14 @@ fn try_site(
             road_d2 = road_d2.min(sr.dist2(x, z));
         }
     }
-    let kind = if road_d2 <= RELAY_ROAD_M * RELAY_ROAD_M && y0 <= 42.0 && unit(h, 40) < 0.5 {
+    // The new kinds' own draw, re-mixed rather than read off `h`'s high
+    // bits: those are the yaw's, and a pick sharing them would turn every
+    // relay to one half of the compass.
+    let pick = unit(crate::rng::splitmix64(h), 0);
+    let kind = if road_d2 <= RELAY_ROAD_M * RELAY_ROAD_M && y0 <= 42.0 && pick < 0.5 {
         // Within sight of a road and off the summits: the relay it serves.
         LandmarkKind::Relay
-    } else if (QUARRY_MIN_H..=42.0).contains(&y0) && moist <= 0.05 && unit(h, 40) < 0.45 {
+    } else if (QUARRY_MIN_H..=42.0).contains(&y0) && moist <= 0.05 && pick < 0.45 {
         // Dry foothills: the rock is near the surface and nothing grows on it.
         LandmarkKind::Quarry
     } else if y0 > 42.0 {
