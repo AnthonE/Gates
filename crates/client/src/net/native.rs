@@ -45,4 +45,14 @@ impl Wire for NativeWire {
             let _ = c.send_datagram(payload);
         }
     }
+
+    fn live(&self) -> bool {
+        self.connection.is_some()
+    }
+
+    fn rtt_ms(&self) -> Option<f32> {
+        self.connection
+            .as_ref()
+            .map(|c| c.rtt().as_secs_f32() * 1000.0)
+    }
 }

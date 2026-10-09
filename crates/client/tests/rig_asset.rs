@@ -899,3 +899,78 @@ fn every_finger_bone_the_grip_turns_is_in_the_skin_under_the_hand() {
         }
     }
 }
+
+/// A node's local transform as a column-major matrix (TRS or `matrix`).
+fn node_local(n: &serde_json::Value) -> bevy::math::Mat4 {
+    use bevy::math::{Mat4, Quat, Vec3};
+    if let Some(m) = n["matrix"].as_array() {
+        let v: Vec<f32> = m.iter().map(|x| x.as_f64().unwrap() as f32).collect();
+        return Mat4::from_cols_slice(&v);
+    }
+    let f = |k: &str, d: &[f32]| -> Vec<f32> {
+        n[k].as_array()
+            .map(|a| a.iter().map(|x| x.as_f64().unwrap() as f32).collect())
+            .unwrap_or_else(|| d.to_vec())
+    };
+    let t = f("translation", &[0.0, 0.0, 0.0]);
+    let r = f("rotation", &[0.0, 0.0, 0.0, 1.0]);
+    let s = f("scale", &[1.0, 1.0, 1.0]);
+    Mat4::from_scale_rotation_translation(
+        Vec3::new(s[0], s[1], s[2]),
+        Quat::from_xyzw(r[0], r[1], r[2], r[3]),
+        Vec3::new(t[0], t[1], t[2]),
+    )
+}
+
+/// **The clothing's one fixed fact** (`render/worn.rs`): every bone it hangs
+/// from, at rest, times its inverse bind matrix, is the turn
+/// `MESH_FROM_BODY` undoes — so a piece authored in body space lands on the
+/// body. A re-import that changes the rig's mesh space fails here rather
+/// than drawing every hood a metre off its head.
+#[test]
+fn clothing_lands_in_body_space_on_every_bone_it_hangs_from() {
+    use bevy::math::Mat4;
+    let glb = Glb::open(&asset_path(RIG));
+    let nodes = glb.json["nodes"].as_array().expect("no nodes");
+    let mut parent = vec![None; nodes.len()];
+    for (i, n) in nodes.iter().enumerate() {
+        for c in n["children"].as_array().into_iter().flatten() {
+            parent[c.as_u64().unwrap() as usize] = Some(i);
+        }
+    }
+    let world = |mut i: usize| {
+        let mut m = node_local(&nodes[i]);
+        while let Some(p) = parent[i] {
+            m = node_local(&nodes[p]) * m;
+            i = p;
+        }
+        m
+    };
+    let skin = &glb.json["skins"][0];
+    let joints: Vec<usize> = skin["joints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j.as_u64().unwrap() as usize)
+        .collect();
+    let ibm = glb.floats(skin["inverseBindMatrices"].as_u64().unwrap() as usize);
+    for bone in client::render::worn::BONE_NAMES {
+        let node = nodes
+            .iter()
+            .position(|n| n["name"].as_str() == Some(bone))
+            .unwrap_or_else(|| panic!("{RIG}: no bone {bone:?} for clothing to hang from"));
+        let j = joints
+            .iter()
+            .position(|&n| n == node)
+            .unwrap_or_else(|| panic!("{RIG}: {bone:?} is not a joint of the skin"));
+        let m = world(node) * Mat4::from_cols_slice(&ibm[j]) * client::render::worn::MESH_FROM_BODY;
+        let err = (m - Mat4::IDENTITY)
+            .to_cols_array()
+            .iter()
+            .fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!(
+            err < 1e-3,
+            "{RIG}: {bone:?} rest × inverse bind × MESH_FROM_BODY is {m:?}, not identity"
+        );
+    }
+}

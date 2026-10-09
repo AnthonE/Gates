@@ -497,7 +497,7 @@ pub fn page_tabs(root: &mut ChildSpawnerCommands, ui: &Ui) {
             .with_children(|t| {
                 t.spawn((
                     Text::new(nav::label(*page)),
-                    font_bold(17.0),
+                    font_bold(18.0),
                     TextColor(TEXT),
                     Pickable::IGNORE,
                 ));

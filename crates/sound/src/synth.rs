@@ -571,6 +571,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::RemoteBowDraw => render_take(Cue::BowDraw, take),
         Cue::Brush => brush(&mut r),
         Cue::RemoteBrush => render_take(Cue::Brush, take),
+        Cue::TorchOut => fizzle(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1283,6 +1284,36 @@ fn rustle(r: &mut Rng) -> Vec<f32> {
     let at = samples(0.09 + 0.03 * r.unit());
     for (o, v) in out[at..].iter_mut().zip(snap) {
         *o += v * 0.6;
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A torch going out: a soft puff of air, then the last of the flame
+/// hissing away to nothing — band-passed noise on a falling envelope, with a
+/// few late crackles as the head cools.
+fn fizzle(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.7);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let (mut lp, mut hp) = (Lp::new(5_500.0), Lp::new(1_400.0));
+    let (mut puff_lp, mut gate) = (Lp::new(260.0), 0.0f32);
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let x = r.noise();
+        // The hiss: bright, falling away over a fifth of a second.
+        let l = lp.run(x);
+        let hiss = (l - hp.run(l)) * attack(t, 0.01) * (-t / 0.2).exp();
+        // The puff: a dull breath under the first tenth.
+        let puff = puff_lp.run(x) * 2.2 * attack(t, 0.004) * (-t / 0.05).exp();
+        // The cooling head: sparse clicks thinning out.
+        if r.unit() < 0.004 * (-t / 0.3).exp() {
+            gate = 1.0;
+        }
+        gate *= 0.985;
+        *v = hiss * 0.9 + puff + x * gate * 0.35;
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);

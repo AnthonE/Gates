@@ -698,3 +698,24 @@ fn the_stag_stands_on_its_legs_at_its_size() {
     );
     assert_eq!(STAG_LEG_ANCHORS.len(), 4);
 }
+
+/// A bite lunges forward with the nose down and comes back; a howl raises
+/// the nose; a lying animal holds neither.
+#[test]
+fn a_bite_lunges_and_a_howl_looks_up() {
+    use client::render::mobs::{Gait, BITE_S, HOWL_S};
+    let mut g = Gait::new(1);
+    assert_eq!(g.pose(0.016).reach, 0.0, "a standing animal does not lunge");
+    g.bite();
+    let mid = g.pose(BITE_S * 0.5);
+    assert!(mid.reach > 0.0 && mid.pitch < 0.0, "mid-bite: {mid:?}");
+    let done = g.pose(BITE_S);
+    assert_eq!(done.reach, 0.0, "the lunge comes back");
+    g.howl();
+    let up = g.pose(HOWL_S * 0.5);
+    assert!(up.pitch > 0.3, "mid-howl the nose is up: {up:?}");
+    assert!(g.pose(HOWL_S).pitch.abs() < 1e-6, "and comes down");
+    g.settle(true, 10.0);
+    g.bite();
+    assert_eq!(g.pose(BITE_S * 0.5).reach, 0.0, "asleep, no lunge");
+}

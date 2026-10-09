@@ -192,6 +192,14 @@ pub struct ShardCore {
     /// A row outlives its connection, so a sleeper keeps its name for late
     /// joiners until the slot's next tenant overwrites it. Never in the sim.
     tags: Box<[TagRow]>,
+    /// What each world slot's body was last seen wearing — its tenant's id
+    /// and the item in each wear slot (`NO_ITEM` for none). A change owes
+    /// every connection a `SUB_WORN` (`note_worn`, then `drip_client`).
+    worn_seen: [(u32, [u16; WEAR_SLOTS]); MAX_PLAYERS],
+    /// World slots whose tenant has worn anything since it arrived. Only
+    /// these are worth a `SUB_WORN`: a client draws a body it was never told
+    /// about in nothing, so an outfit that has always been empty says nothing.
+    worn_dressed: u128,
     /// Autosave sweep cursor: which connection slot [`Self::autosave`] looks
     /// at next. One slot per call, so the work is O(1) per tick and every
     /// connected player is visited once every `MAX_PLAYERS` ticks (3.3 s at
@@ -445,6 +453,8 @@ impl ShardCore {
             heard_len: 0,
             drawing: [false; MAX_PLAYERS],
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
+            worn_seen: [(0, [sim_core::gather::NO_ITEM; WEAR_SLOTS]); MAX_PLAYERS],
+            worn_dressed: 0,
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
@@ -577,6 +587,41 @@ impl ShardCore {
         row.name = name;
         row.pic = pic;
         self.owe_tag(slot);
+    }
+
+    /// Look at what every body wears, and owe each connection the ones that
+    /// changed since last tick (a new tenant in a slot counts as a change).
+    /// 100 slots × two compares a tick.
+    fn note_worn(&mut self) {
+        for w in 0..MAX_PLAYERS {
+            let p = &self.world.players[w];
+            let now = if p.active {
+                let mut items = [sim_core::gather::NO_ITEM; WEAR_SLOTS];
+                for (item, s) in items.iter_mut().zip(p.worn.iter()) {
+                    if s.count > 0 {
+                        *item = s.item;
+                    }
+                }
+                (p.id, items)
+            } else {
+                (0, [sim_core::gather::NO_ITEM; WEAR_SLOTS])
+            };
+            if self.worn_seen[w] != now {
+                let bit = 1u128 << w;
+                if self.worn_seen[w].0 != now.0 {
+                    self.worn_dressed &= !bit; // a new tenant starts undressed
+                }
+                if now.1 != [sim_core::gather::NO_ITEM; WEAR_SLOTS] {
+                    self.worn_dressed |= bit;
+                }
+                self.worn_seen[w] = now;
+                if self.worn_dressed & bit != 0 {
+                    for c in self.clients.iter_mut() {
+                        c.worn_owed |= bit;
+                    }
+                }
+            }
+        }
     }
 
     fn owe_tag(&mut self, slot: usize) {
@@ -1585,6 +1630,7 @@ impl ShardCore {
         }
         self.fan_out(&live, stats, ops, &mut send);
 
+        self.note_worn();
         // The drips: every connection's own walk over world state, unmirrored.
         for slot in 0..MAX_PLAYERS {
             if self.clients[slot].connected {
@@ -4245,6 +4291,34 @@ impl ShardCore {
                     }
                     Err(_) => {
                         self.clients[slot].tags_owed &= !bit;
+                        ShardStats::bump(&stats.encode_range_errors);
+                    }
+                }
+            }
+        }
+
+        // What every body wears (v98): one owed per tick, `tags_owed`'s
+        // shape. An empty world slot, or a body that has never worn
+        // anything, has nothing to say.
+        let owed = self.clients[slot].worn_owed;
+        if owed != 0 {
+            let i = owed.trailing_zeros() as usize;
+            let bit = 1u128 << i;
+            let (id, items) = self.worn_seen[i];
+            if id == 0 || self.worn_dressed & bit == 0 {
+                self.clients[slot].worn_owed &= !bit;
+            } else {
+                match protocol::encode_event_worn(id, &items, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].worn_owed &= !bit;
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        self.clients[slot].worn_owed &= !bit;
                         ShardStats::bump(&stats.encode_range_errors);
                     }
                 }

@@ -382,6 +382,9 @@ pub struct ClientNetState {
     /// `i` is slot `i`. All set on a fresh connection, so a late joiner
     /// learns everyone already here; cleared one per tick as each is sent.
     pub tags_owed: u128,
+    /// World slots whose worn set this connection is owed (`SUB_WORN`),
+    /// `tags_owed`'s shape: all of them at join and on a resync.
+    pub worn_owed: u128,
     /// A set the platform reported for this connection that has not yet
     /// found room in the command queue (`ShardCore::skins_owned`).
     pub skins_pending: Option<sim_core::skin::SkinSet>,
@@ -481,6 +484,7 @@ impl ClientNetState {
             last_glyphs: None,
             last_skins: None,
             tags_owed: TAGS_ALL,
+            worn_owed: TAGS_ALL,
             skins_pending: None,
             last_expo: None,
             last_hostile: None,
@@ -512,6 +516,7 @@ impl ClientNetState {
         self.last_glyphs = None;
         self.last_skins = None;
         self.tags_owed = TAGS_ALL;
+        self.worn_owed = TAGS_ALL;
         self.recipes_cursor = 0;
         self.research_cursor = 0;
         self.piece_defs_cursor = 0;

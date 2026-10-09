@@ -197,6 +197,7 @@ pub mod structures;
 pub mod terrain_mesh;
 pub mod terrain_seam;
 pub mod textures;
+pub mod worn;
 // The ground's four identities, each with its own photograph. The first WGSL
 // in the tree (`RENDER.md` R4).
 pub mod ground_splat;
@@ -750,7 +751,7 @@ impl Plugin for GatesRenderPlugin {
                 textures::load,
                 icons::load,
                 anim::load,
-                (mobs::load, heli::load, sentry::load),
+                (mobs::load, heli::load, sentry::load, worn::load),
                 // The held-item models. Loaded once here rather than per
                 // swap: `AssetServer` dedups, but a `load` still walks and
                 // hashes a path, and `viewmodel::swap` runs every frame.
@@ -1009,6 +1010,16 @@ impl Plugin for GatesRenderPlugin {
         // open the map. `map::open` carries its own guard now and does not
         // rely on being downstream of anything.
         app.init_resource::<map::Island>()
+            .init_resource::<map::MapPins>()
+            .init_resource::<map::MapCursor>()
+            // The mouse is the map's while it is held: the crosshair and the
+            // marks, and nothing in the world sees a click (`map::aim`).
+            .add_systems(
+                PreUpdate,
+                map::aim
+                    .after(bevy::input::InputSystems)
+                    .run_if(in_state(Screen::Map)),
+            )
             .add_systems(
                 OnEnter(Screen::Map),
                 ((map::enter, map::setup).chain(), audio::map_paper),
@@ -1300,6 +1311,8 @@ impl Plugin for GatesRenderPlugin {
                 anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
+                // What other players wear (wire v98), hung on their bones.
+                (worn::bind.after(Stream), worn::dress).chain(),
             )
                 .run_if(world_running),
         )
@@ -1554,7 +1567,7 @@ impl Plugin for GatesRenderPlugin {
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
-                    hud::net_line,
+                    (hud::net_line, hud::conn_warn),
                     // F3: draw what the SIM blocks over what the client
                     // draws. F4: the two top-left diagnostics. Neither is a
                     // gate or a probe — they do nothing until a person
@@ -1738,6 +1751,10 @@ impl Plugin for GatesRenderPlugin {
                 // sentry's lock, a holstered click. After the drain, for the
                 // lock it reads.
                 hud::gate_watch.after(feed::drain),
+                // Your torch burning out: a hiss and a line.
+                viewmodel::torch_watch.after(feed::drain),
+                // A deployable's damage band, drawn on its material.
+                structures::deploy_hurt.after(structures::stream),
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a
                 // respawned trunk up — before it, a sapling would stand one

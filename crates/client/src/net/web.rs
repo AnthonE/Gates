@@ -88,6 +88,11 @@ pub struct WebWire {
     pub over_mtu: Cell<u64>,
     /// Datagrams refused because the writer's queue was already full.
     pub backpressured: Cell<u64>,
+    /// The last `getStats()` answer's `smoothedRtt`, ms; negative before the
+    /// first (or on a browser without `getStats`).
+    rtt: std::rc::Rc<Cell<f64>>,
+    /// A `getStats()` is in flight, so a second ask starts nothing.
+    polling: std::rc::Rc<Cell<bool>>,
 }
 
 impl WebWire {
@@ -102,6 +107,8 @@ impl WebWire {
             writer,
             over_mtu: Cell::new(0),
             backpressured: Cell::new(0),
+            rtt: std::rc::Rc::new(Cell::new(-1.0)),
+            polling: std::rc::Rc::new(Cell::new(false)),
         })
     }
 }
@@ -130,7 +137,50 @@ fn datagram_writable(
     Ok(stream.unchecked_into())
 }
 
+impl WebWire {
+    /// Ask the page for `transport.getStats()` and keep its `smoothedRtt`.
+    /// Read by name rather than through a `web-sys` binding: the stats
+    /// dictionary is newer than WebTransport itself, and a browser without
+    /// it answers `undefined` here instead of throwing.
+    fn poll_rtt(&self) {
+        if self.polling.get() {
+            return;
+        }
+        let Ok(f) = js_sys::Reflect::get(&self.transport, &JsValue::from_str("getStats")) else {
+            return;
+        };
+        let Ok(f) = f.dyn_into::<js_sys::Function>() else {
+            return;
+        };
+        let Ok(promise) = f.call0(&self.transport) else {
+            return;
+        };
+        let Ok(promise) = promise.dyn_into::<js_sys::Promise>() else {
+            return;
+        };
+        self.polling.set(true);
+        let (rtt, polling) = (self.rtt.clone(), self.polling.clone());
+        spawn_local(async move {
+            if let Ok(stats) = JsFuture::from(promise).await {
+                if let Some(ms) = js_sys::Reflect::get(&stats, &JsValue::from_str("smoothedRtt"))
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                {
+                    rtt.set(ms);
+                }
+            }
+            polling.set(false);
+        });
+    }
+}
+
 impl Wire for WebWire {
+    fn rtt_ms(&self) -> Option<f32> {
+        self.poll_rtt();
+        let ms = self.rtt.get();
+        (ms >= 0.0).then_some(ms as f32)
+    }
+
     /// **The clamp `CLAUDE.md`'s trap list has demanded since the first
     /// browser client, finally at the one call site that can enforce it.**
     ///

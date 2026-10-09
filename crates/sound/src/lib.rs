@@ -385,11 +385,14 @@ pub enum Cue {
     /// Somebody else pushing through one, at their body: in Rust a bush you
     /// cannot see into still tells you someone is moving in it.
     RemoteBrush,
+    /// Your torch burning out in your hand: the last of the flame hissing
+    /// away (`render/viewmodel.rs::torch_watch`). Yours, so non-positional.
+    TorchOut,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 92;
+pub const CUE_COUNT: usize = 93;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -490,6 +493,7 @@ impl Cue {
         Cue::RemoteBowDraw,
         Cue::Brush,
         Cue::RemoteBrush,
+        Cue::TorchOut,
     ];
 
     /// Is this cue a piece of music?
@@ -617,6 +621,8 @@ impl Cue {
             // One long take, heard once per charge: a small nudge so two
             // charges side by side are not in unison.
             Cue::Fuse => 0.04,
+            // A hiss is noise: a nudge keeps two in a row from matching.
+            Cue::TorchOut => 0.06,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -997,6 +1003,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // boots do, and from inside cover where its boots are all you have.
     row(GAME,  0.0, 0.42,  90, 1, false),  // brush
     row(GAME, 24.0, 0.42,  40, 2, true),   // brush, somebody else's
+    // A torch going out in your hand: once, and it must be heard.
+    row(GAME,  0.0, 0.55, 500, 3, false),  // torch out
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

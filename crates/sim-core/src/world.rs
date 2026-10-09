@@ -587,7 +587,8 @@ pub const EV_IMPACT: u8 = 38;
 /// beside the trust row.
 pub const EV_TRUST: u8 = 39;
 
-/// EV_SWING: a = the swinging player's id, b = 0, c = 0.
+/// EV_SWING: a = the swinging player's id, or a biting animal's tagged id
+/// (`mob::mob_id`), b = 0, c = 0.
 ///
 /// **Broadcast**, `EV_SHOT`'s posture and its reason: a swing is a fact
 /// about a body that other clients are drawing, and a client that misses
@@ -6174,6 +6175,10 @@ impl World {
             if crate::combat::protected(v) {
                 continue;
             }
+            // The bite, seen: the animal's lunge for everyone drawing it
+            // (`EV_SWING` with the animal's tagged id; `render/mobs.rs`).
+            self.events
+                .push(EV_SWING, mob::mob_id(b.mob_slot as usize), 0, 0);
             let sector =
                 crate::combat::bearing_sector(mqx - v.body.qx as i64, mqz - v.body.qz as i64);
             // The funnel, reduced: a bite is a hit.

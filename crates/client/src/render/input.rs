@@ -245,7 +245,16 @@ pub fn gather(
             }
             crate::ui::pointer::Grab::Leave => {}
         }
-        if !look.frozen && !panel_open && c.grab_mode == CursorGrabMode::Locked && turning {
+        // On the held map the mouse moves the map's crosshair (`map::aim`).
+        let on_map = screen
+            .as_ref()
+            .is_some_and(|s| *s.get() == super::Screen::Map);
+        if !look.frozen
+            && !panel_open
+            && !on_map
+            && c.grab_mode == CursorGrabMode::Locked
+            && turning
+        {
             let d = motion.delta;
             // Sensitivity scales the free-running radians BEFORE the
             // quantization below, never the quantization itself — see

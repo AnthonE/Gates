@@ -211,6 +211,80 @@ pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
     )
 }
 
+/// [`world_to_map`] backwards, for a fraction (`size` 1): the world XZ a
+/// point on the map names.
+pub fn map_to_world(fx: f32, fy: f32) -> (f32, f32) {
+    (ISLAND_SIZE * (1.0 - fx), ISLAND_SIZE * (1.0 - fy))
+}
+
+/// How many marks a player can put on their map (Rust's five).
+pub const PINS_MAX: usize = 5;
+
+/// How close a right click must land to a mark to take it away, as a
+/// fraction of the map's side: about the badge's own size at 640 px.
+pub const PIN_PICK_FRAC: f32 = 0.018;
+
+/// The marks a player put on their own map: world XZ, oldest first, for
+/// one island (`seed`) — a new island starts with none. Client-only: no one
+/// else sees them, and they are not saved.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pins {
+    seed: u64,
+    at: [(f32, f32); PINS_MAX],
+    len: usize,
+}
+
+impl Pins {
+    /// Forget the marks if they were made on another island.
+    pub fn for_seed(&mut self, seed: u64) {
+        if self.seed != seed {
+            *self = Self {
+                seed,
+                ..Self::default()
+            };
+        }
+    }
+
+    /// The marks, oldest first, world XZ.
+    pub fn marks(&self) -> &[(f32, f32)] {
+        &self.at[..self.len]
+    }
+
+    /// A right click at map fraction `(fx, fy)`: take away the mark under
+    /// it, or put one there — dropping the oldest when all five are down.
+    pub fn toggle(&mut self, fx: f32, fy: f32) {
+        let hit = self.marks().iter().position(|&(x, z)| {
+            let (mx, my) = world_to_map(x, z, 1);
+            (mx - fx).abs() < PIN_PICK_FRAC && (my - fy).abs() < PIN_PICK_FRAC
+        });
+        if let Some(i) = hit {
+            self.at.copy_within(i + 1..self.len, i);
+            self.len -= 1;
+            return;
+        }
+        if self.len == PINS_MAX {
+            self.at.copy_within(1.., 0);
+            self.len -= 1;
+        }
+        self.at[self.len] = map_to_world(fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0));
+        self.len += 1;
+    }
+
+    /// The nearest mark to world `(x, z)`: its number (1-based, oldest
+    /// first), how far in metres and its compass bearing in degrees.
+    pub fn nearest(&self, x: f32, z: f32) -> Option<(usize, f32, f32)> {
+        self.marks()
+            .iter()
+            .enumerate()
+            .map(|(i, &(mx, mz))| {
+                let (dx, dz) = (mx - x, mz - z);
+                (i + 1, (dx * dx + dz * dz).sqrt(), dx, dz)
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(n, d, dx, dz)| (n, d, crate::look::bearing_of(dx, dz)))
+    }
+}
+
 /// Paint the island into an RGBA buffer, `size × size`.
 ///
 /// **Three positional facts, each of which has cost a pass somewhere.**
@@ -677,6 +751,71 @@ pub struct Mark {
     pub label: MarkLabel,
 }
 
+impl Mark {
+    /// The name drawn under the badge, if this mark carries one: a work's
+    /// wire name, a landmark's own, or the kind's site word.
+    pub fn label_text(&self) -> Option<&str> {
+        self.label
+            .as_str()
+            .or(self.name)
+            .or_else(|| self.kind.site_label())
+    }
+}
+
+/// Which of `marks` keep their name on a map drawn `map_px` square, with
+/// names `label_px` high in a row `label_w` wide hung `badge_px / 2` under
+/// each badge. Walked in resolve order — the rank the cap protects — so when
+/// two names would print over each other the higher-ranked one keeps its
+/// name and the other is left a bare badge. Widths are estimated (half the
+/// type size a character, the condensed face's), which is what a check
+/// before layout can know.
+pub fn clear_labels(
+    marks: &[Mark],
+    map_px: f32,
+    badge_px: f32,
+    label_px: f32,
+    label_w: f32,
+) -> [bool; MAP_MARKS_MAX] {
+    let mut keep = [false; MAP_MARKS_MAX];
+    let mut placed: [(f32, f32, f32, f32); MAP_MARKS_MAX] = [(0.0, 0.0, 0.0, 0.0); MAP_MARKS_MAX];
+    let mut n = 0;
+    // Two passes: every named place first, then the scenery landmarks — a
+    // work's name or THE GATE beats an Old Keep that happens to sit beside
+    // it, whatever their rank under the cap.
+    let order = marks
+        .iter()
+        .enumerate()
+        .take(MAP_MARKS_MAX)
+        .filter(|(_, m)| m.kind != MarkKind::Landmark)
+        .chain(
+            marks
+                .iter()
+                .enumerate()
+                .take(MAP_MARKS_MAX)
+                .filter(|(_, m)| m.kind == MarkKind::Landmark),
+        );
+    for (i, m) in order {
+        let Some(text) = m.label_text() else {
+            continue;
+        };
+        let raw_w = text.chars().count() as f32 * label_px * 0.5;
+        let lines = (raw_w / label_w).ceil().max(1.0);
+        let w = raw_w.min(label_w);
+        let h = lines * label_px * 1.25;
+        let (cx, top) = (m.px * map_px, m.py * map_px + badge_px * 0.5);
+        let r = (cx - w * 0.5, top, cx + w * 0.5, top + h);
+        let hits = placed[..n]
+            .iter()
+            .any(|q| r.0 < q.2 && q.0 < r.2 && r.1 < q.3 && q.1 < r.3);
+        if !hits {
+            keep[i] = true;
+            placed[n] = r;
+            n += 1;
+        }
+    }
+    keep
+}
+
 /// A short name carried by value, so a [`Mark`] stays `Copy` and [`Marks`]
 /// stays fixed storage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -988,6 +1127,69 @@ pub fn resolve_wake_marks(out: &mut Marks, bags: &[BagAnchor]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_mark_goes_where_it_was_put_and_comes_off_where_it_is() {
+        let mut p = Pins::default();
+        p.for_seed(7);
+        p.toggle(0.25, 0.75);
+        let &[(x, z)] = p.marks() else {
+            panic!("one mark: {p:?}")
+        };
+        let (fx, fy) = world_to_map(x, z, 1);
+        assert!((fx - 0.25).abs() < 1e-5 && (fy - 0.75).abs() < 1e-5);
+        // A click on it takes it off; a click beside it puts a second down.
+        p.toggle(0.25 + PIN_PICK_FRAC * 0.5, 0.75);
+        assert!(p.marks().is_empty());
+        for i in 0..PINS_MAX + 2 {
+            p.toggle(0.1 * i as f32 + 0.05, 0.5);
+        }
+        assert_eq!(p.marks().len(), PINS_MAX, "five at most, the oldest go");
+        assert!((world_to_map(p.marks()[0].0, 0.0, 1).0 - 0.25).abs() < 1e-4);
+        // Another island, no marks.
+        p.for_seed(8);
+        assert!(p.marks().is_empty());
+    }
+
+    #[test]
+    fn two_names_never_print_over_each_other() {
+        let at = |px, py, name| Mark {
+            kind: MarkKind::Landmark,
+            px,
+            py,
+            name: Some(name),
+            label: MarkLabel::default(),
+        };
+        let marks = [
+            at(0.50, 0.50, "THE GATE"),
+            at(0.505, 0.505, "Old Keep"),
+            at(0.80, 0.20, "Arch Rock"),
+        ];
+        let keep = clear_labels(&marks, 640.0, 18.0, 10.0, 84.0);
+        assert_eq!(
+            &keep[..3],
+            &[true, false, true],
+            "the second sits on the first"
+        );
+        // A named work beats a landmark beside it, even ranked after it.
+        let mut work = at(0.505, 0.505, "THE WELLS");
+        work.kind = MarkKind::Work;
+        let keep = clear_labels(&[at(0.50, 0.50, "Old Keep"), work], 640.0, 18.0, 10.0, 84.0);
+        assert_eq!(&keep[..2], &[false, true]);
+    }
+
+    #[test]
+    fn the_nearest_mark_says_how_far_and_which_way() {
+        let mut p = Pins::default();
+        // North of the player is +z, which is up the map (smaller fy).
+        let (x, z) = (2000.0, 2000.0);
+        let (fx, fy) = world_to_map(x, z + 300.0, 1);
+        p.toggle(fx, fy);
+        let (n, d, b) = p.nearest(x, z).expect("a mark");
+        assert_eq!(n, 1);
+        assert!((d - 300.0).abs() < 1.0, "{d}");
+        assert!(!(1.0..359.0).contains(&b), "due north, got {b}");
+    }
+
     use super::*;
 
     #[test]

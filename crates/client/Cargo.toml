@@ -170,6 +170,12 @@ path = "examples/plant_look.rs"
 required-features = ["render", "native"]
 
 [[example]]
+name = "worn_look"
+path = "examples/worn_look.rs"
+# `tree_look`'s reason: it opens a window and shoots to disk.
+required-features = ["render", "native"]
+
+[[example]]
 name = "piece_bench"
 path = "examples/piece_bench.rs"
 # The building kit under the game's light, headless — `native` for the reason

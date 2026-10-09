@@ -1033,7 +1033,7 @@ fn row(pane: &mut ChildSpawnerCommands, listing: &Listing, index: usize, starred
                 ..default()
             })
             .with_children(|c| {
-                c.spawn(ui::strong(listing.name.clone(), 17.0, ui::TEXT));
+                c.spawn(ui::strong(listing.name.clone(), 18.0, ui::TEXT));
                 c.spawn(ui::label(listing.sub_line(), 12.0, ui::DIM));
             });
 

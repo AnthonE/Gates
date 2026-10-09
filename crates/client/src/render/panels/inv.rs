@@ -155,7 +155,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                  -   Tab or Esc closes"
             } else {
                 "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
-                 -   right-click uses   -   P re-skins   -   Q crafting   -   Tab or Esc closes"
+                 -   right-click uses or wears   -   P re-skins   -   Q crafting   -   Tab or Esc closes"
             }),
             font(12.0),
             TextColor(TEXT_DIM),

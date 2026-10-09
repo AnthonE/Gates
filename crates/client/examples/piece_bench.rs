@@ -359,7 +359,7 @@ fn spawn(
     } else {
         root * piece_local(shape)
     };
-    let mat = kit.piece_material(tier, 0);
+    let mat = kit.piece_material(tier, 0, a);
     let mut e = commands.spawn((
         Mesh3d(kit.piece_mesh(shape, tier, loc, own, soft, step)),
         MeshMaterial3d(mat.clone()),

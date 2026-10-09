@@ -655,7 +655,12 @@ pub struct Kit {
     /// materials, built once — which is the whole reason the band is 3 bits
     /// and not a float: a continuous damage value would mean a material per
     /// PIECE, and a base is thousands of them.
-    tier: [[Handle<StandardMaterial>; DMG_BANDS as usize]; N_TIERS],
+    ///
+    /// Each in [`PIECE_LOOKS`] looks — a shifted photograph and a nudged
+    /// grey — so a wall of identical pieces stops reading as one stamp
+    /// repeated (`ART.md` rule 7). Picked per address ([`piece_look`]), so a
+    /// piece keeps its look through damage and upgrades.
+    tier: [[[Handle<StandardMaterial>; PIECE_LOOKS]; DMG_BANDS as usize]; N_TIERS],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
     door_locked: Handle<StandardMaterial>,
@@ -678,10 +683,12 @@ type EdgeMeshes = [[[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES]; N_TIERS];
 type Dressed = [[Option<Handle<Mesh>>; N_SHAPES]; N_TIERS];
 
 impl Kit {
-    /// The material a piece of `material` draws in at damage band `dmg`.
-    pub fn piece_material(&self, material: u8, dmg: u8) -> Handle<StandardMaterial> {
+    /// The material a piece of `material` at `addr` draws in at damage band
+    /// `dmg`.
+    pub fn piece_material(&self, material: u8, dmg: u8, addr: Addr) -> Handle<StandardMaterial> {
         self.tier[(material as usize).min(N_TIERS - 1)][(dmg as usize).min(DMG_BANDS as usize - 1)]
-            .clone()
+            [piece_look(addr)]
+        .clone()
     }
 
     /// The mesh a piece of `shape` in `material` draws with at `loc`.
@@ -2232,6 +2239,34 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/barricade.glb"),      // 16 barricade
 ];
 
+/// How many looks one (tier, damage band) is drawn in. Four materials where
+/// there was one: a base's pieces split four ways between batches, which is
+/// the whole cost, against a hundred identical walls.
+pub const PIECE_LOOKS: usize = 4;
+
+/// Each look's offset into the photograph, in tiles (the material's UVs are
+/// already tile-scaled), and its grey gain against the tier's own. Offsets
+/// are off the half and quarter so no two looks line up on a seam; the gains
+/// stay within ±6 % so a look is a different plank, not a different tier.
+pub const PIECE_LOOK: [([f32; 2], f32); PIECE_LOOKS] = [
+    ([0.0, 0.0], 1.0),
+    ([0.37, 0.61], 0.94),
+    ([0.71, 0.23], 1.05),
+    ([0.13, 0.83], 0.97),
+];
+
+/// Which of the [`PIECE_LOOKS`] a piece at `addr` wears: a hash of the
+/// address, so neighbours differ and a piece keeps its look for life.
+pub fn piece_look(addr: Addr) -> usize {
+    let (cx, cz, level, loc) = addr;
+    let h = (u32::from(cx).wrapping_mul(0x9E37_79B9))
+        ^ (u32::from(cz).wrapping_mul(0x85EB_CA6B))
+        ^ (u32::from(level).wrapping_mul(0xC2B2_AE35))
+        ^ u32::from(loc).wrapping_mul(0x27D4_EB2F);
+    let h = h ^ (h >> 15);
+    (h.wrapping_mul(0x2C1B_3C6D) >> 28) as usize % PIECE_LOOKS
+}
+
 /// The locked door: `door.glb`'s geometry built under iron surfaces by
 /// `ci/prop_kit.py`, which unwraps identical geometry identically, so its
 /// material lays onto `door.glb`'s mesh. Only the material is loaded.
@@ -2254,7 +2289,7 @@ pub fn build_kit(
         // relief registered with the colour. Uniform, so the tangent frame
         // `finish` generated is still the right one; a non-uniform scale here
         // would shear it and the normal map would light wrong.
-        let uv_transform = Affine2::from_scale(Vec2::splat(t.tiles_per_m));
+        let scale = Affine2::from_scale(Vec2::splat(t.tiles_per_m));
         // The maps are loaded ONCE per tier and cloned into all eight bands
         // — `MapSet::load` inside the band loop would be eight identical
         // paths and eight identical settings, which the asset server would
@@ -2262,15 +2297,21 @@ pub fn build_kit(
         // relying on a cache for correctness of cost.
         std::array::from_fn(|band| {
             let hurt = damage_mix(band as u8);
-            let g = t.gain * (1.0 + (DMG_DARKEST - 1.0) * hurt);
-            materials.add(StandardMaterial {
-                base_color: Color::linear_rgb(g, g, g),
-                base_color_texture: Some(map.albedo.clone()),
-                normal_map_texture: Some(map.normal.clone()),
-                perceptual_roughness: (t.roughness + DMG_ROUGHEN * hurt).min(1.0),
-                metallic: t.metallic,
-                uv_transform,
-                ..default()
+            std::array::from_fn(|look| {
+                let ([u, v], gain) = PIECE_LOOK[look];
+                let g = t.gain * gain * (1.0 + (DMG_DARKEST - 1.0) * hurt);
+                // Shift after the scale, in tiles: a translation is uniform,
+                // so the tangent frame stays the one `finish` generated.
+                let uv_transform = Affine2::from_translation(Vec2::new(u, v)) * scale;
+                materials.add(StandardMaterial {
+                    base_color: Color::linear_rgb(g, g, g),
+                    base_color_texture: Some(map.albedo.clone()),
+                    normal_map_texture: Some(map.normal.clone()),
+                    perceptual_roughness: (t.roughness + DMG_ROUGHEN * hurt).min(1.0),
+                    metallic: t.metallic,
+                    uv_transform,
+                    ..default()
+                })
             })
         })
     });
@@ -2307,9 +2348,9 @@ pub fn build_kit(
             alpha_mode: AlphaMode::Blend,
             ..default()
         }),
-        None if i as u8 == ARCH_WINDOW_SHUTTER => tier[MAT_WOOD as usize][0].clone(),
+        None if i as u8 == ARCH_WINDOW_SHUTTER => tier[MAT_WOOD as usize][0][0].clone(),
         None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
-            tier[MAT_METAL as usize][0].clone()
+            tier[MAT_METAL as usize][0][0].clone()
         }
         Some(path) => assets.load(
             GltfAssetLabel::Material {
@@ -2684,14 +2725,20 @@ pub fn stream(
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
             //
-            // **The damage band is deliberately NOT compared here.** A
-            // deployable's material is the one baked into its `.glb`
-            // (`DEPLOY_ASSET`), so there is no band variant to swap to and
-            // comparing would despawn and respawn a furnace on every swing
-            // for an identical picture. `Target::damaged` is correct for
-            // this store either way — that is the wire's doing, not the
-            // renderer's. When deployables get a damage response, this line
-            // and `Live::dmg` below change together.
+            // **The damage band is NOT a redraw.** It moves the entity's
+            // [`DeployHurt`] and [`deploy_hurt`] swaps the material, so a
+            // furnace under fire darkens without being despawned on every
+            // swing.
+            if live.dmg != rec.dmg {
+                live.dmg = rec.dmg;
+                commands
+                    .entity(live.entity)
+                    .entry::<DeployHurt>()
+                    .and_modify({
+                        let band = rec.dmg;
+                        move |mut h| h.band = band
+                    });
+            }
             if live.row == rec.row
                 && live.open == rec.open
                 && live.locked == rec.locked
@@ -2742,7 +2789,7 @@ pub fn stream(
                 row: rec.row,
                 open: rec.open,
                 locked: rec.locked,
-                dmg: 0,
+                dmg: rec.dmg,
                 own: 0,
                 plate,
                 facing: 0,
@@ -3030,7 +3077,7 @@ fn spawn_piece(
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
     // material the sim gained without a row here — which is a red test long
     // before it is a wrong wall.
-    let mat = kit.piece_material(material, dmg);
+    let mat = kit.piece_material(material, dmg, addr);
     // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
@@ -3318,8 +3365,13 @@ pub fn spawn_deploy(
         } else {
             kit.deploy_mesh[idx].clone()
         }),
-        MeshMaterial3d(mat),
+        MeshMaterial3d(mat.clone()),
         transform,
+        DeployHurt {
+            base: mat,
+            band: rec.dmg,
+            applied: Some(0),
+        },
     ));
     // A thing that burns gets a light, hung as a child and dark until the sim
     // says the fire is lit. See [`FireLight`].
@@ -3357,6 +3409,60 @@ pub fn spawn_deploy(
         ));
     }
     e.id()
+}
+
+/// A deployable's damage, drawn: the material it was spawned in (`base`)
+/// and the band the wire last stated. [`deploy_hurt`] darkens and roughens
+/// the base by the band, as a building piece's tier materials are.
+#[derive(Component)]
+pub struct DeployHurt {
+    pub base: Handle<StandardMaterial>,
+    pub band: u8,
+    /// The band the entity's material shows, `None` while waiting on the
+    /// base material to load.
+    applied: Option<u8>,
+}
+
+/// [`deploy_hurt`]'s made materials, by (base material, band).
+type HurtMade = HashMap<(AssetId<StandardMaterial>, u8), Handle<StandardMaterial>>;
+
+/// Keep each deployable's material on its [`DeployHurt`] band.
+///
+/// A deployable's material is the one baked into its `.glb`, so the band
+/// variants cannot be built with the kit: each is cloned from the loaded
+/// base the first time a deployable of that look reaches that band, and
+/// shared after — one material per (look, band) in use, never per entity.
+pub fn deploy_hurt(
+    mut q: Query<(&mut DeployHurt, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut made: Local<HurtMade>,
+) {
+    for (mut hurt, mut mat) in &mut q {
+        if hurt.applied == Some(hurt.band) {
+            continue;
+        }
+        let band = hurt.band;
+        let want = if band == 0 {
+            hurt.base.clone()
+        } else if let Some(h) = made.get(&(hurt.base.id(), band)) {
+            h.clone()
+        } else {
+            let Some(base) = materials.get(&hurt.base) else {
+                continue; // still loading: ask again next frame
+            };
+            let k = damage_mix(band);
+            let mut m = base.clone();
+            let g = 1.0 + (DMG_DARKEST - 1.0) * k;
+            let c = m.base_color.to_linear();
+            m.base_color = Color::linear_rgba(c.red * g, c.green * g, c.blue * g, c.alpha);
+            m.perceptual_roughness = (m.perceptual_roughness + DMG_ROUGHEN * k).min(1.0);
+            let h = materials.add(m);
+            made.insert((hurt.base.id(), band), h.clone());
+            h
+        };
+        mat.0 = want;
+        hurt.applied = Some(band);
+    }
 }
 
 /// Archetypes that burn, as opposed to archetypes that merely convert.

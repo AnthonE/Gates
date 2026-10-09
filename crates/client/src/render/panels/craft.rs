@@ -474,7 +474,7 @@ fn lock(c: &mut ChildSpawnerCommands, icons: &Icons, px: f32, at: f32) {
                     ..default()
                 },
                 Text::new("LOCKED"),
-                font_bold(8.0),
+                font_bold(10.0),
                 TextColor(BADGE),
                 Pickable::IGNORE,
             ));
@@ -587,7 +587,7 @@ fn detail_body(
         .with_children(|mid| {
             mid.spawn((
                 Text::new(name.to_uppercase()),
-                font_bold(19.0),
+                font_bold(18.0),
                 TextColor(TEXT),
             ));
             if let Some(badge) = station_label(def.station) {

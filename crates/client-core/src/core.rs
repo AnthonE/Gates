@@ -1074,6 +1074,34 @@ impl ClientCore {
             .filter(|t| t.id == id && t.id != 0)
     }
 
+    /// What player `id` is wearing, as the shard last said (`EventMsg::Worn`):
+    /// the item in each wear slot, `NO_ITEM` for none or for a body the shard
+    /// has not described yet.
+    pub fn worn_of(&self, id: u32) -> [u16; sim_core::limits::WEAR_SLOTS] {
+        self.bodies_worn
+            .iter()
+            .find(|(who, _)| *who == id && id != 0)
+            .map_or([NO_ITEM; sim_core::limits::WEAR_SLOTS], |(_, items)| *items)
+    }
+
+    /// File `items` as what `id` wears: its own row, else an empty one, else
+    /// the next row round (a fixed table — a shard has at most
+    /// `MAX_PLAYERS` bodies, so a row that is overwritten is a body gone).
+    fn file_worn(&mut self, id: u32, items: [u16; sim_core::limits::WEAR_SLOTS]) {
+        let at = self
+            .bodies_worn
+            .iter()
+            .position(|(who, _)| *who == id)
+            .or_else(|| self.bodies_worn.iter().position(|(who, _)| *who == 0))
+            .unwrap_or_else(|| {
+                let at = self.worn_next % self.bodies_worn.len();
+                self.worn_next = self.worn_next.wrapping_add(1);
+                at
+            });
+        self.bodies_worn[at] = (id, items);
+        self.worn_gen = self.worn_gen.wrapping_add(1);
+    }
+
     /// The fires this client has heard are burning.
     pub fn ovens(&self) -> &LitOvens {
         &self.ovens
@@ -1366,6 +1394,11 @@ pub struct ClientCore {
     /// (the id's low byte) and answered only for the full id — a reused slot
     /// never speaks for its previous tenant. Read with [`Self::tag`].
     tags: Box<[Tag]>,
+    /// What each body wears (`EventMsg::Worn`, v98), by player id.
+    bodies_worn: Box<[(u32, [u16; sim_core::limits::WEAR_SLOTS])]>,
+    worn_next: usize,
+    /// Bumped on every `Worn`, so a renderer re-dresses only when it moved.
+    pub worn_gen: u32,
     /// Bumped whenever a tag lands, so a view can redraw names only then.
     pub tags_gen: u32,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
@@ -1923,6 +1956,13 @@ impl ClientCore {
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
             tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
+            bodies_worn: vec![
+                (0, [NO_ITEM; sim_core::limits::WEAR_SLOTS]);
+                2 * sim_core::limits::MAX_PLAYERS
+            ]
+            .into_boxed_slice(),
+            worn_next: 0,
+            worn_gen: 0,
             tags_gen: 0,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
@@ -2532,6 +2572,7 @@ impl ClientCore {
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }
             }
+            EventMsg::Worn { id, items } => self.file_worn(id, items),
             EventMsg::CraftQ {
                 jobs,
                 count,

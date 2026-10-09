@@ -1905,6 +1905,14 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
                 || !matches!(m, EventMsg::ContSync { kind, .. } if *kind == CONT_WEAR)),
         "nobody else may read what a body is wearing: {seen:?}"
     );
+    // What everyone does see is the look (wire v98): the ids on the body,
+    // never a count or a condition — the clothes, not the panel.
+    assert!(
+        seen.iter().any(|(s, m)| *s == 1
+            && matches!(m, EventMsg::Worn { id, items }
+                if *id == id_of(0) && *items == [OTHER, THIRD])),
+        "the other player is told what the body wears: {seen:?}"
+    );
 
     // And it crossed the ABI, so the claim is about what the client draws.
     //
