@@ -128,6 +128,38 @@ pub struct Marker;
 #[derive(Component)]
 pub struct Readout;
 
+/// The marks a player put on their map (`ui::map::Pins`), kept across opens.
+#[derive(Resource, Default)]
+pub struct MapPins(pub map::Pins);
+
+/// Where the map's crosshair sits, as a fraction of the island (0..1): the
+/// mouse moves it while the map is held, instead of turning the view, and a
+/// right click marks or clears that spot.
+#[derive(Resource, Default)]
+pub struct MapCursor {
+    pub fx: f32,
+    pub fy: f32,
+    /// The marks layer needs redrawing.
+    dirty: bool,
+}
+
+/// The layer the player's marks are drawn in, inside the island's frame.
+#[derive(Component)]
+pub struct PinLayer;
+
+/// The crosshair the mouse moves over the island.
+#[derive(Component)]
+pub struct MapCrosshair;
+
+/// A mark's badge, screen px, and its colour: amber, unlike every authored
+/// mark and the red arrow.
+const PIN_PX: f32 = 14.0;
+const PIN_INK: Color = Color::srgb(1.0, 0.72, 0.22);
+
+/// How far the crosshair moves for a pixel of mouse travel, in map
+/// fractions: one pixel of mouse is one pixel of the drawn island.
+const CURSOR_PER_PX: f32 = 1.0 / MAP_DRAW_PX;
+
 /// The painted island, kept across opens.
 #[derive(Resource, Default)]
 pub struct Island {
@@ -270,6 +302,9 @@ pub fn enter() {}
 
 pub fn leave() {}
 
+// Each is a distinct input: the paint, the world, the body, the look, the
+// icons, and the player's own marks with their crosshair.
+#[allow(clippy::too_many_arguments)]
 pub fn setup(
     mut commands: Commands,
     mut island: ResMut<Island>,
@@ -278,6 +313,8 @@ pub fn setup(
     net: NonSend<Net>,
     look: Res<super::input::Look>,
     icons: Option<Res<super::icons::Icons>>,
+    mut pins: ResMut<MapPins>,
+    mut cursor: ResMut<MapCursor>,
 ) {
     // Already painted by `prepaint` while the loading bar filled; this is the
     // handle clone. It still PAINTS if it has to — a shard joined without ever
@@ -289,6 +326,13 @@ pub fn setup(
     let [x, _, z] = net.session.core.predict.render_position();
     let (px, py) = map::world_to_map(x, z, 1);
     let square = map::grid_label(x, z);
+    // The crosshair opens on you; the marks are this island's.
+    pins.0.for_seed(world.seed);
+    *cursor = MapCursor {
+        fx: px,
+        fy: py,
+        dirty: true,
+    };
     let bearing = bearing_text(look.yaw);
 
     // The markers: the authored destinations off the memoized `Haven`, the
@@ -454,6 +498,19 @@ pub fn setup(
                 // with "has duplicate components", inside a command queue,
                 // naming no system. Not a risk worth carrying on a screen no
                 // headless test can visit.
+                // The player's own marks, over the authored ones and under
+                // the arrow; drawn by `aim`, which owns when they change.
+                frame.spawn((
+                    PinLayer,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                ));
                 let arrow = icons.and_then(|i| i.glyph("map_player"));
                 // With no icon baked, or before the asset server settles: the
                 // small square this screen shipped for a year, so the panel
@@ -485,7 +542,34 @@ pub fn setup(
                         ));
                     }
                 }
+                // The crosshair: a ring the mouse moves, on top of it all.
+                frame.spawn((
+                    MapCrosshair,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Percent(px * 100.0),
+                        top: Val::Percent(py * 100.0),
+                        width: Val::Px(18.0),
+                        height: Val::Px(18.0),
+                        margin: UiRect::all(Val::Px(-9.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                ));
             });
+            root.spawn((
+                ui::label(
+                    "mouse: aim  ·  right click: mark the spot  ·  right click a mark: clear it",
+                    12.0,
+                    ui::FAINT,
+                ),
+                Node {
+                    margin: UiRect::top(Val::Px(6.0)),
+                    ..default()
+                },
+            ));
 
             // The cap is drop-newest and NOT silent: a truncated map that
             // says nothing reads as "everything is drawn" (`CLAUDE.md` §4's
@@ -740,6 +824,74 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MapRoot>>) {
     for e in roots.iter() {
         commands.entity(e).despawn();
     }
+}
+
+/// While the map is held the mouse is the map's: it moves the crosshair
+/// instead of turning the view (`input::gather` stands down), and a right
+/// click marks the spot under it or clears the mark that is there. Runs in
+/// `PreUpdate`, after the input is read and before anything else sees it, and
+/// takes the buttons for itself — so no click on the map also swings, draws a
+/// bow, lights a torch or places a piece in the world behind it.
+pub fn aim(
+    mut commands: Commands,
+    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut cursor: ResMut<MapCursor>,
+    mut pins: ResMut<MapPins>,
+    mut cross: Query<&mut Node, With<MapCrosshair>>,
+    layer: Query<(Entity, Option<&Children>), With<PinLayer>>,
+) {
+    let d = motion.delta * CURSOR_PER_PX;
+    if d != Vec2::ZERO {
+        cursor.fx = (cursor.fx + d.x).clamp(0.0, 1.0);
+        cursor.fy = (cursor.fy + d.y).clamp(0.0, 1.0);
+        if let Ok(mut node) = cross.single_mut() {
+            node.left = Val::Percent(cursor.fx * 100.0);
+            node.top = Val::Percent(cursor.fy * 100.0);
+        }
+    }
+    if mouse.just_pressed(MouseButton::Right) {
+        let (fx, fy) = (cursor.fx, cursor.fy);
+        pins.0.toggle(fx, fy);
+        cursor.dirty = true;
+    }
+    mouse.reset_all();
+    if !cursor.dirty {
+        return;
+    }
+    let Ok((layer, kids)) = layer.single() else {
+        return;
+    };
+    cursor.dirty = false;
+    for k in kids.into_iter().flatten() {
+        commands.entity(*k).despawn();
+    }
+    commands.entity(layer).with_children(|l| {
+        for (i, &(x, z)) in pins.0.marks().iter().enumerate() {
+            let (px, py) = map::world_to_map(x, z, 1);
+            l.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(px * 100.0),
+                    top: Val::Percent(py * 100.0),
+                    width: Val::Px(PIN_PX),
+                    height: Val::Px(PIN_PX),
+                    margin: UiRect::all(Val::Px(-PIN_PX * 0.5)),
+                    border: UiRect::all(Val::Px(1.5)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                UiTransform::from_rotation(Rot2::degrees(45.0)),
+                BackgroundColor(PIN_INK),
+                BorderColor::all(Color::srgba(0.1, 0.07, 0.02, 0.9)),
+            ))
+            .with_child((
+                ui::strong(format!("{}", i + 1), 10.0, Color::srgb(0.12, 0.08, 0.02)),
+                UiTransform::from_rotation(Rot2::degrees(-45.0)),
+            ));
+        }
+    });
 }
 
 /// Forget the painted island when the shard goes: the next one has its own

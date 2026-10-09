@@ -4120,7 +4120,7 @@ const BIND_IDENTS: [(&str, &[&str]); 24] = [
         &["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"],
     ),
     ("INVENTORY / CRAFTING", &["Tab", "KeyI", "KeyQ"]),
-    ("MAP", &["KeyG"]),
+    ("MAP", &["KeyG", "MouseButton::Right"]),
     ("THE ISLAND", &["KeyO"]),
     ("CHAT", &["KeyT", "Enter"]),
     (

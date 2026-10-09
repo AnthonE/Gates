@@ -998,7 +998,10 @@ pub const BINDS: [(&str, &str); 24] = [
         "INVENTORY / CRAFTING",
         "Tab or I: inventory · Q: crafting  (the same key or Esc closes)",
     ),
-    ("MAP", "Hold G"),
+    (
+        "MAP",
+        "Hold G · with it up the mouse aims, right click marks a spot (up to 5)",
+    ),
     (
         "THE ISLAND",
         "O: the works the whole server is switching back on (the same key or Esc closes)",

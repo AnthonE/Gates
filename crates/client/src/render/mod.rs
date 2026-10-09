@@ -1010,6 +1010,16 @@ impl Plugin for GatesRenderPlugin {
         // open the map. `map::open` carries its own guard now and does not
         // rely on being downstream of anything.
         app.init_resource::<map::Island>()
+            .init_resource::<map::MapPins>()
+            .init_resource::<map::MapCursor>()
+            // The mouse is the map's while it is held: the crosshair and the
+            // marks, and nothing in the world sees a click (`map::aim`).
+            .add_systems(
+                PreUpdate,
+                map::aim
+                    .after(bevy::input::InputSystems)
+                    .run_if(in_state(Screen::Map)),
+            )
             .add_systems(
                 OnEnter(Screen::Map),
                 ((map::enter, map::setup).chain(), audio::map_paper),

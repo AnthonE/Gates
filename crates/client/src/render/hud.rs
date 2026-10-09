@@ -2834,6 +2834,7 @@ pub fn prompt(
     near: Res<super::verbs::Near>,
     look: Res<super::input::Look>,
     pad: Res<super::verbs::Pad>,
+    pins: Option<Res<super::map::MapPins>>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
 ) {
@@ -2888,7 +2889,13 @@ pub fn prompt(
         }
     }
     if let Ok(mut text) = compass.single_mut() {
-        let want = compass_strip(look.yaw);
+        let mut want = compass_strip(look.yaw);
+        // The nearest of your map marks, the way the reference pins them to
+        // its compass: which, how far, which way.
+        let [x, _, z] = net.session.core.predict.render_position();
+        if let Some((n, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
+            want.push_str(&mark_strip(n, d, b));
+        }
         if text.0 != want {
             text.0 = want;
         }
@@ -3377,6 +3384,16 @@ fn swing_prompt(occupant: u8) -> String {
     } else {
         format!("[LMB] {label}")
     }
+}
+
+/// A map mark on the compass line: `      mark 2 · 340 m · 045°`.
+fn mark_strip(n: usize, dist_m: f32, bearing: f32) -> String {
+    let d = if dist_m >= 1000.0 {
+        format!("{:.1} km", dist_m / 1000.0)
+    } else {
+        format!("{dist_m:.0} m")
+    };
+    format!("      mark {n} · {d} · {bearing:03.0}°")
 }
 
 /// The eight-point bearing plus degrees, e.g. `NE  045°`.
