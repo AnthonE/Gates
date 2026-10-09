@@ -31,14 +31,9 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
   `REFUSE_VERSION`); `spectate = true` on any shard that should be watchable;
   a wallet, its entitlement and a `chmod 600` key file per hosted agent
   (§2.4's list); the page link from the watch host to `?spectate=0x…`.
-- **jev lane:** `jev-watch`'s shard sets `cfg.spectate = Spectate::on()` and
-  its bot joins `Join::Agent`; `jev-bot` grows `--agent-key PATH`, a name and
-  `--server host:port` onto `botclient::run_agent_bot` — the JPEG feed can
-  then retire behind the browser seat.
-- **The browser loses the close reason.** A seat whose target left is closed
-  with `REFUSE_WATCH_ENDED` as its code; the desktop `Session` reads it
-  (`close_code`, and the disconnected screen says why) and the page's
-  `WebTransport.closed` is not yet read, so a tab says "left the world".
+- **jev lane:** the agent half is in (`jev-watch` spectates, `jev-bot` takes
+  `--server`/`--agent-key`); the JPEG feed (`server/src/watch/http.rs`) can now
+  retire behind the browser seat.
 - A delayed human feed's line is per seat in memory and reserved when the
   seat opens — 7.1 MB at 60 s, 5.0 MB of it an event line sized for eight
   messages a tick; reserving that half on demand makes it cost the traffic;
@@ -54,12 +49,10 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
 
 1. Medicine on a downed body (`reference/WOUNDED.md` §9): `Command::Consume` with a
    target. Content prices bandages and medkits but has no syringe row yet.
-2. Refusals while down are silent (`live_slot_of` sends no event); the fix is each
-   refused verb's own `REFUSE_*`.
+2. Refusals while down: the client says `HANDS_LINE`, but the sim still sends no
+   event from `live_slot_of`; the fix is each refused verb's own `REFUSE_*`.
 3. No drag clip or voice: a remote crawl slides `Death01`'s pose (`render/anim.rs`)
    and the fall reuses `Cue::Death`.
-4. The odds on screen are the odds at the fall; the sim re-reads the meters at the
-   roll. Say so on the line, or resend.
 5. §LOOK: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the vignette — never seen.
 
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
@@ -70,9 +63,9 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
 2. To retire the stretch, fit `SHELTER_BOXES` to the art (prompting for the aspect
    fails). It is sim truth (`test_replay`'s golden, the plinth consts,
    `SHELTER_CORNER_R_M`, `WAYSTATION_RADIUS_M`, guard aprons): a real slice.
-3. `WANTED.md` §2 is done bar the stump (waits on §0stump); four §2 sizes were wrong,
-   so read `occupant_volume`. Next: §4's seven greybox deployables, §5's fifteen held
-   items (`meshy_gen` → `measure_glb` → `import_meshy`, ~6 keepers per 11 rolls).
+3. `WANTED.md` §2 is done bar the stump (waits on §0stump), and §4/§5's deployables
+   and held items are in; rock, torch, revolver and crossbow still draw generated
+   or stand-in models.
 
 ## 0rk · The rock formations: levers measured and parked *(art + client lane)*
 
@@ -83,7 +76,8 @@ The re-packed maps (2026-09-16) and the kit-made nodes and boulders (2026-09-23,
 3. **The formation levers.** Tilt is out at these tolerances (`rock_b`/`rock_c`
    leave the blocked cylinder past 3°); a cluster per slot waits for a slab,
    because the top gate holds the main part at ≥ 0.97 scale; widening the Rock
-   row is sim truth and the operator's call.
+   row is sim truth and the operator's call. Multi-block formations (outcrop, tor,
+   pile) are in (`sim-core/src/boulder.rs`).
 
 ## 0rock · Rock is one tier drawn everywhere alike, and the cliff is bare *(sim + art lane)*
 
@@ -93,12 +87,13 @@ carries no more rock or ore than open highland. What is left:
 
 2. Rock species rides the trees' species field (§0fst item 4), so a region's
    rock family is a coin flip.
-3. **Rock seeding v0** (§9.2): a coarse-grid parent draw for formations;
-   boulders, small rocks and ore weighted by distance to the parent and the
-   cliff mask. Totals conserved (`CONTENT.md` §4, `haven_prize`), and ore stays
+3. **Rock seeding v0** (§9.2): the coarse-grid parent formations are in
+   (`boulder.rs`); left is weighting boulders, small rocks and ore by distance to
+   the parent and the cliff mask. Totals conserved (`CONTENT.md` §4, `haven_prize`), and ore stays
    on the per-island budget (`terrain::ORE_TARGET`). Gates in §9.6. A wipe —
    the operator's.
-4. **Cliff tier v0** (§9.3): `Occupant::Cliff` on the cell the veto empties, a
+4. **Cliff tier v0** (§9.3): the crags are in (`sim-core/src/cliff.rs`,
+   `render/cliffs.rs`); left is `Occupant::Cliff` on the cell the veto empties, a
    box-list volume off its own slope; `ci/rock_kit.py gen --kind slab` builds
    the mesh once `ci/measure_glb.py` has a slab row. Tint and blend: `§LOOK`.
 
@@ -106,22 +101,8 @@ carries no more rock or ore than open highland. What is left:
 
 1. `§LOOK` on a GPU: every frame is lavapipe 1280×720 and the facet fade was
    tuned on that footprint (`findings/rock-face-20260923.md`).
-2. A scarp's silhouette is still the smooth heightfield's — needs §0rock
-   item 4's cliff mesh or finer worldgen relief (§0wg item 3).
-3. Lip and foot are a hard contour line; the answer is scree at the foot
-   (§0rock item 3). Blocks deciding rock vs turf read as paving — don't.
 4. The 2.2 m fine facets vanish past ~20 m by design; whether that second
    lattice walk pays on a real GPU is unprofiled.
-
-## 0anim · The animals cannot be bought until the client can move one *(client lane)*
-
-- Client slice before the asset: generalise `anim.rs`'s clip machinery to mobs and
-  author a skeleton, or deform a whole mesh as `render/mobs.rs`'s leg transforms do.
-  Then pig `01a05e9f-775d` (wolf `01a05ea2-c78a` when wanted) can come in.
-- The generator's rigging (`POST /openapi/v1/rigging`) refuses a quadruped, and its
-  animal is one unskinned primitive: it can't be split onto `LEG_ANCHORS`.
-- The brain has ten states and the mesh shows two: legs swing off position deltas
-  and a sleeper lies down (`mobs::Gait::settle`); no bite, howl or flee pose.
 
 ## 0stump · A felled pine leaves scenery, not a second harvest *(systems lane)*
 
@@ -134,8 +115,11 @@ carries no more rock or ore than open highland. What is left:
 
 ## 0kit · The build kit is the one row a generated mesh fights *(client lane)*
 
+Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by address
+(`PIECE_LOOKS`), so a bought kit is optional. If one is tried:
+
 1. A piece's material is gameplay state: one mesh serves all four tiers, painted by
-   one of `DMG_BANDS × N_TIERS` = 32 materials (`structures.rs`).
+   one of `DMG_BANDS × N_TIERS × PIECE_LOOKS` materials (`structures.rs`).
 2. So buy geometry, not appearance: `should_texture: false`, keep the tier materials.
 3. UVs bind: pieces carry metre-scaled UVs (`PIECE_UV_PER_M = 1.0`), Meshy an atlas
    unwrap. Fix: a metre box-projection mode in `import_meshy.py`, like `Soup::tiling`.
@@ -143,33 +127,16 @@ carries no more rock or ore than open highland. What is left:
    lintel underside), so try a doorway first or not at all.
 - Not started (`WANTED.md` §3's six shapes). Order: 3 → one wall → look; 3 may sink it.
 
-## 0dk · The player character is as dark as grass — measured *(art lane)*
-
-4. It is the albedo: `stumpy.glb`'s baked `Material_1_baseColor` is linear luma
-   0.056, level with grass and just above `ALBEDO_LUMA_BAND`'s 0.05 floor. Remote
-   bodies, SSAO and the fill were measured and ruled out.
-- The lift is nearly free: `base_color` ×2.4 (litter's 0.135) clips 0.14% of
-  texels, ×3.0 (twig's 0.167) 0.34%. The other road is a Meshy re-bake
-  (`assets/models/MANIFEST.md`).
-- How far to lift is the operator's call (`ART.md` owns looks); it moves both
-  hands and every remote at once.
-
 ## 0fp · The first-person pass, and the two judgements it is now waiting on *(client lane)*
 
-0b. Unbuilt: the operator's haft "in line with the thumb with an open Palm".
-   `VIEWMODEL_GRIP_Q` encodes a view pose, not the hand, so framed poses sit ~90°
-   off the thumb; getting both means rotating the hand, which moves a visible arm.
 1. The viewmodel reads oversized (true scale, 0.52 m from the eye; the hatchet at
    0.85 fills the lower-right quarter, `findings/capture-20260917.md`). Operator's
    taste call: shrink it, push it back (`VIEWMODEL_HOLD`) or keep it.
-2b. The swing no longer chops: `swing_pose`'s arc is hard-coded in view axes for a
-   −Z tool, so a +Y haft sweeps sideways (apex +70° vs −12°). Derive the strike
-   axis from each item's rest direction; touches every held item, needs item 3.
 3. The swing and chip burst run on `Time::delta_secs`, so lavapipe swallows them;
    only `./ci/scene.sh --play` on a GPU box shows either.
 4. Look at the spear thrust (`viewmodel::thrust_pose`): 15.6 cm draw, 20.8 cm reach
    — thrust or twitch? Remote spears still play `Sword_Attack` (no right-hand thrust
-   in the rig); the metal spear chops until `§0hand` item 1 lands its row.
+   in the rig).
 - Unchased: two remote bodies read near-black in the first run's `7-player.png`
   (brown in the second). Look at the frames before it becomes a lighting item.
 
@@ -177,8 +144,8 @@ carries no more rock or ore than open highland. What is left:
 
 1. Feel it at the bar: `netsim = "30,10,1"` on a dev shard with two humans — the
    stop test and the strafing-bro test. Every gate ran at zero RTT; operator's eyes.
-2. NetLine gauges: the F4 net row (`render/hud.rs:2145`) shows err/confirm/mispredict
-   only; `buffered_depth`, `repeat_count`, `playout_ticks()`, `jitter_ms`,
+2. NetLine gauges: the F4 net row (`render/hud.rs` `net_line`) shows ping and
+   err/confirm/mispredict; `buffered_depth`, `repeat_count`, `playout_ticks()`, `jitter_ms`,
    `corrections_minor`, `DgRing::dropped` exist and nothing draws them.
 3. The event lane is not shimmed (`DECISIONS.md` §open netsim row has the skew), and
    under netsim the stream lane leads its snapshots by lat_ms.
@@ -211,8 +178,8 @@ carries no more rock or ore than open highland. What is left:
 - Visual gap 3 (`pass-20260815-042118-11`: no structure, character or viewmodel in
   a frame) is partly open: the panels-off rule and the missing hands.
 - From the judge's gap 2, larger than a pass: a world event (a timed, announced
-  window at the pad) and a guard loot tier (§0wc item 3: a third species, five client arms).
-- The judge's gap 3, no session or wipe boundary, is untouched and the bigger one.
+  window at the pad; the heli is scheduled, not announced) and a guard loot tier
+  (§0wc item 3).
 
 ## 0h3 · The other flaky dial: `connection closed by peer: 261` *(server lane)*
 
@@ -233,7 +200,7 @@ carries no more rock or ore than open highland. What is left:
 
 1. `Cue::Hurt` is not positional (`EV_HURT` is a bearing, not a place). Two blows in one
    frame are one heavier voice: the cooldown binds in-frame on purpose, so the fix is a
-   second row (`a_cooldown_binds_within_one_frame`). No camera shake.
+   second row (`a_cooldown_binds_within_one_frame`). (Camera shake landed, `render/shake.rs`.)
 4. Nobody has seen the hurt arc (`§LOOK`; no vantage takes a shot at the camera): do three
    28° arcs on the 116 px ring read as three directions or as a red halo?
 
@@ -247,32 +214,25 @@ carries no more rock or ore than open highland. What is left:
    (`reference/PROJECTILES.md` §9.4b).
 3. Hit rung v0 is unseen and unheard (`§LOOK`: gold as a skull? limb cue lighter, not
    quieter?). The marker changes colour, not shape (the reference pushes ticks out, a
-   `Node` mutation per tick). `Toast::hit_damage` is stored and never drawn.
+   `Node` mutation per tick). The number is drawn (`hud::hit_number`, off `Feed`);
+   `Toast::hit_damage` is a dead field.
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
-1. Nobody has seen it (`§LOOK`); a night frame is `ci/scene.sh --hour midnight` now.
-2. `NIGHT_AMBIENT_LUX` (240× moonlight) caps the torch at a 0.89 m pool (`pool_radius_m`).
-   Fix the ambient, not the flame: one owner over `rig`'s coupled set
-   (`CLAUDE.md` §traps), judged by eye, never from a lane that is changing a light.
+1. Seen on lavapipe (2026-10-09, `ci/drive.sh` at midnight): the pool reads as carrying
+   a light and the moon lights the sky; a GPU look is still the operator's.
 3. Hitting with a torch wears nothing (reference: ~7 condition a swing). V3 forbids an
    unreachable `condition_loss` row, so it needs a node or a combat row first.
-4. Nothing says a torch went out: `cond` reaches 0 on `SUB_INV` a round trip late, and
-   there is no `Cue` for either edge, no toast, no flicker.
-5. A remote's held item doesn't swing (`BODY_PALM` is a fixed body-root offset; the hand
-   bone in `models/stumpy.glb` is unverified) and is unseen (`§LOOK`, item 1). Worst-case
-   datagram: 1058 B of 1100 (`snapshot_cap`), so the next `EntityState` field isn't free.
-6. Your own torch draws no flame in first person; a remote's burns (`bodies::BodyFlame` with
-   `fx::world::FireFx` at `TORCH_FIRE_SCALE`).
+- The snapshot is full: `snapshot_cap` is 1099 B of 1100, so the next `EntityState`
+  field is not free (wire v98 put worn armour on the event lane for that reason).
 
 ## 0eq · Equipment, after armor v1 *(systems+client lane)*
 
-3. A body is not drawn wearing anything (no armor mesh; `worn` reaches only its owner).
-   Design pass first: broadcasting it is raid intel `container_wire.rs`'s wear test refuses.
+3. Bodies are drawn wearing what they wear (`SUB_WORN`, wire v98; `render/worn.rs`):
+   rigid procedural pieces on the head, spine and hips bones, ids only on the wire.
+   Real art is `assets/models/WANTED.md` §6; `examples/worn_look.rs` is the bench.
 5. Unlooked (`§LOOK`): the paperdoll, and the inventory page with a container open at 1280.
 6. Armor does not wear out (§9.4; the catalog has `cond_max`). `§0dur` owns it.
-7. Right-click does not equip: `ui::slots::quick_move`'s `!looting` branch would ask
-   `wearable_here` and send `CONT_WEAR`. Left out as a taste call, not for difficulty.
 
 ## 0gs · What ground surface v1 left open *(client lane)*
 
@@ -370,12 +330,8 @@ Routing candidates are not shipped roads (`findings/road-network-prototype-20260
 
 Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTILES.md` §9).
 1. Nobody has watched a wall come down, a bench fall or a raid decal draw (`§LOOK`).
-2. `sim-core/src/spent.rs`: a lodged arrow stays at the impact point instead of riding the
-   body, and one that expires mid-air leaves nothing. §9.6 (the reference's ~35 bow
-   damage) is unblocked: a `RIPLIST.md` take against `CONTENT.md` §4's bands.
-4. A forest-floor pickup archetype and a farming lane (`server/tests/farmwalk.rs` isn't one).
-5. Tree depth and the blueprint item are `§0tree`; still missing is the wipe schedule
-   blueprints are promised to outlive (`DESIGN.md` §8).
+4. A farming lane (`server/tests/farmwalk.rs` isn't one); forest-floor pickups are in
+   (the mushroom patch and the piles, `content/gatherables.toml`).
 6. Crops. Night has its reasons now (the cold costs hp, `exposure.rs`; a torch keeps
    wolves off) and its sky (moon, stars, `/time`); nothing in `content/` grows.
 
@@ -420,13 +376,11 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 1. Nobody has opened one in the running game: anchor per `container_wire.rs:1307`,
    `dev_spawn` in `shard.toml` (`server/src/config.rs:361`), boot (§0p3).
 1b. `takes_deposits` keys on kind; a fuel slot or vending machine needs it per instance.
-2. An emptied crate looks full from afar: a lid state (`render/props.rs`), a
-   shorter refill, or vanishing (`reference/LOOT.md` §9.4: a wire bit per crate).
 2b. Ground items: no tumble (`reference/LOOT.md` §9.3), most draw as a pouch
     (`HELD_MODELS`), barrels pay 1–2 stacks (`content/loot.toml`, `ci/haven_prize.mjs`).
-3. The guard pays a wolf's loot (`guard.rs`): a tier needs a third species, which
-   falls to the pig in `render/mobs.rs`, `sound/voice.rs` and `ui/death.rs`
-   (`loot.toml` can't carry it: `content/src/validate.rs:887` refuses zero hits).
+3. The guard pays a wolf's loot (`guard.rs`, pinned by `tests/guard.rs`). The stag is
+   the third species now, so a guard tier is a row away; meanwhile the stag's voice
+   falls back to the snort (`sound/voice.rs`) and `ui/death.rs` names it a pig.
 4. Nobody has fought a guard in the running game (route as item 1).
 5. `inventory.rs:110`'s `slots_in` treats every non-box kind as `INV_SLOTS` wide,
    untested; add an explicit arm under `container_wire.rs:1359`'s guard.
@@ -434,7 +388,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 ## 0pr · What predator v0 still owes *(systems lane)*
 
 1. Nobody has heard it; `client/src/bin/soundbank.rs` dumps the bank to WAV.
-2. A wolf drops no hide or bone (`content/mobs.toml`): recipes and icons come with it.
 3. No night-only roster variant; the night's cost so far is the cold (`exposure.rs`).
 4. No gate keeps the growl's 14 m (`CUES`' growl row, `crates/sound/src/lib.rs`) inside the wolf's
    15 m night notice radius; a `mobs.toml` edit reddens nothing.
@@ -443,14 +396,12 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 1. A butchering verb (tool-gated) on the body: no `ui::interact::Verb` arm; output
    goes to the corpse bag (`mob::strike`). Research: `reference/ANIMALS.md` §9.5.
-2. Wolves howl on finding you (#178); pigs owe an aggro cue, every bite a hit-direction tick;
-   holding a charge is free. Voices still run on a timer, not the brain's state
+2. Wolves howl on finding you (#178), and a bite lunges and growls or snorts for
+   everyone near (the sim's `EV_SWING` with the animal's id); pigs still owe an aggro
+   cue, and holding a charge is free. Voices still run on a timer, not the brain's state
    (`sound/voice.rs`: near growls, far howls).
-3. `render/mobs.rs` is box massing; at 8 m the head barely separates.
 4. `MAX_MOBS = 64` came from the wire budget and has never met a playtest.
 5. Should `ttk_melee` widen (rock vs spear)? `DECISIONS.md` §open "tools as weapons".
-6. A blast hurts no animal: `charge::detonate` never takes `Mobs` (arrows and bullets do
-   since 2026-09-25, `ranged::Quarry` → `mob::hurt_slot`).
 7. The brain's numbers are code and shared by every species (`brain.rs`: 2 biters, 3 tries,
    60 s heal, 20 s howl, 7 m orbit, 40 % sleep; `noise.rs`: 100/15/25/200 m hearing); only
    sight, pack and fire fear are in `content/mobs.toml`.
@@ -470,11 +421,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0sp2 · What the spill still cannot say *(systems lane)*
 
-- A partial spill and the four give-backs (demolish refund, pick-up, unbolt, craft
-  cancel) say nothing; one wire field buys both (operator; `DECISIONS.md` §open).
-  The ring is `client-core/src/core.rs:900`, item index only.
-- A spill merges into the nearest bag, even another player's death bag
-  (`sim-core/src/backpack.rs:51`); §open carries it.
+- The give-backs announce what they dropped (`World::announce_spill`), but name the
+  item only, not the amount; one wire field buys it (operator; `DECISIONS.md` §open).
 - No frame has shown a spill line ("pack full — Wood dropped…"); headless only.
 
 ## 0bl · Building catalogue and remaining playtest *(client+sim lane)*
@@ -551,10 +499,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 1. Heal under upkeep (10 min unattacked, at the decay rate; Devblog 189): a per-piece
    last-hit clock is a `WORLD_SAVE_FORMAT` change and a wipe — ride the next bump.
-2. Exact rent: `upkeep::Tax::charge` rounds each hour up. Charge period `k` the
-   difference of cumulative floors `⌊cost·rate·k/24⌋`, require ≥ 1 held for a
-   zero-charge period, and re-price the tests' 5-unit fixtures in hundreds.
-3. A hearth panel (24 h cost per resource, live clock, crew HUD vital); no withdrawal.
+3. The hearth panel shows each resource's day and the time left; still owed: a crew
+   HUD vital and withdrawal.
 4. Door and insert upkeep (Devblog 190): ours charge nothing in a claim.
 5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
 6. No gate runs the inside discount: roof an unpaid piece in the replay (`test_replay`).
@@ -575,8 +521,9 @@ floor of one a second and an hour/day spend guard. `crates/server/JEV.md` and
 (`NETCODE.md` §2.3): unsigned on loopback, or signed with `--agent-key`
 (§2.4, `tests/jev_door.rs`); `--bots N` shares one island. The hosted
 preview still runs the step-level bundle until the operator restages it.
-Next: loot its own death bag, cooking, and an operator-provisioned wallet
-plus a routable spectate shard for a public agent (operator acts).
+It cooks (`agent/oven.rs`) and tracks its own death bag (`agent/home.rs`).
+Next: an operator-provisioned wallet plus a routable spectate shard for a
+public agent (operator acts).
 
 `PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
 is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
@@ -584,14 +531,9 @@ is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
 agent (`server/tests/agent_walls.rs`, `sim-core/tests/agent_input.rs`); wall 2
 is not.
 
-Remains, in order:
-- ~~Nothing reads it~~ and ~~a dropped row is gone~~ — **built 2026-09-22
-  (trust ledger v1).** `World::trust` is a per-tick ring no tick can overflow
-  (`sim-core/trust.rs`: one `TrustSeat` per command, spent by value).
-  `ShardCore::tick` drains it every tick into `<world_file>.trust/`
-  (`server/trustlog.rs`), and `trust-log` reads it. Knobs:
-  `DECISIONS.md` §open. The public shard logs once a build with it is
-  deployed (operator act), and only because it has a `world_file`.
+Remains, in order (the trust ledger — `sim-core/trust.rs`, `server/trustlog.rs`
+— is built; the public shard logs once a build with it is deployed, an operator
+act):
 - **`Command::Loot` mints no trust row.** Emptying another player's bag
   with `Loot` is silent, while taking one stack of it with `Move` logs
   `TRUST_CONT`, so the record depends on which button was pressed. Decide
@@ -601,12 +543,6 @@ Remains, in order:
 - Then the social verbs for agents (`give`, `authorize`, `speak`): human client
   first, and `agent_walls.rs` keeps the agent's set a subset. Entry price and
   earnings are `ALPHA.md`.
-
-- Nothing reads `EV_TRUST`: a server lane must sink it (`server/src/core.rs:2465`).
-- A dropped row is gone (drop-newest ring, `limits.rs:624`); resync can't re-derive it.
-- `TRUST_GIVE` waits on a player-to-player give verb.
-- Then the verb table with wall 1's subset gate, then an agent client that plays
-  badly (spec: `PLAYERS.md`; entry price and earnings: `ALPHA.md`).
 
 ## 4 · A payload swap is still not a compile error
 
@@ -619,16 +555,16 @@ Remains, in order:
 
 1. UDP buffer: raising `rmem_max` on the public shard (8 MiB asked) is an operator act.
 2. Shore barrels as a second destination class, so the ring has two ends.
-3. The wipe, unscoped: no `wipe-now` exists; the loop owns the mechanism, the operator
-   the trigger. Economy: `ALPHA.md` A1→A3 (whose §Admin lane cites "§0q item 2").
+3. The wipe mechanism landed (#238: a posted schedule, `/wipe` with a countdown, the
+   archive); the trigger stays the operator's. Economy: `ALPHA.md` A1→A3.
 4. The soak owes tick jitter as a distribution and an hour-long run (last: 25 min),
    re-run with the contention instruments (`raid_storm.rs`, `bots::raid_step`).
 
 ## 0zd · Doors and locks — the key lock's blocker died and nobody re-took it *(systems lane)*
 
-1. The key lock's blocker is paid (`ItemStack.cond`, `gather.rs:532`): re-take the
-   call (the reference dropped keys, Devblog 193) or fix `reference/DOORS.md` §9.7
-   and the `DECISIONS.md` 2026-08-08 row.
+1. The key lock landed (#239: no keypad, locked to its placer and the hearth crew);
+   `reference/DOORS.md` §9.7 and the `DECISIONS.md` 2026-08-08 row still say it is not
+   built.
 2. `DECISIONS.md` says `L` opens a keypad HUD line, not a panel; the client ships
    `render/hud.rs::pad_overlay`. Fix the registry.
 
@@ -636,8 +572,8 @@ Remains, in order:
 
 ## 0fan · The event lane's fan-out — four arms filtered, nineteen to go *(server lane)*
 
-1. Operator's call (§open "event-lane fan-out v0"): raise `EVENT_RING_CAP` (read
-   `limits.rs`; worst fixture 81/128; 322 B/slot/conn) or batch events (`PROTO_VER`).
+1. `EVENT_RING_CAP` was raised 128 → 192 (#217); the operator's ratification of
+   §open "event-lane fan-out v0" is owed.
 2. Operator's call: should an owner hear their door knocked from anywhere? No owner
    check exists (`server/src/core.rs` `EV_KNOCK` arm, `hud.rs`).
 3. Aim `EV_DEPLOY_PLACED` like `EV_PIECE_PLACED`, then the deploy walk, to free
@@ -660,8 +596,9 @@ Remains, in order:
 1. BBR vs CUBIC (`cc` in `shard.toml`) is untried on a real path with real
    players; `net_congestion_events` is the reading.
 2. Ops: read `net_rcvbuf_asked`/`net_rcvbuf_bytes` before tuning; `rmem_max` decides.
-3. No client telemetry: nothing asks the `Arc<Connection>` at
-   `crates/client/src/lib.rs:291` for `stats()`/`rtt()`; the HUD has no loss/RTT.
+3. The client reads the transport's RTT (`Session::rtt_ms`: QUIC natively,
+   `getStats()` in a page) for the F4 row and the connection warning; loss and
+   `stats()` are still unread.
 
 ## 0sp · The encoder is the tick's largest phase now *(server lane)*
 
@@ -685,7 +622,7 @@ Remains, in order:
 1. Bans are memory-only (`server/src/admin.rs:173`): persist them in their own file
    and format version (the player store's header wipes on a seed change).
 2. Nobody has typed a command at a live shard: the `REFUSE_ADMIN` close
-   (`net.rs:791`) is undriven, with no client dialog (`client/src/lib.rs:486`).
+   (`net.rs:791`) is undriven (the disconnected screen does say an admin removed you).
 3. The anomaly log (JSONL) has no reader to give the alpha gate a verdict.
 4. No `/who`. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
    only in the anomaly log, and nothing stops `dev_env` in a public `shard.toml`.
@@ -733,8 +670,6 @@ Remains, in order:
 
 - ⚠ Nothing in CI compiles `assets/shaders/ground_splat.wgsl`: a syntax error
   is green in CI and dead at boot. Boot it (lavapipe works; `ci/scene.sh`).
-1. Only the albedo has the biplanar wall tap; normal, roughness and AO stay
-   planar XZ on steep faces (`RENDER.md` R4).
 2. The −0.4% roughness null result has not been re-measured with energy in
    the specular lobe (`DECISIONS.md` §open "specular v0").
 3. `ground_detail.jpg` is loaded by nothing (`textures::GROUND_DETAIL`);
@@ -750,17 +685,10 @@ Remains, in order:
 
 ## 0gi · What the island still cannot show: no occluder at blade scale *(client lane)*
 
-4. No occluder at blade scale: clutter is `NotShadowCaster` (`clutter.rs:504`), so a blade's dark base never
-   darkens the ground (`ART.md` rule 2). SSAO is already on (`rig.rs:284`).
+4. No occluder at blade scale: grass cards in the near ring cast shadows now (`GRASS_SHADOW_TILES`), but the
+   blade/stand solids and ferns are still `NotShadowCaster` (`clutter.rs`). SSAO is already on (`rig.rs`).
 5. Litter (2.49× grass, `terrain_mesh::GROUND_ALBEDO`) wins every mix; grass needs ≥78.0% to read green, but
    `ground_where_the_green_goes.rs` asserts only `> 0.66` / `> 2.0×`.
-
-## 0cards · The population wears photographs now — what is left *(client lane)*
-
-1. Conifer needles are still generated (`tree::needle_image`); Set 9.5 (sprig atlas) is fetched: atlas + `base_color`.
-2. Standing litter is still `stand`/`blade` geometry; Set 9.8 (fern atlas) is fetched: a `card` (`PLANTS.md` §6.3).
-3. The outer ring's tree hulls are untextured (§0out item 1): the largest flat-green area left.
-4. `tree::needle_mips` takes the bisection midpoint, not `hi` like `mipmap::preserve_coverage` (latent; gate pins it).
 
 ## 0w · The props' remaining gaps — darks, density, unread roughness *(client lane)*
 
@@ -771,21 +699,16 @@ Remains, in order:
 
 ## 0out · The horizon has trees — what the outer ring owes *(client lane)*
 
-1. **Highest value:** untextured hulls (`foliage`, no map); `WANTED.md` §9.5's leaf texture fixes them and the bush.
-2. `harvest_changed`'s 2.34 ms is a floor since density v1 (no GPU number): fix `HarvestedSet::contains`'s linear scan.
 3. Only trees: boulders and barrels stop at `NEAR_RADIUS` (a sub-pixel lump costs an entity, no silhouette).
 
 ## 0t · the forest — what it still owes *(client lane)*
 
-1. Forest scale v0 (`DECISIONS.md` §open; bench only): (a) `OCCUPANT_TOP_M[Tree]` 5.7 m under a 14 m trunk, one
-   sim row (`shoot.rs`); (b) re-read `tree.rs`'s band table at 14 m, since the hull shows past the ~50–61 m swap;
-   (c) birch bark is a `CANDIDATES.md` row. Treeline 288 m is browser-era; a desktop budget buys `OUTER_RADIUS` 5.
+1. Forest scale v0 (`DECISIONS.md` §open; bench only): (a) `OCCUPANT_TOP_M[Tree]` is 11.0 now; (b) re-read `tree.rs`'s band table at 14 m, since the hull shows past the ~50–61 m swap;
+   (c) birch bark is in. Treeline 288 m is browser-era; a desktop budget buys `OUTER_RADIUS` 5.
 2. Close the crown: `TREE_MAX_R` 2.9 → 4.0 lifts cover ~20% → >35%, moving `SPAWN_CLEAR_M` 4.5 → ~6.0 (spawn
    search, both goldens), one sim row and an `examples/tree_sweep.rs` sweep (`reference/FORESTS.md` §1.2).
-4. `aWind`: `StandardMaterial` can't read a custom attribute; wind needs `RENDER.md`'s custom material (LOD1 free).
 5. Sub-canopy empty, shrubs one blob (`Occupant::Bush`, `PLANTS.md` §2): ez-tree `bush_*` and a 40% small tree
    as new `Occupant` variants plus scatter rows.
-6. Both cards are still generated (`tree::needle_image`, `tree::leaf_image`); `WANTED.md` §9.5 is the upgrade.
 7. Canopy grain v0 is unseen (`§LOOK`). Sky through a near crown: raise `TWIGS`/`NEEDLES_PER_TWIG` (not
    `AXIS_NEEDLES`) and widen `tests/tree.rs::the_cards_hold_the_density_the_forest_was_built_at`. Also: 11 cm
    leaf vs a birch's 3–7 (`BROADLEAF_MAX_R`, sim); `NEEDLE_HI` luma 111 vs lit grass 59–70; `CANOPY_AO_GAMMA` invented.
@@ -794,45 +717,39 @@ Remains, in order:
 
 ## 0a · The clutter ring still ends on a line *(client lane)*
 
-1. It ends hard at ~32–45 m (`CLUTTER_RING = 2` × `CLUTTER_TILE_M = 16.0`; `render/clutter.rs` has no distance term).
-   Fade as `sim-core/terrain.rs::swept_here` (thin by hash, scale survivors to 0), once a person sees the edge read.
+1. Grass and fern cards fade out between 30 and 46 m now (`foliage_common.wgsl`, `CLUTTER_RING = 3`); the opaque
+   solid blades still end on a line. Fade them as `sim-core/terrain.rs::swept_here` does (thin by hash, scale to 0).
 2. Beach skirts are thin from the scatter table (~0.22 vs ~0.95 prop centres a tile, browser-era, not in the
    tree): re-measure against `terrain::scatter` before acting.
 
 ## 0y · The sea is a volume — what it still cannot do *(client lane)*
 
-1. The last hard edge: the alpha ramp is per-vertex, so it rings in the shallows. Fade on prepass depth in the
-   fragment (`ExtendedMaterial` + WGSL, `RENDER.md` §8); SSAO already puts a `DepthPrepass` on the camera.
 2. One sea state: a storm is `WAVES` × a scalar the sim would have to publish — wire, not renderer.
-3. Nothing reflects: read `reference/WATER.md` §5/§6 first; the expensive half, and the payoff is the sky.
-4. Underwater is audio-only; a colour grade there is a second haze owner — the lighting owner's.
-5. The submerged duck is gain/rate/pan; a real low-pass needs a DSP stage in `sound::engine`.
+5. The submerged duck is gain/rate/pan: `sound::engine` has a one-pole low-pass now (`lp_of`, distance only); the
+   `Submerged` snapshot does not use it yet.
 6. `Splash` is the only waterline producer: no stroke, no wake, no interactive deformation.
 
 ## 1 · The native pivot — the one visual gap left of it
 
-1. Cloud form: the deck reads stratus where `ART.md` §4 asks for cumulus (p90 gap 25 luma, measured on the old
-   baked deck — re-measure #176's composed one first); `RENDER.md` §8 ranks it second, behind the gate-asserts item.
+1. Cloud form: billowed cumulus edges landed (#220, `sky.rs` `billow_tiled`); the p90 re-measure on the composed
+   deck against `ART.md` §4 is still owed.
 
 ## 0chr · The clips the wire cannot yet ask for *(client lane)*
 
-1. `interp::RemoteState` lacks the states for `stumpy.glb`'s `Jump_Loop`, `Swim_Fwd_Loop` and crouch pair;
-   crouch moves only the animal brain (`brain.rs`), never the body.
+1. Jump and crouch reach `interp::RemoteState` (`airborne`, wire v83); there is no swim state, so
+   `Swim_Fwd_Loop` is never played.
 2. The gather swing is `Sword_Attack` (operator), blocked on item 1; a remote spear plays it too, and a thrust
    for other players is an asset ask (`Punch_Jab` leads left; `Punch_Cross` was refused).
 4. No render layer, so arms and held item clip into walls; a second camera would duplicate the exposure/tonemap owner.
-5. Head pitch clamps at `ANIM_HEAD_PITCH_MAX` (0.9 rad) and `anim.rs:811` drops the rest: spread it down the spine.
 6. The hand reads large. A grip wants a second baked pose swapped in when `held_model_in_hand` is `Some`,
    never a bigger curl (`ci/curl_hands.py`). Not commissioned (operator, 2026-09-01).
 7. Unlooked-at: `Death01` on a real body, the collapsed off arm, the sleeper tint (`7-player.png`, `ci/scene.sh`).
 
 ## 0hand · Four items still draw the generic stand-in *(client lane)*
 
-1. Metal hatchet/pickaxe/spear: no asset (`assets/models/WANTED.md` §5.6; `content/items.toml` ships two); the
-   stone glb would need a second material for the head.
 2. Fire pit: `assets/models/deploy/fire.glb` bakes a lit emissive that `held_assets.rs::nothing_held_glows` refuses;
    needs an unlit variant or a generated `heldgen` row.
-3. Resources, ammo, bandage, lock: no models (not in `ui::hold::HELD_MODELS`).
+3. Resources, ammo and the lock: no models (not in `ui::hold::HELD_MODELS`); bandage, medkit and food have them.
 4. The item has been parented to the hand with a re-derived grip since 2026-08-30 (`dress_arms`,
    `tests/viewmodel_arms.rs`); nobody has looked at a mid-swing frame to see if the fist still trails the arc.
 
@@ -847,9 +764,7 @@ Remains, in order:
 ## 0ps · Pieces: staged damage, the catalogue, the repeated wall *(client lane)*
 
 1. Damage bands were never staged (one row, hit N times, photographed per band); marks are a plain mesh now, so a capture draws them.
-3. A hundred identical walls (rule 7): `render/structures.rs` wants per-tier variants (offset + tint) by address hash.
-4. Trim (lashings, plank seams, capstone rim) in `shape_parts`; price the entity count at `MAX_PIECES` 8192 first.
-5. Deployables show no damage (no `hurt` term in the deploy material), and nothing shows which face was struck.
+5. Deployables darken and roughen by damage band (`structures.rs::deploy_hurt`); nothing shows which face was struck.
 6. Roughness maps unwired (scalar `perceptual_roughness`); one ORM packing step serves terrain, props and pieces.
 
 ## 0lock · Lock placement reaches doors and boxes *(client lane)*
@@ -858,8 +773,9 @@ Remains, in order:
 
 ## 0fx · What impact fx v1 left *(client lane)*
 
-1. Nobody has seen any of it (`§LOOK` item 0): likely sparks too many, dust too opaque, the whoosh a beat late;
-   nor #179's blood, blast, muzzle flash, tracers and fire.
+1. Seen once on lavapipe (2026-10-09, a hatchet on a wall): chips read as flying cardboard at 4.5 cm and the dust
+   as fog, so `CHIP_SIZE_M` is 3 cm and dust starts at 0.4 alpha. Still unseen: #179's blood, blast, muzzle
+   flash, tracers and fire, and the whoosh's timing.
 2. A deployable's matter is a guess (`struct_point` says `Wood`): `DeployDef` wants a material byte (`CONTENT.md`).
 3. Flesh is heard attacker-side only (§0pvp item 2); no cloud by choice, no mark by design (§0mk).
 4. Sparks and grit bounce once; dust still passes through walls: a collision query, once a person has looked.
@@ -869,13 +785,9 @@ Remains, in order:
 
 1. Nobody has heard it (`ART.md` has no audio section): `cargo run -p client --bin soundbank -- <dir>` writes
    every cue to WAV, or open the web page (`ci/build_web.sh`). Sourcing: `assets/sound/WANTED.md`.
-2. The score is programmer art (`synth::score`); recorded pieces swap in at `synth::render`'s music arm. Two
-   bumps we cannot take: weapon equipped, projectile near-miss.
 3. The device path is ungated: cpal opening, the callback and the real rate need a person booting the game.
 3. `--capture` by hand is the only proof most audio systems run; gate world-free ones the `tests/music.rs` way.
-4. `UiClick` exists only as the mixer's placeholder `Request`; it wants a hook in the per-screen click handlers.
 5. No occlusion: it needs the sim's geometry query (`collide.rs`), not a raycast against render meshes.
-6. Crickets: a night-gated `Cue`, the bird layer with the predicate inverted (`is_day` in `render/audio.rs::bed`).
 
 ## 0x · The native client — the feature trim and the dropped anchors *(client lane)*
 
@@ -883,7 +795,7 @@ Remains, in order:
    `bevy_audio`; keep `bevy_gltf`/`bevy_animation`, x11, wayland, `alsa`. Needs disk headroom and a looked-at
    `--capture`: a missing decoder draws white, so a green compile proves nothing.
 2. World-space anchors are unbuilt (the wall's number at the wall, a clock on the charge mesh); `charge_deploy`
-   is unread and `stock_addr` is read nowhere in `crates/client/src`, so nothing says which hearth. None is blocked.
+   is unread (`stock_addr` is read now: the hearth panel says which hearth).
 
 ## 0z · The Bevy-draws rule's missing gate *(client lane)*
 
@@ -893,19 +805,17 @@ Remains, in order:
 
 ## 0v · Players are people — what the rig still cannot say *(client lane)*
 
-1. Crouch, jump, swim are wired to nothing. Jump: copy `grounded`/`qvy` onto `RemoteState` in `interp::dequant`
-   (no wire work). Swim: no sim fact, only approximately derivable. Crouch: an S→C bit + `PROTO_VER` (the
-   `BINDS` row already says it is a sneak).
-2. Remote bodies hold nothing (`render/bodies.rs`): attach the held mesh to the rig's hand joint, no new art.
-3. Feet slide between the clips' speeds (`_RM` variants unused): scale playback rate to speed, an unmeasured knob.
+1. Swim is wired to nothing: no sim fact, only approximately derivable (jump and crouch are in).
 4. No worn-steel albedo: the axe head has no map (`render/viewmodel.rs`, `assets/textures/MANIFEST.md`).
 
 ## 0p2 · What the UI still owes *(client lane)*
 
 2. Repair's exact price is not on the wire; the hammer names full hp (`findings/building-tools-20260920.md`).
-3. Panel viewer (never a pixel gate): open each panel against a stocked fixture, write PNGs; `--capture` can't.
-4. Font scale: fourteen sizes want a deliberate pass; a five-size cut clipped columns at 720p — not blind.
-4c. Quick-move takes one slot per click; whole-stack scatter and hover-loot need a `take all` verb argued first.
+3. Panel viewer (never a pixel gate): `ci/drive.sh` boots a shard and the game under Xvfb and drives it with
+   xdotool, F12 shots named by the script — panels, the map, night, weather. Not yet against a stocked fixture.
+4. Font scale: the panels were looked at at 720p (2026-10-09) and read; the stray sizes (8, 17, 19) snapped to
+   their neighbours. A full cut to a named scale is optional, and the tech panel's 9 px cells are unlooked.
+4c. TAKE ALL landed (#239); whole-stack scatter and hover-loot are not.
 5. Surveyed and refused: `bevy_hui`, `bevy_lunex`, `bevy_feathers`, the freegameui.net MCP.
 
 ## 0cq · The craft panel beside the reference's — pictures, words, and the closed menu *(client lane)*
@@ -916,8 +826,8 @@ its countdown, padlock, notices over the vitals, colour icons).
 5. CRAFT dims when short; the community plugin paints it green — a palette knob, `DECISIONS.md` §open.
 6b. 8 of 62 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
    painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand items 1 and 3).
-7. Then one `PROTO_VER` turn (the class byte, §0w item 1; a description column), then two sim verbs:
-   fast-track by task id (§1.1/1.4) and the bench rebate (§0tt).
+7. Then one `PROTO_VER` turn (the class byte, §0w item 1; a description column), then fast-track by task id
+   (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
 
 ## 0w · The native menus — the rail and the untested gesture *(client lane)*
 
@@ -932,13 +842,10 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 ## 0pw · Skinned meshes still specialize on arrival *(client lane)*
 
-1. Skinned meshes are a different pipeline key: the first remote player in view still specializes on arrival
-   (a pop). Named in `render/prewarm.rs` lines 52–57.
 2. The pipeline count is unasserted (`PipelineCache::pipelines()` needs a GPU); `tests/prewarm.rs` gates the ECS side.
 
 ## 0pf · The client's CPU frame — four measured leftovers *(client lane)*
 
-1. `ground_slope`'s four taps are ~80% of a tile; the stencil moves every splat byte — a design change + golden.
 2. `water::animate` deep-clones ~677 KiB per frame (`Assets::get_mut`; `examples/frame_cost.rs`): the fix is the
    vertex shader `render/water.rs` §57 names, after a GPU boot.
 3. Under 50 µs together: `verbs::resolve` (use the 3×3 `ColIndex`), the `bodies`/`mobs::stream` slot scans,
@@ -969,10 +876,8 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 ## 0bd · The tree blocks 0.3 m of ceiling nobody draws *(client+sim lane)*
 
-1. `OCCUPANT_TOP_M[Tree] = 5.7` (`terrain.rs:4245`) cites dead `PINE_TRUNK_H` (`render/props.rs:45`), not the
-   drawn tree (`render/tree.rs:127`), and `greybox.rs:210` excuses it. Bound the drawn mesh's height band in
-   `tests/tree.rs` and take the number off it, as for the barrel.
-2. `assets/models/WANTED.md` §2.8 briefs the loot barrel at a retired `0.9 ⌀ × 0.95`; the gate holds 0.585 × 0.88.
+1. `OCCUPANT_TOP_M[Tree]` is 11.0 now (the broadleaf's apex), but nothing bounds the drawn mesh's height band in
+   `tests/tree.rs`, and `render/props.rs`'s comment beside it is stale. Take the number off the mesh, as for the barrel.
 
 ## Numbers, worldgen and the arc *(content + world lanes)*
 
@@ -982,7 +887,6 @@ its countdown, padlock, notices over the vitals, colour icons).
 - Operator rules (2026-08-10): our band yields to their number by default (`BALANCE.md` §6.5); a number absent
   from `RIPLIST.md` is not thereby decided. `reference/RIPLIST.md` §2 is the queue: read it first.
 
-1. Next unblocked: **1g**, the research ladder's per-item ordering (`READY`, page tier); settle §1f's era first.
 2. Blocked, numbers written: **1j** `armor.toml`, re-anchoring `content/tests/content.rs::band_breaks_refused`,
    best inside equipment v0.
 3. No per-material damage resistance: one `structure` column (`content/src/schema.rs:281`) compresses row 2.
@@ -993,18 +897,15 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 Read `reference/MONUMENTS.md` §9 first (§0: the weakest provenance here).
 
-1. Next: quarry and relay kits with distinct terrain needs, then the roster together. Re-derive placement (600 m
+1. Next (eight landmark kits are in, `sim-core/src/landmark.rs`): quarry and relay kits with distinct terrain needs, then the roster together. Re-derive placement (600 m
    separation, 300 m inland search; `INLAND_SITES` alone can't) and rewards as one (caches 4 vs Haven's 5; the
    depot has no loot or guards). Coast-ring continuity is §0rd.
-2. Arrows pass through every deployable: `sim-core/src/ranged.rs` never asks the solid nibbles.
 3. Whether a sleeper blocks is unanswered (§0y item 1) — a design call.
 4. Art rows (`DECISIONS.md` §open): the shelter's posts stand 1.2 m proud of its roof; swept ground reads as shards.
 5. Then §9.4: per-entity interest ranges (nav landed, #178); vertical AOI layers are premature, moving monuments refused.
 
 ## 4b · The world lane: what the second tier left open
 
-1. An authored worldgen deployable: a `DeployRec` no player placed, restart-safe and immune to `pick_up` (owner
-   `0` is reserved, `sim-core/src/world.rs:1611`). Systems lane. Bank and vendor stay blocked on an operator act.
 2. Nothing threatens the walk between sites (guards leash to a `SiteFootprint`). Nav landed with the
    animal brain (#178: A* on a 1 m grid, round walls, trees and cliffs).
 
@@ -1034,17 +935,22 @@ The operator plays the game, so "unseen" only means no answer is recorded: an
 entry whose answer is in `DECISIONS.md` is done — check there first. A look is
 never replaced by a pixel gate.
 
+A lavapipe pass (2026-10-09, `ci/drive.sh`, 1280×720) looked at the map, the
+inventory and crafting pages, night with a torch, a dusk storm and a hatchet on a
+wall. Fixed from it: map names printed over each other, impact chips read as
+cardboard and the dust as fog. The rest read as intended on a software GPU; a
+real GPU is still the operator's.
+
 - Ore node beside a boulder (§0rk): node vs boulder at 10 m unprompted? metal seam glint under the game's light? sulfur crust vs paint? does a hillside node float on its downhill edge (expected at today's 0.5 lift; the proposed 0.3 lift is the fix, `DECISIONS.md` scatter art v1)?
 - Depot, looking down its road (§0rd): does the 25–57 m wander go somewhere or look nudged? gate approach square-on at the apron? far end ever hidden by terrain (the case for more than `SIDE_ROAD_BEND_M = 60`)? No-GPU first look: `cargo run -p client --example map_png`.
 - Smash a barrel (§0wc 2b): a loose sack reads as loot, not debris? findable in grass? smaller than a death bag at 10 m? two stacks told apart by the prompt alone?
 - Open a bag and right-click (§0p2, §0wc, §0eq item 5): the inventory page with a container open is body + pack + container in one row (~950 px at 58 px slots) — does it read, and does it fit at 1280?
 - One tree, then a stand (§0t): needles, not fern fronds? dark inside, lit outside? lit top, shaded underside? too much sky through it (fix: card counts in `tree.rs`)? The broadleaf's 11 cm leaves separately (§0t item 7).
-- Hold G (§0mp): road casing or scratch? 256 grid labels an index or a mesh? 18 px badges blob a base's beds? site names collide? No-GPU island half: `cargo run -p client --example map_png`.
+- Hold G (§0mp): road casing or scratch? 256 grid labels an index or a mesh? 18 px badges blob a base's beds? (Site names no longer collide: `map::clear_labels`.) Your own marks: right click with the map up.
 - Go down (§0wnd, `render/wounded.rs`): the drop to `CRAWL_EYE_M` and roll, vignette, two-number line, a remote body's fallen pose sliding at a crawl; checklist `reference/WOUNDED.md` §9.5.
 - The ground (§0gs; a defect, not taste): new `rock`, macro break-up, the >45° biplanar tap (never compiled here); does litter's 1.3 m repeat read as a lattice (`ART.md` rule 7) or does `MACRO_M` dissolve it?
 - The ranges and the summit slab (§0mtn, §0gs item 3): stand on the shipped seed at `776,1392` (103 m, flat; `./ci/scene.sh --spawn 776,1392`). Does `Rock032` read as rock at your feet and along the summit, and do the ranges read as mountains from the lowland?
 - Worldgen (§0wg; could find a regression): re-shoot the operator's terraced-mountain screenshot — `remap`'s monotone cubic and the detail ladder moved the ground under every prop, tree and clutter tile.
-- Night, torch in hand (§0tl; `ci/scene.sh --hour midnight`): does the 600 lm pool at 0.89 m read as carrying a light, and the torch head as its source?
 - A wall under arrow fire (§5.1): do the mark, hp readout and collapse arrive together and read as a raid?
 - Chop a tree, hit ground and a wall (§0mk): do #179's atlas marks read per material — holes, gashes, dents, scorch?
 - Weather and night (#176): storm, fog, rain, dusk, stars and moon on a real GPU and in a browser, and the rain and thunder beds. Does a roof read as shelter (rain cleared, wind and rain quieter)? `ci/scene.sh --hour … --weather …` pins a frame.
@@ -1079,11 +985,8 @@ never replaced by a pixel gate.
 2. **Operator: keep noon southwest** (`RIG_SUN_AZIMUTH = 2.35`, SE → SW → NW)?
    Moving it retires every judged frame (`DECISIONS.md` §open "sun arc v0").
 
-## 0die · Two calls the operator still owes on the death screen *(operator)*
+## 0die · The calls the operator still owes on the death screen *(operator)*
 
-1. **Operator: should a player pick the bed they wake at?** `ActionMsg::Respawn`
-   carries one bit (`on_bag`) and `World::wake` takes the nearest ready bag; a yes
-   is a bag index on the action plus a `claim_bag` that honours it (wire bump).
 2. `SUB_BAGS` is sent only on death (`server/src/core.rs`), so `ready` ages on the
    screen; re-send on bed placement/removal if that starts to matter.
 3. **Operator:** is five minutes the right floor for a common-only bag now the kit
@@ -1091,8 +994,10 @@ never replaced by a pixel gate.
 
 ## 0mp · The map became a chart — what it still is not *(client lane + operator)*
 
-1. Player-placed markers, the real gap: five each with colour, icon and label,
-   team-shared (`reference/MAP.md` §3); needs a wire message and a cap (`protocol` lane).
+1. Your own marks are in: five, placed and cleared with a right click while the map is
+   held (the mouse aims a crosshair then), the nearest on the compass; client-only and
+   not saved. Left: colour, icon and label, and team-shared marks (`reference/MAP.md`
+   §3), which need a wire message, a cap and a team.
 2. Clock/radius markers (§4): nothing uses one yet; copy `MarkKind::BedSpent`'s
    weight first.
 3. **Operator:** toggleable grid labels? The reference ships them off (§1).
@@ -1273,7 +1178,10 @@ build-kit section), both 2026-08-25; `§0lod`, `§0sw` and `§0tq`, folded into
 `ui/place.rs`, `render/ghost.rs` and `render/structures.rs` still cites its items
 1–3 — the `§0u` here is the frame budgets); `§0wt` (the HTTP/3 layer, struck — its
 warning lives in `§0web`), 2026-09-24; `§0shot` (muzzle flash, tracers and the
-distance low-pass landed in #179; last text `git show 1e046dc:NOW.md`), 2026-09-25.
+distance low-pass landed in #179; last text `git show 1e046dc:NOW.md`), 2026-09-25;
+`§0anim` (the animals move: modelled bodies and legs, bite, howl and run poses),
+`§0dk` (the body's albedo lift, `BODY_ALBEDO_LIFT`) and `§0cards` (every card a
+photograph), 2026-10-09 — last text `git show 3132e62:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
@@ -1281,7 +1189,7 @@ distance low-pass landed in #179; last text `git show 1e046dc:NOW.md`), 2026-09-
 `client/tests/mipmap_retouch.rs`, `client/tests/bank.rs`,
 `client/src/webassets.rs` and `client/src/render/audio.rs`, name work that has
 landed; those numbers now point at other items. `ALPHA.md` cites the wipe as
-"§0q item 2"; it is item 3. Doc comments in `sim-core/{deploy,claim}.rs` cite
+"§0q item 2"; it is item 3, and it landed (#238). Doc comments in `sim-core/{deploy,claim}.rs` cite
 "§0aa item 1" / "items 1–2" under numbering that has since moved.
 
 **Ambiguous** — these resolve to two or three sections:

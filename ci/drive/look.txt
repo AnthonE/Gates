@@ -1,0 +1,50 @@
+# The HUD, the map with two marks, the panels and a lit torch. Joining under
+# lavapipe takes about a minute, hence the first sleep.
+# load
+sleep 75
+moveto 640 360
+click 1
+sleep 3
+shot 01-world
+# the map, two marks
+down g
+sleep 3
+move 140 -90
+sleep 1
+click 3
+sleep 1
+move -260 160
+sleep 1
+click 3
+sleep 2
+shot 02-map-marks
+up g
+sleep 2
+shot 03-compass-mark
+# panels
+key Tab
+sleep 3
+shot 04-inventory
+key Escape
+sleep 1
+key q
+sleep 3
+shot 05-craft
+key Escape
+sleep 1
+key o
+sleep 3
+shot 06-island
+key Escape
+sleep 1
+key Escape
+sleep 2
+shot 07-pause
+key Escape
+sleep 2
+# torch at night needs dev_env; here: hold torch, light it
+key 2
+sleep 1
+click 3
+sleep 3
+shot 08-torch
