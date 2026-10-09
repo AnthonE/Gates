@@ -15,6 +15,14 @@ end). Item numbers are the original ones, gaps included. A pointer to
 `§LOOK` (questions only a person looking at a frame could settle) is closed:
 the operator played through all of it, 2026-10-09.
 
+**Operator playtest, 2026-10-09: "everything works fine", lag included** — a lot
+of play on a real GPU over a real link, on a build from about ten hours before
+this note (before wire v101). Closed on it: the hardware verdict (`§0gfx`), the
+netcode feel (`§0nc` 1), the building playtest (`§0bl` 1, `§0lock`) and the sound
+device booting (`§0x` 3). Still open where a number, not a feel, is owed
+(`§0lc`'s `favour_clamped`, `§0tx`'s BBR vs CUBIC) and where a taste call was
+asked rather than a verdict (`§0fp` 1).
+
 ---
 
 # Buildable now — a loop can pick any of these
@@ -39,11 +47,6 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
   messages a tick; reserving that half on demand makes it cost the traffic;
   `status.json` does not publish `spectators`; a seat does not see the
   target's open container panel (the container stream is per connection).
-
-## 0gfx · Graphics rows and render scale are built *(client lane)*
-
-- No hardware performance or appearance verdict yet: render scale, SMAA and bloom
-  had only software-GPU smoke checks (`findings/render-scale-20260919.md`).
 
 ## 0wnd · Down, hand revive and medkit recovery are built *(sim+client lane)*
 
@@ -128,8 +131,6 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0nc · Netcode v2 landed — what the overhaul still owes *(client+server lane)*
 
-1. Feel it at the bar: `netsim = "30,10,1"` on a dev shard with two humans — the
-   stop test and the strafing-bro test. Every gate ran at zero RTT; operator's eyes.
 3. The event lane is not shimmed (`DECISIONS.md` §open netsim row has the skew), and
    under netsim the stream lane leads its snapshots by lat_ms.
 4. `RESYNC_AHEAD_TICKS = 3` is still a blind guess; it only matters for the first
@@ -366,10 +367,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 - The give-backs announce what they dropped (`World::announce_spill`), but name the
   item only, not the amount; one wire field buys it (operator; `DECISIONS.md` §open).
 
-## 0bl · Building catalogue and remaining playtest *(client+sim lane)*
+## 0bl · Building catalogue *(client+sim lane)*
 
-1. Human playtest: snapping, corner posts/aprons, soft-face readability, walking a
-   furnished base (`findings/building-circulation-20260921.md`).
 2. Perf option: memo `col_base_y`'s terrain sampling (volley 1.25 → 3.07 ms/tick).
 3. Diagonal-wall UV stretch: the √2 root scale stretches the slab texture (`ART.md`).
 4. Operator calls (`DECISIONS.md` §open "piece flanks v0"; `reference/BUILDING.md`
@@ -552,8 +551,8 @@ act):
    errored, 0 dropped ticks, 403 pieces / 360 deploys, top storey 2, 96 charges. The
    anomaly log's one fault (every killing blow counted an encode error) is fixed;
    `ci/anomaly_verdict.py` reads PASS after. Left from it: **16 structures fell to 96
-   charges and `struct hits` read 0** — every charge that reached a piece killed it
-   outright, so no raid ever shows progress; and each shift leaves 8 sleepers (24 at
+   charges and `struct hits` read 0** — the raiders' charges miss most of the time,
+   and the ones that land kill twig outright; and each shift leaves 8 sleepers (24 at
    20 min, no `save_file`), so a long run walks into `sleepers_evicted`.
 2. Can an inhabitant afford its raid rows? Its kit is a bat and a torch
    (`content/balance.toml`); `bot_smoke.rs` grants the satchel. Judge -18 §B.2.
@@ -668,10 +667,6 @@ act):
 5. Deployables darken and roughen by damage band (`structures.rs::deploy_hurt`); nothing shows which face was struck.
 6. Props and pieces still take a scalar `perceptual_roughness` (terrain and the depot's surfaces read maps).
 
-## 0lock · Lock placement reaches doors and boxes *(client lane)*
-
-- Check the door-edge and box-plane lock targets together in the building playtest.
-
 ## 0fx · What impact fx v1 left *(client lane)*
 
 2. A deployable's matter is a guess (`surface::arch_matter`: by archetype, a door by hp, else `Wood`): `DeployDef` wants a material byte (`CONTENT.md`).
@@ -681,7 +676,6 @@ act):
 
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
-3. The device path is ungated: cpal opening, the callback and the real rate need a person booting the game.
 3. `--capture` by hand is the only proof most audio systems run; gate world-free ones the `tests/music.rs` way.
 5. No occlusion: it needs the sim's geometry query (`collide.rs`), not a raycast against render meshes.
 
@@ -1026,7 +1020,9 @@ locks: the registry and `reference/DOORS.md` now say the key lock is built), 202
 — last text `git show 78bcc36:NOW.md`; `§5b` (craft and deploy refusals are
 `DOMAINS` rows, refused past `REFUSE_CR_MAX`/`REFUSE_D_MAX` at both ends) and the
 domain gate's `§4b` (protocol's scrape already reads the whole crate), 2026-10-09 —
-last text `git show 7d45e53:NOW.md`.
+last text `git show 7d45e53:NOW.md`. `§0gfx` (the hardware verdict) and `§0lock` (lock
+targets in the building playtest), closed by the operator's playtest 2026-10-09 —
+last text `git show 0edb5f1:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
