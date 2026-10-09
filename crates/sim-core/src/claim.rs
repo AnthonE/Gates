@@ -310,7 +310,7 @@ fn tbl_home(key: u32) -> usize {
 /// The upkeep sweep asks "which hearths cover this point" for every due
 /// entry, every tick. The walk above is priced for a keypress; per tick it
 /// is not affordable, and that is the whole reason this cache exists
-/// (`NOW.md` §0aa items 1–2 were one item wearing two numbers). What is
+/// (old `NOW.md` §0aa items 1–2, `git show 9a069f4:NOW.md`, were one item wearing two numbers). What is
 /// cached per hearth is its **connected component** of built cells — the
 /// cells [`reach`] would flood through — and a query is then "is the point
 /// within [`PRIV_CUSHION_M`] of any cached cell", which is exactly the

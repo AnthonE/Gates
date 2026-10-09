@@ -501,7 +501,12 @@ const SUB_ALPHABET: u32 = 88;
 /// poncho on the body. Ids only, never `count` or `cond`. Sent to everyone
 /// when it changes and in full to a joiner, one per tick (`SUB_TAG`'s drip).
 const SUB_WORN: u32 = 89;
-const SUB_MAX: u32 = SUB_WORN;
+/// A planter's beds as they are drawn (wire v100, crops v1): the address
+/// and two bits a bed (`sim_core::oven::planter_stages`). Broadcast on a
+/// change, `SUB_OVEN`'s posture; a joiner reads the same byte off the
+/// deploy record.
+const SUB_PLANTER: u32 = 90;
+const SUB_MAX: u32 = SUB_PLANTER;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1436,6 +1441,15 @@ pub enum EventMsg {
         loc: u8,
         lit: bool,
         by: u32,
+    },
+    /// The planter at the address now draws these beds (broadcast, wire
+    /// v100): two bits a bed, absolute, for `Oven`'s reason.
+    Planter {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        stages: u8,
     },
     /// A round left `shooter`'s weapon, aimed at (`yaw`, `pitch`)
     /// (broadcast).
@@ -2591,6 +2605,8 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.ox as u8 as u32, 8)?;
     w.write(rec.pose.oz as u8 as u32, 8)?;
     w.write(rec.pose.yaw as u32, 8)?;
+    // A planter's beds (v100); zero for everything else.
+    w.write(rec.grow as u32, 8)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -2620,6 +2636,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             oz: r.read(8)? as u8 as i8,
             yaw: r.read(8)? as u8,
         },
+        grow: r.read(8)? as u8,
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -2909,6 +2926,32 @@ pub fn encode_event_auth(
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
     w.write(grant as u32, LOCK_GRANT_BITS)?;
+    Ok(w.finish())
+}
+
+/// The planter at the address now draws `stages` (broadcast) — see
+/// `EventMsg::Planter`.
+pub fn encode_event_planter(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    stages: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= MAX_BUILD_COORD
+        || cz as usize >= MAX_BUILD_COORD
+        || level as usize >= MAX_BUILD_SOCKETS
+        || loc > loc_max(true)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_PLANTER)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    w.write(stages as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -5440,6 +5483,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 kind: kind as u8,
             }
         }
+        SUB_PLANTER => EventMsg::Planter {
+            cx: r.read(BUILD_CELL_BITS)? as u16,
+            cz: r.read(BUILD_CELL_BITS)? as u16,
+            level: r.read(BUILD_LEVEL_BITS)? as u8,
+            loc: r.read(BUILD_LOC_BITS)? as u8,
+            stages: r.read(8)? as u8,
+        },
         SUB_OVEN => EventMsg::Oven {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,

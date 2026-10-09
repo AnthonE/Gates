@@ -380,6 +380,9 @@ pub fn hash(c: &Content) -> u64 {
     h.u(c.fuel.seconds);
     h.s(&c.fuel.byproduct);
     h.u(c.fuel.byproduct_pct);
+    h.s(&c.planter.item);
+    h.s(&c.planter.emptied);
+    h.u(c.planter.seconds);
     h.u(c.cooks.len() as u32);
     let mut cooks: Vec<&Cook> = c.cooks.iter().collect();
     cooks.sort_by_key(|k| format!("{}\u{0}{}", k.station as u32, k.input));

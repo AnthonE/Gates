@@ -61,7 +61,7 @@ use sim_core::world::{
     EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_WORK};
+use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK};
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
 ///
@@ -492,6 +492,41 @@ impl ShardCore {
     }
 
     /// Say a server line to one connected slot, or to all of them.
+    /// `/brain`'s answer for the player `who`: the nearest living animal to
+    /// their body (`admin::brain_line`), or why there is none.
+    fn brain_answer(&self, who: u32) -> String {
+        let w = &self.world;
+        let Some(me) = w.players.iter().find(|p| p.active && p.id == who) else {
+            return "no body to measure from".to_string();
+        };
+        let (mx, mz) = (
+            me.body.qx as f32 * sim_core::movement::POS_XZ_Q,
+            me.body.qz as f32 * sim_core::movement::POS_XZ_Q,
+        );
+        let mut best: Option<(usize, f32)> = None;
+        for (slot, m) in w.mobs.m.iter().enumerate() {
+            if !m.alive {
+                continue;
+            }
+            let dx = m.body.qx as f32 * sim_core::movement::POS_XZ_Q - mx;
+            let dz = m.body.qz as f32 * sim_core::movement::POS_XZ_Q - mz;
+            let d2 = dx * dx + dz * dz;
+            if best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((slot, d2));
+            }
+        }
+        let Some((slot, d2)) = best else {
+            return "no animal alive".to_string();
+        };
+        let m = &w.mobs.m[slot];
+        let target = w
+            .players
+            .get(m.target as usize)
+            .filter(|p| p.active)
+            .map(|p| p.id);
+        crate::admin::brain_line(slot, m, target, d2.sqrt(), w.tick)
+    }
+
     fn say_server(
         &mut self,
         to: Option<usize>,
@@ -2028,6 +2063,29 @@ impl ShardCore {
             AdminCmd::SaveNow => {
                 *ops.save_now = true;
             }
+            AdminCmd::Brain => {
+                let mut line = self.brain_answer(who);
+                line.truncate(protocol::ChatText::CAP);
+                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
+                    let line = admin::server_line(&text);
+                    self.say_server(Some(from_slot), &line, stats, send);
+                }
+            }
+            AdminCmd::Who => {
+                let mut line = String::new();
+                let mut n = 0;
+                for c in self.clients.iter().filter(|c| c.connected) {
+                    n += 1;
+                    line.push(' ');
+                    line.push_str(&c.id.to_string());
+                }
+                let mut line = format!("{n} on:{line}");
+                line.truncate(protocol::ChatText::CAP);
+                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
+                    let line = admin::server_line(&text);
+                    self.say_server(Some(from_slot), &line, stats, send);
+                }
+            }
             // Handled above, before the allowlist.
             AdminCmd::Bug { .. } | AdminCmd::WipeWhen => return,
         }
@@ -3139,6 +3197,38 @@ impl ShardCore {
                     let loc = (ev.b >> 8) as u8;
                     let lit = ev.b & 1 != 0;
                     match encode_event_oven(cx, cz, level, loc, lit, ev.c, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_GROW => {
+                    // A planter's beds (crops v1): broadcast, `EV_OVEN`'s
+                    // posture. A client that misses one reads the byte off
+                    // the deploy walk on its resync.
+                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+                    let level = (ev.b >> 16) as u8;
+                    let loc = (ev.b >> 8) as u8;
+                    let stages = ev.b as u8;
+                    match protocol::encode_event_planter(
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        stages,
+                        &mut self.ev_buf,
+                    ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -4633,6 +4723,16 @@ impl ShardCore {
             for (dst, src) in wire.iter_mut().zip(&deploys[at..][..n]) {
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
+                // A planter's beds (crops v1), off the oven row's mirror.
+                dst.grow = self
+                    .world
+                    .deploys
+                    .oven_index(sim_core::deploy::box_key(
+                        src.cx, src.cz, src.level, src.loc,
+                    ))
+                    .map(|i| self.world.deploys.oven_states()[i])
+                    .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
+                    .map_or(0, |o| o.bank as u8);
             }
             let batch = &wire[..n];
             match encode_event_deploy_sync(c.deploy_sync_reset, batch, &mut self.ev_buf) {

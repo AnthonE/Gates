@@ -206,6 +206,46 @@ fn a_young_tree_pays_and_falls_at_its_own_size() {
     assert_eq!(chop(&mut w, aim), (hits, hits * tree.hand_yield as u32));
 }
 
+/// A felled tree's stump is a second harvest (`NOW.md` §0stump): the tree's
+/// tool grubs it out for the stump row's wood, then it pays nothing, and
+/// none of it moves the sapling's timer.
+#[test]
+fn a_stump_pays_once_and_leaves_the_sapling_alone() {
+    let (slot, pos, aim) = lone_tree();
+    let (cx, cz) = cell(&slot);
+    let mut w = world_at(pos);
+    chop(&mut w, aim);
+    let due = w.slot_lives.find(cx, cz).expect("felled").respawn_at;
+    let stump = w.gather.nodes[sim_core::gather::STUMP_NODE];
+    let (tool, per) = stump.tools[0];
+    w.players[0].inv[0] = sim_core::gather::ItemStack {
+        item: tool,
+        count: 1,
+        cond: w.gather.cond_max_of(tool),
+        skin: 0,
+    };
+    let (mut swings, mut paid) = (0, 0);
+    for seq in 0..SWING_INTERVAL_TICKS * 12 {
+        w.tick(&[input(aim, 1_000 + seq, BTN_PRIMARY)]);
+        for e in w.events.entries() {
+            assert_ne!(e.code, EV_SLOT_HARVESTED, "a stump is not a second fell");
+            if e.code == EV_GATHER && e.b >> 16 == stump.output as u32 {
+                swings += 1;
+                paid += e.b & 0xFFFF;
+            }
+        }
+    }
+    assert_eq!(
+        swings, stump.hits as u32,
+        "the stump takes its own row's hits"
+    );
+    assert_eq!(paid, (stump.hits * per) as u32);
+    let life = w.slot_lives.find(cx, cz).expect("still felled");
+    assert_eq!(life.hits, sim_core::gather::STUMP_GRUBBED);
+    assert_eq!(life.respawn_at, due, "grubbing the stump moved the sapling");
+    sprout(&mut w, cx, cz);
+}
+
 /// One sapling at `pm`, everything else untouched.
 struct OneSapling {
     at: (u16, u16),

@@ -48,9 +48,9 @@
 //! they came from is the server's business.
 
 use crate::craft::CraftJob;
-use crate::gather::ItemStack;
+use crate::gather::{ItemStack, NO_ITEM};
 use crate::limits::{
-    CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, WEAR_SLOTS,
+    CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_MAGS, MAX_RECIPES, WEAR_SLOTS,
 };
 use crate::movement::{self, Body};
 use crate::terrain::ISLAND_SIZE;
@@ -72,9 +72,11 @@ use crate::world::Player;
 /// logging out a way to dodge the roll. A slot is **8 bytes and a craft job
 /// 6 since `SAVE_FORMAT` 7** (skins v0): each carries the skin it wears or
 /// will be minted in, 289 → 361. A skinned rifle you log off holding is the
-/// skinned rifle you log in holding.
+/// skinned rifle you log in holding. The magazine closes the record since
+/// `SAVE_FORMAT` 9 (reload v1): `MAX_MAGS` pairs of `u16`, 369 → 401. A
+/// loaded revolver you log off holding is a loaded revolver you log in holding.
 pub const PLAYER_SAVE_BYTES: usize =
-    SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8;
+    SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8 + MAX_MAGS * 4;
 
 /// The fixed head of the record: body, meters, heal, counters, the
 /// blueprint mask, the torch's remainder, and the crawl with its two
@@ -264,6 +266,15 @@ pub struct PlayerSave {
     /// where it left it, which is the honest answer: nobody was holding
     /// it up while the session was closed.
     pub light_acc: u32,
+    /// The magazine, keyed by weapon row (`Player::mag`, `Player::mag_round`;
+    /// store format 9). Without it a reconnect off the store found the
+    /// cylinder empty and the rounds gone — the pack was debited at the
+    /// reload. On disk the round is written `+ 1`, so an empty magazine
+    /// (`NO_ITEM`) is zero bytes and an unwritten record still decodes to
+    /// [`PlayerSave::EMPTY`]. Unvalidated beyond the widths, for the world
+    /// save's reason (`worldsave.rs`, format 12).
+    pub mag: [u16; MAX_MAGS],
+    pub mag_round: [u16; MAX_MAGS],
 }
 
 impl Default for PlayerSave {
@@ -322,6 +333,8 @@ impl PlayerSave {
         light_acc: 0,
         known: 0,
         glyphs: 0,
+        mag: [0; MAX_MAGS],
+        mag_round: [NO_ITEM; MAX_MAGS],
     };
 
     /// The record for a player as they stand. A pure read — the server
@@ -353,6 +366,8 @@ impl PlayerSave {
             heal_span: p.heal_span,
             heal_acc: p.heal_acc,
             light_acc: p.light_acc,
+            mag: p.mag,
+            mag_round: p.mag_round,
         }
     }
 
@@ -397,6 +412,11 @@ impl PlayerSave {
             out[at + 4..at + 6].copy_from_slice(&s.cond.to_le_bytes());
             out[at + 6..at + 8].copy_from_slice(&s.skin.to_le_bytes());
             at += 8;
+        }
+        for (loaded, round) in self.mag.iter().zip(self.mag_round.iter()) {
+            out[at..at + 2].copy_from_slice(&loaded.to_le_bytes());
+            out[at + 2..at + 4].copy_from_slice(&round.wrapping_add(1).to_le_bytes());
+            at += 4;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
     }
@@ -500,9 +520,18 @@ impl PlayerSave {
             }
             at += 8;
         }
+        let mut mag = [0u16; MAX_MAGS];
+        let mut mag_round = [NO_ITEM; MAX_MAGS];
+        for (loaded, round) in mag.iter_mut().zip(mag_round.iter_mut()) {
+            *loaded = u16_at(at);
+            *round = u16_at(at + 2).wrapping_sub(1);
+            at += 4;
+        }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
 
         Ok(Self {
+            mag,
+            mag_round,
             body,
             dead,
             inv,
@@ -587,7 +616,15 @@ mod tests {
             // transposition with `food_acc`, `hurt_acc` or `heal_acc`
             // reads as a wrong value rather than a coincidence.
             light_acc: 123_456,
+            // One loaded magazine and one empty that still names its last
+            // round (the sim leaves it set), so both halves of the `+ 1`
+            // encoding are pinned.
+            mag: [0; MAX_MAGS],
+            mag_round: [NO_ITEM; MAX_MAGS],
         };
+        s.mag[2] = 6;
+        s.mag_round[2] = 0x2122;
+        s.mag_round[5] = 0x3132;
         s.jobs[0] = CraftJob {
             recipe: 2,
             remaining: 5,
@@ -659,9 +696,11 @@ mod tests {
     /// 272 → 289 at `SAVE_FORMAT` 6: the crawl and its two clocks (wounded v0).
     /// 289 → 361 at `SAVE_FORMAT` 7: a skin on every slot and job (skins v0).
     /// 361 → 369 at `SAVE_FORMAT` 8: the glyph mask (`lore.rs`).
+    /// 369 → 401 at `SAVE_FORMAT` 9: the magazine (reload v1).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 369, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 401, "the on-disk record size moved");
+        assert_eq!(MAX_MAGS, 8);
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
         assert_eq!(WEAR_SLOTS, 2);
@@ -775,7 +814,26 @@ mod tests {
         assert_eq!(
             &buf[367..369],
             &0x0E0Fu16.to_le_bytes(),
-            "worn[1].skin at 367 — and 361 is the whole record"
+            "worn[1].skin at 367"
+        );
+        // The magazine closes the record (format 9): pairs from 369, the
+        // round written `+ 1` so an empty one is zero bytes.
+        assert_eq!(&buf[369..373], &[0, 0, 0, 0], "mag[0] empty at 369");
+        assert_eq!(&buf[377..379], &6u16.to_le_bytes(), "mag[2] at 377");
+        assert_eq!(
+            &buf[379..381],
+            &0x2123u16.to_le_bytes(),
+            "mag_round[2] + 1 at 379"
+        );
+        assert_eq!(
+            &buf[391..393],
+            &0x3133u16.to_le_bytes(),
+            "mag_round[5] + 1 at 391"
+        );
+        assert_eq!(
+            &buf[397..401],
+            &[0, 0, 0, 0],
+            "mag[7] closes the record at 401"
         );
     }
 

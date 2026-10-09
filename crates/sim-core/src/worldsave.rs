@@ -72,7 +72,7 @@ use crate::backpack::BackpackRec;
 use crate::build::PieceRec;
 use crate::charge::ChargeRec;
 use crate::deploy::{BoxRec, DeployRec, HearthRec};
-use crate::gather::{ItemStack, SlotLife, NO_ITEM};
+use crate::gather::{ItemStack, SlotLife};
 use crate::grounditem::GroundItemRec;
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
@@ -80,7 +80,7 @@ use crate::limits::MAX_FIRES;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
     MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_GROUND_ITEMS,
-    MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
+    MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
     MAX_SPENT_ARROWS, MAX_WORLD_CONTS, SKIN_WORDS,
 };
 use crate::lock::{LockRec, CODE_KEY, CODE_MAX, CODE_NONE};
@@ -214,7 +214,10 @@ use crate::worldcont::WorldContRec;
 /// **22 — speakers, stones and locks** (`lore.rs`, `mech.rs`): the world's
 /// salt and every mechanism's dials after the works, and each body's glyph
 /// mask in its `PlayerSave` (+8).
-pub const WORLD_SAVE_FORMAT: u16 = 22;
+/// **23 — the magazine moves into `PlayerSave`** (store format 9): the same
+/// 32 bytes per body, now inside the player's record rather than the tail,
+/// so a body's stride is unchanged and its order is not.
+pub const WORLD_SAVE_FORMAT: u16 = 23;
 
 /// The head's arc block: the salt, then every mechanism slot.
 pub const ARC_SAVE_BYTES: usize = 8 + crate::limits::MAX_MECHS * crate::mech::MECH_BYTES;
@@ -269,10 +272,9 @@ pub const SECTION_COUNTS: usize = 12 * 2 + 4;
 /// the round-trip test in `tests/worldsave.rs` is what caught it.
 ///
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
-/// **the magazine** (format 12: `MAX_MAGS` pairs of `u16`, the loaded count
-/// and the round in it), the weak-spot pair, the four death-screen facts,
-/// and `craft_done_at`.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + MAX_MAGS * 4 + 6 + 9 + 8 + 8 + SKIN_WORDS * 8;
+/// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
+/// The magazine rode here from format 12 to 22; it is `PlayerSave`'s now.
+const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + SKIN_WORDS * 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -632,15 +634,6 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(0); // move_z
         o.u8(p.frame.sel);
         o.u64(p.next_swing);
-        // The magazine (format 12). Written because `state_hash` folds it:
-        // a snapshot that dropped it would restore a world that hashes
-        // differently from the one that was saved, which is wall 5 failing
-        // on a field nobody could see. Both arrays, in slot order, because
-        // "six loaded" is not a fact until you say six of what.
-        for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
-            o.u16(*loaded);
-            o.u16(*round);
-        }
         o.u32(p.ws_cell);
         o.u16(p.ws_hits);
         o.u32(p.death_by);
@@ -1066,21 +1059,6 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let move_z = r.u8()? as i8;
         let sel = r.u8()?;
         let next_swing = r.u64()?;
-        // The magazine (format 12), in the order it was written. Not
-        // bounds-checked here beyond the widths: `mag` is a count the sim
-        // clamps against `RangedDef::magazine` on the next reload and a
-        // forged one can only overstate a cylinder the shooter already
-        // holds, and `mag_round` names an item index that `ranged::hitscan`
-        // spends without lookup — a forged one fires a round the pack was
-        // never debited for, which is the same theft as a forged `inv`
-        // stack and is refused by the same thing that refuses that: a save
-        // file is not a client (`ItemStack`'s bound is the model).
-        let mut mag = [0u16; MAX_MAGS];
-        let mut mag_round = [NO_ITEM; MAX_MAGS];
-        for (loaded, round) in mag.iter_mut().zip(mag_round.iter_mut()) {
-            *loaded = r.u16()?;
-            *round = r.u16()?;
-        }
         let ws_cell = r.u32()?;
         let ws_hits = r.u16()?;
         let death_by = r.u32()?;
@@ -1122,8 +1100,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 sel,
             },
             next_swing,
-            mag,
-            mag_round,
+            // Unvalidated beyond the widths, `PlayerSave`'s reason: a save
+            // file is not a client.
+            mag: save.mag,
+            mag_round: save.mag_round,
             ws_cell,
             ws_hits,
             death_by,
@@ -1320,6 +1300,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             locked: false,
             // Not saved — see the piece load above.
             dmg: 0,
+            grow: 0,
         };
         bag_ready[i] = ready;
     }
@@ -1920,7 +1901,8 @@ mod tests {
         // `state_hash` folds it — a snapshot that dropped it would restore
         // a world that hashes differently from the one it was written from.
         // 92 → 124 at format 16: the owned skin set, `SKIN_WORDS` words.
-        assert_eq!(PLAYER_TAIL_BYTES, 124);
+        // 124 → 92 at format 23: the magazine moved into `PlayerSave`.
+        assert_eq!(PLAYER_TAIL_BYTES, 92);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
@@ -1929,7 +1911,8 @@ mod tests {
         // chill and the cold's remainder in the tail (weather v0). 381 →
         // 485 at format 16 (skins v0): eight-byte stacks and six-byte jobs
         // in `PlayerSave` (+72) and the owned set in the tail (+32).
-        // 485 → 493 at format 22: the glyph mask in `PlayerSave`.
+        // 485 → 493 at format 22: the glyph mask in `PlayerSave`. 493 at
+        // format 23 too: the magazine's 32 B moved from the tail into it.
         assert_eq!(
             PLAYER_BYTES, 493,
             "a body is PlayerSave plus every other hashed field"

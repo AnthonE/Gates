@@ -1060,7 +1060,8 @@ fn a_swing_the_node_pays_nothing_for_is_refused_and_costs_the_node_nothing() {
         seq = seq.wrapping_add(1);
         for e in w.events.entries() {
             match e.code {
-                EV_GATHER => paid += e.b & 0xFFFF,
+                // Up to the fell: the swings after it grub the stump.
+                EV_GATHER if harvested == 0 => paid += e.b & 0xFFFF,
                 EV_SLOT_HARVESTED => harvested += 1,
                 _ => {}
             }

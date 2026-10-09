@@ -339,3 +339,20 @@ jobs:
         run: cargo check -p server --bin shard --target ${{ matrix.target }}
       - name: the client
         run: cargo check -p client --features render --bin gates --target ${{ matrix.target }}
+
+  # Has scry-forge moved under the vendored elo SDK? `VENDORED_SHA256` only
+  # catches a local edit; this compares against the hash upstream publishes
+  # (NOW.md §7 item 2). Its own job so a drift never skips the builds above.
+  # Needs the `SCRY_FORGE_TOKEN` secret: a token that can read
+  # AnthonE/scry-forge (the default GITHUB_TOKEN cannot reach another repo).
+  elo-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: the vendored SDK against scry-forge's sdk/SHA256SUMS
+        env:
+          SCRY_FORGE_TOKEN: ${{ secrets.SCRY_FORGE_TOKEN }}
+        run: ./ci/elo_drift.sh

@@ -867,7 +867,13 @@ pub const EV_ARC_DID: u8 = 57;
 /// **Broadcast**: a lock opening is heard across the island.
 pub const EV_MECH_SOLVED: u8 = 58;
 
-pub const EV_MAX: u8 = EV_MECH_SOLVED;
+/// EV_GROW: a = build cell key, b = level << 16 | loc << 8 | stages, c = 0.
+/// A planter's beds changed how they are drawn (crops v1): two bits a bed,
+/// `oven::planter_stages`. **Broadcast**, `EV_OVEN`'s posture: a crop in a
+/// planter is visible from outside the base it is in.
+pub const EV_GROW: u8 = 59;
+
+pub const EV_MAX: u8 = EV_GROW;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -4065,17 +4071,12 @@ impl World {
                     assist_ticks: 0,
                     frame: InputFrame::default(),
                     next_swing: 0,
-                    // Not from the save, and for `next_swing`'s reason one
-                    // line up rather than a new one: `PlayerSave` is the
-                    // store's record of a body that has LEFT the world, and
-                    // reload v1 did not widen it. A player who reconnects
-                    // to a sleeper still standing in the world keeps their
-                    // rounds — that body was never serialized through here
-                    // — and one whose record came back off disk finds the
-                    // cylinder empty and presses reload. Stated rather than
-                    // silent; `NOW.md` §0mag carries the remainder.
-                    mag: [0; MAX_MAGS],
-                    mag_round: [NO_ITEM; MAX_MAGS],
+                    // From the save (store format 9): the rounds were
+                    // debited from the pack at the reload, so a record
+                    // that forgot them would make logging off a way to
+                    // lose a loaded cylinder.
+                    mag: s.mag,
+                    mag_round: s.mag_round,
                     // Dry and warm: the store's record is a body that left
                     // the world, and it comes back the way a body wakes.
                     wet: 0,
@@ -6605,6 +6606,19 @@ impl World {
         // sweeps that can remove the thing it is stepping — an oven that
         // decays this tick has already spent its period, which is the
         // ordering a raid and a decay have to agree on.
+        // A planter grows by day under open sky (crops v1): the shelter
+        // question a body asks of the rain, asked at the planter's feet.
+        let night = is_night(tick);
+        let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let sunlit = |b: &crate::deploy::BoxRec| {
+            if night {
+                return false;
+            }
+            let (x, z) = b.xz();
+            let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
+                + crate::build::level_y(b.level);
+            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, feet)
+        };
         crate::oven::sweep(
             &self.cook,
             &self.gather,
@@ -6615,6 +6629,7 @@ impl World {
                 self.works.unlocks,
                 crate::works::KNOB_SMELT_PCT,
             ),
+            &sunlit,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point

@@ -80,6 +80,7 @@ pub fn container_index(name: &str) -> Option<usize> {
 /// Gatherable index (`sim_core::gather::node_index`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
     let o = match a {
+        NodeArchetype::Stump => return sim_core::gather::STUMP_NODE,
         NodeArchetype::Tree => sim_core::terrain::Occupant::Tree,
         NodeArchetype::StoneNode => sim_core::terrain::Occupant::StoneNode,
         NodeArchetype::MetalNode => sim_core::terrain::Occupant::MetalNode,
@@ -1366,6 +1367,23 @@ impl Content {
             };
         }
         cc.row_count = self.cooks.len() as u16;
+        let w = &self.planter;
+        cc.water_full = self
+            .item_index(&w.item)
+            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.item))?;
+        cc.water_empty = self
+            .item_index(&w.emptied)
+            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.emptied))?;
+        cc.water_ticks = w
+            .seconds
+            .checked_mul(TICK_HZ)
+            .and_then(|t| u16::try_from(t).ok())
+            .ok_or_else(|| {
+                format!(
+                    "bake: planter water {} s does not fit a u16 of ticks",
+                    w.seconds
+                )
+            })?;
         Ok(cc)
     }
 

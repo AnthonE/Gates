@@ -286,7 +286,14 @@ pub struct OccupantHit {
     pub slot: Slot,
     /// Segment fraction where the ray enters the occupant's swing volume.
     pub t: f32,
+    /// The ray struck a felled tree's stump, not a standing occupant.
+    pub stump: bool,
 }
+
+/// How tall a felled tree's stump stands for a swing, metres at the tree's
+/// scale: the drawn stump (`render/props.rs` `STUMP_LIFT_M`, its mesh
+/// centred 0.17 m up) plus a hand of forgiveness, as the swing volumes give.
+pub const STUMP_TOP_M: f32 = 0.5;
 
 /// A swingable occupant the ray entered: an [`OccupantHit`] with the row
 /// `gather::land` pays out of.
@@ -408,7 +415,11 @@ pub fn node_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<NodeHit> {
         slot: hit.slot,
         // `Some` by the predicate above; the fallback is unreachable and
         // says so rather than unwrapping on the hot path.
-        ni: gather::target_index(hit.slot.occupant).unwrap_or(0),
+        ni: if hit.stump {
+            gather::STUMP_NODE
+        } else {
+            gather::target_index(hit.slot.occupant).unwrap_or(0)
+        },
         t: hit.t,
     })
 }
@@ -420,7 +431,9 @@ pub fn node_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<NodeHit> {
 /// prompt and the server's agent both ask this, so they agree on which plant.
 pub fn pick_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {
     occupant_cast(seed, occ, ray, |o| o != Occupant::None).filter(|h| {
-        gather::pickable(h.slot.occupant) && occ.harvested.standing_pm(h.cx, h.cz) == 1000
+        !h.stump
+            && gather::pickable(h.slot.occupant)
+            && occ.harvested.standing_pm(h.cx, h.cz) == 1000
     })
 }
 
@@ -486,7 +499,29 @@ pub fn occupant_cast(
             }
             // A sapling is struck at its own size (tree growth v0): the
             // full-size cylinder above is the cheap outer test.
+            let mut stump = false;
             let (slot, t_in) = match occ.harvested.standing_pm(cx as u16, cz as u16) {
+                // A felled tree's stump is struck at its own height: the
+                // trunk's radius, cut off at `STUMP_TOP_M`.
+                0 if slot.occupant == Occupant::Tree
+                    && occ.harvested.stump_standing(cx as u16, cz as u16) =>
+                {
+                    let Some((t, _)) = cylinder_span(
+                        o,
+                        u,
+                        (slot.x, slot.z),
+                        r * slot.scale + MELEE_PROBE_M,
+                        slot.y,
+                        slot.y + STUMP_TOP_M * slot.scale,
+                    ) else {
+                        continue;
+                    };
+                    if best.is_some_and(|b| t >= b.t) {
+                        continue;
+                    }
+                    stump = true;
+                    (slot, t)
+                }
                 0 => continue,
                 1000 => (slot, t_in),
                 pm => {
@@ -512,6 +547,7 @@ pub fn occupant_cast(
                 cz: cz as u16,
                 slot,
                 t: t_in,
+                stump,
             });
         }
         dz += 1;

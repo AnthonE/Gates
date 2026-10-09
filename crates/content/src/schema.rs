@@ -90,6 +90,9 @@ pub enum NodeArchetype {
     MetalPile,
     SulfurPile,
     MushroomPatch,
+    /// A felled tree's stump (`sim_core::gather::STUMP_NODE`): no occupant of
+    /// its own, the tree slot's second harvest.
+    Stump,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its
@@ -570,6 +573,17 @@ pub struct Fuel {
     /// at 100. An integer rather than a roll so the fire's yield is in
     /// `state_hash` without an RNG draw in the tick.
     pub byproduct_pct: u32,
+}
+
+/// What waters a planter (crops v1, `sim_core::oven::CookContent::water_full`):
+/// a full `item` in the water slot is left there as `emptied` and buys
+/// `seconds` of growth for every bed.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanterWater {
+    pub item: String,
+    pub emptied: String,
+    pub seconds: u32,
 }
 
 /// Which container runs a cook row. The archetype names of

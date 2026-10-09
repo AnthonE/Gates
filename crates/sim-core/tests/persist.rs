@@ -121,6 +121,27 @@ fn a_saved_character_comes_back_as_themselves() {
     assert_eq!(p.food_acc, 12_345, "a zeroed accumulator is free food");
 }
 
+/// A loaded cylinder survives a log-off (`NOW.md` §0mag item 1, store
+/// format 9). The rounds were debited from the pack at the reload, so a
+/// restore that came back empty would make closing the game cost a reload.
+#[test]
+fn a_loaded_magazine_comes_back_loaded() {
+    let mut w = armed_still();
+    w.tick(&[Command::Join { id: ID }]);
+    w.players[0].mag[1] = 5;
+    w.players[0].mag_round[1] = 9;
+    let save = w.save_of(ID).expect("the player is in the world");
+    let mut w2 = armed_still();
+    w2.tick(&[Command::JoinAs { id: REJOIN, save }]);
+    let p = w2.players[0];
+    assert_eq!(p.mag[1], 5, "the cylinder came back empty");
+    assert_eq!(
+        p.mag_round[1], 9,
+        "the cylinder came back holding another round"
+    );
+    assert_eq!(p.mag[0], 0);
+}
+
 /// The survival clock resumes mid-span rather than restarting it.
 ///
 /// The accumulators are the point: they are the exact-arithmetic remainder of

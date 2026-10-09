@@ -689,6 +689,10 @@ fn detail_body(
     if let Some(hint) = crate::ui::craft::unlock_hint(&core.research, core.known(), recipe, def) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
+    // The output's condition, in words (§0dur item 1).
+    if let Some(line) = crate::ui::craft::wear_line(&core.catalog, def.output) {
+        pane.spawn((Text::new(line), font(11.0), TextColor(TEXT_DIM)));
+    }
     // And a recipe the island cannot make yet says which work must burn.
     if let Some(hint) = crate::ui::arc::locked_line(&core.arc, def.unlock) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));

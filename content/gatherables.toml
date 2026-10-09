@@ -273,6 +273,29 @@ hand = 30
 
 # The forest-floor food NOW.md §5 owed: mushrooms you can find without
 # felling a tree.
+# The stump a felled tree leaves (operator: stumps are collected for wood;
+# NOW.md §0stump). It is the tree slot's second harvest — the same cell, the
+# same tools, a fifth of the wood — and grubbing it out does not hurry the
+# sapling, which comes on the tree's own timer. No finish share: nothing
+# falls. Rust has no stump harvest; the size is ours, a dead log's ~¼ of a
+# large tree (RIPLIST §4.1b) rounded down because the trunk already paid.
+[[gatherable]]
+id = "gather.stump"
+archetype = "stump"
+output = "item.wood"
+hits = 4
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+"item.bat" = 25
+"item.hatchet_stone" = 40
+"item.hatchet_metal" = 43
+
+[gatherable.condition_loss]
+"item.bat" = 30
+"item.hatchet_stone" = 30
+"item.hatchet_metal" = 30
+
 [[gatherable]]
 id = "gather.mushroom_patch"
 archetype = "mushroom_patch"

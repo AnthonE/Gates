@@ -593,6 +593,38 @@ pub fn countdown_label(left_s: f32) -> String {
     format!("{}s", left_s.max(0.0).ceil() as u32)
 }
 
+/// What the craft detail pane says about the output's condition (`NOW.md`
+/// §0dur item 1), or `None` for an item that carries none (`cond_max == 0`:
+/// wood, stone, every stackable). A light's condition is its fuel; armour
+/// says the protection it pays; everything else wears with use. Repair is
+/// re-craft in v1, so the line says so rather than promising a bench.
+pub fn wear_line(catalog: &ItemCatalog, item: u16) -> Option<String> {
+    let idx = item as usize;
+    let max = catalog.cond_max(idx);
+    if max == 0 {
+        return None;
+    }
+    let lit = crate::ui::hold::held_model(
+        catalog,
+        ItemStack {
+            item,
+            count: 1,
+            cond: max,
+            skin: 0,
+        },
+    )
+    .is_some_and(|row| crate::ui::hold::HELD_MODELS[row].light.is_some());
+    let armor = catalog.row(idx).armor_pct;
+    Some(if lit {
+        "Burns down while lit; spent, it is gone.".to_string()
+    } else if armor > 0 {
+        format!("Blocks {armor}% of a hit where it is worn. Made at full condition.")
+    } else {
+        "Made at full condition; wears with use and breaks at zero. No repair: craft another."
+            .to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

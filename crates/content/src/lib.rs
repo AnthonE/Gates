@@ -97,6 +97,7 @@ struct DeployablesFile {
 #[serde(deny_unknown_fields)]
 struct CookingFile {
     fuel: Fuel,
+    planter: PlanterWater,
     /// Absent is legal and means an oven that burns but transforms
     /// nothing — the shipped state today, and the honest one while the
     /// island grows no raw food (`content/cooking.toml` says why).
@@ -186,6 +187,7 @@ pub struct Content {
     pub consumables: Vec<Consumable>,
     pub deployables: Vec<Deployable>,
     pub fuel: Fuel,
+    pub planter: PlanterWater,
     pub cooks: Vec<Cook>,
     /// What research is paid in, and what it teaches (research v0).
     pub research_coin: ResearchCoin,
@@ -305,6 +307,7 @@ impl Content {
             consumables: consumables.consumable,
             deployables: deployables.deployable,
             fuel: cooking.fuel,
+            planter: cooking.planter,
             cooks: cooking.cook,
             research_coin: research.coin,
             research_table: research.table,

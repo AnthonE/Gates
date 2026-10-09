@@ -665,6 +665,13 @@ impl Harvested for HarvestedSet {
             None => 1000,
         }
     }
+
+    /// Every felled tree's stump reads as standing here: no wire fact says a
+    /// stump was grubbed, so the prompt over a spent one is the stump the
+    /// renderer still draws, and the server's swing pays nothing.
+    fn stump_standing(&self, cx: u16, cz: u16) -> bool {
+        self.contains(cell_key(cx, cz))
+    }
 }
 
 /// The client's mirror of the placed-piece set, keyed by grid address —
@@ -976,6 +983,18 @@ impl DeploySet {
             Some(gone)
         } else {
             None
+        }
+    }
+
+    /// Apply a planter's beds (crops v1, `EventMsg::Planter`) to its
+    /// record. An address never heard of waits for the deploy walk, which
+    /// carries the same byte.
+    fn set_grow(&mut self, cx: u16, cz: u16, level: u8, loc: u8, stages: u8) {
+        if let Some(r) = self.recs[..self.len]
+            .iter_mut()
+            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+        {
+            r.grow = stages;
         }
     }
 
@@ -3165,6 +3184,16 @@ impl ClientCore {
                 // say about someone else's fire is a UI question, and the
                 // core's job is the fact.
                 self.ovens.set(cx, cz, level, loc, lit);
+                flags |= APPLIED_DEPLOYS;
+            }
+            EventMsg::Planter {
+                cx,
+                cz,
+                level,
+                loc,
+                stages,
+            } => {
+                self.deploys.set_grow(cx, cz, level, loc, stages);
                 flags |= APPLIED_DEPLOYS;
             }
             EventMsg::Vitals {

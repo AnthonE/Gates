@@ -57,9 +57,10 @@ pub const PINE_TRUNK_H: f32 = 5.7;
 /// spawn clearance is derived from, so no sim number moved — and the trunk is
 /// held to the sim's cylinder by `tests/tree.rs`. `examples/tree_sweep.rs` is
 /// the bench the limb length and trunk radius were swept on, over the three
-/// shipped seeds and twelve more. ⚠ `PINE_TRUNK_H` above is the whorl
-/// builder's and the sim's `OCCUPANT_TOP_M[Tree]` row, and it stayed at 5.7:
-/// the trunk above that is drawn and not blocked. `NOW.md` §0t carries it.
+/// shipped seeds and twelve more. `PINE_TRUNK_H` above is the whorl builder's
+/// alone; the sim blocks a tree to the broadleaf's 11 m apex
+/// (`OCCUPANT_TOP_M[Tree]`, held to the shortest drawn tree by
+/// `tests/tree.rs`), so the pine's top 3 m are drawn and not blocked.
 pub const PINE_H: f32 = 14.0;
 /// How far a whorl vertex may be pulled IN toward its axis, as a fraction of
 /// that whorl's radius. It only ever pulls in, never out, which is what keeps
