@@ -72,6 +72,7 @@
 //! bounded by the reach over `ARROW_STEP_MM`, capped at
 //! `MAX_HITSCAN_SAMPLES` — all on a swing tick only.
 
+use crate::backpack::Backpacks;
 use crate::combat::CombatContent;
 use crate::fmath::floor_i32;
 use crate::gather::{self, REACH_M};
@@ -235,6 +236,10 @@ pub struct Reaches {
     /// A built piece or a solid deployable: the row's `reach_cm` again, but
     /// only for a row with a `structure` column.
     pub structure: f32,
+    /// An animal's carcass: the node reach, but only for a hand that
+    /// butchers (`MobContent::butcher_for`). Zero otherwise, so a blunt
+    /// swing passes through a carcass to whatever is under it.
+    pub carcass: f32,
 }
 
 impl Reaches {
@@ -248,12 +253,25 @@ impl Reaches {
             structure: cc
                 .held_struct(held)
                 .map_or(0.0, |d| f32::from(d.reach_cm) * 10.0),
+            carcass: 0.0,
         }
+    }
+
+    /// [`Self::for_hand`], plus the carcass reach when `held` butchers.
+    pub fn for_hand_butchering(cc: &CombatContent, mc: &MobContent, held: u16) -> Self {
+        let mut r = Self::for_hand(cc, held);
+        if mc.butcher_for(held).is_some() {
+            r.carcass = r.node;
+        }
+        r
     }
 
     /// How long the ray has to be to find everything any kind can reach.
     pub fn longest(&self) -> f32 {
-        self.node.max(self.body).max(self.structure)
+        self.node
+            .max(self.body)
+            .max(self.structure)
+            .max(self.carcass)
     }
 }
 
@@ -533,6 +551,48 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
     best
 }
 
+/// An animal's carcass the ray entered: the bag index in the store.
+#[derive(Clone, Copy, Debug)]
+pub struct CarcassHit {
+    pub bag: usize,
+    pub t: f32,
+}
+
+/// The nearest animal carcass along `ray`: a bag whose owner is a pig, wolf
+/// or stag slot (a helicopter's or a sentry's is wreckage, not meat), tested
+/// as the species' body cylinder lying down — its radius, half its height.
+pub fn carcass_cast(mc: &MobContent, bags: &Backpacks, ray: &Ray) -> Option<CarcassHit> {
+    let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
+    let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
+    let mut best: Option<CarcassHit> = None;
+    for (bag, b) in bags.entries().iter().enumerate() {
+        let Some(slot) = crate::mob::slot_of_id(b.owner) else {
+            continue;
+        };
+        let kind = crate::mob::kind_of(slot);
+        if kind as usize >= crate::mob::MOB_KINDS {
+            continue;
+        }
+        let def = mc.def(kind);
+        let (r, h) = (
+            f32::from(def.body_r_cm) * 0.01,
+            f32::from(def.body_h_cm) * 0.005,
+        );
+        if r <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        let base = b.qy as f32 * POS_Y_Q;
+        let centre = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+        let Some((t_in, _)) = cylinder_span(o, u, centre, r, base, base + h) else {
+            continue;
+        };
+        if best.is_none_or(|c| t_in < c.t) {
+            best = Some(CarcassHit { bag, t: t_in });
+        }
+    }
+    best
+}
+
 /// What a swing reached first along its ray.
 #[derive(Clone, Copy, Debug)]
 pub enum Reached {
@@ -547,6 +607,8 @@ pub enum Reached {
     Body { hit: BodyHit, stop_t: f32 },
     /// An animal.
     Mob(MobHit),
+    /// An animal's carcass, by a hand that butchers.
+    Carcass(CarcassHit),
     /// The world: ground, scenery, or — with `built` — a piece or a solid
     /// deployable, addressed the way `World::chip` charges it. `surf` is the
     /// `ranged::SURF_*` class for the mark.
@@ -560,11 +622,12 @@ pub enum Reached {
 /// Resolve one already-taken swing: what did the ray from `attacker`'s eye
 /// enter first, and is that inside the hand's reach for its kind?
 ///
-/// Four questions, each bounded, none allocating: the body solve over
+/// Five questions, each bounded, none allocating: the body solve over
 /// `MAX_PLAYERS` (rewound by `favour`, exactly as a bullet is), the node
-/// solve over nine cells, the animal solve over `MAX_MOBS`, and the world
+/// solve over nine cells, the animal solve over `MAX_MOBS`, the carcass
+/// solve over `MAX_BACKPACKS` (only for a hand that butchers), and the world
 /// walk over the reach at `ARROW_STEP_MM`. Then the minimum entry fraction
-/// wins, ties broken node → body → animal → world, and the winner is
+/// wins, ties broken node → body → animal → carcass → world, and the winner is
 /// accepted only inside its own reach ([`Reaches`]).
 #[allow(clippy::too_many_arguments)]
 pub fn cast(
@@ -575,6 +638,7 @@ pub fn cast(
     players: &[Player; MAX_PLAYERS],
     mobs: &Mobs,
     mc: &MobContent,
+    bags: &Backpacks,
     attacker: usize,
     rewind: &Rewind,
     tick: u64,
@@ -600,6 +664,11 @@ pub fn cast(
     );
     let node = node_cast(seed, occ, ray);
     let mob = mob_cast(mc, mobs, ray);
+    let carcass = if reaches.carcass > 0.0 {
+        carcass_cast(mc, bags, ray)
+    } else {
+        None
+    };
     // The whole reach, sampled as a shot would be. A melee reach is metres,
     // so this is a dozen taps; the cap is the sampler's own and a reach it
     // would coarsen is a content row `validate` refuses.
@@ -628,6 +697,12 @@ pub fn cast(
             best = Reached::Mob(m);
         }
     }
+    if let Some(c) = carcass {
+        if c.t < best_t {
+            best_t = c.t;
+            best = Reached::Carcass(c);
+        }
+    }
     if let Some(kind) = surf {
         if stop_t < best_t {
             best = Reached::World {
@@ -643,6 +718,7 @@ pub fn cast(
         Reached::Node(nh) if !within(nh.t, reaches.node) => Reached::Nothing,
         Reached::Body { hit, .. } if !within(hit.enter, reaches.body) => Reached::Nothing,
         Reached::Mob(m) if !within(m.t, reaches.body) => Reached::Nothing,
+        Reached::Carcass(c) if !within(c.t, reaches.carcass) => Reached::Nothing,
         // A wall the hand cannot damage is still a wall the swing stopped
         // on: it is marked and not charged.
         Reached::World { t, surf, built } if built.is_some() && !within(t, reaches.structure) => {

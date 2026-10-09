@@ -220,9 +220,13 @@ ITEMS = {
     "window_shutters": "delapouite/closed-doors",
     "armor_roadsign_body": "lorc/armor-vest",
     "medkit": "delapouite/first-aid-kit",
+    "syringe": "lorc/syringe",
     "berries": "delapouite/berries-bowl",
     "mushrooms": "delapouite/mushrooms",
     "corn": "delapouite/corn",
+    "corn_seed": "delapouite/plant-seed",
+    "hemp_seed": "delapouite/sesame",
+    "planter": "lorc/sprout",
     # The food loop's pair. A flat marbled cut and a drumstick are the two
     # most different meat silhouettes in the set, which is what a hotbar
     # holding both at 44 px needs — and a drumstick is the universal

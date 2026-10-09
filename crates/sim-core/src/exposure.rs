@@ -24,7 +24,7 @@
 //!
 //! `EMPTY` disarms it: content with no `[exposure]` plays the game it did.
 
-use crate::limits::MAX_ITEM_DEFS;
+use crate::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use crate::survival::{tick_units, Step};
 use crate::world::{EventQueue, Player, EV_HEALTH};
 
@@ -61,6 +61,13 @@ pub struct ExposureContent {
     pub hurt_at: u16,
     /// Hit points a minute at full chill, scaling from zero at `hurt_at`.
     pub hurt_hp_per_min: u16,
+    /// The cold's metabolic cost (`NOW.md` §0wx item 1): percent of the
+    /// normal food and water drain added at full chill, scaled by chill.
+    pub cold_food_pct: u16,
+    pub cold_water_pct: u16,
+    /// Comfort: hit points a minute a warm, dry, fed body gets back by a
+    /// fire or under a roof.
+    pub comfort_hp_per_min: u16,
     /// Per item index: the chill a worn piece keeps out. Negative draws it
     /// in — a road sign jacket is a sheet of metal — as a per-mille share
     /// of the cold the body is already in, never as cold of its own.
@@ -84,6 +91,9 @@ impl ExposureContent {
         chill_fall_per_s: 0,
         hurt_at: 1000,
         hurt_hp_per_min: 0,
+        cold_food_pct: 0,
+        cold_water_pct: 0,
+        comfort_hp_per_min: 0,
         warmth: [0; MAX_ITEM_DEFS],
     };
 
@@ -141,6 +151,8 @@ pub struct Inputs {
     pub fire: bool,
     /// A lit torch in hand.
     pub torch: bool,
+    /// Both meters at least half full — what comfort asks of the body.
+    pub fed: bool,
 }
 
 /// The chill a body is heading for, per mille — the whole rule in one
@@ -228,6 +240,24 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
             let dmg = dmg.min(u16::MAX as u32) as u16;
             died = crate::combat::hurt_unreduced(p, dmg).died;
         }
+    } else if ec.comfort_hp_per_min > 0
+        && inp.fed
+        && (inp.fire || inp.roofed)
+        && p.chill == 0
+        && p.wet == 0
+        && !p.wounded
+        && p.hp > 0
+        && p.hp < p.hp_max
+    {
+        // Comfort: warm, dry, fed and by a fire or under a roof, the body
+        // mends. The cold's accumulator carries it, because the two can
+        // never run at once — comfort needs no chill at all.
+        let give = tick_units(&mut p.cold_acc, ec.comfort_hp_per_min as u32, 60);
+        if give > 0 {
+            p.hp =
+                p.hp.saturating_add(give.min(u16::MAX as u32) as u16)
+                    .min(p.hp_max);
+        }
     } else {
         // Warm again: the partial point owed does not bank.
         p.cold_acc = 0;
@@ -240,6 +270,28 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
         return Step::Changed;
     }
     Step::Quiet
+}
+
+/// One second of the cold's metabolic cost (`NOW.md` §0wx item 1): a
+/// chilled body burns food and water faster — `cold_food_pct` /
+/// `cold_water_pct` percent of the normal drain on top at full chill,
+/// scaled by the chill. Paid into the survival clock's own accumulators as
+/// that share of one second's drain (`max × TICK_HZ` is a second of the
+/// clock's numerator), so the clock takes whole units and stays exact.
+pub fn burn(ec: &ExposureContent, max_food: u16, max_water: u16, p: &mut Player) {
+    if !ec.armed() || p.chill == 0 {
+        return;
+    }
+    let share = |max: u16, pct: u16| -> u32 {
+        let v = max as u64 * TICK_HZ as u64 * pct as u64 * p.chill as u64 / 100_000;
+        v.min(u32::MAX as u64) as u32
+    };
+    let (food, water) = (
+        share(max_food, ec.cold_food_pct),
+        share(max_water, ec.cold_water_pct),
+    );
+    p.food_acc = p.food_acc.saturating_add(food);
+    p.water_acc = p.water_acc.saturating_add(water);
 }
 
 /// A fresh body comes up dry and warm.

@@ -747,11 +747,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 protocol::encode_action_swipe(door, buf)
             });
         }
-        Verb::Assist => {
-            send(net, toast, "help up", |buf| {
-                protocol::encode_action_assist(pick.handle, buf)
-            });
-        }
+        // A syringe in hand injects at once; anything else starts the hold.
+        Verb::Assist => match net.session.core.held_revive_slot() {
+            Some(slot) => {
+                send(net, toast, "inject", |buf| {
+                    protocol::encode_action_treat(slot, pick.handle, buf)
+                });
+            }
+            None => {
+                send(net, toast, "help up", |buf| {
+                    protocol::encode_action_assist(pick.handle, buf)
+                });
+            }
+        },
         Verb::Door => {
             let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
             if send(net, toast, "use", |buf| {
@@ -795,6 +803,16 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             // below — two presses where the reference has one hold-`E`
             // menu with two entries, which is the same two verbs without
             // a radial menu this client does not have.
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
+        Verb::Planter => {
+            // A planter is a box that grows: `E` opens it and the panel is
+            // where the seeds go in and the harvest comes out.
             let handle = pick.handle;
             if send(net, toast, "open", |buf| {
                 protocol::encode_action_container(CONT_BOX, handle, buf)

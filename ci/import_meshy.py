@@ -206,7 +206,7 @@ def main():
         # Each axis to its own target, so the drawn BOUNDING BOX equals the
         # blocked volume rather than fitting inside it. (The renderer's radius
         # is a per-vertex max, which is a hair under the box's corner unless a
-        # vertex sits on it -- `client/tests/site_assets.rs` measures that gap
+        # vertex sits on it -- `client/tests/prop_assets.rs` measures that gap
         # and allows `SITE_SHORT_M` of it.) Sharing one factor between X
         # and Z was the first draft and it was the wrong instinct: both site
         # targets are square, so a shared factor leaves the shorter source

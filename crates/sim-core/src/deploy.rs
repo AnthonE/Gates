@@ -160,6 +160,11 @@ pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 /// Rust's wooden barricade: a free-standing wall of sharpened logs that
 /// blocks a body (wire v97 widened `ARCH_BITS` to five for it).
 pub const ARCH_BARRICADE: u8 = 16;
+/// A planter box (crops v0, `NOW.md` §5): a container that **grows**. Seeds
+/// in its beds become a crop over minutes on the ovens' own sweep
+/// (`oven.rs`), with no fuel and no switch — a planter is always growing,
+/// and what grows into what is rows in `content/cooking.toml`.
+pub const ARCH_PLANTER: u8 = 17;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -182,7 +187,7 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 17] = [
+pub const DEPLOY_VOL: [[f32; 3]; 18] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -200,6 +205,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 17] = [
     [0.0, 0.0, 0.0],   // glass — edge insert
     [0.0, 0.0, 0.0],   // shutters — edge insert, not a solid nibble
     [1.8, 1.4, 0.6],   // 16 barricade — a log wall
+    [1.6, 0.5, 0.8],   // 17 planter — a raised bed
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -295,6 +301,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_FURNACE
         || arch == ARCH_RECYCLER
         || arch == ARCH_RESEARCH
+        || arch == ARCH_PLANTER
 }
 
 /// A workbench archetype's rung on the bench ladder, `0` for anything

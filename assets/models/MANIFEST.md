@@ -324,7 +324,7 @@ aspect correction of **1.329×, worse than the 1.291× it was meant to fix.** It
 is not shipped. The lever that would actually work is the box table, and that
 is sim truth with a replay golden behind it — see `NOW.md`.
 
-`crates/client/tests/site_assets.rs` gates every number in this section, and
+`crates/client/tests/prop_assets.rs` gates every number in this section, and
 each of its claims is proven red under its own mutant (uniform fit, a 5%
 oversize, a kept emissive map, an unpacked JPEG).
 

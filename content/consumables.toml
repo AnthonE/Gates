@@ -18,6 +18,18 @@ seconds = 8
 # reference/WOUNDED.md §2.5: paid only on a failed roll, from the belt.
 belt_recovery = true
 
+# `revive`: used on a downed body in reach (`Command::Treat`), it stands the
+# body up at once, as a won roll does, and heals it by `health` (the
+# reference's syringe, `reference/WOUNDED.md` §1). On yourself it is an
+# ordinary heal. The numbers are ours: a small fast heal, under the bandage.
+[[consumable]]
+id = "item.syringe"
+health = 15
+food = 0
+water = 0
+seconds = 2
+revive = true
+
 # Hydrating and calorie-poor, which is the reference's own split: meat
 # feeds and barely wets, forage wets and barely feeds, and a player who
 # eats only one of them dies of the other.

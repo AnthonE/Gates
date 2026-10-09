@@ -73,6 +73,8 @@ pub enum Verb {
     /// two arms agreeing everywhere the code asks a question about
     /// containers, never as one variant doing both jobs.
     Recycler,
+    /// A planter box (crops v0): a container that grows. `E` opens it.
+    Planter,
     /// A research table (research v0). The one verb here that acts on what
     /// is in your HAND rather than on what is at the address — the table
     /// holds nothing — so the prompt names the held item and `E` spends it.
@@ -193,6 +195,7 @@ impl Verb {
             Verb::Talk => 16,
             Verb::Read => 17,
             Verb::Turn => 18,
+            Verb::Planter => 19,
         }
     }
 
@@ -223,6 +226,7 @@ impl Verb {
             Verb::Talk => "SPEAKER",
             Verb::Read => "INSCRIPTION",
             Verb::Turn => "DIAL",
+            Verb::Planter => "PLANTER",
         }
     }
 }
@@ -434,8 +438,11 @@ impl Pick {
                 crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
                 self.count
             ),
+            // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
+            // `[butcher]`); the prompt teaches the verb rather than knowing
+            // which tools have a row, which the catalog does not carry.
             Verb::Bag if self.species.is_some() => format!(
-                "[E] LOOT {}",
+                "[E] LOOT {}  ·  SWING A BLADE TO BUTCHER",
                 match self.species {
                     Some(sim_core::mob::MOB_WOLF) => "WOLF",
                     Some(sim_core::mob::MOB_STAG) => "STAG",
@@ -923,6 +930,7 @@ pub fn resolve(
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
+            sim_core::deploy::ARCH_PLANTER => Verb::Planter,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
             _ => continue,
@@ -936,6 +944,7 @@ pub fn resolve(
         if verb == Verb::Box
             || verb == Verb::Fire
             || verb == Verb::Recycler
+            || verb == Verb::Planter
             || verb == Verb::Research
         {
             handle = box_key(rec.cx, rec.cz, rec.level, rec.loc);
@@ -1183,8 +1192,14 @@ mod tests {
                 .prompt(&ItemCatalog::EMPTY)
         };
         assert_eq!(prompt(0), "[E] OPEN BACKPACK");
-        assert_eq!(prompt(1 + sim_core::mob::MOB_PIG), "[E] LOOT PIG");
-        assert_eq!(prompt(1 + sim_core::mob::MOB_WOLF), "[E] LOOT WOLF");
+        assert_eq!(
+            prompt(1 + sim_core::mob::MOB_PIG),
+            "[E] LOOT PIG  ·  SWING A BLADE TO BUTCHER"
+        );
+        assert_eq!(
+            prompt(1 + sim_core::mob::MOB_WOLF),
+            "[E] LOOT WOLF  ·  SWING A BLADE TO BUTCHER"
+        );
     }
 
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does

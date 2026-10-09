@@ -49,7 +49,7 @@
 //! merges only into the spiller's own bag, and every give-back announces
 //! what it dropped (`World::announce_spill`).
 
-use crate::gather::{inv_add_skinned, GatherContent, ItemStack};
+use crate::gather::{inv_add_skinned, inv_add_spilling_skinned, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
 use crate::movement::POS_XZ_Q;
 use crate::world::{EventQueue, Player, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
@@ -590,13 +590,15 @@ impl Backpacks {
             || !crate::town::safe(town, b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)
     }
 
+    /// Take everything that fits from the nearest bag in reach. `None` when
+    /// no bag is in reach or the safe zone refuses it.
     pub fn loot_nearest(
         &mut self,
         gc: &GatherContent,
         town: &crate::town::Town,
         p: &mut Player,
         events: &mut EventQueue,
-    ) -> Option<u32> {
+    ) -> Option<Looted> {
         let px = p.body.qx as f32 * POS_XZ_Q;
         let pz = p.body.qz as f32 * POS_XZ_Q;
         let mut best: Option<(f32, usize)> = None;
@@ -622,6 +624,8 @@ impl Backpacks {
             return None;
         }
         let id = self.entries[i].id;
+        let owner = self.entries[i].owner;
+        let mut took_any = false;
         for s in 0..INV_SLOTS {
             let stack = self.entries[i].items[s];
             if stack.count == 0 {
@@ -644,6 +648,7 @@ impl Backpacks {
             if took == 0 {
                 continue;
             }
+            took_any = true;
             self.entries[i].items[s].count -= took;
             if self.entries[i].items[s].count == 0 {
                 // Canonical empty is ALL THREE fields — a looted-out slot
@@ -661,8 +666,63 @@ impl Backpacks {
         if self.entries[i].is_empty() {
             self.remove(i, BAG_GONE_EMPTIED, events);
         }
-        Some(id)
+        Some(Looted {
+            id,
+            owner,
+            took: took_any,
+        })
     }
+}
+
+impl Backpacks {
+    /// One butchering cut on carcass `i` (`NOW.md` §0m item 1): the first
+    /// stack left in it, in the species' `drops` order, paid to `p` at
+    /// `pct` percent and never less than one. What does not fit goes to
+    /// `spill`, as a gather's overflow does. An emptied carcass leaves by
+    /// `loot_nearest`'s route. Returns false when there was nothing to cut.
+    pub fn butcher(
+        &mut self,
+        i: usize,
+        gc: &GatherContent,
+        pct: u16,
+        p: &mut Player,
+        spill: &mut [ItemStack; INV_SLOTS],
+        events: &mut EventQueue,
+    ) -> bool {
+        if i >= self.len {
+            return false;
+        }
+        let Some(s) = (0..INV_SLOTS).find(|&s| {
+            let st = self.entries[i].items[s];
+            st.count > 0 && gc.stack_max_of(st.item) > 0
+        }) else {
+            return false;
+        };
+        let cut = self.entries[i].items[s];
+        self.entries[i].items[s] = ItemStack::default();
+        let pay = (cut.count as u32 * pct as u32 / 100).clamp(1, u16::MAX as u32) as u16;
+        let added = inv_add_spilling_skinned(
+            &mut p.inv,
+            spill,
+            cut.item,
+            pay,
+            gc.stack_max_of(cut.item),
+            cut.cond,
+            cut.skin,
+        );
+        events.push(EV_GATHER, p.id, ((cut.item as u32) << 16) | added as u32, 0);
+        self.drop_if_empty(i, events);
+        true
+    }
+}
+
+/// What one `loot_nearest` reached: the bag, whose it was (read before an
+/// emptied bag's record leaves), and whether any stack moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Looted {
+    pub id: u32,
+    pub owner: u32,
+    pub took: bool,
 }
 
 impl Default for Backpacks {

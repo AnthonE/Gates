@@ -487,17 +487,67 @@ impl MobDef {
     }
 }
 
+/// Stacks a site guard's carcass may add to its species' drops
+/// (`MobContent::guard_loot`). Structural cap, like `MOB_LOOT_ROWS`.
+pub const GUARD_LOOT_ROWS: usize = 2;
+
+/// Tools the butcher table may name. Structural cap, not a knob: the bake
+/// refuses a longer table rather than truncating one.
+pub const MAX_BUTCHER_TOOLS: usize = 8;
+
+/// What one tool pays from a carcass (`mobs.toml` `[butcher]`): `pct`
+/// percent of each cut, and `wear` hundredths of condition per cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ButcherRow {
+    pub tool: u16,
+    pub pct: u16,
+    pub wear: u16,
+}
+
+impl ButcherRow {
+    pub const NONE: Self = Self {
+        tool: NO_ITEM,
+        pct: 0,
+        wear: 0,
+    };
+}
+
 /// The baked species table (`content::Content::bake_mobs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MobContent {
     pub defs: [MobDef; MOB_KINDS],
+    /// The tools that butcher, and what each pays. Unused rows are
+    /// [`ButcherRow::NONE`].
+    pub butcher: [ButcherRow; MAX_BUTCHER_TOOLS],
+    /// What a site guard's carcass holds on top of its species' `loot`
+    /// (`mobs.toml` `[guard]`): the guard's own tier. `NO_ITEM` rows are
+    /// empty.
+    pub guard_loot: [ItemStack; GUARD_LOOT_ROWS],
 }
 
 impl MobContent {
     /// Inert: no species has hit points, so the roster never hatches.
     pub const EMPTY: Self = Self {
         defs: [MobDef::INERT; MOB_KINDS],
+        butcher: [ButcherRow::NONE; MAX_BUTCHER_TOOLS],
+        guard_loot: [ItemStack {
+            item: NO_ITEM,
+            count: 0,
+            cond: 0,
+            skin: 0,
+        }; GUARD_LOOT_ROWS],
     };
+
+    /// The butcher row for `held`, or `None` for a hand that cannot cut.
+    pub fn butcher_for(&self, held: u16) -> Option<ButcherRow> {
+        if held == NO_ITEM {
+            return None;
+        }
+        self.butcher
+            .iter()
+            .find(|r| r.tool == held && r.pct > 0)
+            .copied()
+    }
 
     /// The fixture the probe and the sim tests run on — the alpha roster's
     /// shape without a content directory. Loot is deliberately `NO_ITEM`
@@ -1167,8 +1217,8 @@ fn hatch(
 /// container a player's death, a barrel and a broken box already use), so
 /// the killer walks over and opens it like any bag, and nothing new
 /// crosses the wire. The reference's real interaction is a butchering
-/// *verb* on the corpse — a tool-gated harvest — and that verb now has a
-/// landing place: this bag is where its output would go (`NOW.md` §0m).
+/// *verb* on the corpse — a tool-gated harvest — and that is a swing at
+/// this bag with a blade (`melee::carcass_cast`, `Backpacks::butcher`).
 ///
 /// Two exits pay nothing, both the bag store's own policy, restated here
 /// because this is a call site wall 4 reads: an **inert ladder**
@@ -1274,14 +1324,19 @@ pub fn hurt_slot(
 
     // The corpse: the loot rows, packed into a bag standing where the
     // animal died. The killer's inventory is untouched until they press
-    // the loot verb on it — which is what makes the take a choice, and
-    // what a butchering verb will later gate with a tool. `owner` is the
+    // the loot verb on it or butcher it with a blade — which is what makes
+    // the take a choice. `owner` is the
     // dead animal's own tagged id, the field's meaning ("who died")
     // applied to a body that was never a player; the wire never carries
     // it (world.rs, `EV_BAG_DROPPED`).
     let mut items = [ItemStack::default(); INV_SLOTS];
     let mut n = 0usize;
-    for row in species.loot.iter() {
+    let guard: &[ItemStack] = if guard_site_of(slot).is_some() {
+        &mc.guard_loot
+    } else {
+        &[]
+    };
+    for row in species.loot.iter().chain(guard) {
         if row.item == NO_ITEM || row.count == 0 {
             continue;
         }

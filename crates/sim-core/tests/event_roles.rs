@@ -5224,6 +5224,69 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
     );
 }
 
+/// Cause three by the other verb: **a bag emptied with `Loot`.** Taking
+/// one stack with `Move` logs `TRUST_CONT`, so taking all of it with the
+/// take-all button must too, or the record depends on which button was
+/// pressed. Your own bag stays silent.
+#[test]
+fn trust_names_a_bag_emptied_with_loot() {
+    let mut w = World::new(SEED);
+    builder_world(&mut w);
+    w.backpack = BackpackContent::probe_fixture();
+    stand_an_outsider(&mut w);
+    let os = outsider_slot(&w);
+    let mut items = [ItemStack::default(); INV_SLOTS];
+    items[0] = ItemStack {
+        item: FILLER,
+        count: JUNK_COUNT,
+        cond: 0,
+        skin: 0,
+    };
+    let bag_of = |w: &mut World, owner: u32| {
+        let b = w.players[0].body;
+        let tick = w.tick;
+        w.backpacks
+            .stand_up(
+                &w.backpack,
+                b.qx,
+                b.qy,
+                b.qz,
+                owner,
+                &items,
+                tick,
+                &mut w.events,
+            )
+            .expect("the bag stood up");
+    };
+
+    bag_of(&mut w, BUILDER);
+    w.players[os].inv[0] = ItemStack::default();
+    w.tick(&[Command::Loot { id: OUTSIDER }]);
+    assert_eq!(
+        w.players[os].inv[0].count, JUNK_COUNT,
+        "the loot never landed, so this row is about nothing"
+    );
+    let t = only(&w, EV_TRUST);
+    ledger_mirrors(&w, t);
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(t.b, BUILDER, "EV_TRUST.b is the bag's OWNER");
+    assert_eq!(t.c >> 8, TRUST_CONT as u32, "a bag is a container");
+
+    bag_of(&mut w, OUTSIDER);
+    w.players[os].inv[0] = ItemStack::default();
+    w.tick(&[Command::Loot { id: OUTSIDER }]);
+    assert_eq!(
+        w.players[os].inv[0].count, JUNK_COUNT,
+        "the loot refused, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "looting your own bag logged a trust row against yourself"
+    );
+    ledger_silent(&w);
+}
+
 /// The two ids that are **not** counterparties, and the silence is the
 /// assertion.
 ///

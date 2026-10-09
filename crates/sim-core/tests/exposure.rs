@@ -328,3 +328,74 @@ fn the_road_sign_jacket_chills_a_clear_night_without_hurting() {
         "the jacket alone makes a clear, dry night cost hp: {worn}"
     );
 }
+
+/// The cold eats (`NOW.md` §0wx item 1): at full chill, with
+/// `cold_food_pct` 100, food drains twice as fast as a warm body's, and
+/// water — at 0 — drains the same.
+#[test]
+fn the_cold_burns_food() {
+    let mut sc = SurvivalContent::probe_fixture();
+    sc.exposure = ExposureContent::probe_fixture();
+    sc.exposure.cold_food_pct = 100;
+    let mut warm = body();
+    sim_core::survival::grant(&sc, &mut warm);
+    let mut cold = warm;
+    cold.chill = 1000;
+    let mut ev = EventQueue::default();
+    for t in 0..sim_core::limits::TICK_HZ * 3 {
+        if t % sim_core::limits::TICK_HZ == 0 {
+            exposure::burn(&sc.exposure, sc.max_food, sc.max_water, &mut warm);
+            exposure::burn(&sc.exposure, sc.max_food, sc.max_water, &mut cold);
+        }
+        sim_core::survival::step(&sc, &mut warm, &mut ev);
+        sim_core::survival::step(&sc, &mut cold, &mut ev);
+    }
+    let used = |p: &Player| (sc.max_food - p.food) as i32;
+    assert!(used(&warm) > 0, "the fixture's clock never drained");
+    assert!(
+        (used(&cold) - 2 * used(&warm)).abs() <= 1,
+        "cold used {} food against warm's {}",
+        used(&cold),
+        used(&warm)
+    );
+    assert_eq!(cold.water, warm.water, "the cold burned water at 0%");
+}
+
+/// Comfort: warm, dry, fed and by a fire, the body mends at
+/// `comfort_hp_per_min`; hungry, or with no fire or roof, it does not.
+#[test]
+fn comfort_mends_a_warm_dry_fed_body_by_a_fire() {
+    let mut ec = ExposureContent::probe_fixture();
+    ec.comfort_hp_per_min = 60;
+    let mut ev = EventQueue::default();
+    let mended = |inp: Inputs, ev: &mut EventQueue| {
+        let mut p = body();
+        p.hp = 50;
+        for _ in 0..10 {
+            exposure::step(&ec, &inp, &mut p, ev);
+        }
+        p.hp
+    };
+    let fire = Inputs {
+        fire: true,
+        fed: true,
+        ..Inputs::default()
+    };
+    assert_eq!(mended(fire, &mut ev), 60, "a second by the fire is a point");
+    let roof = Inputs {
+        roofed: true,
+        fed: true,
+        ..Inputs::default()
+    };
+    assert_eq!(mended(roof, &mut ev), 60, "a roof is comfort too");
+    let hungry = Inputs {
+        fire: true,
+        ..Inputs::default()
+    };
+    assert_eq!(mended(hungry, &mut ev), 50, "a hungry body mended");
+    let open = Inputs {
+        fed: true,
+        ..Inputs::default()
+    };
+    assert_eq!(mended(open, &mut ev), 50, "a body in the open mended");
+}

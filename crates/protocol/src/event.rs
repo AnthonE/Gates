@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_BARRICADE, BAG_CAP, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -833,6 +833,10 @@ pub struct ItemRow {
     /// A weapon the safe zone holsters (v92, `combat::drawn_weapon`): the
     /// client lowers it in THE GATE and says why a click there does nothing.
     pub holster: bool,
+    /// Medicine that stands a downed body up (v99,
+    /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
+    /// downed body injects rather than starting the hand revive.
+    pub revive: bool,
 }
 
 /// Width of [`ItemRow::oven`].
@@ -852,6 +856,7 @@ impl ItemRow {
         nock_ticks: 0,
         oven: 0,
         holster: false,
+        revive: false,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -2102,6 +2107,8 @@ pub fn encode_event_catalog(
         w.write(row.oven as u32, OVEN_ROLE_BITS)?;
         // The safe zone's holster (v92).
         w.write_bit(row.holster)?;
+        // The revive (v99).
+        w.write_bit(row.revive)?;
     }
     Ok((w.finish(), count))
 }
@@ -2674,7 +2681,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_BARRICADE || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_PLANTER || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -4462,6 +4469,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     nock_ticks: r.read(8)? as u8,
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
                     holster: r.read_bit()?,
+                    revive: r.read_bit()?,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -4827,7 +4835,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_BARRICADE
+                if arch > ARCH_PLANTER
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -6340,6 +6348,7 @@ mod tests {
                 // The oven roles (v89) at the width's corner.
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
                 holster: i % 2 == 0,
+                revive: i % 3 == 0,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -7893,9 +7902,10 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 17,
+            // 17 → 18 at wire v99: `ARCH_PLANTER`.
+            min_members: 18,
             bits: ARCH_BITS,
-            live_max: 16,
+            live_max: 17,
         },
         Domain {
             what: "deploy placement",

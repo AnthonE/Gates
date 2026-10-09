@@ -189,6 +189,25 @@ station = "none"
 seconds = 15
 inputs = [{ item = "item.wood", count = 200 }]
 
+# Crops v0: the bed is planks, no bench — a garden is a first-day thing.
+[[recipe]]
+id = "recipe.planter"
+output = "item.planter"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.wood", count = 100 }]
+
+# A cob's kernels are seed: one corn, two seeds, by hand. What keeps a farm
+# going once the barrels' seed runs out.
+[[recipe]]
+id = "recipe.corn_seed"
+output = "item.corn_seed"
+count = 2
+station = "none"
+seconds = 2
+inputs = [{ item = "item.corn", count = 1 }]
+
 [[recipe]]
 id = "recipe.waterskin"
 output = "item.waterskin"
@@ -582,6 +601,21 @@ station = "workbench1"
 seconds = 20
 inputs = [
     { item = "item.cloth", count = 50 },
+    { item = "item.lowgrade", count = 10 },
+]
+
+# Priced under the medkit and on the same bench: cloth, fuel, and the metal
+# for the needle.
+[[recipe]]
+id = "recipe.syringe"
+output = "item.syringe"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [
+    { item = "item.cloth", count = 15 },
+    { item = "item.metal_frags", count = 10 },
     { item = "item.lowgrade", count = 10 },
 ]
 

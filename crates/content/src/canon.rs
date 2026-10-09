@@ -204,6 +204,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.water);
         h.u(con.seconds);
         h.u(u32::from(con.belt_recovery));
+        h.u(u32::from(con.revive));
     }
 
     h.s("deployables");
@@ -444,6 +445,9 @@ pub fn hash(c: &Content) -> u64 {
         ex.chill_fall_per_s,
         ex.hurt_at,
         ex.hurt_hp_per_min,
+        ex.cold_food_pct,
+        ex.cold_water_pct,
+        ex.comfort_hp_per_min,
     ] {
         h.u(v);
     }

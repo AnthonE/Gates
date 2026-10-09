@@ -4164,6 +4164,20 @@ impl ClientCore {
             && sim_core::town::safe(&self.haven().town, x, z)
     }
 
+    /// The selected hotbar slot, when what is in it stands a downed body up
+    /// (the catalog's `revive` bit, v99): `E` on a downed body injects it
+    /// (`ActionMsg::Treat`) instead of starting the hand revive.
+    pub fn held_revive_slot(&self) -> Option<u8> {
+        let item = self.held_item();
+        (item != NO_ITEM
+            && self
+                .catalog
+                .rows
+                .get(item as usize)
+                .is_some_and(|r| r.revive))
+        .then_some(self.input.sel)
+    }
+
     /// The item index in the selected hotbar slot, `NO_ITEM` for an empty
     /// hand. The client's own mirror, which is the only place this is
     /// known — `EntityState::held` is what *others* see of this body.

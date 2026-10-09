@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 152] = [
+pub const FIXTURES: [&str; 153] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -271,6 +271,8 @@ pub const FIXTURES: [&str; 152] = [
     "action_respawn_at.bin",
     // What a body wears (v98).
     "event_worn.bin",
+    // A syringe on a downed body (v99).
+    "action_treat.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2299,6 +2301,11 @@ pub fn action_respawn_at() -> (u16, u16, u8) {
 /// 40) (wire v98).
 pub fn event_worn() -> (u32, [u16; sim_core::limits::WEAR_SLOTS]) {
     (0x0100_0007, [41, 40])
+}
+
+/// Inject inventory slot 6 into downed player 0x0100_0009 (wire v99).
+pub fn action_treat() -> (u8, u32) {
+    (6, 0x0100_0009)
 }
 
 /// Drop 250 of inventory slot 9 (wire v97).

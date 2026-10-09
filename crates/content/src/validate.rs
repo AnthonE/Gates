@@ -842,6 +842,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err("exposure: a chill that never falls would never warm".to_string());
         }
         let hp = c.balance.globals.player_hp;
+        if e.cold_food_pct > 300 || e.cold_water_pct > 300 {
+            return Err("[exposure]: the cold burns at most 300% more food or water".into());
+        }
+        if e.comfort_hp_per_min > 60 {
+            return Err("[exposure]: comfort heals at most 60 hp a minute".into());
+        }
         if e.hurt_hp_per_min > 0 && hp / e.hurt_hp_per_min < 5 {
             return Err(format!(
                 "exposure: full cold kills {hp} hp in under 5 min ({} hp/min)",
@@ -1358,6 +1364,61 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // A guard's tier: real items, real counts.
+    if let Some(g) = &c.guard {
+        for d in &g.drops {
+            item_exists(&d.item, "[guard] drop")?;
+            if d.count == 0 {
+                return Err(format!("[guard]: `{}` drops zero", d.item));
+            }
+        }
+    }
+
+    // Butchering: every tool is a melee weapon, pays at least the hand's 100
+    // (or it is worse than `E`), and wears by `gatherables.toml`'s two rules.
+    if let Some(b) = &c.butcher {
+        if b.yield_pct.is_empty() {
+            return Err("[butcher]: an empty yield table is no table; delete it".into());
+        }
+        for (tool, &pct) in &b.yield_pct {
+            let melee = c
+                .weapons
+                .iter()
+                .any(|w| &w.id == tool && w.kind == WeaponKind::Melee);
+            if !melee {
+                return Err(format!("[butcher]: `{tool}` is not a melee weapon"));
+            }
+            if !(100..=300).contains(&pct) {
+                return Err(format!(
+                    "[butcher]: `{tool}` pays {pct}%, outside 100–300 (100 is the hand's E)"
+                ));
+            }
+            let worn = c.item(tool).is_some_and(|i| i.condition_max > 0);
+            match b.condition_loss.get(tool) {
+                None | Some(0) if worn => {
+                    return Err(format!(
+                        "[butcher]: `{tool}` carries condition and has no condition_loss row"
+                    ));
+                }
+                Some(&w) if w > 0 && !worn => {
+                    return Err(format!(
+                        "[butcher]: `{tool}` wears {w} but carries no condition"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if let Some(t) = b
+            .condition_loss
+            .keys()
+            .find(|t| !b.yield_pct.contains_key(*t))
+        {
+            return Err(format!(
+                "[butcher]: condition_loss names `{t}`, which pays nothing"
+            ));
+        }
+    }
+
     // Mobs: every band here is a *reachability* check rather than a taste
     // one — an animal that cannot be killed, cannot be caught, or cannot be
     // left behind is content that reads as a bug in the sim.
@@ -1652,6 +1713,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
             CookStation::Fire => DeployArchetype::Fire,
             CookStation::Furnace => DeployArchetype::Furnace,
             CookStation::Recycler => DeployArchetype::Recycler,
+            CookStation::Planter => DeployArchetype::Planter,
         };
         if !c.deployables.iter().any(|d| d.archetype == arch) {
             return Err(format!(
@@ -1699,7 +1761,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // so the conflict does not exist there and the rule does not
         // reach — it is scoped rather than global because an over-broad
         // rule with a stale reason is how a comment starts lying.
-        if k.input == f.item && k.station != CookStation::Recycler {
+        if k.input == f.item && matches!(k.station, CookStation::Fire | CookStation::Furnace) {
             return Err(format!(
                 "cook: `{}` is the fuel — it burns, it does not cook",
                 k.input

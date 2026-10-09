@@ -566,6 +566,17 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 
+# The medical syringe: the one item that picks a downed body back up
+# (`consumables.toml` `revive`, `NOW.md` §0wnd item 1). Used on yourself it is
+# a small fast heal.
+[[item]]
+id = "item.syringe"
+name = "Medical Syringe"
+stack = 2
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): berry 20,
 # mushroom 10, corn 20 — and the meats' 20 was already a match. Note the
@@ -592,6 +603,33 @@ slot = "hand"
 id = "item.corn"
 name = "Corn"
 stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"
+
+# Crops v0 (`NOW.md` §5): seeds grow in a planter box (`deployables.toml`,
+# `cooking.toml`'s `planter` rows). Corn seed comes off barrels and crates
+# and out of a corn cob (`recipes.toml`); hemp seed off a picked hemp plant.
+[[item]]
+id = "item.corn_seed"
+name = "Corn Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.hemp_seed"
+name = "Hemp Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+
+[[item]]
+id = "item.planter"
+name = "Planter Box"
+stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"

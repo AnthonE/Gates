@@ -1077,7 +1077,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// count; the sim drops it in a bag at your feet.
 /// v98 — what a body wears. `SUB_WORN` (89) carries a player's id and the
 /// item in each wear slot, so other clients draw what they wear.
-pub const PROTO_VER: u16 = 98;
+/// v99 — medicine on a downed body. `ACT_TREAT` (31, the last five-bit
+/// code) carries an inventory slot and the target's id; the sim stands the
+/// body up if the item revives (`Command::Treat`). The item catalog row
+/// grows a `revive` bit after `holster`, so the client offers the verb. On
+/// an animal's record `crouched` now means the brain's hunt (chase, attack
+/// or orbit), so a client voices a hunting animal and not a grazing one.
+pub const PROTO_VER: u16 = 99;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1894,6 +1900,10 @@ const ACT_ARC: u32 = 29;
 /// Drop `count` of an inventory slot on the ground (wire v97,
 /// `Command::Drop`).
 const ACT_DROP: u32 = 30;
+/// Use the medicine in an inventory slot on a downed body (wire v99,
+/// `Command::Treat`): the slot and the target's id. Reach, the target's
+/// state and whether the item revives are the sim's verdict.
+const ACT_TREAT: u32 = 31;
 /// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
 const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
@@ -1905,7 +1915,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_DROP;
+const ACT_MAX: u32 = ACT_TREAT;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2235,6 +2245,9 @@ pub enum ActionMsg {
     /// Drop `count` of inventory slot `slot` on the ground (wire v97). The
     /// slot is shape-checked here; an empty one is the sim's no-op.
     Drop { slot: u8, count: u16 },
+    /// Use inventory slot `slot` on downed body `target` (wire v99). The
+    /// slot is shape-checked here; everything else is the sim's verdict.
+    Treat { slot: u8, target: u32 },
     /// Trade at a town kiosk (wire v86): offer `offer` of the vendor
     /// catalog, `times` over (1..=`VEND_TIMES_MAX`). Everything past the
     /// shape is the sim's verdict.
@@ -2506,6 +2519,18 @@ pub fn encode_action_drop(slot: u8, count: u16, buf: &mut [u8]) -> Result<usize,
     w.write(ACT_DROP, ACTION_SUB_BITS)?;
     w.write(slot as u32, ACTION_SLOT_BITS)?;
     w.write(count as u32, MOVE_COUNT_BITS)?;
+    Ok(w.finish())
+}
+
+pub fn encode_action_treat(slot: u8, target: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_TREAT, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    w.write(target, 32)?;
     Ok(w.finish())
 }
 
@@ -3211,6 +3236,14 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             ActionMsg::Drop { slot, count }
         }
+        ACT_TREAT => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            let target = r.read(32)?;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Treat { slot, target }
+        }
         ACT_RESEARCH => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
             if slot as usize >= sim_core::limits::INV_SLOTS {
@@ -3584,6 +3617,11 @@ pub struct EntityState {
     /// it standing would show a head where no head is. Unconditional beside
     /// [`Self::wounded`], for its reason: a body entering AOI mid-crouch has
     /// to be able to learn it.
+    ///
+    /// **On an animal (v99) it is the brain's hunt** — `AiState::Chase`,
+    /// `Attack` or `Orbit` — because an animal never crouches and the client
+    /// voices a hunting animal differently from a grazing one
+    /// (`sound::voice`). A widened meaning, so the version turned.
     pub crouched: bool,
     pub yaw: u16,
     pub pitch: u8,
@@ -4866,14 +4904,29 @@ mod tests {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
-        // respawn point (v92) 28, the arc's one verb (v95) 29 and drop
-        // (v97) 30, leaving one five-bit code.
-        assert_eq!(ACT_MAX, ACT_DROP);
+        // respawn point (v92) 28, the arc's one verb (v95) 29, drop
+        // (v97) 30 and treat (v99) 31: the five-bit field is full, and the
+        // next action widens `ACTION_SUB_BITS`.
+        assert_eq!(ACT_MAX, ACT_TREAT);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            1,
+            0,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    #[test]
+    fn treat_roundtrips_and_refuses_a_forged_slot() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let n = encode_action_treat(7, 0xDEAD_BEEF, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::Treat {
+                slot: 7,
+                target: 0xDEAD_BEEF
+            })
+        );
+        assert!(encode_action_treat(sim_core::limits::INV_SLOTS as u8, 1, &mut buf).is_err());
     }
 
     #[test]

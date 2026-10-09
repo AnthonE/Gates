@@ -65,6 +65,14 @@ pub enum LandmarkKind {
     Arch = 6,
     /// A cluster of rock spires, the tallest capped.
     Spires = 7,
+    /// A stone quarry cut into foothill rock: a stepped face, cut blocks,
+    /// a crane and the cutters' shed. Dry ground between the lowlands and the
+    /// summits (`try_site`).
+    Quarry = 8,
+    /// A roadside comms relay: a fenced pad, a 20 m lattice tower with its
+    /// dish, a generator hut and a container. It serves a road, so it
+    /// stands within sight of one.
+    Relay = 9,
 }
 
 /// What a part is made of — the client picks a surface by it.
@@ -291,6 +299,58 @@ const SPIRES_CRATES: &[Anchor] = &[
     (8.0, 1.0, Occupant::BarrelSlot),
 ];
 
+const QUARRY: &[Part] = &[
+    // The cut: a high back face, a bench below it, and the two side walls,
+    // all the hill's own rock.
+    p(-16.0, F, 8.0, 16.0, 7.0, 12.0, Mat::Rock),
+    p(-14.0, F, 4.0, 14.0, 3.0, 8.0, Mat::Rock),
+    p(-18.0, F, -6.0, -14.0, 5.5, 12.0, Mat::Rock),
+    p(14.0, F, -6.0, 18.0, 4.5, 12.0, Mat::Rock),
+    // Cut blocks on the floor.
+    p(-6.0, F, -4.0, -3.8, 1.5, -2.0, Mat::Stone),
+    p(-3.0, F, -6.5, -0.8, 1.2, -4.5, Mat::Stone),
+    p(5.0, F, -3.5, 7.6, 1.0, -1.0, Mat::Stone),
+    p(1.0, F, 0.5, 3.2, 2.2, 2.5, Mat::Stone),
+    // The crane: a mast and its jib over the floor.
+    p(9.6, F, -9.6, 10.4, 12.0, -8.8, Mat::Steel),
+    p(2.0, 11.4, -9.5, 11.0, 12.0, -8.9, Mat::Steel),
+    // The cutters' shed, and its roof.
+    p(-14.0, F, -18.0, -6.0, 3.0, -12.0, Mat::Timber),
+    p(-14.5, 3.0, -18.5, -5.5, 3.3, -11.5, Mat::Timber),
+];
+const QUARRY_CRATES: &[Anchor] = &[
+    (-10.0, -9.0, Occupant::CrateSlot),
+    (6.0, -14.0, Occupant::BarrelSlot),
+    (0.0, -2.0, Occupant::BarrelSlot),
+];
+
+const RELAY: &[Part] = &[
+    // The pad, and its fence with a gate gap in the south side.
+    p(-9.0, F, -9.0, 9.0, 0.25, 9.0, Mat::Concrete),
+    p(-9.0, 0.25, 8.8, 9.0, 2.0, 9.0, Mat::Steel),
+    p(-9.0, 0.25, -9.0, -2.0, 2.0, -8.8, Mat::Steel),
+    p(2.0, 0.25, -9.0, 9.0, 2.0, -8.8, Mat::Steel),
+    p(-9.0, 0.25, -8.8, -8.8, 2.0, 8.8, Mat::Steel),
+    p(8.8, 0.25, -8.8, 9.0, 2.0, 8.8, Mat::Steel),
+    // The tower: four legs, two platforms, the antenna and a dish.
+    p(1.8, 0.25, 1.8, 2.2, 20.0, 2.2, Mat::Steel),
+    p(3.8, 0.25, 1.8, 4.2, 20.0, 2.2, Mat::Steel),
+    p(1.8, 0.25, 3.8, 2.2, 20.0, 4.2, Mat::Steel),
+    p(3.8, 0.25, 3.8, 4.2, 20.0, 4.2, Mat::Steel),
+    p(1.8, 10.0, 1.8, 4.2, 10.3, 4.2, Mat::Steel),
+    p(1.5, 20.0, 1.5, 4.5, 20.3, 4.5, Mat::Steel),
+    p(2.85, 20.3, 2.85, 3.15, 26.0, 3.15, Mat::Steel),
+    p(4.2, 16.0, 2.4, 4.6, 17.6, 3.6, Mat::Steel),
+    // The generator hut and its roof, and a container by the gate.
+    p(-7.5, 0.25, 2.0, -2.5, 3.0, 7.0, Mat::Concrete),
+    p(-7.8, 3.0, 1.7, -2.2, 3.25, 7.3, Mat::Steel),
+    p(-7.5, 0.25, -7.0, -5.1, 2.6, -1.0, Mat::Cargo),
+];
+const RELAY_CRATES: &[Anchor] = &[
+    (-4.0, -5.0, Occupant::CrateSlot),
+    (6.0, -6.0, Occupant::BarrelSlot),
+];
+
 /// The boxes of a kind.
 pub const fn parts(kind: LandmarkKind) -> &'static [Part] {
     match kind {
@@ -302,6 +362,8 @@ pub const fn parts(kind: LandmarkKind) -> &'static [Part] {
         LandmarkKind::Anvil => ANVIL,
         LandmarkKind::Arch => ARCH,
         LandmarkKind::Spires => SPIRES,
+        LandmarkKind::Quarry => QUARRY,
+        LandmarkKind::Relay => RELAY,
     }
 }
 
@@ -316,6 +378,8 @@ pub const fn anchors(kind: LandmarkKind) -> &'static [Anchor] {
         LandmarkKind::Anvil => ANVIL_CRATES,
         LandmarkKind::Arch => ARCH_CRATES,
         LandmarkKind::Spires => SPIRES_CRATES,
+        LandmarkKind::Quarry => QUARRY_CRATES,
+        LandmarkKind::Relay => RELAY_CRATES,
     }
 }
 
@@ -341,6 +405,8 @@ pub const fn slug(kind: LandmarkKind) -> &'static str {
         LandmarkKind::Anvil => "anvil",
         LandmarkKind::Arch => "arch",
         LandmarkKind::Spires => "spires",
+        LandmarkKind::Quarry => "quarry",
+        LandmarkKind::Relay => "relay",
     }
 }
 
@@ -386,6 +452,8 @@ pub const fn name(kind: LandmarkKind) -> &'static str {
         LandmarkKind::Anvil => "Anvil Rock",
         LandmarkKind::Arch => "Arch Rock",
         LandmarkKind::Spires => "The Spires",
+        LandmarkKind::Quarry => "Stone Quarry",
+        LandmarkKind::Relay => "Relay Station",
     }
 }
 
@@ -401,6 +469,8 @@ const _: () = {
         LandmarkKind::Anvil,
         LandmarkKind::Arch,
         LandmarkKind::Spires,
+        LandmarkKind::Quarry,
+        LandmarkKind::Relay,
     ];
     let mut k = 0;
     while k < kinds.len() {
@@ -548,6 +618,11 @@ const ROAD_CLEAR_M: f32 = 18.0;
 const SITE_CLEAR_M: f32 = 40.0;
 /// Share of land cells that hold a landmark.
 const DENSITY: f32 = 0.7;
+/// A relay stands no further than this from a road's centreline (and no
+/// nearer than the landmark's own road clearance).
+const RELAY_ROAD_M: f32 = LANDMARK_R_M + ROAD_CLEAR_M + 50.0;
+/// A quarry's foothills start this high.
+const QUARRY_MIN_H: f32 = 26.0;
 
 /// Every landmark on the island, solved once per seed against the sites and
 /// roads already in `pad`.
@@ -652,7 +727,24 @@ fn try_site(
     // The kind by where it stands.
     let moist = terrain::moisture_memo(lat, seed, x, z);
     let roll = unit(h, 32);
-    let kind = if y0 > 42.0 {
+    // How far the nearest road runs, for the relay, which serves one.
+    let mut road_d2 = pad.ring.dist2(x, z);
+    for sr in pad.roads.iter() {
+        if sr.live {
+            road_d2 = road_d2.min(sr.dist2(x, z));
+        }
+    }
+    // The new kinds' own draw, re-mixed rather than read off `h`'s high
+    // bits: those are the yaw's, and a pick sharing them would turn every
+    // relay to one half of the compass.
+    let pick = unit(crate::rng::splitmix64(h), 0);
+    let kind = if road_d2 <= RELAY_ROAD_M * RELAY_ROAD_M && y0 <= 42.0 && pick < 0.5 {
+        // Within sight of a road and off the summits: the relay it serves.
+        LandmarkKind::Relay
+    } else if (QUARRY_MIN_H..=42.0).contains(&y0) && moist <= 0.05 && pick < 0.45 {
+        // Dry foothills: the rock is near the surface and nothing grows on it.
+        LandmarkKind::Quarry
+    } else if y0 > 42.0 {
         if roll < 0.4 {
             LandmarkKind::Mast
         } else if roll < 0.6 {

@@ -1388,7 +1388,7 @@ pub const SINK_M: f32 = 0.06;
 /// `greybox.rs::the_authored_pair_bounds_equal_what_the_sim_publishes`
 /// measures the sim's scalars against, and still what draws if a model fails
 /// to load. `assets/models/MANIFEST.md` carries the prompt and task id per
-/// file; `tests/site_assets.rs` gates every claim in this doc comment.
+/// file; `tests/prop_assets.rs` gates every claim in this doc comment.
 pub fn prop_models(o: Occupant) -> &'static [&'static str] {
     match o {
         Occupant::HavenShelter => &["models/site/shelter.glb"],

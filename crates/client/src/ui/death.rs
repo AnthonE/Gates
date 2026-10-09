@@ -105,6 +105,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         // the cheapest possible way to find out the three had drifted.
         DEATH_BY_MOB => match mob::slot_of_id(d.killer).map(mob::kind_of) {
             Some(mob::MOB_WOLF) => "a wolf ran you down".to_string(),
+            Some(mob::MOB_STAG) => "a stag gored you".to_string(),
             Some(mob::MOB_HELI) => "the attack helicopter gunned you down".to_string(),
             Some(mob::MOB_SENTRY) => "THE GATE's sentry gunned you down".to_string(),
             _ => "a pig gored you".to_string(),
@@ -371,8 +372,12 @@ mod tests {
         let pig = (0..sim_core::limits::MAX_MOBS)
             .find(|&s| mob::kind_of(s) == mob::MOB_PIG)
             .expect("the roster holds prey");
+        let stag = (0..sim_core::limits::MAX_MOBS)
+            .find(|&s| mob::kind_of(s) == mob::MOB_STAG)
+            .expect("the roster holds a stag");
         assert_eq!(said(wolf), "a wolf ran you down");
         assert_eq!(said(pig), "a pig gored you");
+        assert_eq!(said(stag), "a stag gored you");
         assert_eq!(
             said(mob::HELI_SLOT),
             "the attack helicopter gunned you down"

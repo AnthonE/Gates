@@ -45,6 +45,15 @@ archetype = "barricade"
 placement = "any"
 hp = 350
 
+# A raised bed (crops v0): seeds in its beds grow into a crop on the ovens'
+# sweep, with no fuel and no switch (`sim-core/oven.rs`). On the ground or a
+# floor; a planter is a garden, not a fortification, so it is the box's hp.
+[[deployable]]
+id = "item.planter"
+archetype = "planter"
+placement = "any"
+hp = 300
+
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"

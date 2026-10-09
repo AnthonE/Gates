@@ -91,3 +91,35 @@ fn a_landmark_wall_stops_a_body() {
     );
     let _ = Occupant::None;
 }
+
+/// The two kits with a terrain need of their own (`NOW.md` §0n2 item 1): a
+/// relay stands within sight of a road, a quarry in the dry foothills. Over
+/// a handful of seeds each turns up somewhere, and every relay is near a road.
+#[test]
+fn relays_stand_by_roads_and_quarries_turn_up() {
+    use sim_core::landmark::{LandmarkKind, LANDMARK_R_M};
+    let (mut relays, mut quarries) = (0, 0);
+    for seed in [1u64, 7, 42, 99, 2026, 31337] {
+        let h = sim_core::terrain::haven(seed);
+        for m in h.marks.iter().filter(|m| m.live) {
+            match m.kind {
+                LandmarkKind::Relay => {
+                    relays += 1;
+                    let mut d2 = h.ring.dist2(m.x, m.z);
+                    for r in h.roads.iter().filter(|r| r.live) {
+                        d2 = d2.min(r.dist2(m.x, m.z));
+                    }
+                    let most = LANDMARK_R_M + 18.0 + 50.0;
+                    assert!(d2 <= most * most, "a relay {} m from any road", d2.sqrt());
+                }
+                LandmarkKind::Quarry => {
+                    quarries += 1;
+                    assert!(m.y <= 42.0, "a quarry on a summit at {} m", m.y);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(relays > 0, "no relay on six islands");
+    assert!(quarries > 0, "no quarry on six islands");
+}

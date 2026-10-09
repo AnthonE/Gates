@@ -261,6 +261,16 @@ chill_rise_per_s = 8
 chill_fall_per_s = 20
 hurt_at = 600
 hurt_hp_per_min = 6
+# The cold eats (`NOW.md` §0wx item 1): at full chill food drains twice as
+# fast (the reference's cold burns calories); water is the heat's to burn,
+# and the island has no heat, so it stays at the normal drain. Scaled by the
+# chill, so a clear night (380) is +38 % food.
+cold_food_pct = 100
+cold_water_pct = 0
+# Comfort: warm (no chill), dry, both meters at least half full, and by a lit
+# fire or under a roof — the body mends 6 hp a minute. Ours; the reference's
+# comfort raises a regen it pays from food.
+comfort_hp_per_min = 6
 
 # The starter base the raid ratio prices (CONTENT §3: "2×1 stone, door,
 # bag, hearth, box"): 2 foundations, 5 walls, 1 doorway, 2 roofs, plus

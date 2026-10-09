@@ -338,7 +338,7 @@ impl Rules {
                     page.cook_ticks = u16::try_from(ticks).unwrap_or(u16::MAX);
                 }
                 content::schema::CookStation::Recycler => page.recycles = true,
-                content::schema::CookStation::Furnace => {}
+                content::schema::CookStation::Furnace | content::schema::CookStation::Planter => {}
             }
         }
         for w in &content.weapons {

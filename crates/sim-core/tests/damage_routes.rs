@@ -141,6 +141,13 @@ const NOT_DAMAGE: &[(&str, &str, &str)] = &[
          and there is nothing here for a reducer to reduce",
     ),
     (
+        "exposure.rs",
+        "step",
+        "COMFORT (`NOW.md` §0wx item 1) — a warm, dry, fed body by a fire mending. \
+         A gain, not a loss, on the branch where the cold costs nothing, so \
+         there is nothing here for a reducer to reduce",
+    ),
+    (
         "world.rs",
         "down_or_die",
         "the FALL (wounded v0, `wound.rs`) — the funnel has just taken the body to \

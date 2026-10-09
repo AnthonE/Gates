@@ -479,6 +479,9 @@ pub struct Consumable {
     /// Spend one from the belt only if a wounded recovery roll fails.
     #[serde(default)]
     pub belt_recovery: bool,
+    /// Used on a downed body in reach (`Command::Treat`), stand it up.
+    #[serde(default)]
+    pub revive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -530,6 +533,9 @@ pub enum DeployArchetype {
     WindowGlass,
     WindowShutter,
     Barricade,
+    /// A planter box (crops v0): a container that grows what is planted in
+    /// it, by `cooking.toml`'s `planter` rows.
+    Planter,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -577,6 +583,8 @@ pub enum CookStation {
     /// Converts without burning (recycler v0). The station that makes this
     /// table the economy's arming point: a row here is a faucet.
     Recycler,
+    /// Grows (crops v0): a seed in a planter's bed becomes a crop.
+    Planter,
 }
 
 /// One transformation a container performs: one unit in, `count` units of
@@ -770,6 +778,30 @@ pub struct Sentry {
     pub lose_ms: u32,
     /// Aim wobble: within this many centimetres per 10 m, on each axis.
     pub spread_cm_per_10m: u32,
+}
+
+/// A site guard's own loot (`mobs.toml` `[guard]`): stacks its carcass
+/// holds on top of its species' `drops`. A guard is a wolf slot holding a
+/// site (`mob::guard_site_of`), so this is a tier, not a species.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Guard {
+    pub drops: Vec<Stack>,
+}
+
+/// Butchering (`mobs.toml` `[butcher]`): a tool swung at an animal's
+/// carcass cuts one stack out of it per hit and pays `yield_pct` percent of
+/// it. A tool with no row cannot butcher; `E` still pulls the carcass apart
+/// by hand at 100. Keyed per tool, `gatherables.toml`'s shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Butcher {
+    pub yield_pct: BTreeMap<String, u32>,
+    /// Hundredths of condition per cut, per tool — `Gatherable`'s
+    /// `condition_loss`, with its two rules: a row for every
+    /// condition-carrying tool that butchers, and none for one that does not.
+    #[serde(default)]
+    pub condition_loss: BTreeMap<String, u32>,
 }
 
 /// The attack helicopter (`sim-core/src/heli.rs`): an AI gunship that
@@ -1037,6 +1069,16 @@ pub struct Exposure {
     /// Past this chill the cold costs hp; this many a minute at full chill.
     pub hurt_at: u32,
     pub hurt_hp_per_min: u32,
+    /// The cold's metabolic cost: percent of the normal food and water drain
+    /// added at full chill, scaled by the chill.
+    #[serde(default)]
+    pub cold_food_pct: u32,
+    #[serde(default)]
+    pub cold_water_pct: u32,
+    /// Comfort: hit points a minute a warm, dry, fed body gets back by a fire
+    /// or under a roof.
+    #[serde(default)]
+    pub comfort_hp_per_min: u32,
 }
 
 /// The declared bands + globals the anchors compute against

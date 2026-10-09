@@ -92,7 +92,7 @@
 
 use core::ops::Range;
 
-use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER};
+use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_PLANTER, ARCH_RECYCLER};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
 use crate::world::{EventQueue, EV_OVEN};
@@ -106,7 +106,7 @@ pub const ROLE_OUTPUT: u8 = 4;
 
 /// The converters whose roles the item catalog carries, in the order their
 /// three-bit groups are packed ([`CookContent::packed_roles`]).
-pub const ROLE_ARCHES: [u8; 3] = [ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER];
+pub const ROLE_ARCHES: [u8; 4] = [ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER, ARCH_PLANTER];
 /// Bits the packed roles take on the wire.
 pub const PACKED_ROLE_BITS: u32 = 3 * ROLE_ARCHES.len() as u32;
 
@@ -159,11 +159,27 @@ pub const FIRE_LAYOUT: OvenLayout = OvenLayout {
 
 const _: () = assert!(FIRE_LAYOUT.slots() <= BOX_SLOTS);
 
+/// A planter box (crops v0): four beds that grow, and the rest of the box
+/// for what they yield. A bed with several seeds in it grows them one after
+/// another — one plant to a bed at a time, so beds are what make a planter
+/// worth more than one.
+pub const PLANTER_LAYOUT: OvenLayout = OvenLayout {
+    fuel: 0,
+    input: 4,
+    output: 8,
+};
+
+const _: () = assert!(PLANTER_LAYOUT.slots() <= BOX_SLOTS);
+
 /// The sections of an archetype's slots, or `None` for a converter that has
 /// none yet: every slot of it takes whatever it accepts, fuel burns from any
 /// of them and what it makes lands in any.
 pub fn layout(arch: u8) -> Option<OvenLayout> {
-    (arch == ARCH_FIRE).then_some(FIRE_LAYOUT)
+    match arch {
+        ARCH_FIRE => Some(FIRE_LAYOUT),
+        ARCH_PLANTER => Some(PLANTER_LAYOUT),
+        _ => None,
+    }
 }
 
 /// The slots fuel is taken from, those that cook, and those a conversion
@@ -433,7 +449,13 @@ impl OvenState {
     /// Does this container convert at all — the sweep's filter and
     /// `oven_index`'s. A recycler answers yes and burns nothing.
     pub fn arch_converts(arch: u8) -> bool {
-        Self::arch_burns(arch) || arch == ARCH_RECYCLER
+        Self::arch_burns(arch) || arch == ARCH_RECYCLER || arch == ARCH_PLANTER
+    }
+
+    /// Does this converter run without a switch? A planter is always
+    /// growing: there is nothing to light and nothing to snuff.
+    pub fn arch_always_on(arch: u8) -> bool {
+        arch == ARCH_PLANTER
     }
 
     pub fn burns(&self) -> bool {
@@ -567,6 +589,10 @@ pub fn toggle(
     }
     let (boxes, ovens) = deploys.oven_parts_mut();
     let st = &mut ovens[i];
+    // A planter has no switch: it is always growing.
+    if OvenState::arch_always_on(st.arch) {
+        return true;
+    }
     if st.lit {
         st.lit = false;
         announce(cx, cz, level, loc, false, p.id, events);
@@ -612,7 +638,7 @@ pub fn sweep(
     let phase = tick % period;
     let (boxes, ovens) = deploys.oven_parts_mut();
     for i in (phase as usize..ovens.len()).step_by(period as usize) {
-        if !ovens[i].is_converter() || !ovens[i].lit {
+        if !ovens[i].is_converter() || !(ovens[i].lit || OvenState::arch_always_on(ovens[i].arch)) {
             continue;
         }
         let arch = ovens[i].arch;

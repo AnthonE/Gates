@@ -77,7 +77,8 @@ pub const ALL: [Kind; KINDS] = [
 /// The kind an action belongs to.
 pub fn kind_of(act: &ActionMsg) -> Kind {
     match act {
-        ActionMsg::Consume { .. } | ActionMsg::Drink => Kind::Mouth,
+        // A syringe on someone else is a mouthful's pace: one a second.
+        ActionMsg::Consume { .. } | ActionMsg::Drink | ActionMsg::Treat { .. } => Kind::Mouth,
         ActionMsg::Vend { .. } => Kind::Move,
         ActionMsg::Swipe { .. } => Kind::Move,
         // A deposit moves a pack's worth of items, like a trade.

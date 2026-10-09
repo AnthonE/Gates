@@ -531,6 +531,7 @@ pub fn gather(
         && aimed
             .as_ref()
             .is_some_and(|a| a.0.verb == crate::ui::interact::Verb::Assist)
+        && net.session.core.held_revive_slot().is_none()
     {
         buttons |= BTN_ASSIST;
     }
