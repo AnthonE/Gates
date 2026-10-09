@@ -296,13 +296,16 @@ v0" row asked the question this section answers.
    system the reference itself gave up on, **the code lock is the whole
    answer and the key lock is deliberately not built** — that is a
    conclusion, not a deferral.
+   *Since built (#239), without the key:* `LockRec::fresh_key` is a lock with no
+   keypad (`CODE_KEY`), locked at once to its placer and opened by the
+   base's hearth crew, so it needs no instance data. Verb 10 stays unbuilt.
 8. **Boxes want the same lock** (§2.2). `inventory.rs`'s `CONT_BOX` comment
    already reasons "open to anyone, exactly like an unlocked door" and points
    at the door's owner bit as the thing it declined to copy. Once the lock is
    a side-store keyed by an address, a box has an address too, and the
    predicate is the same function. It is a follow-on slice with no new
    concepts, which is the best kind.
-9. **What we should NOT copy**: the key lock (§7 verb 10, and item 7 above);
+9. **What we should NOT copy**: the key (§7 verb 10, and item 7 above);
    `DoorCloser` and `DoorKnocker` as deployables (peripherals on verbs we do
    not have yet); the soft side (§3, a directional damage multiplier that
    wants a hit normal our `combat.rs` does not carry); and door tiers beyond
@@ -312,6 +315,6 @@ v0" row asked the question this section answers.
     1 open/close ✅ · 2 knock ✅ (lock v1) · 3 place a lock ✅ (lock v1) ·
     4 enter a code ✅ (lock v1) · 5 change the code ✅ (lock v1) ·
     6 guest code ✅ (lock v1) · 7 lock/unlock ✅ · 8 take the lock ✅
-    (lock v1) · 9 remove an unsecured door ❌ (no deployable-pickup verb
-    exists at all — a separate slice, named in `NOW.md`) · 10 craft a key ❌
-    (item 7, deliberately) · 11 break the door ✅ (`charge.rs`, `combat.rs`).
+    (lock v1) · 9 remove an unsecured door ✅ (`deploy::pick_up`, pickup v1;
+    a locked one wants full rights) · 10 craft a key ❌ (item 7, deliberately;
+    the key lock is built without one) · 11 break the door ✅ (`charge.rs`, `combat.rs`).

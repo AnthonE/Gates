@@ -546,14 +546,6 @@ act):
 4. The soak owes tick jitter as a distribution and an hour-long run (last: 25 min),
    re-run with the contention instruments (`raid_storm.rs`, `bots::raid_step`).
 
-## 0zd · Doors and locks — the key lock's blocker died and nobody re-took it *(systems lane)*
-
-1. The key lock landed (#239: no keypad, locked to its placer and the hearth crew);
-   `reference/DOORS.md` §9 items 7 and 10 and the `DECISIONS-ARCHIVE.md` 2026-08-08 row
-   still say it is not built.
-2. `DECISIONS.md` says `L` opens a keypad HUD line, not a panel; the client ships
-   `render/hud.rs::pad_overlay`. Fix the registry.
-
 ## Wire, shard and persistence *(server lane)*
 
 ## 0fan · The event lane's fan-out — four arms filtered, nineteen to go *(server lane)*
@@ -1171,7 +1163,9 @@ warning lives in `§0web`), 2026-09-24; `§0shot` (muzzle flash, tracers and the
 distance low-pass landed in #179; last text `git show 1e046dc:NOW.md`), 2026-09-25;
 `§0anim` (the animals move: modelled bodies and legs, bite, howl and run poses),
 `§0dk` (the body's albedo lift, `BODY_ALBEDO_LIFT`) and `§0cards` (every card a
-photograph), 2026-10-09 — last text `git show 3132e62:NOW.md`.
+photograph), 2026-10-09 — last text `git show 3132e62:NOW.md`; `§0zd` (doors and
+locks: the registry and `reference/DOORS.md` now say the key lock is built), 2026-10-09
+— last text `git show 78bcc36:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
@@ -1191,7 +1185,7 @@ landed; those numbers now point at other items. `ALPHA.md` cites the wipe as
 | `0w` | the props' gaps *(client)* · the native menus *(client)* |
 | `0x` | the client's sound *(client)* · the native client's trim *(client)* |
 | `0y` | the sea *(client)* · persistence *(server)* |
-| `0z` | the Bevy-draws rule's gate *(client)* — doors is `§0zd` |
+| `0z` | the Bevy-draws rule's gate *(client)* — doors was `§0zd`, closed |
 | `4b` | the world lane *(world)* · the domain gate *(platform)* |
 
 **Renamed**: doors and locks `§0z` → `§0zd`.

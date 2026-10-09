@@ -102,32 +102,25 @@
 //!   [`Player::Anonymous`] and the game plays. There is no third branch where
 //!   we ask for a private key, and there must never be one.
 //! - **An address is a CLAIM, not authentication.** The launcher reports the
-//!   address the player asked it to watch; anything can say a number. When it
-//!   starts mattering — a raid ledger, an item, a settled round — the wire has
-//!   to carry a signature over something the shard chose, and the shard has to
-//!   recover the signer. Nothing here is that, and nothing here pretends to be.
+//!   address the player asked it to watch; anything can say a number. What
+//!   proves it is the handshake below: a signature over something the shard
+//!   chose, from which the shard recovers the signer.
 //! - **This never blocks the frame.** Discovery happens once, before the window
 //!   opens. `Overlay::sign` waits on a human at a consent prompt (the SDK's
 //!   read timeout is five minutes), so it may never be called from a system.
 //!
-//! ## What it does not do yet, said plainly
+//! ## How the shard learns who is playing
 //!
-//! `PROTO_VER`'s `Hello` carries a version and nothing else, so the shard does
-//! not learn the player's address and does not check one. Wiring identity into
-//! the handshake is a wire change — a version bump and every golden regenerated
-//! in the same commit (`CLAUDE.md` wall 6) — and it is not this slice. What
-//! lands here is the client knowing who it is, from the launcher when one is
-//! running and from `--identity` when the player says so, which is the half
-//! that has to exist first either way.
-//!
-//! When that slice IS built, the verb to reach for is `Overlay::prove(server,
-//! nonce)`, not [`sign_siwe`]. `sign_siwe` hands the launcher a string this
-//! process composed; `prove` binds the signature to a server name and a nonce
-//! the SHARD chose, which is the difference between a signature a shard can
-//! verify and one it can only replay. The SDK's own doc on `Proof::message`
-//! says the rest: the echoed message is for logging, and a server MUST
-//! recompute what it verifies against. `prove` arrived with the 2026-08-09
-//! re-vendor and has no call site here yet.
+//! The handshake proves it (`protocol::auth`): the shard sends a `Challenge`
+//! (a nonce and its own second), [`sign_siwe`] hands both to the launcher's
+//! `prove` ([`Elo::prove_at`]), and the shard rebuilds the message with
+//! `protocol::siwe_message` and recovers the signer. `prove` composes every
+//! word itself from the server name and the nonce and second the SHARD chose,
+//! so no consent prompt fires and a game cannot put words in a signature; the
+//! echoed `Proof::message` is for logging, and the shard recomputes what it
+//! verifies against. What this module adds is the client knowing who it is,
+//! from the launcher when one is running and from `--identity` when the player
+//! says so.
 
 // **The launcher door is desktop-only, and the fix needs no vendored byte.**
 //
