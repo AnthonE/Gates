@@ -949,23 +949,85 @@ const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 
+/// The world around the body, as the exposure chips read it: the client's
+/// own sky (`weather::WeatherNow`), never a second opinion of the sim's.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExposureWorld {
+    pub rain: f32,
+    pub wind: f32,
+    /// 0 by day, 1 deep in the night.
+    pub night: f32,
+    /// A roof overhead (`collide::roofed`, the rain's own question).
+    pub sheltered: bool,
+    pub underwater: bool,
+}
+
+/// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
+/// rain on an open body, the sea, or drying out.
+pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
+    let why = if w.underwater {
+        "IN THE WATER"
+    } else if w.rain > 0.05 && !w.sheltered {
+        "RAIN"
+    } else if w.sheltered {
+        "DRYING UNDER A ROOF"
+    } else {
+        "DRYING"
+    };
+    format!("WET {wet_pct}% · {why}")
+}
+
+/// What the COLD chip says: the strongest cause it can see, and that a roof
+/// is helping when there is one. Freezing names what stops it, less what
+/// the body already has.
+pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
+    let open = !w.sheltered;
+    let why = if w.rain > 0.05 && open {
+        "RAIN"
+    } else if w.wind > 0.4 && open {
+        "WIND"
+    } else if wet_pct >= 30 {
+        "WET CLOTHES"
+    } else if w.night > 0.5 {
+        "NIGHT"
+    } else {
+        "EXPOSED"
+    };
+    match (hurting, w.sheltered) {
+        (true, true) => "FREEZING · UNDER A ROOF · NOW A FIRE".to_string(),
+        (true, false) => format!("FREEZING · {why} · FIND A FIRE OR A ROOF"),
+        (false, true) => format!("COLD · {why} · ROOF HELPS"),
+        (false, false) => format!("COLD · {why}"),
+    }
+}
+
 /// Keep the wet and cold chips on what the server last said. Hidden while
 /// there is nothing to say — dry, and warm enough not to mention.
 pub fn exposure(
     net: NonSend<super::Net>,
+    sky: Option<Res<super::weather::WeatherNow>>,
     mut chips: Query<(&ExposureChip, &mut Text, &mut Node, &mut BackgroundColor)>,
 ) {
     let core = &net.session.core;
+    let w = sky.map_or_else(ExposureWorld::default, |n| ExposureWorld {
+        rain: n.rain,
+        wind: n.wind,
+        night: n.night,
+        sheltered: n.sheltered,
+        underwater: n.underwater,
+    });
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
-            ExposureChip::Wet => (core.wet_pct > 0, format!("WET {}%", core.wet_pct), WET_CHIP),
+            ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
             // The one chip that costs hp says what stops it.
-            ExposureChip::Cold if core.cold_hurting => (
-                true,
-                "FREEZING · FIND A FIRE OR A ROOF".to_string(),
-                FREEZE_CHIP,
+            ExposureChip::Cold if core.cold_hurting => {
+                (true, cold_line(true, core.wet_pct, w), FREEZE_CHIP)
+            }
+            ExposureChip::Cold => (
+                core.cold_pct >= 25,
+                cold_line(false, core.wet_pct, w),
+                COLD_CHIP,
             ),
-            ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
                 let town = &core.haven().town;
@@ -3724,6 +3786,34 @@ pub fn pickups(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that
+    /// is working is said to be working.
+    #[test]
+    fn the_exposure_chips_say_why() {
+        let open_rain = ExposureWorld {
+            rain: 0.8,
+            ..Default::default()
+        };
+        assert_eq!(wet_line(40, open_rain), "WET 40% · RAIN");
+        let roofed = ExposureWorld {
+            sheltered: true,
+            ..open_rain
+        };
+        assert_eq!(wet_line(40, roofed), "WET 40% · DRYING UNDER A ROOF");
+        assert_eq!(cold_line(false, 0, open_rain), "COLD · RAIN");
+        assert_eq!(
+            cold_line(false, 50, roofed),
+            "COLD · WET CLOTHES · ROOF HELPS"
+        );
+        let night = ExposureWorld {
+            night: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(cold_line(false, 0, night), "COLD · NIGHT");
+        assert!(cold_line(true, 0, night).contains("FIND A FIRE OR A ROOF"));
+        assert!(cold_line(true, 0, roofed).contains("NOW A FIRE"));
+    }
 
     /// **The defect this queue exists for, in the shipped world.** A tree
     /// carries a secondary (`content/gatherables.toml`: wood, then

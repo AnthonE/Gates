@@ -414,8 +414,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 1. Exposure is wet and cold only: no overheating (no desert, so the Dust preset was dropped; heat is what
    burns water in the reference). Burlap is the only warm clothing (`content/armor.toml`).
 2. Lightning is a 0.35 s brightening: no bolt, no directional flash; `weather::Bolt::bearing` is never read.
-3. WET and COLD say what, not why, and nothing confirms a roof or a fire is working (FREEZING now says
-   what fixes it, `render/hud.rs`).
+3. WET and COLD say why and confirm a roof (`hud::wet_line`/`cold_line`, off the client's own sky); a
+   fire's warmth is not confirmed — its reach is content the client does not hold.
 4. A sapling is the adult tree scaled 15 → 100 % in 16 steps: no sapling model.
 
 ## 0sk · Skins — what v0 left *(client + platform lane)*
