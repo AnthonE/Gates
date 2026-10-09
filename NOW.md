@@ -353,8 +353,9 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 ## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
 
 2. ADS landed client-side on `BTN_AIM` (no wire change: the sim has no spread, so the sights are a 25 %
-   zoom, a slower look and the drawn bow's walk). Left: a sights pose for the viewmodel (the gun stays at
-   the hip while the view narrows), and whether a spread worth aiming for belongs in the sim.
+   zoom, a slower look and the drawn bow's walk); the gun comes to the middle with its barrel down the view
+   (`viewmodel::sights_aim`, solved off `SIGHTS_PALM`). Unseen by a person: the pose's one number is where
+   the fist sits. Left: whether a spread worth aiming for belongs in the sim.
 3. Flashlight (`F`): the torch and its right-click `BTN_LIGHT` toggle exist (torch
    fuel v0, `render/input.rs`); `F` itself only nudges the plan's height.
 4. Voice (hold `V`): no capture, codec, `KIND_*` or fan-out; `reference/VOICE.md` §9.

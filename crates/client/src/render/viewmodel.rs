@@ -346,6 +346,14 @@ pub const DRAW_ZOOM: f32 = 0.15;
 /// How much a gun aimed down its sights narrows the view (75° → 56°, iron
 /// sights' modest zoom). Unseen by a person yet.
 pub const ADS_ZOOM: f32 = 0.25;
+/// Where the fist holding a gun at its sights sits, view space, metres:
+/// centred, under the crosshair, a little nearer than the hip. The rig is
+/// moved by exactly what puts [`palm_rig`] here ([`sights_off`]), so this
+/// is the one number of the pose and the rest is solved. Unseen by a person.
+pub const SIGHTS_PALM: Vec3 = Vec3::new(0.0, -0.14, -0.42);
+/// How far down the view axis the barrel at its sights points, metres: far
+/// enough that it reads parallel to the view, near enough to converge.
+pub const SIGHTS_RANGE_M: f32 = 25.0;
 /// How far a raised bow is canted about its arrow, radians: the top limb
 /// tipped in toward the frame's middle, so the limbs and the string read
 /// across the view instead of edge-on. See [`bow_aim`].
@@ -775,6 +783,22 @@ pub fn stroke_snap(def: Option<&HeldModelDef>, cock: f32, strike: f32) -> Quat {
         },
         None => Quat::IDENTITY,
     }
+}
+
+/// The rig's shift at full sights: what carries the resting palm onto
+/// [`SIGHTS_PALM`] (an unturned, uncarried rig moves points by its offset).
+pub fn sights_off() -> Vec3 {
+    SIGHTS_PALM - palm_rig()
+}
+
+/// The wrist at the sights, `k` of the way there: the turn that points a
+/// gun's long axis from the palm under the rig `rig` to a spot
+/// [`SIGHTS_RANGE_M`] down the view axis — [`bow_aim`]'s method for a gun.
+pub fn sights_aim(def: &crate::ui::hold::HeldModelDef, rig: &Transform, k: f32) -> Quat {
+    let palm = rig.transform_point(palm_rig());
+    let want_view = (Vec3::new(0.0, 0.0, -SIGHTS_RANGE_M) - palm).normalize_or(Vec3::NEG_Z);
+    let want = (rig.rotation * tilt()).inverse() * want_view;
+    turn_toward(item_rest_dir(def), want, std::f32::consts::PI, k)
 }
 
 /// An item's long axis at rest, in the hold frame — what the wrists turn from.
@@ -2611,8 +2635,11 @@ pub fn animate(
         VIEWMODEL_DRAW_TURN.y * raise + climb * kick,
         VIEWMODEL_DRAW_TURN.z * raise,
     );
-    let draw_off =
-        VIEWMODEL_DRAW_RAISE * raise + VIEWMODEL_DRAW_PULL * (pull * raise) + kick_off * kick;
+    // A gun at its sights comes to the middle (`sights_off`), and still kicks.
+    let draw_off = VIEWMODEL_DRAW_RAISE * raise
+        + VIEWMODEL_DRAW_PULL * (pull * raise)
+        + kick_off * kick
+        + sights_off() * m.ads;
     // ── One pose for the whole assembly ─────────────────────────────────
     //
     // `1 - swing` runs the stroke forwards as `swing` counts down. The arc
@@ -2637,7 +2664,7 @@ pub fn animate(
     m.idle_lag = lag;
     m.idle_drift = bob + Vec3::Y * m.heave;
     *t = carried(
-        m.carry * (1.0 - raise),
+        m.carry * (1.0 - raise.max(m.ads)),
         m.lift,
         lag * arc * draw_turn,
         throw + bob + draw_off + Vec3::Y * m.heave,
@@ -2663,8 +2690,11 @@ pub fn animate(
     let (cock, strike) = swing_phases(s);
     let snap = stroke_snap(def, cock, strike);
     // A raised bow turns in the hand to aim; nothing else does.
+    // …and a gun at its sights turns in the hand to lay its barrel down the
+    // view, off the rig as drawn this frame.
     let aim = match (bow, def) {
         (Some(_), Some(d)) => bow_aim(d, m.raise),
+        (None, Some(d)) if m.ads > 0.0 => sights_aim(d, &t, m.ads),
         _ => Quat::IDENTITY,
     };
     // Holstered in THE GATE the fist is empty (`swap`), so it is the rest hand.
@@ -2775,5 +2805,33 @@ mod tests {
         let d = wrap_pi(-3.13 - 3.13);
         assert!(d.abs() < 0.03, "wrapped delta was {d}");
         assert!((wrap_pi(0.2) - 0.2).abs() < 1e-6);
+    }
+
+    /// A gun at its sights: the fist on [`SIGHTS_PALM`] and the barrel laid
+    /// down the view, within a degree and a half — for every row that is
+    /// fired from the hip, so a new gun inherits the pose. Half way up, the
+    /// barrel is half way turned.
+    #[test]
+    fn a_gun_at_its_sights_lays_its_barrel_down_the_view() {
+        let guns: Vec<_> = HELD_MODELS
+            .iter()
+            .filter(|d| d.stroke == Stroke::Shot)
+            .collect();
+        assert!(guns.len() >= 2, "the revolver and the crossbow");
+        let rig = rig_transform(Quat::IDENTITY, sights_off());
+        let palm = rig.transform_point(palm_rig());
+        assert!(
+            palm.distance(SIGHTS_PALM) < 1e-4,
+            "the fist at the sights: {palm}"
+        );
+        for d in guns {
+            let barrel =
+                |k: f32| rig.rotation * tilt() * (sights_aim(d, &rig, k) * item_rest_dir(d));
+            let off = barrel(1.0).angle_between(Vec3::NEG_Z).to_degrees();
+            assert!(off < 1.5, "{}: the barrel is {off:.2}° off the view", d.key);
+            let rest = barrel(0.0).angle_between(Vec3::NEG_Z);
+            let half = barrel(0.5).angle_between(Vec3::NEG_Z);
+            assert!(half < rest, "{}: half way up is half way turned", d.key);
+        }
     }
 }
