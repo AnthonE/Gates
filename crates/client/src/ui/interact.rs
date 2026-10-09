@@ -434,8 +434,11 @@ impl Pick {
                 crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
                 self.count
             ),
+            // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
+            // `[butcher]`); the prompt teaches the verb rather than knowing
+            // which tools have a row, which the catalog does not carry.
             Verb::Bag if self.species.is_some() => format!(
-                "[E] LOOT {}",
+                "[E] LOOT {}  ·  SWING A BLADE TO BUTCHER",
                 match self.species {
                     Some(sim_core::mob::MOB_WOLF) => "WOLF",
                     Some(sim_core::mob::MOB_STAG) => "STAG",
@@ -1183,8 +1186,14 @@ mod tests {
                 .prompt(&ItemCatalog::EMPTY)
         };
         assert_eq!(prompt(0), "[E] OPEN BACKPACK");
-        assert_eq!(prompt(1 + sim_core::mob::MOB_PIG), "[E] LOOT PIG");
-        assert_eq!(prompt(1 + sim_core::mob::MOB_WOLF), "[E] LOOT WOLF");
+        assert_eq!(
+            prompt(1 + sim_core::mob::MOB_PIG),
+            "[E] LOOT PIG  ·  SWING A BLADE TO BUTCHER"
+        );
+        assert_eq!(
+            prompt(1 + sim_core::mob::MOB_WOLF),
+            "[E] LOOT WOLF  ·  SWING A BLADE TO BUTCHER"
+        );
     }
 
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does

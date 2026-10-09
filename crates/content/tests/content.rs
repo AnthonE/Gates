@@ -3893,17 +3893,18 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 }
 
 /// **The split is theirs** (operator, 2026-09-22 — `reference/BLUEPRINTS.md`
-/// §1): twelve recipes need a blueprint, each at the item page's research
+/// §1): thirteen recipes need a blueprint, each at the item page's research
 /// price, and gunpowder and metal arrows — known from the start there — are
 /// not gated here either.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 12] = [
+    let want: [(&str, u32); 13] = [
         ("item.arrow_fire", 30),
         ("item.hatchet_metal", 30),
         ("item.pickaxe_metal", 30),
         ("item.medkit", 30),
+        ("item.syringe", 30),
         ("item.window_shutters", 15),
         ("item.window_bars_metal", 30),
         ("item.pistol_ammo", 30),

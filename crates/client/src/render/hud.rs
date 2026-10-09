@@ -2866,6 +2866,17 @@ pub fn prompt(
                 "HELPING UP · {:.1} s · HOLD [E] · STAY STILL",
                 remaining as f32 / sim_core::limits::TICK_HZ as f32
             )
+        } else if let Some(slot) = net
+            .session
+            .core
+            .held_revive_slot()
+            .filter(|_| aimed.0.verb == crate::ui::interact::Verb::Assist)
+        {
+            let item = net.session.core.inv[slot as usize].item;
+            format!(
+                "[E] INJECT {}",
+                crate::ui::craft::item_label(&net.session.core.catalog, item).to_uppercase()
+            )
         } else {
             match aimed.0.prompt(&net.session.core.catalog) {
                 // A kiosk names its stall, so six counters are six shops

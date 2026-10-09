@@ -833,6 +833,10 @@ pub struct ItemRow {
     /// A weapon the safe zone holsters (v92, `combat::drawn_weapon`): the
     /// client lowers it in THE GATE and says why a click there does nothing.
     pub holster: bool,
+    /// Medicine that stands a downed body up (v99,
+    /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
+    /// downed body injects rather than starting the hand revive.
+    pub revive: bool,
 }
 
 /// Width of [`ItemRow::oven`].
@@ -852,6 +856,7 @@ impl ItemRow {
         nock_ticks: 0,
         oven: 0,
         holster: false,
+        revive: false,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -2102,6 +2107,8 @@ pub fn encode_event_catalog(
         w.write(row.oven as u32, OVEN_ROLE_BITS)?;
         // The safe zone's holster (v92).
         w.write_bit(row.holster)?;
+        // The revive (v99).
+        w.write_bit(row.revive)?;
     }
     Ok((w.finish(), count))
 }
@@ -4462,6 +4469,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     nock_ticks: r.read(8)? as u8,
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
                     holster: r.read_bit()?,
+                    revive: r.read_bit()?,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -6340,6 +6348,7 @@ mod tests {
                 // The oven roles (v89) at the width's corner.
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
                 holster: i % 2 == 0,
+                revive: i % 3 == 0,
             };
             cat.set(i, &name, row).unwrap();
         }

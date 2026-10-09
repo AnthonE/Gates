@@ -1433,6 +1433,14 @@ pub enum Command {
         id: u32,
         target: u32,
     },
+    /// Use the medicine in inventory slot `slot` on `target`, a downed body
+    /// the sender is aiming at in hand reach (`NOW.md` §0wnd item 1): an
+    /// item with `revive` (the syringe) stands it up at once and heals it.
+    Treat {
+        id: u32,
+        slot: u8,
+        target: u32,
+    },
     Join {
         id: u32,
     },
@@ -2465,6 +2473,43 @@ impl World {
     ///
     /// One row, two rings, built once: the event is packed *from* the row,
     /// so the lossy announcement and the record cannot disagree.
+    /// A butchering swing that reached a carcass (`melee::Reached::Carcass`):
+    /// one cut at the held tool's `[butcher]` rate, then the tool's wear. A
+    /// tool at condition zero is no tool, as on a node (`gather::land`).
+    fn butcher(
+        &mut self,
+        i: usize,
+        held: u16,
+        c: melee::CarcassHit,
+        spill: &mut [ItemStack; INV_SLOTS],
+    ) {
+        let Some(row) = self.mob.butcher_for(held) else {
+            return;
+        };
+        let sel = self.players[i].frame.sel as usize;
+        if self.players[i].inv[sel].cond == 0 && self.gather.cond_max_of(held) > 0 {
+            self.events.push(
+                EV_GATHER_REFUSED,
+                self.players[i].id,
+                ((held as u32) << 16) | gather::REFUSE_G_BROKEN,
+                0,
+            );
+            return;
+        }
+        let cut = self.backpacks.butcher(
+            c.bag,
+            &self.gather,
+            row.pct,
+            &mut self.players[i],
+            spill,
+            &mut self.events,
+        );
+        if cut && row.wear > 0 {
+            let s = &mut self.players[i].inv[sel];
+            s.cond = s.cond.saturating_sub(row.wear);
+        }
+    }
+
     fn log_trust(&mut self, seat: TrustSeat, actor: u32, counterparty: u32, verb: u8) {
         if counterparty == 0
             || counterparty == actor
@@ -3375,25 +3420,52 @@ impl World {
         self.events.push(EV_RECOVERED, q.id, chance, q.hp as u32);
     }
 
-    /// Validate before and after the player/combat steps. No slot ordering
-    /// can complete a revive after its helper moved or was hit this tick.
-    fn assist_valid(&mut self, helper: usize, target: usize) -> bool {
-        let (p, q) = (&self.players[helper], &self.players[target]);
-        if helper == target
-            || !p.active
-            || p.sleeping
-            || p.dead
-            || p.wounded
-            || !p.body.grounded
-            || !crate::assist::holding(&p.frame)
-            || !q.active
-            || q.dead
-            || !q.wounded
-            || q.sleeping
-            || p.assist_target != q.id
-        {
-            return false;
+    /// A syringe on a downed body (`Command::Treat`): the item must revive,
+    /// the target must be down, awake and aimed at in hand reach with
+    /// nothing in the way (`assist::ASSIST_REACH_M`, the hand revive's own
+    /// reach and occluder test). One unit is spent, the body stands as a won
+    /// roll stands it, and the item's heal starts on it. An item that does
+    /// not revive is refused as `consume` refuses a non-food; a target out
+    /// of reach is silent, as an out-of-reach hand revive is.
+    fn treat(&mut self, slot: usize, inv: usize, target: u32) {
+        let id = self.players[slot].id;
+        let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
+        let def = self.survival.row(stack.item);
+        let Some(def) = def.filter(|_| stack.count > 0 && self.survival.revives(stack.item)) else {
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_NOT_FOOD, 0);
+            return;
+        };
+        let Some(t) = self.slot_of(target).filter(|&t| {
+            let q = &self.players[t];
+            t != slot && q.active && q.wounded && !q.dead && !q.sleeping
+        }) else {
+            return;
+        };
+        if !self.reaches_body(slot, t) {
+            return;
         }
+        let s = &mut self.players[slot].inv[inv];
+        s.count -= 1;
+        if s.count == 0 {
+            *s = ItemStack::default();
+        }
+        self.events
+            .push(EV_CONSUMED, id, ((stack.item as u32) << 16) | inv as u32, 0);
+        self.recover(t, 1000);
+        let heal_pct = crate::works::knob_pct(
+            &self.works_def,
+            self.works.unlocks,
+            crate::works::KNOB_HEAL_PCT,
+        );
+        survival::start_heal(def, &mut self.players[t], heal_pct);
+    }
+
+    /// Whether `helper`'s look reaches `target`'s body inside hand reach
+    /// with nothing in the way — the hand revive's test, shared with a
+    /// syringe.
+    fn reaches_body(&mut self, helper: usize, target: usize) -> bool {
+        let (p, q) = (&self.players[helper], &self.players[target]);
         let ray = crate::assist::ray(&p.body, &p.frame, p.crouched());
         let Some(enter) = crate::assist::aimed(&ray, &q.body) else {
             return false;
@@ -3417,6 +3489,28 @@ impl World {
             0.0,
         );
         enter < stop
+    }
+
+    /// Validate before and after the player/combat steps. No slot ordering
+    /// can complete a revive after its helper moved or was hit this tick.
+    fn assist_valid(&mut self, helper: usize, target: usize) -> bool {
+        let (p, q) = (&self.players[helper], &self.players[target]);
+        if helper == target
+            || !p.active
+            || p.sleeping
+            || p.dead
+            || p.wounded
+            || !p.body.grounded
+            || !crate::assist::holding(&p.frame)
+            || !q.active
+            || q.dead
+            || !q.wounded
+            || q.sleeping
+            || p.assist_target != q.id
+        {
+            return false;
+        }
+        self.reaches_body(helper, target)
     }
 
     /// A down body's clock, one tick: nothing until `wound_until`, then the
@@ -4439,6 +4533,15 @@ impl World {
             Command::Assist { id, target } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     self.players[slot].assist_target = target;
+                }
+            }
+            Command::Treat {
+                id,
+                slot: inv,
+                target,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.treat(slot, inv as usize, target);
                 }
             }
             Command::Join { id } => self.seat(id, None),
@@ -5852,7 +5955,7 @@ impl World {
                         combat::held_item(p),
                     )
                 };
-                let reaches = melee::Reaches::for_hand(&self.combat, held);
+                let reaches = melee::Reaches::for_hand_butchering(&self.combat, &self.mob, held);
                 let ray = melee::ray(&body, crouched, yaw, pitch, reaches.longest());
                 let reached = melee::cast(
                     seed,
@@ -5868,6 +5971,7 @@ impl World {
                     &self.players,
                     &self.mobs,
                     &self.mob,
+                    &self.backpacks,
                     i,
                     &self.rewind,
                     tick,
@@ -5933,6 +6037,9 @@ impl World {
                             &mut self.events,
                             m.slot,
                         );
+                    }
+                    melee::Reached::Carcass(c) => {
+                        self.butcher(i, held, c, &mut spill);
                     }
                     melee::Reached::World { t, surf, built } => {
                         // The mark first, then the bill — `hitscan`'s order,

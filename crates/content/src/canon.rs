@@ -204,6 +204,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.water);
         h.u(con.seconds);
         h.u(u32::from(con.belt_recovery));
+        h.u(u32::from(con.revive));
     }
 
     h.s("deployables");

@@ -510,10 +510,9 @@ fn an_unfilled_waystation_keeps_no_guard() {
 // ---------------------------------------------------------------- §F
 
 /// Killing a guard leaves the same body every other animal leaves — the
-/// wolf's own drops, standing up as a ground bag. Stated as a gate because
-/// it is the honest half of this slice: a guard has **no loot tier of its
-/// own** yet, so what it pays is a wolf's meat and fat and the reason to
-/// fight it is the crates behind it (`NOW.md` §0wc).
+/// wolf's own drops, standing up as a ground bag — and its own tier on top
+/// (`MobContent::guard_loot`, `mobs.toml` `[guard]`), which is driven in
+/// [`a_guard_carcass_holds_its_tier_on_top_of_the_wolfs`].
 #[test]
 fn a_guard_pays_what_a_wolf_pays() {
     let mc = MobContent::probe_fixture();
@@ -533,6 +532,57 @@ fn a_guard_pays_what_a_wolf_pays() {
             "the guard's species cannot fight or cannot be killed"
         );
     }
+}
+
+/// The guard tier rides a guard's carcass and no free wolf's: kill one of
+/// each through `mob::hurt_slot` and read the two bags.
+#[test]
+fn a_guard_carcass_holds_its_tier_on_top_of_the_wolfs() {
+    use sim_core::gather::ItemStack;
+    const JUNK: u16 = 70;
+    let mut w = hatched(1);
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    w.mob.guard_loot[0] = ItemStack {
+        item: JUNK,
+        count: 5,
+        cond: 0,
+        skin: 0,
+    };
+    let guard = (0..MAX_MOBS)
+        .find(|&s| mob::guard_site_of(s).is_some() && w.mobs.m[s].alive)
+        .expect("a live guard");
+    let free = (0..MAX_MOBS)
+        .find(|&s| {
+            mob::kind_of(s) == mob::MOB_WOLF && mob::guard_site_of(s).is_none() && w.mobs.m[s].alive
+        })
+        .expect("a live free wolf");
+    let tick = w.tick;
+    for slot in [guard, free] {
+        let hp = w.mobs.m[slot].hp;
+        assert!(mob::hurt_slot(
+            &w.backpack,
+            &w.mob,
+            tick,
+            None,
+            &w.players,
+            &mut w.mobs,
+            &mut w.backpacks,
+            &mut w.events,
+            slot,
+            hp,
+        ));
+    }
+    // The fixture's wolf drops nothing (`probe_fixture`), so a free wolf's
+    // kill may stand no bag at all; that too is "no tier".
+    let holds_junk = |slot: usize| {
+        w.backpacks
+            .entries()
+            .iter()
+            .filter(|b| b.owner == mob::mob_id(slot))
+            .any(|b| b.items.iter().any(|s| s.item == JUNK && s.count == 5))
+    };
+    assert!(holds_junk(guard), "the guard's carcass lacks its tier");
+    assert!(!holds_junk(free), "a free wolf paid the guard's tier");
 }
 
 /// Guards are on top of the density, not out of it, and the store is still

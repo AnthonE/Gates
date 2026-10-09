@@ -45,7 +45,10 @@ use sim_core::limits::{
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
-use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF};
+use sim_core::mob::{
+    ButcherRow, MobContent, MobDef, GUARD_LOOT_ROWS, MAX_BUTCHER_TOOLS, MOB_LOOT_ROWS, MOB_PIG,
+    MOB_WOLF,
+};
 use sim_core::oven::{CookContent, CookRow};
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::skin::{SkinContent, SkinDef};
@@ -1258,6 +1261,9 @@ impl Content {
                     con.id
                 ));
             }
+            if con.revive && health == 0 {
+                return Err(format!("bake: consumable `{}` revive needs health", con.id));
+            }
             if health > 0 && seconds == 0 {
                 return Err(format!("bake: consumable `{}` heals over 0 s", con.id));
             }
@@ -1272,6 +1278,7 @@ impl Content {
                 seconds,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
+            sc.revive[idx] = con.revive;
         }
         if sc.vessel_full != sim_core::gather::NO_ITEM
             && sc.consumable[sc.vessel_full as usize].water == 0
@@ -2363,6 +2370,48 @@ impl Content {
                 };
             }
             mc.defs[which] = def;
+        }
+        if let Some(g) = &self.guard {
+            if g.drops.len() > GUARD_LOOT_ROWS {
+                return Err(format!(
+                    "bake: [guard] drops {} stacks, past the sim's {GUARD_LOOT_ROWS}",
+                    g.drops.len()
+                ));
+            }
+            for (i, d) in g.drops.iter().enumerate() {
+                let item = self
+                    .item_index(&d.item)
+                    .ok_or_else(|| format!("bake: [guard] drops unknown `{}`", d.item))?;
+                mc.guard_loot[i] = ItemStack {
+                    item,
+                    count: u16::try_from(d.count)
+                        .map_err(|_| format!("bake: [guard] `{}` count overflows", d.item))?,
+                    cond: u16::try_from(self.item(&d.item).map(|it| it.condition_max).unwrap_or(0))
+                        .map_err(|_| format!("bake: [guard] `{}` condition overflows", d.item))?,
+                    skin: 0,
+                };
+            }
+        }
+        if let Some(b) = &self.butcher {
+            if b.yield_pct.len() > MAX_BUTCHER_TOOLS {
+                return Err(format!(
+                    "bake: [butcher] names {} tools, past the sim's {MAX_BUTCHER_TOOLS}",
+                    b.yield_pct.len()
+                ));
+            }
+            for (i, (tool, &pct)) in b.yield_pct.iter().enumerate() {
+                let item = self
+                    .item_index(tool)
+                    .ok_or_else(|| format!("bake: [butcher] names unknown tool `{tool}`"))?;
+                let wear = b.condition_loss.get(tool).copied().unwrap_or(0);
+                mc.butcher[i] = ButcherRow {
+                    tool: item,
+                    pct: u16::try_from(pct)
+                        .map_err(|_| format!("bake: [butcher] `{tool}` pct overflows"))?,
+                    wear: u16::try_from(wear)
+                        .map_err(|_| format!("bake: [butcher] `{tool}` wear overflows"))?,
+                };
+            }
         }
         Ok(mc)
     }

@@ -149,7 +149,8 @@ fire_fear_m = 0
 
 # What the corpse holds. The kill stands these rows up as a ground bag at
 # the death position (`mob::strike` → `backpack::stand_up`) — the killer
-# walks over and loots it with E like any bag; nothing is paid into an
+# walks over and loots it with E like any bag, or cuts more out of it with a
+# blade (`[butcher]` at the foot of this file); nothing is paid into an
 # inventory by the blow itself.
 #
 # **Raw meat leads, and it is the reason the campfire has a job.** Meat was
@@ -394,4 +395,40 @@ drops = [
   { item = "item.fat", count = 8 },
   { item = "item.bone_frags", count = 15 },
   { item = "item.leather", count = 10 },
+]
+
+# ---------------------------------------------------------------------------
+
+# **Butchering** (`NOW.md` §0m item 1, `reference/ANIMALS.md` §9.5 item 2):
+# a tool swung at a carcass cuts one stack out of it per hit, in the order
+# the species' `drops` list them (meat first), and pays `yield_pct` percent
+# of that stack. `E` still pulls the whole carcass apart by hand at 100, so
+# every row here pays more than that: a blade is how you get the most out of
+# a kill. A tool with no row is a blunt swing that cuts nothing.
+#
+# Our numbers, not the reference's: theirs pays more to a better tool (the
+# bone knife best) and publishes no per-tool table we could take.
+[butcher.yield_pct]
+"item.hatchet_stone" = 125
+"item.hatchet_metal" = 150
+"item.spear_stone" = 115
+"item.spear_metal" = 125
+
+# Hundredths of condition per cut — `gatherables.toml`'s 0.3 a hit. Spears
+# carry no condition, so they have no row.
+[butcher.condition_loss]
+"item.hatchet_stone" = 30
+"item.hatchet_metal" = 30
+
+# **A site guard's own tier** (`NOW.md` §0wc item 3). A guard is a wolf slot
+# holding a site (`mob::guard_site_of`), and until this its carcass held a
+# wolf's meat and hide and nothing else, so the reason to fight one was only
+# the crates behind it. These stacks ride on top of the wolf's drops: a
+# crate's guaranteed junk (`loot.toml`, the wooden crate's 5) and a crate's
+# middling fragments, because killing the thing guarding a crate should pay
+# about what the crate does.
+[guard]
+drops = [
+  { item = "item.junk", count = 5 },
+  { item = "item.metal_frags", count = 20 },
 ]

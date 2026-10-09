@@ -747,11 +747,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 protocol::encode_action_swipe(door, buf)
             });
         }
-        Verb::Assist => {
-            send(net, toast, "help up", |buf| {
-                protocol::encode_action_assist(pick.handle, buf)
-            });
-        }
+        // A syringe in hand injects at once; anything else starts the hold.
+        Verb::Assist => match net.session.core.held_revive_slot() {
+            Some(slot) => {
+                send(net, toast, "inject", |buf| {
+                    protocol::encode_action_treat(slot, pick.handle, buf)
+                });
+            }
+            None => {
+                send(net, toast, "help up", |buf| {
+                    protocol::encode_action_assist(pick.handle, buf)
+                });
+            }
+        },
         Verb::Door => {
             let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
             if send(net, toast, "use", |buf| {

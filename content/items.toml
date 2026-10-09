@@ -566,6 +566,17 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 
+# The medical syringe: the one item that picks a downed body back up
+# (`consumables.toml` `revive`, `NOW.md` §0wnd item 1). Used on yourself it is
+# a small fast heal.
+[[item]]
+id = "item.syringe"
+name = "Medical Syringe"
+stack = 2
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): berry 20,
 # mushroom 10, corn 20 — and the meats' 20 was already a match. Note the

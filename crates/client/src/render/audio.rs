@@ -1594,11 +1594,7 @@ pub fn voices(
         // A bite (the animal's `EV_SWING`): its near voice with the lunge,
         // so a fight between an animal and someone else is heard too.
         if feed.swings().contains(&animal.0) {
-            let cue = if sim_core::mob::kind_of(slot) == sim_core::mob::MOB_WOLF {
-                Cue::Growl
-            } else {
-                Cue::Snort
-            };
+            let cue = crate::sound::voice::cue_of(slot, true);
             sound.voices.called(slot);
             sound.play(Request::at(cue, at));
             continue;

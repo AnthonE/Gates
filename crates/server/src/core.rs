@@ -1408,6 +1408,11 @@ impl ShardCore {
                         }
                     }
                     ActionMsg::Assist { target } => Command::Assist { id: c.id, target },
+                    ActionMsg::Treat { slot, target } => Command::Treat {
+                        id: c.id,
+                        slot,
+                        target,
+                    },
                     ActionMsg::Craft {
                         recipe,
                         count,

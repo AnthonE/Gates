@@ -1358,6 +1358,61 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // A guard's tier: real items, real counts.
+    if let Some(g) = &c.guard {
+        for d in &g.drops {
+            item_exists(&d.item, "[guard] drop")?;
+            if d.count == 0 {
+                return Err(format!("[guard]: `{}` drops zero", d.item));
+            }
+        }
+    }
+
+    // Butchering: every tool is a melee weapon, pays at least the hand's 100
+    // (or it is worse than `E`), and wears by `gatherables.toml`'s two rules.
+    if let Some(b) = &c.butcher {
+        if b.yield_pct.is_empty() {
+            return Err("[butcher]: an empty yield table is no table; delete it".into());
+        }
+        for (tool, &pct) in &b.yield_pct {
+            let melee = c
+                .weapons
+                .iter()
+                .any(|w| &w.id == tool && w.kind == WeaponKind::Melee);
+            if !melee {
+                return Err(format!("[butcher]: `{tool}` is not a melee weapon"));
+            }
+            if !(100..=300).contains(&pct) {
+                return Err(format!(
+                    "[butcher]: `{tool}` pays {pct}%, outside 100–300 (100 is the hand's E)"
+                ));
+            }
+            let worn = c.item(tool).is_some_and(|i| i.condition_max > 0);
+            match b.condition_loss.get(tool) {
+                None | Some(0) if worn => {
+                    return Err(format!(
+                        "[butcher]: `{tool}` carries condition and has no condition_loss row"
+                    ));
+                }
+                Some(&w) if w > 0 && !worn => {
+                    return Err(format!(
+                        "[butcher]: `{tool}` wears {w} but carries no condition"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if let Some(t) = b
+            .condition_loss
+            .keys()
+            .find(|t| !b.yield_pct.contains_key(*t))
+        {
+            return Err(format!(
+                "[butcher]: condition_loss names `{t}`, which pays nothing"
+            ));
+        }
+    }
+
     // Mobs: every band here is a *reachability* check rather than a taste
     // one — an animal that cannot be killed, cannot be caught, or cannot be
     // left behind is content that reads as a bug in the sim.

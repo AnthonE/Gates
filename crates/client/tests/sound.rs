@@ -2324,7 +2324,7 @@ fn every_species_speaks_with_its_own_voice() {
     use sim_core::mob;
 
     let mut seen = Vec::new();
-    let (mut wolves, mut pigs) = (0, 0);
+    let (mut wolves, mut pigs, mut stags) = (0, 0, 0);
     for slot in 0..sim_core::limits::MAX_MOBS {
         for near in [false, true] {
             let cue = cue_of(slot, near);
@@ -2336,16 +2336,21 @@ fn every_species_speaks_with_its_own_voice() {
                     cue == Cue::Howl || cue == Cue::Growl,
                     "wolf slot {slot} says {cue:?}"
                 ),
+                mob::MOB_STAG => assert_eq!(cue, Cue::Bellow, "stag slot {slot} says {cue:?}"),
                 _ => assert_eq!(cue, Cue::Snort, "pig slot {slot} says {cue:?}"),
             }
         }
         match mob::kind_of(slot) {
             mob::MOB_WOLF => wolves += 1,
+            mob::MOB_STAG => stags += 1,
             _ => pigs += 1,
         }
     }
-    assert_eq!(seen.len(), 3, "the roster speaks {seen:?} - expected three");
-    assert!(wolves > 0 && pigs > 0, "the roster is one species");
+    assert_eq!(seen.len(), 4, "the roster speaks {seen:?} - expected four");
+    assert!(
+        wolves > 0 && pigs > 0 && stags > 0,
+        "the roster is missing a species"
+    );
 
     // The pig ignores the register — one call at every range — and the wolf
     // does not. Both halves matter: the first is why a caller cannot get a

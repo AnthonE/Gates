@@ -120,6 +120,9 @@ pub struct SurvivalContent {
     /// Items that save a failed wounded roll when carried on the belt.
     /// Content opts in; the sim never identifies a medkit by name or index.
     pub belt_recovery: [bool; MAX_ITEM_DEFS],
+    /// Items that stand a downed body up when used on it (`Command::Treat`,
+    /// the syringe). Content opts in, as with `belt_recovery`.
+    pub revive: [bool; MAX_ITEM_DEFS],
     /// Meter ceilings, and what a join grants. Zero is the inert default
     /// and disarms the module: no meter, no drain, no starvation.
     pub max_food: u16,
@@ -160,6 +163,7 @@ impl SurvivalContent {
             seconds: 0,
         }; MAX_ITEM_DEFS],
         belt_recovery: [false; MAX_ITEM_DEFS],
+        revive: [false; MAX_ITEM_DEFS],
         max_food: 0,
         max_water: 0,
         food_span_ticks: 0,
@@ -218,6 +222,12 @@ impl SurvivalContent {
         } else {
             None
         }
+    }
+
+    /// Does `item` revive a downed body it is used on?
+    #[inline]
+    pub fn revives(&self, item: u16) -> bool {
+        item != NO_ITEM && self.revive.get(item as usize).copied().unwrap_or(false)
     }
 
     /// First nonempty recovery stack on the belt, in inventory order.
@@ -449,6 +459,30 @@ pub fn announce_vitals(sc: &SurvivalContent, p: &Player, events: &mut EventQueue
     );
 }
 
+/// Start `def`'s heal ramp on `p` — the half of eating that does not spend
+/// anything, shared by `consume` and a revive (`World::treat`).
+pub fn start_heal(def: ConsumableDef, p: &mut Player, heal_pct: u32) {
+    if def.health > 0 && def.seconds > 0 {
+        // A second consume replaces the ramp rather than queueing behind
+        // it: two bandages at once is one bandage's worth of book-keeping,
+        // and the remainder of the first is folded into the second so the
+        // hp is not lost. **The span grows with the pool, so the RATE never
+        // exceeds this item's own**: folding the remainder in over one
+        // item's span made N items at once heal N times as fast — thirty
+        // bandages in a second was a full heal in one bandage's time
+        // (found 2026-09-25). Integer and rounded up, so never faster.
+        let carried = p.heal_rem;
+        p.heal_rem = def.health.saturating_add(carried);
+        p.heal_total = p.heal_rem;
+        // The Wells' ceiling (`works::KNOB_HEAL_PCT`) shortens the span, so
+        // the same heal lands sooner; 100 is the item's own pace.
+        let span = (def.seconds as u64 * TICK_HZ as u64 * 100 / heal_pct.max(1) as u64).max(1);
+        p.heal_span =
+            ((p.heal_rem as u64 * span).div_ceil(def.health as u64)).min(u32::MAX as u64) as u32;
+        p.heal_acc = 0;
+    }
+}
+
 /// Eat what is in hotbar slot `slot`. Consumes exactly one unit, applies
 /// food and water immediately and starts the health ramp.
 ///
@@ -510,25 +544,7 @@ pub fn consume(
     // not the same as "cannot happen", and this is one word.
     p.food = p.food.saturating_add(def.food).min(sc.max_food);
     p.water = p.water.saturating_add(def.water).min(sc.max_water);
-    if def.health > 0 && def.seconds > 0 {
-        // A second consume replaces the ramp rather than queueing behind
-        // it: two bandages at once is one bandage's worth of book-keeping,
-        // and the remainder of the first is folded into the second so the
-        // hp is not lost. **The span grows with the pool, so the RATE never
-        // exceeds this item's own**: folding the remainder in over one
-        // item's span made N items at once heal N times as fast — thirty
-        // bandages in a second was a full heal in one bandage's time
-        // (found 2026-09-25). Integer and rounded up, so never faster.
-        let carried = p.heal_rem;
-        p.heal_rem = def.health.saturating_add(carried);
-        p.heal_total = p.heal_rem;
-        // The Wells' ceiling (`works::KNOB_HEAL_PCT`) shortens the span, so
-        // the same heal lands sooner; 100 is the item's own pace.
-        let span = (def.seconds as u64 * TICK_HZ as u64 * 100 / heal_pct.max(1) as u64).max(1);
-        p.heal_span =
-            ((p.heal_rem as u64 * span).div_ceil(def.health as u64)).min(u32::MAX as u64) as u32;
-        p.heal_acc = 0;
-    }
+    start_heal(def, p, heal_pct);
     events.push(
         EV_CONSUMED,
         p.id,

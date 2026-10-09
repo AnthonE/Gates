@@ -132,6 +132,10 @@ struct MobsFile {
     mob: Vec<Mob>,
     #[serde(default)]
     heli: Option<schema::Heli>,
+    #[serde(default)]
+    butcher: Option<schema::Butcher>,
+    #[serde(default)]
+    guard: Option<schema::Guard>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -196,6 +200,12 @@ pub struct Content {
     pub mobs: Vec<Mob>,
     /// The attack helicopter (`mobs.toml` `[heli]`), or none on this shard.
     pub heli: Option<schema::Heli>,
+    /// What each tool pays from a carcass (`mobs.toml` `[butcher]`), or
+    /// none: nothing butchers and `E` is the only way in.
+    pub butcher: Option<schema::Butcher>,
+    /// What a site guard's carcass adds to its species' drops (`mobs.toml`
+    /// `[guard]`), or none: a guard pays what its species pays.
+    pub guard: Option<schema::Guard>,
     pub skins: Vec<Skin>,
     /// The town's vendors, kiosk order (`sites.toml`).
     pub vendors: Vec<Vendor>,
@@ -302,6 +312,8 @@ impl Content {
             loot_tables: loot.loot_table,
             mobs: mobs.mob,
             heli: mobs.heli,
+            butcher: mobs.butcher,
+            guard: mobs.guard,
             skins: skins.skin,
             vendors: sites.vendor,
             sentry: sites.sentry,

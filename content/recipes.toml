@@ -585,6 +585,21 @@ inputs = [
     { item = "item.lowgrade", count = 10 },
 ]
 
+# Priced under the medkit and on the same bench: cloth, fuel, and the metal
+# for the needle.
+[[recipe]]
+id = "recipe.syringe"
+output = "item.syringe"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [
+    { item = "item.cloth", count = 15 },
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.lowgrade", count = 10 },
+]
+
 # https://wiki.facepunch.com/rust/item/wall.window.bars.metal
 # https://wiki.facepunch.com/rust/item/wall.frame.garagedoor
 [[recipe]]

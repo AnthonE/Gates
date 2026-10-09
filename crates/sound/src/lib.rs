@@ -388,11 +388,15 @@ pub enum Cue {
     /// Your torch burning out in your hand: the last of the flame hissing
     /// away (`render/viewmodel.rs::torch_watch`). Yours, so non-positional.
     TorchOut,
+    /// The stag's voice: a deep roar falling into a grunt (`sound::voice`).
+    /// Until this the stag borrowed the pig's snort. Appended last — the
+    /// enum's append-order rule, for the reason `Snort` states.
+    Bellow,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 93;
+pub const CUE_COUNT: usize = 94;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -494,6 +498,7 @@ impl Cue {
         Cue::Brush,
         Cue::RemoteBrush,
         Cue::TorchOut,
+        Cue::Bellow,
     ];
 
     /// Is this cue a piece of music?
@@ -582,6 +587,7 @@ impl Cue {
             | Cue::Splash
             | Cue::TreeFall
             | Cue::Snort
+            | Cue::Bellow
             | Cue::Growl
             | Cue::Hurt
             | Cue::BulletSoil
@@ -1005,6 +1011,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.42,  40, 2, true),   // brush, somebody else's
     // A torch going out in your hand: once, and it must be heard.
     row(GAME,  0.0, 0.55, 500, 3, false),  // torch out
+    // The stag: the pig's register (ambience, not signal), carrying further
+    // because a roar is a long-range call where a snort is a near one.
+    row(GAME, 60.0, 0.55, 400, 2, true),   // bellow
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

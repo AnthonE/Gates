@@ -220,6 +220,7 @@ ITEMS = {
     "window_shutters": "delapouite/closed-doors",
     "armor_roadsign_body": "lorc/armor-vest",
     "medkit": "delapouite/first-aid-kit",
+    "syringe": "lorc/syringe",
     "berries": "delapouite/berries-bowl",
     "mushrooms": "delapouite/mushrooms",
     "corn": "delapouite/corn",

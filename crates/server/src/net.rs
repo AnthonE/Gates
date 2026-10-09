@@ -319,6 +319,7 @@ pub fn bake_catalog(
                 nock_ticks,
                 oven: cook.packed_roles(idx as u16),
                 holster: sim_core::combat::drawn_weapon(combat, gather, idx as u16),
+                revive: survival.revives(idx as u16),
             },
         )
         .map_err(|_| {

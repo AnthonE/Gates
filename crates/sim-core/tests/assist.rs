@@ -320,3 +320,136 @@ fn a_world_save_cannot_resume_a_disconnected_hands_hold() {
     assert_eq!(back.players[1].wound_until, until);
     assert!(back.players[1].wounded);
 }
+
+/// A syringe (`Command::Treat`, `NOW.md` §0wnd item 1): aimed at the downed
+/// body in reach, it stands the body up at once, spends one, and starts its
+/// heal on the target. A medkit has no `revive`, so it is refused and spends
+/// nothing.
+#[test]
+fn a_syringe_stands_a_downed_body_up_at_once() {
+    use sim_core::gather::ItemStack;
+    use sim_core::survival::ConsumableDef;
+    const SYRINGE: u16 = 40;
+    const MEDKIT: u16 = 41;
+    let mut w = fixture();
+    w.survival.consumable[SYRINGE as usize] = ConsumableDef {
+        health: 15,
+        food: 0,
+        water: 0,
+        seconds: 2,
+    };
+    w.survival.revive[SYRINGE as usize] = true;
+    w.survival.consumable[MEDKIT as usize] = ConsumableDef {
+        health: 60,
+        food: 0,
+        water: 0,
+        seconds: 8,
+    };
+    w.players[0].inv[3] = ItemStack {
+        item: SYRINGE,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[4] = ItemStack {
+        item: MEDKIT,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let aim = |w: &World| {
+        let mut f = frame(w, 0);
+        f.buttons = 0;
+        Command::Input {
+            id: 1,
+            frame: f,
+            favour: 0,
+        }
+    };
+    let a = aim(&w);
+    w.tick(&[a]);
+
+    let a = aim(&w);
+    w.tick(&[
+        a,
+        Command::Treat {
+            id: 1,
+            slot: 4,
+            target: 2,
+        },
+    ]);
+    assert!(w.players[1].wounded, "a medkit stood the body up");
+    assert_eq!(w.players[0].inv[4].count, 1, "a refused medkit was spent");
+
+    let a = aim(&w);
+    w.tick(&[
+        a,
+        Command::Treat {
+            id: 1,
+            slot: 3,
+            target: 2,
+        },
+    ]);
+    assert!(
+        !w.players[1].wounded,
+        "the syringe did not stand the body up"
+    );
+    assert!(!w.players[1].dead);
+    assert_eq!(w.players[0].inv[3].count, 1, "one syringe is spent");
+    assert!(
+        w.players[1].heal_rem > 0,
+        "the syringe's heal never started"
+    );
+    assert!(w
+        .events
+        .entries()
+        .iter()
+        .any(|e| e.code == EV_RECOVERED && e.a == 2));
+}
+
+/// Out of reach, nothing happens and nothing is spent.
+#[test]
+fn a_syringe_out_of_reach_does_nothing() {
+    use sim_core::gather::ItemStack;
+    use sim_core::survival::ConsumableDef;
+    const SYRINGE: u16 = 40;
+    let mut w = fixture();
+    w.survival.consumable[SYRINGE as usize] = ConsumableDef {
+        health: 15,
+        food: 0,
+        water: 0,
+        seconds: 2,
+    };
+    w.survival.revive[SYRINGE as usize] = true;
+    w.players[0].inv[3] = ItemStack {
+        item: SYRINGE,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let a = w.players[0].body;
+    w.players[1].body = Body::at(
+        42,
+        &w.haven,
+        a.qx as f32 * POS_XZ_Q,
+        a.qz as f32 * POS_XZ_Q + 6.0,
+    );
+    let mut f = frame(&w, 0);
+    f.buttons = 0;
+    for _ in 0..2 {
+        w.tick(&[
+            Command::Input {
+                id: 1,
+                frame: f,
+                favour: 0,
+            },
+            Command::Treat {
+                id: 1,
+                slot: 3,
+                target: 2,
+            },
+        ]);
+    }
+    assert!(w.players[1].wounded);
+    assert_eq!(w.players[0].inv[3].count, 1);
+}

@@ -73,6 +73,11 @@ pub const HOWL_PERIOD_S: f32 = 75.0;
 /// silence in the middle of that reads as the wolf having lost interest.
 pub const GROWL_PERIOD_S: f32 = 2.5;
 
+/// Mean seconds between one stag's bellows. Rarer than the pig's snort and
+/// far commoner than the howl: a stag calls to be heard across a clearing,
+/// not to keep a herd in touch. An opening value, like the snort's.
+pub const BELLOW_PERIOD_S: f32 = 24.0;
+
 /// How far an interval may wander from its mean, as a fraction: each draw
 /// lands in `PERIOD × [1−J, 1+J]`, so 4.5–13.5 s for a snort at the defaults.
 ///
@@ -189,6 +194,7 @@ pub fn cue_of(slot: usize, near: bool) -> Cue {
                 Cue::Howl
             }
         }
+        mob::MOB_STAG => Cue::Bellow,
         _ => Cue::Snort,
     }
 }
@@ -217,11 +223,12 @@ fn interval(slot: usize, cycle: u32, cue: Cue) -> f32 {
 ///
 /// The wildcard arm is the pig, and it is safe by construction rather than by
 /// hope: [`cue_of`] is the only thing that produces a cue here and it returns
-/// exactly three, which `tests/sound.rs` pins.
+/// exactly four, which `tests/sound.rs` pins.
 pub fn period_s(cue: Cue) -> f32 {
     match cue {
         Cue::Howl => HOWL_PERIOD_S,
         Cue::Growl => GROWL_PERIOD_S,
+        Cue::Bellow => BELLOW_PERIOD_S,
         _ => SNORT_PERIOD_S,
     }
 }

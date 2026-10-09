@@ -89,6 +89,11 @@ cost = 30
 item = "item.medkit"
 cost = 30
 
+# The syringe sits beside the medkit on the first bench, at the same price.
+[[research]]
+item = "item.syringe"
+cost = 30
+
 # Their chain: … Hatchet → Wooden Ladder → Wooden Barricade → Barbed Wooden
 # Barricade → Wooden Floor Spikes → Wood Shutters, so the nearest ancestor we
 # ship is the hatchet. Hand-crafted, and still a node in the first tree —

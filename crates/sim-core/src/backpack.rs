@@ -49,7 +49,7 @@
 //! merges only into the spiller's own bag, and every give-back announces
 //! what it dropped (`World::announce_spill`).
 
-use crate::gather::{inv_add_skinned, GatherContent, ItemStack};
+use crate::gather::{inv_add_skinned, inv_add_spilling_skinned, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
 use crate::movement::POS_XZ_Q;
 use crate::world::{EventQueue, Player, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
@@ -671,6 +671,48 @@ impl Backpacks {
             owner,
             took: took_any,
         })
+    }
+}
+
+impl Backpacks {
+    /// One butchering cut on carcass `i` (`NOW.md` §0m item 1): the first
+    /// stack left in it, in the species' `drops` order, paid to `p` at
+    /// `pct` percent and never less than one. What does not fit goes to
+    /// `spill`, as a gather's overflow does. An emptied carcass leaves by
+    /// `loot_nearest`'s route. Returns false when there was nothing to cut.
+    pub fn butcher(
+        &mut self,
+        i: usize,
+        gc: &GatherContent,
+        pct: u16,
+        p: &mut Player,
+        spill: &mut [ItemStack; INV_SLOTS],
+        events: &mut EventQueue,
+    ) -> bool {
+        if i >= self.len {
+            return false;
+        }
+        let Some(s) = (0..INV_SLOTS).find(|&s| {
+            let st = self.entries[i].items[s];
+            st.count > 0 && gc.stack_max_of(st.item) > 0
+        }) else {
+            return false;
+        };
+        let cut = self.entries[i].items[s];
+        self.entries[i].items[s] = ItemStack::default();
+        let pay = (cut.count as u32 * pct as u32 / 100).clamp(1, u16::MAX as u32) as u16;
+        let added = inv_add_spilling_skinned(
+            &mut p.inv,
+            spill,
+            cut.item,
+            pay,
+            gc.stack_max_of(cut.item),
+            cut.cond,
+            cut.skin,
+        );
+        events.push(EV_GATHER, p.id, ((cut.item as u32) << 16) | added as u32, 0);
+        self.drop_if_empty(i, events);
+        true
     }
 }
 

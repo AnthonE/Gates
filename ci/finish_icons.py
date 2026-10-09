@@ -131,6 +131,7 @@ PAINT = {
     "metal_door": dict(c=DARK_STEEL, metal=True),
     "roadsign_vest": dict(c=("#e9d56a", "#9c8622"), metal=True),
     "medkit": dict(c=("#ec5b4f", "#a72620"), holes="#fbf6ee"),
+    "medical_syringe": dict(c=("#dfe9ef", "#6f8798"), metal=True),
     "berries": dict(c=("#caa476", "#7c5a36"), holes="#c2385e"),
     "mushrooms": dict(c=("#ecd6ae", "#a37a4c")),
     "corn": dict(c=("#f6d751", "#b1861a")),

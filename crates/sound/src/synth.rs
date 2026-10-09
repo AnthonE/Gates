@@ -572,6 +572,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Brush => brush(&mut r),
         Cue::RemoteBrush => render_take(Cue::Brush, take),
         Cue::TorchOut => fizzle(&mut r),
+        Cue::Bellow => bellow(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1314,6 +1315,37 @@ fn fizzle(r: &mut Rng) -> Vec<f32> {
         }
         gate *= 0.985;
         *v = hiss * 0.9 + puff + x * gate * 0.35;
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A stag's roar: a pitched, buzzy call that falls from ~190 Hz to ~95 Hz
+/// over a second and breaks into a grunt — a harmonic sum through a low
+/// tract, breath under it, attack fast and tail long.
+fn bellow(r: &mut Rng) -> Vec<f32> {
+    let dur = 1.3f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let mut tract = Lp::new(1_100.0);
+    let mut breath_lp = Lp::new(700.0);
+    let mut phase = 0.0f32;
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let u = t / dur;
+        let hz = 190.0 - 95.0 * u.min(1.0) + (r.unit() - 0.5) * 3.0;
+        phase += std::f32::consts::TAU * hz / sr;
+        // Eight harmonics at -6 dB/oct: the buzz of a roar, not a pure tone.
+        let mut tone = 0.0f32;
+        for k in 1..=8 {
+            tone += (phase * k as f32).sin() / k as f32;
+        }
+        let env = attack(t, 0.04) * (-u * 2.2).exp();
+        let breath = breath_lp.run(r.noise()) * 0.35;
+        *v = tract.run(tone * 0.6 + breath) * env;
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);
