@@ -3510,6 +3510,14 @@ impl ShardCore {
                     let deploy = ev.b & STRUCT_DEPLOY_BIT != 0;
                     let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
                     let (damage, left) = ((ev.c >> 16) as u16, ev.c as u16);
+                    // The killing blow: the sim announces it (the raid gates
+                    // count it), and the removal right behind it is what the
+                    // wire says. The encoder refuses a zero-hp hit by
+                    // design, so sending it only counted a range error per
+                    // structure destroyed.
+                    if left == 0 {
+                        continue;
+                    }
                     match encode_event_struct_hit(
                         deploy,
                         cx,
@@ -6276,6 +6284,35 @@ mod tests {
             ShardStats::get(&stats.encode_range_errors),
             range_before + 2,
             "the in-domain reason is not counted as refused"
+        );
+    }
+
+    /// A killing blow's `EV_STRUCT_HIT` (hp left 0) stays off the wire and
+    /// out of the fault counters: the removal behind it says the piece is
+    /// gone. A hit that leaves hp still crosses.
+    #[test]
+    fn a_killing_struct_hit_is_the_removals_to_say() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let range_before = ShardStats::get(&stats.encode_range_errors);
+        let key = (40 << 16) | 41;
+        core.world.events.push(EV_STRUCT_HIT, key, 0, 10 << 16);
+        core.world
+            .events
+            .push(EV_STRUCT_HIT, key, 0, (10 << 16) | 90);
+        let sent = pumped(&mut core, &stats);
+        let lefts = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::StructHit { left, .. }) => Some(left),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(lefts, vec![90], "only the hit that left hp crossed");
+        assert_eq!(
+            ShardStats::get(&stats.encode_range_errors),
+            range_before,
+            "a destroyed structure is not an encode fault"
         );
     }
 
