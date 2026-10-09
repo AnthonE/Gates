@@ -400,8 +400,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0rc · The wire raid's two unmeasured differences *(systems lane)*
 
-1. `raid_shape.rs:73`/`botclient.rs:399` say `push_action` drops; server `core.rs:722`
-   and `net.rs:2054` keep it ringed. Settle it before quoting "leans optimistic".
+- Settled 2026-10-09: the shard rings actions, one per tick (`net.rs` pops through
+  `core::wants_action`); a burst lands late, never lost. `raid_shape.rs` says so.
 2. `Client::consume_input` (`server/src/client.rs`) lets one frame's buttons act
    per tick, so `charge_slot` may not be in force when the throw lands.
 

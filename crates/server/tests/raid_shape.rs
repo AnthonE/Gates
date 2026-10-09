@@ -71,11 +71,11 @@
 //!   **optimistic** case for held-item timing: they can only find *more*
 //!   plants than the shard, never fewer.
 //! - No packet loss, no reordering, no join stagger. Same direction.
-//! - No dropped actions. `core::wants_action` takes one per client per tick
-//!   and silently drops the rest; a dropped step does not retry, it *skips*,
-//!   so over the wire a lost step 4 leaves step 5 throwing at an empty
-//!   address. The shard's own counters already show the loss is real —
-//!   `bot_smoke.rs` measured ~110 actions per bot across 120 ticks.
+//! - No action queueing. The shard takes one action per client per tick
+//!   and leaves the rest ringed (`core::wants_action` gates the net
+//!   thread's pop; past the ring, QUIC holds the stream), so a burst lands
+//!   late, never lost. Here every step lands the tick it is issued — the
+//!   wire's difference is timing, in the same optimistic direction.
 //!
 //! Since the owners build real bases (`bots::STARTER`), `botclient.rs`'s
 //! owners settle one plot instead of re-seating it; this replay keeps the
