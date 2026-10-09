@@ -347,7 +347,7 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 7. The brain's numbers are code and shared by every species (`brain.rs`: 2 biters, 3 tries,
    60 s heal, 20 s howl, 7 m orbit, 40 % sleep; `noise.rs`: 100/15/25/200 m hearing); only
    sight, pack, fire fear and courage (`brave_pct`) are in `content/mobs.toml`.
-8. Nothing shows the brain's state: no admin command, overlay or log.
+8. The brain's state is `/brain` (admin, the nearest animal, said to the asker); no overlay or log.
 
 ## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
 
@@ -546,7 +546,7 @@ act):
 2. Nobody has typed a command at a live shard: the `REFUSE_ADMIN` close
    (`net.rs:1284`) is undriven (the disconnected screen does say an admin removed you).
 3. The anomaly log (JSONL) has no reader to give the alpha gate a verdict.
-4. No `/who`. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
+4. `/who` and `/brain` answer the asker in chat. `/time` and `/weather` shipped (#176, stored in `weather::Env`) but answer
    only in the anomaly log, and nothing stops `dev_env` in a public `shard.toml`.
 
 ## 4b · The domain gate's one file-local residual

@@ -492,6 +492,41 @@ impl ShardCore {
     }
 
     /// Say a server line to one connected slot, or to all of them.
+    /// `/brain`'s answer for the player `who`: the nearest living animal to
+    /// their body (`admin::brain_line`), or why there is none.
+    fn brain_answer(&self, who: u32) -> String {
+        let w = &self.world;
+        let Some(me) = w.players.iter().find(|p| p.active && p.id == who) else {
+            return "no body to measure from".to_string();
+        };
+        let (mx, mz) = (
+            me.body.qx as f32 * sim_core::movement::POS_XZ_Q,
+            me.body.qz as f32 * sim_core::movement::POS_XZ_Q,
+        );
+        let mut best: Option<(usize, f32)> = None;
+        for (slot, m) in w.mobs.m.iter().enumerate() {
+            if !m.alive {
+                continue;
+            }
+            let dx = m.body.qx as f32 * sim_core::movement::POS_XZ_Q - mx;
+            let dz = m.body.qz as f32 * sim_core::movement::POS_XZ_Q - mz;
+            let d2 = dx * dx + dz * dz;
+            if best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((slot, d2));
+            }
+        }
+        let Some((slot, d2)) = best else {
+            return "no animal alive".to_string();
+        };
+        let m = &w.mobs.m[slot];
+        let target = w
+            .players
+            .get(m.target as usize)
+            .filter(|p| p.active)
+            .map(|p| p.id);
+        crate::admin::brain_line(slot, m, target, d2.sqrt(), w.tick)
+    }
+
     fn say_server(
         &mut self,
         to: Option<usize>,
@@ -2027,6 +2062,29 @@ impl ShardCore {
             }
             AdminCmd::SaveNow => {
                 *ops.save_now = true;
+            }
+            AdminCmd::Brain => {
+                let mut line = self.brain_answer(who);
+                line.truncate(protocol::ChatText::CAP);
+                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
+                    let line = admin::server_line(&text);
+                    self.say_server(Some(from_slot), &line, stats, send);
+                }
+            }
+            AdminCmd::Who => {
+                let mut line = String::new();
+                let mut n = 0;
+                for c in self.clients.iter().filter(|c| c.connected) {
+                    n += 1;
+                    line.push(' ');
+                    line.push_str(&c.id.to_string());
+                }
+                let mut line = format!("{n} on:{line}");
+                line.truncate(protocol::ChatText::CAP);
+                if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
+                    let line = admin::server_line(&text);
+                    self.say_server(Some(from_slot), &line, stats, send);
+                }
             }
             // Handled above, before the allowlist.
             AdminCmd::Bug { .. } | AdminCmd::WipeWhen => return,

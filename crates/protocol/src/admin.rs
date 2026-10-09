@@ -85,6 +85,11 @@ pub enum AdminCmd {
     /// position are stamped by the server, so the note is all a player
     /// has to type (`ALPHA.md` §4).
     Bug { note: ChatText },
+    /// `/brain`: what the nearest animal is thinking — its state, target,
+    /// hp and range — said to the asker only (`NOW.md` §0m item 8).
+    Brain,
+    /// `/who`: the connected player ids, said to the asker only.
+    Who,
 }
 
 /// Is this line addressed to the server at all? Cheap enough to ask
@@ -145,6 +150,8 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
             (count > 0).then_some(AdminCmd::Give { item, count })
         }
         "save" => Some(AdminCmd::SaveNow),
+        "brain" => Some(AdminCmd::Brain),
+        "who" => Some(AdminCmd::Who),
         "wipe" => match parts.next() {
             None => Some(AdminCmd::WipeWhen),
             Some("cancel") => (parts.next().is_none()).then_some(AdminCmd::WipeCancel),

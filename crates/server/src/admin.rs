@@ -71,6 +71,8 @@ pub const VERB_UNKNOWN: u16 = 6;
 pub const VERB_WEATHER: u16 = 7;
 pub const VERB_TIME: u16 = 8;
 pub const VERB_WIPE: u16 = 9;
+pub const VERB_BRAIN: u16 = 10;
+pub const VERB_WHO: u16 = 11;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
@@ -84,6 +86,8 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Weather { .. } => VERB_WEATHER,
         AdminCmd::Time { .. } => VERB_TIME,
         AdminCmd::Wipe { .. } | AdminCmd::WipeCancel | AdminCmd::WipeWhen => VERB_WIPE,
+        AdminCmd::Brain => VERB_BRAIN,
+        AdminCmd::Who => VERB_WHO,
         // A `/bug` is never an admin act; it has its own `Kind`.
         AdminCmd::Bug { .. } => VERB_UNKNOWN,
     }
@@ -216,6 +220,53 @@ impl Bans {
 /// `pump_chat` sends it with `from = 0`, which names no player (ids start
 /// at 256), and this marker is what makes that legible without the client
 /// learning a new message shape.
+/// `/brain`'s answer, for the animal in roster slot `slot` standing `dist_m`
+/// from the asker: species, slot, state, how the last think went (`.` done,
+/// `!` failed), the
+/// remembered target's player id (or `-`), hp, range and how long it stays
+/// roused. Packed tight because a chat line is 48 bytes and the `[server] `
+/// mark takes nine; the order is what a person debugging a chase reads first.
+pub fn brain_line(
+    slot: usize,
+    m: &sim_core::mob::Mob,
+    target_id: Option<u32>,
+    dist_m: f32,
+    tick: u64,
+) -> String {
+    use sim_core::brain::{AiState, FAILED, FINISHED};
+    let species = match m.kind {
+        sim_core::mob::MOB_PIG => "pig",
+        sim_core::mob::MOB_WOLF => "wolf",
+        sim_core::mob::MOB_STAG => "stag",
+        sim_core::mob::MOB_HELI => "heli",
+        sim_core::mob::MOB_SENTRY => "guard",
+        _ => "mob",
+    };
+    let state = match m.state {
+        AiState::Idle => "idle",
+        AiState::Roam => "roam",
+        AiState::Chase => "chase",
+        AiState::Attack => "bite",
+        AiState::Flee => "flee",
+        AiState::NavigateHome => "home",
+        AiState::Orbit => "orbit",
+        AiState::Patrol => "patrol",
+        AiState::Sleep => "sleep",
+        AiState::MoveTowards => "listen",
+    };
+    let status = match m.status {
+        FINISHED => ".",
+        FAILED => "!",
+        _ => "",
+    };
+    let target = target_id.map_or_else(|| "-".to_string(), |id| id.to_string());
+    let roused_s = m.roused_until.saturating_sub(tick) / sim_core::limits::TICK_HZ as u64;
+    format!(
+        "{species}#{slot} {state}{status} >{target} hp{} {dist_m:.0}m r{roused_s}s",
+        m.hp
+    )
+}
+
 pub fn server_line(text: &ChatText) -> ChatText {
     let mut buf = [0u8; ChatText::CAP];
     let prefix = b"[server] ";
@@ -329,5 +380,25 @@ mod tests {
         let out = server_line(&long);
         assert_eq!(out.len(), ChatText::CAP);
         assert!(out.as_bytes().starts_with(b"[server] "));
+    }
+
+    /// A worst-case `/brain` answer still reads whole after the `[server] `
+    /// mark: a chase with a five-digit target, full hp and a long rouse.
+    #[test]
+    fn a_brain_line_fits_a_chat_line() {
+        let m = sim_core::mob::Mob {
+            kind: sim_core::mob::MOB_WOLF,
+            state: sim_core::brain::AiState::Chase,
+            status: sim_core::brain::FAILED,
+            hp: 100,
+            roused_until: 30 * 99,
+            ..Default::default()
+        };
+        let line = brain_line(255, &m, Some(65_535), 99.0, 0);
+        assert!(
+            line.len() + "[server] ".len() <= ChatText::CAP,
+            "{line:?} is {} bytes",
+            line.len()
+        );
     }
 }
