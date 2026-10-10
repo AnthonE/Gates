@@ -1487,7 +1487,9 @@ fn open_panel(ui: Option<&mut Ui>) {
 /// open container outlives the panel that was drawing it — and a container
 /// left open is one the sim keeps syncing to a screen nobody is looking at.
 pub fn close_container(net: &Net, toast: &mut Toast) {
-    if net.session.core.cont_kind == CONT_SELF {
+    // A watcher's open container is its player's (NOW §5sp): there is
+    // nothing of its own to close, and the send would only toast read-only.
+    if net.session.core.cont_kind == CONT_SELF || net.session.watching.is_some() {
         return;
     }
     send(net, toast, "close", |buf| {

@@ -1834,6 +1834,7 @@ impl ShardCore {
                 if self.watching[i].is_some_and(|s| s.catchup) {
                     self.spectator_catchup(i, stats, &mut send);
                 }
+                self.sync_seat_container(i, stats, &mut send);
                 self.drip_client(MAX_PLAYERS + i, stats, &mut send);
             }
         }
@@ -1973,6 +1974,57 @@ impl ShardCore {
         }
         if let Some(seat) = self.watching[i].as_mut() {
             seat.catchup = false;
+        }
+    }
+
+    /// Point seat `i`'s container subscription at whatever its target has
+    /// open (NOW §5sp), so the watcher's panel shows the box, bag or crate
+    /// the player is looting.
+    ///
+    /// **The subscription is mirrored, the contents are not.** A seat never
+    /// sends `ActionMsg::Container`, so without this its `open_cont_kind`
+    /// stays `CONT_SELF` and the container drip (unmirrored, like every
+    /// drip: `fan_out`) never feeds it. Copying the target's `ContSync`
+    /// bytes would be wrong for the reason snapshots are not copied: the
+    /// diff is against the target's shadow, which the seat never had. So
+    /// the seat opens the same handle and its own drip, run right after
+    /// this, sends it a reset batch off its own shadow. That drip resolves
+    /// reach and the lock on the seat's body, which is the target's body
+    /// (`clients[seat].id` is the target's id), so a watcher sees exactly
+    /// the container its player can move items in and nothing more.
+    ///
+    /// The player drips run first, so a target whose open the drip just shut
+    /// (gone, out of reach, locked) already reads `CONT_SELF` here. A close
+    /// is told to the seat directly, since its drip has nothing open to
+    /// close; a refused push leaves the seat open and retries next tick.
+    fn sync_seat_container(
+        &mut self,
+        i: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let Some(seat) = self.watching[i] else {
+            return;
+        };
+        let slot = MAX_PLAYERS + i;
+        let t = &self.clients[seat.target];
+        let want = (t.open_cont_kind, t.open_cont_handle);
+        let me = &self.clients[slot];
+        if want == (me.open_cont_kind, me.open_cont_handle) {
+            return;
+        }
+        if want.0 != CONT_SELF {
+            self.clients[slot].open_container(want.0, want.1);
+            return;
+        }
+        match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
+            Ok(len) => {
+                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.ev_sent);
+                    self.clients[slot].close_container();
+                }
+            }
+            Err(_) => ShardStats::bump(&stats.encode_range_errors),
         }
     }
 
@@ -5495,8 +5547,11 @@ impl ShardCore {
                                     let opened = c.open_cont_reset;
                                     c.open_cont_reset = false;
                                     c.last_cont = now;
-                                    // The lid, heard by whoever is near.
-                                    if opened {
+                                    // The lid, heard by whoever is near —
+                                    // once, off the player's own open: a
+                                    // seat mirroring it (`sync_seat_container`)
+                                    // opened nothing in the world.
+                                    if opened && slot < MAX_PLAYERS {
                                         let id = c.id;
                                         let deed = if kind == CONT_BAG {
                                             DEED_OPEN_BAG

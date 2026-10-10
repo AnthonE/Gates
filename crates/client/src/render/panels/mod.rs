@@ -821,6 +821,9 @@ pub fn keys(
     near: Res<super::verbs::Near>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
     tabs: Query<(&Interaction, &TabGo), Changed<Interaction>>,
+    // A watcher's last seen open container, and whether the inventory is up
+    // because of it (the seat block below).
+    mut follow: Local<((u8, u32), bool)>,
 ) {
     // **The wheel is held RIGHT, and only by an item that owns one.**
     //
@@ -858,6 +861,32 @@ pub fn keys(
         }
         chars.clear();
         return;
+    }
+
+    // **A watcher's inventory follows its player's container** (NOW §5sp).
+    // The seat is fed whatever its target has open, and a box behind a shut
+    // inventory is a box nobody sees, so it raises the page the way `E`
+    // raised the player's own (`verbs::open_panel`: only over no panel), and
+    // shuts it with the container if that is what raised it.
+    if net.session.watching.is_some() {
+        let open = (core.cont_kind, core.cont_handle);
+        if open != follow.0 {
+            follow.0 = open;
+            if crate::ui::slots::looting(open.0) {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Inventory;
+                    ui.dirty = true;
+                    follow.1 = true;
+                }
+            } else {
+                if follow.1 && ui.panel == Panel::Inventory {
+                    ui.panel = Panel::None;
+                    ui.drag = None;
+                    ui.dirty = true;
+                }
+                follow.1 = false;
+            }
+        }
     }
 
     // **Two pages, Rust's two keys.** `Tab` is the inventory and `Q` is the

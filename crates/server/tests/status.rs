@@ -252,3 +252,18 @@ fn names_the_wire_it_speaks() {
     let body = text.split("\r\n\r\n").nth(1).expect("a body after headers");
     assert_eq!(field(body, "proto"), u64::from(protocol::PROTO_VER));
 }
+
+/// Watchers ride the document beside `players` (NOW §5sp), each off its own
+/// gauge: a seat has no body and is never counted as a player.
+#[test]
+fn serves_spectators_apart_from_players() {
+    let stats = Arc::new(ShardStats::default());
+    ShardStats::set(&stats.players, 5);
+    ShardStats::set(&stats.spectators, 2);
+    let addr = start(stats);
+    let resp = exchange(addr, b"GET /status.json HTTP/1.1\r\nHost: t\r\n\r\n");
+    let text = String::from_utf8(resp).expect("the response is text");
+    let body = text.split("\r\n\r\n").nth(1).expect("a body after headers");
+    assert_eq!(field(body, "spectators"), 2);
+    assert_eq!(field(body, "players"), 5);
+}
