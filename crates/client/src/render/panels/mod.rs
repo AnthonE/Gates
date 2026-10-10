@@ -715,7 +715,7 @@ pub fn register(app: &mut App) {
             Update,
             (
                 keys,
-                inv::drag_pointer,
+                (inv::drag_pointer, inv::hover_loot).chain(),
                 inv::skin_keys,
                 inv::table_clicks,
                 (inv::fire_clicks, inv::take_all_clicks).chain(),

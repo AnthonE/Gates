@@ -5221,10 +5221,10 @@ fn the_paperdoll_is_as_wide_as_the_body_is() {
 // `stack_max` since wire v64, and why the cases below are about slots and
 // counts rather than about a click.
 mod quick {
-    use client::ui::slots::{looting, quick_move, MoveArgs, Quick};
+    use client::ui::slots::{looting, quick_move, quick_move_stack, MoveArgs, Quick, Sweep};
     use protocol::event::ItemCatalog;
     use sim_core::gather::ItemStack;
-    use sim_core::inventory::{CONT_BAG, CONT_SELF, CONT_WEAR, CONT_WORLD};
+    use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
     use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
     const BAG: u32 = 0x00BA_6666;
@@ -5641,6 +5641,184 @@ mod quick {
     fn a_right_click_on_an_empty_slot_sends_nothing() {
         assert!(matches!(from_bag(&empty(), &empty(), 0), Quick::Refused(_)));
     }
+
+    /// The whole stack, both ways round (NOW §0p2 4c), planned on copies of
+    /// the views — the right-click's own plumbing.
+    fn scatter(
+        cont_kind: u8,
+        from_kind: u8,
+        slot: usize,
+        inv: &[ItemStack; INV_SLOTS],
+        cont: &[ItemStack; INV_SLOTS],
+    ) -> (Quick, Vec<MoveArgs>) {
+        let (mut inv, mut cont) = (*inv, *cont);
+        let mut worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut out = Vec::new();
+        let q = quick_move_stack(
+            cont_kind,
+            BAG,
+            from_kind,
+            slot,
+            &catalog(),
+            &mut inv,
+            &mut cont,
+            &mut worn,
+            &mut out,
+        );
+        (q, out)
+    }
+
+    /// **A stack that half fits still goes across whole**: 40 wood out of a
+    /// bag into a pack holding 990 tops the pile up by ten and lands the
+    /// other thirty in a free grid slot — two moves from one right-click,
+    /// the second planned against what the first did, so it never asks the
+    /// full pile for room it no longer has.
+    #[test]
+    fn a_right_click_scatters_a_stack_that_half_fits() {
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS + 2] = stack(WOOD, 990);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let (q, moves) = scatter(CONT_BAG, CONT_BAG, 0, &inv, &cont);
+        assert!(matches!(q, Quick::Send(a) if a == moves[0]));
+        let got: Vec<_> = moves
+            .iter()
+            .map(|m| (m.to_kind, m.to_slot as usize, m.count))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (CONT_SELF, HOTBAR_SLOTS + 2, 10),
+                (CONT_SELF, HOTBAR_SLOTS, 30)
+            ],
+            "the rest of a half-fitting stack did not land in the first free grid slot"
+        );
+        assert_eq!(
+            moves.iter().map(|m| m.count).sum::<u16>(),
+            40,
+            "the stack did not all go"
+        );
+    }
+
+    /// The deposit direction is the same walk: pack wood into a box with
+    /// two part-stacks and holes tops both up in slot order, then the hole.
+    #[test]
+    fn a_deposit_scatters_across_part_stacks_then_an_empty_slot() {
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS] = stack(WOOD, 900);
+        let mut cont = empty();
+        cont[0] = stack(HATCHET, 1);
+        cont[1] = stack(WOOD, 700);
+        cont[3] = stack(WOOD, 950);
+        let (_, moves) = scatter(CONT_BOX, CONT_SELF, HOTBAR_SLOTS, &inv, &cont);
+        let got: Vec<_> = moves
+            .iter()
+            .map(|m| (m.to_kind, m.to_slot, m.count))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(CONT_BOX, 1, 300), (CONT_BOX, 3, 50), (CONT_BOX, 2, 550)],
+            "a deposit did not fill the box's piles before opening a hole"
+        );
+        assert!(moves
+            .iter()
+            .all(|m| m.from_kind == CONT_SELF && m.bag == BAG));
+    }
+
+    /// Nothing open is still one gesture, not a scatter: a use is a use,
+    /// and the plan stays empty.
+    #[test]
+    fn a_scatter_with_nothing_open_is_the_old_gesture() {
+        let mut inv = empty();
+        inv[4] = stack(WOOD, 5);
+        let (q, moves) = scatter(CONT_SELF, CONT_SELF, 4, &inv, &empty());
+        assert_eq!(q, Quick::Use(4));
+        assert!(moves.is_empty());
+    }
+
+    /// A full other side plans nothing and says why, as one right-click
+    /// did.
+    #[test]
+    fn a_scatter_into_a_full_side_plans_nothing() {
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let full = [stack(HATCHET, 1); INV_SLOTS];
+        let (q, moves) = scatter(CONT_BAG, CONT_BAG, 0, &full, &cont);
+        assert!(matches!(q, Quick::Refused(_)), "got {q:?}");
+        assert!(moves.is_empty());
+    }
+
+    /// **Hover-loot plans each cell against what the cells before it
+    /// took.** One free grid slot (and a part pile): the first stack takes
+    /// the hole, the second may only top up what is now there rather than
+    /// aim at the hole again, which is the over-ask a sweep would make
+    /// fifteen times a second against the client's lagging view. Only the
+    /// container's own cells fire, a cell fires once on the way in, and a
+    /// full pack is a sentence.
+    #[test]
+    fn a_sweep_plans_each_cell_against_the_last() {
+        let cat = catalog();
+        let mut inv = [stack(HATCHET, 1); INV_SLOTS];
+        inv[HOTBAR_SLOTS + 4] = ItemStack::default();
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        cont[1] = stack(WOOD, 990);
+        cont[2] = stack(HATCHET, 1);
+        let worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
+        let mut out = Vec::new();
+
+        assert_eq!(s.over(CONT_BAG, 0, &cat, &mut out), None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            (out[0].to_slot as usize, out[0].count),
+            (HOTBAR_SLOTS + 4, 40)
+        );
+
+        // Resting on it, or coming back to it, sends nothing more.
+        assert_eq!(s.over(CONT_BAG, 0, &cat, &mut out), None);
+        assert_eq!(out.len(), 1, "a cell fired twice");
+
+        // The second stack tops up the pile the first made: 960, not 990.
+        assert_eq!(s.over(CONT_BAG, 1, &cat, &mut out), None);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            (out[1].to_slot as usize, out[1].count),
+            (HOTBAR_SLOTS + 4, 960),
+            "the second cell was planned against the stale view"
+        );
+
+        // The pack's own cells never fire: take, never give.
+        assert_eq!(s.over(CONT_SELF, 0, &cat, &mut out), None);
+        assert_eq!(out.len(), 2, "a sweep deposited out of the pack");
+
+        // Nowhere left for the hatchet: said, not sent.
+        assert!(s.over(CONT_BAG, 2, &cat, &mut out).is_some());
+        assert_eq!(out.len(), 2);
+
+        // Back over the first cell: empty by the copy, so silent.
+        assert_eq!(s.over(CONT_BAG, 0, &cat, &mut out), None);
+        assert_eq!(out.len(), 2);
+
+        // **A new hold while two moves are unanswered keeps the plan**: the
+        // views handed in are the stale ones, and a fresh copy of them
+        // would aim at the hole the first move is about to fill.
+        let mut again = Sweep::arm(Some(s.clone()), CONT_BAG, BAG, 8, &inv, &cont, &worn);
+        let mut out2 = Vec::new();
+        assert_eq!(again.over(CONT_BAG, 0, &cat, &mut out2), None);
+        assert!(
+            out2.is_empty(),
+            "a carried-on sweep took a stack it already took"
+        );
+
+        // Once both are answered, a new hold reads the views afresh, and a
+        // different container never inherits a plan.
+        let mut fresh = Sweep::arm(Some(s.clone()), CONT_BAG, BAG, 9, &inv, &cont, &worn);
+        assert_eq!(fresh.over(CONT_BAG, 0, &cat, &mut out2), None);
+        assert_eq!(out2.len(), 1, "an answered sweep did not re-read the views");
+        let other = Sweep::arm(Some(s), CONT_BOX, BAG, 8, &inv, &cont, &worn);
+        assert_eq!(other.open(), (CONT_BOX, BAG));
+    }
 }
 
 /// **No crafting is drawn beside a container.** The recipe browser has its
@@ -5672,7 +5850,7 @@ fn the_craft_browser_is_behind_the_looting_check() {
         "the old constant title is still in `inv.rs`"
     );
     assert!(
-        code.contains("quick_move("),
+        code.contains("quick_move_stack("),
         "`inv.rs` does not call the quick-move — the whole gesture is in \
          `ui::slots` and this file is the only thing that can fire it"
     );
