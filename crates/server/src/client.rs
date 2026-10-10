@@ -350,6 +350,11 @@ pub struct ClientNetState {
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
+    /// A hand-reading action's wait (NOW §0rc 2): the newest input seq that
+    /// was already buffered when it reached the hand, and the ticks it has
+    /// waited for that frame to act. Set by `wait_for_hand`, spent by
+    /// `hand_ready`; `None` acts at once.
+    hand_wait: Option<(u16, u8)>,
     /// When each kind of action may act again (`pace.rs`): an early one
     /// waits in the hand.
     pub pace: crate::pace::Pace,
@@ -487,6 +492,7 @@ impl ClientNetState {
             last_wear: [ItemStack::default(); WEAR_SLOTS],
             wear_reset: true,
             pending_action: None,
+            hand_wait: None,
             pace: crate::pace::Pace::default(),
             last_assist: (0, 0, 0),
             last_env: None,
@@ -848,6 +854,57 @@ impl ClientNetState {
         best
     }
 
+    /// Newest buffered seq ahead of the cursor, if any — what a
+    /// hand-reading action waits on (`wait_for_hand`).
+    fn newest_ahead(&self) -> Option<u16> {
+        let mut best: Option<u16> = None;
+        for i in 0..INPUT_BUFFER_CAP {
+            if !self.in_valid[i] {
+                continue;
+            }
+            let seq = self.in_frames[i].seq;
+            let ahead = seq.wrapping_sub(self.last_executed);
+            let in_window = ahead >= 1 && ahead as usize <= INPUT_BUFFER_CAP;
+            if in_window && best.is_none_or(|b| ahead > b.wrapping_sub(self.last_executed)) {
+                best = Some(seq);
+            }
+        }
+        best
+    }
+
+    /// An action just reached the hand (`ShardCore::push_action`). One that
+    /// reads the held item waits for the newest frame already buffered: the
+    /// action lane skips the jitter buffer the frames sit in, so a key
+    /// pressed just after a hotbar switch would otherwise act on the slot
+    /// the cursor is still on — a satchel planted as "you cannot pay"
+    /// (NOW §0rc 2). Any other action acts at once.
+    pub fn wait_for_hand(&mut self, reads_hand: bool) {
+        self.hand_wait = if reads_hand {
+            self.newest_ahead().map(|seq| (seq, 0))
+        } else {
+            None
+        };
+    }
+
+    /// Whether the action in the hand may act this tick: the frame it
+    /// waits for has executed (this tick's consume ran first, and its input
+    /// command rides ahead of the action's in the tick), or it has waited
+    /// `INPUT_BUFFER_CAP` ticks — a buffered frame acts within that many, so
+    /// the bound is a backstop that keeps a hand from ever wedging. A wait
+    /// that does not end counts one tick.
+    pub fn hand_ready(&mut self) -> bool {
+        let Some((seq, waited)) = self.hand_wait else {
+            return true;
+        };
+        let executed = (seq.wrapping_sub(self.last_executed) as i16) <= 0;
+        if executed || usize::from(waited) >= INPUT_BUFFER_CAP {
+            self.hand_wait = None;
+            return true;
+        }
+        self.hand_wait = Some((seq, waited + 1));
+        false
+    }
+
     /// One tick's consume (NETCODE.md §4): normally one frame; two when
     /// the buffer runs deep (the consume throttle); a gap with frames
     /// behind it jumps — 10-frame redundancy means a gap is a ≥ 10-datagram
@@ -1045,6 +1102,40 @@ mod tests {
         c.push_frame(frame(10), None);
         assert_eq!(c.consume_input().unwrap().frame.seq, 10);
         assert_eq!(c.last_executed, 10);
+    }
+
+    /// A hand-reading action waits for the newest frame buffered when it
+    /// arrived — through seq wrap, and never past it — and a wait whose
+    /// frame never acts ends after `INPUT_BUFFER_CAP` ticks rather than
+    /// wedging the hand. Any other action never waits.
+    #[test]
+    fn the_hand_waits_for_the_newest_buffered_frame_and_no_longer() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        for seq in [u16::MAX - 1, u16::MAX, 0] {
+            c.push_frame(frame(seq), None);
+        }
+        c.wait_for_hand(true);
+        c.push_frame(frame(1), None); // arrived after the press
+        let mut acted = Vec::new();
+        for _ in 0..4 {
+            let seq = c.consume_input().unwrap().frame.seq;
+            if c.hand_ready() {
+                acted.push(seq);
+            }
+        }
+        assert_eq!(acted.first(), Some(&0), "acts with the newest frame it saw");
+
+        c.wait_for_hand(false);
+        assert!(c.hand_ready(), "a verb that names its subject never waits");
+
+        // Buffered, but the cursor never moves: bounded.
+        c.push_frame(frame(2), None);
+        c.wait_for_hand(true);
+        let waited = (0..2 * INPUT_BUFFER_CAP)
+            .take_while(|_| !c.hand_ready())
+            .count();
+        assert_eq!(waited, INPUT_BUFFER_CAP);
     }
 
     /// A starved tick mints the decayed stand-in off the last REAL frame —

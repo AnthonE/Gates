@@ -97,6 +97,18 @@ fn addr_parts(addr: u32) -> (u8, u8, u8, u8) {
     )
 }
 
+/// Whether the sim reads this action's subject off the selected hotbar slot
+/// (`combat::held_item`): the charge planted, the gun reloaded, the vessel
+/// filled at the water. These wait for the frames buffered ahead of them
+/// (`ClientNetState::wait_for_hand`, NOW §0rc 2); a verb that names its
+/// slot or its target acts at once.
+fn reads_hand(act: &ActionMsg) -> bool {
+    matches!(
+        act,
+        ActionMsg::Throw { .. } | ActionMsg::Reload | ActionMsg::Drink
+    )
+}
+
 /// Ticks between two connections' crew-vital pushes: the period spread over
 /// every slot a push can go to (players, then seats), so slot `s` is due on
 /// its own phase and no two share a tick (`crew_vital_due`).
@@ -1371,6 +1383,7 @@ impl ShardCore {
         }
         let c = &mut self.clients[slot];
         if c.connected && c.pending_action.is_none() {
+            c.wait_for_hand(reads_hand(&act));
             c.pending_action = Some(act);
         }
     }
@@ -1540,6 +1553,12 @@ impl ShardCore {
         // keeps its own gap on the sim's tick, and an early one waits in the
         // hand — defer, never drop — so a script hammering a key gets a
         // person's pace and a request still gets its answer.
+        //
+        // **And not ahead of the hand it reads** (NOW §0rc 2): a throw, a
+        // reload or a drink waits for the frames that were already buffered
+        // when it reached the hand, so the hotbar slot the client was on
+        // when it pressed is the one in force (`ClientNetState::hand_ready`).
+        // Asked before the pace, so a wait does not start the kind's clock.
         let now = self.world.tick;
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
@@ -1547,7 +1566,7 @@ impl ShardCore {
                 continue;
             }
             if let Some(act) = c.pending_action.take() {
-                if !c.pace.go(&act, now) {
+                if !c.hand_ready() || !c.pace.go(&act, now) {
                     c.pending_action = Some(act);
                     continue;
                 }
