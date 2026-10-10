@@ -2383,6 +2383,34 @@ impl Content {
                     as i16,
                 pack_cm: m.pack_m as i64 * 100,
                 fire_fear_cm: m.fire_fear_m as i64 * 100,
+                // The brain's numbers. Validate bounded the counts and the
+                // percent, so the narrowing casts cannot truncate; spans are
+                // ticks, and the heal is a count of thinks.
+                pack_biters: m.pack_biters as u8,
+                give_up_tries: m.give_up_tries as u8,
+                heal_after_ticks: m
+                    .heal_after_seconds
+                    .checked_mul(TICK_HZ)
+                    .ok_or_else(|| format!("bake: mob `{}` heal delay overflows", m.id))?,
+                heal_parts: small(
+                    m.heal_seconds
+                        .checked_mul(TICK_HZ)
+                        .ok_or_else(|| format!("bake: mob `{}` heal span overflows", m.id))?
+                        / sim_core::limits::MOB_THINK_TICKS as u32,
+                    "heal_seconds",
+                )?,
+                howl_ticks: m
+                    .howl_seconds
+                    .checked_mul(TICK_HZ)
+                    .ok_or_else(|| format!("bake: mob `{}` howl cooldown overflows", m.id))?,
+                orbit_cm: m.orbit_m as i64 * 100,
+                sleep_pct: m.sleep_pct as u8,
+                hear: sim_core::noise::Hearing {
+                    gun_cm: m.hear_m.gun as i64 * 100,
+                    bow_cm: m.hear_m.bow as i64 * 100,
+                    strike_cm: m.hear_m.strike as i64 * 100,
+                    blast_cm: m.hear_m.blast as i64 * 100,
+                },
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,

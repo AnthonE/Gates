@@ -118,13 +118,17 @@ pub enum Cond {
     Crowded,
     /// The target holds a lit torch inside the species' fear radius.
     Fire,
-    /// Every route to the target has failed `GIVE_UP_TRIES` times running.
+    /// Every route to the target has failed `MobDef::give_up_tries` times
+    /// running.
     GaveUp,
     /// After dusk (`world::is_night`).
     Night,
     /// A draw, percent — the reference's `Chance` event, hashed off the
     /// slot and the think so a replay rolls the same.
     Chance(u8),
+    /// The same draw at the species' own `MobDef::sleep_pct`: whether an
+    /// idle animal beds down tonight.
+    Drowsy,
     /// A noise is remembered (`noise.rs`; the reference's
     /// `OnPositionMemorySet`).
     Noise,
@@ -182,7 +186,7 @@ pub static BOAR: Design = Design {
             go(&[Target, Brave], Chase),
             go(&[Noise], Flee),
             go(&[FarFromHome], NavigateHome),
-            go(&[Timer, Night, Chance(40)], Sleep),
+            go(&[Timer, Night, Drowsy], Sleep),
             go(&[Timer], Roam),
         ],
         // Roam
@@ -246,10 +250,10 @@ pub static BOAR: Design = Design {
 };
 
 /// The wolf, after the reference's 2024 rework: a pack hunter that runs you
-/// down, mixes charging with circling (no more than `PACK_BITERS` close in
-/// at once), circles a lit torch instead of biting through it, waits you
-/// out on a rock until it has failed `GIVE_UP_TRIES` routes to you, and
-/// comes to see what a gunshot was.
+/// down, mixes charging with circling (no more than `MobDef::pack_biters`
+/// close in at once), circles a lit torch instead of biting through it,
+/// waits you out on a rock until it has failed `MobDef::give_up_tries`
+/// routes to you, and comes to see what a gunshot was.
 pub static WOLF: Design = Design {
     rules: [
         // Idle
@@ -431,16 +435,6 @@ pub fn design_for(slot: usize, def: &MobDef) -> &'static Design {
     }
 }
 
-/// At most this many animals bite one target at once; the rest of a pack
-/// circles (`Cond::Crowded`). **Ours, not theirs**: the reference's wolves
-/// visibly mix charging with circling and reposition between attacks, but
-/// no published rule caps the count. Two is the cap that makes the mix
-/// happen here.
-pub const PACK_BITERS: usize = 2;
-
-/// Failed routes to one target before the animal gives up on it.
-pub const GIVE_UP_TRIES: u8 = 3;
-
 /// How long a give-up calms the senses: only an attacker is noticed until
 /// it runs out. Twenty seconds.
 const CALM_TICKS: u64 = 600;
@@ -468,18 +462,9 @@ const FIRE_FEINT_CM: i64 = 250;
 /// A target this far under the waterline is swimming, and a wolf gives up
 /// on a swimmer at once.
 const SWIM_DEPTH_M: f32 = 0.5;
-/// Out of combat this long — not struck, nobody remembered — an animal
-/// starts to heal (the reference's reworked wolf regenerates "after a long
-/// time out of combat"). A minute, then a fortieth of its hp every think:
-/// twenty seconds from a scratch to whole.
-const HEAL_AFTER_TICKS: u64 = 1_800;
-const HEAL_PARTS: u16 = 40;
 /// How long an ambushed pack animal backs off before it turns and comes
 /// back with whoever answered. Three seconds.
 const RETREAT_TICKS: u64 = 90;
-/// A wolf howls for its pack at most this often. Twenty seconds: one call
-/// per hunt, not one per sighting.
-const HOWL_COOLDOWN_TICKS: u64 = 600;
 /// How long a heard noise is remembered — how long prey keeps running from
 /// the spot and a hunter keeps meaning to look. Five seconds.
 const NOISE_MEMORY_TICKS: u64 = 150;
@@ -520,9 +505,7 @@ const REPATH_CM: i64 = 150;
 /// A partial route shorter than this is no progress: the animal is already
 /// as close as the ground lets it get.
 const PROGRESS_CM: i64 = 200;
-/// Circling radius; a circling animal closer than the inner fraction of it
-/// backs off first.
-const ORBIT_CM: f32 = 700.0;
+/// How far round its target a circling animal steps each think.
 const ORBIT_STEP: u16 = 12 << 8;
 /// Anything this close is noticed however it moves and wherever it
 /// stands: you do not get to crouch on top of a pig.
@@ -677,15 +660,16 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         InReach => in_reach(ctx, def, mob, 100),
         OutOfReach => !in_reach(ctx, def, mob, 125),
         FarFromHome => far_from_home(ctx.ground.seed, slot, def, mob),
-        Crowded => crowded(ctx, slot, mob),
+        Crowded => crowded(ctx, slot, def, mob),
         Fire => fire(ctx, def, mob),
-        GaveUp => mob.tries >= GIVE_UP_TRIES,
+        GaveUp => mob.tries >= def.give_up_tries,
         Night => crate::world::is_night(ctx.day_tick),
         Noise => mob.poi_until > tick,
         Quiet => mob.poi_until <= tick,
         Ambushed => mob.ambushed,
         MateStruck => mate_struck(ctx, slot, def, mob),
         Chance(pct) => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < pct as u64,
+        Drowsy => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64,
     }
 }
 
@@ -772,8 +756,8 @@ fn leash(slot: usize, def: &MobDef) -> (i64, f32) {
     }
 }
 
-/// `PACK_BITERS` others already biting this animal's target.
-fn crowded(ctx: &Ctx, slot: usize, mob: &Mob) -> bool {
+/// `MobDef::pack_biters` others already biting this animal's target.
+fn crowded(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> bool {
     if mob.target == NO_TARGET {
         return false;
     }
@@ -783,7 +767,7 @@ fn crowded(ctx: &Ctx, slot: usize, mob: &Mob) -> bool {
         .enumerate()
         .filter(|&(i, p)| i != slot && p.live && p.state == Attack && p.target == mob.target)
         .count();
-    biting >= PACK_BITERS
+    biting >= def.pack_biters as usize
 }
 
 /// The target holds a lit torch inside this species' fear radius — and is
@@ -814,12 +798,12 @@ fn mate_struck(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> bool {
 }
 
 /// Howl for the pack, if this is a pack animal and it has not howled
-/// within `HOWL_COOLDOWN_TICKS`.
+/// within `MobDef::howl_ticks` — one call per hunt, not one per sighting.
 fn howl(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     let tick = ctx.tick;
     if def.pack_cm > 0
         && crate::mob::pack_of(slot).is_some()
-        && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(HOWL_COOLDOWN_TICKS))
+        && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(def.howl_ticks as u64))
     {
         mob.howled_at = tick;
         ctx.howls.push(slot as u8);
@@ -944,17 +928,17 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     }
     // A pack animal that found someone itself, fresh, calls its pack —
     // the reference wolf's howl. An answer to a call is not a call, and a
-    // wolf howls at most once a `HOWL_COOLDOWN_TICKS`.
+    // wolf howls at most once a `MobDef::howl_ticks`.
     if best.is_some() && !has_target(ctx, mob) {
         howl(ctx, slot, def, mob);
     }
     if best.is_none() && !calm && def.pack_cm > 0 && !has_target(ctx, mob) {
         best = pack_call(ctx, slot, def, mob);
     }
-    // Hearing: the newest noise this animal is inside the radius of goes
-    // into position memory. A sulk hears nothing, as it sees nothing.
+    // Hearing: the newest noise this animal is inside its species' range of
+    // goes into position memory. A sulk hears nothing, as it sees nothing.
     if !calm {
-        if let Some(n) = ctx.noises.heard(tick, mob.body.qx, mob.body.qz) {
+        if let Some(n) = ctx.noises.heard(tick, mob.body.qx, mob.body.qz, &def.hear) {
             mob.poi_qx = n.qx;
             mob.poi_qz = n.qz;
             mob.poi_until = tick + NOISE_MEMORY_TICKS;
@@ -1000,16 +984,18 @@ fn pack_call(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(i64, u8
     best
 }
 
-/// Healing out of combat (`HEAL_AFTER_TICKS`): a wounded animal that got
-/// away comes back whole, and one still being hunted does not.
+/// Healing out of combat (`MobDef::heal_after_ticks`, the reference's
+/// reworked wolf regenerating "after a long time out of combat"): a wounded
+/// animal that got away comes back whole, and one still being hunted does
+/// not.
 fn heal(ctx: &Ctx, def: &MobDef, mob: &mut Mob) {
     if mob.hp >= def.hp || has_target(ctx, mob) {
         return;
     }
-    if ctx.tick < mob.hurt_at.saturating_add(HEAL_AFTER_TICKS) {
+    if ctx.tick < mob.hurt_at.saturating_add(def.heal_after_ticks as u64) {
         return;
     }
-    mob.hp = (mob.hp + (def.hp / HEAL_PARTS).max(1)).min(def.hp);
+    mob.hp = (mob.hp + (def.hp / def.heal_parts.max(1)).max(1)).min(def.hp);
 }
 
 /// Stuck detection: a walker that has barely moved across a think while
@@ -1210,7 +1196,7 @@ fn chase(ctx: &mut Ctx, def: &MobDef, mob: &mut Mob) -> u8 {
     {
         mob.path.clear();
         mob.gait = 0;
-        mob.tries = GIVE_UP_TRIES;
+        mob.tries = def.give_up_tries;
         return FAILED;
     }
     let stop = (def.attack_range_cm * 4 / 5).clamp(50, u16::MAX as i64) as u16;
@@ -1362,7 +1348,7 @@ fn orbit(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
     let r = if fire(ctx, def, mob) {
         def.fire_fear_cm as f32 + 200.0
     } else {
-        ORBIT_CM
+        def.orbit_cm as f32
     };
     let (ox, oz) = (
         (mob.body.qx - p.qx) as f32 * POS_XZ_Q,
@@ -1569,7 +1555,7 @@ mod tests {
     /// **A wolf that cannot reach you circles, and then gives up.** The
     /// player stands in a walled 3 m box; a wolf 12 m off hears them. It
     /// must never bite through a wall, it must circle at least once while it
-    /// tries, and inside `GIVE_UP_TRIES` failed routes it must drop the
+    /// tries, and inside `give_up_tries` failed routes it must drop the
     /// target and head home with its senses calmed.
     #[test]
     fn a_wolf_circles_a_player_it_cannot_reach_and_then_gives_up() {

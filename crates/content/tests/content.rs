@@ -3559,6 +3559,57 @@ fn the_shipped_wolf_hunts_a_narrower_circle_after_dusk() {
     assert_eq!(wolf.spook_at(night), wolf.night_spook_cm);
 }
 
+/// **The brain's numbers came out of code unchanged** (`NOW.md` §0m item 7).
+/// They were constants in `brain.rs` and `noise.rs` that every species
+/// shared; the shipped rows carry them now, and the bake must hand the sim
+/// what the constants were, units converted, or every animal on the island
+/// changed behaviour the day they moved. The sim's tests run on
+/// `MobContent::probe_fixture`, whose rows are those constants, so the
+/// shipped rows are held to it: a balance pass that retunes one moves the
+/// fixture with it.
+#[test]
+fn the_brain_numbers_bake_to_what_the_code_had() {
+    use sim_core::mob::{MobContent, MOB_PIG, MOB_STAG, MOB_WOLF};
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let mc = c.bake_mobs().expect("shipped animals must bake");
+    let fx = MobContent::probe_fixture();
+    let brain = |d: sim_core::mob::MobDef| {
+        (
+            d.pack_biters,
+            d.give_up_tries,
+            d.heal_after_ticks,
+            d.heal_parts,
+            d.howl_ticks,
+            d.orbit_cm,
+            d.sleep_pct,
+            d.hear,
+        )
+    };
+    // The fixture has no stag; a stag's brain is the pig's.
+    for (kind, like) in [
+        (MOB_PIG, MOB_PIG),
+        (MOB_WOLF, MOB_WOLF),
+        (MOB_STAG, MOB_PIG),
+    ] {
+        assert_eq!(
+            brain(mc.def(kind)),
+            brain(fx.def(like)),
+            "species {kind}: the shipped brain numbers and the sim's fixture disagree"
+        );
+    }
+    // The units, once, against the constants they replaced: a minute and
+    // twenty seconds at 30 Hz, a twenty-second heal in half-second thinks.
+    let pig = mc.def(MOB_PIG);
+    assert_eq!(
+        (pig.heal_after_ticks, pig.heal_parts, pig.howl_ticks),
+        (1_800, 40, 600)
+    );
+    assert_eq!(
+        (pig.orbit_cm, pig.hear.gun_cm, pig.hear.blast_cm),
+        (700, 10_000, 20_000)
+    );
+}
+
 /// **The loop, across three content files that cannot see each other.**
 ///
 /// The pig pays a raw food, the campfire is the only station that turns it
@@ -3975,6 +4026,38 @@ fn mob_refusals() {
         "is not an item",
     );
     refuses("mobs.toml", "count = 15", "count = 0", "zero count");
+    // The brain's numbers (`NOW.md` §0m item 7). Every row carries the same
+    // text today, so each replace lands on all three.
+    refuses(
+        "mobs.toml",
+        "pack_biters = 2",
+        "pack_biters = 0",
+        "pack_biters",
+    );
+    refuses(
+        "mobs.toml",
+        "give_up_tries = 3",
+        "give_up_tries = 0",
+        "give_up_tries",
+    );
+    refuses(
+        "mobs.toml",
+        "heal_seconds = 20",
+        "heal_seconds = 0",
+        "heal_seconds",
+    );
+    // A circle inside the pig's 2 m bite, and one past every leash.
+    refuses("mobs.toml", "orbit_m = 7", "orbit_m = 2", "orbit_m");
+    refuses("mobs.toml", "orbit_m = 7", "orbit_m = 100", "orbit_m");
+    refuses(
+        "mobs.toml",
+        "sleep_pct = 40",
+        "sleep_pct = 101",
+        "sleep_pct",
+    );
+    refuses("mobs.toml", "blast = 200", "blast = 900", "hear_m");
+    // A row that leaves one out is refused, not defaulted into an answer.
+    refuses("mobs.toml", "sleep_pct = 40\n", "", "sleep_pct");
     // A species the sim has no roster kind for is a boot refusal, not a
     // silently ignored row: the content hash would otherwise promise
     // wildlife the shard does not have.

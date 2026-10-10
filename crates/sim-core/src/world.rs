@@ -6336,7 +6336,7 @@ impl World {
                 self.noises.push(crate::noise::Noise {
                     qx: crate::movement::quant_xz(x),
                     qz: crate::movement::quant_xz(z),
-                    radius_cm: crate::noise::NOISE_BLAST_CM,
+                    sound: crate::noise::Sound::Blast,
                     at: tick,
                 });
             }

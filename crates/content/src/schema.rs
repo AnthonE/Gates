@@ -822,10 +822,46 @@ pub struct Mob {
     /// A target holding a lit torch inside this many metres is circled
     /// rather than bitten. Zero fears nothing.
     pub fire_fear_m: u32,
+    /// **The brain's numbers** (`sim-core/src/brain.rs`), every one
+    /// required: at most this many animals bite one target at once, and the
+    /// rest of a pack circles. Only a pack animal waits its turn.
+    pub pack_biters: u32,
+    /// Failed routes to one target before the animal gives up on it.
+    pub give_up_tries: u32,
+    /// Out of combat this long — not struck, nobody remembered — an animal
+    /// starts to heal…
+    pub heal_after_seconds: u32,
+    /// …and takes this long from a scratch to whole, an even share of its
+    /// hp every think.
+    pub heal_seconds: u32,
+    /// A pack animal howls for its pack at most this often.
+    pub howl_seconds: u32,
+    /// The circle a waiting animal walks round its target, metres.
+    pub orbit_m: u32,
+    /// Percent: the draw an idle animal makes at night, when its stand runs
+    /// out, to bed down rather than roam. Only a design with a way into
+    /// sleep asks (the boar's; a hunter never beds down).
+    pub sleep_pct: u32,
+    /// How far it hears each kind of noise, metres (`sim-core/src/noise.rs`).
+    pub hear_m: Hearing,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
     pub drops: Vec<Stack>,
+}
+
+/// How far a species hears each kind of noise, metres. Zero is deaf to it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hearing {
+    /// A firearm going off.
+    pub gun: u32,
+    /// A bow loosing.
+    pub bow: u32,
+    /// A strike on a surface: a felling, a mining, a round landing.
+    pub strike: u32,
+    /// A charge going off.
+    pub blast: u32,
 }
 
 /// A species' liking for each biome, 0–1 (`terrain::Biome`).

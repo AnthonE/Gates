@@ -11,6 +11,9 @@ use std::collections::BTreeSet;
 /// (`protocol::MAX_ITEM_NAME_BYTES`), pinned equal by the server's tests.
 pub const SKIN_NAME_MAX_BYTES: usize = 24;
 
+/// The furthest a species may hear any noise, metres (`mobs.toml` `hear_m`).
+const HEAR_MAX_M: u32 = 500;
+
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
     let rest = id
         .strip_prefix(prefix)
@@ -1615,6 +1618,47 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!(
                 "mob `{}`: pack_m {} / fire_fear_m {} reach past its {}m leash",
                 m.id, m.pack_m, m.fire_fear_m, m.roam_m
+            ));
+        }
+        // The brain's numbers. A pack none of which may bite never closes
+        // in, zero tries gives up before the first route, a heal that takes
+        // no time is a divide by nothing, and a circle inside its own bite or
+        // past its own leash is not one the animal can walk. The upper
+        // bands are typo guards, generous on purpose.
+        if !(1..=16).contains(&m.pack_biters) || !(1..=20).contains(&m.give_up_tries) {
+            return Err(format!(
+                "mob `{}`: pack_biters {} / give_up_tries {} — 1–16 bite one target at \
+                 once, and 1–20 failed routes give it up",
+                m.id, m.pack_biters, m.give_up_tries
+            ));
+        }
+        if m.heal_seconds == 0 {
+            return Err(format!(
+                "mob `{}`: heal_seconds 0 — healing back to whole takes at least a second",
+                m.id
+            ));
+        }
+        if m.orbit_m <= m.attack_range_m || m.orbit_m > m.roam_m {
+            return Err(format!(
+                "mob `{}`: orbit_m {} — the circle lies outside its {}m bite and inside \
+                 its {}m leash",
+                m.id, m.orbit_m, m.attack_range_m, m.roam_m
+            ));
+        }
+        if m.sleep_pct > 100 {
+            return Err(format!(
+                "mob `{}`: sleep_pct {} is a percent, 0–100",
+                m.id, m.sleep_pct
+            ));
+        }
+        let ears = &m.hear_m;
+        if [ears.gun, ears.bow, ears.strike, ears.blast]
+            .iter()
+            .any(|&r| r > HEAR_MAX_M)
+        {
+            return Err(format!(
+                "mob `{}`: hear_m past {HEAR_MAX_M}m — an ear that long is a typo",
+                m.id
             ));
         }
         if m.drops.is_empty() {

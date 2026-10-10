@@ -279,6 +279,19 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.sight_deg);
         h.u(m.pack_m);
         h.u(m.fire_fear_m);
+        // The brain's numbers decide what an animal does on a tick, so a
+        // WAL replays under them like the rest of the row.
+        h.u(m.pack_biters);
+        h.u(m.give_up_tries);
+        h.u(m.heal_after_seconds);
+        h.u(m.heal_seconds);
+        h.u(m.howl_seconds);
+        h.u(m.orbit_m);
+        h.u(m.sleep_pct);
+        h.u(m.hear_m.gun);
+        h.u(m.hear_m.bow);
+        h.u(m.hear_m.strike);
+        h.u(m.hear_m.blast);
         h.stacks(&m.drops);
     }
 

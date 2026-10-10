@@ -5,7 +5,7 @@
 //! Numbers come from `MobContent::probe_fixture`; positions are set, not
 //! walked to, and every assertion reads sim state.
 
-use sim_core::brain::{AiState, NO_TARGET, PACK_BITERS};
+use sim_core::brain::{AiState, NO_TARGET};
 use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_LIGHT, BTN_SPRINT};
@@ -190,7 +190,8 @@ fn a_wolf_outside_its_own_senses_answers_its_pack() {
 }
 
 /// **They take turns.** Three wolves round one player: never more than
-/// `PACK_BITERS` are biting at once, and the one left over circles.
+/// the wolf row's `pack_biters` are biting at once, and the one left over
+/// circles.
 #[test]
 fn no_more_than_two_wolves_bite_one_player_at_once() {
     let pack = free_pack();
@@ -211,7 +212,7 @@ fn no_more_than_two_wolves_bite_one_player_at_once() {
     });
     assert!(most >= 1, "nobody ever bit");
     assert!(
-        most <= PACK_BITERS,
+        most <= w.mob.def(MOB_WOLF).pack_biters as usize,
         "{most} wolves were biting one player at once"
     );
     assert!(circled, "the wolf that had to wait never circled");
@@ -306,7 +307,7 @@ fn gap2(w: &World, slot: usize) -> i64 {
 /// or away on purpose.
 #[test]
 fn a_gunshot_sends_a_pig_running_and_brings_a_wolf_to_look() {
-    use sim_core::noise::{Noise, NOISE_GUN_CM};
+    use sim_core::noise::{Noise, Sound};
     let pig = {
         let mut w = World::new(SEED);
         w.mob = MobContent::probe_fixture();
@@ -320,7 +321,7 @@ fn a_gunshot_sends_a_pig_running_and_brings_a_wolf_to_look() {
         w.noises.push(Noise {
             qx: p.qx,
             qz: p.qz,
-            radius_cm: NOISE_GUN_CM,
+            sound: Sound::Gun,
             at,
         });
     };
@@ -425,7 +426,7 @@ fn a_wounded_animal_left_alone_heals_after_a_minute() {
 
 /// **One howl a hunt.** The pack-mate that found the player howls; the one
 /// that answered the call does not howl back, and the finder does not howl
-/// again while the hunt runs (`brain::HOWL_COOLDOWN_TICKS`). The events are
+/// again while the hunt runs (`MobDef::howl_ticks`). The events are
 /// what reaches clients (`EV_HOWL`), so they are what is counted.
 #[test]
 fn a_pack_howls_once_when_it_finds_someone() {
