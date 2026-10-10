@@ -10,6 +10,8 @@
 #
 # tier: 0 naked era · 1 workbench era · 2 powder era
 # slot: hand | head | body | none
+# class: the craft rail's bucket (sim-core craft::CLASS_*) — construction | items |
+#   resources | clothing | tools | medical | weapons | ammo | food | other
 
 # --- raw ---------------------------------------------------------------
 
@@ -20,6 +22,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.stone"
@@ -28,6 +31,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.metal_ore"
@@ -36,6 +40,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.sulfur_ore"
@@ -44,6 +49,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.cloth"
@@ -52,6 +58,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 # Theirs (RIPLIST §1e, closed 2026-08-14 at the page): 1000. 500 was ours
 # while the row was open.
@@ -62,6 +69,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.charcoal"
@@ -70,6 +78,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.metal_frags"
@@ -78,6 +87,7 @@ stack = 1000
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.sulfur"
@@ -86,6 +96,7 @@ stack = 1000
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 # Theirs (RIPLIST §1e): 1000 [APPROX — one source states it, and every
 # other craft resource already sits there]. 500 was ours.
@@ -96,6 +107,7 @@ stack = 1000
 tier = 2
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 # Stack 500 confirmed theirs (RIPLIST §1e).
 [[item]]
@@ -105,6 +117,7 @@ stack = 500
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 # Components: barrel-only (CONTENT §2) — the reason the coast road matters.
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): gears 20,
@@ -117,6 +130,7 @@ stack = 20
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.rope"
@@ -125,6 +139,7 @@ stack = 50
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.tarp"
@@ -133,6 +148,7 @@ stack = 20
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "resources"
 
 # The working coin (DESIGN.md §3.1) — **scrap's job in this game**, and an
 # ordinary item stack on purpose: it is dropped on death, raidable in your
@@ -162,6 +178,7 @@ stack = 1000
 tier = 0
 rarity = "rare"
 slot = "none"
+class = "resources"
 
 # The blueprint (research table v1, 2026-09-23) — the paper a research
 # table makes. ONE item for every recipe: which recipe a sheet teaches is
@@ -176,6 +193,7 @@ stack = 1
 tier = 1
 rarity = "rare"
 slot = "none"
+class = "other"
 
 # --- T0, the naked era -------------------------------------------------
 
@@ -197,6 +215,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "weapons"
 condition_max = 10000
 
 [[item]]
@@ -206,6 +225,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "tools"
 # 50 pts, the reference's ceiling. No node pays a torch, so no
 # condition_loss row names it (V3 forbids an unreachable one) -- what
 # spends this is the flame itself.
@@ -224,6 +244,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "weapons"
 
 # Rust's stone spear: the wooden one with a stone head, no bench.
 [[item]]
@@ -233,6 +254,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "weapons"
 
 [[item]]
 id = "item.hatchet_stone"
@@ -241,6 +263,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "tools"
 # 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.
 condition_max = 10000
 
@@ -251,6 +274,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "tools"
 condition_max = 10000
 
 [[item]]
@@ -260,6 +284,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "weapons"
 
 # Theirs (RIPLIST §1e): the arrow class stacks 64 [APPROX — ×64 stated
 # for the high-velocity arrow; wooden shares the class].
@@ -270,6 +295,7 @@ stack = 64
 tier = 0
 rarity = "common"
 slot = "none"
+class = "ammo"
 
 # Theirs (RIPLIST §1e): 3 [APPROX — stated once, corroborated by a player
 # petition to raise it *to 5*]. The spawn kit's grant moved 5 → 3 with it
@@ -281,6 +307,7 @@ stack = 3
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "medical"
 
 [[item]]
 id = "item.sleeping_bag"
@@ -289,6 +316,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.box_small"
@@ -297,6 +325,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "items"
 
 # Rust's key lock: wood, no bench, the prim base's first security.
 [[item]]
@@ -306,6 +335,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "construction"
 
 # Rust's wooden barricade: a log wall that stands anywhere and stops a body.
 [[item]]
@@ -315,6 +345,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "construction"
 
 # A water vessel, empty and full: H at fresh water with the empty one in
 # hand fills it, and drinking the full one gives the empty one back
@@ -326,6 +357,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "tools"
 
 [[item]]
 id = "item.waterskin_full"
@@ -334,6 +366,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "tools"
 
 [[item]]
 id = "item.fire_pit"
@@ -342,6 +375,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "items"
 
 # --- T1, the workbench era ---------------------------------------------
 
@@ -352,6 +386,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "items"
 
 # The bench ladder's upper rungs (bench ladder v0, the pre-Oct-2025
 # scrap-era shape — operator 2026-08-15, DECISIONS.md). Both tier 2: each
@@ -364,6 +399,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.workbench3"
@@ -372,6 +408,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.hearth"
@@ -380,6 +417,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.hatchet_metal"
@@ -388,6 +426,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "tools"
 # 400 pts: the 4x stone->metal step is the reference's own tool ladder.
 condition_max = 40000
 
@@ -398,6 +437,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "tools"
 condition_max = 40000
 
 [[item]]
@@ -407,6 +447,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "weapons"
 
 [[item]]
 id = "item.furnace"
@@ -415,6 +456,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.box_large"
@@ -423,6 +465,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.lock_code"
@@ -431,6 +474,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "construction"
 
 # The research table (research v0) — where a found thing becomes a thing
 # you can make. Workbench era and priced there, because it is the second
@@ -442,6 +486,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "items"
 
 # The recycler (recycler v0). Priced beside the furnace it resembles —
 # both are workbench-era converters you place once and feed forever — and
@@ -454,6 +499,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "items"
 
 [[item]]
 id = "item.door_wood"
@@ -462,6 +508,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "construction"
 
 [[item]]
 id = "item.building_plan"
@@ -470,6 +517,7 @@ stack = 1
 tier = 1
 rarity = "common"
 slot = "hand"
+class = "construction"
 
 [[item]]
 id = "item.hammer"
@@ -478,6 +526,7 @@ stack = 1
 tier = 1
 rarity = "common"
 slot = "hand"
+class = "tools"
 
 [[item]]
 id = "item.armor_burlap_head"
@@ -486,6 +535,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "head"
+class = "clothing"
 
 [[item]]
 id = "item.armor_burlap_body"
@@ -494,6 +544,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "body"
+class = "clothing"
 
 # Our item (§1c refused its recipe — theirs is the high-velocity arrow),
 # but the stack is class-wide there, so 64 travels (RIPLIST §1e).
@@ -504,6 +555,7 @@ stack = 64
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "ammo"
 
 [[item]]
 id = "item.crossbow"
@@ -512,6 +564,7 @@ stack = 1
 tier = 1
 rarity = "rare"
 slot = "hand"
+class = "weapons"
 
 # --- T2, the powder era ------------------------------------------------
 
@@ -522,6 +575,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "weapons"
 
 # Theirs (RIPLIST §1e): pistol/rifle ammo stacks 128 [EXACT — multiple
 # independent summaries agree].
@@ -532,6 +586,7 @@ stack = 128
 tier = 2
 rarity = "uncommon"
 slot = "none"
+class = "ammo"
 
 # Stack 10 confirmed theirs (RIPLIST §1e).
 [[item]]
@@ -541,6 +596,7 @@ stack = 10
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "weapons"
 
 [[item]]
 id = "item.door_metal"
@@ -549,6 +605,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "construction"
 
 [[item]]
 id = "item.armor_roadsign_body"
@@ -557,6 +614,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "body"
+class = "clothing"
 
 [[item]]
 id = "item.medkit"
@@ -565,6 +623,7 @@ stack = 5
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "medical"
 
 # The medical syringe: the one item that picks a downed body back up
 # (`consumables.toml` `revive`, `NOW.md` §0wnd item 1). Used on yourself it is
@@ -576,6 +635,7 @@ stack = 2
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "medical"
 
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): berry 20,
@@ -590,6 +650,7 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "food"
 
 [[item]]
 id = "item.mushrooms"
@@ -598,6 +659,7 @@ stack = 10
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "food"
 
 [[item]]
 id = "item.corn"
@@ -606,6 +668,7 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "food"
 
 # Crops v0 (`NOW.md` §5): seeds grow in a planter box (`deployables.toml`,
 # `cooking.toml`'s `planter` rows). Corn seed comes off barrels and crates
@@ -617,6 +680,7 @@ stack = 50
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.hemp_seed"
@@ -625,6 +689,7 @@ stack = 50
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 [[item]]
 id = "item.planter"
@@ -633,6 +698,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "items"
 
 # Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
 # it and nothing could cook it, and both halves stopped being true on one
@@ -652,6 +718,7 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "food"
 
 [[item]]
 id = "item.cooked_meat"
@@ -660,6 +727,7 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "food"
 
 # The overcook. A meal left on a lit fire keeps cooking — the burnt row in
 # `cooking.toml` has the cooked half as its INPUT — so walking away from
@@ -674,6 +742,7 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "food"
 
 # Socket inserts: Facepunch item tables, checked 2026-09-21.
 [[item]]
@@ -683,6 +752,7 @@ stack = 10
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+class = "construction"
 
 [[item]]
 id = "item.garage_door"
@@ -691,6 +761,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "construction"
 
 # Window fittings: Facepunch item tables, 2026-09-21.
 [[item]]
@@ -700,6 +771,7 @@ stack = 10
 tier = 2
 rarity = "rare"
 slot = "hand"
+class = "construction"
 
 [[item]]
 id = "item.window_shutters"
@@ -708,6 +780,7 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+class = "construction"
 
 # Keycards: the Black Ziggurat's doors (`sim-core/src/monument.rs`), Rust's
 # green → blue → red loop. Green is found out in the world, blue only in the
@@ -721,6 +794,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "tools"
 condition_max = 400
 
 [[item]]
@@ -730,6 +804,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "none"
+class = "tools"
 condition_max = 400
 
 [[item]]
@@ -739,6 +814,7 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "none"
+class = "tools"
 condition_max = 200
 
 # Rust's arrow kinds beside the wooden one; `weapons.toml`'s `[[ammo]]`
@@ -751,6 +827,7 @@ stack = 64
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "ammo"
 
 [[item]]
 id = "item.arrow_bone"
@@ -759,6 +836,7 @@ stack = 64
 tier = 0
 rarity = "common"
 slot = "none"
+class = "ammo"
 
 # Rust's fire arrow: it leaves a fire where it lands rather than an arrow.
 [[item]]
@@ -768,6 +846,7 @@ stack = 64
 tier = 1
 rarity = "uncommon"
 slot = "none"
+class = "ammo"
 
 # Rust's leather: what a carcass pays toward hide clothing. Stack 1000, a
 # resource's.
@@ -778,6 +857,7 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"
 
 # Rust's prim clothing, no bench: a hide poncho and a bone helmet.
 [[item]]
@@ -787,6 +867,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "body"
+class = "clothing"
 
 [[item]]
 id = "item.armor_bone_head"
@@ -795,6 +876,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "head"
+class = "clothing"
 
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.
@@ -805,3 +887,4 @@ stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
+class = "resources"

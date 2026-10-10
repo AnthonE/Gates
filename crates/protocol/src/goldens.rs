@@ -26,8 +26,9 @@ use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
 use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD, WEAR_NONE};
 use sim_core::craft::{
-    CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
-    STATION_WORKBENCH2, STATION_WORKBENCH3,
+    CraftContent, CraftJob, RecipeDef, CLASS_CLOTHING, CLASS_FOOD, CLASS_MEDICAL, CLASS_RESOURCES,
+    CLASS_WEAPONS, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
+    STATION_WORKBENCH3,
 };
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::ItemStack;
@@ -1102,22 +1103,23 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 }
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
-/// length — the fixture encodes the batch at `first = 0`. The ceilings
-/// (v46) mix 0 (no condition) with real values and the u16 corner so the
-/// golden pins the column's width and order, not just its presence; the
-/// armor columns (v52) do the same across both slots, the cap, the
-/// not-armor row and a named slot with a zero reduction.
+/// length — the fixture encodes the batch at `first = 0`, rows 0..7 since
+/// v102 cut the batch to seven. The ceilings (v46) mix 0 (no condition)
+/// with real values and the u16 corner so the golden pins the column's
+/// width and order, not just its presence; the armor columns (v52) do the
+/// same across both slots, the cap and the not-armor row. Every row names
+/// its class (v102), and the food rows carry the ledger's top.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
     let rows: [(&[u8], ItemRow); 11] = [
         // The oven column's coverage (v89): wood is fuel at both burners
-        // (the fire's bit and the furnace's), charcoal what both make, and
-        // the last row carries the width's corner.
+        // (the fire's bit and the furnace's).
         (
             b"Wood",
             ItemRow {
                 oven: 0b001_001,
+                class: CLASS_RESOURCES,
                 ..row(0, 0, WEAR_NONE, 1000)
             },
         ),
@@ -1127,44 +1129,67 @@ pub fn event_catalog() -> ItemCatalog {
             ItemRow {
                 draw_ticks: u8::MAX,
                 nock_ticks: u8::MAX - 1,
+                class: CLASS_WEAPONS,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
         // The eat columns' coverage (v81): a food with all three, a heal
         // with only hp, and the width's corner on each column.
         (b"Mushrooms", food(10, 15, 5, 3)),
-        (b"Bandage", food(3, 0, 0, 20)),
-        (b"Corn", food(1000, u16::MAX, 1, u16::MAX - 1)),
-        // Rows 5..8 are the armor columns' coverage (v52): a head piece, a
-        // body piece, the cap itself, and — row 8 — a piece whose slot is
-        // named with no reduction behind it, which is legal and is the
-        // half a fixture full of protective armor would not pin.
-        (b"Burlap Headwrap", row(0, 10, WEAR_HEAD, 1)),
         (
-            b"Charcoal",
+            b"Bandage",
             ItemRow {
-                oven: 0b100_100,
-                ..row(40_000, 0, WEAR_NONE, 1)
+                class: CLASS_MEDICAL,
+                ..food(3, 0, 0, 20)
+            },
+        ),
+        (b"Corn", food(1000, u16::MAX, 1, u16::MAX - 1)),
+        // Rows 5 and 6 are the armor columns' coverage (v52): a head piece
+        // and a body piece at the cap, the latter with the widest name and
+        // the ceiling's u16 corner.
+        (
+            b"Burlap Headwrap",
+            ItemRow {
+                class: CLASS_CLOTHING,
+                ..row(0, 10, WEAR_HEAD, 1)
             },
         ),
         (
             b"Fixture Name Of Width 24",
-            row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1),
+            ItemRow {
+                class: CLASS_CLOTHING,
+                ..row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1)
+            },
+        ),
+        // Past the first batch: charcoal what both burners make, a slot
+        // named with no reduction behind it (legal), and the rest.
+        (
+            b"Charcoal",
+            ItemRow {
+                oven: 0b100_100,
+                class: CLASS_RESOURCES,
+                ..row(40_000, 0, WEAR_NONE, 1)
+            },
         ),
         (b"Bare Slot", row(0, 0, WEAR_HEAD, 1)),
-        (b"Gunpowder", row(1, 0, WEAR_NONE, 1)),
+        (
+            b"Gunpowder",
+            ItemRow {
+                class: CLASS_RESOURCES,
+                ..row(1, 0, WEAR_NONE, 1)
+            },
+        ),
         // The `stack_max` column's own coverage (v64), and the three
         // values it needs are already spread across the table above: a
         // real ladder (1,000, the resources), the V7 floor a condition
-        // item is pinned to by `coherent` (1, rows 6/7/9 — so the
-        // invariant is *pinned in bytes* and not only asserted), and the
-        // width's own corner, here. A 16-bit field carrying 65,535 is
-        // what says the ceiling cannot be truncated into a smaller one
-        // by a narrower field landing under it later.
+        // item is pinned to by `coherent` (1, row 6 — so the invariant is
+        // *pinned in bytes* and not only asserted), and the width's own
+        // corner, here.
         (
             b"Low Grade Fuel",
             ItemRow {
                 oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
+                class: CLASS_RESOURCES,
                 ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
@@ -1189,12 +1214,14 @@ fn row(cond_max: u16, armor_pct: u8, wear_slot: u8, stack_max: u16) -> ItemRow {
     }
 }
 
-/// A food row: the eat columns (v81) on top of a plain stacking row.
+/// A food row: the eat columns (v81) on top of a plain stacking row, in
+/// the food class (v102, the ledger's top).
 fn food(stack_max: u16, food: u16, water: u16, health: u16) -> ItemRow {
     ItemRow {
         food,
         water,
         health,
+        class: CLASS_FOOD,
         ..row(0, 0, WEAR_NONE, stack_max)
     }
 }

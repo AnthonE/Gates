@@ -1102,7 +1102,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// set, the stack's `cond` u16, so a blueprint sheet on the ground can say
 /// what it teaches. And a `SUB_DEPLOY_DEFS` row carries its `matter` (two
 /// bits after hp, `sim_core::deploy::MATTER_*`), so a client stops guessing
-/// what a deployable is made of from its archetype.
+/// what a deployable is made of from its archetype. And an item catalog
+/// row ends in its `class` (four bits after `revive`, `craft::CLASS_*`), so
+/// the craft rail groups by the reference's classes; `CATALOG_BATCH` went
+/// 8 → 7 to keep a full batch under the cap.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

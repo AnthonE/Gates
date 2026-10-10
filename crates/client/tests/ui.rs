@@ -37,7 +37,7 @@
 //! for the four that are not obvious from a test name, not an index.)
 
 use client::ui::build::{self, Rings, MATERIALS, SHAPES};
-use client::ui::craft::{self, Cat, Facts};
+use client::ui::craft::{self, Cat};
 use client::ui::load::Progress;
 use client::ui::slots::{self, Grab};
 use sim_core::build::{
@@ -646,90 +646,126 @@ fn search_is_case_insensitive_and_an_empty_query_matches() {
     assert!(!craft::name_matches(b"Wood", "woodwork"));
 }
 
+/// The fixture's three outputs, classed: row 0 makes a resource (item 2),
+/// row 1 a tool (item 3), row 2 a weapon (item 4).
+fn classed_catalog() -> protocol::event::ItemCatalog {
+    use sim_core::craft::{CLASS_RESOURCES, CLASS_TOOLS, CLASS_WEAPONS};
+    let mut catalog = protocol::event::ItemCatalog::EMPTY;
+    catalog.count = 5;
+    for (item, name, class) in [
+        (2, &b"Rope"[..], CLASS_RESOURCES),
+        (3, b"Hatchet", CLASS_TOOLS),
+        (4, b"Spear", CLASS_WEAPONS),
+    ] {
+        let row = protocol::ItemRow {
+            class,
+            ..protocol::ItemRow::EMPTY
+        };
+        catalog.set(item, name, row).unwrap();
+    }
+    catalog
+}
+
 #[test]
-fn the_rail_buckets_are_computed_and_not_guessed() {
+fn the_rail_is_the_wires_classes_and_not_a_guess() {
+    use sim_core::craft::{CLASS_CONSTRUCTION, CLASS_MAX, CLASS_OTHER, CLASS_TOOLS, CLASS_WEAPONS};
     let recipes = craft_fixture();
-    let deploys = DeployContent::probe_fixture();
-    let facts = Facts::build(&recipes, &deploys);
+    let catalog = classed_catalog();
+    let r = &recipes.recipes;
 
-    // BY HAND and WORKBENCH partition by the sim's own station field.
+    // A class bucket is the output's class off the catalog, nothing else:
+    // the hatchet is a tool and not a weapon, the spear the other way round.
+    let tools = Cat::Class(CLASS_TOOLS);
+    let weapons = Cat::Class(CLASS_WEAPONS);
+    assert!(craft::in_category(tools, 1, &r[1], &catalog, &[]));
+    assert!(!craft::in_category(weapons, 1, &r[1], &catalog, &[]));
+    assert!(craft::in_category(weapons, 2, &r[2], &catalog, &[]));
+    assert!(!craft::in_category(tools, 2, &r[2], &catalog, &[]));
+    // A row that has not dripped in yet reads OTHER, so its recipe is
+    // somewhere on the rail rather than nowhere.
+    let bare = protocol::event::ItemCatalog::EMPTY;
     assert!(craft::in_category(
-        Cat::ByHand,
-        0,
-        &recipes.recipes[0],
-        &facts,
-        &[]
-    ));
-    assert!(!craft::in_category(
-        Cat::ByHand,
-        2,
-        &recipes.recipes[2],
-        &facts,
-        &[]
-    ));
-    assert!(craft::in_category(
-        Cat::Workbench,
-        2,
-        &recipes.recipes[2],
-        &facts,
-        &[]
-    ));
-
-    // COMPONENT is "this output feeds another recipe": row 0 makes item 2,
-    // which row 1 consumes.
-    assert!(facts.is_component(2));
-    assert!(craft::in_category(
-        Cat::Component,
-        0,
-        &recipes.recipes[0],
-        &facts,
+        Cat::Class(CLASS_OTHER),
+        1,
+        &r[1],
+        &bare,
         &[]
     ));
 
     // FAVOURITE is the local latch and nothing else.
-    assert!(!craft::in_category(
-        Cat::Favourite,
-        0,
-        &recipes.recipes[0],
-        &facts,
-        &[]
-    ));
-    assert!(craft::in_category(
-        Cat::Favourite,
-        0,
-        &recipes.recipes[0],
-        &facts,
-        &[0]
-    ));
-
+    assert!(!craft::in_category(Cat::Favourite, 0, &r[0], &catalog, &[]));
+    assert!(craft::in_category(Cat::Favourite, 0, &r[0], &catalog, &[0]));
     // ALL takes everything, which is what makes it the safe default.
-    assert!(craft::in_category(
-        Cat::All,
-        2,
-        &recipes.recipes[2],
-        &facts,
-        &[]
-    ));
+    assert!(craft::in_category(Cat::All, 2, &r[2], &catalog, &[]));
+
+    // The rail: FAVOURITE, ALL, then every class exactly once, each with
+    // its own word.
+    assert_eq!(&craft::RAIL[..2], &[Cat::Favourite, Cat::All]);
+    for class in 0..=CLASS_MAX {
+        let n = craft::RAIL
+            .iter()
+            .filter(|c| **c == Cat::Class(class))
+            .count();
+        assert_eq!(n, 1, "class {class} is on the rail {n} times");
+    }
+    assert_eq!(craft::RAIL.len(), 2 + CLASS_MAX as usize + 1);
+    let mut labels: Vec<_> = craft::RAIL.iter().map(|c| c.label()).collect();
+    labels.sort_unstable();
+    labels.dedup();
+    assert_eq!(labels.len(), craft::RAIL.len(), "two buckets share a word");
+    assert_eq!(Cat::Class(CLASS_CONSTRUCTION).label(), "CONSTRUCTION");
+}
+
+/// The rail's counts are the reference's: a class's size, which the search
+/// box narrows the grid under and leaves alone, and none on FAVOURITE or
+/// ALL (`reference/CRAFTING.md` §3).
+#[test]
+fn a_class_count_is_its_size_and_the_search_does_not_move_it() {
+    use sim_core::craft::{CLASS_CONSTRUCTION, CLASS_TOOLS};
+    let recipes = craft_fixture();
+    let catalog = classed_catalog();
+    let tools = Cat::Class(CLASS_TOOLS);
+    assert_eq!(craft::class_count(tools, &recipes, &catalog), Some(1));
+    assert_eq!(
+        craft::class_count(Cat::Class(CLASS_CONSTRUCTION), &recipes, &catalog),
+        Some(0)
+    );
+    assert_eq!(craft::class_count(Cat::All, &recipes, &catalog), None);
+    assert_eq!(craft::class_count(Cat::Favourite, &recipes, &catalog), None);
+
+    let mut out = Vec::new();
+    craft::rows(&recipes, &empty(), &catalog, &[], 0, tools, "", &mut out);
+    assert_eq!(out.iter().map(|r| r.recipe).collect::<Vec<_>>(), [1]);
+    craft::rows(
+        &recipes,
+        &empty(),
+        &catalog,
+        &[],
+        0,
+        tools,
+        "spear",
+        &mut out,
+    );
+    assert!(out.is_empty(), "the search narrows the grid");
+    assert_eq!(
+        craft::class_count(tools, &recipes, &catalog),
+        Some(1),
+        "and leaves the rail alone"
+    );
+    // Every live recipe is in exactly one class.
+    let classes: usize = craft::RAIL
+        .iter()
+        .filter_map(|c| craft::class_count(*c, &recipes, &catalog))
+        .sum();
+    assert_eq!(classes, 3);
 }
 
 #[test]
 fn the_browser_skips_inert_rows() {
     let recipes = craft_fixture();
-    let deploys = DeployContent::probe_fixture();
-    let facts = Facts::build(&recipes, &deploys);
     let catalog = protocol::event::ItemCatalog::EMPTY;
     let mut out = Vec::new();
-    craft::rows(
-        &recipes,
-        &empty(),
-        &catalog,
-        &facts,
-        &[],
-        0,
-        Cat::All,
-        "",
-        &mut out,
-    );
+    craft::rows(&recipes, &empty(), &catalog, &[], 0, Cat::All, "", &mut out);
     // The fixture declares three; the rest of the table is `INERT`
     // (`out_count == 0`) and an inert row is not a recipe.
     assert_eq!(out.len(), 3);
@@ -741,7 +777,6 @@ fn the_browser_skips_inert_rows() {
         &CraftContent::EMPTY,
         &empty(),
         &catalog,
-        &facts,
         &[],
         0,
         Cat::All,

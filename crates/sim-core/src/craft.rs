@@ -61,6 +61,25 @@ const _: () = {
     assert!(crate::deploy::bench_tier(crate::deploy::ARCH_WORKBENCH3) == STATION_WORKBENCH3);
 };
 
+/// An item's class (`content/items.toml` `class`): the reference craft
+/// rail's grouping. The sim never reads it; it rides the item catalog
+/// (`ItemRow::class`, wire v102) so a client can group recipes by what they
+/// make. `deploy::MATTER_*`'s posture: one ledger here, shared by the
+/// content bake and the wire. `CLASS_OTHER` is 0, so a row that has not
+/// dripped in yet reads as OTHER rather than as a real class.
+pub const CLASS_OTHER: u8 = 0;
+pub const CLASS_CONSTRUCTION: u8 = 1;
+pub const CLASS_ITEMS: u8 = 2;
+pub const CLASS_RESOURCES: u8 = 3;
+pub const CLASS_CLOTHING: u8 = 4;
+pub const CLASS_TOOLS: u8 = 5;
+pub const CLASS_MEDICAL: u8 = 6;
+pub const CLASS_WEAPONS: u8 = 7;
+pub const CLASS_AMMO: u8 = 8;
+pub const CLASS_FOOD: u8 = 9;
+/// The highest live `CLASS_*`.
+pub const CLASS_MAX: u8 = CLASS_FOOD;
+
 /// How close (planar, meters) a placed station must stand at enqueue —
 /// the reference's workbench-proximity read. Proposed default,
 /// DECISIONS.md §open ("deployables v0").

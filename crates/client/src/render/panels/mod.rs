@@ -42,7 +42,7 @@ use bevy::prelude::*;
 // Both search boxes share one cap — see `crate::ui::MAX_QUERY_CHARS`.
 use crate::ui::MAX_QUERY_CHARS;
 
-use crate::ui::craft::{Cat, Facts};
+use crate::ui::craft::Cat;
 use crate::ui::slots::Drag;
 use sim_core::gather::ItemStack;
 
@@ -176,8 +176,6 @@ pub struct Ui {
     /// long, and never silently empty: a panel that cannot say why it did
     /// nothing is the dark-panel defect.
     pub status: String,
-    /// Derived category facts, rebuilt when the content tables drip in.
-    pub facts: Facts,
     /// The wheel's latched choice: an index into `ui::build::SHAPES`.
     /// Latched rather than momentary, so releasing the wheel over nothing
     /// keeps what was chosen last.
@@ -297,7 +295,6 @@ impl Default for Ui {
             browser_scroll: 0.0,
             skin: 0,
             status: String::new(),
-            facts: Facts::default(),
             shape: 0,
             hover: None,
             tech_sel: None,
@@ -913,7 +910,6 @@ pub fn keys(
                     &core.recipes,
                     &core.inv,
                     &core.catalog,
-                    &ui.facts,
                     &ui.favs,
                     core.known(),
                     ui.cat,
@@ -1243,11 +1239,6 @@ fn detect_changes(
             || core.arc.gen != ui.seen.arc_gen
             || core.lore.gen != ui.seen.lore_gen
         {
-            // The def tables drip in over the first seconds of a session, so
-            // the derived category facts are rebuilt with them.
-            if core.recipes_have != ui.seen.recipes_have {
-                ui.facts = Facts::build(&core.recipes, &core.deploy_defs);
-            }
             ui.seen.inv = inv;
             ui.seen.cont = cont;
             ui.seen.worn = worn;

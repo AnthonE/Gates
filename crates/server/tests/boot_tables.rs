@@ -523,3 +523,39 @@ fn the_shipped_catalog_carries_the_fires_roles() {
     assert_eq!(at_fire("item.charcoal"), ROLE_OUTPUT);
     assert_eq!(at_fire("item.stone"), 0);
 }
+
+/// (8) The class column (wire v102): the craft rail groups recipes by their
+/// output's class off this column alone, so every item rides the catalog
+/// with the class it authors, and every recipe's output sits in a real
+/// bucket — an OTHER output is a recipe only ALL can find.
+#[test]
+fn the_shipped_catalog_carries_every_class() {
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        assert_eq!(
+            tables.catalog.class(idx),
+            item.class.code(),
+            "`{}` rides the catalog in its authored class",
+            item.id
+        );
+    }
+    let mut seen = [false; sim_core::craft::CLASS_MAX as usize + 1];
+    for r in &content.recipes {
+        let idx = content.item_index(&r.output).expect("output resolves") as usize;
+        let class = tables.catalog.class(idx);
+        assert_ne!(
+            class,
+            sim_core::craft::CLASS_OTHER,
+            "recipe `{}` makes `{}`, which has no class on the rail",
+            r.id,
+            r.output
+        );
+        seen[class as usize] = true;
+    }
+    assert!(
+        seen.iter().filter(|s| **s).count() >= 6,
+        "the rail's recipes sit in only a few classes: {seen:?}"
+    );
+}

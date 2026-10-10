@@ -361,6 +361,15 @@ fn layout_holds_through_a_balance_edit_and_moves_with_a_row() {
         tuned.layout_hash(),
         "a stack size is balance"
     );
+    // The craft rail's class is presentation and walks the hash like the
+    // name beside it, and like a stack size it is not layout.
+    let tuned = edit("items.toml", "class = \"resources\"", "class = \"other\"");
+    assert_ne!(base.hash(), tuned.hash());
+    assert_eq!(
+        base.layout_hash(),
+        tuned.layout_hash(),
+        "a class is presentation"
+    );
     let tuned = edit("arc.toml", "count = 60000", "count = 40000");
     assert_ne!(base.hash(), tuned.hash());
     assert_eq!(
@@ -373,7 +382,7 @@ fn layout_holds_through_a_balance_edit_and_moves_with_a_row() {
         "items.toml",
         "[[item]]\nid = \"item.wood\"",
         "[[item]]\nid = \"item.aaa_new\"\nname = \"New\"\nstack = 1\ntier = 0\n\
-         rarity = \"common\"\nslot = \"none\"\n\n[[item]]\nid = \"item.wood\"",
+         rarity = \"common\"\nslot = \"none\"\nclass = \"other\"\n\n[[item]]\nid = \"item.wood\"",
     );
     assert_ne!(
         base.layout_hash(),
@@ -815,13 +824,47 @@ fn orphan_refs_refused() {
     );
 }
 
+/// Every item names its class (the craft rail's bucket): a row without one
+/// is refused at parse rather than landing in no bucket, and so is a class
+/// the ledger does not hold.
+#[test]
+fn an_item_without_a_class_is_refused() {
+    refuses(
+        "items.toml",
+        "slot = \"none\"\nclass = \"resources\"\n",
+        "slot = \"none\"\n",
+        "missing field `class`",
+    );
+    refuses(
+        "items.toml",
+        "class = \"medical\"",
+        "class = \"traps\"",
+        "unknown variant",
+    );
+    // The armor rows are CLOTHING, which is the one class the wire could
+    // already half-say (`wear_slot`): the two must not disagree.
+    let c = build(&sources()).unwrap();
+    for i in &c.items {
+        let worn = !matches!(
+            i.slot,
+            content::schema::EquipSlot::Hand | content::schema::EquipSlot::None
+        );
+        assert_eq!(
+            worn,
+            i.class == content::schema::ItemClass::Clothing,
+            "`{}` is worn but not clothing, or clothing but not worn",
+            i.id
+        );
+    }
+}
+
 #[test]
 fn duplicate_id_refused() {
     let mut srcs = sources();
     let items = srcs.iter_mut().find(|(n, _)| *n == "items.toml").unwrap();
     items.1.push_str(
         "\n[[item]]\nid = \"item.wood\"\nname = \"Wood Again\"\nstack = 1\n\
-         tier = 0\nrarity = \"common\"\nslot = \"none\"\n",
+         tier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"resources\"\n",
     );
     let err = build(&srcs).expect_err("duplicate id accepted");
     assert!(err.contains("duplicate id"), "got: {err}");

@@ -30,6 +30,45 @@ pub enum EquipSlot {
     None,
 }
 
+/// What an item is, for the craft rail (`sim_core::craft::CLASS_*`): the
+/// reference's classes, CONSTRUCTION through AMMO, plus FOOD and OTHER.
+/// Required on every row, so a new item cannot land in no bucket. The sim
+/// never reads it; it rides the item catalog to the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemClass {
+    Construction,
+    Items,
+    Resources,
+    Clothing,
+    Tools,
+    Medical,
+    Weapons,
+    Ammo,
+    Food,
+    Other,
+}
+
+impl ItemClass {
+    /// The wire's code. Named per variant rather than `as u8`, so the
+    /// schema's order and the ledger's can move apart without a re-code.
+    pub fn code(self) -> u8 {
+        use sim_core::craft::*;
+        match self {
+            ItemClass::Construction => CLASS_CONSTRUCTION,
+            ItemClass::Items => CLASS_ITEMS,
+            ItemClass::Resources => CLASS_RESOURCES,
+            ItemClass::Clothing => CLASS_CLOTHING,
+            ItemClass::Tools => CLASS_TOOLS,
+            ItemClass::Medical => CLASS_MEDICAL,
+            ItemClass::Weapons => CLASS_WEAPONS,
+            ItemClass::Ammo => CLASS_AMMO,
+            ItemClass::Food => CLASS_FOOD,
+            ItemClass::Other => CLASS_OTHER,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Item {
@@ -39,6 +78,8 @@ pub struct Item {
     pub tier: u32,
     pub rarity: Rarity,
     pub slot: EquipSlot,
+    /// The craft rail's class ([`ItemClass`]).
+    pub class: ItemClass,
     /// Maximum condition, **hundredths of a point** (item durability v0,
     /// DECISIONS.md 2026-08-15 — taken from the reference, per item, never
     /// one constant: rock 10 000, torch 5 000, stone tools 10 000, metal

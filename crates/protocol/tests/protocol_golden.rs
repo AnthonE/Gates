@@ -1240,6 +1240,12 @@ fn golden_event(fixture: &[u8], name: &str) {
                             cat.wear_slot(i),
                             "{name}: wear slot {i} mismatch (v52 column)"
                         );
+                        assert_eq!(
+                            rows[i].class,
+                            cat.class(i),
+                            "{name}: class {i} mismatch (v102 column)"
+                        );
+                        assert_eq!(rows[i], cat.row(i), "{name}: row {i} mismatch");
                     }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),

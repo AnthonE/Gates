@@ -43,6 +43,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(i.tier);
         h.u(i.rarity.canon());
         h.u(i.slot as u32);
+        h.u(i.class.code() as u32);
         // The condition ceiling reaches the sim (`bake_gather`'s
         // `cond_max`), so it walks — a value the sim reads and the digest
         // cannot see lets two contents whose tools die at different rates

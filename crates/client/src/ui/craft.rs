@@ -9,66 +9,59 @@
 //! is arithmetic over tables the client already holds, which is why it lives
 //! here and not in a system.
 //!
-//! ## The category rail is ours, not the reference's, and that is deliberate
+//! ## The category rail is the reference's
 //!
-//! The reference rail sorts by **item class** — CONSTRUCTION, RESOURCES,
-//! CLOTHING, TOOLS, MEDICAL, WEAPONS, AMMO. We cannot draw that rail
-//! honestly, because **the wire does not carry an item's class.**
-//! `EventMsg::Catalog` ships display names, condition ceilings (v46) and
-//! the two armor columns (v52) — no class among them (`protocol/src/
-//! event.rs`), so a client-side class would be a guess made from a string,
-//! and a guess in a filter is a recipe the player cannot find. Note what
-//! the armor columns are *not*: `wear_slot` says where a piece is worn,
-//! which is CLOTHING for the three rows that carry it and silent about
-//! every other item, so it is one bucket of seven and not a rail.
+//! The reference rail sorts by **item class** — CONSTRUCTION, ITEMS,
+//! RESOURCES, CLOTHING, TOOLS, MEDICAL, WEAPONS, AMMO … OTHER — under
+//! FAVOURITE and COMMON. Ours is those eight, then FOOD and OTHER, with ALL
+//! in COMMON's place. The class rides the wire (`ItemRow::class`, v102;
+//! `content/items.toml` authors it per item), so a bucket is the server's
+//! word for what an item is and not a guess from its name. Until v102 the
+//! rail was fact buckets (by hand, workbench, furnace, deployable,
+//! component) because nothing else was provable; the station still shows,
+//! as the detail pane's badge.
 //!
-//! So the rail here is built from what the client provably knows, and every
-//! bucket is a fact rather than a category: which station a recipe needs
-//! (`RecipeDef::station`), whether its output places a deployable
-//! (`DeployDef::item`), whether its output feeds another recipe
-//! (`RecipeDef::inputs`), and which rows the player starred (a local latch,
-//! exactly as the reference's own FAVOURITE is). Giving us the reference's
-//! rail is a one-field content and wire change — a class byte per item in
-//! the catalog message, a `PROTO_VER` bump and regenerated goldens in the
-//! same commit (wall 6) — and `NOW.md` carries the ask rather than this file
-//! faking it.
+//! The counts are the reference's too (`reference/CRAFTING.md` §3): a
+//! class's size, which the search box narrows the grid under and leaves
+//! alone, and none on FAVOURITE or ALL. A class no recipe makes (FOOD,
+//! today) is left off the rail rather than drawn as a dead 0.
 
 use protocol::event::ItemCatalog;
 use sim_core::craft::{
-    inv_count, CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
-    STATION_WORKBENCH2, STATION_WORKBENCH3,
+    inv_count, CraftContent, RecipeDef, CLASS_AMMO, CLASS_CLOTHING, CLASS_CONSTRUCTION, CLASS_FOOD,
+    CLASS_ITEMS, CLASS_MEDICAL, CLASS_OTHER, CLASS_RESOURCES, CLASS_TOOLS, CLASS_WEAPONS,
+    STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2, STATION_WORKBENCH3,
 };
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{INV_SLOTS, MAX_RECIPE_INPUTS, TICK_HZ};
 
-/// A bucket on the left rail. Each is computable from a table the client
-/// holds — see the module note for why it is not the reference's rail.
+/// A bucket on the left rail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cat {
     /// Rows the player starred. A local latch; nothing on the wire.
     Favourite,
     All,
-    /// `STATION_NONE` — craftable standing in a field.
-    ByHand,
-    Workbench,
-    Furnace,
-    /// The output places something (`DeployDef::item`).
-    Deployable,
-    /// The output is an input of another recipe.
-    Component,
+    /// Recipes whose output is of this class (`craft::CLASS_*`, read off
+    /// the catalog).
+    Class(u8),
 }
 
-/// The rail, top to bottom. `Favourite` first and `All` second, which is the
-/// reference frame's own order.
-pub const RAIL: [Cat; 7] = [
+/// The rail, top to bottom: `Favourite` first and `All` second, then the
+/// classes in the reference frame's order, FOOD and OTHER last.
+pub const RAIL: [Cat; 12] = [
     Cat::Favourite,
     Cat::All,
-    Cat::ByHand,
-    Cat::Workbench,
-    Cat::Furnace,
-    Cat::Deployable,
-    Cat::Component,
+    Cat::Class(CLASS_CONSTRUCTION),
+    Cat::Class(CLASS_ITEMS),
+    Cat::Class(CLASS_RESOURCES),
+    Cat::Class(CLASS_CLOTHING),
+    Cat::Class(CLASS_TOOLS),
+    Cat::Class(CLASS_MEDICAL),
+    Cat::Class(CLASS_WEAPONS),
+    Cat::Class(CLASS_AMMO),
+    Cat::Class(CLASS_FOOD),
+    Cat::Class(CLASS_OTHER),
 ];
 
 impl Cat {
@@ -76,77 +69,25 @@ impl Cat {
         match self {
             Cat::Favourite => "FAVOURITE",
             Cat::All => "ALL",
-            Cat::ByHand => "BY HAND",
-            Cat::Workbench => "WORKBENCH",
-            Cat::Furnace => "FURNACE",
-            Cat::Deployable => "DEPLOYABLE",
-            Cat::Component => "COMPONENT",
+            Cat::Class(c) => class_label(c),
         }
     }
 }
 
-/// What the panel knows about the tables, computed once when they change
-/// rather than per row per frame.
-///
-/// `deployable` and `component` are the two buckets that need a pass over
-/// another table to decide, and both are stable for as long as the content
-/// is — which is the whole session, since the content hash is pinned into
-/// the WAL header. Recomputing them per frame would be a scan of
-/// `MAX_RECIPES × MAX_RECIPE_INPUTS` for a set that cannot have changed.
-#[derive(Clone, Copy, Debug)]
-pub struct Facts {
-    deployable: [bool; MAX_ITEMS],
-    component: [bool; MAX_ITEMS],
-}
-
-/// Ceiling on item indices this panel indexes by. `u16` on the wire, but
-/// the baked tables are far smaller and a fixed array keeps the fact
-/// lookups allocation-free; an index past it simply answers `false`, which
-/// is the honest answer for an item no baked table mentions.
-pub const MAX_ITEMS: usize = 256;
-
-impl Default for Facts {
-    fn default() -> Self {
-        Self {
-            deployable: [false; MAX_ITEMS],
-            component: [false; MAX_ITEMS],
-        }
-    }
-}
-
-impl Facts {
-    /// Rebuild from the two tables. Cheap and rare: called when a def drip
-    /// lands, never per frame.
-    pub fn build(recipes: &CraftContent, deploys: &DeployContent) -> Self {
-        let mut f = Self::default();
-        for d in deploys.defs.iter().take(deploys.def_count as usize) {
-            if d.hp > 0 {
-                if let Some(slot) = f.deployable.get_mut(d.item as usize) {
-                    *slot = true;
-                }
-            }
-        }
-        for r in recipes.recipes.iter().take(recipes.recipe_count as usize) {
-            if r.out_count == 0 {
-                continue;
-            }
-            for (item, units) in r.inputs.iter().take(r.n_inputs as usize) {
-                if *units > 0 {
-                    if let Some(slot) = f.component.get_mut(*item as usize) {
-                        *slot = true;
-                    }
-                }
-            }
-        }
-        f
-    }
-
-    pub fn is_deployable(&self, item: u16) -> bool {
-        self.deployable.get(item as usize).copied().unwrap_or(false)
-    }
-
-    pub fn is_component(&self, item: u16) -> bool {
-        self.component.get(item as usize).copied().unwrap_or(false)
+/// A class's word on the rail. A code past the ledger reads OTHER, which
+/// is where `ItemCatalog` files it too.
+pub fn class_label(class: u8) -> &'static str {
+    match class {
+        CLASS_CONSTRUCTION => "CONSTRUCTION",
+        CLASS_ITEMS => "ITEMS",
+        CLASS_RESOURCES => "RESOURCES",
+        CLASS_CLOTHING => "CLOTHING",
+        CLASS_TOOLS => "TOOLS",
+        CLASS_MEDICAL => "MEDICAL",
+        CLASS_WEAPONS => "WEAPONS",
+        CLASS_AMMO => "AMMO",
+        CLASS_FOOD => "FOOD",
+        _ => "OTHER",
     }
 }
 
@@ -172,21 +113,41 @@ pub struct Row {
     pub unlock: u8,
 }
 
-/// Does this recipe belong in `cat`?
-pub fn in_category(cat: Cat, recipe: u16, def: &RecipeDef, facts: &Facts, favs: &[u16]) -> bool {
+/// Does this recipe belong in `cat`? A class bucket asks the catalog what
+/// the output is; a row that has not dripped in yet reads `CLASS_OTHER`,
+/// so a recipe sits in OTHER for the first frames of a session rather than
+/// in no bucket at all.
+pub fn in_category(
+    cat: Cat,
+    recipe: u16,
+    def: &RecipeDef,
+    catalog: &ItemCatalog,
+    favs: &[u16],
+) -> bool {
     match cat {
         Cat::Favourite => favs.contains(&recipe),
         Cat::All => true,
-        Cat::ByHand => def.station == STATION_NONE,
-        // Any rung: the bucket answers "do I need a bench", and which
-        // level is the badge's job (bench ladder v0). An equality against
-        // rung 1 here is how a tier-2 recipe silently vanishes from every
-        // station bucket.
-        Cat::Workbench => (STATION_WORKBENCH1..=STATION_WORKBENCH3).contains(&def.station),
-        Cat::Furnace => def.station == STATION_FURNACE,
-        Cat::Deployable => facts.is_deployable(def.output),
-        Cat::Component => facts.is_component(def.output),
+        Cat::Class(c) => catalog.class(def.output as usize) == c,
     }
+}
+
+/// The count beside a class on the rail: every live recipe whose output is
+/// of that class, the search box notwithstanding — the reference's counts
+/// did not move between two searches (`reference/CRAFTING.md` §3). `None`
+/// for FAVOURITE and ALL, which carry no count there either.
+pub fn class_count(cat: Cat, recipes: &CraftContent, catalog: &ItemCatalog) -> Option<usize> {
+    let Cat::Class(_) = cat else {
+        return None;
+    };
+    Some(
+        recipes
+            .recipes
+            .iter()
+            .take(recipes.recipe_count as usize)
+            .enumerate()
+            .filter(|(i, def)| def.out_count > 0 && in_category(cat, *i as u16, def, catalog, &[]))
+            .count(),
+    )
 }
 
 /// Case-insensitive ASCII substring, over the catalog's raw name bytes.
@@ -241,16 +202,15 @@ pub fn affordable(def: &RecipeDef, inv: &[ItemStack; INV_SLOTS]) -> u32 {
 /// the sim thread's, not this one's — but "the client is a hot path too" is
 /// on the same list, and a filter is exactly where a per-keystroke `Vec`
 /// would go unnoticed.
-// Eight, and every one is a table the filter genuinely reads: two content
-// tables, the inventory, the catalog, the derived facts, the favourites, the
-// bucket and the query. A struct wrapping them would be a struct built at
+// Eight, and every one is a table the filter genuinely reads: the recipes,
+// the inventory, the catalog, the favourites, what is known, the bucket, the
+// query and the buffer. A struct wrapping them would be a struct built at
 // every call site to be destructured here.
 #[allow(clippy::too_many_arguments)]
 pub fn rows(
     recipes: &CraftContent,
     inv: &[ItemStack; INV_SLOTS],
     catalog: &ItemCatalog,
-    facts: &Facts,
     favs: &[u16],
     known: u64,
     cat: Cat,
@@ -269,7 +229,7 @@ pub fn rows(
             continue;
         }
         let recipe = i as u16;
-        if !in_category(cat, recipe, def, facts, favs) {
+        if !in_category(cat, recipe, def, catalog, favs) {
             continue;
         }
         if !name_matches(catalog.name(def.output as usize), query) {

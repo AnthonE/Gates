@@ -25,7 +25,7 @@ use sim_core::build::{
 };
 use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
-use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
+use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
     BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
@@ -38,11 +38,11 @@ use sim_core::limits::{
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
-/// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 315 B since v89's oven roles — 29 header bits and 311 a
-/// row; `catalog_batches_walk_the_table_within_cap` is the one that
-/// measures rather than remembers — a full slot-sync batch
-/// ≈ 258 B) with headroom; the client-side framer refuses past it.
+/// Longest event-lane message. Sized by the worst subtypes (a full
+/// ground-stack batch ≈ 315 B; a full catalog batch ≈ 284 B since v102 —
+/// 29 header bits and seven rows of 320, held by the assert at
+/// `CATALOG_ROW_MAX_BITS` and `catalog_batches_walk_the_table_within_cap`)
+/// with headroom; the client-side framer refuses past it.
 /// Registered in DECISIONS.md §open.
 pub const MAX_EVENT_MSG_BYTES: usize = 320;
 
@@ -57,8 +57,10 @@ const _: () = assert!(SLOT_SYNC_BATCH <= 64);
 /// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
 pub const GROW_SYNC_BATCH: usize = 32;
 
-/// Item names one catalog message carries.
-pub const CATALOG_BATCH: usize = 8;
+/// Item names one catalog message carries. Seven since v102: a worst-case
+/// row is 320 bits with the class nibble, and eight of them would pass
+/// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+pub const CATALOG_BATCH: usize = 7;
 
 /// Skin rows one skin-catalog message carries (skins v0). A row is at most
 /// 16 + 16 + 24 + 2 + 32 + 5 + 24 × 8 = 287 bits, so eight are ≈ 287 B —
@@ -878,11 +880,38 @@ pub struct ItemRow {
     /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
     /// downed body injects rather than starting the hand revive.
     pub revive: bool,
+    /// What the item is for the craft rail (v102, `craft::CLASS_*`):
+    /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
+    /// also what a row past the drip watermark reads as.
+    pub class: u8,
 }
 
 /// Width of [`ItemRow::oven`].
 const OVEN_ROLE_BITS: u32 = sim_core::oven::PACKED_ROLE_BITS;
 const _: () = assert!(OVEN_ROLE_BITS <= 16);
+/// Width of [`ItemRow::class`]: ten classes in four bits, so 10..15 are
+/// forgeable and both ends refuse them against `CLASS_MAX`.
+const ITEM_CLASS_BITS: u32 = 4;
+const _: () = assert!(CLASS_MAX < (1 << ITEM_CLASS_BITS));
+/// The widest catalog row: a full name, then every column in `ItemRow`'s
+/// order.
+const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_BYTES)
+    + 16
+    + (ARMOR_PCT_BITS + WEAR_SLOT_BITS) as usize
+    + 16
+    + 3 * 16
+    + 2 * 8
+    + OVEN_ROLE_BITS as usize
+    + 2
+    + ITEM_CLASS_BITS as usize;
+// A full batch of the widest rows fits one message. v102's class nibble is
+// what took `CATALOG_BATCH` from 8 to 7: eight rows had filled the cap to
+// the byte. A column added to the row must shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 2 * CATALOG_TOTAL_BITS + CATALOG_COUNT_BITS) as usize
+        + CATALOG_BATCH * CATALOG_ROW_MAX_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 
 impl ItemRow {
     pub const EMPTY: Self = Self {
@@ -898,6 +927,7 @@ impl ItemRow {
         oven: 0,
         holster: false,
         revive: false,
+        class: CLASS_OTHER,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -934,6 +964,7 @@ impl ItemRow {
             // else it is a number nothing reads.
             && (self.nock_ticks == 0 || self.draw_ticks > 0)
             && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
+            && self.class <= CLASS_MAX
     }
 }
 
@@ -970,6 +1001,9 @@ impl ItemRow {
 ///
 /// v89 added `oven`, the sixth: which section of a camp fire an item goes
 /// in.
+///
+/// v102 added `class`: which bucket of the craft rail a recipe for the item
+/// sits in, the reference's CONSTRUCTION … AMMO.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -1049,6 +1083,12 @@ impl ItemCatalog {
     /// here by construction, and only one of them is safe to act on.
     pub fn stack_max(&self, idx: usize) -> u16 {
         self.row(idx).stack_max
+    }
+
+    /// The craft rail's class for one item index (`craft::CLASS_*`);
+    /// `CLASS_OTHER` out of table and for a row not yet dripped in.
+    pub fn class(&self, idx: usize) -> u8 {
+        self.row(idx).class
     }
 }
 
@@ -2188,6 +2228,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.holster)?;
         // The revive (v99).
         w.write_bit(row.revive)?;
+        // The craft rail's class (v102).
+        w.write(row.class as u32, ITEM_CLASS_BITS)?;
     }
     Ok((w.finish(), count))
 }
@@ -4623,6 +4665,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
+                    class: r.read(ITEM_CLASS_BITS)? as u8,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -6398,6 +6441,49 @@ mod tests {
         );
     }
 
+    /// The class nibble (v102) holds sixteen patterns over ten classes. The
+    /// six past `CLASS_MAX` are refused by `set` and, located by XOR rather
+    /// than counted (the V7 test's technique), by the decoder.
+    #[test]
+    fn a_class_past_the_ledger_is_refused_at_both_ends() {
+        let mut cat = ItemCatalog::EMPTY;
+        cat.count = 1;
+        let row = |class| ItemRow {
+            class,
+            stack_max: 1,
+            ..ItemRow::EMPTY
+        };
+        assert_eq!(
+            cat.set(0, b"Trap", row(CLASS_MAX + 1)),
+            Err(WireError::Range),
+            "a class past the ledger was installed"
+        );
+        let mut encode = |class| {
+            let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+            cat.set(0, b"Spear", row(class)).unwrap();
+            let (len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+            (len, buf)
+        };
+        let (len, zero) = encode(CLASS_OTHER);
+        let (len3, three) = encode(0b0011);
+        let (len_top, mut top) = encode(CLASS_MAX);
+        assert_eq!((len, len), (len3, len_top), "a class moved the layout");
+        match decode_event(&top[..len]).unwrap() {
+            EventMsg::Catalog { rows, .. } => assert_eq!(rows[0].class, CLASS_MAX),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The top class with its two low bits flipped is one past it.
+        assert_eq!(CLASS_MAX ^ 0b0011, CLASS_MAX + 1);
+        for i in 0..len {
+            top[i] ^= zero[i] ^ three[i];
+        }
+        assert_eq!(
+            decode_event(&top[..len]),
+            Err(WireError::Malformed),
+            "a class past the ledger was installed from the wire"
+        );
+    }
+
     /// The skin drip's worst case — every row priced (the widest coin
     /// arm) with a full-width name — fits the message cap, walks the whole
     /// table, and round-trips row for row.
@@ -6535,6 +6621,9 @@ mod tests {
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
                 holster: i % 2 == 0,
                 revive: i % 3 == 0,
+                // The class (v102) from the ledger's top down, distinct per
+                // row in the batch.
+                class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -8227,6 +8316,18 @@ mod wire_domains {
             live_max: 3,
         },
         Domain {
+            what: "item class",
+            sim_site: "craft.rs CLASS_*",
+            wire_site: "ITEM_CLASS_BITS",
+            home: "craft.rs",
+            prefix: "pub const CLASS_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 10,
+            bits: ITEM_CLASS_BITS,
+            live_max: 9,
+        },
+        Domain {
             what: "deploy placement",
             sim_site: "deploy.rs PLACE_*",
             wire_site: "PLACEMENT_BITS",
@@ -8464,9 +8565,11 @@ mod wire_domains {
             // row, and this assert is what asked for it. 18 -> 19 at v77:
             // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`. 19 -> 21: the
             // craft and deploy refusals, a byte each since v0 (§5b).
-            // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`.
+            // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
+            // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
+            // `craft::CLASS_*`.
             DOMAINS.len(),
-            22,
+            23,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
