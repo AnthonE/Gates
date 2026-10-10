@@ -12,12 +12,15 @@
 # slot: hand | head | body | none
 # class: the craft rail's bucket (sim-core craft::CLASS_*) — construction | items |
 #   resources | clothing | tools | medical | weapons | ammo | food | other
+# description: one plain line the craft panel prints under the name, printable
+#   ASCII, at most 72 bytes (validate; it rides the wire as `SUB_ITEM_DESCS`)
 
 # --- raw ---------------------------------------------------------------
 
 [[item]]
 id = "item.wood"
 name = "Wood"
+description = "Chopped from trees. Fuel for fires and furnaces, and most early builds."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -27,6 +30,7 @@ class = "resources"
 [[item]]
 id = "item.stone"
 name = "Stone"
+description = "Knocked off stone nodes and piles. Stone tools and furnaces need it."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -36,6 +40,7 @@ class = "resources"
 [[item]]
 id = "item.metal_ore"
 name = "Metal Ore"
+description = "Mined from metal nodes. A furnace smelts it into metal fragments."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -45,6 +50,7 @@ class = "resources"
 [[item]]
 id = "item.sulfur_ore"
 name = "Sulfur Ore"
+description = "Mined from sulfur nodes. A furnace smelts it into sulfur."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -54,6 +60,7 @@ class = "resources"
 [[item]]
 id = "item.cloth"
 name = "Cloth"
+description = "Picked from hemp. Bandages, bows, sleeping bags and burlap use it."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -65,6 +72,7 @@ class = "resources"
 [[item]]
 id = "item.fat"
 name = "Animal Fat"
+description = "Cut from animal carcasses. Mixed with cloth into low grade fuel."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -74,6 +82,7 @@ class = "resources"
 [[item]]
 id = "item.charcoal"
 name = "Charcoal"
+description = "Left behind when wood burns. Mixed with sulfur into gunpowder."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -83,6 +92,7 @@ class = "resources"
 [[item]]
 id = "item.metal_frags"
 name = "Metal Fragments"
+description = "Smelted from metal ore. Metal tools, doors and benches are made of it."
 stack = 1000
 tier = 1
 rarity = "uncommon"
@@ -92,6 +102,7 @@ class = "resources"
 [[item]]
 id = "item.sulfur"
 name = "Sulfur"
+description = "Smelted from sulfur ore. Mixed with charcoal into gunpowder."
 stack = 1000
 tier = 1
 rarity = "uncommon"
@@ -103,6 +114,7 @@ class = "resources"
 [[item]]
 id = "item.gunpowder"
 name = "Gunpowder"
+description = "Charcoal and sulfur. Pistol rounds and satchel charges are made of it."
 stack = 1000
 tier = 2
 rarity = "uncommon"
@@ -113,6 +125,7 @@ class = "resources"
 [[item]]
 id = "item.lowgrade"
 name = "Low Grade Fuel"
+description = "Fat and cloth. Torches, furnaces, fire arrows and medicine need it."
 stack = 500
 tier = 1
 rarity = "uncommon"
@@ -126,6 +139,7 @@ class = "resources"
 [[item]]
 id = "item.gears"
 name = "Gears"
+description = "Found in barrels and crates. Revolvers and garage doors use it."
 stack = 20
 tier = 1
 rarity = "uncommon"
@@ -135,6 +149,7 @@ class = "resources"
 [[item]]
 id = "item.rope"
 name = "Rope"
+description = "Found in barrels and crates. Crossbows and satchels use it."
 stack = 50
 tier = 1
 rarity = "uncommon"
@@ -144,6 +159,7 @@ class = "resources"
 [[item]]
 id = "item.tarp"
 name = "Tarp"
+description = "Found in barrels and crates. Satchels and roadsign vests use it."
 stack = 20
 tier = 1
 rarity = "uncommon"
@@ -174,6 +190,7 @@ class = "resources"
 [[item]]
 id = "item.junk"
 name = "Junk"
+description = "The island's coin. Vendors sell for it and research tables burn it."
 stack = 1000
 tier = 0
 rarity = "rare"
@@ -189,6 +206,7 @@ class = "resources"
 [[item]]
 id = "item.blueprint"
 name = "Blueprint"
+description = "Made at a research table. Read it to learn the recipe it names."
 stack = 1
 tier = 1
 rarity = "rare"
@@ -211,6 +229,7 @@ class = "other"
 [[item]]
 id = "item.bat"
 name = "Bat"
+description = "A wooden club. Hits bodies and knocks wood, stone and ore loose."
 stack = 1
 tier = 0
 rarity = "common"
@@ -221,6 +240,7 @@ condition_max = 10000
 [[item]]
 id = "item.torch"
 name = "Torch"
+description = "Held up lit, it lights the dark around you. It burns down while lit."
 stack = 1
 tier = 0
 rarity = "common"
@@ -241,6 +261,7 @@ light_burn = 1000
 [[item]]
 id = "item.spear_wood"
 name = "Wooden Spear"
+description = "A sharpened pole. Stabs at twice the reach of a club."
 stack = 1
 tier = 0
 rarity = "common"
@@ -251,6 +272,7 @@ class = "weapons"
 [[item]]
 id = "item.spear_stone"
 name = "Stone Spear"
+description = "A wooden spear with a stone head. Hits harder than the wooden one."
 stack = 1
 tier = 0
 rarity = "common"
@@ -260,6 +282,7 @@ class = "weapons"
 [[item]]
 id = "item.hatchet_stone"
 name = "Stone Hatchet"
+description = "Chops trees for wood. Wears with use and breaks at zero."
 stack = 1
 tier = 0
 rarity = "common"
@@ -271,6 +294,7 @@ condition_max = 10000
 [[item]]
 id = "item.pickaxe_stone"
 name = "Stone Pickaxe"
+description = "Breaks stone, metal and sulfur nodes. Wears with use."
 stack = 1
 tier = 0
 rarity = "common"
@@ -281,6 +305,7 @@ condition_max = 10000
 [[item]]
 id = "item.bow"
 name = "Hunting Bow"
+description = "Hold right mouse to draw, left click to loose. R picks the arrow."
 stack = 1
 tier = 0
 rarity = "common"
@@ -292,6 +317,7 @@ class = "weapons"
 [[item]]
 id = "item.arrow_wood"
 name = "Wooden Arrow"
+description = "The bow's plain arrow. Wood with a stone point."
 stack = 64
 tier = 0
 rarity = "common"
@@ -304,6 +330,7 @@ class = "ammo"
 [[item]]
 id = "item.bandage"
 name = "Bandage"
+description = "Wraps a wound and heals a little health."
 stack = 3
 tier = 0
 rarity = "common"
@@ -313,6 +340,7 @@ class = "medical"
 [[item]]
 id = "item.sleeping_bag"
 name = "Sleeping Bag"
+description = "Placed, it is somewhere to wake up again after you die."
 stack = 1
 tier = 0
 rarity = "common"
@@ -322,6 +350,7 @@ class = "items"
 [[item]]
 id = "item.box_small"
 name = "Small Box"
+description = "Storage you can place anywhere. Bolt a lock on it to keep it yours."
 stack = 1
 tier = 0
 rarity = "common"
@@ -332,6 +361,7 @@ class = "items"
 [[item]]
 id = "item.lock_key"
 name = "Key Lock"
+description = "Bolts onto a door or box. Opens for whoever placed it, nobody else."
 stack = 1
 tier = 0
 rarity = "common"
@@ -342,6 +372,7 @@ class = "construction"
 [[item]]
 id = "item.barricade_wood"
 name = "Wooden Barricade"
+description = "A log wall that stands anywhere and stops a body."
 stack = 1
 tier = 0
 rarity = "common"
@@ -354,6 +385,7 @@ class = "construction"
 [[item]]
 id = "item.waterskin"
 name = "Waterskin"
+description = "Empty. Hold it at fresh water and press H to fill it."
 stack = 1
 tier = 0
 rarity = "common"
@@ -363,6 +395,7 @@ class = "tools"
 [[item]]
 id = "item.waterskin_full"
 name = "Full Waterskin"
+description = "Drink it anywhere, or water a planter. The empty skin comes back."
 stack = 1
 tier = 0
 rarity = "common"
@@ -372,6 +405,7 @@ class = "tools"
 [[item]]
 id = "item.fire_pit"
 name = "Fire Pit"
+description = "A camp fire. Burns wood, cooks meat and warms whoever stands near."
 stack = 1
 tier = 0
 rarity = "common"
@@ -383,6 +417,7 @@ class = "items"
 [[item]]
 id = "item.workbench1"
 name = "Workbench"
+description = "The first bench. Metal tools, metal doors and the crossbow need one."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -396,6 +431,7 @@ class = "items"
 [[item]]
 id = "item.workbench2"
 name = "Workbench-2"
+description = "The second bench. Gunpowder, the revolver and its rounds need one."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -405,6 +441,7 @@ class = "items"
 [[item]]
 id = "item.workbench3"
 name = "Workbench-3"
+description = "The top bench. Satchel charges are made beside one."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -414,6 +451,7 @@ class = "items"
 [[item]]
 id = "item.hearth"
 name = "Hearth"
+description = "Claims the ground around it. Its stock pays the base's upkeep."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -423,6 +461,7 @@ class = "items"
 [[item]]
 id = "item.hatchet_metal"
 name = "Metal Hatchet"
+description = "Chops more wood a hit than stone, and lasts four times as long."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -434,6 +473,7 @@ condition_max = 40000
 [[item]]
 id = "item.pickaxe_metal"
 name = "Metal Pickaxe"
+description = "Mines more ore a hit than stone, and lasts four times as long."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -444,6 +484,7 @@ condition_max = 40000
 [[item]]
 id = "item.spear_metal"
 name = "Metal Spear"
+description = "A spear with a metal head. The hardest-hitting of the three."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -453,6 +494,7 @@ class = "weapons"
 [[item]]
 id = "item.furnace"
 name = "Furnace"
+description = "Burns wood to smelt metal and sulfur ore. Leaves charcoal."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -462,6 +504,7 @@ class = "items"
 [[item]]
 id = "item.box_large"
 name = "Large Box"
+description = "Storage that stands on a foundation. Sturdier than a small box."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -471,6 +514,7 @@ class = "items"
 [[item]]
 id = "item.lock_code"
 name = "Code Lock"
+description = "Bolts onto a door or box. Whoever enters its code may pass after."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -483,6 +527,7 @@ class = "construction"
 [[item]]
 id = "item.research_table"
 name = "Research Table"
+description = "Put an item and junk in it to turn the item into its blueprint."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -496,6 +541,7 @@ class = "items"
 [[item]]
 id = "item.recycler"
 name = "Recycler"
+description = "Breaks salvaged parts down into the materials and junk in them."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -505,6 +551,7 @@ class = "items"
 [[item]]
 id = "item.door_wood"
 name = "Wooden Door"
+description = "Hangs in a doorway. Bolt a lock on it to keep others out."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -514,6 +561,7 @@ class = "construction"
 [[item]]
 id = "item.building_plan"
 name = "Building Plan"
+description = "Places foundations, walls, floors and stairs. Hold right mouse to pick."
 stack = 1
 tier = 1
 rarity = "common"
@@ -523,6 +571,7 @@ class = "construction"
 [[item]]
 id = "item.hammer"
 name = "Hammer"
+description = "Upgrades, repairs, rotates and takes down what you built."
 stack = 1
 tier = 1
 rarity = "common"
@@ -532,6 +581,7 @@ class = "tools"
 [[item]]
 id = "item.armor_burlap_head"
 name = "Burlap Hood"
+description = "A cloth hood. Takes a little off each hit to the head."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -541,6 +591,7 @@ class = "clothing"
 [[item]]
 id = "item.armor_burlap_body"
 name = "Burlap Tunic"
+description = "A cloth tunic. Takes a little off each hit to the body."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -552,6 +603,7 @@ class = "clothing"
 [[item]]
 id = "item.arrow_metal"
 name = "Metal Arrow"
+description = "The crossbow's arrow, metal-tipped. Flies faster than a wooden one."
 stack = 64
 tier = 1
 rarity = "uncommon"
@@ -561,6 +613,7 @@ class = "ammo"
 [[item]]
 id = "item.crossbow"
 name = "Crossbow"
+description = "Fires metal arrows harder and faster than a bow fires wood."
 stack = 1
 tier = 1
 rarity = "rare"
@@ -572,6 +625,7 @@ class = "weapons"
 [[item]]
 id = "item.revolver"
 name = "Revolver"
+description = "A handgun that fires pistol rounds. R reloads it."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -583,6 +637,7 @@ class = "weapons"
 [[item]]
 id = "item.pistol_ammo"
 name = "Pistol Round"
+description = "The revolver's round."
 stack = 128
 tier = 2
 rarity = "uncommon"
@@ -593,6 +648,7 @@ class = "ammo"
 [[item]]
 id = "item.satchel_charge"
 name = "Satchel Charge"
+description = "Plant it on a wall or door. It blows after a fuse, or sometimes duds."
 stack = 10
 tier = 2
 rarity = "rare"
@@ -602,6 +658,7 @@ class = "weapons"
 [[item]]
 id = "item.door_metal"
 name = "Metal Door"
+description = "Hangs in a doorway. Takes far more breaking than wood."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -611,6 +668,7 @@ class = "construction"
 [[item]]
 id = "item.armor_roadsign_body"
 name = "Roadsign Vest"
+description = "A vest of beaten road signs. Takes a good share off each body hit."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -620,6 +678,7 @@ class = "clothing"
 [[item]]
 id = "item.medkit"
 name = "Medkit"
+description = "Heals a lot of health. Slower to use than a bandage."
 stack = 5
 tier = 2
 rarity = "rare"
@@ -632,6 +691,7 @@ class = "medical"
 [[item]]
 id = "item.syringe"
 name = "Medical Syringe"
+description = "Stands a downed body back up. On yourself, a small fast heal."
 stack = 2
 tier = 1
 rarity = "uncommon"
@@ -647,6 +707,7 @@ class = "medical"
 [[item]]
 id = "item.berries"
 name = "Berries"
+description = "Picked from bushes. A little food and water."
 stack = 20
 tier = 0
 rarity = "common"
@@ -656,6 +717,7 @@ class = "food"
 [[item]]
 id = "item.mushrooms"
 name = "Mushrooms"
+description = "Picked from patches and under felled trees. A small meal."
 stack = 10
 tier = 0
 rarity = "common"
@@ -665,6 +727,7 @@ class = "food"
 [[item]]
 id = "item.corn"
 name = "Corn"
+description = "A filling meal, or crafted into corn seed."
 stack = 20
 tier = 0
 rarity = "common"
@@ -677,6 +740,7 @@ class = "food"
 [[item]]
 id = "item.corn_seed"
 name = "Corn Seed"
+description = "Plant it in a planter box and water it to grow corn."
 stack = 50
 tier = 0
 rarity = "common"
@@ -686,6 +750,7 @@ class = "resources"
 [[item]]
 id = "item.hemp_seed"
 name = "Hemp Seed"
+description = "Plant it in a planter box and water it to grow hemp for cloth."
 stack = 50
 tier = 0
 rarity = "common"
@@ -695,6 +760,7 @@ class = "resources"
 [[item]]
 id = "item.planter"
 name = "Planter Box"
+description = "A bed for seeds. Water it and the crops grow in time."
 stack = 1
 tier = 0
 rarity = "common"
@@ -715,6 +781,7 @@ class = "items"
 [[item]]
 id = "item.raw_meat"
 name = "Raw Meat"
+description = "Cut from animals. It cannot be eaten until a fire cooks it."
 stack = 20
 tier = 0
 rarity = "common"
@@ -724,6 +791,7 @@ class = "food"
 [[item]]
 id = "item.cooked_meat"
 name = "Cooked Meat"
+description = "Meat cooked on a fire. A filling meal that heals a little."
 stack = 20
 tier = 0
 rarity = "common"
@@ -739,6 +807,7 @@ class = "food"
 [[item]]
 id = "item.burnt_meat"
 name = "Burnt Meat"
+description = "Meat left on the fire too long. Barely worth eating."
 stack = 20
 tier = 0
 rarity = "common"
@@ -749,6 +818,7 @@ class = "food"
 [[item]]
 id = "item.window_bars_metal"
 name = "Metal Window Bars"
+description = "Fits a window opening. Keeps bodies out and lets you see through."
 stack = 10
 tier = 1
 rarity = "uncommon"
@@ -758,6 +828,7 @@ class = "construction"
 [[item]]
 id = "item.garage_door"
 name = "Garage Door"
+description = "A wide metal door that rolls up into its frame."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -768,6 +839,7 @@ class = "construction"
 [[item]]
 id = "item.window_glass"
 name = "Glass Window"
+description = "Fits a window opening. Clear to see through, shut to bodies."
 stack = 10
 tier = 2
 rarity = "rare"
@@ -777,6 +849,7 @@ class = "construction"
 [[item]]
 id = "item.window_shutters"
 name = "Wood Shutters"
+description = "Fits a window opening. Opens and shuts like a door."
 stack = 20
 tier = 0
 rarity = "common"
@@ -791,6 +864,7 @@ class = "construction"
 [[item]]
 id = "item.keycard_green"
 name = "Green Keycard"
+description = "Opens the Black Ziggurat's green doors. Each swipe wears it."
 stack = 1
 tier = 1
 rarity = "uncommon"
@@ -801,6 +875,7 @@ condition_max = 400
 [[item]]
 id = "item.keycard_blue"
 name = "Blue Keycard"
+description = "Opens the Ziggurat's blue doors. Found only past a green one."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -811,6 +886,7 @@ condition_max = 400
 [[item]]
 id = "item.keycard_red"
 name = "Red Keycard"
+description = "Opens the Ziggurat's red doors. Found only past a blue one."
 stack = 1
 tier = 2
 rarity = "rare"
@@ -824,6 +900,7 @@ condition_max = 200
 [[item]]
 id = "item.arrow_hv"
 name = "High Velocity Arrow"
+description = "Flies faster and flatter than a wooden arrow, and hits lighter."
 stack = 64
 tier = 1
 rarity = "uncommon"
@@ -833,6 +910,7 @@ class = "ammo"
 [[item]]
 id = "item.arrow_bone"
 name = "Bone Arrow"
+description = "A bone-pointed arrow. Slower and lighter-hitting than wood."
 stack = 64
 tier = 0
 rarity = "common"
@@ -843,6 +921,7 @@ class = "ammo"
 [[item]]
 id = "item.arrow_fire"
 name = "Fire Arrow"
+description = "Sets a fire burning where it lands. Slow and light-hitting."
 stack = 64
 tier = 1
 rarity = "uncommon"
@@ -854,6 +933,7 @@ class = "ammo"
 [[item]]
 id = "item.leather"
 name = "Leather"
+description = "Skinned from animal carcasses. Hide clothing and waterskins use it."
 stack = 1000
 tier = 0
 rarity = "common"
@@ -864,6 +944,7 @@ class = "resources"
 [[item]]
 id = "item.armor_hide_body"
 name = "Hide Poncho"
+description = "A leather poncho. Takes a little off each hit to the body."
 stack = 1
 tier = 0
 rarity = "common"
@@ -873,6 +954,7 @@ class = "clothing"
 [[item]]
 id = "item.armor_bone_head"
 name = "Bone Helmet"
+description = "A helmet of bone and leather. Takes some off each hit to the head."
 stack = 1
 tier = 0
 rarity = "common"
@@ -884,6 +966,7 @@ class = "clothing"
 [[item]]
 id = "item.bone_frags"
 name = "Bone Fragments"
+description = "Cut from animal carcasses. Bone arrows and helmets use it."
 stack = 1000
 tier = 0
 rarity = "common"

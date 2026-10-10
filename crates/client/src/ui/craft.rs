@@ -26,7 +26,7 @@
 //! alone, and none on FAVOURITE or ALL. A class no recipe makes (FOOD,
 //! today) is left off the rail rather than drawn as a dead 0.
 
-use protocol::event::ItemCatalog;
+use protocol::event::{ItemCatalog, ItemDescs};
 use sim_core::craft::{
     inv_count, CraftContent, RecipeDef, CLASS_AMMO, CLASS_CLOTHING, CLASS_CONSTRUCTION, CLASS_FOOD,
     CLASS_ITEMS, CLASS_MEDICAL, CLASS_OTHER, CLASS_RESOURCES, CLASS_TOOLS, CLASS_WEAPONS,
@@ -419,6 +419,18 @@ pub fn item_name(catalog: &ItemCatalog, item: u16) -> Option<&str> {
     std::str::from_utf8(raw).ok()
 }
 
+/// An item's one line for the detail pane (NOW §0cq 7, the reference's
+/// paragraph under the name), or `None` before it has dripped in.
+/// [`item_name`]'s posture: the lines land a second into a session, and a
+/// pane opened before then draws no line rather than a blank one.
+pub fn item_desc(descs: &ItemDescs, item: u16) -> Option<&str> {
+    let raw = descs.text(item as usize);
+    if raw.is_empty() {
+        return None;
+    }
+    std::str::from_utf8(raw).ok()
+}
+
 /// What a cell or a table row prints for an item: its name, or `#12` for an
 /// index no name has arrived for. Drawing the index is honest; drawing an
 /// empty cell is the dark-panel defect both this repo and elo's launcher
@@ -701,6 +713,18 @@ mod tests {
         c.heard(None, 0, 20.0);
         assert_eq!(c.left(20.0), 0.0);
         assert_eq!(c.progress(20.0), 0.0);
+    }
+
+    /// The pane's line is the output's, and nothing until it has dripped.
+    #[test]
+    fn the_description_is_the_outputs_line_once_it_lands() {
+        let mut d = Box::new(ItemDescs::EMPTY);
+        assert_eq!(item_desc(&d, 3), None, "nothing has dripped");
+        d.set(3, b"Chopped from trees.").unwrap();
+        d.count = 4;
+        assert_eq!(item_desc(&d, 3), Some("Chopped from trees."));
+        assert_eq!(item_desc(&d, 2), None, "a row not yet dripped");
+        assert_eq!(item_desc(&d, u16::MAX), None, "past the table");
     }
 
     #[test]

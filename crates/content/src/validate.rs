@@ -13,6 +13,10 @@ pub const SKIN_NAME_MAX_BYTES: usize = 24;
 
 /// The furthest a species may hear any noise, metres (`mobs.toml` `hear_m`).
 const HEAR_MAX_M: u32 = 500;
+/// Longest item description, in bytes: the wire's field
+/// (`protocol::ITEM_DESC_BYTES`), pinned equal by a const assert beside the
+/// server's description bake. One line under the craft panel's name.
+pub const ITEM_DESC_MAX_BYTES: usize = 72;
 
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
     let rest = id
@@ -72,6 +76,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         if i.name.trim().is_empty() {
             return Err(format!("item `{}`: empty name", i.id));
+        }
+        // The craft panel's line (NOW §0cq 7): drawn as text and carried
+        // whole by `SUB_ITEM_DESCS`, so it must fit the wire's field — said
+        // here, where the message can name the item, not as a failed bake.
+        if i.description.trim().is_empty()
+            || i.description.len() > ITEM_DESC_MAX_BYTES
+            || !i.description.bytes().all(|b| (0x20..0x7f).contains(&b))
+        {
+            return Err(format!(
+                "item `{}`: description must be 1..={ITEM_DESC_MAX_BYTES} printable ASCII bytes",
+                i.id
+            ));
         }
         // --- durability V7, FIRST because everything else leans on it: a
         // condition-carrying item stacks to exactly 1. Condition is

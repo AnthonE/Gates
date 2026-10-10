@@ -378,6 +378,9 @@ pub struct SimTables {
     pub sentry: sim_core::sentry::SentryDef,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
+    /// Each item's one line for the craft panel (NOW §0cq 7), catalog
+    /// order, from `content/items.toml`'s `description`.
+    pub item_descs: Box<protocol::ItemDescs>,
     /// The skin catalog, twice: the sim's half (what fits what) and the
     /// wire's (names, tints, prices), both from `content/skins.toml`.
     pub skins: sim_core::skin::SkinContent,
@@ -420,6 +423,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         sentry: content.bake_sentry()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather, &survival, &cook)?,
+        item_descs: bake_item_descs(content)?,
         skins: content.bake_skins()?,
         skin_catalog: bake_skin_catalog(content)?,
         vend: content.bake_vend()?,
@@ -436,6 +440,29 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         survival,
         cook,
     })
+}
+
+// The validator's cap is the wire's field: a line content accepts always
+// fits `SUB_ITEM_DESCS`, so the bake below can only refuse a hole.
+const _: () = assert!(content::ITEM_DESC_MAX_BYTES == protocol::ITEM_DESC_BYTES);
+
+/// The wire's description table (NOW §0cq 7), indexed as the catalog is
+/// (`Content::item_index`), so `SUB_ITEM_DESCS` row `i` is catalog row `i`.
+pub fn bake_item_descs(content: &content::Content) -> Result<Box<protocol::ItemDescs>, String> {
+    let mut descs = Box::new(protocol::ItemDescs::EMPTY);
+    descs.count = content.items.len() as u16;
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        descs.set(idx, item.description.as_bytes()).map_err(|_| {
+            format!(
+                "catalog: item `{}` description is empty, over {} bytes or not \
+                 printable ASCII",
+                item.id,
+                protocol::ITEM_DESC_BYTES
+            )
+        })?;
+    }
+    Ok(descs)
 }
 
 /// The wire's skin catalog (skins v0), in the same row order as
@@ -3210,6 +3237,7 @@ fn sim_thread(
         sentry,
         research,
         catalog,
+        item_descs,
         skins,
         skin_catalog,
         vend,
@@ -3238,6 +3266,7 @@ fn sim_thread(
     core.world.research = research;
     core.world.skins = skins;
     core.catalog = catalog;
+    core.item_descs = item_descs;
     core.skin_catalog = skin_catalog;
     core.world.vend = vend;
     core.vendor_names = vendor_names;

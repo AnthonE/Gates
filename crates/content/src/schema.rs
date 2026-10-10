@@ -74,6 +74,11 @@ impl ItemClass {
 pub struct Item {
     pub id: String,
     pub name: String,
+    /// One plain line the craft panel prints under the name (NOW §0cq 7).
+    /// Required: every item says what it is. Printable ASCII, at most
+    /// [`crate::ITEM_DESC_MAX_BYTES`], because it rides the wire whole
+    /// (`protocol::ITEM_DESC_BYTES`).
+    pub description: String,
     pub stack: u32,
     pub tier: u32,
     pub rarity: Rarity,

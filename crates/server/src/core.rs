@@ -190,6 +190,10 @@ pub struct ShardCore {
     /// before the first tick; empty (the default) sends no catalog, which
     /// is what content-less tests run under.
     pub catalog: ItemCatalog,
+    /// Each item's craft-panel line (NOW §0cq 7), dripped beside the
+    /// catalog as `SUB_ITEM_DESCS`. Boxed: ~7 kB of fixed capacity. Empty
+    /// sends nothing.
+    pub item_descs: Box<protocol::ItemDescs>,
     /// The skin catalog the drip sends (skins v0), baked beside `catalog`
     /// from `content/skins.toml`. Boxed: ~9 kB of fixed capacity. Empty
     /// sends nothing.
@@ -558,6 +562,7 @@ impl ShardCore {
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
+            item_descs: Box::new(protocol::ItemDescs::EMPTY),
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             vendor_names: Vec::new(),
             work_names: Vec::new(),
@@ -4514,6 +4519,24 @@ impl ShardCore {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
                         self.clients[slot].catalog_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Item descriptions (NOW §0cq 7), the catalog's drip shape: only
+        // the craft panel reads them, so they ride after the names.
+        let c = &self.clients[slot];
+        let d = &self.item_descs;
+        if d.count > 0 && c.desc_cursor < d.count as usize {
+            match protocol::encode_event_item_descs(d, c.desc_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].desc_cursor += took;
                     } else {
                         return;
                     }

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 159] = [
+const GOLDEN: [&[u8]; 160] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -222,6 +222,7 @@ const GOLDEN: [&[u8]; 159] = [
     include_bytes!("golden/action_give.bin"),
     include_bytes!("golden/action_unload.bin"),
     include_bytes!("golden/event_down_refused.bin"),
+    include_bytes!("golden/event_item_descs.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -488,8 +489,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 157);
     // A hand verb refused because the body is down (v102).
     g!(seen, golden_event, 158);
+    // Item descriptions, the craft panel's line (v102).
+    g!(seen, golden_event, 159);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 159, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 160, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -2245,6 +2248,35 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_card_doors(bits, &mut buf).unwrap()
+        }
+        "event_item_descs.bin" => {
+            let descs = protocol::goldens::event_item_descs();
+            match decode_event(fixture).unwrap() {
+                EventMsg::ItemDescs {
+                    total,
+                    first,
+                    count,
+                    texts,
+                    lens,
+                } => {
+                    assert_eq!(
+                        (total, first, count),
+                        (descs.count as u8, 0, protocol::ITEM_DESC_BATCH as u8),
+                        "{name}: header mismatch"
+                    );
+                    for i in 0..count as usize {
+                        assert_eq!(
+                            &texts[i][..lens[i] as usize],
+                            descs.text(i),
+                            "{name}: line {i} mismatch"
+                        );
+                    }
+                }
+                other => panic!("{name}: wrong variant {other:?}"),
+            }
+            let (len, took) = protocol::encode_event_item_descs(&descs, 0, &mut buf).unwrap();
+            assert_eq!(took, protocol::ITEM_DESC_BATCH, "{name}: batch shrank");
+            len
         }
         "event_down_refused.bin" => {
             let tag = protocol::goldens::event_down_refused();

@@ -209,6 +209,8 @@ pub struct ClientNetState {
     pub sync_reset: bool,
     /// Next item index the catalog drip sends.
     pub catalog_cursor: usize,
+    /// Next item index the description drip sends (NOW §0cq 7).
+    pub desc_cursor: usize,
     /// Next recipe row the recipe drip sends.
     pub recipes_cursor: usize,
     /// Next research row the tech-tree drip sends (tech tree v0).
@@ -466,6 +468,7 @@ impl ClientNetState {
             sync_cursor: 0,
             sync_reset: true,
             catalog_cursor: 0,
+            desc_cursor: 0,
             recipes_cursor: 0,
             research_cursor: 0,
             piece_defs_cursor: 0,
@@ -531,6 +534,7 @@ impl ClientNetState {
         self.sync_cursor = 0;
         self.sync_reset = true;
         self.catalog_cursor = 0;
+        self.desc_cursor = 0;
         self.skins_cursor = 0;
         self.vend_cursor = 0;
         self.last_doors = None;

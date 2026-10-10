@@ -202,6 +202,11 @@ fn main() {
     // A hand verb refused because the body is down (v102).
     let len = protocol::encode_event_down_refused(goldens::event_down_refused(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[158], &buf[..len]);
+    // Item descriptions, the craft panel's line (v102).
+    let (len, took) =
+        protocol::encode_event_item_descs(&goldens::event_item_descs(), 0, &mut buf).unwrap();
+    assert_eq!(took, protocol::ITEM_DESC_BATCH);
+    write_fixture(goldens::FIXTURES[159], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

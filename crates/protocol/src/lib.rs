@@ -87,6 +87,7 @@ pub use event::{
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
+pub use event::{encode_event_item_descs, ItemDescs, ITEM_DESC_BATCH, ITEM_DESC_BYTES};
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
@@ -1122,7 +1123,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// it came. And an unload: `ACT_UNLOAD` (33, `Command::Unload`), no payload,
 /// empties the held magazine back into the pack. And a hand verb from a
 /// downed body says so: `SUB_DOWN_REFUSED` (92) carries the refused
-/// command's `sim_core::world::CMD_*` tag in six bits.
+/// command's `sim_core::world::CMD_*` tag in six bits. And each item says
+/// what it is: `SUB_ITEM_DESCS` (93) drips `content/items.toml`'s
+/// `description`, four lines of up to 72 bytes a message, for the craft
+/// panel (NOW §0cq 7).
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

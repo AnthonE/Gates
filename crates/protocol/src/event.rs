@@ -62,6 +62,18 @@ pub const GROW_SYNC_BATCH: usize = 32;
 /// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 7;
 
+/// Longest item description on the wire (`SUB_ITEM_DESCS`, NOW §0cq 7): the
+/// one line the craft panel prints under the name. `content` refuses a
+/// longer one at load (`content::ITEM_DESC_MAX_BYTES`, pinned equal at the
+/// server's bake).
+pub const ITEM_DESC_BYTES: usize = 72;
+/// Descriptions one message carries. Their own drip rather than a column
+/// on the catalog row: seven rows already fill that message (above), and a
+/// 72-byte column would take the batch to two. Four widest lines are 2 332
+/// bits plus the header, inside `MAX_EVENT_MSG_BYTES` (the assert at
+/// `ITEM_DESC_ROW_MAX_BITS`).
+pub const ITEM_DESC_BATCH: usize = 4;
+
 /// Skin rows one skin-catalog message carries (skins v0). A row is at most
 /// 16 + 16 + 24 + 2 + 32 + 5 + 24 × 8 = 287 bits, so eight are ≈ 287 B —
 /// inside `MAX_EVENT_MSG_BYTES`, and `skin_batches_fit_the_message_cap`
@@ -528,7 +540,11 @@ const SUB_STUMP_GRUBBED: u32 = 91;
 /// A hand verb refused because the body is down (own-fact, wire v102, sim
 /// `EV_DOWN_REFUSED`): which verb, `sim_core::world::CMD_*`.
 const SUB_DOWN_REFUSED: u32 = 92;
-const SUB_MAX: u32 = SUB_DOWN_REFUSED;
+/// Item descriptions `first..first+count` of a `total`-row table (wire v102,
+/// NOW §0cq 7): the catalog's drip shape, one line an item, for the craft
+/// panel.
+const SUB_ITEM_DESCS: u32 = 93;
+const SUB_MAX: u32 = SUB_ITEM_DESCS;
 /// Width of `SUB_DOWN_REFUSED`'s verb tag: `CMD_MAX` is 31, so one bit of
 /// headroom over the tightest field.
 const DOWN_TAG_BITS: u32 = 6;
@@ -678,6 +694,20 @@ const SYNC_COUNT_BITS: u32 = 7;
 const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
+/// A description batch's count, 1..=`ITEM_DESC_BATCH`, and one line's
+/// length, 1..=`ITEM_DESC_BYTES` (`SUB_ITEM_DESCS`).
+const ITEM_DESC_COUNT_BITS: u32 = 3;
+const ITEM_DESC_LEN_BITS: u32 = 7;
+const _: () = assert!(ITEM_DESC_BATCH < (1 << ITEM_DESC_COUNT_BITS));
+const _: () = assert!(ITEM_DESC_BYTES < (1 << ITEM_DESC_LEN_BITS));
+const _: () = assert!(MAX_ITEM_DEFS < (1 << CATALOG_TOTAL_BITS));
+/// The widest description row, and a full batch of them fits one message.
+const ITEM_DESC_ROW_MAX_BITS: usize = ITEM_DESC_LEN_BITS as usize + 8 * ITEM_DESC_BYTES;
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 2 * CATALOG_TOTAL_BITS + ITEM_DESC_COUNT_BITS) as usize
+        + ITEM_DESC_BATCH * ITEM_DESC_ROW_MAX_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 /// A skin-catalog index or total: 0..=`MAX_SKINS` (256) in nine bits.
 const SKIN_TOTAL_BITS: u32 = 9;
 const SKIN_COUNT_BITS: u32 = 4;
@@ -1155,6 +1185,63 @@ impl Default for ItemCatalog {
     }
 }
 
+/// The item-index → description table (NOW §0cq 7): one plain line an item,
+/// `content/items.toml`'s `description`, for the craft panel's detail pane.
+/// Server bakes it at boot beside the [`ItemCatalog`]; the client fills its
+/// copy from `SUB_ITEM_DESCS`. Its own table rather than columns on the
+/// catalog: ~7 kB of fixed capacity, so both ends hold it boxed (the
+/// skin catalog's posture), and the catalog stays `Copy`-cheap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemDescs {
+    pub texts: [[u8; ITEM_DESC_BYTES]; MAX_ITEM_DEFS],
+    pub lens: [u8; MAX_ITEM_DEFS],
+    pub count: u16,
+}
+
+impl ItemDescs {
+    pub const EMPTY: Self = Self {
+        texts: [[0; ITEM_DESC_BYTES]; MAX_ITEM_DEFS],
+        lens: [0; MAX_ITEM_DEFS],
+        count: 0,
+    };
+
+    /// Is this a line the wire carries and a panel can draw? 1..=
+    /// `ITEM_DESC_BYTES` of printable ASCII — the content validator's rule,
+    /// asked again at both ends of the wire.
+    pub fn line_ok(text: &[u8]) -> bool {
+        !text.is_empty()
+            && text.len() <= ITEM_DESC_BYTES
+            && text.iter().all(|b| (0x20..0x7f).contains(b))
+    }
+
+    /// Install one line. Refuses out-of-table or a line [`Self::line_ok`]
+    /// refuses; the server's bake turns that into a refused boot.
+    pub fn set(&mut self, idx: usize, text: &[u8]) -> Result<(), WireError> {
+        if idx >= MAX_ITEM_DEFS || !Self::line_ok(text) {
+            return Err(WireError::Range);
+        }
+        self.texts[idx][..text.len()].copy_from_slice(text);
+        self.texts[idx][text.len()..].fill(0);
+        self.lens[idx] = text.len() as u8;
+        Ok(())
+    }
+
+    /// One item's line, or empty out of table and before it drips in.
+    pub fn text(&self, idx: usize) -> &[u8] {
+        if idx < MAX_ITEM_DEFS {
+            &self.texts[idx][..self.lens[idx] as usize]
+        } else {
+            &[]
+        }
+    }
+}
+
+impl Default for ItemDescs {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
 /// A skin row's coin: not on sale yet.
 pub const COIN_NONE: u8 = 0;
 /// Priced in ELO.
@@ -1341,6 +1428,15 @@ pub enum EventMsg {
         names: [[u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH],
         lens: [u8; CATALOG_BATCH],
         rows: [ItemRow; CATALOG_BATCH],
+    },
+    /// Item descriptions `first..first+count` of a `total`-row table
+    /// ([`ItemDescs`], NOW §0cq 7), the catalog's drip shape.
+    ItemDescs {
+        total: u8,
+        first: u8,
+        count: u8,
+        texts: [[u8; ITEM_DESC_BYTES]; ITEM_DESC_BATCH],
+        lens: [u8; ITEM_DESC_BATCH],
     },
     /// Own weak-spot mark after a landed hit (swinger-only): the node's
     /// cell, the next mark heading (u8 over the shared 256-entry yaw LUT,
@@ -2303,6 +2399,38 @@ pub fn encode_event_catalog(
         w.write_bit(row.revive)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
+    }
+    Ok((w.finish(), count))
+}
+
+/// Encode up to `ITEM_DESC_BATCH` descriptions starting at `first`, the
+/// catalog's drip shape (NOW §0cq 7). Returns the byte length and how many
+/// lines rode along; the caller's cursor advances by that count.
+pub fn encode_event_item_descs(
+    descs: &ItemDescs,
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = descs.count as usize;
+    if total > MAX_ITEM_DEFS || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = ITEM_DESC_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_ITEM_DESCS)?;
+    w.write(total as u32, CATALOG_TOTAL_BITS)?;
+    w.write(first as u32, CATALOG_TOTAL_BITS)?;
+    w.write(count as u32, ITEM_DESC_COUNT_BITS)?;
+    for idx in first..first + count {
+        // `set` refused a bad line already; a row never set is empty and
+        // refused here, so a hole in the table fails the drip loudly.
+        let text = descs.text(idx);
+        if !ItemDescs::line_ok(text) {
+            return Err(WireError::Range);
+        }
+        w.write(text.len() as u32, ITEM_DESC_LEN_BITS)?;
+        for &b in text {
+            w.write(b as u32, 8)?;
+        }
     }
     Ok((w.finish(), count))
 }
@@ -4838,6 +4966,42 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 rows,
             }
         }
+        SUB_ITEM_DESCS => {
+            let total = r.read(CATALOG_TOTAL_BITS)? as usize;
+            let first = r.read(CATALOG_TOTAL_BITS)? as usize;
+            let count = r.read(ITEM_DESC_COUNT_BITS)? as usize;
+            if total > MAX_ITEM_DEFS
+                || count == 0
+                || count > ITEM_DESC_BATCH
+                || first + count > total
+            {
+                return Err(WireError::Malformed);
+            }
+            let mut texts = [[0u8; ITEM_DESC_BYTES]; ITEM_DESC_BATCH];
+            let mut lens = [0u8; ITEM_DESC_BATCH];
+            for i in 0..count {
+                let len = r.read(ITEM_DESC_LEN_BITS)? as usize;
+                if len == 0 || len > ITEM_DESC_BYTES {
+                    return Err(WireError::Malformed);
+                }
+                for b in texts[i].iter_mut().take(len) {
+                    *b = r.read(8)? as u8;
+                }
+                // The panel draws it as text: a control byte or one past
+                // ASCII is refused here rather than drawn as a box.
+                if !ItemDescs::line_ok(&texts[i][..len]) {
+                    return Err(WireError::Malformed);
+                }
+                lens[i] = len as u8;
+            }
+            EventMsg::ItemDescs {
+                total: total as u8,
+                first: first as u8,
+                count: count as u8,
+                texts,
+                lens,
+            }
+        }
         SUB_WEAK_MARK => EventMsg::WeakMark {
             cx: r.read(16)? as u16,
             cz: r.read(16)? as u16,
@@ -6830,6 +6994,76 @@ mod tests {
             encode_event_catalog(&cat, 11, &mut buf),
             Err(WireError::Range)
         );
+    }
+
+    /// The description drip (NOW §0cq 7): a full batch of the widest lines
+    /// fits the cap and round-trips, the walk covers the table, and the
+    /// lines the panel cannot draw are refused at both ends.
+    #[test]
+    fn item_desc_batches_walk_the_table_within_cap() {
+        let mut descs = Box::new(ItemDescs::EMPTY);
+        descs.count = 10;
+        for i in 0..10usize {
+            // Worst-width lines, a distinct printable byte each.
+            let text = [b'!' + i as u8; ITEM_DESC_BYTES];
+            descs.set(i, &text).unwrap();
+        }
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut first = 0;
+        while first < 10 {
+            let (len, took) = encode_event_item_descs(&descs, first, &mut buf).unwrap();
+            assert!(len <= MAX_EVENT_MSG_BYTES, "{len} B over the cap");
+            assert_eq!(took, ITEM_DESC_BATCH.min(10 - first));
+            match decode_event(&buf[..len]).unwrap() {
+                EventMsg::ItemDescs {
+                    total,
+                    first: f,
+                    count,
+                    texts,
+                    lens,
+                } => {
+                    assert_eq!((total, f, count), (10, first as u8, took as u8));
+                    for i in 0..took {
+                        assert_eq!(&texts[i][..lens[i] as usize], descs.text(first + i));
+                    }
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+            first += took;
+        }
+        assert_eq!(
+            encode_event_item_descs(&descs, 10, &mut buf),
+            Err(WireError::Range)
+        );
+        // A hole in the table refuses the drip rather than sending nothing.
+        descs.count = 11;
+        assert_eq!(
+            encode_event_item_descs(&descs, 10, &mut buf),
+            Err(WireError::Range)
+        );
+
+        // `set` refuses what the validator does: empty, past the cap, a
+        // control byte, a byte past ASCII, past the table.
+        let long = [b'a'; ITEM_DESC_BYTES + 1];
+        for bad in [&b""[..], &long[..], b"tab\there", "caf\u{e9}".as_bytes()] {
+            assert_eq!(descs.set(0, bad), Err(WireError::Range), "{bad:?}");
+        }
+        assert_eq!(descs.set(MAX_ITEM_DEFS, b"ok"), Err(WireError::Range));
+
+        // And the decoder refuses a forged line the encoder would not
+        // write: a control byte, then a zero length.
+        for (len, byte) in [(1u32, 0x07u32), (0, 0)] {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_ITEM_DESCS, SUB_BITS).unwrap();
+            w.write(1, CATALOG_TOTAL_BITS).unwrap();
+            w.write(0, CATALOG_TOTAL_BITS).unwrap();
+            w.write(1, ITEM_DESC_COUNT_BITS).unwrap();
+            w.write(len, ITEM_DESC_LEN_BITS).unwrap();
+            w.write(byte, 8).unwrap();
+            let n = w.finish();
+            assert_eq!(decode_event(&buf[..n]), Err(WireError::Malformed));
+        }
     }
 
     #[test]
@@ -9109,6 +9343,11 @@ mod wire_domains {
             "CATALOG_TOTAL_BITS",
             "CATALOG_COUNT_BITS",
             "NAME_LEN_BITS",
+            // The description drip's batch count and line length (v102),
+            // bounded by `ITEM_DESC_BATCH` and `ITEM_DESC_BYTES` with
+            // const-asserts beside the widths.
+            "ITEM_DESC_COUNT_BITS",
+            "ITEM_DESC_LEN_BITS",
             "CRAFT_Q_COUNT_BITS",
             "RECIPE_TOTAL_BITS",
             "RECIPE_COUNT_BITS",

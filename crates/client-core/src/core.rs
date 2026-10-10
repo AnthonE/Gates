@@ -1541,6 +1541,13 @@ pub struct ClientCore {
     /// Boxed: 24 kB of fixed capacity against wasm's 1 MB shadow stack.
     slot_cache: Box<SlotCache>,
     pub catalog: ItemCatalog,
+    /// Each item's craft-panel line (NOW §0cq 7), dripped after the names
+    /// (`SUB_ITEM_DESCS`). Boxed, `slot_cache`'s reason: ~7 kB of fixed
+    /// capacity.
+    pub item_descs: Box<protocol::ItemDescs>,
+    /// Lines received so far, `recipes_have`'s shape: the panels redraw when
+    /// it moves, so a craft pane opened before its line landed gains it.
+    pub item_descs_have: u16,
     /// The skin catalog (skins v0), dripped at join like `catalog`: row `i`
     /// is bit `i` of [`Self::skins_owned`]. Boxed, `slot_cache`'s reason:
     /// ~9 kB of fixed capacity.
@@ -2133,6 +2140,8 @@ impl ClientCore {
             haven: terrain::haven(seed),
             slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
+            item_descs: Box::new(protocol::ItemDescs::EMPTY),
+            item_descs_have: 0,
             skins: Box::new(protocol::SkinCatalog::EMPTY),
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
@@ -2560,6 +2569,24 @@ impl ClientCore {
                     );
                 }
                 flags |= APPLIED_CATALOG;
+            }
+            EventMsg::ItemDescs {
+                total,
+                first,
+                count,
+                texts,
+                lens,
+            } => {
+                self.item_descs.count = total as u16;
+                for i in 0..count as usize {
+                    // The decoder refused a line the panel cannot draw and
+                    // bounded the index; a failure here is an index past
+                    // the table and nothing else.
+                    let _ = self
+                        .item_descs
+                        .set(first as usize + i, &texts[i][..lens[i] as usize]);
+                }
+                self.item_descs_have = self.item_descs_have.max(first as u16 + count as u16);
             }
             EventMsg::Skins {
                 total,

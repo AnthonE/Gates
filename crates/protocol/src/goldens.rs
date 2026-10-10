@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 159] = [
+pub const FIXTURES: [&str; 160] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -286,6 +286,8 @@ pub const FIXTURES: [&str; 159] = [
     "action_unload.bin",
     // A hand verb refused because the body is down (v102).
     "event_down_refused.bin",
+    // Item descriptions, the craft panel's line (v102, NOW §0cq 7).
+    "event_item_descs.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2407,6 +2409,27 @@ pub fn event_swipe_refused() -> (u8, u8) {
 /// A reload refused because the body is down (v102).
 pub fn event_down_refused() -> u8 {
     sim_core::world::CMD_RELOAD
+}
+
+/// A six-row description table (v102, NOW §0cq 7) whose first batch is a
+/// full `ITEM_DESC_BATCH`: a one-byte line, the cap's width, and two plain
+/// lines between, so the golden pins the length field at both ends.
+pub fn event_item_descs() -> Box<crate::event::ItemDescs> {
+    let mut d = Box::new(crate::event::ItemDescs::EMPTY);
+    let cap = [b'~'; crate::event::ITEM_DESC_BYTES];
+    let lines: [&[u8]; 6] = [
+        b"Chopped from trees.",
+        b"x",
+        &cap,
+        b"Mined from metal nodes. A furnace smelts it.",
+        b"Not in the first batch.",
+        b"Nor this.",
+    ];
+    for (i, l) in lines.iter().enumerate() {
+        d.set(i, l).expect("fixture line fits");
+    }
+    d.count = lines.len() as u16;
+    d
 }
 
 /// Swipe at the blue door.

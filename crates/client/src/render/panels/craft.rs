@@ -12,7 +12,8 @@
 //!   what to go and get — a padlock over the ones not yet learned and a star
 //!   on the favourites, Rust's three marks;
 //! - the **detail pane**: the picture, the name, the station, the craft time
-//!   beside a clock and the yield, the AMOUNT/ITEM TYPE/TOTAL/HAVE table with
+//!   beside a clock and the yield, the item's one-line description, the
+//!   AMOUNT/ITEM TYPE/TOTAL/HAVE table with
 //!   a picture per ingredient, a quantity stepper and the button;
 //! - the **queue**, as Rust draws it: a tile per job, the one being worked
 //!   green with its countdown and progress, a cross to cancel.
@@ -675,6 +676,11 @@ fn detail_body(
         });
     });
 
+    // What the thing is, in one line (NOW §0cq 7): the reference's
+    // paragraph under the name, from the catalog's description drip.
+    if let Some(line) = crate::ui::craft::item_desc(&core.item_descs, def.output) {
+        pane.spawn((Text::new(line), font(12.0), TextColor(TEXT)));
+    }
     // A locked recipe says where it is learned — the bench tree and the
     // node's price — rather than only that it is locked.
     if let Some(hint) = crate::ui::craft::unlock_hint(&core.research, core.known(), recipe, def) {

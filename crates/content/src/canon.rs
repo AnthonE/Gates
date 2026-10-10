@@ -39,6 +39,7 @@ pub fn hash(c: &Content) -> u64 {
     for i in sorted(&c.items, |i| &i.id) {
         h.s(&i.id);
         h.s(&i.name);
+        h.s(&i.description);
         h.u(i.stack);
         h.u(i.tier);
         h.u(i.rarity.canon());

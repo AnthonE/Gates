@@ -559,3 +559,46 @@ fn the_shipped_catalog_carries_every_class() {
         "the rail's recipes sit in only a few classes: {seen:?}"
     );
 }
+
+/// The craft panel's lines (NOW §0cq 7): every shipped item's description
+/// is baked, installed the way `sim_thread` installs it, and drips whole
+/// into a joining client, row for row with the catalog.
+#[test]
+fn every_shipped_description_reaches_a_joining_client() {
+    use server::core::{Lane, ShardCore};
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+    let stats = server::stats::ShardStats::default();
+    let mut core = Box::new(ShardCore::new(7));
+    core.catalog = tables.catalog;
+    core.item_descs = tables.item_descs;
+    let id = 1 << 8;
+    assert!(core.connect(0, id));
+    let mut client = client_core::core::ClientCore::new(7, id, 0);
+    let n = content.items.len();
+    for _ in 0..4 * n {
+        let mut events: Vec<Vec<u8>> = Vec::new();
+        core.tick_bare(&stats, |lane, _, bytes| {
+            if lane == Lane::Event {
+                events.push(bytes.to_vec());
+            }
+            true
+        });
+        for e in &events {
+            client.on_stream(e).expect("server events decode");
+        }
+        if client.item_descs_have as usize == n {
+            break;
+        }
+    }
+    assert_eq!(client.item_descs_have as usize, n, "the drip stopped short");
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        assert_eq!(
+            client.item_descs.text(idx),
+            item.description.as_bytes(),
+            "`{}` reached the client with another line",
+            item.id
+        );
+    }
+}

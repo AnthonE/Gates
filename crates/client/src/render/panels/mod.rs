@@ -267,6 +267,9 @@ pub(crate) struct Seen {
     pub known: u64,
     /// The research drip's watermark, `recipes_have`'s reason exactly.
     pub research_have: u16,
+    /// The description drip's watermark (NOW §0cq 7), the same reason: a
+    /// craft pane drawn before its line landed redraws to gain it.
+    pub descs_have: u16,
     /// Whether the open container is lit — a research table running
     /// (research table v1), a camp fire burning. Its slots do not change
     /// when it starts, only the lit bit does, so without this the table's
@@ -1271,6 +1274,7 @@ fn detect_changes(
             || (ui.panel == Panel::Hammer && near != ui.seen.hammer_target)
             || core.known() != ui.seen.known
             || core.research_have != ui.seen.research_have
+            || core.item_descs_have != ui.seen.descs_have
             || cont_lit != ui.seen.cont_lit
             || core.skins_owned != ui.seen.skins_owned
             || core.skins_gen != ui.seen.skins_have
@@ -1290,6 +1294,7 @@ fn detect_changes(
             ui.seen.hammer_target = near;
             ui.seen.known = core.known();
             ui.seen.research_have = core.research_have;
+            ui.seen.descs_have = core.item_descs_have;
             ui.seen.cont_lit = cont_lit;
             ui.seen.skins_owned = core.skins_owned;
             ui.seen.skins_have = core.skins_gen;

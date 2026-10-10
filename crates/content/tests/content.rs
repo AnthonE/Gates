@@ -381,8 +381,9 @@ fn layout_holds_through_a_balance_edit_and_moves_with_a_row() {
     let grown = edit(
         "items.toml",
         "[[item]]\nid = \"item.wood\"",
-        "[[item]]\nid = \"item.aaa_new\"\nname = \"New\"\nstack = 1\ntier = 0\n\
-         rarity = \"common\"\nslot = \"none\"\nclass = \"other\"\n\n[[item]]\nid = \"item.wood\"",
+        "[[item]]\nid = \"item.aaa_new\"\nname = \"New\"\ndescription = \"New.\"\nstack = 1\n\
+         tier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"other\"\n\n[[item]]\n\
+         id = \"item.wood\"",
     );
     assert_ne!(
         base.layout_hash(),
@@ -863,11 +864,45 @@ fn duplicate_id_refused() {
     let mut srcs = sources();
     let items = srcs.iter_mut().find(|(n, _)| *n == "items.toml").unwrap();
     items.1.push_str(
-        "\n[[item]]\nid = \"item.wood\"\nname = \"Wood Again\"\nstack = 1\n\
-         tier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"resources\"\n",
+        "\n[[item]]\nid = \"item.wood\"\nname = \"Wood Again\"\ndescription = \"Again.\"\n\
+         stack = 1\ntier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"resources\"\n",
     );
     let err = build(&srcs).expect_err("duplicate id accepted");
     assert!(err.contains("duplicate id"), "got: {err}");
+}
+
+/// Every item says what it is in one line the wire carries whole (NOW §0cq
+/// 7): absent, empty, past the cap or outside printable ASCII is refused,
+/// and a line exactly at the cap loads.
+#[test]
+fn item_description_is_one_carryable_line() {
+    use content::ITEM_DESC_MAX_BYTES;
+    let wood =
+        "description = \"Chopped from trees. Fuel for fires and furnaces, and most early builds.\"";
+    let line = |d: &str| format!("description = \"{d}\"");
+    let phrase = "description must be";
+    refuses("items.toml", wood, &line(""), phrase);
+    refuses("items.toml", wood, &line("   "), phrase);
+    refuses(
+        "items.toml",
+        wood,
+        &line(&"x".repeat(ITEM_DESC_MAX_BYTES + 1)),
+        phrase,
+    );
+    refuses(
+        "items.toml",
+        wood,
+        &line("Chopped \u{2014} from trees."),
+        phrase,
+    );
+    // No default: a row without the line does not parse.
+    refuses("items.toml", &format!("{wood}\n"), "", "description");
+    let mut srcs = sources();
+    let items = srcs.iter_mut().find(|(n, _)| *n == "items.toml").unwrap();
+    items.1 = items
+        .1
+        .replace(wood, &line(&"x".repeat(ITEM_DESC_MAX_BYTES)));
+    build(&srcs).expect("a description at the cap loads");
 }
 
 #[test]
@@ -1881,8 +1916,8 @@ fn the_durability_rules_refuse_what_they_name() {
     // arithmetic only while no merge can ever meet two conditions.
     refuses(
         "items.toml",
-        "name = \"Bat\"\nstack = 1",
-        "name = \"Bat\"\nstack = 3",
+        "ore loose.\"\nstack = 1",
+        "ore loose.\"\nstack = 3",
         "(V7)",
     );
     // V4, the set check: a condition-carrying tool that pays on a node
@@ -4357,17 +4392,17 @@ fn the_research_table_bakes_its_paper_and_its_wait() {
 /// target.
 #[test]
 fn a_blueprint_that_stacks_or_wears_is_refused() {
-    let from = "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1";
+    let from = "the recipe it names.\"\nstack = 1";
     refuses(
         "items.toml",
         from,
-        "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 2",
+        "the recipe it names.\"\nstack = 2",
         "must be stack 1 with no condition",
     );
     refuses(
         "items.toml",
         from,
-        "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1\ncondition_max = 100",
+        "the recipe it names.\"\nstack = 1\ncondition_max = 100",
         "must be stack 1 with no condition",
     );
 }

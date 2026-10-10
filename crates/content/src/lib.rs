@@ -17,6 +17,7 @@ use schema::*;
 use std::path::Path;
 
 pub use balance::Anchors;
+pub use validate::ITEM_DESC_MAX_BYTES;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
