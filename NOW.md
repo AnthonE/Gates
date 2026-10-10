@@ -48,8 +48,8 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
 
 ## 0wnd · Down, hand revive and medkit recovery are built *(sim+client lane)*
 
-2. Refusals while down: the client says `HANDS_LINE`, but the sim still sends no
-   event from `live_slot_of`; the fix is each refused verb's own `REFUSE_*`.
+2. A hand verb refused while down answers `EV_DOWN_REFUSED` (one event, not a `REFUSE_*_DOWN`
+   per family); `Command::Use` on an oven or table still answers through `use_door`.
 3. No drag clip or voice: a remote crawl slides `Death01`'s pose (`render/anim.rs`)
    and the fall reuses `Cue::Death`.
 
@@ -145,9 +145,6 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0mag · Reload v1 — what the magazine still cannot do *(systems+client lane)*
 
-2. No unload, no ammo switch (the reference refunds a partial magazine and adopts the
-   new round at `StartReload`; ours refuses, `REFUSE_RL_DRY`). Both need `reload` to
-   see a stack ceiling: `GatherContent` reaching a `CombatContent` caller.
 3. The dry click rides `rate_ticks` (0.4 s on the revolver); the reference gives it
    its own 1.0 s (`BaseProjectile.ServerUse`). Unspoken knob in `DECISIONS.md` §open.
 
@@ -681,8 +678,8 @@ its countdown, padlock, notices over the vitals, colour icons).
 5. CRAFT dims when short; the community plugin paints it green — a palette knob, `DECISIONS.md` §open.
 6b. 8 of 78 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
    painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand item 3).
-7. The class byte landed (wire v102: the rail groups by class); left are a description column, then
-   fast-track by task id (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
+7. The class byte and the description line landed (wire v102: the rail groups by class,
+   `SUB_ITEM_DESCS`); left is fast-track by task id (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
 
 ## 0w · The native menus — the untested gesture *(client lane)*
 
