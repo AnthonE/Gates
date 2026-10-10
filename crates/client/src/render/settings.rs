@@ -1014,7 +1014,7 @@ pub const BINDS: [(&str, &str); 24] = [
     ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
     (
         "LIGHT / SNUFF A TORCH",
-        "Right Mouse with a torch in hand (it burns while it is lit)",
+        "F or Right Mouse with a torch in hand (it burns while it is lit)",
     ),
     ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
     (

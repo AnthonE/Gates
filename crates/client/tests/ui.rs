@@ -4128,7 +4128,7 @@ const BIND_IDENTS: [(&str, &[&str]); 24] = [
         &["KeyJ", "KeyH", "MouseButton::Left", "Digit1", "Digit6"],
     ),
     ("BUILD", &["MouseButton::Right"]),
-    ("LIGHT / SNUFF A TORCH", &["MouseButton::Right"]),
+    ("LIGHT / SNUFF A TORCH", &["KeyF", "MouseButton::Right"]),
     ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
     ("TURN WHILE PLACING", &["KeyR"]),
     ("LIGHT / SWITCH ON", &["KeyC"]),
