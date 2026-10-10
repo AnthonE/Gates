@@ -341,9 +341,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    growl (`assets/sound/MANIFEST.md`): a CC0 red deer roar replaces it.
 4. `MAX_MOBS = 256` (a u8 slot ceiling; shipped densities fill about a quarter) has never met a playtest.
 5. Should `ttk_melee` widen (rock vs spear)? `DECISIONS.md` §open "tools as weapons".
-7. The brain's numbers are code and shared by every species (`brain.rs`: 2 biters, 3 tries,
-   60 s heal, 20 s howl, 7 m orbit, 40 % sleep; `noise.rs`: 100/15/25/200 m hearing); only
-   sight, pack, fire fear and courage (`brave_pct`) are in `content/mobs.toml`.
 8. The brain's state is `/brain` (admin, the nearest animal, said to the asker); no overlay or log.
 
 ## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
@@ -360,7 +357,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0bl · Building catalogue *(client+sim lane)*
 
-2. Perf option: memo `col_base_y`'s terrain sampling (volley 1.25 → 3.07 ms/tick).
 3. Diagonal-wall UV stretch: the √2 root scale stretches the slab texture (`ART.md`).
 4. Operator calls (`DECISIONS.md` §open "piece flanks v0"; `reference/BUILDING.md`
    §9.24): placement inside a body; height-offset foundations vs privilege/stability.
@@ -386,13 +382,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    throwable's damage on purpose): wants a bounded gate at the command ceiling.
 2. The fleet only raids itself (`raid_shape.rs:33`); `§0pop`'s `index % 2`
    owner/attacker split is the knob that would model two parties.
-
-## 0rc · The wire raid's two unmeasured differences *(systems lane)*
-
-- Settled 2026-10-09: the shard rings actions, one per tick (`net.rs` pops through
-  `core::wants_action`); a burst lands late, never lost. `raid_shape.rs` says so.
-2. `Client::consume_input` (`server/src/client.rs`) lets one frame's buttons act
-   per tick, so `charge_slot` may not be in force when the throw lands.
 
 ## 0r · A charge cannot be stopped *(systems lane)*
 
@@ -513,12 +502,10 @@ act):
    memo only pays across repeated picks: measure a respawn storm before `&mut self`.
 3. The soak still owes tick jitter and real bytes (§0q item 4).
 
-## 0y · Persistence — the three questions still open *(server lane)*
+## 0y · Persistence — the two questions still open *(server lane)*
 
 1. Should a sleeper block movement? Unanswered; lootable-alive comes after.
 3. No WAL yet; `worldsave.rs`'s module header fixes its shape.
-4. Ungated, hand-checked only: the three-thread shutdown path (SIGTERM flushes,
-   SIGKILL leaves no `.tmp`) and `KeySlot`'s id match (`server/net.rs:815`).
 
 ## 0ad2 · What the admin lane still cannot do *(server lane)*
 
@@ -997,7 +984,9 @@ last text `git show 7d45e53:NOW.md`. `§0gfx` (the hardware verdict) and `§0loc
 targets in the building playtest), closed by the operator's playtest 2026-10-09 —
 last text `git show 0edb5f1:NOW.md`. `§0sp2` (the spill's amount rides `Gather`'s
 `dropped`, wire v102), 2026-10-10 — last text `git show f8de16d:NOW.md`. `§0vj` (the capture probe writes
-`manifest.json`), 2026-10-10 — last text `git show 9625bfa:NOW.md`.
+`manifest.json`), 2026-10-10 — last text `git show 9625bfa:NOW.md`. `§0rc` (a throw waits
+for the frames buffered ahead of it, `ClientNetState::hand_ready`), 2026-10-10 — last text
+`git show 884c675:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
