@@ -1705,6 +1705,11 @@ pub struct ClientCore {
     /// they disagree, so a stale level is unreachable rather than
     /// unwritten.
     mag_item: u16,
+    /// Magazine fills heard, wrapping (`EventMsg::Reload` with `took > 0`).
+    /// A level like `mag`, read by [`ClientCore::fills`]: the reload key's
+    /// hold compares it across the hold to tell a press that loaded from
+    /// one that had nothing to load (`client::ui::unload`).
+    fills: u32,
     /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
     /// v94): the weapon it was said for, and the round.
     bow_ammo: (u16, u16),
@@ -2308,6 +2313,7 @@ impl ClientCore {
             reload_toast_len: 0,
             mag: (0, 0),
             mag_item: NO_ITEM,
+            fills: 0,
             bow_ammo: (NO_ITEM, NO_ITEM),
             fires: [Fire::default(); FIRES],
             fire_len: 0,
@@ -2416,6 +2422,7 @@ impl ClientCore {
                 self.mag = (loaded, ceiling);
                 self.mag_item = self.held_item();
                 if took > 0 {
+                    self.fills = self.fills.wrapping_add(1);
                     // A fill. Drop-oldest, the toast rings' posture.
                     if self.reload_toast_len == TOAST_RING {
                         self.reload_toast_head = (self.reload_toast_head + 1) % TOAST_RING;
@@ -4356,6 +4363,14 @@ impl ClientCore {
         self.mag
     }
 
+    /// How many magazine fills this client has heard, wrapping. **Not a
+    /// `pop_`**, `mag()`'s posture: a count any reader may compare across
+    /// frames, so the reload key's hold can tell whether its press loaded
+    /// anything without draining the toast ring `render/feed.rs` owns.
+    pub fn fills(&self) -> u32 {
+        self.fills
+    }
+
     /// The arrow the bow in hand looses, if the sim has said one for it —
     /// `None` for any other hand, and for a bow with no arrow it can fire.
     pub fn bow_round(&self) -> Option<u16> {
@@ -4418,7 +4433,7 @@ impl ClientCore {
     /// The item index in the selected hotbar slot, `NO_ITEM` for an empty
     /// hand. The client's own mirror, which is the only place this is
     /// known — `EntityState::held` is what *others* see of this body.
-    fn held_item(&self) -> u16 {
+    pub fn held_item(&self) -> u16 {
         let s = self.inv[self.input.sel as usize];
         if s.count == 0 {
             NO_ITEM

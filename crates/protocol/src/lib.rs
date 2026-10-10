@@ -1119,7 +1119,8 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// worn skinned item keeps its look. And the placed-deployable record grows
 /// a fourth state bit, `lit` (after has-lock, `EV_OVEN`'s bit filled at
 /// encode), so a joiner or a deploy reset's walk learns a fire lit before
-/// it came.
+/// it came. And an unload: `ACT_UNLOAD` (33, `Command::Unload`), no payload,
+/// empties the held magazine back into the pack.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.
@@ -1945,21 +1946,25 @@ const ACT_DROP: u32 = 30;
 const ACT_TREAT: u32 = 31;
 /// Hand a stack to another player (wire v102, `Command::Give`): the slot,
 /// the count and the receiver's id. **The thirty-third action**, so it
-/// paid for `ACTION_SUB_BITS` widening 5 → 6 — thirty-one codes spare now.
+/// paid for `ACTION_SUB_BITS` widening 5 → 6 — thirty-one codes spare after it.
 /// Reach, the receiver's state and their room are the sim's verdict.
 const ACT_GIVE: u32 = 32;
+/// Empty the held weapon's magazine back into the pack (wire v102,
+/// `Command::Unload`, `NOW.md` §0mag 2). No payload, `ACT_RELOAD`'s shape
+/// and its reason: the hand and the count are the sim's.
+const ACT_UNLOAD: u32 = 33;
 /// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
 const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
 /// It was worth more here than there while this lane's field was four
-/// bits and **full**; at v102 it is six bits with thirty-one codes spare,
+/// bits and **full**; at v102 it is six bits with thirty codes spare,
 /// so the pressure is off — but the assert stays, because the failure it
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_GIVE;
+const ACT_MAX: u32 = ACT_UNLOAD;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2342,6 +2347,9 @@ pub enum ActionMsg {
     /// No payload for `Drink`'s reason: the sim already knows the hand and
     /// the amount, so there is nothing here to forge.
     Reload,
+    /// Empty the held weapon's magazine back into the pack
+    /// (`Command::Unload`). Payload-free for `Reload`'s reason.
+    Unload,
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
     /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
     /// "choose beach or a bag").
@@ -2517,6 +2525,14 @@ pub fn encode_action_reload(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_RELOAD, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
+/// The unload verb. No payload — see `ActionMsg::Unload`.
+pub fn encode_action_unload(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_UNLOAD, ACTION_SUB_BITS)?;
     Ok(w.finish())
 }
 
@@ -3387,6 +3403,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         }
         ACT_DRINK => ActionMsg::Drink,
         ACT_RELOAD => ActionMsg::Reload,
+        ACT_UNLOAD => ActionMsg::Unload,
         ACT_ASSIST => ActionMsg::Assist {
             target: r.read(32)?,
         },
@@ -5032,12 +5049,12 @@ mod tests {
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
         // respawn point (v92) 28, the arc's one verb (v95) 29, drop
-        // (v97) 30 and treat (v99) 31 filled the five-bit field, and give
-        // (v102) 32 widened `ACTION_SUB_BITS` to six.
-        assert_eq!(ACT_MAX, ACT_GIVE);
+        // (v97) 30 and treat (v99) 31 filled the five-bit field, give
+        // (v102) 32 widened `ACTION_SUB_BITS` to six, and unload (v102) 33.
+        assert_eq!(ACT_MAX, ACT_UNLOAD);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            31,
+            30,
             "the spare action codes moved — say so where the count is written"
         );
     }

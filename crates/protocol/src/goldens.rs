@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 157] = [
+pub const FIXTURES: [&str; 158] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -282,6 +282,8 @@ pub const FIXTURES: [&str; 157] = [
     "action_take_stock.bin",
     // A stack handed to another player (v102).
     "action_give.bin",
+    // A magazine emptied back into the pack (v102).
+    "action_unload.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in

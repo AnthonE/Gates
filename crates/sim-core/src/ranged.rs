@@ -122,11 +122,11 @@
 use crate::collide::{self, ColIndex, Part, CAPSULE_RADIUS_M, HEAD_BAND_M};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
-use crate::gather::NO_ITEM;
+use crate::gather::{inv_add_spilling, GatherContent, ItemStack, NO_ITEM};
 use crate::input::{BTN_AIM, BTN_PRIMARY};
 use crate::limits::{
-    ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
-    MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
+    ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS,
+    MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -135,7 +135,7 @@ use crate::rewind::{Rewind, RewindPose};
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_AMMO, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
+    EventQueue, Player, EV_AMMO, EV_GATHER, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
     EV_RELOAD_REFUSED, EV_SHOT,
 };
 use crate::yaw_lut::yaw_dir;
@@ -169,12 +169,18 @@ pub const REFUSE_RL_FULL: u32 = 3;
 /// no rounds at all*. Bounded by the weapon's cadence — `hitscan` pays
 /// `rate_ticks` before it refuses, exactly as it does for a shot, so a
 /// held trigger raises at most one of these per `rate_ticks`.
-pub const REFUSE_RL_EMPTY: u32 = 4;
-/// A reload was asked for and the pack holds none of the round it needs.
 ///
-/// "The round it needs" and not "any round": a magazine that already holds
-/// one kind tops up with that kind or not at all, because mixing would fire
-/// the wrong item and hand back the wrong item on the next unload.
+/// An [`unload`] of a magazine with nothing in it answers this too: the
+/// state is the same, and so is the fix.
+pub const REFUSE_RL_EMPTY: u32 = 4;
+/// A reload was asked for and the pack holds no round the weapon takes.
+///
+/// A magazine that already holds one kind tops up with that kind and never
+/// mixes, because mixing would fire the wrong item and hand back the wrong
+/// item on the next unload. When the pack has run out of that kind but
+/// carries another the weapon takes, the reload **switches** instead
+/// (`NOW.md` §0mag 2, the reference's `StartReload`): the loaded rounds go
+/// back to the pack first. So this is only raised with nothing to load.
 pub const REFUSE_RL_DRY: u32 = 5;
 /// The highest reason above, named rather than counted — the discipline
 /// `REFUSE_G_MAX` and `EV_MAX` apply to a value domain, so the wire's
@@ -219,7 +225,22 @@ pub fn mag_ceiling(pair: u32) -> u16 {
 /// against the wrong side of the mutation. So every refusal here is decided
 /// before `inv_take` is called, and the pack is debited by exactly what the
 /// magazine is credited in the same two statements.
-pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Player) -> bool {
+///
+/// **An ammo switch refunds the loaded kind** (`NOW.md` §0mag 2): a
+/// magazine holding a round the pack no longer carries, beside another the
+/// weapon takes, gives its rounds back and loads the new kind, where it
+/// used to refuse `REFUSE_RL_DRY` with ammunition in the pack. The refund
+/// is [`give_back`] — into the pack, the overflow into `spill` for the
+/// caller to drain at the feet — and it lands after the new kind is taken,
+/// so the slot the new rounds leave is room for the old ones.
+pub fn reload(
+    tick: u64,
+    cc: &CombatContent,
+    gc: &GatherContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    spill: &mut [ItemStack; INV_SLOTS],
+) -> bool {
     let item = held_item(p);
     let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
         events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
@@ -257,25 +278,36 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         return false;
     }
     // Which round. A magazine already holding one kind tops up with that
-    // kind or not at all; an empty one takes the first round in the
-    // weapon's preference order the shooter is actually carrying, which is
-    // `draw`'s rule and `hitscan`'s.
-    let round = if p.mag_round[slot] != NO_ITEM && loaded > 0 {
-        p.mag_round[slot]
-    } else {
-        let Some(r) = def
-            .ammo
-            .iter()
-            .copied()
-            .take_while(|&a| a != NO_ITEM)
-            .find(|&a| inv_count(&p.inv, a) > 0)
-        else {
-            refuse(events, REFUSE_RL_DRY, pair);
-            return false;
-        };
-        r
+    // kind while the pack has it; an empty one, or one whose kind the pack
+    // has run out of, takes the first round in the weapon's preference
+    // order the shooter is actually carrying, which is `draw`'s rule and
+    // `hitscan`'s. `old` is the kind a switch gives back — the whole
+    // magazine of it, because two kinds never share one.
+    let held = p.mag_round[slot];
+    let old = (loaded > 0 && held != NO_ITEM).then_some(held);
+    let round = match old {
+        Some(r) if inv_count(&p.inv, r) > 0 => r,
+        _ => {
+            let Some(r) = def
+                .ammo
+                .iter()
+                .copied()
+                .take_while(|&a| a != NO_ITEM)
+                .find(|&a| inv_count(&p.inv, a) > 0)
+            else {
+                refuse(events, REFUSE_RL_DRY, pair);
+                return false;
+            };
+            r
+        }
     };
-    let want = def.magazine - loaded;
+    // A switch starts from an empty magazine; a top-up from what is in it.
+    let refund = match old {
+        Some(r) if r != round => loaded,
+        _ => 0,
+    };
+    let kept = loaded - refund;
+    let want = def.magazine - kept;
     // `u32` down to `u16`: `inv_count` totals a whole inventory and
     // `want` is at most a magazine, so the `min` is taken in the wider
     // type and the result is bounded by `want` before it narrows. Doing
@@ -290,7 +322,10 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
     // the pack is debited by what the magazine is credited, and there is no
     // ordering in which one happens without the other.
     inv_take(&mut p.inv, round, got as u32);
-    p.mag[slot] = loaded + got;
+    if refund > 0 {
+        give_back(gc, events, p, held, refund, spill);
+    }
+    p.mag[slot] = kept + got;
     p.mag_round[slot] = round;
     // The beat you are helpless for, on the shared cadence field.
     p.next_swing = tick + def.reload_ticks.max(1) as u64;
@@ -301,6 +336,97 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         got as u32,
     );
     true
+}
+
+/// Empty the held weapon's magazine back into the pack (`NOW.md` §0mag 2,
+/// the reference's `UnloadAmmo`). Returns `true` when rounds moved.
+///
+/// The refusals are [`reload`]'s, in its order, and say the same things: a
+/// hand with no magazine (a bow included — it has no cylinder to empty),
+/// an arm still busy, and `REFUSE_RL_EMPTY` for nothing loaded. There is
+/// no refusal for a full pack: what does not fit goes to `spill` and the
+/// caller drains it at the feet (`World::drain_spill`) — the reference
+/// drops what its inventory cannot take, and so does every other
+/// give-back here (a craft cancel, a demolish).
+///
+/// **Free, and that is deliberate**: no beat on `next_swing`. An unload
+/// leaves an empty gun, and the reload that fills it again pays the whole
+/// `reload_ticks`, so a free unload buys nothing a fight can use.
+///
+/// `EV_RELOAD` restates the magazine at zero (`took` 0, the shape a spend
+/// would have — the client reads the pair, not the cause) and
+/// [`give_back`]'s `EV_GATHER` says how many came back.
+pub fn unload(
+    tick: u64,
+    cc: &CombatContent,
+    gc: &GatherContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    spill: &mut [ItemStack; INV_SLOTS],
+) -> bool {
+    let item = held_item(p);
+    let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
+        events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
+    };
+    let Some(def) = cc
+        .held_ranged(item)
+        .filter(|d| d.magazine > 0 && (d.mag_slot as usize) < MAX_MAGS)
+    else {
+        refuse(events, REFUSE_RL_HAND, 0);
+        return false;
+    };
+    let slot = def.mag_slot as usize;
+    let (loaded, round) = (p.mag[slot], p.mag_round[slot]);
+    let pair = mag_pair(loaded, def.magazine);
+    // Mid-reload above all: the fill has already been credited (`reload`
+    // moves the rounds up front and pays the beat after), so an unload
+    // inside the beat would hand back rounds the arm is still loading.
+    if tick < p.next_swing {
+        refuse(events, REFUSE_RL_BUSY, pair);
+        return false;
+    }
+    // `NO_ITEM` with a count is a save that arrived with a count and no
+    // kind (the death shed's belt-and-braces); there is nothing to name,
+    // so it reads as the empty magazine it is to every other path.
+    if loaded == 0 || round == NO_ITEM {
+        refuse(events, REFUSE_RL_EMPTY, pair);
+        return false;
+    }
+    p.mag[slot] = 0;
+    give_back(gc, events, p, round, loaded, spill);
+    events.push(EV_RELOAD, p.id, mag_pair(0, def.magazine), 0);
+    true
+}
+
+/// `n` rounds of `round` out of a magazine and back into the pack, the rest
+/// into `spill`, announced as one `EV_GATHER` (the `+N Item` line, its `c`
+/// what went to the feet) — the shape `World::announce_spill` gives a
+/// give-back, plus the half that fit, because here that half is the news.
+///
+/// `cond_max_of` for the death shed's reason (`World::kill`): the source
+/// stack's condition is gone, and a round carries none anyway.
+fn give_back(
+    gc: &GatherContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    round: u16,
+    n: u16,
+    spill: &mut [ItemStack; INV_SLOTS],
+) {
+    let added = inv_add_spilling(
+        &mut p.inv,
+        spill,
+        round,
+        n,
+        gc.stack_max_of(round),
+        gc.cond_max_of(round),
+    );
+    events.push(
+        EV_GATHER,
+        p.id,
+        (round as u32) << 16 | added as u32,
+        (n - added) as u32,
+    );
 }
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not

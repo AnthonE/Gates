@@ -13,6 +13,9 @@
 //!   field a swing and a shot already share — so the cost is real and
 //!   there is no second clock;
 //! - every refusal has its own code and a cause that drives it;
+//! - an unload puts the loaded rounds back in the pack, and a reload whose
+//!   loaded kind the pack has run out of switches to another, refunding
+//!   the old rounds first (`NOW.md` §0mag 2);
 //! - and the **stated cost** of keying the magazine by weapon row rather
 //!   than by stack (`RangedDef::mag_slot`): two of a kind share one
 //!   magazine. That corner is gated rather than left to be rediscovered,
@@ -30,7 +33,7 @@ use sim_core::ranged::{
     mag_ceiling, mag_loaded, mag_pair, REFUSE_RL_BUSY, REFUSE_RL_DRY, REFUSE_RL_EMPTY,
     REFUSE_RL_FULL, REFUSE_RL_HAND, REFUSE_RL_MAX,
 };
-use sim_core::world::{Command, World, EV_RELOAD, EV_RELOAD_REFUSED, EV_SHOT};
+use sim_core::world::{Command, World, EV_GATHER, EV_RELOAD, EV_RELOAD_REFUSED, EV_SHOT};
 
 const ME: u32 = 1;
 const SEED: u64 = 20_260_830;
@@ -385,21 +388,25 @@ fn two_of_a_kind_share_one_magazine() {
     );
 }
 
-/// A magazine holding one kind tops up with that kind or not at all.
+/// A magazine holding one kind tops up with that kind while the pack has
+/// it, and never mixes; once the pack has run out of it, a reload
+/// **switches** — the loaded rounds go back to the pack first (`NOW.md`
+/// §0mag 2, the reference's `StartReload`). It used to refuse
+/// `REFUSE_RL_DRY` here with a pack full of the other round.
 ///
-/// Mixing would fire the wrong item and hand back the wrong item on the
-/// next unload. There is no `SwitchAmmoTo` verb here, so the refusal is the
-/// whole of the policy — the reference refunds the partial magazine and
-/// adopts the new round instead, which needs a verb we do not have.
+/// The other round is listed FIRST, so the top-up half is a real claim: a
+/// build that reloaded by preference order alone would load it and mix.
+/// The refund (3) and the fill (6) are distinct, so `EV_GATHER` and
+/// `EV_RELOAD` cannot trade numbers unseen.
 #[test]
-fn a_partly_loaded_magazine_will_not_mix_rounds() {
+fn a_reload_tops_up_its_own_kind_and_switches_only_once_it_is_gone() {
     const OTHER: u16 = 9;
     let mut w = armed();
-    w.combat.ranged[GUN as usize].ammo = [ROUND, OTHER, NO_ITEM, NO_ITEM];
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.combat.ranged[GUN as usize].ammo = [OTHER, ROUND, NO_ITEM, NO_ITEM];
     w.players[0].mag[0] = 2;
     w.players[0].mag_round[0] = ROUND;
-    // No more of the loaded round, plenty of the other.
-    w.players[0].inv[1] = ItemStack {
+    w.players[0].inv[3] = ItemStack {
         item: OTHER,
         count: PACK,
         cond: 0,
@@ -407,18 +414,189 @@ fn a_partly_loaded_magazine_will_not_mix_rounds() {
     };
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(
-        first(&w, EV_RELOAD_REFUSED).b & 0xFFFF,
-        REFUSE_RL_DRY,
-        "a cylinder with two of one round does not take a third of another"
+        w.players[0].mag_round[0], ROUND,
+        "it topped up its own kind"
     );
-    assert_eq!(w.players[0].mag[0], 2, "and nothing moved");
+    assert_eq!(w.players[0].mag[0], MAG);
+    assert_eq!(inv_count(&w.players[0].inv, ROUND), (PACK - 4) as u32);
+    assert_eq!(inv_count(&w.players[0].inv, OTHER), PACK as u32);
+    assert_eq!(count_of(&w, EV_GATHER), 0, "a top-up gives nothing back");
 
-    // Spend it to zero, and the same press now takes the other round —
-    // an EMPTY magazine remembers nothing.
-    w.players[0].mag[0] = 0;
+    // Three left in the cylinder and none of its kind in the pack.
+    for _ in 0..RELOAD_TICKS {
+        w.tick(&[]);
+    }
+    w.players[0].mag[0] = 3;
+    w.players[0].inv[1] = ItemStack::default();
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(count_of(&w, EV_RELOAD_REFUSED), 0, "a switch, not DRY");
+    assert_eq!(
+        w.players[0].mag_round[0], OTHER,
+        "the magazine took the other"
+    );
+    assert_eq!(w.players[0].mag[0], MAG, "full of it, never mixed");
+    assert_eq!(
+        inv_count(&w.players[0].inv, ROUND),
+        3,
+        "the three loaded rounds went back to the pack"
+    );
+    assert_eq!(inv_count(&w.players[0].inv, OTHER), (PACK - MAG) as u32);
+    let back = first(&w, EV_GATHER);
+    assert_eq!(back.a, ME);
+    assert_eq!(
+        back.b,
+        (ROUND as u32) << 16 | 3,
+        "the +3 line names the old kind"
+    );
+    assert_eq!(back.c, 0, "and nothing fell");
+    let ev = first(&w, EV_RELOAD);
+    assert_eq!(ev.b, mag_pair(MAG, MAG));
+    assert_eq!(
+        ev.c, MAG as u32,
+        "took is the new kind's six, not the refund"
+    );
+
+    // And an empty magazine remembers nothing: it takes the first carried.
+    let mut w = armed();
+    w.combat.ranged[GUN as usize].ammo = [OTHER, ROUND, NO_ITEM, NO_ITEM];
+    w.players[0].inv[3] = ItemStack {
+        item: OTHER,
+        count: PACK,
+        cond: 0,
+        skin: 0,
+    };
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(w.players[0].mag_round[0], OTHER);
+    assert_eq!(count_of(&w, EV_GATHER), 0);
+}
+
+/// **An unload puts the loaded rounds back in the pack** (`NOW.md` §0mag 2,
+/// the reference's `UnloadAmmo`), says so twice — the magazine at zero
+/// (`EV_RELOAD`) and the `+N` line (`EV_GATHER`) — and costs no beat.
+///
+/// Conservation, across a reload, a shot, an unload and a reload: the
+/// rounds the pack holds at the end are what it started with less the one
+/// fired and the six seated again.
+#[test]
+fn an_unload_puts_the_loaded_rounds_back_in_the_pack() {
+    let mut w = armed();
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.tick(&[Command::Reload { id: ME }]);
+    for _ in 0..RELOAD_TICKS {
+        w.tick(&[]);
+    }
+    w.tick(&[input(0, true)]);
+    w.tick(&[input(0, false)]);
+    for _ in 0..RATE_TICKS {
+        w.tick(&[]);
+    }
+    assert_eq!(w.players[0].mag[0], MAG - 1);
+    let before = w.players[0].next_swing;
+
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(count_of(&w, EV_RELOAD_REFUSED), 0);
+    assert_eq!(w.players[0].mag[0], 0, "the cylinder is empty");
+    assert_eq!(
+        inv_count(&w.players[0].inv, ROUND),
+        (PACK - 1) as u32,
+        "and the five in it are back with the four the pack kept"
+    );
+    let ev = first(&w, EV_RELOAD);
+    assert_eq!(ev.a, ME);
+    assert_eq!(ev.b, mag_pair(0, MAG), "the readout is told 0/6");
+    assert_eq!(ev.c, 0, "took nothing from the pack");
+    let back = first(&w, EV_GATHER);
+    assert_eq!(back.b, (ROUND as u32) << 16 | (MAG - 1) as u32);
+    assert_eq!(back.c, 0);
+    assert_eq!(w.players[0].next_swing, before, "an unload is free");
+
+    // A second unload has nothing to empty, and says so.
+    w.tick(&[Command::Unload { id: ME }]);
+    let ev = first(&w, EV_RELOAD_REFUSED);
+    assert_eq!(ev.b, (GUN as u32) << 16 | REFUSE_RL_EMPTY);
+    assert_eq!(ev.c, mag_pair(0, MAG));
+
+    w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(w.players[0].mag[0], MAG);
+    assert_eq!(inv_count(&w.players[0].inv, ROUND), (PACK - 1 - MAG) as u32);
+}
+
+/// **A full pack drops the rest at the feet** rather than refusing or
+/// destroying it: the reference drops what its inventory cannot take, and
+/// every other give-back here (a craft cancel, a demolish) spills through
+/// the same drain. One round fits (1) and five fall (5), distinct, so the
+/// two halves of `EV_GATHER` cannot swap unseen.
+#[test]
+fn an_unload_into_a_full_pack_drops_the_rest_at_the_feet() {
+    const JUNK: u16 = 50;
+    let mut w = armed();
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    w.gather.stack_max[ROUND as usize] = PACK + 1;
+    w.players[0].mag[0] = MAG;
+    w.players[0].mag_round[0] = ROUND;
+    for s in w.players[0].inv.iter_mut().filter(|s| s.count == 0) {
+        *s = ItemStack {
+            item: JUNK,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+    }
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(w.players[0].mag[0], 0);
+    assert_eq!(inv_count(&w.players[0].inv, ROUND), (PACK + 1) as u32);
+    let back = first(&w, EV_GATHER);
+    assert_eq!(back.b, (ROUND as u32) << 16 | 1, "one fit");
+    assert_eq!(back.c, (MAG - 1) as u32, "five went to the feet");
+    let bagged: u32 = w
+        .backpacks
+        .entries()
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .filter(|s| s.item == ROUND)
+        .map(|s| s.count as u32)
+        .sum();
+    assert_eq!(
+        bagged,
+        (MAG - 1) as u32,
+        "and they are on the ground, not gone"
+    );
+}
+
+/// Every unload refusal has a cause, and a refused unload moves nothing.
+#[test]
+fn every_unload_refusal_has_a_cause() {
+    // HAND — a bow has no cylinder to empty.
+    let mut w = armed();
+    w.tick(&[input(2, false)]);
+    w.tick(&[Command::Unload { id: ME }]);
+    let ev = first(&w, EV_RELOAD_REFUSED);
+    assert_eq!(ev.b, (BOW as u32) << 16 | REFUSE_RL_HAND);
+    assert_eq!(ev.c, 0);
+
+    // HAND, from an empty hand.
+    let mut w = armed();
+    w.players[0].inv[0] = ItemStack::default();
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(first(&w, EV_RELOAD_REFUSED).b & 0xFFFF, REFUSE_RL_HAND);
+
+    // BUSY — inside the reload's beat, when the fill is already credited:
+    // an unload here would hand back rounds the arm is still loading.
+    let mut w = armed();
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.tick(&[Command::Reload { id: ME }]);
+    w.tick(&[Command::Unload { id: ME }]);
+    let ev = first(&w, EV_RELOAD_REFUSED);
+    assert_eq!(ev.b & 0xFFFF, REFUSE_RL_BUSY);
+    assert_eq!(ev.c, mag_pair(MAG, MAG));
+    assert_eq!(w.players[0].mag[0], MAG, "nothing moved");
+    assert_eq!(count_of(&w, EV_GATHER), 0);
+
+    // EMPTY — never loaded.
+    let mut w = armed();
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(first(&w, EV_RELOAD_REFUSED).b & 0xFFFF, REFUSE_RL_EMPTY);
+    assert_eq!(inv_count(&w.players[0].inv, ROUND), PACK as u32);
 }
 
 /// The packing helpers are each other's inverse over the whole domain.

@@ -2092,7 +2092,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
 // Eight, and the eighth arrived with the aiming refusal: the vitals stack grew
 // three queries of its own on `main` in the same window. Each is a distinct
 // source this frame reads, which is the same justification `ghost::track`
-// carries for its own count.
+// carries for its own count. Sixteen now, Bevy's ceiling: the unload hold and
+// its clock were the last two.
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     net: NonSend<Net>,
@@ -2121,6 +2122,9 @@ pub fn update(
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
+    // The hold on `R` (`ui::unload`), named on the readout while it runs.
+    unload: Option<Res<super::verbs::Unload>>,
+    time: Res<Time>,
 ) {
     let core = &net.session.core;
 
@@ -2131,7 +2135,15 @@ pub fn update(
     // re-derived by every reader.
     if let Ok(mut text) = ammo.single_mut() {
         let (loaded, ceiling) = core.mag();
-        let want = if ceiling != 0 {
+        let unloading = unload.as_ref().is_some_and(|u| {
+            let now = time.elapsed_secs_f64();
+            u.0.showing(super::verbs::unload_frame(core, false, true, now))
+        });
+        let want = if ceiling != 0 && unloading {
+            // The hold names itself, so letting go before it lands is a
+            // choice the player can see they are making.
+            format!("{loaded} / {ceiling}  ·  UNLOADING")
+        } else if ceiling != 0 {
             format!("{loaded} / {ceiling}")
         } else if let Some(round) = core.bow_round() {
             // A bow's readout is the arrow it looses and how many of it

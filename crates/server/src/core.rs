@@ -1810,6 +1810,7 @@ impl ShardCore {
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Reload => Command::Reload { id: c.id },
+                    ActionMsg::Unload => Command::Unload { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::RespawnGate => Command::RespawnGate { id: c.id },
                     ActionMsg::Move {

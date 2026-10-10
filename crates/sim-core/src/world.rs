@@ -747,7 +747,9 @@ pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 /// spend (`c == 0`, worth only the readout ticking down) — which is
 /// `EV_SHOT`'s `speed == 0` trick one lane over, and spendable for the same
 /// reason: a fill that moved no rounds is not a fill, so the pattern was
-/// unreachable before it was given a meaning.
+/// unreachable before it was given a meaning. An unload (`ranged::unload`)
+/// is the other `c == 0` cause: the magazine stated at zero, and the
+/// rounds that went back said by its own `EV_GATHER`.
 ///
 /// **It fires on the shot as well as on the reload, and that is what makes
 /// the readout authoritative rather than predicted.** The alternative was
@@ -1996,6 +1998,12 @@ pub enum Command {
     /// both sides must agree on every tick is a bit, and a one-shot the
     /// world has to acknowledge is a message.
     Reload {
+        id: u32,
+    },
+    /// Empty the held weapon's magazine back into the pack
+    /// (`ranged::unload`, `NOW.md` §0mag 2). No payload, for `Reload`'s
+    /// reason: the hand and the count are the sim's own.
+    Unload {
         id: u32,
     },
 }
@@ -5537,12 +5545,35 @@ impl World {
                 // for the reason `hitscan` restates the same rule — the
                 // arm belongs to a body somebody is driving.
                 if let Some(slot) = self.live_slot_of(id) {
+                    // An ammo switch gives the loaded kind back, and what the
+                    // pack cannot hold falls at the feet: the give-backs'
+                    // drain (`drain_spill`). `ranged` announces both halves
+                    // itself, so no `announce_spill` here.
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     ranged::reload(
                         self.tick,
                         &self.combat,
+                        &self.gather,
                         &mut self.events,
                         &mut self.players[slot],
+                        &mut spill,
                     );
+                    self.drain_spill(slot, &mut spill);
+                }
+            }
+            Command::Unload { id } => {
+                // `Reload`'s door and `Reload`'s drain.
+                if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    ranged::unload(
+                        self.tick,
+                        &self.combat,
+                        &self.gather,
+                        &mut self.events,
+                        &mut self.players[slot],
+                        &mut spill,
+                    );
+                    self.drain_spill(slot, &mut spill);
                 }
             }
         }

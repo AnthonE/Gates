@@ -101,12 +101,36 @@ pub struct Give {
     pub hold: interact::GiveHold,
 }
 
+/// The hold on `R` that empties the magazine (`NOW.md` §0mag 2,
+/// `ui::unload`). Held by [`keys`], drawn by the HUD's ammo readout.
+#[derive(Resource, Default)]
+pub struct Unload(pub crate::ui::unload::UnloadHold);
+
 /// Drop the give hold on the way out of `Screen::InWorld`. [`keys`] runs
 /// only there, so a hold begun before the pause menu, the map or the death
 /// screen would otherwise keep its start time, and coming back with `B`
-/// still down on the same pick would give on the first frame.
-pub fn drop_give_hold(mut give: ResMut<Give>) {
+/// still down on the same pick would give on the first frame. The unload
+/// hold on `R` goes the same way, for the same reason.
+pub fn drop_give_hold(mut give: ResMut<Give>, mut unload: ResMut<Unload>) {
     give.hold.cancel();
+    unload.0.cancel();
+}
+
+/// This frame of the reload key, for `ui::unload`.
+pub fn unload_frame(
+    core: &client_core::core::ClientCore,
+    pressed: bool,
+    down: bool,
+    now: f64,
+) -> crate::ui::unload::Frame {
+    crate::ui::unload::Frame {
+        pressed,
+        down,
+        item: core.held_item(),
+        mag: core.mag(),
+        fills: core.fills(),
+        now,
+    }
 }
 
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
@@ -482,6 +506,7 @@ pub fn keys(
     // the swing button, so nothing else moves it.
     mut motion: ResMut<super::viewmodel::Motion>,
     mut give: ResMut<Give>,
+    mut unload: ResMut<Unload>,
 ) {
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
@@ -497,6 +522,7 @@ pub fn keys(
         || chat.map(|c| c.open()).unwrap_or(false)
     {
         give.hold.cancel();
+        unload.0.cancel();
         return;
     }
     // `R` and `F` belong to the build ghost while the wheel is up, and to
@@ -515,6 +541,7 @@ pub fn keys(
         pad.0.close();
         hearth.0 = None;
         give.hold.cancel();
+        unload.0.cancel();
         const HAND_KEYS: [KeyCode; 12] = [
             KeyCode::KeyB,
             KeyCode::KeyE,
@@ -585,6 +612,7 @@ pub fn keys(
     // other binding back the moment it closes. Checked before the rest,
     // so typing 1234 at a door cannot also select four hotbar slots.
     if pad.0.is_open() {
+        unload.0.cancel();
         keypad_keys(&keys, &net, &mut pad, &mut toast);
         return;
     }
@@ -686,12 +714,32 @@ pub fn keys(
             held,
         ) == crate::ui::hold::Click::Deploy
     };
-    if !wheel_up && !hand.places() && !deploying && keys.just_pressed(KeyCode::KeyR) {
-        if hand.repairs() {
-            if repair_near(&net, &near.0, &mut toast) {
-                motion.strike();
-            }
-        } else {
+    let r_free = !wheel_up && !hand.places() && !deploying;
+    if r_free
+        && hand.repairs()
+        && keys.just_pressed(KeyCode::KeyR)
+        && repair_near(&net, &near.0, &mut toast)
+    {
+        motion.strike();
+    }
+    if !r_free || hand.repairs() {
+        unload.0.cancel();
+    } else {
+        // **Held, `R` unloads** — when the press had nothing to reload
+        // (`ui::unload` has the rule and why it is safe). The press itself
+        // still reloads on the down edge, so the hold costs a reload no
+        // latency, and the hand changing or a fill landing spends it.
+        let f = unload_frame(
+            &net.session.core,
+            keys.just_pressed(KeyCode::KeyR),
+            keys.pressed(KeyCode::KeyR),
+            now,
+        );
+        let ask = unload.0.step(f);
+        if ask == Some(crate::ui::unload::Ask::Unload) {
+            send(&net, &mut toast, "unload", protocol::encode_action_unload);
+        }
+        if ask == Some(crate::ui::unload::Ask::Reload) {
             // Payload-free, `V`'s shape: the sim reads the hand it already
             // has, so there is nothing to aim and no amount for the client
             // to guess. `just_pressed` for `V`'s reason too — the action
@@ -706,7 +754,9 @@ pub fn keys(
             // `mag()` instead would be worse, not better — the readout is
             // whatever the last event stated, so a revolver just picked up
             // reads `(0, 0)` and the client would swallow the one press
-            // that matters.
+            // that matters. The readout only ever decides *when* a press
+            // on a full magazine sends (on release, `ui::unload`), never
+            // whether.
             send(&net, &mut toast, "reload", protocol::encode_action_reload);
         }
     }
