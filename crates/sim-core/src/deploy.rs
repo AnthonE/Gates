@@ -583,12 +583,25 @@ pub const BAG_COOLDOWN_TICKS: u64 = 9_000;
 /// after a tick-jump). Bounded-work constant, not a knob.
 const SWEEP_CATCHUP_MAX: u32 = 4;
 
+/// What a deployable is made of (`content/deployables.toml` `matter`).
+/// The sim never reads it: it rides `SUB_DEPLOY_DEFS` so a client can say
+/// what a blow on the thing sounds and looks like. Its own ledger rather
+/// than `build::MAT_*`, because no deployable is twig and a bag is cloth.
+pub const MATTER_WOOD: u8 = 0;
+pub const MATTER_STONE: u8 = 1;
+pub const MATTER_METAL: u8 = 2;
+pub const MATTER_CLOTH: u8 = 3;
+/// The highest live `MATTER_*`.
+pub const MATTER_MAX: u8 = MATTER_CLOTH;
+
 /// One baked deployable row. `hp == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeployDef {
     pub arch: u8,
     pub placement: u8,
     pub hp: u16,
+    /// A `MATTER_*` code. Presentation only (see [`MATTER_WOOD`]).
+    pub matter: u8,
     /// Item index placing consumes one unit of (the deployable's item).
     pub item: u16,
     /// Live rows of `costs`. Zero ⇒ the bake found no recipe for `item`,
@@ -611,6 +624,7 @@ impl DeployDef {
         arch: ARCH_BAG,
         placement: PLACE_GROUND,
         hp: 0,
+        matter: MATTER_WOOD,
         item: 0,
         n_costs: 0,
         costs: [(0, 0); MAX_DEPLOY_COSTS],
@@ -694,6 +708,7 @@ impl DeployContent {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
             hp: 100,
+            matter: MATTER_WOOD,
             item: 2,
             n_costs: 2,
             costs: [(0, 30), (1, 10), (0, 0), (0, 0)],
@@ -702,6 +717,7 @@ impl DeployContent {
             arch: ARCH_WORKBENCH,
             placement: PLACE_ANY,
             hp: 80,
+            matter: MATTER_WOOD,
             item: 3,
             n_costs: 1,
             costs: [(0, 20), (0, 0), (0, 0), (0, 0)],
@@ -710,6 +726,7 @@ impl DeployContent {
             arch: ARCH_DOOR,
             placement: PLACE_DOORWAY,
             hp: 60,
+            matter: MATTER_WOOD,
             item: 4,
             n_costs: 2,
             costs: [(0, 40), (1, 8), (0, 0), (0, 0)],
@@ -718,6 +735,7 @@ impl DeployContent {
             arch: ARCH_BAG,
             placement: PLACE_GROUND,
             hp: 50,
+            matter: MATTER_CLOTH,
             item: 5,
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],
@@ -731,6 +749,7 @@ impl DeployContent {
             arch: ARCH_FIRE,
             placement: PLACE_GROUND,
             hp: 40,
+            matter: MATTER_STONE,
             item: 6,
             n_costs: 1,
             costs: [(0, 25), (0, 0), (0, 0), (0, 0)],
@@ -747,6 +766,7 @@ impl DeployContent {
             arch: ARCH_LOCK,
             placement: PLACE_DOOR,
             hp: 40,
+            matter: MATTER_METAL,
             item: 7,
             n_costs: 1,
             costs: [(1, 12), (0, 0), (0, 0), (0, 0)],
@@ -765,6 +785,7 @@ impl DeployContent {
             arch: ARCH_RECYCLER,
             placement: PLACE_GROUND,
             hp: 45,
+            matter: MATTER_METAL,
             item: 8,
             n_costs: 1,
             costs: [(1, 15), (0, 0), (0, 0), (0, 0)],
@@ -781,6 +802,7 @@ impl DeployContent {
             arch: ARCH_RESEARCH,
             placement: PLACE_GROUND,
             hp: 45,
+            matter: MATTER_METAL,
             item: 10,
             n_costs: 1,
             costs: [(0, 18), (0, 0), (0, 0), (0, 0)],
@@ -6605,6 +6627,7 @@ mod tests {
             arch: ARCH_BOX,
             placement: PLACE_FOUNDATION,
             hp: 60,
+            matter: MATTER_WOOD,
             item: 9,
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],

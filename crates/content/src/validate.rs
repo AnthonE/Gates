@@ -1097,6 +1097,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                         d.id, d.hp
                     ));
                 }
+                // The door says what it is made of twice: `material` for
+                // the wall it stays under, `matter` for what a blow on it
+                // sounds like. A wooden door that rang like steel is the
+                // disagreement this refuses.
+                let said = match m {
+                    Material::Twig | Material::Wood => DeployMatter::Wood,
+                    Material::Stone => DeployMatter::Stone,
+                    Material::Metal => DeployMatter::Metal,
+                };
+                if d.matter != said {
+                    return Err(format!(
+                        "deployable `{}`: matter {:?} disagrees with material {m:?}",
+                        d.id, d.matter
+                    ));
+                }
             }
             (_, Some(_)) => {
                 return Err(format!(

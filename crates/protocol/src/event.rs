@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -742,6 +742,10 @@ const ARCH_BITS: u32 = 5;
 /// are now forgeable, so the decoder range-checks the field, which two
 /// bits never had to.
 const PLACEMENT_BITS: u32 = 3;
+/// A deployable's `MATTER_*` (wire v102). Saturated, like `PLACE_*` was at
+/// two bits: all four values are live, so none is forgeable and the decoder
+/// needs no domain check. A fifth matter widens it.
+const MATTER_BITS: u32 = 2;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
 /// Width of the loose-stack batch count. Five bits for `GITEM_SYNC_BATCH`'s
@@ -2774,12 +2778,15 @@ pub fn encode_event_deploy_defs(
         if def.arch > ARCH_PLANTER || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
-        if def.n_costs as usize > MAX_DEPLOY_COSTS {
+        if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
             return Err(WireError::Range);
         }
         w.write(def.arch as u32, ARCH_BITS)?;
         w.write(def.placement as u32, PLACEMENT_BITS)?;
         w.write(def.hp as u32, 16)?;
+        // What it is made of, so a client says what a blow on it sounds
+        // and looks like (wire v102; it guessed from the archetype before).
+        w.write(def.matter as u32, MATTER_BITS)?;
         w.write(def.item as u32, 16)?;
         // The repair price, the same way `SUB_PIECE_DEFS` carries a
         // piece's. Without it a client can quote what a wall costs to mend
@@ -4991,6 +4998,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let arch = r.read(ARCH_BITS)? as u8;
                 let placement = r.read(PLACEMENT_BITS)? as u8;
                 let hp = r.read(16)? as u16;
+                let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
                 if arch > ARCH_PLANTER
@@ -5008,6 +5016,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     arch,
                     placement,
                     hp,
+                    matter,
                     item,
                     n_costs,
                     costs,
@@ -7100,6 +7109,14 @@ mod tests {
             encode_event_deploy_defs(&wide, 0, &mut buf),
             Err(WireError::Range)
         );
+        // A matter past the ledger refuses rather than wrapping into a
+        // live one in `MATTER_BITS`.
+        let mut odd = dc;
+        odd.defs[2].matter = MATTER_MAX + 1;
+        assert_eq!(
+            encode_event_deploy_defs(&odd, 0, &mut buf),
+            Err(WireError::Range)
+        );
 
         // The worst batch this subtype can emit still fits the cap: a full
         // `DEPLOY_DEFS_BATCH` of rows each carrying the maximum cost rows.
@@ -7112,6 +7129,7 @@ mod tests {
                 arch: sim_core::deploy::ARCH_BOX,
                 placement: sim_core::deploy::PLACE_ANY,
                 hp: u16::MAX,
+                matter: sim_core::deploy::MATTER_MAX,
                 item: u16::MAX,
                 n_costs: MAX_DEPLOY_COSTS as u8,
                 costs: [(u16::MAX, u16::MAX); MAX_DEPLOY_COSTS],
@@ -7142,6 +7160,7 @@ mod tests {
                 arch: (i % 10) as u8,
                 placement: (i % 4) as u8,
                 hp: u16::MAX,
+                matter: (i % 4) as u8,
                 item: u16::MAX,
                 ..DeployDef::INERT
             };
@@ -8195,6 +8214,18 @@ mod wire_domains {
             live_max: 17,
         },
         Domain {
+            what: "deploy matter",
+            sim_site: "deploy.rs MATTER_*",
+            wire_site: "MATTER_BITS",
+            home: "deploy.rs",
+            prefix: "pub const MATTER_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 4,
+            bits: MATTER_BITS,
+            live_max: 3,
+        },
+        Domain {
             what: "deploy placement",
             sim_site: "deploy.rs PLACE_*",
             wire_site: "PLACEMENT_BITS",
@@ -8432,8 +8463,9 @@ mod wire_domains {
             // row, and this assert is what asked for it. 18 -> 19 at v77:
             // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`. 19 -> 21: the
             // craft and deploy refusals, a byte each since v0 (§5b).
+            // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`.
             DOMAINS.len(),
-            21,
+            22,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

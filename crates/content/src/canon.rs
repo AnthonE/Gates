@@ -219,6 +219,7 @@ pub fn hash(c: &Content) -> u64 {
         h.s(&d.id);
         h.u(d.archetype as u32);
         h.u(d.placement as u32);
+        h.u(d.matter as u32);
         match d.material {
             None => h.u(0),
             Some(m) => h.u(1 + m as u32),

@@ -1100,7 +1100,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// grows a reason (`REFUSE_M_GIVE`, 14: no room in their pack). And a
 /// loose stack carries its condition: `WireGItem` ends in a bit and, when
 /// set, the stack's `cond` u16, so a blueprint sheet on the ground can say
-/// what it teaches.
+/// what it teaches. And a `SUB_DEPLOY_DEFS` row carries its `matter` (two
+/// bits after hp, `sim_core::deploy::MATTER_*`), so a client stops guessing
+/// what a deployable is made of from its archetype.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

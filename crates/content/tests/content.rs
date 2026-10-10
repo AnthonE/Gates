@@ -1008,6 +1008,24 @@ fn door_must_stay_weaker_than_wall() {
     );
 }
 
+/// A door names what it is made of twice (`material` for its wall,
+/// `matter` for the client's dust and sound), and the two must agree.
+#[test]
+fn a_door_whose_matter_disagrees_with_its_material_is_refused() {
+    refuses(
+        "deployables.toml",
+        "matter = \"wood\"\nmaterial = \"wood\"",
+        "matter = \"metal\"\nmaterial = \"wood\"",
+        "disagrees with material",
+    );
+    refuses(
+        "deployables.toml",
+        "placement = \"any\"\nmatter = \"cloth\"",
+        "placement = \"any\"\nmatter = \"felt\"",
+        "unknown variant",
+    );
+}
+
 /// The shipped set bakes into the sim's fixed tables, and the baked rows
 /// say what the TOML says — the bridge across wall 7 carries the data
 /// unchanged.
@@ -1238,6 +1256,18 @@ fn bake_deployables_carries_the_shipped_numbers() {
     let idx = c.deploy_index("item.door_wood").unwrap() as usize;
     assert_eq!(dc.defs[idx].arch, sim_core::deploy::ARCH_DOOR);
     assert_eq!(dc.defs[idx].placement, sim_core::deploy::PLACE_DOORWAY);
+
+    // What each is made of reaches the row the wire carries: the two
+    // doors differ by it, which the client once told apart by hp.
+    for (id, matter) in [
+        ("item.door_wood", sim_core::deploy::MATTER_WOOD),
+        ("item.door_metal", sim_core::deploy::MATTER_METAL),
+        ("item.furnace", sim_core::deploy::MATTER_STONE),
+        ("item.sleeping_bag", sim_core::deploy::MATTER_CLOTH),
+    ] {
+        let idx = c.deploy_index(id).unwrap() as usize;
+        assert_eq!(dc.defs[idx].matter, matter, "{id}");
+    }
 
     // Upkeep materials are exactly the distinct build-cost items,
     // ascending, and the pct is balance.toml's global.
@@ -2653,7 +2683,7 @@ fn a_second_lock_row_is_refused() {
     refuses(
         "deployables.toml",
         "id = \"item.lock_code\"\narchetype = \"lock\"",
-        "id = \"item.hammer\"\narchetype = \"lock\"\nplacement = \"door\"\nhp = 100\n\n[[deployable]]\nid = \"item.lock_code\"\narchetype = \"lock\"",
+        "id = \"item.hammer\"\narchetype = \"lock\"\nplacement = \"door\"\nmatter = \"metal\"\nhp = 100\n\n[[deployable]]\nid = \"item.lock_code\"\narchetype = \"lock\"",
         "the sim can only name one",
     );
 }

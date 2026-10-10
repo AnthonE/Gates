@@ -19,10 +19,6 @@ use super::WorldId;
 use client_core::core::ClientCore;
 use sim_core::build::{self, BUILD_CELL_M};
 use sim_core::collide::{self, ColIndex, PieceHit, PLANE_THICKNESS_M};
-use sim_core::deploy::{
-    ARCH_BAG, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_GARAGE_DOOR, ARCH_LOCK, ARCH_RECYCLER,
-    ARCH_RESEARCH, ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
-};
 use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
 use sim_core::terrain::{self, Occupant, Slot};
@@ -277,22 +273,9 @@ fn deploy_matter(core: &ClientCore, hit: PieceHit) -> Option<Matter> {
     if (r.row as u16) >= core.deploy_defs_have {
         return None;
     }
-    let def = &core.deploy_defs.defs[r.row as usize];
-    Some(arch_matter(def.arch, def.hp))
-}
-
-/// A deployable's matter by archetype. `DeployDef` carries no material, and
-/// the one archetype that comes in two (the door) is told apart by its hp:
-/// `content/deployables.toml` gives the wooden door 200 and the metal 250.
-pub fn arch_matter(arch: u8, hp: u16) -> Matter {
-    match arch {
-        ARCH_FIRE | ARCH_FURNACE | ARCH_WINDOW_GLASS => Matter::Stone,
-        ARCH_LOCK | ARCH_RECYCLER | ARCH_RESEARCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3
-        | ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR => Matter::Metal,
-        ARCH_DOOR if hp >= 250 => Matter::Metal,
-        ARCH_BAG => Matter::Dirt,
-        _ => Matter::Wood,
-    }
+    Some(Matter::of_deploy(
+        core.deploy_defs.defs[r.row as usize].matter,
+    ))
 }
 
 /// The height of whatever a body standing over `at` stands on: the carved
@@ -444,13 +427,14 @@ mod tests {
         assert_eq!(ground_matter([200, 10, 10, 10], true), Matter::Water);
     }
 
-    /// A door comes in two matters and everything metal is metal.
+    /// A deployable is made of what its row says, and a bag (cloth) still
+    /// raises the dirt it did when the client guessed from the archetype.
     #[test]
-    fn a_deployable_is_made_of_its_archetype() {
-        assert_eq!(arch_matter(ARCH_DOOR, 200), Matter::Wood);
-        assert_eq!(arch_matter(ARCH_DOOR, 250), Matter::Metal);
-        assert_eq!(arch_matter(ARCH_GARAGE_DOOR, 600), Matter::Metal);
-        assert_eq!(arch_matter(ARCH_FURNACE, 500), Matter::Stone);
-        assert_eq!(arch_matter(sim_core::deploy::ARCH_BOX, 150), Matter::Wood);
+    fn a_deployable_is_made_of_its_matter() {
+        use sim_core::deploy::{MATTER_CLOTH, MATTER_METAL, MATTER_STONE, MATTER_WOOD};
+        assert_eq!(Matter::of_deploy(MATTER_WOOD), Matter::Wood);
+        assert_eq!(Matter::of_deploy(MATTER_STONE), Matter::Stone);
+        assert_eq!(Matter::of_deploy(MATTER_METAL), Matter::Metal);
+        assert_eq!(Matter::of_deploy(MATTER_CLOTH), Matter::Dirt);
     }
 }

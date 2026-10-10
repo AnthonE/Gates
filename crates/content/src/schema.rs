@@ -544,12 +544,26 @@ pub enum DeployArchetype {
     Planter,
 }
 
+/// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
+/// never reads it; it rides the wire so a client knows what a blow on the
+/// thing sounds and looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployMatter {
+    Wood,
+    Stone,
+    Metal,
+    Cloth,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployable {
     pub id: String,
     pub archetype: DeployArchetype,
     pub placement: Placement,
+    /// What it is made of. A door's agrees with its `material`.
+    pub matter: DeployMatter,
     /// Doors only: pairs the door under its material's wall hp.
     pub material: Option<Material>,
     pub hp: u32,

@@ -1956,14 +1956,23 @@ pub fn event_deploy_refused() -> u8 {
 /// shape the drip needs: four archetypes over four placements).
 pub fn event_deploy_defs() -> DeployContent {
     let mut dc = DeployContent::probe_fixture();
-    for (row, arch) in [
-        (3, sim_core::deploy::ARCH_WINDOW_GLASS),
-        (4, sim_core::deploy::ARCH_WINDOW_SHUTTER),
+    for (row, arch, matter) in [
+        (
+            3,
+            sim_core::deploy::ARCH_WINDOW_GLASS,
+            sim_core::deploy::MATTER_STONE,
+        ),
+        (
+            4,
+            sim_core::deploy::ARCH_WINDOW_SHUTTER,
+            sim_core::deploy::MATTER_WOOD,
+        ),
     ] {
         dc.defs[row] = sim_core::deploy::DeployDef {
             arch,
             placement: sim_core::deploy::PLACE_WINDOW,
             hp: 350 + row as u16,
+            matter,
             item: 30 + row as u16,
             ..sim_core::deploy::DeployDef::INERT
         };

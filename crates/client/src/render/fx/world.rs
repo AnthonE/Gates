@@ -11,7 +11,7 @@ use super::super::audio::Sound;
 use super::super::decal::Marks;
 use super::super::feed::Feed;
 use super::super::impact::{Burst, Chips, Contact, ContactKind, Matter, Weapon};
-use super::super::{structures, surface, Eye, Net, WorldId};
+use super::super::{structures, Eye, Net, WorldId};
 use super::pool::{Particle, Pool};
 use super::table::{emit, lod, scaled, Layer};
 use super::{atlas, Fx};
@@ -76,8 +76,7 @@ fn piece_matter(core: &client_core::core::ClientCore, row: u8) -> Matter {
 /// The matter a deployable of `row` is made of.
 fn deploy_matter(core: &client_core::core::ClientCore, row: u8) -> Matter {
     if (row as u16) < core.deploy_defs_have {
-        let d = &core.deploy_defs.defs[row as usize];
-        surface::arch_matter(d.arch, d.hp)
+        Matter::of_deploy(core.deploy_defs.defs[row as usize].matter)
     } else {
         Matter::Wood
     }

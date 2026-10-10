@@ -1111,6 +1111,7 @@ fn planter_world() -> (World, u32, u16, u16) {
         arch: ARCH_PLANTER,
         placement: PLACE_ANY,
         hp: 100,
+        matter: sim_core::deploy::MATTER_WOOD,
         item: PLANTER,
         n_costs: 0,
         costs: [(0, 0); 4],

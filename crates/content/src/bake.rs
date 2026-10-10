@@ -8,8 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, Material, NodeArchetype, Placement,
-    Shape, Station, Weapon, WeaponKind,
+    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, DeployMatter, Material, NodeArchetype,
+    Placement, Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -29,8 +29,9 @@ use sim_core::craft::{
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
     ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS,
-    ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
-    PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND, PLACE_WINDOW,
+    ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3, MATTER_CLOTH, MATTER_METAL, MATTER_STONE,
+    MATTER_WOOD, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND,
+    PLACE_WINDOW,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -510,6 +511,12 @@ impl Content {
                     Placement::WallFrame => PLACE_FRAME,
                 },
                 hp,
+                matter: match d.matter {
+                    DeployMatter::Wood => MATTER_WOOD,
+                    DeployMatter::Stone => MATTER_STONE,
+                    DeployMatter::Metal => MATTER_METAL,
+                    DeployMatter::Cloth => MATTER_CLOTH,
+                },
                 item: self
                     .item_index(&d.id)
                     .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?,
