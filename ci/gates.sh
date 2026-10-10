@@ -345,6 +345,8 @@ fi
 # debug). At 10,000 sequences it was ~2 h and timed main out; at 1,000 it is
 # minutes, but pull requests and main still skip it.
 # It is the last gate; nightly and a manual run of the workflow run it.
+# minutes, but a pull request still skips it.
+# It is the last gate, and main and nightly run it on every merge.
 if [ "$TIER" = "fast" ]; then
   echo "== SKIPPED (tier fast): test_parity_wasm — nightly runs it"
   echo "ALL GATES GREEN (tier fast)"
