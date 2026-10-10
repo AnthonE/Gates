@@ -3752,7 +3752,8 @@ pub fn grieve(
         let mut cost = [0u64; HEARTH_STOCK_ROWS];
         for p in pieces.entries().iter().filter(|p| ours(p)) {
             for (m, c) in cost.iter_mut().enumerate().take(mats) {
-                *c += row_cost(&bc.pieces[p.row as usize], dc.mats[m]) as u64;
+                let def = &bc.pieces[p.row as usize];
+                *c += row_cost(&def.costs[..def.n_costs as usize], dc.mats[m]) as u64;
             }
         }
         // Hours each material's stock covers at the day's rent, capped.
@@ -3791,15 +3792,85 @@ pub fn grieve(
     }
 }
 
-/// A piece's build cost in material `item`, every row of it summed: what
-/// its rent in that material is a fraction of.
-fn row_cost(def: &crate::build::PieceDef, item: u16) -> u32 {
-    def.costs
+/// A build cost in material `item`, every row of it summed: what its rent
+/// in that material is a fraction of.
+fn row_cost(costs: &[(u16, u16)], item: u16) -> u32 {
+    costs
         .iter()
-        .take(def.n_costs as usize)
         .filter(|&&(it, _)| it == item)
         .map(|&(_, cost)| cost as u32)
         .sum()
+}
+
+/// Whether a deployable pays rent like the pieces around it: a door or a
+/// window or frame insert (Devblog 190, `reference/BUILDING.md` §4b). A box
+/// on the floor does not — loose deployables are free under a stocked
+/// hearth, as theirs are.
+pub fn pays_rent(def: &DeployDef) -> bool {
+    socket_shape(def.placement).is_some()
+}
+
+/// One hour's rent on `costs` (a build cost, `(item, units)` rows) at rent
+/// hour `k`, charged to the hearths in `cover`.
+///
+/// **Per material, not all-or-nothing** (upkeep/decay v1,
+/// `reference/BUILDING.md` §4). Each material is charged to the first
+/// covering hearth in list order that can cover *that row*; the hour is
+/// paid only if **every** row found a payer. Rows are charged as they are
+/// found rather than after a whole-cost check, so a piece that pays three
+/// rows and misses the fourth has still spent the three: the materials went
+/// into the base, and the base still rots for want of the one that did not.
+///
+/// **The rent is the payer's** (upkeep v2): what a row costs is read off
+/// the covering hearth's own base size (`upkeep::tax`), so the search asks
+/// each candidate its own price rather than pricing once and shopping for a
+/// stock. Most hours a cheap row owes nothing (`Tax::due` pays the day's
+/// rent in whole units), but the hearth must still hold some of the
+/// material: an empty one protects nothing.
+fn pay_hour(
+    dc: &DeployContent,
+    deploys: &mut Deploys,
+    cover: &[u16],
+    costs: &[(u16, u16)],
+    k: u64,
+) -> bool {
+    let mut all_paid = true;
+    for m in 0..dc.mat_count as usize {
+        let item = dc.mats[m];
+        if !costs.iter().any(|&(it, cost)| it == item && cost > 0) {
+            continue;
+        }
+        let cost = row_cost(costs, item);
+        let due = |hi: u16| crate::upkeep::tax(dc, deploys.claim_graded(hi as usize)).due(cost, k);
+        let payer = cover
+            .iter()
+            .find(|&&hi| {
+                let t = crate::upkeep::tax(dc, deploys.claim_graded(hi as usize));
+                let need = if t.num == 0 { 0 } else { due(hi).max(1) };
+                deploys.hearths[hi as usize].stock[m] >= need
+            })
+            .copied();
+        match payer {
+            Some(hi) => {
+                let d = due(hi);
+                deploys.hearths[hi as usize].stock[m] -= d;
+            }
+            None => all_paid = false,
+        }
+    }
+    all_paid
+}
+
+/// Which hearths cover `(x, z)`, in hearth-list order, into `out`; how many.
+fn covering(deploys: &Deploys, x: f32, z: f32, out: &mut [u16; MAX_HEARTHS]) -> usize {
+    let mut n = 0usize;
+    for hi in 0..deploys.hearth_count {
+        if deploys.hearth_covers(hi, x, z) {
+            out[n] = hi as u16;
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Which hour of the rent's cycle a piece is on in its own hour `uh`: a
@@ -3861,13 +3932,7 @@ pub fn upkeep_sweep(
         // visit, outside the hour steps below, because the steps spend
         // stock and never move structure.
         let mut cover = [0u16; MAX_HEARTHS];
-        let mut cover_n = 0usize;
-        for hi in 0..deploys.hearth_count {
-            if deploys.hearth_covers(hi, x, z) {
-                cover[cover_n] = hi as u16;
-                cover_n += 1;
-            }
-        }
+        let cover_n = covering(deploys, x, z, &mut cover);
         // Whether anything of a base stands over this piece — asked once
         // per visit for the reason `cover` is: the steps below spend stock
         // and never move structure (upkeep v2, `upkeep::inside`).
@@ -3882,24 +3947,9 @@ pub fn upkeep_sweep(
         while uh < h_now && steps < SWEEP_CATCHUP_MAX {
             steps += 1;
             uh += 1;
-            // **Per material, not all-or-nothing** (upkeep/decay v1,
-            // `reference/BUILDING.md` §4). Each cost row is charged to the
-            // first covering hearth in list order that can cover *that
-            // row*; the piece is protected only if **every** row found a
-            // payer.
+            // The charge itself is `pay_hour`'s (per material, the rent the
+            // payer's). What is the piece's own:
             //
-            // The old rule wanted one hearth to cover the whole charge, so
-            // a hearth holding stone but no wood protected nothing at all
-            // — half a stock did half of nothing. The reference's is the
-            // better sentence and it is not more code: *if your stone runs
-            // out, only the stone parts of your base lose health.*
-            //
-            // Rows are charged as they are found rather than after a
-            // whole-piece check, so a piece that pays three rows and
-            // misses the fourth has still spent the three. That is the
-            // honest reading of a partial payment: the materials went into
-            // the base, and the base still rots for want of the one that
-            // did not.
             // **A hearth has to cover it at all**, before any row is
             // priced. Without this the per-row loop calls a piece paid
             // when it simply costs nothing, and an unpriced piece in open
@@ -3910,52 +3960,21 @@ pub fn upkeep_sweep(
             // `reference/BUILDING.md` §7b.4). A scaffold is a draft: it
             // costs no upkeep, so a base under construction does not
             // quietly drain the stock that keeps the finished half
-            // standing, and no stock can protect it either — starting
-            // `all_paid` false here skips the charge loop entirely and
-            // sends it straight to the decay step, where the ladder's
-            // 100 %/period is waiting. That is the whole difference
-            // between a draft you re-lay for 50 wood and a cheap
-            // permanent base nobody upgrades.
-            //
-            // **The rent is the payer's** (upkeep v2): what a row costs is
-            // read off the covering hearth's own base size
-            // (`upkeep::tax`), so the search asks each candidate its own
-            // price rather than pricing once and shopping for a stock.
-            let mut all_paid = cover_n > 0 && def.material != crate::build::MAT_TWIG;
-            for m in 0..(if all_paid { dc.mat_count as usize } else { 0 }) {
-                let item = dc.mats[m];
-                if !def
-                    .costs
-                    .iter()
-                    .take(def.n_costs as usize)
-                    .any(|&(it, cost)| it == item && cost > 0)
-                {
-                    continue;
-                }
-                // Most hours a cheap piece owes nothing (`Tax::due` pays
-                // the day's rent in whole units), but the hearth must still
-                // hold some of the material: an empty one protects nothing.
-                let k = rent_hour(rec.cx, rec.cz, rec.level, rec.loc, uh);
-                let cost = row_cost(&def, item);
-                let due = |hi: u16| {
-                    crate::upkeep::tax(dc, deploys.claim_graded(hi as usize)).due(cost, k)
-                };
-                let payer = cover[..cover_n]
-                    .iter()
-                    .find(|&&hi| {
-                        let t = crate::upkeep::tax(dc, deploys.claim_graded(hi as usize));
-                        let need = if t.num == 0 { 0 } else { due(hi).max(1) };
-                        deploys.hearths[hi as usize].stock[m] >= need
-                    })
-                    .copied();
-                match payer {
-                    Some(hi) => {
-                        let d = due(hi);
-                        deploys.hearths[hi as usize].stock[m] -= d;
-                    }
-                    None => all_paid = false,
-                }
-            }
+            // standing, and no stock can protect it either — `all_paid`
+            // false here skips the charge entirely and sends it straight
+            // to the decay step, where the ladder's 100 %/period is
+            // waiting. That is the whole difference between a draft you
+            // re-lay for 50 wood and a cheap permanent base nobody
+            // upgrades.
+            let all_paid = cover_n > 0
+                && def.material != crate::build::MAT_TWIG
+                && pay_hour(
+                    dc,
+                    deploys,
+                    &cover[..cover_n],
+                    &def.costs[..def.n_costs as usize],
+                    rent_hour(rec.cx, rec.cz, rec.level, rec.loc, uh),
+                );
             if !all_paid {
                 let d = crate::upkeep::decay_step(def.hp, piece_decay_pct(dc, def.material), scale);
                 if hp <= d {
@@ -4023,6 +4042,16 @@ pub fn upkeep_sweep(
             dc,
             crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc),
         );
+        // A door or an insert pays its own build cost's rent like the
+        // wall it sits in (`pays_rent`); asked of the claim once per visit
+        // for the pieces' reason.
+        let rent = pays_rent(&def);
+        let mut cover = [0u16; MAX_HEARTHS];
+        let cover_n = if rent {
+            covering(deploys, x, z, &mut cover)
+        } else {
+            0
+        };
         let mut hp = rec.hp;
         let mut uh = rec.uh;
         let mut removed = false;
@@ -4030,9 +4059,19 @@ pub fn upkeep_sweep(
         while uh < h_now && steps < SWEEP_CATCHUP_MAX {
             steps += 1;
             uh += 1;
-            // Covered by any stocked hearth ⇒ free; uncovered ⇒ decay.
-            // (An empty hearth covers nothing, itself included.)
-            if deploys.covering_hearth(x, z).is_none() {
+            // Covered by any stocked hearth ⇒ free (a loose deployable) or
+            // charged (an insert); uncovered or unpaid ⇒ decay. An empty
+            // hearth covers nothing, itself included.
+            let paid = deploys.covering_hearth(x, z).is_some()
+                && (!rent
+                    || pay_hour(
+                        dc,
+                        deploys,
+                        &cover[..cover_n],
+                        &def.costs[..def.n_costs as usize],
+                        rent_hour(rec.cx, rec.cz, rec.level, rec.loc, uh),
+                    ));
+            if !paid {
                 // The flat rate: a deployable has no build material, so
                 // the ladder has nothing to key on (`piece_decay_pct`) —
                 // but a box under a roof is inside as a wall is.
@@ -5126,6 +5165,116 @@ mod tests {
             spent, bc.pieces[GRADED_FOUNDATION].costs[0].1 as u32,
             "the hearth paid for the foundation and nothing else"
         );
+    }
+
+    /// **A door pays rent like the wall it hangs in** (Devblog 190,
+    /// `reference/BUILDING.md` §4b): its own build cost, out of the hearth
+    /// that covers it, and the hearth's bill says so. Short of one of its
+    /// materials it rots while the stone doorway around it stays paid.
+    #[test]
+    fn a_door_pays_its_rent_and_rots_without_it() {
+        let dc = hourly();
+        let mut bc = BuildContent::probe_fixture();
+        // A stone doorway for the door to hang in: the fixture's only one is
+        // twig, which no stock protects.
+        bc.pieces[bc.piece_count as usize] = crate::build::PieceDef {
+            shape: crate::build::SHAPE_DOORWAY,
+            material: crate::build::MAT_STONE,
+            hp: 150,
+            n_costs: 1,
+            costs: [(0, 4), (0, 0)],
+        };
+        bc.piece_count += 1;
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 600), (1, 250), (2, 1), (4, 1)]);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
+        crate::build::place(
+            SEED,
+            hv(),
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            false,
+            0,
+            &mut ev,
+        );
+        crate::build::upgrade(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::build::MAT_STONE,
+            &mut ev,
+        );
+        let doorway = pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        assert_eq!(
+            bc.pieces[doorway.row as usize].material,
+            crate::build::MAT_STONE
+        );
+        for (row, loc) in [(2u16, LOC_EDGE_XLO), (0, LOC_PLANE)] {
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut deploys,
+                &mut p,
+                0,
+                row,
+                CX,
+                CZ,
+                0,
+                loc,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "row {row}");
+        }
+        let door = |d: &Deploys| {
+            d.entries()
+                .iter()
+                .find(|r| r.row == 2)
+                .expect("the door")
+                .hp
+        };
+        deploys.hearths_mut()[0].stock = [STOCK_MAX; HEARTH_STOCK_ROWS];
+
+        // An hour at `hourly`'s rent charges each its whole cost.
+        sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
+        assert_eq!(STOCK_MAX - deploys.hearths()[0].stock[0], 5 + 4 + 40);
+        assert_eq!(STOCK_MAX - deploys.hearths()[0].stock[1], 8);
+        // And a day's bill is the foundation's, the doorway's and the door's.
+        let day = crate::upkeep::bill(&dc, &bc, &pieces, &deploys, 0);
+        assert_eq!(day[0], (5 + 4 + 40) * 24);
+        assert_eq!(day[1], 8 * 24, "item 1 is the door's alone");
+        assert_eq!(door(&deploys), dc.defs[2].hp, "paid, so whole");
+
+        // Out of the door's second material: the door rots, the doorway
+        // and foundation (item 0 only) stay paid.
+        deploys.hearths_mut()[0].stock[1] = 0;
+        sweep_once(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            2 * UPKEEP_PERIOD_TICKS + 1,
+        );
+        assert!(door(&deploys) < dc.defs[2].hp, "an unpaid door rots");
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp, 150);
     }
 
     #[test]
