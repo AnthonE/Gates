@@ -2168,8 +2168,8 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     // The hold on `R` (`ui::unload`), named on the readout while it runs.
-    unload: Option<Res<super::verbs::Unload>>,
-    time: Res<Time>,
+    // One tuple, because Bevy takes at most sixteen system parameters.
+    (unload, time): (Option<Res<super::verbs::Unload>>, Res<Time>),
     mut line: Local<String>,
 ) {
     use std::fmt::Write;
