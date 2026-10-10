@@ -39,8 +39,8 @@ use client_core::core::ClientCore;
 use super::{font, font_bold, ring, Panel, Ui, BADGE, TEXT_DIM, TEXT_SHORT};
 use crate::render::icons::Icons;
 use crate::ui::build::{
-    costs, material_label, row_for, segment_angle, shape_blurb, shape_icon, shape_label, Rings,
-    PLACE_MATERIAL, SHAPES,
+    costs, material_label, row_for, segment_angle, shape_blurb, shape_icon, shape_label, Cost,
+    Rings, PLACE_MATERIAL, SHAPES,
 };
 use crate::ui::craft::item_label;
 use crate::ui::hammer;
@@ -344,18 +344,35 @@ pub fn build_hammer_screen(
                     ));
                     let action =
                         verb.map(|v| hammer::act(v, near, &core.piece_defs, core.piece_defs_have));
+                    // The repair's exact bill (wire v102), the rows
+                    // `build::repair` will take — `None` until the hp, the
+                    // row and the percent are all known.
+                    let repair = match action {
+                        Some(hammer::Act::Repair { .. }) => near.and_then(|t| {
+                            hammer::repair_rows(
+                                t,
+                                &core.piece_defs,
+                                core.piece_defs_have,
+                                &core.deploy_defs,
+                                core.deploy_defs_have,
+                                &core.inv,
+                            )
+                        }),
+                        _ => None,
+                    };
                     let line = match action {
                         Some(hammer::Act::Say(why)) => why.to_string(),
                         Some(hammer::Act::Upgrade { .. }) => "Upgrade cost".into(),
-                        Some(hammer::Act::Repair { .. }) => near
-                            .map(|t| {
-                                if t.hp_max > 0 {
-                                    format!("Restores to {} HP · cost depends on damage", t.hp_max)
-                                } else {
-                                    "Waiting for repair details".into()
-                                }
-                            })
-                            .unwrap_or_default(),
+                        Some(hammer::Act::Repair { .. }) => match (near, repair) {
+                            // `repair`'s own refusal for a row with no price.
+                            (_, Some((_, 0))) => "cannot be repaired".into(),
+                            (Some(t), Some(_)) => format!(
+                                "Restores {} HP to {}",
+                                t.hp_max.saturating_sub(t.hp),
+                                t.hp_max
+                            ),
+                            _ => "Waiting for repair details".into(),
+                        },
                         _ => verb.map(hammer::blurb).unwrap_or("sweep to a verb").into(),
                     };
                     c.spawn((
@@ -373,19 +390,7 @@ pub fn build_hammer_screen(
                             hammer::upgrade_row(t, &core.piece_defs, core.piece_defs_have)
                         }) {
                             let (lines, n) = costs(&core.piece_defs, row, &core.inv);
-                            for line in lines.iter().take(n) {
-                                c.spawn((
-                                    Text::new(format!(
-                                        "{} {} ({})",
-                                        line.units,
-                                        item_label(&core.catalog, line.item),
-                                        line.have
-                                    )),
-                                    font_bold(11.0),
-                                    TextColor(if line.short() { TEXT_SHORT } else { TEXT_DIM }),
-                                    Pickable::IGNORE,
-                                ));
-                            }
+                            cost_lines(c, core, &lines[..n]);
                         } else {
                             c.spawn((
                                 Text::new("Waiting for upgrade details"),
@@ -394,6 +399,9 @@ pub fn build_hammer_screen(
                                 Pickable::IGNORE,
                             ));
                         }
+                    }
+                    if let Some((lines, n)) = repair {
+                        cost_lines(c, core, &lines[..n]);
                     }
                 });
 
@@ -598,7 +606,15 @@ fn readout(
     ));
 
     let (lines, n) = costs(&core.piece_defs, row, &core.inv);
-    for line in lines.iter().take(n) {
+    cost_lines(parent, core, &lines[..n]);
+}
+
+/// A price as the readouts draw it, one line a row: units, item, and what
+/// the pack holds, short rows in the short colour. Shared by the shape
+/// wheel's placement, the hammer's upgrade and its repair, so the three
+/// prices read alike.
+fn cost_lines(parent: &mut ChildSpawnerCommands, core: &ClientCore, lines: &[Cost]) {
+    for line in lines {
         parent.spawn((
             Text::new(format!(
                 "{} {} ({})",
@@ -629,11 +645,13 @@ mod tests {
             core.piece_defs = BuildContent::EMPTY;
             core.piece_defs.piece_count = 2;
             core.piece_defs_have = 2;
+            core.piece_defs.repair_pct = 100;
             core.piece_defs.pieces[0] = PieceDef {
                 shape: SHAPE_WALL,
                 material: MAT_WOOD,
                 hp: 500,
-                ..PieceDef::INERT
+                n_costs: 1,
+                costs: [(3, 10), (0, 0)],
             };
             core.piece_defs.pieces[1] = PieceDef {
                 material: MAT_STONE,
@@ -649,6 +667,7 @@ mod tests {
                 loc: LOC_EDGE_XLO,
                 row: 0,
                 dmg: 1,
+                hp: 250,
                 hp_max: 500,
                 side: Some(true),
             };
@@ -688,9 +707,18 @@ mod tests {
                 );
             }
             if verb == hammer::Verb::Repair {
-                assert!(words
-                    .iter()
-                    .any(|s| s.contains("500 HP") && s.contains("depends on damage")));
+                // Half of a 10-unit wall's hp is 5 units — the exact bill,
+                // not "cost depends on damage".
+                assert!(
+                    words.iter().any(|s| s == "Restores 250 HP to 500"),
+                    "{words:?}"
+                );
+                assert!(
+                    words
+                        .iter()
+                        .any(|s| s.starts_with("5 ") && s.ends_with("(0)")),
+                    "{words:?}"
+                );
             }
         }
     }

@@ -56,8 +56,9 @@ pub struct Target {
     /// repair has anything to buy.
     ///
     /// **This was `hp`/`hp_max` until wire v44, and the pair was a lie.**
-    /// Piece and deploy hp were never on the wire — `write_piece_rec` wrote
-    /// address and row and stopped — so the mirror's `hp` was a permanent 0
+    /// Piece and deploy hp were not on the wire then (they are since v102,
+    /// [`Self::hp`]) — `write_piece_rec` wrote address and row and stopped —
+    /// so the mirror's `hp` was a permanent 0
     /// and `damaged()` answered TRUE for every structure in the world. The
     /// one thing it gates, `hammer.rs`'s "not damaged" refusal, was
     /// therefore unreachable: every repair swing at an intact wall took a
@@ -65,6 +66,11 @@ pub struct Target {
     /// had never once fired. A band is what the wire carries now, and it is
     /// all this needs — `damaged()` is a comparison against 0.
     pub dmg: u8,
+    /// The exact hp the server last stated (wire v102: every record carries
+    /// it, `StructHit` and `PieceRepaired` move it). What the hammer prices
+    /// a repair from (`hammer::repair_rows`); 0 means not known, since a
+    /// standing structure is never at 0.
+    pub hp: u16,
     /// The row's baked maximum hp, 0 until that def row has dripped in.
     /// Kept because the repair prompt prices against it; it is content the
     /// client already holds, not a per-piece fact off the wire.
@@ -128,6 +134,7 @@ pub fn nearest(
             loc: rec.loc,
             row: rec.row,
             dmg: rec.dmg,
+            hp: rec.hp,
             hp_max: if (rec.row as u16) < piece_have {
                 piece_defs.pieces[rec.row as usize].hp
             } else {
@@ -249,6 +256,7 @@ fn deploy_target(rec: &DeployRec, deploy_defs: &DeployContent, deploy_have: u16)
         loc: rec.loc,
         row: rec.row,
         dmg: rec.dmg,
+        hp: rec.hp,
         hp_max: if (rec.row as u16) < deploy_have {
             deploy_defs.defs[rec.row as usize].hp
         } else {
@@ -501,7 +509,7 @@ mod tests {
             dh,
         )
         .unwrap();
-        assert_eq!((t.dmg, t.hp_max), (damage_band(250, 500), 500));
+        assert_eq!((t.dmg, t.hp, t.hp_max), (damage_band(250, 500), 250, 500));
         assert!(t.damaged());
 
         let (ax, az) = anchor(6, 6, LOC_EDGE_XLO);
@@ -515,7 +523,7 @@ mod tests {
             dh,
         )
         .unwrap();
-        assert_eq!((t.dmg, t.hp_max), (0, 200));
+        assert_eq!((t.dmg, t.hp, t.hp_max), (0, 200, 200));
         assert!(!t.damaged(), "an intact door has nothing to buy");
     }
 

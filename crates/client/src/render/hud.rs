@@ -4956,6 +4956,7 @@ mod tests {
                 // Undamaged; this test is about the side label and nothing
                 // else reads the band (wire v44).
                 dmg: 0,
+                hp: 10,
                 hp_max: 10,
                 side,
             })

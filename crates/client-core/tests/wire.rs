@@ -45,13 +45,16 @@ use client_core::core::{
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_cont_sync, encode_event_death, encode_event_fire, encode_event_hit,
-    encode_event_impact, encode_event_move_refused, encode_event_moved, encode_event_respawn,
-    encode_event_shot, encode_event_struct_hit, encode_event_swing, encode_event_vitals, InvSlot,
-    WireBag, MAX_EVENT_MSG_BYTES,
+    encode_event_cont_sync, encode_event_death, encode_event_deploy_sync, encode_event_fire,
+    encode_event_hit, encode_event_impact, encode_event_move_refused, encode_event_moved,
+    encode_event_piece_defs, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_respawn, encode_event_shot, encode_event_struct_hit, encode_event_swing,
+    encode_event_vitals, InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
+use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO};
 use sim_core::collide::Part;
+use sim_core::deploy::DeployRec;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
 use sim_core::ranged::{
@@ -806,6 +809,72 @@ fn an_own_raid_hit_marks_and_latches_the_wall() {
     );
     assert_eq!(c.own_struct_hit.0, 12);
     assert_eq!(c.own_struct_hit.4, 60);
+}
+
+/// A structure's exact hp (wire v102) reaches the mirror with its record,
+/// a blow moves it to `left`, and a repair writes it back on the store its
+/// bit names only — a door and its doorway share one address, and the
+/// hammer quotes a repair off this hp and the defs drip's percent.
+#[test]
+fn structure_hp_crosses_and_follows_hits_and_repairs() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let (len, _) = encode_event_piece_defs(&BuildContent::probe_fixture(), 0, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.piece_defs.repair_pct, 100,
+        "the price rides the defs drip"
+    );
+
+    let at = (12u16, 34u16, 0u8, LOC_EDGE_XLO);
+    let wall = PieceRec {
+        cx: at.0,
+        cz: at.1,
+        level: at.2,
+        loc: at.3,
+        row: 3,
+        hp: 80,
+        ..PieceRec::default()
+    };
+    let door = DeployRec {
+        cx: at.0,
+        cz: at.1,
+        level: at.2,
+        loc: at.3,
+        row: 0,
+        hp: 200,
+        ..DeployRec::default()
+    };
+    let len = encode_event_piece_sync(true, &[wall], &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    let len = encode_event_deploy_sync(true, &[door], &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    let hps = |c: &ClientCore| (c.pieces.entries()[0].hp, c.deploys.entries()[0].hp);
+    assert_eq!(hps(&c), (80, 200), "each record's hp crossed");
+
+    let len = encode_event_struct_hit(false, at.0, at.1, at.2, at.3, 3, 20, 60, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        hps(&c),
+        (60, 200),
+        "the doorway took the blow, not the door"
+    );
+
+    let len =
+        encode_event_piece_repaired(true, at.0, at.1, at.2, at.3, 0, 40, 240, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        hps(&c),
+        (60, 240),
+        "mending the door leaves the doorway hurt"
+    );
+    assert!(c.pieces.entries()[0].dmg > 0, "and still drawn hurt");
+
+    let len =
+        encode_event_piece_repaired(false, at.0, at.1, at.2, at.3, 3, 40, 100, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(hps(&c), (100, 240));
+    assert_eq!(c.pieces.entries()[0].dmg, 0);
 }
 
 /// Vitals, and the reading that must be refused rather than clamped: the

@@ -771,7 +771,9 @@ impl PieceSet {
         self.cols.del_solid(cx, cz, level, loc);
     }
 
-    /// Re-band the piece at an address, if one stands there (wire v44).
+    /// Re-state the piece at an address, if one stands there: its exact hp
+    /// (wire v102, what the hammer prices a repair from) and its band
+    /// (wire v44).
     ///
     /// **The sync walk is not enough on its own and this is the half that
     /// makes the field live.** A piece record reaches a client on join and
@@ -782,10 +784,13 @@ impl PieceSet {
     ///
     /// `EV_STRUCT_HIT` already carries the address and the hp left, and
     /// `EV_PIECE_REPAIRED` the way back, so both edges are on the wire
-    /// already and this costs no byte.
-    fn set_dmg(&mut self, cx: u16, cz: u16, level: u8, loc: u8, dmg: u8) {
+    /// already and this costs no byte. (Decay drains hp without a word, so
+    /// between records the mirror's hp can stand a little above the
+    /// store's — the band always could.)
+    fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
         for r in self.recs[..self.len].iter_mut() {
             if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
+                r.hp = hp;
                 r.dmg = dmg;
                 return;
             }
@@ -953,10 +958,11 @@ impl DeploySet {
         &self.recs[..self.len]
     }
 
-    /// `PieceSet::set_dmg`'s twin — that one carries the reasoning.
-    fn set_dmg(&mut self, cx: u16, cz: u16, level: u8, loc: u8, dmg: u8) {
+    /// `PieceSet::set_hp`'s twin — that one carries the reasoning.
+    fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
         for r in self.recs[..self.len].iter_mut() {
             if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
+                r.hp = hp;
                 r.dmg = dmg;
                 return;
             }
@@ -2814,9 +2820,13 @@ impl ClientCore {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 self.piece_defs.piece_count = total as u16;
+                // The repair price (wire v102), the hammer's quote with
+                // each record's hp (`build::repair_quote`).
+                self.piece_defs.repair_pct = repair_pct;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.piece_defs.pieces[first as usize + i] = *row;
                 }
@@ -3095,15 +3105,16 @@ impl ClientCore {
                     self.own_struct_hit = self.struct_hit;
                     self.applied2 |= APPLIED2_OWN_STRUCT_HIT;
                 }
-                // …and re-band the mirror, so the wall the player is
-                // watching come apart actually comes apart (`set_dmg`).
-                // An unknown maximum bands to 0 by `damage_band`'s own
-                // rule rather than guessing a fraction of nothing.
+                // …and re-state the mirror, so the wall the player is
+                // watching come apart actually comes apart (`set_hp`), and
+                // the hammer's repair quote follows it down. An unknown
+                // maximum bands to 0 by `damage_band`'s own rule rather
+                // than guessing a fraction of nothing.
                 let band = sim_core::build::damage_band(left, max.unwrap_or(0));
                 if deploy {
-                    self.deploys.set_dmg(cx, cz, level, loc, band);
+                    self.deploys.set_hp(cx, cz, level, loc, left, band);
                 } else {
-                    self.pieces.set_dmg(cx, cz, level, loc, band);
+                    self.pieces.set_hp(cx, cz, level, loc, left, band);
                 }
                 flags |= APPLIED_STRUCT_HIT;
             }
@@ -3113,9 +3124,11 @@ impl ClientCore {
                 // both halves of the pair by construction, because the
                 // verb's whole contract is that a repaired structure
                 // stands at its baked row's hp and never a point over — so
-                // the bit is ignored here and the readout means the same
-                // thing for a door as for the doorway it stands in.
-                deploy: _,
+                // the readout means the same thing for a door as for the
+                // doorway it stands in. The mirror is another matter: a
+                // door and its doorway share the address, and mending one
+                // must not write its hp onto the other.
+                deploy,
                 cx,
                 cz,
                 level,
@@ -3131,10 +3144,12 @@ impl ClientCore {
                 // Band 0 without consulting `damage_band`, and that is not
                 // a shortcut: the verb's whole contract is that a repaired
                 // structure stands at its baked row's hp and never a point
-                // over, which is the same reason the `deploy` bit is
-                // ignored above. `damage_band(hp, hp)` is 0 by definition.
-                self.deploys.set_dmg(cx, cz, level, loc, 0);
-                self.pieces.set_dmg(cx, cz, level, loc, 0);
+                // over. `damage_band(hp, hp)` is 0 by definition.
+                if deploy {
+                    self.deploys.set_hp(cx, cz, level, loc, hp, 0);
+                } else {
+                    self.pieces.set_hp(cx, cz, level, loc, hp, 0);
+                }
                 flags |= APPLIED_STRUCT_HIT;
             }
             EventMsg::ChargePlaced {

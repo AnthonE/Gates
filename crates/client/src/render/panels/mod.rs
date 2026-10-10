@@ -1283,6 +1283,7 @@ mod hammer_refresh_tests {
             loc: 1,
             row: 0,
             dmg: 0,
+            hp: 500,
             hp_max: 500,
             side: Some(true),
         };

@@ -117,18 +117,20 @@ pub const RECIPE_BATCH: usize = 4;
 /// `RECIPE_BATCH` because the two tables drip side by side on join.
 pub const RESEARCH_BATCH: usize = 4;
 
-/// Placed-piece records one sync message carries (a record is 33 bits;
-/// 32 keep the batch ≈ 134 B, well under the message cap). The join walk
-/// is drip-fed like the harvested-set sync.
+/// Placed-piece records one sync message carries (a record is 62 bits
+/// since v102's exact hp; 32 keep the batch ≈ 251 B, under the message cap,
+/// and the assert at `PIECE_REC_BITS` holds it there). The join walk is
+/// drip-fed like the harvested-set sync.
 pub const PIECE_SYNC_BATCH: usize = 32;
 
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
 
-/// Placed-deployable records one sync message carries (a record is 65
-/// bits — address, row, state, damage and the pose; 24 keep the batch
-/// ≈ 200 B, under the 320 B message cap). The join walk is drip-fed like
-/// the piece sync.
+/// Placed-deployable records one sync message carries (a record is 89
+/// bits — address, row, state, damage, the pose, the beds and since v102
+/// the exact hp; 24 keep the batch ≈ 270 B, under the 320 B message cap,
+/// held by the assert at `DEPLOY_REC_BITS`). The join walk is drip-fed
+/// like the piece sync.
 pub const DEPLOY_SYNC_BATCH: usize = 24;
 
 /// Deploy-def rows one defs message carries (a full row is ~5 B).
@@ -716,6 +718,13 @@ const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
 const PIECE_DEFS_TOTAL_BITS: u32 = 7;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
+/// The table's repair percent on `SUB_PIECE_DEFS` (wire v102). Content
+/// validates `repair_cost_pct` to 1..=100 and an unbaked table is 0, which
+/// crosses as itself; seven bits hold 100, so 101..=127 are forgeable and
+/// both ends refuse them.
+const REPAIR_PCT_BITS: u32 = 7;
+const REPAIR_PCT_MAX: u16 = 100;
+const _: () = assert!(REPAIR_PCT_MAX < (1 << REPAIR_PCT_BITS));
 /// Widened 3 → 4 in wire v40 (triangles v0): catalogue v1 had saturated
 /// the 3-bit field — its own domain pin said the triangles could not
 /// land without this line. Circulation widens it again to five bits in v72;
@@ -730,6 +739,37 @@ const N_COSTS_BITS: u32 = 2;
 /// quotes no recipe for bakes unpriced and `build::repair` refuses it.
 const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
+/// The widths `write_piece_rec` puts down: address, row, facing, band,
+/// plate, and the exact hp (v102).
+const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
+    + BUILD_LEVEL_BITS
+    + BUILD_LOC_BITS
+    + PIECE_ROW_BITS
+    + 1
+    + DMG_BAND_BITS
+    + PLATE_BITS
+    + 16) as usize;
+/// `write_deploy_rec`'s: address, row, the three state bits, band, the
+/// pose's three bytes, the beds, and the exact hp (v102).
+const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
+    + BUILD_LEVEL_BITS
+    + BUILD_LOC_BITS
+    + DEPLOY_ROW_BITS
+    + 3
+    + DMG_BAND_BITS
+    + 4 * 8
+    + 16) as usize;
+// A full batch of either store's records still fits one message (v102's hp
+// took 16 bits a record): a field added after it must shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + PIECE_SYNC_COUNT_BITS) as usize + PIECE_SYNC_BATCH * PIECE_REC_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + DEPLOY_SYNC_COUNT_BITS) as usize
+        + DEPLOY_SYNC_BATCH * DEPLOY_REC_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 const DEPLOY_DEFS_TOTAL_BITS: u32 = 6;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 /// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
@@ -1372,16 +1412,20 @@ pub enum EventMsg {
     BuildRefused { reason: u8 },
     /// Piece-def rows `first..first+count` of a `total`-row table — the
     /// build menu's data, dripped like the recipe table. Rows decode to
-    /// the same `PieceDef` the sim runs.
+    /// the same `PieceDef` the sim runs. `repair_pct` is the table's
+    /// `BuildContent::repair_pct` (wire v102), on every batch: with it and
+    /// a record's hp a client quotes a repair exactly
+    /// (`sim_core::build::repair_quote`).
     PieceDefs {
         total: u8,
         first: u8,
         count: u8,
+        repair_pct: u16,
         rows: [PieceDef; PIECE_DEFS_BATCH],
     },
     /// A deployable landed (broadcast — world facts like pieces). The
-    /// wire carries address + row + the door's open bit; owner/hp/uh stay
-    /// sim-side, so decoded records hold their defaults there.
+    /// wire carries address + row + state, pose, beds and (since v102) hp;
+    /// owner/uh stay sim-side, so decoded records hold their defaults there.
     DeployPlaced { rec: DeployRec },
     /// One batch of the placed-deployable walk (join sync / resync).
     DeploySync {
@@ -2447,9 +2491,10 @@ pub fn encode_event_research_rows(
     Ok((w.finish(), count))
 }
 
-/// One placed-piece record on the wire: 38 bits, shared by the placed
-/// broadcast and the sync batches. Refuses an address outside the grid or
-/// a row outside the def table — this encoder only ever sees sim records.
+/// One placed-piece record on the wire: 62 bits (`PIECE_REC_BITS`), shared
+/// by the placed broadcast and the sync batches. Refuses an address outside
+/// the grid or a row outside the def table — this encoder only ever sees
+/// sim records.
 /// The trailing bit is the soft side's facing (hard/soft v0, wire v39):
 /// the client labels the side a player is looking at, so the bit rides
 /// every record the way a door's open bit does.
@@ -2485,6 +2530,12 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
         (rec.plate as i32 + PLATE_BIAS).clamp(0, (1 << PLATE_BITS) - 1) as u32,
         PLATE_BITS,
     )?;
+    // The exact hp (wire v102), which the store does maintain. The band
+    // stays beside it — a renderer draws damage from the band without the
+    // defs drip — and this is what the hammer prices a repair from
+    // (`build::repair_quote`), where a band could only bound it. No new
+    // secret: `StructHit` already tells the island `left` on every blow.
+    w.write(rec.hp as u32, 16)?;
     Ok(())
 }
 
@@ -2503,6 +2554,7 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         // so this needs no range check — the width is the check.
         dmg: r.read(DMG_BAND_BITS)? as u8,
         plate: (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8,
+        hp: r.read(16)? as u16,
         ..rec
     };
     // Coord/level/facing widths are exact; the row — and, since v40's
@@ -2661,6 +2713,15 @@ pub fn encode_event_piece_defs(
     w.write(total as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
+    // The repair percent (wire v102), on every batch so no order of the
+    // drip leaves a client holding rows and no price. With it and each
+    // record's hp the hammer names a repair's exact cost; without it, all
+    // it could say was "cost depends on damage". Zero is an unbaked table,
+    // and a client quotes nothing for it, as `build::repair` refuses.
+    if bc.repair_pct > REPAIR_PCT_MAX {
+        return Err(WireError::Range);
+    }
+    w.write(bc.repair_pct as u32, REPAIR_PCT_BITS)?;
     for def in bc.pieces[first..first + count].iter() {
         // `SHAPE_TRI_FLOOR_FRAME` is the top code (circulation, wire v72).
         if def.shape > SHAPE_TRI_FLOOR_FRAME
@@ -2683,9 +2744,10 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 65 bits, shared by the
-/// placed broadcast and the sync batches — the address, the row, the three
-/// state bits, the damage band, and since wire v89 the **pose** (free
+/// One placed-deployable record on the wire: 89 bits (`DEPLOY_REC_BITS`),
+/// shared by the placed broadcast and the sync batches — the address, the
+/// row, the three state bits, the damage band, since wire v100 a planter's
+/// beds, since v102 the exact hp, and since wire v89 the **pose** (free
 /// placement): the offset from the cell centre and the facing, a byte each,
 /// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
@@ -2723,6 +2785,8 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.yaw as u32, 8)?;
     // A planter's beds (v100); zero for everything else.
     w.write(rec.grow as u32, 8)?;
+    // The exact hp (v102) — `write_piece_rec`'s note applies.
+    w.write(rec.hp as u32, 16)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -2753,6 +2817,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         grow: r.read(8)? as u8,
+        hp: r.read(16)? as u16,
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -4965,6 +5030,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             {
                 return Err(WireError::Malformed);
             }
+            let repair_pct = r.read(REPAIR_PCT_BITS)? as u16;
+            if repair_pct > REPAIR_PCT_MAX {
+                return Err(WireError::Malformed);
+            }
             let mut rows = [PieceDef::INERT; PIECE_DEFS_BATCH];
             for row in rows.iter_mut().take(count) {
                 let shape = r.read(SHAPE_BITS)? as u8;
@@ -4995,6 +5064,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                repair_pct,
                 rows,
             }
         }
@@ -6907,12 +6977,15 @@ mod tests {
     #[test]
     fn piece_sync_full_batch_fits_the_cap() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        // Every field at a live value, the hp (v102) across its whole width:
+        // a record's size is fixed, so any full batch is the worst case.
         let recs: [PieceRec; PIECE_SYNC_BATCH] = core::array::from_fn(|i| PieceRec {
             cx: i as u16 * 31,
             cz: 1023 - i as u16,
             level: (i % MAX_BUILD_SOCKETS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_PIECE_DEFS) as u8,
+            hp: u16::MAX - i as u16 * 2047,
             ..PieceRec::default()
         });
         let len = encode_event_piece_sync(true, &recs, &mut buf).unwrap();
@@ -7029,9 +7102,11 @@ mod tests {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 assert_eq!((total, first, count), (7, 0, PIECE_DEFS_BATCH as u8));
+                assert_eq!(repair_pct, bc.repair_pct, "the price rides along");
                 assert_eq!(rows[0], bc.pieces[0], "decode rebuilds the sim row");
                 assert_eq!(rows[PIECE_DEFS_BATCH - 1], bc.pieces[PIECE_DEFS_BATCH - 1]);
             }
@@ -7046,9 +7121,11 @@ mod tests {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 assert_eq!((total, first, count), (7, PIECE_DEFS_BATCH as u8, 1));
+                assert_eq!(repair_pct, bc.repair_pct, "on every batch, not the first");
                 assert_eq!(rows[0], bc.pieces[PIECE_DEFS_BATCH]);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -7065,6 +7142,31 @@ mod tests {
             encode_event_piece_defs(&bad, 0, &mut buf),
             Err(WireError::Range)
         );
+        // So does a percent content would refuse; an unbaked 0 crosses.
+        let mut bad = bc;
+        bad.repair_pct = REPAIR_PCT_MAX + 1;
+        assert_eq!(
+            encode_event_piece_defs(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        let mut unbaked = bc;
+        unbaked.repair_pct = 0;
+        let (len, _) = encode_event_piece_defs(&unbaked, 0, &mut buf).unwrap();
+        assert!(matches!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::PieceDefs { repair_pct: 0, .. }
+        ));
+        // A forged 101..=127 is refused at decode: the percent sits right
+        // after the header, so overwrite it in a real frame.
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
+        let mut forged = buf;
+        let at =
+            (KIND_BITS + SUB_BITS + 2 * PIECE_DEFS_TOTAL_BITS + PIECE_DEFS_COUNT_BITS) as usize;
+        for b in 0..REPAIR_PCT_BITS as usize {
+            let bit = at + b;
+            forged[bit / 8] |= 0x80 >> (bit % 8);
+        }
+        assert_eq!(decode_event(&forged[..len]), Err(WireError::Malformed));
         // The full 18-row alpha shape drips in three batches.
         let mut full = BuildContent::EMPTY;
         full.piece_count = 18;
@@ -7094,13 +7196,14 @@ mod tests {
             level: 1,
             loc: sim_core::build::LOC_PLANE,
             row: 7,
+            hp: 1234,
             ..DeployRec::default()
         };
         let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
             EventMsg::DeployPlaced { rec },
-            "owner/hp/uh stay sim-side: decode carries defaults"
+            "hp crosses (v102); owner/uh stay sim-side and decode as defaults"
         );
         // A record the sim could never hold refuses at encode.
         let bad = DeployRec {
@@ -7119,6 +7222,7 @@ mod tests {
             level: (i % MAX_BUILD_SOCKETS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
+            hp: u16::MAX - i as u16 * 2731,
             ..DeployRec::default()
         });
         let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();
@@ -8770,6 +8874,9 @@ mod wire_domains {
             "WX_PM_BITS",
             // Per-cent wet and cold readings: units, bounded at 100.
             "EXPOSURE_PCT_BITS",
+            // The repair percent (v102): a unit, bounded at 100 by content
+            // and by `REPAIR_PCT_MAX` on both ends.
+            "REPAIR_PCT_BITS",
             // A grow-sync batch length, bounded by `GROW_SYNC_BATCH`.
             "GROW_SYNC_COUNT_BITS",
             "MOVE_SLOT_BITS",

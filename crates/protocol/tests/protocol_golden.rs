@@ -1377,6 +1377,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                     total,
                     first,
                     count,
+                    repair_pct,
                     rows,
                 } => {
                     assert_eq!(
@@ -1384,6 +1385,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                         (bc.piece_count as u8, 0, PIECE_DEFS_BATCH as u8),
                         "{name}: header mismatch"
                     );
+                    assert_eq!(repair_pct, bc.repair_pct, "{name}: repair percent mismatch");
                     for (i, row) in rows.iter().enumerate().take(count as usize) {
                         assert_eq!(*row, bc.pieces[i], "{name}: row {i} mismatch");
                     }

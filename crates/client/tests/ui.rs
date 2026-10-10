@@ -2643,7 +2643,8 @@ fn hammer_piece_defs() -> (BuildContent, u16) {
     (c, 3)
 }
 
-/// A target still stated in hp, banded the way the SERVER bands it.
+/// A target stated in hp, banded the way the SERVER bands it — and since
+/// wire v102 carrying that hp too, as the record does.
 ///
 /// The signature deliberately did not change with wire v44: these cases mean
 /// "half a wall" and "an intact wall", and saying that in bands would be
@@ -2659,6 +2660,7 @@ fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
         loc: 2,
         row,
         dmg: sim_core::build::damage_band(hp, hp_max),
+        hp,
         hp_max,
         side: None,
     }
@@ -2908,6 +2910,61 @@ fn hammer_upgrade_quote_uses_the_received_matching_shape_and_inventory() {
             &protocol::ItemCatalog::EMPTY
         ),
         "Nothing in reach"
+    );
+}
+
+/// The repair is quoted exactly (wire v102): the target's own rows, pro rata
+/// to the hp it is missing, at the table's percent — `build::repair_quote`,
+/// which is what `build::repair` charges — for a wall and for a door. It
+/// waits rather than guessing while the row, the percent or the hp is not
+/// known, and an intact piece quotes nothing rather than waiting.
+#[test]
+fn hammer_repair_quote_is_the_bill_for_either_store() {
+    let (mut defs, have) = hammer_piece_defs();
+    defs.pieces[0].n_costs = 2;
+    defs.pieces[0].costs = [(2, 300), (5, 7)];
+    defs.repair_pct = 50;
+    let mut inv = [ItemStack::default(); INV_SLOTS];
+    inv[0] = ItemStack {
+        item: 2,
+        count: 40,
+        ..ItemStack::default()
+    };
+    let none = DeployContent::EMPTY;
+    // 200 of 500 hp missing at 50 %: 300 × 2/5 × ½ = 60, more than the 40
+    // held; 7 × 2/5 × ½ = 1.4, charged as 2.
+    let wall = target(Store::Piece, 0, 300, 500);
+    let (rows, n) = hammer::repair_rows(&wall, &defs, have, &none, 0, &inv).unwrap();
+    assert_eq!(n, 2);
+    assert_eq!((rows[0].item, rows[0].units, rows[0].have), (2, 60, 40));
+    assert!(rows[0].short());
+    assert_eq!((rows[1].item, rows[1].units, rows[1].have), (5, 2, 0));
+
+    // A door prices off the deploy table's rows, at the piece table's
+    // percent (there is one percent, `BuildContent::repair_pct`).
+    let mut dc = DeployContent::EMPTY;
+    dc.def_count = 1;
+    dc.defs[0].hp = 200;
+    dc.defs[0].n_costs = 1;
+    dc.defs[0].costs[0] = (2, 20);
+    let door = target(Store::Deploy, 0, 50, 200);
+    let (rows, n) = hammer::repair_rows(&door, &defs, have, &dc, 1, &inv).unwrap();
+    // 150 of 200 missing: 20 × ¾ × ½ = 7.5, charged as 8.
+    assert_eq!((n, rows[0].item, rows[0].units), (1, 2, 8));
+
+    // Nothing to name yet: an undripped row, an unknown percent or hp.
+    assert!(hammer::repair_rows(&wall, &defs, 0, &none, 0, &inv).is_none());
+    assert!(hammer::repair_rows(&door, &defs, have, &dc, 0, &inv).is_none());
+    let mut unbaked = defs;
+    unbaked.repair_pct = 0;
+    assert!(hammer::repair_rows(&wall, &unbaked, have, &none, 0, &inv).is_none());
+    let unknown = Target { hp: 0, ..wall };
+    assert!(hammer::repair_rows(&unknown, &defs, have, &none, 0, &inv).is_none());
+    // Intact: an answer (no rows), not a wait.
+    let intact = target(Store::Piece, 0, 500, 500);
+    assert_eq!(
+        hammer::repair_rows(&intact, &defs, have, &none, 0, &inv).map(|(_, n)| n),
+        Some(0)
     );
 }
 

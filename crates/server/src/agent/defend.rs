@@ -25,7 +25,9 @@ use crate::mind::Why;
 use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::bots::OpAddr;
-use sim_core::build::{anchor, LOC_EDGE_XLO, LOC_EDGE_ZLO, REFUSE_B_COST};
+use sim_core::build::{
+    anchor, repair_quote, LOC_EDGE_XLO, LOC_EDGE_ZLO, MAX_REPAIR_COSTS, REFUSE_B_COST,
+};
 use sim_core::limits::{HOTBAR_SLOTS, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::terrain::Haven;
@@ -247,9 +249,10 @@ fn hammer_at_hand(core: &ClientCore, builder: &Builder) -> bool {
     })
 }
 
-/// Would the pack pay for mending this, by the game's price (each of the
-/// piece's own cost rows, pro rata to the hp missing, at the table's
-/// repair percent), the missing hp taken at the most the drawn band allows?
+/// Would the pack pay for mending this, by the game's own price
+/// (`build::repair_quote`: each of the piece's cost rows, pro rata to the hp
+/// missing, at the table's repair percent — the bill `build::repair` takes,
+/// off the hp and percent the wire carries since v102)?
 pub fn affordable(core: &ClientCore, deploy: bool, at: OpAddr) -> bool {
     let same = |r: (u16, u16, u8, u8)| r == (at.cx, at.cz, at.level, at.loc);
     if deploy {
@@ -262,7 +265,7 @@ pub fn affordable(core: &ClientCore, deploy: bool, at: OpAddr) -> bool {
             .is_some_and(|r| {
                 let def = core.deploy_defs.defs[usize::from(r.row)];
                 let n = usize::from(def.n_costs).min(def.costs.len());
-                pays(core, r.dmg, def.hp, &def.costs[..n])
+                pays(core, r.hp, def.hp, &def.costs[..n])
             })
     } else {
         core.pieces
@@ -273,29 +276,22 @@ pub fn affordable(core: &ClientCore, deploy: bool, at: OpAddr) -> bool {
             .is_some_and(|r| {
                 let def = core.piece_defs.pieces[usize::from(r.row)];
                 let n = usize::from(def.n_costs).min(def.costs.len());
-                pays(core, r.dmg, def.hp, &def.costs[..n])
+                pays(core, r.hp, def.hp, &def.costs[..n])
             })
     }
 }
 
-/// The pack holds each row's share of a repair of `dmg` bands on `max` hp.
-fn pays(core: &ClientCore, dmg: u8, max: u16, rows: &[(u16, u16)]) -> bool {
-    if max == 0 {
-        return false;
-    }
-    let pct = match core.piece_defs.repair_pct {
-        0 => 100,
-        p => u64::from(p),
-    };
-    let missing = (u64::from(dmg) * u64::from(max))
-        .div_ceil(7)
-        .min(u64::from(max));
-    rows.iter().all(|&(item, units)| {
-        let need = (u64::from(units) * missing * pct)
-            .div_ceil(u64::from(max) * 100)
-            .max(1);
-        u64::from(count(core, item)) >= need
-    })
+/// The pack holds every row of the quote for mending `hp` back to `max`.
+/// No rows is nothing the server would sell: intact, an unbaked percent, or
+/// an unpriced row.
+fn pays(core: &ClientCore, hp: u16, max: u16, rows: &[(u16, u16)]) -> bool {
+    let mut quote = [(0u16, 0u32); MAX_REPAIR_COSTS];
+    let n = repair_quote(rows, hp, max, core.piece_defs.repair_pct, &mut quote);
+    n > 0
+        && quote
+            .iter()
+            .take(n)
+            .all(|&(item, units)| count(core, item) >= units)
 }
 
 /// The damage band the client draws at this address; `None` once nothing

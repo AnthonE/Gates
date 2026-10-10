@@ -290,17 +290,18 @@ pub fn row_for(content: &BuildContent, shape: u8, material: u8) -> Option<u16> {
 
 /// One line of the centre readout's price. Same shape as the craft panel's
 /// ingredient row and for the same reason: a cost the player cannot pay is
-/// drawn short rather than hidden.
+/// drawn short rather than hidden. `units` is a `u32` because a repair's
+/// share is (`build::repair_quote`); a build row's `u16` widens into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cost {
     pub item: u16,
-    pub units: u16,
+    pub units: u32,
     pub have: u32,
 }
 
 impl Cost {
     pub fn short(&self) -> bool {
-        self.have < self.units as u32
+        self.have < self.units
     }
 }
 
@@ -323,7 +324,7 @@ pub fn costs(
     for (slot, (item, units)) in out.iter_mut().zip(def.costs.iter()).take(n) {
         *slot = Cost {
             item: *item,
-            units: *units,
+            units: u32::from(*units),
             have: inv_count(inv, *item),
         };
     }

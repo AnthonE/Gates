@@ -2248,11 +2248,41 @@ fn repair_units(units: u16, missing: u16, max_hp: u16, repair_pct: u16) -> u32 {
 }
 
 /// The wider of the two cost tables, so one price loop serves both stores.
-const MAX_REPAIR_COSTS: usize = MAX_DEPLOY_COSTS;
+pub const MAX_REPAIR_COSTS: usize = MAX_DEPLOY_COSTS;
 const _: () = assert!(
     MAX_PIECE_COSTS <= MAX_REPAIR_COSTS,
     "repair copies a piece's cost rows into a deployable-width buffer"
 );
+
+/// What mending a structure from `hp_now` back to `hp_full` costs: one
+/// `(item, units)` per cost row in `costs` (the row's own, already cut to
+/// its `n_costs`), written into `out`, and the count returned.
+///
+/// **The one price.** [`repair`] checks and takes exactly these rows, and a
+/// client quotes them before the press (`client::ui::hammer::repair_rows`,
+/// off the hp and `repair_pct` the record and the defs drip carry since
+/// wire v102), so the hammer's readout cannot disagree with the bill.
+///
+/// Zero rows means nothing is for sale, and those are `repair`'s own
+/// refusals: nothing missing, an unbaked table (`repair_pct == 0`), or a
+/// row that quotes no price. A quote is never a free heal.
+pub fn repair_quote(
+    costs: &[(u16, u16)],
+    hp_now: u16,
+    hp_full: u16,
+    repair_pct: u16,
+    out: &mut [(u16, u32); MAX_REPAIR_COSTS],
+) -> usize {
+    let missing = hp_full.saturating_sub(hp_now);
+    if missing == 0 || repair_pct == 0 {
+        return 0;
+    }
+    let n = costs.len().min(MAX_REPAIR_COSTS);
+    for (slot, &(item, units)) in out.iter_mut().zip(costs).take(n) {
+        *slot = (item, repair_units(units, missing, hp_full, repair_pct));
+    }
+    n
+}
 
 /// Take a piece back down and refund it whole — **demolish v1**
 /// (`reference/BUILDING.md` §6/§7 verb 9).
@@ -2492,18 +2522,22 @@ pub fn repair(
     // `place`'s reason. A half-paid repair leaves the client's mirror and
     // the server's store disagreeing about an inventory, which is the
     // divergence class `CLAUDE.md`'s trap list names one verb over.
-    for &(item, units) in costs.iter().take(n_costs) {
-        if inv_count(&p.inv, item) < repair_units(units, missing, hp_full, bc.repair_pct) {
+    let mut quote = [(0u16, 0u32); MAX_REPAIR_COSTS];
+    let n = repair_quote(
+        &costs[..n_costs],
+        hp_now,
+        hp_full,
+        bc.repair_pct,
+        &mut quote,
+    );
+    for &(item, units) in quote.iter().take(n) {
+        if inv_count(&p.inv, item) < units {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
             return;
         }
     }
-    for &(item, units) in costs.iter().take(n_costs) {
-        inv_take(
-            &mut p.inv,
-            item,
-            repair_units(units, missing, hp_full, bc.repair_pct),
-        );
+    for &(item, units) in quote.iter().take(n) {
+        inv_take(&mut p.inv, item, units);
     }
     // The wall: a repaired structure *is* its baked row's hp and never a
     // point more. Written as an assignment rather than an add-and-clamp so
@@ -3742,6 +3776,65 @@ mod tests {
             "a refused repair heals nothing"
         );
         assert_eq!(inv_count(&p.inv, 0), 0, "and takes nothing");
+    }
+
+    /// The quote a client shows is the bill `repair` takes, row by row,
+    /// across the hp range and at a percent that is not the shipped 100 —
+    /// the client quotes through `repair_quote`, so a verb that priced any
+    /// other way would put a number on the hammer the server never charges.
+    #[test]
+    fn the_repair_quote_is_what_repair_charges() {
+        for pct in [100u16, 35] {
+            for hp in [1u16, 2, 33, 40, 50, 99] {
+                let (mut bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 1000), (1, 1000)]);
+                // Two rows on the wall, so a quote that dropped or swapped
+                // one is visible.
+                bc.pieces[1].n_costs = 2;
+                bc.pieces[1].costs = [(0, 3), (1, 7)];
+                bc.repair_pct = pct;
+                let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+                pieces.set_hp(i, hp);
+                let def = bc.pieces[1];
+                let mut quote = [(0u16, 0u32); MAX_REPAIR_COSTS];
+                let n = repair_quote(
+                    &def.costs[..def.n_costs as usize],
+                    hp,
+                    def.hp,
+                    pct,
+                    &mut quote,
+                );
+                assert_eq!(n, 2);
+                let before = [inv_count(&p.inv, 0), inv_count(&p.inv, 1)];
+                repair(
+                    &bc,
+                    &DeployContent::EMPTY,
+                    &mut nod,
+                    &mut pieces,
+                    &mut p,
+                    false,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_EDGE_XLO,
+                    &mut ev,
+                );
+                assert_eq!(last(&ev).0, crate::world::EV_PIECE_REPAIRED);
+                for (k, &(item, units)) in quote.iter().take(n).enumerate() {
+                    assert_eq!(item, def.costs[k].0);
+                    assert!(units >= 1, "pct {pct} hp {hp}: a free row");
+                    assert_eq!(
+                        before[k] - inv_count(&p.inv, item),
+                        units,
+                        "pct {pct} hp {hp}: row {k} quoted {units}, charged otherwise"
+                    );
+                }
+            }
+        }
+        // Nothing for sale is no rows: intact, unbaked, or unpriced.
+        let mut out = [(0u16, 0u32); MAX_REPAIR_COSTS];
+        assert_eq!(repair_quote(&[(0, 3)], 100, 100, 100, &mut out), 0);
+        assert_eq!(repair_quote(&[(0, 3)], 40, 100, 0, &mut out), 0);
+        assert_eq!(repair_quote(&[], 40, 100, 100, &mut out), 0);
     }
 
     /// An unbaked table refuses rather than healing free.

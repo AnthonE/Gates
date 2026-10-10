@@ -1105,7 +1105,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// what a deployable is made of from its archetype. And an item catalog
 /// row ends in its `class` (four bits after `revive`, `craft::CLASS_*`), so
 /// the craft rail groups by the reference's classes; `CATALOG_BATCH` went
-/// 8 → 7 to keep a full batch under the cap.
+/// 8 → 7 to keep a full batch under the cap. And a repair's exact price:
+/// the placed-piece and placed-deployable records end in the structure's
+/// `hp` (16 bits, after the plate and after the beds), and `SUB_PIECE_DEFS`
+/// carries the table's `repair_pct` (7 bits after the header), so the
+/// hammer quotes `build::repair_quote` instead of "cost depends on damage".
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

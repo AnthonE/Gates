@@ -2870,6 +2870,9 @@ impl ShardCore {
                         row: ev.b as u8,
                         locked: placed.is_some_and(|d| d.locked),
                         pose: placed.map(|d| d.pose).unwrap_or_default(),
+                        // Its hp off the store too (wire v102): the hammer
+                        // quotes a repair from it.
+                        hp: placed.map_or(0, |d| d.hp),
                         ..DeployRec::default()
                     };
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {

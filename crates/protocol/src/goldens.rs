@@ -1440,6 +1440,9 @@ pub fn event_piece_placed() -> PieceRec {
         // width one short — agrees with a correct encoder on zero. A fixture
         // carrying 0 would pin bytes that cannot tell the two apart.
         plate: -1,
+        // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
+        // encoder that never wrote the field would match.
+        hp: 0x9C35,
         ..PieceRec::default()
     }
 }
@@ -1479,6 +1482,9 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
         // that gate's whole reason for existing.
         plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
+        // The hp (v102) down the field from its top, off the index for the
+        // plate's reason: a draw here would shift every later record.
+        hp: u16::MAX - i as u16 * 2047,
         ..PieceRec::default()
     });
     (true, recs)
@@ -1496,6 +1502,8 @@ pub fn event_piece_defs() -> BuildContent {
     type Row = (u8, u8, u16, &'static [(u16, u16)]);
     let mut bc = BuildContent::EMPTY;
     bc.piece_count = 7;
+    // The top of the percent's range (v102), so the field is not all zeros.
+    bc.repair_pct = 100;
     let rows: [Row; 7] = [
         (sim_core::build::SHAPE_FOUNDATION, 0, 750, &[(0, 350)]),
         (sim_core::build::SHAPE_WALL, 1, 1750, &[(1, 350)]),
@@ -1579,6 +1587,8 @@ pub fn event_deploy_placed() -> DeployRec {
         locked: true,
         has_lock: true,
         grow: 0b11_00_10_01,
+        // `event_piece_placed`'s rule for the hp (v102).
+        hp: 0x5AC3,
         ..DeployRec::default()
     }
 }
@@ -1610,6 +1620,8 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
             open: rng.next_bounded(2) == 0,
             locked: rng.next_bounded(2) == 0,
             has_lock: rng.next_bounded(2) == 0,
+            // Off the index, not `rng` (v102): `event_piece_sync`'s rule.
+            hp: u16::MAX - i as u16 * 2731,
             ..DeployRec::default()
         };
         // A body slot stands anywhere; an insert hangs at the centre.
