@@ -539,6 +539,11 @@ pub const HEARTH_RADIUS_M: f32 = 24.0;
 /// Upkeep/decay cadence: one period per real hour at the 30 Hz tick.
 /// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const UPKEEP_PERIOD_TICKS: u64 = 108_000;
+/// How often the shard re-tells a hearth's crew standing in its claim what
+/// it holds and what a day costs (the crew HUD vital, NOW §0up 3): every
+/// ten seconds. Not sim state — the server's cadence, kept here so the
+/// client's staleness rule (`ui::hearth::vital`) reads the same number.
+pub const CREW_VITAL_TICKS: u64 = 10 * crate::limits::TICK_HZ as u64;
 /// Periods per day — the divisor that spreads `upkeep_pct_per_day`
 /// (content/balance.toml) over hourly charges. Calendar arithmetic, not
 /// a knob.
@@ -1172,6 +1177,30 @@ impl Deploys {
     /// [`Deploys::refresh_claims`].
     pub(crate) fn hearth_covers(&self, hi: usize, x: f32, z: f32) -> bool {
         self.claim.covers(hi, x, z)
+    }
+
+    /// The hearth whose crew `id` is on and whose **cached** claim volume
+    /// covers the planar point — "am I standing in my own base, and which
+    /// one", the crew HUD vital's question (NOW §0up 3). Where two of your
+    /// claims overlap, the hearth nearest the point answers, so a panel
+    /// open at one hearth is never re-pointed at the other.
+    ///
+    /// Read-only and outside the tick: the server asks it after
+    /// `World::tick`, against the cache the sweep just refreshed, which is
+    /// [`upkeep::bill`](crate::upkeep::bill)'s contract too.
+    pub fn crew_hearth_at(&self, x: f32, z: f32, id: u32) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (hi, h) in self.hearths().iter().enumerate() {
+            if !h.crew.contains(id) || !self.hearth_covers(hi, x, z) {
+                continue;
+            }
+            let (hx, hz) = cell_center(h.cx, h.cz);
+            let d2 = (hx - x) * (hx - x) + (hz - z) * (hz - z);
+            if best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((hi, d2));
+            }
+        }
+        best.map(|(hi, _)| hi)
     }
 
     pub fn len(&self) -> usize {

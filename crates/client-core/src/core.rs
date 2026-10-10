@@ -1957,6 +1957,16 @@ pub struct ClientCore {
     pub stock_addr: (u16, u16, u8),
     pub stock: [(u16, u32, u32); HEARTH_STOCK_ROWS],
     pub stock_count: u8,
+    /// The server tick (estimate, low 32 bits) the last stock ack landed
+    /// on — how old the crew HUD vital's reading is ([`Self::stock_age`]).
+    /// The shard re-sends one every `CREW_VITAL_TICKS` while you stand in
+    /// your own claim (NOW §0up 3), so an old one means you left it.
+    pub stock_at: u32,
+    /// Whether the last ack named the same hearth as the one before it and
+    /// some row held more — a feed landed (yours or a crewmate's). The
+    /// periodic push only ever sees stock spent, so this is what tells the
+    /// answer to a feed from the drip, without a wire bit for it.
+    pub stock_grew: bool,
     /// The `APPLIED2_*` word for the last `on_stream` call, read back by
     /// `applied2()`. Rebuilt from zero on every call for the same reason
     /// `n_slot_changes` is: it describes one message, not a running state,
@@ -2167,6 +2177,8 @@ impl ClientCore {
             stock_addr: (0, 0, 0),
             stock: [(0, 0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
+            stock_at: 0,
+            stock_grew: false,
             applied2: 0,
             known: 0,
             research_toasts: [(0, 0); TOAST_RING],
@@ -3608,9 +3620,16 @@ impl ClientCore {
                 rows,
                 count,
             } => {
+                let n = (count as usize).min(HEARTH_STOCK_ROWS);
+                self.stock_grew = self.stock_addr == (cx, cz, level)
+                    && rows[..n]
+                        .iter()
+                        .zip(&self.stock)
+                        .any(|(new, old)| new.0 == old.0 && new.1 > old.1);
                 self.stock_addr = (cx, cz, level);
                 self.stock = rows;
                 self.stock_count = count;
+                self.stock_at = self.server_tick_u32();
                 flags |= APPLIED_STOCK;
             }
             // The whole list every time, so this is a replace and never a
@@ -4227,6 +4246,13 @@ impl ClientCore {
     /// wire at.
     fn server_tick_u32(&self) -> u32 {
         self.clock.server_est.max(0.0) as u64 as u32
+    }
+
+    /// Ticks since the last stock ack landed — the crew HUD vital's
+    /// freshness (`stock_at`). A clock estimate nudged back under the
+    /// arrival reads 0, not four billion.
+    pub fn stock_age(&self) -> u32 {
+        (self.server_tick_u32().wrapping_sub(self.stock_at) as i32).max(0) as u32
     }
 
     /// Rust's safe zone: standing in THE GATE with a weapon in hand, which

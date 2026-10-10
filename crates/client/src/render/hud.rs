@@ -895,6 +895,9 @@ pub enum ExposureChip {
     Cold,
     /// Inside THE GATE's safe zone (`sim_core::town::safe`).
     Safe,
+    /// Standing in your own base: how long its hearth keeps it, or that it
+    /// is decaying (the crew HUD vital, `ui::hearth::vital`).
+    Upkeep,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -942,6 +945,7 @@ fn safe_chip(
     Some(("SAFE ZONE".to_string(), false))
 }
 
+const UPKEEP_CHIP: Color = Color::srgba(0.46, 0.34, 0.16, 0.85);
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
@@ -999,7 +1003,9 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
 }
 
 /// Keep the wet and cold chips on what the server last said. Hidden while
-/// there is nothing to say — dry, and warm enough not to mention.
+/// there is nothing to say — dry, and warm enough not to mention. The
+/// upkeep chip likewise: shown while the shard keeps re-telling you your
+/// hearth's stock, which it does only inside your own claim.
 pub fn exposure(
     net: NonSend<super::Net>,
     sky: Option<Res<super::weather::WeatherNow>>,
@@ -1041,6 +1047,14 @@ pub fn exposure(
                     Some((line, false)) => (true, line, SAFE_CHIP),
                     Some((line, true)) => (true, line, HOSTILE_CHIP),
                     None => (false, String::new(), SAFE_CHIP),
+                }
+            }
+            ExposureChip::Upkeep => {
+                let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
+                match crate::ui::hearth::vital(rows, core.stock_age()) {
+                    Some((line, false)) => (true, line, UPKEEP_CHIP),
+                    Some((line, true)) => (true, line, FREEZE_CHIP),
+                    None => (false, String::new(), UPKEEP_CHIP),
                 }
             }
         };
@@ -1576,8 +1590,14 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     ));
                 });
             // Wet and cold (weather v0): two chips over the bars, hidden
-            // until there is something to say.
-            for chip in [ExposureChip::Safe, ExposureChip::Wet, ExposureChip::Cold] {
+            // until there is something to say. The base's upkeep heads the
+            // stack (NOW §0up 3): it is about the base, not the body.
+            for chip in [
+                ExposureChip::Upkeep,
+                ExposureChip::Safe,
+                ExposureChip::Wet,
+                ExposureChip::Cold,
+            ] {
                 stack.spawn((
                     chip,
                     Text::new(""),
@@ -2561,8 +2581,10 @@ pub fn feedback(
     // What the hearth is holding, after you feed it. `stock` is a latched
     // ROW TABLE rather than one value, so the same freshness rule applies —
     // and `stock_count` is how many of the rows are live, which is why the
-    // slice is taken rather than the array walked whole.
-    if feed.applied & client_core::core::APPLIED_STOCK != 0 {
+    // slice is taken rather than the array walked whole. Only an ack that
+    // grew the stock speaks: the crew vital's push re-sends the same rows
+    // every ten seconds in your base, and the chip says those.
+    if feed.applied & client_core::core::APPLIED_STOCK != 0 && core.stock_grew {
         let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
         // The panel says it better when it is up on this hearth.
         let shown = hearth_view.0 == Some(core.stock_addr);

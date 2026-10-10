@@ -7,6 +7,8 @@
 //! (`EventMsg::Stock`, latched on `ClientCore::stock`): `E` at a hearth
 //! feeds it and opens this, and a feed with nothing to give still answers.
 //! The server answers only the crew, which is why an empty panel says so.
+//! The same ack is pushed to a crew member standing in the claim every ten
+//! seconds, and that is what the HUD's upkeep vital reads ([`vital`]).
 //!
 //! A panel that does **not** grab the pointer, for the keypad's reason
 //! (`ui::keypad`): the hearth is in the room you are defending, so walking
@@ -78,6 +80,28 @@ pub fn status_line(stock: &[(u16, u32, u32)]) -> String {
     }
 }
 
+/// How long a stock reading stays on the HUD with no fresh one: three of
+/// the shard's pushes (`sim_core::deploy::CREW_VITAL_TICKS`). They come
+/// only while you stand in a claim you are crew of, so a reading this old
+/// means you walked out (or died), and the vital goes with it.
+pub const VITAL_STALE_TICKS: u32 = 3 * sim_core::deploy::CREW_VITAL_TICKS as u32;
+
+/// The crew HUD vital (NOW §0up 3): `UPKEEP 1D 4H 30M` while the base is
+/// paid, `BASE DECAYING` once a material has run out — the `bool` says it
+/// is the warning. `None` when there is nothing to say: nothing billed (a
+/// base of twig), or a reading `age` ticks old that the shard stopped
+/// refreshing. The clock is the latest push's own; at one every ten
+/// seconds there is nothing to count down between them.
+pub fn vital(stock: &[(u16, u32, u32)], age: u32) -> Option<(String, bool)> {
+    if age > VITAL_STALE_TICKS {
+        return None;
+    }
+    match minutes_left(stock)? {
+        0 => Some(("BASE DECAYING".to_string(), true)),
+        m => Some((format!("UPKEEP {}", duration_label(m)), false)),
+    }
+}
+
 /// Is a body at `pos` still in feeding reach of the hearth standing at
 /// `(hx, hz)` (`DeployRec::xz`, where it was freely placed)? `deploy::feed`'s
 /// own test — planar distance against `build::BUILD_REACH_M` — so the panel
@@ -126,6 +150,26 @@ mod tests {
         assert_eq!(duration_label(59), "59M");
         assert_eq!(duration_label(61), "1H 1M");
         assert_eq!(duration_label(1440 + 4 * 60 + 30), "1D 4H 30M");
+    }
+
+    #[test]
+    fn the_vital_reads_the_clock_and_goes_when_the_pushes_stop() {
+        // 480 wood at 240 a day: two days.
+        let paid = [(3, 480, 240), (4, 50, 0)];
+        assert_eq!(
+            vital(&paid, 0),
+            Some(("UPKEEP 2D 0H 0M".to_string(), false))
+        );
+        assert_eq!(
+            vital(&[(3, 0, 240)], 0),
+            Some(("BASE DECAYING".to_string(), true))
+        );
+        // Nothing billed says nothing, however fresh.
+        assert_eq!(vital(&[(3, 480, 0)], 0), None);
+        assert_eq!(vital(&[], 0), None);
+        // Up through three missed pushes it holds; past them it goes.
+        assert!(vital(&paid, VITAL_STALE_TICKS).is_some());
+        assert_eq!(vital(&paid, VITAL_STALE_TICKS + 1), None);
     }
 
     #[test]

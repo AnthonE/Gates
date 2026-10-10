@@ -16,7 +16,7 @@ use protocol::{ActionMsg, ItemCatalog, PIECE_SYNC_BATCH};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE};
-use sim_core::deploy::{DeployContent, REFUSE_D_CLAIM, UPKEEP_PERIOD_TICKS};
+use sim_core::deploy::{DeployContent, CREW_VITAL_TICKS, REFUSE_D_CLAIM, UPKEEP_PERIOD_TICKS};
 use sim_core::gather::{GatherContent, ItemStack};
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
@@ -491,6 +491,145 @@ fn deployables_ride_the_wire() {
         assert_eq!(c.pieces.len(), core.world.pieces.len(), "mirror drifted");
     }
 
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// The crew HUD vital (NOW §0up 3): a crew member standing in the claim is
+/// re-told the hearth's stock once every `CREW_VITAL_TICKS` without a press,
+/// a stranger on the same floor never is, and walking out of the claim stops
+/// it. A push re-sends rows the client already holds, so `stock_grew` stays
+/// down for it and comes up for a feed — what keeps the feed's toast off the
+/// push.
+#[test]
+fn the_crew_in_their_claim_hear_the_stock_unasked() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 50,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w0].inv[2] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    act(
+        &mut core,
+        0,
+        ActionMsg::Place {
+            row: 0,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+            freehand: false,
+            plate: 0,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    act(
+        &mut core,
+        0,
+        ActionMsg::Deploy {
+            row: 0,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(core.world.deploys.hearths().len(), 1, "no hearth stood");
+
+    let stocks = |seen: &[(usize, protocol::EventMsg)], slot: usize| -> Vec<(u16, u16, u8)> {
+        seen.iter()
+            .filter_map(|(s, m)| match *m {
+                protocol::EventMsg::Stock { cx, cz, level, .. } if *s == slot => {
+                    Some((cx, cz, level))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    // A period with no press: one push to the crew, none to the stranger
+    // standing beside them.
+    let mut seen = Vec::new();
+    for _ in 0..CREW_VITAL_TICKS {
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert_eq!(stocks(&seen, 0), vec![(CX, CZ, 0)], "one push a period");
+    assert!(
+        stocks(&seen, 1).is_empty(),
+        "a stranger read the decay clock"
+    );
+    let c0 = &clients[0].1;
+    assert_eq!(c0.stock_addr, (CX, CZ, 0));
+    assert!(c0.stock_count > 0);
+    assert!(
+        (c0.stock_age() as u64) < CREW_VITAL_TICKS,
+        "the push did not stamp its arrival"
+    );
+
+    // The next push names the same hearth with the same rows: no growth.
+    seen.clear();
+    for _ in 0..CREW_VITAL_TICKS {
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert_eq!(stocks(&seen, 0).len(), 1);
+    assert!(!clients[0].1.stock_grew, "a push read as a feed");
+
+    // A feed grows the stock and its ack says so. Kept off slot 0's push
+    // tick (phase 0), whose push would land behind the ack and re-latch it.
+    while !(3..=CREW_VITAL_TICKS - 3).contains(&(core.world.tick % CREW_VITAL_TICKS)) {
+        pump(&mut core, &stats, &mut clients);
+    }
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+        skin: 0,
+    };
+    act(
+        &mut core,
+        0,
+        ActionMsg::Feed {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[0] & APPLIED_STOCK, 0, "the feed was not acked");
+    assert!(clients[0].1.stock_grew, "a feed's ack did not read as one");
+
+    // Out of the claim (60 m off a one-foundation base), the pushes stop.
+    let far_x = ((CX + 20) as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
+    core.world.players[w0].body = sim_core::movement::Body::at(SEED, hv(SEED), far_x, SPAWN.1);
+    seen.clear();
+    for _ in 0..CREW_VITAL_TICKS {
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(stocks(&seen, 0).is_empty(), "pushed outside the claim");
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
 

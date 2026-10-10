@@ -97,6 +97,20 @@ fn addr_parts(addr: u32) -> (u8, u8, u8, u8) {
     )
 }
 
+/// Ticks between two connections' crew-vital pushes: the period spread over
+/// every slot a push can go to (players, then seats), so slot `s` is due on
+/// its own phase and no two share a tick (`crew_vital_due`).
+const CREW_VITAL_STRIDE: u64 =
+    sim_core::deploy::CREW_VITAL_TICKS / (MAX_PLAYERS + MAX_SPECTATORS) as u64;
+const _: () = assert!(CREW_VITAL_STRIDE > 0);
+
+/// Whether connection `slot` is owed its crew-vital push this tick (NOW
+/// §0up 3): once per `CREW_VITAL_TICKS`, on a phase of its own, so a full
+/// shard's crew never ask for their bills on one tick.
+fn crew_vital_due(tick: u64, slot: usize) -> bool {
+    (tick + slot as u64 * CREW_VITAL_STRIDE).is_multiple_of(sim_core::deploy::CREW_VITAL_TICKS)
+}
+
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
 /// distance falloff half-scale is 32 m. Other classes land with their
 /// entities.
@@ -3897,34 +3911,14 @@ impl ShardCore {
                     if !hr.crew.contains(ev.a) {
                         continue;
                     }
-                    // What a day charges this hearth, per row (wire v89) —
-                    // the sweep's own arithmetic over the claim cache the
-                    // tick just refreshed (upkeep v2's readout). A walk of
-                    // the piece store, asked per feed press and never per
-                    // tick, with an O(1) answer for the base's own pieces.
-                    let bill = sim_core::upkeep::bill(
-                        &self.world.deploy,
-                        &self.world.build,
-                        &self.world.pieces,
-                        &self.world.deploys,
-                        hi,
-                    );
-                    let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
-                    let n = self.world.deploy.mat_count as usize;
-                    for (m, row) in rows.iter_mut().enumerate().take(n) {
-                        *row = (self.world.deploy.mats[m], hr.stock[m], bill[m]);
-                    }
-                    match encode_event_stock(cx, cz, level, &rows[..n], &mut self.ev_buf) {
-                        Ok(len) => {
-                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                                ShardStats::bump(&stats.ev_sent);
-                            } else {
-                                // The next feed re-announces; cosmetic.
-                                self.clients[slot].ev_resync();
-                                ShardStats::bump(&stats.ev_resyncs);
-                            }
+                    if let Some(len) = self.encode_stock(hi, stats) {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            // The next feed re-announces; cosmetic.
+                            self.clients[slot].ev_resync();
+                            ShardStats::bump(&stats.ev_resyncs);
                         }
-                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
                 EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED | EV_STUMP_GRUBBED => {
@@ -4103,6 +4097,36 @@ impl ShardCore {
         (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
     }
 
+    /// Hearth `hi`'s stock ack into `ev_buf`: each row's item, what the
+    /// hearth holds and what a day charges (wire v89) — the sweep's own
+    /// arithmetic over the claim cache the tick just refreshed (upkeep v2's
+    /// readout). A walk of the piece store with an O(1) answer for the
+    /// base's own pieces, asked per feed press and by the crew vital's
+    /// push, which [`crew_vital_due`] holds to one connection a tick.
+    /// `None` (counted) when the rows would not encode.
+    fn encode_stock(&mut self, hi: usize, stats: &ShardStats) -> Option<usize> {
+        let hr = self.world.deploys.hearths()[hi];
+        let bill = sim_core::upkeep::bill(
+            &self.world.deploy,
+            &self.world.build,
+            &self.world.pieces,
+            &self.world.deploys,
+            hi,
+        );
+        let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
+        let n = (self.world.deploy.mat_count as usize).min(HEARTH_STOCK_ROWS);
+        for (m, row) in rows.iter_mut().enumerate().take(n) {
+            *row = (self.world.deploy.mats[m], hr.stock[m], bill[m]);
+        }
+        match encode_event_stock(hr.cx, hr.cz, hr.level, &rows[..n], &mut self.ev_buf) {
+            Ok(len) => Some(len),
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                None
+            }
+        }
+    }
+
     /// One client's drip work: catalog batch, harvested-set sync batch,
     /// inventory diff — each at most one message per tick, so per-client
     /// event work is bounded regardless of world size. A refused push
@@ -4279,6 +4303,33 @@ impl ShardCore {
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
             self.clients[slot].bags_owed = false;
+        }
+
+        // The crew HUD vital (NOW §0up 3): a body standing in a claim it is
+        // crew of is re-told that hearth's stock and bill every
+        // `CREW_VITAL_TICKS`, the feed ack's own message (`EventMsg::Stock`),
+        // so the HUD can say UPKEEP 1D 4H / BASE DECAYING without a press.
+        // Phased by slot, so a full shard pays at most one bill a tick. A
+        // full ring skips one push; the next is ten seconds off. A seat runs
+        // it against its target's body and id, as it runs every drip.
+        if crew_vital_due(self.world.tick, slot) {
+            let hi = self.live_wslot(slot).and_then(|w| {
+                let b = self.world.players[w].body;
+                let (x, z) = (
+                    b.qx as f32 * sim_core::movement::POS_XZ_Q,
+                    b.qz as f32 * sim_core::movement::POS_XZ_Q,
+                );
+                self.world
+                    .deploys
+                    .crew_hearth_at(x, z, self.clients[slot].id)
+            });
+            if let Some(len) = hi.and_then(|hi| self.encode_stock(hi, stats)) {
+                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.ev_sent);
+                } else {
+                    return;
+                }
+            }
         }
 
         // Catalog: names first — toasts and hotbar labels want them early.
@@ -6163,6 +6214,27 @@ mod tests {
 
     const SEED: u64 = 0x5B_F06E;
     const PLAYER: u32 = 7;
+
+    /// The crew vital's stagger (NOW §0up 3): every slot a push can go to
+    /// is due exactly once a period, and never on the same tick as another
+    /// — so a full shard standing in its bases pays one bill a tick at most.
+    #[test]
+    fn crew_vital_pushes_are_one_slot_a_tick() {
+        let period = sim_core::deploy::CREW_VITAL_TICKS;
+        let slots = MAX_PLAYERS + MAX_SPECTATORS;
+        let mut due_ticks = vec![0u32; period as usize];
+        for slot in 0..slots {
+            let due: Vec<u64> = (5 * period..6 * period)
+                .filter(|&t| crew_vital_due(t, slot))
+                .collect();
+            assert_eq!(due.len(), 1, "slot {slot} is due once a period");
+            due_ticks[(due[0] % period) as usize] += 1;
+        }
+        assert!(
+            due_ticks.iter().all(|&n| n <= 1),
+            "two slots share a push tick"
+        );
+    }
 
     /// Run the real event pump once, capturing every event-lane payload.
     fn pumped(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<u8>> {
