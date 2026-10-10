@@ -525,7 +525,14 @@ const SUB_PLANTER: u32 = 90;
 /// `EV_STUMP_GRUBBED`): the cell, broadcast. A joiner reads the same fact
 /// off the slot sync's per-cell bit.
 const SUB_STUMP_GRUBBED: u32 = 91;
-const SUB_MAX: u32 = SUB_STUMP_GRUBBED;
+/// A hand verb refused because the body is down (own-fact, wire v102, sim
+/// `EV_DOWN_REFUSED`): which verb, `sim_core::world::CMD_*`.
+const SUB_DOWN_REFUSED: u32 = 92;
+const SUB_MAX: u32 = SUB_DOWN_REFUSED;
+/// Width of `SUB_DOWN_REFUSED`'s verb tag: `CMD_MAX` is 31, so one bit of
+/// headroom over the tightest field.
+const DOWN_TAG_BITS: u32 = 6;
+const _: () = assert!((sim_core::world::CMD_MAX as u32) < (1 << DOWN_TAG_BITS));
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1675,6 +1682,8 @@ pub enum EventMsg {
     CardDoors { bits: u8 },
     /// Your swipe was refused (`sim_core::monument::REFUSE_S_*`).
     SwipeRefused { code: u8, door: u8 },
+    /// A hand verb refused because you are down (`sim_core::world::CMD_*`).
+    DownRefused { tag: u8 },
     /// Until when you are hostile: the low 32 bits of the tick the town's
     /// protection returns (`sim_core::combat::HOSTILE_TICKS` after your last
     /// attack on a player), or 0 when you are not.
@@ -3847,6 +3856,16 @@ pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
+/// Your hand verb `tag` (`sim_core::world::CMD_*`) was refused: you are down.
+pub fn encode_event_down_refused(tag: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if tag == 0 || tag > sim_core::world::CMD_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DOWN_REFUSED)?;
+    w.write(tag as u32, DOWN_TAG_BITS)?;
+    Ok(w.finish())
+}
+
 /// The owner's skin set, every word of it.
 pub fn encode_event_skins_owned(
     owned: &sim_core::skin::SkinSet,
@@ -5758,6 +5777,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::SwipeRefused { code, door }
+        }
+        SUB_DOWN_REFUSED => {
+            let tag = r.read(DOWN_TAG_BITS)? as u8;
+            if tag == 0 || tag > sim_core::world::CMD_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::DownRefused { tag }
         }
         SUB_SKINS_OWNED => {
             let mut owned = sim_core::skin::SkinSet::EMPTY;
@@ -8702,6 +8728,19 @@ mod wire_domains {
             bits: BAG_GONE_BITS,
             live_max: 2,
         },
+        Domain {
+            what: "down-refused verb",
+            sim_site: "world.rs CMD_*",
+            wire_site: "DOWN_TAG_BITS",
+            home: "world.rs",
+            prefix: "pub const CMD_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 31,
+            bits: DOWN_TAG_BITS,
+            // Every hand verb `World::hand_slot_of` answers for, v102.
+            live_max: 31,
+        },
     ];
 
     /// Scrape one domain's live members out of **every** module.
@@ -8851,9 +8890,10 @@ mod wire_domains {
             // craft and deploy refusals, a byte each since v0 (§5b).
             // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
             // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
-            // `craft::CLASS_*`.
+            // `craft::CLASS_*`. 23 -> 24 in the same turn: `DOWN_TAG_BITS`
+            // over `world::CMD_*` (NOW §0wnd 2).
             DOMAINS.len(),
-            23,
+            24,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -9353,6 +9393,38 @@ mod wire_domains {
                     "sub {sub}: reason {reason} is past the ledger and decoded anyway"
                 );
             }
+        }
+    }
+
+    /// The down refusal's verb tag (NOW §0wnd 2): every live `CMD_*`
+    /// crosses, and zero and the slack past `CMD_MAX` are refused at both
+    /// ends.
+    #[test]
+    fn the_down_refusal_carries_every_hand_verb_and_nothing_else() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for tag in 1..=sim_core::world::CMD_MAX {
+            let len = encode_event_down_refused(tag, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::DownRefused { tag }
+            );
+        }
+        let max = sim_core::world::CMD_MAX as u32;
+        for tag in core::iter::once(0).chain((max + 1)..(1 << DOWN_TAG_BITS)) {
+            assert_eq!(
+                encode_event_down_refused(tag as u8, &mut buf),
+                Err(WireError::Range)
+            );
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_DOWN_REFUSED, SUB_BITS).unwrap();
+            w.write(tag, DOWN_TAG_BITS).unwrap();
+            let len = w.finish();
+            assert_eq!(
+                decode_event(&buf[..len]),
+                Err(WireError::Malformed),
+                "tag {tag} names no CMD_* and decoded anyway"
+            );
         }
     }
 

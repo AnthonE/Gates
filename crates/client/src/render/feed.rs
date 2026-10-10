@@ -91,6 +91,10 @@ pub enum Refused {
     Reload,
     /// An arc verb at a work (`sim_core::works::REFUSE_A_*`).
     Arc,
+    /// A hand verb the sim refused because this body is down; the code is
+    /// the verb's `sim_core::world::CMD_*`, and every one reads
+    /// `ui::wounded::HANDS_LINE`.
+    Down,
 }
 
 /// One frame's blows from **one direction**, as [`Feed::hurt_from`] hands
@@ -626,6 +630,9 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     }
     while let Some((code, door)) = core.pop_swipe_refused() {
         feed.push_refusal(Refused::Swipe, code, door as u16);
+    }
+    while let Some(tag) = core.pop_down_refused() {
+        feed.push_refusal(Refused::Down, tag, sim_core::gather::NO_ITEM);
     }
     while let Some((refused, code, offer, times)) = core.pop_vend() {
         if refused {

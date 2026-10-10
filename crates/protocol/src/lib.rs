@@ -56,8 +56,8 @@ pub use event::{
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
-    encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
+    encode_event_deploy_sync, encode_event_door, encode_event_down_refused, encode_event_drank,
+    encode_event_env, encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
     encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
     encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
     encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
@@ -1120,7 +1120,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// a fourth state bit, `lit` (after has-lock, `EV_OVEN`'s bit filled at
 /// encode), so a joiner or a deploy reset's walk learns a fire lit before
 /// it came. And an unload: `ACT_UNLOAD` (33, `Command::Unload`), no payload,
-/// empties the held magazine back into the pack.
+/// empties the held magazine back into the pack. And a hand verb from a
+/// downed body says so: `SUB_DOWN_REFUSED` (92) carries the refused
+/// command's `sim_core::world::CMD_*` tag in six bits.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

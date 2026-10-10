@@ -157,3 +157,48 @@ fn a_hand_hold_crosses_the_wire_and_only_its_participants_see_progress() {
     assert!(clients[1].pop_recovered().is_some());
     assert_eq!(clients[2].assist, (0, 0, 0));
 }
+
+/// NOW §0wnd 2: a hand verb from a downed body crosses back as
+/// `DownRefused`, to that body's client alone, and a release of `E` does not.
+#[test]
+fn a_downed_body_hears_its_hand_verb_refused() {
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.combat = sim_core::combat::CombatContent::probe_fixture();
+    core.world.gather = sim_core::gather::GatherContent::probe_fixture();
+    core.world.dev_spawn = Some(core.world.spawn_pos(id(0)));
+    let stats = ShardStats::default();
+    let mut clients: Vec<_> = (0..2).map(|s| ClientCore::new(SEED, id(s), 0)).collect();
+    for slot in 0..2 {
+        assert!(core.connect(slot, id(slot)));
+    }
+    for _ in 0..20 {
+        pump(&mut core, &stats, &mut clients, false);
+    }
+    // Laid down directly: the fall's own wire is the test above.
+    core.world.players[1].wounded = true;
+    core.world.players[1].wound_until = core.world.tick + 10_000;
+    core.push_action(1, ActionMsg::Assist { target: 0 });
+    let quiet = pump(&mut core, &stats, &mut clients, false);
+    assert!(
+        !quiet
+            .iter()
+            .any(|(_, e)| matches!(e, EventMsg::DownRefused { .. })),
+        "a release is no act"
+    );
+    core.push_action(1, ActionMsg::Reload);
+    let mut heard = Vec::new();
+    for _ in 0..4 {
+        for (slot, e) in pump(&mut core, &stats, &mut clients, false) {
+            if let EventMsg::DownRefused { tag } = e {
+                heard.push((slot, tag));
+            }
+        }
+    }
+    assert_eq!(heard, [(1, sim_core::world::CMD_RELOAD)]);
+    assert_eq!(
+        clients[1].pop_down_refused(),
+        Some(sim_core::world::CMD_RELOAD)
+    );
+    assert_eq!(clients[1].pop_down_refused(), None);
+    assert_eq!(clients[0].pop_down_refused(), None);
+}

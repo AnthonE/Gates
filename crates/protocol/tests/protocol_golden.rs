@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 158] = [
+const GOLDEN: [&[u8]; 159] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -221,6 +221,7 @@ const GOLDEN: [&[u8]; 158] = [
     include_bytes!("golden/action_take_stock.bin"),
     include_bytes!("golden/action_give.bin"),
     include_bytes!("golden/action_unload.bin"),
+    include_bytes!("golden/event_down_refused.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -485,8 +486,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 156);
     // A magazine emptied back into the pack (v102).
     g!(seen, golden_action, 157);
+    // A hand verb refused because the body is down (v102).
+    g!(seen, golden_event, 158);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 158, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 159, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -2242,6 +2245,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_card_doors(bits, &mut buf).unwrap()
+        }
+        "event_down_refused.bin" => {
+            let tag = protocol::goldens::event_down_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::DownRefused { tag },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_down_refused(tag, &mut buf).unwrap()
         }
         "event_swipe_refused.bin" => {
             let (code, door) = protocol::goldens::event_swipe_refused();

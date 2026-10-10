@@ -2606,6 +2606,7 @@ pub fn feedback(
                 crate::ui::refusals::reload(code, &held)
             }
             super::feed::Refused::Arc => crate::ui::refusals::arc(code),
+            super::feed::Refused::Down => crate::ui::wounded::HANDS_LINE.to_string(),
         });
     }
 

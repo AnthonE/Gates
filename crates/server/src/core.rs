@@ -61,7 +61,9 @@ use sim_core::world::{
     EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK};
+use sim_core::world::{
+    EV_ARC_DID, EV_ARC_REFUSED, EV_DOWN_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK,
+};
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
 ///
@@ -2584,6 +2586,19 @@ impl ShardCore {
                         ev.c as u8,
                         &mut self.ev_buf,
                     ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_DOWN_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    match protocol::encode_event_down_refused(ev.b as u8, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);

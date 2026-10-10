@@ -894,7 +894,55 @@ pub const EV_GROW: u8 = 59;
 /// posture: every client stops drawing the stump and offering a swing at it.
 pub const EV_STUMP_GRUBBED: u8 = 60;
 
-pub const EV_MAX: u8 = EV_STUMP_GRUBBED;
+/// EV_DOWN_REFUSED: a = player id, b = the refused command's `CMD_*` tag,
+/// c = 0. **Own-fact**: a hand verb from a body that is down
+/// (`World::hand_slot_of`), which the sim used to drop without a word. The
+/// client already refuses the keys itself while down, so this answers what
+/// that cannot see: a command already in flight when the body fell, or a
+/// client that sent it anyway (NOW §0wnd 2). Never for a corpse or an id
+/// nobody holds. One per refused command, so `MAX_COMMANDS_PER_TICK` and
+/// the server's one-action-per-tick pace bound it.
+pub const EV_DOWN_REFUSED: u8 = 61;
+
+pub const EV_MAX: u8 = EV_DOWN_REFUSED;
+
+/// The hand verbs a downed body is refused, as `EV_DOWN_REFUSED.b` names
+/// them: one per `Command` arm that resolves through `hand_slot_of`. A new
+/// value is a wire meaning change (`protocol`'s `encode_event_down_refused`
+/// refuses past `CMD_MAX`).
+pub const CMD_ASSIST: u8 = 1;
+pub const CMD_TREAT: u8 = 2;
+pub const CMD_GIVE: u8 = 3;
+pub const CMD_CRAFT: u8 = 4;
+pub const CMD_RESKIN: u8 = 5;
+pub const CMD_RESEARCH: u8 = 6;
+pub const CMD_UNLOCK: u8 = 7;
+pub const CMD_CRAFT_CANCEL: u8 = 8;
+pub const CMD_PLACE: u8 = 9;
+pub const CMD_PLACE_DEPLOY: u8 = 10;
+pub const CMD_FEED: u8 = 11;
+pub const CMD_TAKE_STOCK: u8 = 12;
+pub const CMD_DEMOLISH: u8 = 13;
+pub const CMD_ROTATE: u8 = 14;
+pub const CMD_ACCESS: u8 = 15;
+pub const CMD_UPGRADE: u8 = 16;
+pub const CMD_REPAIR: u8 = 17;
+pub const CMD_THROW: u8 = 18;
+pub const CMD_VEND: u8 = 19;
+pub const CMD_ARC: u8 = 20;
+pub const CMD_SWIPE: u8 = 21;
+pub const CMD_CONSUME: u8 = 22;
+pub const CMD_DROP: u8 = 23;
+pub const CMD_DRINK: u8 = 24;
+pub const CMD_LOOT: u8 = 25;
+pub const CMD_PICKUP: u8 = 26;
+pub const CMD_OPEN_WORLD_CONT: u8 = 27;
+pub const CMD_PICK: u8 = 28;
+pub const CMD_MOVE: u8 = 29;
+pub const CMD_RELOAD: u8 = 30;
+pub const CMD_UNLOAD: u8 = 31;
+/// The highest tag above, `EV_MAX`'s discipline.
+pub const CMD_MAX: u8 = CMD_UNLOAD;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2453,7 +2501,9 @@ impl World {
     /// while the death screen waits on it, so every verb that acts on the
     /// world resolves through this instead of `slot_of` — otherwise a body
     /// on the death screen could still craft, build, feed a hearth, lock a
-    /// door and drink, which is a dead player playing the game.
+    /// door and drink, which is a dead player playing the game. A player's
+    /// own hand verbs go through `hand_slot_of`, which is this plus the
+    /// downed body's answer.
     ///
     /// Three commands deliberately use `slot_of` instead: `Respawn`, which
     /// only a corpse may send, `Input`, which is the client's own frame
@@ -2473,6 +2523,23 @@ impl World {
     /// stays on `live_slot_of`.
     pub fn awake_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
+    }
+
+    /// `live_slot_of` for a command that spends a hand, and the one place a
+    /// downed body hears why it did nothing: a miss on a body that is down
+    /// pushes `EV_DOWN_REFUSED` with the command's `tag`. A corpse, a
+    /// stranger's id and a standing body whose arm refuses for its own
+    /// reasons say nothing here.
+    fn hand_slot_of(&mut self, id: u32, tag: u8) -> Option<usize> {
+        let live = self.live_slot_of(id);
+        if live.is_none()
+            && self
+                .awake_slot_of(id)
+                .is_some_and(|s| self.players[s].wounded)
+        {
+            self.events.push(EV_DOWN_REFUSED, id, tag as u32, 0);
+        }
+        live
     }
 
     /// Was this player online — [`PRESENCE_AWAKE`], [`PRESENCE_ASLEEP`] or
@@ -4676,7 +4743,15 @@ impl World {
     ) {
         match *cmd {
             Command::Assist { id, target } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // A release (target 0) is no act: the client sends one on
+                // every `E` let go, a door worked while down included, and
+                // that must not read as a refused hand.
+                let slot = if target == 0 {
+                    self.live_slot_of(id)
+                } else {
+                    self.hand_slot_of(id, CMD_ASSIST)
+                };
+                if let Some(slot) = slot {
                     self.players[slot].assist_target = target;
                 }
             }
@@ -4685,7 +4760,7 @@ impl World {
                 slot: inv,
                 target,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_TREAT) {
                     self.treat(slot, inv as usize, target);
                 }
             }
@@ -4695,7 +4770,7 @@ impl World {
                 count,
                 target,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_GIVE) {
                     self.give(seat, slot, inv as usize, count, target);
                 }
             }
@@ -4818,7 +4893,7 @@ impl World {
                 count,
                 skin,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_CRAFT) {
                     craft::enqueue(
                         &self.craft,
                         &self.skins,
@@ -4835,7 +4910,7 @@ impl World {
                 }
             }
             Command::Reskin { id, slot, skin } => {
-                if let Some(s) = self.live_slot_of(id) {
+                if let Some(s) = self.hand_slot_of(id, CMD_RESKIN) {
                     crate::skin::reskin(
                         &self.skins,
                         &self.deploy,
@@ -4856,7 +4931,7 @@ impl World {
                 }
             }
             Command::Research { id, slot } => {
-                if let Some(s) = self.live_slot_of(id) {
+                if let Some(s) = self.hand_slot_of(id, CMD_RESEARCH) {
                     crate::research::study(
                         &self.research,
                         &mut self.players[s],
@@ -4866,7 +4941,7 @@ impl World {
                 }
             }
             Command::Unlock { id, recipe } => {
-                if let Some(s) = self.live_slot_of(id) {
+                if let Some(s) = self.hand_slot_of(id, CMD_UNLOCK) {
                     crate::research::unlock(
                         &self.research,
                         &self.craft,
@@ -4879,7 +4954,7 @@ impl World {
                 }
             }
             Command::CraftCancel { id, index } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_CRAFT_CANCEL) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     craft::cancel(
                         &self.craft,
@@ -4905,7 +4980,7 @@ impl World {
                 freehand,
                 plate,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_PLACE) {
                     // A piece may not be built through a deployable that
                     // stands where it would go (free placement). Asked here
                     // because the build verb does not hold the deploy table;
@@ -4954,7 +5029,7 @@ impl World {
                 loc,
                 pose,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_PLACE_DEPLOY) {
                     deploy::place_deploy(
                         self.seed,
                         &self.haven,
@@ -4975,7 +5050,7 @@ impl World {
                 }
             }
             Command::Feed { id, cx, cz, level } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_FEED) {
                     deploy::feed(
                         &self.deploy,
                         &mut self.deploys,
@@ -4994,7 +5069,7 @@ impl World {
                 level,
                 row,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_TAKE_STOCK) {
                     deploy::take_stock(
                         &self.deploy,
                         &self.gather,
@@ -5081,7 +5156,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_DEMOLISH) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     if deploy {
                         deploy::pick_up(
@@ -5128,7 +5203,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_ROTATE) {
                     build::rotate(
                         &self.build,
                         &self.deploys,
@@ -5152,7 +5227,7 @@ impl World {
                 op,
                 code,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_ACCESS) {
                     // The one branch: a crew op addresses the hearth on
                     // the cell body, every other op addresses the lock on
                     // a door's edge. `deploy::op_is_crew` is the split,
@@ -5208,7 +5283,7 @@ impl World {
                 loc,
                 material,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_UPGRADE) {
                     build::upgrade(
                         &self.build,
                         &self.deploys,
@@ -5231,7 +5306,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_REPAIR) {
                     build::repair(
                         &self.build,
                         &self.deploy,
@@ -5255,7 +5330,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_THROW) {
                     crate::charge::place(
                         &self.build,
                         &self.deploy,
@@ -5275,7 +5350,7 @@ impl World {
                 }
             }
             Command::Vend { id, offer, times } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_VEND) {
                     let town = self.haven.town;
                     crate::vend::trade(
                         &self.vend,
@@ -5295,7 +5370,7 @@ impl World {
                 target,
                 arg,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_ARC) {
                     match op {
                         crate::lore::OP_TALK | crate::lore::OP_READ => crate::lore::act(
                             &self.lore_def,
@@ -5333,7 +5408,7 @@ impl World {
                 }
             }
             Command::Swipe { id, door } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_SWIPE) {
                     let z = self.haven.ziggurat;
                     crate::monument::swipe(
                         &z,
@@ -5348,7 +5423,7 @@ impl World {
                 }
             }
             Command::Consume { id, slot: inv } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_CONSUME) {
                     survival::consume(
                         &self.survival,
                         inv as usize,
@@ -5368,7 +5443,7 @@ impl World {
                 count,
             } => {
                 let i = inv as usize;
-                if let Some(slot) = self.live_slot_of(id).filter(|_| {
+                if let Some(slot) = self.hand_slot_of(id, CMD_DROP).filter(|_| {
                     // A disarmed backpack module would destroy the drop.
                     self.backpack.base_ticks != 0 && i < INV_SLOTS && count > 0
                 }) {
@@ -5389,7 +5464,7 @@ impl World {
                 }
             }
             Command::Drink { id } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_DRINK) {
                     // The one verb that can kill the player who pressed it.
                     // Handled exactly as a clock death and a combat death
                     // are — the callee counts it and announces it, the
@@ -5409,7 +5484,7 @@ impl World {
                 }
             }
             Command::Loot { id } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_LOOT) {
                     let town = self.haven.town;
                     let looted = self.backpacks.loot_nearest(
                         &self.gather,
@@ -5428,7 +5503,7 @@ impl World {
                 }
             }
             Command::Pickup { id } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_PICKUP) {
                     // The nearest loose stack in reach — a barrel's scatter
                     // or a landed arrow, which is a loose stack the tick it
                     // comes to rest (`spent.rs`) — or an arrow standing in a
@@ -5455,7 +5530,7 @@ impl World {
                 // An emptied crate is out of the world until it refills.
                 let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
                 let gone = self.slot_lives.is_harvested(cx, cz);
-                if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_OPEN_WORLD_CONT).filter(|_| !gone) {
                     self.world_conts.open(
                         self.seed,
                         &self.scatter,
@@ -5470,7 +5545,7 @@ impl World {
                 }
             }
             Command::Pick { id, cell } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_PICK) {
                     let (cx, cz) = ((cell >> 16) as u16, (cell & 0xFFFF) as u16);
                     let s = self.slot_cache.slot(
                         self.seed,
@@ -5504,7 +5579,7 @@ impl World {
                 to_slot,
                 count,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_MOVE) {
                     self.move_item(
                         seat, slot, cont, from_kind, from_slot, to_kind, to_slot, count,
                     );
@@ -5544,7 +5619,7 @@ impl World {
                 // `live_slot_of`: a corpse and a sleeper do not reload,
                 // for the reason `hitscan` restates the same rule — the
                 // arm belongs to a body somebody is driving.
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_RELOAD) {
                     // An ammo switch gives the loaded kind back, and what the
                     // pack cannot hold falls at the feet: the give-backs'
                     // drain (`drain_spill`). `ranged` announces both halves
@@ -5563,7 +5638,7 @@ impl World {
             }
             Command::Unload { id } => {
                 // `Reload`'s door and `Reload`'s drain.
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot_of(id, CMD_UNLOAD) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     ranged::unload(
                         self.tick,

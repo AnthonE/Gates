@@ -13,8 +13,8 @@
 //!    is a death outright, and one after it is a fall again;
 //! 5. the crawl — a downed body moves at a third of the walk and its swing
 //!    button swings nothing;
-//! 6. the doors — `live_slot_of` refuses a downed body, `awake_slot_of`
-//!    keeps it;
+//! 6. the doors — `live_slot_of` refuses a downed body and each hand verb
+//!    says so (`EV_DOWN_REFUSED`), `awake_slot_of` keeps it;
 //! 7. the sleeper — a lethal blow on a sleeper is a death, and a downed body
 //!    whose owner leaves still faces the roll;
 //! 8. the hash — `wounded` is sim state and `state_hash` says so;
@@ -30,8 +30,9 @@ use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, TICK_HZ};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q, WALK_SPEED};
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_HAND, EV_CONSUMED, EV_DEATH, EV_HEALTH, EV_HIT,
-    EV_RECOVERED, EV_SWING, EV_WOUNDED,
+    Command, SimEvent, World, CMD_ASSIST, CMD_CONSUME, CMD_CRAFT, CMD_DRINK, CMD_MOVE, CMD_RELOAD,
+    DEATH_BY_HAND, EV_CONSUMED, EV_DEATH, EV_DOWN_REFUSED, EV_HEALTH, EV_HIT, EV_RECOVERED,
+    EV_SWING, EV_WOUNDED,
 };
 use sim_core::wound::{
     crawl_frame, recover_chance_pm, recovers, CRAWL_DIV, REWOUND_TICKS, WOUNDED_HP,
@@ -654,17 +655,77 @@ fn verbs_are_refused_while_down_but_a_door_would_not_be() {
     assert_eq!(w.awake_slot_of(VICTIM), Some(1), "but it is conscious");
     assert_eq!(w.live_slot_of(ATTACKER), Some(0));
     // A verb that spends a hand does nothing: the craft queue is untouched.
+    stand_down(&mut w);
     let before = w.players[1].jobs;
-    w.tick(&[Command::Craft {
+    let craft = Command::Craft {
         id: VICTIM,
         recipe: 0,
         count: 1,
         skin: 0,
-    }]);
+    };
+    w.tick(&[craft]);
     assert_eq!(w.players[1].jobs, before, "a crawl cannot craft");
-    // And the corpse loses even the door.
+    // And says so (NOW §0wnd 2): one `EV_DOWN_REFUSED` naming the verb.
+    let e = only(&w, EV_DOWN_REFUSED);
+    assert_eq!((e.a, e.b, e.c), (VICTIM, CMD_CRAFT as u32, 0));
+    // Every hand verb answers the same way, each with its own tag, and
+    // nothing moves.
+    arm_victim(&mut w);
+    let inv = w.players[1].inv;
+    let hand = [
+        (Command::Reload { id: VICTIM }, CMD_RELOAD),
+        (
+            Command::Consume {
+                id: VICTIM,
+                slot: 0,
+            },
+            CMD_CONSUME,
+        ),
+        (Command::Drink { id: VICTIM }, CMD_DRINK),
+        (
+            Command::Move {
+                id: VICTIM,
+                cont: 0,
+                from_kind: sim_core::inventory::CONT_SELF,
+                from_slot: 0,
+                to_kind: sim_core::inventory::CONT_SELF,
+                to_slot: 1,
+                count: 1,
+            },
+            CMD_MOVE,
+        ),
+        (
+            Command::Assist {
+                id: VICTIM,
+                target: ATTACKER,
+            },
+            CMD_ASSIST,
+        ),
+    ];
+    for (cmd, tag) in hand {
+        w.tick(&[cmd]);
+        let e = only(&w, EV_DOWN_REFUSED);
+        assert_eq!((e.a, e.b, e.c), (VICTIM, tag as u32, 0), "{cmd:?}");
+    }
+    assert_eq!(w.players[1].inv, inv, "the pack did not move");
+    assert_eq!(w.players[1].assist_target, 0, "nor did the hands");
+    // A release of `E` (assist target 0) is no act, and a standing body or
+    // an id nobody holds is never told it is down.
+    w.tick(&[
+        Command::Assist {
+            id: VICTIM,
+            target: 0,
+        },
+        Command::Reload { id: ATTACKER },
+        Command::Reload { id: 99 },
+    ]);
+    assert_eq!(count(&w, EV_DOWN_REFUSED), 0);
+    // And the corpse loses even the door, and hears nothing either.
     swing_until(&mut w, &mut seq, EV_DEATH);
     assert_eq!(w.awake_slot_of(VICTIM), None);
+    stand_down(&mut w);
+    w.tick(&[craft]);
+    assert_eq!(count(&w, EV_DOWN_REFUSED), 0, "a corpse is not refused");
 }
 
 #[test]

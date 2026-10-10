@@ -535,8 +535,8 @@ pub fn keys(
         .unwrap_or(false);
 
     // **Down, the hands are gone** (wounded v0). The sim refuses every verb
-    // but a door's without a word, so the keys answer here instead of
-    // sending into nothing: `E` still works a door, the rest say why.
+    // but a door's, so the keys answer here instead of sending one it will
+    // only refuse: `E` still works a door, the rest say why.
     if net.session.core.wounded {
         pad.0.close();
         hearth.0 = None;

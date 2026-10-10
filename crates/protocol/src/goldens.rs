@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 158] = [
+pub const FIXTURES: [&str; 159] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -284,6 +284,8 @@ pub const FIXTURES: [&str; 158] = [
     "action_give.bin",
     // A magazine emptied back into the pack (v102).
     "action_unload.bin",
+    // A hand verb refused because the body is down (v102).
+    "event_down_refused.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2400,6 +2402,11 @@ pub fn event_card_doors() -> u8 {
 /// A swipe at the red door without its card.
 pub fn event_swipe_refused() -> (u8, u8) {
     (sim_core::monument::REFUSE_S_CARD as u8, 2)
+}
+
+/// A reload refused because the body is down (v102).
+pub fn event_down_refused() -> u8 {
+    sim_core::world::CMD_RELOAD
 }
 
 /// Swipe at the blue door.

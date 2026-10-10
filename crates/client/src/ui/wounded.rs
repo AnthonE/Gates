@@ -31,7 +31,8 @@ pub fn down_line(ticks: u16, chance_pm: u16) -> String {
 }
 
 /// What a key does while you are down: the sim refuses every hand verb but
-/// a door's (`World::live_slot_of`), silently, so the client says so.
+/// a door's (`World::live_slot_of`), so the keys say this before sending,
+/// and so does a command already in flight (`EV_DOWN_REFUSED`).
 pub const HANDS_LINE: &str = "you are down - crawl to cover, or work a door";
 
 /// Whether `E` on `verb` still does anything while you are down. A door is

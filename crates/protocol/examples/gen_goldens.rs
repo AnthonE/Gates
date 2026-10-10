@@ -199,6 +199,9 @@ fn main() {
     // A magazine emptied back into the pack (v102): payload-free.
     let len = protocol::encode_action_unload(&mut buf).unwrap();
     write_fixture(goldens::FIXTURES[157], &buf[..len]);
+    // A hand verb refused because the body is down (v102).
+    let len = protocol::encode_event_down_refused(goldens::event_down_refused(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[158], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

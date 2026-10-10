@@ -107,7 +107,10 @@ use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
     TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK};
+use sim_core::world::{
+    CMD_RELOAD, EV_ARC_DID, EV_ARC_REFUSED, EV_DOWN_REFUSED, EV_MECH_SOLVED, EV_STUMP_GRUBBED,
+    EV_WORK,
+};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
@@ -1364,6 +1367,24 @@ fn recovered_names_the_body_then_the_odds_then_the_hp() {
         "and owes the minute"
     );
     assert_eq!(count(&w, EV_DEATH), 0);
+}
+
+/// `EV_DOWN_REFUSED: a = player id, b = the command's CMD_* tag, c = 0`
+/// (NOW §0wnd 2): a hand verb from a downed body says why it did nothing.
+#[test]
+fn down_refused_names_the_body_then_the_verb() {
+    let mut w = duel_world();
+    w.players[1].hp = 1;
+    until(&mut w, EV_WOUNDED);
+    w.players[0].frame = InputFrame::default();
+    w.tick(&[Command::Reload { id: VICTIM }]);
+    let e = only(&w, EV_DOWN_REFUSED);
+    assert_eq!(e.a, VICTIM, "EV_DOWN_REFUSED.a is the downed body");
+    assert_eq!(
+        e.b, CMD_RELOAD as u32,
+        "EV_DOWN_REFUSED.b is the refused verb's tag"
+    );
+    assert_eq!(e.c, 0, "EV_DOWN_REFUSED.c is reserved and must stay zero");
 }
 
 /// `EV_DEATH: a = the player who died, b = the player who killed them`.
@@ -4363,7 +4384,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 60] = [
+    const COVERED: [(&str, u8); 61] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_WORK", EV_WORK),
@@ -4372,6 +4393,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_MECH_SOLVED", EV_MECH_SOLVED),
         ("EV_GROW", EV_GROW),
         ("EV_STUMP_GRUBBED", EV_STUMP_GRUBBED),
+        ("EV_DOWN_REFUSED", EV_DOWN_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
         ("EV_PIECE_PLACED", EV_PIECE_PLACED),

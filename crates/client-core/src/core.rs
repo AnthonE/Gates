@@ -1651,6 +1651,9 @@ pub struct ClientCore {
     arc_texts: crate::arc::Ring<(u8, u8, u8), TOAST_RING>,
     mech_solves: crate::arc::Ring<(u8, u32), TOAST_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
+    /// The `sim_core::world::CMD_*` of each hand verb the sim refused
+    /// because this body is down — read once in `render/feed.rs`.
+    down_refusals: crate::arc::Ring<u8, REFUSAL_RING>,
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
     research_refusal_head: usize,
@@ -2302,6 +2305,7 @@ impl ClientCore {
             arc_texts: Default::default(),
             mech_solves: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
+            down_refusals: Default::default(),
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
             gather_refusals: [(0, 0); REFUSAL_RING],
@@ -2751,6 +2755,7 @@ impl ClientCore {
                 self.swipe_refusals[at] = (code, door);
                 self.swipe_refusal_len += 1;
             }
+            EventMsg::DownRefused { tag } => self.down_refusals.push(tag),
             EventMsg::Tag {
                 id,
                 address,
@@ -4313,6 +4318,12 @@ impl ClientCore {
     /// Oldest lock solved: `(mechanism, by)`.
     pub fn pop_mech_solved(&mut self) -> Option<(u8, u32)> {
         self.mech_solves.pop()
+    }
+
+    /// Oldest hand verb refused because the body is down: its
+    /// `sim_core::world::CMD_*`.
+    pub fn pop_down_refused(&mut self) -> Option<u8> {
+        self.down_refusals.pop()
     }
 
     /// Oldest swipe refusal: `(code, door)`.
