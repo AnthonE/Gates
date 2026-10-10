@@ -11,6 +11,10 @@ use std::collections::BTreeSet;
 /// (`protocol::MAX_ITEM_NAME_BYTES`), pinned equal by the server's tests.
 pub const SKIN_NAME_MAX_BYTES: usize = 24;
 
+/// Longest item description, in bytes: the wire's line
+/// (`protocol::MAX_ITEM_DESC_BYTES`), which refuses the boot past it too.
+pub const ITEM_DESC_MAX_BYTES: usize = 96;
+
 /// The furthest a species may hear any noise, metres (`mobs.toml` `hear_m`).
 const HEAR_MAX_M: u32 = 500;
 
@@ -63,6 +67,13 @@ pub fn structural(c: &Content) -> Result<(), String> {
     };
     for i in &c.items {
         check_id(&i.id, "item.", "item")?;
+        if i.description.len() > ITEM_DESC_MAX_BYTES {
+            return Err(format!(
+                "item `{}`: description is {} bytes, over {ITEM_DESC_MAX_BYTES}",
+                i.id,
+                i.description.len()
+            ));
+        }
         unique(&i.id)?;
         if i.stack == 0 {
             return Err(format!("item `{}`: stack must be ≥ 1", i.id));

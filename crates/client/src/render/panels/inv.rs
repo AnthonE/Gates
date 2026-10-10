@@ -1310,6 +1310,12 @@ pub fn slot_tip(
             tip.push_str(" · right-click to eat");
         }
     }
+    // What it is for, on a line of its own (`SUB_ITEM_DESC`).
+    let desc = core.item_descs.get(stack.item as usize);
+    if !desc.is_empty() {
+        tip.push('\n');
+        tip.push_str(&String::from_utf8_lossy(desc));
+    }
     tip
 }
 

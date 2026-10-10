@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 158] = [
+const GOLDEN: [&[u8]; 159] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -221,6 +221,7 @@ const GOLDEN: [&[u8]; 158] = [
     include_bytes!("golden/action_take_stock.bin"),
     include_bytes!("golden/action_give.bin"),
     include_bytes!("golden/action_unload.bin"),
+    include_bytes!("golden/event_item_desc.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -485,8 +486,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 156);
     // A magazine emptied into the pack (v103).
     g!(seen, golden_action, 157);
+    // An item's description line (v103).
+    g!(seen, golden_event, 158);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 158, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 159, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1201,6 +1204,20 @@ fn golden_event(fixture: &[u8], name: &str) {
                 other => panic!("{name}: wrong variant {other:?}"),
             }
             encode_event_slot_sync(reset, &cells, grubbed, &mut buf).unwrap()
+        }
+        "event_item_desc.bin" => {
+            let (item, want) = protocol::goldens::event_item_desc();
+            match decode_event(fixture).unwrap() {
+                EventMsg::ItemDesc { item: i, len, text } => {
+                    assert_eq!(
+                        (i, &text[..len as usize]),
+                        (item, want),
+                        "{name}: decode mismatch"
+                    );
+                }
+                other => panic!("{name}: decoded as {other:?}"),
+            }
+            protocol::encode_event_item_desc(item, want, &mut buf).unwrap()
         }
         "event_stump_grubbed.bin" => {
             let (cx, cz) = protocol::goldens::event_stump_grubbed();

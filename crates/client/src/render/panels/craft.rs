@@ -581,6 +581,15 @@ fn detail_body(
                 font_bold(18.0),
                 TextColor(TEXT),
             ));
+            // What it is for, in a line (`SUB_ITEM_DESC`, `NOW.md` §0cq 7).
+            let desc = core.item_descs.get(def.output as usize);
+            if !desc.is_empty() {
+                mid.spawn((
+                    Text::new(String::from_utf8_lossy(desc).into_owned()),
+                    font(12.0),
+                    TextColor(TEXT_DIM),
+                ));
+            }
             if let Some(badge) = station_label(def.station) {
                 // Green where the station stands in reach, red where it
                 // does not — the badge is the reason CRAFT is dark.

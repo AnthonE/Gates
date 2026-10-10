@@ -1530,6 +1530,9 @@ pub struct ClientCore {
     /// Boxed: 24 kB of fixed capacity against wasm's 1 MB shadow stack.
     slot_cache: Box<SlotCache>,
     pub catalog: ItemCatalog,
+    /// Each item's description line (`SUB_ITEM_DESC`), dripped after the
+    /// catalog. Boxed, `slot_cache`'s reason: 9 kB.
+    pub item_descs: Box<protocol::ItemDescs>,
     /// The skin catalog (skins v0), dripped at join like `catalog`: row `i`
     /// is bit `i` of [`Self::skins_owned`]. Boxed, `slot_cache`'s reason:
     /// ~9 kB of fixed capacity.
@@ -2115,6 +2118,7 @@ impl ClientCore {
             haven: terrain::haven(seed),
             slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
+            item_descs: Box::new(protocol::ItemDescs::EMPTY),
             skins: Box::new(protocol::SkinCatalog::EMPTY),
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
@@ -2482,6 +2486,10 @@ impl ClientCore {
                     self.harvested.set_grow(cell_key(cx, cz), g);
                 }
                 flags |= APPLIED_SLOTS;
+            }
+            EventMsg::ItemDesc { item, len, text } => {
+                // The decoder bounded both, so this cannot refuse.
+                let _ = self.item_descs.set(item as usize, &text[..len as usize]);
             }
             EventMsg::StumpGrubbed { cx, cz } => {
                 self.harvested.grub(cell_key(cx, cz));

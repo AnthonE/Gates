@@ -188,6 +188,9 @@ pub struct ShardCore {
     /// before the first tick; empty (the default) sends no catalog, which
     /// is what content-less tests run under.
     pub catalog: ItemCatalog,
+    /// Each item's description line, dripped after the catalog
+    /// (`SUB_ITEM_DESC`). Empty sends nothing.
+    pub item_descs: Box<protocol::ItemDescs>,
     /// The skin catalog the drip sends (skins v0), baked beside `catalog`
     /// from `content/skins.toml`. Boxed: ~9 kB of fixed capacity. Empty
     /// sends nothing.
@@ -556,6 +559,7 @@ impl ShardCore {
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
+            item_descs: Box::new(protocol::ItemDescs::EMPTY),
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             vendor_names: Vec::new(),
             work_names: Vec::new(),
@@ -4507,6 +4511,32 @@ impl ShardCore {
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
+        }
+        // Then one description line a tick, skipping items with none, once
+        // the names are all there (`SUB_ITEM_DESC`).
+        let c = &self.clients[slot];
+        let n = self.catalog.count as usize;
+        if c.catalog_cursor >= n && c.desc_cursor < n {
+            let mut i = c.desc_cursor;
+            while i < n && self.item_descs.get(i).is_empty() {
+                i += 1;
+            }
+            if i < n {
+                match protocol::encode_event_item_desc(
+                    i as u16,
+                    self.item_descs.get(i),
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            return;
+                        }
+                        ShardStats::bump(&stats.ev_sent);
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+            self.clients[slot].desc_cursor = i + 1;
         }
 
         // Skin rows (skins v0), the item catalog's drip shape: the store

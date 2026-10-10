@@ -74,6 +74,10 @@ impl ItemClass {
 pub struct Item {
     pub id: String,
     pub name: String,
+    /// One line for the craft pane (`protocol::MAX_ITEM_DESC_BYTES`, checked
+    /// when the server bakes it). Absent means none.
+    #[serde(default)]
+    pub description: String,
     pub stack: u32,
     pub tier: u32,
     pub rarity: Rarity,

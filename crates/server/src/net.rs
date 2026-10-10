@@ -378,6 +378,8 @@ pub struct SimTables {
     pub sentry: sim_core::sentry::SentryDef,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
+    /// Each item's description line (`content/items.toml` `description`).
+    pub item_descs: Box<protocol::ItemDescs>,
     /// The skin catalog, twice: the sim's half (what fits what) and the
     /// wire's (names, tints, prices), both from `content/skins.toml`.
     pub skins: sim_core::skin::SkinContent,
@@ -420,6 +422,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         sentry: content.bake_sentry()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather, &survival, &cook)?,
+        item_descs: bake_item_descs(content)?,
         skins: content.bake_skins()?,
         skin_catalog: bake_skin_catalog(content)?,
         vend: content.bake_vend()?,
@@ -436,6 +439,23 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         survival,
         cook,
     })
+}
+
+/// Each item's description line, by item index (`SUB_ITEM_DESC`). A line
+/// over `MAX_ITEM_DESC_BYTES` refuses the boot.
+pub fn bake_item_descs(content: &content::Content) -> Result<Box<protocol::ItemDescs>, String> {
+    let mut d = Box::new(protocol::ItemDescs::EMPTY);
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        d.set(idx, item.description.as_bytes()).map_err(|_| {
+            format!(
+                "item `{}`: description is over {} bytes",
+                item.id,
+                protocol::MAX_ITEM_DESC_BYTES
+            )
+        })?;
+    }
+    Ok(d)
 }
 
 /// The wire's skin catalog (skins v0), in the same row order as
@@ -3210,6 +3230,7 @@ fn sim_thread(
         sentry,
         research,
         catalog,
+        item_descs,
         skins,
         skin_catalog,
         vend,
@@ -3238,6 +3259,7 @@ fn sim_thread(
     core.world.research = research;
     core.world.skins = skins;
     core.catalog = catalog;
+    core.item_descs = item_descs;
     core.skin_catalog = skin_catalog;
     core.world.vend = vend;
     core.vendor_names = vendor_names;

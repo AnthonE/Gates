@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 158] = [
+pub const FIXTURES: [&str; 159] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -284,6 +284,8 @@ pub const FIXTURES: [&str; 158] = [
     "action_give.bin",
     // A magazine emptied into the pack (v103).
     "action_unload.bin",
+    // An item's description line (v103).
+    "event_item_desc.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1097,6 +1099,11 @@ pub fn event_slot_sync() -> (bool, [(u16, u16); SLOT_SYNC_BATCH], u64) {
 /// A grubbed stump (v101): (cx, cz), distinct halves.
 pub fn event_stump_grubbed() -> (u16, u16) {
     (0x00A1, 0x00B2)
+}
+
+/// Item 17's description line (wire v103).
+pub fn event_item_desc() -> (u16, &'static [u8]) {
+    (17, b"A plain wooden club.")
 }
 
 /// A weak-mark message with the weak-hit bit set: (cx, cz, mark8, weak_hit).

@@ -87,6 +87,7 @@ pub use event::{
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
+pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
@@ -1119,7 +1120,8 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// worn skinned item keeps its look.
 /// v103 — unload: `ACT_UNLOAD` (33) empties the held weapon's magazine into
 /// the pack (`Command::Unload`), and `REFUSE_RL_UNLOADED` (6) says there
-/// was nothing in it.
+/// was nothing in it. And `SUB_ITEM_DESC` (92) drips each item's
+/// description line to a joiner.
 pub const PROTO_VER: u16 = 103;
 
 /// This game's slug in the elo catalog.
