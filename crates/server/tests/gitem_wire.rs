@@ -137,9 +137,10 @@ fn drop_stack(core: &mut ShardCore, wslot: usize, stack: ItemStack) -> u32 {
 /// A stack's condition crosses (wire v102), so a blueprint sheet on the
 /// ground reaches the client knowing what it teaches — the prompt reads
 /// `research::blueprint_target` off it. Before, the record dropped `cond`
-/// and every sheet on the ground was just "Blueprint".
+/// and every sheet on the ground was just "Blueprint". And its skin, so a
+/// dropped skinned item is still drawn skinned.
 #[test]
-fn a_stacks_condition_reaches_the_client() {
+fn a_stacks_condition_and_skin_reach_the_client() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
@@ -154,7 +155,7 @@ fn a_stacks_condition_reaches_the_client() {
         item: FILLER,
         count: 1,
         cond: 5,
-        skin: 0,
+        skin: 0x0A61,
     };
     let id = drop_stack(&mut core, w0, sheet);
     let mut seen = Vec::new();
@@ -163,17 +164,17 @@ fn a_stacks_condition_reaches_the_client() {
     }
     let g = clients[0].1.ground_items()[0];
     assert_eq!(
-        (g.id, g.item, g.cond),
-        (id, FILLER, 5),
-        "the mirror lost the cond"
+        (g.id, g.item, g.cond, g.skin),
+        (id, FILLER, 5, 0x0A61),
+        "the mirror lost the cond or the skin"
     );
     assert!(
         seen.iter().any(|(_, m)| matches!(
             m,
             EventMsg::GItemSync { count, recs, .. }
-                if *count == 1 && recs[0].id == id && recs[0].cond == 5
+                if *count == 1 && recs[0].id == id && recs[0].cond == 5 && recs[0].skin == 0x0A61
         )),
-        "the bytes the server sent do not carry the cond"
+        "the bytes the server sent do not carry the cond and the skin"
     );
 }
 

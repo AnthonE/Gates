@@ -1920,6 +1920,14 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
             } else {
                 0
             },
+            // Every fifth from the third wears a skin (v102), past a byte
+            // too; record 12 is stuck, conditioned and skinned, so all
+            // three optional fields are seen side by side.
+            skin: if i % 5 == 2 {
+                256 + rng.next_bounded(60_000) as u16
+            } else {
+                0
+            },
         };
     }
     (true, recs)
@@ -2396,9 +2404,15 @@ pub fn action_respawn_at() -> (u16, u16, u8) {
 }
 
 /// Player 0x0100_0007 in a bone helmet (item 41) and a hide poncho (item
-/// 40) (wire v98).
-pub fn event_worn() -> (u32, [u16; sim_core::limits::WEAR_SLOTS]) {
-    (0x0100_0007, [41, 40])
+/// 40) (wire v98), the poncho skinned (catalog id 0x0B72, wire v102) and
+/// the helmet plain, so both shapes of a slot are pinned.
+#[allow(clippy::type_complexity)]
+pub fn event_worn() -> (
+    u32,
+    [u16; sim_core::limits::WEAR_SLOTS],
+    [u16; sim_core::limits::WEAR_SLOTS],
+) {
+    (0x0100_0007, [41, 40], [0, 0x0B72])
 }
 
 /// Inject inventory slot 6 into downed player 0x0100_0009 (wire v99).

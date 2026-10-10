@@ -2034,7 +2034,7 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     // never a count or a condition — the clothes, not the panel.
     assert!(
         seen.iter().any(|(s, m)| *s == 1
-            && matches!(m, EventMsg::Worn { id, items }
+            && matches!(m, EventMsg::Worn { id, items, .. }
                 if *id == id_of(0) && *items == [OTHER, THIRD])),
         "the other player is told what the body wears: {seen:?}"
     );

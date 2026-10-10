@@ -206,10 +206,11 @@ pub struct ShardCore {
     /// A row outlives its connection, so a sleeper keeps its name for late
     /// joiners until the slot's next tenant overwrites it. Never in the sim.
     tags: Box<[TagRow]>,
-    /// What each world slot's body was last seen wearing — its tenant's id
-    /// and the item in each wear slot (`NO_ITEM` for none). A change owes
-    /// every connection a `SUB_WORN` (`note_worn`, then `drip_client`).
-    worn_seen: [(u32, [u16; WEAR_SLOTS]); MAX_PLAYERS],
+    /// What each world slot's body was last seen wearing — its tenant's id,
+    /// the item in each wear slot (`NO_ITEM` for none) and each piece's skin
+    /// (v102, zero for none). A change owes every connection a `SUB_WORN`
+    /// (`note_worn`, then `drip_client`); a reskin of a worn piece is one.
+    worn_seen: [WornSeen; MAX_PLAYERS],
     /// World slots whose tenant has worn anything since it arrived. Only
     /// these are worth a `SUB_WORN`: a client draws a body it was never told
     /// about in nothing, so an outfit that has always been empty says nothing.
@@ -511,6 +512,12 @@ impl EvictMemo {
     }
 }
 
+/// What one world slot's body was last seen wearing (`ShardCore::worn_seen`):
+/// its tenant's id, the item in each wear slot and each piece's skin.
+type WornSeen = (u32, [u16; WEAR_SLOTS], [u16; WEAR_SLOTS]);
+/// An empty world slot's: nobody, wearing nothing.
+const WORN_NONE: WornSeen = (0, [sim_core::gather::NO_ITEM; WEAR_SLOTS], [0; WEAR_SLOTS]);
+
 /// One player slot's tag (`ShardCore::tags`). `id == 0` is an empty row —
 /// a guest or a slot nobody has joined — and is never sent.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -547,7 +554,7 @@ impl ShardCore {
             heard_len: 0,
             drawing: [false; MAX_PLAYERS],
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
-            worn_seen: [(0, [sim_core::gather::NO_ITEM; WEAR_SLOTS]); MAX_PLAYERS],
+            worn_seen: [WORN_NONE; MAX_PLAYERS],
             worn_dressed: 0,
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
@@ -742,14 +749,16 @@ impl ShardCore {
             let p = &self.world.players[w];
             let now = if p.active {
                 let mut items = [sim_core::gather::NO_ITEM; WEAR_SLOTS];
-                for (item, s) in items.iter_mut().zip(p.worn.iter()) {
+                let mut skins = [0u16; WEAR_SLOTS];
+                for ((item, skin), s) in items.iter_mut().zip(skins.iter_mut()).zip(p.worn.iter()) {
                     if s.count > 0 {
                         *item = s.item;
+                        *skin = s.skin;
                     }
                 }
-                (p.id, items)
+                (p.id, items, skins)
             } else {
-                (0, [sim_core::gather::NO_ITEM; WEAR_SLOTS])
+                WORN_NONE
             };
             if self.worn_seen[w] != now {
                 let bit = 1u128 << w;
@@ -4781,11 +4790,11 @@ impl ShardCore {
         if owed != 0 {
             let i = owed.trailing_zeros() as usize;
             let bit = 1u128 << i;
-            let (id, items) = self.worn_seen[i];
+            let (id, items, skins) = self.worn_seen[i];
             if id == 0 || self.worn_dressed & bit == 0 {
                 self.clients[slot].worn_owed &= !bit;
             } else {
-                match protocol::encode_event_worn(id, &items, &mut self.ev_buf) {
+                match protocol::encode_event_worn(id, &items, &skins, &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].worn_owed &= !bit;

@@ -1113,6 +1113,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// And a fire's warmth reach: `SUB_DEPLOY_DEFS` carries the exposure
 /// table's `heat_radius_cm` (16 bits after the header), so the WET and COLD
 /// chips confirm a fire the way they confirm a roof (`exposure::fire_reaches`).
+/// And a skin: `WireGItem` ends in a bit and, when set, the stack's `skin`
+/// u16 (`GITEM_SYNC_BATCH` went 16 → 14 to keep a full batch under the cap),
+/// and each `SUB_WORN` slot follows its item with the same, so a dropped or
+/// worn skinned item keeps its look.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

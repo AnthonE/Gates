@@ -1152,11 +1152,26 @@ impl HeldModel {
 /// Tinted copies of the held-model materials (skins v0), one per
 /// (`HELD_MODELS` row, skin catalog id), made on first use and kept: a skin
 /// is a colour over the item's own surface, so the copy is the row's material
-/// with its base colour multiplied. Shared by the first-person hand and
-/// every body's hand (`bodies::update_hand`), so one skin on screen twice is
-/// one material.
+/// with its base colour multiplied. Shared by the first-person hand, every
+/// body's hand (`bodies::update_hand`) and a skinned stack on the ground
+/// (`structures::sync_loot`, v102), so one skin on screen twice is one
+/// material. Worn pieces (`worn::dress`, v102) have no row; theirs are kept
+/// by the piece's own material.
 #[derive(Resource, Default)]
-pub struct SkinMats(std::collections::HashMap<(usize, u16), Handle<StandardMaterial>>);
+pub struct SkinMats {
+    rows: std::collections::HashMap<(usize, u16), Handle<StandardMaterial>>,
+    parts: std::collections::HashMap<(AssetId<StandardMaterial>, u16), Handle<StandardMaterial>>,
+}
+
+/// `base` with its base colour multiplied by `tint` (sRGB factors): the
+/// whole of what a skin does to a surface in v0.
+fn tinted(base: &StandardMaterial, tint: [f32; 3]) -> StandardMaterial {
+    let mut m = base.clone();
+    let c = m.base_color.to_linear();
+    let t = Color::srgb(tint[0], tint[1], tint[2]).to_linear();
+    m.base_color = Color::linear_rgba(c.red * t.red, c.green * t.green, c.blue * t.blue, c.alpha);
+    m
+}
 
 impl SkinMats {
     /// Row `row`'s material in skin `skin`, tinted by `tint` (sRGB factors,
@@ -1171,16 +1186,31 @@ impl SkinMats {
         base: &Handle<StandardMaterial>,
         materials: &mut Assets<StandardMaterial>,
     ) -> Option<Handle<StandardMaterial>> {
-        if let Some(h) = self.0.get(&(row, skin)) {
+        if let Some(h) = self.rows.get(&(row, skin)) {
             return Some(h.clone());
         }
-        let mut m = materials.get(base)?.clone();
-        let c = m.base_color.to_linear();
-        let t = Color::srgb(tint[0], tint[1], tint[2]).to_linear();
-        m.base_color =
-            Color::linear_rgba(c.red * t.red, c.green * t.green, c.blue * t.blue, c.alpha);
+        let m = tinted(materials.get(base)?, tint);
         let h = materials.add(m);
-        self.0.insert((row, skin), h.clone());
+        self.rows.insert((row, skin), h.clone());
+        Some(h)
+    }
+
+    /// A worn piece's material `base` in skin `skin` (`worn::dress`, v102),
+    /// [`Self::for_skin`]'s rule keyed by the piece's own material. `None`
+    /// while `base` is not in the store.
+    pub fn for_part(
+        &mut self,
+        skin: u16,
+        tint: [f32; 3],
+        base: &Handle<StandardMaterial>,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> Option<Handle<StandardMaterial>> {
+        if let Some(h) = self.parts.get(&(base.id(), skin)) {
+            return Some(h.clone());
+        }
+        let m = tinted(materials.get(base)?, tint);
+        let h = materials.add(m);
+        self.parts.insert((base.id(), skin), h.clone());
         Some(h)
     }
 }

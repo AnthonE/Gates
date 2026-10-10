@@ -2284,13 +2284,13 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap()
         }
         "event_worn.bin" => {
-            let (id, items) = protocol::goldens::event_worn();
+            let (id, items, skins) = protocol::goldens::event_worn();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Worn { id, items },
+                EventMsg::Worn { id, items, skins },
                 "{name}: decode mismatch"
             );
-            protocol::encode_event_worn(id, &items, &mut buf).unwrap()
+            protocol::encode_event_worn(id, &items, &skins, &mut buf).unwrap()
         }
         "event_tag.bin" => {
             let (id, address, label, pic) = protocol::goldens::event_tag();

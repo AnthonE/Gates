@@ -89,9 +89,10 @@ pub const VEND_BATCH: usize = 8;
 pub const VENDOR_NAME_BYTES: usize = 16;
 
 /// Loose ground stacks one sync message carries (ground items v0).
-/// A lying stack is 116 bits; the widest record — an arrow stuck where it
-/// went in, carrying a condition (v94, v102) — is 156, so sixteen of those
-/// are 315 B, inside `MAX_EVENT_MSG_BYTES` but only just: the assert at
+/// A lying stack is 117 bits; the widest record — an arrow stuck where it
+/// went in, carrying a condition and a skin (v94, v102) — is 173, so
+/// fourteen of those are 305 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were,
+/// until the skin took 17 bits a record): the assert at
 /// `GITEM_SYNC_COUNT_BITS` and `gitem_sync_widest_batch_fits_the_cap`
 /// hold it there. Overflow policy: the next message
 /// continues the walk, exactly as the bag walk does — and the walk
@@ -99,7 +100,7 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// batch much larger than this would spend a tick's lane on a set the
 /// next barrel invalidates. Proposed default, DECISIONS.md §open (ground
 /// items v0).
-pub const GITEM_SYNC_BATCH: usize = 16;
+pub const GITEM_SYNC_BATCH: usize = 14;
 
 /// Arrows in bodies one sync message carries (wire v94): the body, the
 /// round, where in it the arrow went in and which way. Fifteen bytes a
@@ -511,8 +512,9 @@ const SUB_MECH_SOLVED: u32 = 87;
 const SUB_ALPHABET: u32 = 88;
 /// What a player's body is wearing (wire v98): the item in each wear slot,
 /// `NO_ITEM` for none — so other clients draw the hood, the helmet, the
-/// poncho on the body. Ids only, never `count` or `cond`. Sent to everyone
-/// when it changes and in full to a joiner, one per tick (`SUB_TAG`'s drip).
+/// poncho on the body — and each piece's skin (v102). Never `count` or
+/// `cond`. Sent to everyone when it changes and in full to a joiner, one
+/// per tick (`SUB_TAG`'s drip).
 const SUB_WORN: u32 = 89;
 /// A planter's beds as they are drawn (wire v100, crops v1): the address
 /// and two bits a bed (`sim_core::oven::planter_stages`). Broadcast on a
@@ -801,12 +803,13 @@ const BAG_SYNC_COUNT_BITS: u32 = 5;
 const GITEM_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
 /// The widest loose-stack record `write_gitem` can put down: id, the three
-/// position quanta, item and count, then the stuck direction and the
-/// condition, each behind its own bit.
+/// position quanta, item and count, then the stuck direction, the
+/// condition and the skin, each behind its own bit.
 const GITEM_REC_MAX_BITS: usize =
-    32 + 2 * POS_XZ_BITS as usize + POS_Y_BITS as usize + 16 + 16 + (1 + 24) + (1 + 16);
-// A full batch of the widest records still fits one message (v102 left
-// five bytes): a field added to the record must shrink the batch first.
+    32 + 2 * POS_XZ_BITS as usize + POS_Y_BITS as usize + 16 + 16 + (1 + 24) + (1 + 16) + (1 + 16);
+// A full batch of the widest records still fits one message (v102's skin
+// shrank it 16 → 14, leaving fifteen bytes): a field added to the record
+// must shrink the batch first.
 const _: () = assert!(
     (KIND_BITS + SUB_BITS + 1 + GITEM_SYNC_COUNT_BITS) as usize
         + GITEM_SYNC_BATCH * GITEM_REC_MAX_BITS
@@ -1805,8 +1808,13 @@ pub enum EventMsg {
         pic: u32,
     },
     /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
-    /// for an empty one. Appearance only, for drawing the body.
-    Worn { id: u32, items: [u16; WEAR_SLOTS] },
+    /// for an empty one, and each piece's skin (v102), zero for none and
+    /// always zero on an empty slot. Appearance only, for drawing the body.
+    Worn {
+        id: u32,
+        items: [u16; WEAR_SLOTS],
+        skins: [u16; WEAR_SLOTS],
+    },
     /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
     /// The attacker's fact and the attacker's alone — a hitmarker, not a
     /// health readout; the victim's own `Health` is the truth about the
@@ -3775,18 +3783,32 @@ pub fn encode_event_mech_solved(mech: u8, by: u32, buf: &mut [u8]) -> Result<usi
 }
 
 /// What player `id` wears ([`EventMsg::Worn`]). Never an animal's.
+///
+/// Each slot is its item, then (v102) a bit and, when set, the piece's
+/// skin — `WireGItem`'s optional-field shape, so an unskinned outfit costs
+/// one bit a slot. A skin on an empty slot is a picture of nothing.
 pub fn encode_event_worn(
     id: u32,
     items: &[u16; WEAR_SLOTS],
+    skins: &[u16; WEAR_SLOTS],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if id & sim_core::limits::MOB_ID_TAG != 0 {
+    if id & sim_core::limits::MOB_ID_TAG != 0
+        || items
+            .iter()
+            .zip(skins)
+            .any(|(&i, &s)| i == sim_core::gather::NO_ITEM && s != 0)
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_WORN)?;
     w.write(id, 32)?;
-    for &item in items {
+    for (&item, &skin) in items.iter().zip(skins) {
         w.write(item as u32, 16)?;
+        w.write_bit(skin != 0)?;
+        if skin != 0 {
+            w.write(skin as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -3891,7 +3913,8 @@ impl WireBag {
 /// names it — so those two fields ARE the object. `cond` rides too since
 /// v102, as an optional field: a blueprint's target lives in it
 /// (`research::blueprint_target`), so without it a sheet on the ground
-/// could only say "Blueprint", never which one.
+/// could only say "Blueprint", never which one. And `skin`, the same way
+/// (v102): a skinned rifle dropped on the ground is still drawn skinned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WireGItem {
     pub id: u32,
@@ -3909,6 +3932,10 @@ pub struct WireGItem {
     /// zero for litter that carries none and for a dead tool — which costs
     /// one bit on the wire.
     pub cond: u16,
+    /// The stack's `ItemStack::skin` (wire v102): the skin's catalog id,
+    /// zero for none (one bit on the wire). The client draws it if its skin
+    /// catalog knows it (`ui::skins::tint_of`), else plain.
+    pub skin: u16,
 }
 
 impl WireGItem {
@@ -3922,6 +3949,7 @@ impl WireGItem {
             count: g.stack.count,
             dir: g.dir,
             cond: g.stack.cond,
+            skin: g.stack.skin,
         }
     }
 
@@ -4029,6 +4057,12 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
     if g.cond != 0 {
         w.write(g.cond as u32, 16)?;
     }
+    // The skin (v102), the same shape again: a dropped skinned item keeps
+    // its look, and plain litter pays one bit for it.
+    w.write_bit(g.skin != 0)?;
+    if g.skin != 0 {
+        w.write(g.skin as u32, 16)?;
+    }
     Ok(())
 }
 
@@ -4042,6 +4076,7 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         count: r.read(16)? as u16,
         dir: [0; 3],
         cond: 0,
+        skin: 0,
     };
     if r.read_bit()? {
         for d in g.dir.iter_mut() {
@@ -4056,6 +4091,13 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         g.cond = r.read(16)? as u16;
         // Set says there is a condition, and zero is the absence of one.
         if g.cond == 0 {
+            return Err(WireError::Malformed);
+        }
+    }
+    if r.read_bit()? {
+        g.skin = r.read(16)? as u16;
+        // And zero is no skin, for the same reason.
+        if g.skin == 0 {
             return Err(WireError::Malformed);
         }
     }
@@ -5671,10 +5713,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             let mut items = [sim_core::gather::NO_ITEM; WEAR_SLOTS];
-            for item in items.iter_mut() {
+            let mut skins = [0u16; WEAR_SLOTS];
+            for (item, skin) in items.iter_mut().zip(skins.iter_mut()) {
                 *item = r.read(16)? as u16;
+                if r.read_bit()? {
+                    *skin = r.read(16)? as u16;
+                    // Set over zero, or over an empty slot, is a record
+                    // the encoder never writes.
+                    if *skin == 0 || *item == sim_core::gather::NO_ITEM {
+                        return Err(WireError::Malformed);
+                    }
+                }
             }
-            EventMsg::Worn { id, items }
+            EventMsg::Worn { id, items, skins }
         }
         SUB_ALPHABET => {
             let len = r.read(7)? as usize;
@@ -7049,6 +7100,7 @@ mod tests {
             count: u16::MAX,
             dir: [-128, 127, -(i as i8) - 1],
             cond: u16::MAX - i as u16,
+            skin: u16::MAX - 2 * i as u16,
         });
         let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
@@ -7106,6 +7158,92 @@ mod tests {
         w.write(0, 16).unwrap();
         let len = w.finish();
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+
+        // The skin (v102), the condition's twin: a dropped skinned item
+        // crosses wearing it, beside a condition or alone, and costs plain
+        // litter one bit.
+        for rec in [
+            WireGItem {
+                skin: 0x0A61,
+                ..lying
+            },
+            WireGItem {
+                skin: 0x0A61,
+                ..sheet
+            },
+        ] {
+            let with = encode_event_gitem_sync(false, &[rec], &mut buf).unwrap();
+            assert!(with > bare, "the skin took no room");
+            match decode_event(&buf[..with]).unwrap() {
+                EventMsg::GItemSync { recs, count, .. } => {
+                    assert_eq!(count, 1);
+                    assert_eq!(recs[0], rec);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+        // And forged the same way: the skin bit set over a zero skin.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_GITEM_SYNC, SUB_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(1, GITEM_SYNC_COUNT_BITS).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(100, POS_XZ_BITS).unwrap();
+        w.write(POS_Y_BIAS as u32, POS_Y_BITS).unwrap();
+        w.write(200, POS_XZ_BITS).unwrap();
+        w.write(3, 16).unwrap();
+        w.write(1, 16).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(0, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// A worn piece's skin crosses (v102) so a skinned tunic is drawn
+    /// skinned on the body; an unskinned slot costs a bit; and a skin on an
+    /// empty slot is refused both ways, as is the bit set over a zero.
+    #[test]
+    fn worn_carries_each_pieces_skin() {
+        use sim_core::gather::NO_ITEM;
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let id = 0x0100_0007;
+        let mut items = [NO_ITEM; WEAR_SLOTS];
+        let mut skins = [0u16; WEAR_SLOTS];
+        items[0] = 41;
+        items[WEAR_SLOTS - 1] = 40;
+        let bare = encode_event_worn(id, &items, &skins, &mut buf).unwrap();
+        skins[WEAR_SLOTS - 1] = 0x0B72;
+        let len = encode_event_worn(id, &items, &skins, &mut buf).unwrap();
+        assert!(len > bare, "the skin took no room");
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::Worn { id, items, skins })
+        );
+
+        let mut empty = items;
+        empty[WEAR_SLOTS - 1] = NO_ITEM;
+        assert_eq!(
+            encode_event_worn(id, &empty, &skins, &mut buf),
+            Err(WireError::Range),
+            "a skin on an empty slot"
+        );
+        // Forged: the same, and a set bit over a zero skin.
+        for (item, skin) in [(NO_ITEM, 0x0B72u32), (40, 0)] {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_WORN, SUB_BITS).unwrap();
+            w.write(id, 32).unwrap();
+            for _ in 0..WEAR_SLOTS {
+                w.write(item as u32, 16).unwrap();
+                w.write_bit(true).unwrap();
+                w.write(skin, 16).unwrap();
+            }
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        }
     }
 
     #[test]

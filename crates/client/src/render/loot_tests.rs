@@ -17,14 +17,16 @@ fn init(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile(
     mut commands: Commands,
     mut ring: ResMut<StructRing>,
     mirror: Res<Mirror>,
     models: Res<super::super::viewmodel::Models>,
+    mut skin_mats: ResMut<super::super::viewmodel::SkinMats>,
     assets: Res<AssetServer>,
     meshes: Res<Assets<Mesh>>,
-    mats: Res<Assets<StandardMaterial>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     let ring = &mut *ring;
     ring.gen += 1;
@@ -34,11 +36,12 @@ fn reconcile(
         ring.kit.as_ref().unwrap(),
         ring.gen,
         mirror.0.ground_items(),
-        &mirror.0.catalog,
+        (&mirror.0.catalog, &mirror.0.skins),
         &models,
+        &mut skin_mats,
         &assets,
         &meshes,
-        &mats,
+        &mut mats,
         |_, _| 0.0,
     );
 }
@@ -82,6 +85,7 @@ fn item(id: u32) -> protocol::WireGItem {
         count: 1,
         dir: [0; 3],
         cond: 0,
+        skin: 0,
     }
 }
 
@@ -255,4 +259,95 @@ fn a_landed_arrow_stands_in_the_ground() {
         .unwrap()
         .rotation;
     assert_ne!(a, b, "two arrows do not stand in ranks");
+}
+
+/// A dropped skinned stack keeps its look (v102): drawn plain while the
+/// skin catalog does not know the skin, and redrawn in its tint when a
+/// catalog batch lands (`APPLIED2_SKINS`) — the shared model's material,
+/// multiplied, never the base material itself.
+#[test]
+fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
+    const SKIN: u16 = 0x0A61;
+    let mut app = app();
+    app.world_mut()
+        .resource_mut::<Mirror>()
+        .0
+        .catalog
+        .set(
+            16,
+            b"Torch",
+            protocol::ItemRow {
+                stack_max: 1,
+                ..protocol::ItemRow::EMPTY
+            },
+        )
+        .unwrap();
+    sync(
+        &mut app,
+        &[protocol::WireGItem {
+            skin: SKIN,
+            ..item(1)
+        }],
+    );
+    let base = {
+        let ring = app.world().resource::<StructRing>();
+        let model = ring.gitems[&1].model.expect("torch has a generated model");
+        assert_eq!(ring.gitems[&1].skin, 0, "an unknown skin is drawn plain");
+        let base = app
+            .world()
+            .resource::<super::super::viewmodel::Models>()
+            .row(model)
+            .1;
+        let shown = &app
+            .world()
+            .get::<MeshMaterial3d<StandardMaterial>>(ring.gitems[&1].entity)
+            .unwrap()
+            .0;
+        assert_eq!(*shown, base);
+        base
+    };
+
+    {
+        let mut mirror = app.world_mut().resource_mut::<Mirror>();
+        mirror.0.skins.count = 1;
+        mirror
+            .0
+            .skins
+            .set(
+                0,
+                b"Ember",
+                protocol::SkinRow {
+                    catalog: SKIN,
+                    covers: 16,
+                    tint: [255, 64, 0],
+                    coin: protocol::COIN_NONE,
+                    price: 0,
+                },
+            )
+            .unwrap();
+    }
+    let mut feed = app.world_mut().resource_mut::<super::super::feed::Feed>();
+    feed.applied = 0;
+    feed.applied2 = client_core::core::APPLIED2_SKINS;
+    app.update();
+    let ring = app.world().resource::<StructRing>();
+    assert_eq!(ring.gitems[&1].skin, SKIN, "the catalog landing redrew it");
+    let shown = app
+        .world()
+        .get::<MeshMaterial3d<StandardMaterial>>(ring.gitems[&1].entity)
+        .unwrap()
+        .0
+        .clone();
+    assert_ne!(shown, base, "drawn in a tinted copy");
+    let mats = app.world().resource::<Assets<StandardMaterial>>();
+    let (plain, tinted) = (
+        mats.get(&base).unwrap().base_color.to_linear(),
+        mats.get(&shown).unwrap().base_color.to_linear(),
+    );
+    // Red × 1, blue × 0: the base colour multiplied, alpha untouched.
+    assert_eq!(
+        (tinted.red, tinted.blue, tinted.alpha),
+        (plain.red, 0.0, plain.alpha),
+        "{plain:?} → {tinted:?}"
+    );
 }

@@ -173,8 +173,8 @@ fn main() {
     let len = protocol::encode_action_respawn_at(cx, cz, level, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[150], &buf[..len]);
     // What a body wears (v98).
-    let (id, items) = goldens::event_worn();
-    let len = protocol::encode_event_worn(id, &items, &mut buf).unwrap();
+    let (id, items, skins) = goldens::event_worn();
+    let len = protocol::encode_event_worn(id, &items, &skins, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[151], &buf[..len]);
     // A syringe on a downed body (v99).
     let (slot, target) = goldens::action_treat();

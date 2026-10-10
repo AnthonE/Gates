@@ -291,3 +291,48 @@ fn a_store_price_reaches_every_client_and_replaces_the_row() {
         (COIN_NONE, 0)
     );
 }
+
+/// A worn piece's skin reaches every other client (`SUB_WORN`, v102), so
+/// the body is drawn in it; a plain piece beside it stays plain, and taking
+/// the skinned piece off says so.
+#[test]
+fn a_worn_skin_reaches_every_other_client() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.craft = CraftContent::probe_fixture();
+    let (sc, wire) = skins();
+    core.world.skins = sc;
+    *core.skin_catalog = wire;
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = probe_catalog();
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].worn[0] = stack(4, 1);
+    core.world.players[w0].worn[1] = ItemStack {
+        skin: SKIN,
+        ..stack(OUTPUT, 1)
+    };
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let look = clients[1].1.worn_of(id_of(0));
+    assert_eq!(look.items, [4, OUTPUT]);
+    assert_eq!(look.skins, [0, SKIN], "the bystander sees the worn skin");
+
+    core.world.players[w0].worn[1] = ItemStack::default();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let look = clients[1].1.worn_of(id_of(0));
+    assert_eq!(look.items, [4, sim_core::gather::NO_ITEM]);
+    assert_eq!(look.skins, [0, 0], "an empty slot wears no skin");
+}

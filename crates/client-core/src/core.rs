@@ -393,6 +393,12 @@ pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
 /// mirror re-bands every wall in view — but only this one is the player's.
 pub const APPLIED2_OWN_STRUCT_HIT: u32 = 1 << 10;
 
+/// A batch of the skin catalog landed (`EventMsg::Skins`) — a skin the
+/// client could not draw a moment ago may be drawable now, so a renderer
+/// that tints loose stacks re-reads them (`skins_gen` counts the same
+/// landings for readers that poll).
+pub const APPLIED2_SKINS: u32 = 1 << 12;
+
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
 /// matters: **a stack's identity is its id and its contents ride with
@@ -1113,19 +1119,19 @@ impl ClientCore {
     }
 
     /// What player `id` is wearing, as the shard last said (`EventMsg::Worn`):
-    /// the item in each wear slot, `NO_ITEM` for none or for a body the shard
-    /// has not described yet.
-    pub fn worn_of(&self, id: u32) -> [u16; sim_core::limits::WEAR_SLOTS] {
+    /// the item in each wear slot and its skin, [`WornLook::NONE`] for a body
+    /// the shard has not described yet.
+    pub fn worn_of(&self, id: u32) -> WornLook {
         self.bodies_worn
             .iter()
             .find(|(who, _)| *who == id && id != 0)
-            .map_or([NO_ITEM; sim_core::limits::WEAR_SLOTS], |(_, items)| *items)
+            .map_or(WornLook::NONE, |(_, look)| *look)
     }
 
-    /// File `items` as what `id` wears: its own row, else an empty one, else
+    /// File `look` as what `id` wears: its own row, else an empty one, else
     /// the next row round (a fixed table — a shard has at most
     /// `MAX_PLAYERS` bodies, so a row that is overwritten is a body gone).
-    fn file_worn(&mut self, id: u32, items: [u16; sim_core::limits::WEAR_SLOTS]) {
+    fn file_worn(&mut self, id: u32, look: WornLook) {
         let at = self
             .bodies_worn
             .iter()
@@ -1136,7 +1142,7 @@ impl ClientCore {
                 self.worn_next = self.worn_next.wrapping_add(1);
                 at
             });
-        self.bodies_worn[at] = (id, items);
+        self.bodies_worn[at] = (id, look);
         self.worn_gen = self.worn_gen.wrapping_add(1);
     }
 
@@ -1357,6 +1363,23 @@ const PLAYOUT_SLEW_PER_S: f64 = 0.5;
 /// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
 const JITTER_GAIN: f64 = 1.0 / 16.0;
 
+/// What one body wears as the shard last said (`EventMsg::Worn`): the item
+/// in each wear slot (`NO_ITEM` for none) and each piece's skin (v102, zero
+/// for none). Read with [`ClientCore::worn_of`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WornLook {
+    pub items: [u16; sim_core::limits::WEAR_SLOTS],
+    pub skins: [u16; sim_core::limits::WEAR_SLOTS],
+}
+
+impl WornLook {
+    /// Nothing worn: the look of a body the shard has not described.
+    pub const NONE: Self = Self {
+        items: [NO_ITEM; sim_core::limits::WEAR_SLOTS],
+        skins: [0; sim_core::limits::WEAR_SLOTS],
+    };
+}
+
 /// One player's tag as the shard sent it (`EventMsg::Tag`): the proven
 /// address, the name that wallet set on the platform (possibly empty) and
 /// its picture's revision (0 for none).
@@ -1514,7 +1537,7 @@ pub struct ClientCore {
     /// never speaks for its previous tenant. Read with [`Self::tag`].
     tags: Box<[Tag]>,
     /// What each body wears (`EventMsg::Worn`, v98), by player id.
-    bodies_worn: Box<[(u32, [u16; sim_core::limits::WEAR_SLOTS])]>,
+    bodies_worn: Box<[(u32, WornLook)]>,
     worn_next: usize,
     /// Bumped on every `Worn`, so a renderer re-dresses only when it moved.
     pub worn_gen: u32,
@@ -2086,11 +2109,8 @@ impl ClientCore {
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
             tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
-            bodies_worn: vec![
-                (0, [NO_ITEM; sim_core::limits::WEAR_SLOTS]);
-                2 * sim_core::limits::MAX_PLAYERS
-            ]
-            .into_boxed_slice(),
+            bodies_worn: vec![(0, WornLook::NONE); 2 * sim_core::limits::MAX_PLAYERS]
+                .into_boxed_slice(),
             worn_next: 0,
             worn_gen: 0,
             tags_gen: 0,
@@ -2520,6 +2540,7 @@ impl ClientCore {
             } => {
                 self.skins.count = total;
                 self.skins_gen = self.skins_gen.wrapping_add(1);
+                self.applied2 |= APPLIED2_SKINS;
                 for i in 0..count as usize {
                     // The decoder refused incoherent rows and bounded the
                     // index; a failure here is an index past the table.
@@ -2719,7 +2740,7 @@ impl ClientCore {
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }
             }
-            EventMsg::Worn { id, items } => self.file_worn(id, items),
+            EventMsg::Worn { id, items, skins } => self.file_worn(id, WornLook { items, skins }),
             EventMsg::CraftQ {
                 jobs,
                 count,

@@ -6370,6 +6370,7 @@ mod take {
             count,
             dir: [0; 3],
             cond: 0,
+            skin: 0,
         }
     }
 
@@ -6483,6 +6484,7 @@ mod take {
             count: 1,
             dir: [0; 3],
             cond: 0,
+            skin: 0,
         };
         let p = resolve_take(100.0, 100.0, &[one_q]);
         assert_eq!(p.verb, Verb::Take);
