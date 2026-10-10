@@ -405,6 +405,15 @@ name = "music"
 path = "tests/music.rs"
 required-features = ["render"]
 
+# The rest of the audio systems that need no world — the beds' setup and
+# teardown, the click, the map, the fire, the blow, the herd and the pump —
+# the same way: scheduled on a bare `App` with the real bank, each one's ask
+# read back off the engine's frame buffer (`NOW.md` §0x item 3).
+[[test]]
+name = "audio_systems"
+path = "tests/audio_systems.rs"
+required-features = ["render"]
+
 # The day/night cycle: the sun curve as arithmetic, plus `rig::day_night`
 # actually reaching the sun and the ambient on a bare `App` — `music.rs`'
 # shape, applied to the coupled lighting set (day/night v0).
