@@ -530,7 +530,11 @@ const TICKS: u64 = 900;
 /// over main's slope-sunk rocks (`0x648A_1F38_16B5_002C`): the island the
 /// script plays on has a wider road and its junk piles, so what the bots
 /// walk past and smash moved.
-const GOLDEN_FINAL_HASH: u64 = 0xFAEB_87E1_0504_F20B;
+/// **Moved `0xFAEB_87E1_0504_F20B` → `0xB77C_36B0_AD7E_998A` at the roofed
+/// twig** (2026-10-10, NOW §0up 6): the script roofs its hearth cell with a
+/// stone floor and lays a bare twig beside it, so the hut under the roof rots
+/// at the inside discount and stands a leap longer.
+const GOLDEN_FINAL_HASH: u64 = 0xB77C_36B0_AD7E_998A;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -631,7 +635,10 @@ const GOLDEN_FINAL_HASH: u64 = 0xFAEB_87E1_0504_F20B;
 /// differently. The end state holds, and the wall-plane rule that landed
 /// with it moves nothing here.
 /// **Moved → `0x9E70_29A8_C726_FA3D` at the 8 m ring**, with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x9E70_29A8_C726_FA3D;
+/// **Moved `0x9E70_29A8_C726_FA3D` → `0x36ED_1524_BB94_8B0B` at the roofed twig**
+/// (NOW §0up 6), with the final hash: the hut under the new roof rots at
+/// the inside discount from the t=191 leap on.
+const GOLDEN_TRACE_HASH: u64 = 0x36ED_1524_BB94_8B0B;
 
 /// Fold a stamped trace into one number.
 ///
@@ -851,6 +858,8 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     let (mut eaten, mut eat_refused) = (0u32, 0u32);
     let (mut drank, mut drink_refused) = (0u32, 0u32);
     let mut hearth_cell = (0u16, 0u16);
+    let (mut bare_twig_placed, mut roof_stone, mut bare_twig_stood) = (false, false, true);
+    let mut roofed_twig_hp: Option<u16> = None;
 
     for t in 0..TICKS {
         let mut cmds: Vec<Command> = Vec::new();
@@ -1303,6 +1312,51 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 }),
             }
         }
+        // The inside discount (upkeep v2, `upkeep::inside`; NOW §0up 6), on
+        // the replayed surface rather than only in unit tests: a floor over
+        // the hearth cell at level 1 roofs the twig foundation under it, and a
+        // bare twig foundation one cell over is the control. Twig is never
+        // paid, so both rot on the first visit after the t=191 leap — the bare
+        // one at the full 100 % a period and gone in one step, the roofed one
+        // at `inside_decay_pct` (10 %) of it. The roof is climbed to the
+        // fixture's stone floor (row 6) so it is not twig itself: unroofed and
+        // unpaid it rots at stone's 20 %, which keeps it standing through that
+        // first leap whichever of the two the sweep visits first. The floor
+        // stands on the doorway (152) and the wall (159) under its sides.
+        if (168..=170).contains(&t) {
+            let (cx, cz) = hearth_cell;
+            let id = world.players[0].id;
+            cmds.push(match t {
+                168 => Command::Place {
+                    id,
+                    row: 0,
+                    cx: cx + 1,
+                    cz,
+                    level: 0,
+                    loc: sim_core::build::LOC_PLANE,
+                    freehand: false,
+                    plate: 0,
+                },
+                169 => Command::Place {
+                    id,
+                    row: 2,
+                    cx,
+                    cz,
+                    level: 1,
+                    loc: sim_core::build::LOC_PLANE,
+                    freehand: false,
+                    plate: 0,
+                },
+                _ => Command::Upgrade {
+                    id,
+                    cx,
+                    cz,
+                    level: 1,
+                    loc: sim_core::build::LOC_PLANE,
+                    material: sim_core::build::MAT_STONE,
+                },
+            });
+        }
         // Leap the clock three upkeep periods on a cadence: over the run
         // that is ~40 periods, enough to decay unpaid fixture pieces
         // (100 hp − 5/period) all the way to removal — charge, decay,
@@ -1324,6 +1378,27 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     sim_core::build::LOC_EDGE_ZLO,
                 )
                 .is_some_and(|p| p.row == 4);
+        }
+        // The inside discount's verdict (the roof block above), read off the
+        // stores: the arc landed at 168/170, and at 250 — after the t=191
+        // leap's three periods, before the t=255 one — the roofed twig stands,
+        // rotted (so the sweep did visit it) but only by the discounted step,
+        // while the bare one beside it is gone.
+        let plane = |cx: u16, level: u8| {
+            world
+                .pieces
+                .find(cx, hearth_cell.1, level, sim_core::build::LOC_PLANE)
+                .copied()
+        };
+        if t == 168 {
+            bare_twig_placed = plane(hearth_cell.0 + 1, 0).is_some();
+        }
+        if t == 170 {
+            roof_stone = plane(hearth_cell.0, 1).is_some_and(|p| p.row == 6);
+        }
+        if t == 250 {
+            roofed_twig_hp = plane(hearth_cell.0, 0).map(|p| p.hp);
+            bare_twig_stood = plane(hearth_cell.0 + 1, 0).is_some();
         }
         for e in world.events.entries() {
             match e.code {
@@ -1404,6 +1479,25 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         locked_seen && unlocked_seen,
         "the scripted door never changed hands both ways — the lock verb fell out \
          of the replay surface"
+    );
+    // The inside discount (NOW §0up 6). The setup half first, so a refused
+    // placement reads as the arc falling out rather than as the rule failing.
+    assert!(
+        bare_twig_placed && roof_stone,
+        "the inside-discount arc never stood up (bare twig placed {bare_twig_placed}, \
+         stone roof {roof_stone}) — the roof block fell out of the replay surface"
+    );
+    assert!(
+        roofed_twig_hp.is_some_and(|hp| hp < 100) && !bare_twig_stood,
+        "the roofed twig foundation reads hp {roofed_twig_hp:?} and the bare one \
+         {} after the t=191 leap — the roofed one should stand on a discounted \
+         rot and the bare one be gone; the inside discount fell out of the \
+         replay surface",
+        if bare_twig_stood {
+            "still stands"
+        } else {
+            "is gone"
+        }
     );
     // The raid verb's own floor, and it is the one arm on this surface that
     // needs one most: a `Command::Throw` whose every instance refused would

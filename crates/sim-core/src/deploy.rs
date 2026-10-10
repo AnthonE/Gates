@@ -818,14 +818,11 @@ impl DeployContent {
         d.decay_pct = [100, 34, 20, 13];
         // And upkeep v2's rules keyed, for the same reason: a rent ladder
         // with steps low enough that the gates' bases climb it, an inside
-        // rate, and a grief window. ⚠ **Keyed is not the same as exercised,
-        // and it was measured**: the ladder walk and the inside predicate
-        // run on every visit these gates make, but no piece in the replay
-        // script ever goes unpaid with anything over it (0 discounted steps,
-        // counted 2026-09-22), so the inside discount is held by
-        // `upkeep.rs`'s and this module's unit tests and not by parity or
-        // replay. The grief receipt was not counted; its gates are the
-        // unit tests here too.
+        // rate, and a grief window. Keyed is not the same as exercised: the
+        // inside discount is on the replay surface because `tests/replay.rs`
+        // roofs a twig foundation and asserts it outlives a bare one (NOW
+        // §0up 6); parity does not reach it. The grief receipt was not
+        // counted; its gates are the unit tests here.
         d.upkeep_steps[0] = (3, 150);
         d.upkeep_steps[1] = (6, 200);
         d.upkeep_step_count = 2;
