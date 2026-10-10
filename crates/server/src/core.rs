@@ -1650,6 +1650,11 @@ impl ShardCore {
                     // here anyway asks the sim for nothing.
                     ActionMsg::SkinsRefresh => continue,
                     ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
+                    ActionMsg::CraftFastTrack { index, recipe } => Command::CraftFastTrack {
+                        id: c.id,
+                        index,
+                        recipe,
+                    },
                     ActionMsg::Place {
                         row,
                         cx,

@@ -678,9 +678,10 @@ its countdown, padlock, notices over the vitals, colour icons).
 5. CRAFT dims when short; the community plugin paints it green — a palette knob, `DECISIONS.md` §open.
 6b. 8 of 78 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
    painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand item 3).
-7. The class byte landed (wire v102: the rail groups by class) and every item carries a description
-   line (`items.toml` `description`, `SUB_ITEM_DESC`, wire v103); left is fast-track by task id
-   (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
+7. The class byte landed (wire v102: the rail groups by class), every item carries a description
+   line (`items.toml` `description`, `SUB_ITEM_DESC`) and a right-click fast-tracks a queued job
+   (`ACT_FASTTRACK`, both wire v103). A cancel still names an index, not a task id (§1.1); the
+   fast-track carries the recipe it saw instead. The bench rebate landed (`REBATE_MAX_RUNGS`).
 
 ## 0w · The native menus — the untested gesture *(client lane)*
 

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 159] = [
+const GOLDEN: [&[u8]; 160] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -222,6 +222,7 @@ const GOLDEN: [&[u8]; 159] = [
     include_bytes!("golden/action_give.bin"),
     include_bytes!("golden/action_unload.bin"),
     include_bytes!("golden/event_item_desc.bin"),
+    include_bytes!("golden/action_fasttrack.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -488,8 +489,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 157);
     // An item's description line (v103).
     g!(seen, golden_event, 158);
+    // A queued craft pulled to the head (v103).
+    g!(seen, golden_action, 159);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 159, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 160, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -847,6 +850,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_action_reload(&mut buf).unwrap()
+        }
+        "action_fasttrack.bin" => {
+            let (index, recipe) = protocol::goldens::action_fasttrack();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::CraftFastTrack { index, recipe },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap()
         }
         "action_unload.bin" => {
             assert_eq!(

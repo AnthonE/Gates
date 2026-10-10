@@ -1121,7 +1121,8 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v103 — unload: `ACT_UNLOAD` (33) empties the held weapon's magazine into
 /// the pack (`Command::Unload`), and `REFUSE_RL_UNLOADED` (6) says there
 /// was nothing in it. And `SUB_ITEM_DESC` (92) drips each item's
-/// description line to a joiner.
+/// description line to a joiner, and `ACT_FASTTRACK` (34) pulls a queued
+/// craft to the head.
 pub const PROTO_VER: u16 = 103;
 
 /// This game's slug in the elo catalog.
@@ -1953,18 +1954,21 @@ const ACT_GIVE: u32 = 32;
 /// Empty the held weapon's magazine into the pack (wire v103,
 /// `Command::Unload`). No payload, `ACT_RELOAD`'s reasoning.
 const ACT_UNLOAD: u32 = 33;
+/// Pull a queued craft to the head (wire v103, `Command::CraftFastTrack`):
+/// the index and the recipe the click saw there, so a moved queue refuses.
+const ACT_FASTTRACK: u32 = 34;
 /// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
 const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
 /// It was worth more here than there while this lane's field was four
-/// bits and **full**; at v103 it is six bits with thirty codes spare,
+/// bits and **full**; at v103 it is six bits with twenty-nine codes spare,
 /// so the pressure is off — but the assert stays, because the failure it
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_UNLOAD;
+const ACT_MAX: u32 = ACT_FASTTRACK;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2111,6 +2115,8 @@ pub enum ActionMsg {
     SkinsRefresh,
     /// Cancel the queue job at `index`, refunding remaining inputs.
     CraftCancel { index: u16 },
+    /// Pull the queue job at `index` to the head, if it is still `recipe`.
+    CraftFastTrack { index: u16, recipe: u16 },
     /// Place baked piece row `row` at build-grid address (cx, cz, level,
     /// loc). Shape here too: address inside the grid, row inside the
     /// table; support/terrain/cost are the sim's verdict, delivered as a
@@ -2742,6 +2748,25 @@ pub fn encode_action_skins_refresh(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_SKINS_REFRESH, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
+/// Fast-track the queue job at `index`, which the click saw as `recipe`.
+pub fn encode_action_fasttrack(
+    index: u16,
+    recipe: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if index as usize >= sim_core::limits::CRAFT_QUEUE
+        || recipe as usize >= sim_core::limits::MAX_RECIPES
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_FASTTRACK, ACTION_SUB_BITS)?;
+    w.write(index as u32, CANCEL_INDEX_BITS)?;
+    w.write(recipe as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -3404,6 +3429,16 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_DRINK => ActionMsg::Drink,
         ACT_RELOAD => ActionMsg::Reload,
         ACT_UNLOAD => ActionMsg::Unload,
+        ACT_FASTTRACK => {
+            let index = r.read(CANCEL_INDEX_BITS)? as u16;
+            let recipe = r.read(8)? as u16;
+            if index as usize >= sim_core::limits::CRAFT_QUEUE
+                || recipe as usize >= sim_core::limits::MAX_RECIPES
+            {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::CraftFastTrack { index, recipe }
+        }
         ACT_ASSIST => ActionMsg::Assist {
             target: r.read(32)?,
         },
@@ -5050,11 +5085,12 @@ mod tests {
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
         // respawn point (v92) 28, the arc's one verb (v95) 29, drop
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
-        // (v102) 32 widened `ACTION_SUB_BITS` to six, and unload (v103) 33.
-        assert_eq!(ACT_MAX, ACT_UNLOAD);
+        // (v102) 32 widened `ACTION_SUB_BITS` to six, and unload (v103) 33
+        // and fast-track 34.
+        assert_eq!(ACT_MAX, ACT_FASTTRACK);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            30,
+            29,
             "the spare action codes moved — say so where the count is written"
         );
     }

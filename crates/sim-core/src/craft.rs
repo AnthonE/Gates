@@ -513,6 +513,33 @@ pub fn cancel(
     }
 }
 
+/// Pull the job at `index` to the head of the queue (`NOW.md` §0cq 7, the
+/// reference's `FastTrackTask`): the jobs ahead of it each move back one.
+/// Ignored unless that job is still one of `recipe` — the index was read
+/// off a queue the click saw, and a queue that moved under it must not
+/// promote a stranger. The old head's started unit starts again behind it;
+/// its inputs were paid at enqueue, so only the time is lost.
+pub fn fast_track(
+    cc: &CraftContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
+    tick: u64,
+    p: &mut Player,
+    index: u16,
+    recipe: u16,
+) {
+    let index = index as usize;
+    if index == 0
+        || index >= CRAFT_QUEUE
+        || p.jobs[index].remaining == 0
+        || p.jobs[index].recipe != recipe
+    {
+        return;
+    }
+    p.jobs[..=index].rotate_right(1);
+    rearm(cc, dc, deploys, tick, p);
+}
+
 /// One player's per-tick craft progress: at most one unit completes per
 /// tick (recipe ticks are ≥ 1 by bake), paying the output and starting
 /// the next unit's — or the next job's — timer.
@@ -876,6 +903,27 @@ mod tests {
         let before = ev.len();
         enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
         assert_eq!(ev.entries()[before].b, REFUSE_CR_QUEUE_FULL);
+    }
+
+    /// Fast-track (`FastTrackTask`): a queued job jumps to the head and the
+    /// jobs ahead of it move back one; a stale index or a wrong recipe is
+    /// ignored, and the head cannot be fast-tracked.
+    #[test]
+    fn fast_track_pulls_a_job_to_the_head() {
+        let (cc, _) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
+        let mut p = player(&[(0, 30), (1, 20), (2, 20)]);
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &SK, 0, &dc, &nod, 50, &mut p, 0, 3, 0, &mut ev);
+        enqueue(&cc, &SK, 0, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev);
+        let before = p.jobs;
+        fast_track(&cc, &dc, &nod, 55, &mut p, 1, 0);
+        assert_eq!(p.jobs, before, "a wrong recipe moved the queue");
+        fast_track(&cc, &dc, &nod, 55, &mut p, 0, 0);
+        assert_eq!(p.jobs, before, "the head was fast-tracked");
+        fast_track(&cc, &dc, &nod, 55, &mut p, 1, 1);
+        assert_eq!((p.jobs[0], p.jobs[1]), (before[1], before[0]));
+        assert!(p.craft_done_at > 55, "the new head did not start");
     }
 
     #[test]

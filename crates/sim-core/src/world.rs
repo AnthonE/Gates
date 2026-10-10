@@ -1698,6 +1698,13 @@ pub enum Command {
         id: u32,
         index: u16,
     },
+    /// Pull the queue job at `index` to the head (`craft::fast_track`), if
+    /// it is still a job of `recipe` — the reference's `FastTrackTask`.
+    CraftFastTrack {
+        id: u32,
+        index: u16,
+        recipe: u16,
+    },
     /// Place baked building-piece row `row` at grid address (cx, cz,
     /// level, loc) (build.rs validates and refuses by event, never by
     /// panic).
@@ -4872,6 +4879,19 @@ impl World {
                         &mut self.players[s],
                         recipe,
                         &mut self.events,
+                    );
+                }
+            }
+            Command::CraftFastTrack { id, index, recipe } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    craft::fast_track(
+                        &self.craft,
+                        &self.deploy,
+                        &self.deploys,
+                        self.tick,
+                        &mut self.players[slot],
+                        index,
+                        recipe,
                     );
                 }
             }
