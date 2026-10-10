@@ -1899,7 +1899,11 @@ impl Plugin for GatesRenderPlugin {
                 .get_resource::<capture::CaptureLog>()
                 .cloned()
                 .unwrap_or_default();
-            app.insert_resource(capture::Capture::new(dir.clone(), log));
+            let cap = capture::Capture::new(dir.clone(), log);
+            // On disk before the first frame, so a run that hangs anywhere
+            // from here on still leaves a manifest, and never the last run's.
+            cap.begin();
+            app.insert_resource(cap);
             // Ahead of `gather`, because it owns the view on a capture run
             // and `gather` must not fight it for the same frame. Gated on
             // `world_running` rather than on `InWorld`: a capture run now

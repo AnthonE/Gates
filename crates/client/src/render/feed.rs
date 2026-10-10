@@ -111,7 +111,8 @@ pub enum Refused {
 ///
 /// **The per-sector split is still the arc's alone.** `Cue::Hurt` is
 /// non-positional, so three light blows from three directions are two voices
-/// (`sound::hurt::again`) that say how many and how hard, never from where.
+/// (`sound::hurt::again`): they tell one blow from more than one, and how
+/// hard, never how many past two nor from where.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Hurt {
     pub from: u8,

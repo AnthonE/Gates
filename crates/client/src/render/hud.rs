@@ -520,6 +520,9 @@ pub struct Toast {
     pub hit_part: Option<Part>,
     /// That hit killed: the marker is in its widest shape ([`Toast::kill`]).
     pub hit_kill: bool,
+    /// Who the blow that lit the marker landed on (`Feed::hit_victims`, the
+    /// frame's last), or `None` for a wall: the one death that may widen it.
+    pub hit_victim: Option<u32>,
     /// The live hurt arcs — `hit_*`'s pair from the other side of the blow
     /// (wire v57), one entry per direction currently being pointed at.
     ///
@@ -541,6 +544,7 @@ impl Default for Toast {
             hit_left: 0.0,
             hit_part: None,
             hit_kill: false,
+            hit_victim: None,
             hurts: [HurtArc::default(); HURT_ARCS],
         }
     }
@@ -719,29 +723,35 @@ impl Toast {
         self.dropped
     }
 
-    /// A blow of yours landed on `part` (`None` = a wall). The number it
-    /// did is [`hit_number`]'s, off the feed.
+    /// A blow of yours landed on `part` (`None` = a wall), on `victim`
+    /// (`None` = a wall too). The number it did is [`hit_number`]'s, off the
+    /// feed.
     ///
     /// The rung is latched with the clock and not merged with whatever was
     /// there: the marker is a statement about the shot the player just
     /// took, and a headshot four frames ago must not colour a leg hit now.
-    pub fn hit(&mut self, part: Option<Part>) {
+    /// The victim is latched with it, for [`Toast::kill`].
+    pub fn hit(&mut self, part: Option<Part>, victim: Option<u32>) {
         self.hit_left = HITMARK_SECS;
         self.hit_part = part;
         self.hit_kill = false;
+        self.hit_victim = victim;
     }
 
-    /// The blow on the marker killed: it takes its kill shape on a fresh
-    /// clock.
+    /// `victim` died at your hand: if the blow on the marker was the one on
+    /// them, it takes its kill shape on a fresh clock.
     ///
-    /// **Only a hot marker is promoted.** A death credited to you is not
-    /// always a blow you just landed — a body you put down can bleed out a
-    /// minute later — and the marker is a statement about the shot just
+    /// **Only a hot marker is promoted, and only by its own victim.** A
+    /// death credited to you is not always a blow you just landed — a body
+    /// you put down can bleed out a minute later, while you are shooting
+    /// someone else — and the marker is a statement about the shot just
     /// taken. The killing blow's `EV_HIT` is pushed before the world's
     /// `EV_DEATH` and both ride the same ordered event lane, so a death that
-    /// *is* a shot always finds its hit already on the crosshair.
-    pub fn kill(&mut self) {
-        if self.hit_left > 0.0 {
+    /// *is* a shot always finds its hit, and its victim, already on the
+    /// crosshair. A frame whose blows landed on two bodies latches the last
+    /// of them; a kill of the other one keeps the plain marker.
+    pub fn kill(&mut self, victim: u32) {
+        if self.hit_left > 0.0 && self.hit_victim == Some(victim) {
             self.hit_left = HITMARK_SECS;
             self.hit_kill = true;
         }
@@ -869,14 +879,15 @@ fn tick_offset(i: usize, push: f32) -> (f32, f32) {
     (dx - w * 0.5 + ux * push, dy - h * 0.5 + uy * push)
 }
 
-/// A death in this frame's feed is a kill of yours: you are named the
-/// killer and you are not the body. `killer == victim` is how the world
-/// spells a death nobody dealt (cold, salt, the clock), so a suicide is
-/// not a kill either.
-fn own_kill(deaths: &[(u32, u32)], own: u32) -> bool {
+/// The bodies this frame's feed says you killed: you are named the killer
+/// and you are not the body. `killer == victim` is how the world spells a
+/// death nobody dealt (cold, salt, the clock), so a suicide is not a kill
+/// either.
+fn own_kills(deaths: &[(u32, u32)], own: u32) -> impl Iterator<Item = u32> + '_ {
     deaths
         .iter()
-        .any(|&(victim, killer)| killer == own && victim != own)
+        .filter(move |&&(victim, killer)| killer == own && victim != own)
+        .map(|&(victim, _)| victim)
 }
 
 /// A hotbar cell, by index.
@@ -2512,13 +2523,13 @@ pub fn feedback(
 
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
-        toast.hit(feed.hit_part);
+        toast.hit(feed.hit_part, feed.hit_victims().last().copied());
     }
     // And whether it killed, which is the marker's widest shape. Read off
     // the same broadcast deaths the kill feed below says, after the hit so
     // the blow that killed is already the one on the crosshair.
-    if own_kill(feed.deaths(), core.player_id) {
-        toast.kill();
+    for victim in own_kills(feed.deaths(), core.player_id) {
+        toast.kill(victim);
     }
     // And the same blow from the other end — every direction it came from,
     // not just the last one. `Feed::hurt_from` is a list precisely so that a
@@ -2978,6 +2989,11 @@ pub fn net_line(
     mut meter: Local<PathMeter>,
     mut line: Query<&mut Text, With<NetLine>>,
 ) {
+    // A new `Net` is a new session (`render::mod` removes it on the way
+    // out): its counters start over, and so does the meter.
+    if net.is_added() {
+        meter.reset();
+    }
     let p = &net.session.core.predict;
     *peak = peak.max(p.error_magnitude());
     *since += time.delta_secs();
@@ -3039,7 +3055,13 @@ pub const CONN_SLOW_MS: f32 = 250.0;
 /// speaks. A taste number: prediction measured 99.68 % confirmed at 10 %
 /// loss (`server/tests/client_loop.rs`), so 5 % is a link worth naming well
 /// before it is one the player can feel.
+///
+/// Read off [`crate::net::PathReading::settled_loss_pct`], so a window too
+/// young to hold [`PathMeter::SETTLED_SENT`] packets says nothing — and at
+/// that size one loss must stay under this line, or a single drop right
+/// after connect would flash it.
 pub const CONN_LOSSY_PCT: f32 = 5.0;
+const _: () = assert!(100.0 / PathMeter::SETTLED_SENT < CONN_LOSSY_PCT);
 
 /// What [`ConnWarn`] says, or `None` for a healthy link. A stall outranks
 /// loss, which outranks ping: each is the likelier cause of the next.
@@ -3066,6 +3088,9 @@ pub fn conn_warn(
     mut meter: Local<PathMeter>,
     mut q: Query<(&mut Text, &mut Visibility), With<ConnWarn>>,
 ) {
+    if net.is_added() {
+        meter.reset();
+    }
     let (applied, stalled, since) = &mut *seen;
     let dt = time.delta_secs();
     let now = net.session.core.snapshots_applied;
@@ -3082,7 +3107,9 @@ pub fn conn_warn(
     // Its own meter rather than `net_line`'s: both see the same counters on
     // the same frames, and one more 4 Hz `stats()` is cheaper than a
     // resource to share a reading through.
-    let loss = meter.update(net.session.path_counts(), *since).loss_pct;
+    let loss = meter
+        .update(net.session.path_counts(), *since)
+        .settled_loss_pct();
     *since = 0.0;
     let want = if net.session.live() {
         conn_warning(*stalled, net.session.rtt_ms(), loss)
@@ -4424,7 +4451,7 @@ mod tests {
     #[test]
     fn the_hitmarker_is_not_a_toast() {
         let mut t = Toast::default();
-        t.hit(Some(Part::Head));
+        t.hit(Some(Part::Head), Some(3));
         t.say("+1 × WOOD");
         assert_eq!(t.hit_part, Some(Part::Head));
         t.tick(HITMARK_SECS + 0.01);
@@ -4533,34 +4560,45 @@ mod tests {
         }
     }
 
-    /// A kill promotes the marker that is up, and only that one: a death
-    /// credited to you a minute after the blow (a bleed-out) is not a shot,
-    /// and the next hit is a statement about itself, not the last kill.
+    /// A kill promotes the marker that is up, and only by the body that
+    /// marker's blow landed on: a death credited to you a minute after the
+    /// blow (a bleed-out) is not a shot, nor is it the shot you are landing
+    /// on someone else when it comes, and the next hit is a statement about
+    /// itself, not the last kill.
     #[test]
     fn a_kill_widens_the_marker_that_is_up() {
         let mut t = Toast::default();
-        t.kill();
+        t.kill(3);
         assert!(!t.hit_kill && t.hit_left == 0.0, "a cold marker stays cold");
-        t.hit(Some(Part::Chest));
+        t.hit(Some(Part::Chest), Some(3));
         t.tick(HITMARK_SECS * 0.5);
-        t.kill();
+        // Someone you hit earlier bleeds out under this marker: not its kill.
+        t.kill(4);
+        assert!(!t.hit_kill, "another body's death widened this blow");
+        assert!(t.hit_left < HITMARK_SECS);
+        t.kill(3);
         assert!(t.hit_kill);
         assert_eq!(
             t.hit_left, HITMARK_SECS,
             "the kill shape gets its own clock"
         );
-        t.hit(Some(Part::Limb));
+        t.hit(Some(Part::Limb), Some(3));
         assert!(!t.hit_kill, "a fresh hit is not the last one's kill");
+        // A wall's marker has no victim, so no death widens it.
+        t.hit(None, None);
+        t.kill(3);
+        assert!(!t.hit_kill, "a wall hit took a kill shape");
 
         // Whose death is a kill: yours on someone else, never your own, and
         // never one the world dealt (`killer == victim`).
         let me = 7;
-        assert!(own_kill(&[(3, me)], me));
-        assert!(own_kill(&[(3, 9), (4, me)], me));
-        assert!(!own_kill(&[(3, 9)], me), "someone else's kill");
-        assert!(!own_kill(&[(me, 9)], me), "your own death");
-        assert!(!own_kill(&[(me, me)], me), "the cold, not a kill");
-        assert!(!own_kill(&[], me));
+        let kills = |d: &[(u32, u32)]| own_kills(d, me).collect::<Vec<_>>();
+        assert_eq!(kills(&[(3, me)]), [3]);
+        assert_eq!(kills(&[(3, 9), (4, me)]), [4]);
+        assert!(kills(&[(3, 9)]).is_empty(), "someone else's kill");
+        assert!(kills(&[(me, 9)]).is_empty(), "your own death");
+        assert!(kills(&[(me, me)]).is_empty(), "the cold, not a kill");
+        assert!(kills(&[]).is_empty());
     }
 
     /// The hurt arc keeps its own clock, longer than the hitmarker's,

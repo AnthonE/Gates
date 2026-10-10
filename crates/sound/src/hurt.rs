@@ -37,16 +37,19 @@
 //!   chest plate made no sound at all. An announced blow is audible whether or
 //!   not it cost anything, which is the point of hearing it.
 //!
-//! **Two blows in one frame are two voices** ([`again`]). A cue's cooldown
-//! binds inside a frame per row, so two requests for [`Cue::Hurt`] were one
-//! voice at the weight of their sum: one heavier sound, not two. The second
-//! blow plays [`Cue::HurtAgain`], Hurt's recording on a row of its own, and
-//! each voice weighs one blow. Across frames the pair shares Hurt's 120 ms
-//! clock ([`Cue::lead`]), so the rate a beating is heard at did not move;
-//! only a frame with several blows in it got its second voice. A third blow
-//! in that frame makes the first voice heavier rather than starting a third:
-//! two voices is what tells a pair from one, and the frame's budget is four
-//! starts for every cue there is (`STARTS_PER_FRAME`).
+//! **Two blows in one frame are two voices** ([`again`]). [`request`] asks
+//! for [`Cue::Hurt`] once a frame, weighted by the frame's summed damage, so
+//! two blows used to be one heavier sound, not two — and asking that row
+//! twice would not have helped, because a cue's cooldown binds inside a frame
+//! per row and the mixer starts it once. The second blow plays
+//! [`Cue::HurtAgain`], Hurt's recording on a row of its own, at the weight of
+//! one blow, and `request`'s voice weighs the rest. Across frames the pair
+//! shares Hurt's 120 ms clock ([`Cue::lead`]), so the rate a beating is heard
+//! at did not move; only a frame with several blows in it got its second
+//! voice. A third blow in that frame makes the first voice heavier rather
+//! than starting a third: two voices is what tells more than one blow from
+//! one, and the frame's budget is four starts for every cue there is
+//! (`STARTS_PER_FRAME`).
 //!
 //! What this does **not** do: the cue is still non-positional, so the bearing
 //! `Feed` merges per sector is read by the arc and not by the mixer.

@@ -109,8 +109,21 @@ pub struct PathReading {
     /// Upstream loss, percent of packets sent; `None` before a window has
     /// sent anything.
     pub loss_pct: Option<f32>,
+    /// The packets `loss_pct` is a share of: the window's decayed sent
+    /// count. A share of a few is noise ([`PathReading::settled_loss_pct`]).
+    pub sent: f32,
     /// Downstream rate, kB/s (1000 bytes).
     pub down_kbs: Option<f32>,
+}
+
+impl PathReading {
+    /// [`Self::loss_pct`] once the window holds [`PathMeter::SETTLED_SENT`]
+    /// packets, else `None`: the loss a warning may act on. The F4 row
+    /// prints the raw share, which is a diagnostic and may be noisy.
+    pub fn settled_loss_pct(&self) -> Option<f32> {
+        self.loss_pct
+            .filter(|_| self.sent >= PathMeter::SETTLED_SENT)
+    }
 }
 
 /// Turns cumulative [`PathCounts`] into a smoothed loss and rate.
@@ -135,15 +148,34 @@ impl PathMeter {
     /// the HUD's 4 Hz.
     pub const KEEP: f32 = 0.875;
 
+    /// Packets the window must hold before its loss is settled enough to
+    /// warn on ([`PathReading::settled_loss_pct`]). Right after connect the
+    /// window is a reading or two of ~15 packets, where one loss reads as 7%;
+    /// at 40 one loss is at most 2.5%. A client sending nothing but its
+    /// 30 Hz inputs (7.5 packets a reading, a window of 60 at rest) gets
+    /// there about 2 s in.
+    pub const SETTLED_SENT: f32 = 40.0;
+
     /// Fold in a reading taken `dt` seconds after the last. `None` (no
     /// counters) forgets everything, so a later session starts clean.
-    /// Counters that go backwards (a new connection under the same reader)
-    /// read as a quiet window rather than wrapping.
+    ///
+    /// **Counters that go backwards are a new session** (a new connection
+    /// under the same reader): the meter starts over and the reading is its
+    /// new baseline, rather than the last session's loss decaying on into
+    /// this one's. A new session whose counters have already passed the old
+    /// ones cannot be seen from here; a reader that knows of it calls
+    /// [`PathMeter::reset`].
     pub fn update(&mut self, now: Option<PathCounts>, dt: f32) -> PathReading {
         let Some(now) = now else {
-            *self = Self::default();
+            self.reset();
             return PathReading::default();
         };
+        if self
+            .prev
+            .is_some_and(|p| now.sent < p.sent || now.lost < p.lost || now.rx_bytes < p.rx_bytes)
+        {
+            self.reset();
+        }
         let Some(prev) = self.prev.replace(now) else {
             return PathReading::default();
         };
@@ -156,8 +188,14 @@ impl PathMeter {
             // Loss is declared an RTT or so after the send, so a burst can
             // briefly out-count its window: clamp rather than print 120%.
             loss_pct: (self.sent > 0.0).then(|| (100.0 * self.lost / self.sent).min(100.0)),
+            sent: self.sent,
             down_kbs: (self.secs > 0.0).then(|| self.rx / self.secs / 1000.0),
         }
+    }
+
+    /// Forget everything: the next reading is a baseline. For a new session.
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -391,7 +429,8 @@ mod tests {
 
     /// The F4 row's loss and rate (`NOW.md` §0tx item 3): the first reading
     /// is only a baseline, a steady 1-in-20 reads 5%, the rate is bytes over
-    /// seconds, and counters that run backwards neither wrap nor go negative.
+    /// seconds, a clean burst decays the loss without a step, and a window
+    /// that sent nothing has no loss to speak of.
     #[test]
     fn the_path_meter_reads_loss_and_rate_off_cumulative_counts() {
         let mut m = PathMeter::default();
@@ -405,20 +444,13 @@ mod tests {
         }
         assert!((r.loss_pct.unwrap() - 5.0).abs() < 1e-3, "{r:?}");
         assert!((r.down_kbs.unwrap() - 40.0).abs() < 1e-2, "{r:?}");
+        assert_eq!(r.settled_loss_pct(), r.loss_pct, "a full window settles");
 
         // A clean burst decays the loss toward zero without a step.
         let before = r.loss_pct.unwrap();
         r = m.update(counts(1300 + 20, 49, 1_410_000), 0.25);
         let after = r.loss_pct.unwrap();
         assert!(after < before && after > 0.0, "{before} -> {after}");
-
-        // A new connection under the same reader: smaller counters are a
-        // quiet window, not 2^64 packets.
-        r = m.update(counts(3, 0, 2_000), 0.25);
-        assert!(
-            r.loss_pct.unwrap() <= 100.0 && r.down_kbs.unwrap() < 100.0,
-            "{r:?}"
-        );
 
         // Nothing sent yet: no loss to speak of. Detection outrunning its
         // window clamps at 100%.
@@ -430,5 +462,86 @@ mod tests {
         // No counters (a replay, a browser without the fields) forgets.
         assert_eq!(fresh.update(None, 0.25), PathReading::default());
         assert_eq!(fresh.update(counts(50, 0, 0), 0.25), PathReading::default());
+    }
+
+    /// **Every packet weighs the same, not every window.** Busy readings of
+    /// 100 clean packets alternate with quiet ones of 10 that lose 5: per
+    /// packet that is 5 in 110, under 5%; per window it is 0% and 50%, whose
+    /// mean is near 25%. The meter must read the first. A steady 1-in-20
+    /// cannot tell the two apart, so this is the shape that pins the doc.
+    #[test]
+    fn the_path_meter_weighs_packets_not_windows() {
+        let k = PathMeter::KEEP;
+        let mut m = PathMeter::default();
+        m.update(counts(0, 0, 0), 0.25);
+        let (mut sent, mut lost) = (0u64, 0u64);
+        let (mut sums, mut ratios) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
+        let mut r = PathReading::default();
+        for i in 0..64 {
+            let (ds, dl) = if i % 2 == 0 { (100u64, 0u64) } else { (10, 5) };
+            sent += ds;
+            lost += dl;
+            r = m.update(counts(sent, lost, 0), 0.25);
+            sums = (sums.0 * k + dl as f32, sums.1 * k + ds as f32);
+            ratios = (ratios.0 * k + dl as f32 / ds as f32, ratios.1 * k + 1.0);
+        }
+        let got = r.loss_pct.unwrap();
+        let of_sums = 100.0 * sums.0 / sums.1;
+        let of_ratios = 100.0 * ratios.0 / ratios.1;
+        assert!((got - of_sums).abs() < 1e-3, "{got} vs {of_sums}");
+        assert!(got < 6.0 && of_ratios > 20.0, "{got} {of_ratios}");
+    }
+
+    /// **A new session starts the meter over.** A new connection's counters
+    /// begin again near zero: they are a baseline, not a quiet window that
+    /// lets the last session's 20% loss decay on into this one. And a new
+    /// session the counters cannot reveal (they have already passed the old
+    /// ones) is the reader's to report, through `reset`.
+    #[test]
+    fn a_new_session_starts_the_path_meter_over() {
+        let mut m = PathMeter::default();
+        m.update(counts(0, 0, 0), 0.25);
+        for i in 1..=20u64 {
+            m.update(counts(20 * i, 4 * i, 1_000 * i), 0.25);
+        }
+        assert_eq!(
+            m.update(counts(15, 0, 3_000), 0.25),
+            PathReading::default(),
+            "a new connection's first counters were read as a window"
+        );
+        let r = m.update(counts(30, 0, 6_000), 0.25);
+        assert_eq!(r.loss_pct, Some(0.0), "the last session's loss carried on");
+        assert_eq!(r.sent, 15.0, "the window still holds the last session");
+
+        m.reset();
+        assert_eq!(m.update(counts(10_000, 0, 0), 0.25), PathReading::default());
+    }
+
+    /// **One loss right after connect cannot raise the warning.** The first
+    /// window is ~15 packets, so one loss is 7% of it: the F4 row may print
+    /// that, but a warning waits for [`PathMeter::SETTLED_SENT`], by which
+    /// point one loss is at most 100/40 = 2.5%, under the HUD's line
+    /// (`hud::CONN_LOSSY_PCT` asserts it). A client at its quietest (its 30 Hz
+    /// inputs, 7.5 packets a reading) still settles within a few seconds,
+    /// so the gate is not a warning that can never speak.
+    #[test]
+    fn one_loss_after_connect_does_not_settle_into_a_warning() {
+        let mut m = PathMeter::default();
+        m.update(counts(0, 0, 0), 0.25);
+        let mut r = m.update(counts(15, 1, 0), 0.25);
+        assert!(r.loss_pct.unwrap() > 6.0, "{r:?}");
+        assert_eq!(r.settled_loss_pct(), None);
+        let (mut sent, mut readings) = (15, 1);
+        while r.settled_loss_pct().is_none() {
+            readings += 1;
+            assert!(readings <= 12, "a 30 Hz client never settled: {r:?}");
+            sent += 7 + readings % 2;
+            r = m.update(counts(sent, 1, 0), 0.25);
+            assert!(
+                r.settled_loss_pct()
+                    .is_none_or(|l| l <= 100.0 / PathMeter::SETTLED_SENT),
+                "{r:?}"
+            );
+        }
     }
 }

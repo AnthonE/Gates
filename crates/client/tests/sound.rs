@@ -3000,7 +3000,7 @@ fn a_full_weight_blow_is_exactly_the_old_loudness() {
 /// **Two blows in one frame are two voices**, not one heavier voice
 /// (`NOW.md` §0hrt 1). The second blow is `HurtAgain`, Hurt's recording on
 /// its own row, so the per-row cooldown that binds inside a frame does not
-/// fold it into the first; and each voice weighs one blow.
+/// fold it into the first; it weighs one blow and the first voice the rest.
 #[test]
 fn two_blows_in_one_frame_are_two_voices() {
     let mix = Mix::default();

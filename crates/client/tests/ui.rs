@@ -6208,57 +6208,67 @@ mod quick {
     /// holds eight and refuses the ninth; a sweep that played the refused
     /// move onto its copy anyway would think the stack gone (the cell
     /// silent for good) and owe an answer that never comes (the copy never
-    /// re-read). So the half that went is played, the half that did not is
-    /// planned again when the pointer is next over the cell — the next
-    /// frame, if it rests there — and the count owed is only what went.
+    /// re-read). So the moves that went are played, and the first refusal
+    /// ends the cell: the move after it is neither offered nor played, even
+    /// to a lane that would take it, because it was planned against a copy
+    /// the refused move had already changed. What did not go is planned
+    /// again when the pointer is next over the cell — the next frame, if it
+    /// rests there — and the count owed is only what went.
     #[test]
     fn a_sweep_plays_only_the_moves_that_went() {
         let cat = catalog();
         let mut inv = empty();
         inv[HOTBAR_SLOTS + 2] = stack(WOOD, 990);
+        inv[HOTBAR_SLOTS + 3] = stack(WOOD, 980);
         let mut cont = empty();
         cont[0] = stack(WOOD, 40);
         let worn = [ItemStack::default(); WEAR_SLOTS];
         let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
 
-        // Room for one: the top-up goes, the rest is refused.
+        // Three moves (top up both piles, then a hole) and a lane that
+        // refuses only the second: the first goes, the third is never asked.
         let (mut went, mut tried) = (Vec::new(), 0);
         let quiet = s.over(CONT_BAG, 0, &cat, |a| {
             tried += 1;
-            let room = went.is_empty();
+            let room = tried != 2;
             if room {
                 went.push(a);
             }
             room
         });
         assert_eq!(quiet, None);
-        assert_eq!(tried, 2, "the sweep kept sending past a full lane");
+        assert_eq!(tried, 2, "the sweep kept sending past a refused move");
         assert_eq!(
-            (went[0].to_slot as usize, went[0].count),
-            (HOTBAR_SLOTS + 2, 10)
+            went.iter()
+                .map(|m| (m.to_slot as usize, m.count))
+                .collect::<Vec<_>>(),
+            vec![(HOTBAR_SLOTS + 2, 10)],
+            "a move after the refused one went"
         );
 
-        // Still over the cell, the lane drained: the thirty that did not
-        // go are asked for, and only they.
+        // Still over the cell, the lane drained: the two that did not go
+        // are asked for, and only they — a third move played onto the copy
+        // would have left 20 to top up the second pile and no hole to fill.
         let mut out = Vec::new();
         assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
         assert_eq!(
             out.iter()
                 .map(|m| (m.to_slot as usize, m.count))
                 .collect::<Vec<_>>(),
-            vec![(HOTBAR_SLOTS, 30)],
-            "the refused move was played onto the copy, or re-planned whole"
+            vec![(HOTBAR_SLOTS + 3, 20), (HOTBAR_SLOTS, 10)],
+            "a move the lane never took was played onto the copy, or the \
+             stack was re-planned whole"
         );
 
-        // Two went, so two answers re-read the views: a third owed (the
-        // refused one counted) would pin this copy for the whole hold.
-        let mut seen = Sweep::arm(Some(s), CONT_BAG, BAG, 9, &inv, &cont, &worn);
+        // Three went, so three answers re-read the views: a fourth owed
+        // (the refused one counted) would pin this copy for the whole hold.
+        let mut seen = Sweep::arm(Some(s), CONT_BAG, BAG, 10, &inv, &cont, &worn);
         let mut again = Vec::new();
         assert_eq!(seen.over(CONT_BAG, 0, &cat, lane(&mut again)), None);
         assert_eq!(
             again.len(),
-            2,
-            "two answers did not re-read the views: the sweep counted a \
+            3,
+            "three answers did not re-read the views: the sweep counted a \
              move the lane refused"
         );
     }

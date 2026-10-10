@@ -47,6 +47,12 @@ fn main() -> AppExit {
     };
     let server = a.server.clone();
     let capture = a.capture.clone();
+    // A reused `--capture` directory's manifest is the last run's: gone
+    // before the connect below, which can still fail and exit without
+    // writing this run's (`render::capture::Capture::begin` writes it).
+    if let Some(dir) = &capture {
+        client::render::capture::forget_manifest(dir);
+    }
     // **Who connects before the window, and who does not.**
     //
     // Only `--capture` does, now. The probe harness is a gate: a client that

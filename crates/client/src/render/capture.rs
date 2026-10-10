@@ -25,8 +25,10 @@
 //! logged while it was taken — Bevy's own (`Path not found`, which draws the
 //! white fallback and is invisible in the image) and the probe's own lines.
 //! A frame with no record of what went wrong while it was shot is a frame a
-//! judge has to take on trust. Rewritten after every shot with outcome
-//! `running`, so a run that hangs or is killed still says how far it got.
+//! judge has to take on trust. Written with outcome `running` when the probe
+//! starts (replacing whatever a reused directory held), then every
+//! [`MANIFEST_EVERY_FRAMES`] and after every shot, so a run that hangs — the
+//! build wait has no frame budget — or is killed still says how far it got.
 
 use bevy::log::{tracing, tracing_subscriber};
 use bevy::prelude::*;
@@ -212,7 +214,13 @@ pub const EXTRA_SHOTS: usize = 3;
 /// first error of a run is usually the cause of the rest.
 pub const LOG_CAP: usize = 512;
 /// `manifest.json`'s schema version. Bump it when a field changes meaning.
-pub const MANIFEST_VERSION: u32 = 1;
+/// 2: a shot's `log` is the lines of its own window, each with the frame it
+/// was first seen on in that window and how often it was seen there.
+pub const MANIFEST_VERSION: u32 = 2;
+/// Frames between the manifest's rewrites while the run is going: about ten
+/// seconds under lavapipe, a sixth of one on a GPU, and a small file either
+/// way.
+pub const MANIFEST_EVERY_FRAMES: u32 = 10;
 
 /// `(label, yaw radians, pitch radians)`.
 ///
@@ -399,23 +407,45 @@ struct LogLine {
     last_frame: u32,
     /// Times seen. Repeats fold into one line rather than filling the cap.
     count: u32,
+    /// The same, per shot window it was seen in (see [`Seen`]). One entry
+    /// per window at most, so bounded by the shots, not by the frames.
+    #[serde(skip)]
+    windows: Vec<Seen>,
+}
+
+/// A line's sightings inside one shot's window: shot `window`'s frames are
+/// (the shot before's frame, its own frame], and a frame after the last shot
+/// is the window of the shot not yet taken.
+#[derive(Clone, Copy)]
+struct Seen {
+    window: u32,
+    /// The frame it was first seen on in this window.
+    first: u32,
+    count: u32,
 }
 
 #[derive(Default)]
 struct LogRing {
     lines: Vec<LogLine>,
     dropped: u32,
+    /// The frame of every shot so far, in order ([`CaptureLog::shot`]): what
+    /// files a line under its window as it arrives.
+    shots: Vec<u32>,
 }
 
 impl LogRing {
     fn push(&mut self, level: &'static str, source: &str, message: String, frame: u32) {
-        if let Some(l) = self
+        // Frame 0 (boot, connect, loading) is before any shot's window.
+        let window = (frame > 0).then(|| self.shots.partition_point(|&f| f < frame) as u32);
+        let at = if let Some(i) = self
             .lines
-            .iter_mut()
-            .find(|l| l.level == level && l.source == source && l.message == message)
+            .iter()
+            .position(|l| l.level == level && l.source == source && l.message == message)
         {
+            let l = &mut self.lines[i];
             l.count = l.count.saturating_add(1);
             l.last_frame = frame;
+            i
         } else if self.lines.len() < LOG_CAP {
             self.lines.push(LogLine {
                 level,
@@ -424,9 +454,25 @@ impl LogRing {
                 frame,
                 last_frame: frame,
                 count: 1,
+                windows: Vec::new(),
             });
+            self.lines.len() - 1
         } else {
             self.dropped = self.dropped.saturating_add(1);
+            return;
+        };
+        let Some(window) = window else {
+            return;
+        };
+        // From the back: a line is all but always in the newest window.
+        let seen = &mut self.lines[at].windows;
+        match seen.iter_mut().rev().find(|s| s.window == window) {
+            Some(s) => s.count = s.count.saturating_add(1),
+            None => seen.push(Seen {
+                window,
+                first: frame,
+                count: 1,
+            }),
         }
     }
 }
@@ -459,6 +505,17 @@ impl CaptureLog {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(level, source, message, frame);
+    }
+
+    /// A shot was taken on `frame`: it closes that shot's window. Lines
+    /// logged later on the same frame still fall in it — a window ends at
+    /// its shot's frame inclusive, whichever side of the shutter they land.
+    fn shot(&self, frame: u32) {
+        self.ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .shots
+            .push(frame);
     }
 
     fn snapshot(&self) -> (Vec<LogLine>, u32) {
@@ -633,6 +690,23 @@ impl Capture {
         }
     }
 
+    /// The probe is starting: a reused directory's manifest is not this
+    /// run's, so it goes, and this run's first one (outcome `running`, frame
+    /// 0) takes its place before the first frame, which is the earliest a
+    /// run can hang (`bin/gates.rs` already removed the old one before its
+    /// connect).
+    pub fn begin(&self) {
+        forget_manifest(&self.dir);
+        write_manifest(self, "running", &[]);
+    }
+
+    /// Keep a shot for the manifest, and close its window in the log: the
+    /// two lists are indexed alike, which is how a shot finds its lines.
+    fn record(&mut self, shot: ShotRec) {
+        self.log.shot(shot.frame);
+        self.shots.push(shot);
+    }
+
     /// Take a shot and remember it for the tail check.
     ///
     /// Every shutter in this file goes through here, so `taken` and the
@@ -667,7 +741,7 @@ impl Capture {
                 ));
             }
         }
-        self.shots.push(ShotRec {
+        self.record(ShotRec {
             path: path.clone(),
             kind,
             frame: self.frame,
@@ -741,6 +815,11 @@ pub fn drive(
     cap.frame += 1;
     cap.log.set_frame(cap.frame);
     look.frozen = true;
+    // A wait that never ends (the build's has no budget) is still a run that
+    // says how far it got. An exit below on this frame rewrites it again.
+    if cap.frame.is_multiple_of(MANIFEST_EVERY_FRAMES) {
+        write_manifest(&cap, "running", &[]);
+    }
 
     // **The probe is a player, and things kill it** (`RENDER.md`: three of
     // four runs carrying a heavy change died where none of two baseline runs
@@ -1751,10 +1830,15 @@ const MANIFEST_ABOUT: &str = "One capture run. `frame` is the probe's own frame 
     (0 = before its first frame: boot, connect, asset loading). `log` is every distinct \
     WARN/ERROR line the client logged plus the probe's own lines (source `capture`: INFO \
     narration, WARN complaints), each with the frame it was first and last seen on and \
-    how many times; `warnings`/`errors` total those counts. A shot's `log` is \
-    the lines seen in (previous shot's frame, this shot's frame]. `landed` = the PNG was \
-    on disk and non-empty when this file was written. `outcome` is `running` until the \
-    run ends, then `ok`, `missing`, `died` or `never_placed`.";
+    how many times in the whole run; `warnings`/`errors` total those counts. A shot's \
+    `log` is the lines seen in its own window, (previous shot's frame, this shot's \
+    frame], ordered by `frame`, the frame each was first seen on in that window, with \
+    `count` the times it was seen in that window; frame-0 lines and lines after the \
+    last shot are in no shot's. `landed` = the PNG was on disk and non-empty when this \
+    file was written. Written when the probe starts and rewritten as it runs: \
+    `outcome` is `running` until the run ends (a `running` file that stopped changing \
+    is a hung or killed run, and `frame` says how far it got), then `ok`, `missing`, \
+    `died` or `never_placed`.";
 
 #[derive(Serialize)]
 struct Manifest<'a> {
@@ -1782,7 +1866,28 @@ struct ShotOut<'a> {
     pitch: f32,
     aim: Option<[f32; 3]>,
     landed: bool,
-    log: Vec<&'a LogLine>,
+    log: Vec<ShotLine<'a>>,
+}
+
+/// A line as one shot saw it: when it first turned up in that shot's window
+/// and how often it did there, not over the whole run.
+#[derive(Serialize)]
+struct ShotLine<'a> {
+    level: &'static str,
+    source: &'a str,
+    message: &'a str,
+    frame: u32,
+    count: u32,
+}
+
+/// Remove `manifest.json` (and a temporary a killed writer left) from a
+/// capture directory: a reused `--capture` directory's manifest describes
+/// the last run, and must not be read as this one's if this one never gets
+/// to write its own. Missing files are the ordinary case.
+pub fn forget_manifest(dir: &Path) {
+    for name in ["manifest.json", "manifest.json.tmp"] {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
 }
 
 /// Write `manifest.json` beside the frames: what was shot, from where, and
@@ -1800,8 +1905,23 @@ fn write_manifest(cap: &Capture, outcome: &str, missing: &[PathBuf]) {
         )
     };
     let mut shots = Vec::with_capacity(cap.shots.len());
-    let mut prev = 0;
-    for s in &cap.shots {
+    for (i, s) in cap.shots.iter().enumerate() {
+        // The lines seen in this shot's window, by when they turned up in it
+        // (stable, so one frame keeps the log's order).
+        let mut lines: Vec<ShotLine> = log
+            .iter()
+            .filter_map(|l| {
+                let seen = l.windows.iter().find(|w| w.window as usize == i)?;
+                Some(ShotLine {
+                    level: l.level,
+                    source: &l.source,
+                    message: &l.message,
+                    frame: seen.first,
+                    count: seen.count,
+                })
+            })
+            .collect();
+        lines.sort_by_key(|l| l.frame);
         shots.push(ShotOut {
             file: file(&s.path),
             kind: s.kind,
@@ -1811,14 +1931,8 @@ fn write_manifest(cap: &Capture, outcome: &str, missing: &[PathBuf]) {
             pitch: s.pitch,
             aim: s.aim.map(|a| a.to_array()),
             landed: landed(&s.path),
-            // Seen at any point in this shot's window: a line that repeats
-            // every frame belongs to every shot it was repeating through.
-            log: log
-                .iter()
-                .filter(|l| l.frame <= s.frame && l.last_frame > prev)
-                .collect(),
+            log: lines,
         });
-        prev = s.frame;
     }
     let count = |level: &str| {
         log.iter()
@@ -2060,10 +2174,12 @@ mod tests {
 
     /// **The manifest names every shot and files each line under the shots it
     /// was logged during** — the point of §0vj. A line seen before the probe
-    /// ran (frame 0) belongs to no shot; a one-off belongs to the shot whose
-    /// window it fell in; a line repeating across two windows belongs to
-    /// both. `landed` is read off the disk, and the rename leaves no
-    /// temporary behind.
+    /// ran (frame 0) or after its last shot belongs to no shot; a line is
+    /// listed under a shot by the frame it first turned up in that shot's
+    /// window, with how often it did there, so a line spamming across two
+    /// windows is two honest entries rather than its whole-run first frame
+    /// and count twice. `landed` is read off the disk, and the rename leaves
+    /// no temporary behind.
     #[test]
     fn the_manifest_files_each_line_under_its_shots() {
         let dir = std::env::temp_dir().join(format!("gates-manifest-{}", std::process::id()));
@@ -2071,14 +2187,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut cap = Capture::new(dir.clone(), CaptureLog::default());
         cap.built_at = Some(20);
-        cap.log
-            .push("WARN", "bevy_asset::server", "Path not found".into());
-        cap.log.set_frame(33);
-        cap.warn("probe hp 100 -> 90");
-        cap.log.set_frame(35);
-        cap.log.push("ERROR", "wgpu", "spam".into());
-        cap.log.set_frame(40);
-        cap.log.push("ERROR", "wgpu", "spam".into());
         let shot = |path: PathBuf, kind, frame| ShotRec {
             path,
             kind,
@@ -2089,8 +2197,32 @@ mod tests {
             aim: None,
         };
         let (a, b) = (dir.join("0-design.png"), dir.join("6-swing.png"));
-        cap.shots.push(shot(a.clone(), Kind::Vantage, 35));
-        cap.shots.push(shot(b.clone(), Kind::Swing, 41));
+        let at = |cap: &Capture, frame| cap.log.set_frame(frame);
+
+        cap.log
+            .push("WARN", "bevy_asset::server", "Path not found".into());
+        at(&cap, 33);
+        cap.warn("probe hp 100 -> 90");
+        at(&cap, 34);
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        at(&cap, 35);
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        cap.record(shot(a.clone(), Kind::Vantage, 35));
+        // Later on the shot's own frame: still that shot's window.
+        cap.log.push("ERROR", "wgpu", "late".into());
+        // The second window: a line new to the run turns up before the spam
+        // does, so it is listed first here though the spam is older.
+        at(&cap, 37);
+        cap.log.push("ERROR", "wgpu", "fresh".into());
+        at(&cap, 38);
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        at(&cap, 40);
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        at(&cap, 41);
+        cap.record(shot(b.clone(), Kind::Swing, 41));
+        at(&cap, 50);
+        cap.warn("MISSING or empty: 6-swing.png");
         std::fs::write(&a, b"png").unwrap();
         cap.frame = 60;
         write_manifest(&cap, "missing", std::slice::from_ref(&b));
@@ -2103,19 +2235,39 @@ mod tests {
         assert_eq!(v["frame"], 60);
         assert_eq!(v["built_at_frame"], 20);
         assert_eq!(v["missing"], serde_json::json!(["6-swing.png"]));
-        assert_eq!(v["log"].as_array().unwrap().len(), 3);
-        assert_eq!(v["warnings"], 2);
-        assert_eq!(v["errors"], 2);
-        let msgs = |i: usize| -> Vec<String> {
+        assert_eq!(v["log"].as_array().unwrap().len(), 6);
+        assert_eq!(v["warnings"], 3);
+        assert_eq!(v["errors"], 7);
+        // The whole-run line keeps its whole-run numbers.
+        let spam = &v["log"][2];
+        assert_eq!(spam["message"], "spam");
+        assert_eq!(spam["frame"], 34);
+        assert_eq!(spam["last_frame"], 40);
+        assert_eq!(spam["count"], 5);
+        let lines = |i: usize| -> Vec<(String, u64, u64)> {
             v["shots"][i]["log"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|l| l["message"].as_str().unwrap().to_string())
+                .map(|l| {
+                    (
+                        l["message"].as_str().unwrap().to_string(),
+                        l["frame"].as_u64().unwrap(),
+                        l["count"].as_u64().unwrap(),
+                    )
+                })
                 .collect()
         };
-        assert_eq!(msgs(0), ["probe hp 100 -> 90", "spam"]);
-        assert_eq!(msgs(1), ["spam"]);
+        let own = |m: &str, f, n| (m.to_string(), f, n);
+        assert_eq!(
+            lines(0),
+            [
+                own("probe hp 100 -> 90", 33, 1),
+                own("spam", 34, 2),
+                own("late", 35, 1)
+            ]
+        );
+        assert_eq!(lines(1), [own("fresh", 37, 1), own("spam", 38, 3)]);
         let s0 = &v["shots"][0];
         assert_eq!(s0["file"], "0-design.png");
         assert_eq!(s0["kind"], "vantage");
@@ -2123,6 +2275,34 @@ mod tests {
         assert_eq!(s0["eye"], serde_json::json!([1.0, 2.0, 3.0]));
         assert_eq!(v["shots"][1]["kind"], "swing");
         assert_eq!(v["shots"][1]["landed"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A run leaves a manifest before it can hang, and never the last
+    /// run's.** A reused directory holding a finished run's `ok` manifest is
+    /// overwritten at the start with this run's `running` one at frame 0, and
+    /// `forget_manifest` (what `bin/gates.rs` does before it connects) leaves
+    /// nothing for a run that dies before it starts.
+    #[test]
+    fn a_run_starts_by_replacing_a_stale_manifest() {
+        let dir = std::env::temp_dir().join(format!("gates-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("manifest.json");
+        std::fs::write(&manifest, br#"{"outcome":"ok","frame":900}"#).unwrap();
+        std::fs::write(dir.join("manifest.json.tmp"), b"half").unwrap();
+
+        forget_manifest(&dir);
+        assert!(!manifest.exists() && !dir.join("manifest.json.tmp").exists());
+
+        std::fs::write(&manifest, br#"{"outcome":"ok","frame":900}"#).unwrap();
+        let cap = Capture::new(dir.clone(), CaptureLog::default());
+        cap.begin();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(v["outcome"], "running");
+        assert_eq!(v["frame"], 0);
+        assert_eq!(v["shots"], serde_json::json!([]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
