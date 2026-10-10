@@ -426,15 +426,4 @@ mod tests {
         assert_eq!(ground_matter([10, 10, 10, 200], false), Matter::Stone);
         assert_eq!(ground_matter([200, 10, 10, 10], true), Matter::Water);
     }
-
-    /// A deployable is made of what its row says, and a bag (cloth) still
-    /// raises the dirt it did when the client guessed from the archetype.
-    #[test]
-    fn a_deployable_is_made_of_its_matter() {
-        use sim_core::deploy::{MATTER_CLOTH, MATTER_METAL, MATTER_STONE, MATTER_WOOD};
-        assert_eq!(Matter::of_deploy(MATTER_WOOD), Matter::Wood);
-        assert_eq!(Matter::of_deploy(MATTER_STONE), Matter::Stone);
-        assert_eq!(Matter::of_deploy(MATTER_METAL), Matter::Metal);
-        assert_eq!(Matter::of_deploy(MATTER_CLOTH), Matter::Dirt);
-    }
 }

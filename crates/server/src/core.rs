@@ -6602,6 +6602,43 @@ mod tests {
         );
     }
 
+    /// `EV_GATHER`'s and `EV_CRAFT_DONE`'s `c` is what went to the ground
+    /// (NOW §0sp2), and the route copies it into the wire's `dropped`: the
+    /// spill toast's count comes from nowhere else, so a route that dropped
+    /// `c` would say "0 dropped" with every gate on the codec green.
+    #[test]
+    fn gather_and_craft_done_carry_what_spilled() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        core.world.events.push(EV_GATHER, PLAYER, (3 << 16) | 4, 5);
+        core.world
+            .events
+            .push(EV_CRAFT_DONE, PLAYER, (3 << 16) | 4, 5);
+        let sent = pumped(&mut core, &stats);
+        let got = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(m @ (EventMsg::Gather { .. } | EventMsg::CraftDone { .. })) => Some(m),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            vec![
+                EventMsg::Gather {
+                    item: 3,
+                    added: 4,
+                    dropped: 5
+                },
+                EventMsg::CraftDone {
+                    item: 3,
+                    added: 4,
+                    dropped: 5
+                },
+            ]
+        );
+    }
+
     /// Everything `fan_out` sent, per connection slot, in order.
     fn fanned(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<Vec<u8>>> {
         let mut out = vec![Vec::new(); MAX_CONNS];

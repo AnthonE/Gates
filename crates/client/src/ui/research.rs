@@ -73,9 +73,17 @@ pub fn is_paper(rc: &ResearchContent, s: ItemStack) -> bool {
 /// the item's own label for everything else — a blank sheet included,
 /// which is honestly just "Blueprint".
 pub fn stack_label(catalog: &ItemCatalog, rc: &ResearchContent, s: ItemStack) -> String {
-    match blueprint_target(rc, s) {
-        Some(t) => format!("{} {}", item_label(catalog, t), item_label(catalog, s.item)),
-        None => item_label(catalog, s.item),
+    teaching_label(catalog, s.item, blueprint_target(rc, s))
+}
+
+/// [`stack_label`] once the target is already read: `item` named after what
+/// it `teaches`, or plainly when it teaches nothing. The one spelling of a
+/// sheet's name, for a caller that holds the target rather than the stack
+/// (`ui::interact::Pick`'s Take prompt, stamped by `stamp_teaches`).
+pub fn teaching_label(catalog: &ItemCatalog, item: u16, teaches: Option<u16>) -> String {
+    match teaches {
+        Some(t) => format!("{} {}", item_label(catalog, t), item_label(catalog, item)),
+        None => item_label(catalog, item),
     }
 }
 

@@ -460,19 +460,13 @@ impl Pick {
             // holding 4 cloth and a sack holding 300 metal are the same
             // picture. `×` and the same `item_label` the panels use, so
             // one item has one name everywhere.
-            // A sheet names what it teaches, the way `research::stack_label`
-            // does in the panels: "Revolver Blueprint", not "Blueprint".
+            // A sheet names what it teaches with the panels' own words
+            // (`research::stack_label`'s composition): "Revolver Blueprint",
+            // not "Blueprint".
             Verb::Take => format!(
                 "[E] TAKE {} ×{}",
-                match self.teaches {
-                    Some(t) => format!(
-                        "{} {}",
-                        crate::ui::craft::item_label(catalog, t),
-                        crate::ui::craft::item_label(catalog, self.item)
-                    ),
-                    None => crate::ui::craft::item_label(catalog, self.item),
-                }
-                .to_uppercase(),
+                crate::ui::research::teaching_label(catalog, self.item, self.teaches)
+                    .to_uppercase(),
                 self.count
             ),
             // A blade swung at it cuts more out than `E` pulls (`mobs.toml`

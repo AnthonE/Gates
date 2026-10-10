@@ -1472,6 +1472,9 @@ impl Plugin for GatesRenderPlugin {
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
         )
+        // `keys` stops with the screen, so the give hold it times is dropped
+        // on the way out rather than resumed, half-run, on the way back.
+        .add_systems(OnExit(Screen::InWorld), verbs::drop_give_hold)
         // The build ghost. `track` before `place_key` for the same reason
         // `verbs::resolve` precedes `verbs::keys`: the click commits what is
         // drawn, so the drawing has to be this frame's.

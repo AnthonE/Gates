@@ -3521,7 +3521,10 @@ impl World {
     /// A target out of reach or in the wrong state is silent, as a syringe
     /// out of reach is; a pack with no room for any of it is
     /// `REFUSE_M_GIVE`, because the giver pressed a key and is owed why
-    /// nothing left their hand.
+    /// nothing left their hand. That refusal is a fact about the receiver
+    /// told to the giver — their pack had no room for this item — and it is
+    /// said on purpose: it is what a hand held out and not taken shows face
+    /// to face, and nothing else about their pack is said.
     fn give(&mut self, seat: TrustSeat, slot: usize, inv: usize, count: u16, target: u32) {
         let id = self.players[slot].id;
         let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();

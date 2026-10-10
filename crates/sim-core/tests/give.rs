@@ -141,12 +141,13 @@ fn a_stack_keeps_its_condition_and_its_skin() {
 }
 
 /// Out of reach, at a sleeper, a downed body, a corpse, yourself, an empty
-/// slot, a zero count and a slot past the pack: nothing moves and nothing
-/// is said, as a syringe out of reach says nothing.
+/// slot, a zero count, a slot past the pack and from a giver who is down:
+/// nothing moves and nothing is said, as a syringe out of reach says
+/// nothing.
 #[test]
 fn every_wrong_give_changes_nothing() {
     type Setup = fn(&mut World) -> (u8, u16, u32);
-    let cases: [(&str, Setup); 8] = [
+    let cases: [(&str, Setup); 9] = [
         ("out of reach", |w| {
             w.players[1].body.qz += 200; // six metres further
             (3, 30, TAKER)
@@ -168,6 +169,12 @@ fn every_wrong_give_changes_nothing() {
         ("an empty slot", |_| (4, 30, TAKER)),
         ("a zero count", |_| (3, 0, TAKER)),
         ("a slot past the pack", |_| (INV_SLOTS as u8, 30, TAKER)),
+        // Down, the hands are gone (`live_slot_of`), whoever they aim at.
+        ("a downed giver", |w| {
+            w.players[0].wounded = true;
+            w.players[0].wound_until = w.tick + 900;
+            (3, 30, TAKER)
+        }),
     ];
     for (what, setup) in cases {
         let mut w = fixture();

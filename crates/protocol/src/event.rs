@@ -3778,8 +3778,9 @@ pub struct WireGItem {
     /// this angle. Zero for a stack lying on the ground.
     pub dir: [i8; 3],
     /// The stack's `ItemStack::cond` (wire v102): a blueprint's target plus
-    /// one, a worn tool's wear, zero for ordinary litter — which costs one
-    /// bit on the wire.
+    /// one, a tool's condition left in hundredths of a point (not its wear),
+    /// zero for litter that carries none and for a dead tool — which costs
+    /// one bit on the wire.
     pub cond: u16,
 }
 

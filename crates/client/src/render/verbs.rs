@@ -101,6 +101,14 @@ pub struct Give {
     pub hold: interact::GiveHold,
 }
 
+/// Drop the give hold on the way out of `Screen::InWorld`. [`keys`] runs
+/// only there, so a hold begun before the pause menu, the map or the death
+/// screen would otherwise keep its start time, and coming back with `B`
+/// still down on the same pick would give on the first frame.
+pub fn drop_give_hold(mut give: ResMut<Give>) {
+    give.hold.cancel();
+}
+
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
@@ -546,20 +554,28 @@ pub fn keys(
     // friend with the key down gives nothing; the prompt names the item, the
     // count and the person first. Whether it lands — reach, their state,
     // their room — is the sim's verdict, and a full pack says so.
-    let pick = give.pick;
-    let b = keys.just_pressed(KeyCode::KeyB);
-    if let Some(p) = give.hold.step(b, keys.pressed(KeyCode::KeyB), pick, now) {
-        send(&net, &mut toast, "give", |buf| {
-            protocol::encode_action_give(p.slot, p.count, p.target, buf)
-        });
-    } else if b && pick.is_none() {
-        let core = &net.session.core;
-        let empty = core.inv.get(net.sel as usize).is_none_or(|s| s.count == 0);
-        toast.warn(if empty {
-            "nothing in your hand to give"
-        } else {
-            "look at a player within reach to give them what you hold"
-        });
+    //
+    // Not while the keypad is up: it claims the keys (below), and the HUD
+    // already hides the give line then, so a hold under way is dropped and
+    // none starts — the pad closing with `B` still down gives nothing.
+    if pad.0.is_open() {
+        give.hold.cancel();
+    } else {
+        let pick = give.pick;
+        let b = keys.just_pressed(KeyCode::KeyB);
+        if let Some(p) = give.hold.step(b, keys.pressed(KeyCode::KeyB), pick, now) {
+            send(&net, &mut toast, "give", |buf| {
+                protocol::encode_action_give(p.slot, p.count, p.target, buf)
+            });
+        } else if b && pick.is_none() {
+            let core = &net.session.core;
+            let empty = core.inv.get(net.sel as usize).is_none_or(|s| s.count == 0);
+            toast.warn(if empty {
+                "nothing in your hand to give"
+            } else {
+                "look at a player within reach to give them what you hold"
+            });
+        }
     }
     if keys.just_pressed(KeyCode::KeyE) {
         // A second `E` closes the hearth's panel rather than feeding again.

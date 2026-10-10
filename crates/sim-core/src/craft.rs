@@ -1168,6 +1168,10 @@ mod tests {
             0,
             "nothing reached the hands, and the event says so"
         );
+        assert_eq!(
+            e.c, cc.recipes[0].out_count as u32,
+            "and says how many went to the ground"
+        );
         assert_eq!(p.jobs[0].remaining, 1, "the batch still advances");
         assert_eq!(
             inv_count(&spill, 2),
