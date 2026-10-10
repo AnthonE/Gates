@@ -878,4 +878,42 @@ mod tests {
             "hearth 1 likewise"
         );
     }
+
+    /// The crew vital's question (`Deploys::crew_hearth_at`) on one base
+    /// with two of your hearths: the nearer hearth answers, unless the one
+    /// the client last heard about still covers you — a push must not
+    /// re-point a panel open at the other. A stranger has no hearth, a
+    /// preferred hearth that is gone is passed over, and off the base no
+    /// preference makes one.
+    #[test]
+    fn the_crew_vital_keeps_the_hearth_the_client_holds() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        for cx in 100..120u16 {
+            pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, &bc);
+        }
+        deploys.push_hearth_for_test(100, 100, 0, OWNER);
+        deploys.push_hearth_for_test(119, 100, 0, OWNER);
+        deploys.refresh_claims(&pieces, &bc);
+        let (x, z) = centre(117, 100);
+        assert_eq!(deploys.crew_hearth_at(x, z, OWNER, None), Some(1), "nearer");
+        assert_eq!(
+            deploys.crew_hearth_at(x, z, OWNER, Some((100, 100, 0))),
+            Some(0),
+            "the hearth the client holds"
+        );
+        assert_eq!(
+            deploys.crew_hearth_at(x, z, OWNER, Some((50, 50, 0))),
+            Some(1),
+            "a hearth that decayed since"
+        );
+        assert_eq!(deploys.crew_hearth_at(x, z, STRANGER, None), None);
+        let off = centre(160, 100);
+        assert_eq!(
+            deploys.crew_hearth_at(off.0, off.1, OWNER, Some((100, 100, 0))),
+            None,
+            "off the base, preferred or not"
+        );
+    }
 }

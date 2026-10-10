@@ -4239,7 +4239,9 @@ impl Survivor {
             self.stash_job.on_refused();
             self.oven_job.on_refused(reason);
         }
-        // The reply to a feed of its own cupboard: the stock readout.
+        // Its own cupboard's stock readout: a feed's reply, or the crew
+        // vital's push while it stands in the claim. Either is a reading;
+        // only a reply answers a feed (`StashJob::on_stock`).
         if flags & APPLIED_STOCK != 0 {
             let (cx, cz, level) = core.stock_addr;
             if self
@@ -4248,7 +4250,7 @@ impl Survivor {
                 .is_some_and(|h| (h.cx, h.cz, h.level) == (cx, cz, level))
             {
                 self.home.on_stock(core, tick, self.builder.charged());
-                self.stash_job.on_stock();
+                self.stash_job.on_stock(core.stock_grew);
             }
         }
         // Its own box's panel: what it shows is what the box holds.

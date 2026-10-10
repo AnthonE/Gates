@@ -358,6 +358,12 @@ pub struct ClientNetState {
     /// fresh join and a resync start owing it, and `route_events` arms it
     /// again on the tick one of their bags is placed or taken down.
     pub bags_owed: bool,
+    /// The hearth `(cx, cz, level)` of the last `EventMsg::Stock` this
+    /// connection was sent — what its client's `stock_addr` holds. The crew
+    /// vital's push keeps to it while it still covers the body, so a push
+    /// never re-latches the client away from a panel open at it (NOW §0up
+    /// 3). `None` at a fresh join.
+    pub stock_hearth: Option<(u16, u16, u8)>,
     /// Next skin-catalog row the drip sends (skins v0).
     pub skins_cursor: usize,
     /// Next vendor offer the drip sends (wire v85).
@@ -478,6 +484,7 @@ impl ClientNetState {
             last_env: None,
             fires_owed: true,
             bags_owed: true,
+            stock_hearth: None,
             skins_cursor: 0,
             vend_cursor: 0,
             last_doors: None,

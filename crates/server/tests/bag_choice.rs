@@ -24,7 +24,8 @@
 //!   4. a spent bag says so, so a second death inside the cooldown draws a
 //!      hollow marker instead of promising an anchor that will not answer;
 //!   5. it follows the bags while the owner lives — told at a join, a
-//!      placement, a pickup and a resync, not only at a death (NOW §0die 2).
+//!      placement, a pickup, a resync and a wake that spends one, not only
+//!      at a death (NOW §0die 2).
 
 use client_core::core::{ClientCore, APPLIED2_BAGS, APPLIED_RESPAWN};
 use protocol::{ActionMsg, EventMsg, ItemCatalog};
@@ -348,6 +349,7 @@ fn a_bag_inside_its_cooldown_is_reported_spent() {
     assert!(core.wants_action(0), "hand should be open");
     core.push_action(0, ActionMsg::Respawn { on_bag: true });
     let mut woke = [0u32; 2];
+    let mut waking = Vec::new();
     for _ in 0..4 {
         let mut seen = Vec::new();
         pump(&mut core, &stats, &mut clients, &mut seen);
@@ -356,6 +358,7 @@ fn a_bag_inside_its_cooldown_is_reported_spent() {
                 woke[0] |= APPLIED_RESPAWN;
             }
         }
+        waking.extend(seen);
     }
     assert_ne!(woke[0], 0, "the respawn never came back");
     assert!(!clients[0].1.dead, "the body never woke");
@@ -364,6 +367,19 @@ fn a_bag_inside_its_cooldown_is_reported_spent() {
         "the wake did not land on the bag — the cooldown below would be \
          measuring nothing"
     );
+    // The wake spent the bag, so the living owner is told at once, not at
+    // the next death: the map's bed mark must not promise a ready anchor.
+    assert_eq!(
+        bags_for(&waking, 0),
+        vec![(CX, CZ, 0u8, false)],
+        "a wake on the bag left the owner's list saying it is ready"
+    );
+    assert_eq!(
+        lists_to(&waking, 1),
+        0,
+        "the bystander heard the owner's list"
+    );
+    assert!(!clients[0].1.any_bag_ready(), "the living owner's mirror");
 
     let second = die(&mut core, &stats, &mut clients);
     assert_eq!(

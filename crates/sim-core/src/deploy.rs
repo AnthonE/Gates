@@ -1204,19 +1204,31 @@ impl Deploys {
     /// The hearth whose crew `id` is on and whose **cached** claim volume
     /// covers the planar point — "am I standing in my own base, and which
     /// one", the crew HUD vital's question (NOW §0up 3). Where two of your
-    /// claims overlap, the hearth nearest the point answers, so a panel
-    /// open at one hearth is never re-pointed at the other.
+    /// claims overlap, `prefer` answers while it still qualifies — the
+    /// caller passes the hearth the client last heard about, the one its
+    /// panel shows — so a periodic push never re-points an open panel at
+    /// the other; failing that, the hearth whose body (`hearth_xz`, not
+    /// its cell's centre) stands nearest the point.
     ///
     /// Read-only and outside the tick: the server asks it after
     /// `World::tick`, against the cache the sweep just refreshed, which is
     /// [`upkeep::bill`](crate::upkeep::bill)'s contract too.
-    pub fn crew_hearth_at(&self, x: f32, z: f32, id: u32) -> Option<usize> {
+    pub fn crew_hearth_at(
+        &self,
+        x: f32,
+        z: f32,
+        id: u32,
+        prefer: Option<(u16, u16, u8)>,
+    ) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (hi, h) in self.hearths().iter().enumerate() {
             if !h.crew.contains(id) || !self.hearth_covers(hi, x, z) {
                 continue;
             }
-            let (hx, hz) = cell_center(h.cx, h.cz);
+            if prefer == Some((h.cx, h.cz, h.level)) {
+                return Some(hi);
+            }
+            let (hx, hz) = self.hearth_xz(h);
             let d2 = (hx - x) * (hx - x) + (hz - z) * (hz - z);
             if best.is_none_or(|(_, b)| d2 < b) {
                 best = Some((hi, d2));

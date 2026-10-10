@@ -578,6 +578,19 @@ fn the_crew_in_their_claim_hear_the_stock_unasked() {
         pump_seen(&mut core, &stats, &mut clients, &mut seen);
     }
     assert_eq!(stocks(&seen, 0), vec![(CX, CZ, 0)], "one push a period");
+    // The stranger's feet really are in the claim (a crew member standing
+    // there would be pushed), so the silence below is the crew check and
+    // not the stranger standing off the base.
+    let b1 = core.world.players[world_slot(&core, id_of(1))].body;
+    let (x1, z1) = (
+        b1.qx as f32 * sim_core::movement::POS_XZ_Q,
+        b1.qz as f32 * sim_core::movement::POS_XZ_Q,
+    );
+    assert_eq!(
+        core.world.deploys.crew_hearth_at(x1, z1, id_of(0), None),
+        Some(0),
+        "slot 1 stands outside the claim, so its silence proves nothing"
+    );
     assert!(
         stocks(&seen, 1).is_empty(),
         "a stranger read the decay clock"

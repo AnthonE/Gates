@@ -190,6 +190,66 @@ fn unban_crosses_as_a_prefix_and_its_answer_reaches_the_admin_alone() {
     assert_eq!(text.as_bytes(), b"[server] unbanned 0xffeeddccbbaa");
 }
 
+/// Every way the sim itself refuses `/kick`, `/ban` or `/unban` reaches the
+/// admin, alone: a target not on the shard, a target with no wallet to ban,
+/// and a full ring to the accept loop. Silence would read as "done".
+#[test]
+fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    setup(&mut core);
+    // A dev login with no wallet: on the shard, but nothing to ban.
+    assert!(core.connect_as(2, id_of(2), None, None).is_some());
+    let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(1);
+    pump(&mut core, &stats, &mut tx);
+
+    let heard = |core: &mut ShardCore, tx: &mut rtrb::Producer<AdminAct>, typed: &str| {
+        say(core, 0, typed);
+        let (chats, _) = pump(core, &stats, tx);
+        assert_eq!(
+            chats.len(),
+            1,
+            "{typed:?}: the admin alone hears it: {chats:?}"
+        );
+        let (slot, text, from) = &chats[0];
+        assert_eq!(
+            (*slot, *from),
+            (0, 0),
+            "{typed:?}: to the admin, from the house"
+        );
+        String::from_utf8(text.as_bytes().to_vec()).unwrap()
+    };
+    assert_eq!(
+        heard(&mut core, &mut tx, "/kick 999"),
+        "[server] 999 is not on"
+    );
+    assert_eq!(
+        heard(&mut core, &mut tx, "/ban 999"),
+        "[server] 999 is not on"
+    );
+    assert_eq!(
+        heard(&mut core, &mut tx, "/ban 258"),
+        "[server] 258 not banned: no wallet"
+    );
+    assert!(rx.pop().is_err(), "no refusal crossed the ring");
+
+    // The one-slot ring takes a kick; the next three find it full.
+    say(&mut core, 0, "/kick 257");
+    let (chats, _) = pump(&mut core, &stats, &mut tx);
+    assert!(
+        chats.is_empty(),
+        "a sent kick is the accept loop's to answer"
+    );
+    for typed in ["/kick 257", "/ban 257", "/unban 0011223344"] {
+        assert_eq!(
+            heard(&mut core, &mut tx, typed),
+            "[server] not done: admin ring full"
+        );
+    }
+    assert!(matches!(rx.pop(), Ok(AdminAct::Kick { .. })));
+    assert!(rx.pop().is_err(), "only the first kick crossed");
+}
+
 /// The permission check, from the wrong side: a player who is not on the
 /// list types the same line and **nothing happens** — no ring entry, and
 /// no line in the room either.

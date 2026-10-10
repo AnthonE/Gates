@@ -150,8 +150,8 @@ pub struct Home {
     asked: Option<(u16, u16, u8, u8)>,
     verdict: Option<Placed>,
     /// The server said it has all the bags it may have down: none of the
-    /// ones it knows of this session, maybe, but the cap stands until a
-    /// death screen lists them.
+    /// ones it knows of this session, maybe, but the cap stands until the
+    /// next own-bag list names them.
     capped: bool,
     /// Where and when the last bag failed to go down.
     bag_failed: Option<([f32; 2], u32)>,
@@ -201,8 +201,8 @@ impl Home {
         }
     }
 
-    /// A new session: what it knew of the old one is learned again at the
-    /// next death screen.
+    /// A new session: what it knew of the old one is learned again from
+    /// the own-bag list the server sends at the join.
     pub fn reset(&mut self) {
         let stats = self.stats;
         *self = Self::new();
@@ -260,8 +260,9 @@ impl Home {
         loc == LOC_PLANE && self.bags.contains(&Some((cx, cz, level)))
     }
 
-    /// The death screen's list replaces what it thought: a bag a raider
-    /// cut is gone from it, one from an earlier session is on it.
+    /// The own-bag list (at the join, as its bags change, at each death)
+    /// replaces what it thought: a bag a raider cut is gone from it, one
+    /// from an earlier session is on it.
     pub fn on_bags(&mut self, anchors: &[BagAnchor]) {
         self.bags = [None; BAG_CAP];
         self.capped = false;
@@ -291,8 +292,9 @@ impl Home {
     /// A deploy refusal: its own, since the ring carries only the owner's.
     pub fn on_refused(&mut self, reason: u8) {
         self.stats.deploy_refusals += 1;
-        // Bags from an earlier session count against the cap before the
-        // death screen has listed them.
+        // The join's own-bag list names bags from an earlier session, so
+        // this is the backstop: a refusal that beats that list (or a list
+        // a resync is still owed) still says the cap is full.
         if u32::from(reason) == REFUSE_D_BAG_CAP {
             self.capped = true;
         }
@@ -385,7 +387,8 @@ impl Home {
         self.upkeep = None;
     }
 
-    /// The reply to a feed of its own cupboard arrived.
+    /// A stock readout of its own cupboard arrived: a feed's reply, or the
+    /// crew vital's push while it stands in the claim.
     pub fn on_stock(&mut self, core: &ClientCore, tick: u32, grades: u32) {
         let n = usize::from(core.stock_count).min(HEARTH_STOCK_ROWS);
         let mut r = Reading {

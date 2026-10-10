@@ -402,6 +402,9 @@ pub struct StashJob {
     fresh: bool,
     /// The visit stopped short: moves refused, or too many of them.
     cut_short: bool,
+    /// A stock ack for the cupboard has reached this visit: what the next
+    /// one's `stock_grew` is measured against is a reading of this visit.
+    stocked: bool,
 }
 
 impl StashJob {
@@ -443,11 +446,16 @@ impl StashJob {
         }
     }
 
-    /// The cupboard's stock came back: the feed is answered.
-    pub fn on_stock(&mut self) {
-        if matches!(self.waiting, Some((Wait::Feed, _))) {
+    /// The cupboard's stock came back (`grew`: `ClientCore::stock_grew`).
+    /// It answers the feed in flight only if some row grew, because the
+    /// crew vital's periodic push (NOW §0up 3) rides the same message and
+    /// only ever shows stock spent — or if it is the visit's first ack,
+    /// which has no reading of this visit to have grown from.
+    pub fn on_stock(&mut self, grew: bool) {
+        if matches!(self.waiting, Some((Wait::Feed, _))) && (grew || !self.stocked) {
             self.answered = true;
         }
+        self.stocked = true;
     }
 
     /// A deploy refusal: a feed in flight was refused (reach, or no
@@ -905,5 +913,32 @@ mod tests {
         let mut out = [(0, 0); STORED_ROWS];
         assert_eq!(ledger.totals(&mut out), 1);
         assert_eq!(out[0], (STONE, 12_000));
+    }
+
+    /// The crew vital's push rides the feed's own reply (`EventMsg::Stock`),
+    /// so a push landing while a feed is in flight must not answer it: only
+    /// an ack that shows the stock grown does, once the visit has a reading
+    /// to grow from. The visit's first ack has none, and still answers.
+    #[test]
+    fn a_periodic_push_does_not_answer_a_feed_in_flight() {
+        let feeding = |job: &mut StashJob| {
+            job.want = Some(Wait::Feed);
+            job.sent(10);
+        };
+        let mut job = StashJob::default();
+        job.on_stock(false); // a push on the walk in
+        feeding(&mut job);
+        job.on_stock(false); // the next push, ahead of the reply
+        assert!(!job.answered, "a push read as the feed's reply");
+        job.on_stock(true);
+        assert!(job.answered, "the reply showed the stock grown");
+
+        let mut first = StashJob::default();
+        feeding(&mut first);
+        first.on_stock(false);
+        assert!(
+            first.answered,
+            "the visit's first ack has nothing to grow from"
+        );
     }
 }

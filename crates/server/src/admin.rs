@@ -39,7 +39,8 @@
 //! shard's uptime. Its own file with its own header, never the player
 //! store's: that header pins the seed, and a wipe would forget every ban.
 //! The file is text, one wallet a line, so an operator can also lift a ban
-//! by deleting its line while the shard is down.
+//! by deleting its line while the shard is down, or add one by pasting a
+//! wallet (any case: it is read lowercased, as the handshake proves it).
 //!
 //! A ban is enforced **at the door**: a handshake that proves a banned
 //! wallet is refused `REFUSE_ADMIN` before it claims a slot, so the screen
@@ -48,6 +49,8 @@
 //! the player it means is not on the shard to have an id. Only the accept
 //! loop holds the list, so it is the one that knows how either verb went,
 //! and it says so to the admin on an [`AdminReply`] ring back to the sim.
+//! What the sim refuses before the ring (no such player, no wallet to ban,
+//! the ring full) it answers itself, so every outcome reaches the admin.
 
 use protocol::admin::{AdminCmd, WalletPrefix};
 use protocol::ChatText;
@@ -242,6 +245,16 @@ pub fn ban_full_line(id: u32) -> String {
     format!("{id} not banned: {MAX_BANS} bans")
 }
 
+/// `/ban`'s answer, from the sim, when the target joined with no wallet
+/// (a dev login): there is nothing a ban could hold at the door.
+pub fn no_wallet_line(id: u32) -> String {
+    format!("{id} not banned: no wallet")
+}
+
+/// The sim's answer to `/kick`, `/ban` or `/unban` when the ring to the
+/// accept loop is full: the act did not happen, so the admin types it again.
+pub const RING_FULL_LINE: &str = "not done: admin ring full";
+
 /// `/unban`'s answer.
 pub fn unban_line(prefix: &WalletPrefix, how: &Result<PlayerKey, UnbanMiss>) -> String {
     let typed = &prefix.as_bytes()[..prefix.as_bytes().len().min(SHOWN_HEX)];
@@ -386,7 +399,9 @@ fn bans_text(keys: &[PlayerKey]) -> String {
 }
 
 /// [`bans_text`] read back. Blank lines and `#` comments are skipped, so
-/// an operator may annotate a ban.
+/// an operator may annotate a ban. A wallet-shaped line is lowercased as
+/// [`Admins::parse`] does, because that is the key a handshake proves: a
+/// hand-pasted checksummed address would otherwise never match at the door.
 fn parse_bans(text: &str) -> Result<Vec<PlayerKey>, String> {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some(BAN_FILE_HEADER) {
@@ -407,6 +422,7 @@ fn parse_bans(text: &str) -> Result<Vec<PlayerKey>, String> {
                 .collect::<Result<Vec<u8>, _>>()
                 .map_err(|_| format!("line {}: bad hex", n + 2))?,
             Some(_) => return Err(format!("line {}: odd hex", n + 2)),
+            None if is_wallet(line) => line.to_ascii_lowercase().into_bytes(),
             None => line.as_bytes().to_vec(),
         };
         let key = PlayerKey::new(&bytes).ok_or_else(|| format!("line {}: not a wallet", n + 2))?;
@@ -632,8 +648,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Every answer the accept loop gives an admin reads whole after the
-    /// `[server] ` mark at its longest: a ten-digit id, a full list.
+    /// Every answer an admin gets to a kick, ban or unban (the accept loop's
+    /// and the sim's own refusals) reads whole after the `[server] ` mark at
+    /// its longest: a ten-digit id, a full list.
     #[test]
     fn the_admin_answers_fit_a_chat_line() {
         let room = ChatText::CAP - "[server] ".len();
@@ -643,6 +660,8 @@ mod tests {
             kicked_line(u32::MAX, false),
             banned_line(u32::MAX, &key(A)),
             ban_full_line(u32::MAX),
+            no_wallet_line(u32::MAX),
+            RING_FULL_LINE.to_string(),
             unban_line(&pre, &Ok(key(A))),
             unban_line(&pre, &Err(UnbanMiss::None)),
             unban_line(&pre, &Err(UnbanMiss::Ambiguous(MAX_BANS))),
@@ -666,12 +685,19 @@ mod tests {
         b.insert(PlayerKey::new(&[0x00, 0xff, b' ']).unwrap());
         b.save().unwrap();
 
+        // An operator pastes B by hand as a checksummed (mixed-case)
+        // address: it loads as the lowercase key a handshake proves.
         let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, format!("{text}\n# lifted by hand:\n")).unwrap();
+        let pasted = "0xFFeeDDccBBaa99887766554433221100FFeeDDcc";
+        std::fs::write(&path, format!("{text}\n# lifted by hand:\n{pasted}\n")).unwrap();
         let back = Bans::load(&path).unwrap();
-        assert_eq!(back.len(), 2);
+        assert_eq!(back.len(), 3);
         assert!(back.contains(&key(A)));
         assert!(back.contains(&PlayerKey::new(&[0x00, 0xff, b' ']).unwrap()));
+        assert!(
+            back.contains(&PlayerKey::new(B.as_bytes()).unwrap()),
+            "a checksummed line is enforced as the lowercase wallet"
+        );
         assert!(text.contains("hex:00ff20"), "{text}");
 
         std::fs::write(&path, "0xabc\n").unwrap();

@@ -351,7 +351,9 @@ pub struct Ops<'a> {
 pub enum Admitted {
     /// Took over the sleeping body they left behind.
     TookOver,
-    /// Restored from the store's record — the world did not have them.
+    /// Restored from a record — the world did not have them. The shard's
+    /// own eviction record when it kept one for the key (`EvictMemo`),
+    /// else the store's, as the accept loop read it.
     Restored,
     /// A fresh character: a first visit, a guest, or a wiped shard.
     Fresh,
@@ -450,13 +452,17 @@ impl SleeperIndex {
 /// `JoinAs` would undo the raid that the current-body save exists to keep.
 /// The current record is already in hand here, so it wins.
 ///
-/// It may always win. The store's only other source for a key is that
-/// key's own connection (its leave, its autosaves), so an entry is spent at
-/// any admission of its key and dropped at any leave of it, and while it
-/// stands it is at least as new as anything the store holds. Nothing
-/// expires on a clock for that reason; a full table drops its oldest put,
-/// which costs that one victim only the hole this closes. Boxed at `new`,
-/// and `PlayerSave` is `Copy`, so a put never allocates.
+/// It may always win, though not because it is newer than the store's
+/// copy: once the ring files it, the store holds this very record. What
+/// makes it safe is that nothing newer can be written while it stands. The
+/// only writer of a key's records is that key's own connection (its leave,
+/// its autosaves), and every admission of the key spends the entry, as
+/// does any leave of it — so a victim who comes back, plays on and is
+/// restored later gets the store's newer record, never this one
+/// (`persist_store.rs`). Nothing expires on a clock for that reason; a full
+/// table drops its oldest put, which costs that one victim only the hole
+/// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
+/// allocates.
 struct EvictMemo {
     entries: Box<[Option<(PlayerKey, PlayerSave, u64)>]>,
     /// The next put's stamp: oldest-first replacement with no ties when one
@@ -2083,11 +2089,15 @@ impl ShardCore {
         let mut logged = Record::new(tick, Kind::AdminAct, verb, who);
         match cmd {
             AdminCmd::Kick { id } | AdminCmd::Ban { id } => {
+                // Every refusal here is answered too, as the accept loop
+                // answers the acts it runs: an admin who hears nothing
+                // cannot tell a refused kick from a slow one.
                 let ban = matches!(cmd, AdminCmd::Ban { .. });
                 let Some(slot) = target_slot(self, id) else {
                     ops.log.push(
                         Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
                     );
+                    self.answer(from_slot, admin::kicked_line(id, false), stats, send);
                     return;
                 };
                 let act = if ban {
@@ -2097,6 +2107,7 @@ impl ShardCore {
                         ops.log.push(
                             Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
                         );
+                        self.answer(from_slot, admin::no_wallet_line(id), stats, send);
                         return;
                     };
                     AdminAct::Ban { by: who, id, key }
@@ -2111,6 +2122,7 @@ impl ShardCore {
                     ops.log.push(
                         Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
                     );
+                    self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
                 logged = logged.with(id as i64, 0, 0);
@@ -2123,6 +2135,7 @@ impl ShardCore {
                     ops.log.push(
                         Record::new(tick, Kind::AdminRefused, verb, who).note(prefix.as_bytes()),
                     );
+                    self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
                 logged = logged.note(prefix.as_bytes());
@@ -3127,6 +3140,13 @@ impl ShardCore {
                     // over a world it can see — which is why the client
                     // also drops the screen on any own-position snapshot it
                     // cannot reconcile with a corpse (`client-core`).
+                    //
+                    // A wake on a bag spends it: its cooldown starts now,
+                    // so the list's `ready` bit is stale from this tick and
+                    // the drip owes the owner (and their seats) a fresh one.
+                    if ev.b != 0 {
+                        self.owe_bags(ev.a);
+                    }
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // that player left this tick
                     };
@@ -3933,6 +3953,7 @@ impl ShardCore {
                     if let Some(len) = self.encode_stock(hi, stats) {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             ShardStats::bump(&stats.ev_sent);
+                            self.clients[slot].stock_hearth = Some((cx, cz, level));
                         } else {
                             // The next feed re-announces; cosmetic.
                             self.clients[slot].ev_resync();
@@ -4101,9 +4122,14 @@ impl ShardCore {
             .defs
             .get(row as usize)
             .is_some_and(|d| d.arch == ARCH_BAG);
-        if !bag {
-            return;
+        if bag {
+            self.owe_bags(owner);
         }
+    }
+
+    /// Owe player `owner`'s connection and every seat watching them their
+    /// own-bag list on the next drip: a bag of theirs moved or was spent.
+    fn owe_bags(&mut self, owner: u32) {
         for c in self.clients.iter_mut() {
             if c.connected && c.id == owner {
                 c.bags_owed = true;
@@ -4297,8 +4323,9 @@ impl ShardCore {
         }
 
         // The owner's own bags, whole (`SUB_BAGS`, NOW §0die 2), whenever
-        // they are owed: a fresh join, a resync, and the tick one of them
-        // was placed or taken down (`owe_bags_if_bag`). Not only at a death
+        // they are owed: a fresh join, a resync, the tick one of them was
+        // placed or taken down (`owe_bags_if_bag`), and a wake that spent
+        // one (`EV_RESPAWN`, so its `ready` bit is fresh). Not only at a death
         // any more — the map tags your beds off this list while you live,
         // and a list from your last death misses every bed since. A seat
         // runs it too, against its target's id, as it runs every drip. One
@@ -4338,13 +4365,19 @@ impl ShardCore {
                     b.qx as f32 * sim_core::movement::POS_XZ_Q,
                     b.qz as f32 * sim_core::movement::POS_XZ_Q,
                 );
+                // Where two of your claims overlap, the hearth the client
+                // already holds answers while it still covers you.
+                let c = &self.clients[slot];
                 self.world
                     .deploys
-                    .crew_hearth_at(x, z, self.clients[slot].id)
+                    .crew_hearth_at(x, z, c.id, c.stock_hearth)
             });
-            if let Some(len) = hi.and_then(|hi| self.encode_stock(hi, stats)) {
+            let stock = hi.and_then(|hi| self.encode_stock(hi, stats).map(|len| (hi, len)));
+            if let Some((hi, len)) = stock {
                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                     ShardStats::bump(&stats.ev_sent);
+                    let h = self.world.deploys.hearths()[hi];
+                    self.clients[slot].stock_hearth = Some((h.cx, h.cz, h.level));
                 } else {
                     return;
                 }
