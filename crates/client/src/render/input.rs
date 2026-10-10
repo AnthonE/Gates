@@ -451,10 +451,9 @@ pub fn gather(
         sel,
     )
     .swings();
-    // **A light is struck with the right hand, not a keyboard letter** —
-    // the reference's own binding for a torch, and it costs no key at a
-    // point where `R`, `F` and `G` are all spoken for (repair, the ghost's
-    // flip, the map). Right-click is already held-item modal in this
+    // **A light is struck with the right hand** — the reference's own
+    // binding for a torch — and with `F`, the flashlight key a player
+    // reaches for. Right-click is already held-item modal in this
     // client: `panels/mod.rs` opens the build wheel with it when the hand
     // `opens_a_wheel`, and `ghost.rs` cancels a placement with it. A torch
     // does neither, so the gesture is free exactly where it is wanted.
@@ -538,7 +537,10 @@ pub fn gather(
     // Not while down or under: the sim reads no flame there
     // (`light::is_lit`), so a latch flipped there would be a light only
     // this screen draws.
-    if holds_light && fuel && !downed && !under && mouse.just_pressed(MouseButton::Right) {
+    // `F` strikes it too (§0ctl 3, the flashlight key). The ghost's `F` nudge
+    // needs the plan in hand, and a hand holding a torch is not holding it.
+    let strike = mouse.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::KeyF);
+    if holds_light && fuel && !downed && !under && strike {
         net.light = !net.light;
     }
     if net.light {

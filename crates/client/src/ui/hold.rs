@@ -247,9 +247,9 @@ pub fn hand_hint(
                 String::new()
             };
             if latch {
-                format!("{}  LIT{left}   (right click: put out)", name())
+                format!("{}  LIT{left}   (F: put out)", name())
             } else {
-                format!("{}{left}   (right click: light)", name())
+                format!("{}{left}   (F: light)", name())
             }
         }
         Click::Build | Click::Deploy => String::new(),
@@ -1471,14 +1471,8 @@ mod tests {
             "USE  BANDAGE  +20 hp   (left click)"
         );
         let torch = |cond| ItemStack { cond, ..one(TORCH) };
-        assert_eq!(
-            hint(torch(5_000), false),
-            "TORCH  100%   (right click: light)"
-        );
-        assert_eq!(
-            hint(torch(2_000), true),
-            "TORCH  LIT  40%   (right click: put out)"
-        );
+        assert_eq!(hint(torch(5_000), false), "TORCH  100%   (F: light)");
+        assert_eq!(hint(torch(2_000), true), "TORCH  LIT  40%   (F: put out)");
         assert_eq!(hint(torch(0), true), "TORCH  BURNT OUT");
         assert_eq!(hint(one(WOOD), false), "", "a resource says nothing");
         assert_eq!(hint(ItemStack::default(), false), "", "nor a fist");
