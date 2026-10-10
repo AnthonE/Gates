@@ -3207,7 +3207,7 @@ pub fn prompt(
                     }
                 }
                 s if !s.is_empty() => s,
-                _ => match swing_prompt_weak(swung.0.occupant, in_weak.0) {
+                _ => match swing_prompt_weak(&swung.0, in_weak.0) {
                     s if !s.is_empty() => s,
                     _ => side_line(&near.0),
                 },
@@ -3516,8 +3516,8 @@ pub fn hearth_overlay(
 /// discoverable at all. The suffix is deliberately on the same line as the
 /// verb rather than a second element: it is a property of the swing you are
 /// about to take, not a separate thing happening.
-fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
-    let base = swing_prompt(occupant);
+fn swing_prompt_weak(pick: &crate::ui::interact::SwingPick, in_weak: bool) -> String {
+    let base = swing_prompt(pick);
     if base.is_empty() || !in_weak {
         return base;
     }
@@ -3728,9 +3728,10 @@ fn kill_line_for(
 ///
 /// `[LMB]` rather than a verb name because the swing is a button, and the
 /// button is the thing the player has to connect the text to — the same
-/// reasoning `Pick::prompt` uses for naming `[E]`.
-fn swing_prompt(occupant: u8) -> String {
-    let label = crate::ui::interact::swing_label(occupant);
+/// reasoning `Pick::prompt` uses for naming `[E]`. The label is the pick's
+/// own (`SwingPick::label`): the scatter's, or a carcass's butchering.
+fn swing_prompt(pick: &crate::ui::interact::SwingPick) -> String {
+    let label = pick.label();
     if label.is_empty() {
         String::new()
     } else {
@@ -5074,7 +5075,7 @@ mod tests {
 
     #[test]
     fn e_outranks_the_swing_and_the_swing_fills_the_silence() {
-        use crate::ui::interact::{Pick, Verb};
+        use crate::ui::interact::{Pick, SwingPick, Verb};
         use sim_core::terrain::Occupant;
 
         let silent = Pick::default();
@@ -5085,11 +5086,22 @@ mod tests {
         );
 
         // Where E is silent, the swing speaks.
-        assert_eq!(swing_prompt(Occupant::Tree as u8), "[LMB] CHOP TREE");
+        let at = |o: u8| SwingPick {
+            occupant: o,
+            ..Default::default()
+        };
+        assert_eq!(swing_prompt(&at(Occupant::Tree as u8)), "[LMB] CHOP TREE");
         assert_eq!(
-            swing_prompt(Occupant::BarrelSlot as u8),
+            swing_prompt(&at(Occupant::BarrelSlot as u8)),
             "[LMB] SMASH BARREL"
         );
+        // A blade at a carcass names the cut (§0ray 2).
+        let carcass = SwingPick {
+            carcass: Some(sim_core::mob::MOB_WOLF),
+            bag: 9,
+            ..Default::default()
+        };
+        assert_eq!(swing_prompt(&carcass), "[LMB] BUTCHER WOLF");
 
         // Where E has something, it wins — the caller takes E's string first
         // and never reaches the swing. This asserts E is non-empty for every
@@ -5106,8 +5118,8 @@ mod tests {
         }
 
         // And a swing at nothing is silent rather than "[LMB] ".
-        assert_eq!(swing_prompt(0), "");
-        assert_eq!(swing_prompt(Occupant::Rock as u8), "");
+        assert_eq!(swing_prompt(&at(0)), "");
+        assert_eq!(swing_prompt(&at(Occupant::Rock as u8)), "");
     }
 
     /// The readout's WHERE. North is `+Z` and east is `-X`

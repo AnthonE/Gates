@@ -1799,6 +1799,8 @@ fn a_man_in_front_of_the_tree_takes_the_prompt() {
                 own: 1,
                 entities: &entities,
                 cols: w.pieces.cols(),
+                bags: &[],
+                butchers: false,
             },
         );
 
@@ -1887,6 +1889,8 @@ fn a_stag_in_the_line_takes_the_prompt_and_a_pig_under_it_does_not() {
                 own: 1,
                 entities,
                 cols: &cols,
+                bags: &[],
+                butchers: false,
             },
         )
         .occupant
@@ -1931,6 +1935,326 @@ fn the_prompts_animal_volumes_are_contents() {
              update ui::interact::MOB_SWING_BODY_CM"
         );
     }
+}
+
+// A carcass in the line, and a wall the core was sent (§0ray 2's follow-up).
+// The shard's cast weighs a carcass for a hand that butchers, so a blade at a
+// wolf lying at the foot of a tree cuts the wolf, and the prompt must say
+// BUTCHER there rather than CHOP TREE. And the wall half of the shadow is
+// read off the core's own piece index, through the wiring the frame uses.
+
+use client::ui::interact::{butchers, butchers_in_hand, swing_island, BUTCHER_STEMS};
+
+/// **A blade at a carcass in front of the tree cuts the carcass, and the
+/// prompt names the cut**, proven against a running sim: the same stance,
+/// the same tool and the same look down through a wolf's carcass at the foot
+/// of a trunk, once with a `[butcher]` row for the tool and once without.
+/// With the row the shard cuts the carcass and leaves the tree alone, and
+/// the prompt says BUTCHER WOLF and carries the carcass's bag; without it
+/// the swing passes through to the tree, and the prompt names the tree.
+#[test]
+fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
+    use sim_core::backpack::BackpackContent;
+    use sim_core::combat::CombatContent;
+    use sim_core::gather::{GatherContent, ItemStack};
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    use sim_core::limits::{INV_SLOTS, MAX_MOBS};
+    use sim_core::mob::{self, ButcherRow, MobContent, MOB_WOLF};
+    use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+    use sim_core::world::{Command, World, EV_GATHER, EV_GATHER_REFUSED, EV_SWING};
+
+    /// What the carcass holds: an item past every fixture row, so a cut is
+    /// told from the tree's payout by the item alone.
+    const MEAT: u16 = 82;
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    // A metre short of the bark, so a look at its foot is inside the arm,
+    // and the carcass lies across the gap.
+    let px = tx - (tr + 1.0);
+    for blade in [false, true] {
+        let mut w = Box::new(World::new(seed));
+        w.gather = GatherContent::probe_fixture();
+        w.combat = CombatContent::probe_fixture();
+        w.backpack = BackpackContent::probe_fixture();
+        w.mob = MobContent::probe_fixture();
+        // Sized, so a carcass has a volume, but never hatched: no live
+        // animal wanders into the line.
+        for d in w.mob.defs.iter_mut() {
+            d.hp = 0;
+        }
+        w.gather.stack_max[MEAT as usize] = 1000;
+        w.gather.item_count = w.gather.item_count.max(MEAT + 1);
+        if blade {
+            w.mob.butcher[0] = ButcherRow {
+                tool: 0,
+                pct: 100,
+                wear: 0,
+            };
+        }
+        w.dev_spawn = Some((px, tz));
+        w.tick(&[Command::Join { id: 1 }]);
+        // At full condition: a broken tool is refused at a carcass as at a
+        // node, which would prove nothing about the cast.
+        w.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: w.gather.cond_max_of(0),
+            skin: 0,
+        };
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        let b = w.players[0].body;
+        let (x, y, z) = (
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        );
+        let wolf = (0..MAX_MOBS)
+            .find(|&s| mob::kind_of(s) == MOB_WOLF)
+            .expect("a wolf slot");
+        let lie = Body::at(seed, &haven, x + 0.6, z);
+        let mut items = [ItemStack::default(); INV_SLOTS];
+        items[0] = ItemStack {
+            item: MEAT,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        };
+        let tick = w.tick;
+        let id = w
+            .backpacks
+            .stand_up(
+                &w.backpack,
+                lie.qx,
+                lie.qy,
+                lie.qz,
+                mob::mob_id(wolf),
+                &items,
+                tick,
+                &mut w.events,
+            )
+            .expect("the carcass stood up");
+        let bag = protocol::event::WireBag::of(
+            w.backpacks
+                .entries()
+                .iter()
+                .find(|b| b.id == id)
+                .expect("the carcass"),
+        );
+        assert_eq!(bag.species(), Some(MOB_WOLF), "the wire calls it a wolf");
+        // At the bark's foot, 0.15 m up: down through the carcass's back
+        // (a 0.42 m wolf lying down) before the trunk, and still inside the
+        // arm when nothing is lying there.
+        let aim = aim_at(x, y, z, tx - tr, y + 0.15, tz);
+        let mut cache = SlotCache::new();
+        let prompt = resolve_swing_shadowed(
+            aim,
+            &mut Island {
+                doors: 0,
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+            &Shadows {
+                own: 1,
+                entities: &[],
+                cols: w.pieces.cols(),
+                bags: &[bag],
+                butchers: w.mob.butcher_for(0).is_some(),
+            },
+        );
+
+        // One swing, and what it reached: the tree's payout or refusal, or
+        // meat out of the carcass.
+        let mut tree = false;
+        let mut seq = 0u16;
+        for _ in 0..60 {
+            seq = seq.wrapping_add(1);
+            w.tick(&[Command::Input {
+                id: 1,
+                frame: InputFrame {
+                    seq,
+                    buttons: BTN_PRIMARY,
+                    yaw: aim.yaw,
+                    pitch: aim.pitch,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                },
+                favour: 0,
+            }]);
+            let ev = w.events.entries();
+            for e in ev.iter().filter(|e| e.a == 1) {
+                tree |= e.code == EV_GATHER_REFUSED
+                    || (e.code == EV_GATHER && e.b >> 16 != u32::from(MEAT));
+            }
+            if ev.iter().any(|e| e.code == EV_SWING && e.a == 1) {
+                break;
+            }
+        }
+        let cut = w
+            .backpacks
+            .entries()
+            .iter()
+            .find(|b| b.id == id)
+            .is_none_or(|b| b.items[0].count < 4);
+        let name = if blade { "a blade" } else { "a blunt hand" };
+        assert_eq!(
+            (cut, tree),
+            (blade, !blade),
+            "{name}: the sim's swing cut={cut} reached the tree={tree}"
+        );
+        if blade {
+            assert_eq!(
+                (prompt.occupant, prompt.carcass, prompt.bag),
+                (0, Some(MOB_WOLF), id),
+                "{name}: the prompt said {:?}",
+                prompt.label()
+            );
+            assert_eq!(prompt.label(), "BUTCHER WOLF");
+        } else {
+            assert_eq!(
+                (prompt.occupant, prompt.carcass),
+                (Occupant::Tree as u8, None),
+                "{name}: the prompt said {:?}",
+                prompt.label()
+            );
+        }
+    }
+}
+
+/// The prompt's butchering hands are the shard's, read through the real
+/// loader: every item `content/` defines, named the way the catalog names it
+/// (`ItemCatalog::name`, the display name), butchers on [`BUTCHER_STEMS`]
+/// exactly when `MobContent::butcher_for` gives it a row. The client links
+/// no content, so a new blade row must go red here rather than leave the
+/// prompt calling a carcass the shard cuts a tree.
+#[test]
+fn the_prompts_butchering_hands_are_contents() {
+    use protocol::event::ItemCatalog;
+    use sim_core::gather::ItemStack;
+
+    let content = content::Content::load_dir(std::path::Path::new("../../content"))
+        .unwrap_or_else(|e| panic!("content/ does not load: {e}"));
+    let mc = content
+        .bake_mobs()
+        .unwrap_or_else(|e| panic!("bake_mobs: {e}"));
+    let mut cat = Box::new(ItemCatalog::EMPTY);
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves");
+        cat.set(
+            idx as usize,
+            item.name.as_bytes(),
+            protocol::ItemRow::default(),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e:?}", item.id));
+    }
+    let one = |item: u16| ItemStack {
+        item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let mut cutting = Vec::new();
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves");
+        let shard = mc.butcher_for(idx).is_some();
+        assert_eq!(
+            butchers(&cat, one(idx)),
+            shard,
+            "{} (\"{}\"): the shard {} with it — update \
+             ui::interact::BUTCHER_STEMS to content/mobs.toml's [butcher.yield_pct]",
+            item.id,
+            item.name,
+            if shard {
+                "butchers"
+            } else {
+                "does not butcher"
+            }
+        );
+        if shard {
+            cutting.push(idx);
+        }
+    }
+    assert_eq!(
+        cutting.len(),
+        BUTCHER_STEMS.len(),
+        "every stem names exactly one loaded item"
+    );
+    // The selected slot is the hand; an empty stack is a bare hand.
+    let hatchet = cutting[0];
+    let inv = [ItemStack::default(), one(hatchet)];
+    assert!(!butchers_in_hand(&cat, &inv, 0), "a bare hand cuts nothing");
+    assert!(butchers_in_hand(&cat, &inv, 1), "the selected blade cuts");
+    assert!(!butchers(&cat, ItemStack::default()));
+}
+
+/// **A wall the core was sent shadows the tree behind it, through the
+/// wiring the frame uses.** `swing_island` is what `render/verbs.rs` hands
+/// the prompt every frame — the core's own collision index, fed by the piece
+/// stream, beside the snapshot and the bags — so this drives it rather than
+/// a fixture `ColIndex`: a wall placed across the look through
+/// `ClientCore::on_stream` must blank the prompt, and the same stance in a
+/// core that never heard of the wall must name the tree.
+#[test]
+fn a_wall_the_core_was_sent_shadows_the_tree() {
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_piece_defs, encode_event_piece_placed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{BuildContent, PieceRec, BUILD_CELL_M, LOC_EDGE_XLO, SHAPE_WALL};
+    use sim_core::movement::{Body, POS_Y_Q};
+
+    let seed = 7;
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    // The x cell edge nearer the trunk, and a stance just the far side of
+    // it, looking level across it at the tree: at most half a cell plus the
+    // gap from the bark, which is inside the arm.
+    let k = (tx / BUILD_CELL_M + 0.5).floor();
+    let edge = k * BUILD_CELL_M;
+    let (px, yaw) = if edge <= tx {
+        (edge - 0.4, YAW_PLUS_X)
+    } else {
+        (edge + 0.4, YAW_MINUS_X)
+    };
+    let py = Body::at(seed, &haven, px, tz).qy as f32 * POS_Y_Q;
+    let aim = level(px, py, tz, yaw);
+    let bc = BuildContent::probe_fixture();
+    assert_eq!(bc.pieces[1].shape, SHAPE_WALL, "fixture row 1 is a wall");
+    let wall = PieceRec {
+        cx: k as u16,
+        cz: (tz / BUILD_CELL_M).floor() as u16,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 1,
+        hp: bc.pieces[1].hp,
+        ..PieceRec::default()
+    };
+    let pick = |with_wall: bool| {
+        let mut core = Box::new(ClientCore::new(seed, 1, 0));
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
+        core.on_stream(&buf[..len]).expect("defs apply");
+        if with_wall {
+            let len = encode_event_piece_placed(&wall, &mut buf).expect("encode piece");
+            core.on_stream(&buf[..len]).expect("piece applies");
+            assert_eq!(core.pieces.len(), 1, "the core holds the wall");
+        }
+        let (mut island, shadows) = swing_island(&mut core, 0);
+        resolve_swing_shadowed(aim, &mut island, &shadows).occupant
+    };
+    assert_eq!(
+        pick(false),
+        Occupant::Tree as u8,
+        "no wall: the stance must reach the tree"
+    );
+    assert_eq!(pick(true), 0, "a wall across the look takes the swing");
 }
 
 // ---------------------------------------------------------------------------

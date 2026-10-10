@@ -291,6 +291,11 @@ pub struct Pick {
     /// to take, and a recycler that pays the safe zone's share. Stamped by
     /// the caller, as `lit` is, from [`town_station`].
     pub public: bool,
+    /// The swing in hand would land on THIS carcass: the hand butchers and
+    /// nothing nearer along the look takes the blow (`SwingPick::bag` is
+    /// this pick's handle, §0ray 2). Stamped by the caller, as `lit` is, so
+    /// the bag's line names the button instead of teaching the verb.
+    pub butcher: bool,
     /// Squared distance from the player, and from the aim line. Diagnostics
     /// for the gate; nothing draws them.
     pub d2: f32,
@@ -470,18 +475,32 @@ impl Pick {
                 self.count
             ),
             // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
-            // `[butcher]`); the prompt teaches the verb rather than knowing
-            // which tools have a row, which the catalog does not carry.
+            // `[butcher]`). The prompt teaches the verb, and names the
+            // button once the hand in it would cut this carcass — the swing
+            // pick's own answer ([`BUTCHER_STEMS`] and the cast), stamped
+            // by the caller.
             Verb::Bag if self.species.is_some() => format!(
-                "[E] LOOT {}  ·  SWING A BLADE TO BUTCHER",
-                match self.species {
-                    Some(sim_core::mob::MOB_WOLF) => "WOLF",
-                    Some(sim_core::mob::MOB_STAG) => "STAG",
-                    _ => "PIG",
+                "[E] LOOT {}  ·  {}",
+                species_noun(self.species.unwrap_or(sim_core::mob::MOB_PIG)),
+                if self.butcher {
+                    "[LMB] BUTCHER"
+                } else {
+                    "SWING A BLADE TO BUTCHER"
                 }
             ),
             v => format!("[E] OPEN {}", v.label()),
         }
+    }
+}
+
+/// What a carcass is called on the prompt, by its wire species
+/// (`WireBag::species`). Anything past the roster reads as the pig, the
+/// first row, rather than as nothing.
+fn species_noun(species: u8) -> &'static str {
+    match species {
+        sim_core::mob::MOB_WOLF => "WOLF",
+        sim_core::mob::MOB_STAG => "STAG",
+        _ => "PIG",
     }
 }
 
@@ -1233,6 +1252,20 @@ mod tests {
             prompt(1 + sim_core::mob::MOB_WOLF),
             "[E] LOOT WOLF  ·  SWING A BLADE TO BUTCHER"
         );
+        // With the cut stamped (a blade in hand, the swing on this carcass)
+        // the line names the button instead (§0ray 2).
+        let mut stamped = resolve(
+            Aim::new(0.0, 0.0, 1.0, 0.0),
+            &[],
+            &defs,
+            have,
+            &[at(1 + sim_core::mob::MOB_STAG)],
+        );
+        stamped.butcher = true;
+        assert_eq!(
+            stamped.prompt(&ItemCatalog::EMPTY),
+            "[E] LOOT STAG  ·  [LMB] BUTCHER"
+        );
     }
 
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does
@@ -1415,6 +1448,29 @@ pub struct SwingPick {
     /// are: `render::impact` places a burst on the occupant's collision
     /// skin, which is `occupant_volume` × this. Zero when nothing is picked.
     pub scale: f32,
+    /// The species of the carcass this swing would butcher instead
+    /// (`WireBag::species`), or `None` (§0ray 2). A carcass is not scatter,
+    /// so `occupant` stays 0 beside it, and every reader that throws a
+    /// node's chips (`render::impact`) or chases its weak spot stays quiet
+    /// on a cut; the prompt reads it through [`SwingPick::label`].
+    pub carcass: Option<u8>,
+    /// That carcass's bag id (`WireBag::id`; a real bag is never 0), so the
+    /// caller can tell whether the `E` pick is the same carcass
+    /// ([`Pick::butcher`]). 0 with no carcass.
+    pub bag: u32,
+}
+
+impl SwingPick {
+    /// The noun the prompt names for this pick: a carcass's butchering, or
+    /// [`swing_label`] for the scatter (`""` for a whiff).
+    pub fn label(&self) -> &'static str {
+        match self.carcass {
+            Some(sim_core::mob::MOB_WOLF) => "BUTCHER WOLF",
+            Some(sim_core::mob::MOB_STAG) => "BUTCHER STAG",
+            Some(_) => "BUTCHER PIG",
+            None => swing_label(self.occupant),
+        }
+    }
 }
 
 /// The noun the prompt names for a swing pick, or `""` for a whiff.
@@ -1543,6 +1599,7 @@ fn pick_of(at: SwingAim, cx: u16, cz: u16, s: Slot) -> SwingPick {
         y: s.y,
         z: s.z,
         scale: s.scale,
+        ..SwingPick::default()
     }
 }
 
@@ -1583,6 +1640,78 @@ pub struct Shadows<'a> {
     /// `ClientCore::pieces`' index: the walls, floors and doors this client
     /// predicts against, which is what `melee::world_cast` walks.
     pub cols: &'a ColIndex,
+    /// `ClientCore::bags` — the standing bags, a killed animal's among them
+    /// as its carcass (`WireBag::species`).
+    pub bags: &'a [WireBag],
+    /// The hand in use butchers ([`butchers_in_hand`]): only then does a
+    /// carcass take the swing, as `Reaches::for_hand_butchering` arms it on
+    /// the shard. A blunt swing passes through to whatever lies behind.
+    pub butchers: bool,
+}
+
+/// The tools that cut a carcass, by the stem of the catalog's display name
+/// (`hold::held`'s key) — `content/mobs.toml`'s `[butcher.yield_pct]` rows,
+/// which this client does not load. The shard decides with
+/// `MobContent::butcher_for`; the prompt decides here, and `tests/ui.rs`
+/// holds the two sets equal through the real loader, so a new blade row goes
+/// red there instead of being swung at a carcass the prompt calls a tree.
+pub const BUTCHER_STEMS: [&str; 4] = [
+    "stone_hatchet",
+    "metal_hatchet",
+    "stone_spear",
+    "metal_spear",
+];
+
+/// Whether `stack` is a tool the shard butchers with ([`BUTCHER_STEMS`]).
+/// An empty stack is a bare hand, which cuts nothing.
+pub fn butchers(catalog: &ItemCatalog, stack: sim_core::gather::ItemStack) -> bool {
+    if stack.count == 0 {
+        return false;
+    }
+    core::str::from_utf8(catalog.name(stack.item as usize))
+        .is_ok_and(|n| BUTCHER_STEMS.contains(&crate::ui::icons::stem(n).as_str()))
+}
+
+/// [`butchers`] on the selected hotbar slot — the stack the shard swings
+/// (`combat::held_item`). `sel` is clamped for `hold::held_in_hand`'s reason.
+pub fn butchers_in_hand(
+    catalog: &ItemCatalog,
+    inv: &[sim_core::gather::ItemStack],
+    sel: u8,
+) -> bool {
+    !inv.is_empty() && butchers(catalog, inv[(sel as usize).min(inv.len() - 1)])
+}
+
+/// The island and its [`Shadows`] off one hold of the core: what
+/// `render/verbs.rs` hands [`resolve_swing_shadowed`] every frame, built in
+/// one place so `tests/ui.rs` can drive the same wiring — the predictor's
+/// collision index (`ClientCore::pieces`), the snapshot's bodies and the
+/// bag list — rather than a hand-assembled copy of it. `sel` is the hotbar
+/// latch, read for [`butchers_in_hand`] before the core is lent out.
+pub fn swing_island(
+    core: &mut client_core::core::ClientCore,
+    sel: u8,
+) -> (Island<'_>, Shadows<'_>) {
+    let own = core.player_id;
+    let butchers = butchers_in_hand(&core.catalog, &core.inv, sel);
+    let (seed, occ, cols, entities, bags) = core.swing_view();
+    (
+        Island {
+            doors: occ.doors,
+            seed,
+            table: occ.table,
+            haven: occ.haven,
+            harvested: occ.harvested,
+            cache: occ.cache,
+        },
+        Shadows {
+            own,
+            entities,
+            cols,
+            bags,
+            butchers,
+        },
+    )
 }
 
 /// Each species' hit cylinder, `(body_r_cm, body_h_cm)`, in `mob::MOB_*`
@@ -1595,7 +1724,8 @@ pub const MOB_SWING_BODY_CM: [(u16, u16); sim_core::mob::MOB_KINDS] =
 
 /// What a swing from `at` would land on, with everything the sim's cast
 /// weighs (§0ray 2): [`resolve_swing`]'s node, kept only if nothing nearer
-/// along the same ray takes the blow first.
+/// along the same ray takes the blow first — or the carcass a butchering
+/// hand would cut, when that is what it meets first.
 ///
 /// `melee::cast` ranks a node against the nearest body, animal, carcass and
 /// world stop by entry fraction, and the arm is spent on whichever comes
@@ -1604,21 +1734,26 @@ pub const MOB_SWING_BODY_CM: [(u16, u16); sim_core::mob::MOB_KINDS] =
 /// impact path would throw the tree's chips off a blow that landed in flesh.
 /// This asks the same questions with the sim's own pieces: `node_cast`, the
 /// body quadratic (`ranged::body_crossing`), the animal cylinder
-/// (`melee::animal_entry`), the world walk (`melee::world_cast`), and the
-/// ranking itself (`melee::nearest`). A non-node winner is not named (a
-/// body already has its nametag and a wall its side line, and a label for
-/// either would be a new verb nobody asked for), so the prompt goes quiet
-/// rather than lying.
+/// (`melee::animal_entry`), the carcass lying down
+/// (`melee::carcass_entry`), the world walk (`melee::world_cast`), and the
+/// ranking itself (`melee::nearest`). A body, an animal or a wall that wins
+/// is not named (a body already has its nametag and a wall its side line,
+/// and a label for either would be a new verb nobody asked for), so the
+/// prompt goes quiet rather than lying.
 ///
-/// What it cannot see: a carcass (only a butchering hand meets one, and the
-/// butcher table is content the client does not hold — a blunt swing passes
-/// through, which is what this assumes), and the shard's rewound poses (the
-/// snapshot stands in for them, so a body crossing the line can disagree for
-/// a frame). The ray is `gather::REACH_M` long, which is every shipped melee
-/// row's longest reach, so the world walk samples where the shard's does.
+/// A carcass is the one other winner that IS named, because cutting it is
+/// a verb the shard pays for: only a butchering hand ([`Shadows::butchers`])
+/// meets one, and the pick then carries its species and bag, so the prompt
+/// says BUTCHER where the shard will cut rather than CHOP TREE over it. A
+/// blunt hand passes through it, as `melee::cast` lets it.
+///
+/// What it cannot see: the shard's rewound poses (the snapshot stands in
+/// for them, so a body crossing the line can disagree for a frame). The ray
+/// is `gather::REACH_M` long, which is every shipped melee row's longest
+/// reach, so the world walk samples where the shard's does.
 ///
 /// Allocates nothing; the world walk and the two loops run only when a node
-/// is in the ray, since nothing else is ever named.
+/// or a carcass is in the ray, since nothing else is ever named.
 pub fn resolve_swing_shadowed(
     at: SwingAim,
     island: &mut Island<'_>,
@@ -1627,28 +1762,74 @@ pub fn resolve_swing_shadowed(
     let ray = at.ray(SWING_REACH_M);
     let (seed, haven) = (island.seed, island.haven);
     let mut occ = island.occupants();
-    let Some(node) = melee::node_cast(seed, &mut occ, &ray) else {
-        return SwingPick::default();
+    let node = melee::node_cast(seed, &mut occ, &ray);
+    let carcass = if shadows.butchers {
+        nearest_carcass(&ray, shadows)
+    } else {
+        None
     };
+    if node.is_none() && carcass.is_none() {
+        return SwingPick::default();
+    }
     let world = melee::world_cast(seed, haven, shadows.cols, &mut occ, &ray);
     let entered = melee::Entered {
-        node: Some(node),
+        node,
         body: nearest_body(&ray, shadows),
         mob: nearest_animal(&ray, shadows),
-        carcass: None,
+        carcass,
         world,
     };
-    // Only the node's reach decides anything here: a body or a wall out of
-    // the hand's reach still ends the swing (`melee::cast`'s whiff), so it
-    // shadows the node either way and its own reach is never asked.
+    // Only the node's and the carcass's reaches decide anything here: a
+    // body or a wall out of the hand's reach still ends the swing
+    // (`melee::cast`'s whiff), so it shadows either way and its own reach is
+    // never asked. A carcass's is the node's, as `for_hand_butchering` sets.
+    let reach = SWING_REACH_M * MM_PER_M;
     let reaches = melee::Reaches {
-        node: SWING_REACH_M * MM_PER_M,
+        node: reach,
+        carcass: if shadows.butchers { reach } else { 0.0 },
         ..melee::Reaches::default()
     };
     match melee::nearest(&entered, &ray, &reaches) {
         melee::Reached::Node(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        melee::Reached::Carcass(c) => {
+            let bag = shadows.bags[c.bag];
+            SwingPick {
+                carcass: bag.species(),
+                bag: bag.id,
+                ..SwingPick::default()
+            }
+        }
         _ => SwingPick::default(),
     }
+}
+
+/// The nearest carcass the ray enters, by `melee::carcass_cast`'s rule, over
+/// the wire's bag list: a bag whose look is a species (`WireBag::species`)
+/// with a hit volume, solved by `melee::carcass_entry`. `bag` is the index
+/// in `shadows.bags`. A pack (a player's or a box's) is not meat.
+fn nearest_carcass(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::CarcassHit> {
+    let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
+    let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
+    let mut best: Option<melee::CarcassHit> = None;
+    for (bag, b) in shadows.bags.iter().enumerate() {
+        let Some(&(r_cm, h_cm)) = b.species().and_then(|k| MOB_SWING_BODY_CM.get(k as usize))
+        else {
+            continue;
+        };
+        let lying = Body {
+            qx: b.qx,
+            qy: b.qy,
+            qz: b.qz,
+            ..Body::default()
+        };
+        let Some(t) = melee::carcass_entry(o, u, r_cm, h_cm, &lying) else {
+            continue;
+        };
+        if best.is_none_or(|c| t < c.t) {
+            best = Some(melee::CarcassHit { bag, t });
+        }
+    }
+    best
 }
 
 /// The nearest other living player the ray crosses, by

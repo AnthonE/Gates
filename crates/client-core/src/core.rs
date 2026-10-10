@@ -1238,10 +1238,12 @@ impl ClientCore {
     }
 
     /// [`Self::island`], plus what else a swing can meet on its way to the
-    /// scatter: the collision index the predictor walls with and the
-    /// snapshot's bodies and animals. Disjoint field borrows, so the swing
-    /// prompt can ask the sim's whole melee cast in one hold
-    /// (`ui::interact::resolve_swing_shadowed`, §0ray 2).
+    /// scatter: the collision index the predictor walls with, the
+    /// snapshot's bodies and animals, and the standing bags (a carcass is
+    /// one, and a butchering hand cuts it). Disjoint field borrows, so the
+    /// swing prompt can ask the sim's whole melee cast in one hold
+    /// (`ui::interact::swing_island`, §0ray 2).
+    #[allow(clippy::type_complexity)]
     pub fn swing_view(
         &mut self,
     ) -> (
@@ -1249,6 +1251,7 @@ impl ClientCore {
         Occupants<'_>,
         &ColIndex,
         &[(u32, protocol::EntityState)],
+        &[WireBag],
     ) {
         (
             self.predict.seed(),
@@ -1261,6 +1264,7 @@ impl ClientCore {
             },
             self.pieces.cols(),
             &self.view.entities,
+            self.bags.entries(),
         )
     }
 

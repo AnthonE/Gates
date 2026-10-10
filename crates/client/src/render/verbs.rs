@@ -210,21 +210,14 @@ pub fn resolve(
     // *second* seed would flush it every frame — see that method's header.
     // `w` is still what says a world exists at all.
     //
-    // `swing_view` is `island` plus the walls and the snapshot's bodies, in
-    // the same hold, because the swing prompt asks the sim's whole cast: a
-    // node with a pig, a man or a wall in front of it is not named (§0ray 2).
-    let own = core.player_id;
+    // `swing_island` is `island` plus the walls, the snapshot's bodies and
+    // the bags, in the same hold, because the swing prompt asks the sim's
+    // whole cast: a node with a pig, a man or a wall in front of it is not
+    // named, and a carcass there is named as the butchering a blade in hand
+    // would do instead (§0ray 2).
     (swung.0, in_weak.0) = match world.as_deref() {
         Some(_) => {
-            let (seed, occ, cols, entities) = core.swing_view();
-            let mut island = interact::Island {
-                doors: occ.doors,
-                seed,
-                table: occ.table,
-                haven: occ.haven,
-                harvested: occ.harvested,
-                cache: occ.cache,
-            };
+            let (mut island, shadows) = interact::swing_island(core, sel);
             let pick = interact::resolve_swing_shadowed(
                 SwingAim {
                     x,
@@ -235,11 +228,7 @@ pub fn resolve(
                     crouched,
                 },
                 &mut island,
-                &interact::Shadows {
-                    own,
-                    entities,
-                    cols,
-                },
+                &shadows,
             );
             // The open pick, on the same island borrow and the same aim.
             // Folded into `aimed` rather than kept beside it, because to
@@ -319,6 +308,10 @@ pub fn resolve(
         }
         None => (SwingPick::default(), false),
     };
+    // The carcass `E` names is the one the swing in hand would cut, so its
+    // line names the button instead of teaching the verb (`Pick::butcher`).
+    aimed.0.butcher =
+        aimed.0.verb == Verb::Bag && swung.0.carcass.is_some() && swung.0.bag == aimed.0.handle;
     if !core.wounded && !core.dead {
         let help = interact::resolve_assist(
             SwingAim {

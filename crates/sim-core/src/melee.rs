@@ -66,9 +66,11 @@
 //! quantize-both-sides law applied to aiming: the prompt cannot offer a
 //! tree the server's ray misses. Since §0ray 2 it asks the rest of the cast
 //! too — the snapshot's bodies through `ranged::body_crossing`, its animals
-//! through [`animal_entry`], the world through [`world_cast`], ranked by
+//! through [`animal_entry`], its carcasses through [`carcass_entry`] (for a
+//! hand that butchers), the world through [`world_cast`], ranked by
 //! [`nearest`] — so a man, a pig or a wall in front of the tree blanks the
-//! prompt exactly where it would eat the swing.
+//! prompt exactly where it would eat the swing, and a carcass there names
+//! the butchering instead.
 //!
 //! Wall 1 throughout: `+ − × ÷ sqrt min max` and the two LUTs. Wall 2:
 //! nothing here allocates. Wall 4: the node cast is nine cells, the mob
@@ -626,16 +628,13 @@ pub fn carcass_cast(mc: &MobContent, bags: &Backpacks, ray: &Ray) -> Option<Carc
             continue;
         }
         let def = mc.def(kind);
-        let (r, h) = (
-            f32::from(def.body_r_cm) * 0.01,
-            f32::from(def.body_h_cm) * 0.005,
-        );
-        if r <= 0.0 || h <= 0.0 {
-            continue;
-        }
-        let base = b.qy as f32 * POS_Y_Q;
-        let centre = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-        let Some((t_in, _)) = cylinder_span(o, u, centre, r, base, base + h) else {
+        let lying = Body {
+            qx: b.qx,
+            qy: b.qy,
+            qz: b.qz,
+            ..Body::default()
+        };
+        let Some(t_in) = carcass_entry(o, u, def.body_r_cm, def.body_h_cm, &lying) else {
             continue;
         };
         if best.is_none_or(|c| t_in < c.t) {
@@ -643,6 +642,29 @@ pub fn carcass_cast(mc: &MobContent, bags: &Backpacks, ray: &Ray) -> Option<Carc
         }
     }
     best
+}
+
+/// Where a ray `o + u·t` (metres) enters a carcass lying at `at` whose
+/// species' content row sizes it `r_cm` × `h_cm` standing — the body
+/// cylinder lying down, so its radius and half its height. [`carcass_cast`]'s
+/// per-bag solve, lifted out the way [`animal_entry`] was, so the client's
+/// swing prompt measures a carcass in the wire's bag list with the sim's own
+/// arithmetic (`ui::interact::resolve_swing_shadowed`). `None` for a miss
+/// and for a zero volume.
+pub fn carcass_entry(
+    o: (f32, f32, f32),
+    u: (f32, f32, f32),
+    r_cm: u16,
+    h_cm: u16,
+    at: &Body,
+) -> Option<f32> {
+    let (r, h) = (f32::from(r_cm) * 0.01, f32::from(h_cm) * 0.005);
+    if r <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let base = at.qy as f32 * POS_Y_Q;
+    let centre = (at.qx as f32 * POS_XZ_Q, at.qz as f32 * POS_XZ_Q);
+    cylinder_span(o, u, centre, r, base, base + h).map(|(t_in, _)| t_in)
 }
 
 /// What a swing reached first along its ray.
