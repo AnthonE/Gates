@@ -26,8 +26,8 @@
 //! and not *where*: `EV_SWING` carries only the swinger, `EV_HIT` a victim
 //! id, `EV_STRUCT_HIT` a build address. So the point a burst comes from is
 //! recovered from something the client already holds and already trusts for
-//! the same question — the swing pick (`ui::interact::resolve_swing`, the
-//! client's mirror of the sim's own scan, which the prompt has drawn off
+//! the same question — the swing pick (`ui::interact::resolve_swing_shadowed`,
+//! the client's mirror of the sim's own cast, which the prompt has drawn off
 //! since it existed), the drawn body's transform, and the build grid. None
 //! of that is a second opinion about whether the blow landed; it is only
 //! about where to draw the answer.

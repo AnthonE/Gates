@@ -64,7 +64,11 @@
 //! [`node_cast`] now, over its own `Occupants`, with the same quantized yaw
 //! and pitch the wire carries. One implementation on both sides is the
 //! quantize-both-sides law applied to aiming: the prompt cannot offer a
-//! tree the server's ray misses.
+//! tree the server's ray misses. Since §0ray 2 it asks the rest of the cast
+//! too — the snapshot's bodies through `ranged::body_crossing`, its animals
+//! through [`animal_entry`], the world through [`world_cast`], ranked by
+//! [`nearest`] — so a man, a pig or a wall in front of the tree blanks the
+//! prompt exactly where it would eat the swing.
 //!
 //! Wall 1 throughout: `+ − × ÷ sqrt min max` and the two LUTs. Wall 2:
 //! nothing here allocates. Wall 4: the node cast is nine cells, the mob
@@ -568,16 +572,7 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
             continue;
         }
         let def = mc.def(m.kind);
-        let (r, h) = (
-            f32::from(def.body_r_cm) * 0.01,
-            f32::from(def.body_h_cm) * 0.01,
-        );
-        if r <= 0.0 || h <= 0.0 {
-            continue;
-        }
-        let base = m.body.qy as f32 * POS_Y_Q;
-        let centre = (m.body.qx as f32 * POS_XZ_Q, m.body.qz as f32 * POS_XZ_Q);
-        let Some((t_in, _)) = cylinder_span(o, u, centre, r, base, base + h) else {
+        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &m.body) else {
             continue;
         };
         if best.is_none_or(|b| t_in < b.t) {
@@ -585,6 +580,27 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
         }
     }
     best
+}
+
+/// Where a ray `o + u·t` (metres) enters an animal standing at `body` whose
+/// content row sizes it `r_cm` × `h_cm` — [`mob_cast`]'s per-animal solve,
+/// lifted out (§0ray 2) so the client's swing prompt measures a snapshot's
+/// animal with the sim's own arithmetic. `None` for a miss, and for a zero
+/// volume (the heli's and the sentries' `MobDef::INERT`).
+pub fn animal_entry(
+    o: (f32, f32, f32),
+    u: (f32, f32, f32),
+    r_cm: u16,
+    h_cm: u16,
+    body: &Body,
+) -> Option<f32> {
+    let (r, h) = (f32::from(r_cm) * 0.01, f32::from(h_cm) * 0.01);
+    if r <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let base = body.qy as f32 * POS_Y_Q;
+    let centre = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    cylinder_span(o, u, centre, r, base, base + h).map(|(t_in, _)| t_in)
 }
 
 /// An animal's carcass the ray entered: the bag index in the store.
@@ -705,13 +721,68 @@ pub fn cast(
     } else {
         None
     };
+    let world = world_cast(seed, haven, cols, occ, ray);
+    nearest(
+        &Entered {
+            node,
+            body,
+            mob,
+            carcass,
+            world,
+        },
+        ray,
+        reaches,
+    )
+}
+
+/// The world half of [`cast`]: where ground, scenery or a built piece stops
+/// the swing's ray, what stopped it (`ranged::SURF_*`), and — for a piece or
+/// a solid deployable — the address `World::chip` charges. `(1.0, None,
+/// None)` when nothing did.
+///
+/// Public (§0ray 2) because the client's swing prompt asks it too, over its
+/// own collision index and memo: a wall or a bank standing in front of a
+/// tree is what the swing meets, so the prompt must not name the tree.
+pub fn world_cast(
+    seed: u64,
+    haven: &Haven,
+    cols: &crate::collide::ColIndex,
+    occ: &mut Occupants,
+    ray: &Ray,
+) -> (f32, Option<u8>, Option<Struck>) {
     // The whole reach, sampled as a shot would be. A melee reach is metres,
     // so this is a dozen taps; the cap is the sampler's own and a reach it
     // would coarsen is a content row `validate` refuses.
     let n = ((ray.len_mm / ARROW_STEP_MM as f32) as usize + 1).min(MAX_HITSCAN_SAMPLES);
-    let (stop_t, surf, built) =
-        ranged::world_stop(seed, haven, cols, occ, ray.o, ray.s, n, n, MELEE_PROBE_M);
+    ranged::world_stop(seed, haven, cols, occ, ray.o, ray.s, n, n, MELEE_PROBE_M)
+}
 
+/// Everything one swing's ray entered, one candidate per store, before
+/// [`nearest`] picks among them — what [`cast`] gathers off the sim, and
+/// what the client's swing prompt gathers off its snapshot
+/// (`ui::interact::resolve_swing_shadowed`).
+#[derive(Clone, Copy, Debug)]
+pub struct Entered {
+    pub node: Option<NodeHit>,
+    pub body: Option<BodyHit>,
+    pub mob: Option<MobHit>,
+    pub carcass: Option<CarcassHit>,
+    /// [`world_cast`]'s answer.
+    pub world: (f32, Option<u8>, Option<Struck>),
+}
+
+/// [`cast`]'s arbitration: the minimum entry fraction wins, ties broken node
+/// → body → animal → carcass → world, and the winner is accepted only inside
+/// its own reach ([`Reaches`]). One function for the sim's swing and the
+/// client's prompt, so the two cannot rank a tree and a pig differently.
+pub fn nearest(entered: &Entered, ray: &Ray, reaches: &Reaches) -> Reached {
+    let Entered {
+        node,
+        body,
+        mob,
+        carcass,
+        world: (stop_t, surf, built),
+    } = *entered;
     let mut best_t = f32::INFINITY;
     let mut best = Reached::Nothing;
     if let Some(nh) = node {

@@ -1181,6 +1181,33 @@ impl ClientCore {
         )
     }
 
+    /// [`Self::island`], plus what else a swing can meet on its way to the
+    /// scatter: the collision index the predictor walls with and the
+    /// snapshot's bodies and animals. Disjoint field borrows, so the swing
+    /// prompt can ask the sim's whole melee cast in one hold
+    /// (`ui::interact::resolve_swing_shadowed`, §0ray 2).
+    pub fn swing_view(
+        &mut self,
+    ) -> (
+        u64,
+        Occupants<'_>,
+        &ColIndex,
+        &[(u32, protocol::EntityState)],
+    ) {
+        (
+            self.predict.seed(),
+            Occupants {
+                doors: self.card_doors,
+                table: &self.scatter_table,
+                haven: &self.haven,
+                harvested: &self.harvested,
+                cache: &mut self.slot_cache,
+            },
+            self.pieces.cols(),
+            &self.view.entities,
+        )
+    }
+
     /// Lend a path search the ground this client predicts on: the same
     /// seed, haven, occupants and collision index `advance` hands
     /// `movement::step`, so a planned route agrees with the capsule about

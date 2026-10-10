@@ -185,9 +185,14 @@ pub fn resolve(
     // core's copy is the one that owns the cache, and handing the cache a
     // *second* seed would flush it every frame — see that method's header.
     // `w` is still what says a world exists at all.
+    //
+    // `swing_view` is `island` plus the walls and the snapshot's bodies, in
+    // the same hold, because the swing prompt asks the sim's whole cast: a
+    // node with a pig, a man or a wall in front of it is not named (§0ray 2).
+    let own = core.player_id;
     (swung.0, in_weak.0) = match world.as_deref() {
         Some(_) => {
-            let (seed, occ) = core.island();
+            let (seed, occ, cols, entities) = core.swing_view();
             let mut island = interact::Island {
                 doors: occ.doors,
                 seed,
@@ -196,7 +201,7 @@ pub fn resolve(
                 harvested: occ.harvested,
                 cache: occ.cache,
             };
-            let pick = interact::resolve_swing(
+            let pick = interact::resolve_swing_shadowed(
                 SwingAim {
                     x,
                     y,
@@ -206,6 +211,11 @@ pub fn resolve(
                     crouched,
                 },
                 &mut island,
+                &interact::Shadows {
+                    own,
+                    entities,
+                    cols,
+                },
             );
             // The open pick, on the same island borrow and the same aim.
             // Folded into `aimed` rather than kept beside it, because to

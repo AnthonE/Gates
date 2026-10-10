@@ -1881,81 +1881,105 @@ pub(crate) fn nearest_body(
     owner: u32,
     pose: Pose<'_>,
 ) -> Option<BodyHit> {
-    let (ox, oy, oz) = o;
-    let (sx, sy, sz) = s;
     let mut best: Option<BodyHit> = None;
-    let planar2 = sx * sx + sz * sz;
     for (j, v) in players.iter().enumerate() {
         if !v.active || v.dead || v.hp == 0 || v.id == owner {
             continue;
         }
-        let at = pose.of(j, v);
-        let (bx, by, bz) = (
-            at.qx as f32 * POS_XZ_Q,
-            at.qy as f32 * POS_Y_Q,
-            at.qz as f32 * POS_XZ_Q,
-        );
-        let (ax, ay, az) = (ox / MM_PER_M, oy / MM_PER_M, oz / MM_PER_M);
-        let (ux, uy, uz) = (sx / MM_PER_M, sy / MM_PER_M, sz / MM_PER_M);
-        // Closest approach in the plane, clamped to the segment. A
-        // degenerate (purely vertical) shot pins to its start.
-        let t = if planar2 <= 0.0 {
-            0.0
-        } else {
-            (((bx - ax) * ux + (bz - az) * uz) / (ux * ux + uz * uz)).clamp(0.0, 1.0)
+        let Some(hit) = body_crossing(o, s, stop_t, j, pose.of(j, v)) else {
+            continue;
         };
-        if t > stop_t {
-            continue;
-        }
-        let (cx, cy, cz) = (ax + ux * t, ay + uy * t, az + uz * t);
-        let (ddx, ddz) = (cx - bx, cz - bz);
-        // A cylinder, exactly like `terrain::slot_blocks` — the house
-        // shape. The head is a band off the top of this same cylinder
-        // (`collide::HEAD_BAND_M`), never a second collider, so this test
-        // is what it always was.
-        if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
-            continue;
-        }
-        if cy < by || cy > by + crate::collide::hit_height_m(at.crouched) {
-            continue;
-        }
-        // The rest of the quadratic the closest approach is the vertex of:
-        // `|w + v·t|² = R²`, with `w` the muzzle-to-body planar offset. The
-        // discriminant cannot be negative here — the compare above already
-        // proved the line comes within `R` — but it is `max`ed at zero
-        // anyway, because a `sqrt` of a float that is -1e-9 by rounding is
-        // a NaN, and a NaN would spread through the span into
-        // `part_crossed` and out of it as a silent chest hit.
-        let vv = ux * ux + uz * uz;
-        let (enter, exit) = if vv <= 0.0 {
-            // A purely vertical shot never leaves its own column, so the
-            // span is the point the hit was decided at — the same `t = 0`
-            // pin above, for the same reason.
-            (t, t)
-        } else {
-            let (wx, wz) = (ax - bx, az - bz);
-            let wv = wx * ux + wz * uz;
-            let ww = wx * wx + wz * wz;
-            let disc = (wv * wv - vv * (ww - CAPSULE_RADIUS_M * CAPSULE_RADIUS_M)).max(0.0);
-            let half = disc.sqrt() / vv;
-            let centre = -wv / vv;
-            (
-                (centre - half).clamp(0.0, 1.0),
-                (centre + half).clamp(0.0, 1.0),
-            )
-        };
-        if best.is_none_or(|b| t < b.t) {
-            best = Some(BodyHit {
-                t,
-                slot: j,
-                enter,
-                exit,
-                qy: at.qy,
-                crouched: at.crouched,
-            });
+        if best.is_none_or(|b| hit.t < b.t) {
+            best = Some(hit);
         }
     }
     best
+}
+
+/// One body's crossing by the segment `o + s·t` (millimetres), solved
+/// against the pose `at`: the closest approach and the span inside the
+/// cylinder, as a [`BodyHit`] in slot `slot` — or `None` when the segment
+/// passes beside the body, over or under it at the closest approach, or
+/// comes closest only after `stop_t`.
+///
+/// [`nearest_body`]'s per-body arithmetic, lifted out verbatim (§0ray 2) so
+/// a client can ask it of a snapshot: the swing prompt
+/// (`ui::interact::resolve_swing_shadowed`) shadows a node behind a body with
+/// this quadratic rather than a restated one. The liveness filter is the
+/// caller's. Wall 1 only.
+#[inline]
+pub fn body_crossing(
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+    stop_t: f32,
+    slot: usize,
+    at: RewindPose,
+) -> Option<BodyHit> {
+    let (ox, oy, oz) = o;
+    let (sx, sy, sz) = s;
+    let planar2 = sx * sx + sz * sz;
+    let (bx, by, bz) = (
+        at.qx as f32 * POS_XZ_Q,
+        at.qy as f32 * POS_Y_Q,
+        at.qz as f32 * POS_XZ_Q,
+    );
+    let (ax, ay, az) = (ox / MM_PER_M, oy / MM_PER_M, oz / MM_PER_M);
+    let (ux, uy, uz) = (sx / MM_PER_M, sy / MM_PER_M, sz / MM_PER_M);
+    // Closest approach in the plane, clamped to the segment. A
+    // degenerate (purely vertical) shot pins to its start.
+    let t = if planar2 <= 0.0 {
+        0.0
+    } else {
+        (((bx - ax) * ux + (bz - az) * uz) / (ux * ux + uz * uz)).clamp(0.0, 1.0)
+    };
+    if t > stop_t {
+        return None;
+    }
+    let (cx, cy, cz) = (ax + ux * t, ay + uy * t, az + uz * t);
+    let (ddx, ddz) = (cx - bx, cz - bz);
+    // A cylinder, exactly like `terrain::slot_blocks` — the house
+    // shape. The head is a band off the top of this same cylinder
+    // (`collide::HEAD_BAND_M`), never a second collider, so this test
+    // is what it always was.
+    if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
+        return None;
+    }
+    if cy < by || cy > by + crate::collide::hit_height_m(at.crouched) {
+        return None;
+    }
+    // The rest of the quadratic the closest approach is the vertex of:
+    // `|w + v·t|² = R²`, with `w` the muzzle-to-body planar offset. The
+    // discriminant cannot be negative here — the compare above already
+    // proved the line comes within `R` — but it is `max`ed at zero
+    // anyway, because a `sqrt` of a float that is -1e-9 by rounding is
+    // a NaN, and a NaN would spread through the span into
+    // `part_crossed` and out of it as a silent chest hit.
+    let vv = ux * ux + uz * uz;
+    let (enter, exit) = if vv <= 0.0 {
+        // A purely vertical shot never leaves its own column, so the
+        // span is the point the hit was decided at — the same `t = 0`
+        // pin above, for the same reason.
+        (t, t)
+    } else {
+        let (wx, wz) = (ax - bx, az - bz);
+        let wv = wx * ux + wz * uz;
+        let ww = wx * wx + wz * wz;
+        let disc = (wv * wv - vv * (ww - CAPSULE_RADIUS_M * CAPSULE_RADIUS_M)).max(0.0);
+        let half = disc.sqrt() / vv;
+        let centre = -wv / vv;
+        (
+            (centre - half).clamp(0.0, 1.0),
+            (centre + half).clamp(0.0, 1.0),
+        )
+    };
+    Some(BodyHit {
+        t,
+        slot,
+        enter,
+        exit,
+        qy: at.qy,
+        crouched: at.crouched,
+    })
 }
 
 /// A hitscan kill fits the arrow's kill array because there are never more

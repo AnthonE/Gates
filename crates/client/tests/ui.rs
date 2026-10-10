@@ -1673,6 +1673,232 @@ fn the_prompt_and_the_swing_agree() {
 }
 
 // ---------------------------------------------------------------------------
+// §0ray 2: the prompt weighs what the swing would meet first. `melee::cast`
+// ranks the node against bodies, animals and the world along the same ray,
+// so a man standing in front of a tree eats the blow — and the prompt that
+// said CHOP TREE over his shoulder was naming a swing that never lands.
+
+use client::ui::interact::{resolve_swing_shadowed, Shadows, MOB_SWING_BODY_CM};
+
+/// A snapshot record of a standing body at `body`'s quanta.
+fn standing(body: sim_core::movement::Body) -> protocol::EntityState {
+    protocol::EntityState {
+        qx: body.qx,
+        qy: body.qy,
+        qz: body.qz,
+        ..Default::default()
+    }
+}
+
+/// **A man between you and the tree takes the prompt as he takes the
+/// swing**, proven against a running sim: the same stance and the same look
+/// at the trunk, once with the second player off to the side and once with
+/// him standing in the line. The sim must gather in the first and land
+/// `EV_HIT` (and no gather) in the second, and the shadowed prompt must name
+/// the tree exactly when the sim gathered. The swinger's own record rides
+/// the snapshot too, so a prompt that forgot to skip itself would blank on
+/// every swing.
+#[test]
+fn a_man_in_front_of_the_tree_takes_the_prompt() {
+    use sim_core::combat::CombatContent;
+    use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+    use sim_core::world::{Command, World, EV_GATHER, EV_GATHER_REFUSED, EV_HIT};
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    // Further back than `stance`, so a body fits in the gap: 1.6 m short of
+    // the bark is still inside the 2 m arm, and the man stands 0.8 m out.
+    let px = tx - (tr + 1.6);
+    for between in [false, true] {
+        let mut w = Box::new(World::new(seed));
+        w.gather = GatherContent::probe_fixture();
+        // Item 0 is a 2 m melee row, so the man in the line is a hit and
+        // not a whiff — the swing reaching him is the sim's half of the claim.
+        w.combat = CombatContent::probe_fixture();
+        w.dev_spawn = Some((px, tz));
+        w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+        let (bx, bz) = if between {
+            (px + 0.8, tz)
+        } else {
+            (px, tz + 6.0)
+        };
+        w.players[1].body = Body::at(seed, &haven, bx, bz);
+        w.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        let b = w.players[0].body;
+        let (x, y, z) = (
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        );
+        // At the trunk a metre up: through the man's chest when he is there.
+        let aim = aim_at(x, y, z, tx, y + 1.0, tz);
+        let entities = [
+            (1, standing(w.players[0].body)),
+            (2, standing(w.players[1].body)),
+        ];
+        let mut cache = SlotCache::new();
+        let prompt = resolve_swing_shadowed(
+            aim,
+            &mut Island {
+                doors: 0,
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+            &Shadows {
+                own: 1,
+                entities: &entities,
+                cols: w.pieces.cols(),
+            },
+        );
+
+        let (mut hit, mut gathered) = (false, false);
+        let mut seq = 0u16;
+        for _ in 0..SWING_INTERVAL_TICKS * 2 {
+            seq = seq.wrapping_add(1);
+            w.tick(&[Command::Input {
+                id: 1,
+                frame: InputFrame {
+                    seq,
+                    buttons: BTN_PRIMARY,
+                    yaw: aim.yaw,
+                    pitch: aim.pitch,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                },
+                favour: 0,
+            }]);
+            for e in w.events.entries() {
+                hit |= e.code == EV_HIT;
+                gathered |= e.code == EV_GATHER || e.code == EV_GATHER_REFUSED;
+            }
+        }
+        let name = if between { "in the line" } else { "aside" };
+        assert_eq!(
+            (hit, gathered),
+            (between, !between),
+            "the man {name}: the sim's swing hit={hit} gathered={gathered}"
+        );
+        assert_eq!(
+            prompt.occupant,
+            if between { 0 } else { Occupant::Tree as u8 },
+            "the man {name}: the prompt said {:?}",
+            swing_label(prompt.occupant)
+        );
+    }
+}
+
+/// An animal the ray enters before the trunk shadows it; one the ray passes
+/// over does not, and neither does a dead one. A stag stands 1.3 m and a pig
+/// 0.78 (`content/mobs.toml`), so a look dropping from a 1.6 m eye toward the
+/// foot of a tree crosses the one's back and clears the other's — the
+/// animal half of the cast is client arithmetic over the snapshot, so it is
+/// held here without a `World`.
+#[test]
+fn a_stag_in_the_line_takes_the_prompt_and_a_pig_under_it_does_not() {
+    use sim_core::limits::MOB_ID_TAG;
+    use sim_core::mob::{kind_of, MOB_PIG, MOB_STAG};
+    use sim_core::movement::Body;
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    let px = tx - (tr + 1.6);
+    let me = Body::at(seed, &haven, px, tz);
+    let y = me.qy as f32 * sim_core::movement::POS_Y_Q;
+    // At the trunk 0.6 m up: the ray is at ~1.0 m over the pig's far flank
+    // and drops through a stag's back.
+    let aim = aim_at(px, y, tz, tx, y + 0.6, tz);
+    let tag = |kind: u8| {
+        let slot = (0..sim_core::limits::MAX_MOBS)
+            .find(|&s| kind_of(s) == kind)
+            .expect("every species has a slot");
+        MOB_ID_TAG | slot as u32
+    };
+    let stag = standing(Body::at(seed, &haven, px + 0.8, tz));
+    let pig = standing(Body::at(seed, &haven, px + 0.5, tz));
+    let cols = sim_core::collide::ColIndex::default();
+    let mut cache = SlotCache::new();
+    let mut pick = |entities: &[(u32, protocol::EntityState)]| {
+        resolve_swing_shadowed(
+            aim,
+            &mut Island {
+                doors: 0,
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+            &Shadows {
+                own: 1,
+                entities,
+                cols: &cols,
+            },
+        )
+        .occupant
+    };
+    let tree = Occupant::Tree as u8;
+    assert_eq!(pick(&[]), tree, "nothing in the way must name the tree");
+    assert_eq!(
+        pick(&[(tag(MOB_STAG), stag)]),
+        0,
+        "a stag in the line eats the swing"
+    );
+    assert_eq!(
+        pick(&[(tag(MOB_PIG), pig)]),
+        tree,
+        "the look passes over a pig's back"
+    );
+    let dead = protocol::EntityState { dead: true, ..stag };
+    assert_eq!(
+        pick(&[(tag(MOB_STAG), dead)]),
+        tree,
+        "a dead stag is a carcass, and a blunt swing passes it"
+    );
+}
+
+/// The prompt's animal volumes are the ones the shard bakes from
+/// `content/mobs.toml`, read through the real loader — the client links no
+/// content, so this copy is the only one it has and a resized species must
+/// go red here rather than shadow a tree at the wrong height.
+#[test]
+fn the_prompts_animal_volumes_are_contents() {
+    let content = content::Content::load_dir(std::path::Path::new("../../content"))
+        .unwrap_or_else(|e| panic!("content/ does not load: {e}"));
+    let mc = content
+        .bake_mobs()
+        .unwrap_or_else(|e| panic!("bake_mobs: {e}"));
+    for (kind, &want) in MOB_SWING_BODY_CM.iter().enumerate() {
+        let def = mc.def(kind as u8);
+        assert_eq!(
+            (def.body_r_cm, def.body_h_cm),
+            want,
+            "species {kind}: content/mobs.toml's body_r_cm/body_h_cm moved — \
+             update ui::interact::MOB_SWING_BODY_CM"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The weak spot. These mirror `gather::swing`'s sector test; if the sim moves
 // `WEAK_COS`, the LUT, or the point-blank exemption, these go red rather than
 // the HUD quietly promising a bonus the server refuses.

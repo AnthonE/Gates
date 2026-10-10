@@ -1345,6 +1345,7 @@ mod tests {
 // the harvested set is the whole truth and there is no second state to test.
 
 use sim_core::backpack::LOOT_REACH_M as OPEN_REACH_M;
+use sim_core::collide::ColIndex;
 use sim_core::gather::{POINT_BLANK_M2, REACH_M as SWING_REACH_M};
 use sim_core::melee::{self, Ray};
 use sim_core::movement::{quant_xz, quant_y, Body};
@@ -1536,6 +1537,147 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
         Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
         None => SwingPick::default(),
     }
+}
+
+/// What else a swing can meet before the scatter, off this client's own
+/// view: the snapshot's bodies and animals and the built world's collision
+/// index — the stores `melee::cast` reads besides the nine cells.
+pub struct Shadows<'a> {
+    /// This client's own entity id: a swing never meets its own body
+    /// (`melee::cast` skips the attacker the same way).
+    pub own: u32,
+    /// `ClientView::entities` — players and animals, split by the wire tag.
+    pub entities: &'a [(u32, protocol::EntityState)],
+    /// `ClientCore::pieces`' index: the walls, floors and doors this client
+    /// predicts against, which is what `melee::world_cast` walks.
+    pub cols: &'a ColIndex,
+}
+
+/// Each species' hit cylinder, `(body_r_cm, body_h_cm)`, in `mob::MOB_*`
+/// order — `content/mobs.toml`'s, which this client does not load. The sim's
+/// `melee::mob_cast` reads them off `MobDef`; the prompt reads them here, and
+/// `tests/ui.rs` holds the two equal through the real loader, so a resized
+/// stag goes red there instead of shadowing a tree at the wrong height.
+pub const MOB_SWING_BODY_CM: [(u16, u16); sim_core::mob::MOB_KINDS] =
+    [(55, 78), (60, 85), (55, 130)];
+
+/// What a swing from `at` would land on, with everything the sim's cast
+/// weighs (§0ray 2): [`resolve_swing`]'s node, kept only if nothing nearer
+/// along the same ray takes the blow first.
+///
+/// `melee::cast` ranks a node against the nearest body, animal, carcass and
+/// world stop by entry fraction, and the arm is spent on whichever comes
+/// first — so a pig, a man or a wall standing in front of a tree eats the
+/// swing while [`resolve_swing`] alone would still say CHOP TREE, and the
+/// impact path would throw the tree's chips off a blow that landed in flesh.
+/// This asks the same questions with the sim's own pieces: `node_cast`, the
+/// body quadratic (`ranged::body_crossing`), the animal cylinder
+/// (`melee::animal_entry`), the world walk (`melee::world_cast`), and the
+/// ranking itself (`melee::nearest`). A non-node winner is not named (a
+/// body already has its nametag and a wall its side line, and a label for
+/// either would be a new verb nobody asked for), so the prompt goes quiet
+/// rather than lying.
+///
+/// What it cannot see: a carcass (only a butchering hand meets one, and the
+/// butcher table is content the client does not hold — a blunt swing passes
+/// through, which is what this assumes), and the shard's rewound poses (the
+/// snapshot stands in for them, so a body crossing the line can disagree for
+/// a frame). The ray is `gather::REACH_M` long, which is every shipped melee
+/// row's longest reach, so the world walk samples where the shard's does.
+///
+/// Allocates nothing; the world walk and the two loops run only when a node
+/// is in the ray, since nothing else is ever named.
+pub fn resolve_swing_shadowed(
+    at: SwingAim,
+    island: &mut Island<'_>,
+    shadows: &Shadows<'_>,
+) -> SwingPick {
+    let ray = at.ray(SWING_REACH_M);
+    let (seed, haven) = (island.seed, island.haven);
+    let mut occ = island.occupants();
+    let Some(node) = melee::node_cast(seed, &mut occ, &ray) else {
+        return SwingPick::default();
+    };
+    let world = melee::world_cast(seed, haven, shadows.cols, &mut occ, &ray);
+    let entered = melee::Entered {
+        node: Some(node),
+        body: nearest_body(&ray, shadows),
+        mob: nearest_animal(&ray, shadows),
+        carcass: None,
+        world,
+    };
+    // Only the node's reach decides anything here: a body or a wall out of
+    // the hand's reach still ends the swing (`melee::cast`'s whiff), so it
+    // shadows the node either way and its own reach is never asked.
+    let reaches = melee::Reaches {
+        node: SWING_REACH_M * MM_PER_M,
+        ..melee::Reaches::default()
+    };
+    match melee::nearest(&entered, &ray, &reaches) {
+        melee::Reached::Node(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        _ => SwingPick::default(),
+    }
+}
+
+/// The nearest other living player the ray crosses, by
+/// `ranged::nearest_body`'s rule (closest approach first), over the
+/// snapshot. `slot` is the entity's index in `entities`; nothing reads it.
+fn nearest_body(ray: &Ray, shadows: &Shadows<'_>) -> Option<sim_core::ranged::BodyHit> {
+    let mut best: Option<sim_core::ranged::BodyHit> = None;
+    for (i, &(id, e)) in shadows.entities.iter().enumerate() {
+        if id == shadows.own || id & sim_core::limits::MOB_ID_TAG != 0 || e.dead {
+            continue;
+        }
+        let pose = sim_core::rewind::RewindPose {
+            id,
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            crouched: e.crouched,
+        };
+        let Some(hit) = sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, i, pose) else {
+            continue;
+        };
+        if best.is_none_or(|b| hit.t < b.t) {
+            best = Some(hit);
+        }
+    }
+    best
+}
+
+/// The nearest living animal the ray enters, by `melee::mob_cast`'s rule,
+/// over the snapshot. The heli and the sentries ride the animal tag with no
+/// hit volume, so their kinds (past `MOB_KINDS`) are skipped as the sim's
+/// `MobDef::INERT` skips them.
+fn nearest_animal(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::MobHit> {
+    use sim_core::mob;
+    let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
+    let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
+    let mut best: Option<melee::MobHit> = None;
+    for &(id, e) in shadows.entities {
+        if e.dead {
+            continue;
+        }
+        let Some(slot) = mob::slot_of_id(id) else {
+            continue;
+        };
+        let Some(&(r_cm, h_cm)) = MOB_SWING_BODY_CM.get(mob::kind_of(slot) as usize) else {
+            continue;
+        };
+        let body = Body {
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            ..Body::default()
+        };
+        let Some(t) = melee::animal_entry(o, u, r_cm, h_cm, &body) else {
+            continue;
+        };
+        if best.is_none_or(|b| t < b.t) {
+            best = Some(melee::MobHit { slot, t });
+        }
+    }
+    best
 }
 
 /// Whether an occupant is something `E` OPENS.
