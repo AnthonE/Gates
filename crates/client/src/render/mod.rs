@@ -119,6 +119,8 @@ pub mod fingers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
+// The number at the wall and the clock on the charge (NOW §0x 2).
+pub mod anchor;
 // The arc's banner under the compass (`ARC.md` F4), and the works'
 // terminals in the world.
 pub mod arc_hud;
@@ -1136,6 +1138,7 @@ impl Plugin for GatesRenderPlugin {
                 hud::setup.after(rig::setup),
                 // Beside the HUD, and like it absent from a plate run.
                 spectate::setup,
+                anchor::setup,
                 arc_hud::setup,
             )
                 .run_if(move || !plate),
@@ -1260,6 +1263,17 @@ impl Plugin for GatesRenderPlugin {
                 .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
+        )
+        // The world-space tags (`anchor.rs`): after this frame's projection
+        // is computed and before UI layout places them, so a tag sits where
+        // this frame's camera sees its wall rather than a frame behind it.
+        .add_systems(
+            PostUpdate,
+            anchor::draw
+                .after(bevy::camera::CameraUpdateSystems)
+                .before(bevy::ui::UiSystems::Prepare)
+                .run_if(world_running)
+                .run_if(world_placed),
         )
         // The fire on the torch in your own hand, in the hand's frame: the
         // same slot for the same reason, and the viewmodel's conditions.

@@ -23,6 +23,7 @@ use sim_core::limits::HOTBAR_SLOTS;
 use super::verbs::Aimed;
 use super::Net;
 use crate::net::PathMeter;
+use crate::ui::anchor::Spot;
 
 /// How long a toast stays up, seconds. Cosmetic (`DECISIONS.md` §open,
 /// client cosmetics). A clock is fine here and would not be in a gate: this
@@ -1237,22 +1238,41 @@ pub struct ReadoutLine;
 /// resource — filled off `Feed`'s freshness bits — is what turns "latest"
 /// into "live": the wall refreshes on every hit and fades like a toast,
 /// the charge counts down from the fuse the wire named and clears at zero.
+/// The world-space anchors (`render/anchor.rs`) draw the same two facts at
+/// the structures they name, off the same latches, so the line and the
+/// tags cannot disagree about what is live.
 #[derive(Resource, Default)]
 pub struct Readout {
-    /// The wall's cell, hp pair, and seconds left on the surface.
-    wall: Option<(u16, u16)>,
+    /// The wall's address, hp pair, and seconds left on the surface.
+    wall: Option<Spot>,
     wall_left: u16,
     wall_max: u16,
     wall_secs: f32,
-    /// The charge's cell and seconds to detonation. Cleared at zero — the
-    /// blast's own `EV_STRUCT_HIT` takes the surface back over.
-    charge: Option<(u16, u16)>,
-    charge_secs: f32,
+    /// The charge's address while its fuse burns. The clock itself is the
+    /// core's (`ClientCore::charge_left`, on the server-tick estimate);
+    /// this is the latch that turns its running out into a dud wait.
+    /// Cleared at zero — the blast's own `EV_STRUCT_HIT` takes the surface
+    /// back over.
+    charge: Option<Spot>,
     /// A clock that ran out, waiting [`FIZZLE_GRACE_S`] for its blast. No
     /// blast at it by then means the charge went out (a dud,
     /// `sim_core::charge::dud`) — the one way this side learns it.
     fizzle: Option<(u16, u16)>,
     fizzle_secs: f32,
+}
+
+impl Readout {
+    /// The live charge's address, while its fuse burns.
+    pub(crate) fn charge(&self) -> Option<Spot> {
+        self.charge
+    }
+
+    /// The wall readout's address, its `(left, max)` hp, and the line's own
+    /// fade, while it is up.
+    pub(crate) fn wall(&self) -> Option<(Spot, u16, u16, f32)> {
+        self.wall
+            .map(|at| (at, self.wall_left, self.wall_max, self.wall_secs.min(1.0)))
+    }
 }
 
 /// How long a run-out clock waits for its blast before calling it a dud:
@@ -2895,10 +2915,9 @@ pub fn feedback(
 ///
 /// A second reader of `Feed`, which is the architecture doing its job
 /// (`feed.rs`: a reader is a `Res<_>` and cannot consume anything — no
-/// `pop_*` here, `tests/sound.rs` greps). The world-space anchors — a
-/// number at the wall itself, a clock on the charge mesh — are still not
-/// built; this is the HUD half, and `charge_deploy` stays unread until
-/// the mesh half wants it.
+/// `pop_*` here, `tests/sound.rs` greps). This is the HUD half; the
+/// world-space half — the number at the wall, the clock on the charge — is
+/// `render/anchor.rs`, reading what this latches.
 pub fn readout(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
@@ -2913,35 +2932,31 @@ pub fn readout(
     // This player's own blows only (wire v77): the island-wide
     // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
     if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
-        let (cx, cz, _, _, left, max) = core.own_struct_hit;
+        let (_, _, _, _, left, max) = core.own_struct_hit;
         // `max == 0` is the defs-not-arrived state and pins nothing: the
         // same honesty rule the toast held (`struct_hit_line`'s doc).
         if max > 0 {
-            ro.wall = Some((cx, cz));
+            ro.wall = Some(Spot::own_hit(core));
             ro.wall_left = left;
             ro.wall_max = max;
             ro.wall_secs = TOAST_SECS;
         }
     }
-    if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
-        let (cx, cz, _, _, _, fuse) = core.charge_placed;
-        if fuse > 0 {
-            ro.charge = Some((cx, cz));
-            ro.charge_secs = fuse as f32 / sim_core::limits::TICK_HZ as f32;
-        }
+    if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 && core.charge_left() > 0 {
+        ro.charge = Some(Spot::charge(core));
     }
 
-    // The clocks. Cosmetic fades and a countdown mirror, not a gate — the
-    // detonation itself is the sim's, and arrives as its own events.
+    // The clocks. A cosmetic fade and the core's countdown, not a gate —
+    // the detonation itself is the sim's, and arrives as its own events.
     let dt = time.delta_secs();
     ro.wall_secs = (ro.wall_secs - dt).max(0.0);
     if ro.wall_secs == 0.0 {
         ro.wall = None;
     }
-    ro.charge_secs = (ro.charge_secs - dt).max(0.0);
-    if ro.charge_secs == 0.0 {
+    let charge_secs = core.charge_left() as f32 / sim_core::limits::TICK_HZ as f32;
+    if charge_secs == 0.0 {
         if let Some(at) = ro.charge.take() {
-            ro.fizzle = Some(at);
+            ro.fizzle = Some((at.cx, at.cz));
             ro.fizzle_secs = FIZZLE_GRACE_S;
         }
     }
@@ -2965,14 +2980,18 @@ pub fn readout(
     // The clock outranks the wall on the one line: it is rarer, it is
     // fatal, and it is bounded by its own fuse — the wall's timer keeps
     // running underneath and the fraction is back when the charge clears.
-    let (want, alpha) = if let Some((cx, cz)) = ro.charge {
+    let (want, alpha) = if let Some(at) = ro.charge {
         (
-            charge_readout(ro.charge_secs, &whereabouts(px, pz, cx, cz)),
+            charge_readout(charge_secs, &whereabouts(px, pz, at.cx, at.cz)),
             1.0,
         )
-    } else if let Some((cx, cz)) = ro.wall {
+    } else if let Some(at) = ro.wall {
         (
-            struct_readout(ro.wall_left, ro.wall_max, &whereabouts(px, pz, cx, cz)),
+            struct_readout(
+                ro.wall_left,
+                ro.wall_max,
+                &whereabouts(px, pz, at.cx, at.cz),
+            ),
             // The toast's own fade: full until the last second, then out.
             ro.wall_secs.min(1.0),
         )
@@ -3654,12 +3673,12 @@ fn periods_label(h: u32) -> String {
 /// counts in them, and `TICK_HZ` is the sim's own constant rather than a
 /// number invented here. A player has no use for 240 and every use for 8.
 ///
-/// **This is the warning, not a countdown.** A live timer ticking down on the
-/// wall itself is a world-space element and is not built; what this buys is
-/// the thing a defender actually needs first — that a charge exists at all,
-/// and roughly how long they have. Said plainly here rather than implied,
-/// because a toast that looked like a timer and did not move would be worse
-/// than none.
+/// **This is the warning, not a countdown.** The live timers are the pinned
+/// readout's clock and the one on the charge itself (`render/anchor.rs`);
+/// what this buys is the thing a defender actually needs first — that a
+/// charge exists at all, and roughly how long they have. Said plainly here
+/// rather than implied, because a toast that looked like a timer and did
+/// not move would be worse than none.
 fn charge_line(fuse_ticks: u16) -> Option<String> {
     if fuse_ticks == 0 {
         return None;
@@ -3683,16 +3702,26 @@ fn charge_line(fuse_ticks: u16) -> Option<String> {
 /// over an unknown maximum is worse than silence, and `ClientCore::struct_hit`
 /// says so where the field is declared.
 fn struct_hit_line(left: u16, max: u16) -> Option<String> {
+    let mut line = String::new();
+    push_struct_hit(&mut line, left, max).then_some(line)
+}
+
+/// [`struct_hit_line`] appended to `out` rather than allocated — the wall
+/// tag redraws it every frame it is up (`render/anchor.rs`). False, with
+/// `out` untouched, where the line would be `None`.
+pub(crate) fn push_struct_hit(out: &mut String, left: u16, max: u16) -> bool {
+    use std::fmt::Write;
     if max == 0 {
-        return None;
+        return false;
     }
     let left = left.min(max);
     let pct = (left as u32 * 100).div_ceil(max as u32);
-    Some(if left == 0 {
-        "STRUCTURE DOWN".to_string()
+    if left == 0 {
+        out.push_str("STRUCTURE DOWN");
     } else {
-        format!("{left}/{max}  ·  {pct}%")
-    })
+        let _ = write!(out, "{left}/{max}  ·  {pct}%");
+    }
+    true
 }
 
 /// Where a build cell stands relative to the player: an eight-point
@@ -3728,12 +3757,10 @@ fn struct_readout(left: u16, max: u16, whereat: &str) -> Option<String> {
 
 /// The charge clock's line, or `None` once it is spent. Ceiling, for
 /// [`charge_line`]'s stated reason — a live thing must not read as
-/// finished, so the line says `1s` until the instant it is gone.
+/// finished, so the line says `1s` until the instant it is gone — and
+/// through the one rounding the clock on the charge uses too.
 fn charge_readout(secs_left: f32, whereat: &str) -> Option<String> {
-    if secs_left <= 0.0 {
-        return None;
-    }
-    let secs = secs_left.ceil() as u32;
+    let secs = crate::ui::anchor::clock_secs(secs_left)?;
     Some(format!("CHARGE  ·  {secs}s  ·  {whereat}"))
 }
 

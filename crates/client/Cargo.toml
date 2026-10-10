@@ -215,6 +215,13 @@ name = "spectate_label"
 path = "tests/spectate_label.rs"
 required-features = ["render"]
 
+# The world-space tags' bundles (NOW §0x 2), the same way and for the same
+# reason: spawned in a headless `App`, because only a run sees a duplicate.
+[[test]]
+name = "anchor_tags"
+path = "tests/anchor_tags.rs"
+required-features = ["render"]
+
 # The animal the client draws against the cylinder the sim lets you hit —
 # one number in two crates with a TOML file between them (melee aim v1).
 [[test]]

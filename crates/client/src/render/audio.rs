@@ -1268,16 +1268,18 @@ pub fn feed(
             sound.play(Request::at(Cue::Unlock, [x, y + 1.2, z]));
         }
         // A charge going live: its fuse sizzles where it was stuck, for
-        // anyone near enough to run.
-        if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
-            let (cx, cz, level, loc, _row, fuse) = core.charge_placed;
-            if fuse > 0 {
-                let (x, z) = sim_core::build::anchor(cx, cz, loc);
-                let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
-                let y =
-                    super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
-                sound.play(Request::at(Cue::Fuse, [x, y + 1.0, z]));
-            }
+        // anyone near enough to run — at the point the clock on it hangs
+        // (`ui::anchor`), whose store bit stands it on a free-placed box
+        // rather than at a corner of the box's cell.
+        if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 && core.charge_placed.5 > 0 {
+            let at = crate::ui::anchor::structure_point(
+                world.seed,
+                &world.haven,
+                core,
+                crate::ui::anchor::Spot::charge(core),
+                crate::ui::anchor::CHARGE_LIFT_M,
+            );
+            sound.play(Request::at(Cue::Fuse, at));
         }
     }
     // Every refusal kind, one sound. A player does not need to hear the

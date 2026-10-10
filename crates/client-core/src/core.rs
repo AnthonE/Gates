@@ -2056,6 +2056,10 @@ pub struct ClientCore {
     /// The last structure hit that was this player's own blow, the same
     /// shape — what the HUD's wall readout draws (`APPLIED2_OWN_STRUCT_HIT`).
     pub own_struct_hit: (u16, u16, u8, u8, u16, u16),
+    /// Which store `own_struct_hit` names (the event's `deploy` bit), kept
+    /// beside it for `charge_deploy`'s reason: the address is what a reader
+    /// wants first, and the store only picks where the number hangs.
+    pub own_struct_deploy: bool,
     /// The damage of this player's last hitmarker on a structure (an
     /// `EV_HIT` with no victim), waiting for the island-wide `StructHit`
     /// behind it; the pair is how a client tells its own raid from anyone's.
@@ -2066,6 +2070,11 @@ pub struct ClientCore {
     /// address first and the store only to pick which mesh to stick it to.
     pub charge_placed: (u16, u16, u8, u8, u8, u16),
     pub charge_deploy: bool,
+    /// When that charge blows, the low 32 bits of the server tick: the
+    /// fuse added to the estimate it landed on; 0 for none. The countdown
+    /// the HUD draws is [`Self::charge_left`] off this, not a frame clock
+    /// in the renderer, so a hitch or a tab sleep cannot leave it behind.
+    pub charge_until: u32,
     /// The last stock ack: hearth address, rows `(item, units, bill)` —
     /// `bill` being what one upkeep period charges in that material — and
     /// the live row count.
@@ -2286,9 +2295,11 @@ impl ClientCore {
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
             own_struct_hit: (0, 0, 0, 0, 0, 0),
+            own_struct_deploy: false,
             own_struct_pending: None,
             charge_placed: (0, 0, 0, 0, 0, 0),
             charge_deploy: false,
+            charge_until: 0,
             stock_addr: (0, 0, 0),
             stock: [(0, 0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
@@ -3252,6 +3263,7 @@ impl ClientCore {
                 self.struct_hit = (cx, cz, level, loc, left, max.unwrap_or(0));
                 if own {
                     self.own_struct_hit = self.struct_hit;
+                    self.own_struct_deploy = deploy;
                     self.applied2 |= APPLIED2_OWN_STRUCT_HIT;
                 }
                 // …and re-state the mirror, so the wall the player is
@@ -3317,6 +3329,13 @@ impl ClientCore {
                 // renderer's job is to draw the clock running down.
                 self.charge_placed = (cx, cz, level, loc, row, fuse);
                 self.charge_deploy = deploy;
+                // 0 is "none", so a deadline that wraps onto it is a tick
+                // late rather than gone.
+                self.charge_until = if fuse == 0 {
+                    0
+                } else {
+                    self.server_tick_u32().wrapping_add(u32::from(fuse)).max(1)
+                };
                 self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
@@ -4931,6 +4950,17 @@ impl ClientCore {
         (self.hostile_until.wrapping_sub(now) as i32).max(0) as u32
     }
 
+    /// Ticks until the last charge planted blows (`charge_until`), 0 when
+    /// none is burning — the countdown the HUD's clock and the clock on the
+    /// charge both draw. A spent fuse reads 0, never a wrapped four billion;
+    /// an estimate nudged back under the plant reads a tick or two long.
+    pub fn charge_left(&self) -> u32 {
+        if self.charge_until == 0 {
+            return 0;
+        }
+        (self.charge_until.wrapping_sub(self.server_tick_u32()) as i32).max(0) as u32
+    }
+
     /// THE GATE's respawn point for the death screen: `None` while it is
     /// locked (you have not been to the town), else the ticks until it is
     /// free — 0 when it is.
@@ -5186,6 +5216,39 @@ mod tests {
         // A decode failure leaves nothing behind either.
         assert!(c.on_stream(&[0xFF, 0xFF, 0xFF]).is_err());
         assert_eq!(c.applied2(), 0);
+    }
+
+    /// A planted charge's clock runs on the server-tick estimate, not on a
+    /// renderer's frame count (NOW §0x 2): the fuse from where it landed,
+    /// down to 0 and held there — never a wrapped four billion — with the
+    /// store bit kept beside the address for the clock on the charge.
+    #[test]
+    fn a_charge_counts_down_on_the_server_clock() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        assert_eq!(c.charge_left(), 0, "nothing planted, nothing burning");
+        let hz = sim_core::limits::TICK_HZ;
+        let len =
+            protocol::encode_event_charge_placed(true, 40, 41, 0, 3, 2, (hz * 8) as u16, &mut buf)
+                .unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.applied2(), APPLIED2_CHARGE);
+        assert!(c.charge_deploy);
+        assert_eq!(c.charge_placed, (40, 41, 0, 3, 2, (hz * 8) as u16));
+        assert_eq!(c.charge_left(), hz * 8);
+        // Two seconds of frames take two seconds off.
+        for _ in 0..120 {
+            c.advance(1000.0 / 60.0);
+        }
+        let left = c.charge_left();
+        assert!(
+            left.abs_diff(hz * 6) <= 1,
+            "{left} after 2 s of an 8 s fuse"
+        );
+        for _ in 0..600 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert_eq!(c.charge_left(), 0, "a spent fuse reads 0");
     }
 
     #[test]

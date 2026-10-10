@@ -73,6 +73,7 @@
 /// (wall 4, applied to a client-driven path).
 pub const MAX_QUERY_CHARS: usize = 32;
 
+pub mod anchor;
 pub mod arc;
 pub mod boot;
 pub mod build;
