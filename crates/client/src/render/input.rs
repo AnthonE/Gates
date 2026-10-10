@@ -112,7 +112,12 @@ pub fn gather(
     // Same shape as `ui`, and the same reason it is optional: a capture run
     // registers neither.
     chat: Option<Res<super::chat::Chat>>,
-    reports: Option<Res<super::report::Reports>>,
+    // Paired with the held map's cursor, whose mark label is a text field
+    // too (`map::label`); neither is registered on a capture run.
+    (reports, map): (
+        Option<Res<super::report::Reports>>,
+        Option<Res<super::map::MapCursor>>,
+    ),
     // The inverse of the two above: present ONLY on a capture run, absent in
     // every player's client. `capture::drive` runs `.before` this system, so
     // the intent read here was decided this frame and not last one.
@@ -155,6 +160,20 @@ pub fn gather(
     let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
         || chat.map(|c| c.open()).unwrap_or(false)
         || reports.map(|r| r.open).unwrap_or(false);
+    // **So does a map mark's label** — but it owns no pointer: the map's
+    // crosshair stays on the locked mouse while the label is typed, so it is
+    // not a `panel_open` (which would let the pointer go) and only stands
+    // the body down below. `map::label` clears the key edges and leaves
+    // what is held held, so `W` typed into a label is down here until this
+    // says otherwise. Only on the map: a flag left set by an exit `map::keys`
+    // did not make (the shard hanging up mid-word) must not freeze the body
+    // in the next world, and `map::drop_label` clears it on the way out too.
+    // (`on_map` is read again below: on the held map the mouse moves the
+    // map's crosshair, `map::aim`, not the view.)
+    let on_map = screen
+        .as_ref()
+        .is_some_and(|s| *s.get() == super::Screen::Map);
+    let labelling = on_map && map.is_some_and(|m| m.typing());
 
     // **Free look: the head turns and the body does not.** Held `Left Alt`
     // parks the wire angles where they are and spends the mouse on a camera
@@ -253,10 +272,6 @@ pub fn gather(
             }
             crate::ui::pointer::Grab::Leave => {}
         }
-        // On the held map the mouse moves the map's crosshair (`map::aim`).
-        let on_map = screen
-            .as_ref()
-            .is_some_and(|s| *s.get() == super::Screen::Map);
         if !look.frozen
             && !panel_open
             && !on_map
@@ -300,7 +315,7 @@ pub fn gather(
             }
         }
     }
-    if panel_open {
+    if panel_open || labelling {
         // The input frame still goes out — the sim needs one every tick and
         // a client that stopped sending would be a client standing still for
         // a different reason. It goes out EMPTY of movement and buttons,

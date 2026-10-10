@@ -95,9 +95,14 @@ fn app() -> App {
 }
 
 /// Every request the frame's producers put to the mixer, counted before
-/// `pump` resolves them. The mixer's per-cue cooldown binds within a frame,
-/// so two asks for one cue on one frame leave as one start — and two asks
-/// for one tree is the defect `fell`'s test exists to see.
+/// `pump` resolves them: what the systems asked for, not what the mixer let
+/// through. A start count can hide an ask. A cue with a cooldown starts once
+/// a frame however often it is asked (`ImpactStone`'s 40 ms), the falloff
+/// culls an ask past the cue's radius, and the frame budget and the voice
+/// cap refuse past theirs. `TreeFall` has no cooldown, so a second ask for
+/// one tree would show as a second start as well. Counting the asks is what
+/// makes "one chop, one cue" a statement about `fell` rather than about the
+/// mix, and "out of reach" one about `fires`' own reach filter.
 #[derive(Resource, Default)]
 struct Asked(usize);
 
@@ -302,9 +307,25 @@ fn a_lit_fire_crackles_on_its_side() {
         assert_side(*v, -1.0);
     }
 
-    // Out of reach: silence.
+    // The reach is `fires`' own filter, read off the asks rather than the
+    // starts: the cue's radius is `FIRE_REACH_M` too, so past it the mixer's
+    // falloff would silence an ask the system wrongly made, and a start
+    // count could not tell the two apart. Just inside, it asks…
+    take_asked(&mut app);
+    *app.world_mut().get_mut::<GlobalTransform>(fire).unwrap() = at(1.0, FIRE_REACH_M - 1.0);
+    let near = frames(&mut app, 30);
+    assert!(
+        take_asked(&mut app) > 0,
+        "a fire just in reach was never asked for: {near:?}"
+    );
+    // …and just outside, it does not.
     *app.world_mut().get_mut::<GlobalTransform>(fire).unwrap() = at(1.0, FIRE_REACH_M + 1.0);
     let far = frames(&mut app, 30);
+    assert_eq!(
+        take_asked(&mut app),
+        0,
+        "a fire out of reach was asked for: {far:?}"
+    );
     assert!(
         starts(&far).is_empty(),
         "a fire out of reach crackled: {far:?}"
@@ -317,6 +338,7 @@ fn a_lit_fire_crackles_on_its_side() {
         .unwrap()
         .intensity = 0.0;
     let out = frames(&mut app, 30);
+    assert_eq!(take_asked(&mut app), 0, "an unlit fire was asked for");
     assert!(starts(&out).is_empty(), "an unlit fire crackled: {out:?}");
 }
 

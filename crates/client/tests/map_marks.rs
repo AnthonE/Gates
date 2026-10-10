@@ -18,13 +18,22 @@
 //!
 //! No window and no GPU: `MinimalPlugins` plus the asset server, which hands
 //! out handles for files it has not loaded. `tests/prewarm.rs`'s fixture.
+//!
+//! The held map's label keyboard (`map::label`, `aim`, `keys`) is here too:
+//! input rather than a spawn, but the same screen, and the same reason to run
+//! it rather than read it — the frame order is the whole of the bug it had.
 
 #![cfg(feature = "render")]
 
 use bevy::asset::AssetPlugin;
+use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit, MouseWheel};
+use bevy::input::{ButtonState, InputPlugin};
 use bevy::prelude::*;
+use bevy::state::app::StatesPlugin;
 use client::render::icons::Icons;
-use client::render::map::{spawn_mark, spawn_pin};
+use client::render::map::{self, keys, spawn_mark, spawn_pin, MapCursor, MapPins};
+use client::render::screen::Screen;
 use client::ui::map::{Mark, MarkKind, PinStyle, PIN_COLOURS, PIN_ICONS};
 
 /// Every kind. A `match` over each one so a kind added without a row here
@@ -294,4 +303,265 @@ fn every_pin_look_spawns_and_draws_what_it_says() {
             }
         }
     }
+}
+
+/// What `Update` saw of the keyboard and the wheel after the map's
+/// `PreUpdate` pair had its say: any key edge at all, and the wheel's delta —
+/// `input::gather`'s view, without the session it needs.
+#[derive(Resource, Default)]
+struct Seen {
+    edge: bool,
+    wheel: f32,
+}
+
+fn probe(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut seen: ResMut<Seen>,
+) {
+    seen.edge = keyboard.get_just_pressed().len() + keyboard.get_just_released().len() > 0;
+    seen.wheel = scroll.delta.y;
+}
+
+/// A held map with one mark under the crosshair and the map's input half
+/// as the game registers it (`map::input`: `label` then `aim` in
+/// `PreUpdate`, `drop_label` on the way out), plus `keys` in `Update`. The
+/// real `InputPlugin`, so a key is a `KeyboardInput` message turned into
+/// `ButtonInput` by Bevy itself, and a held key stays held across frames
+/// only if nothing wipes it.
+fn held_map() -> App {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, InputPlugin, StatesPlugin));
+    app.insert_state(Screen::Map);
+    app.init_resource::<MapPins>()
+        .init_resource::<MapCursor>()
+        .init_resource::<Seen>();
+    let mut cursor = app.world_mut().resource_mut::<MapCursor>();
+    (cursor.fx, cursor.fy) = (0.5, 0.5);
+    app.world_mut().resource_mut::<MapPins>().0.toggle(0.5, 0.5);
+    map::input(&mut app);
+    app.add_systems(Update, (keys.run_if(in_state(Screen::Map)), probe));
+    app
+}
+
+fn key(app: &mut App, key_code: KeyCode, logical_key: Key, state: ButtonState, repeat: bool) {
+    app.world_mut().write_message(KeyboardInput {
+        key_code,
+        logical_key,
+        state,
+        text: None,
+        repeat,
+        window: Entity::PLACEHOLDER,
+    });
+}
+
+/// A tap: down this frame, up the next.
+fn tap(app: &mut App, code: KeyCode, logical: Key) {
+    key(app, code, logical.clone(), ButtonState::Pressed, false);
+    app.update();
+    key(app, code, logical, ButtonState::Released, false);
+}
+
+fn ch(c: &str) -> Key {
+    Key::Character(c.into())
+}
+
+fn screen(app: &App) -> Screen {
+    app.world().resource::<State<Screen>>().get().clone()
+}
+
+fn typing(app: &App) -> bool {
+    app.world().resource::<MapCursor>().typing()
+}
+
+fn label_of(app: &App) -> String {
+    app.world()
+        .resource::<MapPins>()
+        .0
+        .style(0)
+        .label()
+        .to_string()
+}
+
+/// `G` held the whole time: `Enter` on the mark opens its label, a held
+/// `Enter`'s auto-repeat does not close it, the letters and the wheel are
+/// the label's and reach nothing downstream, and the `Enter` that keeps the
+/// label leaves the map up — because `G` is still down, which a keyboard
+/// wiped every frame had forgotten. Letting go of `G` then closes it.
+#[test]
+fn a_label_typed_with_g_held_keeps_the_map_up() {
+    let mut app = held_map();
+    key(
+        &mut app,
+        KeyCode::KeyG,
+        ch("g"),
+        ButtonState::Pressed,
+        false,
+    );
+    app.update();
+    assert_eq!(screen(&app), Screen::Map);
+
+    key(
+        &mut app,
+        KeyCode::Enter,
+        Key::Enter,
+        ButtonState::Pressed,
+        false,
+    );
+    app.update();
+    assert!(typing(&app), "Enter on a mark did not open its label");
+    assert!(
+        !app.world().resource::<Seen>().edge,
+        "the Enter that opened the label leaked"
+    );
+
+    // Held a moment longer than a tap: the OS repeats it.
+    for _ in 0..3 {
+        key(
+            &mut app,
+            KeyCode::Enter,
+            Key::Enter,
+            ButtonState::Pressed,
+            true,
+        );
+        app.update();
+        assert!(typing(&app), "a repeated Enter closed the label it opened");
+    }
+    key(
+        &mut app,
+        KeyCode::Enter,
+        Key::Enter,
+        ButtonState::Released,
+        false,
+    );
+
+    // A letter with the wheel turning under it.
+    let icon = app.world().resource::<MapPins>().0.style(0).icon;
+    app.world_mut().write_message(MouseWheel {
+        unit: MouseScrollUnit::Line,
+        x: 0.0,
+        y: 1.0,
+        window: Entity::PLACEHOLDER,
+    });
+    tap(&mut app, KeyCode::KeyH, ch("h"));
+    let seen = app.world().resource::<Seen>();
+    assert!(!seen.edge, "a letter typed into the label leaked");
+    assert_eq!(
+        seen.wheel, 0.0,
+        "the wheel reached the hotbar under a label"
+    );
+    assert_eq!(app.world().resource::<MapPins>().0.style(0).icon, icon);
+    app.update();
+    tap(&mut app, KeyCode::KeyQ, ch("q"));
+    app.update();
+    assert_eq!(label_of(&app), "HQ");
+
+    tap(&mut app, KeyCode::Enter, Key::Enter);
+    assert!(!typing(&app), "Enter did not keep the label");
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_eq!(label_of(&app), "HQ");
+    assert_eq!(
+        screen(&app),
+        Screen::Map,
+        "the map closed with G still held"
+    );
+
+    key(
+        &mut app,
+        KeyCode::KeyG,
+        ch("g"),
+        ButtonState::Released,
+        false,
+    );
+    app.update();
+    app.update();
+    assert_eq!(
+        screen(&app),
+        Screen::InWorld,
+        "letting go of G left the map up"
+    );
+}
+
+/// The latch: `G` let go mid-label keeps the map up, and `Esc` puts the old
+/// label back — then, with `G` up, the map follows it and closes. The `Esc`
+/// does not also reach anything downstream.
+#[test]
+fn a_label_latches_the_map_until_kept_or_put_back() {
+    let mut app = held_map();
+    key(
+        &mut app,
+        KeyCode::KeyG,
+        ch("g"),
+        ButtonState::Pressed,
+        false,
+    );
+    app.update();
+    tap(&mut app, KeyCode::Enter, Key::Enter);
+    assert!(typing(&app));
+    key(
+        &mut app,
+        KeyCode::KeyG,
+        ch("g"),
+        ButtonState::Released,
+        false,
+    );
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_eq!(screen(&app), Screen::Map, "the label did not latch the map");
+    tap(&mut app, KeyCode::KeyX, ch("x"));
+    app.update();
+    assert_eq!(label_of(&app), "X");
+
+    key(
+        &mut app,
+        KeyCode::Escape,
+        Key::Escape,
+        ButtonState::Pressed,
+        false,
+    );
+    app.update();
+    assert!(!typing(&app));
+    assert!(!app.world().resource::<Seen>().edge, "the Esc leaked");
+    assert_eq!(label_of(&app), "", "Esc did not put the label back");
+    app.update();
+    assert_eq!(
+        screen(&app),
+        Screen::InWorld,
+        "the map stayed up with G let go"
+    );
+}
+
+/// The shard hangs up mid-word: `disconnected::watch` moves the screen off
+/// the map with the label still open, an exit `keys` never makes. The label
+/// is put back as `Esc` would and the flag goes with it, so nothing in the
+/// next world reads a label being typed (`input::gather` stood the body down
+/// on it until `G` was pressed again).
+#[test]
+fn leaving_the_map_mid_label_puts_it_back() {
+    let mut app = held_map();
+    key(
+        &mut app,
+        KeyCode::KeyG,
+        ch("g"),
+        ButtonState::Pressed,
+        false,
+    );
+    app.update();
+    tap(&mut app, KeyCode::Enter, Key::Enter);
+    app.update();
+    tap(&mut app, KeyCode::KeyX, ch("x"));
+    app.update();
+    assert!(typing(&app));
+    assert_eq!(label_of(&app), "X");
+
+    app.world_mut()
+        .resource_mut::<NextState<Screen>>()
+        .set(Screen::Disconnected);
+    app.update();
+    assert_eq!(screen(&app), Screen::Disconnected);
+    assert!(!typing(&app), "the label outlived the map");
+    assert_eq!(label_of(&app), "", "the half-typed label was kept");
 }

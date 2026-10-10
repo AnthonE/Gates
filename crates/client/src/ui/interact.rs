@@ -293,8 +293,9 @@ pub struct Pick {
     pub public: bool,
     /// The swing in hand would land on THIS carcass: the hand butchers and
     /// nothing nearer along the look takes the blow (`SwingPick::bag` is
-    /// this pick's handle, §0ray 2). Stamped by the caller, as `lit` is, so
-    /// the bag's line names the button instead of teaching the verb.
+    /// this pick's handle, §0ray 2). Stamped by the caller, as `lit` is, off
+    /// [`SwingPick::cuts`], so the bag's line names the button instead of
+    /// teaching the verb.
     pub butcher: bool,
     /// Squared distance from the player, and from the aim line. Diagnostics
     /// for the gate; nothing draws them.
@@ -1269,6 +1270,38 @@ mod tests {
         );
     }
 
+    /// The stamp `render/verbs.rs` puts on the `E` pick (`SwingPick::cuts`)
+    /// is that carcass or nothing: not the bag behind the one the blade
+    /// meets, not a swing that meets no carcass, and not another verb whose
+    /// handle happens to equal the bag's id.
+    #[test]
+    fn the_cut_is_stamped_only_on_the_carcass_the_swing_meets() {
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        let carcass = WireBag {
+            id: 5,
+            qx: (2.0 / sim_core::movement::POS_XZ_Q) as i32,
+            qy: 0,
+            qz: 0,
+            kind: 1 + sim_core::mob::MOB_PIG,
+        };
+        let aimed = resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[carcass]);
+        assert_eq!((aimed.verb, aimed.handle), (Verb::Bag, 5));
+        let swung = SwingPick {
+            carcass: Some(sim_core::mob::MOB_PIG),
+            bag: 5,
+            ..SwingPick::default()
+        };
+        assert!(swung.cuts(&aimed));
+        // `E` names one carcass, the blade meets another.
+        assert!(!SwingPick { bag: 6, ..swung }.cuts(&aimed));
+        // The blade meets a tree, or nothing.
+        assert!(!SwingPick::default().cuts(&aimed));
+        // Not a bag, with the bag's number in its handle.
+        for verb in [Verb::Box, Verb::Take, Verb::Door] {
+            assert!(!swung.cuts(&Pick { verb, ..aimed }), "{verb:?}");
+        }
+    }
+
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does
     /// not offer it.
     #[test]
@@ -1471,6 +1504,15 @@ impl SwingPick {
             Some(_) => "BUTCHER PIG",
             None => swing_label(self.occupant),
         }
+    }
+
+    /// [`Pick::butcher`]'s stamp: `aimed`, the `E` pick, is the carcass this
+    /// swing would cut. It takes a bag pick, a swing that meets a carcass,
+    /// and the same bag ([`SwingPick::bag`]). A second carcass behind the one
+    /// the blade meets is not it, and neither is another verb whose handle
+    /// happens to equal the bag's id (a box's packed key, a stack's id).
+    pub fn cuts(&self, aimed: &Pick) -> bool {
+        aimed.verb == Verb::Bag && self.carcass.is_some() && self.bag == aimed.handle
     }
 }
 
@@ -1753,8 +1795,11 @@ pub const MOB_SWING_BODY_CM: [(u16, u16); sim_core::mob::MOB_KINDS] =
 /// is `gather::REACH_M` long, which is every shipped melee row's longest
 /// reach, so the world walk samples where the shard's does.
 ///
-/// Allocates nothing; the world walk and the two loops run only when a node
-/// or a carcass is in the ray, since nothing else is ever named.
+/// Allocates nothing. The node cast always runs, and so does the carcass
+/// loop whenever the hand butchers (finding a carcass is its job, so it
+/// cannot wait on one). The world walk and the body and animal loops run
+/// only when one of those two found something, since nothing else is ever
+/// named.
 pub fn resolve_swing_shadowed(
     at: SwingAim,
     island: &mut Island<'_>,

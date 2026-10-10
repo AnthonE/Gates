@@ -334,8 +334,7 @@ pub fn resolve(
     };
     // The carcass `E` names is the one the swing in hand would cut, so its
     // line names the button instead of teaching the verb (`Pick::butcher`).
-    aimed.0.butcher =
-        aimed.0.verb == Verb::Bag && swung.0.carcass.is_some() && swung.0.bag == aimed.0.handle;
+    aimed.0.butcher = swung.0.cuts(&aimed.0);
     if !core.wounded && !core.dead {
         let help = interact::resolve_assist(
             SwingAim {

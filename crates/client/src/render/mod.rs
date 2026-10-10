@@ -404,9 +404,11 @@ pub fn world_placed(eye: Res<Eye>) -> bool {
 ///
 /// Runs on entering `Screen::Menu` — both the voluntary disconnect path and
 /// the app's first frame — and on entering `Screen::Disconnected`, the
-/// involuntary one. On the first frame it finds nothing and does nothing,
-/// which is why it needs no "have we ever had a world" flag; the same
-/// property is what lets `Disconnected → Menu` run it twice harmlessly.
+/// involuntary one. It always removes `WorldId` and `Net` (a no-op when
+/// they are absent), and touches the rings and view resources only when it
+/// despawned a root. So on the first frame, and on the second run that
+/// `Disconnected → Menu` makes, it changes nothing, which is why it needs no
+/// "have we ever had a world" flag.
 ///
 /// **The rings are reset rather than drained.** Each holds a map from a cell
 /// to the entity that draws it; a ring that kept its keys after the entities
@@ -990,16 +992,6 @@ impl Plugin for GatesRenderPlugin {
         app.init_resource::<map::Island>()
             .init_resource::<map::MapPins>()
             .init_resource::<map::MapCursor>()
-            // The mouse is the map's while it is held: the crosshair and the
-            // marks, and nothing in the world sees a click (`map::aim`). The
-            // keyboard is too while a mark's label is typed (`map::label`).
-            .add_systems(
-                PreUpdate,
-                (map::label, map::aim)
-                    .chain()
-                    .after(bevy::input::InputSystems)
-                    .run_if(in_state(Screen::Map)),
-            )
             .add_systems(
                 OnEnter(Screen::Map),
                 ((map::enter, map::setup).chain(), audio::map_paper),
@@ -1024,6 +1016,11 @@ impl Plugin for GatesRenderPlugin {
                 OnEnter(Screen::Menu),
                 (map::forget, viewmodel::forget, impact::forget, fx::forget),
             );
+        // The mouse is the map's while it is held: the crosshair and the
+        // marks, and nothing in the world sees a click (`map::aim`). The
+        // keyboard is too while a mark's label is typed (`map::label`).
+        // Shared with `tests/map_marks.rs`, which boots this wiring headless.
+        map::input(app);
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen

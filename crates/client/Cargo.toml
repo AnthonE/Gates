@@ -406,9 +406,10 @@ path = "tests/music.rs"
 required-features = ["render"]
 
 # The rest of the audio systems that need no world — the beds' setup and
-# teardown, the click, the map, the fire, the blow, the herd and the pump —
-# the same way: scheduled on a bare `App` with the real bank, each one's ask
-# read back off the engine's frame buffer (`NOW.md` §0x item 3).
+# teardown, the click, the map, the fire, the blow, the herd, the felled tree
+# and the broken node (`fell`) and the pump — the same way: scheduled on a
+# bare `App` with the real bank, each one's ask read back off the engine's
+# frame buffer (`NOW.md` §0x item 3).
 [[test]]
 name = "audio_systems"
 path = "tests/audio_systems.rs"

@@ -145,8 +145,17 @@ pub struct MapCursor {
     dirty: bool,
     /// The mark whose label is being typed, and how it looked before, for
     /// `Esc` to put back. While it is `Some` the map stays up with `G` let
-    /// go and the keyboard is the label's (`label`).
+    /// go and the keyboard is the label's (`label`); any exit from the map
+    /// clears it (`drop_label`).
     typing: Option<(usize, map::PinStyle)>,
+}
+
+impl MapCursor {
+    /// A mark's label is being typed: the keyboard is a text field's, and
+    /// `input::gather` stands the body down as it does for chat.
+    pub fn typing(&self) -> bool {
+        self.typing.is_some()
+    }
 }
 
 /// The help line under the island; [`aim`] rewrites it while a label is
@@ -870,6 +879,38 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MapRoot>>) {
     }
 }
 
+/// The held map's input half, registered here so `GatesRenderPlugin` and
+/// `tests/map_marks.rs` run the one wiring: [`label`] then [`aim`] in
+/// `PreUpdate`, after Bevy's own input and before anything in `Update` reads
+/// a key or the wheel, and [`drop_label`] on the way out. ([`keys`] is not
+/// here: it closes the map in `Update`, after `track`, which needs a
+/// session.)
+pub fn input(app: &mut App) {
+    app.add_systems(
+        PreUpdate,
+        (label, aim)
+            .chain()
+            .after(bevy::input::InputSystems)
+            .run_if(in_state(Screen::Map)),
+    )
+    .add_systems(OnExit(Screen::Map), drop_label);
+}
+
+/// A label still open as the map goes is put back, as `Esc` would, and the
+/// flag goes with it. `keys` holds the map up until a label is kept or put
+/// back, so this is every exit `keys` did not make: the shard hanging up
+/// mid-word, which `disconnected::watch` turns into `Map → Disconnected`
+/// whatever the screen. Left set, the flag would outlive its screen: it once
+/// followed the player into the next world, where `input::gather` stood the
+/// body down for a label nobody could see until `G` reopened the map.
+pub fn drop_label(mut cursor: ResMut<MapCursor>, mut pins: ResMut<MapPins>) {
+    if let Some((i, was)) = cursor.typing.take() {
+        if let Some(style) = pins.0.style_mut(i) {
+            *style = was;
+        }
+    }
+}
+
 /// The line under the island: every gesture the held map answers, so none
 /// of them has to be learned from anywhere else. One function so `setup` and
 /// [`aim`] cannot write it two ways.
@@ -889,8 +930,8 @@ fn help_text(typing: bool) -> &'static str {
 /// `PreUpdate`, after the input is read and before anything else sees it, and
 /// takes the buttons for itself — so no click on the map also swings, draws a
 /// bow, lights a torch or places a piece in the world behind it — and the
-/// wheel when it turned a mark's picture, so that does not also walk the
-/// hotbar.
+/// wheel when it turned a mark's picture, and whenever a label is being
+/// typed, so neither also walks the hotbar.
 // Each is a distinct input: the mouse's three channels, the marks and the
 // crosshair, and the three things drawn from them.
 #[allow(clippy::too_many_arguments)]
@@ -940,6 +981,11 @@ pub fn aim(
             scroll.delta = Vec2::ZERO;
             cursor.dirty = true;
         }
+    } else {
+        // The wheel turns nothing while a label is typed, and left in the
+        // accumulator it would walk the hotbar under the map
+        // (`input::gather` reads it after this).
+        scroll.delta = Vec2::ZERO;
     }
     mouse.reset_all();
     if !cursor.dirty {
@@ -969,9 +1015,19 @@ pub fn aim(
 
 /// `Enter` with the crosshair on a mark: type its label. The map latches up
 /// (`keys`) so `G` can be let go, and until `Enter` keeps the label or `Esc`
-/// puts the old one back, every key is the label's — the keyboard is wiped
-/// each frame, before `input::gather` reads it, so typing `WASD` into a label
-/// does not also walk the body (`chat::keys`' rule for its composer).
+/// puts the old one back, every key is the label's: each frame's presses and
+/// releases are cleared before anything in `Update` reads them, so no key
+/// typed into a label also opens chat or strikes a torch, and `input::gather`
+/// stands the body down (`MapCursor::typing`), so typing `WASD` does not walk.
+///
+/// **Cleared, not reset.** `ButtonInput::reset_all` forgets what is HELD as
+/// well, and that broke two things: `G` read as up on the frame `Enter` kept
+/// the label, so `keys` closed a map the player was still holding; and a key
+/// it forgot came back as a fresh `just_pressed` on its next auto-repeat, so
+/// a held `Enter` reopened the label it had just closed. Clearing the edges
+/// leaves `pressed` the keyboard's real state, and a repeat of a key already
+/// down presses nothing. The label itself skips repeats too (`repeat` on the
+/// message), so holding `Enter` a moment cannot end a label it just opened.
 ///
 /// Runs in `PreUpdate` beside [`aim`], before anything in `Update` reads a
 /// key. Reads the typed text off `KeyboardInput` rather than off key codes,
@@ -992,7 +1048,7 @@ pub fn label(
             if let Some(i) = pins.0.hit(cursor.fx, cursor.fy) {
                 cursor.typing = Some((i, pins.0.style(i)));
                 cursor.dirty = true;
-                keyboard.reset_all();
+                keyboard.clear();
             }
         }
         // Not typing: drain, so a key pressed before does not arrive in the
@@ -1002,7 +1058,7 @@ pub fn label(
     };
     let (mut done, mut changed) = (false, false);
     for ev in chars.read() {
-        if done || !ev.state.is_pressed() {
+        if done || !ev.state.is_pressed() || ev.repeat {
             continue;
         }
         let Some(style) = pins.0.style_mut(i) else {
@@ -1029,7 +1085,7 @@ pub fn label(
         cursor.typing = None;
     }
     cursor.dirty |= done || changed;
-    keyboard.reset_all();
+    keyboard.clear();
 }
 
 /// One of the player's own marks: a diamond in its colour with its picture
