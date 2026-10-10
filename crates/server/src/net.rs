@@ -1331,26 +1331,39 @@ async fn accept_loop(
                     // look at the flag — which is what this did — threw them
                     // away and left the shutdown flush writing into a ring
                     // nobody would ever read.
-                    //
-                    // Waited on the *producer being dropped*, not on a
-                    // duration: the sim thread drops `save_tx` when it is
-                    // finished, so this is an exact signal. The try count is
-                    // a backstop for a sim thread that is wedged rather than
-                    // finishing, because "no bound is wait" applies here too.
-                    for _ in 0..SHUTDOWN_DRAIN_TRIES {
-                        drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                        if save_rx.is_abandoned() {
-                            break;
-                        }
-                        tokio::time::sleep(SHUTDOWN_DRAIN_POLL).await;
-                    }
-                    drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+                    drain_until_abandoned(&mut save_rx, &mut write_tx, &mut store, &keys, &stats)
+                        .await;
                     endpoint.close(wtransport::VarInt::from_u32(0), b"shutdown");
                     return;
                 }
             }
         }
     }
+}
+
+/// The accept loop's half of the shutdown flush: file records until the sim
+/// thread lets go of the ring.
+///
+/// Waited on the *producer being dropped*, not on a duration: the sim thread
+/// drops `save_tx` when it is finished, so this is an exact signal. The try
+/// count is a backstop for a sim thread that is wedged rather than finishing,
+/// because "no bound is wait" applies here too. Its own function so a test
+/// can hold the producer open (`NOW.md` §0y item 4).
+async fn drain_until_abandoned(
+    save_rx: &mut rtrb::Consumer<SaveMsg>,
+    write_tx: &mut rtrb::Producer<WriteMsg>,
+    store: &mut SaveStore,
+    keys: &[KeySlot; MAX_PLAYERS],
+    stats: &Arc<ShardStats>,
+) {
+    for _ in 0..SHUTDOWN_DRAIN_TRIES {
+        drain_saves(save_rx, write_tx, store, keys, stats);
+        if save_rx.is_abandoned() {
+            break;
+        }
+        tokio::time::sleep(SHUTDOWN_DRAIN_POLL).await;
+    }
+    drain_saves(save_rx, write_tx, store, keys, stats);
 }
 
 /// Hand one record to the store's index. Called only from the sim thread, so
@@ -4081,5 +4094,122 @@ mod tests {
         accept_input(&buf[..n], &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 2);
         assert!(rx.pop().is_err(), "no frame of a forged datagram survives");
+    }
+
+    /// **`KeySlot`'s id match** (`NOW.md` §0y item 4): a record the sim hands
+    /// back is filed under a slot's key only when it carries that slot's
+    /// *current* id. The ring here holds the case the ordering argument says
+    /// cannot happen — the previous tenant's record arriving after the slot
+    /// was re-claimed — so the id check is the only thing between it and the
+    /// new tenant's file. Matching on the slot byte alone files it under the
+    /// new key, last, and hands them the old tenant's inventory.
+    #[test]
+    fn a_save_is_filed_only_under_the_tenant_whose_id_it_carries() {
+        use sim_core::persist::PlayerSave;
+        let (mut save_tx, mut save_rx) = RingBuffer::<SaveMsg>::new(8);
+        let (mut write_tx, mut write_rx) = RingBuffer::<WriteMsg>::new(8);
+        let mut store = SaveStore::new();
+        let stats = Arc::new(ShardStats::default());
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let id = |gen: u32, slot: usize| (gen << 8) | slot as u32;
+        let tenant = PlayerKey::new(b"slot-3-generation-2").expect("fits");
+        let evicted = PlayerKey::new(b"an-evicted-sleeper").expect("fits");
+        // Slot 3 was re-claimed: generation 2 holds it now. Slot 4 is a guest.
+        keys[3] = KeySlot {
+            key: Some(tenant),
+            id: id(2, 3),
+            ..KeySlot::default()
+        };
+        keys[4] = KeySlot {
+            key: None,
+            id: id(1, 4),
+            ..KeySlot::default()
+        };
+        let save = |qx: i32| {
+            let mut s = PlayerSave::EMPTY;
+            s.body.qx = qx;
+            s
+        };
+        for (id, key, qx) in [
+            (id(2, 3), None, 1),           // slot 3's current tenant
+            (id(1, 3), None, 2),           // its previous tenant, late
+            (id(1, 4), None, 3),           // a guest: remembered by nobody
+            (id(7, 5), None, 4),           // a slot nobody holds
+            (id(1, MAX_PLAYERS), None, 5), // a spectator seat's slot
+            (id(1, 3), Some(evicted), 6),  // an eviction: the sim named the key
+        ] {
+            assert!(save_tx
+                .push(SaveMsg {
+                    id,
+                    key,
+                    save: save(qx)
+                })
+                .is_ok());
+        }
+        drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+
+        // Which record is told by `qx` alone: the saves differ in nothing else,
+        // and a whole `PlayerSave` in a failure message is a page of zeros.
+        let first = write_rx.pop().expect("the current tenant's record");
+        assert_eq!((first.key, first.save.body.qx), (tenant, 1));
+        let second = write_rx.pop().expect("the eviction record, filed as named");
+        assert_eq!((second.key, second.save.body.qx), (evicted, 6));
+        assert!(
+            write_rx.pop().is_err(),
+            "a record for a tenant no slot holds reached the disk"
+        );
+        assert_eq!(
+            store.find(&tenant).map(|s| s.body.qx),
+            Some(1),
+            "the previous tenant's record was filed under the new one's key"
+        );
+        assert_eq!(store.live(), 2);
+        assert_eq!(ShardStats::get(&stats.saves_taken), 2);
+        assert_eq!(ShardStats::get(&stats.save_ring_drops), 0);
+    }
+
+    /// **The accept loop waits out the sim's flush** (`NOW.md` §0y item 4):
+    /// the shutdown drain files every record pushed until the sim thread
+    /// drops its producer, including the ones that land after the flag was
+    /// seen. Returning on the first look, which is what the loop once did,
+    /// files the first record here and loses the rest. The producer is held
+    /// open on a thread, the way the sim thread holds it while it disconnects
+    /// everyone.
+    #[tokio::test]
+    async fn the_shutdown_drain_files_records_until_the_sim_lets_go() {
+        let (mut save_tx, mut save_rx) = RingBuffer::<SaveMsg>::new(8);
+        let (mut write_tx, mut write_rx) = RingBuffer::<WriteMsg>::new(8);
+        let mut store = SaveStore::new();
+        let stats = Arc::new(ShardStats::default());
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let who: Vec<PlayerKey> = (0..3)
+            .map(|s| PlayerKey::new(format!("player-{s}").as_bytes()).expect("fits"))
+            .collect();
+        for (s, key) in who.iter().enumerate() {
+            keys[s] = KeySlot {
+                key: Some(*key),
+                id: (1 << 8) | s as u32,
+                ..KeySlot::default()
+            };
+        }
+        let rec = |s: u32| SaveMsg {
+            id: (1 << 8) | s,
+            key: None,
+            save: sim_core::persist::PlayerSave::EMPTY,
+        };
+        assert!(save_tx.push(rec(0)).is_ok());
+        let sim = std::thread::spawn(move || {
+            for s in 1..3 {
+                std::thread::sleep(Duration::from_millis(50));
+                assert!(save_tx.push(rec(s)).is_ok());
+            }
+            // `save_tx` drops here: the flush is over.
+        });
+        drain_until_abandoned(&mut save_rx, &mut write_tx, &mut store, &keys, &stats).await;
+        sim.join().expect("the sim half finished");
+        let filed: Vec<PlayerKey> = std::iter::from_fn(|| write_rx.pop().ok())
+            .map(|w| w.key)
+            .collect();
+        assert_eq!(filed, who, "the drain stopped before the sim let go");
     }
 }
