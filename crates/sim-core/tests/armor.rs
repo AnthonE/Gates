@@ -365,6 +365,43 @@ fn the_set_is_clamped_at_the_ceiling() {
     );
 }
 
+/// **A hit wears what it hits** (`NOW.md` §0dur 2, the reference's
+/// `ItemModWearable`): each counted piece loses the raw damage times its
+/// protection, in hundredths; a piece at zero protects at a quarter; and a
+/// piece that does not wear is untouched.
+#[test]
+fn a_hit_wears_the_armor_and_broken_armor_protects_at_a_quarter() {
+    let mut cc = CombatContent::probe_fixture();
+    cc.player_hp = 100;
+    let plate_pct = cc.armor[PLATE as usize].reduction_pct as u32;
+    cc.cond_max[PLATE as usize] = 10_000;
+    let mut p = Player {
+        hp: 100,
+        ..Player::default()
+    };
+    p.worn[1] = ItemStack {
+        cond: 10_000,
+        ..one(PLATE)
+    };
+    p.worn[0] = one(HEADWRAP);
+    combat::hurt(&cc, &mut p, 40);
+    assert_eq!(
+        p.worn[1].cond as u32,
+        10_000 - 40 * plate_pct,
+        "the plate lost the share of the blow it took"
+    );
+    assert_eq!(p.worn[0].cond, 0, "a piece with no ceiling does not wear");
+
+    let whole = combat::worn_pct(&cc, &p);
+    p.worn[1].cond = 0;
+    let broken = combat::worn_pct(&cc, &p);
+    assert_eq!(
+        whole - broken,
+        plate_pct - plate_pct * combat::BROKEN_ARMOR_PCT / 100,
+        "a broken plate protects at a quarter"
+    );
+}
+
 // ---------------------------------------------------------------------
 // 3 · The three routes armor must NEVER blunt.
 // ---------------------------------------------------------------------

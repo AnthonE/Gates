@@ -2021,10 +2021,14 @@ fn the_torch_wears_by_the_blow() {
         700,
         "the blow's wear never reached the sim"
     );
-    // Only the torch wears by the blow so far: the tools wear on their
-    // nodes, the spears carry no condition.
+    // The tools wear a point a landed blow too (the reference's base 1,
+    // `BaseMelee.UpdateItemCondition`; NOW §0dur 2); the spears carry no
+    // condition. And a shot wears the gun a quarter point.
     let hatchet = c.item_index("item.hatchet_stone").unwrap();
-    assert_eq!(cc.wear_of(hatchet), 0);
+    assert_eq!(cc.wear_of(hatchet), 100);
+    let revolver = c.item_index("item.revolver").unwrap();
+    assert_eq!(cc.shot_wear[revolver as usize], 25);
+    assert_eq!(cc.cond_max[revolver as usize], 10_000);
 
     let mut srcs = sources();
     let w = srcs.iter_mut().find(|(n, _)| *n == "weapons.toml").unwrap();
@@ -2054,12 +2058,12 @@ fn the_torch_wears_by_the_blow() {
         "id = \"item.spear_stone\"\nkind = \"melee\"\ncondition_loss = 30",
         "(V6)",
     );
-    // A shot never reads it.
+    // A charge is spent whole: nothing is left to wear.
     refuses(
         "weapons.toml",
-        "draw_ms = 1000",
-        "draw_ms = 1000\ncondition_loss = 30",
-        "non-melee",
+        "id = \"item.satchel_charge\"\nkind = \"throwable\"",
+        "id = \"item.satchel_charge\"\nkind = \"throwable\"\ncondition_loss = 30",
+        "throwable",
     );
 }
 

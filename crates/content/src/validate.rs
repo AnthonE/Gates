@@ -599,10 +599,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // structure damage (the bake refuses one that does not), so a
         // landed blow always reaches the row.
         if let Some(loss) = w.condition_loss {
-            if w.kind != WeaponKind::Melee {
+            if w.kind == WeaponKind::Throwable {
                 return Err(format!(
-                    "weapon `{}`: condition_loss on a non-melee row — only a \
-                     landed swing wears the hand that dealt it",
+                    "weapon `{}`: condition_loss on a throwable — the charge \
+                     is spent whole, so there is nothing left to wear",
                     w.id
                 ));
             }

@@ -657,6 +657,12 @@ impl Content {
                     self.balance.globals.arrow_break_pct
                 )
             })?;
+        // Every item's condition ceiling, for armour wear and a broken gun.
+        for item in &self.items {
+            let idx = self.item_index(&item.id).expect("own id resolves") as usize;
+            cc.cond_max[idx] = u16::try_from(item.condition_max)
+                .map_err(|_| format!("bake: `{}` condition_max overflows u16", item.id))?;
+        }
         // Seconds → ticks, checked, exactly like a throwable's `fuse_s`.
         // A lodge nobody could outlive is a lodge that never expires, so
         // the overflow is refused rather than saturated.
@@ -960,6 +966,9 @@ impl Content {
         if cc.ranged[idx].damage != 0 {
             return Err(format!("bake: duplicate weapon row for `{}`", w.id));
         }
+        // What each shot wears off it (`CombatContent::shot_wear`).
+        cc.shot_wear[idx] = u16::try_from(w.condition_loss.unwrap_or(0))
+            .map_err(|_| format!("bake: `{}` condition_loss overflows u16", w.id))?;
         cc.ranged[idx] = RangedDef {
             damage,
             ammo,

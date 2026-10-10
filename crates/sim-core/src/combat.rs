@@ -522,9 +522,41 @@ pub struct CombatContent {
     /// takeable on the tick it lands, so this number prices exactly one
     /// thing: re-using the arrow you just shot someone with, mid-fight.
     pub arrow_lodge_ticks: u32,
+    /// Each item's condition ceiling, hundredths (`items.toml`
+    /// `condition_max`; 0 = never wears). What armour wear and a broken gun
+    /// are read against, so this table needs no gather content beside it.
+    pub cond_max: [u16; MAX_ITEM_DEFS],
+    /// Condition one **shot** takes off the bow or gun that fired it,
+    /// hundredths (`weapons.toml` `condition_loss` on a ranged row; the
+    /// reference's 0.25 a pull, `BaseProjectile.UpdateItemCondition`).
+    pub shot_wear: [u16; MAX_ITEM_DEFS],
 }
 
+/// A worn piece at condition zero protects at this per cent of its row —
+/// the reference's broken armour (`ConditionProtectionScale`, Devblog 104).
+pub const BROKEN_ARMOR_PCT: u32 = 25;
+
 impl CombatContent {
+    /// Whether this stack is a wearing item at condition zero: a broken
+    /// weapon, tool or piece of armour.
+    #[inline]
+    pub fn broken(&self, s: crate::gather::ItemStack) -> bool {
+        s.count > 0
+            && (s.item as usize) < MAX_ITEM_DEFS
+            && self.cond_max[s.item as usize] > 0
+            && s.cond == 0
+    }
+
+    /// One shot's wear on the stack that fired it. Total: an item that does
+    /// not wear is untouched.
+    #[inline]
+    pub fn wear_shot(&self, s: &mut crate::gather::ItemStack) {
+        let i = s.item as usize;
+        if s.count > 0 && i < MAX_ITEM_DEFS && self.cond_max[i] > 0 {
+            s.cond = s.cond.saturating_sub(self.shot_wear[i]);
+        }
+    }
+
     pub const EMPTY: Self = Self {
         melee: [MeleeDef {
             damage: 0,
@@ -583,6 +615,8 @@ impl CombatContent {
         // cannot be noticed by looking at the game.
         arrow_break_pct: 100,
         arrow_lodge_ticks: 0,
+        cond_max: [0; MAX_ITEM_DEFS],
+        shot_wear: [0; MAX_ITEM_DEFS],
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -1082,7 +1116,40 @@ pub fn shielded(attacker: &mut Player, victim: &Player) -> bool {
 
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
-    debit(v, reduce(raw, worn_pct(cc, v)))
+    let pct = worn_pct(cc, v);
+    wear_worn(cc, v, raw);
+    debit(v, reduce(raw, pct))
+}
+
+/// Each worn piece that counts loses the share of the blow it took: the
+/// raw damage times its protection, the reference's `ItemModWearable`
+/// (`reference/DURABILITY.md` §5, Devblog 104). Slot-blind like
+/// [`worn_pct`], for its reason. Hundredths: `raw × pct` per cent of a
+/// point is `raw × pct` hundredths. A piece that does not wear is untouched.
+fn wear_worn(cc: &CombatContent, v: &mut Player, raw: u16) {
+    for i in 0..WEAR_SLOTS {
+        let s = v.worn[i];
+        if s.count == 0 || (s.item as usize) >= MAX_ITEM_DEFS {
+            continue;
+        }
+        let a = cc.armor[s.item as usize];
+        if a.slot as usize != i + 1 || cc.cond_max[s.item as usize] == 0 {
+            continue;
+        }
+        let loss = (raw as u32 * piece_pct(cc, s, a)).min(u16::MAX as u32) as u16;
+        v.worn[i].cond = s.cond.saturating_sub(loss);
+    }
+}
+
+/// One counted piece's protection, per cent: its row, or a quarter of it
+/// once broken ([`BROKEN_ARMOR_PCT`]).
+#[inline]
+fn piece_pct(cc: &CombatContent, s: crate::gather::ItemStack, a: ArmorDef) -> u32 {
+    if cc.broken(s) {
+        a.reduction_pct as u32 * BROKEN_ARMOR_PCT / 100
+    } else {
+        a.reduction_pct as u32
+    }
 }
 
 /// What a worn set takes off every hit, in percent — the sum over the
@@ -1119,7 +1186,7 @@ pub fn worn_pct(cc: &CombatContent, v: &Player) -> u32 {
         if s.count > 0 && (s.item as usize) < MAX_ITEM_DEFS {
             let a = cc.armor[s.item as usize];
             if a.slot as usize == i + 1 {
-                pct += a.reduction_pct as u32;
+                pct += piece_pct(cc, s, a);
             }
         }
         i += 1;

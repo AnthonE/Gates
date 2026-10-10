@@ -499,9 +499,10 @@ pub struct Weapon {
     /// body, an animal or a built thing (`sim_core::combat::MeleeDef::wear`;
     /// the reference's torch, ~7 points a swing). A node hit wears by
     /// `gatherables.toml`'s `(tool, node)` table instead, and a whiff wears
-    /// nothing. Only on a melee row whose item declares `condition_max`,
-    /// nonzero and inside `u16` — the durability rules' V1/V5/V6 shapes
-    /// (`validate.rs`).
+    /// nothing. On a bow or a firearm it is what **each shot** takes
+    /// (`CombatContent::shot_wear`; the reference's 0.25 a pull). Never on a
+    /// throwable; only on an item that declares `condition_max`, nonzero and
+    /// inside `u16` — the durability rules' V1/V5/V6 shapes (`validate.rs`).
     pub condition_loss: Option<u32>,
 }
 

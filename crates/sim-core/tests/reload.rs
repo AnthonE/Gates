@@ -757,3 +757,44 @@ fn a_reload_switches_to_the_next_carried_round() {
     assert_eq!(ev.b, mag_pair(MAG, MAG));
     assert_eq!(ev.c, MAG as u32);
 }
+
+/// **Each shot wears the gun, and a broken gun does not fire** (`NOW.md`
+/// §0dur 2, the reference's 0.25 a pull): the shot takes `shot_wear` off
+/// the stack, and at zero the trigger says the broken tool's sentence and
+/// spends nothing.
+#[test]
+fn a_shot_wears_the_gun_and_a_broken_gun_refuses() {
+    use sim_core::gather::REFUSE_G_BROKEN;
+    use sim_core::world::EV_GATHER_REFUSED;
+    let mut w = armed();
+    w.combat.cond_max[GUN as usize] = 10_000;
+    w.combat.shot_wear[GUN as usize] = 25;
+    w.players[0].inv[0].cond = 10_000;
+    w.tick(&[Command::Reload { id: ME }]);
+    settle(&mut w);
+    w.tick(&[input(0, true)]);
+    assert_eq!(count_of(&w, EV_SHOT), 1, "the gun did not fire");
+    assert_eq!(
+        w.players[0].inv[0].cond,
+        10_000 - 25,
+        "the shot wore nothing"
+    );
+
+    w.players[0].inv[0].cond = 0;
+    let loaded = w.players[0].mag[0];
+    for _ in 0..=RATE_TICKS {
+        w.tick(&[input(0, true)]);
+        assert_eq!(count_of(&w, EV_SHOT), 0, "a broken gun fired");
+    }
+    assert_eq!(w.players[0].mag[0], loaded, "a broken gun spent a round");
+    assert!(
+        (0..=RATE_TICKS).any(|_| {
+            w.tick(&[input(0, true)]);
+            w.events
+                .entries()
+                .iter()
+                .any(|e| e.code == EV_GATHER_REFUSED && e.b & 0xFFFF == REFUSE_G_BROKEN)
+        }),
+        "a broken gun said nothing"
+    );
+}

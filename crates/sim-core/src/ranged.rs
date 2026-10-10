@@ -959,6 +959,18 @@ pub fn draw(
     // on the hit — the same rule `gather::swing` uses, for the same reason:
     // a refused shot must not be re-attempted every tick.
     p.next_swing = tick + def.rate_ticks.max(1) as u64;
+    // A broken bow looses nothing (`NOW.md` §0dur 2), and says so in the
+    // broken tool's own sentence; bounded by the cadence just paid.
+    let sel = (p.frame.sel as usize).min(INV_SLOTS - 1);
+    if cc.broken(p.inv[sel]) {
+        events.push(
+            crate::world::EV_GATHER_REFUSED,
+            p.id,
+            (held_item(p) as u32) << 16 | crate::gather::REFUSE_G_BROKEN,
+            0,
+        );
+        return true;
+    }
 
     // The round `keep_round` settled on: the kind the archer picked (`R`),
     // or the first in the weapon's list they carry. Ballistics belong to
@@ -1027,6 +1039,8 @@ pub fn draw(
         (p.frame.yaw as u32) << 8 | p.frame.pitch as u32,
         (ball.speed_mmpt as u32) << 16 | ball.drop_mmpt2 as u32,
     );
+    // And the shot wears the bow (`CombatContent::shot_wear`).
+    cc.wear_shot(&mut p.inv[sel]);
     true
 }
 
@@ -2309,6 +2323,18 @@ fn hitscan_in(
         // not be re-attempted every tick. It is also what bounds the dry
         // click below to one event per `rate_ticks` per player.
         players[i].next_swing = tick + def.rate_ticks.max(1) as u64;
+        // A broken gun fires nothing (`NOW.md` §0dur 2): the broken tool's
+        // sentence, bounded by the cadence just paid.
+        let sel = (players[i].frame.sel as usize).min(INV_SLOTS - 1);
+        if cc.broken(players[i].inv[sel]) {
+            events.push(
+                crate::world::EV_GATHER_REFUSED,
+                id,
+                (held as u32) << 16 | crate::gather::REFUSE_G_BROKEN,
+                0,
+            );
+            continue;
+        }
         let Some(round) = round else {
             // **The dry click.** A trigger pulled on an empty magazine is a
             // refusal and not a silence: without it the gun going quiet is
@@ -2371,6 +2397,8 @@ fn hitscan_in(
             (yaw as u32) << 8 | pitch as u32,
             def.range_mm / 100,
         );
+        // Each pull wears the gun (`CombatContent::shot_wear`).
+        cc.wear_shot(&mut players[i].inv[sel]);
 
         let (fx, fz) = yaw_dir(yaw);
         let (ch, sv) = pitch_dir(pitch);

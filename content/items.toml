@@ -308,6 +308,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "weapons"
+condition_max = 5000
 description = "Hold right mouse to draw, left to loose. R picks the arrow kind."
 
 # Theirs (RIPLIST §1e): the arrow class stacks 64 [APPROX — ×64 stated
@@ -616,6 +617,7 @@ tier = 1
 rarity = "rare"
 slot = "hand"
 class = "weapons"
+condition_max = 10000
 description = "Slow to reload, hits hard. Loads metal arrows."
 
 # --- T2, the powder era ------------------------------------------------
@@ -628,6 +630,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "weapons"
+condition_max = 10000
 description = "A sidearm that takes pistol rounds. R reloads."
 
 # Theirs (RIPLIST §1e): pistol/rifle ammo stacks 128 [EXACT — multiple
@@ -671,6 +674,7 @@ tier = 2
 rarity = "rare"
 slot = "body"
 class = "clothing"
+condition_max = 50000
 description = "A vest of beaten road signs. Heavy protection, but cold and slow."
 
 [[item]]
@@ -957,6 +961,7 @@ tier = 0
 rarity = "common"
 slot = "body"
 class = "clothing"
+condition_max = 25000
 description = "A leather poncho. Light protection, and the warmest thing you can wear."
 
 [[item]]
@@ -967,6 +972,7 @@ tier = 0
 rarity = "common"
 slot = "head"
 class = "clothing"
+condition_max = 10000
 description = "A helmet of bone and leather. Solid protection for the head."
 
 # What a carcass pays besides meat and fat — Rust's bone fragments, the

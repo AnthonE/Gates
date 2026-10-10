@@ -199,7 +199,7 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 3. Bodies are drawn wearing what they wear (`SUB_WORN`, wire v98; `render/worn.rs`):
    rigid procedural pieces on the head, spine and hips bones, ids only on the wire.
    Real art is `assets/models/WANTED.md` §6; `examples/worn_look.rs` is the bench.
-6. Armor does not wear out (§9.4; the catalog has `cond_max`). `§0dur` owns it.
+6. Armor wears (`combat::hurt`, §0dur 2); burlap carries no condition, as the reference's does not.
 
 ## 0gs · What ground surface v1 left open *(client lane)*
 
@@ -622,8 +622,11 @@ act):
 
 ## 0dur · Durability: the words, the wearers, the bench *(client lane)*
 
-2. Weapons and armour don't wear (`condition_loss` only in `content/gatherables.toml` and `mobs.toml`'s `[butcher]`; no `sim-core/src/armor.rs`):
-   a research row first (`reference/DURABILITY.md` §5); on-swing wear is `DECISIONS.md` §open "tools as weapons".
+2. Weapons and armour wear, on the reference's decompiled rules (Assembly-CSharp via
+   `github.com/MillionthOdin16/RustChangelog`, 2024-08): a shot takes 0.25 off the gun or bow, a landed
+   blow 1 off the tool, and a worn piece the damage it absorbed; broken, a gun or bow refuses and armour
+   protects at a quarter. Left: the per-round `barrelConditionLoss` (unsourced), and the reference's
+   melee extra of 0.2 × the damage armour soaked.
 3. Repair is re-craft in v1 (Q3). A repair bench is `Station::Workbench1..3` (`content/src/schema.rs`) + a blueprint
    check, never a new deployable; `DURABILITY.md` §3's 0.20 stays DISPUTED until checked against the in-game price.
 
