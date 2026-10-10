@@ -126,6 +126,21 @@ const CRAFT_BAR_FILL: Color = Color::srgba(0.122, 0.420, 0.627, 0.92);
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
 
+/// How far a landed hit throws each crosshair tick out along its own arm,
+/// px, at the instant it lands: the marker changes *shape* and not only
+/// colour, as the reference's does (`NOW.md` §0hs item 3). A colour alone
+/// is the one cue a player with a colour-blind eye, or a red sky, loses.
+///
+/// Three steps — a hit, a headshot, a kill — and the ordering is the
+/// property, not the pixels: the louder the blow, the wider the marker. The
+/// limb rung shares the body's push on purpose; its colour already says
+/// *weaker*, and a marker that shrank toward rest would read as a miss
+/// ([`CROSSHAIR_HIT_LIMB`]'s whole argument). Cosmetics.
+pub const HIT_PUSH_PX: f32 = 3.0;
+pub const HIT_PUSH_HEAD_PX: f32 = 5.0;
+pub const HIT_PUSH_KILL_PX: f32 = 7.0;
+const _: () = assert!(HIT_PUSH_PX < HIT_PUSH_HEAD_PX && HIT_PUSH_HEAD_PX < HIT_PUSH_KILL_PX);
+
 /// How long a hit's damage number stays beside the crosshair, seconds —
 /// long enough to read, which the marker's quarter second is not.
 pub const HIT_NUMBER_SECS: f32 = 0.8;
@@ -502,6 +517,8 @@ pub struct Toast {
     /// The rung that hit landed on (v58), or `None` for a wall — which is
     /// what picks the marker's colour. See [`mark_colour`].
     pub hit_part: Option<Part>,
+    /// That hit killed: the marker is in its widest shape ([`Toast::kill`]).
+    pub hit_kill: bool,
     /// The live hurt arcs — `hit_*`'s pair from the other side of the blow
     /// (wire v57), one entry per direction currently being pointed at.
     ///
@@ -522,6 +539,7 @@ impl Default for Toast {
             overflow: String::new(),
             hit_left: 0.0,
             hit_part: None,
+            hit_kill: false,
             hurts: [HurtArc::default(); HURT_ARCS],
         }
     }
@@ -709,6 +727,23 @@ impl Toast {
     pub fn hit(&mut self, part: Option<Part>) {
         self.hit_left = HITMARK_SECS;
         self.hit_part = part;
+        self.hit_kill = false;
+    }
+
+    /// The blow on the marker killed: it takes its kill shape on a fresh
+    /// clock.
+    ///
+    /// **Only a hot marker is promoted.** A death credited to you is not
+    /// always a blow you just landed — a body you put down can bleed out a
+    /// minute later — and the marker is a statement about the shot just
+    /// taken. The killing blow's `EV_HIT` is pushed before the world's
+    /// `EV_DEATH` and both ride the same ordered event lane, so a death that
+    /// *is* a shot always finds its hit already on the crosshair.
+    pub fn kill(&mut self) {
+        if self.hit_left > 0.0 {
+            self.hit_left = HITMARK_SECS;
+            self.hit_kill = true;
+        }
     }
 
     /// Something hurt you, from `sector`, for `damage`.
@@ -796,6 +831,51 @@ pub fn mark_colour(hot: bool, part: Option<Part>) -> Color {
         // what it read as before there were rungs.
         Some(Part::Chest) | None => CROSSHAIR_HIT,
     }
+}
+
+/// How far out the ticks stand, px, with `hit_left` seconds on the marker:
+/// the rung's full push ([`HIT_PUSH_PX`] and its two louder steps) the
+/// instant the blow lands, gliding back to rest as the clock runs out.
+///
+/// Eased (`f·(2−f)`) rather than linear, so the shape holds while it is
+/// being read and closes as the colour goes — one event ending, not a
+/// slow drift inward that outlives the flash it belongs to.
+pub fn hit_push_px(hit_left: f32, part: Option<Part>, kill: bool) -> f32 {
+    let full = if kill {
+        HIT_PUSH_KILL_PX
+    } else if part == Some(Part::Head) {
+        HIT_PUSH_HEAD_PX
+    } else {
+        HIT_PUSH_PX
+    };
+    let f = (hit_left / HITMARK_SECS).clamp(0.0, 1.0);
+    full * f * (2.0 - f)
+}
+
+/// Where tick `i` of [`CROSSHAIR_TICKS`] sits, `(left, top)` px off the
+/// aim point, pushed `push` px outward along its own arm. The spawn and
+/// the marker both place it through here, so at rest the two cannot
+/// disagree about where a tick lives.
+fn tick_offset(i: usize, push: f32) -> (f32, f32) {
+    let (dx, dy, w, h) = CROSSHAIR_TICKS[i];
+    let len = (dx * dx + dy * dy).sqrt();
+    // A tick on the aim point itself has no arm to travel along.
+    let (ux, uy) = if len > 0.0 {
+        (dx / len, dy / len)
+    } else {
+        (0.0, 0.0)
+    };
+    (dx - w * 0.5 + ux * push, dy - h * 0.5 + uy * push)
+}
+
+/// A death in this frame's feed is a kill of yours: you are named the
+/// killer and you are not the body. `killer == victim` is how the world
+/// spells a death nobody dealt (cold, salt, the clock), so a suicide is
+/// not a kill either.
+fn own_kill(deaths: &[(u32, u32)], own: u32) -> bool {
+    deaths
+        .iter()
+        .any(|&(victim, killer)| killer == own && victim != own)
 }
 
 /// A hotbar cell, by index.
@@ -1174,10 +1254,11 @@ pub fn blast_at(impacts: &[client_core::core::Impact], cx: u16, cz: u16) -> bool
 #[derive(Component)]
 pub struct Crosshair;
 
-/// The hitmarker: the crosshair's ticks, recoloured for a quarter second
-/// when a swing lands.
+/// The hitmarker: the crosshair's ticks, recoloured and pushed outward for
+/// a quarter second when a swing lands. Carries the tick's index into
+/// [`CROSSHAIR_TICKS`], which is the arm it is pushed along.
 #[derive(Component)]
-pub struct HitMark;
+pub struct HitMark(pub u8);
 
 /// The damage a hit did, up and right of the crosshair ([`hit_number`]).
 #[derive(Component)]
@@ -1826,14 +1907,15 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            for (dx, dy, w, h) in CROSSHAIR_TICKS {
+            for (i, &(_, _, w, h)) in CROSSHAIR_TICKS.iter().enumerate() {
+                let (left, top) = tick_offset(i, 0.0);
                 c.spawn((
                     Crosshair,
-                    HitMark,
+                    HitMark(i as u8),
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(dx - w * 0.5),
-                        top: Val::Px(dy - h * 0.5),
+                        left: Val::Px(left),
+                        top: Val::Px(top),
                         width: Val::Px(w),
                         height: Val::Px(h),
                         ..default()
@@ -2391,7 +2473,7 @@ pub fn feedback(
     hearth_view: Res<super::verbs::HearthView>,
     time: Res<Time>,
     ghost: Option<Res<super::ghost::Ghost>>,
-    mut marks: Query<&mut BackgroundColor, With<HitMark>>,
+    mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
 ) {
     let core = &net.session.core;
@@ -2411,6 +2493,12 @@ pub fn feedback(
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
         toast.hit(feed.hit_part);
+    }
+    // And whether it killed, which is the marker's widest shape. Read off
+    // the same broadcast deaths the kill feed below says, after the hit so
+    // the blow that killed is already the one on the crosshair.
+    if own_kill(feed.deaths(), core.player_id) {
+        toast.kill();
     }
     // And the same blow from the other end — every direction it came from,
     // not just the last one. `Feed::hurt_from` is a list precisely so that a
@@ -2682,9 +2770,18 @@ pub fn feedback(
 
     let hot = toast.hit_left > 0.0;
     let want = mark_colour(hot, toast.hit_part);
-    for mut bg in marks.iter_mut() {
+    let push = hit_push_px(toast.hit_left, toast.hit_part, toast.hit_kill);
+    for (mark, mut bg, mut node) in marks.iter_mut() {
         if bg.0 != want {
             bg.0 = want;
+        }
+        // Written only when it moves: a still crosshair is most frames, and
+        // a `Node` touched every frame is a relayout every frame.
+        let (left, top) = tick_offset(mark.0 as usize, push);
+        let (left, top) = (Val::Px(left), Val::Px(top));
+        if node.left != left || node.top != top {
+            node.left = left;
+            node.top = top;
         }
     }
 
@@ -4285,6 +4382,92 @@ mod tests {
         }
     }
 
+    /// **The marker changes shape, not only colour** (`NOW.md` §0hs item
+    /// 3): every tick is thrown out along its own arm on a hit, further on a
+    /// headshot and further again on a kill, and is back exactly where the
+    /// spawn put it once the clock runs out.
+    #[test]
+    fn the_hitmarker_pushes_its_ticks_out() {
+        // At rest the marker is the crosshair, to the pixel the spawn used.
+        for (i, &(dx, dy, w, h)) in CROSSHAIR_TICKS.iter().enumerate() {
+            assert_eq!(tick_offset(i, 0.0), (dx - w * 0.5, dy - h * 0.5));
+        }
+        for part in [Some(Part::Head), Some(Part::Chest), Some(Part::Limb), None] {
+            for kill in [false, true] {
+                assert_eq!(hit_push_px(0.0, part, kill), 0.0, "cold is at rest");
+            }
+        }
+        // The full push the instant it lands, and it only ever closes.
+        assert_eq!(hit_push_px(HITMARK_SECS, None, false), HIT_PUSH_PX);
+        assert_eq!(
+            hit_push_px(HITMARK_SECS, Some(Part::Limb), false),
+            HIT_PUSH_PX
+        );
+        let mut last = f32::INFINITY;
+        for step in (0..=10).rev() {
+            let p = hit_push_px(HITMARK_SECS * step as f32 / 10.0, Some(Part::Head), false);
+            assert!(
+                p <= last,
+                "the push grew as the clock ran down: {p} > {last}"
+            );
+            last = p;
+        }
+        // The ladder, read as shape: a kill outranks the headshot it was.
+        let body = hit_push_px(HITMARK_SECS, Some(Part::Chest), false);
+        let head = hit_push_px(HITMARK_SECS, Some(Part::Head), false);
+        let kill = hit_push_px(HITMARK_SECS, Some(Part::Head), true);
+        assert!(
+            0.0 < body && body < head && head < kill,
+            "{body} {head} {kill}"
+        );
+        // Each tick moves straight out along its own arm: further from the
+        // aim point, and not at all across it.
+        for (i, &(dx, dy, _, _)) in CROSSHAIR_TICKS.iter().enumerate() {
+            let (l0, t0) = tick_offset(i, 0.0);
+            let (l1, t1) = tick_offset(i, kill);
+            let (mx, my) = (l1 - l0, t1 - t0);
+            assert!(
+                (mx * dx + my * dy) > 0.0,
+                "tick {i} did not move outward: ({mx}, {my})"
+            );
+            assert!(
+                (mx * dy - my * dx).abs() < 1e-4,
+                "tick {i} slid sideways off its arm: ({mx}, {my})"
+            );
+            assert!(((mx * mx + my * my).sqrt() - kill).abs() < 1e-4);
+        }
+    }
+
+    /// A kill promotes the marker that is up, and only that one: a death
+    /// credited to you a minute after the blow (a bleed-out) is not a shot,
+    /// and the next hit is a statement about itself, not the last kill.
+    #[test]
+    fn a_kill_widens_the_marker_that_is_up() {
+        let mut t = Toast::default();
+        t.kill();
+        assert!(!t.hit_kill && t.hit_left == 0.0, "a cold marker stays cold");
+        t.hit(Some(Part::Chest));
+        t.tick(HITMARK_SECS * 0.5);
+        t.kill();
+        assert!(t.hit_kill);
+        assert_eq!(
+            t.hit_left, HITMARK_SECS,
+            "the kill shape gets its own clock"
+        );
+        t.hit(Some(Part::Limb));
+        assert!(!t.hit_kill, "a fresh hit is not the last one's kill");
+
+        // Whose death is a kill: yours on someone else, never your own, and
+        // never one the world dealt (`killer == victim`).
+        let me = 7;
+        assert!(own_kill(&[(3, me)], me));
+        assert!(own_kill(&[(3, 9), (4, me)], me));
+        assert!(!own_kill(&[(3, 9)], me), "someone else's kill");
+        assert!(!own_kill(&[(me, 9)], me), "your own death");
+        assert!(!own_kill(&[(me, me)], me), "the cold, not a kill");
+        assert!(!own_kill(&[], me));
+    }
+
     /// The hurt arc keeps its own clock, longer than the hitmarker's,
     /// and the weight it is drawn at rises with the blow.
     #[test]
@@ -4889,11 +5072,12 @@ mod tests {
         Window::default().resolution.physical_height() as f32
     }
 
-    /// How far the lowest crosshair tick reaches below the aim point, px.
+    /// How far the lowest crosshair tick reaches below the aim point, px —
+    /// at its widest, a kill's push, because the marker is the crosshair
+    /// too and a prompt it lands on is a prompt in the way for that frame.
     fn crosshair_reach_px() -> f32 {
-        CROSSHAIR_TICKS
-            .iter()
-            .map(|&(_, dy, _, h)| dy - h * 0.5 + h)
+        (0..CROSSHAIR_TICKS.len())
+            .map(|i| tick_offset(i, HIT_PUSH_KILL_PX).1 + CROSSHAIR_TICKS[i].3)
             .fold(f32::MIN, f32::max)
     }
 
