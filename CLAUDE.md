@@ -30,9 +30,10 @@ WebTransport/QUIC.
    crate names to run their tests too (`ci/quick.sh sim-core protocol`).
 3. Commit with a short message. Push your branch.
 
-CI runs `ci/gates.sh fast` on the PR: everything except the wasm parity probe
-and the web build, which run on every merge to main and nightly. There's no
-need to run it locally.
+CI runs `ci/gates.sh fast` on the PR and on main: everything except the wasm
+parity probe and the web builds, which run nightly (or by hand: run the
+`gates` workflow from the Actions tab). Don't run `gates.sh` locally; it's
+hours.
 
 ## Don't
 
@@ -54,7 +55,7 @@ need to run it locally.
 1. **`sim-core` is deterministic.** No I/O, clock, threads, `HashMap`
    iteration or trig/libm, and floats are limited to `+ − × ÷ sqrt min max`.
    Clippy enforces it on every PR. Native vs wasm must hash identically;
-   that probe runs on main and nightly.
+   that probe runs nightly.
 2. **No allocation in the sim tick after warmup** (`test_alloc_zero`), and
    every queue has a cap in `sim-core/src/limits.rs`.
 3. **Bevy draws, it does not decide.** Gameplay state lives in `sim-core` and

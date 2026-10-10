@@ -96,9 +96,10 @@ jobs:
         run: pip3 install numpy pillow
       - name: the gates
         env:
-          # PRs skip the wasm parity probe and the web-profile build (MVP mode);
-          # main and manual runs, like nightly and release, run everything.
-          GATES_TIER: ${{ github.event_name == 'pull_request' && 'fast' || 'all' }}
+          # PRs and merges to main skip the wasm parity probe and the
+          # web-profile builds (MVP mode). Nightly, release and a manual run
+          # of this workflow run everything.
+          GATES_TIER: ${{ github.event_name == 'workflow_dispatch' && 'all' || 'fast' }}
         run: ./ci/gates.sh
       - name: cache cargo (save, main only)
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}

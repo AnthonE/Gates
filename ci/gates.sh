@@ -62,7 +62,7 @@ done
 TIER="${1:-${GATES_TIER:-all}}"
 case "$TIER" in
   all | auto) TIER=all ;;
-  fast) echo "note: tier 'fast' SKIPS the wasm parity probe and the web-profile build (main and nightly run them)." ;;
+  fast) echo "note: tier 'fast' SKIPS the wasm parity probe and the web-profile build (nightly runs them)." ;;
   *) fail "unknown tier '$TIER' — pass 'fast' or nothing." ;;
 esac
 
@@ -270,7 +270,7 @@ if [ "$TIER" = "all" ]; then
   $NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
     || fail "browser client build"
 else
-  echo "   SKIPPED (tier fast): the --profile web link — main and nightly run it"
+  echo "   SKIPPED (tier fast): the --profile web link — nightly runs it"
 fi
 
 # **The audio thread's module, which is a SECOND wasm artifact and therefore a
@@ -338,15 +338,17 @@ if [ "$TIER" = "all" ]; then
   $NICE cargo build -p client-web --features webgpu --profile web --target wasm32-unknown-unknown \
     || fail "browser client build (WebGPU)"
 else
-  echo "   SKIPPED (tier fast): the WebGPU --profile web link — main and nightly run it"
+  echo "   SKIPPED (tier fast): the WebGPU --profile web link — nightly runs it"
 fi
 
 # The parity probe runs one simulation three times (native, wasm under node,
 # debug). At 10,000 sequences it was ~2 h and timed main out; at 1,000 it is
+# minutes, but pull requests and main still skip it.
+# It is the last gate; nightly and a manual run of the workflow run it.
 # minutes, but a pull request still skips it.
 # It is the last gate, and main and nightly run it on every merge.
 if [ "$TIER" = "fast" ]; then
-  echo "== SKIPPED (tier fast): test_parity_wasm — main and nightly run it"
+  echo "== SKIPPED (tier fast): test_parity_wasm — nightly runs it"
   echo "ALL GATES GREEN (tier fast)"
   exit 0
 fi
