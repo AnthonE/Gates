@@ -587,7 +587,12 @@ pub fn steps(
             }
         }
     }
-    let Some(mut step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
+    // Chest deep the player is swimming, and a swimmer takes no steps: the
+    // rule a remote's drawn swim and its silence use (NOW §0chr 1). Banked
+    // ground is dropped like an airborne stretch's.
+    air.swimming = client_core::interp::swimming(pos[1], air.swimming);
+    let walking = body.grounded && !air.swimming;
+    let Some(mut step) = sound.steps.sample(pos, walking, time.delta_secs()) else {
         return;
     };
     if net.session.core.crouched() {
@@ -677,11 +682,13 @@ pub const CROUCH_STEP_GAIN: f32 = 0.5;
 /// A fall faster than this, m/s, lands with a thud (a jump lands at ~7).
 pub const LAND_SOUND_MPS: f32 = 3.5;
 
-/// The body's last airborne state, for [`steps`]'s landing.
+/// The body's last airborne state, for [`steps`]'s landing, and whether it
+/// was swimming, for the hysteresis that silences its steps.
 #[derive(Default)]
 pub struct Air {
     airborne: bool,
     vy: f32,
+    swimming: bool,
 }
 
 /// How far a lit fire is heard crackling, metres (the cue's own radius).
@@ -762,11 +769,10 @@ pub fn remote_steps(
         let pos = [t.translation.x, t.translation.y, t.translation.z];
         // Spaced as the drawn feet are spaced (`Rig::step_m`), so a remote's
         // steps land at the cadence its legs are moving; and nothing in the
-        // air, off the wire's airborne bit.
-        let Some(mut step) = steps
-            .0
-            .sample_with(pos, !anim.airborne, dt, rig.step_m(anim))
-        else {
+        // air, off the wire's airborne bit, or from a body drawn swimming
+        // (whose clip has no stride, so it would fall back to `stride_m`).
+        let walking = !anim.airborne && !anim.swimming;
+        let Some(mut step) = steps.0.sample_with(pos, walking, dt, rig.step_m(anim)) else {
             continue;
         };
         if anim.crouched {

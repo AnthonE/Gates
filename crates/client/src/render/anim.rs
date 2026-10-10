@@ -128,6 +128,15 @@ pub enum Clip {
     CrouchIdle,
     /// Crouched and moving.
     CrouchWalk,
+    /// **In deep water and moving** (NOW §0chr 1 / §0v 1). Not a wire bit:
+    /// the sim's swim is a wade along the seabed, so this is derived from the
+    /// feet's depth below sea level (`client_core::interp::swimming`). It
+    /// outranks the air and the crouch — a body that jumps off the bottom or
+    /// sinks to it after a fall is in the water, and the reference game has
+    /// no crouch in water either.
+    Swim,
+    /// In deep water, still: treading water.
+    SwimIdle,
 }
 
 impl Clip {
@@ -209,13 +218,18 @@ impl Clip {
             Clip::Air => "Jump_Loop",
             Clip::CrouchIdle => "Crouch_Idle_Loop",
             Clip::CrouchWalk => "Crouch_Fwd_Loop",
+            // Both keep the hips near standing height (0.82 m and 0.67–0.75 m
+            // against the idle's 0.79, off the file), so at
+            // `SWIM_FEET_DEPTH_M` of water the drawn swimmer is under it.
+            Clip::Swim => "Swim_Fwd_Loop",
+            Clip::SwimIdle => "Swim_Idle_Loop",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 12] = [
+    pub const ALL: [Clip; 14] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
@@ -228,6 +242,8 @@ impl Clip {
         Clip::Air,
         Clip::CrouchIdle,
         Clip::CrouchWalk,
+        Clip::Swim,
+        Clip::SwimIdle,
     ];
 
     /// The ground speed a locomotion loop's feet were authored for, m/s, and
@@ -298,6 +314,8 @@ impl Clip {
             Clip::Air => 9,
             Clip::CrouchIdle => 10,
             Clip::CrouchWalk => 11,
+            Clip::Swim => 12,
+            Clip::SwimIdle => 13,
         }
     }
 }
@@ -465,17 +483,17 @@ pub struct Rig {
     pub graph: Option<Handle<AnimationGraph>>,
     /// One node per [`Clip`], indexed by `Clip::slot`.
     ///
-    /// ⚠ **This width, `Clip::ALL`'s and the two constructors' are one
-    /// number in four places, and nothing but a runtime index-out-of-bounds
-    /// connects them.** Adding a variant and moving three of the four
+    /// ⚠ **This width, `durations`', `Clip::ALL`'s and the two constructors'
+    /// are one number in seven places, and nothing but a runtime
+    /// index-out-of-bounds connects them.** Adding a variant and missing one
     /// compiles clean and panics the first time that clip is played — which
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 12],
+    nodes: [AnimationNodeIndex; 14],
     /// Each clip's length, seconds, indexed by `Clip::slot` — what the gait
     /// phase sync in [`drive`] converts a seek time into a stride phase with.
-    durations: [f32; 12],
+    durations: [f32; 14],
     /// The transients again, **masked off the legs** ([`Clip::upper_slot`]):
     /// a swing, flinch or shot played over a moving gait poses the arms and
     /// spine and leaves the hips and legs running. `None` for a clip the file
@@ -577,8 +595,8 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 12],
-        durations: [1.0; 12],
+        nodes: [AnimationNodeIndex::default(); 14],
+        durations: [1.0; 14],
         upper: [None; 3],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
@@ -683,7 +701,7 @@ pub fn build(
     // The clips' lengths and the skeleton's node tree are sub-assets of the
     // glTF and can land a frame after it: wait for both rather than build a
     // graph that cannot phase-sync or cannot mask.
-    let mut durations = [1.0; 12];
+    let mut durations = [1.0; 14];
     for clip in Clip::ALL {
         if let Some(h) = gltf.named_animations.get(clip.name()) {
             let Some(c) = clips.get(h) else { return };
@@ -696,7 +714,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 12];
+    let mut nodes = [AnimationNodeIndex::default(); 14];
     let mut upper = [None; 3];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
@@ -873,6 +891,11 @@ pub struct BodyAnim {
     /// Crouched this frame, straight off the wire (`RemoteState::crouched`,
     /// v83); set beside [`BodyAnim::airborne`].
     pub crouched: bool,
+    /// In deep water: [`BodyAnim::observe`] derives it from the feet's
+    /// depth with hysteresis (`client_core::interp::swimming`), since no
+    /// wire bit says so. Public because a swimmer takes no footsteps
+    /// (`audio::remote_steps`).
+    pub swimming: bool,
     /// Bumped once per one-shot heard. `drive` compares it against what it
     /// last started, so a second swing arriving while the first is still
     /// playing restarts the clip instead of being swallowed by the
@@ -909,12 +932,20 @@ impl BodyAnim {
         self.last = Some(pos);
         let turned = self.last_facing.map_or(0.0, |f| wrap_pi(self.facing - f));
         self.last_facing = Some(self.facing);
+        // The wire's y is the feet (`bodies.rs`), so the depth is right here.
+        self.swimming = client_core::interp::swimming(pos.y, self.swimming);
 
         self.clip = Some(self.gait(sleeping, dead, wounded));
         // A whole-body one-shot stands the body up, and the sim tests a
-        // crouched body's shorter cylinder, so a crouch ends it. An
-        // upper-body one carries on: its legs are already the crouch's.
-        if self.transient_full && matches!(self.clip, Some(Clip::CrouchIdle | Clip::CrouchWalk)) {
+        // crouched body's shorter cylinder, so a crouch ends it; the lunge's
+        // planted feet are as wrong on a swimmer. An upper-body one carries
+        // on: its legs are already the crouch's or the swim's.
+        if self.transient_full
+            && matches!(
+                self.clip,
+                Some(Clip::CrouchIdle | Clip::CrouchWalk | Clip::Swim | Clip::SwimIdle)
+            )
+        {
             self.swing_s = 0.0;
             self.flinch_s = 0.0;
             self.shoot_s = 0.0;
@@ -940,11 +971,6 @@ impl BodyAnim {
         if sleeping {
             return Clip::Sleep;
         }
-        // In the air the legs are not walking, whatever the speed says. The
-        // speed keeps integrating, so the landing picks the right gait.
-        if self.airborne {
-            return Clip::Air;
-        }
         // Hysteresis: the threshold to speed UP is above the nominal and the
         // one to slow DOWN is below it, so a body sitting on a boundary keeps
         // whatever it already had.
@@ -953,12 +979,22 @@ impl BodyAnim {
         let rank = |c: Clip| match c {
             Clip::Sprint => 3,
             Clip::Jog => 2,
-            Clip::Walk | Clip::CrouchWalk => 1,
+            Clip::Walk | Clip::CrouchWalk | Clip::Swim => 1,
             _ => 0,
         };
         let up = |t: f32| self.speed > t + h;
         let down = |t: f32| self.speed < t - h;
         let moving = up(ANIM_WALK_MPS) || (rank(now) >= 1 && !down(ANIM_WALK_MPS));
+        // **Chest deep** (NOW §0chr 1): swimming, whether the sim has the
+        // feet on the bottom or a jump has lifted them off it.
+        if self.swimming {
+            return if moving { Clip::Swim } else { Clip::SwimIdle };
+        }
+        // In the air the legs are not walking, whatever the speed says. The
+        // speed keeps integrating, so the landing picks the right gait.
+        if self.airborne {
+            return Clip::Air;
+        }
         // **Crouched** (v83): the sim tests a crouched body's shorter
         // cylinder (`collide::CROUCH_HEIGHT_M`, measured off this clip's
         // head), so drawing it standing would show a head where no head is.
@@ -2060,6 +2096,59 @@ mod tests {
         a.crouched = true;
         a.observe(a.last.unwrap(), 1.0 / 60.0, false, true, false);
         assert_eq!(a.wants(), Some(Clip::Death));
+    }
+
+    #[test]
+    fn a_body_in_deep_water_swims_and_wades_back_out() {
+        use client_core::interp::SWIM_FEET_DEPTH_M;
+        use sim_core::movement::{WADE_SPEED_MULT, WALK_SPEED};
+        use sim_core::terrain::SEA_LEVEL;
+        let dt = 1.0 / 60.0;
+        let wade = WALK_SPEED * WADE_SPEED_MULT;
+        // Feet on the seabed, chest deep: treading water, then swimming.
+        let deep = Vec3::new(0.0, SEA_LEVEL - SWIM_FEET_DEPTH_M - 0.3, 0.0);
+        let mut a = BodyAnim::default();
+        a.observe(deep, dt, false, false, false);
+        step(&mut a, 0.0, 30);
+        assert!(a.swimming);
+        assert_eq!(a.wants(), Some(Clip::SwimIdle));
+        step(&mut a, wade, 120);
+        assert_eq!(a.wants(), Some(Clip::Swim));
+        assert_eq!(a.rate(), 1.0, "a swim has no stride to plant");
+        // Crouched or off the bottom, it is still in the water.
+        a.crouched = true;
+        a.airborne = true;
+        step(&mut a, wade, 10);
+        assert_eq!(a.wants(), Some(Clip::Swim));
+        a.crouched = false;
+        a.airborne = false;
+        // A swing goes on the arms; the legs keep swimming.
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Swim));
+        assert_eq!(a.wants_upper(), Some(Clip::Swing));
+        // Down, dead or asleep outranks the water.
+        a.observe(a.last.unwrap(), dt, false, false, true);
+        assert_eq!(a.wants(), Some(Clip::Death));
+        a.observe(a.last.unwrap(), dt, false, true, false);
+        assert_eq!(a.wants(), Some(Clip::Death));
+        a.observe(a.last.unwrap(), dt, true, false, false);
+        assert_eq!(a.wants(), Some(Clip::Sleep));
+        // Into the shallows: a wading walk again.
+        let mut p = Vec3::new(a.last.unwrap().x, SEA_LEVEL - 0.5, 0.0);
+        for _ in 0..120 {
+            p.x += wade * dt;
+            a.observe(p, dt, false, false, false);
+        }
+        assert!(!a.swimming);
+        assert_eq!(a.wants(), Some(Clip::Walk));
+        // A whole-body swing begun standing ends when the body goes under,
+        // rather than lunging on planted feet in the water.
+        let mut a = BodyAnim::default();
+        step(&mut a, 0.0, 30);
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Swing));
+        a.observe(deep, dt, false, false, false);
+        assert_eq!(a.wants(), Some(Clip::SwimIdle));
     }
 
     #[test]

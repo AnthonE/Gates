@@ -146,6 +146,35 @@ pub struct RemoteState {
     pub crouched: bool,
 }
 
+/// Metres of sea over a body's feet at which it is drawn swimming (NOW §0chr
+/// 1 / §0v 1): chest deep on the 1.8 m body. **Not a sim fact and not on the
+/// wire** — the sim's swim is a slow wade along the seabed (`movement.rs`
+/// `WADE_SPEED_MULT`), so a swimmer is wherever its feet are and the depth
+/// over them is the wire's own y against `SEA_LEVEL`. Lakes are carved at
+/// `SEA_LEVEL` too, so one number covers both. The body is drawn where the
+/// sim holds it, on the bottom: floating it to the surface would draw it
+/// somewhere the server does not hit.
+pub const SWIM_FEET_DEPTH_M: f32 = 1.2;
+
+/// How much shallower than [`SWIM_FEET_DEPTH_M`] a swimmer must come before
+/// it stands again. A body walking a rippled seabed at the threshold would
+/// otherwise flip between swimming and wading every few frames.
+pub const SWIM_EXIT_BAND_M: f32 = 0.1;
+
+/// Whether feet at height `feet_y` are swimming, given whether they were a
+/// frame ago (`was`): in at [`SWIM_FEET_DEPTH_M`] of water, out at
+/// [`SWIM_EXIT_BAND_M`] less. One rule for every reader — a remote's gait
+/// (`render/anim.rs`), its footsteps and the player's own — so the picture
+/// and the sound cannot disagree about who is in the water.
+pub fn swimming(feet_y: f32, was: bool) -> bool {
+    let depth = sim_core::terrain::SEA_LEVEL - feet_y;
+    if was {
+        depth > SWIM_FEET_DEPTH_M - SWIM_EXIT_BAND_M
+    } else {
+        depth > SWIM_FEET_DEPTH_M
+    }
+}
+
 fn dequant(s: &Sample, out: &mut RemoteState) {
     out.id = s.e.id;
     out.x = s.e.qx as f32 * POS_XZ_Q;
@@ -653,6 +682,22 @@ mod tests {
         assert_eq!(it.ids().count(), 1);
         it.clear();
         assert_eq!(it.ids().count(), 0);
+    }
+
+    /// Chest-deep is swimming, the shallows are not, and the band between
+    /// keeps whichever it already was — a seabed ripple at the threshold
+    /// must not flip the body every few frames.
+    #[test]
+    fn swimming_starts_chest_deep_and_holds_through_the_band() {
+        use sim_core::terrain::SEA_LEVEL;
+        let deep = SEA_LEVEL - SWIM_FEET_DEPTH_M - 0.05;
+        let band = SEA_LEVEL - SWIM_FEET_DEPTH_M + SWIM_EXIT_BAND_M * 0.5;
+        let wading = SEA_LEVEL - SWIM_FEET_DEPTH_M + SWIM_EXIT_BAND_M + 0.05;
+        assert!(swimming(deep, false), "chest-deep is not swimming");
+        assert!(!swimming(band, false), "the band started a swim");
+        assert!(swimming(band, true), "the band ended a swim");
+        assert!(!swimming(wading, true), "a swimmer never stood up");
+        assert!(!swimming(SEA_LEVEL + 1.0, false), "dry land swims");
     }
 
     #[test]
