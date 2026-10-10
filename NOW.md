@@ -44,9 +44,7 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
   retire behind the browser seat.
 - A delayed human feed's line is per seat in memory and reserved when the
   seat opens — 7.1 MB at 60 s, 5.0 MB of it an event line sized for eight
-  messages a tick; reserving that half on demand makes it cost the traffic;
-  `status.json` does not publish `spectators`; a seat does not see the
-  target's open container panel (the container stream is per connection).
+  messages a tick; reserving that half on demand makes it cost the traffic.
 
 ## 0wnd · Down, hand revive and medkit recovery are built *(sim+client lane)*
 
@@ -178,8 +176,7 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 ## 0hrt · Being hit points somewhere — the rest of the fight *(systems+client lane)*
 
 1. `Cue::Hurt` is not positional (`EV_HURT` is a bearing, not a place). Two blows in one
-   frame are one heavier voice: the cooldown binds in-frame on purpose, so the fix is a
-   second row (`a_cooldown_binds_within_one_frame`). (Camera shake landed, `render/shake.rs`.)
+   frame are two voices (`Cue::HurtAgain`); a third only weighs the first.
 
 ## 0hs · The body-part ladder — what limb band v0 left *(systems lane)*
 
@@ -189,13 +186,11 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 2. No arm band (a cylinder can't tell arm from chest), and every weapon's `limb_pct` is
    50: the first that should differ decides whether the geometry widens
    (`reference/PROJECTILES.md` §9.4b).
-3. The hit marker changes colour, not shape (the reference pushes ticks out, a
-   `Node` mutation per tick). The number is drawn (`hud::hit_number`, off `Feed`).
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
-3. Hitting with a torch wears nothing (reference: ~7 condition a swing). V3 forbids an
-   unreachable `condition_loss` row, so it needs a node or a combat row first.
+3. A torch wears 7 a landed blow (`content/weapons.toml`); a blow into bare terrain or a refused
+   tree/rock hit wears nothing, which the reference may charge (unsourced).
 - The snapshot is full: `snapshot_cap` is 1099 B of 1100, so the next `EntityState`
   field is not free (wire v98 put worn armour on the event lane for that reason).
 
@@ -435,7 +430,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    stock back with `1`–`4` (wire v101, `deploy::take_stock`); crew in their claim see an
    UPKEEP chip off a staggered `Stock` push.
 5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
-6. No gate runs the inside discount: roof an unpaid piece in the replay (`test_replay`).
 
 ## 0aa · Building rights: the roster's third customer is missing *(systems lane)*
 
@@ -494,9 +488,9 @@ act):
    §open "event-lane fan-out v0" is owed.
 2. Operator's call: should an owner hear their door knocked from anywhere? No owner
    check exists (`server/src/core.rs` `EV_KNOCK` arm, `hud.rs`).
-3. Aim `EV_DEPLOY_PLACED` like `EV_PIECE_PLACED`, then the deploy walk, to free
-   `EV_DOOR`/`EV_OVEN`; `deploy_wire.rs` reddens by design. Sizing:
-   `findings/swing-fanout-20260824.md`.
+3. `EV_DEPLOY_PLACED` and the deploy walk are aimed (`interest::owned_in_interest`);
+   `EV_DOOR`/`EV_OVEN`/`EV_GROW` are still broadcast, because a client keeps every record
+   it was told about. Sizing: `findings/swing-fanout-20260824.md`.
 4. The combat and raid storms pass alone but together fill the 256-event cap (88
    dropped, all resync; `findings/note-20260830-two-storms-are-additive.md`).
    Candidate: §open "refusal coalescing v0" (window, counting, site unspoken).
@@ -505,18 +499,13 @@ act):
 
 1. The grid: no chunk version or subscribe/unsubscribe, so removals stay broadcast
    and a re-arm re-walks the in-range set (`NETCODE.md` §5/§7; a wire change).
-2. Deploys and backpacks are unfiltered (`server/src/core.rs:2618`, `:2854`); their walks
-   restart on a removal (`:3017`, `:3606`) — `reference/NETWORK.md` §9.2.1.
 3. `test_stream_in` (`NETCODE.md` §11) is unbuilt; per-frame apply/teardown is ungated.
 
-## 0tx · The transport's three residuals *(server lane)*
+## 0tx · The transport's two residuals *(server lane)*
 
 1. BBR vs CUBIC (`cc` in `shard.toml`) is untried on a real path with real
    players; `net_congestion_events` is the reading.
 2. Ops: read `net_rcvbuf_asked`/`net_rcvbuf_bytes` before tuning; `rmem_max` decides.
-3. The client reads the transport's RTT (`Session::rtt_ms`: QUIC natively,
-   `getStats()` in a page) for the F4 row and the connection warning; loss and
-   `stats()` are still unread.
 
 ## 0sp · The encoder is the tick's largest phase now *(server lane)*
 
@@ -693,7 +682,8 @@ act):
 
 ## 0p2 · What the UI still owes *(client lane)*
 
-2. Repair's exact price is not on the wire; the hammer names full hp (`findings/building-tools-20260920.md`).
+2. The hammer quotes repair from the record's hp (`build::repair_quote`), but decay lowers hp with
+   no event, so after an upkeep step the quote can read low until the next hit or repair.
 3. Panel viewer (never a pixel gate): `ci/drive.sh` boots a shard and the game under Xvfb and drives it with
    xdotool, F12 shots named by the script — panels, the map, night, weather. Not yet against a stocked fixture.
 5. Surveyed and refused: `bevy_hui`, `bevy_lunex`, `bevy_feathers`, the freegameui.net MCP.
@@ -706,12 +696,11 @@ its countdown, padlock, notices over the vitals, colour icons).
 5. CRAFT dims when short; the community plugin paints it green — a palette knob, `DECISIONS.md` §open.
 6b. 8 of 78 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
    painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand item 3).
-7. Then one `PROTO_VER` turn (the class byte, §0w item 1; a description column), then fast-track by task id
-   (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
+7. The class byte landed (wire v102: the rail groups by class); left are a description column, then
+   fast-track by task id (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
 
-## 0w · The native menus — the rail and the untested gesture *(client lane)*
+## 0w · The native menus — the untested gesture *(client lane)*
 
-1. The rail wants a class byte per item in `EventMsg::Catalog` (`ui/craft.rs:14-28`): `PROTO_VER` + goldens together.
 2. The drag is gated as arithmetic only (`tests/ui.rs` §B); press → ghost → release → send is by inspection.
 
 ## 0v · The menu flow — the served list and the untested hangup *(client lane)*
@@ -747,11 +736,6 @@ its countdown, padlock, notices over the vitals, colour icons).
   WGPU_BACKEND=vulkan target/release/gates --server 127.0.0.1:4433 --capture <dir>`. Shots face N/E/S/W: stand opposite.
 - Owed (§0p2 item 3): `render/capture.rs` knows only `Player`/`Build`; a viewer should open each panel against
   a stocked fixture and write a PNG per screen.
-
-## 0vj · The capture probe ships frames with no record of what went wrong *(harness lane)*
-
-- `crates/client/src/render/capture.rs` writes PNGs only; the visual judge's prompt wants a `manifest.json` of
-  what the client logged while shooting.
 
 ## Numbers, worldgen and the arc *(content + world lanes)*
 
@@ -1013,7 +997,8 @@ domain gate's `§4b` (protocol's scrape already reads the whole crate), 2026-10-
 last text `git show 7d45e53:NOW.md`. `§0gfx` (the hardware verdict) and `§0lock` (lock
 targets in the building playtest), closed by the operator's playtest 2026-10-09 —
 last text `git show 0edb5f1:NOW.md`. `§0sp2` (the spill's amount rides `Gather`'s
-`dropped`, wire v102), 2026-10-10 — last text `git show f8de16d:NOW.md`.
+`dropped`, wire v102), 2026-10-10 — last text `git show f8de16d:NOW.md`. `§0vj` (the capture probe writes
+`manifest.json`), 2026-10-10 — last text `git show 9625bfa:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
