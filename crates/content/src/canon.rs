@@ -43,6 +43,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(i.tier);
         h.u(i.rarity.canon());
         h.u(i.slot as u32);
+        h.u(i.class.code() as u32);
         // The condition ceiling reaches the sim (`bake_gather`'s
         // `cond_max`), so it walks — a value the sim reads and the digest
         // cannot see lets two contents whose tools die at different rates
@@ -124,6 +125,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.rate_per_min);
         h.u(w.range_m);
         h.u(w.lit_damage.unwrap_or(0));
+        h.u(w.condition_loss.unwrap_or(0));
         // The round list walks in **declared order, not sorted**, and that
         // is deliberate: order is the ammo policy (the sim spends the first
         // round the shooter carries), so two bows differing only in which
@@ -219,6 +221,7 @@ pub fn hash(c: &Content) -> u64 {
         h.s(&d.id);
         h.u(d.archetype as u32);
         h.u(d.placement as u32);
+        h.u(d.matter as u32);
         match d.material {
             None => h.u(0),
             Some(m) => h.u(1 + m as u32),
@@ -276,6 +279,19 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.sight_deg);
         h.u(m.pack_m);
         h.u(m.fire_fear_m);
+        // The brain's numbers decide what an animal does on a tick, so a
+        // WAL replays under them like the rest of the row.
+        h.u(m.pack_biters);
+        h.u(m.give_up_tries);
+        h.u(m.heal_after_seconds);
+        h.u(m.heal_seconds);
+        h.u(m.howl_seconds);
+        h.u(m.orbit_m);
+        h.u(m.sleep_pct);
+        h.u(m.hear_m.gun);
+        h.u(m.hear_m.bow);
+        h.u(m.hear_m.strike);
+        h.u(m.hear_m.blast);
         h.stacks(&m.drops);
     }
 

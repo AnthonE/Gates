@@ -87,10 +87,13 @@ fn every_clip_name_ships_in_the_rig() {
     }
 }
 
-/// `Clip::ALL`'s length and every `Rig::nodes` width are the same number.
+/// `Clip::ALL`'s length and every `Rig::nodes` and `Rig::durations` width
+/// are the same number.
 ///
-/// Red-proof: change one of the four literals and this fails naming both
+/// Red-proof: change one of the literals and this fails naming both
 /// values; that is the exact edit that otherwise ships a runtime panic.
+/// `durations` is indexed by `Clip::slot()` too, so it is counted beside
+/// `nodes` (the swim clips widened all of them at once, NOW §0chr 1).
 #[test]
 fn the_clip_table_and_the_graph_are_the_same_width() {
     let all = ANIM
@@ -104,6 +107,9 @@ fn the_clip_table_and_the_graph_are_the_same_width() {
     for (pat, tail) in [
         ("nodes: [AnimationNodeIndex; ", "]"),
         ("[AnimationNodeIndex::default(); ", "]"),
+        ("durations: [f32; ", "]"),
+        ("durations: [1.0; ", "]"),
+        ("durations = [1.0; ", "]"),
     ] {
         for chunk in ANIM.split(pat).skip(1) {
             if let Some(n) = chunk
@@ -116,7 +122,7 @@ fn the_clip_table_and_the_graph_are_the_same_width() {
         }
     }
     assert!(
-        widths.len() >= 3,
+        widths.len() >= 6,
         "found only {} node-array width(s) in anim.rs — the declaration \
          shape moved and this gate is looking at nothing",
         widths.len()

@@ -81,18 +81,23 @@ const UNSTICK_EVERY_TICKS: u64 = crate::limits::TICK_HZ as u64;
 /// EV_GATHER: a = player id, b = item index << 16 | units actually added
 /// (0 = the pack was full and every unit went to the ground; the loss is
 /// announced, never silent — `EV_CRAFT_DONE` has said this since it
-/// landed and this one now says it too).
+/// landed and this one now says it too), c = units that did not fit and
+/// went to the spill at the feet (wire v102: a partial spill is `b`'s low
+/// half > 0 *and* c > 0, one event for both halves; a give-back's
+/// `World::announce_spill` is zero added and c the item's spilled total).
 /// Read it as "these units entered your inventory", not as "a node paid":
 /// looting a backpack (backpack.rs) announces its take the same way, and
 /// deliberately — the client's `+N Item` toast is the right feedback for
 /// both, and loot pays in the currency gathering already pays in.
 ///
-/// **Every producer owes the zero its meaning.** All three only push when
+/// **Every producer owes the zero its meaning.** All of them only push when
 /// something was actually owed — `gather::swing` guards on `pay > 0` and
 /// on `sec_pay > 0`, `backpack`'s loot walk skips a slot it took nothing
-/// from — so a zero here is never "nothing happened". A fourth producer
-/// that pushes an unowed zero silently turns the client's "pack full" line
-/// into a lie, which is why the guards are stated rather than assumed.
+/// from, a give (`World::give`, to the receiver) refuses before it pushes
+/// when nothing fit — so a zero here is never "nothing happened". A new
+/// producer that pushes an unowed zero silently turns the client's "pack
+/// full" line into a lie, which is why the guards are stated rather than
+/// assumed.
 pub const EV_GATHER: u8 = 1;
 /// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = terrain occupant
 /// ordinal (`terrain::Occupant as u32`) — *what* stopped standing there,
@@ -112,7 +117,8 @@ pub const EV_SLOT_RESPAWNED: u8 = 3;
 /// the mark is per-player (gather.rs).
 pub const EV_WEAK_MARK: u8 = 4;
 /// EV_CRAFT_DONE: a = player id, b = item index << 16 | units actually
-/// added (0 = full inventory; the loss is announced, never silent).
+/// added (0 = full inventory; the loss is announced, never silent), c =
+/// units that did not fit and went to the feet (`EV_GATHER`'s c).
 pub const EV_CRAFT_DONE: u8 = 5;
 /// EV_CRAFT_REFUSED: a = player id, b = `craft::REFUSE_*` reason code.
 pub const EV_CRAFT_REFUSED: u8 = 6;
@@ -132,7 +138,9 @@ pub const EV_DEPLOY_REFUSED: u8 = 10;
 /// the structural collapse either of them can start (build.rs
 /// `collapse_from`) — because a client redraws the same way for each.
 pub const EV_PIECE_REMOVED: u8 = 11;
-/// EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row.
+/// EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row,
+/// c = owner player id (sim-side, like the placement's: the wire record is
+/// the address alone).
 pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.
@@ -581,10 +589,10 @@ pub const EV_IMPACT: u8 = 38;
 /// **No address.** Three fields are spent on who/whom/what, and the
 /// address is not lost: every push here rides the same tick as the verb's
 /// own addressed event — `EV_DOOR` for a leaf, `EV_AUTH` for a grant or a
-/// crew seat, `EV_MOVED` for a container — so a reader joins the two by
-/// tick and loses nothing. That is a claim, so each of the four causes in
-/// `tests/event_roles.rs` asserts its verb's own event is on the tick
-/// beside the trust row.
+/// crew seat, `EV_MOVED` for a container, the receiver's `EV_GATHER` for a
+/// give — so a reader joins the two by tick and loses nothing. That is a
+/// claim, so each of the causes in `tests/event_roles.rs` asserts its
+/// verb's own event is on the tick beside the trust row.
 pub const EV_TRUST: u8 = 39;
 
 /// EV_SWING: a = the swinging player's id, or a biting animal's tagged id
@@ -672,6 +680,12 @@ pub const TRUST_AUTH: u8 = 2;
 /// A world container has no owner and is therefore never this: nobody's
 /// crate is nobody's trust.
 pub const TRUST_CONT: u8 = 3;
+/// A stack handed from this hand into another player's pack
+/// (`Command::Give`). The counterparty is the **receiver**: the act is
+/// the giver's, and the record it answers to is the pack it filled. The
+/// receiver is always awake — a give needs a standing body to aim at — so
+/// what this row measures is who gives to whom, not who was watching.
+pub const TRUST_GIVE: u8 = 4;
 /// The highest verb above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a value domain, exactly as `DEATH_BY_MAX` is.
 ///
@@ -683,12 +697,11 @@ pub const TRUST_CONT: u8 = 3;
 /// and an unclassified log column is this constant and the ledger that
 /// reads it (`event_roles.rs`).
 ///
-/// `PLAYERS.md`'s verb list names a fourth — **give** — and it is
-/// deliberately absent: there is no player-to-player give verb in the sim
-/// yet, so a `TRUST_GIVE` declared now would be a value with no cause,
-/// which is the one thing this lane's discipline refuses. It lands in the
-/// commit that lands the verb.
-pub const TRUST_VERB_MAX: u8 = TRUST_CONT;
+/// `PLAYERS.md`'s verb list names a fourth — **give** — and it waited,
+/// deliberately, for the verb: a `TRUST_GIVE` declared before
+/// `Command::Give` existed would have been a value with no cause. It
+/// landed in the same commit as the verb.
+pub const TRUST_VERB_MAX: u8 = TRUST_GIVE;
 
 /// Whether the counterparty was online, in `EV_TRUST.c`'s low byte.
 ///
@@ -1451,6 +1464,15 @@ pub enum Command {
     Treat {
         id: u32,
         slot: u8,
+        target: u32,
+    },
+    /// Hand up to `count` of inventory slot `slot` to `target`, a standing,
+    /// awake player the sender is aiming at in hand reach (`World::give`,
+    /// `NOW.md` §5d). What fits in their pack moves; the rest stays put.
+    Give {
+        id: u32,
+        slot: u8,
+        count: u16,
         target: u32,
     },
     Join {
@@ -2531,6 +2553,31 @@ impl World {
         }
     }
 
+    /// One landed blow's wear on the weapon that dealt it — the melee row's
+    /// `condition_loss` (`CombatContent::wear_of`; the torch's, NOW §0tl 3).
+    /// Called by the three arms whose blow did something: a body hit, an
+    /// animal hit, a built thing chipped. A whiff, a scuff in the dirt and
+    /// a refused swing wear nothing, `gather::land`'s rule and its reason (a
+    /// `SUB_INV` diff on every empty swing), and a node hit is the node's
+    /// own `(tool, node)` wear, so no blow is billed twice.
+    ///
+    /// `held` is the swing's read of the selected slot and is checked
+    /// again: an item with no condition (`cond_max_of == 0`) has a `cond`
+    /// that may mean something else (the research paper's target), so it
+    /// is never touched. `saturating_sub` for the node's reason: the last
+    /// point is spent, never owed.
+    fn wear_weapon(&mut self, i: usize, held: u16) {
+        let wear = self.combat.wear_of(held);
+        if wear == 0 || self.gather.cond_max_of(held) == 0 {
+            return;
+        }
+        let sel = self.players[i].frame.sel as usize;
+        let s = &mut self.players[i].inv[sel];
+        if s.count > 0 && s.item == held {
+            s.cond = s.cond.saturating_sub(wear);
+        }
+    }
+
     fn log_trust(&mut self, seat: TrustSeat, actor: u32, counterparty: u32, verb: u8) {
         if counterparty == 0
             || counterparty == actor
@@ -3158,8 +3205,12 @@ impl World {
             0,
         );
         // `take_nearest`'s announcement: into the pack, or to the feet.
-        self.events
-            .push(EV_GATHER, p.id, ((rec.round as u32) << 16) | took as u32, 0);
+        self.events.push(
+            EV_GATHER,
+            p.id,
+            ((rec.round as u32) << 16) | took as u32,
+            1 - took as u32,
+        );
         true
     }
 
@@ -3482,9 +3533,76 @@ impl World {
         survival::start_heal(def, &mut self.players[t], heal_pct);
     }
 
+    /// Hand up to `count` of inventory slot `inv` to `target`
+    /// (`Command::Give`): a standing, awake player — not down, not dead, not
+    /// a sleeper, not yourself — aimed at in hand reach with nothing in the
+    /// way (`reaches_body`, the syringe's test). What fits in their pack
+    /// moves, top-ups first exactly as a payout lands (`inv_add_skinned`,
+    /// so a stack keeps its condition and its skin), and the rest stays in
+    /// the giver's slot — nothing spills, because a give is a hand-over and
+    /// not a drop. The receiver hears `EV_GATHER` (the "+N Item" line) and
+    /// the ledger keeps `TRUST_GIVE`.
+    ///
+    /// A target out of reach or in the wrong state is silent, as a syringe
+    /// out of reach is; a pack with no room for any of it is
+    /// `REFUSE_M_GIVE`, because the giver pressed a key and is owed why
+    /// nothing left their hand. That refusal is a fact about the receiver
+    /// told to the giver — their pack had no room for this item — and it is
+    /// said on purpose: it is what a hand held out and not taken shows face
+    /// to face, and nothing else about their pack is said.
+    fn give(&mut self, seat: TrustSeat, slot: usize, inv: usize, count: u16, target: u32) {
+        let id = self.players[slot].id;
+        let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
+        if stack.count == 0 || count == 0 {
+            return;
+        }
+        let Some(t) = self.slot_of(target).filter(|&t| {
+            let q = &self.players[t];
+            t != slot && q.active && !q.wounded && !q.dead && !q.sleeping
+        }) else {
+            return;
+        };
+        if !self.reaches_body(slot, t) {
+            return;
+        }
+        let n = count.min(stack.count);
+        // A copy out and back rather than two live borrows of `players`:
+        // 30 stacks by value, no allocation.
+        let mut pack = self.players[t].inv;
+        let added = gather::inv_add_skinned(
+            &mut pack,
+            stack.item,
+            n,
+            self.gather.stack_max_of(stack.item),
+            stack.cond,
+            stack.skin,
+        );
+        if added == 0 {
+            let addr = inventory::addr(
+                inventory::CONT_SELF,
+                inv as u8,
+                inventory::CONT_SELF,
+                inv as u8,
+            );
+            self.events
+                .push(EV_MOVE_REFUSED, id, inventory::REFUSE_M_GIVE, addr);
+            return;
+        }
+        self.players[t].inv = pack;
+        let s = &mut self.players[slot].inv[inv];
+        s.count -= added;
+        if s.count == 0 {
+            *s = ItemStack::default();
+        }
+        let to = self.players[t].id;
+        self.events
+            .push(EV_GATHER, to, ((stack.item as u32) << 16) | added as u32, 0);
+        self.log_trust(seat, id, to, TRUST_GIVE);
+    }
+
     /// Whether `helper`'s look reaches `target`'s body inside hand reach
     /// with nothing in the way — the hand revive's test, shared with a
-    /// syringe.
+    /// syringe and a give.
     fn reaches_body(&mut self, helper: usize, target: usize) -> bool {
         let (p, q) = (&self.players[helper], &self.players[target]);
         let ray = crate::assist::ray(&p.body, &p.frame, p.crouched());
@@ -4473,24 +4591,27 @@ impl World {
     }
 
     /// Tell the player a give-back (cancel, refund, pick-up, unbolt) spilled
-    /// at their feet: `EV_GATHER` with zero added, the "pack full" line.
+    /// at their feet: `EV_GATHER` with zero added and c the units dropped,
+    /// the "pack full — N × Item" line. One event per distinct item, its
+    /// stacks summed (a big refund spills as several stacks of one item).
     /// Not inside `drain_spill`: the per-tick gather/craft drain already
     /// announces, and the death shed has nobody to tell.
     fn announce_spill(&mut self, slot: usize, spill: &[ItemStack; INV_SLOTS]) {
         let pid = self.players[slot].id;
-        let mut said = [0u16; crate::limits::SPILL_TOASTS_MAX];
+        let mut said = [(0u16, 0u32); crate::limits::SPILL_TOASTS_MAX];
         let mut n = 0;
         for s in spill.iter().filter(|s| s.count > 0) {
-            if n == said.len() {
-                break;
+            if let Some(e) = said[..n].iter_mut().find(|e| e.0 == s.item) {
+                e.1 += s.count as u32;
+            } else if n < said.len() {
+                said[n] = (s.item, s.count as u32);
+                n += 1;
             }
-            if said[..n].contains(&s.item) {
-                continue;
-            }
-            said[n] = s.item;
-            n += 1;
+        }
+        for &(item, units) in &said[..n] {
             // The zero is owed: these units left for the ground (`EV_GATHER`).
-            self.events.push(EV_GATHER, pid, (s.item as u32) << 16, 0);
+            let c = units.min(u16::MAX as u32);
+            self.events.push(EV_GATHER, pid, (item as u32) << 16, c);
         }
     }
 
@@ -4535,8 +4656,8 @@ impl World {
     }
 
     /// `seat` is this command's right to one trust row (`trust.rs`). The
-    /// three trust-bearing arms move it into `log_trust`; every other arm
-    /// drops it unspent.
+    /// trust-bearing arms (a door, an access op, a container move or loot, a
+    /// give) move it into `log_trust`; every other arm drops it unspent.
     fn apply(
         &mut self,
         cmd: &Command,
@@ -4558,6 +4679,16 @@ impl World {
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     self.treat(slot, inv as usize, target);
+                }
+            }
+            Command::Give {
+                id,
+                slot: inv,
+                count,
+                target,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.give(seat, slot, inv as usize, count, target);
                 }
             }
             Command::Join { id } => self.seat(id, None),
@@ -5510,10 +5641,11 @@ impl World {
     }
 
     /// Is a lit fire (a campfire, a furnace) near enough to warm a body
-    /// standing here? Planar reach from the content, and within a storey.
+    /// standing here? Planar reach from the content, and within a storey
+    /// (`exposure::fire_reaches`, which the client's HUD asks too).
     fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
-        let r = self.survival.exposure.heat_radius_cm as f32 * 0.01;
-        if r <= 0.0 {
+        let r = self.survival.exposure.heat_radius_cm;
+        if r == 0 {
             return false;
         }
         let cols = self.pieces.cols();
@@ -5522,27 +5654,18 @@ impl World {
             .iter()
             .zip(self.deploys.oven_states())
             .any(|(b, st)| {
-                if !(st.lit && st.burns()) {
-                    return false;
-                }
-                let (bx, bz) = b.xz();
-                let (dx, dz) = (bx - x, bz - z);
-                if dx * dx + dz * dz > r * r {
-                    return false;
-                }
-                let y = crate::deploy::built_floor(
-                    self.seed,
-                    &self.haven,
-                    cols,
-                    b.cx,
-                    b.cz,
-                    b.level,
-                    bx,
-                    bz,
-                )
-                .unwrap_or_else(|| crate::terrain::ground(self.seed, &self.haven, bx, bz));
-                let dy = y - feet;
-                dy * dy < 9.0
+                st.lit
+                    && st.burns()
+                    && crate::exposure::fire_reaches(
+                        self.seed,
+                        &self.haven,
+                        cols,
+                        r,
+                        (b.cx, b.cz, b.level, b.pose),
+                        x,
+                        z,
+                        feet,
+                    )
             })
     }
 
@@ -5686,6 +5809,10 @@ impl World {
             let seat = self.trust.seat();
             self.apply(cmd, seat, &mut removals, &mut favour, &mut catchup);
         }
+        // Every column the commands opened gets its terrain band memoized
+        // before the walks below ask for floors (`ColIndex::fill_bands`) —
+        // a compare on a tick that built nothing.
+        self.pieces.fill_bands(self.seed, &self.haven);
         // One helper per target. Existing ownership wins; otherwise lowest
         // slot wins. Two hands never add their time together.
         let mut assisting = [None; MAX_PLAYERS];
@@ -6046,11 +6173,7 @@ impl World {
                         // A burning torch hits with its heat too
                         // (`MeleeDef::lit_bonus`).
                         let lit = crate::light::is_lit(&self.players[i], &self.gather);
-                        if let combat::Strike::Killed {
-                            victim,
-                            item,
-                            range_cm,
-                        } = combat::strike_body(
+                        match combat::strike_body(
                             &self.combat,
                             i,
                             &hit,
@@ -6060,14 +6183,23 @@ impl World {
                             &mut self.players,
                             &mut self.events,
                         ) {
-                            let by = self.players[i].id;
-                            // A swing wounds whatever it hit (`wound::wounds`).
-                            self.down_or_die(victim, by, DEATH_BY_HAND, item, range_cm, false);
+                            combat::Strike::Missed => {}
+                            combat::Strike::Hit => self.wear_weapon(i, held),
+                            combat::Strike::Killed {
+                                victim,
+                                item,
+                                range_cm,
+                            } => {
+                                self.wear_weapon(i, held);
+                                let by = self.players[i].id;
+                                // A swing wounds whatever it hit (`wound::wounds`).
+                                self.down_or_die(victim, by, DEATH_BY_HAND, item, range_cm, false);
+                            }
                         }
                     }
                     melee::Reached::Mob(m) => {
                         let lit = crate::light::is_lit(&self.players[i], &self.gather);
-                        mob::strike_slot(
+                        if mob::strike_slot(
                             &self.combat,
                             &self.backpack,
                             &self.mob,
@@ -6079,7 +6211,9 @@ impl World {
                             &mut self.backpacks,
                             &mut self.events,
                             m.slot,
-                        );
+                        ) {
+                            self.wear_weapon(i, held);
+                        }
                     }
                     melee::Reached::Carcass(c) => {
                         self.butcher(i, held, c, &mut spill);
@@ -6119,6 +6253,7 @@ impl World {
                                 by: self.players[i].id,
                             };
                             self.chip(&chip, &mut removals);
+                            self.wear_weapon(i, held);
                         }
                     }
                     melee::Reached::Nothing => {}
@@ -6205,7 +6340,7 @@ impl World {
                 self.noises.push(crate::noise::Noise {
                     qx: crate::movement::quant_xz(x),
                     qz: crate::movement::quant_xz(z),
-                    radius_cm: crate::noise::NOISE_BLAST_CM,
+                    sound: crate::noise::Sound::Blast,
                     at: tick,
                 });
             }

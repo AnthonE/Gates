@@ -1,5 +1,5 @@
-//! The in-world keys: what the crosshair is on, and what `E`, `J` and `H` do
-//! about it.
+//! The in-world keys: what the crosshair is on, and what `E`, `J`, `H` and
+//! `B` do about it.
 //!
 //! **Twelve of the wire's sixteen action verbs had no key in this client.**
 //! `ACT_USE`, `ACT_LOOT`, `ACT_CONTAINER`, `ACT_DRINK` and `ACT_FEED` are the
@@ -90,6 +90,25 @@ impl Bite {
     }
 }
 
+/// What the give key is on this frame, and the hold on it (`NOW.md` §5d).
+/// Its own resource beside [`Aimed`] because it is its own key: `B` hands
+/// the held stack to the standing player the crosshair is on, and `E` never
+/// does — see `ui::interact::GivePick` for why. Written by [`resolve`], held
+/// by [`keys`], drawn by the HUD prompt, so the three cannot disagree.
+#[derive(Resource, Default)]
+pub struct Give {
+    pub pick: Option<interact::GivePick>,
+    pub hold: interact::GiveHold,
+}
+
+/// Drop the give hold on the way out of `Screen::InWorld`. [`keys`] runs
+/// only there, so a hold begun before the pause menu, the map or the death
+/// screen would otherwise keep its start time, and coming back with `B`
+/// still down on the same pick would give on the first frame.
+pub fn drop_give_hold(mut give: ResMut<Give>) {
+    give.hold.cancel();
+}
+
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
@@ -111,6 +130,9 @@ pub struct Near(pub Option<Target>);
 /// with the very cells this frame's movement step just resolved — and a memo
 /// is written to. It costs no extra scheduling: `keys` below already takes
 /// the session mutably, so these two were serialized before this line changed.
+// One output per pick (`E`'s, the swing's, the weak sector, the structure,
+// the give key's) plus the session, the look and the world: each distinct.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve(
     mut net: NonSendMut<Net>,
     look: Res<Look>,
@@ -118,8 +140,10 @@ pub fn resolve(
     mut near: ResMut<Near>,
     mut swung: ResMut<Swung>,
     mut in_weak: ResMut<InWeak>,
+    mut give: ResMut<Give>,
     world: Option<Res<crate::render::WorldId>>,
 ) {
+    let sel = net.sel;
     let core = &mut net.session.core;
     let [x, y, z] = core.predict.render_position();
     // The wire's own two bytes for the look, so the swing prompt is cast
@@ -185,18 +209,16 @@ pub fn resolve(
     // core's copy is the one that owns the cache, and handing the cache a
     // *second* seed would flush it every frame — see that method's header.
     // `w` is still what says a world exists at all.
+    //
+    // `swing_island` is `island` plus the walls, the snapshot's bodies and
+    // the bags, in the same hold, because the swing prompt asks the sim's
+    // whole cast: a node with a pig, a man or a wall in front of it is not
+    // named, and a carcass there is named as the butchering a blade in hand
+    // would do instead (§0ray 2).
     (swung.0, in_weak.0) = match world.as_deref() {
         Some(_) => {
-            let (seed, occ) = core.island();
-            let mut island = interact::Island {
-                doors: occ.doors,
-                seed,
-                table: occ.table,
-                haven: occ.haven,
-                harvested: occ.harvested,
-                cache: occ.cache,
-            };
-            let pick = interact::resolve_swing(
+            let (mut island, shadows) = interact::swing_island(core, sel);
+            let pick = interact::resolve_swing_shadowed(
                 SwingAim {
                     x,
                     y,
@@ -206,6 +228,7 @@ pub fn resolve(
                     crouched,
                 },
                 &mut island,
+                &shadows,
             );
             // The open pick, on the same island borrow and the same aim.
             // Folded into `aimed` rather than kept beside it, because to
@@ -285,6 +308,10 @@ pub fn resolve(
         }
         None => (SwingPick::default(), false),
     };
+    // The carcass `E` names is the one the swing in hand would cut, so its
+    // line names the button instead of teaching the verb (`Pick::butcher`).
+    aimed.0.butcher =
+        aimed.0.verb == Verb::Bag && swung.0.carcass.is_some() && swung.0.bag == aimed.0.handle;
     if !core.wounded && !core.dead {
         let help = interact::resolve_assist(
             SwingAim {
@@ -302,6 +329,26 @@ pub fn resolve(
             aimed.0 = help;
         }
     }
+    // The give key's target, on the same aim (`B`, never `E`). A downed or
+    // dead hand gives nothing: the sim reads neither (`live_slot_of`).
+    give.pick = if core.wounded || core.dead {
+        None
+    } else {
+        let held = core.inv.get(sel as usize).copied().unwrap_or_default();
+        interact::resolve_give(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                crouched,
+            },
+            core.player_id,
+            &core.view.entities,
+            (sel, held),
+        )
+    };
     // A loose stack (ground items v0), last of the three `E` picks.
     //
     // **Outside the island block on purpose**: `core.island()` holds the
@@ -434,6 +481,7 @@ pub fn keys(
     // The arm, for the hammer's repair swing: a repair is an action, not
     // the swing button, so nothing else moves it.
     mut motion: ResMut<super::viewmodel::Motion>,
+    mut give: ResMut<Give>,
 ) {
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
@@ -448,6 +496,7 @@ pub fn keys(
         .unwrap_or(false)
         || chat.map(|c| c.open()).unwrap_or(false)
     {
+        give.hold.cancel();
         return;
     }
     // `R` and `F` belong to the build ghost while the wheel is up, and to
@@ -465,7 +514,9 @@ pub fn keys(
     if net.session.core.wounded {
         pad.0.close();
         hearth.0 = None;
-        const HAND_KEYS: [KeyCode; 11] = [
+        give.hold.cancel();
+        const HAND_KEYS: [KeyCode; 12] = [
+            KeyCode::KeyB,
             KeyCode::KeyE,
             KeyCode::KeyL,
             KeyCode::KeyK,
@@ -490,6 +541,35 @@ pub fn keys(
         return;
     }
 
+    // **`B`, held, hands the stack in your hand to the player you are
+    // looking at** (`Command::Give`). Held for `interact::GIVE_HOLD_S` on
+    // one unchanged pick, so a tap, a brush, or a crosshair swept across a
+    // friend with the key down gives nothing; the prompt names the item, the
+    // count and the person first. Whether it lands — reach, their state,
+    // their room — is the sim's verdict, and a full pack says so.
+    //
+    // Not while the keypad is up: it claims the keys (below), and the HUD
+    // already hides the give line then, so a hold under way is dropped and
+    // none starts — the pad closing with `B` still down gives nothing.
+    if pad.0.is_open() {
+        give.hold.cancel();
+    } else {
+        let pick = give.pick;
+        let b = keys.just_pressed(KeyCode::KeyB);
+        if let Some(p) = give.hold.step(b, keys.pressed(KeyCode::KeyB), pick, now) {
+            send(&net, &mut toast, "give", |buf| {
+                protocol::encode_action_give(p.slot, p.count, p.target, buf)
+            });
+        } else if b && pick.is_none() {
+            let core = &net.session.core;
+            let empty = core.inv.get(net.sel as usize).is_none_or(|s| s.count == 0);
+            toast.warn(if empty {
+                "nothing in your hand to give"
+            } else {
+                "look at a player within reach to give them what you hold"
+            });
+        }
+    }
     if keys.just_pressed(KeyCode::KeyE) {
         // A second `E` closes the hearth's panel rather than feeding again.
         if hearth.0.is_some() {
@@ -1400,7 +1480,9 @@ fn open_panel(ui: Option<&mut Ui>) {
 /// open container outlives the panel that was drawing it — and a container
 /// left open is one the sim keeps syncing to a screen nobody is looking at.
 pub fn close_container(net: &Net, toast: &mut Toast) {
-    if net.session.core.cont_kind == CONT_SELF {
+    // A watcher's open container is its player's (NOW §5sp): there is
+    // nothing of its own to close, and the send would only toast read-only.
+    if net.session.core.cont_kind == CONT_SELF || net.session.watching.is_some() {
         return;
     }
     send(net, toast, "close", |buf| {
@@ -1478,14 +1560,20 @@ pub fn hearth_close(
 /// The pick `E` takes from where the player stands: a loose stack, or an
 /// arrow standing in a body in reach — their own, where they stand, or one
 /// they can see, where it is drawn.
+///
+/// A blueprint sheet's target is stamped here (v102), `lit`'s way: the
+/// resolver is handed the stacks, and the research table that reads a
+/// sheet's `cond` lives on the core.
 fn take_or_pull(core: &client_core::core::ClientCore, x: f32, z: f32) -> interact::Pick {
     let at = core.render_tick();
     let mut rs = client_core::interp::RemoteState::default();
-    interact::resolve_take_or_pull(x, z, core.ground_items(), core.lodged(), |id| {
+    let mut pick = interact::resolve_take_or_pull(x, z, core.ground_items(), core.lodged(), |id| {
         if id == core.player_id {
             Some((x, z))
         } else {
             core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
         }
-    })
+    });
+    pick.stamp_teaches(&core.research);
+    pick
 }

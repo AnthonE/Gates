@@ -392,11 +392,16 @@ pub enum Cue {
     /// Until this the stag borrowed the pig's snort. Appended last — the
     /// enum's append-order rule, for the reason `Snort` states.
     Bellow,
+    /// The second blow to land in one frame: [`Cue::Hurt`]'s recording
+    /// started as a second voice (`sound::hurt::again`). Its own row because
+    /// a per-row cooldown binds inside a frame, so two blows asked of one row
+    /// are one voice; it keeps Hurt's clock across frames ([`Cue::lead`]).
+    HurtAgain,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 94;
+pub const CUE_COUNT: usize = 95;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -499,6 +504,7 @@ impl Cue {
         Cue::RemoteBrush,
         Cue::TorchOut,
         Cue::Bellow,
+        Cue::HurtAgain,
     ];
 
     /// Is this cue a piece of music?
@@ -538,6 +544,22 @@ impl Cue {
                 | Cue::BedTown
                 | Cue::BedNight
         )
+    }
+
+    /// The cue this one is a second voice of: its cooldown clock and its
+    /// last-take memory ([`mixer::Takes`]). Itself for every cue but
+    /// [`Cue::HurtAgain`].
+    ///
+    /// Inside a frame the mixer refuses a second start by row; across frames,
+    /// by this clock. So a frame with two blows starts Hurt and HurtAgain,
+    /// and the next blow 16 ms later is still on Hurt's 120 ms whichever row
+    /// it asks for. Not the remote rows: another body's swing has a clock of
+    /// its own on purpose (`RSWING`).
+    pub fn lead(self) -> Cue {
+        match self {
+            Cue::HurtAgain => Cue::Hurt,
+            c => c,
+        }
     }
 
     /// The cue's index into every table in this module.
@@ -590,6 +612,7 @@ impl Cue {
             | Cue::Bellow
             | Cue::Growl
             | Cue::Hurt
+            | Cue::HurtAgain
             | Cue::BulletSoil
             | Cue::BulletStone
             | Cue::BulletWood
@@ -799,7 +822,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // volley" true, and every zero-cooldown row in this table is one that is
     // either positional (so no two are identical) or happens once.
     row(GAME,  0.0, 0.50,  45, 6, false),  // hit (the marker)
-    row(GAME,  0.0, 0.80, 120, 7, false),  // hurt
+    HURT,                                  // hurt (and `HurtAgain`, last)
     row(GAME,  0.0, 0.90,   0, 8, false),  // death
     // Placement happens at a cell — the reference shipped this one wrong for a
     // while, with placement effects firing at the world origin instead of at
@@ -1013,7 +1036,13 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The stag: the pig's register (ambience, not signal), carrying further
     // because a roar is a long-range call where a snort is a near one.
     row(GAME, 60.0, 0.55, 400, 2, true),   // bellow
+    // The second blow in a frame: Hurt's row, read off it (`Cue::lead`).
+    HURT,
 ];
+
+/// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
+/// the second voice of a frame's blows is as loud and as urgent as the first.
+const HURT: CueDef = row(GAME, 0.0, 0.80, 120, 7, false);
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
 /// numbers off it instead of restating them — [`STEP`]/[`RSTEP`]'s shape.

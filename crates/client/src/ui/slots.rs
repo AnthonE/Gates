@@ -362,9 +362,9 @@ pub fn move_args(
 /// this side's.
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
-        REFUSE_M_BUSY, REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT,
-        REFUSE_M_NO_ROOM, REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SAFE, REFUSE_M_SLOT,
-        REFUSE_M_TABLE, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
+        REFUSE_M_BUSY, REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_GIVE, REFUSE_M_NO_CONTAINER,
+        REFUSE_M_NO_INPUT, REFUSE_M_NO_ROOM, REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SAFE,
+        REFUSE_M_SLOT, REFUSE_M_TABLE, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -394,6 +394,8 @@ pub fn refusal_text(reason: u8) -> &'static str {
         REFUSE_M_BUSY => "the table is researching - wait for it to finish",
         // THE GATE's "No Looting" (v92), Rust's popup.
         REFUSE_M_SAFE => "you can't loot other players in a safe zone",
+        // A give (v102): their pack, not a slot you dragged to.
+        REFUSE_M_GIVE => "their pack has no room for that",
         _ => "refused",
     }
 }
@@ -522,9 +524,10 @@ pub enum Quick {
 /// though no current branch can get it wrong.
 ///
 /// One move, one slot, because the wire's move verb addresses one slot.
-/// A stack that half fits leaves a remainder in place and a second
-/// right-click moves it on — which is honest, and is what the sim would
-/// have to be asked twice for anyway.
+/// The panel's right-click does not stop there: [`quick_move_stack`] asks
+/// this again against a copy until the whole stack has gone across, so a
+/// stack that half fits tops up the pile and lands the rest in a free
+/// slot (NOW §0p2 4c).
 #[allow(clippy::too_many_arguments)]
 pub fn quick_move(
     cont_kind: u8,
@@ -643,7 +646,11 @@ pub fn quick_move(
         // this would read as load-bearing and change nothing. Same
         // sentence `plan_move` writes about the same call, one crate
         // over.
-        if there.item == src.item {
+        //
+        // The skin too, because `plan_move` asks it: two skins of one item
+        // swap rather than merge there, so a top-up aimed across skins is
+        // refused (or, at the whole count, a swap the plan never meant).
+        if there.item == src.item && there.skin == src.skin {
             let room = cap.saturating_sub(there.count);
             if room > 0 {
                 return finish(
@@ -705,10 +712,127 @@ fn finish(
     }
 }
 
+/// A right-click followed through to the whole stack: [`quick_move`] asked
+/// again and again against the caller's copies of both sides, each move
+/// applied to them before the next is planned, until the source slot is
+/// empty or the other side has no more room (NOW §0p2 4c). Rust's
+/// right-click moves the stack, not the part of it the first slot took.
+///
+/// The moves land in `out`, first to last, and the return is the **first**
+/// step's verdict: a caller handed anything but `Quick::Send` (a use, a
+/// refusal) acts on it exactly as a single right-click would, and one
+/// handed `Send` sends `out`. A remainder with nowhere to go stays where
+/// it was, without a line — the first move went, so the gesture did
+/// something, and the cell still holding the rest says the rest.
+///
+/// **The copies are the point.** Every move after the first is aimed at a
+/// slot an earlier one changed, and the sim answers none of them before
+/// the next is sent (the lane paces moves, `server::pace`), so planning
+/// against the client's view would aim the second move at the slot the
+/// first just filled: an over-ask the sim refuses, or a swap nobody meant.
+/// The copies are never drawn — the panel still redraws from the sync.
+///
+/// With nothing open it stops after one move: a wear is one piece into
+/// one slot.
+#[allow(clippy::too_many_arguments)]
+pub fn quick_move_stack(
+    cont_kind: u8,
+    cont_handle: u32,
+    from_kind: u8,
+    from_slot: usize,
+    catalog: &ItemCatalog,
+    inv: &mut [ItemStack; INV_SLOTS],
+    cont: &mut [ItemStack; INV_SLOTS],
+    worn: &mut [ItemStack],
+    out: &mut Vec<MoveArgs>,
+) -> Quick {
+    let first = quick_move(
+        cont_kind,
+        cont_handle,
+        from_kind,
+        from_slot,
+        catalog,
+        inv,
+        cont,
+        worn,
+    );
+    let Quick::Send(mut a) = first else {
+        return first;
+    };
+    // Every move either empties the source or tops a slot of the other
+    // side up to its ceiling (and that slot is never picked again), so the
+    // other side's width bounds the walk: `INV_SLOTS` moves at most.
+    for _ in 0..INV_SLOTS {
+        out.push(a);
+        if !looting(cont_kind) {
+            break;
+        }
+        apply(&a, inv, cont, worn);
+        match quick_move(
+            cont_kind,
+            cont_handle,
+            from_kind,
+            from_slot,
+            catalog,
+            inv,
+            cont,
+            worn,
+        ) {
+            Quick::Send(next) => a = next,
+            _ => break,
+        }
+    }
+    first
+}
+
+/// Play a planned move onto the planning copies the way `plan_move` and
+/// `resolve` will on the shard: the source loses `count` (and an emptied
+/// slot zeroes both fields, `gather.rs`'s canonical empty), the
+/// destination gains it, and a stack landing in an empty slot carries its
+/// condition and skin. A looting quick-move only ever plans a transfer —
+/// a merge of the same item and skin, or into an empty slot — so there is
+/// no swap arm to mirror (a wear can swap, and is never applied).
+fn apply(
+    a: &MoveArgs,
+    inv: &mut [ItemStack; INV_SLOTS],
+    cont: &mut [ItemStack; INV_SLOTS],
+    worn: &mut [ItemStack],
+) {
+    fn side<'a>(
+        kind: u8,
+        inv: &'a mut [ItemStack; INV_SLOTS],
+        cont: &'a mut [ItemStack; INV_SLOTS],
+        worn: &'a mut [ItemStack],
+    ) -> &'a mut [ItemStack] {
+        match kind {
+            CONT_SELF => inv,
+            CONT_WEAR => worn,
+            _ => cont,
+        }
+    }
+    let Some(from) = side(a.from_kind, inv, cont, worn).get_mut(a.from_slot as usize) else {
+        return;
+    };
+    let src = *from;
+    let n = a.count.min(src.count);
+    from.count -= n;
+    if from.count == 0 {
+        *from = ItemStack::default();
+    }
+    if let Some(to) = side(a.to_kind, inv, cont, worn).get_mut(a.to_slot as usize) {
+        if to.count == 0 {
+            *to = ItemStack { count: n, ..src };
+        } else {
+            to.count += n;
+        }
+    }
+}
+
 /// Rust's LOOT ALL: every stack of the open container into the pack, as the
-/// quick-moves a right-click on each would send, planned against a copy of
-/// both sides so two stacks never aim at the same empty slot. Stops at the
-/// first stack with nowhere to go (the pack is full).
+/// whole-stack quick-moves a right-click on each would send
+/// ([`quick_move_stack`]), planned against one copy of both sides so two
+/// stacks never aim at the same empty slot. Stops at the first stack with
+/// nowhere to go, or only part of one (the pack is full).
 pub fn take_all(
     cont_kind: u8,
     cont_handle: u32,
@@ -722,41 +846,213 @@ pub fn take_all(
         return out;
     }
     let (mut inv, mut cont) = (*inv, *cont);
+    let mut body = [ItemStack::default(); WEAR_SLOTS];
+    let n = worn.len().min(WEAR_SLOTS);
+    body[..n].copy_from_slice(&worn[..n]);
     for slot in 0..slots_in(cont_kind) {
-        // A stack can take a merge and then an empty slot: a few moves at
-        // most, and every move carries at least one unit.
-        for _ in 0..INV_SLOTS {
-            if cont[slot].count == 0 {
-                break;
-            }
-            let Quick::Send(a) = quick_move(
-                cont_kind,
-                cont_handle,
-                cont_kind,
-                slot,
-                catalog,
-                &inv,
-                &cont,
-                worn,
-            ) else {
-                return out;
-            };
-            let src = cont[slot];
-            let n = a.count.min(src.count);
-            cont[slot].count -= n;
-            if cont[slot].count == 0 {
-                cont[slot] = ItemStack::default();
-            }
-            let to = &mut inv[a.to_slot as usize];
-            if to.count == 0 {
-                *to = ItemStack { count: n, ..src };
-            } else {
-                to.count += n;
-            }
-            out.push(a);
+        if cont[slot].count == 0 {
+            continue;
+        }
+        let Quick::Send(_) = quick_move_stack(
+            cont_kind,
+            cont_handle,
+            cont_kind,
+            slot,
+            catalog,
+            &mut inv,
+            &mut cont,
+            &mut body[..n],
+            &mut out,
+        ) else {
+            break;
+        };
+        if cont[slot].count > 0 {
+            break;
         }
     }
     out
+}
+
+/// **Hover-loot**: hold the key and sweep the pointer over the open
+/// container's cells, and every stack it passes comes across as the
+/// whole-stack right-click would take it ([`quick_move_stack`]). Rust's
+/// hover loot (NOW §0p2 4c). The panel arms it (`render/panels/inv.rs`
+/// `hover_loot`, Shift); this is the whole decision.
+///
+/// **Take, never give.** Only the container's own cells fire — not the
+/// pack's, not the body's. The key is Shift, which is also sprint, and a
+/// sweep that deposited would empty a pack into a box under a hand that
+/// was only running up to it.
+///
+/// **One plan for the whole hold.** A sweep fires far faster than the sim
+/// answers (moves are paced at fifteen a second, `server::pace`), so
+/// planning each cell against the client's view would aim every stack at
+/// the same free slot. The sweep owns a copy of both sides, plays every
+/// move that goes onto it, and plans the next cell against that — and a
+/// hold that begins while the last one's moves are still unanswered
+/// carries the same copy on ([`Sweep::arm`]). Never drawn: the cells still
+/// draw the sync.
+///
+/// **Re-read whenever it is caught up.** Each time the sim has answered
+/// every move played onto the copy, the copy is taken again from the views
+/// ([`Sweep::refresh`]), so another looter's take under a long hold is
+/// seen within one round trip instead of being over-asked for the rest of
+/// it.
+///
+/// **Only a move that went is played.** The action lane holds
+/// `ACTION_RING_CAP` and answers a full one with a refusal, so `over`
+/// hands each planned move to the caller's `send` and stops at the first
+/// it could not send: what did not go is neither played onto the copy nor
+/// counted as owed (an owed answer that never comes would pin a stale copy
+/// for the rest of the hold), and the cell is forgotten so the next frame
+/// over it plans the rest again.
+#[derive(Clone, Debug)]
+pub struct Sweep {
+    /// The container the copy is of: `(cont_kind, cont_handle)`.
+    open: (u8, u32),
+    /// The cell the pointer was last over. A cell fires once on the way
+    /// in, so resting on it (or a frame of no cell while the panel
+    /// rebuilds) never fires it twice.
+    last: Option<(u8, usize)>,
+    inv: [ItemStack; INV_SLOTS],
+    cont: [ItemStack; INV_SLOTS],
+    worn: [ItemStack; WEAR_SLOTS],
+    /// `ClientCore::move_seq` when the copy was taken, and the moves
+    /// sent against it since: the answers still owed are the difference.
+    seq: u32,
+    sent: u32,
+}
+
+impl Sweep {
+    /// Begin a hold over the container `(cont_kind, cont_handle)`.
+    ///
+    /// `prev` is the last hold's sweep. Its copy carries on when it is of
+    /// the same container and the sim has not answered every move sent
+    /// against it (`move_seq` counts answers, accepted or refused): the
+    /// views passed here are then behind moves already on the lane, and a
+    /// fresh copy of them would aim at slots those moves are about to
+    /// fill. Otherwise the copy is taken fresh from the views.
+    pub fn arm(
+        prev: Option<Sweep>,
+        cont_kind: u8,
+        cont_handle: u32,
+        move_seq: u32,
+        inv: &[ItemStack; INV_SLOTS],
+        cont: &[ItemStack; INV_SLOTS],
+        worn: &[ItemStack],
+    ) -> Sweep {
+        match prev {
+            Some(mut s) if s.open == (cont_kind, cont_handle) => {
+                s.last = None;
+                s.refresh(move_seq, inv, cont, worn);
+                s
+            }
+            _ => Sweep {
+                open: (cont_kind, cont_handle),
+                last: None,
+                inv: *inv,
+                cont: *cont,
+                worn: body_of(worn),
+                seq: move_seq,
+                sent: 0,
+            },
+        }
+    }
+
+    /// Re-take the copy from the views once every move sent against it
+    /// has been answered — the views have then caught up with the plan,
+    /// and are the better picture of anything the plan could not know
+    /// (another looter's take, a stack the sim refused). While any answer
+    /// is owed the copy stands: the views are behind the lane. The cell
+    /// last fired is kept, so resting on it still fires nothing.
+    ///
+    /// The panel calls this every frame of a hold. The answer and the
+    /// diff it caused ride one lane in that order, written in the same
+    /// shard tick (`server/core.rs` `route_events` then `drip_client`), so
+    /// a caught-up `move_seq` all but always arrives with views that show
+    /// it. A frame that splits them can aim one cell at the slot that
+    /// answer just filled (a refusal, or at worst a swap of that one
+    /// stack, never a lost item), and the next frame's re-read is right.
+    pub fn refresh(
+        &mut self,
+        move_seq: u32,
+        inv: &[ItemStack; INV_SLOTS],
+        cont: &[ItemStack; INV_SLOTS],
+        worn: &[ItemStack],
+    ) {
+        if move_seq.wrapping_sub(self.seq) < self.sent {
+            return;
+        }
+        self.inv = *inv;
+        self.cont = *cont;
+        self.worn = body_of(worn);
+        self.seq = move_seq;
+        self.sent = 0;
+    }
+
+    /// The container this hold was armed over. A re-aim mid-hold ends the
+    /// hold rather than carrying a plan of one box into another.
+    pub fn open(&self) -> (u8, u32) {
+        self.open
+    }
+
+    /// The pointer is over `(kind, slot)`. Fires when it is a new cell, of
+    /// the open container, holding something by the copy: the stack's
+    /// moves are planned and handed to `send` first to last, and each one
+    /// `send` took (returned `true` for) is played onto the copy. The
+    /// first it refuses ends the cell for this frame, as the type's doc
+    /// says. Returns the line to print when the stack had nowhere to go.
+    pub fn over(
+        &mut self,
+        kind: u8,
+        slot: usize,
+        catalog: &ItemCatalog,
+        mut send: impl FnMut(MoveArgs) -> bool,
+    ) -> Option<&'static str> {
+        if self.last == Some((kind, slot)) {
+            return None;
+        }
+        self.last = Some((kind, slot));
+        if kind != self.open.0 || self.cont.get(slot).is_none_or(|s| s.count == 0) {
+            return None;
+        }
+        // Planned on a scratch copy, played onto the real one a move at a
+        // time as each goes: the plan is `quick_move_stack`'s, unchanged.
+        let (mut inv, mut cont, mut worn) = (self.inv, self.cont, self.worn);
+        let mut plan = Vec::new();
+        let quick = quick_move_stack(
+            self.open.0,
+            self.open.1,
+            kind,
+            slot,
+            catalog,
+            &mut inv,
+            &mut cont,
+            &mut worn,
+            &mut plan,
+        );
+        for a in plan {
+            if !send(a) {
+                self.last = None;
+                break;
+            }
+            apply(&a, &mut self.inv, &mut self.cont, &mut self.worn);
+            self.sent = self.sent.wrapping_add(1);
+        }
+        match quick {
+            Quick::Refused(why) => Some(why),
+            Quick::Send(_) | Quick::Use(_) => None,
+        }
+    }
+}
+
+/// The body's slots as a fixed copy, zero past what the view holds.
+fn body_of(worn: &[ItemStack]) -> [ItemStack; WEAR_SLOTS] {
+    let mut body = [ItemStack::default(); WEAR_SLOTS];
+    for (d, s) in body.iter_mut().zip(worn) {
+        *d = *s;
+    }
+    body
 }
 
 /// The container panel's title. `CONT_SELF` has no panel, so it is named

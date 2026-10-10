@@ -36,7 +36,7 @@ use super::{
 };
 use crate::render::icons::{Icons, LOCK_TINT, PICTURE, PICTURE_DIM};
 use crate::ui::craft::{
-    affordable, cell_abbrev, countdown_label, ingredients, item_label, rows, seconds,
+    affordable, cell_abbrev, class_count, countdown_label, ingredients, item_label, rows, seconds,
     station_label, Row, CELL_LINE_CHARS, RAIL,
 };
 
@@ -175,7 +175,6 @@ pub fn build_browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCo
 }
 
 fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
-    let mut buf: Vec<Row> = Vec::new();
     parent
         .spawn(Node {
             flex_direction: FlexDirection::Column,
@@ -186,21 +185,15 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
         })
         .with_children(|col| {
             for (i, cat) in RAIL.iter().enumerate() {
-                // The count is the bucket with the search box applied, so a
-                // rail that says 3 and a grid that shows 3 can never
-                // disagree — they are the same call.
-                rows(
-                    &core.recipes,
-                    &core.inv,
-                    &core.catalog,
-                    &ui.facts,
-                    &ui.favs,
-                    core.known(),
-                    *cat,
-                    &ui.query,
-                    &mut buf,
-                );
+                // The reference's count: the class's size, which the search
+                // box leaves alone, and none on FAVOURITE or ALL.
+                let count = class_count(*cat, &core.recipes, &core.catalog);
                 let on = ui.cat == *cat;
+                // A class no recipe makes is not a bucket anyone can use —
+                // unless it is the one chosen, which stays so it can be left.
+                if count == Some(0) && !on {
+                    continue;
+                }
                 // **Blue, and it is the only hue on the panel.** The
                 // selected category was a lighter grey block, which on a
                 // panel made entirely of lighter and darker grey blocks
@@ -234,17 +227,16 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                         TextColor(if on { TEXT } else { TEXT_DIM }),
                         Pickable::IGNORE,
                     ));
-                    // A zero is drawn, not hidden: an empty bucket the
-                    // player can see is an answer, an absent one is a
-                    // question.
-                    b.spawn((
-                        Text::new(format!("{}", buf.len())),
-                        font_bold(12.0),
-                        // On the selected row the count sits on blue, where
-                        // a blue count would vanish.
-                        TextColor(if on { TEXT } else { COUNT }),
-                        Pickable::IGNORE,
-                    ));
+                    if let Some(n) = count {
+                        b.spawn((
+                            Text::new(format!("{n}")),
+                            font_bold(12.0),
+                            // On the selected row the count sits on blue,
+                            // where a blue count would vanish.
+                            TextColor(if on { TEXT } else { COUNT }),
+                            Pickable::IGNORE,
+                        ));
+                    }
                 });
             }
         });
@@ -256,7 +248,6 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
         &core.recipes,
         &core.inv,
         &core.catalog,
-        &ui.facts,
         &ui.favs,
         core.known(),
         ui.cat,
@@ -1042,7 +1033,6 @@ pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore
         &core.recipes,
         &core.inv,
         &core.catalog,
-        &ui.facts,
         &ui.favs,
         core.known(),
         crate::ui::craft::Cat::All,

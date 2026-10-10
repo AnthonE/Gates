@@ -37,7 +37,7 @@
 //! for the four that are not obvious from a test name, not an index.)
 
 use client::ui::build::{self, Rings, MATERIALS, SHAPES};
-use client::ui::craft::{self, Cat, Facts};
+use client::ui::craft::{self, Cat};
 use client::ui::load::Progress;
 use client::ui::slots::{self, Grab};
 use sim_core::build::{
@@ -646,90 +646,126 @@ fn search_is_case_insensitive_and_an_empty_query_matches() {
     assert!(!craft::name_matches(b"Wood", "woodwork"));
 }
 
+/// The fixture's three outputs, classed: row 0 makes a resource (item 2),
+/// row 1 a tool (item 3), row 2 a weapon (item 4).
+fn classed_catalog() -> protocol::event::ItemCatalog {
+    use sim_core::craft::{CLASS_RESOURCES, CLASS_TOOLS, CLASS_WEAPONS};
+    let mut catalog = protocol::event::ItemCatalog::EMPTY;
+    catalog.count = 5;
+    for (item, name, class) in [
+        (2, &b"Rope"[..], CLASS_RESOURCES),
+        (3, b"Hatchet", CLASS_TOOLS),
+        (4, b"Spear", CLASS_WEAPONS),
+    ] {
+        let row = protocol::ItemRow {
+            class,
+            ..protocol::ItemRow::EMPTY
+        };
+        catalog.set(item, name, row).unwrap();
+    }
+    catalog
+}
+
 #[test]
-fn the_rail_buckets_are_computed_and_not_guessed() {
+fn the_rail_is_the_wires_classes_and_not_a_guess() {
+    use sim_core::craft::{CLASS_CONSTRUCTION, CLASS_MAX, CLASS_OTHER, CLASS_TOOLS, CLASS_WEAPONS};
     let recipes = craft_fixture();
-    let deploys = DeployContent::probe_fixture();
-    let facts = Facts::build(&recipes, &deploys);
+    let catalog = classed_catalog();
+    let r = &recipes.recipes;
 
-    // BY HAND and WORKBENCH partition by the sim's own station field.
+    // A class bucket is the output's class off the catalog, nothing else:
+    // the hatchet is a tool and not a weapon, the spear the other way round.
+    let tools = Cat::Class(CLASS_TOOLS);
+    let weapons = Cat::Class(CLASS_WEAPONS);
+    assert!(craft::in_category(tools, 1, &r[1], &catalog, &[]));
+    assert!(!craft::in_category(weapons, 1, &r[1], &catalog, &[]));
+    assert!(craft::in_category(weapons, 2, &r[2], &catalog, &[]));
+    assert!(!craft::in_category(tools, 2, &r[2], &catalog, &[]));
+    // A row that has not dripped in yet reads OTHER, so its recipe is
+    // somewhere on the rail rather than nowhere.
+    let bare = protocol::event::ItemCatalog::EMPTY;
     assert!(craft::in_category(
-        Cat::ByHand,
-        0,
-        &recipes.recipes[0],
-        &facts,
-        &[]
-    ));
-    assert!(!craft::in_category(
-        Cat::ByHand,
-        2,
-        &recipes.recipes[2],
-        &facts,
-        &[]
-    ));
-    assert!(craft::in_category(
-        Cat::Workbench,
-        2,
-        &recipes.recipes[2],
-        &facts,
-        &[]
-    ));
-
-    // COMPONENT is "this output feeds another recipe": row 0 makes item 2,
-    // which row 1 consumes.
-    assert!(facts.is_component(2));
-    assert!(craft::in_category(
-        Cat::Component,
-        0,
-        &recipes.recipes[0],
-        &facts,
+        Cat::Class(CLASS_OTHER),
+        1,
+        &r[1],
+        &bare,
         &[]
     ));
 
     // FAVOURITE is the local latch and nothing else.
-    assert!(!craft::in_category(
-        Cat::Favourite,
-        0,
-        &recipes.recipes[0],
-        &facts,
-        &[]
-    ));
-    assert!(craft::in_category(
-        Cat::Favourite,
-        0,
-        &recipes.recipes[0],
-        &facts,
-        &[0]
-    ));
-
+    assert!(!craft::in_category(Cat::Favourite, 0, &r[0], &catalog, &[]));
+    assert!(craft::in_category(Cat::Favourite, 0, &r[0], &catalog, &[0]));
     // ALL takes everything, which is what makes it the safe default.
-    assert!(craft::in_category(
-        Cat::All,
-        2,
-        &recipes.recipes[2],
-        &facts,
-        &[]
-    ));
+    assert!(craft::in_category(Cat::All, 2, &r[2], &catalog, &[]));
+
+    // The rail: FAVOURITE, ALL, then every class exactly once, each with
+    // its own word.
+    assert_eq!(&craft::RAIL[..2], &[Cat::Favourite, Cat::All]);
+    for class in 0..=CLASS_MAX {
+        let n = craft::RAIL
+            .iter()
+            .filter(|c| **c == Cat::Class(class))
+            .count();
+        assert_eq!(n, 1, "class {class} is on the rail {n} times");
+    }
+    assert_eq!(craft::RAIL.len(), 2 + CLASS_MAX as usize + 1);
+    let mut labels: Vec<_> = craft::RAIL.iter().map(|c| c.label()).collect();
+    labels.sort_unstable();
+    labels.dedup();
+    assert_eq!(labels.len(), craft::RAIL.len(), "two buckets share a word");
+    assert_eq!(Cat::Class(CLASS_CONSTRUCTION).label(), "CONSTRUCTION");
+}
+
+/// The rail's counts are the reference's: a class's size, which the search
+/// box narrows the grid under and leaves alone, and none on FAVOURITE or
+/// ALL (`reference/CRAFTING.md` §3).
+#[test]
+fn a_class_count_is_its_size_and_the_search_does_not_move_it() {
+    use sim_core::craft::{CLASS_CONSTRUCTION, CLASS_TOOLS};
+    let recipes = craft_fixture();
+    let catalog = classed_catalog();
+    let tools = Cat::Class(CLASS_TOOLS);
+    assert_eq!(craft::class_count(tools, &recipes, &catalog), Some(1));
+    assert_eq!(
+        craft::class_count(Cat::Class(CLASS_CONSTRUCTION), &recipes, &catalog),
+        Some(0)
+    );
+    assert_eq!(craft::class_count(Cat::All, &recipes, &catalog), None);
+    assert_eq!(craft::class_count(Cat::Favourite, &recipes, &catalog), None);
+
+    let mut out = Vec::new();
+    craft::rows(&recipes, &empty(), &catalog, &[], 0, tools, "", &mut out);
+    assert_eq!(out.iter().map(|r| r.recipe).collect::<Vec<_>>(), [1]);
+    craft::rows(
+        &recipes,
+        &empty(),
+        &catalog,
+        &[],
+        0,
+        tools,
+        "spear",
+        &mut out,
+    );
+    assert!(out.is_empty(), "the search narrows the grid");
+    assert_eq!(
+        craft::class_count(tools, &recipes, &catalog),
+        Some(1),
+        "and leaves the rail alone"
+    );
+    // Every live recipe is in exactly one class.
+    let classes: usize = craft::RAIL
+        .iter()
+        .filter_map(|c| craft::class_count(*c, &recipes, &catalog))
+        .sum();
+    assert_eq!(classes, 3);
 }
 
 #[test]
 fn the_browser_skips_inert_rows() {
     let recipes = craft_fixture();
-    let deploys = DeployContent::probe_fixture();
-    let facts = Facts::build(&recipes, &deploys);
     let catalog = protocol::event::ItemCatalog::EMPTY;
     let mut out = Vec::new();
-    craft::rows(
-        &recipes,
-        &empty(),
-        &catalog,
-        &facts,
-        &[],
-        0,
-        Cat::All,
-        "",
-        &mut out,
-    );
+    craft::rows(&recipes, &empty(), &catalog, &[], 0, Cat::All, "", &mut out);
     // The fixture declares three; the rest of the table is `INERT`
     // (`out_count == 0`) and an inert row is not a recipe.
     assert_eq!(out.len(), 3);
@@ -741,7 +777,6 @@ fn the_browser_skips_inert_rows() {
         &CraftContent::EMPTY,
         &empty(),
         &catalog,
-        &facts,
         &[],
         0,
         Cat::All,
@@ -1673,6 +1708,556 @@ fn the_prompt_and_the_swing_agree() {
 }
 
 // ---------------------------------------------------------------------------
+// §0ray 2: the prompt weighs what the swing would meet first. `melee::cast`
+// ranks the node against bodies, animals and the world along the same ray,
+// so a man standing in front of a tree eats the blow — and the prompt that
+// said CHOP TREE over his shoulder was naming a swing that never lands.
+
+use client::ui::interact::{resolve_swing_shadowed, Shadows, MOB_SWING_BODY_CM};
+
+/// A snapshot record of a standing body at `body`'s quanta.
+fn standing(body: sim_core::movement::Body) -> protocol::EntityState {
+    protocol::EntityState {
+        qx: body.qx,
+        qy: body.qy,
+        qz: body.qz,
+        ..Default::default()
+    }
+}
+
+/// **A man between you and the tree takes the prompt as he takes the
+/// swing**, proven against a running sim: the same stance and the same look
+/// at the trunk, once with the second player off to the side and once with
+/// him standing in the line. The sim must gather in the first and land
+/// `EV_HIT` (and no gather) in the second, and the shadowed prompt must name
+/// the tree exactly when the sim gathered. The swinger's own record rides
+/// the snapshot too, so a prompt that forgot to skip itself would blank on
+/// every swing.
+#[test]
+fn a_man_in_front_of_the_tree_takes_the_prompt() {
+    use sim_core::combat::CombatContent;
+    use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+    use sim_core::world::{Command, World, EV_GATHER, EV_GATHER_REFUSED, EV_HIT};
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    // Further back than `stance`, so a body fits in the gap: 1.6 m short of
+    // the bark is still inside the 2 m arm, and the man stands 0.8 m out.
+    let px = tx - (tr + 1.6);
+    for between in [false, true] {
+        let mut w = Box::new(World::new(seed));
+        w.gather = GatherContent::probe_fixture();
+        // Item 0 is a 2 m melee row, so the man in the line is a hit and
+        // not a whiff — the swing reaching him is the sim's half of the claim.
+        w.combat = CombatContent::probe_fixture();
+        w.dev_spawn = Some((px, tz));
+        w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+        let (bx, bz) = if between {
+            (px + 0.8, tz)
+        } else {
+            (px, tz + 6.0)
+        };
+        w.players[1].body = Body::at(seed, &haven, bx, bz);
+        w.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        let b = w.players[0].body;
+        let (x, y, z) = (
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        );
+        // At the trunk a metre up: through the man's chest when he is there.
+        let aim = aim_at(x, y, z, tx, y + 1.0, tz);
+        let entities = [
+            (1, standing(w.players[0].body)),
+            (2, standing(w.players[1].body)),
+        ];
+        let mut cache = SlotCache::new();
+        let prompt = resolve_swing_shadowed(
+            aim,
+            &mut Island {
+                doors: 0,
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+            &Shadows {
+                own: 1,
+                entities: &entities,
+                cols: w.pieces.cols(),
+                bags: &[],
+                butchers: false,
+            },
+        );
+
+        let (mut hit, mut gathered) = (false, false);
+        let mut seq = 0u16;
+        for _ in 0..SWING_INTERVAL_TICKS * 2 {
+            seq = seq.wrapping_add(1);
+            w.tick(&[Command::Input {
+                id: 1,
+                frame: InputFrame {
+                    seq,
+                    buttons: BTN_PRIMARY,
+                    yaw: aim.yaw,
+                    pitch: aim.pitch,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                },
+                favour: 0,
+            }]);
+            for e in w.events.entries() {
+                hit |= e.code == EV_HIT;
+                gathered |= e.code == EV_GATHER || e.code == EV_GATHER_REFUSED;
+            }
+        }
+        let name = if between { "in the line" } else { "aside" };
+        assert_eq!(
+            (hit, gathered),
+            (between, !between),
+            "the man {name}: the sim's swing hit={hit} gathered={gathered}"
+        );
+        assert_eq!(
+            prompt.occupant,
+            if between { 0 } else { Occupant::Tree as u8 },
+            "the man {name}: the prompt said {:?}",
+            swing_label(prompt.occupant)
+        );
+    }
+}
+
+/// An animal the ray enters before the trunk shadows it; one the ray passes
+/// over does not, and neither does a dead one. A stag stands 1.3 m and a pig
+/// 0.78 (`content/mobs.toml`), so a look dropping from a 1.6 m eye toward the
+/// foot of a tree crosses the one's back and clears the other's — the
+/// animal half of the cast is client arithmetic over the snapshot, so it is
+/// held here without a `World`.
+#[test]
+fn a_stag_in_the_line_takes_the_prompt_and_a_pig_under_it_does_not() {
+    use sim_core::limits::MOB_ID_TAG;
+    use sim_core::mob::{kind_of, MOB_PIG, MOB_STAG};
+    use sim_core::movement::Body;
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    let px = tx - (tr + 1.6);
+    let me = Body::at(seed, &haven, px, tz);
+    let y = me.qy as f32 * sim_core::movement::POS_Y_Q;
+    // At the trunk 0.6 m up: the ray is at ~1.0 m over the pig's far flank
+    // and drops through a stag's back.
+    let aim = aim_at(px, y, tz, tx, y + 0.6, tz);
+    let tag = |kind: u8| {
+        let slot = (0..sim_core::limits::MAX_MOBS)
+            .find(|&s| kind_of(s) == kind)
+            .expect("every species has a slot");
+        MOB_ID_TAG | slot as u32
+    };
+    let stag = standing(Body::at(seed, &haven, px + 0.8, tz));
+    let pig = standing(Body::at(seed, &haven, px + 0.5, tz));
+    let cols = sim_core::collide::ColIndex::default();
+    let mut cache = SlotCache::new();
+    let mut pick = |entities: &[(u32, protocol::EntityState)]| {
+        resolve_swing_shadowed(
+            aim,
+            &mut Island {
+                doors: 0,
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+            &Shadows {
+                own: 1,
+                entities,
+                cols: &cols,
+                bags: &[],
+                butchers: false,
+            },
+        )
+        .occupant
+    };
+    let tree = Occupant::Tree as u8;
+    assert_eq!(pick(&[]), tree, "nothing in the way must name the tree");
+    assert_eq!(
+        pick(&[(tag(MOB_STAG), stag)]),
+        0,
+        "a stag in the line eats the swing"
+    );
+    assert_eq!(
+        pick(&[(tag(MOB_PIG), pig)]),
+        tree,
+        "the look passes over a pig's back"
+    );
+    let dead = protocol::EntityState { dead: true, ..stag };
+    assert_eq!(
+        pick(&[(tag(MOB_STAG), dead)]),
+        tree,
+        "a dead stag is a carcass, and a blunt swing passes it"
+    );
+}
+
+/// The prompt's animal volumes are the ones the shard bakes from
+/// `content/mobs.toml`, read through the real loader — the client links no
+/// content, so this copy is the only one it has and a resized species must
+/// go red here rather than shadow a tree at the wrong height.
+#[test]
+fn the_prompts_animal_volumes_are_contents() {
+    let content = content::Content::load_dir(std::path::Path::new("../../content"))
+        .unwrap_or_else(|e| panic!("content/ does not load: {e}"));
+    let mc = content
+        .bake_mobs()
+        .unwrap_or_else(|e| panic!("bake_mobs: {e}"));
+    for (kind, &want) in MOB_SWING_BODY_CM.iter().enumerate() {
+        let def = mc.def(kind as u8);
+        assert_eq!(
+            (def.body_r_cm, def.body_h_cm),
+            want,
+            "species {kind}: content/mobs.toml's body_r_cm/body_h_cm moved — \
+             update ui::interact::MOB_SWING_BODY_CM"
+        );
+    }
+}
+
+// A carcass in the line, and a wall the core was sent (§0ray 2's follow-up).
+// The shard's cast weighs a carcass for a hand that butchers, so a blade at a
+// wolf lying at the foot of a tree cuts the wolf, and the prompt must say
+// BUTCHER there rather than CHOP TREE. And the wall half of the shadow is
+// read off the core's own piece index, through the wiring the frame uses.
+
+use client::ui::interact::{butchers, butchers_in_hand, swing_island, BUTCHER_STEMS};
+
+/// **A blade at a carcass in front of the tree cuts the carcass, and the
+/// prompt names the cut**, proven against a running sim: the same stance,
+/// the same tool and the same look down through a wolf's carcass at the foot
+/// of a trunk, once with a `[butcher]` row for the tool and once without.
+/// With the row the shard cuts the carcass and leaves the tree alone, and
+/// the prompt says BUTCHER WOLF and carries the carcass's bag; without it
+/// the swing passes through to the tree, and the prompt names the tree.
+#[test]
+fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
+    use sim_core::backpack::BackpackContent;
+    use sim_core::combat::CombatContent;
+    use sim_core::gather::{GatherContent, ItemStack};
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    use sim_core::limits::{INV_SLOTS, MAX_MOBS};
+    use sim_core::mob::{self, ButcherRow, MobContent, MOB_WOLF};
+    use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+    use sim_core::world::{Command, World, EV_GATHER, EV_GATHER_REFUSED, EV_SWING};
+
+    /// What the carcass holds: an item past every fixture row, so a cut is
+    /// told from the tree's payout by the item alone.
+    const MEAT: u16 = 82;
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    // A metre short of the bark, so a look at its foot is inside the arm,
+    // and the carcass lies across the gap.
+    let px = tx - (tr + 1.0);
+    for blade in [false, true] {
+        let mut w = Box::new(World::new(seed));
+        w.gather = GatherContent::probe_fixture();
+        w.combat = CombatContent::probe_fixture();
+        w.backpack = BackpackContent::probe_fixture();
+        w.mob = MobContent::probe_fixture();
+        // Sized, so a carcass has a volume, but never hatched: no live
+        // animal wanders into the line.
+        for d in w.mob.defs.iter_mut() {
+            d.hp = 0;
+        }
+        w.gather.stack_max[MEAT as usize] = 1000;
+        w.gather.item_count = w.gather.item_count.max(MEAT + 1);
+        if blade {
+            w.mob.butcher[0] = ButcherRow {
+                tool: 0,
+                pct: 100,
+                wear: 0,
+            };
+        }
+        w.dev_spawn = Some((px, tz));
+        w.tick(&[Command::Join { id: 1 }]);
+        // At full condition: a broken tool is refused at a carcass as at a
+        // node, which would prove nothing about the cast.
+        w.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: w.gather.cond_max_of(0),
+            skin: 0,
+        };
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        let b = w.players[0].body;
+        let (x, y, z) = (
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        );
+        let wolf = (0..MAX_MOBS)
+            .find(|&s| mob::kind_of(s) == MOB_WOLF)
+            .expect("a wolf slot");
+        let lie = Body::at(seed, &haven, x + 0.6, z);
+        let mut items = [ItemStack::default(); INV_SLOTS];
+        items[0] = ItemStack {
+            item: MEAT,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        };
+        let tick = w.tick;
+        let id = w
+            .backpacks
+            .stand_up(
+                &w.backpack,
+                lie.qx,
+                lie.qy,
+                lie.qz,
+                mob::mob_id(wolf),
+                &items,
+                tick,
+                &mut w.events,
+            )
+            .expect("the carcass stood up");
+        let bag = protocol::event::WireBag::of(
+            w.backpacks
+                .entries()
+                .iter()
+                .find(|b| b.id == id)
+                .expect("the carcass"),
+        );
+        assert_eq!(bag.species(), Some(MOB_WOLF), "the wire calls it a wolf");
+        // At the bark's foot, 0.15 m up: down through the carcass's back
+        // (a 0.42 m wolf lying down) before the trunk, and still inside the
+        // arm when nothing is lying there.
+        let aim = aim_at(x, y, z, tx - tr, y + 0.15, tz);
+        let mut cache = SlotCache::new();
+        let prompt = resolve_swing_shadowed(
+            aim,
+            &mut Island {
+                doors: 0,
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+            &Shadows {
+                own: 1,
+                entities: &[],
+                cols: w.pieces.cols(),
+                bags: &[bag],
+                butchers: w.mob.butcher_for(0).is_some(),
+            },
+        );
+
+        // One swing, and what it reached: the tree's payout or refusal, or
+        // meat out of the carcass.
+        let mut tree = false;
+        let mut seq = 0u16;
+        for _ in 0..60 {
+            seq = seq.wrapping_add(1);
+            w.tick(&[Command::Input {
+                id: 1,
+                frame: InputFrame {
+                    seq,
+                    buttons: BTN_PRIMARY,
+                    yaw: aim.yaw,
+                    pitch: aim.pitch,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                },
+                favour: 0,
+            }]);
+            let ev = w.events.entries();
+            for e in ev.iter().filter(|e| e.a == 1) {
+                tree |= e.code == EV_GATHER_REFUSED
+                    || (e.code == EV_GATHER && e.b >> 16 != u32::from(MEAT));
+            }
+            if ev.iter().any(|e| e.code == EV_SWING && e.a == 1) {
+                break;
+            }
+        }
+        let cut = w
+            .backpacks
+            .entries()
+            .iter()
+            .find(|b| b.id == id)
+            .is_none_or(|b| b.items[0].count < 4);
+        let name = if blade { "a blade" } else { "a blunt hand" };
+        assert_eq!(
+            (cut, tree),
+            (blade, !blade),
+            "{name}: the sim's swing cut={cut} reached the tree={tree}"
+        );
+        if blade {
+            assert_eq!(
+                (prompt.occupant, prompt.carcass, prompt.bag),
+                (0, Some(MOB_WOLF), id),
+                "{name}: the prompt said {:?}",
+                prompt.label()
+            );
+            assert_eq!(prompt.label(), "BUTCHER WOLF");
+        } else {
+            assert_eq!(
+                (prompt.occupant, prompt.carcass),
+                (Occupant::Tree as u8, None),
+                "{name}: the prompt said {:?}",
+                prompt.label()
+            );
+        }
+    }
+}
+
+/// The prompt's butchering hands are the shard's, read through the real
+/// loader: every item `content/` defines, named the way the catalog names it
+/// (`ItemCatalog::name`, the display name), butchers on [`BUTCHER_STEMS`]
+/// exactly when `MobContent::butcher_for` gives it a row. The client links
+/// no content, so a new blade row must go red here rather than leave the
+/// prompt calling a carcass the shard cuts a tree.
+#[test]
+fn the_prompts_butchering_hands_are_contents() {
+    use protocol::event::ItemCatalog;
+    use sim_core::gather::ItemStack;
+
+    let content = content::Content::load_dir(std::path::Path::new("../../content"))
+        .unwrap_or_else(|e| panic!("content/ does not load: {e}"));
+    let mc = content
+        .bake_mobs()
+        .unwrap_or_else(|e| panic!("bake_mobs: {e}"));
+    let mut cat = Box::new(ItemCatalog::EMPTY);
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves");
+        cat.set(
+            idx as usize,
+            item.name.as_bytes(),
+            protocol::ItemRow::default(),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e:?}", item.id));
+    }
+    let one = |item: u16| ItemStack {
+        item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let mut cutting = Vec::new();
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves");
+        let shard = mc.butcher_for(idx).is_some();
+        assert_eq!(
+            butchers(&cat, one(idx)),
+            shard,
+            "{} (\"{}\"): the shard {} with it — update \
+             ui::interact::BUTCHER_STEMS to content/mobs.toml's [butcher.yield_pct]",
+            item.id,
+            item.name,
+            if shard {
+                "butchers"
+            } else {
+                "does not butcher"
+            }
+        );
+        if shard {
+            cutting.push(idx);
+        }
+    }
+    assert_eq!(
+        cutting.len(),
+        BUTCHER_STEMS.len(),
+        "every stem names exactly one loaded item"
+    );
+    // The selected slot is the hand; an empty stack is a bare hand.
+    let hatchet = cutting[0];
+    let inv = [ItemStack::default(), one(hatchet)];
+    assert!(!butchers_in_hand(&cat, &inv, 0), "a bare hand cuts nothing");
+    assert!(butchers_in_hand(&cat, &inv, 1), "the selected blade cuts");
+    assert!(!butchers(&cat, ItemStack::default()));
+}
+
+/// **A wall the core was sent shadows the tree behind it, through the
+/// wiring the frame uses.** `swing_island` is what `render/verbs.rs` hands
+/// the prompt every frame — the core's own collision index, fed by the piece
+/// stream, beside the snapshot and the bags — so this drives it rather than
+/// a fixture `ColIndex`: a wall placed across the look through
+/// `ClientCore::on_stream` must blank the prompt, and the same stance in a
+/// core that never heard of the wall must name the tree.
+#[test]
+fn a_wall_the_core_was_sent_shadows_the_tree() {
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_piece_defs, encode_event_piece_placed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{BuildContent, PieceRec, BUILD_CELL_M, LOC_EDGE_XLO, SHAPE_WALL};
+    use sim_core::movement::{Body, POS_Y_Q};
+
+    let seed = 7;
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, _, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    // The x cell edge nearer the trunk, and a stance just the far side of
+    // it, looking level across it at the tree: at most half a cell plus the
+    // gap from the bark, which is inside the arm.
+    let k = (tx / BUILD_CELL_M + 0.5).floor();
+    let edge = k * BUILD_CELL_M;
+    let (px, yaw) = if edge <= tx {
+        (edge - 0.4, YAW_PLUS_X)
+    } else {
+        (edge + 0.4, YAW_MINUS_X)
+    };
+    let py = Body::at(seed, &haven, px, tz).qy as f32 * POS_Y_Q;
+    let aim = level(px, py, tz, yaw);
+    let bc = BuildContent::probe_fixture();
+    assert_eq!(bc.pieces[1].shape, SHAPE_WALL, "fixture row 1 is a wall");
+    let wall = PieceRec {
+        cx: k as u16,
+        cz: (tz / BUILD_CELL_M).floor() as u16,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 1,
+        hp: bc.pieces[1].hp,
+        ..PieceRec::default()
+    };
+    let pick = |with_wall: bool| {
+        let mut core = Box::new(ClientCore::new(seed, 1, 0));
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
+        core.on_stream(&buf[..len]).expect("defs apply");
+        if with_wall {
+            let len = encode_event_piece_placed(&wall, &mut buf).expect("encode piece");
+            core.on_stream(&buf[..len]).expect("piece applies");
+            assert_eq!(core.pieces.len(), 1, "the core holds the wall");
+        }
+        let (mut island, shadows) = swing_island(&mut core, 0);
+        resolve_swing_shadowed(aim, &mut island, &shadows).occupant
+    };
+    assert_eq!(
+        pick(false),
+        Occupant::Tree as u8,
+        "no wall: the stance must reach the tree"
+    );
+    assert_eq!(pick(true), 0, "a wall across the look takes the swing");
+}
+
+// ---------------------------------------------------------------------------
 // The weak spot. These mirror `gather::swing`'s sector test; if the sim moves
 // `WEAK_COS`, the LUT, or the point-blank exemption, these go red rather than
 // the HUD quietly promising a bonus the server refuses.
@@ -2382,7 +2967,8 @@ fn hammer_piece_defs() -> (BuildContent, u16) {
     (c, 3)
 }
 
-/// A target still stated in hp, banded the way the SERVER bands it.
+/// A target stated in hp, banded the way the SERVER bands it — and since
+/// wire v102 carrying that hp too, as the record does.
 ///
 /// The signature deliberately did not change with wire v44: these cases mean
 /// "half a wall" and "an intact wall", and saying that in bands would be
@@ -2398,6 +2984,7 @@ fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
         loc: 2,
         row,
         dmg: sim_core::build::damage_band(hp, hp_max),
+        hp,
         hp_max,
         side: None,
     }
@@ -2647,6 +3234,87 @@ fn hammer_upgrade_quote_uses_the_received_matching_shape_and_inventory() {
             &protocol::ItemCatalog::EMPTY
         ),
         "Nothing in reach"
+    );
+}
+
+/// The repair is quoted exactly (wire v102): the target's own rows, pro rata
+/// to the hp it is missing, at the table's percent — `build::repair_quote`,
+/// which is what `build::repair` charges — for a wall and for a door. It
+/// waits rather than guessing while the row, the percent or the hp is not
+/// known, and an intact piece quotes nothing rather than waiting.
+#[test]
+fn hammer_repair_quote_is_the_bill_for_either_store() {
+    let (mut defs, have) = hammer_piece_defs();
+    defs.pieces[0].n_costs = 2;
+    defs.pieces[0].costs = [(2, 300), (5, 7)];
+    defs.repair_pct = 50;
+    let mut inv = [ItemStack::default(); INV_SLOTS];
+    inv[0] = ItemStack {
+        item: 2,
+        count: 40,
+        ..ItemStack::default()
+    };
+    let none = DeployContent::EMPTY;
+    // 200 of 500 hp missing at 50 %: 300 × 2/5 × ½ = 60, more than the 40
+    // held; 7 × 2/5 × ½ = 1.4, charged as 2.
+    let wall = target(Store::Piece, 0, 300, 500);
+    let (rows, n) = hammer::repair_rows(&wall, &defs, have, &none, 0, &inv).unwrap();
+    assert_eq!(n, 2);
+    assert_eq!((rows[0].item, rows[0].units, rows[0].have), (2, 60, 40));
+    assert!(rows[0].short());
+    assert_eq!((rows[1].item, rows[1].units, rows[1].have), (5, 2, 0));
+
+    // A door prices off the deploy table's rows, at the piece table's
+    // percent (there is one percent, `BuildContent::repair_pct`).
+    let mut dc = DeployContent::EMPTY;
+    dc.def_count = 1;
+    dc.defs[0].hp = 200;
+    dc.defs[0].n_costs = 1;
+    dc.defs[0].costs[0] = (2, 20);
+    let door = target(Store::Deploy, 0, 50, 200);
+    let (rows, n) = hammer::repair_rows(&door, &defs, have, &dc, 1, &inv).unwrap();
+    // 150 of 200 missing: 20 × ¾ × ½ = 7.5, charged as 8.
+    assert_eq!((n, rows[0].item, rows[0].units), (1, 2, 8));
+
+    // Nothing to name yet: an undripped row, an unknown percent or hp.
+    assert!(hammer::repair_rows(&wall, &defs, 0, &none, 0, &inv).is_none());
+    assert!(hammer::repair_rows(&door, &defs, have, &dc, 0, &inv).is_none());
+    let mut unbaked = defs;
+    unbaked.repair_pct = 0;
+    assert!(hammer::repair_rows(&wall, &unbaked, have, &none, 0, &inv).is_none());
+    let unknown = Target { hp: 0, ..wall };
+    assert!(hammer::repair_rows(&unknown, &defs, have, &none, 0, &inv).is_none());
+    // Intact: an answer (no rows), not a wait.
+    let intact = target(Store::Piece, 0, 500, 500);
+    assert_eq!(
+        hammer::repair_rows(&intact, &defs, have, &none, 0, &inv).map(|(_, n)| n),
+        Some(0)
+    );
+}
+
+/// The headline says what the quote is: a floor. Decay lowers the store's hp
+/// with no event, so the mirror can stand above it and the server's bill can
+/// only be these rows or more (`build::repair_quote` never falls as the hp
+/// missing grows) — "costs at least", never an exact price the server may
+/// raise. It waits while the rows do, and a row with no price says so.
+#[test]
+fn hammer_repair_line_names_the_quote_as_a_floor() {
+    let wall = target(Store::Piece, 0, 300, 500);
+    assert_eq!(
+        hammer::repair_line(Some(&wall), Some(2)),
+        "Restores 200+ HP to 500 · costs at least"
+    );
+    assert_eq!(
+        hammer::repair_line(Some(&wall), None),
+        "Waiting for repair details"
+    );
+    assert_eq!(
+        hammer::repair_line(None, None),
+        "Waiting for repair details"
+    );
+    assert_eq!(
+        hammer::repair_line(Some(&wall), Some(0)),
+        "cannot be repaired"
     );
 }
 
@@ -4106,7 +4774,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 ///
 /// An empty list means the row is not a discrete button — `LOOK` is mouse
 /// motion — and is exempt by name rather than by falling through.
-const BIND_IDENTS: [(&str, &[&str]); 24] = [
+const BIND_IDENTS: [(&str, &[&str]); 25] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
     ("CROUCH", &["ControlLeft", "KeyZ"]),
@@ -4115,6 +4783,7 @@ const BIND_IDENTS: [(&str, &[&str]); 24] = [
     ("LOOK", &[]),
     ("USE / ATTACK", &["MouseButton::Left"]),
     ("INTERACT / OPEN", &["KeyE"]),
+    ("GIVE", &["KeyB"]),
     (
         "HOTBAR",
         &["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"],
@@ -5221,10 +5890,10 @@ fn the_paperdoll_is_as_wide_as_the_body_is() {
 // `stack_max` since wire v64, and why the cases below are about slots and
 // counts rather than about a click.
 mod quick {
-    use client::ui::slots::{looting, quick_move, MoveArgs, Quick};
+    use client::ui::slots::{looting, quick_move, quick_move_stack, MoveArgs, Quick, Sweep};
     use protocol::event::ItemCatalog;
     use sim_core::gather::ItemStack;
-    use sim_core::inventory::{CONT_BAG, CONT_SELF, CONT_WEAR, CONT_WORLD};
+    use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
     use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
     const BAG: u32 = 0x00BA_6666;
@@ -5427,6 +6096,37 @@ mod quick {
             "the quick-move ignored 10 units of room in the pile and \
              either scattered a second stack or asked for a count the sim \
              refuses"
+        );
+    }
+
+    /// **Two skins of one item do not merge** (`plan_move` swaps them
+    /// rather than stacking), so the pile of a different skin is passed
+    /// over and the whole stack lands in the first free grid slot — and a
+    /// pile of the same skin further on still takes the top-up.
+    #[test]
+    fn a_quick_move_passes_a_pile_of_another_skin_for_an_empty_slot() {
+        let skinned = |count, skin| ItemStack {
+            skin,
+            ..stack(WOOD, count)
+        };
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS] = skinned(500, 2);
+        let mut cont = empty();
+        cont[0] = skinned(40, 0);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot as usize, args.count),
+            (HOTBAR_SLOTS + 1, 40),
+            "a top-up was aimed across skins: the sim swaps those, it does \
+             not merge them"
+        );
+
+        inv[HOTBAR_SLOTS + 3] = skinned(900, 0);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot as usize, args.count),
+            (HOTBAR_SLOTS + 3, 40),
+            "the pile of the same skin was not topped up"
         );
     }
 
@@ -5641,6 +6341,305 @@ mod quick {
     fn a_right_click_on_an_empty_slot_sends_nothing() {
         assert!(matches!(from_bag(&empty(), &empty(), 0), Quick::Refused(_)));
     }
+
+    /// The whole stack, both ways round (NOW §0p2 4c), planned on copies of
+    /// the views — the right-click's own plumbing.
+    fn scatter(
+        cont_kind: u8,
+        from_kind: u8,
+        slot: usize,
+        inv: &[ItemStack; INV_SLOTS],
+        cont: &[ItemStack; INV_SLOTS],
+    ) -> (Quick, Vec<MoveArgs>) {
+        let (mut inv, mut cont) = (*inv, *cont);
+        let mut worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut out = Vec::new();
+        let q = quick_move_stack(
+            cont_kind,
+            BAG,
+            from_kind,
+            slot,
+            &catalog(),
+            &mut inv,
+            &mut cont,
+            &mut worn,
+            &mut out,
+        );
+        (q, out)
+    }
+
+    /// A lane with room: every move handed to it goes, into `out`.
+    fn lane(out: &mut Vec<MoveArgs>) -> impl FnMut(MoveArgs) -> bool + '_ {
+        |a| {
+            out.push(a);
+            true
+        }
+    }
+
+    /// **A stack that half fits still goes across whole**: 40 wood out of a
+    /// bag into a pack holding 990 tops the pile up by ten and lands the
+    /// other thirty in a free grid slot — two moves from one right-click,
+    /// the second planned against what the first did, so it never asks the
+    /// full pile for room it no longer has.
+    #[test]
+    fn a_right_click_scatters_a_stack_that_half_fits() {
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS + 2] = stack(WOOD, 990);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let (q, moves) = scatter(CONT_BAG, CONT_BAG, 0, &inv, &cont);
+        assert!(matches!(q, Quick::Send(a) if a == moves[0]));
+        let got: Vec<_> = moves
+            .iter()
+            .map(|m| (m.to_kind, m.to_slot as usize, m.count))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (CONT_SELF, HOTBAR_SLOTS + 2, 10),
+                (CONT_SELF, HOTBAR_SLOTS, 30)
+            ],
+            "the rest of a half-fitting stack did not land in the first free grid slot"
+        );
+        assert_eq!(
+            moves.iter().map(|m| m.count).sum::<u16>(),
+            40,
+            "the stack did not all go"
+        );
+    }
+
+    /// The deposit direction is the same walk: pack wood into a box with
+    /// two part-stacks and holes tops both up in slot order, then the hole.
+    #[test]
+    fn a_deposit_scatters_across_part_stacks_then_an_empty_slot() {
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS] = stack(WOOD, 900);
+        let mut cont = empty();
+        cont[0] = stack(HATCHET, 1);
+        cont[1] = stack(WOOD, 700);
+        cont[3] = stack(WOOD, 950);
+        let (_, moves) = scatter(CONT_BOX, CONT_SELF, HOTBAR_SLOTS, &inv, &cont);
+        let got: Vec<_> = moves
+            .iter()
+            .map(|m| (m.to_kind, m.to_slot, m.count))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(CONT_BOX, 1, 300), (CONT_BOX, 3, 50), (CONT_BOX, 2, 550)],
+            "a deposit did not fill the box's piles before opening a hole"
+        );
+        assert!(moves
+            .iter()
+            .all(|m| m.from_kind == CONT_SELF && m.bag == BAG));
+    }
+
+    /// Nothing open is still one gesture, not a scatter: a use is a use,
+    /// and the plan stays empty.
+    #[test]
+    fn a_scatter_with_nothing_open_is_the_old_gesture() {
+        let mut inv = empty();
+        inv[4] = stack(WOOD, 5);
+        let (q, moves) = scatter(CONT_SELF, CONT_SELF, 4, &inv, &empty());
+        assert_eq!(q, Quick::Use(4));
+        assert!(moves.is_empty());
+    }
+
+    /// A full other side plans nothing and says why, as one right-click
+    /// did.
+    #[test]
+    fn a_scatter_into_a_full_side_plans_nothing() {
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let full = [stack(HATCHET, 1); INV_SLOTS];
+        let (q, moves) = scatter(CONT_BAG, CONT_BAG, 0, &full, &cont);
+        assert!(matches!(q, Quick::Refused(_)), "got {q:?}");
+        assert!(moves.is_empty());
+    }
+
+    /// **Hover-loot plans each cell against what the cells before it
+    /// took.** One free grid slot (and a part pile): the first stack takes
+    /// the hole, the second may only top up what is now there rather than
+    /// aim at the hole again, which is the over-ask a sweep would make
+    /// fifteen times a second against the client's lagging view. Only the
+    /// container's own cells fire, a cell fires once on the way in, and a
+    /// full pack is a sentence.
+    #[test]
+    fn a_sweep_plans_each_cell_against_the_last() {
+        let cat = catalog();
+        let mut inv = [stack(HATCHET, 1); INV_SLOTS];
+        inv[HOTBAR_SLOTS + 4] = ItemStack::default();
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        cont[1] = stack(WOOD, 990);
+        cont[2] = stack(HATCHET, 1);
+        let worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
+        let mut out = Vec::new();
+
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            (out[0].to_slot as usize, out[0].count),
+            (HOTBAR_SLOTS + 4, 40)
+        );
+
+        // Resting on it, or coming back to it, sends nothing more.
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 1, "a cell fired twice");
+
+        // The second stack tops up the pile the first made: 960, not 990.
+        assert_eq!(s.over(CONT_BAG, 1, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            (out[1].to_slot as usize, out[1].count),
+            (HOTBAR_SLOTS + 4, 960),
+            "the second cell was planned against the stale view"
+        );
+
+        // The pack's own cells never fire: take, never give.
+        assert_eq!(s.over(CONT_SELF, 0, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 2, "a sweep deposited out of the pack");
+
+        // Nowhere left for the hatchet: said, not sent.
+        assert!(s.over(CONT_BAG, 2, &cat, lane(&mut out)).is_some());
+        assert_eq!(out.len(), 2);
+
+        // Back over the first cell: empty by the copy, so silent.
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 2);
+
+        // **A new hold while two moves are unanswered keeps the plan**: the
+        // views handed in are the stale ones, and a fresh copy of them
+        // would aim at the hole the first move is about to fill.
+        let mut again = Sweep::arm(Some(s.clone()), CONT_BAG, BAG, 8, &inv, &cont, &worn);
+        let mut out2 = Vec::new();
+        assert_eq!(again.over(CONT_BAG, 0, &cat, lane(&mut out2)), None);
+        assert!(
+            out2.is_empty(),
+            "a carried-on sweep took a stack it already took"
+        );
+
+        // Once both are answered, a new hold reads the views afresh, and a
+        // different container never inherits a plan.
+        let mut fresh = Sweep::arm(Some(s.clone()), CONT_BAG, BAG, 9, &inv, &cont, &worn);
+        assert_eq!(fresh.over(CONT_BAG, 0, &cat, lane(&mut out2)), None);
+        assert_eq!(out2.len(), 1, "an answered sweep did not re-read the views");
+        let other = Sweep::arm(Some(s), CONT_BOX, BAG, 8, &inv, &cont, &worn);
+        assert_eq!(other.open(), (CONT_BOX, BAG));
+    }
+
+    /// **A full lane plays nothing it did not send.** The action lane
+    /// holds eight and refuses the ninth; a sweep that played the refused
+    /// move onto its copy anyway would think the stack gone (the cell
+    /// silent for good) and owe an answer that never comes (the copy never
+    /// re-read). So the moves that went are played, and the first refusal
+    /// ends the cell: the move after it is neither offered nor played, even
+    /// to a lane that would take it, because it was planned against a copy
+    /// the refused move had already changed. What did not go is planned
+    /// again when the pointer is next over the cell — the next frame, if it
+    /// rests there — and the count owed is only what went.
+    #[test]
+    fn a_sweep_plays_only_the_moves_that_went() {
+        let cat = catalog();
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS + 2] = stack(WOOD, 990);
+        inv[HOTBAR_SLOTS + 3] = stack(WOOD, 980);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
+
+        // Three moves (top up both piles, then a hole) and a lane that
+        // refuses only the second: the first goes, the third is never asked.
+        let (mut went, mut tried) = (Vec::new(), 0);
+        let quiet = s.over(CONT_BAG, 0, &cat, |a| {
+            tried += 1;
+            let room = tried != 2;
+            if room {
+                went.push(a);
+            }
+            room
+        });
+        assert_eq!(quiet, None);
+        assert_eq!(tried, 2, "the sweep kept sending past a refused move");
+        assert_eq!(
+            went.iter()
+                .map(|m| (m.to_slot as usize, m.count))
+                .collect::<Vec<_>>(),
+            vec![(HOTBAR_SLOTS + 2, 10)],
+            "a move after the refused one went"
+        );
+
+        // Still over the cell, the lane drained: the two that did not go
+        // are asked for, and only they — a third move played onto the copy
+        // would have left 20 to top up the second pile and no hole to fill.
+        let mut out = Vec::new();
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(
+            out.iter()
+                .map(|m| (m.to_slot as usize, m.count))
+                .collect::<Vec<_>>(),
+            vec![(HOTBAR_SLOTS + 3, 20), (HOTBAR_SLOTS, 10)],
+            "a move the lane never took was played onto the copy, or the \
+             stack was re-planned whole"
+        );
+
+        // Three went, so three answers re-read the views: a fourth owed
+        // (the refused one counted) would pin this copy for the whole hold.
+        let mut seen = Sweep::arm(Some(s), CONT_BAG, BAG, 10, &inv, &cont, &worn);
+        let mut again = Vec::new();
+        assert_eq!(seen.over(CONT_BAG, 0, &cat, lane(&mut again)), None);
+        assert_eq!(
+            again.len(),
+            3,
+            "three answers did not re-read the views: the sweep counted a \
+             move the lane refused"
+        );
+    }
+
+    /// **The copy is re-read once every move is answered**, not held for
+    /// the whole hold: another looter takes most of a stack mid-sweep, and
+    /// the next cell is asked for what is there, not for what the hold
+    /// began over. While an answer is owed the copy stands, because the
+    /// views are then behind the lane.
+    #[test]
+    fn a_sweep_rereads_the_views_once_its_moves_are_answered() {
+        let cat = catalog();
+        let mut inv = empty();
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        cont[1] = stack(WOOD, 300);
+        let worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
+        let mut out = Vec::new();
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 1);
+
+        // The move landed, and someone else took 200 of the second stack.
+        inv[HOTBAR_SLOTS] = stack(WOOD, 40);
+        cont[0] = ItemStack::default();
+        cont[1] = stack(WOOD, 100);
+
+        // Unanswered: the copy stands (and asks for the 300 it saw).
+        let mut owed = s.clone();
+        owed.refresh(7, &inv, &cont, &worn);
+        let mut stale = Vec::new();
+        assert_eq!(owed.over(CONT_BAG, 1, &cat, lane(&mut stale)), None);
+        assert_eq!(stale.iter().map(|m| m.count).collect::<Vec<_>>(), vec![300]);
+
+        // Answered: the views are read again, and the 100 is what is asked.
+        s.refresh(8, &inv, &cont, &worn);
+        assert_eq!(s.over(CONT_BAG, 1, &cat, lane(&mut out)), None);
+        assert_eq!(
+            (out[1].to_slot as usize, out[1].count),
+            (HOTBAR_SLOTS, 100),
+            "the sweep over-asked from the copy it took when the hold began"
+        );
+        // The re-read keeps the cell it last fired: resting there is quiet.
+        s.refresh(9, &inv, &cont, &worn);
+        assert_eq!(s.over(CONT_BAG, 1, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 2, "a re-read made the rested-on cell fire again");
+    }
 }
 
 /// **No crafting is drawn beside a container.** The recipe browser has its
@@ -5672,7 +6671,7 @@ fn the_craft_browser_is_behind_the_looting_check() {
         "the old constant title is still in `inv.rs`"
     );
     assert!(
-        code.contains("quick_move("),
+        code.contains("quick_move_stack("),
         "`inv.rs` does not call the quick-move — the whole gesture is in \
          `ui::slots` and this file is the only thing that can fire it"
     );
@@ -5704,6 +6703,8 @@ mod take {
             item,
             count,
             dir: [0; 3],
+            cond: 0,
+            skin: 0,
         }
     }
 
@@ -5816,6 +6817,8 @@ mod take {
             item: 1,
             count: 1,
             dir: [0; 3],
+            cond: 0,
+            skin: 0,
         };
         let p = resolve_take(100.0, 100.0, &[one_q]);
         assert_eq!(p.verb, Verb::Take);
@@ -5969,6 +6972,47 @@ mod research_table {
             "RESEARCH TABLE",
             "and the name bar says what it is, not BOX"
         );
+    }
+
+    /// A sheet on the GROUND names what it teaches too (v102): the wire
+    /// carries the stack's `cond`, `resolve_take` copies it onto the pick,
+    /// and `stamp_teaches` (what `render::verbs::take_or_pull` calls) reads
+    /// it with the research table. Before, the prompt said "Blueprint" for
+    /// every sheet. A blank, and anything else, keeps its own name.
+    #[test]
+    fn a_sheet_on_the_ground_says_which_blueprint_it_is() {
+        use client::ui::interact::resolve_take;
+        use protocol::event::WireGItem;
+        use sim_core::movement::quant_xz;
+        let (rc, cat) = (rc(), catalog());
+        let take = |s: ItemStack| {
+            let rec = WireGItem {
+                id: 1,
+                qx: quant_xz(100.0),
+                qz: quant_xz(100.0),
+                item: s.item,
+                count: s.count,
+                cond: s.cond,
+                ..WireGItem::default()
+            };
+            let mut p = resolve_take(100.0, 100.0, &[rec]);
+            p.stamp_teaches(&rc);
+            p
+        };
+        let sheet = take(blueprint_of(&rc, SAMPLE));
+        assert_eq!(sheet.teaches, Some(SAMPLE));
+        assert_eq!(sheet.prompt(&cat), "[E] TAKE REVOLVER BLUEPRINT ×1");
+        let blank = take(stack(PAPER, 1));
+        assert_eq!(blank.teaches, None);
+        assert_eq!(blank.prompt(&cat), "[E] TAKE BLUEPRINT ×1");
+        assert_eq!(take(stack(7, 30)).prompt(&cat), "[E] TAKE WOOD ×30");
+        // Another verb is never a sheet, whatever its fields say.
+        let mut door = Pick {
+            verb: Verb::Door,
+            ..sheet
+        };
+        door.stamp_teaches(&rc);
+        assert_eq!(door.teaches, None);
     }
 
     /// A sheet is named and drawn as what it teaches; a blank is honestly

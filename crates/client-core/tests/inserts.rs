@@ -47,7 +47,7 @@ fn inserts_survive_late_definitions_and_rebuilds_then_unseal_on_removal() {
         let mut dc = DeployContent::probe_fixture();
         dc.defs[2].arch = arch;
         dc.defs[2].placement = placement;
-        let (n, _) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        let (n, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
         c.on_stream(&buf[..n]).unwrap();
         assert!(sealed(&c), "late definitions must seal the existing insert");
         let (n, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();

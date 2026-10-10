@@ -147,6 +147,39 @@ sight_deg = 240
 pack_m = 0
 fire_fear_m = 0
 
+# **The brain's numbers** (`sim-core/src/brain.rs`, `noise.rs`). Every
+# species carries the lot, though only a design that asks spends each one:
+# a pig never waits its turn, gives up, howls or circles, and a wolf never
+# beds down. They are the numbers the brain had in code, the same on every
+# row until a species earns its own.
+#
+# No more than two close in on one target at a time; the rest of a pack
+# circles. Ours, not theirs: the reference's wolves visibly mix charging
+# with circling and reposition between attacks, but no published rule caps
+# the count. Two is the cap that makes the mix happen.
+pack_biters = 2
+# Failed routes to one target before it gives up and goes home.
+give_up_tries = 3
+# A minute out of combat (not struck, nobody remembered) and it heals,
+# twenty seconds from a scratch to whole: the reference's reworked wolf
+# regenerates "after a long time out of combat".
+heal_after_seconds = 60
+heal_seconds = 20
+# A pack animal howls for its pack at most this often: one call per hunt,
+# not one per sighting.
+howl_seconds = 20
+# The circle a waiting animal walks round its target.
+orbit_m = 7
+# At night, when an idle stand runs out, the draw to lie down for 20–40 s
+# instead of roaming.
+sleep_pct = 40
+# How far each kind of noise carries to it. Ours: the reference publishes
+# that its animals hear these, not how far. A gunshot at 100 m is the
+# disclosure `reference/AUDIO.md` §9 already prices for players; a bow is
+# quiet, the reason to hunt with one; a strike is a hatchet in a trunk, a
+# pick on a node or a round landing; a blast is a satchel.
+hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
+
 # What the corpse holds. The kill stands these rows up as a ground bag at
 # the death position (`mob::strike` → `backpack::stand_up`) — the killer
 # walks over and loots it with E like any bag, or cuts more out of it with a
@@ -298,14 +331,27 @@ sight_deg = 240
 # own senses answers a pack-mate on a target inside 40 m — its howl — so a
 # pack arrives together. Free wolves den in threes (`mob::PACK_SIZE`) and
 # the guards on one post are a pack already. No more than two close in on
-# one player at a time (`brain::PACK_BITERS`); the rest circle at 7 m and
-# rush the gap.
+# one player at a time (`pack_biters`); the rest circle at 7 m (`orbit_m`)
+# and rush the gap.
 pack_m = 40
 
 # A lit torch inside 8 m holds a wolf off: it circles at the edge of the
 # light instead of biting (the reference's wolves keep off fire). What it
 # costs the player is the hand the torch is in.
 fire_fear_m = 8
+
+# The pig's brain numbers (its row says why each is what it is). This is
+# the row that spends the first five: it waits its turn, gives up on a
+# player it cannot reach, howls and circles. Its design never beds down,
+# so `sleep_pct` is the table's.
+pack_biters = 2
+give_up_tries = 3
+heal_after_seconds = 60
+heal_seconds = 20
+howl_seconds = 20
+orbit_m = 7
+sleep_pct = 40
+hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
 
 # **It pays less than the pig, and that is the reference's own shape** —
 # their boar is the fat-and-cloth animal and their wolf is not. The point
@@ -390,6 +436,15 @@ body_h_cm = 130
 sight_deg = 240
 pack_m = 0
 fire_fear_m = 0
+# The pig's brain numbers: it hears, heals and beds down like one.
+pack_biters = 2
+give_up_tries = 3
+heal_after_seconds = 60
+heal_seconds = 20
+howl_seconds = 20
+orbit_m = 7
+sleep_pct = 40
+hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
 drops = [
   { item = "item.raw_meat", count = 6 },
   { item = "item.fat", count = 8 },

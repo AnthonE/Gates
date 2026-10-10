@@ -32,12 +32,59 @@
 //! reports `"{addr}: {why}"` into the menu status, and this screen says the
 //! same sentence, larger, with the two rows a player wants next. One
 //! vocabulary for "the shard is not there", however you arrived at it.
+//!
+//! **Gated headless** (`tests/disconnect.rs`, `NOW.md` §0v menu 2): the
+//! wiring lives in [`plugin`] so that test boots the SAME registrations the
+//! game does, hangs up a replayed session under every state that holds one,
+//! and reads the screen, the reason and the torn-down world back.
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use super::screen::{Connecting, Menu, Screen};
-use super::{ui, Net};
+use super::{audio, fx, impact, input, map, ui, viewmodel, water, world_teardown, Net};
+
+/// The whole involuntary disconnect: the watch, the entry chain, the screen.
+///
+/// `watch` is ungated: its guard is `Net`'s presence (the module doc says why
+/// that is exactly the right set of states), and it runs after `place_eye` so
+/// it reads the latch the frame's own pump set rather than last frame's.
+/// Entry runs the SAME teardown chain the menu runs — the session under the
+/// world is dead, so the world goes before the screen is built, not when the
+/// player clicks through — and `setup` follows it in the chain so the reason
+/// line it draws was captured by `watch` before `Net` went away.
+///
+/// The resources the entry chain borrows from other modules (the rings,
+/// `audio`, `water`, `map`, …) are theirs to register; only this module's
+/// own two are initialised here.
+pub fn plugin(app: &mut App) {
+    app.init_resource::<Reason>()
+        .init_resource::<Chosen>()
+        .add_systems(Update, watch.after(input::place_eye))
+        .add_systems(
+            OnEnter(Screen::Disconnected),
+            (world_teardown, setup).chain(),
+        )
+        .add_systems(
+            OnEnter(Screen::Disconnected),
+            audio::teardown.after(world_teardown),
+        )
+        .add_systems(
+            OnEnter(Screen::Disconnected),
+            water::teardown.after(world_teardown),
+        )
+        .add_systems(
+            OnEnter(Screen::Disconnected),
+            (map::forget, viewmodel::forget, impact::forget, fx::forget),
+        )
+        .add_systems(OnExit(Screen::Disconnected), teardown)
+        .add_systems(
+            Update,
+            (click, keys, act)
+                .chain()
+                .run_if(in_state(Screen::Disconnected)),
+        );
+}
 
 /// Why the player is looking at this screen, captured at the moment the
 /// hangup is noticed — `Net` (and `Connecting`'s relevance) do not survive

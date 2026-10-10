@@ -970,6 +970,7 @@ fn a_higher_bench_unlocks_a_lower_tier_node() {
         arch: ARCH_WORKBENCH2,
         placement: PLACE_ANY,
         hp: 80,
+        matter: sim_core::deploy::MATTER_METAL,
         item: BENCH_ITEM,
         n_costs: 1,
         costs: [(0, 20), (0, 0), (0, 0), (0, 0)],

@@ -498,6 +498,180 @@ fn an_open_is_heard_near_and_not_far() {
     );
 }
 
+/// **A spectator seat sees its target's open container** (NOW §5sp). The
+/// seat opens nothing itself, so it rides the target's subscription: the
+/// same reset batch on the open, the same diff on a change, a close when the
+/// player closes or walks off, and silence after. A watcher seated while the
+/// bag is already open is shown it too, and the lid is still heard once —
+/// the seat's late open is not a second deed in the world.
+#[test]
+fn a_seat_sees_the_container_its_player_has_open() {
+    use sim_core::limits::MAX_PLAYERS;
+    let (seat_a, seat_b) = (MAX_PLAYERS, MAX_PLAYERS + 1);
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut clients = two_clients(&mut core, &stats);
+    let bag = bag_from_a_kill(&mut core, &stats, &mut clients);
+    let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+    core.world.players[w1].body = core.world.players[w0].body;
+    assert!(core.connect_spectator(seat_a, id_of(0), 0), "seated");
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(syncs(&seen).is_empty(), "a seat opens nothing by itself");
+
+    // Open: the seat is shown exactly what the opener is.
+    let of = |got: &[Sync], slot: usize| -> Vec<Sync> {
+        got.iter().filter(|s| s.0 == slot).cloned().collect()
+    };
+    let same = |a: &[Sync], b: &[Sync]| -> bool {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| (x.1, x.2, x.3, &x.4) == (y.1, y.2, y.3, &y.4))
+    };
+    let mut open = Vec::new();
+    ask(&mut core, 0, CONT_BAG, bag);
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut open);
+    }
+    let got = syncs(&open);
+    let (mine, theirs) = (of(&got, 0), of(&got, seat_a));
+    assert_eq!(mine.len(), 1, "the opener's reset batch: {got:?}");
+    assert_eq!((mine[0].1, mine[0].2, mine[0].3), (CONT_BAG, bag, true));
+    assert_eq!(mine[0].4.len(), 2, "the bag's two stacks: {got:?}");
+    assert!(same(&mine, &theirs), "the seat saw another panel: {got:?}");
+    assert!(of(&got, 1).is_empty(), "the neighbour still sees nothing");
+
+    // A watcher who arrives with the bag already open is shown it.
+    assert!(core.connect_spectator(seat_b, id_of(0), 0), "seated late");
+    let mut late = Vec::new();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut late);
+    }
+    let got = syncs(&late);
+    assert!(
+        same(&of(&got, seat_b), &mine),
+        "a late seat missed the open bag: {got:?}"
+    );
+    assert!(
+        of(&got, 0).is_empty() && of(&got, seat_a).is_empty(),
+        "nothing changed for the opener or the first seat: {got:?}"
+    );
+    let heard = [&seen, &open, &late]
+        .iter()
+        .flat_map(|v| v.iter())
+        .filter(|(slot, m)| *slot == 1 && matches!(m, EventMsg::Heard { .. }))
+        .count();
+    assert_eq!(heard, 1, "the lid is heard once, not once per seat");
+
+    // A change: one diff each, the same rows.
+    core.world.backpacks.set_slot(
+        0,
+        SLOT_A,
+        ItemStack {
+            item: THIRD,
+            count: COUNT_C,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    let mut diff = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut diff);
+    let got = syncs(&diff);
+    let mine = of(&got, 0);
+    assert_eq!(mine.len(), 1, "{got:?}");
+    assert_eq!((mine[0].1, mine[0].2, mine[0].3), (CONT_BAG, bag, false));
+    assert!(same(&mine, &of(&got, seat_a)), "{got:?}");
+    assert!(same(&mine, &of(&got, seat_b)), "{got:?}");
+
+    // The player closes: no echo to them, a close to each seat, then quiet.
+    ask(&mut core, 0, CONT_SELF, 0);
+    let mut shut = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut shut);
+    }
+    let got = syncs(&shut);
+    assert!(of(&got, 0).is_empty(), "{got:?}");
+    for seat in [seat_a, seat_b] {
+        let s = of(&got, seat);
+        assert_eq!(s.len(), 1, "one close per seat: {got:?}");
+        assert_eq!(
+            (s[0].1, s[0].2, s[0].3, s[0].4.len()),
+            (CONT_SELF, 0, true, 0)
+        );
+    }
+
+    // Open again and walk off: the server shuts every view, once each.
+    ask(&mut core, 0, CONT_BAG, bag);
+    let mut again = Vec::new();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut again);
+    }
+    assert_eq!(syncs(&again).len(), 3, "{:?}", syncs(&again));
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), SPAWN.0 + 200.0, SPAWN.1 + 200.0);
+    let mut away = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut away);
+    }
+    let got = syncs(&away);
+    for slot in [0, seat_a, seat_b] {
+        let s = of(&got, slot);
+        assert_eq!(s.len(), 1, "one close for slot {slot}: {got:?}");
+        assert_eq!((s[0].1, s[0].3, s[0].4.len()), (CONT_SELF, true, 0));
+    }
+}
+
+/// **A seat's close survives a refused push and the resync after it.** The
+/// player closes while the seat's ring is full, so the close push is
+/// refused; the resync that follows drops the seat's subscription without
+/// a word, and after it the two subscriptions agree (nothing open) while
+/// the watcher's panel is still up. The close is owed by what the watcher
+/// was told, so the next tick sends it, once.
+#[test]
+fn a_seat_is_told_the_close_a_refused_push_and_a_resync_swallowed() {
+    use sim_core::limits::MAX_PLAYERS;
+    let seat = MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut clients = two_clients(&mut core, &stats);
+    let bag = bag_from_a_kill(&mut core, &stats, &mut clients);
+    assert!(core.connect_spectator(seat, id_of(0), 0), "seated");
+    let mut open = Vec::new();
+    ask(&mut core, 0, CONT_BAG, bag);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut open);
+    }
+    assert!(
+        syncs(&open)
+            .iter()
+            .any(|s| (s.0, s.1, s.2, s.3) == (seat, CONT_BAG, bag, true)),
+        "the seat was never shown the bag: {:?}",
+        syncs(&open)
+    );
+
+    // The close, on a tick whose every push to the seat is refused.
+    ask(&mut core, 0, CONT_SELF, 0);
+    core.tick_bare(&stats, |_, slot, _| slot != seat);
+    core.clients[seat].ev_resync();
+    assert_eq!(
+        core.clients[seat].open_cont_kind, CONT_SELF,
+        "the resync dropped the seat's subscription"
+    );
+
+    let mut after = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+    let got: Vec<_> = syncs(&after).into_iter().filter(|s| s.0 == seat).collect();
+    assert_eq!(got.len(), 1, "one close owed to the seat: {got:?}");
+    assert_eq!(
+        (got[0].1, got[0].2, got[0].3, got[0].4.len()),
+        (CONT_SELF, 0, true, 0)
+    );
+}
+
 #[test]
 fn walking_away_closes_the_panel_rather_than_starving_it() {
     let stats = ShardStats::default();
@@ -1909,7 +2083,7 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     // never a count or a condition — the clothes, not the panel.
     assert!(
         seen.iter().any(|(s, m)| *s == 1
-            && matches!(m, EventMsg::Worn { id, items }
+            && matches!(m, EventMsg::Worn { id, items, .. }
                 if *id == id_of(0) && *items == [OTHER, THIRD])),
         "the other player is told what the body wears: {seen:?}"
     );

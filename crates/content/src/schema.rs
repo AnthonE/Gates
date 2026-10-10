@@ -30,6 +30,45 @@ pub enum EquipSlot {
     None,
 }
 
+/// What an item is, for the craft rail (`sim_core::craft::CLASS_*`): the
+/// reference's classes, CONSTRUCTION through AMMO, plus FOOD and OTHER.
+/// Required on every row, so a new item cannot land in no bucket. The sim
+/// never reads it; it rides the item catalog to the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemClass {
+    Construction,
+    Items,
+    Resources,
+    Clothing,
+    Tools,
+    Medical,
+    Weapons,
+    Ammo,
+    Food,
+    Other,
+}
+
+impl ItemClass {
+    /// The wire's code. Named per variant rather than `as u8`, so the
+    /// schema's order and the ledger's can move apart without a re-code.
+    pub fn code(self) -> u8 {
+        use sim_core::craft::*;
+        match self {
+            ItemClass::Construction => CLASS_CONSTRUCTION,
+            ItemClass::Items => CLASS_ITEMS,
+            ItemClass::Resources => CLASS_RESOURCES,
+            ItemClass::Clothing => CLASS_CLOTHING,
+            ItemClass::Tools => CLASS_TOOLS,
+            ItemClass::Medical => CLASS_MEDICAL,
+            ItemClass::Weapons => CLASS_WEAPONS,
+            ItemClass::Ammo => CLASS_AMMO,
+            ItemClass::Food => CLASS_FOOD,
+            ItemClass::Other => CLASS_OTHER,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Item {
@@ -39,6 +78,8 @@ pub struct Item {
     pub tier: u32,
     pub rarity: Rarity,
     pub slot: EquipSlot,
+    /// The craft rail's class ([`ItemClass`]).
+    pub class: ItemClass,
     /// Maximum condition, **hundredths of a point** (item durability v0,
     /// DECISIONS.md 2026-08-15 — taken from the reference, per item, never
     /// one constant: rock 10 000, torch 5 000, stone tools 10 000, metal
@@ -450,6 +491,14 @@ pub struct Weapon {
     /// declares `light_burn` — a bonus for burning on something that cannot
     /// burn is a number nothing reads (`validate.rs`).
     pub lit_damage: Option<u32>,
+    /// Hundredths of condition one **landed** blow takes off the item — a
+    /// body, an animal or a built thing (`sim_core::combat::MeleeDef::wear`;
+    /// the reference's torch, ~7 points a swing). A node hit wears by
+    /// `gatherables.toml`'s `(tool, node)` table instead, and a whiff wears
+    /// nothing. Only on a melee row whose item declares `condition_max`,
+    /// nonzero and inside `u16` — the durability rules' V1/V5/V6 shapes
+    /// (`validate.rs`).
+    pub condition_loss: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -544,12 +593,26 @@ pub enum DeployArchetype {
     Planter,
 }
 
+/// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
+/// never reads it; it rides the wire so a client knows what a blow on the
+/// thing sounds and looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployMatter {
+    Wood,
+    Stone,
+    Metal,
+    Cloth,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Deployable {
     pub id: String,
     pub archetype: DeployArchetype,
     pub placement: Placement,
+    /// What it is made of. A door's agrees with its `material`.
+    pub matter: DeployMatter,
     /// Doors only: pairs the door under its material's wall hp.
     pub material: Option<Material>,
     pub hp: u32,
@@ -759,10 +822,46 @@ pub struct Mob {
     /// A target holding a lit torch inside this many metres is circled
     /// rather than bitten. Zero fears nothing.
     pub fire_fear_m: u32,
+    /// **The brain's numbers** (`sim-core/src/brain.rs`), every one
+    /// required: at most this many animals bite one target at once, and the
+    /// rest of a pack circles. Only a pack animal waits its turn.
+    pub pack_biters: u32,
+    /// Failed routes to one target before the animal gives up on it.
+    pub give_up_tries: u32,
+    /// Out of combat this long — not struck, nobody remembered — an animal
+    /// starts to heal…
+    pub heal_after_seconds: u32,
+    /// …and takes this long from a scratch to whole, an even share of its
+    /// hp every think.
+    pub heal_seconds: u32,
+    /// A pack animal howls for its pack at most this often.
+    pub howl_seconds: u32,
+    /// The circle a waiting animal walks round its target, metres.
+    pub orbit_m: u32,
+    /// Percent: the draw an idle animal makes at night, when its stand runs
+    /// out, to bed down rather than roam. Only a design with a way into
+    /// sleep asks (the boar's; a hunter never beds down).
+    pub sleep_pct: u32,
+    /// How far it hears each kind of noise, metres (`sim-core/src/noise.rs`).
+    pub hear_m: Hearing,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
     pub drops: Vec<Stack>,
+}
+
+/// How far a species hears each kind of noise, metres. Zero is deaf to it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hearing {
+    /// A firearm going off.
+    pub gun: u32,
+    /// A bow loosing.
+    pub bow: u32,
+    /// A strike on a surface: a felling, a mining, a round landing.
+    pub strike: u32,
+    /// A charge going off.
+    pub blast: u32,
 }
 
 /// A species' liking for each biome, 0–1 (`terrain::Biome`).

@@ -321,7 +321,9 @@ pub fn scale(dc: &DeployContent, inside: bool) -> u32 {
 /// Bounded by the piece and deploy stores (`MAX_PIECES` + `MAX_DEPLOYS`
 /// visits, each O(1) for an address in the base itself —
 /// `claim::ClaimCache::covers`' membership probe), and asked per feed
-/// press, never per tick.
+/// press and by the crew vital's push (`deploy::CREW_VITAL_TICKS`, phased
+/// by connection so a tick asks it at most once), never per player per
+/// tick.
 pub fn bill(
     dc: &DeployContent,
     bc: &BuildContent,

@@ -4225,8 +4225,9 @@ impl Survivor {
                 self.home.lost_hearth();
             }
         }
-        // Its own deploys' answers, and the bag list each death screen
-        // brings: home takes the facts.
+        // Its own deploys' answers: home takes the facts. (The own-bag
+        // list comes in below, `APPLIED2_BAGS`: at the join, as its bags go
+        // down or come up, on a wake and at each death.)
         while let Some((cx, cz, level, loc, deploy)) = core.pop_placed() {
             self.home.on_placed(cx, cz, level, loc, deploy);
             self.builder.on_placed(cx, cz, level, loc, deploy);
@@ -4239,7 +4240,9 @@ impl Survivor {
             self.stash_job.on_refused();
             self.oven_job.on_refused(reason);
         }
-        // The reply to a feed of its own cupboard: the stock readout.
+        // Its own cupboard's stock readout: a feed's reply, or the crew
+        // vital's push while it stands in the claim. Either is a reading;
+        // only a reply answers a feed (`StashJob::on_stock`).
         if flags & APPLIED_STOCK != 0 {
             let (cx, cz, level) = core.stock_addr;
             if self
@@ -4248,7 +4251,7 @@ impl Survivor {
                 .is_some_and(|h| (h.cx, h.cz, h.level) == (cx, cz, level))
             {
                 self.home.on_stock(core, tick, self.builder.charged());
-                self.stash_job.on_stock();
+                self.stash_job.on_stock(core.stock_grew);
             }
         }
         // Its own box's panel: what it shows is what the box holds.
@@ -5765,7 +5768,7 @@ mod tests {
             })
         ));
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_craft_done(9, 1, &mut buf).unwrap();
+        let n = protocol::event::encode_event_craft_done(9, 1, 0, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let n = protocol::event::encode_event_inv(
             &[InvSlot {
@@ -6296,7 +6299,7 @@ mod tests {
         let now = Instant::now();
         bot.frame_at(&view, 1, 1, now);
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_gather(5, 25, &mut buf).unwrap();
+        let n = protocol::event::encode_event_gather(5, 25, 0, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);

@@ -8,8 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, Material, NodeArchetype, Placement,
-    Shape, Station, Weapon, WeaponKind,
+    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, DeployMatter, Material, NodeArchetype,
+    Placement, Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -29,8 +29,9 @@ use sim_core::craft::{
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
     ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS,
-    ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
-    PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND, PLACE_WINDOW,
+    ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3, MATTER_CLOTH, MATTER_METAL, MATTER_STONE,
+    MATTER_WOOD, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND,
+    PLACE_WINDOW,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -510,6 +511,12 @@ impl Content {
                     Placement::WallFrame => PLACE_FRAME,
                 },
                 hp,
+                matter: match d.matter {
+                    DeployMatter::Wood => MATTER_WOOD,
+                    DeployMatter::Stone => MATTER_STONE,
+                    DeployMatter::Metal => MATTER_METAL,
+                    DeployMatter::Cloth => MATTER_CLOTH,
+                },
                 item: self
                     .item_index(&d.id)
                     .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?,
@@ -778,6 +785,10 @@ impl Content {
             // ranged row's reason (`RangedDef::head_pct`).
             let lit_bonus = u16::try_from(w.lit_damage.unwrap_or(0))
                 .map_err(|_| format!("bake: `{}` lit_damage overflows u16", w.id))?;
+            // Validate held it inside u16 (V1's shape); the bake says so
+            // again rather than truncating.
+            let wear = u16::try_from(w.condition_loss.unwrap_or(0))
+                .map_err(|_| format!("bake: `{}` condition_loss overflows u16", w.id))?;
             cc.melee[idx] = MeleeDef {
                 damage,
                 structure,
@@ -785,6 +796,7 @@ impl Content {
                 head_pct: w.headshot_pct as u16,
                 limb_pct: w.limb_pct as u16,
                 lit_bonus,
+                wear,
             };
         }
         Ok(cc)
@@ -2371,6 +2383,34 @@ impl Content {
                     as i16,
                 pack_cm: m.pack_m as i64 * 100,
                 fire_fear_cm: m.fire_fear_m as i64 * 100,
+                // The brain's numbers. Validate bounded the counts and the
+                // percent, so the narrowing casts cannot truncate; spans are
+                // ticks, and the heal is a count of thinks.
+                pack_biters: m.pack_biters as u8,
+                give_up_tries: m.give_up_tries as u8,
+                heal_after_ticks: m
+                    .heal_after_seconds
+                    .checked_mul(TICK_HZ)
+                    .ok_or_else(|| format!("bake: mob `{}` heal delay overflows", m.id))?,
+                heal_parts: small(
+                    m.heal_seconds
+                        .checked_mul(TICK_HZ)
+                        .ok_or_else(|| format!("bake: mob `{}` heal span overflows", m.id))?
+                        / sim_core::limits::MOB_THINK_TICKS as u32,
+                    "heal_seconds",
+                )?,
+                howl_ticks: m
+                    .howl_seconds
+                    .checked_mul(TICK_HZ)
+                    .ok_or_else(|| format!("bake: mob `{}` howl cooldown overflows", m.id))?,
+                orbit_cm: m.orbit_m as i64 * 100,
+                sleep_pct: m.sleep_pct as u8,
+                hear: sim_core::noise::Hearing {
+                    gun_cm: m.hear_m.gun as i64 * 100,
+                    bow_cm: m.hear_m.bow as i64 * 100,
+                    strike_cm: m.hear_m.strike as i64 * 100,
+                    blast_cm: m.hear_m.blast as i64 * 100,
+                },
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,

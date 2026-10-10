@@ -29,9 +29,13 @@
 //! does not hold, and the sim's refusal (`REFUSE_B_WINDOW`) already has a
 //! sentence.
 
-use sim_core::build::{shape_has_facing, BuildContent};
+use sim_core::build::{repair_quote, shape_has_facing, BuildContent, MAX_REPAIR_COSTS};
+use sim_core::craft::inv_count;
+use sim_core::deploy::DeployContent;
+use sim_core::gather::ItemStack;
+use sim_core::limits::INV_SLOTS;
 
-use super::build::Rings;
+use super::build::{Cost, Rings};
 use super::structure::{self, Store, Target};
 
 /// The verbs on the ring.
@@ -242,12 +246,91 @@ pub fn upgrade_row(near: &Target, defs: &BuildContent, have: u16) -> Option<u16>
     })
 }
 
+/// What mending `t` takes, row by row against the pack: its own cost rows,
+/// pro rata to the hp it is missing, at the table's repair percent. That is
+/// `sim_core::build::repair_quote`, the function `build::repair` charges
+/// with, so the wheel names the bill rather than "cost depends on damage"
+/// (wire v102 carries each record's hp and the percent) — for the hp the
+/// client was last told, which decay can have lowered since. The rows are
+/// therefore a floor on the bill, and [`repair_line`] says so.
+///
+/// `None` while the client cannot name it: the row or the percent has not
+/// dripped, or the hp is unknown. Zero rows is an answer, not a wait —
+/// nothing missing, or a row that quotes no price, `repair`'s refusals.
+pub fn repair_rows(
+    t: &Target,
+    pieces: &BuildContent,
+    piece_have: u16,
+    deploys: &DeployContent,
+    deploy_have: u16,
+    inv: &[ItemStack; INV_SLOTS],
+) -> Option<([Cost; MAX_REPAIR_COSTS], usize)> {
+    let mut rows = [(0u16, 0u16); MAX_REPAIR_COSTS];
+    let (hp_full, n) = match t.store {
+        Store::Piece if (t.row as u16) < piece_have.min(pieces.piece_count) => {
+            let def = pieces.pieces[t.row as usize];
+            let n = (def.n_costs as usize).min(def.costs.len());
+            rows[..n].copy_from_slice(&def.costs[..n]);
+            (def.hp, n)
+        }
+        Store::Deploy if (t.row as u16) < deploy_have.min(deploys.def_count) => {
+            let def = deploys.defs[t.row as usize];
+            let n = (def.n_costs as usize).min(def.costs.len());
+            rows[..n].copy_from_slice(&def.costs[..n]);
+            (def.hp, n)
+        }
+        _ => return None,
+    };
+    if hp_full == 0 || t.hp == 0 || pieces.repair_pct == 0 {
+        return None;
+    }
+    let mut quote = [(0u16, 0u32); MAX_REPAIR_COSTS];
+    let n = repair_quote(&rows[..n], t.hp, hp_full, pieces.repair_pct, &mut quote);
+    let mut out = [Cost {
+        item: 0,
+        units: 0,
+        have: 0,
+    }; MAX_REPAIR_COSTS];
+    for (slot, &(item, units)) in out.iter_mut().zip(quote.iter()).take(n) {
+        *slot = Cost {
+            item,
+            units,
+            have: inv_count(inv, item),
+        };
+    }
+    Some((out, n))
+}
+
+/// The repair readout's headline, over [`repair_rows`]' row count.
+///
+/// **A floor, and it says so.** Decay drains a structure's hp with no
+/// event (a broadcast per decay step would be every unpaid wall in the
+/// world, every period), so between one record and the next `StructHit`
+/// or `PieceRepaired` the mirror's hp can stand above the store's. Never
+/// below it: every edge that raises hp (a repair, an upgrade, a placement)
+/// is sent. `repair_quote` never falls as the hp missing grows, so the
+/// quoted rows are the bill or less, row by row, and the hp restored is
+/// this or more. The line promises that much and no more, rather than an
+/// exact price the server may raise.
+pub fn repair_line(t: Option<&Target>, rows: Option<usize>) -> String {
+    match (t, rows) {
+        // `repair`'s own refusal for a row with no price.
+        (_, Some(0)) => "cannot be repaired".into(),
+        (Some(t), Some(_)) => format!(
+            "Restores {}+ HP to {} · costs at least",
+            t.hp_max.saturating_sub(t.hp),
+            t.hp_max
+        ),
+        _ => "Waiting for repair details".into(),
+    }
+}
+
 /// Human-readable target identity, read from the same rows as the action.
 pub fn target_name(
     near: Option<&Target>,
     pieces: &BuildContent,
     piece_have: u16,
-    deploys: &sim_core::deploy::DeployContent,
+    deploys: &DeployContent,
     deploy_have: u16,
     catalog: &protocol::ItemCatalog,
 ) -> String {

@@ -25,9 +25,9 @@ use sim_core::build::{
 };
 use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
-use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
+use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -38,11 +38,11 @@ use sim_core::limits::{
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
-/// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 315 B since v89's oven roles — 29 header bits and 311 a
-/// row; `catalog_batches_walk_the_table_within_cap` is the one that
-/// measures rather than remembers — a full slot-sync batch
-/// ≈ 258 B) with headroom; the client-side framer refuses past it.
+/// Longest event-lane message. Sized by the worst subtypes (a full
+/// ground-stack batch ≈ 315 B; a full catalog batch ≈ 284 B since v102 —
+/// 29 header bits and seven rows of 320, held by the assert at
+/// `CATALOG_ROW_MAX_BITS` and `catalog_batches_walk_the_table_within_cap`)
+/// with headroom; the client-side framer refuses past it.
 /// Registered in DECISIONS.md §open.
 pub const MAX_EVENT_MSG_BYTES: usize = 320;
 
@@ -57,8 +57,10 @@ const _: () = assert!(SLOT_SYNC_BATCH <= 64);
 /// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
 pub const GROW_SYNC_BATCH: usize = 32;
 
-/// Item names one catalog message carries.
-pub const CATALOG_BATCH: usize = 8;
+/// Item names one catalog message carries. Seven since v102: a worst-case
+/// row is 320 bits with the class nibble, and eight of them would pass
+/// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+pub const CATALOG_BATCH: usize = 7;
 
 /// Skin rows one skin-catalog message carries (skins v0). A row is at most
 /// 16 + 16 + 24 + 2 + 32 + 5 + 24 × 8 = 287 bits, so eight are ≈ 287 B —
@@ -87,14 +89,18 @@ pub const VEND_BATCH: usize = 8;
 pub const VENDOR_NAME_BYTES: usize = 16;
 
 /// Loose ground stacks one sync message carries (ground items v0).
-/// Sixteen × 14 B is ~230 B, inside `MAX_EVENT_MSG_BYTES` with the
-/// headroom the catalog batch leaves. Overflow policy: the next message
+/// A lying stack is 117 bits; the widest record — an arrow stuck where it
+/// went in, carrying a condition and a skin (v94, v102) — is 173, so
+/// fourteen of those are 305 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were,
+/// until the skin took 17 bits a record): the assert at
+/// `GITEM_SYNC_COUNT_BITS` and `gitem_sync_widest_batch_fits_the_cap`
+/// hold it there. Overflow policy: the next message
 /// continues the walk, exactly as the bag walk does — and the walk
 /// restarts whenever the store moves, which for litter is often, so a
 /// batch much larger than this would spend a tick's lane on a set the
 /// next barrel invalidates. Proposed default, DECISIONS.md §open (ground
 /// items v0).
-pub const GITEM_SYNC_BATCH: usize = 16;
+pub const GITEM_SYNC_BATCH: usize = 14;
 
 /// Arrows in bodies one sync message carries (wire v94): the body, the
 /// round, where in it the arrow went in and which way. Fifteen bytes a
@@ -112,18 +118,20 @@ pub const RECIPE_BATCH: usize = 4;
 /// `RECIPE_BATCH` because the two tables drip side by side on join.
 pub const RESEARCH_BATCH: usize = 4;
 
-/// Placed-piece records one sync message carries (a record is 33 bits;
-/// 32 keep the batch ≈ 134 B, well under the message cap). The join walk
-/// is drip-fed like the harvested-set sync.
+/// Placed-piece records one sync message carries (a record is 62 bits
+/// since v102's exact hp; 32 keep the batch ≈ 251 B, under the message cap,
+/// and the assert at `PIECE_REC_BITS` holds it there). The join walk is
+/// drip-fed like the harvested-set sync.
 pub const PIECE_SYNC_BATCH: usize = 32;
 
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
 
-/// Placed-deployable records one sync message carries (a record is 65
-/// bits — address, row, state, damage and the pose; 24 keep the batch
-/// ≈ 200 B, under the 320 B message cap). The join walk is drip-fed like
-/// the piece sync.
+/// Placed-deployable records one sync message carries (a record is 89
+/// bits — address, row, state, damage, the pose, the beds and since v102
+/// the exact hp; 24 keep the batch ≈ 270 B, under the 320 B message cap,
+/// held by the assert at `DEPLOY_REC_BITS`). The join walk is drip-fed
+/// like the piece sync.
 pub const DEPLOY_SYNC_BATCH: usize = 24;
 
 /// Deploy-def rows one defs message carries (a full row is ~5 B).
@@ -309,6 +317,10 @@ const SUB_GATHER_REFUSED: u32 = 49;
 /// lost: a client that missed one placement would offer a bag it does not
 /// have, or hide one it does, with no event left to correct it. Eight
 /// entries is `BAG_CAP`, which placement already enforces.
+///
+/// *When*: at a join and after a resync, on the tick one of the owner's
+/// bags is placed, taken down or spent by a wake on it, and on their
+/// death, ahead of the `Death`.
 ///
 /// The `ready` bit is a **snapshot at send**, not a subscription: a
 /// cooldown lapses on a clock that emits nothing. `world.rs`'s respawn is
@@ -500,8 +512,9 @@ const SUB_MECH_SOLVED: u32 = 87;
 const SUB_ALPHABET: u32 = 88;
 /// What a player's body is wearing (wire v98): the item in each wear slot,
 /// `NO_ITEM` for none — so other clients draw the hood, the helmet, the
-/// poncho on the body. Ids only, never `count` or `cond`. Sent to everyone
-/// when it changes and in full to a joiner, one per tick (`SUB_TAG`'s drip).
+/// poncho on the body — and each piece's skin (v102). Never `count` or
+/// `cond`. Sent to everyone when it changes and in full to a joiner, one
+/// per tick (`SUB_TAG`'s drip).
 const SUB_WORN: u32 = 89;
 /// A planter's beds as they are drawn (wire v100, crops v1): the address
 /// and two bits a bed (`sim_core::oven::planter_stages`). Broadcast on a
@@ -708,6 +721,13 @@ const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
 const PIECE_DEFS_TOTAL_BITS: u32 = 7;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
+/// The table's repair percent on `SUB_PIECE_DEFS` (wire v102). Content
+/// validates `repair_cost_pct` to 1..=100 and an unbaked table is 0, which
+/// crosses as itself; seven bits hold 100, so 101..=127 are forgeable and
+/// both ends refuse them.
+const REPAIR_PCT_BITS: u32 = 7;
+const REPAIR_PCT_MAX: u16 = 100;
+const _: () = assert!(REPAIR_PCT_MAX < (1 << REPAIR_PCT_BITS));
 /// Widened 3 → 4 in wire v40 (triangles v0): catalogue v1 had saturated
 /// the 3-bit field — its own domain pin said the triangles could not
 /// land without this line. Circulation widens it again to five bits in v72;
@@ -722,6 +742,41 @@ const N_COSTS_BITS: u32 = 2;
 /// quotes no recipe for bakes unpriced and `build::repair` refuses it.
 const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
+/// A structure's exact hp on the piece and deploy records (wire v102): the
+/// stores' own `u16` at its full width, so every hp the sim can hold
+/// crosses as itself and there is no value past it to refuse.
+const STRUCT_HP_BITS: u32 = u16::BITS;
+/// The widths `write_piece_rec` puts down: address, row, facing, band,
+/// plate, and the exact hp (v102).
+const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
+    + BUILD_LEVEL_BITS
+    + BUILD_LOC_BITS
+    + PIECE_ROW_BITS
+    + 1
+    + DMG_BAND_BITS
+    + PLATE_BITS
+    + STRUCT_HP_BITS) as usize;
+/// `write_deploy_rec`'s: address, row, the three state bits, band, the
+/// pose's three bytes, the beds, and the exact hp (v102).
+const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
+    + BUILD_LEVEL_BITS
+    + BUILD_LOC_BITS
+    + DEPLOY_ROW_BITS
+    + 3
+    + DMG_BAND_BITS
+    + 4 * 8
+    + STRUCT_HP_BITS) as usize;
+// A full batch of either store's records still fits one message (v102's hp
+// took 16 bits a record): a field added after it must shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + PIECE_SYNC_COUNT_BITS) as usize + PIECE_SYNC_BATCH * PIECE_REC_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + DEPLOY_SYNC_COUNT_BITS) as usize
+        + DEPLOY_SYNC_BATCH * DEPLOY_REC_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 const DEPLOY_DEFS_TOTAL_BITS: u32 = 6;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 /// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
@@ -736,6 +791,10 @@ const ARCH_BITS: u32 = 5;
 /// are now forgeable, so the decoder range-checks the field, which two
 /// bits never had to.
 const PLACEMENT_BITS: u32 = 3;
+/// A deployable's `MATTER_*` (wire v102). Saturated, like `PLACE_*` was at
+/// two bits: all four values are live, so none is forgeable and the decoder
+/// needs no domain check. A fifth matter widens it.
+const MATTER_BITS: u32 = 2;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
 /// Width of the loose-stack batch count. Five bits for `GITEM_SYNC_BATCH`'s
@@ -743,6 +802,19 @@ const BAG_SYNC_COUNT_BITS: u32 = 5;
 /// drip sends per tick, not what the store holds.
 const GITEM_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
+/// The widest loose-stack record `write_gitem` can put down: id, the three
+/// position quanta, item and count, then the stuck direction, the
+/// condition and the skin, each behind its own bit.
+const GITEM_REC_MAX_BITS: usize =
+    32 + 2 * POS_XZ_BITS as usize + POS_Y_BITS as usize + 16 + 16 + (1 + 24) + (1 + 16) + (1 + 16);
+// A full batch of the widest records still fits one message (v102's skin
+// shrank it 16 → 14, leaving fifteen bytes): a field added to the record
+// must shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + GITEM_SYNC_COUNT_BITS) as usize
+        + GITEM_SYNC_BATCH * GITEM_REC_MAX_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 /// Width of the lodged-arrow batch count — `GITEM_SYNC_COUNT_BITS`' shape.
 const LODGED_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(LODGED_SYNC_BATCH < (1usize << LODGED_SYNC_COUNT_BITS));
@@ -856,11 +928,38 @@ pub struct ItemRow {
     /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
     /// downed body injects rather than starting the hand revive.
     pub revive: bool,
+    /// What the item is for the craft rail (v102, `craft::CLASS_*`):
+    /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
+    /// also what a row past the drip watermark reads as.
+    pub class: u8,
 }
 
 /// Width of [`ItemRow::oven`].
 const OVEN_ROLE_BITS: u32 = sim_core::oven::PACKED_ROLE_BITS;
 const _: () = assert!(OVEN_ROLE_BITS <= 16);
+/// Width of [`ItemRow::class`]: ten classes in four bits, so 10..15 are
+/// forgeable and both ends refuse them against `CLASS_MAX`.
+const ITEM_CLASS_BITS: u32 = 4;
+const _: () = assert!(CLASS_MAX < (1 << ITEM_CLASS_BITS));
+/// The widest catalog row: a full name, then every column in `ItemRow`'s
+/// order.
+const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_BYTES)
+    + 16
+    + (ARMOR_PCT_BITS + WEAR_SLOT_BITS) as usize
+    + 16
+    + 3 * 16
+    + 2 * 8
+    + OVEN_ROLE_BITS as usize
+    + 2
+    + ITEM_CLASS_BITS as usize;
+// A full batch of the widest rows fits one message. v102's class nibble is
+// what took `CATALOG_BATCH` from 8 to 7: eight rows had filled the cap to
+// the byte. A column added to the row must shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 2 * CATALOG_TOTAL_BITS + CATALOG_COUNT_BITS) as usize
+        + CATALOG_BATCH * CATALOG_ROW_MAX_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 
 impl ItemRow {
     pub const EMPTY: Self = Self {
@@ -876,6 +975,7 @@ impl ItemRow {
         oven: 0,
         holster: false,
         revive: false,
+        class: CLASS_OTHER,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -912,6 +1012,7 @@ impl ItemRow {
             // else it is a number nothing reads.
             && (self.nock_ticks == 0 || self.draw_ticks > 0)
             && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
+            && self.class <= CLASS_MAX
     }
 }
 
@@ -948,6 +1049,9 @@ impl ItemRow {
 ///
 /// v89 added `oven`, the sixth: which section of a camp fire an item goes
 /// in.
+///
+/// v102 added `class`: which bucket of the craft rail a recipe for the item
+/// sits in, the reference's CONSTRUCTION … AMMO.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -1027,6 +1131,12 @@ impl ItemCatalog {
     /// here by construction, and only one of them is safe to act on.
     pub fn stack_max(&self, idx: usize) -> u16 {
         self.row(idx).stack_max
+    }
+
+    /// The craft rail's class for one item index (`craft::CLASS_*`);
+    /// `CLASS_OTHER` out of table and for a row not yet dripped in.
+    pub fn class(&self, idx: usize) -> u8 {
+        self.row(idx).class
     }
 }
 
@@ -1165,8 +1275,11 @@ pub enum EventMsg {
         ticks: u16,
     },
     /// Own gather payout: `added` units of `item` landed (or 0 — full
-    /// inventory). The toast, not the truth: `Inv` is authoritative.
-    Gather { item: u16, added: u16 },
+    /// inventory), and `dropped` units did not fit and went to the feet
+    /// (wire v102; both nonzero is a partial spill, `added == 0` with
+    /// `dropped > 0` a whole one or a give-back). The toast, not the
+    /// truth: `Inv` is authoritative.
+    Gather { item: u16, added: u16, dropped: u16 },
     /// A gather swing bounced (wire v42): `item` is what was held —
     /// `sim_core::gather::NO_ITEM` means bare hands — and `reason` is a
     /// `sim_core::gather::REFUSE_G_*` code. The item crosses so the HUD
@@ -1239,8 +1352,9 @@ pub enum EventMsg {
         eta_ticks: u16,
     },
     /// One craft unit completed: `added` units of `item` landed (0 = full
-    /// inventory — the loss is announced). The toast; `Inv` is the truth.
-    CraftDone { item: u16, added: u16 },
+    /// inventory — the loss is announced) and `dropped` went to the feet
+    /// (wire v102, `Gather`'s field). The toast; `Inv` is the truth.
+    CraftDone { item: u16, added: u16, dropped: u16 },
     /// A blueprint was learned: `recipe` is now craftable by this player,
     /// and `cost` is what it actually burned (research.rs).
     Research { recipe: u16, cost: u16 },
@@ -1306,16 +1420,20 @@ pub enum EventMsg {
     BuildRefused { reason: u8 },
     /// Piece-def rows `first..first+count` of a `total`-row table — the
     /// build menu's data, dripped like the recipe table. Rows decode to
-    /// the same `PieceDef` the sim runs.
+    /// the same `PieceDef` the sim runs. `repair_pct` is the table's
+    /// `BuildContent::repair_pct` (wire v102), on every batch: with it and
+    /// a record's hp a client quotes a repair exactly
+    /// (`sim_core::build::repair_quote`).
     PieceDefs {
         total: u8,
         first: u8,
         count: u8,
+        repair_pct: u16,
         rows: [PieceDef; PIECE_DEFS_BATCH],
     },
     /// A deployable landed (broadcast — world facts like pieces). The
-    /// wire carries address + row + the door's open bit; owner/hp/uh stay
-    /// sim-side, so decoded records hold their defaults there.
+    /// wire carries address + row + state, pose, beds and (since v102) hp;
+    /// owner/uh stay sim-side, so decoded records hold their defaults there.
     DeployPlaced { rec: DeployRec },
     /// One batch of the placed-deployable walk (join sync / resync).
     DeploySync {
@@ -1328,10 +1446,15 @@ pub enum EventMsg {
     DeployRefused { reason: u8 },
     /// Deploy-def rows `first..first+count` of a `total`-row table — the
     /// deployable menu's data, dripped like the piece defs.
+    /// `heat_radius_cm` is how far a lit fire's warmth reaches
+    /// (`ExposureContent::heat_radius_cm`, wire v102), on every batch: with
+    /// it the HUD confirms a fire the way it confirms a roof
+    /// (`sim_core::exposure::fire_reaches`). Zero warms nothing.
     DeployDefs {
         total: u8,
         first: u8,
         count: u8,
+        heat_radius_cm: u16,
         rows: [DeployDef; DEPLOY_DEFS_BATCH],
     },
     /// A structure at the address took damage and is still standing
@@ -1685,8 +1808,13 @@ pub enum EventMsg {
         pic: u32,
     },
     /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
-    /// for an empty one. Appearance only, for drawing the body.
-    Worn { id: u32, items: [u16; WEAR_SLOTS] },
+    /// for an empty one, and each piece's skin (v102), zero for none and
+    /// always zero on an empty slot. Appearance only, for drawing the body.
+    Worn {
+        id: u32,
+        items: [u16; WEAR_SLOTS],
+        skins: [u16; WEAR_SLOTS],
+    },
     /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
     /// The attacker's fact and the attacker's alone — a hitmarker, not a
     /// health readout; the victim's own `Health` is the truth about the
@@ -1918,10 +2046,16 @@ fn begin(buf: &mut [u8], subtype: u32) -> Result<BitWriter<'_>, WireError> {
     Ok(w)
 }
 
-pub fn encode_event_gather(item: u16, added: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_gather(
+    item: u16,
+    added: u16,
+    dropped: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_GATHER)?;
     w.write(item as u32, 16)?;
     w.write(added as u32, 16)?;
+    w.write(dropped as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -2156,6 +2290,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.holster)?;
         // The revive (v99).
         w.write_bit(row.revive)?;
+        // The craft rail's class (v102).
+        w.write(row.class as u32, ITEM_CLASS_BITS)?;
     }
     Ok((w.finish(), count))
 }
@@ -2199,10 +2335,16 @@ pub fn encode_event_craft_q(
     Ok(w.finish())
 }
 
-pub fn encode_event_craft_done(item: u16, added: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_craft_done(
+    item: u16,
+    added: u16,
+    dropped: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_CRAFT_DONE)?;
     w.write(item as u32, 16)?;
     w.write(added as u32, 16)?;
+    w.write(dropped as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -2367,9 +2509,10 @@ pub fn encode_event_research_rows(
     Ok((w.finish(), count))
 }
 
-/// One placed-piece record on the wire: 38 bits, shared by the placed
-/// broadcast and the sync batches. Refuses an address outside the grid or
-/// a row outside the def table — this encoder only ever sees sim records.
+/// One placed-piece record on the wire: 62 bits (`PIECE_REC_BITS`), shared
+/// by the placed broadcast and the sync batches. Refuses an address outside
+/// the grid or a row outside the def table — this encoder only ever sees
+/// sim records.
 /// The trailing bit is the soft side's facing (hard/soft v0, wire v39):
 /// the client labels the side a player is looking at, so the bit rides
 /// every record the way a door's open bit does.
@@ -2405,6 +2548,12 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
         (rec.plate as i32 + PLATE_BIAS).clamp(0, (1 << PLATE_BITS) - 1) as u32,
         PLATE_BITS,
     )?;
+    // The exact hp (wire v102), which the store does maintain. The band
+    // stays beside it — a renderer draws damage from the band without the
+    // defs drip — and this is what the hammer prices a repair from
+    // (`build::repair_quote`), where a band could only bound it. No new
+    // secret: `StructHit` already tells the island `left` on every blow.
+    w.write(rec.hp as u32, STRUCT_HP_BITS)?;
     Ok(())
 }
 
@@ -2423,6 +2572,7 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         // so this needs no range check — the width is the check.
         dmg: r.read(DMG_BAND_BITS)? as u8,
         plate: (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8,
+        hp: r.read(STRUCT_HP_BITS)? as u16,
         ..rec
     };
     // Coord/level/facing widths are exact; the row — and, since v40's
@@ -2581,6 +2731,15 @@ pub fn encode_event_piece_defs(
     w.write(total as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
+    // The repair percent (wire v102), on every batch so no order of the
+    // drip leaves a client holding rows and no price. With it and each
+    // record's hp the hammer names a repair's exact cost; without it, all
+    // it could say was "cost depends on damage". Zero is an unbaked table,
+    // and a client quotes nothing for it, as `build::repair` refuses.
+    if bc.repair_pct > REPAIR_PCT_MAX {
+        return Err(WireError::Range);
+    }
+    w.write(bc.repair_pct as u32, REPAIR_PCT_BITS)?;
     for def in bc.pieces[first..first + count].iter() {
         // `SHAPE_TRI_FLOOR_FRAME` is the top code (circulation, wire v72).
         if def.shape > SHAPE_TRI_FLOOR_FRAME
@@ -2603,9 +2762,10 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 65 bits, shared by the
-/// placed broadcast and the sync batches — the address, the row, the three
-/// state bits, the damage band, and since wire v89 the **pose** (free
+/// One placed-deployable record on the wire: 89 bits (`DEPLOY_REC_BITS`),
+/// shared by the placed broadcast and the sync batches — the address, the
+/// row, the three state bits, the damage band, since wire v100 a planter's
+/// beds, since v102 the exact hp, and since wire v89 the **pose** (free
 /// placement): the offset from the cell centre and the facing, a byte each,
 /// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
@@ -2643,6 +2803,8 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.yaw as u32, 8)?;
     // A planter's beds (v100); zero for everything else.
     w.write(rec.grow as u32, 8)?;
+    // The exact hp (v102) — `write_piece_rec`'s note applies.
+    w.write(rec.hp as u32, STRUCT_HP_BITS)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -2673,6 +2835,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         grow: r.read(8)? as u8,
+        hp: r.read(STRUCT_HP_BITS)? as u16,
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -2722,8 +2885,11 @@ pub fn encode_event_deploy_refused(reason: u8, buf: &mut [u8]) -> Result<usize, 
 /// Encode up to `DEPLOY_DEFS_BATCH` baked deployable rows starting at
 /// `first`. Returns the byte length and how many rows rode along. Row
 /// shapes the bake refuses (hp 0, out-of-range codes) refuse here too.
+/// `heat_radius_cm` is the exposure table's fire reach
+/// (`ExposureContent::heat_radius_cm`), which rides the header.
 pub fn encode_event_deploy_defs(
     dc: &DeployContent,
+    heat_radius_cm: u16,
     first: usize,
     buf: &mut [u8],
 ) -> Result<(usize, usize), WireError> {
@@ -2736,16 +2902,26 @@ pub fn encode_event_deploy_defs(
     w.write(total as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
+    // A fire's warmth reach (wire v102), on every batch for the repair
+    // percent's reason. The rows say which deployables are fires and the
+    // oven events which are lit; this is the one number of the warmth rule
+    // a client did not hold, so its WET and COLD chips could confirm a roof
+    // and never a fire (`NOW.md` §0wx item 3). Full width, every value
+    // content can bake.
+    w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
         if def.arch > ARCH_PLANTER || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
-        if def.n_costs as usize > MAX_DEPLOY_COSTS {
+        if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
             return Err(WireError::Range);
         }
         w.write(def.arch as u32, ARCH_BITS)?;
         w.write(def.placement as u32, PLACEMENT_BITS)?;
         w.write(def.hp as u32, 16)?;
+        // What it is made of, so a client says what a blow on it sounds
+        // and looks like (wire v102; it guessed from the archetype before).
+        w.write(def.matter as u32, MATTER_BITS)?;
         w.write(def.item as u32, 16)?;
         // The repair price, the same way `SUB_PIECE_DEFS` carries a
         // piece's. Without it a client can quote what a wall costs to mend
@@ -3607,18 +3783,32 @@ pub fn encode_event_mech_solved(mech: u8, by: u32, buf: &mut [u8]) -> Result<usi
 }
 
 /// What player `id` wears ([`EventMsg::Worn`]). Never an animal's.
+///
+/// Each slot is its item, then (v102) a bit and, when set, the piece's
+/// skin — `WireGItem`'s optional-field shape, so an unskinned outfit costs
+/// one bit a slot. A skin on an empty slot is a picture of nothing.
 pub fn encode_event_worn(
     id: u32,
     items: &[u16; WEAR_SLOTS],
+    skins: &[u16; WEAR_SLOTS],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if id & sim_core::limits::MOB_ID_TAG != 0 {
+    if id & sim_core::limits::MOB_ID_TAG != 0
+        || items
+            .iter()
+            .zip(skins)
+            .any(|(&i, &s)| i == sim_core::gather::NO_ITEM && s != 0)
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_WORN)?;
     w.write(id, 32)?;
-    for &item in items {
+    for (&item, &skin) in items.iter().zip(skins) {
         w.write(item as u32, 16)?;
+        w.write_bit(skin != 0)?;
+        if skin != 0 {
+            w.write(skin as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -3720,10 +3910,11 @@ impl WireBag {
 /// open, so its contents answer a `ContSync` when you do, and shipping
 /// them unasked would put the shard's loot on every wire. A loose stack
 /// has nothing to open — the client draws the thing itself and the prompt
-/// names it — so those two fields ARE the object. `cond` deliberately
-/// stays behind: nothing on screen reads a loose stack's condition, and
-/// durability V7 means a stack carrying one is a stack of exactly 1, so
-/// the pip has nothing to divide either.
+/// names it — so those two fields ARE the object. `cond` rides too since
+/// v102, as an optional field: a blueprint's target lives in it
+/// (`research::blueprint_target`), so without it a sheet on the ground
+/// could only say "Blueprint", never which one. And `skin`, the same way
+/// (v102): a skinned rifle dropped on the ground is still drawn skinned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WireGItem {
     pub id: u32,
@@ -3736,6 +3927,15 @@ pub struct WireGItem {
     /// the position is where it went in, and the client stands it there at
     /// this angle. Zero for a stack lying on the ground.
     pub dir: [i8; 3],
+    /// The stack's `ItemStack::cond` (wire v102): a blueprint's target plus
+    /// one, a tool's condition left in hundredths of a point (not its wear),
+    /// zero for litter that carries none and for a dead tool — which costs
+    /// one bit on the wire.
+    pub cond: u16,
+    /// The stack's `ItemStack::skin` (wire v102): the skin's catalog id,
+    /// zero for none (one bit on the wire). The client draws it if its skin
+    /// catalog knows it (`ui::skins::tint_of`), else plain.
+    pub skin: u16,
 }
 
 impl WireGItem {
@@ -3748,6 +3948,8 @@ impl WireGItem {
             item: g.stack.item,
             count: g.stack.count,
             dir: g.dir,
+            cond: g.stack.cond,
+            skin: g.stack.skin,
         }
     }
 
@@ -3849,6 +4051,18 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
             w.write(d as u8 as u32, 8)?;
         }
     }
+    // The condition (v102), the same shape: a bit, and sixteen only when
+    // there is one, so litter pays one bit and a sheet names what it teaches.
+    w.write_bit(g.cond != 0)?;
+    if g.cond != 0 {
+        w.write(g.cond as u32, 16)?;
+    }
+    // The skin (v102), the same shape again: a dropped skinned item keeps
+    // its look, and plain litter pays one bit for it.
+    w.write_bit(g.skin != 0)?;
+    if g.skin != 0 {
+        w.write(g.skin as u32, 16)?;
+    }
     Ok(())
 }
 
@@ -3861,6 +4075,8 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         item: r.read(16)? as u16,
         count: r.read(16)? as u16,
         dir: [0; 3],
+        cond: 0,
+        skin: 0,
     };
     if r.read_bit()? {
         for d in g.dir.iter_mut() {
@@ -3868,6 +4084,20 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         }
         // Set says stuck, and a stuck arrow points somewhere.
         if !g.stuck() {
+            return Err(WireError::Malformed);
+        }
+    }
+    if r.read_bit()? {
+        g.cond = r.read(16)? as u16;
+        // Set says there is a condition, and zero is the absence of one.
+        if g.cond == 0 {
+            return Err(WireError::Malformed);
+        }
+    }
+    if r.read_bit()? {
+        g.skin = r.read(16)? as u16;
+        // And zero is no skin, for the same reason.
+        if g.skin == 0 {
             return Err(WireError::Malformed);
         }
     }
@@ -4397,6 +4627,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_GATHER => EventMsg::Gather {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
+            dropped: r.read(16)? as u16,
         },
         SUB_RELOAD => {
             let loaded = r.read(16)? as u16;
@@ -4561,6 +4792,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
+                    class: r.read(ITEM_CLASS_BITS)? as u8,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -4609,6 +4841,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_CRAFT_DONE => EventMsg::CraftDone {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
+            dropped: r.read(16)? as u16,
         },
         SUB_CRAFT_REFUSED => {
             let reason = r.read(REFUSE_CR_BITS)?;
@@ -4859,6 +5092,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             {
                 return Err(WireError::Malformed);
             }
+            let repair_pct = r.read(REPAIR_PCT_BITS)? as u16;
+            if repair_pct > REPAIR_PCT_MAX {
+                return Err(WireError::Malformed);
+            }
             let mut rows = [PieceDef::INERT; PIECE_DEFS_BATCH];
             for row in rows.iter_mut().take(count) {
                 let shape = r.read(SHAPE_BITS)? as u8;
@@ -4889,6 +5126,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                repair_pct,
                 rows,
             }
         }
@@ -4931,11 +5169,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             {
                 return Err(WireError::Malformed);
             }
+            let heat_radius_cm = r.read(16)? as u16;
             let mut rows = [DeployDef::INERT; DEPLOY_DEFS_BATCH];
             for row in rows.iter_mut().take(count) {
                 let arch = r.read(ARCH_BITS)? as u8;
                 let placement = r.read(PLACEMENT_BITS)? as u8;
                 let hp = r.read(16)? as u16;
+                let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
                 if arch > ARCH_PLANTER
@@ -4953,6 +5193,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     arch,
                     placement,
                     hp,
+                    matter,
                     item,
                     n_costs,
                     costs,
@@ -4962,6 +5203,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                heat_radius_cm,
                 rows,
             }
         }
@@ -5471,10 +5713,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             let mut items = [sim_core::gather::NO_ITEM; WEAR_SLOTS];
-            for item in items.iter_mut() {
+            let mut skins = [0u16; WEAR_SLOTS];
+            for (item, skin) in items.iter_mut().zip(skins.iter_mut()) {
                 *item = r.read(16)? as u16;
+                if r.read_bit()? {
+                    *skin = r.read(16)? as u16;
+                    // Set over zero, or over an empty slot, is a record
+                    // the encoder never writes.
+                    if *skin == 0 || *item == sim_core::gather::NO_ITEM {
+                        return Err(WireError::Malformed);
+                    }
+                }
             }
-            EventMsg::Worn { id, items }
+            EventMsg::Worn { id, items, skins }
         }
         SUB_ALPHABET => {
             let len = r.read(7)? as usize;
@@ -5965,10 +6216,14 @@ mod tests {
     #[test]
     fn gather_and_slot_change_round_trip() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_gather(7, 13, &mut buf).unwrap();
+        let len = encode_event_gather(7, 13, 4, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::Gather { item: 7, added: 13 }
+            EventMsg::Gather {
+                item: 7,
+                added: 13,
+                dropped: 4
+            }
         );
         let len = encode_event_slot_change(true, 130, 77, &mut buf).unwrap();
         assert_eq!(
@@ -6329,6 +6584,49 @@ mod tests {
         );
     }
 
+    /// The class nibble (v102) holds sixteen patterns over ten classes. The
+    /// six past `CLASS_MAX` are refused by `set` and, located by XOR rather
+    /// than counted (the V7 test's technique), by the decoder.
+    #[test]
+    fn a_class_past_the_ledger_is_refused_at_both_ends() {
+        let mut cat = ItemCatalog::EMPTY;
+        cat.count = 1;
+        let row = |class| ItemRow {
+            class,
+            stack_max: 1,
+            ..ItemRow::EMPTY
+        };
+        assert_eq!(
+            cat.set(0, b"Trap", row(CLASS_MAX + 1)),
+            Err(WireError::Range),
+            "a class past the ledger was installed"
+        );
+        let mut encode = |class| {
+            let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+            cat.set(0, b"Spear", row(class)).unwrap();
+            let (len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+            (len, buf)
+        };
+        let (len, zero) = encode(CLASS_OTHER);
+        let (len3, three) = encode(0b0011);
+        let (len_top, mut top) = encode(CLASS_MAX);
+        assert_eq!((len, len), (len3, len_top), "a class moved the layout");
+        match decode_event(&top[..len]).unwrap() {
+            EventMsg::Catalog { rows, .. } => assert_eq!(rows[0].class, CLASS_MAX),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The top class with its two low bits flipped is one past it.
+        assert_eq!(CLASS_MAX ^ 0b0011, CLASS_MAX + 1);
+        for i in 0..len {
+            top[i] ^= zero[i] ^ three[i];
+        }
+        assert_eq!(
+            decode_event(&top[..len]),
+            Err(WireError::Malformed),
+            "a class past the ledger was installed from the wire"
+        );
+    }
+
     /// The skin drip's worst case — every row priced (the widest coin
     /// arm) with a full-width name — fits the message cap, walks the whole
     /// table, and round-trips row for row.
@@ -6466,6 +6764,9 @@ mod tests {
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
                 holster: i % 2 == 0,
                 revive: i % 3 == 0,
+                // The class (v102) from the ledger's top down, distinct per
+                // row in the batch.
+                class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -6577,10 +6878,14 @@ mod tests {
     #[test]
     fn craft_done_and_refused_round_trip() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_craft_done(9, 3, &mut buf).unwrap();
+        let len = encode_event_craft_done(9, 3, 2, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::CraftDone { item: 9, added: 3 }
+            EventMsg::CraftDone {
+                item: 9,
+                added: 3,
+                dropped: 2
+            }
         );
         let len = encode_event_craft_refused(4, &mut buf).unwrap();
         assert_eq!(
@@ -6745,12 +7050,15 @@ mod tests {
     #[test]
     fn piece_sync_full_batch_fits_the_cap() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        // Every field at a live value, the hp (v102) across its whole width:
+        // a record's size is fixed, so any full batch is the worst case.
         let recs: [PieceRec; PIECE_SYNC_BATCH] = core::array::from_fn(|i| PieceRec {
             cx: i as u16 * 31,
             cz: 1023 - i as u16,
             level: (i % MAX_BUILD_SOCKETS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_PIECE_DEFS) as u8,
+            hp: u16::MAX - i as u16 * 2047,
             ..PieceRec::default()
         });
         let len = encode_event_piece_sync(true, &recs, &mut buf).unwrap();
@@ -6775,6 +7083,169 @@ mod tests {
         );
     }
 
+    /// The loose-stack batch at its widest (v102): every record an arrow
+    /// stuck where it went in AND carrying a condition, every field at the
+    /// top of its range. It must encode inside the message cap and come
+    /// back whole — the const assert beside `GITEM_SYNC_COUNT_BITS` sums
+    /// the widths, this measures the bytes.
+    #[test]
+    fn gitem_sync_widest_batch_fits_the_cap() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let recs: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
+            id: u32::MAX - i as u32,
+            qx: (1 << POS_XZ_BITS) - 1,
+            qy: (1 << POS_Y_BITS) - 1 - POS_Y_BIAS,
+            qz: (1 << POS_XZ_BITS) - 1 - i as i32,
+            item: (MAX_ITEM_DEFS - 1 - i) as u16,
+            count: u16::MAX,
+            dir: [-128, 127, -(i as i8) - 1],
+            cond: u16::MAX - i as u16,
+            skin: u16::MAX - 2 * i as u16,
+        });
+        let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::GItemSync {
+                reset,
+                recs: got,
+                count,
+            } => {
+                assert!(reset);
+                assert_eq!(count as usize, GITEM_SYNC_BATCH);
+                assert_eq!(got, recs);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // Litter pays one bit for the condition it does not have, and a
+        // sheet's target survives the trip.
+        let lying = WireGItem {
+            id: 9,
+            qx: 100,
+            qz: 200,
+            item: 3,
+            count: 1,
+            ..WireGItem::default()
+        };
+        let sheet = WireGItem { cond: 42, ..lying };
+        let bare = encode_event_gitem_sync(false, &[lying], &mut buf).unwrap();
+        let with = encode_event_gitem_sync(false, &[sheet], &mut buf).unwrap();
+        assert!(with > bare, "the condition took no room");
+        match decode_event(&buf[..with]).unwrap() {
+            EventMsg::GItemSync { recs, count, .. } => {
+                assert_eq!(count, 1);
+                assert_eq!(recs[0], sheet);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // Forged by hand: the condition bit set over a zero condition. The
+        // encoder never writes it (zero IS no condition), so the decoder
+        // refuses it rather than holding a record two spellings can mean.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_GITEM_SYNC, SUB_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(1, GITEM_SYNC_COUNT_BITS).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(100, POS_XZ_BITS).unwrap();
+        w.write(POS_Y_BIAS as u32, POS_Y_BITS).unwrap();
+        w.write(200, POS_XZ_BITS).unwrap();
+        w.write(3, 16).unwrap();
+        w.write(1, 16).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(0, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+
+        // The skin (v102), the condition's twin: a dropped skinned item
+        // crosses wearing it, beside a condition or alone, and costs plain
+        // litter one bit.
+        for rec in [
+            WireGItem {
+                skin: 0x0A61,
+                ..lying
+            },
+            WireGItem {
+                skin: 0x0A61,
+                ..sheet
+            },
+        ] {
+            let with = encode_event_gitem_sync(false, &[rec], &mut buf).unwrap();
+            assert!(with > bare, "the skin took no room");
+            match decode_event(&buf[..with]).unwrap() {
+                EventMsg::GItemSync { recs, count, .. } => {
+                    assert_eq!(count, 1);
+                    assert_eq!(recs[0], rec);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+        // And forged the same way: the skin bit set over a zero skin.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_GITEM_SYNC, SUB_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(1, GITEM_SYNC_COUNT_BITS).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(100, POS_XZ_BITS).unwrap();
+        w.write(POS_Y_BIAS as u32, POS_Y_BITS).unwrap();
+        w.write(200, POS_XZ_BITS).unwrap();
+        w.write(3, 16).unwrap();
+        w.write(1, 16).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(0, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// A worn piece's skin crosses (v102) so a skinned tunic is drawn
+    /// skinned on the body; an unskinned slot costs a bit; and a skin on an
+    /// empty slot is refused both ways, as is the bit set over a zero.
+    #[test]
+    fn worn_carries_each_pieces_skin() {
+        use sim_core::gather::NO_ITEM;
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let id = 0x0100_0007;
+        let mut items = [NO_ITEM; WEAR_SLOTS];
+        let mut skins = [0u16; WEAR_SLOTS];
+        items[0] = 41;
+        items[WEAR_SLOTS - 1] = 40;
+        let bare = encode_event_worn(id, &items, &skins, &mut buf).unwrap();
+        skins[WEAR_SLOTS - 1] = 0x0B72;
+        let len = encode_event_worn(id, &items, &skins, &mut buf).unwrap();
+        assert!(len > bare, "the skin took no room");
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::Worn { id, items, skins })
+        );
+
+        let mut empty = items;
+        empty[WEAR_SLOTS - 1] = NO_ITEM;
+        assert_eq!(
+            encode_event_worn(id, &empty, &skins, &mut buf),
+            Err(WireError::Range),
+            "a skin on an empty slot"
+        );
+        // Forged: the same, and a set bit over a zero skin.
+        for (item, skin) in [(NO_ITEM, 0x0B72u32), (40, 0)] {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_WORN, SUB_BITS).unwrap();
+            w.write(id, 32).unwrap();
+            for _ in 0..WEAR_SLOTS {
+                w.write(item as u32, 16).unwrap();
+                w.write_bit(true).unwrap();
+                w.write(skin, 16).unwrap();
+            }
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        }
+    }
+
     #[test]
     fn piece_defs_batches_walk_the_table_within_cap() {
         let bc = BuildContent::probe_fixture();
@@ -6791,9 +7262,11 @@ mod tests {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 assert_eq!((total, first, count), (7, 0, PIECE_DEFS_BATCH as u8));
+                assert_eq!(repair_pct, bc.repair_pct, "the price rides along");
                 assert_eq!(rows[0], bc.pieces[0], "decode rebuilds the sim row");
                 assert_eq!(rows[PIECE_DEFS_BATCH - 1], bc.pieces[PIECE_DEFS_BATCH - 1]);
             }
@@ -6808,9 +7281,11 @@ mod tests {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 assert_eq!((total, first, count), (7, PIECE_DEFS_BATCH as u8, 1));
+                assert_eq!(repair_pct, bc.repair_pct, "on every batch, not the first");
                 assert_eq!(rows[0], bc.pieces[PIECE_DEFS_BATCH]);
             }
             other => panic!("wrong variant: {other:?}"),
@@ -6827,6 +7302,31 @@ mod tests {
             encode_event_piece_defs(&bad, 0, &mut buf),
             Err(WireError::Range)
         );
+        // So does a percent content would refuse; an unbaked 0 crosses.
+        let mut bad = bc;
+        bad.repair_pct = REPAIR_PCT_MAX + 1;
+        assert_eq!(
+            encode_event_piece_defs(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        let mut unbaked = bc;
+        unbaked.repair_pct = 0;
+        let (len, _) = encode_event_piece_defs(&unbaked, 0, &mut buf).unwrap();
+        assert!(matches!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::PieceDefs { repair_pct: 0, .. }
+        ));
+        // A forged 101..=127 is refused at decode: the percent sits right
+        // after the header, so overwrite it in a real frame.
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
+        let mut forged = buf;
+        let at =
+            (KIND_BITS + SUB_BITS + 2 * PIECE_DEFS_TOTAL_BITS + PIECE_DEFS_COUNT_BITS) as usize;
+        for b in 0..REPAIR_PCT_BITS as usize {
+            let bit = at + b;
+            forged[bit / 8] |= 0x80 >> (bit % 8);
+        }
+        assert_eq!(decode_event(&forged[..len]), Err(WireError::Malformed));
         // The full 18-row alpha shape drips in three batches.
         let mut full = BuildContent::EMPTY;
         full.piece_count = 18;
@@ -6856,13 +7356,14 @@ mod tests {
             level: 1,
             loc: sim_core::build::LOC_PLANE,
             row: 7,
+            hp: 1234,
             ..DeployRec::default()
         };
         let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
             EventMsg::DeployPlaced { rec },
-            "owner/hp/uh stay sim-side: decode carries defaults"
+            "hp crosses (v102); owner/uh stay sim-side and decode as defaults"
         );
         // A record the sim could never hold refuses at encode.
         let bad = DeployRec {
@@ -6881,6 +7382,7 @@ mod tests {
             level: (i % MAX_BUILD_SOCKETS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
+            hp: u16::MAX - i as u16 * 2731,
             ..DeployRec::default()
         });
         let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();
@@ -6913,8 +7415,9 @@ mod tests {
     #[test]
     fn deploy_defs_batches_walk_the_table_within_cap() {
         let dc = DeployContent::probe_fixture();
+        let heat = sim_core::exposure::ExposureContent::probe_fixture().heat_radius_cm;
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        let (len, took) = encode_event_deploy_defs(&dc, heat, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
         assert_eq!(took, 8, "fixture has 8 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
@@ -6922,9 +7425,11 @@ mod tests {
                 total,
                 first,
                 count,
+                heat_radius_cm,
                 rows,
             } => {
                 assert_eq!((total, first, count), (8, 0, 8));
+                assert_eq!(heat_radius_cm, heat, "the fire's reach rides along");
                 assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
                 assert_eq!(rows[3], dc.defs[3]);
                 // The oven row (oven v0), the code lock (lock v1), the
@@ -6941,7 +7446,7 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_deploy_defs(&dc, 8, &mut buf),
+            encode_event_deploy_defs(&dc, heat, 8, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -6949,7 +7454,7 @@ mod tests {
         let mut bad = dc;
         bad.defs[1].hp = 0;
         assert_eq!(
-            encode_event_deploy_defs(&bad, 0, &mut buf),
+            encode_event_deploy_defs(&bad, heat, 0, &mut buf),
             Err(WireError::Range)
         );
         // A cost count past the table refuses too — the decoder bounds it
@@ -6958,7 +7463,15 @@ mod tests {
         let mut wide = dc;
         wide.defs[0].n_costs = MAX_DEPLOY_COSTS as u8 + 1;
         assert_eq!(
-            encode_event_deploy_defs(&wide, 0, &mut buf),
+            encode_event_deploy_defs(&wide, heat, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // A matter past the ledger refuses rather than wrapping into a
+        // live one in `MATTER_BITS`.
+        let mut odd = dc;
+        odd.defs[2].matter = MATTER_MAX + 1;
+        assert_eq!(
+            encode_event_deploy_defs(&odd, heat, 0, &mut buf),
             Err(WireError::Range)
         );
 
@@ -6973,13 +7486,14 @@ mod tests {
                 arch: sim_core::deploy::ARCH_BOX,
                 placement: sim_core::deploy::PLACE_ANY,
                 hp: u16::MAX,
+                matter: sim_core::deploy::MATTER_MAX,
                 item: u16::MAX,
                 n_costs: MAX_DEPLOY_COSTS as u8,
                 costs: [(u16::MAX, u16::MAX); MAX_DEPLOY_COSTS],
             };
             let _ = n;
         }
-        let (len, took) = encode_event_deploy_defs(&full, 0, &mut buf).unwrap();
+        let (len, took) = encode_event_deploy_defs(&full, u16::MAX, 0, &mut buf).unwrap();
         assert_eq!(took, DEPLOY_DEFS_BATCH, "a full batch rides");
         assert!(
             len <= MAX_EVENT_MSG_BYTES,
@@ -6987,7 +7501,12 @@ mod tests {
              {MAX_EVENT_MSG_BYTES} B cap"
         );
         match decode_event(&buf[..len]).unwrap() {
-            EventMsg::DeployDefs { rows, .. } => {
+            EventMsg::DeployDefs {
+                heat_radius_cm,
+                rows,
+                ..
+            } => {
+                assert_eq!(heat_radius_cm, u16::MAX, "the reach's top survives");
                 assert_eq!(
                     rows[DEPLOY_DEFS_BATCH - 1],
                     full.defs[DEPLOY_DEFS_BATCH - 1]
@@ -7003,23 +7522,26 @@ mod tests {
                 arch: (i % 10) as u8,
                 placement: (i % 4) as u8,
                 hp: u16::MAX,
+                matter: (i % 4) as u8,
                 item: u16::MAX,
                 ..DeployDef::INERT
             };
         }
         let mut first = 0;
         while first < MAX_DEPLOY_DEFS {
-            let (len, took) = encode_event_deploy_defs(&full, first, &mut buf).unwrap();
+            let (len, took) = encode_event_deploy_defs(&full, heat, first, &mut buf).unwrap();
             assert!(len <= MAX_EVENT_MSG_BYTES);
             assert_eq!(took, DEPLOY_DEFS_BATCH.min(MAX_DEPLOY_DEFS - first));
             match decode_event(&buf[..len]).unwrap() {
                 EventMsg::DeployDefs {
                     first: start,
                     count,
+                    heat_radius_cm,
                     rows,
                     ..
                 } => {
                     assert_eq!(start as usize, first);
+                    assert_eq!(heat_radius_cm, heat, "on every batch, not the first");
                     assert_eq!(count as usize, took);
                     assert_eq!(&rows[..took], &full.defs[first..first + took]);
                 }
@@ -7373,7 +7895,7 @@ mod tests {
     #[test]
     fn trailing_garbage_and_unknown_subtype_are_malformed() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_gather(1, 2, &mut buf).unwrap();
+        let len = encode_event_gather(1, 2, 0, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len + 1]),
             Err(WireError::Malformed),
@@ -7866,7 +8388,10 @@ mod wire_domains {
             //
             // 12 -> 13 at wire v92: `REFUSE_M_SAFE`, THE GATE's "No
             // Looting" — another player's bag in the safe zone.
-            live_max: 13,
+            //
+            // 13 -> 14 at wire v102: `REFUSE_M_GIVE`, a give with no room
+            // in the receiver's pack.
+            live_max: 14,
         },
         Domain {
             what: "wear slot",
@@ -8051,6 +8576,30 @@ mod wire_domains {
             min_members: 18,
             bits: ARCH_BITS,
             live_max: 17,
+        },
+        Domain {
+            what: "deploy matter",
+            sim_site: "deploy.rs MATTER_*",
+            wire_site: "MATTER_BITS",
+            home: "deploy.rs",
+            prefix: "pub const MATTER_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 4,
+            bits: MATTER_BITS,
+            live_max: 3,
+        },
+        Domain {
+            what: "item class",
+            sim_site: "craft.rs CLASS_*",
+            wire_site: "ITEM_CLASS_BITS",
+            home: "craft.rs",
+            prefix: "pub const CLASS_",
+            ty: ": u8 = ",
+            exempt: &["MAX"],
+            min_members: 10,
+            bits: ITEM_CLASS_BITS,
+            live_max: 9,
         },
         Domain {
             what: "deploy placement",
@@ -8290,8 +8839,11 @@ mod wire_domains {
             // row, and this assert is what asked for it. 18 -> 19 at v77:
             // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`. 19 -> 21: the
             // craft and deploy refusals, a byte each since v0 (§5b).
+            // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
+            // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
+            // `craft::CLASS_*`.
             DOMAINS.len(),
-            21,
+            23,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -8492,6 +9044,12 @@ mod wire_domains {
             "WX_PM_BITS",
             // Per-cent wet and cold readings: units, bounded at 100.
             "EXPOSURE_PCT_BITS",
+            // The repair percent (v102): a unit, bounded at 100 by content
+            // and by `REPAIR_PCT_MAX` on both ends.
+            "REPAIR_PCT_BITS",
+            // A structure's exact hp (v102): a magnitude at the stores'
+            // own `u16` width, so it cannot be outgrown.
+            "STRUCT_HP_BITS",
             // A grow-sync batch length, bounded by `GROW_SYNC_BATCH`.
             "GROW_SYNC_COUNT_BITS",
             "MOVE_SLOT_BITS",

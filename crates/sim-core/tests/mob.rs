@@ -456,6 +456,45 @@ fn kill_the_pig(w: &mut World, slot: usize) {
     panic!("three fixture spear hits must kill inside eight swing intervals");
 }
 
+/// **A blow that lands on an animal wears the weapon** by its row's `wear`
+/// (NOW §0tl 3) — the body arm's rule, on the mob arm. The fixture spear
+/// carries condition (`GatherContent::probe_fixture`'s 400).
+#[test]
+fn a_blow_on_an_animal_wears_the_weapon() {
+    let (mut w, slot) = hunt_world();
+    w.combat.melee[SPEAR as usize].wear = 70;
+    w.players[0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+        cond: 400,
+        skin: 0,
+    };
+    let hp0 = w.mobs.m[slot].hp;
+    for seq in 0..(SWING_INTERVAL_TICKS as u16 * 3) {
+        let frame = InputFrame {
+            seq,
+            buttons: BTN_PRIMARY,
+            yaw: 0,
+            pitch: aim_at_mob(&w, 0, slot),
+            sel: 0,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
+        if w.mobs.m[slot].hp < hp0 {
+            break;
+        }
+    }
+    assert!(w.mobs.m[slot].hp < hp0, "fixture: the blow must land");
+    assert_eq!(
+        w.players[0].inv[0].cond, 330,
+        "the pig took a blow for free"
+    );
+}
+
 /// The kill leaves a body, not a payment: the killer's inventory holds
 /// nothing new until the loot verb, a ground bag stands where the animal
 /// died holding exactly the content rows, and E takes them — the direct

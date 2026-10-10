@@ -260,6 +260,12 @@ pub struct Pick {
     /// every other dynamic word in a prompt (`open`, `lit`, `locked`).
     pub item: u16,
     pub count: u16,
+    /// A `Verb::Take` stack's condition, straight off the wire (v102), and
+    /// what it teaches if it is a blueprint sheet. `teaches` is stamped by
+    /// the caller, as `lit` is: the research table lives in `ClientCore`,
+    /// and `research::blueprint_target` is the one reading of `cond`.
+    pub cond: u16,
+    pub teaches: Option<u16>,
     /// What a `Verb::Pick` is picking — the terrain occupant ordinal, so the
     /// prompt can say berries or hemp. Zero for every other verb.
     pub occupant: u8,
@@ -285,6 +291,11 @@ pub struct Pick {
     /// to take, and a recycler that pays the safe zone's share. Stamped by
     /// the caller, as `lit` is, from [`town_station`].
     pub public: bool,
+    /// The swing in hand would land on THIS carcass: the hand butchers and
+    /// nothing nearer along the look takes the blow (`SwingPick::bag` is
+    /// this pick's handle, §0ray 2). Stamped by the caller, as `lit` is, so
+    /// the bag's line names the button instead of teaching the verb.
+    pub butcher: bool,
     /// Squared distance from the player, and from the aim line. Diagnostics
     /// for the gate; nothing draws them.
     pub d2: f32,
@@ -296,6 +307,27 @@ pub struct Pick {
 impl Pick {
     pub fn is_none(&self) -> bool {
         self.verb == Verb::None
+    }
+
+    /// Stamp what a `Verb::Take` sheet teaches (v102) from the research
+    /// table the caller holds — `research::blueprint_target` on the stack
+    /// this pick resolved, so the prompt reads `cond` exactly as the panels
+    /// do. `None` for a blank, for anything that is not paper, and for
+    /// every other verb.
+    pub fn stamp_teaches(&mut self, rc: &sim_core::research::ResearchContent) {
+        self.teaches = (self.verb == Verb::Take)
+            .then(|| {
+                sim_core::research::blueprint_target(
+                    rc,
+                    sim_core::gather::ItemStack {
+                        item: self.item,
+                        count: self.count,
+                        cond: self.cond,
+                        skin: 0,
+                    },
+                )
+            })
+            .flatten();
     }
 
     /// What the centre prompt says, or `""` for nothing in reach.
@@ -433,24 +465,42 @@ impl Pick {
             // holding 4 cloth and a sack holding 300 metal are the same
             // picture. `×` and the same `item_label` the panels use, so
             // one item has one name everywhere.
+            // A sheet names what it teaches with the panels' own words
+            // (`research::teaching_label`, the spelling `stack_label` uses):
+            // "Revolver Blueprint", not "Blueprint".
             Verb::Take => format!(
                 "[E] TAKE {} ×{}",
-                crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
+                crate::ui::research::teaching_label(catalog, self.item, self.teaches)
+                    .to_uppercase(),
                 self.count
             ),
             // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
-            // `[butcher]`); the prompt teaches the verb rather than knowing
-            // which tools have a row, which the catalog does not carry.
+            // `[butcher]`). The prompt teaches the verb, and names the
+            // button once the hand in it would cut this carcass — the swing
+            // pick's own answer ([`BUTCHER_STEMS`] and the cast), stamped
+            // by the caller.
             Verb::Bag if self.species.is_some() => format!(
-                "[E] LOOT {}  ·  SWING A BLADE TO BUTCHER",
-                match self.species {
-                    Some(sim_core::mob::MOB_WOLF) => "WOLF",
-                    Some(sim_core::mob::MOB_STAG) => "STAG",
-                    _ => "PIG",
+                "[E] LOOT {}  ·  {}",
+                species_noun(self.species.unwrap_or(sim_core::mob::MOB_PIG)),
+                if self.butcher {
+                    "[LMB] BUTCHER"
+                } else {
+                    "SWING A BLADE TO BUTCHER"
                 }
             ),
             v => format!("[E] OPEN {}", v.label()),
         }
+    }
+}
+
+/// What a carcass is called on the prompt, by its wire species
+/// (`WireBag::species`). Anything past the roster reads as the pig, the
+/// first row, rather than as nothing.
+fn species_noun(species: u8) -> &'static str {
+    match species {
+        sim_core::mob::MOB_WOLF => "WOLF",
+        sim_core::mob::MOB_STAG => "STAG",
+        _ => "PIG",
     }
 }
 
@@ -690,6 +740,7 @@ pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pic
             handle: items[i].id,
             item: items[i].item,
             count: items[i].count,
+            cond: items[i].cond,
             d2,
             ..Pick::default()
         },
@@ -1201,6 +1252,20 @@ mod tests {
             prompt(1 + sim_core::mob::MOB_WOLF),
             "[E] LOOT WOLF  ·  SWING A BLADE TO BUTCHER"
         );
+        // With the cut stamped (a blade in hand, the swing on this carcass)
+        // the line names the button instead (§0ray 2).
+        let mut stamped = resolve(
+            Aim::new(0.0, 0.0, 1.0, 0.0),
+            &[],
+            &defs,
+            have,
+            &[at(1 + sim_core::mob::MOB_STAG)],
+        );
+        stamped.butcher = true;
+        assert_eq!(
+            stamped.prompt(&ItemCatalog::EMPTY),
+            "[E] LOOT STAG  ·  [LMB] BUTCHER"
+        );
     }
 
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does
@@ -1345,6 +1410,7 @@ mod tests {
 // the harvested set is the whole truth and there is no second state to test.
 
 use sim_core::backpack::LOOT_REACH_M as OPEN_REACH_M;
+use sim_core::collide::ColIndex;
 use sim_core::gather::{POINT_BLANK_M2, REACH_M as SWING_REACH_M};
 use sim_core::melee::{self, Ray};
 use sim_core::movement::{quant_xz, quant_y, Body};
@@ -1382,6 +1448,29 @@ pub struct SwingPick {
     /// are: `render::impact` places a burst on the occupant's collision
     /// skin, which is `occupant_volume` × this. Zero when nothing is picked.
     pub scale: f32,
+    /// The species of the carcass this swing would butcher instead
+    /// (`WireBag::species`), or `None` (§0ray 2). A carcass is not scatter,
+    /// so `occupant` stays 0 beside it, and every reader that throws a
+    /// node's chips (`render::impact`) or chases its weak spot stays quiet
+    /// on a cut; the prompt reads it through [`SwingPick::label`].
+    pub carcass: Option<u8>,
+    /// That carcass's bag id (`WireBag::id`; a real bag is never 0), so the
+    /// caller can tell whether the `E` pick is the same carcass
+    /// ([`Pick::butcher`]). 0 with no carcass.
+    pub bag: u32,
+}
+
+impl SwingPick {
+    /// The noun the prompt names for this pick: a carcass's butchering, or
+    /// [`swing_label`] for the scatter (`""` for a whiff).
+    pub fn label(&self) -> &'static str {
+        match self.carcass {
+            Some(sim_core::mob::MOB_WOLF) => "BUTCHER WOLF",
+            Some(sim_core::mob::MOB_STAG) => "BUTCHER STAG",
+            Some(_) => "BUTCHER PIG",
+            None => swing_label(self.occupant),
+        }
+    }
 }
 
 /// The noun the prompt names for a swing pick, or `""` for a whiff.
@@ -1510,6 +1599,7 @@ fn pick_of(at: SwingAim, cx: u16, cz: u16, s: Slot) -> SwingPick {
         y: s.y,
         z: s.z,
         scale: s.scale,
+        ..SwingPick::default()
     }
 }
 
@@ -1536,6 +1626,271 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
         Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
         None => SwingPick::default(),
     }
+}
+
+/// What else a swing can meet before the scatter, off this client's own
+/// view: the snapshot's bodies and animals and the built world's collision
+/// index — the stores `melee::cast` reads besides the nine cells.
+pub struct Shadows<'a> {
+    /// This client's own entity id: a swing never meets its own body
+    /// (`melee::cast` skips the attacker the same way).
+    pub own: u32,
+    /// `ClientView::entities` — players and animals, split by the wire tag.
+    pub entities: &'a [(u32, protocol::EntityState)],
+    /// `ClientCore::pieces`' index: the walls, floors and doors this client
+    /// predicts against, which is what `melee::world_cast` walks.
+    pub cols: &'a ColIndex,
+    /// `ClientCore::bags` — the standing bags, a killed animal's among them
+    /// as its carcass (`WireBag::species`).
+    pub bags: &'a [WireBag],
+    /// The hand in use butchers ([`butchers_in_hand`]): only then does a
+    /// carcass take the swing, as `Reaches::for_hand_butchering` arms it on
+    /// the shard. A blunt swing passes through to whatever lies behind.
+    pub butchers: bool,
+}
+
+/// The tools that cut a carcass, by the stem of the catalog's display name
+/// (`hold::held`'s key) — `content/mobs.toml`'s `[butcher.yield_pct]` rows,
+/// which this client does not load. The shard decides with
+/// `MobContent::butcher_for`; the prompt decides here, and `tests/ui.rs`
+/// holds the two sets equal through the real loader, so a new blade row goes
+/// red there instead of being swung at a carcass the prompt calls a tree.
+pub const BUTCHER_STEMS: [&str; 4] = [
+    "stone_hatchet",
+    "metal_hatchet",
+    "stone_spear",
+    "metal_spear",
+];
+
+/// Whether `stack` is a tool the shard butchers with ([`BUTCHER_STEMS`]).
+/// An empty stack is a bare hand, which cuts nothing.
+pub fn butchers(catalog: &ItemCatalog, stack: sim_core::gather::ItemStack) -> bool {
+    if stack.count == 0 {
+        return false;
+    }
+    core::str::from_utf8(catalog.name(stack.item as usize))
+        .is_ok_and(|n| BUTCHER_STEMS.contains(&crate::ui::icons::stem(n).as_str()))
+}
+
+/// [`butchers`] on the selected hotbar slot — the stack the shard swings
+/// (`combat::held_item`). `sel` is clamped for `hold::held_in_hand`'s reason.
+pub fn butchers_in_hand(
+    catalog: &ItemCatalog,
+    inv: &[sim_core::gather::ItemStack],
+    sel: u8,
+) -> bool {
+    !inv.is_empty() && butchers(catalog, inv[(sel as usize).min(inv.len() - 1)])
+}
+
+/// The island and its [`Shadows`] off one hold of the core: what
+/// `render/verbs.rs` hands [`resolve_swing_shadowed`] every frame, built in
+/// one place so `tests/ui.rs` can drive the same wiring — the predictor's
+/// collision index (`ClientCore::pieces`), the snapshot's bodies and the
+/// bag list — rather than a hand-assembled copy of it. `sel` is the hotbar
+/// latch, read for [`butchers_in_hand`] before the core is lent out.
+pub fn swing_island(
+    core: &mut client_core::core::ClientCore,
+    sel: u8,
+) -> (Island<'_>, Shadows<'_>) {
+    let own = core.player_id;
+    let butchers = butchers_in_hand(&core.catalog, &core.inv, sel);
+    let (seed, occ, cols, entities, bags) = core.swing_view();
+    (
+        Island {
+            doors: occ.doors,
+            seed,
+            table: occ.table,
+            haven: occ.haven,
+            harvested: occ.harvested,
+            cache: occ.cache,
+        },
+        Shadows {
+            own,
+            entities,
+            cols,
+            bags,
+            butchers,
+        },
+    )
+}
+
+/// Each species' hit cylinder, `(body_r_cm, body_h_cm)`, in `mob::MOB_*`
+/// order — `content/mobs.toml`'s, which this client does not load. The sim's
+/// `melee::mob_cast` reads them off `MobDef`; the prompt reads them here, and
+/// `tests/ui.rs` holds the two equal through the real loader, so a resized
+/// stag goes red there instead of shadowing a tree at the wrong height.
+pub const MOB_SWING_BODY_CM: [(u16, u16); sim_core::mob::MOB_KINDS] =
+    [(55, 78), (60, 85), (55, 130)];
+
+/// What a swing from `at` would land on, with everything the sim's cast
+/// weighs (§0ray 2): [`resolve_swing`]'s node, kept only if nothing nearer
+/// along the same ray takes the blow first — or the carcass a butchering
+/// hand would cut, when that is what it meets first.
+///
+/// `melee::cast` ranks a node against the nearest body, animal, carcass and
+/// world stop by entry fraction, and the arm is spent on whichever comes
+/// first — so a pig, a man or a wall standing in front of a tree eats the
+/// swing while [`resolve_swing`] alone would still say CHOP TREE, and the
+/// impact path would throw the tree's chips off a blow that landed in flesh.
+/// This asks the same questions with the sim's own pieces: `node_cast`, the
+/// body quadratic (`ranged::body_crossing`), the animal cylinder
+/// (`melee::animal_entry`), the carcass lying down
+/// (`melee::carcass_entry`), the world walk (`melee::world_cast`), and the
+/// ranking itself (`melee::nearest`). A body, an animal or a wall that wins
+/// is not named (a body already has its nametag and a wall its side line,
+/// and a label for either would be a new verb nobody asked for), so the
+/// prompt goes quiet rather than lying.
+///
+/// A carcass is the one other winner that IS named, because cutting it is
+/// a verb the shard pays for: only a butchering hand ([`Shadows::butchers`])
+/// meets one, and the pick then carries its species and bag, so the prompt
+/// says BUTCHER where the shard will cut rather than CHOP TREE over it. A
+/// blunt hand passes through it, as `melee::cast` lets it.
+///
+/// What it cannot see: the shard's rewound poses (the snapshot stands in
+/// for them, so a body crossing the line can disagree for a frame). The ray
+/// is `gather::REACH_M` long, which is every shipped melee row's longest
+/// reach, so the world walk samples where the shard's does.
+///
+/// Allocates nothing; the world walk and the two loops run only when a node
+/// or a carcass is in the ray, since nothing else is ever named.
+pub fn resolve_swing_shadowed(
+    at: SwingAim,
+    island: &mut Island<'_>,
+    shadows: &Shadows<'_>,
+) -> SwingPick {
+    let ray = at.ray(SWING_REACH_M);
+    let (seed, haven) = (island.seed, island.haven);
+    let mut occ = island.occupants();
+    let node = melee::node_cast(seed, &mut occ, &ray);
+    let carcass = if shadows.butchers {
+        nearest_carcass(&ray, shadows)
+    } else {
+        None
+    };
+    if node.is_none() && carcass.is_none() {
+        return SwingPick::default();
+    }
+    let world = melee::world_cast(seed, haven, shadows.cols, &mut occ, &ray);
+    let entered = melee::Entered {
+        node,
+        body: nearest_body(&ray, shadows),
+        mob: nearest_animal(&ray, shadows),
+        carcass,
+        world,
+    };
+    // Only the node's and the carcass's reaches decide anything here: a
+    // body or a wall out of the hand's reach still ends the swing
+    // (`melee::cast`'s whiff), so it shadows either way and its own reach is
+    // never asked. A carcass's is the node's, as `for_hand_butchering` sets.
+    let reach = SWING_REACH_M * MM_PER_M;
+    let reaches = melee::Reaches {
+        node: reach,
+        carcass: if shadows.butchers { reach } else { 0.0 },
+        ..melee::Reaches::default()
+    };
+    match melee::nearest(&entered, &ray, &reaches) {
+        melee::Reached::Node(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        melee::Reached::Carcass(c) => {
+            let bag = shadows.bags[c.bag];
+            SwingPick {
+                carcass: bag.species(),
+                bag: bag.id,
+                ..SwingPick::default()
+            }
+        }
+        _ => SwingPick::default(),
+    }
+}
+
+/// The nearest carcass the ray enters, by `melee::carcass_cast`'s rule, over
+/// the wire's bag list: a bag whose look is a species (`WireBag::species`)
+/// with a hit volume, solved by `melee::carcass_entry`. `bag` is the index
+/// in `shadows.bags`. A pack (a player's or a box's) is not meat.
+fn nearest_carcass(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::CarcassHit> {
+    let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
+    let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
+    let mut best: Option<melee::CarcassHit> = None;
+    for (bag, b) in shadows.bags.iter().enumerate() {
+        let Some(&(r_cm, h_cm)) = b.species().and_then(|k| MOB_SWING_BODY_CM.get(k as usize))
+        else {
+            continue;
+        };
+        let lying = Body {
+            qx: b.qx,
+            qy: b.qy,
+            qz: b.qz,
+            ..Body::default()
+        };
+        let Some(t) = melee::carcass_entry(o, u, r_cm, h_cm, &lying) else {
+            continue;
+        };
+        if best.is_none_or(|c| t < c.t) {
+            best = Some(melee::CarcassHit { bag, t });
+        }
+    }
+    best
+}
+
+/// The nearest other living player the ray crosses, by
+/// `ranged::nearest_body`'s rule (closest approach first), over the
+/// snapshot. `slot` is the entity's index in `entities`; nothing reads it.
+fn nearest_body(ray: &Ray, shadows: &Shadows<'_>) -> Option<sim_core::ranged::BodyHit> {
+    let mut best: Option<sim_core::ranged::BodyHit> = None;
+    for (i, &(id, e)) in shadows.entities.iter().enumerate() {
+        if id == shadows.own || id & sim_core::limits::MOB_ID_TAG != 0 || e.dead {
+            continue;
+        }
+        let pose = sim_core::rewind::RewindPose {
+            id,
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            crouched: e.crouched,
+        };
+        let Some(hit) = sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, i, pose) else {
+            continue;
+        };
+        if best.is_none_or(|b| hit.t < b.t) {
+            best = Some(hit);
+        }
+    }
+    best
+}
+
+/// The nearest living animal the ray enters, by `melee::mob_cast`'s rule,
+/// over the snapshot. The heli and the sentries ride the animal tag with no
+/// hit volume, so their kinds (past `MOB_KINDS`) are skipped as the sim's
+/// `MobDef::INERT` skips them.
+fn nearest_animal(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::MobHit> {
+    use sim_core::mob;
+    let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
+    let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
+    let mut best: Option<melee::MobHit> = None;
+    for &(id, e) in shadows.entities {
+        if e.dead {
+            continue;
+        }
+        let Some(slot) = mob::slot_of_id(id) else {
+            continue;
+        };
+        let Some(&(r_cm, h_cm)) = MOB_SWING_BODY_CM.get(mob::kind_of(slot) as usize) else {
+            continue;
+        };
+        let body = Body {
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            ..Body::default()
+        };
+        let Some(t) = melee::animal_entry(o, u, r_cm, h_cm, &body) else {
+            continue;
+        };
+        if best.is_none_or(|b| t < b.t) {
+            best = Some(melee::MobHit { slot, t });
+        }
+    }
+    best
 }
 
 /// Whether an occupant is something `E` OPENS.
@@ -1693,6 +2048,158 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
     best
 }
 
+/// What the give key would hand over this frame (`Command::Give`, `NOW.md`
+/// §5d): the whole stack in the selected hotbar slot, to the standing player
+/// the crosshair is on in hand reach.
+///
+/// **Its own key, never `E`.** `E` on a body already means help up, inject
+/// and nothing else; a give on the same key would turn a press meant for a
+/// door behind a friend into a weapon handed over. So it is `B`, held for
+/// [`GIVE_HOLD_S`] (`GiveHold`), and the prompt names the item, the count
+/// and the person before anything leaves the hand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GivePick {
+    pub target: u32,
+    pub slot: u8,
+    pub item: u16,
+    pub count: u16,
+}
+
+/// How long the give key is held before the stack goes, seconds. Long
+/// enough that a tap or a brush of the key never gives, short enough that a
+/// deliberate hand-over is not a wait.
+pub const GIVE_HOLD_S: f64 = 0.5;
+
+/// The give key's target: the nearest standing, awake player (not down, not
+/// dead, not a sleeper, not an animal, not you) whose body the aim enters
+/// inside hand reach — the syringe's ray and reach (`sim_core::assist`), so
+/// the prompt is offered exactly where the sim's `reaches_body` would pass
+/// on open ground. `held` is the selected slot and its stack; an empty hand
+/// gives nothing.
+pub fn resolve_give(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+    held: (u8, sim_core::gather::ItemStack),
+) -> Option<GivePick> {
+    let (slot, stack) = held;
+    if stack.count == 0 {
+        return None;
+    }
+    let body = Body {
+        qx: quant_xz(aim.x),
+        qy: quant_y(aim.y),
+        qz: quant_xz(aim.z),
+        ..Default::default()
+    };
+    let ray = sim_core::assist::ray(
+        &body,
+        &sim_core::input::InputFrame {
+            yaw: aim.yaw,
+            pitch: aim.pitch,
+            ..Default::default()
+        },
+        aim.crouched,
+    );
+    let mut best: Option<(f32, u32)> = None;
+    for &(id, e) in entities {
+        if id == own || e.wounded || e.dead || e.sleeping || sim_core::mob::slot_of_id(id).is_some()
+        {
+            continue;
+        }
+        let target = Body {
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            ..Default::default()
+        };
+        if let Some(t) = sim_core::assist::aimed(&ray, &target) {
+            // Identity breaks an exact tie, `resolve_assist`'s rule.
+            if best.is_none_or(|(d, b)| t < d || (t == d && id < b)) {
+                best = Some((t, id));
+            }
+        }
+    }
+    best.map(|(_, target)| GivePick {
+        target,
+        slot,
+        item: stack.item,
+        count: stack.count,
+    })
+}
+
+/// The give key's line: what, how many and to whom, and while the key is
+/// held, how long is left. `who` is the receiver's label (`ui::names`).
+pub fn give_prompt(
+    pick: &GivePick,
+    catalog: &ItemCatalog,
+    who: &str,
+    left_s: Option<f64>,
+) -> String {
+    let item = crate::ui::craft::item_label(catalog, pick.item).to_uppercase();
+    match left_s {
+        Some(s) => format!(
+            "GIVING {item} ×{} TO {who} · {s:.1} s · HOLD [B]",
+            pick.count
+        ),
+        None => format!("HOLD [B] GIVE {item} ×{} TO {who}", pick.count),
+    }
+}
+
+/// The hold on the give key. A hold starts only on the key's **press** with
+/// a give aimed, and it gives only if that same pick — same person, same
+/// slot, same item, same count — is still aimed when [`GIVE_HOLD_S`] runs
+/// out. Anything else cancels it until the key comes up and goes down
+/// again: holding `B` and sweeping the crosshair across a friend gives
+/// nothing, and one hold gives once.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GiveHold {
+    on: Option<(GivePick, f64)>,
+}
+
+impl GiveHold {
+    /// One frame. `pressed` is the key's down edge, `down` whether it is
+    /// held, `pick` this frame's [`resolve_give`]. Returns the pick to send,
+    /// on the one frame the hold completes.
+    pub fn step(
+        &mut self,
+        pressed: bool,
+        down: bool,
+        pick: Option<GivePick>,
+        now: f64,
+    ) -> Option<GivePick> {
+        if !down {
+            self.on = None;
+            return None;
+        }
+        if pressed {
+            self.on = pick.map(|p| (p, now));
+            return None;
+        }
+        let (on, t0) = self.on?;
+        if pick != Some(on) {
+            self.on = None;
+            return None;
+        }
+        if now - t0 >= GIVE_HOLD_S {
+            self.on = None;
+            return Some(on);
+        }
+        None
+    }
+
+    /// Seconds left on the hold under way, if one is.
+    pub fn left(&self, now: f64) -> Option<f64> {
+        self.on.map(|(_, t0)| (GIVE_HOLD_S - (now - t0)).max(0.0))
+    }
+
+    /// Drop the hold without giving (a panel took the keys, the body went
+    /// down).
+    pub fn cancel(&mut self) {
+        self.on = None;
+    }
+}
+
 /// A nametag's target: the player id, the eye the aim leaves from, and
 /// their head.
 pub type NametagHit = (u32, (f32, f32, f32), (f32, f32, f32));
@@ -1790,5 +2297,122 @@ mod assist_tests {
             resolve_assist(aim, 1, &[(3, target), (2, target)]).handle,
             2
         );
+    }
+
+    #[test]
+    fn a_give_needs_a_held_stack_and_an_aimed_standing_player() {
+        use sim_core::gather::ItemStack;
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: 128,
+            crouched: false,
+        };
+        let friend = protocol::EntityState {
+            qx: quant_xz(10.0),
+            qy: quant_y(0.0),
+            qz: quant_xz(11.5),
+            ..Default::default()
+        };
+        let held = (
+            2,
+            ItemStack {
+                item: 9,
+                count: 40,
+                cond: 0,
+                skin: 0,
+            },
+        );
+        assert_eq!(
+            resolve_give(aim, 1, &[(2, friend)], held),
+            Some(GivePick {
+                target: 2,
+                slot: 2,
+                item: 9,
+                count: 40
+            })
+        );
+        assert_eq!(
+            resolve_give(aim, 1, &[(2, friend)], (2, ItemStack::default())),
+            None,
+            "an empty hand gives nothing"
+        );
+        assert_eq!(resolve_give(aim, 2, &[(2, friend)], held), None, "yourself");
+        let animal = sim_core::mob::mob_id(3);
+        assert_eq!(resolve_give(aim, 1, &[(animal, friend)], held), None);
+        for absent in [
+            protocol::EntityState {
+                wounded: true,
+                ..friend
+            },
+            protocol::EntityState {
+                dead: true,
+                ..friend
+            },
+            protocol::EntityState {
+                sleeping: true,
+                ..friend
+            },
+            protocol::EntityState {
+                qz: quant_xz(14.0),
+                ..friend
+            },
+        ] {
+            assert_eq!(resolve_give(aim, 1, &[(2, absent)], held), None);
+        }
+        assert_eq!(
+            resolve_give(SwingAim { yaw: 32768, ..aim }, 1, &[(2, friend)], held),
+            None,
+            "not aimed at"
+        );
+        let p = resolve_give(aim, 1, &[(3, friend), (2, friend)], held).unwrap();
+        assert_eq!(p.target, 2, "identity breaks a dead tie");
+        let line = give_prompt(&p, &ItemCatalog::EMPTY, "ANNA", None);
+        assert!(line.contains("[B]") && line.contains("×40") && line.contains("ANNA"));
+    }
+
+    #[test]
+    fn a_give_takes_a_held_press_on_one_unchanged_pick() {
+        let p = GivePick {
+            target: 2,
+            slot: 0,
+            item: 9,
+            count: 4,
+        };
+        let other = GivePick { target: 3, ..p };
+        // A full hold from the press gives once, then nothing more until
+        // the key comes up and goes down again.
+        let mut h = GiveHold::default();
+        assert_eq!(h.step(true, true, Some(p), 0.0), None);
+        assert_eq!(h.step(false, true, Some(p), 0.3), None);
+        assert!(h.left(0.3).is_some_and(|s| (s - 0.2).abs() < 1e-9));
+        assert_eq!(h.step(false, true, Some(p), GIVE_HOLD_S), Some(p));
+        assert_eq!(
+            h.step(false, true, Some(p), 5.0),
+            None,
+            "one hold, one give"
+        );
+        assert_eq!(h.left(5.0), None);
+        // A tap gives nothing.
+        let mut h = GiveHold::default();
+        h.step(true, true, Some(p), 0.0);
+        assert_eq!(h.step(false, false, Some(p), 0.1), None);
+        assert_eq!(h.step(false, true, Some(p), 1.0), None);
+        // Holding the key and sweeping onto somebody gives nothing.
+        let mut h = GiveHold::default();
+        h.step(true, true, None, 0.0);
+        assert_eq!(h.step(false, true, Some(p), 1.0), None);
+        // A pick that changes mid-hold cancels it, even if it changes back.
+        let mut h = GiveHold::default();
+        h.step(true, true, Some(p), 0.0);
+        assert_eq!(h.step(false, true, Some(other), 0.2), None);
+        assert_eq!(h.step(false, true, Some(p), 1.0), None);
+        // So does a stack that changed under the hold.
+        let mut h = GiveHold::default();
+        h.step(true, true, Some(p), 0.0);
+        let more = GivePick { count: 5, ..p };
+        assert_eq!(h.step(false, true, Some(more), 1.0), None);
     }
 }

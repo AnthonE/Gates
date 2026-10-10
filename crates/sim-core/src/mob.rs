@@ -70,6 +70,7 @@ use crate::input::{InputFrame, BTN_SPRINT};
 use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS};
 use crate::movement::{self, Body, POS_XZ_Q};
 use crate::nav::{self, Ground, Nav, NavPath};
+use crate::noise::Hearing;
 use crate::occupy::Occupants;
 use crate::rng::cell_hash;
 use crate::terrain::{self, Haven};
@@ -433,6 +434,29 @@ pub struct MobDef {
     /// A target holding a lit torch inside this radius is circled, not
     /// bitten, centimetres. Zero fears nothing.
     pub fire_fear_cm: i64,
+    /// At most this many animals bite one target at once; the rest of a
+    /// pack circles (`brain::Cond::Crowded`). Only a pack design asks.
+    pub pack_biters: u8,
+    /// Failed routes to one target before the animal gives up on it
+    /// (`brain::Cond::GaveUp`); a swimmer spends them all at once.
+    pub give_up_tries: u8,
+    /// Out of combat this long, ticks — not struck, nobody remembered — an
+    /// animal starts to heal (`brain::heal`)…
+    pub heal_after_ticks: u32,
+    /// …a `heal_parts`th of its max hp every think: this many thinks from
+    /// a scratch to whole.
+    pub heal_parts: u16,
+    /// A pack animal howls for its pack at most this often, ticks.
+    pub howl_ticks: u32,
+    /// The circle a waiting animal walks round its target, centimetres
+    /// (`brain::orbit`); closer than its inner part it backs off first.
+    pub orbit_cm: i64,
+    /// Percent: the draw an idle animal makes at night, when its stand runs
+    /// out, to bed down rather than roam (`brain::Cond::Drowsy`). Only a
+    /// design with a way into `Sleep` asks.
+    pub sleep_pct: u8,
+    /// How far it hears each kind of noise (`noise.rs`).
+    pub hear: Hearing,
     /// What the corpse holds: the killing blow stands these rows up as a
     /// ground bag at the death cell (`strike_slot`), and the killer loots it
     /// like any other bag. `NO_ITEM` ends the table.
@@ -460,6 +484,14 @@ impl MobDef {
         sight_dot_pm: 0,
         pack_cm: 0,
         fire_fear_cm: 0,
+        pack_biters: 0,
+        give_up_tries: 0,
+        heal_after_ticks: 0,
+        heal_parts: 0,
+        howl_ticks: 0,
+        orbit_cm: 0,
+        sleep_pct: 0,
+        hear: Hearing::DEAF,
         loot: [ItemStack {
             item: NO_ITEM,
             count: 0,
@@ -549,6 +581,15 @@ impl MobContent {
             .copied()
     }
 
+    /// The shipped rows' ears (`content/mobs.toml` `hear_m`): a gunshot at
+    /// 100 m, a bow at 15, a strike at 25 and a blast at 200.
+    pub const FIXTURE_EARS: Hearing = Hearing {
+        gun_cm: 10_000,
+        bow_cm: 1_500,
+        strike_cm: 2_500,
+        blast_cm: 20_000,
+    };
+
     /// The fixture the probe and the sim tests run on — the alpha roster's
     /// shape without a content directory. Loot is deliberately `NO_ITEM`
     /// here: item *indices* are a property of the loaded set, and a
@@ -597,6 +638,16 @@ impl MobContent {
             sight_dot_pm: -500,
             pack_cm: 0,
             fire_fear_cm: 0,
+            // The brain's numbers, the shipped rows' (every species carries
+            // the same today).
+            pack_biters: 2,
+            give_up_tries: 3,
+            heal_after_ticks: 1_800,
+            heal_parts: 40,
+            howl_ticks: 600,
+            orbit_cm: 700,
+            sleep_pct: 40,
+            hear: Self::FIXTURE_EARS,
             loot: [ItemStack {
                 item: NO_ITEM,
                 count: 0,
@@ -624,6 +675,14 @@ impl MobContent {
             sight_dot_pm: -500,
             pack_cm: 4_000,
             fire_fear_cm: 800,
+            pack_biters: 2,
+            give_up_tries: 3,
+            heal_after_ticks: 1_800,
+            heal_parts: 40,
+            howl_ticks: 600,
+            orbit_cm: 700,
+            sleep_pct: 40,
+            hear: Self::FIXTURE_EARS,
             loot: [ItemStack {
                 item: NO_ITEM,
                 count: 0,
@@ -705,7 +764,7 @@ pub struct Mob {
     /// The tick it was last struck — the out-of-combat clock its healing
     /// runs off (`brain::heal`).
     pub hurt_at: u64,
-    /// The tick it last howled for its pack (`brain::HOWL_COOLDOWN_TICKS`).
+    /// The tick it last howled for its pack (`MobDef::howl_ticks`).
     pub howled_at: u64,
     /// Struck before it had noticed anyone. A pack animal answers that by
     /// backing off, calling its pack and coming back with it (the

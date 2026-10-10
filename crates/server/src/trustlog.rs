@@ -64,7 +64,7 @@ use crate::store::PlayerKey;
 use sim_core::limits::{MAX_PLAYERS, MAX_TRUST_ROWS_PER_TICK, TICK_HZ};
 use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, TRUST_AUTH, TRUST_CONT,
-    TRUST_DOOR, TRUST_VERB_MAX,
+    TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -775,6 +775,7 @@ pub fn verb_name(v: u8) -> Option<&'static str> {
         TRUST_DOOR => Some("door"),
         TRUST_AUTH => Some("auth"),
         TRUST_CONT => Some("cont"),
+        TRUST_GIVE => Some("give"),
         _ => None,
     }
 }

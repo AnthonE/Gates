@@ -361,6 +361,15 @@ fn layout_holds_through_a_balance_edit_and_moves_with_a_row() {
         tuned.layout_hash(),
         "a stack size is balance"
     );
+    // The craft rail's class is presentation and walks the hash like the
+    // name beside it, and like a stack size it is not layout.
+    let tuned = edit("items.toml", "class = \"resources\"", "class = \"other\"");
+    assert_ne!(base.hash(), tuned.hash());
+    assert_eq!(
+        base.layout_hash(),
+        tuned.layout_hash(),
+        "a class is presentation"
+    );
     let tuned = edit("arc.toml", "count = 60000", "count = 40000");
     assert_ne!(base.hash(), tuned.hash());
     assert_eq!(
@@ -373,7 +382,7 @@ fn layout_holds_through_a_balance_edit_and_moves_with_a_row() {
         "items.toml",
         "[[item]]\nid = \"item.wood\"",
         "[[item]]\nid = \"item.aaa_new\"\nname = \"New\"\nstack = 1\ntier = 0\n\
-         rarity = \"common\"\nslot = \"none\"\n\n[[item]]\nid = \"item.wood\"",
+         rarity = \"common\"\nslot = \"none\"\nclass = \"other\"\n\n[[item]]\nid = \"item.wood\"",
     );
     assert_ne!(
         base.layout_hash(),
@@ -815,13 +824,47 @@ fn orphan_refs_refused() {
     );
 }
 
+/// Every item names its class (the craft rail's bucket): a row without one
+/// is refused at parse rather than landing in no bucket, and so is a class
+/// the ledger does not hold.
+#[test]
+fn an_item_without_a_class_is_refused() {
+    refuses(
+        "items.toml",
+        "slot = \"none\"\nclass = \"resources\"\n",
+        "slot = \"none\"\n",
+        "missing field `class`",
+    );
+    refuses(
+        "items.toml",
+        "class = \"medical\"",
+        "class = \"traps\"",
+        "unknown variant",
+    );
+    // The armor rows are CLOTHING, which is the one class the wire could
+    // already half-say (`wear_slot`): the two must not disagree.
+    let c = build(&sources()).unwrap();
+    for i in &c.items {
+        let worn = !matches!(
+            i.slot,
+            content::schema::EquipSlot::Hand | content::schema::EquipSlot::None
+        );
+        assert_eq!(
+            worn,
+            i.class == content::schema::ItemClass::Clothing,
+            "`{}` is worn but not clothing, or clothing but not worn",
+            i.id
+        );
+    }
+}
+
 #[test]
 fn duplicate_id_refused() {
     let mut srcs = sources();
     let items = srcs.iter_mut().find(|(n, _)| *n == "items.toml").unwrap();
     items.1.push_str(
         "\n[[item]]\nid = \"item.wood\"\nname = \"Wood Again\"\nstack = 1\n\
-         tier = 0\nrarity = \"common\"\nslot = \"none\"\n",
+         tier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"resources\"\n",
     );
     let err = build(&srcs).expect_err("duplicate id accepted");
     assert!(err.contains("duplicate id"), "got: {err}");
@@ -1005,6 +1048,24 @@ fn door_must_stay_weaker_than_wall() {
         "material = \"wood\"\nhp = 200",
         "material = \"wood\"\nhp = 4000",
         "must stay under",
+    );
+}
+
+/// A door names what it is made of twice (`material` for its wall,
+/// `matter` for the client's dust and sound), and the two must agree.
+#[test]
+fn a_door_whose_matter_disagrees_with_its_material_is_refused() {
+    refuses(
+        "deployables.toml",
+        "matter = \"wood\"\nmaterial = \"wood\"",
+        "matter = \"metal\"\nmaterial = \"wood\"",
+        "disagrees with material",
+    );
+    refuses(
+        "deployables.toml",
+        "placement = \"any\"\nmatter = \"cloth\"",
+        "placement = \"any\"\nmatter = \"felt\"",
+        "unknown variant",
     );
 }
 
@@ -1238,6 +1299,18 @@ fn bake_deployables_carries_the_shipped_numbers() {
     let idx = c.deploy_index("item.door_wood").unwrap() as usize;
     assert_eq!(dc.defs[idx].arch, sim_core::deploy::ARCH_DOOR);
     assert_eq!(dc.defs[idx].placement, sim_core::deploy::PLACE_DOORWAY);
+
+    // What each is made of reaches the row the wire carries: the two
+    // doors differ by it, which the client once told apart by hp.
+    for (id, matter) in [
+        ("item.door_wood", sim_core::deploy::MATTER_WOOD),
+        ("item.door_metal", sim_core::deploy::MATTER_METAL),
+        ("item.furnace", sim_core::deploy::MATTER_STONE),
+        ("item.sleeping_bag", sim_core::deploy::MATTER_CLOTH),
+    ] {
+        let idx = c.deploy_index(id).unwrap() as usize;
+        assert_eq!(dc.defs[idx].matter, matter, "{id}");
+    }
 
     // Upkeep materials are exactly the distinct build-cost items,
     // ascending, and the pct is balance.toml's global.
@@ -1922,6 +1995,71 @@ fn the_shipped_torch_is_five_minutes_of_light() {
         torch.condition_max / torch.light_burn,
         5,
         "the shipped torch is no longer the reference's five minutes"
+    );
+}
+
+/// **A torch blow wears the torch** (NOW §0tl 3): the shipped row's
+/// `condition_loss` reaches the sim's melee row and the content hash, and
+/// the rules that keep it honest refuse what they name.
+#[test]
+fn the_torch_wears_by_the_blow() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let row = c
+        .weapons
+        .iter()
+        .find(|w| w.id == "item.torch")
+        .expect("content/weapons.toml no longer arms the torch");
+    assert_eq!(
+        row.condition_loss,
+        Some(700),
+        "the torch's ~7 points a blow (the reference's) moved"
+    );
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let torch = c.item_index("item.torch").unwrap();
+    assert_eq!(
+        cc.wear_of(torch),
+        700,
+        "the blow's wear never reached the sim"
+    );
+    // Only the torch wears by the blow so far: the tools wear on their
+    // nodes, the spears carry no condition.
+    let hatchet = c.item_index("item.hatchet_stone").unwrap();
+    assert_eq!(cc.wear_of(hatchet), 0);
+
+    let mut srcs = sources();
+    let w = srcs.iter_mut().find(|(n, _)| *n == "weapons.toml").unwrap();
+    w.1 = w.1.replace("condition_loss = 700", "condition_loss = 600");
+    assert_ne!(
+        c.hash(),
+        build(&srcs).unwrap().hash(),
+        "a blow's wear must move the content hash"
+    );
+
+    refuses(
+        "weapons.toml",
+        "condition_loss = 700",
+        "condition_loss = 0",
+        "(V5)",
+    );
+    refuses(
+        "weapons.toml",
+        "condition_loss = 700",
+        "condition_loss = 70000",
+        "(V1)",
+    );
+    // A spear carries no condition, so a blow has nothing to wear.
+    refuses(
+        "weapons.toml",
+        "id = \"item.spear_stone\"\nkind = \"melee\"",
+        "id = \"item.spear_stone\"\nkind = \"melee\"\ncondition_loss = 30",
+        "(V6)",
+    );
+    // A shot never reads it.
+    refuses(
+        "weapons.toml",
+        "draw_ms = 1000",
+        "draw_ms = 1000\ncondition_loss = 30",
+        "non-melee",
     );
 }
 
@@ -2653,7 +2791,7 @@ fn a_second_lock_row_is_refused() {
     refuses(
         "deployables.toml",
         "id = \"item.lock_code\"\narchetype = \"lock\"",
-        "id = \"item.hammer\"\narchetype = \"lock\"\nplacement = \"door\"\nhp = 100\n\n[[deployable]]\nid = \"item.lock_code\"\narchetype = \"lock\"",
+        "id = \"item.hammer\"\narchetype = \"lock\"\nplacement = \"door\"\nmatter = \"metal\"\nhp = 100\n\n[[deployable]]\nid = \"item.lock_code\"\narchetype = \"lock\"",
         "the sim can only name one",
     );
 }
@@ -3421,6 +3559,57 @@ fn the_shipped_wolf_hunts_a_narrower_circle_after_dusk() {
     assert_eq!(wolf.spook_at(night), wolf.night_spook_cm);
 }
 
+/// **The brain's numbers came out of code unchanged** (`NOW.md` §0m item 7).
+/// They were constants in `brain.rs` and `noise.rs` that every species
+/// shared; the shipped rows carry them now, and the bake must hand the sim
+/// what the constants were, units converted, or every animal on the island
+/// changed behaviour the day they moved. The sim's tests run on
+/// `MobContent::probe_fixture`, whose rows are those constants, so the
+/// shipped rows are held to it: a balance pass that retunes one moves the
+/// fixture with it.
+#[test]
+fn the_brain_numbers_bake_to_what_the_code_had() {
+    use sim_core::mob::{MobContent, MOB_PIG, MOB_STAG, MOB_WOLF};
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let mc = c.bake_mobs().expect("shipped animals must bake");
+    let fx = MobContent::probe_fixture();
+    let brain = |d: sim_core::mob::MobDef| {
+        (
+            d.pack_biters,
+            d.give_up_tries,
+            d.heal_after_ticks,
+            d.heal_parts,
+            d.howl_ticks,
+            d.orbit_cm,
+            d.sleep_pct,
+            d.hear,
+        )
+    };
+    // The fixture has no stag; a stag's brain is the pig's.
+    for (kind, like) in [
+        (MOB_PIG, MOB_PIG),
+        (MOB_WOLF, MOB_WOLF),
+        (MOB_STAG, MOB_PIG),
+    ] {
+        assert_eq!(
+            brain(mc.def(kind)),
+            brain(fx.def(like)),
+            "species {kind}: the shipped brain numbers and the sim's fixture disagree"
+        );
+    }
+    // The units, once, against the constants they replaced: a minute and
+    // twenty seconds at 30 Hz, a twenty-second heal in half-second thinks.
+    let pig = mc.def(MOB_PIG);
+    assert_eq!(
+        (pig.heal_after_ticks, pig.heal_parts, pig.howl_ticks),
+        (1_800, 40, 600)
+    );
+    assert_eq!(
+        (pig.orbit_cm, pig.hear.gun_cm, pig.hear.blast_cm),
+        (700, 10_000, 20_000)
+    );
+}
+
 /// **The loop, across three content files that cannot see each other.**
 ///
 /// The pig pays a raw food, the campfire is the only station that turns it
@@ -3837,6 +4026,38 @@ fn mob_refusals() {
         "is not an item",
     );
     refuses("mobs.toml", "count = 15", "count = 0", "zero count");
+    // The brain's numbers (`NOW.md` §0m item 7). Every row carries the same
+    // text today, so each replace lands on all three.
+    refuses(
+        "mobs.toml",
+        "pack_biters = 2",
+        "pack_biters = 0",
+        "pack_biters",
+    );
+    refuses(
+        "mobs.toml",
+        "give_up_tries = 3",
+        "give_up_tries = 0",
+        "give_up_tries",
+    );
+    refuses(
+        "mobs.toml",
+        "heal_seconds = 20",
+        "heal_seconds = 0",
+        "heal_seconds",
+    );
+    // A circle inside the pig's 2 m bite, and one past every leash.
+    refuses("mobs.toml", "orbit_m = 7", "orbit_m = 2", "orbit_m");
+    refuses("mobs.toml", "orbit_m = 7", "orbit_m = 100", "orbit_m");
+    refuses(
+        "mobs.toml",
+        "sleep_pct = 40",
+        "sleep_pct = 101",
+        "sleep_pct",
+    );
+    refuses("mobs.toml", "blast = 200", "blast = 900", "hear_m");
+    // A row that leaves one out is refused, not defaulted into an answer.
+    refuses("mobs.toml", "sleep_pct = 40\n", "", "sleep_pct");
     // A species the sim has no roster kind for is a boot refusal, not a
     // silently ignored row: the content hash would otherwise promise
     // wildlife the shard does not have.

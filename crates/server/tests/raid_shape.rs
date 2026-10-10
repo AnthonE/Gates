@@ -53,10 +53,12 @@
 //!    `RAID_CYCLE` steps — `botclient::body_cell` and the `steps_in_cycle`
 //!    reset, which is the line `NOW.md` §0rc suspects.
 //! 3. **Odd streams raid, even streams own** (`seed_stream % 2 == 1`).
-//! 4. **The hotbar selection rides the input lane and lasts one frame.**
-//!    `raid_step`'s `Command::Input` never becomes an action: `botclient.rs`
-//!    folds its `sel` into the *next* `bot_frame` with `.take()`, and every
-//!    other frame carries `bot_frame`'s own `rng.next_bounded(6)`.
+//! 4. **The hotbar selection rides the input lane.** `raid_step`'s
+//!    `Command::Input` never becomes an action. `botclient.rs` now holds its
+//!    `sel` on every frame until the cycle re-seats (`HeldSel`); this replay
+//!    folds it into the *next* frame only and lets `bot_frame`'s own
+//!    `rng.next_bounded(6)` back after. The two agree on every plant, because
+//!    the step after a select is the throw and it lands on that same tick.
 //! 5. **The bodies walk**, on `bot_frame`, seeded the way `botclient.rs`
 //!    seeds it, with the raid on its own second stream.
 //! 6. Shipped content and `bot_smoke.rs`'s kit layout, slot for slot.
@@ -64,12 +66,13 @@
 //! ## What is deliberately NOT reproduced, and which way each one leans
 //!
 //! - **No jitter buffer.** `client::consume_input` buffers frames and can
-//!   throttle two into one tick (both stepping, netcode v2), so over the
-//!   wire the frame carrying `charge_slot` need not be the frame in force
-//!   when the throw lands. Here the input command is applied the same tick
-//!   it is issued. That makes both arms the
-//!   **optimistic** case for held-item timing: they can only find *more*
-//!   plants than the shard, never fewer.
+//!   throttle two into one tick (both stepping, netcode v2). The shard holds
+//!   a throw until the frames buffered when it arrived have acted
+//!   (`ClientNetState::hand_ready`, `tests/held_throw.rs`), so the selected
+//!   slot is in force when it lands, up to the buffer's depth in ticks late.
+//!   Here the input command is applied the same tick it is issued. That
+//!   makes both arms the **optimistic** case for throw timing: they can only
+//!   find *more* plants than the shard, never fewer.
 //! - No packet loss, no reordering, no join stagger. Same direction.
 //! - No action queueing. The shard takes one action per client per tick
 //!   and leaves the rest ringed (`core::wants_action` gates the net
@@ -347,8 +350,8 @@ fn replay(seating: Seating) -> Run {
         // ahead of the action lane inside one server tick.
         let mut steps: Vec<Command> = Vec::with_capacity(BOTS);
         for b in bots.iter_mut() {
-            // The frame first, with any pending selection folded in and
-            // consumed — `botclient.rs`'s `.take()`.
+            // The frame first, with any pending selection folded in for
+            // this frame only (doc point 4).
             let mut f = bot_frame(&mut b.rng, b.yaw, b.seq);
             if let Some(sel) = b.sel_override.take() {
                 f.sel = sel;

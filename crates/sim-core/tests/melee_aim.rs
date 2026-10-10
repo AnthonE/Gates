@@ -40,8 +40,9 @@ use sim_core::fmath::fabs;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+use sim_core::ranged::{IMPACT_MELEE, SURF_GROUND};
 use sim_core::terrain;
-use sim_core::world::{Command, World, EV_STRUCT_HIT, EV_SWING};
+use sim_core::world::{impact_parts, Command, World, EV_IMPACT, EV_STRUCT_HIT, EV_SWING};
 use sim_core::yaw_dir;
 
 const SEED: u64 = 20260802;
@@ -274,16 +275,24 @@ fn swing_once(w: &mut World, yaw: u16, pitch: u8) -> Swung {
         }]);
         let mut swung = false;
         let mut structure = 0;
+        let mut impact = None;
         for e in w.events.entries() {
             swung |= e.code == EV_SWING;
             if e.code == EV_STRUCT_HIT {
                 structure += e.c >> 16;
+            }
+            if e.code == EV_IMPACT {
+                let (surf, kind, _) = impact_parts(e.a);
+                if kind == IMPACT_MELEE {
+                    impact = Some(surf);
+                }
             }
         }
         if swung {
             return Swung {
                 hp: before.saturating_sub(w.players[1].hp),
                 structure,
+                impact,
             };
         }
     }
@@ -297,6 +306,10 @@ struct Swung {
     /// Structure damage announced on `EV_STRUCT_HIT` (`c` packs
     /// `damage << 16 | hp_left`).
     structure: u32,
+    /// The surface of the swing's own `EV_IMPACT` (`ranged::SURF_*`), if
+    /// the ray stopped on the world: what tells a blow into the dirt from
+    /// a whiff, which leaves no mark.
+    impact: Option<u8>,
 }
 
 /// One swing's damage to the body.
@@ -838,4 +851,97 @@ fn a_wall_interrupts_the_hand_helping_the_body_behind_it() {
         w.players[1].assist_ticks, 0,
         "help must not pass through a wall"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 3 · A landed blow wears the hand that dealt it (NOW §0tl 3).
+// ---------------------------------------------------------------------------
+
+/// The fixture's wear for these tests: not the shipped torch's 700, and not
+/// item 0's 400-point ceiling, so a bake or a lookup that read the wrong
+/// column cannot land on the right number.
+const WEAR: u16 = 70;
+/// `GatherContent::probe_fixture`'s `cond_max[0]`: the spear carries
+/// condition, which is what lets `World::wear_weapon` touch it at all.
+const COND: u16 = 400;
+
+fn held_cond(w: &World) -> u16 {
+    w.players[0].inv[0].cond
+}
+
+/// **Only a blow that lands wears**: the sky and the dirt cost nothing, the
+/// man in front costs exactly the row's `wear`, a row without one costs
+/// nothing, and the last point is spent rather than wrapped.
+#[test]
+fn a_landed_blow_wears_the_weapon_and_a_whiff_does_not() {
+    let mut w = duel();
+    stand_east_of_attacker(&mut w, 1, 1.2);
+    let chest = look_at_height(&w, 1.0);
+    w.players[0].inv[0].cond = COND;
+
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, chest), SPEAR_DAMAGE);
+    assert_eq!(held_cond(&w), COND, "a row with no wear wore on a hit");
+    heal(&mut w);
+
+    w.combat.melee[SPEAR as usize].wear = WEAR;
+    let sky = swing_once(&mut w, YAW_PLUS_X, STRAIGHT_UP);
+    assert_eq!(
+        (sky.hp, sky.impact),
+        (0, None),
+        "fixture: the sky is a whiff"
+    );
+    assert_eq!(held_cond(&w), COND, "a swing at the sky wore the weapon");
+    // Straight down stops on the ground at the swinger's feet: a stop, not
+    // a whiff, so the mark is asserted or this would only repeat the sky.
+    let dirt = swing_once(&mut w, YAW_PLUS_X, 0);
+    assert_eq!(
+        (dirt.hp, dirt.impact),
+        (0, Some(SURF_GROUND)),
+        "fixture: straight down must meet the terrain"
+    );
+    assert_eq!(held_cond(&w), COND, "a blow into the dirt wore the weapon");
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, chest), SPEAR_DAMAGE);
+    assert_eq!(
+        held_cond(&w),
+        COND - WEAR,
+        "a landed blow must take exactly the row's wear"
+    );
+    heal(&mut w);
+
+    w.players[0].inv[0].cond = WEAR - 1;
+    swing_at(&mut w, YAW_PLUS_X, chest);
+    assert_eq!(held_cond(&w), 0, "the last point is spent, not owed");
+    heal(&mut w);
+    swing_at(&mut w, YAW_PLUS_X, chest);
+    assert_eq!(held_cond(&w), 0, "a spent weapon's condition wrapped");
+}
+
+/// **A wall is a landed blow too**, and an item that carries no condition is
+/// never touched, whatever its row says: its `cond` may be another field's
+/// (the research paper's target).
+#[test]
+fn a_blow_at_a_wall_wears_the_weapon_and_a_conditionless_item_never() {
+    let mut w = duel();
+    let (cx, cz) = two_at_a_buildable_edge(&mut w);
+    let chest = look_at_height(&w, 1.0);
+    place_at(&mut w, cx, cz, PIECE_WALL, LOC_EDGE_XLO);
+    w.combat.melee[SPEAR as usize].wear = WEAR;
+    w.players[0].inv[0].cond = COND;
+
+    let blow = swing_once(&mut w, YAW_PLUS_X, chest);
+    assert!(blow.structure > 0, "fixture: the swing must reach the wall");
+    assert_eq!(held_cond(&w), COND - WEAR, "the wall took a blow for free");
+
+    // Item 2 is a fixture weapon with no `cond_max`.
+    let plain = 2u16;
+    assert_eq!(w.gather.cond_max_of(plain), 0, "fixture rot: item 2 wears");
+    w.combat.melee[plain as usize].wear = WEAR;
+    w.players[0].inv[0] = ItemStack {
+        item: plain,
+        count: 1,
+        cond: 123,
+        skin: 0,
+    };
+    assert!(swing_for_structure(&mut w, YAW_PLUS_X, chest) > 0);
+    assert_eq!(held_cond(&w), 123, "an item with no condition was worn");
 }

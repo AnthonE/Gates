@@ -343,6 +343,16 @@ fn a_take_into_a_full_pack_spills_rather_than_destroying() {
         in_bags, 9,
         "a take into a full pack destroyed what it could not carry"
     );
+    // And it says so with the amount (wire v102): one event, zero taken,
+    // nine to the feet.
+    let said: Vec<_> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == sim_core::world::EV_GATHER)
+        .map(|e| (e.b, e.c))
+        .collect();
+    assert_eq!(said, vec![(3 << 16, 9)]);
 }
 
 /// An item no stack ladder can size (`stack_max == 0`,
@@ -377,9 +387,9 @@ fn a_stack_no_ladder_can_size_stays_where_it_is() {
 }
 
 /// A take says what it took the way every other `EV_GATHER` producer does
-/// (`b = item << 16 | added`, `c = 0`), so the pickup notice names the
-/// item and not "+<index> of item 0" — and the stack keeps its skin into
-/// the pack, as it keeps its condition.
+/// (`b = item << 16 | added`, `c` = what fell, none here), so the pickup
+/// notice names the item and not "+<index> of item 0" — and the stack
+/// keeps its skin into the pack, as it keeps its condition.
 #[test]
 fn a_take_announces_its_item_and_keeps_its_skin() {
     let gc = GatherContent::probe_fixture();

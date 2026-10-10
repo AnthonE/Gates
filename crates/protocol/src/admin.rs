@@ -37,6 +37,13 @@
 //! to outlive the session, so the server resolves the id to the wallet it
 //! already holds — the admin types what they can see and the server
 //! records what it can enforce.
+//!
+//! **`/unban` is the one verb that cannot take an id**: the player it names
+//! is not on the shard, so no id exists. It takes the front of the wallet
+//! instead ([`WalletPrefix`]), which `/ban`'s answer prints for exactly this.
+//! A whole wallet does not fit (`/unban 0x` + 40 hex is 49 bytes), so the
+//! `0x` is optional and six digits is enough; the server lifts a ban only
+//! when one banned wallet matches.
 
 use crate::ChatText;
 
@@ -44,6 +51,52 @@ use crate::ChatText;
 /// arrives in, so this is a slice of an already-sanitized text rather
 /// than a second cap to keep in step.
 pub const BUG_NOTE_MAX: usize = ChatText::CAP;
+
+/// The fewest hex digits `/unban` takes: 24 bits, so two wallets sharing a
+/// prefix by chance is one in sixteen million per pair. Ambiguity is still
+/// refused server-side; this only keeps a stray `/unban 0` from being one.
+pub const UNBAN_HEX_MIN: usize = 6;
+/// A whole address's hex digits, the most a prefix can be.
+pub const UNBAN_HEX_MAX: usize = 40;
+
+/// The front of a wallet's hex, as `/unban` takes it: lowercase, no `0x`,
+/// [`UNBAN_HEX_MIN`]`..=`[`UNBAN_HEX_MAX`] digits. Fixed bytes so the command
+/// stays `Copy` and crosses the admin ring by value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WalletPrefix {
+    hex: [u8; UNBAN_HEX_MAX],
+    len: u8,
+}
+
+impl WalletPrefix {
+    /// One typed word, `0x` optional and any case. `None` for anything that
+    /// is not hex or is outside the length bounds.
+    pub fn parse(word: &str) -> Option<Self> {
+        let digits = word
+            .strip_prefix("0x")
+            .or_else(|| word.strip_prefix("0X"))
+            .unwrap_or(word)
+            .as_bytes();
+        if !(UNBAN_HEX_MIN..=UNBAN_HEX_MAX).contains(&digits.len())
+            || !digits.iter().all(u8::is_ascii_hexdigit)
+        {
+            return None;
+        }
+        let mut hex = [0u8; UNBAN_HEX_MAX];
+        for (out, b) in hex.iter_mut().zip(digits) {
+            *out = b.to_ascii_lowercase();
+        }
+        Some(Self {
+            hex,
+            len: digits.len() as u8,
+        })
+    }
+
+    /// The digits, lowercase ASCII, without the `0x`.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.hex[..self.len as usize]
+    }
+}
 
 /// One parsed slash line.
 ///
@@ -56,6 +109,8 @@ pub enum AdminCmd {
     Kick { id: u32 },
     /// Kick, and remember the wallet so the next join is refused.
     Ban { id: u32 },
+    /// Forget the one banned wallet that starts with `prefix`.
+    Unban { prefix: WalletPrefix },
     /// A line from the house, to everybody, marked as the server's.
     Say { text: ChatText },
     /// Put the caller at another player's feet. Self-targeted movement
@@ -135,6 +190,10 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         "ban" => Some(AdminCmd::Ban {
             id: parts.next()?.parse().ok()?,
         }),
+        "unban" => {
+            let prefix = WalletPrefix::parse(parts.next()?)?;
+            (parts.next().is_none()).then_some(AdminCmd::Unban { prefix })
+        }
         "tp" => Some(AdminCmd::Teleport {
             id: parts.next()?.parse().ok()?,
         }),
@@ -289,6 +348,42 @@ mod tests {
             Some(AdminCmd::Give { item: 7, count: 30 })
         );
         assert_eq!(parse(&text("/save")), Some(AdminCmd::SaveNow));
+    }
+
+    /// `/unban` takes the front of a wallet, `0x` optional and any case, and
+    /// both spellings land on the same lowercase digits; a whole address's
+    /// 40 digits still fit the line.
+    #[test]
+    fn unban_takes_a_wallet_prefix() {
+        let want = WalletPrefix::parse("0011aabbcc").unwrap();
+        assert_eq!(want.as_bytes(), b"0011aabbcc");
+        for line in [
+            "/unban 0011aabbcc",
+            "/unban 0x0011AABBCC",
+            "/unban  0X0011aaBBcc",
+        ] {
+            assert_eq!(
+                parse(&text(line)),
+                Some(AdminCmd::Unban { prefix: want }),
+                "{line:?}"
+            );
+        }
+        let line = "/unban 00112233445566778899aabbccddeeff00112233";
+        let Some(AdminCmd::Unban { prefix }) = parse(&text(line)) else {
+            panic!("a whole address parses");
+        };
+        assert_eq!(prefix.as_bytes(), &line.as_bytes()[7..]);
+        for bad in [
+            "/unban",
+            "/unban 12345",                                     // too short
+            "/unban 0x12345",                                   // too short past the 0x
+            "/unban zzzzzz",                                    // not hex
+            "/unban 00112233 x",                                // a trailing word
+            "/unban 00112233445566778899aabbccddeeff001122334", // 41 digits
+            "/unban 0x",
+        ] {
+            assert_eq!(parse(&text(bad)), None, "{bad:?}");
+        }
     }
 
     /// A bare `/give` means one of the thing, and a zero count is refused

@@ -587,7 +587,12 @@ pub fn steps(
             }
         }
     }
-    let Some(mut step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
+    // Chest deep the player is swimming, and a swimmer takes no steps: the
+    // rule a remote's drawn swim and its silence use (NOW §0chr 1). Banked
+    // ground is dropped like an airborne stretch's.
+    air.swimming = client_core::interp::swimming(pos[1], air.swimming);
+    let walking = body.grounded && !air.swimming;
+    let Some(mut step) = sound.steps.sample(pos, walking, time.delta_secs()) else {
         return;
     };
     if net.session.core.crouched() {
@@ -677,11 +682,13 @@ pub const CROUCH_STEP_GAIN: f32 = 0.5;
 /// A fall faster than this, m/s, lands with a thud (a jump lands at ~7).
 pub const LAND_SOUND_MPS: f32 = 3.5;
 
-/// The body's last airborne state, for [`steps`]'s landing.
+/// The body's last airborne state, for [`steps`]'s landing, and whether it
+/// was swimming, for the hysteresis that silences its steps.
 #[derive(Default)]
 pub struct Air {
     airborne: bool,
     vy: f32,
+    swimming: bool,
 }
 
 /// How far a lit fire is heard crackling, metres (the cue's own radius).
@@ -762,11 +769,10 @@ pub fn remote_steps(
         let pos = [t.translation.x, t.translation.y, t.translation.z];
         // Spaced as the drawn feet are spaced (`Rig::step_m`), so a remote's
         // steps land at the cadence its legs are moving; and nothing in the
-        // air, off the wire's airborne bit.
-        let Some(mut step) = steps
-            .0
-            .sample_with(pos, !anim.airborne, dt, rig.step_m(anim))
-        else {
+        // air, off the wire's airborne bit, or from a body drawn swimming
+        // (whose clip has no stride, so it would fall back to `stride_m`).
+        let walking = !anim.airborne && !anim.swimming;
+        let Some(mut step) = steps.0.sample_with(pos, walking, dt, rig.step_m(anim)) else {
             continue;
         };
         if anim.crouched {
@@ -1638,12 +1644,13 @@ pub struct LastHp(pub u16);
 
 /// Being hurt, as a **blow** rather than as a health bar.
 ///
-/// Two producers, one voice. The fall carries coverage — see
+/// Two witnesses, up to two voices. The fall carries coverage — see
 /// [`crate::sound::hurt`] for why reading `EV_HURT` alone would silence
 /// starvation, thirst and the keypad shock — and this frame's announced blows
-/// carry the weight. `Feed` is taken immutably, which is the shape
-/// `CLAUDE.md`'s two-drains trap requires of every reader that is not
-/// `feed::drain` itself; scheduling puts this after it.
+/// carry the weight, and a second voice when there were two. `Feed` is taken
+/// immutably, which is the shape `CLAUDE.md`'s two-drains trap requires of
+/// every reader that is not `feed::drain` itself; scheduling puts this after
+/// it.
 pub fn hurt(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
@@ -1669,6 +1676,12 @@ pub fn hurt(
         // blow armor ate whole now tenses the music too — it is the shooting
         // that matters to the score, not the bookkeeping.
         sound.music.bump(music::BUMP_HURT);
+    }
+    // Two blows in one frame are two voices, not one heavier one: the second
+    // is its own row, so the per-row cooldown that binds inside a frame
+    // does not fold it into the first (`sound::hurt::again`).
+    if let Some(req) = crate::sound::hurt::again(feed.hurt_damage, feed.hurts, core.hp_max) {
+        sound.play(req);
     }
 }
 
@@ -1785,10 +1798,12 @@ pub fn bed(
     sound.bed_target[0] = (1.0 - 0.45 * cover) * (0.6 + 0.8 * gale);
     // The surf reads how much sea is within earshot, from the same
     // `terrain::height` the water is drawn from — 24 taps, a fixed pattern, so
-    // the level cannot flicker as a search finds different water.
+    // the level cannot flicker as a search finds different water. A storm's
+    // sea is louder than a breeze's, by the roughness the drawn swell is
+    // raised by (`water::sea_state`).
     sound.bed_target[1] = crate::sound::water::surf_gain(crate::sound::water::shore_exposure(
         world.seed, eye.pos.x, eye.pos.z,
-    ));
+    )) * (1.0 + 0.6 * super::water::sea_state(weather.wind));
     // The submerged bed has no world level of its own: it is entirely the
     // snapshot's, which is the point of a snapshot.
     sound.bed_target[2] = 1.0;

@@ -3,9 +3,10 @@
 //!
 //! What a player knows here and nothing more: the bags it placed itself
 //! (it watched each go down), the own-bag list the death screen shows
-//! (`ClientCore::own_bags`, sent at each death), and where its last death
-//! backpack lies (`ClientCore::own_bag`, the map mark a player walks back
-//! to). Nobody else's bags, boxes or bases.
+//! (`ClientCore::own_bags`, sent at the join and re-sent as its bags go
+//! down or come up, on a wake and at each death),
+//! and where its last death backpack lies (`ClientCore::own_bag`, the map
+//! mark a player walks back to). Nobody else's bags, boxes or bases.
 //!
 //! The skills are small state machines that return what to do next
 //! ([`Do`]); `explorer.rs` owns the outbox and turns a `Do` into the verb.
@@ -150,8 +151,8 @@ pub struct Home {
     asked: Option<(u16, u16, u8, u8)>,
     verdict: Option<Placed>,
     /// The server said it has all the bags it may have down: none of the
-    /// ones it knows of this session, maybe, but the cap stands until a
-    /// death screen lists them.
+    /// ones it knows of this session, maybe, but the cap stands until the
+    /// next own-bag list names them.
     capped: bool,
     /// Where and when the last bag failed to go down.
     bag_failed: Option<([f32; 2], u32)>,
@@ -201,8 +202,8 @@ impl Home {
         }
     }
 
-    /// A new session: what it knew of the old one is learned again at the
-    /// next death screen.
+    /// A new session: what it knew of the old one is learned again from
+    /// the own-bag list the server sends at the join.
     pub fn reset(&mut self) {
         let stats = self.stats;
         *self = Self::new();
@@ -260,8 +261,9 @@ impl Home {
         loc == LOC_PLANE && self.bags.contains(&Some((cx, cz, level)))
     }
 
-    /// The death screen's list replaces what it thought: a bag a raider
-    /// cut is gone from it, one from an earlier session is on it.
+    /// The own-bag list (at the join, as its bags change, at each death)
+    /// replaces what it thought: a bag a raider cut is gone from it, one
+    /// from an earlier session is on it.
     pub fn on_bags(&mut self, anchors: &[BagAnchor]) {
         self.bags = [None; BAG_CAP];
         self.capped = false;
@@ -291,8 +293,9 @@ impl Home {
     /// A deploy refusal: its own, since the ring carries only the owner's.
     pub fn on_refused(&mut self, reason: u8) {
         self.stats.deploy_refusals += 1;
-        // Bags from an earlier session count against the cap before the
-        // death screen has listed them.
+        // The join's own-bag list names bags from an earlier session, so
+        // this is the backstop: a refusal that beats that list (or a list
+        // a resync is still owed) still says the cap is full.
         if u32::from(reason) == REFUSE_D_BAG_CAP {
             self.capped = true;
         }
@@ -385,7 +388,8 @@ impl Home {
         self.upkeep = None;
     }
 
-    /// The reply to a feed of its own cupboard arrived.
+    /// A stock readout of its own cupboard arrived: a feed's reply, or the
+    /// crew vital's push while it stands in the claim.
     pub fn on_stock(&mut self, core: &ClientCore, tick: u32, grades: u32) {
         let n = usize::from(core.stock_count).min(HEARTH_STOCK_ROWS);
         let mut r = Reading {
@@ -436,6 +440,20 @@ impl Home {
             }
             Some(r) => r.low(tick).any(has),
         }
+    }
+
+    /// Would a feed take `item` for nothing? The last reading names it
+    /// among what the cupboard eats with nothing charged in it, while
+    /// something else is, and the base has not grown since (`grades`): fed,
+    /// it sits in the stock for good, the fragments a bench was to cost.
+    /// Without a current reading nothing is known to be wasted.
+    pub fn feed_wastes(&self, item: u16, grades: u32) -> bool {
+        self.upkeep.is_some_and(|r| {
+            let n = usize::from(r.rows);
+            grades <= r.grades
+                && r.bill[..n].iter().any(|&b| b > 0)
+                && (0..n).any(|i| r.items[i] == item && r.bill[i] == 0)
+        })
     }
 
     /// What a feed wants in the pack while the cupboard is due one: a
@@ -514,7 +532,7 @@ impl Home {
         self.wake_on(core.own_bags(), tick, fell)
     }
 
-    /// [`Home::wake_on_bag`] over the death screen's list of its bags.
+    /// [`Home::wake_on_bag`] over a list of its bags (the own-bag list).
     pub fn wake_on(&self, bags: &[BagAnchor], tick: u32, fell: [f32; 2]) -> bool {
         let ready = bags.iter().filter(|b| b.ready);
         if !self.under_attack(tick) {
@@ -925,7 +943,7 @@ mod tests {
         assert!(home.under_attack(40) && !home.alarmed(40, 10));
         home.on_shot([x + 205.0, z], 50);
         assert!(home.alarmed(50, 10), "shots at the base itself");
-        // The death screen's list is the truth.
+        // The own-bag list is the truth.
         home.on_bags(&[]);
         assert_eq!(home.bags(), 0);
         // A refusal answers only a deploy in flight.
@@ -979,7 +997,8 @@ mod tests {
         assert!(!home.bag_held([100.0 + BAG_RETRY_M + 1.0, 100.0], 51));
         assert!(!home.bag_held([100.0, 100.0], 50 + BAG_RETRY_TICKS));
         // Bags from an earlier session fill the cap: the server's word
-        // stands until a death screen lists them.
+        // stands until the next own-bag list (the join's, a bag placed or
+        // taken down, a wake, a death) names them.
         home.asked(5, 5, 0, LOC_PLANE);
         home.on_refused(REFUSE_D_BAG_CAP as u8);
         assert_eq!((home.bags(), home.bags_known()), (0, BAG_CAP as u8));
@@ -1101,5 +1120,34 @@ mod tests {
         home.stash_failed(1000);
         assert!(home.stash_held(1000 + STASH_RETRY_TICKS - 1));
         assert!(!home.stash_held(1000 + STASH_RETRY_TICKS));
+    }
+
+    /// A feed takes a chunk of all the cupboard eats: what a current
+    /// reading charges nothing in, while it charges something, is fed for
+    /// nothing (the kit's fragments under a base of wood and stone). Never
+    /// read, read as charging nothing, or read before the base grew: not
+    /// known.
+    #[test]
+    fn a_feed_wastes_what_a_current_reading_charges_nothing_in() {
+        const FRAGS: u16 = 49;
+        const STONE: u16 = 66;
+        const WOOD: u16 = 77;
+        const CLOTH: u16 = 22;
+        let mut home = Home::new();
+        assert!(!home.feed_wastes(FRAGS, 22), "never read");
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        core.stock[0] = (FRAGS, 0, 0);
+        core.stock[1] = (STONE, 0, 297);
+        core.stock[2] = (WOOD, 0, 60);
+        core.stock_count = 3;
+        home.on_stock(&core, 100, 22);
+        assert!(home.feed_wastes(FRAGS, 22));
+        assert!(!home.feed_wastes(STONE, 22) && !home.feed_wastes(WOOD, 22));
+        assert!(!home.feed_wastes(CLOTH, 22), "not eaten at all");
+        assert!(!home.feed_wastes(FRAGS, 23), "the base grew since");
+        core.stock[1].2 = 0;
+        core.stock[2].2 = 0;
+        home.on_stock(&core, 200, 22);
+        assert!(!home.feed_wastes(FRAGS, 22), "a reading charging nothing");
     }
 }

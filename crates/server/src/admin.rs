@@ -38,10 +38,21 @@
 //! ban ([`Bans::load`], [`Bans::save`]); without it a ban holds for the
 //! shard's uptime. Its own file with its own header, never the player
 //! store's: that header pins the seed, and a wipe would forget every ban.
-//! The file is text, one wallet a line, so an operator lifts a ban by
-//! deleting its line while the shard is down.
+//! The file is text, one wallet a line, so an operator can also lift a ban
+//! by deleting its line while the shard is down, or add one by pasting a
+//! wallet (any case: it is read lowercased, as the handshake proves it).
+//!
+//! A ban is enforced **at the door**: a handshake that proves a banned
+//! wallet is refused `REFUSE_ADMIN` before it claims a slot, so the screen
+//! says what it said at the kick. `/unban <hex>` lifts one in a running
+//! shard; it names the wallet's front (`/ban`'s answer prints it), because
+//! the player it means is not on the shard to have an id. Only the accept
+//! loop holds the list, so it is the one that knows how either verb went,
+//! and it says so to the admin on an [`AdminReply`] ring back to the sim.
+//! What the sim refuses before the ring (no such player, no wallet to ban,
+//! the ring full) it answers itself, so every outcome reaches the admin.
 
-use protocol::admin::AdminCmd;
+use protocol::admin::{AdminCmd, WalletPrefix};
 use protocol::ChatText;
 
 use crate::store::PlayerKey;
@@ -73,12 +84,14 @@ pub const VERB_TIME: u16 = 8;
 pub const VERB_WIPE: u16 = 9;
 pub const VERB_BRAIN: u16 = 10;
 pub const VERB_WHO: u16 = 11;
+pub const VERB_UNBAN: u16 = 12;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
     match cmd {
         AdminCmd::Kick { .. } => VERB_KICK,
         AdminCmd::Ban { .. } => VERB_BAN,
+        AdminCmd::Unban { .. } => VERB_UNBAN,
         AdminCmd::Say { .. } => VERB_SAY,
         AdminCmd::Teleport { .. } => VERB_TP,
         AdminCmd::Give { .. } => VERB_GIVE,
@@ -164,7 +177,8 @@ fn is_wallet(s: &str) -> bool {
 }
 
 /// What the sim thread asks the accept loop to do — the half of the admin
-/// lane that needs a connection.
+/// lane that needs a connection, or the ban list beside the connections.
+/// `by` is the admin's own player id, which the [`AdminReply`] goes back to.
 ///
 /// `Copy` and fixed-size, like every other record crossing an `rtrb` ring
 /// in this crate.
@@ -172,9 +186,93 @@ fn is_wallet(s: &str) -> bool {
 pub enum AdminAct {
     /// Close this player's connection. The body stays as a sleeper: a kick
     /// is not a wipe, and the reference's is not either.
-    Kick { id: u32 },
+    Kick { by: u32, id: u32 },
     /// Kick, and remember the wallet for the rest of this uptime.
-    Ban { id: u32, key: PlayerKey },
+    Ban { by: u32, id: u32, key: PlayerKey },
+    /// Forget the one banned wallet starting with `prefix`.
+    Unban { by: u32, prefix: WalletPrefix },
+}
+
+/// Accept → sim: how an [`AdminAct`] went, said to admin `to` as a
+/// `[server]` line by the next tick's chat pump. A full ring drops it (the
+/// act still happened; the line is counted as `chat_undelivered`).
+#[derive(Clone, Copy, Debug)]
+pub struct AdminReply {
+    pub to: u32,
+    pub text: ChatText,
+}
+
+impl AdminReply {
+    /// `line` cut to a chat line. Every answer is ASCII, so the cut cannot
+    /// split a character; a line that still fails the sanitize is no reply.
+    pub fn new(to: u32, line: &str) -> Option<Self> {
+        let b = line.as_bytes();
+        let text = ChatText::sanitize(&b[..b.len().min(ChatText::CAP)])?;
+        Some(Self { to, text })
+    }
+}
+
+/// How many hex digits of a wallet the answers print: what an admin types
+/// back into `/unban`, and short enough that every answer below fits beside
+/// the `[server] ` mark.
+const SHOWN_HEX: usize = 12;
+
+/// The front of a wallet as the answers show it: `0x` and [`SHOWN_HEX`]
+/// digits. A key that is not an address (a hand-edited ban file) shows as
+/// much of itself as is printable.
+fn shown(key: &PlayerKey) -> &str {
+    let b = key.as_bytes();
+    let n = b.len().min(2 + SHOWN_HEX);
+    std::str::from_utf8(&b[..n]).unwrap_or("?")
+}
+
+/// `/kick`'s answer.
+pub fn kicked_line(id: u32, kicked: bool) -> String {
+    if kicked {
+        format!("kicked {id}")
+    } else {
+        format!("{id} is not on")
+    }
+}
+
+/// `/ban`'s answer: the wallet's front, which is what `/unban` takes.
+pub fn banned_line(id: u32, key: &PlayerKey) -> String {
+    format!("banned {id} ({})", shown(key))
+}
+
+/// `/ban`'s answer when [`MAX_BANS`] refused it.
+pub fn ban_full_line(id: u32) -> String {
+    format!("{id} not banned: {MAX_BANS} bans")
+}
+
+/// `/ban`'s answer, from the sim, when the target joined with no wallet
+/// (a dev login): there is nothing a ban could hold at the door.
+pub fn no_wallet_line(id: u32) -> String {
+    format!("{id} not banned: no wallet")
+}
+
+/// The sim's answer to `/kick`, `/ban` or `/unban` when the ring to the
+/// accept loop is full: the act did not happen, so the admin types it again.
+pub const RING_FULL_LINE: &str = "not done: admin ring full";
+
+/// `/unban`'s answer.
+pub fn unban_line(prefix: &WalletPrefix, how: &Result<PlayerKey, UnbanMiss>) -> String {
+    let typed = &prefix.as_bytes()[..prefix.as_bytes().len().min(SHOWN_HEX)];
+    let typed = std::str::from_utf8(typed).unwrap_or("?");
+    match how {
+        Ok(key) => format!("unbanned {}", shown(key)),
+        Err(UnbanMiss::None) => format!("no ban starts {typed}"),
+        Err(UnbanMiss::Ambiguous(n)) => format!("{n} bans start {typed}: type more"),
+    }
+}
+
+/// Why `/unban` lifted nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnbanMiss {
+    /// No banned wallet starts with the prefix.
+    None,
+    /// This many do: lifting one would be a guess.
+    Ambiguous(usize),
 }
 
 /// The ban file's first line. Its own format version, bumped if a line's
@@ -244,6 +342,33 @@ impl Bans {
         self.keys.iter().any(|k| k == key)
     }
 
+    /// Lift the one ban whose wallet's hex starts with `prefix` (case
+    /// ignored, `0x` implied), and say whose it was. Two matches lift
+    /// nothing: unbanning the wrong griefer is worse than asking for two
+    /// more digits. The caller saves.
+    pub fn remove_prefix(&mut self, prefix: &WalletPrefix) -> Result<PlayerKey, UnbanMiss> {
+        let want = prefix.as_bytes();
+        let hits = |k: &PlayerKey| {
+            k.as_bytes()
+                .strip_prefix(b"0x")
+                .and_then(|hex| hex.get(..want.len()))
+                .is_some_and(|front| front.eq_ignore_ascii_case(want))
+        };
+        let mut found = None;
+        let mut n = 0;
+        for (i, k) in self.keys.iter().enumerate() {
+            if hits(k) {
+                n += 1;
+                found = Some(i);
+            }
+        }
+        match (n, found) {
+            (1, Some(i)) => Ok(self.keys.remove(i)),
+            (0, _) => Err(UnbanMiss::None),
+            _ => Err(UnbanMiss::Ambiguous(n)),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.keys.len()
     }
@@ -274,7 +399,9 @@ fn bans_text(keys: &[PlayerKey]) -> String {
 }
 
 /// [`bans_text`] read back. Blank lines and `#` comments are skipped, so
-/// an operator may annotate a ban.
+/// an operator may annotate a ban. A wallet-shaped line is lowercased as
+/// [`Admins::parse`] does, because that is the key a handshake proves: a
+/// hand-pasted checksummed address would otherwise never match at the door.
 fn parse_bans(text: &str) -> Result<Vec<PlayerKey>, String> {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some(BAN_FILE_HEADER) {
@@ -295,6 +422,7 @@ fn parse_bans(text: &str) -> Result<Vec<PlayerKey>, String> {
                 .collect::<Result<Vec<u8>, _>>()
                 .map_err(|_| format!("line {}: bad hex", n + 2))?,
             Some(_) => return Err(format!("line {}: odd hex", n + 2)),
+            None if is_wallet(line) => line.to_ascii_lowercase().into_bytes(),
             None => line.as_bytes().to_vec(),
         };
         let key = PlayerKey::new(&bytes).ok_or_else(|| format!("line {}: not a wallet", n + 2))?;
@@ -486,6 +614,64 @@ mod tests {
         );
     }
 
+    /// `/unban` lifts exactly one ban: a unique prefix (any case) removes it,
+    /// a prefix two wallets share and a prefix nobody has both lift nothing,
+    /// and the file written after the lift no longer has the wallet.
+    #[test]
+    fn unban_lifts_one_ban_by_its_prefix_and_never_guesses() {
+        let p = |s: &str| WalletPrefix::parse(s).unwrap();
+        let twin = "0x001122ffffffffffffffffffffffffffffffffff";
+        let mut b = Bans::new();
+        for w in [A, B, twin] {
+            b.insert(key(w));
+        }
+        assert_eq!(b.remove_prefix(&p("001122")), Err(UnbanMiss::Ambiguous(2)));
+        assert_eq!(b.remove_prefix(&p("abcdef")), Err(UnbanMiss::None));
+        assert_eq!(b.len(), 3, "a miss lifts nothing");
+        assert_eq!(b.remove_prefix(&p("0x0011223344")), Ok(key(A)));
+        assert!(!b.contains(&key(A)));
+        assert_eq!(b.remove_prefix(&p("FFEEDD")), Ok(key(B)), "case ignored");
+        assert_eq!(b.remove_prefix(&p("001122")), Ok(key(twin)), "unique now");
+        assert!(b.is_empty());
+
+        let path = std::env::temp_dir().join(format!("gates-unban-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut f = Bans::load(&path).unwrap();
+        f.insert(key(A));
+        f.insert(key(B));
+        f.save().unwrap();
+        f.remove_prefix(&p("00112233")).unwrap();
+        f.save().unwrap();
+        let back = Bans::load(&path).unwrap();
+        assert_eq!(back.len(), 1);
+        assert!(back.contains(&key(B)) && !back.contains(&key(A)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Every answer an admin gets to a kick, ban or unban (the accept loop's
+    /// and the sim's own refusals) reads whole after the `[server] ` mark at
+    /// its longest: a ten-digit id, a full list.
+    #[test]
+    fn the_admin_answers_fit_a_chat_line() {
+        let room = ChatText::CAP - "[server] ".len();
+        let pre = WalletPrefix::parse(&"a".repeat(40)).unwrap();
+        for line in [
+            kicked_line(u32::MAX, true),
+            kicked_line(u32::MAX, false),
+            banned_line(u32::MAX, &key(A)),
+            ban_full_line(u32::MAX),
+            no_wallet_line(u32::MAX),
+            RING_FULL_LINE.to_string(),
+            unban_line(&pre, &Ok(key(A))),
+            unban_line(&pre, &Err(UnbanMiss::None)),
+            unban_line(&pre, &Err(UnbanMiss::Ambiguous(MAX_BANS))),
+        ] {
+            assert!(line.len() <= room, "{line:?} is {} bytes", line.len());
+            assert!(AdminReply::new(1, &line).is_some(), "{line:?}");
+        }
+        assert_eq!(banned_line(257, &key(A)), "banned 257 (0x001122334455)");
+    }
+
     /// A ban outlives the shard in its own file, read back as written —
     /// annotations skipped, an unprintable key carried as hex — and a file
     /// that is not a ban file refuses rather than loading as empty.
@@ -499,12 +685,19 @@ mod tests {
         b.insert(PlayerKey::new(&[0x00, 0xff, b' ']).unwrap());
         b.save().unwrap();
 
+        // An operator pastes B by hand as a checksummed (mixed-case)
+        // address: it loads as the lowercase key a handshake proves.
         let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, format!("{text}\n# lifted by hand:\n")).unwrap();
+        let pasted = "0xFFeeDDccBBaa99887766554433221100FFeeDDcc";
+        std::fs::write(&path, format!("{text}\n# added by hand:\n{pasted}\n")).unwrap();
         let back = Bans::load(&path).unwrap();
-        assert_eq!(back.len(), 2);
+        assert_eq!(back.len(), 3);
         assert!(back.contains(&key(A)));
         assert!(back.contains(&PlayerKey::new(&[0x00, 0xff, b' ']).unwrap()));
+        assert!(
+            back.contains(&PlayerKey::new(B.as_bytes()).unwrap()),
+            "a checksummed line is enforced as the lowercase wallet"
+        );
         assert!(text.contains("hex:00ff20"), "{text}");
 
         std::fs::write(&path, "0xabc\n").unwrap();

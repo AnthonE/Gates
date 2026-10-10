@@ -14,18 +14,18 @@ use protocol::goldens::{
     event_bag_sync, event_bags, event_build_refused, event_catalog, event_charge_placed_deploy,
     event_charge_placed_piece, event_chat, event_consume_refused, event_consumed, event_cont_close,
     event_cont_sync, event_cont_sync_wear, event_cont_sync_world, event_craft_done, event_craft_q,
-    event_craft_refused, event_death, event_deploy_defs, event_deploy_placed, event_deploy_refused,
-    event_deploy_sync, event_door, event_drank, event_gather, event_gather_refused,
-    event_gitem_sync, event_health, event_hit, event_hurt, event_impact, event_inv, event_knock,
-    event_known, event_move_refused, event_move_refused_wear, event_moved, event_oven_lit,
-    event_oven_out, event_piece_defs, event_piece_placed, event_piece_repaired_deploy,
-    event_piece_repaired_piece, event_piece_sync, event_recipes, event_recovered, event_reload,
-    event_reload_refused, event_removed, event_research, event_research_refused,
-    event_research_rows, event_respawn, event_shot, event_slot_change, event_slot_sync,
-    event_stock, event_struct_hit_deploy, event_struct_hit_piece, event_swing, event_vitals,
-    event_weak_mark, event_wounded, hello, hello_spectate, input_acks_only, input_full,
-    refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, watch, welcome, SnapshotCase,
-    FIXTURES,
+    event_craft_refused, event_death, event_deploy_defs, event_deploy_defs_heat_cm,
+    event_deploy_placed, event_deploy_refused, event_deploy_sync, event_door, event_drank,
+    event_gather, event_gather_refused, event_gitem_sync, event_health, event_hit, event_hurt,
+    event_impact, event_inv, event_knock, event_known, event_move_refused, event_move_refused_wear,
+    event_moved, event_oven_lit, event_oven_out, event_piece_defs, event_piece_placed,
+    event_piece_repaired_deploy, event_piece_repaired_piece, event_piece_sync, event_recipes,
+    event_recovered, event_reload, event_reload_refused, event_removed, event_research,
+    event_research_refused, event_research_rows, event_respawn, event_shot, event_slot_change,
+    event_slot_sync, event_stock, event_struct_hit_deploy, event_struct_hit_piece, event_swing,
+    event_vitals, event_weak_mark, event_wounded, hello, hello_spectate, input_acks_only,
+    input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, watch, welcome,
+    SnapshotCase, FIXTURES,
 };
 use protocol::{
     decode_action, decode_auth, decode_challenge, decode_chat, decode_event, decode_hello,
@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 156] = [
+const GOLDEN: [&[u8]; 157] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -219,6 +219,7 @@ const GOLDEN: [&[u8]; 156] = [
     include_bytes!("golden/event_planter.bin"),
     include_bytes!("golden/event_stump_grubbed.bin"),
     include_bytes!("golden/action_take_stock.bin"),
+    include_bytes!("golden/action_give.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -479,8 +480,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 154);
     // Stock taken back out of a hearth (v101).
     g!(seen, golden_action, 155);
+    // A stack handed to another player (v102).
+    g!(seen, golden_action, 156);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 156, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 157, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -592,6 +595,19 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_treat(slot, target, &mut buf).unwrap()
+        }
+        "action_give.bin" => {
+            let (slot, count, target) = protocol::goldens::action_give();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Give {
+                    slot,
+                    count,
+                    target
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_give(slot, count, target, &mut buf).unwrap()
         }
         "action_drop.bin" => {
             let (slot, count) = protocol::goldens::action_drop();
@@ -1064,13 +1080,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_bags(&bags[..n], &mut buf).unwrap()
         }
         "event_gather.bin" => {
-            let (item, added) = event_gather();
+            let (item, added, dropped) = event_gather();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Gather { item, added },
+                EventMsg::Gather {
+                    item,
+                    added,
+                    dropped
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_gather(item, added, &mut buf).unwrap()
+            encode_event_gather(item, added, dropped, &mut buf).unwrap()
         }
         "event_reload.bin" => {
             let (loaded, ceiling, took) = event_reload();
@@ -1220,6 +1240,12 @@ fn golden_event(fixture: &[u8], name: &str) {
                             cat.wear_slot(i),
                             "{name}: wear slot {i} mismatch (v52 column)"
                         );
+                        assert_eq!(
+                            rows[i].class,
+                            cat.class(i),
+                            "{name}: class {i} mismatch (v102 column)"
+                        );
+                        assert_eq!(rows[i], cat.row(i), "{name}: row {i} mismatch");
                     }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
@@ -1265,13 +1291,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_craft_q(&jobs, eta, &mut buf).unwrap()
         }
         "event_craft_done.bin" => {
-            let (item, added) = event_craft_done();
+            let (item, added, dropped) = event_craft_done();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::CraftDone { item, added },
+                EventMsg::CraftDone {
+                    item,
+                    added,
+                    dropped
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_craft_done(item, added, &mut buf).unwrap()
+            encode_event_craft_done(item, added, dropped, &mut buf).unwrap()
         }
         "event_craft_refused.bin" => {
             let reason = event_craft_refused();
@@ -1347,6 +1377,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                     total,
                     first,
                     count,
+                    repair_pct,
                     rows,
                 } => {
                     assert_eq!(
@@ -1354,6 +1385,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                         (bc.piece_count as u8, 0, PIECE_DEFS_BATCH as u8),
                         "{name}: header mismatch"
                     );
+                    assert_eq!(repair_pct, bc.repair_pct, "{name}: repair percent mismatch");
                     for (i, row) in rows.iter().enumerate().take(count as usize) {
                         assert_eq!(*row, bc.pieces[i], "{name}: row {i} mismatch");
                     }
@@ -1400,11 +1432,13 @@ fn golden_event(fixture: &[u8], name: &str) {
         }
         "event_deploy_defs.bin" => {
             let dc = event_deploy_defs();
+            let heat = event_deploy_defs_heat_cm();
             match decode_event(fixture).unwrap() {
                 EventMsg::DeployDefs {
                     total,
                     first,
                     count,
+                    heat_radius_cm,
                     rows,
                 } => {
                     assert_eq!(
@@ -1412,13 +1446,14 @@ fn golden_event(fixture: &[u8], name: &str) {
                         (dc.def_count as u8, 0, dc.def_count as u8),
                         "{name}: header mismatch"
                     );
+                    assert_eq!(heat_radius_cm, heat, "{name}: heat reach mismatch");
                     for (i, row) in rows.iter().enumerate().take(count as usize) {
                         assert_eq!(*row, dc.defs[i], "{name}: row {i} mismatch");
                     }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
             }
-            let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+            let (len, took) = encode_event_deploy_defs(&dc, heat, 0, &mut buf).unwrap();
             assert_eq!(took, dc.def_count as usize, "{name}: batch shrank");
             len
         }
@@ -2249,13 +2284,13 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap()
         }
         "event_worn.bin" => {
-            let (id, items) = protocol::goldens::event_worn();
+            let (id, items, skins) = protocol::goldens::event_worn();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Worn { id, items },
+                EventMsg::Worn { id, items, skins },
                 "{name}: decode mismatch"
             );
-            protocol::encode_event_worn(id, &items, &mut buf).unwrap()
+            protocol::encode_event_worn(id, &items, &skins, &mut buf).unwrap()
         }
         "event_tag.bin" => {
             let (id, address, label, pic) = protocol::goldens::event_tag();

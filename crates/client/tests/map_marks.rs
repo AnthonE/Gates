@@ -24,8 +24,8 @@
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use client::render::icons::Icons;
-use client::render::map::spawn_mark;
-use client::ui::map::{Mark, MarkKind};
+use client::render::map::{spawn_mark, spawn_pin};
+use client::ui::map::{Mark, MarkKind, PinStyle, PIN_COLOURS, PIN_ICONS};
 
 /// Every kind. A `match` over each one so a kind added without a row here
 /// fails to compile rather than going unspawned.
@@ -199,4 +199,99 @@ fn depot_badge_is_hollow_and_names_the_freight_destination() {
         .find_map(|e| app.world().entity(e).get::<Text>().map(|t| t.0.clone()))
         .expect("destination text");
     assert_eq!(text, "DEPOT");
+}
+
+/// The player's own mark under test: its look, and whether its label is
+/// being typed.
+#[derive(Resource)]
+struct PinSubject(PinStyle, bool);
+
+fn pin_system(
+    mut commands: Commands,
+    subject: Res<PinSubject>,
+    icons: Option<Res<Icons>>,
+    mut out: ResMut<Drawn>,
+) {
+    let e = commands
+        .spawn(Node::default())
+        .with_children(|layer| {
+            spawn_pin(
+                layer,
+                3,
+                (2048.0, 2048.0),
+                subject.0,
+                icons.as_deref(),
+                subject.1,
+            )
+        })
+        .id();
+    out.0 = Some(e);
+}
+
+fn text_of(app: &App, e: Entity) -> Option<String> {
+    app.world().entity(e).get::<Text>().map(|t| t.0.clone())
+}
+
+/// Every look a player can give their own mark spawns — each picture and
+/// the number, labelled or not, being typed or not, with the atlas loaded or
+/// not — and draws what it says: the picture or the number in the diamond,
+/// and the label (with a caret while typed) under it.
+#[test]
+fn every_pin_look_spawns_and_draws_what_it_says() {
+    for (icon, stem) in PIN_ICONS.iter().enumerate() {
+        for label in ["", "hq"] {
+            for typing in [false, true] {
+                for icons in [false, true] {
+                    let mut style = PinStyle::default();
+                    style.colour = (icon % PIN_COLOURS.len()) as u8;
+                    style.icon = icon as u8;
+                    for c in label.chars() {
+                        style.push_label(c);
+                    }
+                    let mut app = App::new();
+                    app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+                    app.init_asset::<Image>();
+                    app.init_resource::<Drawn>();
+                    app.insert_resource(PinSubject(style, typing));
+                    if icons {
+                        app.add_systems(Startup, client::render::icons::load);
+                    }
+                    app.add_systems(Update, pin_system);
+                    app.update();
+                    let case =
+                        format!("icon {icon}, label {label:?}, typing {typing}, icons {icons}");
+                    let parent = app.world().resource::<Drawn>().0.expect("drew");
+                    let &[anchor] = children(&app, parent).as_slice() else {
+                        panic!("{case}: one anchor per mark");
+                    };
+                    let kids = children(&app, anchor);
+                    let diamond = kids[0];
+                    let &[inside] = children(&app, diamond).as_slice() else {
+                        panic!("{case}: one thing in the diamond");
+                    };
+                    let picture = icons && stem.is_some();
+                    assert_eq!(
+                        app.world().entity(inside).contains::<ImageNode>(),
+                        picture,
+                        "{case}"
+                    );
+                    if !picture {
+                        assert_eq!(text_of(&app, inside).as_deref(), Some("3"), "{case}");
+                    }
+                    let want = match (label, typing) {
+                        ("", false) => None,
+                        (_, false) => Some("HQ".to_string()),
+                        (l, true) => Some(format!("{}_", l.to_ascii_uppercase())),
+                    };
+                    let got = kids.get(1).and_then(|row| {
+                        children(&app, *row)
+                            .into_iter()
+                            .find_map(|e| text_of(&app, e))
+                    });
+                    assert_eq!(got, want, "{case}");
+                    assert_eq!(kids.len(), 1 + usize::from(want.is_some()), "{case}");
+                }
+            }
+        }
+    }
 }

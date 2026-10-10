@@ -23,6 +23,7 @@ use client::render::impact::{
 use client::sound::Cue;
 use client::ui::interact::SwingPick;
 use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
+use sim_core::deploy::{MATTER_CLOTH, MATTER_METAL, MATTER_STONE, MATTER_WOOD};
 use sim_core::terrain::Occupant;
 
 fn burst_at(at: Vec3, away: Vec3) -> Burst {
@@ -576,6 +577,16 @@ fn a_piece_is_made_of_its_tier() {
         Matter::Dirt,
         "an unknown tier is the honest default"
     );
+}
+
+/// A deployable is made of what its row says, and a bag (cloth) still
+/// raises the dirt it did when the client guessed from the archetype.
+#[test]
+fn a_deployable_is_made_of_its_matter() {
+    assert_eq!(Matter::of_deploy(MATTER_WOOD), Matter::Wood);
+    assert_eq!(Matter::of_deploy(MATTER_STONE), Matter::Stone);
+    assert_eq!(Matter::of_deploy(MATTER_METAL), Matter::Metal);
+    assert_eq!(Matter::of_deploy(MATTER_CLOTH), Matter::Dirt);
 }
 
 /// The contact list is bounded, drop-newest, and counts what it dropped.

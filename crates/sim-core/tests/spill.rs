@@ -261,8 +261,13 @@ fn a_node_that_pays_twice_spills_twice_and_announces_both() {
     );
     assert_eq!(gathers[0].b >> 16, tree.output as u32, "primary first");
     assert_eq!(gathers[0].b & 0xFFFF, 0, "and none of it reached the hands");
+    assert_eq!(
+        gathers[0].c, tree.hand_yield as u32,
+        "c says how much hit the floor (wire v102)"
+    );
     assert_eq!(gathers[1].b >> 16, sec as u32, "then the secondary");
     assert_eq!(gathers[1].b & 0xFFFF, 0, "which did not fit either");
+    assert_eq!(gathers[1].c, sec_units as u32, "and its own amount");
 
     // Both are on the floor, in the one bag, whole.
     assert_eq!(w.backpacks.len(), 1, "one swing stands up one bag");
@@ -276,6 +281,48 @@ fn a_node_that_pays_twice_spills_twice_and_announces_both() {
         inv_count(&bag.items, sec),
         sec_units as u32,
         "and the secondary beside it, not destroyed"
+    );
+}
+
+/// **A partial spill is one event with both halves** (`NOW.md` §0sp2). A
+/// pack with room for three of the tree's seven used to announce `+3` and
+/// nothing else, so four units fell to the floor in silence. The same
+/// `EV_GATHER` now carries the four in `c`, and the bag holds exactly them.
+#[test]
+fn a_partial_spill_says_what_fit_and_what_fell() {
+    let (pos, yaw) = find_isolated(SEED, Occupant::Tree);
+    let mut w = full_pack_world(pos);
+    let tree = w.gather.nodes[0];
+    let room: u16 = 3;
+    assert!(room < tree.hand_yield, "the fixture must overflow the room");
+    w.players[0].inv[INV_SLOTS - 1] = ItemStack {
+        item: tree.output,
+        count: STACK_MAX - room,
+        cond: 0,
+        skin: 0,
+    };
+
+    w.tick(&[hold_primary(yaw, 0)]);
+
+    let gathers: Vec<_> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER)
+        .collect();
+    assert_eq!(gathers.len(), 1, "one event carries both halves");
+    assert_eq!(gathers[0].b >> 16, tree.output as u32);
+    assert_eq!(gathers[0].b & 0xFFFF, room as u32, "what fit");
+    assert_eq!(
+        gathers[0].c,
+        (tree.hand_yield - room) as u32,
+        "what fell — the half that used to go unsaid"
+    );
+    assert_eq!(w.backpacks.len(), 1, "the rest stood a bag up");
+    assert_eq!(
+        inv_count(&w.backpacks.entries()[0].items, tree.output),
+        (tree.hand_yield - room) as u32,
+        "and the bag holds exactly what c says"
     );
 }
 
@@ -791,8 +838,8 @@ fn a_demolish_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         w.events
             .entries()
             .iter()
-            .any(|e| e.code == EV_GATHER && e.b == (cost.0 as u32) << 16),
-        "and the demolisher is told it dropped at their feet"
+            .any(|e| e.code == EV_GATHER && e.b == (cost.0 as u32) << 16 && e.c == cost.1 as u32),
+        "and the demolisher is told how much dropped at their feet"
     );
 }
 
@@ -924,7 +971,15 @@ fn a_cancelled_craft_s_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
     let (mut w, _cx, _cz) = giveback_world();
     let recipe = w.craft.recipes[0];
     let (input, per) = recipe.inputs[0];
-    let units = 3u16;
+    // Past one stack of refund (150 at a ceiling of 100), so the spill is
+    // two stacks of one item and the announcement has to sum them.
+    let units = 50u16;
+    w.players[0].inv[4] = ItemStack {
+        item: input,
+        count: STACK_MAX,
+        cond: 0,
+        skin: 0,
+    };
     w.tick(&[Command::Craft {
         id: OWNER,
         recipe: 0,
@@ -961,6 +1016,19 @@ fn a_cancelled_craft_s_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         "the WHOLE refund, every chunk — the break used to keep the tail"
     );
     assert_eq!((bag.qx, bag.qz), (px, pz), "at the crafter's feet");
+    let said: Vec<_> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER && e.a == OWNER)
+        .collect();
+    assert_eq!(said.len(), 1, "one line per item, not one per stack");
+    assert_eq!(said[0].b, (input as u32) << 16, "nothing reached the pack");
+    assert_eq!(
+        said[0].c,
+        per as u32 * units as u32,
+        "the line's count is both stacks summed"
+    );
 }
 
 /// Wall 5 over the give-backs: the bag a give-back mints is sim state, so

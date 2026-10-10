@@ -12,7 +12,7 @@
 //! and a mistyped command must never reach the room.
 
 use protocol::{ChatMsg, ChatText, EventMsg, ItemCatalog};
-use server::admin::{AdminAct, Admins};
+use server::admin::{AdminAct, AdminReply, Admins};
 use server::anomaly::Sink;
 use server::core::{Lane, Ops, ShardCore};
 use server::stats::ShardStats;
@@ -62,6 +62,16 @@ fn pump(
     stats: &ShardStats,
     admin_tx: &mut rtrb::Producer<AdminAct>,
 ) -> (Vec<(usize, ChatText, u32)>, bool) {
+    pump_answering(core, stats, admin_tx, None)
+}
+
+/// [`pump`], with the accept loop's answer ring attached too.
+fn pump_answering(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    admin_tx: &mut rtrb::Producer<AdminAct>,
+    answers: Option<&mut rtrb::Consumer<AdminReply>>,
+) -> (Vec<(usize, ChatText, u32)>, bool) {
     let mut log = Sink::off();
     let mut save_now = false;
     let mut chats = Vec::new();
@@ -69,6 +79,7 @@ fn pump(
         let mut ops = Ops {
             log: &mut log,
             admin_tx: Some(admin_tx),
+            admin_answers: answers,
             save_now: &mut save_now,
         };
         core.tick(stats, &mut ops, |lane, slot, bytes| {
@@ -115,14 +126,17 @@ fn an_admin_kicks_and_bans_by_id_and_the_ban_carries_the_wallet() {
     say(&mut core, 0, "/kick 257");
     pump(&mut core, &stats, &mut tx);
     match rx.pop() {
-        Ok(AdminAct::Kick { id }) => assert_eq!(id, id_of(1)),
+        Ok(AdminAct::Kick { by, id }) => {
+            assert_eq!(id, id_of(1));
+            assert_eq!(by, id_of(0), "the answer goes back to the admin");
+        }
         other => panic!("expected a kick for slot 1, got {other:?}"),
     }
 
     say(&mut core, 0, "/ban 257");
     pump(&mut core, &stats, &mut tx);
     match rx.pop() {
-        Ok(AdminAct::Ban { id, key: k }) => {
+        Ok(AdminAct::Ban { id, key: k, .. }) => {
             assert_eq!(id, id_of(1));
             assert_eq!(
                 k.as_bytes(),
@@ -132,6 +146,108 @@ fn an_admin_kicks_and_bans_by_id_and_the_ban_carries_the_wallet() {
         }
         other => panic!("expected a ban for slot 1, got {other:?}"),
     }
+}
+
+/// `/unban` crosses the ring as the prefix the admin typed, lowercased and
+/// without its `0x`, because only the accept loop holds the list to match
+/// it against; a stranger's crosses nothing. The accept loop's answer comes
+/// back on its own ring and is said to that admin alone, marked as the
+/// house's.
+#[test]
+fn unban_crosses_as_a_prefix_and_its_answer_reaches_the_admin_alone() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    setup(&mut core);
+    let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(8);
+    let (mut answer_tx, mut answer_rx) = rtrb::RingBuffer::<AdminReply>::new(8);
+    pump(&mut core, &stats, &mut tx);
+
+    say(&mut core, 1, "/unban 0011223344");
+    pump(&mut core, &stats, &mut tx);
+    assert!(
+        rx.pop().is_err(),
+        "a stranger's unban must not cross the ring"
+    );
+
+    say(&mut core, 0, "/unban 0xFFEEDDCCBB");
+    pump(&mut core, &stats, &mut tx);
+    match rx.pop() {
+        Ok(AdminAct::Unban { by, prefix }) => {
+            assert_eq!(by, id_of(0));
+            assert_eq!(prefix.as_bytes(), b"ffeeddccbb");
+        }
+        other => panic!("expected an unban, got {other:?}"),
+    }
+
+    answer_tx
+        .push(AdminReply::new(id_of(0), "unbanned 0xffeeddccbbaa").unwrap())
+        .unwrap();
+    let (chats, _) = pump_answering(&mut core, &stats, &mut tx, Some(&mut answer_rx));
+    assert_eq!(chats.len(), 1, "the admin alone hears it: {chats:?}");
+    let (slot, text, from) = &chats[0];
+    assert_eq!(*slot, 0);
+    assert_eq!(*from, 0, "said by the house");
+    assert_eq!(text.as_bytes(), b"[server] unbanned 0xffeeddccbbaa");
+}
+
+/// Every way the sim itself refuses `/kick`, `/ban` or `/unban` reaches the
+/// admin, alone: a target not on the shard, a target with no wallet to ban,
+/// and a full ring to the accept loop. Silence would read as "done".
+#[test]
+fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    setup(&mut core);
+    // A dev login with no wallet: on the shard, but nothing to ban.
+    assert!(core.connect_as(2, id_of(2), None, None).is_some());
+    let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(1);
+    pump(&mut core, &stats, &mut tx);
+
+    let heard = |core: &mut ShardCore, tx: &mut rtrb::Producer<AdminAct>, typed: &str| {
+        say(core, 0, typed);
+        let (chats, _) = pump(core, &stats, tx);
+        assert_eq!(
+            chats.len(),
+            1,
+            "{typed:?}: the admin alone hears it: {chats:?}"
+        );
+        let (slot, text, from) = &chats[0];
+        assert_eq!(
+            (*slot, *from),
+            (0, 0),
+            "{typed:?}: to the admin, from the house"
+        );
+        String::from_utf8(text.as_bytes().to_vec()).unwrap()
+    };
+    assert_eq!(
+        heard(&mut core, &mut tx, "/kick 999"),
+        "[server] 999 is not on"
+    );
+    assert_eq!(
+        heard(&mut core, &mut tx, "/ban 999"),
+        "[server] 999 is not on"
+    );
+    assert_eq!(
+        heard(&mut core, &mut tx, "/ban 258"),
+        "[server] 258 not banned: no wallet"
+    );
+    assert!(rx.pop().is_err(), "no refusal crossed the ring");
+
+    // The one-slot ring takes a kick; the next three find it full.
+    say(&mut core, 0, "/kick 257");
+    let (chats, _) = pump(&mut core, &stats, &mut tx);
+    assert!(
+        chats.is_empty(),
+        "a sent kick is the accept loop's to answer"
+    );
+    for typed in ["/kick 257", "/ban 257", "/unban 0011223344"] {
+        assert_eq!(
+            heard(&mut core, &mut tx, typed),
+            "[server] not done: admin ring full"
+        );
+    }
+    assert!(matches!(rx.pop(), Ok(AdminAct::Kick { .. })));
+    assert!(rx.pop().is_err(), "only the first kick crossed");
 }
 
 /// The permission check, from the wrong side: a player who is not on the

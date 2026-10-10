@@ -36,6 +36,15 @@
 //! is covered by the identical arithmetic — one predicate, two callers, no
 //! second opinion about where a client is.
 //!
+//! **Three walks, one anchor** (`NOW.md` §0n1 item 2). The deployable and
+//! backpack walks are aimed from the same anchor with the same radius, and
+//! the `EV_DEPLOY_PLACED` / `EV_BAG_DROPPED` broadcasts gate on the same
+//! predicate, so the guarantee above holds for all three stores. The one
+//! difference is the **owner's exemption** ([`owned_in_interest`]): a
+//! client is always owed the deployables and bags that are its own,
+//! wherever it stands, because the map draws them — its beds and hearths,
+//! and its death bag after a respawn on the far side of the island.
+//!
 //! **What this is not.** It is not §7's chunk subscription: there is still
 //! no grid, a re-arm re-walks the whole in-range set rather than the
 //! difference, and nothing is ever un-subscribed — a client keeps what it
@@ -43,8 +52,10 @@
 //! server's store carries, so "keep" is bounded, not unbounded). What it
 //! buys is the join cost and the raid cost, which is what §9.2.1 measured.
 
+use sim_core::backpack::BackpackRec;
 use sim_core::build::PieceRec;
-use sim_core::limits::{AOI_ENTER_CM, AOI_EXIT_CM};
+use sim_core::deploy::DeployRec;
+use sim_core::limits::{AOI_ENTER_CM, AOI_EXIT_CM, MAX_BACKPACKS, MAX_DEPLOYS, MAX_PIECES};
 
 /// The build grid's cell pitch in centimetres — the units every AOI
 /// comparison in this crate is already written in (`AOI_ENTER_CM`, and the
@@ -96,7 +107,13 @@ pub const PIECE_REARM_CM: i64 = AOI_EXIT_CM - AOI_ENTER_CM;
 /// where every walk has finished and the scan does not run at all.
 /// `tests/piece_interest.rs` holds the inequality against the constants it
 /// is derived from.
+///
+/// The deployable and backpack walks scan with the same window. Their
+/// stores are smaller (`MAX_DEPLOYS` 1024 is 4 ticks, `MAX_BACKPACKS` 256
+/// is one), so the floor above clears by more for them; the assert below
+/// is what says so.
 pub const PIECE_SCAN_BATCH: usize = 256;
+const _: () = assert!(MAX_DEPLOYS <= MAX_PIECES && MAX_BACKPACKS <= MAX_PIECES);
 
 /// Squared planar distance between two centimetre positions.
 ///
@@ -156,6 +173,31 @@ pub fn point_in_interest(anchor: (i64, i64), at: (i64, i64)) -> bool {
 #[inline]
 pub fn rec_in_interest(anchor: (i64, i64), rec: &PieceRec) -> bool {
     piece_in_interest(anchor, rec.cx, rec.cz)
+}
+
+/// [`point_in_interest`] with the owner's exemption: is a record owned by
+/// `owner` at world point `at` owed to the client of player `viewer`?
+///
+/// The one predicate the deployable and backpack walks and their placement
+/// broadcasts share. Owner first because it is the cheaper test, and
+/// because it is the half that must never be filtered: a client's own bed
+/// or death bag dropping off its map is a bug, not a saving.
+#[inline]
+pub fn owned_in_interest(anchor: (i64, i64), viewer: u32, owner: u32, at: (i64, i64)) -> bool {
+    owner == viewer || point_in_interest(anchor, at)
+}
+
+/// [`owned_in_interest`] for a placed deployable, measured at its cell's
+/// centre like a piece.
+#[inline]
+pub fn deploy_in_interest(anchor: (i64, i64), viewer: u32, rec: &DeployRec) -> bool {
+    owned_in_interest(anchor, viewer, rec.owner, cell_cm(rec.cx, rec.cz))
+}
+
+/// [`owned_in_interest`] for a standing backpack, measured where it lies.
+#[inline]
+pub fn bag_in_interest(anchor: (i64, i64), viewer: u32, bag: &BackpackRec) -> bool {
+    owned_in_interest(anchor, viewer, bag.owner, body_cm(bag.qx, bag.qz))
 }
 
 #[cfg(test)]

@@ -320,6 +320,7 @@ pub fn bake_catalog(
                 oven: cook.packed_roles(idx as u16),
                 holster: sim_core::combat::drawn_weapon(combat, gather, idx as u16),
                 revive: survival.revives(idx as u16),
+                class: item.class.code(),
             },
         )
         .map_err(|_| {
@@ -591,6 +592,9 @@ pub async fn spawn_shard(
     // the same reason — and a full ring refuses the act out loud rather
     // than queueing a kick nobody remembers ordering.
     let (admin_tx, admin_rx) = RingBuffer::<crate::admin::AdminAct>::new(CTRL_RING_CAP);
+    // And back, accept → sim: how each act went, for the admin's screen.
+    // One answer per act, so the same depth; a full ring drops the line.
+    let (answer_tx, answer_rx) = RingBuffer::<crate::admin::AdminReply>::new(CTRL_RING_CAP);
     // The skins path, accept → sim, one direction: what the platform said a
     // player owns (`skins.rs`), read off the sim thread and entered as a
     // command. One read in flight per slot, so a slot's worth of depth is a
@@ -669,6 +673,7 @@ pub async fn spawn_shard(
                     world_tx,
                     world_done_rx,
                     admin_tx,
+                    answer_rx,
                     log,
                     admins,
                     trust,
@@ -728,6 +733,7 @@ pub async fn spawn_shard(
         save_rx,
         write_tx,
         admin_rx,
+        answer_tx,
         saves.store,
         slots,
         stats.clone(),
@@ -963,6 +969,7 @@ async fn accept_loop(
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
     mut admin_rx: rtrb::Consumer<crate::admin::AdminAct>,
+    mut answer_tx: rtrb::Producer<crate::admin::AdminReply>,
     mut store: SaveStore,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
@@ -1068,6 +1075,15 @@ async fn accept_loop(
                 ));
             }
             Some(done) = done_rx.recv() => {
+                // A banned wallet stops here, before it claims anything,
+                // refused with the code its ban closed it on — so the
+                // screen says what it said then. A watcher too: a ban is
+                // the wallet's, not the body's.
+                if done.key.as_ref().is_some_and(|k| bans.contains(k)) {
+                    ShardStats::bump(&stats.refused_banned);
+                    spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
+                    continue;
+                }
                 // Before the claim, never after: a record for the slot's
                 // previous tenant has to be filed under the key it was
                 // written for, and installing first would overwrite that key.
@@ -1252,19 +1268,40 @@ async fn accept_loop(
                     }
                     *seat = SeatSlot::default();
                 }
-                // Admin kicks and bans, on the same cadence as the
+                // Admin kicks, bans and unbans, on the same cadence as the
                 // graveyard: an admin is a person typing, so 100 ms is
-                // immediate and the arm costs a pop on an empty ring.
+                // immediate and the arm costs a pop on an empty ring. Each
+                // act answers its admin, because only this loop knows how
+                // it went.
                 while let Ok(act) = admin_rx.pop() {
-                    let (id, ban_key) = match act {
-                        crate::admin::AdminAct::Kick { id } => (id, None),
-                        crate::admin::AdminAct::Ban { id, key } => (id, Some(key)),
+                    let (by, id, ban_key) = match act {
+                        crate::admin::AdminAct::Kick { by, id } => (by, id, None),
+                        crate::admin::AdminAct::Ban { by, id, key } => (by, id, Some(key)),
+                        crate::admin::AdminAct::Unban { by, prefix } => {
+                            let how = bans.remove_prefix(&prefix);
+                            match how {
+                                Ok(_) => {
+                                    ShardStats::bump(&stats.admin_unbanned);
+                                    // Written whole, like a ban: the lift
+                                    // has to outlive a restart too.
+                                    if bans.save().is_err() {
+                                        ShardStats::bump(&stats.save_write_errors);
+                                    }
+                                }
+                                Err(_) => ShardStats::bump(&stats.admin_refused),
+                            }
+                            let line = crate::admin::unban_line(&prefix, &how);
+                            answer_admin(&mut answer_tx, by, &line, &stats);
+                            continue;
+                        }
                     };
                     if let Some(key) = ban_key {
                         // Recorded before the kick, so a full list refuses
                         // the BAN rather than kicking and forgetting why.
                         if !bans.insert(key) {
                             ShardStats::bump(&stats.admin_refused);
+                            let line = crate::admin::ban_full_line(id);
+                            answer_admin(&mut answer_tx, by, &line, &stats);
                             continue;
                         }
                         // Written whole on each ban: an admin typing, a few
@@ -1274,33 +1311,17 @@ async fn accept_loop(
                             ShardStats::bump(&stats.save_write_errors);
                         }
                     }
-                    // The slot is found by id rather than carried, because
-                    // the sim named a player and slots are the accept
-                    // loop's business — and a reconnect between the two
-                    // must not be kicked in the first one's name.
-                    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some())
-                    else {
-                        ShardStats::bump(&stats.admin_refused);
-                        continue;
+                    let kicked = admin_kick(id, &mut keys, &slots);
+                    let counter = if kicked { &stats.admin_kicked } else { &stats.admin_refused };
+                    ShardStats::bump(counter);
+                    // A ban whose target already left still took: the door
+                    // refuses them next time, which is what the admin wants
+                    // to hear.
+                    let line = match ban_key {
+                        Some(key) => crate::admin::banned_line(id, &key),
+                        None => crate::admin::kicked_line(id, kicked),
                     };
-                    let word = slots.load(slot);
-                    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
-                        ShardStats::bump(&stats.admin_refused);
-                        continue;
-                    }
-                    ShardStats::bump(&stats.admin_kicked);
-                    slots.mark_leaving_why(
-                        slot,
-                        crate::slot::generation_of(word),
-                        protocol::REFUSE_ADMIN,
-                    );
-                    if let Some(conn) = keys[slot].conn.take() {
-                        // Closed with a posted reason, the entitle kick's
-                        // rule: a silent close reads as a network fault,
-                        // and "my internet broke" is the wrong thing for a
-                        // kicked player to believe.
-                        close_with_reason(conn, protocol::REFUSE_ADMIN);
-                    }
+                    answer_admin(&mut answer_tx, by, &line, &stats);
                 }
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 if shutdown.load(Ordering::Relaxed) {
@@ -1310,26 +1331,39 @@ async fn accept_loop(
                     // look at the flag — which is what this did — threw them
                     // away and left the shutdown flush writing into a ring
                     // nobody would ever read.
-                    //
-                    // Waited on the *producer being dropped*, not on a
-                    // duration: the sim thread drops `save_tx` when it is
-                    // finished, so this is an exact signal. The try count is
-                    // a backstop for a sim thread that is wedged rather than
-                    // finishing, because "no bound is wait" applies here too.
-                    for _ in 0..SHUTDOWN_DRAIN_TRIES {
-                        drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                        if save_rx.is_abandoned() {
-                            break;
-                        }
-                        tokio::time::sleep(SHUTDOWN_DRAIN_POLL).await;
-                    }
-                    drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+                    drain_until_abandoned(&mut save_rx, &mut write_tx, &mut store, &keys, &stats)
+                        .await;
                     endpoint.close(wtransport::VarInt::from_u32(0), b"shutdown");
                     return;
                 }
             }
         }
     }
+}
+
+/// The accept loop's half of the shutdown flush: file records until the sim
+/// thread lets go of the ring.
+///
+/// Waited on the *producer being dropped*, not on a duration: the sim thread
+/// drops `save_tx` when it is finished, so this is an exact signal. The try
+/// count is a backstop for a sim thread that is wedged rather than finishing,
+/// because "no bound is wait" applies here too. Its own function so a test
+/// can hold the producer open (`NOW.md` §0y item 4).
+async fn drain_until_abandoned(
+    save_rx: &mut rtrb::Consumer<SaveMsg>,
+    write_tx: &mut rtrb::Producer<WriteMsg>,
+    store: &mut SaveStore,
+    keys: &[KeySlot; MAX_PLAYERS],
+    stats: &Arc<ShardStats>,
+) {
+    for _ in 0..SHUTDOWN_DRAIN_TRIES {
+        drain_saves(save_rx, write_tx, store, keys, stats);
+        if save_rx.is_abandoned() {
+            break;
+        }
+        tokio::time::sleep(SHUTDOWN_DRAIN_POLL).await;
+    }
+    drain_saves(save_rx, write_tx, store, keys, stats);
 }
 
 /// Hand one record to the store's index. Called only from the sim thread, so
@@ -1339,9 +1373,11 @@ async fn accept_loop(
 /// key, in place.
 ///
 /// One caller passes `key`: the eviction save, whose ring-drop story is
-/// different and still freshness — the store keeps the record the victim's
-/// leave filed, stale by the raid but present, and the same interval the
-/// autosave sweep already leaves at risk.
+/// different. The store keeps the record the victim's leave filed, stale by
+/// the raid, but the sim kept its own copy at the pick (`core.rs`
+/// `EvictMemo`) and a returning victim rejoins from that, not from the
+/// store's. A drop still costs the raid if a restart, or `MAX_PLAYERS`
+/// later evictions, come before the victim does.
 fn push_save(
     save_tx: &mut rtrb::Producer<SaveMsg>,
     id: u32,
@@ -1858,6 +1894,8 @@ async fn install(
     };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
+    // A hit can be stale — an eviction record still on the save ring — and
+    // the sim, which kept that record, decides (`ShardCore::connect_as`).
     let save = key.and_then(|k| store.find(&k));
 
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
@@ -2879,6 +2917,50 @@ async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
     write_frame(send, &payload[..len]).await
 }
 
+/// Close player `id`'s connection for an admin, with `REFUSE_ADMIN` posted.
+/// False ⇒ nobody live holds that id (they left between the verb and this).
+///
+/// The slot is found by id rather than carried, because the sim named a
+/// player and slots are the accept loop's business — and a reconnect between
+/// the two must not be kicked in the first one's name.
+fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> bool {
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some()) else {
+        return false;
+    };
+    let word = slots.load(slot);
+    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
+        return false;
+    }
+    slots.mark_leaving_why(
+        slot,
+        crate::slot::generation_of(word),
+        protocol::REFUSE_ADMIN,
+    );
+    if let Some(conn) = keys[slot].conn.take() {
+        // Closed with a posted reason, the entitle kick's rule: a silent
+        // close reads as a network fault, and "my internet broke" is the
+        // wrong thing for a kicked player to believe.
+        close_with_reason(conn, protocol::REFUSE_ADMIN);
+    }
+    true
+}
+
+/// Tell admin `to` how an act went (`admin::AdminReply`). A full ring loses
+/// the line, never the act, and counts it like any other undelivered line.
+fn answer_admin(
+    tx: &mut rtrb::Producer<crate::admin::AdminReply>,
+    to: u32,
+    line: &str,
+    stats: &ShardStats,
+) {
+    let Some(reply) = crate::admin::AdminReply::new(to, line) else {
+        return;
+    };
+    if tx.push(reply).is_err() {
+        ShardStats::bump(&stats.chat_undelivered);
+    }
+}
+
 /// Refusals are posted, never hung (DESIGN.md §5.9) — and never block the
 /// accept loop. A buffered write dies with the dropped connection, so
 /// delivery needs `finish` (retransmit-until-acked) before the drop; that
@@ -3098,6 +3180,7 @@ fn sim_thread(
     mut world_tx: rtrb::Producer<WorldMsg>,
     mut world_done_rx: rtrb::Consumer<WorldDone>,
     mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
+    mut answer_rx: rtrb::Consumer<crate::admin::AdminReply>,
     mut log: crate::anomaly::Sink,
     admins: crate::admin::Admins,
     trust: crate::trustlog::Tap,
@@ -3414,12 +3497,13 @@ fn sim_thread(
             core.wipe_poll(now);
             ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
         }
-        // Tick + publish. `Ops` is the tick's three side channels (admin
-        // v0) — the anomaly log, the kick ring, and `/save`'s flag.
+        // Tick + publish. `Ops` is the tick's side channels (admin v0) —
+        // the anomaly log, the kick ring and its answers, `/save`'s flag.
         let mut save_now = false;
         let mut ops = crate::core::Ops {
             log: &mut log,
             admin_tx: Some(&mut admin_tx),
+            admin_answers: Some(&mut answer_rx),
             save_now: &mut save_now,
         };
         core.tick(&stats, &mut ops, |lane, slot, bytes| {
@@ -4010,5 +4094,122 @@ mod tests {
         accept_input(&buf[..n], &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 2);
         assert!(rx.pop().is_err(), "no frame of a forged datagram survives");
+    }
+
+    /// **`KeySlot`'s id match** (`NOW.md` §0y item 4): a record the sim hands
+    /// back is filed under a slot's key only when it carries that slot's
+    /// *current* id. The ring here holds the case the ordering argument says
+    /// cannot happen — the previous tenant's record arriving after the slot
+    /// was re-claimed — so the id check is the only thing between it and the
+    /// new tenant's file. Matching on the slot byte alone files it under the
+    /// new key, last, and hands them the old tenant's inventory.
+    #[test]
+    fn a_save_is_filed_only_under_the_tenant_whose_id_it_carries() {
+        use sim_core::persist::PlayerSave;
+        let (mut save_tx, mut save_rx) = RingBuffer::<SaveMsg>::new(8);
+        let (mut write_tx, mut write_rx) = RingBuffer::<WriteMsg>::new(8);
+        let mut store = SaveStore::new();
+        let stats = Arc::new(ShardStats::default());
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let id = |gen: u32, slot: usize| (gen << 8) | slot as u32;
+        let tenant = PlayerKey::new(b"slot-3-generation-2").expect("fits");
+        let evicted = PlayerKey::new(b"an-evicted-sleeper").expect("fits");
+        // Slot 3 was re-claimed: generation 2 holds it now. Slot 4 is a guest.
+        keys[3] = KeySlot {
+            key: Some(tenant),
+            id: id(2, 3),
+            ..KeySlot::default()
+        };
+        keys[4] = KeySlot {
+            key: None,
+            id: id(1, 4),
+            ..KeySlot::default()
+        };
+        let save = |qx: i32| {
+            let mut s = PlayerSave::EMPTY;
+            s.body.qx = qx;
+            s
+        };
+        for (id, key, qx) in [
+            (id(2, 3), None, 1),           // slot 3's current tenant
+            (id(1, 3), None, 2),           // its previous tenant, late
+            (id(1, 4), None, 3),           // a guest: remembered by nobody
+            (id(7, 5), None, 4),           // a slot nobody holds
+            (id(1, MAX_PLAYERS), None, 5), // a spectator seat's slot
+            (id(1, 3), Some(evicted), 6),  // an eviction: the sim named the key
+        ] {
+            assert!(save_tx
+                .push(SaveMsg {
+                    id,
+                    key,
+                    save: save(qx)
+                })
+                .is_ok());
+        }
+        drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+
+        // Which record is told by `qx` alone: the saves differ in nothing else,
+        // and a whole `PlayerSave` in a failure message is a page of zeros.
+        let first = write_rx.pop().expect("the current tenant's record");
+        assert_eq!((first.key, first.save.body.qx), (tenant, 1));
+        let second = write_rx.pop().expect("the eviction record, filed as named");
+        assert_eq!((second.key, second.save.body.qx), (evicted, 6));
+        assert!(
+            write_rx.pop().is_err(),
+            "a record for a tenant no slot holds reached the disk"
+        );
+        assert_eq!(
+            store.find(&tenant).map(|s| s.body.qx),
+            Some(1),
+            "the previous tenant's record was filed under the new one's key"
+        );
+        assert_eq!(store.live(), 2);
+        assert_eq!(ShardStats::get(&stats.saves_taken), 2);
+        assert_eq!(ShardStats::get(&stats.save_ring_drops), 0);
+    }
+
+    /// **The accept loop waits out the sim's flush** (`NOW.md` §0y item 4):
+    /// the shutdown drain files every record pushed until the sim thread
+    /// drops its producer, including the ones that land after the flag was
+    /// seen. Returning on the first look, which is what the loop once did,
+    /// files the first record here and loses the rest. The producer is held
+    /// open on a thread, the way the sim thread holds it while it disconnects
+    /// everyone.
+    #[tokio::test]
+    async fn the_shutdown_drain_files_records_until_the_sim_lets_go() {
+        let (mut save_tx, mut save_rx) = RingBuffer::<SaveMsg>::new(8);
+        let (mut write_tx, mut write_rx) = RingBuffer::<WriteMsg>::new(8);
+        let mut store = SaveStore::new();
+        let stats = Arc::new(ShardStats::default());
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let who: Vec<PlayerKey> = (0..3)
+            .map(|s| PlayerKey::new(format!("player-{s}").as_bytes()).expect("fits"))
+            .collect();
+        for (s, key) in who.iter().enumerate() {
+            keys[s] = KeySlot {
+                key: Some(*key),
+                id: (1 << 8) | s as u32,
+                ..KeySlot::default()
+            };
+        }
+        let rec = |s: u32| SaveMsg {
+            id: (1 << 8) | s,
+            key: None,
+            save: sim_core::persist::PlayerSave::EMPTY,
+        };
+        assert!(save_tx.push(rec(0)).is_ok());
+        let sim = std::thread::spawn(move || {
+            for s in 1..3 {
+                std::thread::sleep(Duration::from_millis(50));
+                assert!(save_tx.push(rec(s)).is_ok());
+            }
+            // `save_tx` drops here: the flush is over.
+        });
+        drain_until_abandoned(&mut save_rx, &mut write_tx, &mut store, &keys, &stats).await;
+        sim.join().expect("the sim half finished");
+        let filed: Vec<PlayerKey> = std::iter::from_fn(|| write_rx.pop().ok())
+            .map(|w| w.key)
+            .collect();
+        assert_eq!(filed, who, "the drain stopped before the sim let go");
     }
 }

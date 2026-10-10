@@ -199,9 +199,10 @@ impl BackpackRec {
 }
 
 /// The ground-container store: dense, insertion-ordered, fixed capacity.
-/// Removal swap-removes (like `Deploys`), so the wire layer restarts an
-/// in-progress sync walk on any removal — the same contract the piece and
-/// deploy walks already carry.
+/// Removal swap-removes (like `Deploys`), so the wire layer's sync walk
+/// reads it from the tail down, where the entry a swap-remove moves is
+/// always one already sent — the same contract the piece and deploy walks
+/// carry. That walk never re-derives an append: see [`Self::stand_up`].
 pub struct Backpacks {
     /// Boxed via [`crate::boxed_array`], and it stopped being optional the
     /// day `ItemStack` grew `cond`: 256 records × 30 six-byte stacks is
@@ -322,6 +323,12 @@ impl Backpacks {
     /// armed the module) and an empty item set both take this exit, so a
     /// naked spawn dying leaves no litter and neither does a barrel whose
     /// roll paid nothing.
+    ///
+    /// ⚠ **The `EV_BAG_DROPPED` push is load-bearing on the wire.** The
+    /// server's bag walk reads tail-down and so never sees an append; a
+    /// bag stood up after a client's walk began reaches it only as that
+    /// broadcast. A new runtime insert path that skips the event is a bag
+    /// some clients never learn about.
     #[allow(clippy::too_many_arguments)]
     pub fn stand_up(
         &mut self,
@@ -710,7 +717,12 @@ impl Backpacks {
             cut.cond,
             cut.skin,
         );
-        events.push(EV_GATHER, p.id, ((cut.item as u32) << 16) | added as u32, 0);
+        events.push(
+            EV_GATHER,
+            p.id,
+            ((cut.item as u32) << 16) | added as u32,
+            (pay - added) as u32,
+        );
         self.drop_if_empty(i, events);
         true
     }

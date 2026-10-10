@@ -872,6 +872,7 @@ fn a_bad_row_is_red_on_both_sides() {
         arch: ARCH_BOX,
         placement: PLACE_GROUND,
         hp: 0,
+        matter: sim_core::deploy::MATTER_WOOD,
         item: 9,
         n_costs: 0,
         costs: [(0, 0); sim_core::limits::MAX_DEPLOY_COSTS],

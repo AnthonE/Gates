@@ -229,7 +229,9 @@ pub struct ClientNetState {
     pub piece_sync_reset: bool,
     /// Where this client's piece walk is **aimed**, in centimetres — the
     /// player position the walk was armed at, not where the player is now
-    /// (class-S interest v0, `interest.rs` carries the argument).
+    /// (class-S interest v0, `interest.rs` carries the argument). The
+    /// deployable and backpack walks are aimed from it too, and re-armed
+    /// with it.
     ///
     /// Fixed for a walk's duration on purpose. The filter has to answer the
     /// same way for every batch of one walk, or "this client has been sent
@@ -246,23 +248,20 @@ pub struct ClientNetState {
     pub piece_anchor_valid: bool,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
-    /// Placed-deployable walk: the next `world.deploys` entry index to
-    /// send, read upward, and a decay removal mid-walk restarts it (the
-    /// store swap-removes). **Not** the piece walk's semantics any more —
-    /// that one reads downward and never restarts, and this one is left as
-    /// it was until its own placement seam is proven (`core.rs`).
+    /// Placed-deployable walk: entries **still owed**, the piece walk's
+    /// semantics exactly — read from the tail down, aimed from
+    /// `piece_anchor_cm`, never restarted by a removal, clamped where it
+    /// is read (`NOW.md` §0n1 item 2; `core.rs` carries the argument).
     pub deploy_sync_cursor: usize,
     /// The next deploy batch carries the reset bit.
     pub deploy_sync_reset: bool,
-    /// Standing-backpack walk cursor, restart semantics like the
-    /// deployables' — a bag looted or despawned mid-walk swap-removes
-    /// under it.
+    /// Standing-backpack walk: entries still owed, the same semantics as
+    /// the deployables' — tail-down, aimed, never restarted.
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
-    /// Loose-stack walk cursor (ground items v0), the bag walk's
-    /// semantics — the store swap-removes, so a take or a despawn
-    /// mid-walk restarts it.
+    /// Loose-stack walk cursor (ground items v0): read upward, and the
+    /// store swap-removes, so a take or a despawn mid-walk restarts it.
     pub gitem_sync_cursor: usize,
     /// The next loose-stack batch carries the reset bit.
     pub gitem_sync_reset: bool,
@@ -316,6 +315,14 @@ pub struct ClientNetState {
     /// and the tail stays zero on both sides, so it never manufactures a
     /// change.
     pub last_cont: [ItemStack; INV_SLOTS],
+    /// Whether this client was last *told* a ground container is open: set
+    /// when a container batch gets away, cleared when a close does (or when
+    /// its own press shut the panel). Not the subscription above, which
+    /// `ev_resync` drops without a word — a player asks again, but a seat
+    /// cannot, so `ShardCore::sync_seat_container` reads this to owe the
+    /// watcher the close a resync swallowed. Survives `close_container`
+    /// and `ev_resync` on purpose.
+    pub cont_shown: bool,
     /// The **body's** slots as last successfully queued — `last_cont`'s
     /// twin, for a stream that runs beside the ground container rather
     /// than taking its place.
@@ -343,6 +350,11 @@ pub struct ClientNetState {
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
+    /// A hand-reading action's wait (NOW §0rc 2): the newest input seq that
+    /// was already buffered when it reached the hand, and the ticks it has
+    /// waited for that frame to act. Set by `wait_for_hand`, spent by
+    /// `hand_ready`; `None` acts at once.
+    hand_wait: Option<(u16, u8)>,
     /// When each kind of action may act again (`pace.rs`): an early one
     /// waits in the hand.
     pub pace: crate::pace::Pace,
@@ -354,6 +366,16 @@ pub struct ClientNetState {
     /// The fires burning are owed (wire v94): a fresh join and a resync both
     /// start owing them, since each fire is broadcast once, when it is lit.
     pub fires_owed: bool,
+    /// This player's own-bag list is owed (`SUB_BAGS`, NOW §0die 2): a
+    /// fresh join and a resync start owing it, and `route_events` arms it
+    /// again on the tick one of their bags is placed or taken down.
+    pub bags_owed: bool,
+    /// The hearth `(cx, cz, level)` of the last `EventMsg::Stock` this
+    /// connection was sent — what its client's `stock_addr` holds. The crew
+    /// vital's push keeps to it while it still covers the body, so a push
+    /// never re-latches the client away from a panel open at it (NOW §0up
+    /// 3). `None` at a fresh join.
+    pub stock_hearth: Option<(u16, u16, u8)>,
     /// Next skin-catalog row the drip sends (skins v0).
     pub skins_cursor: usize,
     /// Next vendor offer the drip sends (wire v85).
@@ -466,13 +488,17 @@ impl ClientNetState {
             open_cont_handle: 0,
             open_cont_reset: false,
             last_cont: [ItemStack::default(); INV_SLOTS],
+            cont_shown: false,
             last_wear: [ItemStack::default(); WEAR_SLOTS],
             wear_reset: true,
             pending_action: None,
+            hand_wait: None,
             pace: crate::pace::Pace::default(),
             last_assist: (0, 0, 0),
             last_env: None,
             fires_owed: true,
+            bags_owed: true,
+            stock_hearth: None,
             skins_cursor: 0,
             vend_cursor: 0,
             last_doors: None,
@@ -555,6 +581,7 @@ impl ClientNetState {
         self.last_done_at = u64::MAX;
         self.last_env = None;
         self.fires_owed = true;
+        self.bags_owed = true;
         self.last_expo = None;
         self.last_hostile = None;
         self.last_gate_spawn = None;
@@ -827,6 +854,57 @@ impl ClientNetState {
         best
     }
 
+    /// Newest buffered seq ahead of the cursor, if any — what a
+    /// hand-reading action waits on (`wait_for_hand`).
+    fn newest_ahead(&self) -> Option<u16> {
+        let mut best: Option<u16> = None;
+        for i in 0..INPUT_BUFFER_CAP {
+            if !self.in_valid[i] {
+                continue;
+            }
+            let seq = self.in_frames[i].seq;
+            let ahead = seq.wrapping_sub(self.last_executed);
+            let in_window = ahead >= 1 && ahead as usize <= INPUT_BUFFER_CAP;
+            if in_window && best.is_none_or(|b| ahead > b.wrapping_sub(self.last_executed)) {
+                best = Some(seq);
+            }
+        }
+        best
+    }
+
+    /// An action just reached the hand (`ShardCore::push_action`). One that
+    /// reads the held item waits for the newest frame already buffered: the
+    /// action lane skips the jitter buffer the frames sit in, so a key
+    /// pressed just after a hotbar switch would otherwise act on the slot
+    /// the cursor is still on — a satchel planted as "you cannot pay"
+    /// (NOW §0rc 2). Any other action acts at once.
+    pub fn wait_for_hand(&mut self, reads_hand: bool) {
+        self.hand_wait = if reads_hand {
+            self.newest_ahead().map(|seq| (seq, 0))
+        } else {
+            None
+        };
+    }
+
+    /// Whether the action in the hand may act this tick: the frame it
+    /// waits for has executed (this tick's consume ran first, and its input
+    /// command rides ahead of the action's in the tick), or it has waited
+    /// `INPUT_BUFFER_CAP` ticks — a buffered frame acts within that many, so
+    /// the bound is a backstop that keeps a hand from ever wedging. A wait
+    /// that does not end counts one tick.
+    pub fn hand_ready(&mut self) -> bool {
+        let Some((seq, waited)) = self.hand_wait else {
+            return true;
+        };
+        let executed = (seq.wrapping_sub(self.last_executed) as i16) <= 0;
+        if executed || usize::from(waited) >= INPUT_BUFFER_CAP {
+            self.hand_wait = None;
+            return true;
+        }
+        self.hand_wait = Some((seq, waited + 1));
+        false
+    }
+
     /// One tick's consume (NETCODE.md §4): normally one frame; two when
     /// the buffer runs deep (the consume throttle); a gap with frames
     /// behind it jumps — 10-frame redundancy means a gap is a ≥ 10-datagram
@@ -1024,6 +1102,40 @@ mod tests {
         c.push_frame(frame(10), None);
         assert_eq!(c.consume_input().unwrap().frame.seq, 10);
         assert_eq!(c.last_executed, 10);
+    }
+
+    /// A hand-reading action waits for the newest frame buffered when it
+    /// arrived — through seq wrap, and never past it — and a wait whose
+    /// frame never acts ends after `INPUT_BUFFER_CAP` ticks rather than
+    /// wedging the hand. Any other action never waits.
+    #[test]
+    fn the_hand_waits_for_the_newest_buffered_frame_and_no_longer() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        for seq in [u16::MAX - 1, u16::MAX, 0] {
+            c.push_frame(frame(seq), None);
+        }
+        c.wait_for_hand(true);
+        c.push_frame(frame(1), None); // arrived after the press
+        let mut acted = Vec::new();
+        for _ in 0..4 {
+            let seq = c.consume_input().unwrap().frame.seq;
+            if c.hand_ready() {
+                acted.push(seq);
+            }
+        }
+        assert_eq!(acted.first(), Some(&0), "acts with the newest frame it saw");
+
+        c.wait_for_hand(false);
+        assert!(c.hand_ready(), "a verb that names its subject never waits");
+
+        // Buffered, but the cursor never moves: bounded.
+        c.push_frame(frame(2), None);
+        c.wait_for_hand(true);
+        let waited = (0..2 * INPUT_BUFFER_CAP)
+            .take_while(|_| !c.hand_ready())
+            .count();
+        assert_eq!(waited, INPUT_BUFFER_CAP);
     }
 
     /// A starved tick mints the decayed stand-in off the last REAL frame —

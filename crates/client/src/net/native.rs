@@ -6,7 +6,7 @@
 //! rest of the session's per-frame work is portable and lives one level up
 //! (`super`'s header has the measurement).
 
-use super::Wire;
+use super::{PathCounts, Wire};
 use wtransport::Connection;
 
 /// A connected wtransport session's send half.
@@ -54,5 +54,18 @@ impl Wire for NativeWire {
         self.connection
             .as_ref()
             .map(|c| c.rtt().as_secs_f32() * 1000.0)
+    }
+
+    /// quinn's own counters, the ones the shard reads per client
+    /// (`server/src/net.rs`'s stats tick) from the other end of this path.
+    fn path_counts(&self) -> Option<PathCounts> {
+        self.connection.as_ref().map(|c| {
+            let s = c.quic_connection().stats();
+            PathCounts {
+                sent: s.path.sent_packets,
+                lost: s.path.lost_packets,
+                rx_bytes: s.udp_rx.bytes,
+            }
+        })
     }
 }

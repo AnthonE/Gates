@@ -117,6 +117,13 @@ pub struct MeleeDef {
     /// torch's heat on top of its blow, `weapons.toml`'s `lit_damage`. Zero
     /// for everything that cannot burn.
     pub lit_bonus: u16,
+    /// Condition one **landed** blow takes off the item that dealt it,
+    /// hundredths of a point — `weapons.toml`'s `condition_loss` (the
+    /// torch's ~7 a swing, NOW §0tl 3). Landed means it met a body, an
+    /// animal or a built thing (`World::wear_weapon`); a node's wear is
+    /// `NodeDef::wear_for`'s, a whiff's is nothing. Zero is a row that
+    /// does not wear.
+    pub wear: u16,
 }
 
 impl MeleeDef {
@@ -526,6 +533,7 @@ impl CombatContent {
             head_pct: 100,
             limb_pct: 100,
             lit_bonus: 0,
+            wear: 0,
         }; MAX_ITEM_DEFS],
         throw: [ThrowDef {
             damage: 0,
@@ -606,6 +614,7 @@ impl CombatContent {
                 head_pct: 200,
                 limb_pct: 50,
                 lit_bonus: 0,
+                wear: 0,
             };
             i += 1;
         }
@@ -728,6 +737,7 @@ impl CombatContent {
                 head_pct: 100,
                 limb_pct: 100,
                 lit_bonus: 0,
+                wear: 0,
             };
             // One point a blast, for the swing's reason: `probe_parity`'s
             // bots must keep the base they built standing long enough to
@@ -773,6 +783,15 @@ impl CombatContent {
     #[inline]
     pub fn held_struct(&self, held: u16) -> Option<MeleeDef> {
         self.held_row(held).filter(|d| d.structure > 0)
+    }
+
+    /// Condition one landed blow takes off `held` (`MeleeDef::wear`) —
+    /// zero for an empty hand, an item off the table, and every row that
+    /// does not wear. Read off the row unfiltered: a blow at a wall wears
+    /// the hand as a blow at a man does.
+    #[inline]
+    pub fn wear_of(&self, held: u16) -> u16 {
+        self.held_row(held).map_or(0, |d| d.wear)
     }
 
     /// The throwable row of the item a player is holding — what the plant

@@ -571,6 +571,70 @@ fn a_successful_write_leaves_no_temp_file_behind() {
     sweep(&path);
 }
 
+/// **What a SIGKILL leaves behind, and why it costs nothing** (`NOW.md` §0y
+/// item 4). A kill between the temp file's open and its rename leaves a torn
+/// `.tmp` beside the world, and no test can time that kill. What can be
+/// gated is the property that makes it harmless: the boot neither refuses on
+/// a stray `.tmp` nor reads it as the world, and the next save replaces it.
+/// Both kills: during the very first write (no world yet), and during a
+/// later one (the last published world stands).
+#[test]
+fn a_temp_file_a_kill_left_behind_is_neither_read_nor_kept() {
+    let path = scratch("killed");
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let boot = |want: &str| {
+        let mut trial = World::new(SEED);
+        install_content(&mut trial);
+        worldfile::open(
+            &path,
+            &mut trial,
+            SEED,
+            CONTENT,
+            LAYOUT,
+            world_digest(),
+            INTERVAL,
+        )
+        .unwrap_or_else(|e| panic!("{want}: {e}"))
+    };
+
+    // Killed during the first write: a fresh island, not a refusal.
+    std::fs::write(&tmp, b"torn before the header was out").expect("plant");
+    let (first, found) = boot("a stray .tmp refused the first boot");
+    assert!(found.created, "a .tmp was read as a world");
+    let mut file = first.file;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core
+        .connect_as(0, id_of(0), Some(key("dev-killed")), None)
+        .is_some());
+    for _ in 0..3 {
+        core.tick_bare(&stats, |_, _, _| true);
+    }
+    let tick = core.world.tick;
+    write_world(&core, &mut file);
+    assert!(!tmp.exists(), "the first save kept the torn .tmp");
+
+    // Killed during a later write: half of a real world sits in the `.tmp`.
+    let whole = std::fs::read(&path).expect("published");
+    std::fs::write(&tmp, &whole[..whole.len() / 2]).expect("plant");
+    let (second, found) = boot("a torn .tmp refused the boot");
+    assert!(!found.created, "the published world was not found");
+    assert_eq!(
+        (found.tick, found.bodies, found.claimable),
+        (tick, 1, 1),
+        "the boot did not resume the last published world"
+    );
+    let mut file = second.file;
+    core.tick_bare(&stats, |_, _, _| true);
+    write_world(&core, &mut file);
+    assert!(!tmp.exists(), "the next save kept the torn .tmp");
+    let (_, found) = boot("the world after the kill");
+    assert_eq!(found.tick, tick + 1);
+    sweep(&path);
+}
+
 /// World persistence off is a no-op and never an error: a shard told not to
 /// remember is not a shard failing to. The bool is what says so — a caller
 /// that counted every `Ok` would report a shard persisting a world it has

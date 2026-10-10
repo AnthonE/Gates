@@ -22,6 +22,7 @@ use sim_core::limits::HOTBAR_SLOTS;
 
 use super::verbs::Aimed;
 use super::Net;
+use crate::net::PathMeter;
 
 /// How long a toast stays up, seconds. Cosmetic (`DECISIONS.md` §open,
 /// client cosmetics). A clock is fine here and would not be in a gate: this
@@ -125,6 +126,21 @@ const CRAFT_BAR_FILL: Color = Color::srgba(0.122, 0.420, 0.627, 0.92);
 /// How long the hitmarker flashes, seconds. Short on purpose — it is
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
+
+/// How far a landed hit throws each crosshair tick out along its own arm,
+/// px, at the instant it lands: the marker changes *shape* and not only
+/// colour, as the reference's does (`NOW.md` §0hs item 3). A colour alone
+/// is the one cue a player with a colour-blind eye, or a red sky, loses.
+///
+/// Three steps — a hit, a headshot, a kill — and the ordering is the
+/// property, not the pixels: the louder the blow, the wider the marker. The
+/// limb rung shares the body's push on purpose; its colour already says
+/// *weaker*, and a marker that shrank toward rest would read as a miss
+/// ([`CROSSHAIR_HIT_LIMB`]'s whole argument). Cosmetics.
+pub const HIT_PUSH_PX: f32 = 3.0;
+pub const HIT_PUSH_HEAD_PX: f32 = 5.0;
+pub const HIT_PUSH_KILL_PX: f32 = 7.0;
+const _: () = assert!(HIT_PUSH_PX < HIT_PUSH_HEAD_PX && HIT_PUSH_HEAD_PX < HIT_PUSH_KILL_PX);
 
 /// How long a hit's damage number stays beside the crosshair, seconds —
 /// long enough to read, which the marker's quarter second is not.
@@ -502,6 +518,11 @@ pub struct Toast {
     /// The rung that hit landed on (v58), or `None` for a wall — which is
     /// what picks the marker's colour. See [`mark_colour`].
     pub hit_part: Option<Part>,
+    /// That hit killed: the marker is in its widest shape ([`Toast::kill`]).
+    pub hit_kill: bool,
+    /// Who the blow that lit the marker landed on (`Feed::hit_victims`, the
+    /// frame's last), or `None` for a wall: the one death that may widen it.
+    pub hit_victim: Option<u32>,
     /// The live hurt arcs — `hit_*`'s pair from the other side of the blow
     /// (wire v57), one entry per direction currently being pointed at.
     ///
@@ -522,6 +543,8 @@ impl Default for Toast {
             overflow: String::new(),
             hit_left: 0.0,
             hit_part: None,
+            hit_kill: false,
+            hit_victim: None,
             hurts: [HurtArc::default(); HURT_ARCS],
         }
     }
@@ -700,15 +723,38 @@ impl Toast {
         self.dropped
     }
 
-    /// A blow of yours landed on `part` (`None` = a wall). The number it
-    /// did is [`hit_number`]'s, off the feed.
+    /// A blow of yours landed on `part` (`None` = a wall), on `victim`
+    /// (`None` = a wall too). The number it did is [`hit_number`]'s, off the
+    /// feed.
     ///
     /// The rung is latched with the clock and not merged with whatever was
     /// there: the marker is a statement about the shot the player just
     /// took, and a headshot four frames ago must not colour a leg hit now.
-    pub fn hit(&mut self, part: Option<Part>) {
+    /// The victim is latched with it, for [`Toast::kill`].
+    pub fn hit(&mut self, part: Option<Part>, victim: Option<u32>) {
         self.hit_left = HITMARK_SECS;
         self.hit_part = part;
+        self.hit_kill = false;
+        self.hit_victim = victim;
+    }
+
+    /// `victim` died at your hand: if the blow on the marker was the one on
+    /// them, it takes its kill shape on a fresh clock.
+    ///
+    /// **Only a hot marker is promoted, and only by its own victim.** A
+    /// death credited to you is not always a blow you just landed — a body
+    /// you put down can bleed out a minute later, while you are shooting
+    /// someone else — and the marker is a statement about the shot just
+    /// taken. The killing blow's `EV_HIT` is pushed before the world's
+    /// `EV_DEATH` and both ride the same ordered event lane, so a death that
+    /// *is* a shot always finds its hit, and its victim, already on the
+    /// crosshair. A frame whose blows landed on two bodies latches the last
+    /// of them; a kill of the other one keeps the plain marker.
+    pub fn kill(&mut self, victim: u32) {
+        if self.hit_left > 0.0 && self.hit_victim == Some(victim) {
+            self.hit_left = HITMARK_SECS;
+            self.hit_kill = true;
+        }
     }
 
     /// Something hurt you, from `sector`, for `damage`.
@@ -796,6 +842,52 @@ pub fn mark_colour(hot: bool, part: Option<Part>) -> Color {
         // what it read as before there were rungs.
         Some(Part::Chest) | None => CROSSHAIR_HIT,
     }
+}
+
+/// How far out the ticks stand, px, with `hit_left` seconds on the marker:
+/// the rung's full push ([`HIT_PUSH_PX`] and its two louder steps) the
+/// instant the blow lands, gliding back to rest as the clock runs out.
+///
+/// Eased (`f·(2−f)`) rather than linear, so the shape holds while it is
+/// being read and closes as the colour goes — one event ending, not a
+/// slow drift inward that outlives the flash it belongs to.
+pub fn hit_push_px(hit_left: f32, part: Option<Part>, kill: bool) -> f32 {
+    let full = if kill {
+        HIT_PUSH_KILL_PX
+    } else if part == Some(Part::Head) {
+        HIT_PUSH_HEAD_PX
+    } else {
+        HIT_PUSH_PX
+    };
+    let f = (hit_left / HITMARK_SECS).clamp(0.0, 1.0);
+    full * f * (2.0 - f)
+}
+
+/// Where tick `i` of [`CROSSHAIR_TICKS`] sits, `(left, top)` px off the
+/// aim point, pushed `push` px outward along its own arm. The spawn and
+/// the marker both place it through here, so at rest the two cannot
+/// disagree about where a tick lives.
+fn tick_offset(i: usize, push: f32) -> (f32, f32) {
+    let (dx, dy, w, h) = CROSSHAIR_TICKS[i];
+    let len = (dx * dx + dy * dy).sqrt();
+    // A tick on the aim point itself has no arm to travel along.
+    let (ux, uy) = if len > 0.0 {
+        (dx / len, dy / len)
+    } else {
+        (0.0, 0.0)
+    };
+    (dx - w * 0.5 + ux * push, dy - h * 0.5 + uy * push)
+}
+
+/// The bodies this frame's feed says you killed: you are named the killer
+/// and you are not the body. `killer == victim` is how the world spells a
+/// death nobody dealt (cold, salt, the clock), so a suicide is not a kill
+/// either.
+fn own_kills(deaths: &[(u32, u32)], own: u32) -> impl Iterator<Item = u32> + '_ {
+    deaths
+        .iter()
+        .filter(move |&&(victim, killer)| killer == own && victim != own)
+        .map(|&(victim, _)| victim)
 }
 
 /// A hotbar cell, by index.
@@ -895,6 +987,9 @@ pub enum ExposureChip {
     Cold,
     /// Inside THE GATE's safe zone (`sim_core::town::safe`).
     Safe,
+    /// Standing in your own base: how long its hearth keeps it, or that it
+    /// is decaying (the crew HUD vital, `ui::hearth::vital`).
+    Upkeep,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -942,6 +1037,7 @@ fn safe_chip(
     Some(("SAFE ZONE".to_string(), false))
 }
 
+const UPKEEP_CHIP: Color = Color::srgba(0.46, 0.34, 0.16, 0.85);
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
@@ -957,15 +1053,22 @@ pub struct ExposureWorld {
     /// A roof overhead (`collide::roofed`, the rain's own question).
     pub sheltered: bool,
     pub underwater: bool,
+    /// In a lit fire's warmth (`ClientCore::near_fire`, the sim's own
+    /// `exposure::fire_reaches` on the client's mirrors).
+    pub fire: bool,
 }
 
 /// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
-/// rain on an open body, the sea, or drying out.
+/// rain on an open body, the sea, or drying out, fast beside a fire. Rain
+/// on an open body soaks it fire or no fire (`exposure::step`), so the
+/// rain still wins there.
 pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     let why = if w.underwater {
         "IN THE WATER"
     } else if w.rain > 0.05 && !w.sheltered {
         "RAIN"
+    } else if w.fire {
+        "DRYING BY A FIRE"
     } else if w.sheltered {
         "DRYING UNDER A ROOF"
     } else {
@@ -974,9 +1077,17 @@ pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     format!("WET {wet_pct}% · {why}")
 }
 
+/// The spill line: `n` units of `label` that did not fit and fell at the
+/// feet (`Feed::spills`).
+pub fn spill_line(n: u16, label: &str) -> String {
+    format!("pack full — {n} × {label} dropped at your feet")
+}
+
 /// What the COLD chip says: the strongest cause it can see, and that a roof
-/// is helping when there is one. Freezing names what stops it, less what
-/// the body already has.
+/// or a fire is helping when there is one. Freezing names what stops it,
+/// less what the body already has. A fire is said to help, never to have
+/// won: soaked at night in the rain in the road sign jacket, a fire alone
+/// still leaves the body past `hurt_at` (`content/balance.toml`).
 pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     let open = !w.sheltered;
     let why = if w.rain > 0.05 && open {
@@ -990,29 +1101,41 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     } else {
         "EXPOSED"
     };
-    match (hurting, w.sheltered) {
-        (true, true) => "FREEZING · UNDER A ROOF · NOW A FIRE".to_string(),
-        (true, false) => format!("FREEZING · {why} · FIND A FIRE OR A ROOF"),
-        (false, true) => format!("COLD · {why} · ROOF HELPS"),
-        (false, false) => format!("COLD · {why}"),
+    match (hurting, w.fire, w.sheltered) {
+        (true, true, true) => "FREEZING · BY A FIRE · UNDER A ROOF".to_string(),
+        (true, true, false) => format!("FREEZING · {why} · BY A FIRE · NOW A ROOF"),
+        (true, false, true) => "FREEZING · UNDER A ROOF · NOW A FIRE".to_string(),
+        (true, false, false) => format!("FREEZING · {why} · FIND A FIRE OR A ROOF"),
+        (false, true, true) => format!("COLD · {why} · FIRE AND ROOF HELP"),
+        (false, true, false) => format!("COLD · {why} · FIRE HELPS"),
+        (false, false, true) => format!("COLD · {why} · ROOF HELPS"),
+        (false, false, false) => format!("COLD · {why}"),
     }
 }
 
 /// Keep the wet and cold chips on what the server last said. Hidden while
-/// there is nothing to say — dry, and warm enough not to mention.
+/// there is nothing to say — dry, and warm enough not to mention. The
+/// upkeep chip likewise: shown while the shard keeps re-telling you your
+/// hearth's stock, which it does only inside your own claim.
 pub fn exposure(
     net: NonSend<super::Net>,
     sky: Option<Res<super::weather::WeatherNow>>,
     mut chips: Query<(&ExposureChip, &mut Text, &mut Node, &mut BackgroundColor)>,
 ) {
     let core = &net.session.core;
-    let w = sky.map_or_else(ExposureWorld::default, |n| ExposureWorld {
+    let mut w = sky.map_or_else(ExposureWorld::default, |n| ExposureWorld {
         rain: n.rain,
         wind: n.wind,
         night: n.night,
         sheltered: n.sheltered,
         underwater: n.underwater,
+        fire: false,
     });
+    // Asked only while a chip could say it: the walk is over the lit set,
+    // small, but it is a frame-rate reader.
+    if core.wet_pct > 0 || core.cold_pct >= 25 || core.cold_hurting {
+        w.fire = core.near_fire();
+    }
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
@@ -1041,6 +1164,14 @@ pub fn exposure(
                     Some((line, false)) => (true, line, SAFE_CHIP),
                     Some((line, true)) => (true, line, HOSTILE_CHIP),
                     None => (false, String::new(), SAFE_CHIP),
+                }
+            }
+            ExposureChip::Upkeep => {
+                let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
+                match crate::ui::hearth::vital(rows, core.stock_age()) {
+                    Some((line, false)) => (true, line, UPKEEP_CHIP),
+                    Some((line, true)) => (true, line, FREEZE_CHIP),
+                    None => (false, String::new(), UPKEEP_CHIP),
                 }
             }
         };
@@ -1154,10 +1285,11 @@ pub fn blast_at(impacts: &[client_core::core::Impact], cx: u16, cz: u16) -> bool
 #[derive(Component)]
 pub struct Crosshair;
 
-/// The hitmarker: the crosshair's ticks, recoloured for a quarter second
-/// when a swing lands.
+/// The hitmarker: the crosshair's ticks, recoloured and pushed outward for
+/// a quarter second when a swing lands. Carries the tick's index into
+/// [`CROSSHAIR_TICKS`], which is the arm it is pushed along.
 #[derive(Component)]
-pub struct HitMark;
+pub struct HitMark(pub u8);
 
 /// The damage a hit did, up and right of the crosshair ([`hit_number`]).
 #[derive(Component)]
@@ -1576,8 +1708,14 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     ));
                 });
             // Wet and cold (weather v0): two chips over the bars, hidden
-            // until there is something to say.
-            for chip in [ExposureChip::Safe, ExposureChip::Wet, ExposureChip::Cold] {
+            // until there is something to say. The base's upkeep heads the
+            // stack (NOW §0up 3): it is about the base, not the body.
+            for chip in [
+                ExposureChip::Upkeep,
+                ExposureChip::Safe,
+                ExposureChip::Wet,
+                ExposureChip::Cold,
+            ] {
                 stack.spawn((
                     chip,
                     Text::new(""),
@@ -1800,14 +1938,15 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            for (dx, dy, w, h) in CROSSHAIR_TICKS {
+            for (i, &(_, _, w, h)) in CROSSHAIR_TICKS.iter().enumerate() {
+                let (left, top) = tick_offset(i, 0.0);
                 c.spawn((
                     Crosshair,
-                    HitMark,
+                    HitMark(i as u8),
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(dx - w * 0.5),
-                        top: Val::Px(dy - h * 0.5),
+                        left: Val::Px(left),
+                        top: Val::Px(top),
                         width: Val::Px(w),
                         height: Val::Px(h),
                         ..default()
@@ -2365,7 +2504,7 @@ pub fn feedback(
     hearth_view: Res<super::verbs::HearthView>,
     time: Res<Time>,
     ghost: Option<Res<super::ghost::Ghost>>,
-    mut marks: Query<&mut BackgroundColor, With<HitMark>>,
+    mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
 ) {
     let core = &net.session.core;
@@ -2384,7 +2523,13 @@ pub fn feedback(
 
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
-        toast.hit(feed.hit_part);
+        toast.hit(feed.hit_part, feed.hit_victims().last().copied());
+    }
+    // And whether it killed, which is the marker's widest shape. Read off
+    // the same broadcast deaths the kill feed below says, after the hit so
+    // the blow that killed is already the one on the crosshair.
+    for victim in own_kills(feed.deaths(), core.player_id) {
+        toast.kill(victim);
     }
     // And the same blow from the other end — every direction it came from,
     // not just the last one. `Feed::hurt_from` is a list precisely so that a
@@ -2561,8 +2706,10 @@ pub fn feedback(
     // What the hearth is holding, after you feed it. `stock` is a latched
     // ROW TABLE rather than one value, so the same freshness rule applies —
     // and `stock_count` is how many of the rows are live, which is why the
-    // slice is taken rather than the array walked whole.
-    if feed.applied & client_core::core::APPLIED_STOCK != 0 {
+    // slice is taken rather than the array walked whole. Only an ack that
+    // grew the stock speaks: the crew vital's push re-sends the same rows
+    // every ten seconds in your base, and the chip says those.
+    if feed.applied & client_core::core::APPLIED_STOCK != 0 && core.stock_grew {
         let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
         // The panel says it better when it is up on this hearth.
         let shown = hearth_view.0 == Some(core.stock_addr);
@@ -2636,12 +2783,13 @@ pub fn feedback(
     // — `Rank` does — and this loop stays last for where it draws, not for
     // what survives.
     //
-    // No amount, because the wire has none to give — see `Feed::spills`.
+    // The amount is the wire's `dropped` (v102), so a partial spill says
+    // how much of the stack hit the floor beside its `+N` notice.
     // "at your feet" is where `world.rs`'s `drain_spill` stands the bag up;
     // a merge into a bag already standing puts it within the same reach.
-    for &item in feed.spills() {
+    for &(item, n) in feed.spills() {
         let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.warn(format!("pack full — {label} dropped at your feet"));
+        toast.warn(spill_line(n, &label));
     }
 
     // ---- the timers -----------------------------------------------------
@@ -2653,9 +2801,18 @@ pub fn feedback(
 
     let hot = toast.hit_left > 0.0;
     let want = mark_colour(hot, toast.hit_part);
-    for mut bg in marks.iter_mut() {
+    let push = hit_push_px(toast.hit_left, toast.hit_part, toast.hit_kill);
+    for (mark, mut bg, mut node) in marks.iter_mut() {
         if bg.0 != want {
             bg.0 = want;
+        }
+        // Written only when it moves: a still crosshair is most frames, and
+        // a `Node` touched every frame is a relayout every frame.
+        let (left, top) = tick_offset(mark.0 as usize, push);
+        let (left, top) = (Val::Px(left), Val::Px(top));
+        if node.left != left || node.top != top {
+            node.left = left;
+            node.top = top;
         }
     }
 
@@ -2819,19 +2976,31 @@ pub fn readout(
 /// samples — which matters, because the defect this row exists to expose is
 /// exactly one that shows up as an offset the eye can see and the sample rate
 /// cannot.
+///
+/// Beside the ping, the transport's own counters (`NOW.md` §0tx item 3):
+/// loss on what this client sends (`up`: the only direction an endpoint can
+/// detect; the shard's `net_lost_packets` is the other) and the bytes the
+/// shard is sending, both smoothed over ~2 s by [`PathMeter`].
 pub fn net_line(
     net: NonSend<super::Net>,
     time: Res<Time>,
     mut since: Local<f32>,
     mut peak: Local<f32>,
+    mut meter: Local<PathMeter>,
     mut line: Query<&mut Text, With<NetLine>>,
 ) {
+    // A new `Net` is a new session (`render::mod` removes it on the way
+    // out): its counters start over, and so does the meter.
+    if net.is_added() {
+        meter.reset();
+    }
     let p = &net.session.core.predict;
     *peak = peak.max(p.error_magnitude());
     *since += time.delta_secs();
     if *since < NET_LINE_PERIOD_S {
         return;
     }
+    let path = meter.update(net.session.path_counts(), *since);
     *since = 0.0;
     let Ok(mut text) = line.single_mut() else {
         return;
@@ -2844,13 +3013,17 @@ pub fn net_line(
         .session
         .rtt_ms()
         .map_or_else(|| "ping --".to_string(), |ms| format!("ping {ms:.0} ms"));
+    let path = match (path.loss_pct, path.down_kbs) {
+        (Some(loss), Some(down)) => format!("loss {loss:.1}% up · down {down:.0} kB/s"),
+        _ => "loss --".to_string(),
+    };
     // The second row is netcode v2's own gauges (`NOW.md` §0nc item 2): the
     // server's input-buffer depth and starved-tick repeats off the newest
     // snapshot, the playout delay and arrival jitter the client steers on,
     // the sub-quantum corrections, and snapshots the ring dropped.
     let core = &net.session.core;
     text.0 = format!(
-        "{ping} · net {:.2}% ok · {} miss · err {:.2} m\n\
+        "{ping} · {path} · net {:.2}% ok · {} miss · err {:.2} m\n\
          buf {} · rep {} · playout {:.1} t · jit {:.1} ms · minor {} · drop {}",
         100.0 * p.confirmations as f64 / total as f64,
         p.mispredictions,
@@ -2866,9 +3039,10 @@ pub fn net_line(
 }
 
 /// Rust's "connection problem" warning: an amber line top-left, up only
-/// while the link is bad — no fresh snapshot for [`CONN_STALL_S`], or a round
-/// trip past [`CONN_SLOW_MS`]. Always on screen when it applies, unlike the
-/// F4 diagnostics, because it is the one net fact a player has to act on.
+/// while the link is bad — no fresh snapshot for [`CONN_STALL_S`], upstream
+/// loss at [`CONN_LOSSY_PCT`], or a round trip past [`CONN_SLOW_MS`]. Always
+/// on screen when it applies, unlike the F4 diagnostics, because it is the
+/// one net fact a player has to act on.
 #[derive(Component)]
 pub struct ConnWarn;
 
@@ -2877,13 +3051,28 @@ pub struct ConnWarn;
 pub const CONN_STALL_S: f32 = 1.5;
 /// A round trip past this is called out too.
 pub const CONN_SLOW_MS: f32 = 250.0;
+/// Upstream loss (percent, [`PathMeter`]'s ~2 s smoothing) at which the line
+/// speaks. A taste number: prediction measured 99.68 % confirmed at 10 %
+/// loss (`server/tests/client_loop.rs`), so 5 % is a link worth naming well
+/// before it is one the player can feel.
+///
+/// Read off [`crate::net::PathReading::settled_loss_pct`], so a window too
+/// young to hold [`PathMeter::SETTLED_SENT`] packets says nothing — and at
+/// that size one loss must stay under this line, or a single drop right
+/// after connect would flash it.
+pub const CONN_LOSSY_PCT: f32 = 5.0;
+const _: () = assert!(100.0 / PathMeter::SETTLED_SENT < CONN_LOSSY_PCT);
 
-/// What [`ConnWarn`] says, or `None` for a healthy link.
-pub fn conn_warning(stalled_s: f32, rtt_ms: Option<f32>) -> Option<String> {
+/// What [`ConnWarn`] says, or `None` for a healthy link. A stall outranks
+/// loss, which outranks ping: each is the likelier cause of the next.
+pub fn conn_warning(stalled_s: f32, rtt_ms: Option<f32>, loss_pct: Option<f32>) -> Option<String> {
     if stalled_s >= CONN_STALL_S {
         return Some(format!(
             "CONNECTION PROBLEM  ·  no update for {stalled_s:.0} s"
         ));
+    }
+    if let Some(loss) = loss_pct.filter(|&l| l >= CONN_LOSSY_PCT) {
+        return Some(format!("PACKET LOSS  ·  {loss:.0}%"));
     }
     match rtt_ms {
         Some(ms) if ms >= CONN_SLOW_MS => Some(format!("HIGH PING  ·  {ms:.0} ms")),
@@ -2896,8 +3085,12 @@ pub fn conn_warn(
     net: NonSend<super::Net>,
     time: Res<Time>,
     mut seen: Local<(u64, f32, f32)>,
+    mut meter: Local<PathMeter>,
     mut q: Query<(&mut Text, &mut Visibility), With<ConnWarn>>,
 ) {
+    if net.is_added() {
+        meter.reset();
+    }
     let (applied, stalled, since) = &mut *seen;
     let dt = time.delta_secs();
     let now = net.session.core.snapshots_applied;
@@ -2911,9 +3104,15 @@ pub fn conn_warn(
     if *since < NET_LINE_PERIOD_S {
         return;
     }
+    // Its own meter rather than `net_line`'s: both see the same counters on
+    // the same frames, and one more 4 Hz `stats()` is cheaper than a
+    // resource to share a reading through.
+    let loss = meter
+        .update(net.session.path_counts(), *since)
+        .settled_loss_pct();
     *since = 0.0;
     let want = if net.session.live() {
-        conn_warning(*stalled, net.session.rtt_ms())
+        conn_warning(*stalled, net.session.rtt_ms(), loss)
     } else {
         None
     };
@@ -2938,7 +3137,8 @@ const NET_LINE_PERIOD_S: f32 = 0.25;
 
 /// The centre prompt and the compass.
 // Eight sources and each is a distinct input: the two picks, the swing,
-// the near structure, the look, the pad, and the two text nodes.
+// the near structure, the look, the pad, and the two text nodes — plus the
+// give key's pick and the clock its hold runs on.
 #[allow(clippy::too_many_arguments)]
 pub fn prompt(
     // The catalog arrived with `Verb::Take` (ground items v0): a loose
@@ -2951,6 +3151,8 @@ pub fn prompt(
     look: Res<super::input::Look>,
     pad: Res<super::verbs::Pad>,
     pins: Option<Res<super::map::MapPins>>,
+    give: Res<super::verbs::Give>,
+    time: Res<Time>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
 ) {
@@ -3005,11 +3207,29 @@ pub fn prompt(
                     }
                 }
                 s if !s.is_empty() => s,
-                _ => match swing_prompt_weak(swung.0.occupant, in_weak.0) {
+                _ => match swing_prompt_weak(&swung.0, in_weak.0) {
                     s if !s.is_empty() => s,
                     _ => side_line(&near.0),
                 },
             }
+        };
+        // The give key names its own line (`B`, `verbs::Give`): beside an
+        // `E` prompt when there is one, over the swing and side lines when
+        // there is not, and alone while the hold runs — the countdown is
+        // the one thing the player is watching then.
+        let want = match give.pick.filter(|_| !pad.0.is_open()) {
+            Some(p) => {
+                let core = &net.session.core;
+                let who = crate::ui::names::label(core.tag(p.target), p.target);
+                let left = give.hold.left(time.elapsed_secs_f64());
+                let line = crate::ui::interact::give_prompt(&p, &core.catalog, &who, left);
+                if left.is_none() && !aimed.0.is_none() {
+                    format!("{want}  ·  {line}")
+                } else {
+                    line
+                }
+            }
+            None => want,
         };
         if text.0 != want {
             text.0 = want;
@@ -3018,10 +3238,11 @@ pub fn prompt(
     if let Ok(mut text) = compass.single_mut() {
         let mut want = compass_strip(look.yaw);
         // The nearest of your map marks, the way the reference pins them to
-        // its compass: which, how far, which way.
+        // its compass: which (its label's three characters, or its number),
+        // how far, which way.
         let [x, _, z] = net.session.core.predict.render_position();
-        if let Some((n, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
-            want.push_str(&mark_strip(n, d, b));
+        if let Some((n, style, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
+            want.push_str(&mark_strip(n, style.compass_label(), d, b));
         }
         if text.0 != want {
             text.0 = want;
@@ -3296,8 +3517,8 @@ pub fn hearth_overlay(
 /// discoverable at all. The suffix is deliberately on the same line as the
 /// verb rather than a second element: it is a property of the swing you are
 /// about to take, not a separate thing happening.
-fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
-    let base = swing_prompt(occupant);
+fn swing_prompt_weak(pick: &crate::ui::interact::SwingPick, in_weak: bool) -> String {
+    let base = swing_prompt(pick);
     if base.is_empty() || !in_weak {
         return base;
     }
@@ -3508,9 +3729,10 @@ fn kill_line_for(
 ///
 /// `[LMB]` rather than a verb name because the swing is a button, and the
 /// button is the thing the player has to connect the text to — the same
-/// reasoning `Pick::prompt` uses for naming `[E]`.
-fn swing_prompt(occupant: u8) -> String {
-    let label = crate::ui::interact::swing_label(occupant);
+/// reasoning `Pick::prompt` uses for naming `[E]`. The label is the pick's
+/// own (`SwingPick::label`): the scatter's, or a carcass's butchering.
+fn swing_prompt(pick: &crate::ui::interact::SwingPick) -> String {
+    let label = pick.label();
     if label.is_empty() {
         String::new()
     } else {
@@ -3518,14 +3740,20 @@ fn swing_prompt(occupant: u8) -> String {
     }
 }
 
-/// A map mark on the compass line: `      mark 2 · 340 m · 045°`.
-fn mark_strip(n: usize, dist_m: f32, bearing: f32) -> String {
+/// A map mark on the compass line: `      mark 2 · 340 m · 045°`, or
+/// `      HQ · 340 m · 045°` once it has a label (`label` is already the
+/// compass's three characters, `PinStyle::compass_label`).
+fn mark_strip(n: usize, label: &str, dist_m: f32, bearing: f32) -> String {
     let d = if dist_m >= 1000.0 {
         format!("{:.1} km", dist_m / 1000.0)
     } else {
         format!("{dist_m:.0} m")
     };
-    format!("      mark {n} · {d} · {bearing:03.0}°")
+    if label.is_empty() {
+        format!("      mark {n} · {d} · {bearing:03.0}°")
+    } else {
+        format!("      {label} · {d} · {bearing:03.0}°")
+    }
 }
 
 /// The eight-point bearing plus degrees, e.g. `NE  045°`.
@@ -3834,6 +4062,30 @@ pub fn pickups(
 mod tests {
     use super::*;
 
+    /// The connection line's order (`NOW.md` §0tx item 3): a stall beats
+    /// loss, loss at the threshold beats a high ping, loss under it is
+    /// silent, and a page with no loss reading still hears about its ping.
+    #[test]
+    fn the_connection_line_names_loss_between_a_stall_and_a_ping() {
+        let lossy = Some(CONN_LOSSY_PCT);
+        let slow = Some(CONN_SLOW_MS + 50.0);
+        assert!(conn_warning(CONN_STALL_S, slow, lossy)
+            .unwrap()
+            .starts_with("CONNECTION PROBLEM"));
+        assert_eq!(
+            conn_warning(0.0, slow, lossy).as_deref(),
+            Some("PACKET LOSS  ·  5%")
+        );
+        assert_eq!(conn_warning(0.0, Some(40.0), Some(4.9)), None);
+        assert!(conn_warning(0.0, slow, Some(4.9))
+            .unwrap()
+            .starts_with("HIGH PING"));
+        assert!(conn_warning(0.0, slow, None)
+            .unwrap()
+            .starts_with("HIGH PING"));
+        assert_eq!(conn_warning(0.0, None, None), None);
+    }
+
     /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that
     /// is working is said to be working.
     #[test]
@@ -3860,6 +4112,31 @@ mod tests {
         assert_eq!(cold_line(false, 0, night), "COLD · NIGHT");
         assert!(cold_line(true, 0, night).contains("FIND A FIRE OR A ROOF"));
         assert!(cold_line(true, 0, roofed).contains("NOW A FIRE"));
+        // A fire is confirmed the way the roof is (§0wx item 3): it dries
+        // you unless the rain is on you, and it helps against the cold.
+        let fire_rain = ExposureWorld {
+            fire: true,
+            ..open_rain
+        };
+        assert_eq!(wet_line(40, fire_rain), "WET 40% · RAIN");
+        let fire_roofed = ExposureWorld {
+            fire: true,
+            ..roofed
+        };
+        assert_eq!(wet_line(40, fire_roofed), "WET 40% · DRYING BY A FIRE");
+        assert_eq!(cold_line(false, 0, fire_rain), "COLD · RAIN · FIRE HELPS");
+        assert_eq!(
+            cold_line(false, 50, fire_roofed),
+            "COLD · WET CLOTHES · FIRE AND ROOF HELP"
+        );
+        assert_eq!(
+            cold_line(true, 0, fire_rain),
+            "FREEZING · RAIN · BY A FIRE · NOW A ROOF"
+        );
+        assert_eq!(
+            cold_line(true, 0, fire_roofed),
+            "FREEZING · BY A FIRE · UNDER A ROOF"
+        );
     }
 
     /// **The defect this queue exists for, in the shipped world.** A tree
@@ -3874,17 +4151,17 @@ mod tests {
     #[test]
     fn both_spills_of_one_swing_survive_the_frame() {
         let mut t = Toast::default();
-        t.say("pack full — WOOD dropped at your feet");
-        t.say("pack full — MUSHROOMS dropped at your feet");
+        t.say(spill_line(30, "WOOD"));
+        t.say(spill_line(3, "MUSHROOMS"));
         assert_eq!(t.len(), 2, "two facts in one frame must be two lines");
         // Newest first: the row the eye starts at is the last thing said.
         assert_eq!(
             t.row(0).map(Say::text),
-            Some("pack full — MUSHROOMS dropped at your feet")
+            Some("pack full — 3 × MUSHROOMS dropped at your feet")
         );
         assert_eq!(
             t.row(1).map(Say::text),
-            Some("pack full — WOOD dropped at your feet"),
+            Some("pack full — 30 × WOOD dropped at your feet"),
             "the earlier line of the same frame must still be on screen"
         );
         assert_eq!(
@@ -4182,7 +4459,7 @@ mod tests {
     #[test]
     fn the_hitmarker_is_not_a_toast() {
         let mut t = Toast::default();
-        t.hit(Some(Part::Head));
+        t.hit(Some(Part::Head), Some(3));
         t.say("+1 × WOOD");
         assert_eq!(t.hit_part, Some(Part::Head));
         t.tick(HITMARK_SECS + 0.01);
@@ -4233,6 +4510,103 @@ mod tests {
                 "an expired marker must return to the resting crosshair"
             );
         }
+    }
+
+    /// **The marker changes shape, not only colour** (`NOW.md` §0hs item
+    /// 3): every tick is thrown out along its own arm on a hit, further on a
+    /// headshot and further again on a kill, and is back exactly where the
+    /// spawn put it once the clock runs out.
+    #[test]
+    fn the_hitmarker_pushes_its_ticks_out() {
+        // At rest the marker is the crosshair, to the pixel the spawn used.
+        for (i, &(dx, dy, w, h)) in CROSSHAIR_TICKS.iter().enumerate() {
+            assert_eq!(tick_offset(i, 0.0), (dx - w * 0.5, dy - h * 0.5));
+        }
+        for part in [Some(Part::Head), Some(Part::Chest), Some(Part::Limb), None] {
+            for kill in [false, true] {
+                assert_eq!(hit_push_px(0.0, part, kill), 0.0, "cold is at rest");
+            }
+        }
+        // The full push the instant it lands, and it only ever closes.
+        assert_eq!(hit_push_px(HITMARK_SECS, None, false), HIT_PUSH_PX);
+        assert_eq!(
+            hit_push_px(HITMARK_SECS, Some(Part::Limb), false),
+            HIT_PUSH_PX
+        );
+        let mut last = f32::INFINITY;
+        for step in (0..=10).rev() {
+            let p = hit_push_px(HITMARK_SECS * step as f32 / 10.0, Some(Part::Head), false);
+            assert!(
+                p <= last,
+                "the push grew as the clock ran down: {p} > {last}"
+            );
+            last = p;
+        }
+        // The ladder, read as shape: a kill outranks the headshot it was.
+        let body = hit_push_px(HITMARK_SECS, Some(Part::Chest), false);
+        let head = hit_push_px(HITMARK_SECS, Some(Part::Head), false);
+        let kill = hit_push_px(HITMARK_SECS, Some(Part::Head), true);
+        assert!(
+            0.0 < body && body < head && head < kill,
+            "{body} {head} {kill}"
+        );
+        // Each tick moves straight out along its own arm: further from the
+        // aim point, and not at all across it.
+        for (i, &(dx, dy, _, _)) in CROSSHAIR_TICKS.iter().enumerate() {
+            let (l0, t0) = tick_offset(i, 0.0);
+            let (l1, t1) = tick_offset(i, kill);
+            let (mx, my) = (l1 - l0, t1 - t0);
+            assert!(
+                (mx * dx + my * dy) > 0.0,
+                "tick {i} did not move outward: ({mx}, {my})"
+            );
+            assert!(
+                (mx * dy - my * dx).abs() < 1e-4,
+                "tick {i} slid sideways off its arm: ({mx}, {my})"
+            );
+            assert!(((mx * mx + my * my).sqrt() - kill).abs() < 1e-4);
+        }
+    }
+
+    /// A kill promotes the marker that is up, and only by the body that
+    /// marker's blow landed on: a death credited to you a minute after the
+    /// blow (a bleed-out) is not a shot, nor is it the shot you are landing
+    /// on someone else when it comes, and the next hit is a statement about
+    /// itself, not the last kill.
+    #[test]
+    fn a_kill_widens_the_marker_that_is_up() {
+        let mut t = Toast::default();
+        t.kill(3);
+        assert!(!t.hit_kill && t.hit_left == 0.0, "a cold marker stays cold");
+        t.hit(Some(Part::Chest), Some(3));
+        t.tick(HITMARK_SECS * 0.5);
+        // Someone you hit earlier bleeds out under this marker: not its kill.
+        t.kill(4);
+        assert!(!t.hit_kill, "another body's death widened this blow");
+        assert!(t.hit_left < HITMARK_SECS);
+        t.kill(3);
+        assert!(t.hit_kill);
+        assert_eq!(
+            t.hit_left, HITMARK_SECS,
+            "the kill shape gets its own clock"
+        );
+        t.hit(Some(Part::Limb), Some(3));
+        assert!(!t.hit_kill, "a fresh hit is not the last one's kill");
+        // A wall's marker has no victim, so no death widens it.
+        t.hit(None, None);
+        t.kill(3);
+        assert!(!t.hit_kill, "a wall hit took a kill shape");
+
+        // Whose death is a kill: yours on someone else, never your own, and
+        // never one the world dealt (`killer == victim`).
+        let me = 7;
+        let kills = |d: &[(u32, u32)]| own_kills(d, me).collect::<Vec<_>>();
+        assert_eq!(kills(&[(3, me)]), [3]);
+        assert_eq!(kills(&[(3, 9), (4, me)]), [4]);
+        assert!(kills(&[(3, 9)]).is_empty(), "someone else's kill");
+        assert!(kills(&[(me, 9)]).is_empty(), "your own death");
+        assert!(kills(&[(me, me)]).is_empty(), "the cold, not a kill");
+        assert!(kills(&[]).is_empty());
     }
 
     /// The hurt arc keeps its own clock, longer than the hitmarker's,
@@ -4672,6 +5046,7 @@ mod tests {
                 // Undamaged; this test is about the side label and nothing
                 // else reads the band (wire v44).
                 dmg: 0,
+                hp: 10,
                 hp_max: 10,
                 side,
             })
@@ -4707,7 +5082,7 @@ mod tests {
 
     #[test]
     fn e_outranks_the_swing_and_the_swing_fills_the_silence() {
-        use crate::ui::interact::{Pick, Verb};
+        use crate::ui::interact::{Pick, SwingPick, Verb};
         use sim_core::terrain::Occupant;
 
         let silent = Pick::default();
@@ -4718,11 +5093,22 @@ mod tests {
         );
 
         // Where E is silent, the swing speaks.
-        assert_eq!(swing_prompt(Occupant::Tree as u8), "[LMB] CHOP TREE");
+        let at = |o: u8| SwingPick {
+            occupant: o,
+            ..Default::default()
+        };
+        assert_eq!(swing_prompt(&at(Occupant::Tree as u8)), "[LMB] CHOP TREE");
         assert_eq!(
-            swing_prompt(Occupant::BarrelSlot as u8),
+            swing_prompt(&at(Occupant::BarrelSlot as u8)),
             "[LMB] SMASH BARREL"
         );
+        // A blade at a carcass names the cut (§0ray 2).
+        let carcass = SwingPick {
+            carcass: Some(sim_core::mob::MOB_WOLF),
+            bag: 9,
+            ..Default::default()
+        };
+        assert_eq!(swing_prompt(&carcass), "[LMB] BUTCHER WOLF");
 
         // Where E has something, it wins — the caller takes E's string first
         // and never reaches the swing. This asserts E is non-empty for every
@@ -4739,8 +5125,8 @@ mod tests {
         }
 
         // And a swing at nothing is silent rather than "[LMB] ".
-        assert_eq!(swing_prompt(0), "");
-        assert_eq!(swing_prompt(Occupant::Rock as u8), "");
+        assert_eq!(swing_prompt(&at(0)), "");
+        assert_eq!(swing_prompt(&at(Occupant::Rock as u8)), "");
     }
 
     /// The readout's WHERE. North is `+Z` and east is `-X`
@@ -4839,11 +5225,12 @@ mod tests {
         Window::default().resolution.physical_height() as f32
     }
 
-    /// How far the lowest crosshair tick reaches below the aim point, px.
+    /// How far the lowest crosshair tick reaches below the aim point, px —
+    /// at its widest, a kill's push, because the marker is the crosshair
+    /// too and a prompt it lands on is a prompt in the way for that frame.
     fn crosshair_reach_px() -> f32 {
-        CROSSHAIR_TICKS
-            .iter()
-            .map(|&(_, dy, _, h)| dy - h * 0.5 + h)
+        (0..CROSSHAIR_TICKS.len())
+            .map(|i| tick_offset(i, HIT_PUSH_KILL_PX).1 + CROSSHAIR_TICKS[i].3)
             .fold(f32::MIN, f32::max)
     }
 

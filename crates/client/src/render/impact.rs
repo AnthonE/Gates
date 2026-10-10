@@ -26,8 +26,8 @@
 //! and not *where*: `EV_SWING` carries only the swinger, `EV_HIT` a victim
 //! id, `EV_STRUCT_HIT` a build address. So the point a burst comes from is
 //! recovered from something the client already holds and already trusts for
-//! the same question — the swing pick (`ui::interact::resolve_swing`, the
-//! client's mirror of the sim's own scan, which the prompt has drawn off
+//! the same question — the swing pick (`ui::interact::resolve_swing_shadowed`,
+//! the client's mirror of the sim's own cast, which the prompt has drawn off
 //! since it existed), the drawn body's transform, and the build grid. None
 //! of that is a second opinion about whether the blow landed; it is only
 //! about where to draw the answer.
@@ -73,6 +73,7 @@ use super::{surface, Eye, Net, WorldId};
 use crate::sound::Cue;
 use crate::ui::interact::SwingPick;
 use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
+use sim_core::deploy::{MATTER_CLOTH, MATTER_METAL, MATTER_STONE};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{IMPACT_ARROW, IMPACT_BLAST, IMPACT_MELEE, SURF_GROUND, SURF_WORLD};
 use sim_core::terrain::{self, Occupant};
@@ -229,6 +230,19 @@ impl Matter {
             MAT_STONE => Matter::Stone,
             MAT_METAL => Matter::Metal,
             _ => Matter::Dirt,
+        }
+    }
+
+    /// What a deployable is made of, from its baked row's `matter`
+    /// (`sim_core::deploy::MATTER_*`, `content/deployables.toml`). Cloth has
+    /// no chips or sound of its own, and a bag takes the soft dirt it always
+    /// drew.
+    pub fn of_deploy(matter: u8) -> Matter {
+        match matter {
+            MATTER_STONE => Matter::Stone,
+            MATTER_METAL => Matter::Metal,
+            MATTER_CLOTH => Matter::Dirt,
+            _ => Matter::Wood,
         }
     }
 }

@@ -61,6 +61,25 @@ const _: () = {
     assert!(crate::deploy::bench_tier(crate::deploy::ARCH_WORKBENCH3) == STATION_WORKBENCH3);
 };
 
+/// An item's class (`content/items.toml` `class`): the reference craft
+/// rail's grouping. The sim never reads it; it rides the item catalog
+/// (`ItemRow::class`, wire v102) so a client can group recipes by what they
+/// make. `deploy::MATTER_*`'s posture: one ledger here, shared by the
+/// content bake and the wire. `CLASS_OTHER` is 0, so a row that has not
+/// dripped in yet reads as OTHER rather than as a real class.
+pub const CLASS_OTHER: u8 = 0;
+pub const CLASS_CONSTRUCTION: u8 = 1;
+pub const CLASS_ITEMS: u8 = 2;
+pub const CLASS_RESOURCES: u8 = 3;
+pub const CLASS_CLOTHING: u8 = 4;
+pub const CLASS_TOOLS: u8 = 5;
+pub const CLASS_MEDICAL: u8 = 6;
+pub const CLASS_WEAPONS: u8 = 7;
+pub const CLASS_AMMO: u8 = 8;
+pub const CLASS_FOOD: u8 = 9;
+/// The highest live `CLASS_*`.
+pub const CLASS_MAX: u8 = CLASS_FOOD;
+
 /// How close (planar, meters) a placed station must stand at enqueue —
 /// the reference's workbench-proximity read. Proposed default,
 /// DECISIONS.md §open ("deployables v0").
@@ -541,7 +560,7 @@ pub fn step(
         EV_CRAFT_DONE,
         p.id,
         ((def.output as u32) << 16) | added as u32,
-        0,
+        (def.out_count - added) as u32,
     );
     p.jobs[0].remaining -= 1;
     if p.jobs[0].remaining == 0 {
@@ -1021,6 +1040,7 @@ mod tests {
             arch: ARCH_WORKBENCH2,
             placement: PLACE_ANY,
             hp: 80,
+            matter: crate::deploy::MATTER_METAL,
             item: 3,
             n_costs: 1,
             costs: [(0, 20), (0, 0), (0, 0), (0, 0)],
@@ -1167,6 +1187,10 @@ mod tests {
             0,
             "nothing reached the hands, and the event says so"
         );
+        assert_eq!(
+            e.c, cc.recipes[0].out_count as u32,
+            "and says how many went to the ground"
+        );
         assert_eq!(p.jobs[0].remaining, 1, "the batch still advances");
         assert_eq!(
             inv_count(&spill, 2),
@@ -1228,6 +1252,7 @@ mod tests {
                 arch,
                 placement: PLACE_ANY,
                 hp: 80,
+                matter: crate::deploy::MATTER_METAL,
                 item: 3,
                 n_costs: 1,
                 costs: [(0, 20), (0, 0), (0, 0), (0, 0)],

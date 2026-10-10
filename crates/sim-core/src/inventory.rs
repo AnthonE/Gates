@@ -354,7 +354,14 @@ pub const REFUSE_M_BUSY: u32 = 12;
 /// "No Looting" rule: a corpse or a sleeper's drop inside the zone opens
 /// only for its owner. An animal's bag is anyone's there as anywhere.
 pub const REFUSE_M_SAFE: u32 = 13;
-pub const REFUSE_M_MAX: u32 = REFUSE_M_SAFE;
+/// A **give** (`Command::Give`) found no room for any of the stack in the
+/// receiver's pack. Its own reason rather than `REFUSE_M_NO_ROOM`, for
+/// `REFUSE_M_SAFE`'s reason: the verb that hears it has no panel open, so
+/// the client says it as a toast, and "it does not fit there" names a
+/// "there" the player never dragged to. The address is the giver's own
+/// slot, both halves.
+pub const REFUSE_M_GIVE: u32 = 14;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_GIVE;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the

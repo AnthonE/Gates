@@ -42,7 +42,7 @@ use bevy::prelude::*;
 // Both search boxes share one cap — see `crate::ui::MAX_QUERY_CHARS`.
 use crate::ui::MAX_QUERY_CHARS;
 
-use crate::ui::craft::{Cat, Facts};
+use crate::ui::craft::Cat;
 use crate::ui::slots::Drag;
 use sim_core::gather::ItemStack;
 
@@ -176,8 +176,6 @@ pub struct Ui {
     /// long, and never silently empty: a panel that cannot say why it did
     /// nothing is the dark-panel defect.
     pub status: String,
-    /// Derived category facts, rebuilt when the content tables drip in.
-    pub facts: Facts,
     /// The wheel's latched choice: an index into `ui::build::SHAPES`.
     /// Latched rather than momentary, so releasing the wheel over nothing
     /// keeps what was chosen last.
@@ -297,7 +295,6 @@ impl Default for Ui {
             browser_scroll: 0.0,
             skin: 0,
             status: String::new(),
-            facts: Facts::default(),
             shape: 0,
             hover: None,
             tech_sel: None,
@@ -715,7 +712,7 @@ pub fn register(app: &mut App) {
             Update,
             (
                 keys,
-                inv::drag_pointer,
+                (inv::drag_pointer, inv::hover_loot).chain(),
                 inv::skin_keys,
                 inv::table_clicks,
                 (inv::fire_clicks, inv::take_all_clicks).chain(),
@@ -824,6 +821,9 @@ pub fn keys(
     near: Res<super::verbs::Near>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
     tabs: Query<(&Interaction, &TabGo), Changed<Interaction>>,
+    // A watcher's last seen open container, and whether the inventory is up
+    // because of it (the seat block below).
+    mut follow: Local<((u8, u32), bool)>,
 ) {
     // **The wheel is held RIGHT, and only by an item that owns one.**
     //
@@ -859,8 +859,43 @@ pub fn keys(
         if was_inventory {
             super::verbs::close_container(&net, &mut toast);
         }
+        // Forced shut: a page the follow raised is not up any more, so a
+        // later close must not shut one the watcher opens for themselves.
+        follow.1 = false;
         chars.clear();
         return;
+    }
+
+    // **A watcher's inventory follows its player's container** (NOW §5sp).
+    // The seat is fed whatever its target has open, and a box behind a shut
+    // inventory is a box nobody sees, so it raises the page the way `E`
+    // raised the player's own (`verbs::open_panel`: only over no panel), and
+    // shuts it with the container if that is what raised it.
+    if net.session.watching.is_some() {
+        // The raised page stops being the follow's once it is down — the
+        // watcher shut it or switched away, or something forced it shut —
+        // so a later close never shuts an inventory the watcher opened.
+        if follow.1 && ui.panel != Panel::Inventory {
+            follow.1 = false;
+        }
+        let open = (core.cont_kind, core.cont_handle);
+        if open != follow.0 {
+            follow.0 = open;
+            if crate::ui::slots::looting(open.0) {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Inventory;
+                    ui.dirty = true;
+                    follow.1 = true;
+                }
+            } else {
+                if follow.1 && ui.panel == Panel::Inventory {
+                    ui.panel = Panel::None;
+                    ui.drag = None;
+                    ui.dirty = true;
+                }
+                follow.1 = false;
+            }
+        }
     }
 
     // **Two pages, Rust's two keys.** `Tab` is the inventory and `Q` is the
@@ -913,7 +948,6 @@ pub fn keys(
                     &core.recipes,
                     &core.inv,
                     &core.catalog,
-                    &ui.facts,
                     &ui.favs,
                     core.known(),
                     ui.cat,
@@ -1123,8 +1157,12 @@ pub fn sync_refusals(
     }
     *seen = core.move_seq;
     // THE GATE's "No Looting" is Rust's popup, not a panel line: the loot
-    // verb that hears it may have no panel open at all.
-    if core.last_move_refused as u32 == sim_core::inventory::REFUSE_M_SAFE {
+    // verb that hears it may have no panel open at all. A give's full pack
+    // is the same shape — `B` opens no panel.
+    if matches!(
+        core.last_move_refused as u32,
+        sim_core::inventory::REFUSE_M_SAFE | sim_core::inventory::REFUSE_M_GIVE
+    ) {
         toast.warn(crate::ui::slots::refusal_text(core.last_move_refused));
     }
     if core.last_move_refused > 0 {
@@ -1239,11 +1277,6 @@ fn detect_changes(
             || core.arc.gen != ui.seen.arc_gen
             || core.lore.gen != ui.seen.lore_gen
         {
-            // The def tables drip in over the first seconds of a session, so
-            // the derived category facts are rebuilt with them.
-            if core.recipes_have != ui.seen.recipes_have {
-                ui.facts = Facts::build(&core.recipes, &core.deploy_defs);
-            }
             ui.seen.inv = inv;
             ui.seen.cont = cont;
             ui.seen.worn = worn;
@@ -1288,6 +1321,7 @@ mod hammer_refresh_tests {
             loc: 1,
             row: 0,
             dmg: 0,
+            hp: 500,
             hp_max: 500,
             side: Some(true),
         };

@@ -1302,7 +1302,7 @@ pub fn land(
             EV_GATHER,
             p.id,
             ((def.output as u32) << 16) | added as u32,
-            0,
+            (pay - added) as u32,
         );
     }
     // The side payout: its own `EV_GATHER`, so the client's toast stack
@@ -1319,7 +1319,12 @@ pub fn land(
             gc.stack_max[sec_item as usize],
             gc.cond_max[sec_item as usize],
         );
-        events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
+        events.push(
+            EV_GATHER,
+            p.id,
+            ((sec_item as u32) << 16) | got as u32,
+            (sec_pay - got) as u32,
+        );
     }
     // **Wear, after the payout, on a landed node hit only** — never on a
     // whiff, a refusal or a smash, because a whiff that wore would put a
@@ -1445,7 +1450,7 @@ pub fn pick(
         EV_GATHER,
         p.id,
         ((def.output as u32) << 16) | added as u32,
-        0,
+        (pay - added) as u32,
     );
     let (sec_item, sec_per) = def.secondary;
     if sec_item != NO_ITEM && (sec_item as usize) < MAX_ITEM_DEFS && sec_per > 0 {
@@ -1458,7 +1463,12 @@ pub fn pick(
             gc.stack_max[sec_item as usize],
             gc.cond_max[sec_item as usize],
         );
-        events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
+        events.push(
+            EV_GATHER,
+            p.id,
+            ((sec_item as u32) << 16) | got as u32,
+            (sec_pay - got) as u32,
+        );
     }
     events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), slot.occupant as u32, 0);
     true

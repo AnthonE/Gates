@@ -288,6 +288,14 @@ path = "tests/packed_maps.rs"
 # target, so proving it on the desktop build proves it.
 required-features = ["render", "native"]
 
+# The shard hanging up mid-play, headless: a replayed session's lanes close
+# under the real `disconnected::plugin` wiring. `native` because
+# `Session::replay` is the desktop's (a page has no recording to play).
+[[test]]
+name = "disconnect"
+path = "tests/disconnect.rs"
+required-features = ["render", "native"]
+
 [[test]]
 name = "gaps"
 path = "tests/gaps.rs"
@@ -395,6 +403,15 @@ required-features = ["render"]
 [[test]]
 name = "music"
 path = "tests/music.rs"
+required-features = ["render"]
+
+# The rest of the audio systems that need no world — the beds' setup and
+# teardown, the click, the map, the fire, the blow, the herd and the pump —
+# the same way: scheduled on a bare `App` with the real bank, each one's ask
+# read back off the engine's frame buffer (`NOW.md` §0x item 3).
+[[test]]
+name = "audio_systems"
+path = "tests/audio_systems.rs"
 required-features = ["render"]
 
 # The day/night cycle: the sun curve as arithmetic, plus `rig::day_night`

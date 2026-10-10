@@ -322,6 +322,10 @@ fn nearer_wins_a_tie() {
 /// A cooldown that only bound between frames would let four footsteps
 /// requested in one frame all start together — which is a 90 ms cooldown that
 /// three of them never had to pass. This is the assertion that found it.
+///
+/// **Per row.** A row that is a second voice of another (`Cue::lead`: only
+/// `HurtAgain`, of `Hurt`) starts beside it in the same frame, which is the
+/// whole of how two blows are two voices; asked twice, each row is still one.
 #[test]
 fn a_cooldown_binds_within_one_frame() {
     let mut m = Mixer::new();
@@ -336,6 +340,22 @@ fn a_cooldown_binds_within_one_frame() {
     );
     // And they were refused by the cooldown, not starved of a voice: the pool
     // was empty and the frame budget was untouched.
+    assert_eq!(m.starved, 0, "a cooldown refusal was counted as starvation");
+
+    let mut m = Mixer::new();
+    for cue in [Cue::Hurt, Cue::Hurt, Cue::HurtAgain, Cue::HurtAgain] {
+        m.push(Request::own(cue));
+    }
+    let heard: Vec<Cue> = m
+        .tick(16.0, AT_ORIGIN, 0, &mix)
+        .iter()
+        .map(|s| s.cue)
+        .collect();
+    assert_eq!(
+        heard,
+        [Cue::Hurt, Cue::HurtAgain],
+        "each hurt row starts once a frame, and the two rows start together"
+    );
     assert_eq!(m.starved, 0, "a cooldown refusal was counted as starvation");
 }
 
@@ -2977,6 +2997,94 @@ fn a_full_weight_blow_is_exactly_the_old_loudness() {
     );
 }
 
+/// **Two blows in one frame are two voices**, not one heavier voice
+/// (`NOW.md` §0hrt 1). The second blow is `HurtAgain`, Hurt's recording on
+/// its own row, so the per-row cooldown that binds inside a frame does not
+/// fold it into the first; it weighs one blow and the first voice the rest.
+#[test]
+fn two_blows_in_one_frame_are_two_voices() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(hurt::request(40, 40, 2, 100).expect("two blows were silent"));
+    m.push(hurt::again(40, 2, 100).expect("the second blow had no voice"));
+    let starts = m.tick(16.0, AT_ORIGIN, 0, &mix).to_vec();
+    let heard: Vec<Cue> = starts.iter().map(|s| s.cue).collect();
+    assert_eq!(heard, [Cue::Hurt, Cue::HurtAgain], "two blows, {heard:?}");
+    // Two 20s are two voices at a 20's weight, not a 40 beside a 20.
+    let one = Cue::Hurt.def().gain * hurt::weight(20, 100);
+    for s in &starts {
+        assert!(
+            (s.gain - one).abs() < 1e-6,
+            "{:?} at {} is not one blow's {one}",
+            s.cue,
+            s.gain
+        );
+    }
+
+    // One blow, a fall nobody announced, or nothing: one voice at most.
+    assert!(hurt::again(28, 1, 100).is_none());
+    assert!(hurt::again(0, 0, 100).is_none());
+    // A third blow weighs on the first voice; the second is still one blow.
+    assert_eq!(hurt::again(30, 3, 100).unwrap().gain, hurt::weight(10, 100));
+    assert_eq!(
+        hurt::request(30, 30, 3, 100).unwrap().gain,
+        hurt::weight(20, 100)
+    );
+    // A silent route's fall in the same frame is the first voice's to carry.
+    assert_eq!(
+        hurt::request(50, 40, 2, 100).unwrap().gain,
+        hurt::weight(30, 100)
+    );
+    // Both armor-eaten: the event is still the only witness, and it is two.
+    assert_eq!(
+        hurt::request(0, 40, 2, 100).unwrap().gain,
+        hurt::weight(20, 100)
+    );
+
+    // Two takes, not one twice: the second voice plays Hurt's takes and must
+    // not start the one Hurt just did beside it.
+    let mut t = client::sound::mixer::Takes::default();
+    for _ in 0..50 {
+        let first = t.pick(Cue::Hurt, 6);
+        assert_ne!(t.pick(Cue::HurtAgain, 6), first, "the same grunt twice");
+    }
+}
+
+/// **The second row does not move the rate a beating is heard at.** It is a
+/// second voice inside the frame and nothing else: across frames it is on
+/// Hurt's 120 ms clock, so a pair of blows one frame after a single blow
+/// starts nothing (`Cue::lead`).
+#[test]
+fn the_second_hurt_row_keeps_hurts_clock_across_frames() {
+    let mix = Mix::default();
+    let cool = Cue::Hurt.def().cooldown_ms as f32;
+    let mut m = Mixer::new();
+    m.push(hurt::request(20, 20, 1, 100).unwrap());
+    assert_eq!(m.tick(16.0, AT_ORIGIN, 0, &mix).len(), 1);
+    // One frame later, two blows: both on Hurt's clock.
+    m.push(hurt::request(40, 40, 2, 100).unwrap());
+    m.push(hurt::again(40, 2, 100).unwrap());
+    assert!(
+        m.tick(16.0, AT_ORIGIN, 0, &mix).is_empty(),
+        "a second hurt row started inside Hurt's cooldown"
+    );
+    // The other way round: the second row winds Hurt's clock too.
+    let mut m = Mixer::new();
+    m.push(Request::own(Cue::HurtAgain));
+    assert_eq!(m.tick(16.0, AT_ORIGIN, 0, &mix).len(), 1);
+    m.push(Request::own(Cue::Hurt));
+    assert!(m.tick(16.0, AT_ORIGIN, 0, &mix).is_empty());
+    // And once the clock has run down, two blows are two voices again.
+    m.push(hurt::request(40, 40, 2, 100).unwrap());
+    m.push(hurt::again(40, 2, 100).unwrap());
+    assert_eq!(m.tick(cool, AT_ORIGIN, 0, &mix).len(), 2);
+    assert_eq!(
+        Cue::HurtAgain.lead(),
+        Cue::Hurt,
+        "the second row lost its lead"
+    );
+}
+
 /// **One owner for the hurt cue, and the producer must still read both
 /// witnesses.** Everything above this test is arithmetic, and every bit of it
 /// stays green if the Bevy system that calls it stops passing the feed — the
@@ -2997,6 +3105,11 @@ fn the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses() {
         "render/audio.rs no longer asks sound::hurt what to play - the split \
          between the four announcing routes and the three silent ones is back \
          in a Bevy system where nothing headless can check it"
+    );
+    assert!(
+        AUDIO.contains("crate::sound::hurt::again("),
+        "render/audio.rs no longer asks for the second blow's voice - two \
+         blows in one frame are one voice again"
     );
     assert!(
         REGISTER.contains("audio::hurt,"),

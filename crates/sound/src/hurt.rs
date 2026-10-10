@@ -37,12 +37,22 @@
 //!   chest plate made no sound at all. An announced blow is audible whether or
 //!   not it cost anything, which is the point of hearing it.
 //!
-//! What this does **not** do, and `NOW.md` §0hrt item 1 keeps: the cue is still
-//! non-positional, so the bearing `Feed` merges per sector is read by the arc
-//! and not by the mixer, and [`Cue::Hurt`]'s 120 ms cooldown still means two
-//! blows in one frame start one voice. They start a *heavier* one now — the
-//! damage is summed before the weight is taken — but that is a different thing
-//! from two sounds.
+//! **Two blows in one frame are two voices** ([`again`]). [`request`] asks
+//! for [`Cue::Hurt`] once a frame, weighted by the frame's summed damage, so
+//! two blows used to be one heavier sound, not two — and asking that row
+//! twice would not have helped, because a cue's cooldown binds inside a frame
+//! per row and the mixer starts it once. The second blow plays
+//! [`Cue::HurtAgain`], Hurt's recording on a row of its own, at the weight of
+//! one blow, and `request`'s voice weighs the rest. Across frames the pair
+//! shares Hurt's 120 ms clock ([`Cue::lead`]), so the rate a beating is heard
+//! at did not move; only a frame with several blows in it got its second
+//! voice. A third blow in that frame makes the first voice heavier rather
+//! than starting a third: two voices is what tells more than one blow from
+//! one, and the frame's budget is four starts for every cue there is
+//! (`STARTS_PER_FRAME`).
+//!
+//! What this does **not** do: the cue is still non-positional, so the bearing
+//! `Feed` merges per sector is read by the arc and not by the mixer.
 
 use super::mixer::Request;
 use super::Cue;
@@ -95,6 +105,10 @@ pub fn weight(damage: u16, hp_max: u16) -> f32 {
 /// - when a silent route fired, the event is 0 and the fall is the only one.
 ///
 /// A sum would double-count the ordinary case, which is every case but two.
+///
+/// When [`again`] starts a second voice this frame, its blow is taken off the
+/// top first: the first voice weighs the rest, so two equal blows are two
+/// equal voices rather than one at their sum beside one at half of it.
 pub fn request(
     fall: u16,
     announced_damage: u16,
@@ -104,6 +118,30 @@ pub fn request(
     if fall == 0 && announced_hits == 0 {
         return None;
     }
-    let damage = announced_damage.max(fall);
+    // Never below zero: the share is at most `announced_damage`.
+    let damage = announced_damage.max(fall) - second_blow(announced_damage, announced_hits);
     Some(Request::own(Cue::Hurt).with_gain(weight(damage, hp_max)))
+}
+
+/// The second voice of a frame that took two blows or more, or nothing.
+///
+/// Called beside [`request`] with the same announced blows, and only ever
+/// from the same producer (`render/audio.rs::hurt`). Announced only: a fall
+/// nobody announced has no count, so it is one blow, and it is `request`'s.
+/// It weighs one blow, the frame's announced damage over its count.
+pub fn again(announced_damage: u16, announced_hits: u16, hp_max: u16) -> Option<Request> {
+    if announced_hits < 2 {
+        return None;
+    }
+    let blow = second_blow(announced_damage, announced_hits);
+    Some(Request::own(Cue::HurtAgain).with_gain(weight(blow, hp_max)))
+}
+
+/// What the second voice carries: one blow of the frame's announced damage,
+/// or 0 when there is no second voice.
+fn second_blow(announced_damage: u16, announced_hits: u16) -> u16 {
+    if announced_hits < 2 {
+        return 0;
+    }
+    announced_damage / announced_hits
 }

@@ -11,6 +11,9 @@ use std::collections::BTreeSet;
 /// (`protocol::MAX_ITEM_NAME_BYTES`), pinned equal by the server's tests.
 pub const SKIN_NAME_MAX_BYTES: usize = 24;
 
+/// The furthest a species may hear any noise, metres (`mobs.toml` `hear_m`).
+const HEAR_MAX_M: u32 = 500;
+
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
     let rest = id
         .strip_prefix(prefix)
@@ -577,6 +580,43 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
+        // Wear on a blow (NOW §0tl 3), held to the gather table's shapes
+        // for a loss row. Melee only: a shot and a charge land through
+        // verbs that never read it. V5 (a zero is an inert row — omit it),
+        // V1 (it fits the sim's u16), V6 (the item has a condition to
+        // lose). V3 has no twin here: every melee row deals body and
+        // structure damage (the bake refuses one that does not), so a
+        // landed blow always reaches the row.
+        if let Some(loss) = w.condition_loss {
+            if w.kind != WeaponKind::Melee {
+                return Err(format!(
+                    "weapon `{}`: condition_loss on a non-melee row — only a \
+                     landed swing wears the hand that dealt it",
+                    w.id
+                ));
+            }
+            if loss == 0 {
+                return Err(format!(
+                    "weapon `{}`: condition_loss is 0 — drop the row (no wear \
+                     on a blow) instead of shipping an inert one (V5)",
+                    w.id
+                ));
+            }
+            if loss > u16::MAX as u32 {
+                return Err(format!(
+                    "weapon `{}`: condition_loss {loss} overflows the sim's u16 \
+                     hundredths (V1)",
+                    w.id
+                ));
+            }
+            if !c.item(&w.id).is_some_and(|i| i.condition_max > 0) {
+                return Err(format!(
+                    "weapon `{}`: condition_loss on an item whose condition_max \
+                     is 0 — nothing wears on an item with no condition (V6)",
+                    w.id
+                ));
+            }
+        }
         // The fuse belongs to exactly one kind, checked both ways for the
         // reason `ballistic` is: a throwable without one is a charge that
         // never blows, and a fuse on a hatchet is a number nothing reads,
@@ -1097,6 +1137,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                         d.id, d.hp
                     ));
                 }
+                // The door says what it is made of twice: `material` for
+                // the wall it stays under, `matter` for what a blow on it
+                // sounds like. A wooden door that rang like steel is the
+                // disagreement this refuses.
+                let said = match m {
+                    Material::Twig | Material::Wood => DeployMatter::Wood,
+                    Material::Stone => DeployMatter::Stone,
+                    Material::Metal => DeployMatter::Metal,
+                };
+                if d.matter != said {
+                    return Err(format!(
+                        "deployable `{}`: matter {:?} disagrees with material {m:?}",
+                        d.id, d.matter
+                    ));
+                }
             }
             (_, Some(_)) => {
                 return Err(format!(
@@ -1563,6 +1618,47 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!(
                 "mob `{}`: pack_m {} / fire_fear_m {} reach past its {}m leash",
                 m.id, m.pack_m, m.fire_fear_m, m.roam_m
+            ));
+        }
+        // The brain's numbers. A pack none of which may bite never closes
+        // in, zero tries gives up before the first route, a heal that takes
+        // no time is a divide by nothing, and a circle inside its own bite or
+        // past its own leash is not one the animal can walk. The upper
+        // bands are typo guards, generous on purpose.
+        if !(1..=16).contains(&m.pack_biters) || !(1..=20).contains(&m.give_up_tries) {
+            return Err(format!(
+                "mob `{}`: pack_biters {} / give_up_tries {} — 1–16 bite one target at \
+                 once, and 1–20 failed routes give it up",
+                m.id, m.pack_biters, m.give_up_tries
+            ));
+        }
+        if m.heal_seconds == 0 {
+            return Err(format!(
+                "mob `{}`: heal_seconds 0 — healing back to whole takes at least a second",
+                m.id
+            ));
+        }
+        if m.orbit_m <= m.attack_range_m || m.orbit_m > m.roam_m {
+            return Err(format!(
+                "mob `{}`: orbit_m {} — the circle lies outside its {}m bite and inside \
+                 its {}m leash",
+                m.id, m.orbit_m, m.attack_range_m, m.roam_m
+            ));
+        }
+        if m.sleep_pct > 100 {
+            return Err(format!(
+                "mob `{}`: sleep_pct {} is a percent, 0–100",
+                m.id, m.sleep_pct
+            ));
+        }
+        let ears = &m.hear_m;
+        if [ears.gun, ears.bow, ears.strike, ears.blast]
+            .iter()
+            .any(|&r| r > HEAR_MAX_M)
+        {
+            return Err(format!(
+                "mob `{}`: hear_m past {HEAR_MAX_M}m — an ear that long is a typo",
+                m.id
             ));
         }
         if m.drops.is_empty() {

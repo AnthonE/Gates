@@ -259,6 +259,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Arc { .. } => "arc",
         ActionMsg::Drop { .. } => "drop",
         ActionMsg::Treat { .. } => "treat",
+        ActionMsg::Give { .. } => "give",
         ActionMsg::RespawnAt { .. } => "respawn",
     }
 }
@@ -1997,6 +1998,27 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
             cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
         );
         assert_eq!(arch(yx, yz, 0), Some(ARCH_WORKBENCH), "the bench behind");
+        // The kit's fragments paid for the bench. A feed takes a chunk of
+        // everything the cupboard eats, and a base of wood and stone is
+        // charged nothing in fragments: fed, they would have sat in its
+        // stock, and the bench waited on loot runs for a hundred more.
+        let frags = content.item_index("item.metal_frags").unwrap();
+        let row = w.deploy.mats[..usize::from(w.deploy.mat_count)]
+            .iter()
+            .position(|&m| m == frags)
+            .expect("the cupboard eats fragments");
+        let hearth = w
+            .deploys
+            .hearths()
+            .iter()
+            .find(|r| r.owner == ID)
+            .expect("its cupboard");
+        assert_eq!(
+            hearth.stock[row],
+            0,
+            "the cupboard was fed fragments: {}",
+            h.explain()
+        );
     }
     assert!(
         h.held_checks as u64 >= h.bot.builder().stats.deployed,

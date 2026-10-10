@@ -784,6 +784,9 @@ struct LootLive {
     name: [u8; protocol::MAX_ITEM_NAME_BYTES],
     wanted: Option<usize>,
     model: Option<usize>,
+    /// The skin `model` is drawn in (v102), zero for plain — and for a
+    /// skin the catalog does not know yet, so its landing reads as a change.
+    skin: u16,
 }
 
 #[derive(Resource, Default)]
@@ -2564,8 +2567,10 @@ pub const STRUCT_APPLIED: u32 = client_core::core::APPLIED_PIECES
     | client_core::core::APPLIED_DEPLOY_DEFS
     | client_core::core::APPLIED_BAGS;
 
-/// Loose stacks use the second word; its bit numbers overlap the first.
-pub const STRUCT_APPLIED2: u32 = client_core::core::APPLIED2_GITEMS;
+/// Loose stacks use the second word; its bit numbers overlap the first. A
+/// skin catalog batch may make a dropped stack's skin drawable (v102).
+pub const STRUCT_APPLIED2: u32 =
+    client_core::core::APPLIED2_GITEMS | client_core::core::APPLIED2_SKINS;
 
 /// Run condition for [`stream`]: the wire said something about what it draws,
 /// or the ring has not been built yet.
@@ -2593,6 +2598,7 @@ pub fn stream(
     world: Res<WorldId>,
     net: NonSend<Net>,
     models: Res<super::viewmodel::Models>,
+    mut skin_mats: ResMut<super::viewmodel::SkinMats>,
     mut marks: Option<ResMut<super::decal::Marks>>,
     mut sound: Option<ResMut<super::audio::Sound>>,
 ) {
@@ -2896,16 +2902,21 @@ pub fn stream(
         kit,
         gen,
         core.ground_items(),
-        &core.catalog,
+        (&core.catalog, &core.skins),
         &models,
+        &mut skin_mats,
         &assets,
         &meshes,
-        &materials,
+        &mut materials,
         |x, z| super::loot::surface_y(seed, haven, x, z),
     );
 }
 
 /// Returns whether a fallback is waiting for a shared model to load.
+///
+/// A skinned stack (v102) draws its model in the skin's tint — the held
+/// item's rule, `bodies::update_hand`: if `skins` knows the skin, else
+/// plain. A pouch or an arrow stand-in is never tinted.
 #[allow(clippy::too_many_arguments)]
 fn sync_loot(
     commands: &mut Commands,
@@ -2913,15 +2924,18 @@ fn sync_loot(
     kit: &Kit,
     generation: u64,
     items: &[protocol::WireGItem],
-    catalog: &protocol::ItemCatalog,
+    (catalog, skins): (&protocol::ItemCatalog, &protocol::SkinCatalog),
     models: &super::viewmodel::Models,
+    skin_mats: &mut super::viewmodel::SkinMats,
     assets: &AssetServer,
     meshes: &Assets<Mesh>,
-    materials: &Assets<StandardMaterial>,
+    materials: &mut Assets<StandardMaterial>,
     ground: impl Fn(f32, f32) -> f32,
 ) -> bool {
     let mut pending = false;
     for g in items {
+        let tint = crate::ui::skins::tint_of(skins, g.skin);
+        let skin = if tint.is_some() { g.skin } else { 0 };
         // Normalize only a new/renamed item. Retrying an asynchronous model
         // must not allocate a name per stack on every loading frame.
         let raw = catalog.name(g.item as usize);
@@ -2940,7 +2954,7 @@ fn sync_loot(
             ),
         };
         if let Some(old) = live.get_mut(&g.id) {
-            if old.item == g.item && old.model.is_some() && old.model == want {
+            if old.item == g.item && old.model.is_some() && old.model == want && old.skin == skin {
                 old.seen = generation;
                 old.name = name;
                 old.wanted = want;
@@ -2971,7 +2985,7 @@ fn sync_loot(
             old.seen = generation;
             old.name = name;
             old.wanted = want;
-            if old.item == g.item && old.model == ready {
+            if old.item == g.item && old.model == ready && (ready.is_none() || old.skin == skin) {
                 continue;
             }
             commands.entity(old.entity).despawn();
@@ -2981,6 +2995,7 @@ fn sync_loot(
             g.qy as f32 * POS_Y_Q,
             g.qz as f32 * POS_XZ_Q,
         );
+        let mut drawn = 0;
         let (mesh, mat, transform) = match ready {
             Some(i) => {
                 let (mesh, mat) = models.row(i);
@@ -2992,6 +3007,13 @@ fn sync_loot(
                     true,
                     &ground,
                 );
+                let mat = match tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mat, materials)) {
+                    Some(skinned) => {
+                        drawn = skin;
+                        skinned
+                    }
+                    None => mat,
+                };
                 (mesh, mat, transform)
             }
             None if crate::ui::hold::is_arrow(catalog, g.item) => (
@@ -3032,6 +3054,7 @@ fn sync_loot(
                 name,
                 wanted: want,
                 model: ready,
+                skin: drawn,
             },
         );
     }

@@ -69,11 +69,17 @@ range_m = 1
 # is `lit_damage` (the sim adds it only while `light::is_lit`). It is a light
 # first, so it answers to `[bands] ttk_light` rather than the weapons' band
 # (`balance.rs`), and it harvests nothing (no gatherable names it).
+#
+# And a blow wears it, as the reference's does: ~7 points a landed hit off
+# its 50-point ceiling, so eight blows spend a fresh torch (and a spent
+# torch is dark, `light::is_lit`). Hundredths, on a body, an animal or a
+# built thing; a whiff wears nothing (NOW §0tl 3).
 [[weapon]]
 id = "item.torch"
 kind = "melee"
 damage = 10
 lit_damage = 2
+condition_loss = 700
 structure = 1
 headshot_pct = 200
 limb_pct = 50

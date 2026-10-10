@@ -1092,7 +1092,32 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// saying the same, so no client draws or offers a stump that is gone. And
 /// the hearth gives back: `ACT_FEED` ends in a take bit, and a set one is
 /// followed by the stock row its crew takes out (`ActionMsg::TakeStock`).
-pub const PROTO_VER: u16 = 101;
+/// v102 — a spill says how much: `SUB_GATHER` and `SUB_CRAFT_DONE` end in a
+/// `dropped` u16, the units that did not fit and went to the feet. And a
+/// give: `ACT_GIVE` (32) carries a slot, a count and the receiver's id
+/// (`Command::Give`), the thirty-third action, so `ACTION_SUB_BITS` widened
+/// 5 → 6 and every action message moved by one bit; `SUB_MOVE_REFUSED`
+/// grows a reason (`REFUSE_M_GIVE`, 14: no room in their pack). And a
+/// loose stack carries its condition: `WireGItem` ends in a bit and, when
+/// set, the stack's `cond` u16, so a blueprint sheet on the ground can say
+/// what it teaches. And a `SUB_DEPLOY_DEFS` row carries its `matter` (two
+/// bits after hp, `sim_core::deploy::MATTER_*`), so a client stops guessing
+/// what a deployable is made of from its archetype. And an item catalog
+/// row ends in its `class` (four bits after `revive`, `craft::CLASS_*`), so
+/// the craft rail groups by the reference's classes; `CATALOG_BATCH` went
+/// 8 → 7 to keep a full batch under the cap. And a repair's exact price:
+/// the placed-piece and placed-deployable records end in the structure's
+/// `hp` (16 bits, after the plate and after the beds), and `SUB_PIECE_DEFS`
+/// carries the table's `repair_pct` (7 bits after the header), so the
+/// hammer quotes `build::repair_quote` instead of "cost depends on damage".
+/// And a fire's warmth reach: `SUB_DEPLOY_DEFS` carries the exposure
+/// table's `heat_radius_cm` (16 bits after the header), so the WET and COLD
+/// chips confirm a fire the way they confirm a roof (`exposure::fire_reaches`).
+/// And a skin: `WireGItem` ends in a bit and, when set, the stack's `skin`
+/// u16 (`GITEM_SYNC_BATCH` went 16 → 14 to keep a full batch under the cap),
+/// and each `SUB_WORN` slot follows its item with the same, so a dropped or
+/// worn skinned item keeps its look.
+pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1770,8 +1795,10 @@ pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {
 /// was the ceiling. Every action message therefore moved by one bit —
 /// the goldens are regenerated in the same commit (CLAUDE.md wall 6),
 /// and the C→S action lane is the only lane affected (no datagram
-/// layout, no S→C event, moved).
-const ACTION_SUB_BITS: u32 = 5;
+/// layout, no S→C event, moved). Widened 4 → 5 at v30 for `ACT_DEMOLISH`,
+/// and 5 → 6 at v102 for `ACT_GIVE`, the thirty-third: the same turn each
+/// time, every action golden regenerated.
+const ACTION_SUB_BITS: u32 = 6;
 const ACT_CRAFT: u32 = 0;
 const ACT_CANCEL: u32 = 1;
 const ACT_PLACE: u32 = 2;
@@ -1913,18 +1940,23 @@ const ACT_DROP: u32 = 30;
 /// `Command::Treat`): the slot and the target's id. Reach, the target's
 /// state and whether the item revives are the sim's verdict.
 const ACT_TREAT: u32 = 31;
+/// Hand a stack to another player (wire v102, `Command::Give`): the slot,
+/// the count and the receiver's id. **The thirty-third action**, so it
+/// paid for `ACTION_SUB_BITS` widening 5 → 6 — thirty-one codes spare now.
+/// Reach, the receiver's state and their room are the sim's verdict.
+const ACT_GIVE: u32 = 32;
 /// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
 const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
 /// It was worth more here than there while this lane's field was four
-/// bits and **full**; at v30 it is five bits with fifteen codes spare, so
-/// the pressure is off — but the assert stays, because the failure it
+/// bits and **full**; at v102 it is six bits with thirty-one codes spare,
+/// so the pressure is off — but the assert stays, because the failure it
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_TREAT;
+const ACT_MAX: u32 = ACT_GIVE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2265,6 +2297,10 @@ pub enum ActionMsg {
     /// Use inventory slot `slot` on downed body `target` (wire v99). The
     /// slot is shape-checked here; everything else is the sim's verdict.
     Treat { slot: u8, target: u32 },
+    /// Hand `count` of inventory slot `slot` to player `target` (wire
+    /// v102). Slot and a nonzero count are shape-checked here; reach, the
+    /// receiver and their room are the sim's verdict.
+    Give { slot: u8, count: u16, target: u32 },
     /// Trade at a town kiosk (wire v86): offer `offer` of the vendor
     /// catalog, `times` over (1..=`VEND_TIMES_MAX`). Everything past the
     /// shape is the sim's verdict.
@@ -2547,6 +2583,24 @@ pub fn encode_action_treat(slot: u8, target: u32, buf: &mut [u8]) -> Result<usiz
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_TREAT, ACTION_SUB_BITS)?;
     w.write(slot as u32, ACTION_SLOT_BITS)?;
+    w.write(target, 32)?;
+    Ok(w.finish())
+}
+
+pub fn encode_action_give(
+    slot: u8,
+    count: u16,
+    target: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS || count == 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_GIVE, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    w.write(count as u32, MOVE_COUNT_BITS)?;
     w.write(target, 32)?;
     Ok(w.finish())
 }
@@ -3300,6 +3354,19 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Treat { slot, target }
+        }
+        ACT_GIVE => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            let count = r.read(MOVE_COUNT_BITS)? as u16;
+            let target = r.read(32)?;
+            if slot as usize >= sim_core::limits::INV_SLOTS || count == 0 {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Give {
+                slot,
+                count,
+                target,
+            }
         }
         ACT_RESEARCH => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
@@ -4962,12 +5029,12 @@ mod tests {
         // 24 (re-skin, refresh); the town's vendors (v86) spend 25 and the
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
         // respawn point (v92) 28, the arc's one verb (v95) 29, drop
-        // (v97) 30 and treat (v99) 31: the five-bit field is full, and the
-        // next action widens `ACTION_SUB_BITS`.
-        assert_eq!(ACT_MAX, ACT_TREAT);
+        // (v97) 30 and treat (v99) 31 filled the five-bit field, and give
+        // (v102) 32 widened `ACTION_SUB_BITS` to six.
+        assert_eq!(ACT_MAX, ACT_GIVE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            0,
+            31,
             "the spare action codes moved — say so where the count is written"
         );
     }
@@ -4984,6 +5051,35 @@ mod tests {
             })
         );
         assert!(encode_action_treat(sim_core::limits::INV_SLOTS as u8, 1, &mut buf).is_err());
+    }
+
+    #[test]
+    fn give_roundtrips_and_refuses_a_forged_slot_or_a_zero_count() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let n = encode_action_give(29, 0xFFFF, 0xDEAD_BEEF, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::Give {
+                slot: 29,
+                count: 0xFFFF,
+                target: 0xDEAD_BEEF
+            })
+        );
+        let inv = sim_core::limits::INV_SLOTS as u8;
+        assert!(encode_action_give(inv, 1, 1, &mut buf).is_err());
+        assert!(encode_action_give(3, 0, 1, &mut buf).is_err());
+        // The decoder refuses what the encoder will not write: a slot past
+        // the pack and a zero count, hand-built on the wire.
+        for (slot, count) in [(inv as u32, 1), (3, 0)] {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_ACTION, KIND_BITS).unwrap();
+            w.write(ACT_GIVE, ACTION_SUB_BITS).unwrap();
+            w.write(slot, ACTION_SLOT_BITS).unwrap();
+            w.write(count, MOVE_COUNT_BITS).unwrap();
+            w.write(7, 32).unwrap();
+            let n = w.finish();
+            assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+        }
     }
 
     #[test]

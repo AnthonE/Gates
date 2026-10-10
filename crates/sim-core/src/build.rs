@@ -348,7 +348,8 @@ pub const BUILD_BASE_Q_M: f32 = 0.5;
 
 /// The world y of a column's level-0 floor surface — **the one
 /// implementation** of the piece height rule, and deliberately the only
-/// one: `collide::col_base_y` (the sim's movement/raid/charge walks), the
+/// one: `collide::col_base_y` (the sim's movement/raid/charge walks, through
+/// [`band_floor_y`] with the band it memoized), the
 /// client renderer's `level_base_y` and `deploy::box_drop_pos` all call
 /// this rather than restating the formula, because the formula existed in
 /// two crates before this function did and a third copy is how the drawn
@@ -371,7 +372,15 @@ pub const BUILD_BASE_Q_M: f32 = 0.5;
 /// `movement::STEP_UP`.
 #[inline]
 pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8) -> f32 {
-    band_y(terrain_band(seed, haven, cx, cz) + plate as i32)
+    band_floor_y(terrain_band(seed, haven, cx, cz), plate)
+}
+
+/// [`column_floor_y`] with the column's [`terrain_band`] already in hand —
+/// `collide::col_base_y`'s memoized path (`ColIndex::fill_bands`), kept here
+/// so the rule still has one spelling.
+#[inline]
+pub fn band_floor_y(band: i32, plate: i8) -> f32 {
+    band_y(band + plate as i32)
 }
 
 /// The band a column's level-0 floor takes with **nothing built on it** —
@@ -916,6 +925,13 @@ impl Pieces {
     /// The collision view movement steps against (collide.rs).
     pub fn cols(&self) -> &crate::collide::ColIndex {
         &self.cols
+    }
+
+    /// Memoize the terrain band of any column opened since the last call
+    /// (`ColIndex::fill_bands`). Derived like the rest of `cols`: never
+    /// hashed, never saved, and no answer depends on whether it ran.
+    pub(crate) fn fill_bands(&mut self, seed: u64, haven: &terrain::Haven) {
+        self.cols.fill_bands(seed, haven);
     }
 
     pub fn len(&self) -> usize {
@@ -2248,11 +2264,46 @@ fn repair_units(units: u16, missing: u16, max_hp: u16, repair_pct: u16) -> u32 {
 }
 
 /// The wider of the two cost tables, so one price loop serves both stores.
-const MAX_REPAIR_COSTS: usize = MAX_DEPLOY_COSTS;
+pub const MAX_REPAIR_COSTS: usize = MAX_DEPLOY_COSTS;
 const _: () = assert!(
     MAX_PIECE_COSTS <= MAX_REPAIR_COSTS,
     "repair copies a piece's cost rows into a deployable-width buffer"
 );
+
+/// What mending a structure from `hp_now` back to `hp_full` costs: one
+/// `(item, units)` per cost row in `costs` (the row's own, already cut to
+/// its `n_costs`), written into `out`, and the count returned.
+///
+/// **The one price.** [`repair`] checks and takes exactly these rows, and a
+/// client quotes them before the press (`client::ui::hammer::repair_rows`,
+/// off the hp and `repair_pct` the record and the defs drip carry since
+/// wire v102), so the readout and the bill are one function and can only
+/// differ in the hp they are handed. They can differ there: decay lowers a
+/// store's hp with no event, so a client's mirror can stand above the
+/// store, never below it. The price never falls as the hp missing grows,
+/// so a stale quote is a floor on the bill, which is how the hammer words
+/// it (`hammer::repair_line`).
+///
+/// Zero rows means nothing is for sale, and those are `repair`'s own
+/// refusals: nothing missing, an unbaked table (`repair_pct == 0`), or a
+/// row that quotes no price. A quote is never a free heal.
+pub fn repair_quote(
+    costs: &[(u16, u16)],
+    hp_now: u16,
+    hp_full: u16,
+    repair_pct: u16,
+    out: &mut [(u16, u32); MAX_REPAIR_COSTS],
+) -> usize {
+    let missing = hp_full.saturating_sub(hp_now);
+    if missing == 0 || repair_pct == 0 {
+        return 0;
+    }
+    let n = costs.len().min(MAX_REPAIR_COSTS);
+    for (slot, &(item, units)) in out.iter_mut().zip(costs).take(n) {
+        *slot = (item, repair_units(units, missing, hp_full, repair_pct));
+    }
+    n
+}
 
 /// Take a piece back down and refund it whole — **demolish v1**
 /// (`reference/BUILDING.md` §6/§7 verb 9).
@@ -2492,18 +2543,22 @@ pub fn repair(
     // `place`'s reason. A half-paid repair leaves the client's mirror and
     // the server's store disagreeing about an inventory, which is the
     // divergence class `CLAUDE.md`'s trap list names one verb over.
-    for &(item, units) in costs.iter().take(n_costs) {
-        if inv_count(&p.inv, item) < repair_units(units, missing, hp_full, bc.repair_pct) {
+    let mut quote = [(0u16, 0u32); MAX_REPAIR_COSTS];
+    let n = repair_quote(
+        &costs[..n_costs],
+        hp_now,
+        hp_full,
+        bc.repair_pct,
+        &mut quote,
+    );
+    for &(item, units) in quote.iter().take(n) {
+        if inv_count(&p.inv, item) < units {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
             return;
         }
     }
-    for &(item, units) in costs.iter().take(n_costs) {
-        inv_take(
-            &mut p.inv,
-            item,
-            repair_units(units, missing, hp_full, bc.repair_pct),
-        );
+    for &(item, units) in quote.iter().take(n) {
+        inv_take(&mut p.inv, item, units);
     }
     // The wall: a repaired structure *is* its baked row's hp and never a
     // point more. Written as an assignment rather than an add-and-clamp so
@@ -3742,6 +3797,90 @@ mod tests {
             "a refused repair heals nothing"
         );
         assert_eq!(inv_count(&p.inv, 0), 0, "and takes nothing");
+    }
+
+    /// The quote a client shows is the bill `repair` takes, row by row,
+    /// across the hp range and at a percent that is not the shipped 100 —
+    /// the client quotes through `repair_quote`, so a verb that priced any
+    /// other way would put a number on the hammer the server never charges.
+    #[test]
+    fn the_repair_quote_is_what_repair_charges() {
+        for pct in [100u16, 35] {
+            for hp in [1u16, 2, 33, 40, 50, 99] {
+                let (mut bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 1000), (1, 1000)]);
+                // Two rows on the wall, so a quote that dropped or swapped
+                // one is visible.
+                bc.pieces[1].n_costs = 2;
+                bc.pieces[1].costs = [(0, 3), (1, 7)];
+                bc.repair_pct = pct;
+                let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+                pieces.set_hp(i, hp);
+                let def = bc.pieces[1];
+                let mut quote = [(0u16, 0u32); MAX_REPAIR_COSTS];
+                let n = repair_quote(
+                    &def.costs[..def.n_costs as usize],
+                    hp,
+                    def.hp,
+                    pct,
+                    &mut quote,
+                );
+                assert_eq!(n, 2);
+                let before = [inv_count(&p.inv, 0), inv_count(&p.inv, 1)];
+                repair(
+                    &bc,
+                    &DeployContent::EMPTY,
+                    &mut nod,
+                    &mut pieces,
+                    &mut p,
+                    false,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_EDGE_XLO,
+                    &mut ev,
+                );
+                assert_eq!(last(&ev).0, crate::world::EV_PIECE_REPAIRED);
+                for (k, &(item, units)) in quote.iter().take(n).enumerate() {
+                    assert_eq!(item, def.costs[k].0);
+                    assert!(units >= 1, "pct {pct} hp {hp}: a free row");
+                    assert_eq!(
+                        before[k] - inv_count(&p.inv, item),
+                        units,
+                        "pct {pct} hp {hp}: row {k} quoted {units}, charged otherwise"
+                    );
+                }
+            }
+        }
+        // Nothing for sale is no rows: intact, unbaked, or unpriced.
+        let mut out = [(0u16, 0u32); MAX_REPAIR_COSTS];
+        assert_eq!(repair_quote(&[(0, 3)], 100, 100, 100, &mut out), 0);
+        assert_eq!(repair_quote(&[(0, 3)], 40, 100, 0, &mut out), 0);
+        assert_eq!(repair_quote(&[], 40, 100, 100, &mut out), 0);
+    }
+
+    /// Decay lowers a store's hp without an event, so a client quotes from
+    /// an hp at or above the store's, and the hammer calls its quote a floor
+    /// ("costs at least"). That is only true while the price never falls as
+    /// the hp missing grows, row by row; the rounding up and the floor at
+    /// one are where a non-monotone price would hide.
+    #[test]
+    fn a_quote_from_a_stale_higher_hp_is_a_floor_on_the_bill() {
+        let costs = [(0u16, 7u16), (1, 1000), (2, 1)];
+        for pct in [1u16, 35, 100] {
+            let mut prev = [0u32; 3];
+            for hp in (1..=1000u16).rev() {
+                let mut out = [(0u16, 0u32); MAX_REPAIR_COSTS];
+                let n = repair_quote(&costs, hp, 1000, pct, &mut out);
+                for (k, &(_, units)) in out.iter().take(n).enumerate() {
+                    assert!(
+                        units >= prev[k],
+                        "pct {pct}: row {k} fell from {} to {units} at hp {hp}",
+                        prev[k]
+                    );
+                    prev[k] = units;
+                }
+            }
+        }
     }
 
     /// An unbaked table refuses rather than healing free.

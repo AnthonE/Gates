@@ -26,8 +26,9 @@ use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
 use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD, WEAR_NONE};
 use sim_core::craft::{
-    CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
-    STATION_WORKBENCH2, STATION_WORKBENCH3,
+    CraftContent, CraftJob, RecipeDef, CLASS_CLOTHING, CLASS_FOOD, CLASS_MEDICAL, CLASS_RESOURCES,
+    CLASS_WEAPONS, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
+    STATION_WORKBENCH3,
 };
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::ItemStack;
@@ -41,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 156] = [
+pub const FIXTURES: [&str; 157] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -279,6 +280,8 @@ pub const FIXTURES: [&str; 156] = [
     "event_stump_grubbed.bin",
     // Stock taken back out of a hearth (v101).
     "action_take_stock.bin",
+    // A stack handed to another player (v102).
+    "action_give.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -982,8 +985,10 @@ pub fn refuse_full() -> Refuse {
 // these and compare bytes and decodes.
 // ---------------------------------------------------------------------------
 
-pub fn event_gather() -> (u16, u16) {
-    (7, 13)
+/// (item, added, dropped): all three distinct and nonzero so a transposed
+/// field moves bytes — a partial spill (wire v102).
+pub fn event_gather() -> (u16, u16, u16) {
+    (7, 13, 5)
 }
 
 /// The gather refusal (wire v42): the held item and the reason, both
@@ -1098,23 +1103,42 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 }
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
-/// length — the fixture encodes the batch at `first = 0`. The ceilings
-/// (v46) mix 0 (no condition) with real values and the u16 corner so the
-/// golden pins the column's width and order, not just its presence; the
-/// armor columns (v52) do the same across both slots, the cap, the
-/// not-armor row and a named slot with a zero reduction.
+/// length — the fixture encodes the batch at `first = 0`, rows 0..7 since
+/// v102 cut the batch to seven, and **only those rows are pinned in
+/// bytes**: a column's coverage belongs in rows 0..7 or it is asserted and
+/// never encoded. The ceilings (v46) mix 0 (no condition) with real values
+/// and the u16 corner so the golden pins the column's width and order, not
+/// just its presence; the armor columns (v52) do the same across both
+/// slots, the cap and the not-armor row. Every row names its class (v102),
+/// and the food rows carry the ledger's top.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
     let rows: [(&[u8], ItemRow); 11] = [
-        // The oven column's coverage (v89): wood is fuel at both burners
-        // (the fire's bit and the furnace's), charcoal what both make, and
-        // the last row carries the width's corner.
+        // The oven column's coverage (v89), both rows in the first batch so
+        // two distinct values pin the column's order and width: wood is
+        // fuel at both burners (the fire's bit and the furnace's), and low
+        // grade fuel carries the width's corner, every role at every
+        // converter.
         (
             b"Wood",
             ItemRow {
                 oven: 0b001_001,
+                class: CLASS_RESOURCES,
                 ..row(0, 0, WEAR_NONE, 1000)
+            },
+        ),
+        // It also carries the `stack_max` column's corner (v64). The
+        // column's three values sit in the first batch: a real ladder
+        // (1,000, the resources), the V7 floor a condition item is pinned
+        // to by `coherent` (1, row 6 — so the invariant is *pinned in
+        // bytes* and not only asserted), and the width's own corner, here.
+        (
+            b"Low Grade Fuel",
+            ItemRow {
+                oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
+                class: CLASS_RESOURCES,
+                ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
         // The draw columns' coverage (v82), at the byte's corner.
@@ -1123,45 +1147,55 @@ pub fn event_catalog() -> ItemCatalog {
             ItemRow {
                 draw_ticks: u8::MAX,
                 nock_ticks: u8::MAX - 1,
+                class: CLASS_WEAPONS,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
-        // The eat columns' coverage (v81): a food with all three, a heal
-        // with only hp, and the width's corner on each column.
-        (b"Mushrooms", food(10, 15, 5, 3)),
-        (b"Bandage", food(3, 0, 0, 20)),
-        (b"Corn", food(1000, u16::MAX, 1, u16::MAX - 1)),
-        // Rows 5..8 are the armor columns' coverage (v52): a head piece, a
-        // body piece, the cap itself, and — row 8 — a piece whose slot is
-        // named with no reduction behind it, which is legal and is the
-        // half a fixture full of protective armor would not pin.
-        (b"Burlap Headwrap", row(0, 10, WEAR_HEAD, 1)),
+        // The eat columns' coverage (v81): a heal with only hp, and a food
+        // with all three at the width's corner on each column.
         (
-            b"Charcoal",
+            b"Bandage",
             ItemRow {
-                oven: 0b100_100,
-                ..row(40_000, 0, WEAR_NONE, 1)
+                class: CLASS_MEDICAL,
+                ..food(3, 0, 0, 20)
+            },
+        ),
+        (b"Corn", food(1000, u16::MAX, 1, u16::MAX - 1)),
+        // Rows 5 and 6 are the armor columns' coverage (v52): a head piece
+        // and a body piece at the cap, the latter with the widest name and
+        // the ceiling's u16 corner.
+        (
+            b"Burlap Headwrap",
+            ItemRow {
+                class: CLASS_CLOTHING,
+                ..row(0, 10, WEAR_HEAD, 1)
             },
         ),
         (
             b"Fixture Name Of Width 24",
-            row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1),
+            ItemRow {
+                class: CLASS_CLOTHING,
+                ..row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1)
+            },
+        ),
+        // Past the first batch: a plain food, charcoal what both burners
+        // make, a slot named with no reduction behind it (legal), and the
+        // rest.
+        (b"Mushrooms", food(10, 15, 5, 3)),
+        (
+            b"Charcoal",
+            ItemRow {
+                oven: 0b100_100,
+                class: CLASS_RESOURCES,
+                ..row(40_000, 0, WEAR_NONE, 1)
+            },
         ),
         (b"Bare Slot", row(0, 0, WEAR_HEAD, 1)),
-        (b"Gunpowder", row(1, 0, WEAR_NONE, 1)),
-        // The `stack_max` column's own coverage (v64), and the three
-        // values it needs are already spread across the table above: a
-        // real ladder (1,000, the resources), the V7 floor a condition
-        // item is pinned to by `coherent` (1, rows 6/7/9 — so the
-        // invariant is *pinned in bytes* and not only asserted), and the
-        // width's own corner, here. A 16-bit field carrying 65,535 is
-        // what says the ceiling cannot be truncated into a smaller one
-        // by a narrower field landing under it later.
         (
-            b"Low Grade Fuel",
+            b"Gunpowder",
             ItemRow {
-                oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
-                ..row(0, 0, WEAR_NONE, u16::MAX)
+                class: CLASS_RESOURCES,
+                ..row(1, 0, WEAR_NONE, 1)
             },
         ),
     ];
@@ -1185,12 +1219,14 @@ fn row(cond_max: u16, armor_pct: u8, wear_slot: u8, stack_max: u16) -> ItemRow {
     }
 }
 
-/// A food row: the eat columns (v81) on top of a plain stacking row.
+/// A food row: the eat columns (v81) on top of a plain stacking row, in
+/// the food class (v102, the ledger's top).
 fn food(stack_max: u16, food: u16, water: u16, health: u16) -> ItemRow {
     ItemRow {
         food,
         water,
         health,
+        class: CLASS_FOOD,
         ..row(0, 0, WEAR_NONE, stack_max)
     }
 }
@@ -1219,9 +1255,10 @@ pub fn event_craft_q() -> ([CraftJob; 3], u16) {
     )
 }
 
-/// One completed unit: (item index, units that actually landed).
-pub fn event_craft_done() -> (u16, u16) {
-    (12, 3)
+/// One completed unit: (item index, units that actually landed, units
+/// that went to the feet — wire v102).
+pub fn event_craft_done() -> (u16, u16, u16) {
+    (12, 3, 1)
 }
 
 /// A refusal carrying `sim_core::craft::REFUSE_CR_INPUTS`.
@@ -1408,6 +1445,9 @@ pub fn event_piece_placed() -> PieceRec {
         // width one short — agrees with a correct encoder on zero. A fixture
         // carrying 0 would pin bytes that cannot tell the two apart.
         plate: -1,
+        // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
+        // encoder that never wrote the field would match.
+        hp: 0x9C35,
         ..PieceRec::default()
     }
 }
@@ -1447,6 +1487,9 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
         // that gate's whole reason for existing.
         plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
+        // The hp (v102) down the field from its top, off the index for the
+        // plate's reason: a draw here would shift every later record.
+        hp: u16::MAX - i as u16 * 2047,
         ..PieceRec::default()
     });
     (true, recs)
@@ -1464,6 +1507,8 @@ pub fn event_piece_defs() -> BuildContent {
     type Row = (u8, u8, u16, &'static [(u16, u16)]);
     let mut bc = BuildContent::EMPTY;
     bc.piece_count = 7;
+    // The top of the percent's range (v102), so the field is not all zeros.
+    bc.repair_pct = 100;
     let rows: [Row; 7] = [
         (sim_core::build::SHAPE_FOUNDATION, 0, 750, &[(0, 350)]),
         (sim_core::build::SHAPE_WALL, 1, 1750, &[(1, 350)]),
@@ -1547,6 +1592,8 @@ pub fn event_deploy_placed() -> DeployRec {
         locked: true,
         has_lock: true,
         grow: 0b11_00_10_01,
+        // `event_piece_placed`'s rule for the hp (v102).
+        hp: 0x5AC3,
         ..DeployRec::default()
     }
 }
@@ -1578,6 +1625,8 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
             open: rng.next_bounded(2) == 0,
             locked: rng.next_bounded(2) == 0,
             has_lock: rng.next_bounded(2) == 0,
+            // Off the index, not `rng` (v102): `event_piece_sync`'s rule.
+            hp: u16::MAX - i as u16 * 2731,
             ..DeployRec::default()
         };
         // A body slot stands anywhere; an insert hangs at the centre.
@@ -1863,6 +1912,22 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
             } else {
                 [0; 3]
             },
+            // Every fourth carries a condition (v102), past a byte so a
+            // narrowed field reddens; two of them (0 and 12) are stuck too,
+            // so the two optional fields are seen side by side.
+            cond: if i % 4 == 0 {
+                256 + rng.next_bounded(60_000) as u16
+            } else {
+                0
+            },
+            // Every fifth from the third wears a skin (v102), past a byte
+            // too; record 12 is stuck, conditioned and skinned, so all
+            // three optional fields are seen side by side.
+            skin: if i % 5 == 2 {
+                256 + rng.next_bounded(60_000) as u16
+            } else {
+                0
+            },
         };
     }
     (true, recs)
@@ -1943,20 +2008,35 @@ pub fn event_deploy_refused() -> u8 {
 /// shape the drip needs: four archetypes over four placements).
 pub fn event_deploy_defs() -> DeployContent {
     let mut dc = DeployContent::probe_fixture();
-    for (row, arch) in [
-        (3, sim_core::deploy::ARCH_WINDOW_GLASS),
-        (4, sim_core::deploy::ARCH_WINDOW_SHUTTER),
+    for (row, arch, matter) in [
+        (
+            3,
+            sim_core::deploy::ARCH_WINDOW_GLASS,
+            sim_core::deploy::MATTER_STONE,
+        ),
+        (
+            4,
+            sim_core::deploy::ARCH_WINDOW_SHUTTER,
+            sim_core::deploy::MATTER_WOOD,
+        ),
     ] {
         dc.defs[row] = sim_core::deploy::DeployDef {
             arch,
             placement: sim_core::deploy::PLACE_WINDOW,
             hp: 350 + row as u16,
+            matter,
             item: 30 + row as u16,
             ..sim_core::deploy::DeployDef::INERT
         };
     }
     dc.def_count = 5;
     dc
+}
+
+/// The fire's warmth reach the deploy-def golden carries (wire v102):
+/// the shipped 4.5 m, so the field is neither zero nor all ones.
+pub fn event_deploy_defs_heat_cm() -> u16 {
+    450
 }
 
 /// The removed-piece address: (cx, cz, level, loc).
@@ -2324,14 +2404,25 @@ pub fn action_respawn_at() -> (u16, u16, u8) {
 }
 
 /// Player 0x0100_0007 in a bone helmet (item 41) and a hide poncho (item
-/// 40) (wire v98).
-pub fn event_worn() -> (u32, [u16; sim_core::limits::WEAR_SLOTS]) {
-    (0x0100_0007, [41, 40])
+/// 40) (wire v98), the poncho skinned (catalog id 0x0B72, wire v102) and
+/// the helmet plain, so both shapes of a slot are pinned.
+#[allow(clippy::type_complexity)]
+pub fn event_worn() -> (
+    u32,
+    [u16; sim_core::limits::WEAR_SLOTS],
+    [u16; sim_core::limits::WEAR_SLOTS],
+) {
+    (0x0100_0007, [41, 40], [0, 0x0B72])
 }
 
 /// Inject inventory slot 6 into downed player 0x0100_0009 (wire v99).
 pub fn action_treat() -> (u8, u32) {
     (6, 0x0100_0009)
+}
+
+/// Hand 37 of inventory slot 4 to player 0x0100_000B (wire v102).
+pub fn action_give() -> (u8, u16, u32) {
+    (4, 37, 0x0100_000B)
 }
 
 /// Drop 250 of inventory slot 9 (wire v97).

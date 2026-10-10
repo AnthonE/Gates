@@ -3,6 +3,10 @@
 # `material` so validation can hold them under their material's wall hp
 # (the door is the intended breach point); non-doors must not declare one.
 #
+# matter: wood | stone | metal | cloth — what it is made of, which the client
+# hears and sees a blow land on (dust, chips, the impact sound). The sim never
+# reads it. A door's agrees with its `material`.
+#
 # `door` is the code lock's placement class and its alone (lock v1): it is
 # the one class whose target must be OCCUPIED, by a door. A lock mints no
 # deploy record — it lives in the sim's lock store, keyed by the door's
@@ -17,24 +21,28 @@
 id = "item.sleeping_bag"
 archetype = "bag"
 placement = "any"
+matter = "cloth"
 hp = 200
 
 [[deployable]]
 id = "item.hearth"
 archetype = "hearth"
 placement = "foundation"
+matter = "wood"
 hp = 1000
 
 [[deployable]]
 id = "item.box_small"
 archetype = "box"
 placement = "any"
+matter = "wood"
 hp = 150
 
 [[deployable]]
 id = "item.box_large"
 archetype = "box"
 placement = "foundation"
+matter = "wood"
 hp = 300
 
 # A log wall: stands on the ground or a floor and blocks a body
@@ -43,6 +51,7 @@ hp = 300
 id = "item.barricade_wood"
 archetype = "barricade"
 placement = "any"
+matter = "wood"
 hp = 350
 
 # A raised bed (crops v0): seeds in its beds grow into a crop on the ovens'
@@ -52,24 +61,28 @@ hp = 350
 id = "item.planter"
 archetype = "planter"
 placement = "any"
+matter = "wood"
 hp = 300
 
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"
 placement = "any"
+matter = "stone"
 hp = 50
 
 [[deployable]]
 id = "item.furnace"
 archetype = "furnace"
 placement = "any"
+matter = "stone"
 hp = 500
 
 [[deployable]]
 id = "item.workbench1"
 archetype = "workbench"
 placement = "foundation"
+matter = "wood"
 hp = 500
 
 # The ladder's upper rungs (bench ladder v0). hp rises 500 → 750 → 1000
@@ -82,12 +95,14 @@ hp = 500
 id = "item.workbench2"
 archetype = "workbench2"
 placement = "foundation"
+matter = "metal"
 hp = 750
 
 [[deployable]]
 id = "item.workbench3"
 archetype = "workbench3"
 placement = "foundation"
+matter = "metal"
 hp = 1000
 
 # The recycler (recycler v0): a container that converts without burning.
@@ -100,6 +115,7 @@ hp = 1000
 id = "item.recycler"
 archetype = "recycler"
 placement = "any"
+matter = "metal"
 hp = 300
 
 # The research table (research v0). `foundation` like the workbench it sits
@@ -110,6 +126,7 @@ hp = 300
 id = "item.research_table"
 archetype = "research"
 placement = "foundation"
+matter = "metal"
 hp = 200
 
 [[deployable]]
@@ -122,6 +139,7 @@ hp = 200
 id = "item.lock_code"
 archetype = "lock"
 placement = "door"
+matter = "metal"
 hp = 100
 
 # The key lock: locked the moment it is on, to its placer and the base's
@@ -131,6 +149,7 @@ hp = 100
 id = "item.lock_key"
 archetype = "lock"
 placement = "door"
+matter = "metal"
 hp = 100
 keyed = true
 
@@ -138,6 +157,7 @@ keyed = true
 id = "item.door_wood"
 archetype = "door"
 placement = "doorway"
+matter = "wood"
 material = "wood"
 hp = 200
 
@@ -145,6 +165,7 @@ hp = 200
 id = "item.door_metal"
 archetype = "door"
 placement = "doorway"
+matter = "metal"
 material = "metal"
 hp = 250
 
@@ -152,12 +173,14 @@ hp = 250
 id = "item.window_bars_metal"
 archetype = "window_bars"
 placement = "window"
+matter = "metal"
 hp = 500
 
 [[deployable]]
 id = "item.garage_door"
 archetype = "garage_door"
 placement = "wall_frame"
+matter = "metal"
 material = "metal"
 hp = 600
 
@@ -166,6 +189,7 @@ hp = 600
 id = "item.window_glass"
 archetype = "window_glass"
 placement = "window"
+matter = "stone"
 hp = 350
 
 # HP: https://wiki.rustclash.com/item/wood-shutters
@@ -173,4 +197,5 @@ hp = 350
 id = "item.window_shutters"
 archetype = "window_shutter"
 placement = "window"
+matter = "wood"
 hp = 200

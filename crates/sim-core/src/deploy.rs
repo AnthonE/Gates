@@ -539,6 +539,11 @@ pub const HEARTH_RADIUS_M: f32 = 24.0;
 /// Upkeep/decay cadence: one period per real hour at the 30 Hz tick.
 /// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const UPKEEP_PERIOD_TICKS: u64 = 108_000;
+/// How often the shard re-tells a hearth's crew standing in its claim what
+/// it holds and what a day costs (the crew HUD vital, NOW §0up 3): every
+/// ten seconds. Not sim state — the server's cadence, kept here so the
+/// client's staleness rule (`ui::hearth::vital`) reads the same number.
+pub const CREW_VITAL_TICKS: u64 = 10 * crate::limits::TICK_HZ as u64;
 /// Periods per day — the divisor that spreads `upkeep_pct_per_day`
 /// (content/balance.toml) over hourly charges. Calendar arithmetic, not
 /// a knob.
@@ -578,12 +583,25 @@ pub const BAG_COOLDOWN_TICKS: u64 = 9_000;
 /// after a tick-jump). Bounded-work constant, not a knob.
 const SWEEP_CATCHUP_MAX: u32 = 4;
 
+/// What a deployable is made of (`content/deployables.toml` `matter`).
+/// The sim never reads it: it rides `SUB_DEPLOY_DEFS` so a client can say
+/// what a blow on the thing sounds and looks like. Its own ledger rather
+/// than `build::MAT_*`, because no deployable is twig and a bag is cloth.
+pub const MATTER_WOOD: u8 = 0;
+pub const MATTER_STONE: u8 = 1;
+pub const MATTER_METAL: u8 = 2;
+pub const MATTER_CLOTH: u8 = 3;
+/// The highest live `MATTER_*`.
+pub const MATTER_MAX: u8 = MATTER_CLOTH;
+
 /// One baked deployable row. `hp == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeployDef {
     pub arch: u8,
     pub placement: u8,
     pub hp: u16,
+    /// A `MATTER_*` code. Presentation only (see [`MATTER_WOOD`]).
+    pub matter: u8,
     /// Item index placing consumes one unit of (the deployable's item).
     pub item: u16,
     /// Live rows of `costs`. Zero ⇒ the bake found no recipe for `item`,
@@ -606,6 +624,7 @@ impl DeployDef {
         arch: ARCH_BAG,
         placement: PLACE_GROUND,
         hp: 0,
+        matter: MATTER_WOOD,
         item: 0,
         n_costs: 0,
         costs: [(0, 0); MAX_DEPLOY_COSTS],
@@ -689,6 +708,7 @@ impl DeployContent {
             arch: ARCH_HEARTH,
             placement: PLACE_FOUNDATION,
             hp: 100,
+            matter: MATTER_WOOD,
             item: 2,
             n_costs: 2,
             costs: [(0, 30), (1, 10), (0, 0), (0, 0)],
@@ -697,6 +717,7 @@ impl DeployContent {
             arch: ARCH_WORKBENCH,
             placement: PLACE_ANY,
             hp: 80,
+            matter: MATTER_WOOD,
             item: 3,
             n_costs: 1,
             costs: [(0, 20), (0, 0), (0, 0), (0, 0)],
@@ -705,6 +726,7 @@ impl DeployContent {
             arch: ARCH_DOOR,
             placement: PLACE_DOORWAY,
             hp: 60,
+            matter: MATTER_WOOD,
             item: 4,
             n_costs: 2,
             costs: [(0, 40), (1, 8), (0, 0), (0, 0)],
@@ -713,6 +735,7 @@ impl DeployContent {
             arch: ARCH_BAG,
             placement: PLACE_GROUND,
             hp: 50,
+            matter: MATTER_CLOTH,
             item: 5,
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],
@@ -726,6 +749,7 @@ impl DeployContent {
             arch: ARCH_FIRE,
             placement: PLACE_GROUND,
             hp: 40,
+            matter: MATTER_STONE,
             item: 6,
             n_costs: 1,
             costs: [(0, 25), (0, 0), (0, 0), (0, 0)],
@@ -742,6 +766,7 @@ impl DeployContent {
             arch: ARCH_LOCK,
             placement: PLACE_DOOR,
             hp: 40,
+            matter: MATTER_METAL,
             item: 7,
             n_costs: 1,
             costs: [(1, 12), (0, 0), (0, 0), (0, 0)],
@@ -760,6 +785,7 @@ impl DeployContent {
             arch: ARCH_RECYCLER,
             placement: PLACE_GROUND,
             hp: 45,
+            matter: MATTER_METAL,
             item: 8,
             n_costs: 1,
             costs: [(1, 15), (0, 0), (0, 0), (0, 0)],
@@ -776,6 +802,7 @@ impl DeployContent {
             arch: ARCH_RESEARCH,
             placement: PLACE_GROUND,
             hp: 45,
+            matter: MATTER_METAL,
             item: 10,
             n_costs: 1,
             costs: [(0, 18), (0, 0), (0, 0), (0, 0)],
@@ -791,14 +818,11 @@ impl DeployContent {
         d.decay_pct = [100, 34, 20, 13];
         // And upkeep v2's rules keyed, for the same reason: a rent ladder
         // with steps low enough that the gates' bases climb it, an inside
-        // rate, and a grief window. ⚠ **Keyed is not the same as exercised,
-        // and it was measured**: the ladder walk and the inside predicate
-        // run on every visit these gates make, but no piece in the replay
-        // script ever goes unpaid with anything over it (0 discounted steps,
-        // counted 2026-09-22), so the inside discount is held by
-        // `upkeep.rs`'s and this module's unit tests and not by parity or
-        // replay. The grief receipt was not counted; its gates are the
-        // unit tests here too.
+        // rate, and a grief window. Keyed is not the same as exercised: the
+        // inside discount is on the replay surface because `tests/replay.rs`
+        // roofs a twig foundation and asserts it outlives a bare one (NOW
+        // §0up 6); parity does not reach it. The grief receipt was not
+        // counted; its gates are the unit tests here.
         d.upkeep_steps[0] = (3, 150);
         d.upkeep_steps[1] = (6, 200);
         d.upkeep_step_count = 2;
@@ -1174,6 +1198,42 @@ impl Deploys {
         self.claim.covers(hi, x, z)
     }
 
+    /// The hearth whose crew `id` is on and whose **cached** claim volume
+    /// covers the planar point — "am I standing in my own base, and which
+    /// one", the crew HUD vital's question (NOW §0up 3). Where two of your
+    /// claims overlap, `prefer` answers while it still qualifies — the
+    /// caller passes the hearth the client last heard about, the one its
+    /// panel shows — so a periodic push never re-points an open panel at
+    /// the other; failing that, the hearth whose body (`hearth_xz`, not
+    /// its cell's centre) stands nearest the point.
+    ///
+    /// Read-only and outside the tick: the server asks it after
+    /// `World::tick`, against the cache the sweep just refreshed, which is
+    /// [`upkeep::bill`](crate::upkeep::bill)'s contract too.
+    pub fn crew_hearth_at(
+        &self,
+        x: f32,
+        z: f32,
+        id: u32,
+        prefer: Option<(u16, u16, u8)>,
+    ) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (hi, h) in self.hearths().iter().enumerate() {
+            if !h.crew.contains(id) || !self.hearth_covers(hi, x, z) {
+                continue;
+            }
+            if prefer == Some((h.cx, h.cz, h.level)) {
+                return Some(hi);
+            }
+            let (hx, hz) = self.hearth_xz(h);
+            let d2 = (hx - x) * (hx - x) + (hz - z) * (hz - z);
+            if best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((hi, d2));
+            }
+        }
+        best.map(|(hi, _)| hi)
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -1239,6 +1299,29 @@ impl Deploys {
         };
         self.hearth_count += 1;
         self.hearth_gen += 1;
+    }
+
+    /// [`Deploys::push_hearth_for_test`] with the deploy record under it
+    /// (the probe fixture's hearth row, 0) standing at `pose` in its cell,
+    /// so [`Deploys::hearth_xz`] reads the body and not the cell's centre.
+    /// **Fixtures only**, for the same reason.
+    #[cfg(test)]
+    pub(crate) fn stand_hearth_for_test(&mut self, cx: u16, cz: u16, pose: Pose, owner: u32) {
+        assert!(self.insert(
+            DeployRec {
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+                pose,
+                row: 0,
+                owner,
+                hp: 100,
+                ..DeployRec::default()
+            },
+            0,
+        ));
+        self.push_hearth_for_test(cx, cz, 0, owner);
     }
 
     /// The hearth records, writable. **Tests and fixtures only** — every
@@ -1489,6 +1572,11 @@ impl Deploys {
         self.entries[i].hp = hp;
     }
 
+    /// ⚠ Every runtime caller must push `EV_DEPLOY_PLACED` for what it
+    /// inserted (`place_deploy` does; `stand_authored` is boot-only). The
+    /// server's deploy walk reads tail-down and never re-derives an append,
+    /// so the broadcast is the only way a record placed mid-walk reaches a
+    /// client.
     fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;
@@ -3556,7 +3644,9 @@ pub(crate) fn drop_piece(
 
 /// Remove the deployable at store index `di`, unsealing its doorway if it
 /// was a door, and broadcast the removal. The other half of the one
-/// removal path.
+/// removal path. The event names the record's owner in `c`, as the
+/// placement did: the server re-tells a bag's owner their own-bag list
+/// off it (`SUB_BAGS`), and this is the last moment the owner is known.
 fn drop_deploy(
     dc: &DeployContent,
     pieces: &mut Pieces,
@@ -3599,7 +3689,7 @@ fn drop_deploy(
         EV_DEPLOY_REMOVED,
         crate::gather::cell_key(rec.cx, rec.cz),
         ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-        0,
+        rec.owner,
     );
 }
 
@@ -6574,6 +6664,7 @@ mod tests {
             arch: ARCH_BOX,
             placement: PLACE_FOUNDATION,
             hp: 60,
+            matter: MATTER_WOOD,
             item: 9,
             n_costs: 0,
             costs: [(0, 0); MAX_DEPLOY_COSTS],

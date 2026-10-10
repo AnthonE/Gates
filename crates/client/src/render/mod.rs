@@ -434,13 +434,25 @@ pub fn world_teardown(
     mut pad: ResMut<verbs::Pad>,
     mut hearth: ResMut<verbs::HearthView>,
 ) {
+    // The session and the seed go whether or not a root was standing. A
+    // hangup that lands before the first one spawned would otherwise leave
+    // `Net` behind, and `disconnected::watch` would re-enter its screen every
+    // frame (`NextState::set` re-runs a same-state transition) — the case
+    // `tests/disconnect.rs` hangs up with no world on purpose. Removing what
+    // is not there is a no-op, so the app's first frame is still untouched.
+    commands.remove_resource::<WorldId>();
+    // `Commands` cannot remove a non-send resource, the same asymmetry
+    // `menu::poll_connect` goes through the world for on the way in.
+    commands.queue(|world: &mut World| {
+        world.remove_non_send_resource::<Net>();
+    });
     let mut n = 0usize;
     for e in entities.iter() {
         commands.entity(e).despawn();
         n += 1;
     }
     if n == 0 {
-        // Nothing was up: the app just started. Say nothing and touch nothing.
+        // Nothing was up: the app just started. Say nothing.
         return;
     }
     *ring = terrain_mesh::Ring::default();
@@ -467,12 +479,6 @@ pub fn world_teardown(
     hearth.0 = None;
     *eye = Eye::default();
     *look = input::Look::default();
-    commands.remove_resource::<WorldId>();
-    // `Commands` cannot remove a non-send resource, the same asymmetry
-    // `menu::poll_connect` goes through the world for on the way in.
-    commands.queue(|world: &mut World| {
-        world.remove_non_send_resource::<Net>();
-    });
     info!("gates: left the world - {n} root entities despawned");
 }
 
@@ -606,6 +612,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bow::DrawArm>()
             .init_resource::<viewmodel::DrawZoom>()
             .init_resource::<verbs::Aimed>()
+            .init_resource::<verbs::Give>()
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
@@ -613,8 +620,6 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::HearthView>()
             .init_resource::<verbs::Bite>()
             .init_resource::<death::Answer>()
-            .init_resource::<disconnected::Reason>()
-            .init_resource::<disconnected::Chosen>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
@@ -965,38 +970,9 @@ impl Plugin for GatesRenderPlugin {
             );
 
         // ---- the involuntary disconnect ------------------------------
-        // `watch` is ungated: its guard is `Net`'s presence (the module doc
-        // says why that is exactly the right set of states), and it runs
-        // after `place_eye` so it reads the latch the frame's own pump set
-        // rather than last frame's. Entry runs the SAME teardown chain the
-        // menu runs — the session under the world is dead, so the world
-        // goes before the screen is built, not when the player clicks
-        // through — and `setup` follows it in the chain so the reason line
-        // it draws was captured by `watch` before `Net` went away.
-        app.add_systems(Update, disconnected::watch.after(input::place_eye))
-            .add_systems(
-                OnEnter(Screen::Disconnected),
-                (world_teardown, disconnected::setup).chain(),
-            )
-            .add_systems(
-                OnEnter(Screen::Disconnected),
-                audio::teardown.after(world_teardown),
-            )
-            .add_systems(
-                OnEnter(Screen::Disconnected),
-                water::teardown.after(world_teardown),
-            )
-            .add_systems(
-                OnEnter(Screen::Disconnected),
-                (map::forget, viewmodel::forget, impact::forget, fx::forget),
-            )
-            .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
-            .add_systems(
-                Update,
-                (disconnected::click, disconnected::keys, disconnected::act)
-                    .chain()
-                    .run_if(in_state(Screen::Disconnected)),
-            );
+        // The watch, the entry chain and the screen, registered in one place
+        // so `tests/disconnect.rs` boots exactly this wiring headless.
+        disconnected::plugin(app);
 
         // ---- the map -------------------------------------------------
         // **Hold `G`.** `open` is ordered after the panels and after chat,
@@ -1014,10 +990,12 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<map::MapPins>()
             .init_resource::<map::MapCursor>()
             // The mouse is the map's while it is held: the crosshair and the
-            // marks, and nothing in the world sees a click (`map::aim`).
+            // marks, and nothing in the world sees a click (`map::aim`). The
+            // keyboard is too while a mark's label is typed (`map::label`).
             .add_systems(
                 PreUpdate,
-                map::aim
+                (map::label, map::aim)
+                    .chain()
                     .after(bevy::input::InputSystems)
                     .run_if(in_state(Screen::Map)),
             )
@@ -1471,6 +1449,9 @@ impl Plugin for GatesRenderPlugin {
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
         )
+        // `keys` stops with the screen, so the give hold it times is dropped
+        // on the way out rather than resumed, half-run, on the way back.
+        .add_systems(OnExit(Screen::InWorld), verbs::drop_give_hold)
         // The build ghost. `track` before `place_key` for the same reason
         // `verbs::resolve` precedes `verbs::keys`: the click commits what is
         // drawn, so the drawing has to be this frame's.
@@ -1888,7 +1869,18 @@ impl Plugin for GatesRenderPlugin {
 
         if let Some(dir) = &self.capture {
             let _ = std::fs::create_dir_all(dir);
-            app.insert_resource(capture::Capture::new(dir.clone()));
+            // The log `capture::log_layer` started under `LogPlugin`, which
+            // built first; absent if nothing installed it.
+            let log = app
+                .world()
+                .get_resource::<capture::CaptureLog>()
+                .cloned()
+                .unwrap_or_default();
+            let cap = capture::Capture::new(dir.clone(), log);
+            // On disk before the first frame, so a run that hangs anywhere
+            // from here on still leaves a manifest, and never the last run's.
+            cap.begin();
+            app.insert_resource(cap);
             // Ahead of `gather`, because it owns the view on a capture run
             // and `gather` must not fight it for the same frame. Gated on
             // `world_running` rather than on `InWorld`: a capture run now

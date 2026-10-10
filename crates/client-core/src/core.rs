@@ -340,20 +340,15 @@ pub const APPLIED2_CHARGE: u32 = 1 << 9;
 /// be three ways to spell one redraw.
 pub const APPLIED2_RESEARCH: u32 = 1 << 3;
 
-/// A payout did not fit and went to the ground — an `EV_GATHER` or
-/// `EV_CRAFT_DONE` whose "units actually added" was zero. Drain `pop_spill`.
+/// Some of a payout did not fit and went to the ground — a `Gather` or
+/// `CraftDone` with `dropped > 0`. Drain `pop_spill`.
 ///
-/// **The wire did not change to carry this.** The zero was always on it;
-/// `EV_CRAFT_DONE`'s doc line has declared its meaning since it landed and
-/// `EV_GATHER`'s now does too, and the client simply threw both away — the
-/// gather arm on an `if added > 0` guard, the craft arm by formatting the
-/// zero into "crafted 0 × Hatchet" and showing it. So this is the client-
-/// side read `NOW.md` §0sp2 asked whether existed. It does, for the whole-
-/// spill case, and it does not for the other two halves: a PARTIAL spill
-/// (some fit, some did not) is invisible here because the shortfall never
-/// leaves the sim, and the four give-backs — demolish refund, deployable
-/// pick-up, lock removal, craft cancel — emit no payout event at all.
-/// Both of those need a wire field, which is the operator's question.
+/// Wire v102 carries the amount (`NOW.md` §0sp2): a whole spill is zero
+/// added and `dropped` the lot, a PARTIAL spill (some fit, some did not)
+/// is both nonzero and raises this beside the toast, and the four
+/// give-backs — demolish refund, deployable pick-up, lock removal, craft
+/// cancel — arrive as zero-added `Gather`s from `World::announce_spill`.
+/// Before v102 only the whole-spill zero reached the client, item only.
 ///
 /// Word 1 because word 0 is full; see `APPLIED2_CHARGE`.
 pub const APPLIED2_SPILL: u32 = 1 << 4;
@@ -361,9 +356,10 @@ pub const APPLIED2_SPILL: u32 = 1 << 4;
 /// This client's own bag list arrived (`EventMsg::Bags`, wire v43) —
 /// re-read `own_bags()`. Word 1 for `APPLIED2_CHARGE`'s reason.
 ///
-/// The list is sent on a death and nowhere else, so in practice this bit
-/// is raised one message before the `Death` that raises the screen
-/// reading it. A reader that wants "is it fresh" wants this bit; a reader
+/// The list is sent at a join, after a resync, whenever one of your bags
+/// is placed, taken down or spent by a wake, and on a death — one message
+/// before the `Death` that raises the screen reading it. So this bit is
+/// not a death signal. A reader that wants "is it fresh" wants this bit; a reader
 /// that wants "what do I own" can read the field any time — it is a
 /// latched set, not a ring, and it is only ever replaced whole.
 pub const APPLIED2_BAGS: u32 = 1 << 5;
@@ -396,6 +392,12 @@ pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
 /// `APPLIED_STRUCT_HIT` still rises for every hit on the island — the
 /// mirror re-bands every wall in view — but only this one is the player's.
 pub const APPLIED2_OWN_STRUCT_HIT: u32 = 1 << 10;
+
+/// A batch of the skin catalog landed (`EventMsg::Skins`) — a skin the
+/// client could not draw a moment ago may be drawable now, so a renderer
+/// that tints loose stacks re-reads them (`skins_gen` counts the same
+/// landings for readers that poll).
+pub const APPLIED2_SKINS: u32 = 1 << 12;
 
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
@@ -746,6 +748,12 @@ impl PieceSet {
         &self.cols
     }
 
+    /// Memoize the terrain band of any column the mirror opened since the
+    /// last call — the sim's `Pieces::fill_bands`, for the predictor's walks.
+    fn fill_bands(&mut self, seed: u64, haven: &Haven) {
+        self.cols.fill_bands(seed, haven);
+    }
+
     /// Set or clear a closed-door bit in the predictor's index. Doors
     /// live in the deploy mirror, but they seal *pieces*, so the bit
     /// belongs to this index — `ClientCore` is what keeps the two
@@ -775,7 +783,9 @@ impl PieceSet {
         self.cols.del_solid(cx, cz, level, loc);
     }
 
-    /// Re-band the piece at an address, if one stands there (wire v44).
+    /// Re-state the piece at an address, if one stands there: its exact hp
+    /// (wire v102, what the hammer prices a repair from) and its band
+    /// (wire v44).
     ///
     /// **The sync walk is not enough on its own and this is the half that
     /// makes the field live.** A piece record reaches a client on join and
@@ -786,10 +796,14 @@ impl PieceSet {
     ///
     /// `EV_STRUCT_HIT` already carries the address and the hp left, and
     /// `EV_PIECE_REPAIRED` the way back, so both edges are on the wire
-    /// already and this costs no byte.
-    fn set_dmg(&mut self, cx: u16, cz: u16, level: u8, loc: u8, dmg: u8) {
+    /// already and this costs no byte. (Decay drains hp without a word, so
+    /// between records the mirror's hp can stand a little above the
+    /// store's — the band always could — which is why the hammer words its
+    /// repair quote as a floor, `client::ui::hammer::repair_line`.)
+    fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
         for r in self.recs[..self.len].iter_mut() {
             if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
+                r.hp = hp;
                 r.dmg = dmg;
                 return;
             }
@@ -957,10 +971,11 @@ impl DeploySet {
         &self.recs[..self.len]
     }
 
-    /// `PieceSet::set_dmg`'s twin — that one carries the reasoning.
-    fn set_dmg(&mut self, cx: u16, cz: u16, level: u8, loc: u8, dmg: u8) {
+    /// `PieceSet::set_hp`'s twin — that one carries the reasoning.
+    fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
         for r in self.recs[..self.len].iter_mut() {
             if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
+                r.hp = hp;
                 r.dmg = dmg;
                 return;
             }
@@ -1110,19 +1125,19 @@ impl ClientCore {
     }
 
     /// What player `id` is wearing, as the shard last said (`EventMsg::Worn`):
-    /// the item in each wear slot, `NO_ITEM` for none or for a body the shard
-    /// has not described yet.
-    pub fn worn_of(&self, id: u32) -> [u16; sim_core::limits::WEAR_SLOTS] {
+    /// the item in each wear slot and its skin, [`WornLook::NONE`] for a body
+    /// the shard has not described yet.
+    pub fn worn_of(&self, id: u32) -> WornLook {
         self.bodies_worn
             .iter()
             .find(|(who, _)| *who == id && id != 0)
-            .map_or([NO_ITEM; sim_core::limits::WEAR_SLOTS], |(_, items)| *items)
+            .map_or(WornLook::NONE, |(_, look)| *look)
     }
 
-    /// File `items` as what `id` wears: its own row, else an empty one, else
+    /// File `look` as what `id` wears: its own row, else an empty one, else
     /// the next row round (a fixed table — a shard has at most
     /// `MAX_PLAYERS` bodies, so a row that is overwritten is a body gone).
-    fn file_worn(&mut self, id: u32, items: [u16; sim_core::limits::WEAR_SLOTS]) {
+    fn file_worn(&mut self, id: u32, look: WornLook) {
         let at = self
             .bodies_worn
             .iter()
@@ -1133,13 +1148,60 @@ impl ClientCore {
                 self.worn_next = self.worn_next.wrapping_add(1);
                 at
             });
-        self.bodies_worn[at] = (id, items);
+        self.bodies_worn[at] = (id, look);
         self.worn_gen = self.worn_gen.wrapping_add(1);
     }
 
     /// The fires this client has heard are burning.
     pub fn ovens(&self) -> &LitOvens {
         &self.ovens
+    }
+
+    /// Is the body standing in a lit fire's warmth (`NOW.md` §0wx item 3)?
+    /// The predicted body, the sim-truth reader every verb resolves on —
+    /// see [`Self::fire_warms`].
+    pub fn near_fire(&self) -> bool {
+        let [x, feet, z] = self.predict.position();
+        self.fire_warms(x, z, feet)
+    }
+
+    /// Does a fire this client has heard is lit warm a body at `(x, z)` with
+    /// its feet at `feet`? The sim's own question (`World::near_fire`) on
+    /// the client's mirrors: the lit set, the deploy rows that say a
+    /// deployable burns (a running recycler is lit and warms nothing) and
+    /// the reach the defs drip carries, through the one rule both sides
+    /// call (`exposure::fire_reaches`). A fire whose record or row has not
+    /// arrived yet, or that was lit before this client joined and has not
+    /// toggled since (`EV_OVEN` is the only carrier of the bit, and its
+    /// flame is not drawn either), warms nothing here: the shy answer.
+    pub fn fire_warms(&self, x: f32, z: f32, feet: f32) -> bool {
+        let r = self.heat_radius_cm;
+        if r == 0 {
+            return false;
+        }
+        let seed = self.predict.seed();
+        let cols = self.pieces.cols();
+        self.ovens.addrs().iter().any(|&(cx, cz, level, loc)| {
+            let Some(rec) = self
+                .deploys
+                .entries()
+                .iter()
+                .find(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
+            else {
+                return false;
+            };
+            burns(&self.deploy_defs, self.deploy_defs_have, rec.row)
+                && sim_core::exposure::fire_reaches(
+                    seed,
+                    &self.haven,
+                    cols,
+                    r,
+                    (cx, cz, level, rec.pose),
+                    x,
+                    z,
+                    feet,
+                )
+        })
     }
 
     /// The island's authored sites, solved once in `new`. A join hands this
@@ -1181,6 +1243,37 @@ impl ClientCore {
         )
     }
 
+    /// [`Self::island`], plus what else a swing can meet on its way to the
+    /// scatter: the collision index the predictor walls with, the
+    /// snapshot's bodies and animals, and the standing bags (a carcass is
+    /// one, and a butchering hand cuts it). Disjoint field borrows, so the
+    /// swing prompt can ask the sim's whole melee cast in one hold
+    /// (`ui::interact::swing_island`, §0ray 2).
+    #[allow(clippy::type_complexity)]
+    pub fn swing_view(
+        &mut self,
+    ) -> (
+        u64,
+        Occupants<'_>,
+        &ColIndex,
+        &[(u32, protocol::EntityState)],
+        &[WireBag],
+    ) {
+        (
+            self.predict.seed(),
+            Occupants {
+                doors: self.card_doors,
+                table: &self.scatter_table,
+                haven: &self.haven,
+                harvested: &self.harvested,
+                cache: &mut self.slot_cache,
+            },
+            self.pieces.cols(),
+            &self.view.entities,
+            self.bags.entries(),
+        )
+    }
+
     /// Lend a path search the ground this client predicts on: the same
     /// seed, haven, occupants and collision index `advance` hands
     /// `movement::step`, so a planned route agrees with the capsule about
@@ -1217,6 +1310,13 @@ fn is_door(defs: &DeployContent, have: u16, row: u8) -> bool {
 fn is_edge_insert(defs: &DeployContent, have: u16, row: u8) -> bool {
     (row as u16) < have.min(defs.def_count)
         && sim_core::deploy::edge_insert(defs.defs[row as usize].arch)
+}
+
+/// `is_door`'s twin for warmth: does this row burn when lit — a fire or a
+/// furnace, and not a running recycler (`OvenState::arch_burns`).
+fn burns(defs: &DeployContent, have: u16, row: u8) -> bool {
+    (row as u16) < have.min(defs.def_count)
+        && sim_core::oven::OvenState::arch_burns(defs.defs[row as usize].arch)
 }
 
 /// The archetype of a solid (movement-blocking) deploy row, or `None` —
@@ -1272,6 +1372,23 @@ const PLAYOUT_JITTER_K: f64 = 2.0;
 const PLAYOUT_SLEW_PER_S: f64 = 0.5;
 /// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
 const JITTER_GAIN: f64 = 1.0 / 16.0;
+
+/// What one body wears as the shard last said (`EventMsg::Worn`): the item
+/// in each wear slot (`NO_ITEM` for none) and each piece's skin (v102, zero
+/// for none). Read with [`ClientCore::worn_of`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WornLook {
+    pub items: [u16; sim_core::limits::WEAR_SLOTS],
+    pub skins: [u16; sim_core::limits::WEAR_SLOTS],
+}
+
+impl WornLook {
+    /// Nothing worn: the look of a body the shard has not described.
+    pub const NONE: Self = Self {
+        items: [NO_ITEM; sim_core::limits::WEAR_SLOTS],
+        skins: [0; sim_core::limits::WEAR_SLOTS],
+    };
+}
 
 /// One player's tag as the shard sent it (`EventMsg::Tag`): the proven
 /// address, the name that wallet set on the platform (possibly empty) and
@@ -1430,7 +1547,7 @@ pub struct ClientCore {
     /// never speaks for its previous tenant. Read with [`Self::tag`].
     tags: Box<[Tag]>,
     /// What each body wears (`EventMsg::Worn`, v98), by player id.
-    bodies_worn: Box<[(u32, [u16; sim_core::limits::WEAR_SLOTS])]>,
+    bodies_worn: Box<[(u32, WornLook)]>,
     worn_next: usize,
     /// Bumped on every `Worn`, so a renderer re-dresses only when it moved.
     pub worn_gen: u32,
@@ -1446,19 +1563,16 @@ pub struct ClientCore {
     /// cosmetic — the toast rings' posture exactly).
     ///
     /// One ring for both producers. `EV_GATHER` and `EV_CRAFT_DONE` both
-    /// carry "units actually added", and a zero from either means the same
+    /// carry `dropped`, and a nonzero one from either means the same
     /// thing to the player — *this did not fit and it is on the ground* —
     /// so the cause does not change the sentence or the action, and a
     /// discriminator nothing reads would be structure invented for its own
     /// sake. If a later pass wants a different cue per cause, the two arms
     /// that fill this are the place to widen it.
     ///
-    /// Only the item index is kept, because only the item index is known:
-    /// the wire carries what *reached the hands* and never what was paid,
-    /// so the client can say which item spilled but not how much of it.
-    /// Closing that half needs a wire field — `NOW.md` §0sp2 holds it as
-    /// the operator's question and this ring is the half that did not.
-    spills: [u16; TOAST_RING],
+    /// `(item, units dropped)`: the wire's `dropped` (v102), so the HUD can
+    /// say how much went to the floor and not only what.
+    spills: [(u16, u16); TOAST_RING],
     spill_head: usize,
     spill_len: usize,
     /// The own weak-spot mark (server-announced, per-player): the node's
@@ -1812,6 +1926,10 @@ pub struct ClientCore {
     pub deploy_defs: DeployContent,
     /// Rows received so far (batches arrive in order).
     pub deploy_defs_have: u16,
+    /// How far a lit fire's warmth reaches, cm (`ExposureContent::
+    /// heat_radius_cm`, on every deploy-def batch since wire v102). Zero
+    /// until the first batch, and on a shard whose fires warm nothing.
+    pub heat_radius_cm: u16,
     deploy_refusals: [u8; REFUSAL_RING],
     /// Knocks heard this frame (lock v1): address + who. Broadcast, so
     /// this ring is the *only* one here that can carry somebody else's
@@ -1929,6 +2047,16 @@ pub struct ClientCore {
     pub stock_addr: (u16, u16, u8),
     pub stock: [(u16, u32, u32); HEARTH_STOCK_ROWS],
     pub stock_count: u8,
+    /// The server tick (estimate, low 32 bits) the last stock ack landed
+    /// on — how old the crew HUD vital's reading is ([`Self::stock_age`]).
+    /// The shard re-sends one every `CREW_VITAL_TICKS` while you stand in
+    /// your own claim (NOW §0up 3), so an old one means you left it.
+    pub stock_at: u32,
+    /// Whether the last ack named the same hearth as the one before it and
+    /// some row held more — a feed landed (yours or a crewmate's). The
+    /// periodic push only ever sees stock spent, so this is what tells the
+    /// answer to a feed from the drip, without a wire bit for it.
+    pub stock_grew: bool,
     /// The `APPLIED2_*` word for the last `on_stream` call, read back by
     /// `applied2()`. Rebuilt from zero on every call for the same reason
     /// `n_slot_changes` is: it describes one message, not a running state,
@@ -1991,11 +2119,8 @@ impl ClientCore {
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
             tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
-            bodies_worn: vec![
-                (0, [NO_ITEM; sim_core::limits::WEAR_SLOTS]);
-                2 * sim_core::limits::MAX_PLAYERS
-            ]
-            .into_boxed_slice(),
+            bodies_worn: vec![(0, WornLook::NONE); 2 * sim_core::limits::MAX_PLAYERS]
+                .into_boxed_slice(),
             worn_next: 0,
             worn_gen: 0,
             tags_gen: 0,
@@ -2004,7 +2129,7 @@ impl ClientCore {
             toasts: [(0, 0); TOAST_RING],
             toast_head: 0,
             toast_len: 0,
-            spills: [0; TOAST_RING],
+            spills: [(0, 0); TOAST_RING],
             spill_head: 0,
             spill_len: 0,
             mark_cell: NO_CELL,
@@ -2095,6 +2220,7 @@ impl ClientCore {
             n_deploy_changes: 0,
             deploy_defs: DeployContent::EMPTY,
             deploy_defs_have: 0,
+            heat_radius_cm: 0,
             deploy_refusals: [0; REFUSAL_RING],
             knocks: [(0, 0, 0, 0, 0); REFUSAL_RING],
             shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -2139,6 +2265,8 @@ impl ClientCore {
             stock_addr: (0, 0, 0),
             stock: [(0, 0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
+            stock_at: 0,
+            stock_grew: false,
             applied2: 0,
             known: 0,
             research_toasts: [(0, 0); TOAST_RING],
@@ -2243,7 +2371,11 @@ impl ClientCore {
         self.events_applied += 1;
         let mut flags = 0u32;
         match msg {
-            EventMsg::Gather { item, added } => {
+            EventMsg::Gather {
+                item,
+                added,
+                dropped,
+            } => {
                 if added > 0 {
                     if self.toast_len == TOAST_RING {
                         // Drop oldest: advance the head.
@@ -2253,12 +2385,14 @@ impl ClientCore {
                     self.toasts[(self.toast_head + self.toast_len) % TOAST_RING] = (item, added);
                     self.toast_len += 1;
                     flags |= APPLIED_TOAST;
-                } else {
-                    // The pack was full. `sim-core` only pushes this event
-                    // for a payout it actually owed (`gather.rs`'s `pay > 0`,
-                    // `backpack.rs`'s `took == 0` skip), so the zero is the
-                    // spill and not a swing that earned nothing.
-                    self.push_spill(item);
+                }
+                // Not `else`: a partial spill is one event with both halves,
+                // a `+N` toast for what fit and a spill line for the rest.
+                // `sim-core` only pushes this for a payout it actually owed
+                // (`gather.rs`'s `pay > 0`, `backpack.rs`'s `took == 0`
+                // skip), so a zero-added event always carries its `dropped`.
+                if dropped > 0 {
+                    self.push_spill(item, dropped);
                 }
             }
             EventMsg::Reload {
@@ -2416,6 +2550,7 @@ impl ClientCore {
             } => {
                 self.skins.count = total;
                 self.skins_gen = self.skins_gen.wrapping_add(1);
+                self.applied2 |= APPLIED2_SKINS;
                 for i in 0..count as usize {
                     // The decoder refused incoherent rows and bounded the
                     // index; a failure here is an index past the table.
@@ -2615,7 +2750,7 @@ impl ClientCore {
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }
             }
-            EventMsg::Worn { id, items } => self.file_worn(id, items),
+            EventMsg::Worn { id, items, skins } => self.file_worn(id, WornLook { items, skins }),
             EventMsg::CraftQ {
                 jobs,
                 count,
@@ -2626,16 +2761,20 @@ impl ClientCore {
                 self.craft_eta_ticks = eta_ticks;
                 flags |= APPLIED_CRAFT_Q;
             }
-            EventMsg::CraftDone { item, added } => {
-                if added == 0 {
-                    // A finished unit that could not fit. This used to fall
-                    // through to the toast ring, and the HUD formatted it
-                    // straight out as `crafted 0 × Stone Hatchet` — a line
-                    // that told the player the craft had failed when it had
-                    // succeeded and was lying on the floor. Gather's arm has
-                    // always guarded its zero; this one now does too.
-                    self.push_spill(item);
-                } else {
+            EventMsg::CraftDone {
+                item,
+                added,
+                dropped,
+            } => {
+                // What could not fit (a two-arrow recipe can half fit). A
+                // zero added used to fall through to the toast ring, and the
+                // HUD formatted it straight out as `crafted 0 × Stone
+                // Hatchet` — a line that told the player the craft had
+                // failed when it had succeeded and was lying on the floor.
+                if dropped > 0 {
+                    self.push_spill(item, dropped);
+                }
+                if added > 0 {
                     if self.craft_toast_len == TOAST_RING {
                         self.craft_toast_head = (self.craft_toast_head + 1) % TOAST_RING;
                         self.craft_toast_len -= 1;
@@ -2772,9 +2911,13 @@ impl ClientCore {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 self.piece_defs.piece_count = total as u16;
+                // The repair price (wire v102), the hammer's quote with
+                // each record's hp (`build::repair_quote`).
+                self.piece_defs.repair_pct = repair_pct;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.piece_defs.pieces[first as usize + i] = *row;
                 }
@@ -3006,9 +3149,12 @@ impl ClientCore {
                 total,
                 first,
                 count,
+                heat_radius_cm,
                 rows,
             } => {
                 self.deploy_defs.def_count = total as u16;
+                // The fire's reach (wire v102), what `near_fire` measures.
+                self.heat_radius_cm = heat_radius_cm;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.deploy_defs.defs[first as usize + i] = *row;
                 }
@@ -3053,15 +3199,16 @@ impl ClientCore {
                     self.own_struct_hit = self.struct_hit;
                     self.applied2 |= APPLIED2_OWN_STRUCT_HIT;
                 }
-                // …and re-band the mirror, so the wall the player is
-                // watching come apart actually comes apart (`set_dmg`).
-                // An unknown maximum bands to 0 by `damage_band`'s own
-                // rule rather than guessing a fraction of nothing.
+                // …and re-state the mirror, so the wall the player is
+                // watching come apart actually comes apart (`set_hp`), and
+                // the hammer's repair quote follows it down. An unknown
+                // maximum bands to 0 by `damage_band`'s own rule rather
+                // than guessing a fraction of nothing.
                 let band = sim_core::build::damage_band(left, max.unwrap_or(0));
                 if deploy {
-                    self.deploys.set_dmg(cx, cz, level, loc, band);
+                    self.deploys.set_hp(cx, cz, level, loc, left, band);
                 } else {
-                    self.pieces.set_dmg(cx, cz, level, loc, band);
+                    self.pieces.set_hp(cx, cz, level, loc, left, band);
                 }
                 flags |= APPLIED_STRUCT_HIT;
             }
@@ -3071,9 +3218,11 @@ impl ClientCore {
                 // both halves of the pair by construction, because the
                 // verb's whole contract is that a repaired structure
                 // stands at its baked row's hp and never a point over — so
-                // the bit is ignored here and the readout means the same
-                // thing for a door as for the doorway it stands in.
-                deploy: _,
+                // the readout means the same thing for a door as for the
+                // doorway it stands in. The mirror is another matter: a
+                // door and its doorway share the address, and mending one
+                // must not write its hp onto the other.
+                deploy,
                 cx,
                 cz,
                 level,
@@ -3089,10 +3238,12 @@ impl ClientCore {
                 // Band 0 without consulting `damage_band`, and that is not
                 // a shortcut: the verb's whole contract is that a repaired
                 // structure stands at its baked row's hp and never a point
-                // over, which is the same reason the `deploy` bit is
-                // ignored above. `damage_band(hp, hp)` is 0 by definition.
-                self.deploys.set_dmg(cx, cz, level, loc, 0);
-                self.pieces.set_dmg(cx, cz, level, loc, 0);
+                // over. `damage_band(hp, hp)` is 0 by definition.
+                if deploy {
+                    self.deploys.set_hp(cx, cz, level, loc, hp, 0);
+                } else {
+                    self.pieces.set_hp(cx, cz, level, loc, hp, 0);
+                }
                 flags |= APPLIED_STRUCT_HIT;
             }
             EventMsg::ChargePlaced {
@@ -3580,9 +3731,16 @@ impl ClientCore {
                 rows,
                 count,
             } => {
+                let n = (count as usize).min(HEARTH_STOCK_ROWS);
+                self.stock_grew = self.stock_addr == (cx, cz, level)
+                    && rows[..n]
+                        .iter()
+                        .zip(&self.stock)
+                        .any(|(new, old)| new.0 == old.0 && new.1 > old.1);
                 self.stock_addr = (cx, cz, level);
                 self.stock = rows;
                 self.stock_count = count;
+                self.stock_at = self.server_tick_u32();
                 flags |= APPLIED_STOCK;
             }
             // The whole list every time, so this is a replace and never a
@@ -4022,25 +4180,26 @@ impl ClientCore {
         Some(t)
     }
 
-    /// Buffer an item the pack could not hold, and raise `APPLIED2_SPILL`.
+    /// Buffer `n` units of an item the pack could not hold, and raise
+    /// `APPLIED2_SPILL`.
     ///
-    /// Private and shared by the two arms that can see a zero, so neither
+    /// Private and shared by the two arms that can see a spill, so neither
     /// can drift from the other on the drop-oldest rule.
-    fn push_spill(&mut self, item: u16) {
+    fn push_spill(&mut self, item: u16, n: u16) {
         if self.spill_len == TOAST_RING {
             self.spill_head = (self.spill_head + 1) % TOAST_RING;
             self.spill_len -= 1;
         }
-        self.spills[(self.spill_head + self.spill_len) % TOAST_RING] = item;
+        self.spills[(self.spill_head + self.spill_len) % TOAST_RING] = (item, n);
         self.spill_len += 1;
         self.applied2 |= APPLIED2_SPILL;
     }
 
-    /// Oldest buffered spill, if any: the item index that did not fit.
+    /// Oldest buffered spill, if any: (item index, units dropped).
     ///
     /// Destructive, single-consumer — `render/feed.rs` owns the drain and
     /// `tests/sound.rs` greps for any second call site.
-    pub fn pop_spill(&mut self) -> Option<u16> {
+    pub fn pop_spill(&mut self) -> Option<(u16, u16)> {
         if self.spill_len == 0 {
             return None;
         }
@@ -4199,6 +4358,13 @@ impl ClientCore {
     /// wire at.
     fn server_tick_u32(&self) -> u32 {
         self.clock.server_est.max(0.0) as u64 as u32
+    }
+
+    /// Ticks since the last stock ack landed — the crew HUD vital's
+    /// freshness (`stock_at`). A clock estimate nudged back under the
+    /// arrival reads 0, not four billion.
+    pub fn stock_age(&self) -> u32 {
+        (self.server_tick_u32().wrapping_sub(self.stock_at) as i32).max(0) as u32
     }
 
     /// Rust's safe zone: standing in THE GATE with a weapon in hand, which
@@ -4455,6 +4621,11 @@ impl ClientCore {
                 self.input_due = true;
             }
             return steps;
+        }
+        // Before the walks, as the sim does after its commands: any column a
+        // sync opened gets its terrain band memoized (`ColIndex::fill_bands`).
+        if steps > 0 {
+            self.pieces.fill_bands(self.predict.seed(), &self.haven);
         }
         for _ in 0..steps {
             let frame = InputFrame {
@@ -4936,7 +5107,7 @@ mod tests {
         // And word 1 describes one message: the next event clears it, so
         // an unconditional read cannot mistake the refusal above for a
         // verdict on a drag that has not been answered yet.
-        let len = encode_event_gather(3, 7, &mut buf).unwrap();
+        let len = encode_event_gather(3, 7, 0, &mut buf).unwrap();
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_eq!(flags, APPLIED_TOAST);
         assert_eq!(c.applied2(), 0, "a stale move verdict outlived its message");
@@ -4950,12 +5121,12 @@ mod tests {
     fn stream_applies_inventory_and_toasts() {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_gather(3, 7, &mut buf).unwrap();
+        let len = encode_event_gather(3, 7, 0, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_TOAST);
         // A full pack (added 0) is still not a toast — `+0 × Wood` was
         // never the right line — but it is no longer *nothing*: it is a
-        // spill, on word 1, and the item survives so the HUD can name it.
-        let len = encode_event_gather(3, 0, &mut buf).unwrap();
+        // spill, on word 1, and the item and amount survive for the HUD.
+        let len = encode_event_gather(3, 0, 6, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), 0, "a spill toasted");
         assert_eq!(c.applied2(), APPLIED2_SPILL);
         let slots = [InvSlot {
@@ -4981,7 +5152,28 @@ mod tests {
         assert_eq!(c.pop_toast(), Some((3, 7)));
         assert_eq!(c.pop_toast(), None);
         // The whiff went here instead, and carries which item it was.
-        assert_eq!(c.pop_spill(), Some(3));
+        assert_eq!(c.pop_spill(), Some((3, 6)));
+        assert_eq!(c.pop_spill(), None);
+    }
+
+    /// A partial spill (wire v102) is one event with both halves: what fit
+    /// is a `+N` toast and what did not is a spill line with its count, so
+    /// neither half eats the other. Same for a craft that half fits.
+    #[test]
+    fn a_partial_spill_toasts_what_fit_and_spills_the_rest() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_gather(5, 4, 21, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_TOAST);
+        assert_eq!(c.applied2(), APPLIED2_SPILL, "the rest went unsaid");
+        assert_eq!(c.pop_toast(), Some((5, 4)));
+        assert_eq!(c.pop_spill(), Some((5, 21)));
+
+        let len = encode_event_craft_done(8, 1, 1, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_DONE);
+        assert_eq!(c.applied2(), APPLIED2_SPILL);
+        assert_eq!(c.pop_craft_toast(), Some((8, 1)));
+        assert_eq!(c.pop_spill(), Some((8, 1)));
         assert_eq!(c.pop_spill(), None);
     }
 
@@ -4998,11 +5190,11 @@ mod tests {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
 
-        let len = encode_event_gather(11, 0, &mut buf).unwrap();
+        let len = encode_event_gather(11, 0, 30, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap() & APPLIED_TOAST, 0);
         assert_eq!(c.applied2(), APPLIED2_SPILL);
 
-        let len = encode_event_craft_done(12, 0, &mut buf).unwrap();
+        let len = encode_event_craft_done(12, 0, 2, &mut buf).unwrap();
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_eq!(
             flags & APPLIED_CRAFT_DONE,
@@ -5017,8 +5209,8 @@ mod tests {
             None,
             "a spill leaked into the craft ring"
         );
-        assert_eq!(c.pop_spill(), Some(11));
-        assert_eq!(c.pop_spill(), Some(12));
+        assert_eq!(c.pop_spill(), Some((11, 30)));
+        assert_eq!(c.pop_spill(), Some((12, 2)));
         assert_eq!(c.pop_spill(), None);
     }
 
@@ -5029,12 +5221,12 @@ mod tests {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for i in 0..(TOAST_RING + 2) {
-            let len = encode_event_gather(i as u16, 0, &mut buf).unwrap();
+            let len = encode_event_gather(i as u16, 0, 1, &mut buf).unwrap();
             c.on_stream(&buf[..len]).unwrap();
         }
         // The first two fell off the front; the rest survive in order.
         for i in 2..(TOAST_RING + 2) {
-            assert_eq!(c.pop_spill(), Some(i as u16));
+            assert_eq!(c.pop_spill(), Some((i as u16, 1)));
         }
         assert_eq!(c.pop_spill(), None);
     }
@@ -5120,7 +5312,7 @@ mod tests {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for i in 0..TOAST_RING as u16 + 2 {
-            let len = encode_event_gather(i, 1, &mut buf).unwrap();
+            let len = encode_event_gather(i, 1, 0, &mut buf).unwrap();
             c.on_stream(&buf[..len]).unwrap();
         }
         assert_eq!(c.pop_toast(), Some((2, 1)), "two oldest dropped");
@@ -5288,7 +5480,7 @@ mod tests {
         assert_eq!(c.jobs_count, 0, "empty announce clears the queue");
 
         // Done toasts and refusals ride their own rings.
-        let len = encode_event_craft_done(3, 2, &mut buf).unwrap();
+        let len = encode_event_craft_done(3, 2, 0, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_DONE);
         assert_eq!(c.pop_craft_toast(), Some((3, 2)));
         assert_eq!(c.pop_craft_toast(), None);
@@ -5334,6 +5526,69 @@ mod tests {
         assert_eq!(c.event_errors, 1);
     }
 
+    /// A fire's warmth reaches the HUD (`NOW.md` §0wx item 3): the reach
+    /// rides the deploy-def drip, and the client says "by a fire" only for
+    /// a lit row that burns, within that reach and within a storey — the
+    /// sim's `World::near_fire`, through the same `exposure::fire_reaches`.
+    #[test]
+    fn a_lit_fire_warms_within_its_reach_and_nothing_else_does() {
+        use protocol::{encode_event_deploy_defs, encode_event_deploy_placed, encode_event_oven};
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        // Probe fixture: row 4 is the campfire, row 6 the recycler.
+        let dc = DeployContent::probe_fixture();
+        let (len, _) = encode_event_deploy_defs(&dc, 450, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.heat_radius_cm, 450);
+        let fire = DeployRec {
+            cx: 341,
+            cz: 682,
+            row: 4,
+            ..DeployRec::default()
+        };
+        let recycler = DeployRec {
+            cx: 345,
+            row: 6,
+            ..fire
+        };
+        for rec in [fire, recycler] {
+            let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        }
+        let (fx, fz) = fire.xz();
+        let fy = terrain::ground(1, c.haven(), fx, fz);
+        assert!(!c.fire_warms(fx, fz, fy), "an unlit fire warms nobody");
+
+        let light = |c: &mut ClientCore, rec: &DeployRec, lit: bool| {
+            let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+            let len =
+                encode_event_oven(rec.cx, rec.cz, rec.level, rec.loc, lit, 9, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        };
+        light(&mut c, &fire, true);
+        assert!(c.fire_warms(fx, fz, fy), "standing in it");
+        assert!(c.fire_warms(fx + 4.4, fz, fy), "inside 4.5 m");
+        assert!(!c.fire_warms(fx + 4.6, fz, fy), "past the reach");
+        assert!(!c.fire_warms(fx, fz, fy + 3.1), "a storey up is out of it");
+
+        // A running recycler is lit and burns nothing.
+        light(&mut c, &recycler, true);
+        let (rx, rz) = recycler.xz();
+        let ry = terrain::ground(1, c.haven(), rx, rz);
+        assert!(!c.fire_warms(rx, rz, ry), "a recycler warms nobody");
+
+        // Snuffed, it stops; and a shard whose fires warm nothing says so
+        // on its next batch.
+        light(&mut c, &fire, false);
+        assert!(!c.fire_warms(fx, fz, fy), "out is out");
+        light(&mut c, &fire, true);
+        let (len, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(!c.fire_warms(fx, fz, fy), "a zero reach warms nothing");
+    }
+
     /// The predictor collides against the same closed doors the sim does,
     /// and the shut bit survives every path that rebuilds the derived
     /// index. A door the client renders shut but predicts through is the
@@ -5360,7 +5615,7 @@ mod tests {
         let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         let dc = DeployContent::probe_fixture();
-        let (len, _) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        let (len, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         let doorway = PieceRec {
             cx,

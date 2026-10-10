@@ -26,6 +26,7 @@ use bevy::math::Vec2;
 use client::render::terrain_mesh::{self, WET_BAND_M, WET_REACH_M, WET_VALUE};
 use client::render::water::*;
 use sim_core::terrain::{ISLAND_SIZE, SEA_LEVEL};
+use sim_core::weather;
 
 // ---------------------------------------------------------------------------
 // The wave set.
@@ -174,6 +175,8 @@ fn the_skirt_only_coarsens() {
 // ---------------------------------------------------------------------------
 
 const PHASE: [f32; WAVE_COUNT] = [0.3, 1.1, 2.4, 5.0];
+/// The clear sea's gains: [`WAVES`] as authored.
+const CALM: [f32; WAVE_COUNT] = SeaState::CALM.swell;
 
 /// The gradient must be the height field's own, or the specular disagrees with
 /// the silhouette and the sea reads as a lit sheet of plastic laid over a wavy
@@ -183,11 +186,11 @@ const PHASE: [f32; WAVE_COUNT] = [0.3, 1.1, 2.4, 5.0];
 fn the_normal_agrees_with_the_height_field() {
     let e = 0.01f32;
     for (x, z) in [(0.0, 0.0), (13.7, -22.1), (-101.5, 47.0), (3.3, 3.3)] {
-        let (_, gx, gz) = wave_field(x, z, &PHASE, STEP_M, 1.0);
-        let (hx1, _, _) = wave_field(x + e, z, &PHASE, STEP_M, 1.0);
-        let (hx0, _, _) = wave_field(x - e, z, &PHASE, STEP_M, 1.0);
-        let (hz1, _, _) = wave_field(x, z + e, &PHASE, STEP_M, 1.0);
-        let (hz0, _, _) = wave_field(x, z - e, &PHASE, STEP_M, 1.0);
+        let (_, gx, gz) = wave_field(x, z, &PHASE, &CALM, STEP_M, 1.0);
+        let (hx1, _, _) = wave_field(x + e, z, &PHASE, &CALM, STEP_M, 1.0);
+        let (hx0, _, _) = wave_field(x - e, z, &PHASE, &CALM, STEP_M, 1.0);
+        let (hz1, _, _) = wave_field(x, z + e, &PHASE, &CALM, STEP_M, 1.0);
+        let (hz0, _, _) = wave_field(x, z - e, &PHASE, &CALM, STEP_M, 1.0);
         let fd_x = (hx1 - hx0) / (2.0 * e);
         let fd_z = (hz1 - hz0) / (2.0 * e);
         assert!(
@@ -197,7 +200,7 @@ fn the_normal_agrees_with_the_height_field() {
         );
     }
     // And the normal it makes is a normal.
-    let (_, gx, gz) = wave_field(9.0, -4.0, &PHASE, STEP_M, 1.0);
+    let (_, gx, gz) = wave_field(9.0, -4.0, &PHASE, &CALM, STEP_M, 1.0);
     let n = wave_normal(gx, gz);
     assert!((n.length() - 1.0).abs() < 1e-5);
     assert!(n.y > 0.0, "the surface normal points down");
@@ -257,7 +260,7 @@ fn the_swell_dies_at_the_waterline() {
     assert_eq!(shoal(0.0), 0.0);
     assert_eq!(shoal(-3.0), 0.0);
     assert_eq!(shoal(SHOAL_FULL_M), 1.0);
-    let (h, gx, gz) = wave_field(20.0, 20.0, &PHASE, STEP_M, shoal(0.0));
+    let (h, gx, gz) = wave_field(20.0, 20.0, &PHASE, &CALM, STEP_M, shoal(0.0));
     assert_eq!((h, gx, gz), (0.0, 0.0, 0.0));
     // Monotone in between, so the shore is a ramp and not a step.
     let mut prev = -1.0f32;
@@ -267,6 +270,192 @@ fn the_swell_dies_at_the_waterline() {
         assert!(s >= prev - 1e-6, "shoaling fell at depth {d}");
         prev = s;
     }
+}
+
+// ---------------------------------------------------------------------------
+// The sea state.
+// ---------------------------------------------------------------------------
+
+/// A preset's wind as the client reads it (`render/weather.rs`'s `pm`).
+fn wind_of(preset: u8) -> f32 {
+    weather::preset(preset, 0).wind as f32 * 0.001
+}
+
+/// **A clear day draws the authored sea, bit for bit**, and every gate on the
+/// wave set above rests on it: they measure [`WAVES`], and `WAVES` is what a
+/// player sees only while the clear preset's wind raises nothing. Retune the
+/// clear wind in `sim_core::weather` and this goes red, rather than the clear
+/// sea quietly drawing a little rough under gates that still pass.
+#[test]
+fn a_clear_day_draws_the_authored_sea() {
+    assert!(
+        (wind_of(weather::CLEAR) - CALM_WIND).abs() < 1e-6,
+        "the clear preset blows {} and the calm sea is drawn at {CALM_WIND}",
+        wind_of(weather::CLEAR)
+    );
+    assert_eq!(SeaState::of_wind(wind_of(weather::CLEAR)), SeaState::CALM);
+    // Fog is stiller than clear, and the sea goes no flatter than authored.
+    assert_eq!(SeaState::of_wind(wind_of(weather::FOG)), SeaState::CALM);
+    assert_eq!(SeaState::of_wind(0.0), SeaState::CALM);
+    assert_eq!(SeaState::default(), SeaState::CALM);
+    // And a storm is the whole storm table.
+    let storm = SeaState::of_wind(wind_of(weather::STORM));
+    assert_eq!(storm.swell, STORM_GAIN);
+    assert_eq!(storm.surf, STORM_SURF_GAIN);
+}
+
+/// The sea rises with the wind through every preset, every wave with it, and
+/// without a step: the weather fades its wind (20 s for an admin's
+/// `/weather`, 15 min on the schedule), and a step in the curve is a sea that
+/// jumps mid-fade.
+#[test]
+fn the_sea_rises_with_the_wind() {
+    let mut presets: Vec<u8> = (weather::CLEAR..=weather::PRESET_MAX).collect();
+    presets.sort_by_key(|p| weather::preset(*p, 0).wind);
+    let mut prev = SeaState::CALM;
+    for p in presets {
+        let s = SeaState::of_wind(wind_of(p));
+        for i in 0..WAVE_COUNT {
+            assert!(
+                s.swell[i] >= prev.swell[i],
+                "wave {i} is lower under {} than under a stiller sky",
+                weather::preset_name(p)
+            );
+        }
+        assert!(
+            s.surf >= prev.surf,
+            "the breakers fell under {}",
+            weather::preset_name(p)
+        );
+        prev = s;
+    }
+    // Rain is rougher than clear, heavy rain than mild, a storm than both.
+    let mild = SeaState::of_wind(wind_of(weather::RAIN_MILD)).swell[0];
+    let heavy = SeaState::of_wind(wind_of(weather::RAIN_HEAVY)).swell[0];
+    assert!(1.0 < mild && mild < heavy && heavy < STORM_GAIN[0]);
+    let mut last = sea_state(0.0);
+    for i in 1..=1000 {
+        let s = sea_state(i as f32 / 1000.0);
+        assert!(
+            s >= last && s - last < 0.01,
+            "the sea state steps at wind {i}‰"
+        );
+        last = s;
+    }
+    assert_eq!(sea_state(1.0), 1.0);
+}
+
+/// **A storm is held to the clear sea's own limits.** The swell's summed
+/// steepness under the storm gains is the Gerstner bound
+/// `the_swell_cannot_break` holds the authored set to, and the shoaling
+/// still takes every wave to nothing at the waterline — a storm that climbed
+/// the beach would be `shoal`'s artefact back, taller.
+///
+/// The gains also have to be the shape the storm table claims: none under
+/// one (a storm that calmed a wave), and longest most, which is what makes a
+/// storm a different sea rather than the clear one drawn taller.
+#[test]
+fn a_storm_cannot_break_the_swell() {
+    let storm = SeaState::at(1.0);
+    let mut slope = 0.0f32;
+    for (w, g) in WAVES.iter().zip(storm.swell) {
+        slope += w.amp_m * g * (std::f32::consts::TAU / w.len_m);
+    }
+    let peak = slope * SHAPE_MAX_SLOPE;
+    assert!(
+        peak < 1.0,
+        "a storm swell's peak slope is {peak} - at or past 1 the surface folds through itself"
+    );
+    assert_eq!(
+        wave_field(20.0, 20.0, &PHASE, &storm.swell, STEP_M, shoal(0.0)),
+        (0.0, 0.0, 0.0),
+        "a storm swell stands on the waterline"
+    );
+    assert_eq!(surf_envelope(0.0, 0.0, 1.0) * storm.surf, 0.0);
+
+    for w in WAVES.windows(2) {
+        assert!(w[0].len_m > w[1].len_m, "WAVES is no longer longest first");
+    }
+    for i in 0..WAVE_COUNT {
+        assert!(STORM_GAIN[i] >= 1.0, "a storm lowers wave {i}");
+        if i > 0 {
+            assert!(
+                STORM_GAIN[i] <= STORM_GAIN[i - 1],
+                "a storm raises wave {i} more than the longer wave {}",
+                i - 1
+            );
+        }
+    }
+    assert!(STORM_SURF_GAIN >= 1.0);
+}
+
+/// **A storm trough never bares the seabed.** Every wave and the breaker on
+/// top troughing together, at the storm's gains, must stay above the bed at
+/// every depth the shoaling and the surf reach — a trough deeper than the
+/// water is a dry hole walking across the shallows a metre offshore, where
+/// no real wave draws back. The bound is the worst case (all troughs at
+/// once), so it holds whatever the phases.
+#[test]
+fn a_storm_trough_never_bares_the_seabed() {
+    let trough = (0..4096)
+        .map(|i| shape(std::f32::consts::TAU * i as f32 / 4096.0).0)
+        .fold(0.0f32, f32::min)
+        .abs();
+    let storm = SeaState::at(1.0);
+    let swell: f32 = WAVES
+        .iter()
+        .zip(storm.swell)
+        .map(|(w, g)| w.amp_m * g)
+        .sum();
+    let reach = SURF_FADE_TO_M.max(SHOAL_FULL_M) * 1.5;
+    for i in 1..=2000 {
+        let d = reach * i as f32 / 2000.0;
+        let worst = trough * (swell * shoal(d) + surf_envelope(d, 0.0, 1.0) * storm.surf);
+        assert!(
+            worst < d,
+            "at {d} m of water a storm trough reaches {worst} m down - the seabed shows through"
+        );
+    }
+}
+
+/// **A storm whitens the swell, and a breeze keeps its scatter.**
+/// `crest_foam` measures every sea against the clear sea's crest reach, so
+/// the clear sea's caps are exactly the old ones and a storm's crests, which
+/// pass that reach, cap far more of the surface — but not all of it: a storm
+/// is a streaked sea, and one capped everywhere is a white sheet.
+#[test]
+fn a_storm_caps_more_of_the_swell_than_a_breeze() {
+    let reach: f32 = WAVES.iter().map(|w| w.amp_m).sum::<f32>() * SHAPE_PEAK;
+    let capped = |s: &SeaState| {
+        let mut n = 0usize;
+        for iz in 0..64 {
+            for ix in 0..64 {
+                let (h, _, _) = wave_field(
+                    ix as f32 * 3.1,
+                    iz as f32 * 2.7,
+                    &PHASE,
+                    &s.swell,
+                    STEP_M,
+                    1.0,
+                );
+                if crest_foam(h, reach) > 0.0 {
+                    n += 1;
+                }
+            }
+        }
+        n as f32 / (64.0 * 64.0)
+    };
+    let calm = capped(&SeaState::CALM);
+    let storm = capped(&SeaState::at(1.0));
+    assert!(calm > 0.0, "the clear sea has no whitecaps at all");
+    assert!(
+        storm > 3.0 * calm,
+        "a storm caps {storm} of the swell against a breeze's {calm}"
+    );
+    assert!(
+        storm < 0.5,
+        "a storm caps {storm} of the swell - a white sheet"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -827,8 +1016,13 @@ fn the_resolved_field_is_the_field_at_that_vertex() {
     // off-by-one index cannot land on an equal value by luck.
     let shoal: Vec<f32> = (0..n * n).map(|i| (i % 97) as f32 / 96.0).collect();
     let centre = Vec2::new(-37.0, 118.0);
+    // A rough sea, whose gains differ wave to wave, so a gain handed to the
+    // wrong wave is a different surface too.
+    let swell = SeaState::at(0.7).swell;
     let mut field = vec![[0.0f32; 3]; n * n];
-    resolve_field(centre, &coords, &spacing, &shoal, &PHASE, &mut field);
+    resolve_field(
+        centre, &coords, &spacing, &shoal, &PHASE, &swell, &mut field,
+    );
 
     for (iz, iaz) in [(0usize, 0usize), (1, 5), (n / 2, n / 3), (n - 1, n - 2)] {
         let ix = iaz;
@@ -838,6 +1032,7 @@ fn the_resolved_field_is_the_field_at_that_vertex() {
             centre.x + coords[ix],
             centre.y + coords[iz],
             &PHASE,
+            &swell,
             sp,
             shoal[i],
         );
@@ -857,6 +1052,7 @@ fn the_resolved_field_is_the_field_at_that_vertex() {
                 centre.x + coords[ix],
                 centre.y + coords[iz],
                 &PHASE,
+                &swell,
                 sp,
                 shoal[i],
             );

@@ -143,6 +143,7 @@ fn dress(
             ibm,
             &mut rig,
             OUTFITS[(body.0 as usize - 1) % OUTFITS.len()],
+            |_, plain| plain.clone(),
         );
     }
     if all && bodies.iter().count() == OUTFITS.len() {

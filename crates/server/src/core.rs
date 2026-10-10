@@ -37,7 +37,7 @@ use protocol::{
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
 use sim_core::craft::CraftJob;
-use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
@@ -95,6 +95,32 @@ fn addr_parts(addr: u32) -> (u8, u8, u8, u8) {
         (addr >> 8) as u8,
         addr as u8,
     )
+}
+
+/// Whether the sim reads this action's subject off the selected hotbar slot
+/// (`combat::held_item`): the charge planted, the gun reloaded, the vessel
+/// filled at the water. These wait for the frames buffered ahead of them
+/// (`ClientNetState::wait_for_hand`, NOW §0rc 2); a verb that names its
+/// slot or its target acts at once.
+fn reads_hand(act: &ActionMsg) -> bool {
+    matches!(
+        act,
+        ActionMsg::Throw { .. } | ActionMsg::Reload | ActionMsg::Drink
+    )
+}
+
+/// Ticks between two connections' crew-vital pushes: the period spread over
+/// every slot a push can go to (players, then seats), so slot `s` is due on
+/// its own phase and no two share a tick (`crew_vital_due`).
+const CREW_VITAL_STRIDE: u64 =
+    sim_core::deploy::CREW_VITAL_TICKS / (MAX_PLAYERS + MAX_SPECTATORS) as u64;
+const _: () = assert!(CREW_VITAL_STRIDE > 0);
+
+/// Whether connection `slot` is owed its crew-vital push this tick (NOW
+/// §0up 3): once per `CREW_VITAL_TICKS`, on a phase of its own, so a full
+/// shard's crew never ask for their bills on one tick.
+fn crew_vital_due(tick: u64, slot: usize) -> bool {
+    (tick + slot as u64 * CREW_VITAL_STRIDE).is_multiple_of(sim_core::deploy::CREW_VITAL_TICKS)
 }
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -192,10 +218,11 @@ pub struct ShardCore {
     /// A row outlives its connection, so a sleeper keeps its name for late
     /// joiners until the slot's next tenant overwrites it. Never in the sim.
     tags: Box<[TagRow]>,
-    /// What each world slot's body was last seen wearing — its tenant's id
-    /// and the item in each wear slot (`NO_ITEM` for none). A change owes
-    /// every connection a `SUB_WORN` (`note_worn`, then `drip_client`).
-    worn_seen: [(u32, [u16; WEAR_SLOTS]); MAX_PLAYERS],
+    /// What each world slot's body was last seen wearing — its tenant's id,
+    /// the item in each wear slot (`NO_ITEM` for none) and each piece's skin
+    /// (v102, zero for none). A change owes every connection a `SUB_WORN`
+    /// (`note_worn`, then `drip_client`); a reskin of a worn piece is one.
+    worn_seen: [WornSeen; MAX_PLAYERS],
     /// World slots whose tenant has worn anything since it arrived. Only
     /// these are worth a `SUB_WORN`: a client draws a body it was never told
     /// about in nothing, so an outfit that has always been empty says nothing.
@@ -239,6 +266,11 @@ pub struct ShardCore {
     /// it ([`Self::adopt_identities`]) so the bodies it restored are
     /// claimable.
     sleepers: SleeperIndex,
+    /// Eviction records the store may not have filed yet ([`EvictMemo`]): a
+    /// victim back before its record lands rejoins from this, not from the
+    /// stale copy the accept loop read. In memory only: after a restart the
+    /// store's copy is what a victim gets back.
+    evicted: EvictMemo,
     /// The wallets this shard trusts with the admin lane (admin v0). Pure
     /// config, read once at boot and never written — the same standing as
     /// the baked content tables, and the reason it may live on a struct
@@ -292,11 +324,11 @@ struct Seat {
 const NO_SEAT: u8 = u8::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
-/// The three side channels an admin verb needs and the sim's own state
+/// The side channels an admin verb needs and the sim's own state
 /// cannot provide — passed into [`ShardCore::tick`] rather than held,
 /// because every one of them belongs to a thread that is not this one.
 ///
-/// A bundle rather than three parameters for `charge::tick_fuses`' reason
+/// A bundle rather than four parameters for `charge::tick_fuses`' reason
 /// inverted: these are not distinct owners of the world, they are one
 /// answer to "what does this tick owe the outside".
 pub struct Ops<'a> {
@@ -310,6 +342,9 @@ pub struct Ops<'a> {
     /// close. It takes the same path a full ring takes — the act is
     /// refused, counted and logged — so the two cannot diverge.
     pub admin_tx: Option<&'a mut rtrb::Producer<crate::admin::AdminAct>>,
+    /// The accept loop's answers to those acts, said to the admin by the
+    /// chat pump (`admin::AdminReply`). `None` ⇒ no accept loop, no answers.
+    pub admin_answers: Option<&'a mut rtrb::Consumer<crate::admin::AdminReply>>,
     /// Raised by `/save`, read and cleared by the sim thread's world-save
     /// cadence — a flag rather than a call because the blob is written by
     /// a different thread again, and this tick has no business waiting.
@@ -329,7 +364,9 @@ pub struct Ops<'a> {
 pub enum Admitted {
     /// Took over the sleeping body they left behind.
     TookOver,
-    /// Restored from the store's record — the world did not have them.
+    /// Restored from a record — the world did not have them. The shard's
+    /// own eviction record when it kept one for the key (`EvictMemo`),
+    /// else the store's, as the accept loop read it.
     Restored,
     /// A fresh character: a first visit, a guest, or a wiped shard.
     Fresh,
@@ -417,6 +454,82 @@ impl SleeperIndex {
     }
 }
 
+/// The sim's own copy of every eviction record it has handed out, by key
+/// (NOW §0y 2). `connect_as` reads it ahead of the record a joiner brings.
+///
+/// The eviction record leaves the sim on the save ring and reaches the
+/// store a hop later, but a reconnecting victim's `install` reads the store
+/// on the accept loop, *before* its `Connect` reaches the sim. Inside the
+/// eviction's window — or for good, if a full save ring dropped the record
+/// — it brings the copy its leave filed, frozen before the raid, and
+/// `JoinAs` would undo the raid that the current-body save exists to keep.
+/// The current record is already in hand here, so it wins.
+///
+/// It may always win, though not because it is newer than the store's
+/// copy: once the ring files it, the store holds this very record. What
+/// makes it safe is that nothing newer can be written while it stands. The
+/// only writer of a key's records is that key's own connection (its leave,
+/// its autosaves), and every admission of the key spends the entry, as
+/// does any leave of it — so a victim who comes back, plays on and is
+/// restored later gets the store's newer record, never this one
+/// (`persist_store.rs`). Nothing expires on a clock for that reason; a full
+/// table drops its oldest put, which costs that one victim only the hole
+/// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
+/// allocates.
+struct EvictMemo {
+    entries: Box<[Option<(PlayerKey, PlayerSave, u64)>]>,
+    /// The next put's stamp: oldest-first replacement with no ties when one
+    /// window evicts more than once.
+    next: u64,
+}
+
+impl EvictMemo {
+    fn new() -> Self {
+        Self {
+            entries: vec![None; MAX_PLAYERS].into_boxed_slice(),
+            next: 0,
+        }
+    }
+
+    fn find(&self, key: &PlayerKey) -> Option<PlayerSave> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|(k, _, _)| k == key)
+            .map(|(_, s, _)| *s)
+    }
+
+    fn forget(&mut self, key: &PlayerKey) {
+        for e in self.entries.iter_mut() {
+            if e.map(|(k, _, _)| k == *key).unwrap_or(false) {
+                *e = None;
+            }
+        }
+    }
+
+    /// File `save` under `key`, replacing any earlier one for the same key,
+    /// else into a free row, else over the oldest put.
+    fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
+        self.forget(key);
+        let stamp = |e: &Option<(PlayerKey, PlayerSave, u64)>| e.map_or(0, |(_, _, n)| n);
+        let row = self
+            .entries
+            .iter()
+            .position(|e| e.is_none())
+            .or_else(|| (0..self.entries.len()).min_by_key(|&i| stamp(&self.entries[i])));
+        if let Some(i) = row {
+            self.entries[i] = Some((*key, save, self.next));
+            self.next += 1;
+        }
+    }
+}
+
+/// What one world slot's body was last seen wearing (`ShardCore::worn_seen`):
+/// its tenant's id, the item in each wear slot and each piece's skin.
+type WornSeen = (u32, [u16; WEAR_SLOTS], [u16; WEAR_SLOTS]);
+/// An empty world slot's: nobody, wearing nothing.
+const WORN_NONE: WornSeen = (0, [sim_core::gather::NO_ITEM; WEAR_SLOTS], [0; WEAR_SLOTS]);
+
 /// One player slot's tag (`ShardCore::tags`). `id == 0` is an empty row —
 /// a guest or a slot nobody has joined — and is never sent.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -453,13 +566,14 @@ impl ShardCore {
             heard_len: 0,
             drawing: [false; MAX_PLAYERS],
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
-            worn_seen: [(0, [sim_core::gather::NO_ITEM; WEAR_SLOTS]); MAX_PLAYERS],
+            worn_seen: [WORN_NONE; MAX_PLAYERS],
             worn_dressed: 0,
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
             sleepers: SleeperIndex::new(),
+            evicted: EvictMemo::new(),
             watching: [None; MAX_SPECTATORS],
             trust: crate::trustlog::Tap::off(),
             wipe: crate::wipe::Clock::off(),
@@ -647,14 +761,16 @@ impl ShardCore {
             let p = &self.world.players[w];
             let now = if p.active {
                 let mut items = [sim_core::gather::NO_ITEM; WEAR_SLOTS];
-                for (item, s) in items.iter_mut().zip(p.worn.iter()) {
+                let mut skins = [0u16; WEAR_SLOTS];
+                for ((item, skin), s) in items.iter_mut().zip(skins.iter_mut()).zip(p.worn.iter()) {
                     if s.count > 0 {
                         *item = s.item;
+                        *skin = s.skin;
                     }
                 }
-                (p.id, items)
+                (p.id, items, skins)
             } else {
-                (0, [sim_core::gather::NO_ITEM; WEAR_SLOTS])
+                WORN_NONE
             };
             if self.worn_seen[w] != now {
                 let bit = 1u128 << w;
@@ -902,6 +1018,14 @@ impl ShardCore {
     /// keyless victim with no record to file. The record returns rather
     /// than being pushed here because `ShardCore` holds no rings — the
     /// same seam `disconnect` and `autosave` already cross by returning.
+    ///
+    /// **`save` is what the accept loop read, and it can be stale.** It
+    /// fetched the store before this join's `Connect` reached the sim, so a
+    /// victim reconnecting in its own eviction's window (or after the save
+    /// ring dropped the eviction record) brings the copy its leave filed,
+    /// raid not included. The record this function kept at the pick
+    /// ([`EvictMemo`]) outranks it whenever the world has no body for the
+    /// key (NOW §0y 2).
     #[must_use]
     pub fn connect_as(
         &mut self,
@@ -918,6 +1042,13 @@ impl ShardCore {
             .and_then(|k| self.sleepers.find(&k))
             .filter(|&s| self.world.is_sleeper(s))
             .filter(|&s| !self.spoken_for(s));
+        // No body, so a record: this shard's own eviction record first, the
+        // store's (as the accept loop read it) only if it has none. Peeked,
+        // not taken — it is spent below only once the join is queued.
+        let save = match key {
+            Some(k) if sleeper.is_none() => self.evicted.find(&k).or(save),
+            _ => save,
+        };
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
@@ -944,10 +1075,12 @@ impl ShardCore {
                     // (`world.rs`) so evaluating it eagerly costs a slot
                     // lookup on the guest path and changes nothing else.
                     let record = self.sleepers.key_of(victim).zip(self.world.save_of(victim));
-                    if let Some((k, _)) = record.as_ref() {
+                    if let Some((k, s)) = record.as_ref() {
                         // The arrow points at a body the command below is
-                        // about to remove.
+                        // about to remove. The record is kept for the
+                        // victim's return, which may beat the store to it.
                         self.sleepers.forget(k);
+                        self.evicted.put(k, *s);
                     }
                     let roomed = self.queue(Command::Evict { id: victim });
                     debug_assert!(roomed, "room for two was checked above");
@@ -973,6 +1106,10 @@ impl ShardCore {
             // answer, wrong reason, and one that stops being right the
             // moment ids are reused.
             self.sleepers.forget(k);
+            // Whichever door opened, the world has a body for this key now,
+            // and every record the store gets for it from here on is newer
+            // than an eviction's.
+            self.evicted.forget(k);
         }
         self.keys[slot] = key;
         self.clients[slot].reset(id);
@@ -1096,6 +1233,9 @@ impl ShardCore {
         if let Some(k) = self.keys[slot] {
             let world = &self.world;
             self.sleepers.put(&k, id, |s| world.is_sleeper(s));
+            // This leave's record supersedes any eviction record for the
+            // key — reachable only when one key held two connections.
+            self.evicted.forget(&k);
         }
         self.keys[slot] = None;
         self.clients[slot].connected = false;
@@ -1243,6 +1383,7 @@ impl ShardCore {
         }
         let c = &mut self.clients[slot];
         if c.connected && c.pending_action.is_none() {
+            c.wait_for_hand(reads_hand(&act));
             c.pending_action = Some(act);
         }
     }
@@ -1284,6 +1425,7 @@ impl ShardCore {
         let mut ops = Ops {
             log: &mut log,
             admin_tx: None,
+            admin_answers: None,
             save_now: &mut save_now,
         };
         self.tick(stats, &mut ops, send);
@@ -1411,6 +1553,12 @@ impl ShardCore {
         // keeps its own gap on the sim's tick, and an early one waits in the
         // hand — defer, never drop — so a script hammering a key gets a
         // person's pace and a request still gets its answer.
+        //
+        // **And not ahead of the hand it reads** (NOW §0rc 2): a throw, a
+        // reload or a drink waits for the frames that were already buffered
+        // when it reached the hand, so the hotbar slot the client was on
+        // when it pressed is the one in force (`ClientNetState::hand_ready`).
+        // Asked before the pace, so a wait does not start the kind's clock.
         let now = self.world.tick;
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
@@ -1418,7 +1566,7 @@ impl ShardCore {
                 continue;
             }
             if let Some(act) = c.pending_action.take() {
-                if !c.pace.go(&act, now) {
+                if !c.hand_ready() || !c.pace.go(&act, now) {
                     c.pending_action = Some(act);
                     continue;
                 }
@@ -1451,6 +1599,11 @@ impl ShardCore {
                     // rate limit on the roll.
                     ActionMsg::Container { kind, cont } => {
                         c.open_container(kind, cont);
+                        // A close is the client's own press: its panel is
+                        // already shut, so it is owed no word back.
+                        if kind == CONT_SELF {
+                            c.cont_shown = false;
+                        }
                         if kind == sim_core::inventory::CONT_WORLD {
                             Command::OpenWorldCont { id: c.id, cont }
                         } else {
@@ -1461,6 +1614,16 @@ impl ShardCore {
                     ActionMsg::Treat { slot, target } => Command::Treat {
                         id: c.id,
                         slot,
+                        target,
+                    },
+                    ActionMsg::Give {
+                        slot,
+                        count,
+                        target,
+                    } => Command::Give {
+                        id: c.id,
+                        slot,
+                        count,
                         target,
                     },
                     ActionMsg::Craft {
@@ -1704,6 +1867,7 @@ impl ShardCore {
                 if self.watching[i].is_some_and(|s| s.catchup) {
                     self.spectator_catchup(i, stats, &mut send);
                 }
+                self.sync_seat_container(i, stats, &mut send);
                 self.drip_client(MAX_PLAYERS + i, stats, &mut send);
             }
         }
@@ -1846,6 +2010,66 @@ impl ShardCore {
         }
     }
 
+    /// Point seat `i`'s container subscription at whatever its target has
+    /// open (NOW §5sp), so the watcher's panel shows the box, bag or crate
+    /// the player is looting.
+    ///
+    /// **The subscription is mirrored, the contents are not.** A seat never
+    /// sends `ActionMsg::Container`, so without this its `open_cont_kind`
+    /// stays `CONT_SELF` and the container drip (unmirrored, like every
+    /// drip: `fan_out`) never feeds it. Copying the target's `ContSync`
+    /// bytes would be wrong for the reason snapshots are not copied: the
+    /// diff is against the target's shadow, which the seat never had. So
+    /// the seat opens the same handle and its own drip, run right after
+    /// this, sends it a reset batch off its own shadow. That drip resolves
+    /// reach and the lock on the seat's body, which is the target's body
+    /// (`clients[seat].id` is the target's id), so a watcher sees exactly
+    /// the container its player can move items in and nothing more.
+    ///
+    /// The player drips run first, so a target whose open the drip just shut
+    /// (gone, out of reach, locked) already reads `CONT_SELF` here. A close
+    /// is told to the seat directly, since its drip has nothing open to
+    /// close; a refused push leaves the seat open and retries next tick.
+    ///
+    /// The close is owed by what the watcher was **told**, not by the
+    /// subscription (`cont_shown`): a refused close followed by a resync
+    /// (`ev_resync` drops the subscription silently, which a player answers
+    /// by asking again and a seat cannot) would otherwise leave the
+    /// subscriptions agreeing and the watcher's panel up, stale, for good.
+    fn sync_seat_container(
+        &mut self,
+        i: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let Some(seat) = self.watching[i] else {
+            return;
+        };
+        let slot = MAX_PLAYERS + i;
+        let t = &self.clients[seat.target];
+        let want = (t.open_cont_kind, t.open_cont_handle);
+        let me = &self.clients[slot];
+        if want.0 != CONT_SELF {
+            if want != (me.open_cont_kind, me.open_cont_handle) {
+                self.clients[slot].open_container(want.0, want.1);
+            }
+            return;
+        }
+        if me.open_cont_kind == CONT_SELF && !me.cont_shown {
+            return;
+        }
+        match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
+            Ok(len) => {
+                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.ev_sent);
+                    self.clients[slot].close_container();
+                    self.clients[slot].cont_shown = false;
+                }
+            }
+            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+        }
+    }
+
     /// This client's live world slot, or None while its join command is
     /// still queued. `update_interest` refreshes the cache every tick, so
     /// this is a validated read of it, never a scan — chat routing is
@@ -1959,11 +2183,15 @@ impl ShardCore {
         let mut logged = Record::new(tick, Kind::AdminAct, verb, who);
         match cmd {
             AdminCmd::Kick { id } | AdminCmd::Ban { id } => {
+                // Every refusal here is answered too, as the accept loop
+                // answers the acts it runs: an admin who hears nothing
+                // cannot tell a refused kick from a slow one.
                 let ban = matches!(cmd, AdminCmd::Ban { .. });
                 let Some(slot) = target_slot(self, id) else {
                     ops.log.push(
                         Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
                     );
+                    self.answer(from_slot, admin::kicked_line(id, false), stats, send);
                     return;
                 };
                 let act = if ban {
@@ -1973,11 +2201,12 @@ impl ShardCore {
                         ops.log.push(
                             Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
                         );
+                        self.answer(from_slot, admin::no_wallet_line(id), stats, send);
                         return;
                     };
-                    AdminAct::Ban { id, key }
+                    AdminAct::Ban { by: who, id, key }
                 } else {
-                    AdminAct::Kick { id }
+                    AdminAct::Kick { by: who, id }
                 };
                 let sent = ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok());
                 if !sent {
@@ -1987,9 +2216,23 @@ impl ShardCore {
                     ops.log.push(
                         Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
                     );
+                    self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
                 logged = logged.with(id as i64, 0, 0);
+            }
+            AdminCmd::Unban { prefix } => {
+                // The list is the accept loop's, so it decides whether the
+                // prefix names one ban and answers on `admin_answers`.
+                let act = AdminAct::Unban { by: who, prefix };
+                if !ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok()) {
+                    ops.log.push(
+                        Record::new(tick, Kind::AdminRefused, verb, who).note(prefix.as_bytes()),
+                    );
+                    self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
+                    return;
+                }
+                logged = logged.note(prefix.as_bytes());
             }
             AdminCmd::Say { text } => {
                 // The house's line, marked and sent from `from = 0` — an
@@ -2124,6 +2367,21 @@ impl ShardCore {
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
         self.pump_wipe(stats, send);
+        // How the accept loop's half of an admin verb went, to the admin
+        // alone. One who left meanwhile hears nothing, which is counted.
+        if let Some(rx) = ops.admin_answers.as_mut() {
+            while let Ok(r) = rx.pop() {
+                match (0..MAX_PLAYERS)
+                    .find(|&s| self.clients[s].connected && self.clients[s].id == r.to)
+                {
+                    Some(slot) => {
+                        let line = crate::admin::server_line(&r.text);
+                        self.say_server(Some(slot), &line, stats, send);
+                    }
+                    None => ShardStats::bump(&stats.chat_undelivered),
+                }
+            }
+        }
         for from_slot in 0..MAX_PLAYERS {
             let Some(msg) = self.clients[from_slot].pending_chat.take() else {
                 continue;
@@ -2225,7 +2483,8 @@ impl ShardCore {
                     };
                     let item = (ev.b >> 16) as u16;
                     let added = ev.b as u16;
-                    match encode_event_gather(item, added, &mut self.ev_buf) {
+                    let dropped = ev.c.min(u16::MAX as u32) as u16;
+                    match encode_event_gather(item, added, dropped, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -2511,7 +2770,12 @@ impl ShardCore {
                         continue; // crafter left this tick
                     };
                     let enc = if ev.code == EV_CRAFT_DONE {
-                        encode_event_craft_done((ev.b >> 16) as u16, ev.b as u16, &mut self.ev_buf)
+                        encode_event_craft_done(
+                            (ev.b >> 16) as u16,
+                            ev.b as u16,
+                            ev.c.min(u16::MAX as u32) as u16,
+                            &mut self.ev_buf,
+                        )
                     } else {
                         encode_event_craft_refused(ev.b as u8, &mut self.ev_buf)
                     };
@@ -2691,6 +2955,7 @@ impl ShardCore {
                 }
                 EV_DEPLOY_PLACED => {
                     ShardStats::bump(&stats.deploys_placed);
+                    self.owe_bags_if_bag(ev.c, ev.b as u8);
                     // Owner (ev.c) stays sim-side: the wire record is
                     // address + row + open + locked (event.rs). Everything
                     // places closed; a door places locked, which is a
@@ -2712,12 +2977,33 @@ impl ShardCore {
                         row: ev.b as u8,
                         locked: placed.is_some_and(|d| d.locked),
                         pose: placed.map(|d| d.pose).unwrap_or_default(),
+                        // Its hp off the store too (wire v102): the hammer
+                        // quotes a repair from it.
+                        hp: placed.map_or(0, |d| d.hp),
                         ..DeployRec::default()
                     };
+                    let at = interest::cell_cm(rec.cx, rec.cz);
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                // Class-S interest, `EV_PIECE_PLACED`'s
+                                // gate with the deploy walk's own predicate
+                                // (owner exempt), against the same anchor:
+                                // a deployable placed after a client's walk
+                                // finished can only reach it here.
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        ev.c,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2870,11 +3156,15 @@ impl ShardCore {
                     // ordered, so "before" here is a guarantee and not a
                     // race.
                     //
-                    // A death is the only moment this is sent, and that is
-                    // the whole bound: one message per death, never a
-                    // per-tick scan of `MAX_DEPLOYS` per client. What it
-                    // costs is a `ready` bit that ages while a player sits
-                    // on the screen — a cooldown lapses on a clock nothing
+                    // A death is not the only moment this is sent (the
+                    // drip also sends it at a join, after a resync and on
+                    // the tick one of the owner's bags is placed or taken
+                    // down — `owe_bags_if_bag`), but it is the one that
+                    // must not wait for the drip, for the ordering above.
+                    // Every send is event-driven, never a per-tick scan of
+                    // `MAX_DEPLOYS` per client. What that costs is a
+                    // `ready` bit that ages while a player sits on the
+                    // screen — a cooldown lapses on a clock nothing
                     // announces. `own_bags`' doc states it; the fallback
                     // is the sim's own (ask for a bag that is not ready,
                     // get a beach, and be told so).
@@ -2932,13 +3222,34 @@ impl ShardCore {
                     // is a thing that stays. Position is read out of the
                     // store at encode — the event carries identity only,
                     // the same shape the hearth's stock ack takes.
-                    let Some(bag) = self.world.backpacks.find(ev.a).map(WireBag::of) else {
+                    let Some(rec) = self.world.backpacks.find(ev.a) else {
                         continue; // looted or despawned inside the same tick
                     };
+                    let bag = WireBag::of(rec);
+                    // `interest::bag_in_interest`, unpacked so the store
+                    // borrow ends here.
+                    let (owner, at) = (rec.owner, interest::body_cm(rec.qx, rec.qz));
                     match encode_event_bag_dropped(&bag, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                // Aimed like a placement, with the bag
+                                // walk's predicate: the owner always hears
+                                // its own bag drop (the client's `own_bag`
+                                // join keys on this very event), and a
+                                // stranger 400 m off does not.
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        owner,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.bag_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2962,6 +3273,13 @@ impl ShardCore {
                     // over a world it can see — which is why the client
                     // also drops the screen on any own-position snapshot it
                     // cannot reconcile with a corpse (`client-core`).
+                    //
+                    // A wake on a bag spends it: its cooldown starts now,
+                    // so the list's `ready` bit is stale from this tick and
+                    // the drip owes the owner (and their seats) a fresh one.
+                    if ev.b != 0 {
+                        self.owe_bags(ev.a);
+                    }
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // that player left this tick
                     };
@@ -3067,32 +3385,27 @@ impl ShardCore {
                     // reason domain tops out at BAG_GONE_MAX. Since the
                     // §5b decode pass the encoder bounds the DOMAIN too
                     // (`encode_event_bag_removed` refuses `why == 3`), so
-                    // this pump check is the belt to that suspender — it
-                    // still runs first because validation goes ahead of
-                    // mutation (the item-move trap), into
-                    // the same counter the encoder's own range check uses,
-                    // and refuse **before** the cursor loop below moves
-                    // anything (validation ahead of mutation — the
-                    // item-move trap).
+                    // this pump check is the belt to that suspender, into
+                    // the same counter the encoder's own range check uses.
+                    // The arm no longer moves any walk state (the cursor
+                    // reset it once guarded is gone, below), so all it
+                    // spares is the encode; the unit test
+                    // `bag_removed_refuses_the_reason_the_sim_cannot_mean`
+                    // pins both.
                     if ev.b > BAG_GONE_MAX {
                         ShardStats::bump(&stats.encode_range_errors);
                         continue;
                     }
-                    // Same posture as a piece/deploy removal, including
-                    // the walk restart: the store swap-removes, so a
-                    // cursor inside the shrunken store is now pointing at
-                    // an entry it already sent.
-                    let store_len = self.world.backpacks.len();
+                    // Same posture as a piece/deploy removal: broadcast to
+                    // everyone, unfiltered (an absence is the one thing no
+                    // walk re-derives), and **no walk restart** — the bag
+                    // walk reads tail-down, so the entry the swap-remove
+                    // moved is one it already sent (`drip_client`).
                     match encode_event_bag_removed(ev.a, ev.b as u8, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
                                     continue;
-                                }
-                                let c = &mut self.clients[slot];
-                                if c.bag_sync_cursor > 0 && c.bag_sync_cursor <= store_len {
-                                    c.bag_sync_cursor = 0;
-                                    c.bag_sync_reset = true;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
@@ -3107,9 +3420,14 @@ impl ShardCore {
                 }
                 EV_DOOR => {
                     // A door's state is a world fact: broadcast, not
-                    // AOI'd, like the placement that put it there. A
-                    // client that misses one re-derives it from the
-                    // deploy walk — the sync record carries the bit.
+                    // AOI'd — though the placement that put it there is
+                    // now (`NOW.md` §0n1 item 2). A client keeps every
+                    // record it was ever told about (nothing un-subscribes
+                    // it), so one that walked away still holds this door
+                    // and must hear it swing. Aiming this needs the re-arm
+                    // argument, and it is `NOW.md` §0fan's. A client that
+                    // misses one re-derives it from the deploy walk — the
+                    // sync record carries the bit.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
@@ -3165,10 +3483,11 @@ impl ShardCore {
                     // two events beside it in this arm's family — are not,
                     // and the difference is not the address, it is the
                     // residue. A knock is an instant; those two are
-                    // *state*, on records the client holds shard-wide
-                    // because the deploy walk is unaimed. Filtering a
-                    // state change onto a record somebody keeps is how a
-                    // door stays shut on one screen forever.
+                    // *state*, on records a client keeps once told — the
+                    // deploy walk is aimed now, but nothing un-subscribes,
+                    // so a client holds every record it was ever in range
+                    // of. Filtering a state change onto a record somebody
+                    // keeps is how a door stays shut on one screen forever.
                     //
                     // **Still open and the operator's**: whether the OWNER
                     // should hear their own door knocked from anywhere on
@@ -3659,49 +3978,35 @@ impl ShardCore {
                 }
                 EV_PIECE_REMOVED | EV_DEPLOY_REMOVED => {
                     let piece = ev.code == EV_PIECE_REMOVED;
+                    if !piece {
+                        self.owe_bags_if_bag(ev.c, ev.b as u8);
+                    }
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     match encode_event_removed(piece, cx, cz, level, loc, &mut self.ev_buf) {
                         Ok(len) => {
-                            let store_len = self.world.deploys.len();
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
                                     continue;
                                 }
-                                // A swap-remove reshuffles the store under
-                                // an in-progress **deployable** walk
-                                // (cursor inside the shrunken store):
-                                // restart that walk with a reset batch.
-                                // Finished walks (cursor past the store)
-                                // hear the broadcast and nothing else.
-                                //
-                                // **The piece walk is not here any more**,
-                                // and that is this arm's whole news. The
-                                // restart is correct and its *cost* is
-                                // unbounded: a full walk is `store_len /
-                                // PIECE_SYNC_BATCH` ticks, and removals
-                                // arriving faster than that walk a client
-                                // back to zero indefinitely — a raid clears
-                                // that bar easily, and the client-side
-                                // symptom, a world that never finishes
-                                // arriving, does not read as a network
-                                // problem (`reference/NETWORK.md` §9.2.1).
-                                // The piece walk reads its store from the
-                                // tail down instead, where the entry a
-                                // swap-remove moves is always one already
-                                // sent, so a removal costs it nothing and
-                                // it clamps its own cursor where it reads
-                                // it (`drip_client` carries the argument).
-                                //
-                                // The deployable walk still reads upward
-                                // and so still restarts here: the same
-                                // defect one store over, left standing
-                                // deliberately rather than ported blind,
-                                // because the downward walk trades the
-                                // restart for a dependency on every
-                                // *placement* reaching the client, and that
-                                // seam is worth proving one store at a time
-                                // (`stats.rs` `piece_walk_restarts`).
+                                // **No walk restarts here any more**, piece
+                                // or deployable (`NOW.md` §0n1 item 2). A
+                                // restart is correct under the store's
+                                // swap-remove and its *cost* is unbounded:
+                                // a full walk is `store_len / batch` ticks,
+                                // and removals arriving faster than that
+                                // walk a client back to zero indefinitely —
+                                // a raid or a decay sweep clears that bar
+                                // easily, and the client-side symptom, a
+                                // world that never finishes arriving, does
+                                // not read as a network problem
+                                // (`reference/NETWORK.md` §9.2.1). Both
+                                // walks read their store from the tail down
+                                // instead, where the entry a swap-remove
+                                // moves is always one already sent, so a
+                                // removal costs them nothing and each
+                                // clamps its own cursor where it reads it
+                                // (`drip_client` carries the argument).
                                 //
                                 // **A removal is broadcast to everyone, and
                                 // class-S interest deliberately does not
@@ -3719,15 +4024,6 @@ impl ShardCore {
                                 // is cheap — a removal is nine bytes and a
                                 // raid produces far fewer of them than the
                                 // walk it used to restart.
-                                let c = &mut self.clients[slot];
-                                if !piece
-                                    && c.deploy_sync_cursor > 0
-                                    && c.deploy_sync_cursor <= store_len
-                                {
-                                    c.deploy_sync_cursor = 0;
-                                    c.deploy_sync_reset = true;
-                                    ShardStats::bump(&stats.piece_walk_restarts);
-                                }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
@@ -3762,34 +4058,15 @@ impl ShardCore {
                     if !hr.crew.contains(ev.a) {
                         continue;
                     }
-                    // What a day charges this hearth, per row (wire v89) —
-                    // the sweep's own arithmetic over the claim cache the
-                    // tick just refreshed (upkeep v2's readout). A walk of
-                    // the piece store, asked per feed press and never per
-                    // tick, with an O(1) answer for the base's own pieces.
-                    let bill = sim_core::upkeep::bill(
-                        &self.world.deploy,
-                        &self.world.build,
-                        &self.world.pieces,
-                        &self.world.deploys,
-                        hi,
-                    );
-                    let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
-                    let n = self.world.deploy.mat_count as usize;
-                    for (m, row) in rows.iter_mut().enumerate().take(n) {
-                        *row = (self.world.deploy.mats[m], hr.stock[m], bill[m]);
-                    }
-                    match encode_event_stock(cx, cz, level, &rows[..n], &mut self.ev_buf) {
-                        Ok(len) => {
-                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                                ShardStats::bump(&stats.ev_sent);
-                            } else {
-                                // The next feed re-announces; cosmetic.
-                                self.clients[slot].ev_resync();
-                                ShardStats::bump(&stats.ev_resyncs);
-                            }
+                    if let Some(len) = self.encode_stock(hi, stats) {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            self.clients[slot].stock_hearth = Some((cx, cz, level));
+                        } else {
+                            // The next feed re-announces; cosmetic.
+                            self.clients[slot].ev_resync();
+                            ShardStats::bump(&stats.ev_resyncs);
                         }
-                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
                 EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED | EV_STUMP_GRUBBED => {
@@ -3939,9 +4216,68 @@ impl ShardCore {
         self.heard_len = 0;
     }
 
+    /// Owe player `owner` their own-bag list (`SUB_BAGS`, NOW §0die 2) when
+    /// deploy row `row` is a bag — one of theirs was just placed or taken
+    /// down. Their own connection and every seat watching them (a seat's
+    /// `id` is its target's, `NETCODE.md` §2.3) hear the whole list from
+    /// the next drip, so a tick that moves several of one owner's bags
+    /// still sends it once. The row is a `u8` off the event and the table
+    /// is `MAX_DEPLOY_DEFS` long, hence `get`.
+    fn owe_bags_if_bag(&mut self, owner: u32, row: u8) {
+        let bag = self
+            .world
+            .deploy
+            .defs
+            .get(row as usize)
+            .is_some_and(|d| d.arch == ARCH_BAG);
+        if bag {
+            self.owe_bags(owner);
+        }
+    }
+
+    /// Owe player `owner`'s connection and every seat watching them their
+    /// own-bag list on the next drip: a bag of theirs moved or was spent.
+    fn owe_bags(&mut self, owner: u32) {
+        for c in self.clients.iter_mut() {
+            if c.connected && c.id == owner {
+                c.bags_owed = true;
+            }
+        }
+    }
+
     /// Resolve which connection slot player `id` belongs to.
     fn client_slot_of(&self, id: u32) -> Option<usize> {
         (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
+    }
+
+    /// Hearth `hi`'s stock ack into `ev_buf`: each row's item, what the
+    /// hearth holds and what a day charges (wire v89) — the sweep's own
+    /// arithmetic over the claim cache the tick just refreshed (upkeep v2's
+    /// readout). A walk of the piece store with an O(1) answer for the
+    /// base's own pieces, asked per feed press and by the crew vital's
+    /// push, which [`crew_vital_due`] holds to one connection a tick.
+    /// `None` (counted) when the rows would not encode.
+    fn encode_stock(&mut self, hi: usize, stats: &ShardStats) -> Option<usize> {
+        let hr = self.world.deploys.hearths()[hi];
+        let bill = sim_core::upkeep::bill(
+            &self.world.deploy,
+            &self.world.build,
+            &self.world.pieces,
+            &self.world.deploys,
+            hi,
+        );
+        let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
+        let n = (self.world.deploy.mat_count as usize).min(HEARTH_STOCK_ROWS);
+        for (m, row) in rows.iter_mut().enumerate().take(n) {
+            *row = (self.world.deploy.mats[m], hr.stock[m], bill[m]);
+        }
+        match encode_event_stock(hr.cx, hr.cz, hr.level, &rows[..n], &mut self.ev_buf) {
+            Ok(len) => Some(len),
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                None
+            }
+        }
     }
 
     /// One client's drip work: catalog batch, harvested-set sync batch,
@@ -4092,6 +4428,68 @@ impl ShardCore {
                 }
             }
             self.clients[slot].fires_owed = false;
+        }
+
+        // The owner's own bags, whole (`SUB_BAGS`, NOW §0die 2), whenever
+        // they are owed: a fresh join, a resync, the tick one of them was
+        // placed or taken down (`owe_bags_if_bag`), and a wake that spent
+        // one (`EV_RESPAWN`, so its `ready` bit is fresh). Not only at a death
+        // any more — the map tags your beds off this list while you live,
+        // and a list from your last death misses every bed since. A seat
+        // runs it too, against its target's id, as it runs every drip. One
+        // store scan, only on a tick that owes it.
+        if self.clients[slot].bags_owed {
+            let mut anchors = [BagAnchor::default(); BAG_CAP];
+            let n = self.world.deploys.own_bags(
+                &self.world.deploy,
+                self.clients[slot].id,
+                self.world.tick,
+                &mut anchors,
+            );
+            match encode_event_bags(&anchors[..n], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+            self.clients[slot].bags_owed = false;
+        }
+
+        // The crew HUD vital (NOW §0up 3): a body standing in a claim it is
+        // crew of is re-told that hearth's stock and bill every
+        // `CREW_VITAL_TICKS`, the feed ack's own message (`EventMsg::Stock`),
+        // so the HUD can say UPKEEP 1D 4H / BASE DECAYING without a press.
+        // Phased by slot, so a full shard pays at most one bill a tick. A
+        // full ring skips one push; the next is ten seconds off. A seat runs
+        // it against its target's body and id, as it runs every drip.
+        if crew_vital_due(self.world.tick, slot) {
+            let hi = self.live_wslot(slot).and_then(|w| {
+                let b = self.world.players[w].body;
+                let (x, z) = (
+                    b.qx as f32 * sim_core::movement::POS_XZ_Q,
+                    b.qz as f32 * sim_core::movement::POS_XZ_Q,
+                );
+                // Where two of your claims overlap, the hearth the client
+                // already holds answers while it still covers you.
+                let c = &self.clients[slot];
+                self.world
+                    .deploys
+                    .crew_hearth_at(x, z, c.id, c.stock_hearth)
+            });
+            let stock = hi.and_then(|hi| self.encode_stock(hi, stats).map(|len| (hi, len)));
+            if let Some((hi, len)) = stock {
+                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.ev_sent);
+                    let h = self.world.deploys.hearths()[hi];
+                    self.clients[slot].stock_hearth = Some((h.cx, h.cz, h.level));
+                } else {
+                    return;
+                }
+            }
         }
 
         // Catalog: names first — toasts and hotbar labels want them early.
@@ -4428,11 +4826,11 @@ impl ShardCore {
         if owed != 0 {
             let i = owed.trailing_zeros() as usize;
             let bit = 1u128 << i;
-            let (id, items) = self.worn_seen[i];
+            let (id, items, skins) = self.worn_seen[i];
             if id == 0 || self.worn_dressed & bit == 0 {
                 self.clients[slot].worn_owed &= !bit;
             } else {
-                match protocol::encode_event_worn(id, &items, &mut self.ev_buf) {
+                match protocol::encode_event_worn(id, &items, &skins, &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].worn_owed &= !bit;
@@ -4615,8 +5013,12 @@ impl ShardCore {
         // placement pushes — a refused push there calls `ev_resync`, which
         // re-arms this walk from the new tail, and a dropped event ring
         // does the same for everyone. That is the trade the paragraph
-        // above buys, and it is why the deployable walk was left reading
-        // upward until its own placement seam is proven.
+        // above buys. The deployable and backpack walks below make it too
+        // (`NOW.md` §0n1 item 2), on the same seam: every runtime insert
+        // into either store pushes its placement event (`deploy::
+        // place_deploy`, `Backpacks::stand_up`), and the only other inserts
+        // are boot-time (`stand_authored`, `restore`), before anyone is
+        // connected.
         //
         // **And it is aimed** (class-S interest v0, `interest.rs`). The
         // walk streams what is within `PIECE_INTEREST_CM` of the anchor it
@@ -4646,8 +5048,14 @@ impl ShardCore {
                 // restart could — a full-store walk is 32 ticks and a
                 // sprinter covers 5.9 m of the 32 m that triggers this
                 // (`interest::PIECE_SCAN_BATCH` carries the arithmetic).
+                //
+                // The deployable and backpack walks share the anchor, so
+                // they re-arm with it: a record the old anchor skipped may
+                // be in range of the new one.
                 c.piece_anchor_cm = here;
                 c.piece_sync_cursor = len;
+                c.deploy_sync_cursor = self.world.deploys.len();
+                c.bag_sync_cursor = self.world.backpacks.len();
                 ShardStats::bump(&stats.piece_walk_rearms);
             }
         }
@@ -4727,11 +5135,13 @@ impl ShardCore {
             }
         }
 
-        // Deploy-def rows, same drip shape (the deploy menu's data).
+        // Deploy-def rows, same drip shape (the deploy menu's data), and
+        // the fire's warmth reach the HUD confirms a fire with (wire v102).
         let c = &self.clients[slot];
         let dc = &self.world.deploy;
+        let heat = self.world.survival.exposure.heat_radius_cm;
         if dc.def_count > 0 && c.deploy_defs_cursor < dc.def_count as usize {
-            match encode_event_deploy_defs(dc, c.deploy_defs_cursor, &mut self.ev_buf) {
+            match encode_event_deploy_defs(dc, heat, c.deploy_defs_cursor, &mut self.ev_buf) {
                 Ok((len, took)) => {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
@@ -4744,16 +5154,35 @@ impl ShardCore {
             }
         }
 
-        // Placed-deployable walk (join sync / resync), drip-fed like the
-        // piece walk. A decay removal mid-walk restarts it (pump_events).
+        // Placed-deployable walk (join sync / resync): the piece walk
+        // above, line for line, over `world.deploys` (`NOW.md` §0n1 item
+        // 2). Tail-down, so a decay removal mid-walk costs it nothing and
+        // the cursor only needs clamping; aimed from the same anchor, so a
+        // joiner pays for the deployables it landed beside. The one
+        // difference is the owner's exemption (`interest::
+        // owned_in_interest`): a client's own beds and hearths are always
+        // owed, because its map draws them wherever it stands.
         let c = &self.clients[slot];
         let deploys = self.world.deploys.entries();
-        if c.deploy_sync_reset || c.deploy_sync_cursor < deploys.len() {
-            let at = c.deploy_sync_cursor.min(deploys.len());
-            let n = DEPLOY_SYNC_BATCH.min(deploys.len() - at);
+        let anchor = c.piece_anchor_cm;
+        let viewer = c.id;
+        let owed = if c.deploy_sync_reset {
+            deploys.len()
+        } else {
+            c.deploy_sync_cursor.min(deploys.len())
+        };
+        if c.piece_anchor_valid && (c.deploy_sync_reset || owed > 0) {
+            let window = PIECE_SCAN_BATCH.min(owed);
             // The band, filled at the boundary — `PieceRec::dmg`'s note.
             let mut wire = [DeployRec::default(); DEPLOY_SYNC_BATCH];
-            for (dst, src) in wire.iter_mut().zip(&deploys[at..][..n]) {
+            let mut n = 0usize;
+            let mut scanned = 0usize;
+            for src in deploys[owed - window..owed].iter().rev() {
+                scanned += 1;
+                if !interest::deploy_in_interest(anchor, viewer, src) {
+                    continue;
+                }
+                let dst = &mut wire[n];
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
                 // A planter's beds (crops v1), off the oven row's mirror.
@@ -4766,51 +5195,95 @@ impl ShardCore {
                     .map(|i| self.world.deploys.oven_states()[i])
                     .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
                     .map_or(0, |o| o.bank as u8);
-            }
-            let batch = &wire[..n];
-            match encode_event_deploy_sync(c.deploy_sync_reset, batch, &mut self.ev_buf) {
-                Ok(len) => {
-                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                        ShardStats::bump(&stats.ev_sent);
-                        let c = &mut self.clients[slot];
-                        c.deploy_sync_reset = false;
-                        c.deploy_sync_cursor = at + n;
-                    } else {
-                        return;
-                    }
+                n += 1;
+                if n == DEPLOY_SYNC_BATCH {
+                    break;
                 }
-                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+            wire[..n].reverse();
+            let rest = owed - scanned;
+            let done = |c: &mut ClientNetState| {
+                c.deploy_sync_reset = false;
+                c.deploy_sync_cursor = rest;
+                ShardStats::add(&stats.deploy_sync_skipped, (scanned - n) as u64);
+                if rest == 0 {
+                    ShardStats::bump(&stats.deploy_walk_completes);
+                }
+            };
+            if n > 0 || c.deploy_sync_reset {
+                match encode_event_deploy_sync(c.deploy_sync_reset, &wire[..n], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            done(&mut self.clients[slot]);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                done(&mut self.clients[slot]);
             }
         }
 
-        // Standing-backpack walk (join sync / resync), drip-fed like the
-        // deploy walk. A loot or a despawn mid-walk restarts it
-        // (pump_events), for the same swap-remove reason.
+        // Standing-backpack walk (join sync / resync): the deployable walk
+        // again, over `world.backpacks` — tail-down, aimed, the owner
+        // exempt. The exemption is what keeps a death bag on its owner's
+        // map after a respawn far away and a resync (`ui/map.rs` finds
+        // `own_bag` by id in this mirror). A carcass bag's owner is a
+        // roster id, which no client is.
         let c = &self.clients[slot];
-        let n_bags = self.world.backpacks.len();
-        if c.bag_sync_reset || c.bag_sync_cursor < n_bags {
-            let at = c.bag_sync_cursor.min(n_bags);
-            let n = BAG_SYNC_BATCH.min(n_bags - at);
+        let bags = self.world.backpacks.entries();
+        let owed = if c.bag_sync_reset {
+            bags.len()
+        } else {
+            c.bag_sync_cursor.min(bags.len())
+        };
+        if c.piece_anchor_valid && (c.bag_sync_reset || owed > 0) {
+            let window = PIECE_SCAN_BATCH.min(owed);
             let mut batch = [WireBag::default(); BAG_SYNC_BATCH];
-            for (i, b) in self.world.backpacks.entries()[at..][..n].iter().enumerate() {
-                batch[i] = WireBag::of(b);
-            }
-            match encode_event_bag_sync(c.bag_sync_reset, &batch[..n], &mut self.ev_buf) {
-                Ok(len) => {
-                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                        ShardStats::bump(&stats.ev_sent);
-                        let c = &mut self.clients[slot];
-                        c.bag_sync_reset = false;
-                        c.bag_sync_cursor = at + n;
-                    } else {
-                        return;
-                    }
+            let mut n = 0usize;
+            let mut scanned = 0usize;
+            for b in bags[owed - window..owed].iter().rev() {
+                scanned += 1;
+                if !interest::bag_in_interest(anchor, viewer, b) {
+                    continue;
                 }
-                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                batch[n] = WireBag::of(b);
+                n += 1;
+                if n == BAG_SYNC_BATCH {
+                    break;
+                }
+            }
+            batch[..n].reverse();
+            let rest = owed - scanned;
+            let done = |c: &mut ClientNetState| {
+                c.bag_sync_reset = false;
+                c.bag_sync_cursor = rest;
+                ShardStats::add(&stats.bag_sync_skipped, (scanned - n) as u64);
+                if rest == 0 {
+                    ShardStats::bump(&stats.bag_walk_completes);
+                }
+            };
+            if n > 0 || c.bag_sync_reset {
+                match encode_event_bag_sync(c.bag_sync_reset, &batch[..n], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            done(&mut self.clients[slot]);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                done(&mut self.clients[slot]);
             }
         }
 
-        // Loose-stack walk (ground items v0), drip-fed like the bag walk.
+        // Loose-stack walk (ground items v0), drip-fed and read upward.
         //
         // **Keyed on the store's fingerprint rather than on an event**,
         // which is the one thing this walk does differently and the
@@ -5047,6 +5520,7 @@ impl ShardCore {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
                                 self.clients[slot].close_container();
+                                self.clients[slot].cont_shown = false;
                             } else {
                                 return;
                             }
@@ -5121,8 +5595,12 @@ impl ShardCore {
                                     let opened = c.open_cont_reset;
                                     c.open_cont_reset = false;
                                     c.last_cont = now;
-                                    // The lid, heard by whoever is near.
-                                    if opened {
+                                    c.cont_shown = true;
+                                    // The lid, heard by whoever is near —
+                                    // once, off the player's own open: a
+                                    // seat mirroring it (`sync_seat_container`)
+                                    // opened nothing in the world.
+                                    if opened && slot < MAX_PLAYERS {
                                         let id = c.id;
                                         let deed = if kind == CONT_BAG {
                                             DEED_OPEN_BAG
@@ -5977,6 +6455,27 @@ mod tests {
     const SEED: u64 = 0x5B_F06E;
     const PLAYER: u32 = 7;
 
+    /// The crew vital's stagger (NOW §0up 3): every slot a push can go to
+    /// is due exactly once a period, and never on the same tick as another
+    /// — so a full shard standing in its bases pays one bill a tick at most.
+    #[test]
+    fn crew_vital_pushes_are_one_slot_a_tick() {
+        let period = sim_core::deploy::CREW_VITAL_TICKS;
+        let slots = MAX_PLAYERS + MAX_SPECTATORS;
+        let mut due_ticks = vec![0u32; period as usize];
+        for slot in 0..slots {
+            let due: Vec<u64> = (5 * period..6 * period)
+                .filter(|&t| crew_vital_due(t, slot))
+                .collect();
+            assert_eq!(due.len(), 1, "slot {slot} is due once a period");
+            due_ticks[(due[0] % period) as usize] += 1;
+        }
+        assert!(
+            due_ticks.iter().all(|&n| n <= 1),
+            "two slots share a push tick"
+        );
+    }
+
     /// Run the real event pump once, capturing every event-lane payload.
     fn pumped(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
@@ -6187,9 +6686,10 @@ mod tests {
     fn bag_removed_refuses_the_reason_the_sim_cannot_mean() {
         let stats = ShardStats::default();
         let mut core = quiet_core(&stats);
-        // A real bag in the store, and a client mid-walk over it, so the
-        // cursor reset below the guard is a mutation the forged event
-        // would actually reach — the order half of the assert.
+        // A real bag in the store, and a client whose walk over it has
+        // finished. No removal restarts the bag walk any more (it reads
+        // tail-down, `drip_client`), so the walk state must come through
+        // both the refused event and the real one untouched.
         core.world.backpack = BackpackContent::probe_fixture();
         let one = [ItemStack {
             item: 0,
@@ -6203,7 +6703,7 @@ mod tests {
             .expect("bag stands");
         core.world.tick(&[]); // flush the EV_BAG_DROPPED it pushed
         assert!(core.world.events.is_empty(), "ring quiet again");
-        core.clients[0].bag_sync_cursor = 1;
+        core.clients[0].bag_sync_cursor = 0;
         core.clients[0].bag_sync_reset = false;
 
         // Just outside the domain: why == 3 fits the two-bit field, so
@@ -6225,14 +6725,13 @@ mod tests {
             "the refusal is a count"
         );
         assert_eq!(
-            core.clients[0].bag_sync_cursor, 1,
-            "the walk cursor moved for a refused event — the refusal is \
-             not ordered before the mutation"
+            core.clients[0].bag_sync_cursor, 0,
+            "the walk cursor moved for a refused event"
         );
         assert!(!core.clients[0].bag_sync_reset, "same, the reset flag");
 
-        // Just inside: why == BAG_GONE_MAX still crosses, and the cursor
-        // reset that comes with a real removal happens.
+        // Just inside: why == BAG_GONE_MAX still crosses, and it restarts
+        // nothing.
         core.world.tick(&[]);
         core.world.events.push(EV_BAG_REMOVED, 42, BAG_GONE_MAX, 0);
         let sent = pumped(&mut core, &stats);
@@ -6248,6 +6747,10 @@ mod tests {
             ShardStats::get(&stats.encode_range_errors),
             range_before + 1,
             "the in-domain reason is not counted as refused"
+        );
+        assert!(
+            core.clients[0].bag_sync_cursor == 0 && !core.clients[0].bag_sync_reset,
+            "a removal restarted the bag walk"
         );
     }
 
@@ -6327,6 +6830,43 @@ mod tests {
         );
     }
 
+    /// `EV_GATHER`'s and `EV_CRAFT_DONE`'s `c` is what went to the ground
+    /// (NOW §0sp2), and the route copies it into the wire's `dropped`: the
+    /// spill toast's count comes from nowhere else, so a route that dropped
+    /// `c` would say "0 dropped" with every gate on the codec green.
+    #[test]
+    fn gather_and_craft_done_carry_what_spilled() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        core.world.events.push(EV_GATHER, PLAYER, (3 << 16) | 4, 5);
+        core.world
+            .events
+            .push(EV_CRAFT_DONE, PLAYER, (3 << 16) | 4, 5);
+        let sent = pumped(&mut core, &stats);
+        let got = sent
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(m @ (EventMsg::Gather { .. } | EventMsg::CraftDone { .. })) => Some(m),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            vec![
+                EventMsg::Gather {
+                    item: 3,
+                    added: 4,
+                    dropped: 5
+                },
+                EventMsg::CraftDone {
+                    item: 3,
+                    added: 4,
+                    dropped: 5
+                },
+            ]
+        );
+    }
+
     /// Everything `fan_out` sent, per connection slot, in order.
     fn fanned(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<Vec<u8>>> {
         let mut out = vec![Vec::new(); MAX_CONNS];
@@ -6336,6 +6876,7 @@ mod tests {
         let mut ops = Ops {
             log: &mut log,
             admin_tx: None,
+            admin_answers: None,
             save_now: &mut save_now,
         };
         core.fan_out(&live, stats, &mut ops, &mut |lane, slot, bytes: &[u8]| {
@@ -6534,5 +7075,28 @@ mod tests {
             "past the seats"
         );
         assert_eq!(core.spectators(), 0);
+    }
+
+    /// A full eviction memo gives up its oldest put, never a newer one, and
+    /// a key filed twice holds one row (its newer record).
+    #[test]
+    fn a_full_evict_memo_drops_its_oldest_put() {
+        let key = |n: usize| PlayerKey::new(format!("victim-{n}").as_bytes()).unwrap();
+        let save = |n: usize| PlayerSave {
+            hp: n as u16,
+            ..PlayerSave::EMPTY
+        };
+        let mut memo = EvictMemo::new();
+        for n in 0..MAX_PLAYERS {
+            memo.put(&key(n), save(n));
+        }
+        memo.put(&key(3), save(1000));
+        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
+        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
+        assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
+        assert_eq!(memo.find(&key(1)), Some(save(1)));
+        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
+        memo.forget(&key(1));
+        assert_eq!(memo.find(&key(1)), None);
     }
 }

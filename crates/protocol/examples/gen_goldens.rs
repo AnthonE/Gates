@@ -173,8 +173,8 @@ fn main() {
     let len = protocol::encode_action_respawn_at(cx, cz, level, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[150], &buf[..len]);
     // What a body wears (v98).
-    let (id, items) = goldens::event_worn();
-    let len = protocol::encode_event_worn(id, &items, &mut buf).unwrap();
+    let (id, items, skins) = goldens::event_worn();
+    let len = protocol::encode_event_worn(id, &items, &skins, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[151], &buf[..len]);
     // A syringe on a downed body (v99).
     let (slot, target) = goldens::action_treat();
@@ -192,6 +192,10 @@ fn main() {
     let (cx, cz, level, row) = goldens::action_take_stock();
     let len = protocol::encode_action_take_stock(cx, cz, level, row, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[155], &buf[..len]);
+    // A stack handed to another player (v102).
+    let (slot, count, target) = goldens::action_give();
+    let len = protocol::encode_action_give(slot, count, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[156], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -199,8 +203,8 @@ fn main() {
     let len = protocol::encode_auth(&goldens::auth(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[75], &buf[..len]);
 
-    let (item, added) = goldens::event_gather();
-    let len = encode_event_gather(item, added, &mut buf).unwrap();
+    let (item, added, dropped) = goldens::event_gather();
+    let len = encode_event_gather(item, added, dropped, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[8], &buf[..len]);
 
     let (slots, count) = goldens::event_inv();
@@ -232,8 +236,8 @@ fn main() {
     let len = encode_event_craft_q(&jobs, eta, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[15], &buf[..len]);
 
-    let (item, added) = goldens::event_craft_done();
-    let len = encode_event_craft_done(item, added, &mut buf).unwrap();
+    let (item, added, dropped) = goldens::event_craft_done();
+    let len = encode_event_craft_done(item, added, dropped, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[16], &buf[..len]);
 
     let len = encode_event_craft_refused(goldens::event_craft_refused(), &mut buf).unwrap();
@@ -287,7 +291,8 @@ fn main() {
     write_fixture(goldens::FIXTURES[30], &buf[..len]);
 
     let dc = goldens::event_deploy_defs();
-    let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+    let heat = goldens::event_deploy_defs_heat_cm();
+    let (len, took) = encode_event_deploy_defs(&dc, heat, 0, &mut buf).unwrap();
     assert_eq!(took, dc.def_count as usize);
     write_fixture(goldens::FIXTURES[31], &buf[..len]);
 

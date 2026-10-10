@@ -573,6 +573,9 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::RemoteBrush => render_take(Cue::Brush, take),
         Cue::TorchOut => fizzle(&mut r),
         Cue::Bellow => bellow(&mut r),
+        // The second blow of a frame: the same grunt, by delegation for the
+        // remote swing's reason. What makes it a second voice is its row.
+        Cue::HurtAgain => render_take(Cue::Hurt, take),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm

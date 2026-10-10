@@ -89,9 +89,10 @@ const NOT_THE_MIRROR: &[(&str, u8, &str)] = &[
         "BAGS",
         1,
         "word 1's `APPLIED2_BAGS` is THIS CLIENT'S OWN bag list (`own_bags()`, \
-         sent on a death and nowhere else) for the death screen to list \
-         recoverable packs. The world's standing-backpack store is word 0's \
-         `APPLIED_BAGS`, and that one is in the set.",
+         sent at a join, after a resync, as its own bags go down or come up, \
+         and on a death) for the death screen and the map's bed marks. The \
+         world's standing-backpack store is word 0's `APPLIED_BAGS`, and that \
+         one is in the set.",
     ),
     (
         "OWN_STRUCT_HIT",

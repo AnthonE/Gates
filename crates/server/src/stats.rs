@@ -231,6 +231,9 @@ pub struct ShardStats {
     pub skin_prices_read: AtomicU64,
     pub skin_prices_unknown: AtomicU64,
     pub refused_full: AtomicU64,
+    /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
+    /// the door before claiming a slot (`admin::Bans`).
+    pub refused_banned: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.
     pub input_dg_ok: AtomicU64,
@@ -316,38 +319,18 @@ pub struct ShardStats {
     /// the entity records inside them, and excludes the own entity for the
     /// reason `snap_candidates` gives.
     pub snap_entities_sent: AtomicU64,
-    /// Class-S join walks restarted from zero (`core.rs`, the swap-remove
-    /// rule): a removal landed while a client's sync cursor was still
-    /// inside the store, so that client's walk begins again with a reset
-    /// batch.
-    ///
-    /// Correct under the store's swap-remove — a walk reading *upward*
-    /// cannot trust a cursor into a set that reshuffled beneath it — and
-    /// **unbounded in cost**, which is the half worth counting. A full walk
-    /// is `store_len / 32` ticks; removals arriving faster than that walk
-    /// the client back to zero indefinitely, and a raid removes pieces far
-    /// faster than that. The client's symptom is a world that never
-    /// finishes loading, which reads as anything but a network problem
-    /// (`reference/NETWORK.md` §9.2.1 has the arithmetic).
-    ///
-    /// ⚠ **The piece walk no longer restarts and no longer bumps this.**
-    /// It reads the store from the tail down, where the entry a
-    /// swap-remove moves is always one already sent, so the cursor
-    /// survives (`core.rs` `drip_client` carries the argument). What is
-    /// still counted here is the **deployable** walk, which still reads
-    /// upward and still restarts on a removal — the same defect, one store
-    /// over, and the reason this counter keeps its name.
-    pub piece_walk_restarts: AtomicU64,
     /// Piece walks that reached the end — a client that has been sent every
     /// piece the store held when its walk began.
     ///
-    /// The other half of `piece_walk_restarts`, and it exists because that
-    /// counter alone cannot answer the only question an operator has: a
-    /// shard reporting restarts cannot be told apart from a shard where the
-    /// walk restarted twice and then *finished* — the first is a world that
-    /// never arrives, the second is a hiccup. One completion per client per
-    /// walk, so `completes` short of the join count is a shard where
-    /// somebody is still waiting.
+    /// Born as the other half of a restart counter, retired once nothing
+    /// restarted: the class-S walks (pieces, then deployables and backpacks,
+    /// `NOW.md` §0n1 item 2) read their store from the tail down, where the
+    /// entry a swap-remove moves is always one already sent, so no removal
+    /// walks a client back to zero (`core.rs` `drip_client` carries the
+    /// argument; `reference/NETWORK.md` §9.2.1 the history). What is left
+    /// is the operator's question: one completion per client per walk, so
+    /// `completes` short of the join count is a shard where somebody is
+    /// still waiting.
     pub piece_walk_completes: AtomicU64,
     /// Piece walks re-armed because the player walked `PIECE_REARM_CM` out
     /// from under the anchor the walk was aimed from (class-S interest v0,
@@ -358,8 +341,8 @@ pub struct ShardStats {
     /// the difference, so `rearms` × the local base is the redundancy v0
     /// pays for having no chunk grid to subscribe to. Bounded by movement —
     /// at most one per 32 m travelled, ~5.8 s of sprinting — which is what
-    /// keeps it apart from `piece_walk_restarts`, whose bound was a raid's
-    /// removal rate and therefore was not one.
+    /// kept it apart from the retired removal restart, whose bound was a
+    /// raid's removal rate and therefore was not one.
     pub piece_walk_rearms: AtomicU64,
     /// Piece-store entries a walk scanned and skipped as out of interest.
     ///
@@ -372,6 +355,16 @@ pub struct ShardStats {
     /// `EV_PIECE_PLACED` broadcasts a connection was not sent because the
     /// piece is outside its class-S interest.
     pub piece_events_skipped: AtomicU64,
+    /// The deployable walk's `piece_walk_completes`, `piece_sync_skipped`
+    /// and `piece_events_skipped` (`EV_DEPLOY_PLACED`): the same walk, aimed
+    /// from the same anchor, over `world.deploys` (`NOW.md` §0n1 item 2).
+    pub deploy_walk_completes: AtomicU64,
+    pub deploy_sync_skipped: AtomicU64,
+    pub deploy_events_skipped: AtomicU64,
+    /// The same three for the backpack walk and `EV_BAG_DROPPED`.
+    pub bag_walk_completes: AtomicU64,
+    pub bag_sync_skipped: AtomicU64,
+    pub bag_events_skipped: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,
@@ -679,6 +672,9 @@ pub struct ShardStats {
     /// because the anomaly log carries which — a counter answers "is this
     /// happening", the log answers "what happened".
     pub admin_refused: AtomicU64,
+    /// Bans lifted by `/unban` (a miss or an ambiguous prefix is an
+    /// `admin_refused`).
+    pub admin_unbanned: AtomicU64,
     /// Anomaly records the log ring refused (`anomaly.rs`, wall 4's drop
     /// policy). **Deliberately not in `anomaly::WATCHED`**: a full log ring
     /// logging its own overflow is the one line guaranteed to make the
@@ -972,6 +968,7 @@ impl ShardStats {
             "refused_auth" => &self.refused_auth,
             "refused_ticket" => &self.refused_ticket,
             "refused_full" => &self.refused_full,
+            "refused_banned" => &self.refused_banned,
             "entitle_unknown" => &self.entitle_unknown,
             "entitle_kicked" => &self.entitle_kicked,
             "skins_unknown" => &self.skins_unknown,
@@ -997,7 +994,6 @@ impl ShardStats {
             "chat_rate_limited" => &self.chat_rate_limited,
             "chat_ring_drops" => &self.chat_ring_drops,
             "chat_undelivered" => &self.chat_undelivered,
-            "piece_walk_restarts" => &self.piece_walk_restarts,
             "save_ring_drops" => &self.save_ring_drops,
             "saves_evicted" => &self.saves_evicted,
             "save_write_errors" => &self.save_write_errors,

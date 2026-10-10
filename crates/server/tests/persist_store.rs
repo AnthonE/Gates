@@ -364,6 +364,173 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     assert_eq!(core.world.evictions, 2);
 }
 
+/// NOW §0y 2's board: a keyed player who carried something and left (their
+/// leave filed the frozen record), was raided asleep, and a full shard
+/// around them with one more, keyless, sleeper — filler 5 — so the victim's
+/// own rejoin has a body to evict. Returns the victim's key and the frozen
+/// record: what the accept loop's `store.find` hands back until the
+/// eviction record is filed over it.
+fn a_raided_sleeper_on_a_full_shard(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+) -> (PlayerKey, PlayerSave) {
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let me = key("raided-in-the-window");
+    let carried = ItemStack {
+        item: 3,
+        count: 128,
+        cond: 0,
+        skin: 0,
+    };
+    assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
+    core.tick_bare(stats, |_, _, _| true);
+    let slot = world_slot(core, id_of(0));
+    core.world.players[slot].inv[0] = carried;
+    let (_, frozen) = core.disconnect(0).expect("a leaving player has a record");
+    assert_eq!(frozen.inv[0], carried);
+    core.tick_bare(stats, |_, _, _| true);
+    core.world.players[slot].inv[0] = ItemStack::default();
+    for s in 1..MAX {
+        assert!(core.connect(s, id_of(s)), "filler {s}");
+    }
+    core.tick_bare(stats, |_, _, _| true);
+    // Filler 5 sleeps second, so the victim stays the longest asleep.
+    core.disconnect(5);
+    core.tick_bare(stats, |_, _, _| true);
+    assert_eq!(core.world.sleepers(), 2);
+    (me, frozen)
+}
+
+/// The victim reconnects **in the same window as its own eviction**, so the
+/// accept loop read the store before the eviction record was even pushed,
+/// and the join brings the frozen pre-raid record. The sim kept the current
+/// one at the pick and must use it, or the rejoin undoes the raid.
+#[test]
+fn a_victim_back_in_its_eviction_window_rejoins_raided() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let (me, frozen) = a_raided_sleeper_on_a_full_shard(&mut core, &stats);
+
+    let stranger = id2_of(0);
+    let (_, evicted) = core
+        .connect_as(0, stranger, Some(key("newcomer")), None)
+        .expect("admitted");
+    assert_eq!(evicted.map(|(k, _)| k), Some(me), "the victim is the pick");
+    // No tick between: the record above is still on its way to the store.
+    let (how, second) = core
+        .connect_as(5, id2_of(5), Some(me), Some(frozen))
+        .expect("admitted");
+    assert_eq!(how, Admitted::Restored);
+    assert!(
+        second.is_none(),
+        "filler 5's keyless sleeper makes the room"
+    );
+    core.tick_bare(&stats, |_, _, _| true);
+    assert_eq!(core.world.evictions, 2);
+    assert!(core
+        .world
+        .players
+        .iter()
+        .any(|p| p.active && p.id == stranger));
+    let p = core.world.players[world_slot(&core, id2_of(5))];
+    assert_eq!(
+        p.inv[0],
+        ItemStack::default(),
+        "the same-window rejoin restored the stale pre-raid record"
+    );
+}
+
+/// The eviction record never reached the store — the save ring was full and
+/// dropped it — so the store holds the frozen record for good. A return
+/// many ticks later still comes back from the eviction's record.
+#[test]
+fn a_dropped_eviction_record_still_outranks_the_stale_store_copy() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let (me, frozen) = a_raided_sleeper_on_a_full_shard(&mut core, &stats);
+
+    let (_, evicted) = core
+        .connect_as(0, id2_of(0), Some(key("newcomer")), None)
+        .expect("admitted");
+    assert!(evicted.is_some(), "a keyed victim hands back a record");
+    // ...which is dropped here, as a full ring would.
+    for _ in 0..90 {
+        core.tick_bare(&stats, |_, _, _| true);
+    }
+    assert_eq!(core.world.evictions, 1);
+    let (how, _) = core
+        .connect_as(5, id2_of(5), Some(me), Some(frozen))
+        .expect("admitted");
+    assert_eq!(how, Admitted::Restored);
+    core.tick_bare(&stats, |_, _, _| true);
+    let p = core.world.players[world_slot(&core, id2_of(5))];
+    assert_eq!(
+        p.inv[0],
+        ItemStack::default(),
+        "the rejoin trusted the stale store copy over the eviction's record"
+    );
+}
+
+/// The memo is spent at the victim's return, so it never outlives it. A
+/// victim back from its eviction record plays on (the autosave files what
+/// it found), its link drops, and it reconnects before the shard has reaped
+/// the dead link — so its body is still awake, no sleeper answers, and the
+/// join is a restore from the store's newer record. A memo still holding
+/// the eviction record would hand back the raided pack instead.
+#[test]
+fn a_returned_victim_restored_later_gets_the_newer_store_record() {
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let (me, frozen) = a_raided_sleeper_on_a_full_shard(&mut core, &stats);
+    let (_, evicted) = core
+        .connect_as(0, id2_of(0), Some(key("newcomer")), None)
+        .expect("admitted");
+    assert!(evicted.is_some(), "a keyed victim hands back a record");
+    core.tick_bare(&stats, |_, _, _| true);
+    let (how, _) = core
+        .connect_as(5, id2_of(5), Some(me), Some(frozen))
+        .expect("admitted");
+    assert_eq!(how, Admitted::Restored);
+    core.tick_bare(&stats, |_, _, _| true);
+    let w = world_slot(&core, id2_of(5));
+    assert_eq!(
+        core.world.players[w].inv[0],
+        ItemStack::default(),
+        "back raided"
+    );
+
+    // It plays on, and the sweep files the pack it now carries.
+    let found = ItemStack {
+        item: 3,
+        count: 7,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w].inv[0] = found;
+    let newer = (0..2 * MAX)
+        .find_map(|_| core.autosave().filter(|&(id, _)| id == id2_of(5)))
+        .map(|(_, s)| s)
+        .expect("the sweep files the victim's moved state");
+    assert_eq!(newer.inv[0], found);
+
+    // A conn slot and a keyless sleeper to make room for the reconnect.
+    core.disconnect(7);
+    core.tick_bare(&stats, |_, _, _| true);
+    let (how, _) = core
+        .connect_as(7, id2_of(7), Some(me), Some(newer))
+        .expect("admitted");
+    assert_eq!(how, Admitted::Restored);
+    core.tick_bare(&stats, |_, _, _| true);
+    assert_eq!(
+        core.world.players[world_slot(&core, id2_of(7))].inv[0],
+        found,
+        "the old eviction record outlived the victim's return"
+    );
+    // The dead link is reaped at last.
+    assert!(core.disconnect(5).is_some());
+}
+
 /// Two joins in one window must nominate two different victims. Both picks
 /// happen against the same un-ticked world, so without the queue-aware
 /// arithmetic (`ShardCore::slots_short` / `spoken_for`) both would name the

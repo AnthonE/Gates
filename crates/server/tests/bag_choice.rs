@@ -13,7 +13,7 @@
 //! id on every deployable anybody can see, which hands a raider the census
 //! of a base they have not opened yet.
 //!
-//! Four things it holds:
+//! Five things it holds:
 //!
 //!   1. the list reaches the dying player and **nobody else** — it is an
 //!      own-fact, and readiness in particular is exactly what an attacker
@@ -22,7 +22,10 @@
 //!   3. it arrives **before** the `Death` that raises the screen, which is
 //!      what makes reading it in `OnEnter(Screen::Dead)` sound;
 //!   4. a spent bag says so, so a second death inside the cooldown draws a
-//!      hollow marker instead of promising an anchor that will not answer.
+//!      hollow marker instead of promising an anchor that will not answer;
+//!   5. it follows the bags while the owner lives — told at a join, a
+//!      placement, a pickup, a resync and a wake that spends one, not only
+//!      at a death (NOW §0die 2).
 
 use client_core::core::{ClientCore, APPLIED2_BAGS, APPLIED_RESPAWN};
 use protocol::{ActionMsg, EventMsg, ItemCatalog};
@@ -108,6 +111,7 @@ fn world_slot(core: &ShardCore, id: u32) -> usize {
 }
 
 /// Place a bag through the real verb, standing where the fixture stands.
+/// Returns every event the tick of the placement produced.
 fn place_bag(
     core: &mut ShardCore,
     stats: &ShardStats,
@@ -115,7 +119,7 @@ fn place_bag(
     net_slot: usize,
     cx: u16,
     cz: u16,
-) {
+) -> Vec<(usize, EventMsg)> {
     let w = world_slot(core, id_of(net_slot));
     core.world.players[w].inv[10] = ItemStack {
         item: BAG_ITEM,
@@ -139,12 +143,14 @@ fn place_bag(
             pose: sim_core::footprint::Pose::CENTRE,
         },
     );
-    pump(core, stats, clients, &mut Vec::new());
+    let mut seen = Vec::new();
+    pump(core, stats, clients, &mut seen);
     assert_eq!(
         core.world.deploys.len(),
         before + 1,
         "the bag did not place at ({cx}, {cz}) — the fixture, not the mechanic"
     );
+    seen
 }
 
 /// Empty both meters and pump until the death screen is up on slot 0's
@@ -166,6 +172,13 @@ fn die(
         }
     }
     panic!("the probe clock never killed the body — the survival fixture changed");
+}
+
+/// How many `Bags` messages went to `slot`.
+fn lists_to(seen: &[(usize, EventMsg)], slot: usize) -> usize {
+    seen.iter()
+        .filter(|(s, m)| *s == slot && matches!(m, EventMsg::Bags { .. }))
+        .count()
 }
 
 fn bags_for(seen: &[(usize, EventMsg)], slot: usize) -> Vec<(u16, u16, u8, bool)> {
@@ -266,8 +279,17 @@ fn a_dying_player_is_told_their_own_bags_and_only_their_own() {
     assert!(owner.dead, "the owner's client is not on the death screen");
     assert_eq!(owner.own_bags().len(), 1);
     assert!(owner.any_bag_ready());
-    assert!(
-        clients[1].1.own_bags().is_empty(),
+    // The bystander was told its own bag when it placed it (NOW §0die 2),
+    // so its mirror holds that one — and still only that one.
+    let mine: Vec<_> = clients[1]
+        .1
+        .own_bags()
+        .iter()
+        .map(|b| (b.cx, b.cz))
+        .collect();
+    assert_eq!(
+        mine,
+        vec![(CX + 1, CZ)],
         "the bystander's mirror grew a bag from somebody else's death"
     );
 }
@@ -327,6 +349,7 @@ fn a_bag_inside_its_cooldown_is_reported_spent() {
     assert!(core.wants_action(0), "hand should be open");
     core.push_action(0, ActionMsg::Respawn { on_bag: true });
     let mut woke = [0u32; 2];
+    let mut waking = Vec::new();
     for _ in 0..4 {
         let mut seen = Vec::new();
         pump(&mut core, &stats, &mut clients, &mut seen);
@@ -335,6 +358,7 @@ fn a_bag_inside_its_cooldown_is_reported_spent() {
                 woke[0] |= APPLIED_RESPAWN;
             }
         }
+        waking.extend(seen);
     }
     assert_ne!(woke[0], 0, "the respawn never came back");
     assert!(!clients[0].1.dead, "the body never woke");
@@ -343,6 +367,19 @@ fn a_bag_inside_its_cooldown_is_reported_spent() {
         "the wake did not land on the bag — the cooldown below would be \
          measuring nothing"
     );
+    // The wake spent the bag, so the living owner is told at once, not at
+    // the next death: the map's bed mark must not promise a ready anchor.
+    assert_eq!(
+        bags_for(&waking, 0),
+        vec![(CX, CZ, 0u8, false)],
+        "a wake on the bag left the owner's list saying it is ready"
+    );
+    assert_eq!(
+        lists_to(&waking, 1),
+        0,
+        "the bystander heard the owner's list"
+    );
+    assert!(!clients[0].1.any_bag_ready(), "the living owner's mirror");
 
     let second = die(&mut core, &stats, &mut clients);
     assert_eq!(
@@ -388,5 +425,94 @@ fn the_bag_list_announces_itself() {
         raised & APPLIED2_BAGS,
         0,
         "the bag list arrived and raised no applied flag"
+    );
+}
+
+/// **The list follows the bags while the owner lives** (NOW §0die 2), not
+/// only at a death: the map tags your beds off it, so a list from your
+/// last death misses every bed placed since and still tags one a raider
+/// took. A join is told (empty), a placement is told, a pickup is told,
+/// and a resync is told again — each to the owner and nobody else.
+///
+/// The pickup is a **stranger's** (unclaimed ground: anyone in reach may
+/// take a deployable), which is the case `EV_DEPLOY_REMOVED`'s owner field
+/// exists for: the hand that lifted the bag is not the player whose list
+/// changed, so routing the re-send off the actor would tell the wrong one.
+#[test]
+fn a_bag_placed_or_taken_is_told_to_its_living_owner_and_nobody_else() {
+    let (mut core, stats, mut clients) = a_shard();
+    let mut joined = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut joined);
+    }
+    // 1 · a join is told, explicitly, that nothing is there.
+    for slot in 0..2 {
+        assert_eq!(lists_to(&joined, slot), 1, "slot {slot}'s join list");
+    }
+    assert_eq!(bags_for(&joined, 0), vec![]);
+
+    // 2 · a placement reaches its owner alive, and only its owner.
+    let placed = place_bag(&mut core, &stats, &mut clients, 0, CX, CZ);
+    assert!(!clients[0].1.dead, "nobody died — this is the living case");
+    assert_eq!(
+        lists_to(&placed, 0),
+        1,
+        "the owner was not told its new bag"
+    );
+    assert_eq!(bags_for(&placed, 0), vec![(CX, CZ, 0u8, true)]);
+    assert_eq!(
+        lists_to(&placed, 1),
+        0,
+        "the bystander was told somebody else's bags"
+    );
+    assert_eq!(clients[0].1.own_bags().len(), 1, "the owner's mirror");
+    assert!(clients[1].1.own_bags().is_empty(), "the bystander's mirror");
+
+    // 3 · a resync re-tells it whole, from the store.
+    core.clients[0].ev_resync();
+    let mut resynced = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut resynced);
+    assert_eq!(bags_for(&resynced, 0), vec![(CX, CZ, 0u8, true)]);
+    assert_eq!(lists_to(&resynced, 1), 0);
+
+    // 4 · the stranger lifts it, and the OWNER is told it is gone.
+    assert!(core.wants_action(1), "hand should be open");
+    core.push_action(
+        1,
+        ActionMsg::Demolish {
+            deploy: true,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    let mut taken = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut taken);
+        if core.world.deploys.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(
+        core.world.deploys.len(),
+        0,
+        "the stranger's pickup did not land — the fixture, not the mechanic"
+    );
+    assert_eq!(
+        lists_to(&taken, 0),
+        1,
+        "the owner was not told its bag is gone"
+    );
+    assert_eq!(bags_for(&taken, 0), vec![]);
+    assert_eq!(
+        lists_to(&taken, 1),
+        0,
+        "the hand that lifted it was sent a list — the re-send followed the \
+         actor, not the owner"
+    );
+    assert!(
+        clients[0].1.own_bags().is_empty(),
+        "the owner's map still tags a bed that is gone"
     );
 }

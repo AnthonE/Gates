@@ -4,7 +4,11 @@
 //! a piece of clothing or armour off the matching bone — a hood or a helmet
 //! on `Head`, a tunic, a vest or a poncho on the spine, a tunic's skirt on
 //! `Hips` — so a hide poncho reads from across a field the way it does in
-//! Rust. Ids only: the wire carries no condition and no count.
+//! Rust. Ids and skins: the wire carries no condition and no count.
+//!
+//! A skinned piece (v102) is drawn in its skin's tint, the held item's rule
+//! (`bodies::update_hand`): if this client's skin catalog knows the skin,
+//! else plain until the catalog drip brings it.
 //!
 //! ## Placing a piece on a bone
 //!
@@ -22,7 +26,7 @@
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use sim_core::gather::NO_ITEM;
+use client_core::core::WornLook;
 use sim_core::limits::WEAR_SLOTS;
 
 use super::bodies::Body;
@@ -59,7 +63,9 @@ pub struct WornRig {
     bones: [Option<Entity>; 3],
     /// The body's skinned mesh, whose inverse bind poses place a piece.
     pub skin: Option<Entity>,
-    shown: [u16; WEAR_SLOTS],
+    /// What is drawn: a skin this client could not draw is shown as zero,
+    /// so the catalog landing it later reads as a change.
+    shown: WornLook,
     parts: [Option<Entity>; MAX_PARTS],
     /// Dress again next frame: the rig was just found, or a name or the
     /// bind poses had not arrived when it last tried.
@@ -245,7 +251,7 @@ pub fn bind(
         let mut rig = WornRig {
             bones: [None; 3],
             skin: None,
-            shown: [NO_ITEM; WEAR_SLOTS],
+            shown: WornLook::NONE,
             parts: [None; MAX_PARTS],
             pending: true,
         };
@@ -272,26 +278,48 @@ pub fn bind(
     }
 }
 
+/// What of `look` this client can draw, and how: each slot's skin tint if
+/// the skin catalog knows the skin, and the look with every skin it does
+/// not know zeroed — what [`WornRig::shown`] records.
+pub fn drawable(
+    look: WornLook,
+    cat: &protocol::SkinCatalog,
+) -> (WornLook, [Option<[f32; 3]>; WEAR_SLOTS]) {
+    let mut out = look;
+    let mut tints = [None; WEAR_SLOTS];
+    for (skin, tint) in out.skins.iter_mut().zip(tints.iter_mut()) {
+        *tint = crate::ui::skins::tint_of(cat, *skin);
+        if tint.is_none() {
+            *skin = 0;
+        }
+    }
+    (out, tints)
+}
+
 /// Keep each remote body dressed in what the shard says it wears. Work only
-/// when a `Worn` landed (`ClientCore::worn_gen`) or a body is waiting.
+/// when a `Worn` landed (`ClientCore::worn_gen`), the skin catalog moved
+/// (`skins_gen`: a skin may have become drawable) or a body is waiting.
+#[allow(clippy::too_many_arguments)]
 pub fn dress(
     mut commands: Commands,
     net: NonSend<Net>,
     kit: Option<Res<WornKit>>,
     binds: Res<Assets<SkinnedMeshInverseBindposes>>,
     skins: Query<&SkinnedMesh>,
+    mut skin_mats: ResMut<super::viewmodel::SkinMats>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut bodies: Query<(&Body, &mut WornRig)>,
-    mut last_gen: Local<u32>,
+    mut last_gen: Local<(u32, u32)>,
 ) {
     let Some(kit) = kit else { return };
     let core = &net.session.core;
-    let moved = core.worn_gen != *last_gen;
-    *last_gen = core.worn_gen;
+    let moved = (core.worn_gen, core.skins_gen) != *last_gen;
+    *last_gen = (core.worn_gen, core.skins_gen);
     for (body, mut rig) in &mut bodies {
         if !moved && !rig.pending {
             continue;
         }
-        let want = core.worn_of(body.0);
+        let (want, tints) = drawable(core.worn_of(body.0), &core.skins);
         if want == rig.shown && !rig.pending {
             continue;
         }
@@ -304,8 +332,8 @@ pub fn dress(
         };
         let mut pending = false;
         let mut names: [&str; WEAR_SLOTS] = [""; WEAR_SLOTS];
-        for (name, &item) in names.iter_mut().zip(want.iter()) {
-            if item == NO_ITEM {
+        for (name, &item) in names.iter_mut().zip(want.items.iter()) {
+            if item == sim_core::gather::NO_ITEM {
                 continue;
             }
             match crate::ui::craft::item_name(&core.catalog, item) {
@@ -313,7 +341,19 @@ pub fn dress(
                 None => pending = true, // the catalog has not dripped this row yet
             }
         }
-        hang(&mut commands, &kit, skin, ibm, &mut rig, &names);
+        hang(
+            &mut commands,
+            &kit,
+            skin,
+            ibm,
+            &mut rig,
+            &names,
+            |slot, base| {
+                tints[slot]
+                    .and_then(|t| skin_mats.for_part(want.skins[slot], t, base, &mut materials))
+                    .unwrap_or_else(|| base.clone())
+            },
+        );
         rig.shown = want;
         rig.pending = pending;
     }
@@ -321,7 +361,9 @@ pub fn dress(
 
 /// Take off whatever `rig` shows and hang the pieces named in `names` (the
 /// catalog's display names; an empty or unknown name hangs nothing) on its
-/// bones. [`dress`]'s body, and `examples/worn_look.rs`'s.
+/// bones, each part in the material `look` gives for its slot (the index in
+/// `names`) and its own material — that, or a skin's tinted copy of it.
+/// [`dress`]'s body, and `examples/worn_look.rs`'s.
 pub fn hang(
     commands: &mut Commands,
     kit: &WornKit,
@@ -329,6 +371,7 @@ pub fn hang(
     ibm: &[Mat4],
     rig: &mut WornRig,
     names: &[&str],
+    mut look: impl FnMut(usize, &Handle<StandardMaterial>) -> Handle<StandardMaterial>,
 ) {
     for p in rig.parts.iter_mut() {
         if let Some(e) = p.take() {
@@ -336,7 +379,7 @@ pub fn hang(
         }
     }
     let mut n = 0;
-    for name in names {
+    for (slot, name) in names.iter().enumerate() {
         for part in kit.parts_of(name) {
             let Some(bone) = rig.bones[part.bone as usize] else {
                 continue;
@@ -351,7 +394,7 @@ pub fn hang(
             let e = commands
                 .spawn((
                     Mesh3d(part.mesh.clone()),
-                    MeshMaterial3d(part.material.clone()),
+                    MeshMaterial3d(look(slot, &part.material)),
                     Transform::from_matrix(inv * MESH_FROM_BODY),
                     KeepLook,
                     ChildOf(bone),
@@ -429,4 +472,42 @@ fn build(pos: Vec<[f32; 3]>, nor: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u32
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nor)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
         .with_inserted_indices(Indices::U32(idx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A worn skin is drawn only if the catalog knows it, and `shown`
+    /// records an unknown one as plain — so the catalog landing it later
+    /// is a change [`dress`] acts on, not a look it thinks it already drew.
+    #[test]
+    fn an_unknown_worn_skin_is_drawn_plain_until_the_catalog_knows_it() {
+        let look = WornLook {
+            items: [41, 40],
+            skins: [0, 0x0B72],
+        };
+        let mut cat = protocol::SkinCatalog::EMPTY;
+        let (shown, tints) = drawable(look, &cat);
+        assert_eq!(shown.items, look.items);
+        assert_eq!((shown.skins, tints), ([0, 0], [None, None]));
+
+        cat.count = 1;
+        cat.set(
+            0,
+            b"Ember",
+            protocol::SkinRow {
+                catalog: 0x0B72,
+                covers: 40,
+                tint: [255, 0, 0],
+                coin: protocol::COIN_NONE,
+                price: 0,
+            },
+        )
+        .unwrap();
+        let (now, tints) = drawable(look, &cat);
+        assert_eq!(now, look, "drawn in its skin");
+        assert_eq!(tints, [None, Some([1.0, 0.0, 0.0])]);
+        assert_ne!(now, shown, "and that reads as a change");
+    }
 }
