@@ -307,8 +307,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 ## 0ray · What melee aim v1 left *(systems+client lane)*
 
 2. The swing prompt goes quiet when a body, an animal or a wall would take the swing
-   (`melee::nearest`, the server's own cast); it names only scatter, and a carcass is
-   not in its cast yet.
+   (`melee::nearest`) and names the cut when a blade would reach a carcass first; it names
+   no player, animal or wall.
 3. An animal is one cylinder with no part bands; `reference/ANIMALS.md` has no view.
 4. The weak spot is stance-based (`gather`'s sector) and ignores the look.
 5. A remote body's spine, neck and head follow the wire pitch (`render/anim.rs::pose_spine`), but
@@ -405,8 +405,8 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 1. Exposure is wet and cold only: no overheating (no desert, so the Dust preset was dropped; heat is what
    burns water in the reference). Burlap is the only warm clothing (`content/armor.toml`).
 2. Lightning is a 0.35 s brightening: no bolt, no directional flash; `weather::Bolt::bearing` is never read.
-3. WET and COLD say why and confirm a roof (`hud::wet_line`/`cold_line`, off the client's own sky); a
-   fire's warmth is not confirmed — its reach is content the client does not hold.
+3. WET and COLD say why and confirm a roof and a fire (`hud::wet_line`/`cold_line`; `heat_radius_cm`
+   rides the deploy-defs drip).
 4. A sapling is the adult tree scaled 15 → 100 % in 16 steps: no sapling model.
 
 ## 0sk · Skins — what v0 left *(client + platform lane)*
@@ -415,8 +415,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    ITEM STORE entry (`ui/hub.rs`) opens nothing until §0s item 2's `store` link exists.
 2. A look is a flat colour multiply: no per-skin texture or mesh; deployables are refused as targets;
    `season` does nothing.
-3. A ground item carries no skin on the wire, and worn armour draws by id only (`render/worn.rs`, §0eq
-   item 3), with no skin.
 4. A purchase lands at the next ownership check, asked when the inventory or crafting page opens and at
    most every 15 s; a check that fails at join owns nothing until the next.
 5. **Operator:** confirm elo's catalog ids are per title: `/api/items/of/{wallet}` names no title and the
@@ -611,7 +609,6 @@ act):
 
 ## 0y · The sea is a volume — what it still cannot do *(client lane)*
 
-2. One sea state: a storm is `WAVES` × a scalar the sim would have to publish — wire, not renderer.
 5. Under water, one-shots take the engine's one-pole (`engine::lp_under`); beds and loops run unfiltered and are
    only ducked. Not yet heard by a person.
 6. `Splash` is the only waterline producer: no stroke, no wake, no interactive deformation.
@@ -657,7 +654,8 @@ act):
 
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
-3. `--capture` by hand is the only proof most audio systems run; gate world-free ones the `tests/music.rs` way.
+3. The world-free audio systems are gated headless (`tests/audio_systems.rs`); those that need `Net` or
+   `WorldId` still rest on `--capture` by hand.
 5. No occlusion: it needs the sim's geometry query (`collide.rs`), not a raycast against render meshes.
 
 ## 0x · The native client — the feature trim and the dropped anchors *(client lane)*
@@ -707,7 +705,8 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 1. Nothing diffs the served list (`GET /api/launcher/servers/gates`) against `shards.toml`; `ci/shardlist.py
    --self-test` is offline by design, and `ops/certbot-deploy-hook.sh` covers only the certificate.
-2. Ungated, by hand only: killing the shard mid-play into `Screen::Disconnected`.
+2. `tests/disconnect.rs` closes the event lane under a replay; a real transport close (datagram ring,
+   close code) into `Screen::Disconnected` is still by hand.
 
 ## 0pw · Skinned meshes still specialize on arrival *(client lane)*
 
@@ -807,8 +806,8 @@ Standing rule: anything a playtest breaks jumps this queue; anything a wall catc
 
 1. Your own marks are in: five, placed and cleared with a right click while the map is
    held (the mouse aims a crosshair then), the nearest on the compass; client-only and
-   not saved. Left: colour, icon and label, and team-shared marks (`reference/MAP.md`
-   §3), which need a wire message, a cap and a team.
+   not saved; each takes a colour, a picture and a label. Left: team-shared marks
+   (`reference/MAP.md` §3), which need a wire message, a cap and a team.
 2. Clock/radius markers (§4): nothing uses one yet; copy `MarkKind::BedSpent`'s
    weight first.
 3. **Operator:** toggleable grid labels? The reference ships them off (§1).
