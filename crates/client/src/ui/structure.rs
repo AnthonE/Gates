@@ -22,7 +22,8 @@
 //! the call site converts once, at the encoder, where the argument is named.
 
 use sim_core::build::{
-    anchor, shape_has_facing, soft_side, BuildContent, PieceRec, BUILD_REACH_M, MAT_METAL,
+    anchor, build_cell_of, shape_has_facing, soft_side, BuildContent, PieceRec, BUILD_CELL_M,
+    BUILD_REACH_M, MAT_METAL,
 };
 use sim_core::deploy::{DeployContent, DeployRec};
 
@@ -109,6 +110,20 @@ impl Target {
     }
 }
 
+/// How many build cells either side of the feet's own a piece in reach can
+/// stand in, per axis.
+///
+/// An anchor lies in `[x0, x0 + 2/3 cell]` of its cell on each axis
+/// (`build::anchor`: an edge's corner side, a centre, a triangle's thirds),
+/// so a piece `k` cells up an axis from the feet's cell is more than
+/// `k - 1` cells away and one `k` cells down it at least `k - 2/3`. Both
+/// pass the reach by `k = floor(reach / cell) + 2`, so one less holds every
+/// piece in reach: two at 5 m and 3 m, with a metre to spare up the axis and
+/// two down it — far more than the feet's own `floor` can round by.
+/// `tests::the_cell_window_drops_no_piece_in_reach` holds it against the
+/// unfiltered walk.
+const REACH_CELLS: i32 = (BUILD_REACH_M / BUILD_CELL_M) as i32 + 1;
+
 /// The nearest structure within `BUILD_REACH_M` of the feet, over BOTH
 /// stores.
 ///
@@ -121,6 +136,14 @@ impl Target {
 /// which is the door rather than its doorway. That is the thing a player is
 /// looking at and the thing a raider means; the doorway behind it is still
 /// reachable by breaking the door first.
+///
+/// **Runs every frame over the whole piece mirror** (`verbs::resolve`, up to
+/// `MAX_PIECES`), so a piece outside the [`REACH_CELLS`] window around the
+/// feet is dropped on two integer compares before any anchor is measured
+/// (NOW §0pf 3). The compares are on wrapped `u16` offsets: a piece in reach
+/// is at most `REACH_CELLS` cells off per axis, so its offset from the
+/// window's low corner is `0..=2 * REACH_CELLS` however the feet's cell
+/// wraps, and anything else the window lets through is still measured.
 pub fn nearest(
     at: (f32, f32),
     pieces: &[PieceRec],
@@ -133,7 +156,13 @@ pub fn nearest(
     let mut best: Option<Target> = None;
     let mut best_d2 = BUILD_REACH_M * BUILD_REACH_M;
 
+    let span = 2 * REACH_CELLS as u16;
+    let x0 = build_cell_of(at.0).wrapping_sub(REACH_CELLS) as u16;
+    let z0 = build_cell_of(at.1).wrapping_sub(REACH_CELLS) as u16;
     for rec in pieces {
+        if rec.cx.wrapping_sub(x0) > span || rec.cz.wrapping_sub(z0) > span {
+            continue;
+        }
         let (ax, az) = anchor(rec.cx, rec.cz, rec.loc);
         let (dx, dz) = (ax - at.0, az - at.1);
         let d2 = dx * dx + dz * dz;
@@ -686,5 +715,81 @@ mod tests {
         // A row past what has dripped is not searched — its `item` is
         // INERT's and would match the wrong hand.
         assert_eq!(row_for_item(&c, 1, 42), None);
+    }
+
+    /// **`nearest`'s cell window drops nothing the unfiltered walk reaches**
+    /// (NOW §0pf 3). One piece of every anchor kind, the feet swept on a
+    /// quarter-metre grid over the cells around it — cell edges and the
+    /// reach circle's rim included — and the address compared with the walk
+    /// the window replaced, kept here as it was. Then every piece at once,
+    /// for the tie rule. Near cell 0 too, where the window's low corner
+    /// wraps.
+    ///
+    /// It must also REACH the window's outermost cells both ways, or a
+    /// window one cell too narrow would agree with the walk everywhere this
+    /// sweep happened to look.
+    #[test]
+    fn the_cell_window_drops_no_piece_in_reach() {
+        use sim_core::build::{
+            LOC_DIAG_A, LOC_EDGE_ZLO, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
+            LOC_TRI_XLO_ZLO,
+        };
+        let walk = |at: (f32, f32), pieces: &[PieceRec]| {
+            let mut best = None;
+            let mut best_d2 = BUILD_REACH_M * BUILD_REACH_M;
+            for r in pieces {
+                let (ax, az) = anchor(r.cx, r.cz, r.loc);
+                let (dx, dz) = (ax - at.0, az - at.1);
+                let d2 = dx * dx + dz * dz;
+                if d2 <= best_d2 {
+                    best_d2 = d2;
+                    best = Some((r.cx, r.cz, r.loc));
+                }
+            }
+            best
+        };
+        let (pd, ph) = piece_table(&[MAT_WOOD]);
+        let (dd, dh) = deploy_table();
+        let pick = |at: (f32, f32), pieces: &[PieceRec]| {
+            nearest(at, pieces, &pd, ph, &[], &dd, dh).map(|t| (t.cx, t.cz, t.loc))
+        };
+        let locs = [
+            LOC_PLANE,
+            LOC_RISER,
+            LOC_EDGE_XLO,
+            LOC_EDGE_ZLO,
+            LOC_TRI_XLO_ZLO,
+            LOC_TRI_XHI_ZLO,
+            LOC_TRI_XLO_ZHI,
+            LOC_TRI_XHI_ZHI,
+            LOC_DIAG_A,
+        ];
+        let (mut up, mut down, mut reached) = (false, false, 0usize);
+        for (cx, cz) in [(100u16, 100u16), (0, 1)] {
+            let all: Vec<PieceRec> = locs.iter().map(|&l| piece(cx, cz, l, 500)).collect();
+            let (x0, z0) = (cx as f32 * BUILD_CELL_M, cz as f32 * BUILD_CELL_M);
+            for i in 0..=96 {
+                for j in 0..=96 {
+                    let at = (x0 - 10.5 + i as f32 * 0.25, z0 - 10.5 + j as f32 * 0.25);
+                    for rec in &all {
+                        let one = std::slice::from_ref(rec);
+                        let got = pick(at, one);
+                        assert_eq!(got, walk(at, one), "{rec:?} from {at:?}");
+                        if got.is_some() {
+                            reached += 1;
+                            let off = cx as i32 - build_cell_of(at.0);
+                            up |= off == REACH_CELLS;
+                            down |= off == -REACH_CELLS;
+                        }
+                    }
+                    assert_eq!(pick(at, &all), walk(at, &all), "every piece from {at:?}");
+                }
+            }
+        }
+        assert!(reached > 0, "the sweep never reached a piece");
+        assert!(
+            up && down,
+            "no piece in reach {REACH_CELLS} cells off (up {up}, down {down})"
+        );
     }
 }

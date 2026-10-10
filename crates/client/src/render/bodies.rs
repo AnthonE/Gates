@@ -239,7 +239,7 @@ pub fn stream(
     store.gen = store.gen.wrapping_add(1);
     let gen = store.gen;
 
-    for id in core.interp.ids() {
+    for (entry, id) in core.interp.slots() {
         if id == core.player_id {
             continue;
         }
@@ -267,7 +267,7 @@ pub fn stream(
             live.seen = gen;
             (live.entity, live.sleeping)
         });
-        if !core.interp.sample(id, at, &mut rs) {
+        if !core.interp.sample_slot(entry, at, &mut rs) {
             continue;
         }
         // **The rig's origin is its FEET, and the capsule's was its middle.**

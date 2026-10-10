@@ -1315,11 +1315,14 @@ pub fn feed(
 /// received two event messages sees only the second one's change feed. The
 /// mesh swap is authoritative and this listens to the swap.
 ///
-/// `Ref` rather than a `Changed<T>` filter because `Changed` also fires on the
-/// frame a component is ADDED, and props are added by the streamer every time
-/// the player walks a chunk into the ring. Without the `is_added` guard, every
-/// already-felled stump in the forest would crash to the ground again each
-/// time it streamed in.
+/// `Ref` as well as the `Changed<T>` filter, because `Changed` also fires on
+/// the frame a component is ADDED, and props are added by the streamer every
+/// time the player walks a chunk into the ring. Without the `is_added` guard,
+/// every already-felled stump in the forest would crash to the ground again
+/// each time it streamed in. The filter is the cheap half: it reads the
+/// change tick and skips the row before the transform is fetched, where the
+/// query used to hand over every fellable in the rings — thousands, all
+/// standing still — to be thrown back by an `is_changed` test (NOW §0pf 3).
 ///
 /// **A bush is picked, not felled** (`E`, `gather::pick`): it plays
 /// [`Cue::BushPick`] and sheds a puff of leaves, once per slot — a bush is
@@ -1327,7 +1330,7 @@ pub fn feed(
 /// remembered for the frame. Which `Vanish` node is a bush is read off the
 /// scatter by its key, on the transition frame only.
 pub fn fell(
-    q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>,
+    q: Query<(Ref<super::props::Fellable>, &GlobalTransform), Changed<super::props::Fellable>>,
     world: Option<Res<super::WorldId>>,
     eye: Res<Eye>,
     mut fx: ResMut<super::fx::Fx>,
@@ -1336,7 +1339,7 @@ pub fn fell(
     let mut picked = [u32::MAX; 8];
     let mut n_picked = 0;
     for (f, t) in q.iter() {
-        if !f.is_changed() || f.is_added() || !f.felled {
+        if f.is_added() || !f.felled {
             // A slot respawning is silent: a tree that comes back after 20-45
             // minutes (`TERRAIN.md` §2) does not do so audibly.
             continue;

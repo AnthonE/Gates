@@ -27,6 +27,12 @@
 //!  - **`water::stream`**, as a system on a bare `App`: a cold sweep (nothing
 //!    to carry) against a one-cell snap (most of the core carried).
 //!
+//! Then `NOW.md` §0pf item 3's five small leftovers, each on a settled frame
+//! (`-- leftovers` runs that section alone, without the far mesh):
+//! `structure::nearest` over a full piece store, the remote-body walk over a
+//! full interpolator, and the ring streamers, `audio::fell` and `hud::update`
+//! as systems, each alone in a single-threaded schedule net of an empty one.
+//!
 //! Medians are not reported — the MINIMUM of several runs is, which is the
 //! honest statistic on a box that shares cores with a build: the fastest run
 //! is the one least interrupted, and a mean here measures the neighbours.
@@ -59,6 +65,20 @@ fn row(label: &str, ns: f64) {
     println!("  {label:<46} {:9.3} ms", ns / 1e6);
 }
 
+/// [`best`] for work too small to time one call of: `k` calls per sample,
+/// reported per call.
+fn best_of(reps: u32, k: u32, mut f: impl FnMut()) -> f64 {
+    best(reps, || {
+        for _ in 0..k {
+            f();
+        }
+    }) / k as f64
+}
+
+fn row_us(label: &str, ns: f64) {
+    println!("  {label:<46} {:9.2} µs", ns / 1e3);
+}
+
 fn tile_origin(t: (i32, i32)) -> (f32, f32) {
     (
         t.0 as f32 * terrain::CLUTTER_TILE_M,
@@ -88,6 +108,10 @@ fn range_tiles() -> ((i32, i32), (i32, i32)) {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "leftovers") {
+        leftovers();
+        return;
+    }
     println!("frame_cost — release, minimum of several runs, CPU only\n");
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
@@ -338,4 +362,291 @@ fn main() {
         bytes as f32 / 1024.0
     );
     row("stream + animate on a still frame", anim);
+    println!();
+    leftovers();
+}
+
+// ── NOW §0pf 3: the five small leftovers ────────────────────────────────────
+//
+// Each was a few microseconds when it was named, under 50 together, so each is
+// timed over a batch and reported per call. The systems run alone in a
+// single-threaded schedule on a world that has settled — the frame a player
+// standing still pays — net of an empty schedule's own run.
+
+fn leftovers() {
+    println!("NOW §0pf 3 — the five small leftovers, per frame");
+    nearest_cost();
+    remotes_cost();
+    systems_cost();
+}
+
+/// `ui::structure::nearest` over a full piece store (`MAX_PIECES`): a 32 x 32
+/// cell base, two pieces a cell on four storeys.
+fn nearest_cost() {
+    use client::ui::structure;
+    use sim_core::build::{
+        BuildContent, PieceDef, PieceRec, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE, SHAPE_FOUNDATION,
+    };
+    use sim_core::deploy::DeployContent;
+    use sim_core::limits::{MAX_PIECES, MAX_PIECE_COSTS};
+
+    let mut defs = BuildContent::EMPTY;
+    defs.pieces[0] = PieceDef {
+        shape: SHAPE_FOUNDATION,
+        material: 1,
+        hp: 500,
+        n_costs: 0,
+        costs: [(0, 0); MAX_PIECE_COSTS],
+    };
+    defs.piece_count = 1;
+    let (ox, oz) = (400u16, 400u16);
+    let mut pieces = Vec::with_capacity(MAX_PIECES);
+    for level in 0..4u8 {
+        for loc in [LOC_PLANE, LOC_EDGE_XLO] {
+            for i in 0..32u16 {
+                for j in 0..32u16 {
+                    pieces.push(PieceRec {
+                        cx: ox + i,
+                        cz: oz + j,
+                        level,
+                        loc,
+                        hp: 500,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+    let deploys = DeployContent::EMPTY;
+    println!("structure::nearest, {} pieces", pieces.len());
+    let inside = (
+        (ox as f32 + 16.3) * BUILD_CELL_M,
+        (oz as f32 + 16.6) * BUILD_CELL_M,
+    );
+    let away = (inside.0 + 300.0, inside.1);
+    for (label, at) in [("standing in the base", inside), ("300 m from it", away)] {
+        row_us(
+            label,
+            best_of(20, 200, || {
+                black_box(structure::nearest(
+                    black_box(at),
+                    &pieces,
+                    &defs,
+                    1,
+                    &[],
+                    &deploys,
+                    0,
+                ));
+            }),
+        );
+    }
+}
+
+/// `bodies::stream` and `mobs::stream` together sample every id the
+/// interpolator holds once a frame: here a full table (`INTERP_SLOTS`),
+/// sixteen samples deep.
+fn remotes_cost() {
+    use client_core::interp::{Interp, RemoteState, INTERP_SLOTS};
+    let mut it = Interp::new();
+    for t in 0..16u32 {
+        for id in 0..INTERP_SLOTS as u32 {
+            it.push(
+                t * 2,
+                &protocol::EntityState {
+                    id: id + 1,
+                    qx: 30_000 + id as i32 * 7 + t as i32 * 3,
+                    qy: 500,
+                    qz: 40_000,
+                    qvy: 0,
+                    grounded: true,
+                    sleeping: false,
+                    dead: false,
+                    wounded: false,
+                    crouched: false,
+                    yaw: 0,
+                    pitch: 100,
+                    held: None,
+                    lit: false,
+                    held_skin: 0,
+                },
+            );
+        }
+    }
+    let at = 25.5;
+    println!("the remote-body walk, {INTERP_SLOTS} bodies");
+    row_us(
+        "ids(), then sample(id) — the search per body",
+        best_of(20, 50, || {
+            let mut rs = RemoteState::default();
+            let mut n = 0u32;
+            for id in it.ids() {
+                n += it.sample(id, black_box(at), &mut rs) as u32;
+            }
+            black_box((n, rs.x));
+        }),
+    );
+    row_us(
+        "slots(), then sample_slot — the streamers' walk",
+        best_of(20, 50, || {
+            let mut rs = RemoteState::default();
+            let mut n = 0u32;
+            for (slot, _) in it.slots() {
+                n += it.sample_slot(slot, black_box(at), &mut rs) as u32;
+            }
+            black_box((n, rs.x));
+        }),
+    );
+}
+
+/// Run `sys` alone, single-threaded, on `world`: per call, net of an empty
+/// schedule.
+fn system_cost<M>(
+    world: &mut World,
+    k: u32,
+    sys: impl bevy::ecs::schedule::IntoScheduleConfigs<bevy::ecs::system::ScheduleSystem, M>,
+) -> f64 {
+    use bevy::ecs::schedule::ExecutorKind;
+    let mut s = Schedule::default();
+    s.set_executor_kind(ExecutorKind::SingleThreaded);
+    s.add_systems(sys);
+    let mut empty = Schedule::default();
+    empty.set_executor_kind(ExecutorKind::SingleThreaded);
+    let base = best_of(20, k, || empty.run(world));
+    best_of(20, k, || s.run(world)) - base
+}
+
+/// The ring streamers, `audio::fell` and `hud::update`, on worlds that have
+/// stopped streaming.
+fn systems_cost() {
+    use client::render::foliage::{FoliageMaterial, Foliages};
+    use client::render::ground_splat::GroundMaterial;
+    use client::render::props::{Fellable, PropRing};
+    use client::render::textures::{GroundArrays, MapSet, PropMaps};
+    use client::render::tree::TreeLod;
+    use client::render::{audio, boulders, cliffs, clutter, fx, props};
+
+    // An eye among the ranges, where the rock and cliff rings have the most
+    // to hold.
+    let (_, flank) = range_tiles();
+    let (fx_m, fz_m) = tile_origin(flank);
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+    app.init_asset::<Mesh>();
+    app.init_asset::<Image>();
+    app.init_asset::<StandardMaterial>();
+    app.init_asset::<GroundMaterial>();
+    app.init_asset::<FoliageMaterial>();
+    app.insert_resource(WorldId::new(SEED));
+    app.insert_resource(GroundArrays {
+        albedo: Handle::default(),
+        data: Handle::default(),
+    });
+    app.insert_resource(Foliages::new(Handle::default(), Handle::default()));
+    app.insert_resource(PropMaps {
+        rock: MapSet::default(),
+        bark: MapSet::default(),
+        birch: MapSet::default(),
+        wood: MapSet::default(),
+        stone: MapSet::default(),
+        metal: MapSet::default(),
+    });
+    app.init_resource::<terrain_mesh::Ring>();
+    app.init_resource::<boulders::RockRing>();
+    app.init_resource::<cliffs::CliffRing>();
+    app.init_resource::<clutter::ClutterRing>();
+    app.init_resource::<PropRing>();
+    app.init_resource::<TreeLod>();
+    app.init_resource::<audio::Sound>();
+    app.init_resource::<fx::Fx>();
+    app.insert_resource(Eye {
+        pos: Vec3::new(fx_m + 8.0, 20.0, fz_m + 8.0),
+        placed: true,
+        ..default()
+    });
+    app.add_systems(
+        Update,
+        (
+            terrain_mesh::stream,
+            clutter::stream,
+            cliffs::stream,
+            boulders::stream,
+            props::stream,
+        )
+            .chain(),
+    );
+    // Settle: every ring full, then long enough for the cliff cells on the
+    // pool to land (a steep one is milliseconds; the frames here are not).
+    let rock_cells = ((2 * boulders::ROCK_RING + 1) * (2 * boulders::ROCK_RING + 1)) as usize;
+    let mut frames = 0;
+    loop {
+        app.update();
+        frames += 1;
+        let w = app.world();
+        let full = w.resource::<boulders::RockRing>().len() >= rock_cells
+            && w.resource::<clutter::ClutterRing>().is_full()
+            && w.resource::<PropRing>().is_full()
+            && w.resource::<PropRing>().outer_len() >= props::OUTER_CHUNKS;
+        if full || frames > 20_000 {
+            break;
+        }
+    }
+    for _ in 0..400 {
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let fellables = {
+        let w = app.world_mut();
+        w.query::<&Fellable>().iter(w).count()
+    };
+    println!("the ring streamers, settled after {frames} frames at ({fx_m:.0}, {fz_m:.0})");
+    let w = app.world_mut();
+    row_us("boulders::stream", system_cost(w, 50, boulders::stream));
+    row_us("cliffs::stream", system_cost(w, 50, cliffs::stream));
+    row_us("clutter::stream", system_cost(w, 50, clutter::stream));
+    row_us("props::stream", system_cost(w, 50, props::stream));
+    println!("audio::fell over {fellables} fellables, none changing");
+    row_us("audio::fell", system_cost(w, 50, audio::fell));
+    hud_cost();
+}
+
+/// `hud::update` with a stocked hotbar and the vitals up — counts and
+/// numbers to say, none of them changing.
+fn hud_cost() {
+    use client::film::Recording;
+    use client::render::{ghost, hud, icons, panels, Net};
+    use sim_core::gather::ItemStack;
+    use sim_core::limits::HOTBAR_SLOTS;
+
+    let (mut session, _replay) = client::Session::replay(Recording {
+        welcome: protocol::Welcome {
+            player_id: 1,
+            seed: SEED,
+            tick: 0,
+            dev: true,
+        },
+        entries: Vec::new(),
+    });
+    let core = &mut session.core;
+    for (i, s) in core.inv.iter_mut().take(HOTBAR_SLOTS).enumerate() {
+        *s = ItemStack {
+            item: i as u16 + 1,
+            count: 12 + i as u16,
+            ..Default::default()
+        };
+    }
+    (core.hp, core.hp_max) = (83, 100);
+    (core.water, core.max_water) = (190, 250);
+    (core.food, core.max_food) = (311, 500);
+    let mut world = World::new();
+    world.init_resource::<icons::Icons>();
+    world.init_resource::<panels::Ui>();
+    world.init_resource::<ghost::Ghost>();
+    world.insert_non_send_resource(Net {
+        session,
+        sel: 0,
+        light: false,
+    });
+    world.run_system_cached(hud::setup).expect("hud::setup ran");
+    println!("hud::update, {HOTBAR_SLOTS} stocked slots and three vitals");
+    row_us("hud::update", system_cost(&mut world, 200, hud::update));
 }

@@ -142,6 +142,11 @@ pub struct ClutterRing {
     /// The ring's lattice memo, kept across tiles: a neighbour's quads and the
     /// ranges' layout stay warm from one fill to the next.
     lat: terrain::Lattice,
+    /// The eye's tile, once a walk around it dropped every tile outside the
+    /// ring and found every tile inside it filled: until the eye leaves it
+    /// the frame has nothing to do and returns before the walk
+    /// (`boulders::RockRing::settled`, NOW §0pf 3).
+    settled: Option<(i32, i32)>,
 }
 
 /// Tiles in a full clutter ring.
@@ -637,6 +642,13 @@ pub fn stream(
     assets: Res<AssetServer>,
 ) {
     let Some(foliages) = foliages else { return };
+    let tx = (eye.pos.x / CLUTTER_TILE_M).floor() as i32;
+    let tz = (eye.pos.z / CLUTTER_TILE_M).floor() as i32;
+    // Ahead of the materials too: a walk that settled had made them.
+    if ring.settled == Some((tx, tz)) {
+        return;
+    }
+    ring.settled = None;
     // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
     // is the browser's name for exactly this sum and the two fills are
     // documented as sharing a population, so a single allocation holds both.
@@ -711,9 +723,6 @@ pub fn stream(
             foliage_mats.add(foliages.make(base, super::foliage::Kind::Grass))
         })
         .clone();
-
-    let tx = (eye.pos.x / CLUTTER_TILE_M).floor() as i32;
-    let tz = (eye.pos.z / CLUTTER_TILE_M).floor() as i32;
 
     let mut dropped = 0usize;
     ring.built.retain(|(bx, bz), e| {
@@ -908,5 +917,10 @@ pub fn stream(
             ring.built.insert(key, e);
             filled += 1;
         }
+    }
+    // Under the budget, the retain dropped every tile outside the ring; and
+    // the walk ran to the end, so every tile inside it is filled.
+    if dropped < CLUTTER_FILLS_PER_FRAME {
+        ring.settled = Some((tx, tz));
     }
 }

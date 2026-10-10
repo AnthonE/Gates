@@ -74,6 +74,12 @@ pub struct CliffRing {
     built: HashMap<(i32, i32), Option<Entity>>,
     /// Cells being built on the pool.
     tasks: HashMap<(i32, i32), Task<CellMeshes>>,
+    /// The eye's cell, once a walk around it found every cell of the ring
+    /// built or queued: until the eye leaves it, the retains and the probe
+    /// have nothing to do and are skipped (`boulders::RockRing::settled`).
+    /// Landing is not — a queued cell still lands into `built`, which keeps
+    /// it in the ring.
+    settled: Option<(i32, i32)>,
 }
 
 /// Keep the cliff cells within [`CLIFF_RING`] of the eye built, nearest
@@ -106,21 +112,26 @@ pub fn stream(
         // Dropping a `Task` cancels it.
         ring.tasks.clear();
         ring.seed = Some(world.seed);
+        ring.settled = None;
     }
     let cx = (eye.pos.x / CLIFF_CELL_M).floor() as i32;
     let cz = (eye.pos.z / CLIFF_CELL_M).floor() as i32;
-    let near =
-        |x: i32, z: i32| (x - cx).abs() <= CLIFF_RING + 1 && (z - cz).abs() <= CLIFF_RING + 1;
-    ring.built.retain(|&(x, z), e| {
-        let keep = near(x, z);
-        if !keep {
-            if let Some(e) = e {
-                commands.entity(*e).despawn();
+    let settled = ring.settled == Some((cx, cz));
+    if !settled {
+        ring.settled = None;
+        let near =
+            |x: i32, z: i32| (x - cx).abs() <= CLIFF_RING + 1 && (z - cz).abs() <= CLIFF_RING + 1;
+        ring.built.retain(|&(x, z), e| {
+            let keep = near(x, z);
+            if !keep {
+                if let Some(e) = e {
+                    commands.entity(*e).despawn();
+                }
             }
-        }
-        keep
-    });
-    ring.tasks.retain(|&(x, z), _| near(x, z));
+            keep
+        });
+        ring.tasks.retain(|&(x, z), _| near(x, z));
+    }
 
     // Cells that finished, a bounded few a frame: `meshes.add` uploads.
     for _ in 0..LANDS_PER_FRAME {
@@ -167,6 +178,9 @@ pub fn stream(
         ring.built.insert(key, e);
     }
 
+    if settled {
+        return;
+    }
     let pool = AsyncComputeTaskPool::get();
     let (seed, haven) = (world.seed, world.haven);
     let mut budget = QUEUES_PER_FRAME;
@@ -197,6 +211,7 @@ pub fn stream(
             }
         }
     }
+    ring.settled = Some((cx, cz));
 }
 
 /// A new world: forget the cells (their entities are `WorldEntity`).

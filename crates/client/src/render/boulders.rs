@@ -69,6 +69,11 @@ const SEG_V_M: f32 = 0.9;
 pub struct RockRing {
     seed: Option<u64>,
     built: HashMap<(i32, i32), Option<Entity>>,
+    /// The eye's cell, once a walk around it found every cell of the ring
+    /// already built. Until the eye leaves that cell there is nothing for
+    /// the next walk to drop or build, and the walk is 841 hash probes and
+    /// a pass over the whole map (NOW §0pf 3), so the frame skips it.
+    settled: Option<(i32, i32)>,
 }
 
 impl RockRing {
@@ -100,9 +105,14 @@ pub fn stream(
             }
         }
         rocks.seed = Some(world.seed);
+        rocks.settled = None;
     }
     let cx = (eye.pos.x / BOULDER_CELL_M).floor() as i32;
     let cz = (eye.pos.z / BOULDER_CELL_M).floor() as i32;
+    if rocks.settled == Some((cx, cz)) {
+        return;
+    }
+    rocks.settled = None;
     rocks.built.retain(|&(x, z), e| {
         let keep = (x - cx).abs() <= ROCK_RING + 1 && (z - cz).abs() <= ROCK_RING + 1;
         if !keep {
@@ -146,6 +156,8 @@ pub fn stream(
             }
         }
     }
+    // The walk ran to the end, so every cell of the ring is in the map.
+    rocks.settled = Some((cx, cz));
 }
 
 /// A new world: forget the formations (their entities are `WorldEntity`).

@@ -192,6 +192,12 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.crouched = s.e.crouched;
 }
 
+/// A body's place in [`Interp`]'s table, as [`Interp::slots`] hands it out.
+/// Only `slots` makes one, so [`Interp::sample_slot`] is never asked about
+/// an index the table did not give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slot(usize);
+
 pub struct Interp {
     used: [bool; INTERP_SLOTS],
     ids: [u32; INTERP_SLOTS],
@@ -308,9 +314,18 @@ impl Interp {
     }
 
     pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.slots().map(|(_, id)| id)
+    }
+
+    /// [`Self::ids`] with each body's place in the table, for a reader that
+    /// samples every body it walks (`render/bodies.rs`, `render/mobs.rs`):
+    /// [`Self::sample_slot`] then reads the slot it was handed, where
+    /// `sample(id)` would scan the table again to find it — a full table's
+    /// worth of compares per body, every frame (NOW §0pf 3).
+    pub fn slots(&self) -> impl Iterator<Item = (Slot, u32)> + '_ {
         (0..INTERP_SLOTS)
             .filter(|&i| self.used[i] && self.len[i] > 0)
-            .map(|i| self.ids[i])
+            .map(|i| (Slot(i), self.ids[i]))
     }
 
     fn get(&self, slot: usize, i: usize) -> &Sample {
@@ -348,9 +363,13 @@ impl Interp {
     /// linear blend (yaw shortest-arc). Beyond the newest or before the
     /// oldest: clamp with `live = false`.
     pub fn sample(&self, id: u32, at: f64, out: &mut RemoteState) -> bool {
-        let Some(slot) = self.slot_of(id) else {
-            return false;
-        };
+        self.slot_of(id)
+            .is_some_and(|slot| self.sample_slot(Slot(slot), at, out))
+    }
+
+    /// [`Self::sample`] for a body [`Self::slots`] has already found.
+    pub fn sample_slot(&self, slot: Slot, at: f64, out: &mut RemoteState) -> bool {
+        let slot = slot.0;
         let n = self.len[slot] as usize;
         if n == 0 {
             return false;
@@ -669,6 +688,43 @@ mod tests {
             (r.x - 1500.0 * 0.03).abs() < 1e-3,
             "an in-depth straddle stopped lerping"
         );
+    }
+
+    /// **`sample_slot` is `sample` without the search**: over a table with
+    /// holes in it (a removal, a keyframe), every slot `slots()` hands out
+    /// samples bit for bit what its id does, and the ids come in `ids()`'s
+    /// order — the two render walks switched from one to the other.
+    #[test]
+    fn a_slot_samples_what_its_id_does() {
+        let mut it = Interp::new();
+        for t in [10u32, 12, 14] {
+            for id in 1..=9u32 {
+                it.push(t, &ent(id, (id * 1000 + t) as i32, (id * 7000) as u16));
+            }
+        }
+        it.remove(4);
+        it.push(16, &ent(11, 500, 0));
+        let named: Vec<EntityState> = [1u32, 2, 3, 5, 6, 8, 9, 11]
+            .iter()
+            .map(|&id| ent(id, 0, 0))
+            .collect();
+        it.retain_present(&named);
+        let ids: Vec<u32> = it.ids().collect();
+        let slots: Vec<(Slot, u32)> = it.slots().collect();
+        assert_eq!(slots.iter().map(|s| s.1).collect::<Vec<_>>(), ids);
+        assert_eq!(ids.len(), 8);
+        // Every field the two walks read, to the bit.
+        let seen = |r: &RemoteState| {
+            let f = [r.x, r.y, r.z, r.yaw, r.pitch].map(f32::to_bits);
+            (r.id, f, r.live, r.sleeping, r.dead, r.held, r.airborne)
+        };
+        for at in [9.0, 11.0, 13.5, 14.0, 16.0, 30.0] {
+            for &(slot, id) in &slots {
+                let (mut a, mut b) = (RemoteState::default(), RemoteState::default());
+                assert_eq!(it.sample(id, at, &mut a), it.sample_slot(slot, at, &mut b));
+                assert_eq!(seen(&a), seen(&b), "id {id} at {at}");
+            }
+        }
     }
 
     #[test]

@@ -501,6 +501,11 @@ pub const OUTER_RADIUS: i32 = 4;
 pub struct PropRing {
     built: HashMap<(i32, i32), Entity>,
     outer: HashMap<(i32, i32), Entity>,
+    /// The eye's chunk, once a walk around it found both rings exactly
+    /// built — nothing to drop, nothing to build: until the eye leaves it
+    /// the frame skips both walks (`boulders::RockRing::settled`, NOW §0pf
+    /// 3).
+    settled: Option<(i32, i32)>,
 }
 
 impl PropRing {
@@ -2340,6 +2345,10 @@ pub fn stream(
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
+    if ring.settled == Some((cx, cz)) {
+        return;
+    }
+    ring.settled = None;
 
     let mut dropped = 0usize;
     ring.built.retain(|(bx, bz), e| {
@@ -2492,6 +2501,12 @@ pub fn stream(
             ring.outer.insert(key, parent);
             return;
         }
+    }
+    // Both walks ran to the end and neither retain left a chunk behind (the
+    // outer one returns when it drops; the near one may have dropped its
+    // one-a-frame and left more).
+    if dropped == 0 {
+        ring.settled = Some((cx, cz));
     }
 }
 

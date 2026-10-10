@@ -530,7 +530,7 @@ pub fn stream(
     herd.gen = herd.gen.wrapping_add(1);
     let gen = herd.gen;
 
-    for id in core.interp.ids() {
+    for (entry, id) in core.interp.slots() {
         // The one line that divides this file from `bodies.rs`.
         let Some(slot) = mob::slot_of_id(id) else {
             continue;
@@ -548,7 +548,7 @@ pub fn stream(
             live.seen = gen;
             live.entity
         });
-        if !core.interp.sample(id, at, &mut rs) {
+        if !core.interp.sample_slot(entry, at, &mut rs) {
             continue;
         }
         let pos = Vec3::new(rs.x, rs.y, rs.z);

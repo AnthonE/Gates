@@ -2086,8 +2086,33 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
     // and became a thing with state, and `hud.rs` is the HUD.
 }
 
+/// Write `out` into `text` only when it differs: `Text` is change-detected
+/// and a rewrite re-lays out the node. Takes the `Mut` itself so the compare
+/// reads through `Deref` and only the write marks the text changed.
+fn say(text: &mut Mut<Text>, out: &str) {
+    if text.0 != out {
+        text.0.clear();
+        text.0.push_str(out);
+    }
+}
+
+/// `s.to_uppercase()`, appended to `out` rather than allocated.
+fn push_upper(out: &mut String, s: &str) {
+    out.extend(s.chars().flat_map(char::to_uppercase));
+}
+
 /// Redraw from the core. Cheap enough per frame: six background colours and
-/// one string.
+/// a few strings.
+///
+/// **Every string is written into one reused buffer** (`line`) and only
+/// copied into its `Text` when it differs, so a frame where nothing moved
+/// allocates nothing (NOW §0pf 3). The readouts used to `format!` afresh
+/// each frame — the ammo, the plan line, a count per stocked slot, a number
+/// per vital — and compare after. The buffer is compared against the text
+/// itself rather than against a remembered key, so a respawned HUD or a def
+/// row that drips in later is written exactly when it was before. The one
+/// string still built per frame is `hold::hand_hint`'s, and only for a hand
+/// it has something to say about.
 #[allow(clippy::type_complexity)]
 // Eight, and the eighth arrived with the aiming refusal: the vitals stack grew
 // three queries of its own on `main` in the same window. Each is a distinct
@@ -2125,8 +2150,11 @@ pub fn update(
     // The hold on `R` (`ui::unload`), named on the readout while it runs.
     unload: Option<Res<super::verbs::Unload>>,
     time: Res<Time>,
+    mut line: Local<String>,
 ) {
+    use std::fmt::Write;
     let core = &net.session.core;
+    let line = &mut *line;
 
     // The ammo readout. `mag()` answers `(0, 0)` for a hand with no
     // magazine AND for one whose magazine was last stated for a different
@@ -2139,12 +2167,13 @@ pub fn update(
             let now = time.elapsed_secs_f64();
             u.0.showing(super::verbs::unload_frame(core, false, true, now))
         });
-        let want = if ceiling != 0 && unloading {
+        line.clear();
+        if ceiling != 0 && unloading {
             // The hold names itself, so letting go before it lands is a
             // choice the player can see they are making.
-            format!("{loaded} / {ceiling}  ·  UNLOADING")
+            let _ = write!(line, "{loaded} / {ceiling}  ·  UNLOADING");
         } else if ceiling != 0 {
-            format!("{loaded} / {ceiling}")
+            let _ = write!(line, "{loaded} / {ceiling}");
         } else if let Some(round) = core.bow_round() {
             // A bow's readout is the arrow it looses and how many of it
             // the pack holds — `R` picks the next kind (Rust's ammo pick).
@@ -2154,19 +2183,19 @@ pub fn update(
                 .filter(|s| s.count > 0 && s.item == round)
                 .map(|s| u32::from(s.count))
                 .sum();
-            format!(
-                "{} {n}",
-                crate::ui::craft::item_label(&core.catalog, round).to_uppercase()
-            )
-        } else {
-            String::new()
-        };
+            // `item_label`, uppercased, without its two allocations.
+            match crate::ui::craft::item_name(&core.catalog, round) {
+                Some(name) => push_upper(line, name),
+                None => {
+                    let _ = write!(line, "#{round}");
+                }
+            }
+            let _ = write!(line, " {n}");
+        }
         // Written only when it changed: `Text` is change-detected and the
         // hotbar counts beside it take the same care, because a string
         // rewritten every frame re-lays out the node every frame.
-        if text.0 != want {
-            text.0 = want;
-        }
+        say(&mut text, line);
     }
 
     if let (Ok(mut text), Some(ui)) = (plan.single_mut(), ui.as_ref()) {
@@ -2206,13 +2235,8 @@ pub fn update(
             core.deploy_defs_have,
             held,
         );
-        let out = if click == crate::ui::hold::Click::Deploy {
-            let name = core
-                .catalog
-                .name(held.item as usize)
-                .iter()
-                .map(|b| (*b as char).to_ascii_uppercase())
-                .collect::<String>();
+        line.clear();
+        if click == crate::ui::hold::Click::Deploy {
             let why = match ghost.as_ref().map(|g| g.deploy_verdict) {
                 Some(crate::ui::place::DeployVerdict::No(w)) if !w.is_empty() => w,
                 _ => "",
@@ -2233,16 +2257,33 @@ pub fn update(
                         | sim_core::deploy::PLACE_ANY
                 )
             });
-            match (why.is_empty(), turns) {
-                (true, true) => format!("PLACE  {name}   (left click · [R] turn)"),
-                (true, false) => format!("PLACE  {name}   (left click)"),
-                (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
-                (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
+            line.push_str("PLACE  ");
+            line.extend(
+                core.catalog
+                    .name(held.item as usize)
+                    .iter()
+                    .map(|b| (*b as char).to_ascii_uppercase()),
+            );
+            if !why.is_empty() {
+                line.push_str("  — ");
+                push_upper(line, why);
             }
+            line.push_str(match (why.is_empty(), turns) {
+                (true, true) => "   (left click · [R] turn)",
+                (true, false) => "   (left click)",
+                (false, true) => "   ([R] turn)",
+                (false, false) => "",
+            });
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
-            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
+            line.push_str(&crate::ui::hold::hand_hint(
+                &core.catalog,
+                &core.research,
+                click,
+                held,
+                lit,
+            ));
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {
@@ -2260,11 +2301,6 @@ pub fn update(
                     // the player's. Silent at zero, which is the common
                     // case and the one that needs no reading.
                     let plate = ghost.as_ref().map(|g| g.plate).unwrap_or(0);
-                    let height = if plate != 0 {
-                        format!("  {:+.1} m", plate as f32 * sim_core::build::BUILD_BASE_Q_M)
-                    } else {
-                        String::new()
-                    };
                     // The height keys are named on the shapes they mean
                     // something for: a foundation starting a plate. On a
                     // wall the nudge is sent and ignored, and a hint about
@@ -2281,32 +2317,28 @@ pub fn update(
                     } else {
                         "(hold right)"
                     };
+                    let _ = write!(
+                        line,
+                        "BUILD  {} {}  L{}",
+                        material_label(material),
+                        shape_label(shape),
+                        level
+                    );
+                    if plate != 0 {
+                        let m = plate as f32 * sim_core::build::BUILD_BASE_Q_M;
+                        let _ = write!(line, "  {m:+.1} m");
+                    }
                     if why.is_empty() {
-                        format!(
-                            "BUILD  {} {}  L{}{}   {}",
-                            material_label(material),
-                            shape_label(shape),
-                            level,
-                            height,
-                            keys
-                        )
+                        let _ = write!(line, "   {keys}");
                     } else {
-                        format!(
-                            "BUILD  {} {}  L{}{}  — {}",
-                            material_label(material),
-                            shape_label(shape),
-                            level,
-                            height,
-                            why.to_uppercase()
-                        )
+                        line.push_str("  — ");
+                        push_upper(line, why);
                     }
                 }
-                None => "BUILD  -   (hold right)".to_string(),
+                None => line.push_str("BUILD  -   (hold right)"),
             }
-        };
-        if text.0 != out {
-            text.0 = out;
         }
+        say(&mut text, line);
     }
 
     // The cells' contents. Separate loops from the selection highlight below
@@ -2342,16 +2374,11 @@ pub fn update(
         let stack = core.inv.get(slot.0).copied().unwrap_or_default();
         // A count of 1 is not drawn: every cell would carry a "1" and the
         // digit stops meaning "how many" and starts being decoration.
-        let want = if stack.count > 1 {
-            let mut s = String::new();
-            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{}", stack.count));
-            s
-        } else {
-            String::new()
-        };
-        if text.0 != want {
-            text.0 = want;
+        line.clear();
+        if stack.count > 1 {
+            let _ = write!(line, "{}", stack.count);
         }
+        say(&mut text, line);
     }
 
     // The durability pip. Two loops for one bar because the trough carries the
@@ -2438,10 +2465,9 @@ pub fn update(
     }
     for (num, mut text) in nums.iter_mut() {
         let (value, _) = num.0.read(core);
-        let out = value.to_string();
-        if text.0 != out {
-            text.0 = out;
-        }
+        line.clear();
+        let _ = write!(line, "{value}");
+        say(&mut text, line);
     }
 }
 
