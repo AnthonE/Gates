@@ -291,7 +291,8 @@ fn main() {
     write_fixture(goldens::FIXTURES[30], &buf[..len]);
 
     let dc = goldens::event_deploy_defs();
-    let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+    let heat = goldens::event_deploy_defs_heat_cm();
+    let (len, took) = encode_event_deploy_defs(&dc, heat, 0, &mut buf).unwrap();
     assert_eq!(took, dc.def_count as usize);
     write_fixture(goldens::FIXTURES[31], &buf[..len]);
 

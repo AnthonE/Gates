@@ -1110,6 +1110,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `hp` (16 bits, after the plate and after the beds), and `SUB_PIECE_DEFS`
 /// carries the table's `repair_pct` (7 bits after the header), so the
 /// hammer quotes `build::repair_quote` instead of "cost depends on damage".
+/// And a fire's warmth reach: `SUB_DEPLOY_DEFS` carries the exposure
+/// table's `heat_radius_cm` (16 bits after the header), so the WET and COLD
+/// chips confirm a fire the way they confirm a roof (`exposure::fire_reaches`).
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

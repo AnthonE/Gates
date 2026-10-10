@@ -14,18 +14,18 @@ use protocol::goldens::{
     event_bag_sync, event_bags, event_build_refused, event_catalog, event_charge_placed_deploy,
     event_charge_placed_piece, event_chat, event_consume_refused, event_consumed, event_cont_close,
     event_cont_sync, event_cont_sync_wear, event_cont_sync_world, event_craft_done, event_craft_q,
-    event_craft_refused, event_death, event_deploy_defs, event_deploy_placed, event_deploy_refused,
-    event_deploy_sync, event_door, event_drank, event_gather, event_gather_refused,
-    event_gitem_sync, event_health, event_hit, event_hurt, event_impact, event_inv, event_knock,
-    event_known, event_move_refused, event_move_refused_wear, event_moved, event_oven_lit,
-    event_oven_out, event_piece_defs, event_piece_placed, event_piece_repaired_deploy,
-    event_piece_repaired_piece, event_piece_sync, event_recipes, event_recovered, event_reload,
-    event_reload_refused, event_removed, event_research, event_research_refused,
-    event_research_rows, event_respawn, event_shot, event_slot_change, event_slot_sync,
-    event_stock, event_struct_hit_deploy, event_struct_hit_piece, event_swing, event_vitals,
-    event_weak_mark, event_wounded, hello, hello_spectate, input_acks_only, input_full,
-    refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, watch, welcome, SnapshotCase,
-    FIXTURES,
+    event_craft_refused, event_death, event_deploy_defs, event_deploy_defs_heat_cm,
+    event_deploy_placed, event_deploy_refused, event_deploy_sync, event_door, event_drank,
+    event_gather, event_gather_refused, event_gitem_sync, event_health, event_hit, event_hurt,
+    event_impact, event_inv, event_knock, event_known, event_move_refused, event_move_refused_wear,
+    event_moved, event_oven_lit, event_oven_out, event_piece_defs, event_piece_placed,
+    event_piece_repaired_deploy, event_piece_repaired_piece, event_piece_sync, event_recipes,
+    event_recovered, event_reload, event_reload_refused, event_removed, event_research,
+    event_research_refused, event_research_rows, event_respawn, event_shot, event_slot_change,
+    event_slot_sync, event_stock, event_struct_hit_deploy, event_struct_hit_piece, event_swing,
+    event_vitals, event_weak_mark, event_wounded, hello, hello_spectate, input_acks_only,
+    input_full, refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, watch, welcome,
+    SnapshotCase, FIXTURES,
 };
 use protocol::{
     decode_action, decode_auth, decode_challenge, decode_chat, decode_event, decode_hello,
@@ -1432,11 +1432,13 @@ fn golden_event(fixture: &[u8], name: &str) {
         }
         "event_deploy_defs.bin" => {
             let dc = event_deploy_defs();
+            let heat = event_deploy_defs_heat_cm();
             match decode_event(fixture).unwrap() {
                 EventMsg::DeployDefs {
                     total,
                     first,
                     count,
+                    heat_radius_cm,
                     rows,
                 } => {
                     assert_eq!(
@@ -1444,13 +1446,14 @@ fn golden_event(fixture: &[u8], name: &str) {
                         (dc.def_count as u8, 0, dc.def_count as u8),
                         "{name}: header mismatch"
                     );
+                    assert_eq!(heat_radius_cm, heat, "{name}: heat reach mismatch");
                     for (i, row) in rows.iter().enumerate().take(count as usize) {
                         assert_eq!(*row, dc.defs[i], "{name}: row {i} mismatch");
                     }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
             }
-            let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+            let (len, took) = encode_event_deploy_defs(&dc, heat, 0, &mut buf).unwrap();
             assert_eq!(took, dc.def_count as usize, "{name}: batch shrank");
             len
         }

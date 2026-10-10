@@ -195,6 +195,42 @@ pub fn target_chill(ec: &ExposureContent, inp: &Inputs, p: &Player) -> u16 {
     t.clamp(0, 1000) as u16
 }
 
+/// Does a lit fire's warmth reach a body at `(x, z)` with its feet at
+/// `feet`? The fire is a deployable at `(cx, cz, level)` moved by `pose`,
+/// standing on its built floor or else the ground; its warmth reaches
+/// `heat_radius_cm` in the plane, and within a storey.
+///
+/// One sentence for two readers: the sim's `World::near_fire`, and the
+/// client confirming a fire on its WET and COLD chips (`NOW.md` §0wx item
+/// 3, `ClientCore::near_fire`), so the HUD says "by a fire" exactly where
+/// the sim warms. Whether the fire is lit, and burns at all, is the
+/// caller's to ask first.
+#[allow(clippy::too_many_arguments)]
+pub fn fire_reaches(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &crate::collide::ColIndex,
+    heat_radius_cm: u16,
+    (cx, cz, level, pose): (u16, u16, u8, crate::footprint::Pose),
+    x: f32,
+    z: f32,
+    feet: f32,
+) -> bool {
+    let r = heat_radius_cm as f32 * 0.01;
+    if r <= 0.0 {
+        return false;
+    }
+    let (bx, bz) = crate::footprint::centre(cx, cz, pose);
+    let (dx, dz) = (bx - x, bz - z);
+    if dx * dx + dz * dz > r * r {
+        return false;
+    }
+    let y = crate::deploy::built_floor(seed, haven, cols, cx, cz, level, bx, bz)
+        .unwrap_or_else(|| crate::terrain::ground(seed, haven, bx, bz));
+    let dy = y - feet;
+    dy * dy < 9.0
+}
+
 /// One second of exposure for one body: wet, then chill, then hurt.
 pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut EventQueue) -> Step {
     if !ec.armed() {

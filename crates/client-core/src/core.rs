@@ -1145,6 +1145,53 @@ impl ClientCore {
         &self.ovens
     }
 
+    /// Is the body standing in a lit fire's warmth (`NOW.md` §0wx item 3)?
+    /// The predicted body, the sim-truth reader every verb resolves on —
+    /// see [`Self::fire_warms`].
+    pub fn near_fire(&self) -> bool {
+        let [x, feet, z] = self.predict.position();
+        self.fire_warms(x, z, feet)
+    }
+
+    /// Does a fire this client has heard is lit warm a body at `(x, z)` with
+    /// its feet at `feet`? The sim's own question (`World::near_fire`) on
+    /// the client's mirrors: the lit set, the deploy rows that say a
+    /// deployable burns (a running recycler is lit and warms nothing) and
+    /// the reach the defs drip carries, through the one rule both sides
+    /// call (`exposure::fire_reaches`). A fire whose record or row has not
+    /// arrived yet, or that was lit before this client joined and has not
+    /// toggled since (`EV_OVEN` is the only carrier of the bit, and its
+    /// flame is not drawn either), warms nothing here: the shy answer.
+    pub fn fire_warms(&self, x: f32, z: f32, feet: f32) -> bool {
+        let r = self.heat_radius_cm;
+        if r == 0 {
+            return false;
+        }
+        let seed = self.predict.seed();
+        let cols = self.pieces.cols();
+        self.ovens.addrs().iter().any(|&(cx, cz, level, loc)| {
+            let Some(rec) = self
+                .deploys
+                .entries()
+                .iter()
+                .find(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
+            else {
+                return false;
+            };
+            burns(&self.deploy_defs, self.deploy_defs_have, rec.row)
+                && sim_core::exposure::fire_reaches(
+                    seed,
+                    &self.haven,
+                    cols,
+                    r,
+                    (cx, cz, level, rec.pose),
+                    x,
+                    z,
+                    feet,
+                )
+        })
+    }
+
     /// The island's authored sites, solved once in `new`. A join hands this
     /// copy to `render::WorldId` rather than solving `terrain::haven` twice.
     pub fn haven(&self) -> &Haven {
@@ -1247,6 +1294,13 @@ fn is_door(defs: &DeployContent, have: u16, row: u8) -> bool {
 fn is_edge_insert(defs: &DeployContent, have: u16, row: u8) -> bool {
     (row as u16) < have.min(defs.def_count)
         && sim_core::deploy::edge_insert(defs.defs[row as usize].arch)
+}
+
+/// `is_door`'s twin for warmth: does this row burn when lit — a fire or a
+/// furnace, and not a running recycler (`OvenState::arch_burns`).
+fn burns(defs: &DeployContent, have: u16, row: u8) -> bool {
+    (row as u16) < have.min(defs.def_count)
+        && sim_core::oven::OvenState::arch_burns(defs.defs[row as usize].arch)
 }
 
 /// The archetype of a solid (movement-blocking) deploy row, or `None` —
@@ -1839,6 +1893,10 @@ pub struct ClientCore {
     pub deploy_defs: DeployContent,
     /// Rows received so far (batches arrive in order).
     pub deploy_defs_have: u16,
+    /// How far a lit fire's warmth reaches, cm (`ExposureContent::
+    /// heat_radius_cm`, on every deploy-def batch since wire v102). Zero
+    /// until the first batch, and on a shard whose fires warm nothing.
+    pub heat_radius_cm: u16,
     deploy_refusals: [u8; REFUSAL_RING],
     /// Knocks heard this frame (lock v1): address + who. Broadcast, so
     /// this ring is the *only* one here that can carry somebody else's
@@ -2132,6 +2190,7 @@ impl ClientCore {
             n_deploy_changes: 0,
             deploy_defs: DeployContent::EMPTY,
             deploy_defs_have: 0,
+            heat_radius_cm: 0,
             deploy_refusals: [0; REFUSAL_RING],
             knocks: [(0, 0, 0, 0, 0); REFUSAL_RING],
             shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -3059,9 +3118,12 @@ impl ClientCore {
                 total,
                 first,
                 count,
+                heat_radius_cm,
                 rows,
             } => {
                 self.deploy_defs.def_count = total as u16;
+                // The fire's reach (wire v102), what `near_fire` measures.
+                self.heat_radius_cm = heat_radius_cm;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.deploy_defs.defs[first as usize + i] = *row;
                 }
@@ -5428,6 +5490,69 @@ mod tests {
         assert_eq!(c.event_errors, 1);
     }
 
+    /// A fire's warmth reaches the HUD (`NOW.md` §0wx item 3): the reach
+    /// rides the deploy-def drip, and the client says "by a fire" only for
+    /// a lit row that burns, within that reach and within a storey — the
+    /// sim's `World::near_fire`, through the same `exposure::fire_reaches`.
+    #[test]
+    fn a_lit_fire_warms_within_its_reach_and_nothing_else_does() {
+        use protocol::{encode_event_deploy_defs, encode_event_deploy_placed, encode_event_oven};
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        // Probe fixture: row 4 is the campfire, row 6 the recycler.
+        let dc = DeployContent::probe_fixture();
+        let (len, _) = encode_event_deploy_defs(&dc, 450, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.heat_radius_cm, 450);
+        let fire = DeployRec {
+            cx: 341,
+            cz: 682,
+            row: 4,
+            ..DeployRec::default()
+        };
+        let recycler = DeployRec {
+            cx: 345,
+            row: 6,
+            ..fire
+        };
+        for rec in [fire, recycler] {
+            let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        }
+        let (fx, fz) = fire.xz();
+        let fy = terrain::ground(1, c.haven(), fx, fz);
+        assert!(!c.fire_warms(fx, fz, fy), "an unlit fire warms nobody");
+
+        let light = |c: &mut ClientCore, rec: &DeployRec, lit: bool| {
+            let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+            let len =
+                encode_event_oven(rec.cx, rec.cz, rec.level, rec.loc, lit, 9, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        };
+        light(&mut c, &fire, true);
+        assert!(c.fire_warms(fx, fz, fy), "standing in it");
+        assert!(c.fire_warms(fx + 4.4, fz, fy), "inside 4.5 m");
+        assert!(!c.fire_warms(fx + 4.6, fz, fy), "past the reach");
+        assert!(!c.fire_warms(fx, fz, fy + 3.1), "a storey up is out of it");
+
+        // A running recycler is lit and burns nothing.
+        light(&mut c, &recycler, true);
+        let (rx, rz) = recycler.xz();
+        let ry = terrain::ground(1, c.haven(), rx, rz);
+        assert!(!c.fire_warms(rx, rz, ry), "a recycler warms nobody");
+
+        // Snuffed, it stops; and a shard whose fires warm nothing says so
+        // on its next batch.
+        light(&mut c, &fire, false);
+        assert!(!c.fire_warms(fx, fz, fy), "out is out");
+        light(&mut c, &fire, true);
+        let (len, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(!c.fire_warms(fx, fz, fy), "a zero reach warms nothing");
+    }
+
     /// The predictor collides against the same closed doors the sim does,
     /// and the shut bit survives every path that rebuilds the derived
     /// index. A door the client renders shut but predicts through is the
@@ -5454,7 +5579,7 @@ mod tests {
         let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         let dc = DeployContent::probe_fixture();
-        let (len, _) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        let (len, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         let doorway = PieceRec {
             cx,

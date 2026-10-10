@@ -187,6 +187,9 @@ fn deployables_ride_the_wire() {
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = fixture;
+    // A fire's reach rides the drip (wire v102). Only the reach: exposure
+    // stays disarmed, so nobody in this test gets cold.
+    core.world.survival.exposure.heat_radius_cm = 450;
     core.world.dev_spawn = Some(SPAWN);
     core.catalog = ItemCatalog::EMPTY;
     assert!(core.connect(0, id_of(0)));
@@ -212,6 +215,7 @@ fn deployables_ride_the_wire() {
         for i in 0..fixture.def_count as usize {
             assert_eq!(c.deploy_defs.defs[i], fixture.defs[i], "row {i} drifted");
         }
+        assert_eq!(c.heat_radius_cm, 450, "the fire's reach rides the drip");
     }
 
     // Grant the owner a kit server-side (gather_wire covers earning).

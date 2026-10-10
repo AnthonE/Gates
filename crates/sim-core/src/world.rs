@@ -5641,10 +5641,11 @@ impl World {
     }
 
     /// Is a lit fire (a campfire, a furnace) near enough to warm a body
-    /// standing here? Planar reach from the content, and within a storey.
+    /// standing here? Planar reach from the content, and within a storey
+    /// (`exposure::fire_reaches`, which the client's HUD asks too).
     fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
-        let r = self.survival.exposure.heat_radius_cm as f32 * 0.01;
-        if r <= 0.0 {
+        let r = self.survival.exposure.heat_radius_cm;
+        if r == 0 {
             return false;
         }
         let cols = self.pieces.cols();
@@ -5653,27 +5654,18 @@ impl World {
             .iter()
             .zip(self.deploys.oven_states())
             .any(|(b, st)| {
-                if !(st.lit && st.burns()) {
-                    return false;
-                }
-                let (bx, bz) = b.xz();
-                let (dx, dz) = (bx - x, bz - z);
-                if dx * dx + dz * dz > r * r {
-                    return false;
-                }
-                let y = crate::deploy::built_floor(
-                    self.seed,
-                    &self.haven,
-                    cols,
-                    b.cx,
-                    b.cz,
-                    b.level,
-                    bx,
-                    bz,
-                )
-                .unwrap_or_else(|| crate::terrain::ground(self.seed, &self.haven, bx, bz));
-                let dy = y - feet;
-                dy * dy < 9.0
+                st.lit
+                    && st.burns()
+                    && crate::exposure::fire_reaches(
+                        self.seed,
+                        &self.haven,
+                        cols,
+                        r,
+                        (b.cx, b.cz, b.level, b.pose),
+                        x,
+                        z,
+                        feet,
+                    )
             })
     }
 

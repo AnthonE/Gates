@@ -1042,15 +1042,22 @@ pub struct ExposureWorld {
     /// A roof overhead (`collide::roofed`, the rain's own question).
     pub sheltered: bool,
     pub underwater: bool,
+    /// In a lit fire's warmth (`ClientCore::near_fire`, the sim's own
+    /// `exposure::fire_reaches` on the client's mirrors).
+    pub fire: bool,
 }
 
 /// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
-/// rain on an open body, the sea, or drying out.
+/// rain on an open body, the sea, or drying out, fast beside a fire. Rain
+/// on an open body soaks it fire or no fire (`exposure::step`), so the
+/// rain still wins there.
 pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     let why = if w.underwater {
         "IN THE WATER"
     } else if w.rain > 0.05 && !w.sheltered {
         "RAIN"
+    } else if w.fire {
+        "DRYING BY A FIRE"
     } else if w.sheltered {
         "DRYING UNDER A ROOF"
     } else {
@@ -1066,8 +1073,10 @@ pub fn spill_line(n: u16, label: &str) -> String {
 }
 
 /// What the COLD chip says: the strongest cause it can see, and that a roof
-/// is helping when there is one. Freezing names what stops it, less what
-/// the body already has.
+/// or a fire is helping when there is one. Freezing names what stops it,
+/// less what the body already has. A fire is said to help, never to have
+/// won: soaked at night in the rain in the road sign jacket, a fire alone
+/// still leaves the body past `hurt_at` (`content/balance.toml`).
 pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     let open = !w.sheltered;
     let why = if w.rain > 0.05 && open {
@@ -1081,11 +1090,15 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     } else {
         "EXPOSED"
     };
-    match (hurting, w.sheltered) {
-        (true, true) => "FREEZING · UNDER A ROOF · NOW A FIRE".to_string(),
-        (true, false) => format!("FREEZING · {why} · FIND A FIRE OR A ROOF"),
-        (false, true) => format!("COLD · {why} · ROOF HELPS"),
-        (false, false) => format!("COLD · {why}"),
+    match (hurting, w.fire, w.sheltered) {
+        (true, true, true) => "FREEZING · BY A FIRE · UNDER A ROOF".to_string(),
+        (true, true, false) => format!("FREEZING · {why} · BY A FIRE · NOW A ROOF"),
+        (true, false, true) => "FREEZING · UNDER A ROOF · NOW A FIRE".to_string(),
+        (true, false, false) => format!("FREEZING · {why} · FIND A FIRE OR A ROOF"),
+        (false, true, true) => format!("COLD · {why} · FIRE AND ROOF HELP"),
+        (false, true, false) => format!("COLD · {why} · FIRE HELPS"),
+        (false, false, true) => format!("COLD · {why} · ROOF HELPS"),
+        (false, false, false) => format!("COLD · {why}"),
     }
 }
 
@@ -1099,13 +1112,19 @@ pub fn exposure(
     mut chips: Query<(&ExposureChip, &mut Text, &mut Node, &mut BackgroundColor)>,
 ) {
     let core = &net.session.core;
-    let w = sky.map_or_else(ExposureWorld::default, |n| ExposureWorld {
+    let mut w = sky.map_or_else(ExposureWorld::default, |n| ExposureWorld {
         rain: n.rain,
         wind: n.wind,
         night: n.night,
         sheltered: n.sheltered,
         underwater: n.underwater,
+        fire: false,
     });
+    // Asked only while a chip could say it: the walk is over the lit set,
+    // small, but it is a frame-rate reader.
+    if core.wet_pct > 0 || core.cold_pct >= 25 || core.cold_hurting {
+        w.fire = core.near_fire();
+    }
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
@@ -4058,6 +4077,31 @@ mod tests {
         assert_eq!(cold_line(false, 0, night), "COLD · NIGHT");
         assert!(cold_line(true, 0, night).contains("FIND A FIRE OR A ROOF"));
         assert!(cold_line(true, 0, roofed).contains("NOW A FIRE"));
+        // A fire is confirmed the way the roof is (§0wx item 3): it dries
+        // you unless the rain is on you, and it helps against the cold.
+        let fire_rain = ExposureWorld {
+            fire: true,
+            ..open_rain
+        };
+        assert_eq!(wet_line(40, fire_rain), "WET 40% · RAIN");
+        let fire_roofed = ExposureWorld {
+            fire: true,
+            ..roofed
+        };
+        assert_eq!(wet_line(40, fire_roofed), "WET 40% · DRYING BY A FIRE");
+        assert_eq!(cold_line(false, 0, fire_rain), "COLD · RAIN · FIRE HELPS");
+        assert_eq!(
+            cold_line(false, 50, fire_roofed),
+            "COLD · WET CLOTHES · FIRE AND ROOF HELP"
+        );
+        assert_eq!(
+            cold_line(true, 0, fire_rain),
+            "FREEZING · RAIN · BY A FIRE · NOW A ROOF"
+        );
+        assert_eq!(
+            cold_line(true, 0, fire_roofed),
+            "FREEZING · BY A FIRE · UNDER A ROOF"
+        );
     }
 
     /// **The defect this queue exists for, in the shipped world.** A tree

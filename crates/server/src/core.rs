@@ -5090,11 +5090,13 @@ impl ShardCore {
             }
         }
 
-        // Deploy-def rows, same drip shape (the deploy menu's data).
+        // Deploy-def rows, same drip shape (the deploy menu's data), and
+        // the fire's warmth reach the HUD confirms a fire with (wire v102).
         let c = &self.clients[slot];
         let dc = &self.world.deploy;
+        let heat = self.world.survival.exposure.heat_radius_cm;
         if dc.def_count > 0 && c.deploy_defs_cursor < dc.def_count as usize {
-            match encode_event_deploy_defs(dc, c.deploy_defs_cursor, &mut self.ev_buf) {
+            match encode_event_deploy_defs(dc, heat, c.deploy_defs_cursor, &mut self.ev_buf) {
                 Ok((len, took)) => {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);

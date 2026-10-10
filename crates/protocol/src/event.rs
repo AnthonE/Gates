@@ -1443,10 +1443,15 @@ pub enum EventMsg {
     DeployRefused { reason: u8 },
     /// Deploy-def rows `first..first+count` of a `total`-row table — the
     /// deployable menu's data, dripped like the piece defs.
+    /// `heat_radius_cm` is how far a lit fire's warmth reaches
+    /// (`ExposureContent::heat_radius_cm`, wire v102), on every batch: with
+    /// it the HUD confirms a fire the way it confirms a roof
+    /// (`sim_core::exposure::fire_reaches`). Zero warms nothing.
     DeployDefs {
         total: u8,
         first: u8,
         count: u8,
+        heat_radius_cm: u16,
         rows: [DeployDef; DEPLOY_DEFS_BATCH],
     },
     /// A structure at the address took damage and is still standing
@@ -2872,8 +2877,11 @@ pub fn encode_event_deploy_refused(reason: u8, buf: &mut [u8]) -> Result<usize, 
 /// Encode up to `DEPLOY_DEFS_BATCH` baked deployable rows starting at
 /// `first`. Returns the byte length and how many rows rode along. Row
 /// shapes the bake refuses (hp 0, out-of-range codes) refuse here too.
+/// `heat_radius_cm` is the exposure table's fire reach
+/// (`ExposureContent::heat_radius_cm`), which rides the header.
 pub fn encode_event_deploy_defs(
     dc: &DeployContent,
+    heat_radius_cm: u16,
     first: usize,
     buf: &mut [u8],
 ) -> Result<(usize, usize), WireError> {
@@ -2886,6 +2894,13 @@ pub fn encode_event_deploy_defs(
     w.write(total as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
+    // A fire's warmth reach (wire v102), on every batch for the repair
+    // percent's reason. The rows say which deployables are fires and the
+    // oven events which are lit; this is the one number of the warmth rule
+    // a client did not hold, so its WET and COLD chips could confirm a roof
+    // and never a fire (`NOW.md` §0wx item 3). Full width, every value
+    // content can bake.
+    w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
         if def.arch > ARCH_PLANTER || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
@@ -5112,6 +5127,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             {
                 return Err(WireError::Malformed);
             }
+            let heat_radius_cm = r.read(16)? as u16;
             let mut rows = [DeployDef::INERT; DEPLOY_DEFS_BATCH];
             for row in rows.iter_mut().take(count) {
                 let arch = r.read(ARCH_BITS)? as u8;
@@ -5145,6 +5161,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                heat_radius_cm,
                 rows,
             }
         }
@@ -7260,8 +7277,9 @@ mod tests {
     #[test]
     fn deploy_defs_batches_walk_the_table_within_cap() {
         let dc = DeployContent::probe_fixture();
+        let heat = sim_core::exposure::ExposureContent::probe_fixture().heat_radius_cm;
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
+        let (len, took) = encode_event_deploy_defs(&dc, heat, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
         assert_eq!(took, 8, "fixture has 8 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
@@ -7269,9 +7287,11 @@ mod tests {
                 total,
                 first,
                 count,
+                heat_radius_cm,
                 rows,
             } => {
                 assert_eq!((total, first, count), (8, 0, 8));
+                assert_eq!(heat_radius_cm, heat, "the fire's reach rides along");
                 assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
                 assert_eq!(rows[3], dc.defs[3]);
                 // The oven row (oven v0), the code lock (lock v1), the
@@ -7288,7 +7308,7 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_deploy_defs(&dc, 8, &mut buf),
+            encode_event_deploy_defs(&dc, heat, 8, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -7296,7 +7316,7 @@ mod tests {
         let mut bad = dc;
         bad.defs[1].hp = 0;
         assert_eq!(
-            encode_event_deploy_defs(&bad, 0, &mut buf),
+            encode_event_deploy_defs(&bad, heat, 0, &mut buf),
             Err(WireError::Range)
         );
         // A cost count past the table refuses too — the decoder bounds it
@@ -7305,7 +7325,7 @@ mod tests {
         let mut wide = dc;
         wide.defs[0].n_costs = MAX_DEPLOY_COSTS as u8 + 1;
         assert_eq!(
-            encode_event_deploy_defs(&wide, 0, &mut buf),
+            encode_event_deploy_defs(&wide, heat, 0, &mut buf),
             Err(WireError::Range)
         );
         // A matter past the ledger refuses rather than wrapping into a
@@ -7313,7 +7333,7 @@ mod tests {
         let mut odd = dc;
         odd.defs[2].matter = MATTER_MAX + 1;
         assert_eq!(
-            encode_event_deploy_defs(&odd, 0, &mut buf),
+            encode_event_deploy_defs(&odd, heat, 0, &mut buf),
             Err(WireError::Range)
         );
 
@@ -7335,7 +7355,7 @@ mod tests {
             };
             let _ = n;
         }
-        let (len, took) = encode_event_deploy_defs(&full, 0, &mut buf).unwrap();
+        let (len, took) = encode_event_deploy_defs(&full, u16::MAX, 0, &mut buf).unwrap();
         assert_eq!(took, DEPLOY_DEFS_BATCH, "a full batch rides");
         assert!(
             len <= MAX_EVENT_MSG_BYTES,
@@ -7343,7 +7363,12 @@ mod tests {
              {MAX_EVENT_MSG_BYTES} B cap"
         );
         match decode_event(&buf[..len]).unwrap() {
-            EventMsg::DeployDefs { rows, .. } => {
+            EventMsg::DeployDefs {
+                heat_radius_cm,
+                rows,
+                ..
+            } => {
+                assert_eq!(heat_radius_cm, u16::MAX, "the reach's top survives");
                 assert_eq!(
                     rows[DEPLOY_DEFS_BATCH - 1],
                     full.defs[DEPLOY_DEFS_BATCH - 1]
@@ -7366,17 +7391,19 @@ mod tests {
         }
         let mut first = 0;
         while first < MAX_DEPLOY_DEFS {
-            let (len, took) = encode_event_deploy_defs(&full, first, &mut buf).unwrap();
+            let (len, took) = encode_event_deploy_defs(&full, heat, first, &mut buf).unwrap();
             assert!(len <= MAX_EVENT_MSG_BYTES);
             assert_eq!(took, DEPLOY_DEFS_BATCH.min(MAX_DEPLOY_DEFS - first));
             match decode_event(&buf[..len]).unwrap() {
                 EventMsg::DeployDefs {
                     first: start,
                     count,
+                    heat_radius_cm,
                     rows,
                     ..
                 } => {
                     assert_eq!(start as usize, first);
+                    assert_eq!(heat_radius_cm, heat, "on every batch, not the first");
                     assert_eq!(count as usize, took);
                     assert_eq!(&rows[..took], &full.defs[first..first + took]);
                 }

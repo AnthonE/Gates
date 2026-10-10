@@ -2025,6 +2025,12 @@ pub fn event_deploy_defs() -> DeployContent {
     dc
 }
 
+/// The fire's warmth reach the deploy-def golden carries (wire v102):
+/// the shipped 4.5 m, so the field is neither zero nor all ones.
+pub fn event_deploy_defs_heat_cm() -> u16 {
+    450
+}
+
 /// The removed-piece address: (cx, cz, level, loc).
 pub fn event_removed() -> (u16, u16, u8, u8) {
     (341, 682, 0, sim_core::build::LOC_EDGE_ZLO)
