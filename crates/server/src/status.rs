@@ -115,6 +115,7 @@
 use crate::stats::ShardStats;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -140,18 +141,33 @@ pub const STATUS_IO_TIMEOUT_MS: u64 = 2000;
 /// nothing would be the config-says-X-shard-does-Y defect `config.rs`
 /// refuses everywhere else.
 pub fn spawn_status(addr: SocketAddr, stats: Arc<ShardStats>) -> std::io::Result<SocketAddr> {
+    spawn_status_with(addr, stats, None)
+}
+
+/// [`spawn_status`], also serving `GET /standings.json` from the file the
+/// standings' writer keeps (`standings::json_path`) — a website's or a
+/// bot's leaderboard, read from disk so this thread still never speaks to
+/// the sim thread.
+pub fn spawn_status_with(
+    addr: SocketAddr,
+    stats: Arc<ShardStats>,
+    standings: Option<PathBuf>,
+) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
     std::thread::Builder::new()
         .name("status".into())
-        .spawn(move || serve(listener, stats))?;
+        .spawn(move || serve(listener, stats, standings))?;
     Ok(bound)
 }
+
+/// The most of the standings file this will serve.
+pub const STANDINGS_JSON_CAP: u64 = 256 * 1024;
 
 /// The thread body: accept, answer, close, forever. An accept error backs
 /// off briefly rather than spinning — the errors that recur (fd
 /// exhaustion) are not fixed by asking again in the same microsecond.
-fn serve(listener: TcpListener, stats: Arc<ShardStats>) {
+fn serve(listener: TcpListener, stats: Arc<ShardStats>, standings: Option<PathBuf>) {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -159,7 +175,7 @@ fn serve(listener: TcpListener, stats: Arc<ShardStats>) {
                 // worth a counter, let alone a panic. The one observable
                 // that matters is that the NEXT request is answered, and
                 // `tests/status.rs` asserts exactly that.
-                let _ = answer(stream, &stats);
+                let _ = answer(stream, &stats, standings.as_deref());
             }
             Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
@@ -168,7 +184,11 @@ fn serve(listener: TcpListener, stats: Arc<ShardStats>) {
 
 /// Read one request, bounded; answer it or close. Every early `Ok(())` is
 /// a deliberate refusal — the connection closes with nothing written.
-fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
+fn answer(
+    mut stream: TcpStream,
+    stats: &ShardStats,
+    standings: Option<&Path>,
+) -> std::io::Result<()> {
     let timeout = Some(Duration::from_millis(STATUS_IO_TIMEOUT_MS));
     stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(timeout)?;
@@ -203,6 +223,27 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
     };
     if method != "GET" {
         return Ok(()); // this endpoint speaks GET and nothing else
+    }
+    if path == "/standings.json" {
+        let body = standings.and_then(|p| {
+            let f = std::fs::File::open(p).ok()?;
+            let mut text = String::new();
+            f.take(STANDINGS_JSON_CAP).read_to_string(&mut text).ok()?;
+            Some(text)
+        });
+        let Some(body) = body else {
+            return stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        };
+        // Open to any origin: a leaderboard is for a website to show.
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Access-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        return stream.write_all(body.as_bytes());
     }
     if path != "/status.json" {
         return stream.write_all(

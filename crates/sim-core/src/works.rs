@@ -26,7 +26,7 @@ use crate::limits::{
 };
 use crate::spot::Spot;
 use crate::terrain::Haven;
-use crate::world::{EventQueue, Player, EV_ARC_REFUSED, EV_WORK};
+use crate::world::{EventQueue, Player, EV_ARC_REFUSED, EV_GAVE, EV_WORK};
 
 /// Not open yet.
 pub const WORK_SEALED: u8 = 0;
@@ -521,6 +521,7 @@ pub fn act(
                 }
                 inv_take(&mut p.inv, input.item, take);
                 w.got[i] += take;
+                events.push(EV_GAVE, p.id, (input.item as u32) << 16 | k as u32, take);
                 let share = (take as u64 * 10_000 / input.need.max(1) as u64).max(1);
                 points = points.saturating_add(share as u32);
             }
@@ -556,6 +557,7 @@ pub fn act(
                 return refuse(events, REFUSE_A_NOTHING);
             }
             inv_take(&mut p.inv, def.fuel, take);
+            events.push(EV_GAVE, p.id, (def.fuel as u32) << 16 | k as u32, take);
             let dry = w.fuel == 0;
             w.fuel += take;
             // A full tank is worth a quarter of a quota's credit.

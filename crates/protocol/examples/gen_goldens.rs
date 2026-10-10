@@ -207,6 +207,9 @@ fn main() {
     let (index, recipe) = goldens::action_fasttrack();
     let len = protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[159], &buf[..len]);
+    // One standings board (v104).
+    let len = protocol::encode_event_standing(&goldens::event_standing(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[160], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

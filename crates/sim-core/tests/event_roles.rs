@@ -107,7 +107,9 @@ use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
     TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK};
+use sim_core::world::{
+    EV_ARC_DID, EV_ARC_REFUSED, EV_GAVE, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK,
+};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
@@ -4363,8 +4365,9 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 60] = [
+    const COVERED: [(&str, u8); 61] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_GAVE", EV_GAVE),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_WORK", EV_WORK),
         ("EV_ARC_REFUSED", EV_ARC_REFUSED),
@@ -5860,10 +5863,12 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
     assert_eq!(sim_core::craft::inv_count(inv, 2), 8, "got 4 × 2");
 }
 
-/// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`, and
-/// `EV_WORK: a = work, b = what, c = who` — a deposit while the work is
-/// sealed, its opening (nobody did it), a deposit out of reach, then the
-/// whole quota at the terminal, which lights it in the depositor's name.
+/// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`,
+/// `EV_WORK: a = work, b = what, c = who`, and `EV_GAVE: a = player,
+/// b = item << 16 | work, c = units` — a deposit while the work is sealed,
+/// its opening (nobody did it), a deposit out of reach, one line, then the
+/// rest of the quota at the terminal, which lights it in the depositor's
+/// name.
 #[test]
 fn a_work_names_itself_what_happened_and_who() {
     use sim_core::works::{
@@ -5920,7 +5925,19 @@ fn a_work_names_itself_what_happened_and_who() {
     assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_A_REACH, 0));
 
     w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.tick(&[Command::Arc {
+        id: BUILDER,
+        op: OP_DEPOSIT,
+        target: 0,
+        arg: 1,
+    }]);
+    let ev = only(&w, EV_GAVE);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 1 << 16, 2), "two of item 1");
+    assert_eq!(count(&w, EV_WORK), 0, "half a quota lights nothing");
+
     w.tick(&[deposit]);
+    let ev = only(&w, EV_GAVE);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 0, 6), "six of item 0");
     let ev = only(&w, EV_WORK);
     assert_eq!((ev.a, ev.b, ev.c), (0, WORK_EV_LIT, BUILDER));
     assert_eq!(w.works.w[0].state, WORK_LIT);

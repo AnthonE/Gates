@@ -892,7 +892,14 @@ pub const EV_GROW: u8 = 59;
 /// posture: every client stops drawing the stump and offering a swing at it.
 pub const EV_STUMP_GRUBBED: u8 = 60;
 
-pub const EV_MAX: u8 = EV_STUMP_GRUBBED;
+/// EV_GAVE: a = player id, b = item << 16 | work, c = units. One per quota
+/// line a deposit took from, and one for fuel into a tank (`works.rs`).
+/// Server-only: it rides no wire, and the standings value it
+/// (`server::standings`), which the works' bounded ledger cannot do for
+/// every giver.
+pub const EV_GAVE: u8 = 61;
+
+pub const EV_MAX: u8 = EV_GAVE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

@@ -155,3 +155,78 @@ pub fn locked_line(arc: &ArcView, u: u8) -> Option<String> {
         None => "THE ISLAND CANNOT MAKE THIS YET — [O] ISLAND".into(),
     })
 }
+
+// ---- the standings (`server::standings`, wire v104) ----------------------------
+
+/// Board `b`'s name, in `SUB_STANDING` order.
+pub fn board_title(board: u8) -> &'static str {
+    match board {
+        0 => "THE ISLAND",
+        1 => "THE WORKS",
+        2 => "THE HOARD",
+        3 => "THE FIGHT",
+        _ => "LAST WIPE",
+    }
+}
+
+/// What a board ranks, in one line.
+pub fn board_blurb(board: u8) -> &'static str {
+    match board {
+        0 => "all of it on one scale: given, held, and the fights won",
+        1 => "what you gave the works, and the deeds; a raid cannot take it back",
+        2 => "what your bases hold now, split across the crew; it freezes at the wipe",
+        3 => "players killed",
+        _ => "where the last island ended",
+    }
+}
+
+/// `12,345`.
+pub fn thousands(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A row's score as the board counts it: kills on THE FIGHT, points
+/// elsewhere.
+pub fn board_score(board: u8, score: u32) -> String {
+    match (board, score) {
+        (3, 1) => "1 kill".into(),
+        (3, n) => format!("{} kills", thousands(n)),
+        (_, n) => thousands(n),
+    }
+}
+
+/// Where this player stands on a board, or the way onto it.
+pub fn standing_you(b: &protocol::StandingBoard) -> String {
+    if b.my_rank == 0 {
+        return match b.board {
+            1 => "YOU  unranked — feed a work at its terminal".into(),
+            2 => "YOU  unranked — a hearth, and boxes in its claim".into(),
+            4 => "YOU  were not on the last island".into(),
+            _ => "YOU  unranked".into(),
+        };
+    }
+    let verb = if b.board == 4 { "finished" } else { "stand" };
+    format!(
+        "YOU  {verb} #{} of {} · {}",
+        b.my_rank,
+        b.ranked,
+        board_score(b.board, b.my_score)
+    )
+}
+
+/// A board's heading: its name, and the wipe it ranks once one landed.
+pub fn board_heading(b: &protocol::StandingBoard, board: u8) -> String {
+    if b.wipe == 0 {
+        board_title(board).into()
+    } else {
+        format!("{} · WIPE {}", board_title(board), b.wipe)
+    }
+}

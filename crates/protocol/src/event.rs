@@ -529,7 +529,88 @@ const SUB_STUMP_GRUBBED: u32 = 91;
 /// up to `MAX_ITEM_DESC_BYTES` of text, dripped once to a joiner after the
 /// catalog, one a tick.
 const SUB_ITEM_DESC: u32 = 92;
-const SUB_MAX: u32 = SUB_ITEM_DESC;
+/// One board of the wipe's standings (wire v104, `server::standings`): its
+/// top rows, how many are ranked, and where the receiver stands. Per client,
+/// when the boards move and to a joiner, one board a tick.
+const SUB_STANDING: u32 = 93;
+const SUB_MAX: u32 = SUB_STANDING;
+/// Rows a standings board carries.
+pub const STANDING_TOP: usize = 5;
+/// The boards: island, works, hoard, fight, and last wipe's island.
+pub const STANDING_BOARDS: u8 = 5;
+/// The longest name on a board: the platform's (`NAME_MAX_BYTES`).
+pub const STANDING_NAME_BYTES: usize = crate::NAME_MAX_BYTES;
+const _: () = assert!(STANDING_TOP < 8 && STANDING_NAME_BYTES < 32);
+
+/// One standings board as the wire carries it (`SUB_STANDING`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandingBoard {
+    /// `0..STANDING_BOARDS`.
+    pub board: u8,
+    /// The wipe it ranks (for the last-wipe board, that wipe's number).
+    pub wipe: u16,
+    /// How many have a score on it.
+    pub ranked: u16,
+    /// Where the receiver stands, 1-based; 0 for unranked.
+    pub my_rank: u16,
+    pub my_score: u32,
+    /// Rows used, best first.
+    pub n: u8,
+    pub scores: [u32; STANDING_TOP],
+    /// Printable ASCII, `names[i][..name_lens[i]]`.
+    pub names: [[u8; STANDING_NAME_BYTES]; STANDING_TOP],
+    pub name_lens: [u8; STANDING_TOP],
+}
+
+impl StandingBoard {
+    pub const EMPTY: Self = StandingBoard {
+        board: 0,
+        wipe: 0,
+        ranked: 0,
+        my_rank: 0,
+        my_score: 0,
+        n: 0,
+        scores: [0; STANDING_TOP],
+        names: [[0; STANDING_NAME_BYTES]; STANDING_TOP],
+        name_lens: [0; STANDING_TOP],
+    };
+
+    /// Row `i`'s name.
+    pub fn name(&self, i: usize) -> &str {
+        let len = self.name_lens.get(i).copied().unwrap_or(0) as usize;
+        self.names
+            .get(i)
+            .and_then(|n| core::str::from_utf8(&n[..len.min(STANDING_NAME_BYTES)]).ok())
+            .unwrap_or("?")
+    }
+
+    /// Put row `n`: a name (cut to the wire's length, non-printables
+    /// dropped) and its score. False when the board is full.
+    pub fn push(&mut self, name: &str, score: u32) -> bool {
+        let i = self.n as usize;
+        if i >= STANDING_TOP {
+            return false;
+        }
+        let mut len = 0;
+        for b in name.bytes().filter(|b| (0x20..=0x7E).contains(b)) {
+            if len == STANDING_NAME_BYTES {
+                break;
+            }
+            self.names[i][len] = b;
+            len += 1;
+        }
+        self.name_lens[i] = len as u8;
+        self.scores[i] = score;
+        self.n += 1;
+        true
+    }
+}
+
+impl Default for StandingBoard {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
 /// The longest item description, bytes: one line in the craft pane, and an
 /// event under `MAX_STREAM_MSG_BYTES` with its header.
 pub const MAX_ITEM_DESC_BYTES: usize = 96;
@@ -1357,6 +1438,8 @@ pub enum EventMsg {
     /// A felled tree's stump was grubbed out: the cell stays harvested
     /// until the sapling, with nothing standing in it.
     StumpGrubbed { cx: u16, cz: u16 },
+    /// One board of the wipe's standings.
+    Standing(StandingBoard),
     /// One item's description line: `text[..len]`, UTF-8.
     ItemDesc {
         item: u16,
@@ -2289,6 +2372,34 @@ pub fn encode_event_item_desc(item: u16, text: &[u8], buf: &mut [u8]) -> Result<
     w.write(text.len() as u32, DESC_LEN_BITS)?;
     for &b in text {
         w.write(b as u32, 8)?;
+    }
+    Ok(w.finish())
+}
+
+/// One standings board, to one client. Refuses a board past the five, more
+/// rows than `STANDING_TOP`, and a name the wire cannot carry.
+pub fn encode_event_standing(b: &StandingBoard, buf: &mut [u8]) -> Result<usize, WireError> {
+    if b.board >= STANDING_BOARDS || b.n as usize > STANDING_TOP {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_STANDING)?;
+    w.write(b.board as u32, 3)?;
+    w.write(b.wipe as u32, 16)?;
+    w.write(b.ranked as u32, 16)?;
+    w.write(b.my_rank as u32, 16)?;
+    w.write(b.my_score, 32)?;
+    w.write(b.n as u32, 3)?;
+    for i in 0..b.n as usize {
+        let len = b.name_lens[i] as usize;
+        let name = &b.names[i][..len.min(STANDING_NAME_BYTES)];
+        if len > STANDING_NAME_BYTES || !name.iter().all(|c| (0x20..=0x7E).contains(c)) {
+            return Err(WireError::Range);
+        }
+        w.write(b.scores[i], 32)?;
+        w.write(len as u32, 5)?;
+        for &c in name {
+            w.write(c as u32, 8)?;
+        }
     }
     Ok(w.finish())
 }
@@ -4827,6 +4938,35 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             cx: r.read(16)? as u16,
             cz: r.read(16)? as u16,
         },
+        SUB_STANDING => {
+            let mut b = StandingBoard {
+                board: r.read(3)? as u8,
+                wipe: r.read(16)? as u16,
+                ranked: r.read(16)? as u16,
+                my_rank: r.read(16)? as u16,
+                my_score: r.read(32)?,
+                n: r.read(3)? as u8,
+                ..StandingBoard::EMPTY
+            };
+            if b.board >= STANDING_BOARDS || b.n as usize > STANDING_TOP {
+                return Err(WireError::Malformed);
+            }
+            for i in 0..b.n as usize {
+                b.scores[i] = r.read(32)?;
+                let len = r.read(5)? as usize;
+                if len > STANDING_NAME_BYTES {
+                    return Err(WireError::Malformed);
+                }
+                for c in b.names[i].iter_mut().take(len) {
+                    *c = r.read(8)? as u8;
+                    if !(0x20..=0x7E).contains(c) {
+                        return Err(WireError::Malformed);
+                    }
+                }
+                b.name_lens[i] = len as u8;
+            }
+            EventMsg::Standing(b)
+        }
         SUB_ITEM_DESC => {
             let item = r.read(16)? as u16;
             let len = r.read(DESC_LEN_BITS)? as usize;

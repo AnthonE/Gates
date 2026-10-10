@@ -156,7 +156,7 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     });
 }
 
-/// An ISLAND tab: 0 the works, 1 the journal.
+/// An ISLAND tab: 0 the works, 1 the journal, 2 the standings.
 #[derive(Component, Clone, Copy)]
 pub struct IslandTab(pub u8);
 
@@ -171,12 +171,13 @@ pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
         );
         kit::row(p, |r| {
             kit::button(r, "THE WORKS", IslandTab(0), ui.island_tab == 0);
+            kit::button(r, "STANDINGS", IslandTab(2), ui.island_tab == 2);
             kit::button(r, "JOURNAL", IslandTab(1), ui.island_tab == 1);
         });
-        if ui.island_tab == 1 {
-            journal(p, core);
-        } else {
-            works(p, core);
+        match ui.island_tab {
+            1 => journal(p, core),
+            2 => standings(p, core),
+            _ => works(p, core),
         }
         kit::hint(p, "[O] OR [ESC] CLOSE");
     });
@@ -226,6 +227,38 @@ fn works(p: &mut ChildSpawnerCommands, core: &ClientCore) {
         kit::line(p, "nothing yet — it starts broken", 12.0, TEXT_DIM);
     } else {
         kit::strong(p, held.join("  ·  "), 13.0, TEXT);
+    }
+}
+
+/// The wipe's standings: four boards and the last wipe's island, each with
+/// its top rows and where this player stands (`SUB_STANDING`).
+fn standings(p: &mut ChildSpawnerCommands, core: &ClientCore) {
+    kit::line(
+        p,
+        "Ranked all wipe. What you give the works is yours for good; what \
+         your base holds counts only if it is still yours when the wipe lands.",
+        12.0,
+        TEXT_DIM,
+    );
+    let last = &core.standings[protocol::STANDING_BOARDS as usize - 1];
+    for (board, b) in core.standings.iter().enumerate() {
+        let board = board as u8;
+        if board == protocol::STANDING_BOARDS - 1 && last.n == 0 {
+            continue;
+        }
+        kit::section(p, &words::board_heading(b, board));
+        kit::line(p, words::board_blurb(board), 11.0, TEXT_DIM);
+        if b.n == 0 {
+            kit::line(p, "nobody yet — the board is open", 12.0, TEXT_DIM);
+        }
+        for i in 0..b.n as usize {
+            kit::row(p, |r| {
+                kit::cell(r, format!("#{}", i + 1), 40.0, TEXT_DIM);
+                kit::cell(r, b.name(i), 260.0, TEXT);
+                kit::cell(r, words::board_score(board, b.scores[i]), 140.0, TEXT);
+            });
+        }
+        kit::strong(p, words::standing_you(b), 12.0, LINE_HOT);
     }
 }
 

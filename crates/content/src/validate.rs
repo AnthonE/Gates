@@ -41,6 +41,14 @@ pub fn structural(c: &Content) -> Result<(), String> {
     c.bake_lore()?;
     c.bake_mechs()?;
     c.bake_arc_text()?;
+    for (item, w) in &c.standings.worth {
+        if c.item(item).is_none() {
+            return Err(format!("[standings] worth: no item `{item}`"));
+        }
+        if !w.is_finite() || *w < 0.0 {
+            return Err(format!("[standings] worth `{item}`: {w} is not a price"));
+        }
+    }
     for r in &c.recipes {
         if let Some(u) = &r.unlock {
             if c.unlock_code(u).is_none() {

@@ -7220,3 +7220,28 @@ mod research_table {
         assert!(busy.contains("[C] RESEARCHING"), "{busy}");
     }
 }
+
+/// The STANDINGS page's words: a board's score reads as points or kills,
+/// and "you" says where you stand or how to get on the board.
+#[test]
+fn standings_words_read_like_a_scoreboard() {
+    use client::ui::arc::{board_score, standing_you, thousands};
+    assert_eq!(thousands(0), "0");
+    assert_eq!(thousands(98_765), "98,765");
+    assert_eq!(thousands(1_000_000), "1,000,000");
+    assert_eq!(board_score(1, 1_240), "1,240");
+    assert_eq!(board_score(3, 1), "1 kill");
+    assert_eq!(board_score(3, 12), "12 kills");
+    let mut b = protocol::StandingBoard {
+        board: 1,
+        wipe: 7,
+        ranked: 41,
+        ..protocol::StandingBoard::EMPTY
+    };
+    assert!(standing_you(&b).contains("feed a work"));
+    b.my_rank = 3;
+    b.my_score = 1_240;
+    assert_eq!(standing_you(&b), "YOU  stand #3 of 41 · 1,240");
+    b.board = 4;
+    assert_eq!(standing_you(&b), "YOU  finished #3 of 41 · 1,240");
+}

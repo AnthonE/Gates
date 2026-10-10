@@ -1831,6 +1831,19 @@ impl Content {
         self.works.iter().map(|w| w.name.clone()).collect()
     }
 
+    /// What one unit of every item is worth on the standings, hundredths of
+    /// a farm-minute, by sim item index (`server::standings`).
+    pub fn bake_worth(&self) -> Vec<u32> {
+        let mut out = vec![0u32; self.items.len()];
+        for it in &self.items {
+            if let Some(i) = self.item_index(&it.id) {
+                let w = crate::balance::worth_minutes(self, &it.id) * 100.0;
+                out[i as usize] = w.round().clamp(0.0, u32::MAX as f64) as u32;
+            }
+        }
+        out
+    }
+
     /// The works and their effects (`sim_core::works`, `content/arc.toml`).
     /// Hours become ticks and metres centimetres here; every reference is
     /// resolved or the boot is refused.

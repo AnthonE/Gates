@@ -304,6 +304,18 @@ pub fn apply(
         }
     }
 
+    // The standings go with the world they ranked; the hall and last
+    // wipe's placings stay (`standings::close_wipe` wrote them first).
+    for p in [
+        crate::standings::standings_path(base),
+        crate::standings::json_path(base),
+    ] {
+        if p.exists() {
+            std::fs::rename(&p, into_archive(&p))
+                .map_err(|e| format!("wipe: archiving {}: {e}", p.display()))?;
+        }
+    }
+
     if let Some(save) = save_file.filter(|p| p.exists()) {
         std::fs::copy(save, into_archive(save))
             .map_err(|e| format!("wipe: archiving {}: {e}", save.display()))?;
@@ -441,6 +453,11 @@ impl Clock {
 
     pub fn next(&self) -> Option<Pending> {
         self.pending
+    }
+
+    /// The number of the wipe now running: the wipes before it, plus one.
+    pub fn number(&self) -> u32 {
+        self.wipes + 1
     }
 
     /// `/wipe <minutes> [bp]`: the next wipe is `minutes` from now. The

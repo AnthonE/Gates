@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 160] = [
+pub const FIXTURES: [&str; 161] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -288,6 +288,8 @@ pub const FIXTURES: [&str; 160] = [
     "event_item_desc.bin",
     // A queued craft pulled to the head (v103).
     "action_fasttrack.bin",
+    // One standings board (v104).
+    "event_standing.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1106,6 +1108,21 @@ pub fn event_stump_grubbed() -> (u16, u16) {
 /// Fast-track queue job 3, seen as recipe 41 (wire v103).
 pub fn action_fasttrack() -> (u16, u16) {
     (3, 41)
+}
+
+/// THE WORKS in wipe 7 (wire v104): two rows, the receiver third of 41.
+pub fn event_standing() -> crate::StandingBoard {
+    let mut b = crate::StandingBoard {
+        board: 1,
+        wipe: 7,
+        ranked: 41,
+        my_rank: 3,
+        my_score: 1_240,
+        ..crate::StandingBoard::EMPTY
+    };
+    b.push("ALICE", 98_765);
+    b.push("0x12ab..cdef", 4_321);
+    b
 }
 
 /// Item 17's description line (wire v103).

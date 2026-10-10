@@ -101,8 +101,9 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Wipe { .. } | AdminCmd::WipeCancel | AdminCmd::WipeWhen => VERB_WIPE,
         AdminCmd::Brain => VERB_BRAIN,
         AdminCmd::Who => VERB_WHO,
-        // A `/bug` is never an admin act; it has its own `Kind`.
-        AdminCmd::Bug { .. } => VERB_UNKNOWN,
+        // A `/bug` is never an admin act; it has its own `Kind`, and
+        // `/top` is anybody's question.
+        AdminCmd::Bug { .. } | AdminCmd::Top => VERB_UNKNOWN,
     }
 }
 

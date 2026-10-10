@@ -170,6 +170,8 @@ struct ArcFile {
     inscription: Vec<Inscription>,
     #[serde(default)]
     mechanism: Vec<Mechanism>,
+    #[serde(default)]
+    standings: schema::Standings,
 }
 
 /// The whole validated content set. Construction is the only way in, so
@@ -228,6 +230,8 @@ pub struct Content {
     pub speakers: Vec<Speaker>,
     pub inscriptions: Vec<Inscription>,
     pub mechanisms: Vec<Mechanism>,
+    /// What the standings rank (`arc.toml` `[standings]`).
+    pub standings: schema::Standings,
     pub balance: Balance,
     anchors: Anchors,
 }
@@ -332,6 +336,7 @@ impl Content {
             speakers: arc.speaker,
             inscriptions: arc.inscription,
             mechanisms: arc.mechanism,
+            standings: arc.standings,
             balance,
             anchors: Anchors::default(),
         };
