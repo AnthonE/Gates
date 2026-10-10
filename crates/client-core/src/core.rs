@@ -340,20 +340,15 @@ pub const APPLIED2_CHARGE: u32 = 1 << 9;
 /// be three ways to spell one redraw.
 pub const APPLIED2_RESEARCH: u32 = 1 << 3;
 
-/// A payout did not fit and went to the ground — an `EV_GATHER` or
-/// `EV_CRAFT_DONE` whose "units actually added" was zero. Drain `pop_spill`.
+/// Some of a payout did not fit and went to the ground — a `Gather` or
+/// `CraftDone` with `dropped > 0`. Drain `pop_spill`.
 ///
-/// **The wire did not change to carry this.** The zero was always on it;
-/// `EV_CRAFT_DONE`'s doc line has declared its meaning since it landed and
-/// `EV_GATHER`'s now does too, and the client simply threw both away — the
-/// gather arm on an `if added > 0` guard, the craft arm by formatting the
-/// zero into "crafted 0 × Hatchet" and showing it. So this is the client-
-/// side read `NOW.md` §0sp2 asked whether existed. It does, for the whole-
-/// spill case, and it does not for the other two halves: a PARTIAL spill
-/// (some fit, some did not) is invisible here because the shortfall never
-/// leaves the sim, and the four give-backs — demolish refund, deployable
-/// pick-up, lock removal, craft cancel — emit no payout event at all.
-/// Both of those need a wire field, which is the operator's question.
+/// Wire v102 carries the amount (`NOW.md` §0sp2): a whole spill is zero
+/// added and `dropped` the lot, a PARTIAL spill (some fit, some did not)
+/// is both nonzero and raises this beside the toast, and the four
+/// give-backs — demolish refund, deployable pick-up, lock removal, craft
+/// cancel — arrive as zero-added `Gather`s from `World::announce_spill`.
+/// Before v102 only the whole-spill zero reached the client, item only.
 ///
 /// Word 1 because word 0 is full; see `APPLIED2_CHARGE`.
 pub const APPLIED2_SPILL: u32 = 1 << 4;
@@ -1474,19 +1469,16 @@ pub struct ClientCore {
     /// cosmetic — the toast rings' posture exactly).
     ///
     /// One ring for both producers. `EV_GATHER` and `EV_CRAFT_DONE` both
-    /// carry "units actually added", and a zero from either means the same
+    /// carry `dropped`, and a nonzero one from either means the same
     /// thing to the player — *this did not fit and it is on the ground* —
     /// so the cause does not change the sentence or the action, and a
     /// discriminator nothing reads would be structure invented for its own
     /// sake. If a later pass wants a different cue per cause, the two arms
     /// that fill this are the place to widen it.
     ///
-    /// Only the item index is kept, because only the item index is known:
-    /// the wire carries what *reached the hands* and never what was paid,
-    /// so the client can say which item spilled but not how much of it.
-    /// Closing that half needs a wire field — `NOW.md` §0sp2 holds it as
-    /// the operator's question and this ring is the half that did not.
-    spills: [u16; TOAST_RING],
+    /// `(item, units dropped)`: the wire's `dropped` (v102), so the HUD can
+    /// say how much went to the floor and not only what.
+    spills: [(u16, u16); TOAST_RING],
     spill_head: usize,
     spill_len: usize,
     /// The own weak-spot mark (server-announced, per-player): the node's
@@ -2042,7 +2034,7 @@ impl ClientCore {
             toasts: [(0, 0); TOAST_RING],
             toast_head: 0,
             toast_len: 0,
-            spills: [0; TOAST_RING],
+            spills: [(0, 0); TOAST_RING],
             spill_head: 0,
             spill_len: 0,
             mark_cell: NO_CELL,
@@ -2283,7 +2275,11 @@ impl ClientCore {
         self.events_applied += 1;
         let mut flags = 0u32;
         match msg {
-            EventMsg::Gather { item, added } => {
+            EventMsg::Gather {
+                item,
+                added,
+                dropped,
+            } => {
                 if added > 0 {
                     if self.toast_len == TOAST_RING {
                         // Drop oldest: advance the head.
@@ -2293,12 +2289,14 @@ impl ClientCore {
                     self.toasts[(self.toast_head + self.toast_len) % TOAST_RING] = (item, added);
                     self.toast_len += 1;
                     flags |= APPLIED_TOAST;
-                } else {
-                    // The pack was full. `sim-core` only pushes this event
-                    // for a payout it actually owed (`gather.rs`'s `pay > 0`,
-                    // `backpack.rs`'s `took == 0` skip), so the zero is the
-                    // spill and not a swing that earned nothing.
-                    self.push_spill(item);
+                }
+                // Not `else`: a partial spill is one event with both halves,
+                // a `+N` toast for what fit and a spill line for the rest.
+                // `sim-core` only pushes this for a payout it actually owed
+                // (`gather.rs`'s `pay > 0`, `backpack.rs`'s `took == 0`
+                // skip), so a zero-added event always carries its `dropped`.
+                if dropped > 0 {
+                    self.push_spill(item, dropped);
                 }
             }
             EventMsg::Reload {
@@ -2666,16 +2664,20 @@ impl ClientCore {
                 self.craft_eta_ticks = eta_ticks;
                 flags |= APPLIED_CRAFT_Q;
             }
-            EventMsg::CraftDone { item, added } => {
-                if added == 0 {
-                    // A finished unit that could not fit. This used to fall
-                    // through to the toast ring, and the HUD formatted it
-                    // straight out as `crafted 0 × Stone Hatchet` — a line
-                    // that told the player the craft had failed when it had
-                    // succeeded and was lying on the floor. Gather's arm has
-                    // always guarded its zero; this one now does too.
-                    self.push_spill(item);
-                } else {
+            EventMsg::CraftDone {
+                item,
+                added,
+                dropped,
+            } => {
+                // What could not fit (a two-arrow recipe can half fit). A
+                // zero added used to fall through to the toast ring, and the
+                // HUD formatted it straight out as `crafted 0 × Stone
+                // Hatchet` — a line that told the player the craft had
+                // failed when it had succeeded and was lying on the floor.
+                if dropped > 0 {
+                    self.push_spill(item, dropped);
+                }
+                if added > 0 {
                     if self.craft_toast_len == TOAST_RING {
                         self.craft_toast_head = (self.craft_toast_head + 1) % TOAST_RING;
                         self.craft_toast_len -= 1;
@@ -4069,25 +4071,26 @@ impl ClientCore {
         Some(t)
     }
 
-    /// Buffer an item the pack could not hold, and raise `APPLIED2_SPILL`.
+    /// Buffer `n` units of an item the pack could not hold, and raise
+    /// `APPLIED2_SPILL`.
     ///
-    /// Private and shared by the two arms that can see a zero, so neither
+    /// Private and shared by the two arms that can see a spill, so neither
     /// can drift from the other on the drop-oldest rule.
-    fn push_spill(&mut self, item: u16) {
+    fn push_spill(&mut self, item: u16, n: u16) {
         if self.spill_len == TOAST_RING {
             self.spill_head = (self.spill_head + 1) % TOAST_RING;
             self.spill_len -= 1;
         }
-        self.spills[(self.spill_head + self.spill_len) % TOAST_RING] = item;
+        self.spills[(self.spill_head + self.spill_len) % TOAST_RING] = (item, n);
         self.spill_len += 1;
         self.applied2 |= APPLIED2_SPILL;
     }
 
-    /// Oldest buffered spill, if any: the item index that did not fit.
+    /// Oldest buffered spill, if any: (item index, units dropped).
     ///
     /// Destructive, single-consumer — `render/feed.rs` owns the drain and
     /// `tests/sound.rs` greps for any second call site.
-    pub fn pop_spill(&mut self) -> Option<u16> {
+    pub fn pop_spill(&mut self) -> Option<(u16, u16)> {
         if self.spill_len == 0 {
             return None;
         }
@@ -4990,7 +4993,7 @@ mod tests {
         // And word 1 describes one message: the next event clears it, so
         // an unconditional read cannot mistake the refusal above for a
         // verdict on a drag that has not been answered yet.
-        let len = encode_event_gather(3, 7, &mut buf).unwrap();
+        let len = encode_event_gather(3, 7, 0, &mut buf).unwrap();
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_eq!(flags, APPLIED_TOAST);
         assert_eq!(c.applied2(), 0, "a stale move verdict outlived its message");
@@ -5004,12 +5007,12 @@ mod tests {
     fn stream_applies_inventory_and_toasts() {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_gather(3, 7, &mut buf).unwrap();
+        let len = encode_event_gather(3, 7, 0, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_TOAST);
         // A full pack (added 0) is still not a toast — `+0 × Wood` was
         // never the right line — but it is no longer *nothing*: it is a
-        // spill, on word 1, and the item survives so the HUD can name it.
-        let len = encode_event_gather(3, 0, &mut buf).unwrap();
+        // spill, on word 1, and the item and amount survive for the HUD.
+        let len = encode_event_gather(3, 0, 6, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), 0, "a spill toasted");
         assert_eq!(c.applied2(), APPLIED2_SPILL);
         let slots = [InvSlot {
@@ -5035,7 +5038,28 @@ mod tests {
         assert_eq!(c.pop_toast(), Some((3, 7)));
         assert_eq!(c.pop_toast(), None);
         // The whiff went here instead, and carries which item it was.
-        assert_eq!(c.pop_spill(), Some(3));
+        assert_eq!(c.pop_spill(), Some((3, 6)));
+        assert_eq!(c.pop_spill(), None);
+    }
+
+    /// A partial spill (wire v102) is one event with both halves: what fit
+    /// is a `+N` toast and what did not is a spill line with its count, so
+    /// neither half eats the other. Same for a craft that half fits.
+    #[test]
+    fn a_partial_spill_toasts_what_fit_and_spills_the_rest() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_gather(5, 4, 21, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_TOAST);
+        assert_eq!(c.applied2(), APPLIED2_SPILL, "the rest went unsaid");
+        assert_eq!(c.pop_toast(), Some((5, 4)));
+        assert_eq!(c.pop_spill(), Some((5, 21)));
+
+        let len = encode_event_craft_done(8, 1, 1, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_DONE);
+        assert_eq!(c.applied2(), APPLIED2_SPILL);
+        assert_eq!(c.pop_craft_toast(), Some((8, 1)));
+        assert_eq!(c.pop_spill(), Some((8, 1)));
         assert_eq!(c.pop_spill(), None);
     }
 
@@ -5052,11 +5076,11 @@ mod tests {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
 
-        let len = encode_event_gather(11, 0, &mut buf).unwrap();
+        let len = encode_event_gather(11, 0, 30, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap() & APPLIED_TOAST, 0);
         assert_eq!(c.applied2(), APPLIED2_SPILL);
 
-        let len = encode_event_craft_done(12, 0, &mut buf).unwrap();
+        let len = encode_event_craft_done(12, 0, 2, &mut buf).unwrap();
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_eq!(
             flags & APPLIED_CRAFT_DONE,
@@ -5071,8 +5095,8 @@ mod tests {
             None,
             "a spill leaked into the craft ring"
         );
-        assert_eq!(c.pop_spill(), Some(11));
-        assert_eq!(c.pop_spill(), Some(12));
+        assert_eq!(c.pop_spill(), Some((11, 30)));
+        assert_eq!(c.pop_spill(), Some((12, 2)));
         assert_eq!(c.pop_spill(), None);
     }
 
@@ -5083,12 +5107,12 @@ mod tests {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for i in 0..(TOAST_RING + 2) {
-            let len = encode_event_gather(i as u16, 0, &mut buf).unwrap();
+            let len = encode_event_gather(i as u16, 0, 1, &mut buf).unwrap();
             c.on_stream(&buf[..len]).unwrap();
         }
         // The first two fell off the front; the rest survive in order.
         for i in 2..(TOAST_RING + 2) {
-            assert_eq!(c.pop_spill(), Some(i as u16));
+            assert_eq!(c.pop_spill(), Some((i as u16, 1)));
         }
         assert_eq!(c.pop_spill(), None);
     }
@@ -5174,7 +5198,7 @@ mod tests {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for i in 0..TOAST_RING as u16 + 2 {
-            let len = encode_event_gather(i, 1, &mut buf).unwrap();
+            let len = encode_event_gather(i, 1, 0, &mut buf).unwrap();
             c.on_stream(&buf[..len]).unwrap();
         }
         assert_eq!(c.pop_toast(), Some((2, 1)), "two oldest dropped");
@@ -5342,7 +5366,7 @@ mod tests {
         assert_eq!(c.jobs_count, 0, "empty announce clears the queue");
 
         // Done toasts and refusals ride their own rings.
-        let len = encode_event_craft_done(3, 2, &mut buf).unwrap();
+        let len = encode_event_craft_done(3, 2, 0, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CRAFT_DONE);
         assert_eq!(c.pop_craft_toast(), Some((3, 2)));
         assert_eq!(c.pop_craft_toast(), None);

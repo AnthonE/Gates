@@ -1168,8 +1168,11 @@ pub enum EventMsg {
         ticks: u16,
     },
     /// Own gather payout: `added` units of `item` landed (or 0 — full
-    /// inventory). The toast, not the truth: `Inv` is authoritative.
-    Gather { item: u16, added: u16 },
+    /// inventory), and `dropped` units did not fit and went to the feet
+    /// (wire v102; both nonzero is a partial spill, `added == 0` with
+    /// `dropped > 0` a whole one or a give-back). The toast, not the
+    /// truth: `Inv` is authoritative.
+    Gather { item: u16, added: u16, dropped: u16 },
     /// A gather swing bounced (wire v42): `item` is what was held —
     /// `sim_core::gather::NO_ITEM` means bare hands — and `reason` is a
     /// `sim_core::gather::REFUSE_G_*` code. The item crosses so the HUD
@@ -1242,8 +1245,9 @@ pub enum EventMsg {
         eta_ticks: u16,
     },
     /// One craft unit completed: `added` units of `item` landed (0 = full
-    /// inventory — the loss is announced). The toast; `Inv` is the truth.
-    CraftDone { item: u16, added: u16 },
+    /// inventory — the loss is announced) and `dropped` went to the feet
+    /// (wire v102, `Gather`'s field). The toast; `Inv` is the truth.
+    CraftDone { item: u16, added: u16, dropped: u16 },
     /// A blueprint was learned: `recipe` is now craftable by this player,
     /// and `cost` is what it actually burned (research.rs).
     Research { recipe: u16, cost: u16 },
@@ -1921,10 +1925,16 @@ fn begin(buf: &mut [u8], subtype: u32) -> Result<BitWriter<'_>, WireError> {
     Ok(w)
 }
 
-pub fn encode_event_gather(item: u16, added: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_gather(
+    item: u16,
+    added: u16,
+    dropped: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_GATHER)?;
     w.write(item as u32, 16)?;
     w.write(added as u32, 16)?;
+    w.write(dropped as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -2202,10 +2212,16 @@ pub fn encode_event_craft_q(
     Ok(w.finish())
 }
 
-pub fn encode_event_craft_done(item: u16, added: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_craft_done(
+    item: u16,
+    added: u16,
+    dropped: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_CRAFT_DONE)?;
     w.write(item as u32, 16)?;
     w.write(added as u32, 16)?;
+    w.write(dropped as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -4400,6 +4416,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_GATHER => EventMsg::Gather {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
+            dropped: r.read(16)? as u16,
         },
         SUB_RELOAD => {
             let loaded = r.read(16)? as u16;
@@ -4612,6 +4629,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_CRAFT_DONE => EventMsg::CraftDone {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
+            dropped: r.read(16)? as u16,
         },
         SUB_CRAFT_REFUSED => {
             let reason = r.read(REFUSE_CR_BITS)?;
@@ -5968,10 +5986,14 @@ mod tests {
     #[test]
     fn gather_and_slot_change_round_trip() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_gather(7, 13, &mut buf).unwrap();
+        let len = encode_event_gather(7, 13, 4, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::Gather { item: 7, added: 13 }
+            EventMsg::Gather {
+                item: 7,
+                added: 13,
+                dropped: 4
+            }
         );
         let len = encode_event_slot_change(true, 130, 77, &mut buf).unwrap();
         assert_eq!(
@@ -6580,10 +6602,14 @@ mod tests {
     #[test]
     fn craft_done_and_refused_round_trip() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_craft_done(9, 3, &mut buf).unwrap();
+        let len = encode_event_craft_done(9, 3, 2, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::CraftDone { item: 9, added: 3 }
+            EventMsg::CraftDone {
+                item: 9,
+                added: 3,
+                dropped: 2
+            }
         );
         let len = encode_event_craft_refused(4, &mut buf).unwrap();
         assert_eq!(
@@ -7376,7 +7402,7 @@ mod tests {
     #[test]
     fn trailing_garbage_and_unknown_subtype_are_malformed() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_gather(1, 2, &mut buf).unwrap();
+        let len = encode_event_gather(1, 2, 0, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len + 1]),
             Err(WireError::Malformed),

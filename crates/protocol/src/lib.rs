@@ -1092,7 +1092,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// saying the same, so no client draws or offers a stump that is gone. And
 /// the hearth gives back: `ACT_FEED` ends in a take bit, and a set one is
 /// followed by the stock row its crew takes out (`ActionMsg::TakeStock`).
-pub const PROTO_VER: u16 = 101;
+/// v102 — a spill says how much: `SUB_GATHER` and `SUB_CRAFT_DONE` end in a
+/// `dropped` u16, the units that did not fit and went to the feet.
+pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.
 ///

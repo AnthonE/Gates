@@ -978,6 +978,12 @@ pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     format!("WET {wet_pct}% · {why}")
 }
 
+/// The spill line: `n` units of `label` that did not fit and fell at the
+/// feet (`Feed::spills`).
+pub fn spill_line(n: u16, label: &str) -> String {
+    format!("pack full — {n} × {label} dropped at your feet")
+}
+
 /// What the COLD chip says: the strongest cause it can see, and that a roof
 /// is helping when there is one. Freezing names what stops it, less what
 /// the body already has.
@@ -2658,12 +2664,13 @@ pub fn feedback(
     // — `Rank` does — and this loop stays last for where it draws, not for
     // what survives.
     //
-    // No amount, because the wire has none to give — see `Feed::spills`.
+    // The amount is the wire's `dropped` (v102), so a partial spill says
+    // how much of the stack hit the floor beside its `+N` notice.
     // "at your feet" is where `world.rs`'s `drain_spill` stands the bag up;
     // a merge into a bag already standing puts it within the same reach.
-    for &item in feed.spills() {
+    for &(item, n) in feed.spills() {
         let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.warn(format!("pack full — {label} dropped at your feet"));
+        toast.warn(spill_line(n, &label));
     }
 
     // ---- the timers -----------------------------------------------------
@@ -3896,17 +3903,17 @@ mod tests {
     #[test]
     fn both_spills_of_one_swing_survive_the_frame() {
         let mut t = Toast::default();
-        t.say("pack full — WOOD dropped at your feet");
-        t.say("pack full — MUSHROOMS dropped at your feet");
+        t.say(spill_line(30, "WOOD"));
+        t.say(spill_line(3, "MUSHROOMS"));
         assert_eq!(t.len(), 2, "two facts in one frame must be two lines");
         // Newest first: the row the eye starts at is the last thing said.
         assert_eq!(
             t.row(0).map(Say::text),
-            Some("pack full — MUSHROOMS dropped at your feet")
+            Some("pack full — 3 × MUSHROOMS dropped at your feet")
         );
         assert_eq!(
             t.row(1).map(Say::text),
-            Some("pack full — WOOD dropped at your feet"),
+            Some("pack full — 30 × WOOD dropped at your feet"),
             "the earlier line of the same frame must still be on screen"
         );
         assert_eq!(

@@ -5765,7 +5765,7 @@ mod tests {
             })
         ));
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_craft_done(9, 1, &mut buf).unwrap();
+        let n = protocol::event::encode_event_craft_done(9, 1, 0, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let n = protocol::event::encode_event_inv(
             &[InvSlot {
@@ -6296,7 +6296,7 @@ mod tests {
         let now = Instant::now();
         bot.frame_at(&view, 1, 1, now);
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_gather(5, 25, &mut buf).unwrap();
+        let n = protocol::event::encode_event_gather(5, 25, 0, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);

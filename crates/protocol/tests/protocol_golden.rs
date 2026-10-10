@@ -1064,13 +1064,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_bags(&bags[..n], &mut buf).unwrap()
         }
         "event_gather.bin" => {
-            let (item, added) = event_gather();
+            let (item, added, dropped) = event_gather();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Gather { item, added },
+                EventMsg::Gather {
+                    item,
+                    added,
+                    dropped
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_gather(item, added, &mut buf).unwrap()
+            encode_event_gather(item, added, dropped, &mut buf).unwrap()
         }
         "event_reload.bin" => {
             let (loaded, ceiling, took) = event_reload();
@@ -1265,13 +1269,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_craft_q(&jobs, eta, &mut buf).unwrap()
         }
         "event_craft_done.bin" => {
-            let (item, added) = event_craft_done();
+            let (item, added, dropped) = event_craft_done();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::CraftDone { item, added },
+                EventMsg::CraftDone {
+                    item,
+                    added,
+                    dropped
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_craft_done(item, added, &mut buf).unwrap()
+            encode_event_craft_done(item, added, dropped, &mut buf).unwrap()
         }
         "event_craft_refused.bin" => {
             let reason = event_craft_refused();

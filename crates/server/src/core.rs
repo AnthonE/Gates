@@ -2366,7 +2366,8 @@ impl ShardCore {
                     };
                     let item = (ev.b >> 16) as u16;
                     let added = ev.b as u16;
-                    match encode_event_gather(item, added, &mut self.ev_buf) {
+                    let dropped = ev.c.min(u16::MAX as u32) as u16;
+                    match encode_event_gather(item, added, dropped, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -2652,7 +2653,12 @@ impl ShardCore {
                         continue; // crafter left this tick
                     };
                     let enc = if ev.code == EV_CRAFT_DONE {
-                        encode_event_craft_done((ev.b >> 16) as u16, ev.b as u16, &mut self.ev_buf)
+                        encode_event_craft_done(
+                            (ev.b >> 16) as u16,
+                            ev.b as u16,
+                            ev.c.min(u16::MAX as u32) as u16,
+                            &mut self.ev_buf,
+                        )
                     } else {
                         encode_event_craft_refused(ev.b as u8, &mut self.ev_buf)
                     };

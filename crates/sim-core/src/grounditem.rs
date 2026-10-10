@@ -389,17 +389,14 @@ impl GroundItems {
         if took == 0 && spill.iter().all(|s| s.count == 0) {
             return None;
         }
+        // One event for both halves: `took` reached the pack, c went to the
+        // feet (a part fit raises the `+N` toast and the spill line both).
         events.push(
             EV_GATHER,
             p.id,
             ((rec.stack.item as u32) << 16) | took as u32,
-            0,
+            (rec.stack.count - took) as u32,
         );
-        // Part fit and the rest went to the feet: say so too. (Nothing fit
-        // is already the zero above.)
-        if took > 0 && spill.iter().any(|s| s.count > 0) {
-            events.push(EV_GATHER, p.id, (rec.stack.item as u32) << 16, 0);
-        }
         self.remove(i);
         Some(rec.id)
     }

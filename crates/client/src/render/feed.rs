@@ -231,10 +231,8 @@ pub struct Feed {
     /// or a craft whose payout the pack could not hold. Own-fact, like the
     /// two rings above it and unlike `knocks`/`shots`.
     ///
-    /// The item index only: the wire says what reached the hands and never
-    /// what was paid, so there is no amount to carry (`client-core`'s
-    /// `spills` says why in full).
-    spills: [u16; FEED_CAP],
+    /// `(item, units dropped)`, the wire's `dropped` (v102).
+    spills: [(u16, u16); FEED_CAP],
     n_spills: usize,
     /// `(recipe, coin burned)` per blueprint learned this frame.
     learned: [(u16, u16); FEED_CAP],
@@ -380,8 +378,9 @@ impl Feed {
         &self.crafted[..self.n_crafted]
     }
 
-    /// Item indices the pack could not hold this frame, oldest first.
-    pub fn spills(&self) -> &[u16] {
+    /// `(item, units dropped)` the pack could not hold this frame, oldest
+    /// first.
+    pub fn spills(&self) -> &[(u16, u16)] {
         &self.spills[..self.n_spills]
     }
 
@@ -822,12 +821,12 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.n_crafted += 1;
         }
     }
-    while let Some(item) = core.pop_spill() {
+    while let Some(spill) = core.pop_spill() {
         if feed.n_spills >= FEED_CAP {
             feed.dropped = feed.dropped.saturating_add(1);
         } else {
             let n = feed.n_spills;
-            feed.spills[n] = item;
+            feed.spills[n] = spill;
             feed.n_spills += 1;
         }
     }

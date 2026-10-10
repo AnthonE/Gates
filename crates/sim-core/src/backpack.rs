@@ -710,7 +710,12 @@ impl Backpacks {
             cut.cond,
             cut.skin,
         );
-        events.push(EV_GATHER, p.id, ((cut.item as u32) << 16) | added as u32, 0);
+        events.push(
+            EV_GATHER,
+            p.id,
+            ((cut.item as u32) << 16) | added as u32,
+            (pay - added) as u32,
+        );
         self.drop_if_empty(i, events);
         true
     }

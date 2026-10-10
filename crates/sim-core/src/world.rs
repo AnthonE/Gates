@@ -81,7 +81,10 @@ const UNSTICK_EVERY_TICKS: u64 = crate::limits::TICK_HZ as u64;
 /// EV_GATHER: a = player id, b = item index << 16 | units actually added
 /// (0 = the pack was full and every unit went to the ground; the loss is
 /// announced, never silent — `EV_CRAFT_DONE` has said this since it
-/// landed and this one now says it too).
+/// landed and this one now says it too), c = units that did not fit and
+/// went to the spill at the feet (wire v102: a partial spill is `b`'s low
+/// half > 0 *and* c > 0, one event for both halves; a give-back's
+/// `World::announce_spill` is zero added and c the item's spilled total).
 /// Read it as "these units entered your inventory", not as "a node paid":
 /// looting a backpack (backpack.rs) announces its take the same way, and
 /// deliberately — the client's `+N Item` toast is the right feedback for
@@ -112,7 +115,8 @@ pub const EV_SLOT_RESPAWNED: u8 = 3;
 /// the mark is per-player (gather.rs).
 pub const EV_WEAK_MARK: u8 = 4;
 /// EV_CRAFT_DONE: a = player id, b = item index << 16 | units actually
-/// added (0 = full inventory; the loss is announced, never silent).
+/// added (0 = full inventory; the loss is announced, never silent), c =
+/// units that did not fit and went to the feet (`EV_GATHER`'s c).
 pub const EV_CRAFT_DONE: u8 = 5;
 /// EV_CRAFT_REFUSED: a = player id, b = `craft::REFUSE_*` reason code.
 pub const EV_CRAFT_REFUSED: u8 = 6;
@@ -3160,8 +3164,12 @@ impl World {
             0,
         );
         // `take_nearest`'s announcement: into the pack, or to the feet.
-        self.events
-            .push(EV_GATHER, p.id, ((rec.round as u32) << 16) | took as u32, 0);
+        self.events.push(
+            EV_GATHER,
+            p.id,
+            ((rec.round as u32) << 16) | took as u32,
+            1 - took as u32,
+        );
         true
     }
 
@@ -4475,24 +4483,27 @@ impl World {
     }
 
     /// Tell the player a give-back (cancel, refund, pick-up, unbolt) spilled
-    /// at their feet: `EV_GATHER` with zero added, the "pack full" line.
+    /// at their feet: `EV_GATHER` with zero added and c the units dropped,
+    /// the "pack full — N × Item" line. One event per distinct item, its
+    /// stacks summed (a big refund spills as several stacks of one item).
     /// Not inside `drain_spill`: the per-tick gather/craft drain already
     /// announces, and the death shed has nobody to tell.
     fn announce_spill(&mut self, slot: usize, spill: &[ItemStack; INV_SLOTS]) {
         let pid = self.players[slot].id;
-        let mut said = [0u16; crate::limits::SPILL_TOASTS_MAX];
+        let mut said = [(0u16, 0u32); crate::limits::SPILL_TOASTS_MAX];
         let mut n = 0;
         for s in spill.iter().filter(|s| s.count > 0) {
-            if n == said.len() {
-                break;
+            if let Some(e) = said[..n].iter_mut().find(|e| e.0 == s.item) {
+                e.1 += s.count as u32;
+            } else if n < said.len() {
+                said[n] = (s.item, s.count as u32);
+                n += 1;
             }
-            if said[..n].contains(&s.item) {
-                continue;
-            }
-            said[n] = s.item;
-            n += 1;
+        }
+        for &(item, units) in &said[..n] {
             // The zero is owed: these units left for the ground (`EV_GATHER`).
-            self.events.push(EV_GATHER, pid, (s.item as u32) << 16, 0);
+            let c = units.min(u16::MAX as u32);
+            self.events.push(EV_GATHER, pid, (item as u32) << 16, c);
         }
     }
 

@@ -982,8 +982,10 @@ pub fn refuse_full() -> Refuse {
 // these and compare bytes and decodes.
 // ---------------------------------------------------------------------------
 
-pub fn event_gather() -> (u16, u16) {
-    (7, 13)
+/// (item, added, dropped): all three distinct and nonzero so a transposed
+/// field moves bytes — a partial spill (wire v102).
+pub fn event_gather() -> (u16, u16, u16) {
+    (7, 13, 5)
 }
 
 /// The gather refusal (wire v42): the held item and the reason, both
@@ -1219,9 +1221,10 @@ pub fn event_craft_q() -> ([CraftJob; 3], u16) {
     )
 }
 
-/// One completed unit: (item index, units that actually landed).
-pub fn event_craft_done() -> (u16, u16) {
-    (12, 3)
+/// One completed unit: (item index, units that actually landed, units
+/// that went to the feet — wire v102).
+pub fn event_craft_done() -> (u16, u16, u16) {
+    (12, 3, 1)
 }
 
 /// A refusal carrying `sim_core::craft::REFUSE_CR_INPUTS`.

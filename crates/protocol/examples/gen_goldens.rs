@@ -199,8 +199,8 @@ fn main() {
     let len = protocol::encode_auth(&goldens::auth(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[75], &buf[..len]);
 
-    let (item, added) = goldens::event_gather();
-    let len = encode_event_gather(item, added, &mut buf).unwrap();
+    let (item, added, dropped) = goldens::event_gather();
+    let len = encode_event_gather(item, added, dropped, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[8], &buf[..len]);
 
     let (slots, count) = goldens::event_inv();
@@ -232,8 +232,8 @@ fn main() {
     let len = encode_event_craft_q(&jobs, eta, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[15], &buf[..len]);
 
-    let (item, added) = goldens::event_craft_done();
-    let len = encode_event_craft_done(item, added, &mut buf).unwrap();
+    let (item, added, dropped) = goldens::event_craft_done();
+    let len = encode_event_craft_done(item, added, dropped, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[16], &buf[..len]);
 
     let len = encode_event_craft_refused(goldens::event_craft_refused(), &mut buf).unwrap();

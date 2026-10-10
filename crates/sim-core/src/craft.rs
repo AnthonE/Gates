@@ -541,7 +541,7 @@ pub fn step(
         EV_CRAFT_DONE,
         p.id,
         ((def.output as u32) << 16) | added as u32,
-        0,
+        (def.out_count - added) as u32,
     );
     p.jobs[0].remaining -= 1;
     if p.jobs[0].remaining == 0 {
