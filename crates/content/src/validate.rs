@@ -1551,6 +1551,9 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 m.id
             ));
         }
+        if !(0.0..=4.0).contains(&m.night_extra) {
+            return Err(format!("mob `{}`: night_extra is 0–4", m.id));
+        }
         if m.per_km2 > 0.0 && weights.iter().all(|w| *w == 0.0) {
             return Err(format!(
                 "mob `{}`: {} per km² of no habitat at all",

@@ -2365,6 +2365,7 @@ impl Content {
                 // `terrain::Biome` order (beach, meadow, forest, highland).
                 // Validate bounded every value, so the casts cannot wrap.
                 per_km2_milli: (m.per_km2 * 1000.0).round() as u32,
+                night_extra_pct: (m.night_extra * 100.0).round() as u16,
                 habitat_pm: [
                     0,
                     (m.habitat.meadow * 1000.0).round() as u16,

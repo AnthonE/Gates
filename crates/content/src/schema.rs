@@ -799,6 +799,10 @@ pub struct Mob {
     /// `boar.population` (5) and `wolf.population` (2). The island's
     /// roster of this species is this times its habitat-weighted land.
     pub per_km2: f32,
+    /// More after dark, as a multiple of `per_km2` (`MobDef::night_extra_pct`):
+    /// the extra animals hatch after dusk and leave at daybreak. 0–4.
+    #[serde(default)]
+    pub night_extra: f32,
     /// Where the species lives — a weight per biome the home draw is
     /// accepted at (the reference's spawn filter). Beach is never a home.
     pub habitat: Habitat,

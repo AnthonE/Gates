@@ -332,10 +332,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 2b. Ground items: no tumble (`reference/LOOT.md` §9.3), most draw as a pouch
     (`HELD_MODELS`), barrels pay 1–2 rolls plus 2 junk (`content/loot.toml`, `ci/haven_prize.mjs`).
 
-## 0pr · What predator v0 still owes *(systems lane)*
-
-3. No night-only roster variant; the night's cost so far is the cold (`exposure.rs`).
-
 ## 0m · The pig is in — what the roster still owes *(systems lane)*
 
 2. Holding a charge is free. The stag's bellow is a stand-in cut from the howl and a
@@ -987,7 +983,8 @@ last text `git show 0edb5f1:NOW.md`. `§0sp2` (the spill's amount rides `Gather`
 `dropped`, wire v102), 2026-10-10 — last text `git show f8de16d:NOW.md`. `§0vj` (the capture probe writes
 `manifest.json`), 2026-10-10 — last text `git show 9625bfa:NOW.md`. `§0rc` (a throw waits
 for the frames buffered ahead of it, `ClientNetState::hand_ready`), 2026-10-10 — last text
-`git show 884c675:NOW.md`.
+`git show 884c675:NOW.md`. `§0pr` (the night doubles the wolves, `mobs.toml` `night_extra`),
+2026-10-10 — last text `git show 10835f4:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 

@@ -408,6 +408,11 @@ pub struct MobDef {
     /// ([`targets`]), so a bigger island carries more animals and a species
     /// that only lives in forest carries fewer. Site guards are on top.
     pub per_km2_milli: u32,
+    /// More of them after dark, per cent of `per_km2_milli` (`NOW.md` §0pr
+    /// 3): the extra slots this enrols hatch only at night and leave at
+    /// daybreak once nobody is near them — the night-only spawn of
+    /// `reference/ANIMALS.md` §3. Zero ⇒ the night carries no more.
+    pub night_extra_pct: u16,
     /// How much this species likes each biome, per mille, indexed by
     /// `terrain::Biome`: the reference's spawn filter (`reference/SPAWN.md`
     /// §4), as a weight a home draw is accepted at. Beach is always zero —
@@ -478,6 +483,7 @@ impl MobDef {
         night_spook_cm: 0,
         respawn_ticks: 0,
         per_km2_milli: 0,
+        night_extra_pct: 0,
         habitat_pm: [0; 4],
         body_r_cm: 0,
         body_h_cm: 0,
@@ -624,6 +630,7 @@ impl MobContent {
             respawn_ticks: 9_000,
             // The shipped rows' density and habitat (`content/mobs.toml`).
             per_km2_milli: 5_000,
+            night_extra_pct: 0,
             habitat_pm: [0, 1_000, 1_000, 300],
             // The client draws a pig 0.78 m high and 1.5 m long
             // (`render/mobs.rs` PIG_H_M / PIG_LEN_M); a cylinder of this
@@ -669,6 +676,7 @@ impl MobContent {
             night_spook_cm: 1_500,
             respawn_ticks: 9_000,
             per_km2_milli: 2_000,
+            night_extra_pct: 0,
             habitat_pm: [0, 400, 1_000, 1_000],
             body_r_cm: 60,
             body_h_cm: 85,
@@ -717,6 +725,10 @@ pub struct Mob {
     /// species' density reaches it ([`targets`]), or it guards a site that
     /// exists. A slot never enrolled never hatches.
     pub homed: bool,
+    /// Enrolled only by the night's extra density
+    /// ([`MobDef::night_extra_pct`]): hatches after dusk and leaves at
+    /// daybreak once dormant. Enrolment, like `homed`: not hashed.
+    pub night_only: bool,
     pub hp: u16,
     pub body: Body,
     /// Heading, on the wire's yaw scale. The animal's whole steering state:
@@ -835,9 +847,11 @@ impl Mobs {
     /// once — on the first tick a species is armed.
     fn enrol(&mut self, seed: u64, haven: &Haven, mc: &MobContent) {
         self.survey = survey(seed);
-        let want = targets(mc, &self.survey);
+        let day = targets(mc, &self.survey, false);
+        let night = targets(mc, &self.survey, true);
         for (slot, mob) in self.m.iter_mut().enumerate() {
-            mob.homed = takes_part(seed, haven, slot, mc, &want);
+            mob.homed = takes_part(seed, haven, slot, mc, &night);
+            mob.night_only = mob.homed && !takes_part(seed, haven, slot, mc, &day);
         }
     }
 }
@@ -879,8 +893,8 @@ pub fn survey(seed: u64) -> Survey {
 /// How many of each species live: habitat-weighted land × density, the
 /// reference's `targetCount` (`reference/SPAWN.md` §3.3), capped at the
 /// slots the roster has for it. Wolves count free wolves only; the site
-/// guards are on top.
-pub fn targets(mc: &MobContent, survey: &Survey) -> [usize; MOB_KINDS] {
+/// guards are on top. `night` adds each species' `night_extra_pct`.
+pub fn targets(mc: &MobContent, survey: &Survey, night: bool) -> [usize; MOB_KINDS] {
     let mut out = [0usize; MOB_KINDS];
     for (kind, n) in out.iter_mut().enumerate() {
         let def = mc.def(kind as u8);
@@ -891,7 +905,13 @@ pub fn targets(mc: &MobContent, survey: &Survey) -> [usize; MOB_KINDS] {
         for (b, m2) in survey.land_m2.iter().enumerate() {
             km2 += *m2 as f32 * 1e-6 * def.habitat_pm[b] as f32 * 1e-3;
         }
-        let want = crate::fmath::floor_i32(km2 * def.per_km2_milli as f32 * 1e-3 + 0.5).max(0);
+        let pct = if night {
+            100 + def.night_extra_pct as u32
+        } else {
+            100
+        };
+        let milli = (def.per_km2_milli as u64 * pct as u64 / 100) as f32;
+        let want = crate::fmath::floor_i32(km2 * milli * 1e-3 + 0.5).max(0);
         *n = (want as usize).min(capacity(kind as u8));
     }
     out
@@ -1130,14 +1150,23 @@ pub fn step(
             continue;
         }
         let def = mc.def(mob.kind);
+        // The night's extra animals (`MobDef::night_extra_pct`) keep the
+        // dark's hours: they hatch only after dusk, and at daybreak one
+        // nobody is near simply goes — dormant, so no player sees it vanish.
+        let day = mob.night_only && !crate::world::is_night(day_tick);
         if !mob.alive {
             // Hatching is the one thing a dormant slot still does. It is
             // cheap, it is off a tick comparison, and an animal that only
             // came back when somebody was standing there to watch would be
             // a shard whose population depends on who logged in.
-            if def.hp > 0 && tick >= mob.respawn_at {
+            if def.hp > 0 && tick >= mob.respawn_at && !day {
                 hatch(seed, haven, tick, slot, mob, &def, leader_home);
             }
+            continue;
+        }
+        if day && !mob.awake {
+            mob.alive = false;
+            mob.respawn_at = tick;
             continue;
         }
 
