@@ -132,7 +132,7 @@ pub(crate) const STAG_SLOT_PHASE: usize = 2;
 pub const fn kind_of(slot: usize) -> u8 {
     if slot == HELI_SLOT {
         MOB_HELI
-    } else if crate::sentry::is_sentry_slot(slot) {
+    } else if crate::sentry::is_sentry_slot(slot) || crate::turret::is_turret_slot(slot) {
         MOB_SENTRY
     } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
@@ -940,7 +940,11 @@ pub const fn capacity(kind: u8) -> usize {
 /// sentries and the heli sit at the top of the roster, so no free slot has
 /// one below it.
 pub const fn ordinal(slot: usize) -> Option<usize> {
-    if slot == HELI_SLOT || crate::sentry::is_sentry_slot(slot) || guard_site_of(slot).is_some() {
+    if slot == HELI_SLOT
+        || crate::sentry::is_sentry_slot(slot)
+        || crate::turret::is_turret_slot(slot)
+        || guard_site_of(slot).is_some()
+    {
         return None;
     }
     match kind_of(slot) {

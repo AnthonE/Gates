@@ -165,6 +165,10 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// (`oven.rs`), with no fuel and no switch — a planter is always growing,
 /// and what grows into what is rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
+/// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
+/// rounds a gun on top spends on anybody who is not its owner or the crew
+/// of the claim it stands in.
+pub const ARCH_TURRET: u8 = 18;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -187,7 +191,7 @@ pub const ARCH_PLANTER: u8 = 17;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 18] = [
+pub const DEPLOY_VOL: [[f32; 3]; 19] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -206,6 +210,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 18] = [
     [0.0, 0.0, 0.0],   // shutters — edge insert, not a solid nibble
     [1.8, 1.4, 0.6],   // 16 barricade — a log wall
     [1.6, 0.5, 0.8],   // 17 planter — a raised bed
+    [0.7, 0.6, 0.7],   // 18 turret — the base; the gun stands on it
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -302,6 +307,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_RECYCLER
         || arch == ARCH_RESEARCH
         || arch == ARCH_PLANTER
+        || arch == ARCH_TURRET
 }
 
 /// A workbench archetype's rung on the bench ladder, `0` for anything

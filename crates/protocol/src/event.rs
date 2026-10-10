@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_TURRET, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -2978,7 +2978,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_PLANTER || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_TURRET || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -5262,7 +5262,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_PLANTER
+                if arch > ARCH_TURRET
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -8148,6 +8148,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/sentry.rs"),
         },
         Module {
+            file: "turret.rs",
+            src: include_str!("../../sim-core/src/turret.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -8656,10 +8660,10 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            // 17 → 18 at wire v99: `ARCH_PLANTER`.
-            min_members: 18,
+            // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`.
+            min_members: 19,
             bits: ARCH_BITS,
-            live_max: 17,
+            live_max: 18,
         },
         Domain {
             what: "deploy matter",

@@ -536,8 +536,12 @@ pub fn stream(
             continue;
         };
         // The heli rides the roster's last slot and is `heli.rs`'s to draw;
-        // the town's sentries ride the four below it and are `sentry.rs`'s.
-        if slot == mob::HELI_SLOT || sim_core::sentry::is_sentry_slot(slot) {
+        // the town's sentries ride the four below it and the player turrets
+        // the block below those, and both are `sentry.rs`'s.
+        if slot == mob::HELI_SLOT
+            || sim_core::sentry::is_sentry_slot(slot)
+            || sim_core::turret::is_turret_slot(slot)
+        {
             continue;
         }
         // Stamped on PRESENCE, not on a successful sample, for the reason

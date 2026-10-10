@@ -977,7 +977,8 @@ pub fn resolve(
         let arch = defs.defs[rec.row as usize].arch;
         let verb = match arch {
             ARCH_DOOR | ARCH_GARAGE_DOOR | sim_core::deploy::ARCH_WINDOW_SHUTTER => Verb::Door,
-            ARCH_BOX => Verb::Box,
+            // A turret is loaded like a box: E opens its rounds.
+            ARCH_BOX | sim_core::deploy::ARCH_TURRET => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,

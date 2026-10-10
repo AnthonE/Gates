@@ -62,6 +62,7 @@ pub mod survival;
 pub mod terrain;
 pub mod town;
 pub mod trust;
+pub mod turret;
 pub mod upkeep;
 pub mod vend;
 pub mod weather;

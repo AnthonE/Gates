@@ -534,6 +534,21 @@ inputs = [
     { item = "item.gears", count = 2 },
 ]
 
+# The auto turret is a revolver on a mount: the gun, its gears and a steel
+# housing (`deployables.toml` `[turret]`).
+[[recipe]]
+id = "recipe.autoturret"
+output = "item.autoturret"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.revolver", count = 1 },
+    { item = "item.metal_frags", count = 300 },
+    { item = "item.gears", count = 4 },
+]
+
 [[recipe]]
 id = "recipe.pistol_ammo"
 output = "item.pistol_ammo"

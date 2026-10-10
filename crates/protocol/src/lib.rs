@@ -1122,7 +1122,8 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// the pack (`Command::Unload`), and `REFUSE_RL_UNLOADED` (6) says there
 /// was nothing in it. And `SUB_ITEM_DESC` (92) drips each item's
 /// description line to a joiner, and `ACT_FASTTRACK` (34) pulls a queued
-/// craft to the head.
+/// craft to the head. And `ARCH_TURRET` (18) is a deploy archetype both
+/// ends admit.
 pub const PROTO_VER: u16 = 103;
 
 /// This game's slug in the elo catalog.

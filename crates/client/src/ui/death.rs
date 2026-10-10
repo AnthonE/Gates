@@ -103,6 +103,9 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         // built the roster with: three readers, one pure function, and no
         // wire field. A death screen that named the wrong animal would be
         // the cheapest possible way to find out the three had drifted.
+        DEATH_BY_MOB if mob::slot_of_id(d.killer).is_some_and(sim_core::turret::is_turret_slot) => {
+            "an auto turret gunned you down".to_string()
+        }
         DEATH_BY_MOB => match mob::slot_of_id(d.killer).map(mob::kind_of) {
             Some(mob::MOB_WOLF) => "a wolf ran you down".to_string(),
             Some(mob::MOB_STAG) => "a stag gored you".to_string(),

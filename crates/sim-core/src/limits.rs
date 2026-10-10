@@ -572,6 +572,11 @@ const _: () = assert!(SOLID_SLOTS.is_power_of_two());
 /// DECISIONS.md §open (deployables row).
 pub const MAX_HEARTHS: usize = 256;
 
+/// Player auto turrets that shoot at once, shard-wide (`turret.rs`): each
+/// rides a roster slot below the town's sentries. Past it, a placed turret
+/// stands inert until one comes down.
+pub const MAX_TURRETS: usize = 24;
+
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
 /// refuses a build table needing more. Structural cap, not a knob.

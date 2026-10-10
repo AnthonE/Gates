@@ -500,6 +500,7 @@ impl Content {
                     DeployArchetype::WindowShutter => sim_core::deploy::ARCH_WINDOW_SHUTTER,
                     DeployArchetype::Barricade => sim_core::deploy::ARCH_BARRICADE,
                     DeployArchetype::Planter => sim_core::deploy::ARCH_PLANTER,
+                    DeployArchetype::Turret => sim_core::deploy::ARCH_TURRET,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -2299,6 +2300,36 @@ impl Content {
             lose_ticks: ms_ticks(t.lose_ms)?,
             // Centimetres per 10 m is millimetres per metre.
             spread_pm: t.spread_cm_per_10m as u16,
+        })
+    }
+
+    /// A player auto turret's gun (`[turret]`), in sim units, or
+    /// `TurretDef::INERT` for a set without one.
+    pub fn bake_turret(&self) -> Result<sim_core::turret::TurretDef, String> {
+        let Some(t) = &self.turret else {
+            return Ok(sim_core::turret::TurretDef::INERT);
+        };
+        let ms_ticks = |ms: u32| -> Result<u16, String> {
+            u16::try_from((ms as u64 * TICK_HZ as u64 / 1000).max(1))
+                .map_err(|_| format!("bake: turret {ms} ms overflows the sim"))
+        };
+        let ammo = self
+            .item_index(&t.ammo)
+            .ok_or_else(|| format!("bake: turret ammo `{}` names no item", t.ammo))?;
+        Ok(sim_core::turret::TurretDef {
+            gun: sim_core::sentry::SentryDef {
+                range_mm: t.range_m * 1000,
+                damage: u16::try_from(t.damage)
+                    .map_err(|_| format!("bake: turret damage {} overflows", t.damage))?,
+                burst: u8::try_from(t.burst)
+                    .map_err(|_| format!("bake: turret burst {} overflows", t.burst))?,
+                rate_ticks: ms_ticks(t.rate_ms)?,
+                gap_ticks: ms_ticks(t.burst_gap_ms)?,
+                lock_ticks: ms_ticks(t.lock_ms)?,
+                lose_ticks: ms_ticks(t.lose_ms)?,
+                spread_pm: t.spread_cm_per_10m as u16,
+            },
+            ammo,
         })
     }
 

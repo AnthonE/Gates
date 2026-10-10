@@ -376,6 +376,8 @@ pub struct SimTables {
     /// THE GATE's sentries (`sentry.rs`), armed by the boot alone like the
     /// heli.
     pub sentry: sim_core::sentry::SentryDef,
+    /// A player auto turret's gun (`deployables.toml` `[turret]`).
+    pub turret: sim_core::turret::TurretDef,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
     /// Each item's description line (`content/items.toml` `description`).
@@ -420,6 +422,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         mobs: content.bake_mobs()?,
         heli: content.bake_heli()?,
         sentry: content.bake_sentry()?,
+        turret: content.bake_turret()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather, &survival, &cook)?,
         item_descs: bake_item_descs(content)?,
@@ -3228,6 +3231,7 @@ fn sim_thread(
         mobs,
         heli,
         sentry,
+        turret,
         research,
         catalog,
         item_descs,
@@ -3256,6 +3260,7 @@ fn sim_thread(
     core.world.mob = mobs;
     core.world.heli_def = heli;
     core.world.sentry_def = sentry;
+    core.world.turret_def = turret;
     core.world.research = research;
     core.world.skins = skins;
     core.catalog = catalog;

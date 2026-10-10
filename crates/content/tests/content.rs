@@ -4126,11 +4126,12 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// **The split is theirs** (operator, 2026-09-22 — `reference/BLUEPRINTS.md`
 /// §1): thirteen recipes need a blueprint, each at the item page's research
 /// price, and gunpowder and metal arrows — known from the start there — are
-/// not gated here either.
+/// not gated here either. The auto turret (ours, `NOW.md` §0aa 1) is the
+/// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 13] = [
+    let want: [(&str, u32); 14] = [
         ("item.arrow_fire", 30),
         ("item.hatchet_metal", 30),
         ("item.pickaxe_metal", 30),
@@ -4144,6 +4145,7 @@ fn the_shipped_split_is_rusts() {
         ("item.window_glass", 30),
         ("item.garage_door", 30),
         ("item.satchel_charge", 60),
+        ("item.autoturret", 60),
     ];
     let gated: Vec<&str> = c
         .recipes
@@ -4775,10 +4777,10 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 11,
-        "expected exactly eleven solid rows — the hearth, the box (twice), the \
+        seen, 12,
+        "expected exactly twelve solid rows — the hearth, the box (twice), the \
          furnace, the three benches, the recycler, the research table, \
-         the barricade and the planter — \
+         the barricade, the planter and the auto turret — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \

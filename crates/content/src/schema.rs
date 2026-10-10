@@ -595,6 +595,9 @@ pub enum DeployArchetype {
     /// A planter box (crops v0): a container that grows what is planted in
     /// it, by `cooking.toml`'s `planter` rows.
     Planter,
+    /// A player's auto turret (`sim-core/src/turret.rs`): a container of
+    /// rounds and a gun, `deployables.toml` `[turret]`.
+    Turret,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -906,6 +909,24 @@ pub struct Sentry {
     pub lose_ms: u32,
     /// Aim wobble: within this many centimetres per 10 m, on each axis.
     pub spread_cm_per_10m: u32,
+}
+
+/// A player auto turret's gun (`deployables.toml` `[turret]`,
+/// `sim-core/src/turret.rs`): the sentry's numbers, and the round it spends
+/// out of its own box. Optional — without it a placed turret never fires.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurretGun {
+    pub range_m: u32,
+    pub damage: u32,
+    pub burst: u32,
+    pub rate_ms: u32,
+    pub burst_gap_ms: u32,
+    pub lock_ms: u32,
+    pub lose_ms: u32,
+    pub spread_cm_per_10m: u32,
+    /// The item it fires, one a round, out of its box.
+    pub ammo: String,
 }
 
 /// A site guard's own loot (`mobs.toml` `[guard]`): stacks its carcass

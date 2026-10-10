@@ -127,6 +127,12 @@ item = "item.revolver"
 cost = 30
 requires = "item.pistol_ammo"
 
+# Ours: the turret is a revolver on a mount, so it follows the revolver.
+[[research]]
+item = "item.autoturret"
+cost = 60
+requires = "item.revolver"
+
 # Their chain: Hazmat Suit → Boots → Coffee Can Helmet → Road Sign Jacket;
 # none of those is ours.
 [[research]]

@@ -415,9 +415,12 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    UPKEEP chip off a staggered `Stock` push.
 5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
 
-## 0aa · Building rights: the roster's third customer is missing *(systems lane)*
+## 0aa · Building rights: the turret's own list *(systems lane)*
 
-1. No `AutoTurret`: `sim-core/roster.rs` serves only the lock lists and hearth crew.
+1. The auto turret is in (`sim-core/turret.rs`, `[turret]` in `deployables.toml`): unpowered, it
+   fires pistol rounds out of its own box at anybody but its owner and the covering claim's crew.
+   It has no list of its own — a saved roster is a world-format change, so it waits on the next
+   bump. No model yet: the base is a cuboid and the gun is the town sentry's head.
 
 ## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
 
