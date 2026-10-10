@@ -354,6 +354,10 @@ pub struct ClientNetState {
     /// The fires burning are owed (wire v94): a fresh join and a resync both
     /// start owing them, since each fire is broadcast once, when it is lit.
     pub fires_owed: bool,
+    /// This player's own-bag list is owed (`SUB_BAGS`, NOW §0die 2): a
+    /// fresh join and a resync start owing it, and `route_events` arms it
+    /// again on the tick one of their bags is placed or taken down.
+    pub bags_owed: bool,
     /// Next skin-catalog row the drip sends (skins v0).
     pub skins_cursor: usize,
     /// Next vendor offer the drip sends (wire v85).
@@ -473,6 +477,7 @@ impl ClientNetState {
             last_assist: (0, 0, 0),
             last_env: None,
             fires_owed: true,
+            bags_owed: true,
             skins_cursor: 0,
             vend_cursor: 0,
             last_doors: None,
@@ -555,6 +560,7 @@ impl ClientNetState {
         self.last_done_at = u64::MAX;
         self.last_env = None;
         self.fires_owed = true;
+        self.bags_owed = true;
         self.last_expo = None;
         self.last_hostile = None;
         self.last_gate_spawn = None;

@@ -37,7 +37,7 @@ use protocol::{
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
 use sim_core::craft::CraftJob;
-use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
@@ -2722,6 +2722,7 @@ impl ShardCore {
                 }
                 EV_DEPLOY_PLACED => {
                     ShardStats::bump(&stats.deploys_placed);
+                    self.owe_bags_if_bag(ev.c, ev.b as u8);
                     // Owner (ev.c) stays sim-side: the wire record is
                     // address + row + open + locked (event.rs). Everything
                     // places closed; a door places locked, which is a
@@ -2901,11 +2902,15 @@ impl ShardCore {
                     // ordered, so "before" here is a guarantee and not a
                     // race.
                     //
-                    // A death is the only moment this is sent, and that is
-                    // the whole bound: one message per death, never a
-                    // per-tick scan of `MAX_DEPLOYS` per client. What it
-                    // costs is a `ready` bit that ages while a player sits
-                    // on the screen — a cooldown lapses on a clock nothing
+                    // A death is not the only moment this is sent (the
+                    // drip also sends it at a join, after a resync and on
+                    // the tick one of the owner's bags is placed or taken
+                    // down — `owe_bags_if_bag`), but it is the one that
+                    // must not wait for the drip, for the ordering above.
+                    // Every send is event-driven, never a per-tick scan of
+                    // `MAX_DEPLOYS` per client. What that costs is a
+                    // `ready` bit that ages while a player sits on the
+                    // screen — a cooldown lapses on a clock nothing
                     // announces. `own_bags`' doc states it; the fallback
                     // is the sim's own (ask for a bag that is not ready,
                     // get a beach, and be told so).
@@ -3690,6 +3695,9 @@ impl ShardCore {
                 }
                 EV_PIECE_REMOVED | EV_DEPLOY_REMOVED => {
                     let piece = ev.code == EV_PIECE_REMOVED;
+                    if !piece {
+                        self.owe_bags_if_bag(ev.c, ev.b as u8);
+                    }
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     match encode_event_removed(piece, cx, cz, level, loc, &mut self.ev_buf) {
@@ -3970,6 +3978,30 @@ impl ShardCore {
         self.heard_len = 0;
     }
 
+    /// Owe player `owner` their own-bag list (`SUB_BAGS`, NOW §0die 2) when
+    /// deploy row `row` is a bag — one of theirs was just placed or taken
+    /// down. Their own connection and every seat watching them (a seat's
+    /// `id` is its target's, `NETCODE.md` §2.3) hear the whole list from
+    /// the next drip, so a tick that moves several of one owner's bags
+    /// still sends it once. The row is a `u8` off the event and the table
+    /// is `MAX_DEPLOY_DEFS` long, hence `get`.
+    fn owe_bags_if_bag(&mut self, owner: u32, row: u8) {
+        let bag = self
+            .world
+            .deploy
+            .defs
+            .get(row as usize)
+            .is_some_and(|d| d.arch == ARCH_BAG);
+        if !bag {
+            return;
+        }
+        for c in self.clients.iter_mut() {
+            if c.connected && c.id == owner {
+                c.bags_owed = true;
+            }
+        }
+    }
+
     /// Resolve which connection slot player `id` belongs to.
     fn client_slot_of(&self, id: u32) -> Option<usize> {
         (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
@@ -4123,6 +4155,34 @@ impl ShardCore {
                 }
             }
             self.clients[slot].fires_owed = false;
+        }
+
+        // The owner's own bags, whole (`SUB_BAGS`, NOW §0die 2), whenever
+        // they are owed: a fresh join, a resync, and the tick one of them
+        // was placed or taken down (`owe_bags_if_bag`). Not only at a death
+        // any more — the map tags your beds off this list while you live,
+        // and a list from your last death misses every bed since. A seat
+        // runs it too, against its target's id, as it runs every drip. One
+        // store scan, only on a tick that owes it.
+        if self.clients[slot].bags_owed {
+            let mut anchors = [BagAnchor::default(); BAG_CAP];
+            let n = self.world.deploys.own_bags(
+                &self.world.deploy,
+                self.clients[slot].id,
+                self.world.tick,
+                &mut anchors,
+            );
+            match encode_event_bags(&anchors[..n], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+            self.clients[slot].bags_owed = false;
         }
 
         // Catalog: names first — toasts and hotbar labels want them early.

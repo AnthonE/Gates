@@ -361,9 +361,10 @@ pub const APPLIED2_SPILL: u32 = 1 << 4;
 /// This client's own bag list arrived (`EventMsg::Bags`, wire v43) —
 /// re-read `own_bags()`. Word 1 for `APPLIED2_CHARGE`'s reason.
 ///
-/// The list is sent on a death and nowhere else, so in practice this bit
-/// is raised one message before the `Death` that raises the screen
-/// reading it. A reader that wants "is it fresh" wants this bit; a reader
+/// The list is sent at a join, after a resync, whenever one of your bags
+/// is placed or taken down, and on a death — one message before the
+/// `Death` that raises the screen reading it. So this bit is not a death
+/// signal. A reader that wants "is it fresh" wants this bit; a reader
 /// that wants "what do I own" can read the field any time — it is a
 /// latched set, not a ring, and it is only ever replaced whole.
 pub const APPLIED2_BAGS: u32 = 1 << 5;

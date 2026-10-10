@@ -3317,7 +3317,7 @@ fn piece_removed_names_the_cell_then_the_address_it_was_hit_at() {
 }
 
 /// `EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 |
-/// row`.
+/// row, c = owner player id`.
 ///
 /// Byte-for-byte the same shape as `EV_PIECE_REMOVED` and a different code,
 /// which is exactly the pair most worth checking together: the two removals
@@ -3363,8 +3363,9 @@ fn deploy_removed_names_the_cell_and_the_deploy_row_not_the_piece_under_it() {
          store this is, and setting it here would corrupt the level field"
     );
     assert_eq!(
-        r.c, 0,
-        "EV_DEPLOY_REMOVED states no role for c, and the emit site passes 0"
+        r.c, BUILDER,
+        "EV_DEPLOY_REMOVED.c is the OWNER player id, as EV_DEPLOY_PLACED's \
+         is — the server re-sends a bag owner's list off it"
     );
 
     // The doorway is still standing. The two removals are separate codes

@@ -132,7 +132,9 @@ pub const EV_DEPLOY_REFUSED: u8 = 10;
 /// the structural collapse either of them can start (build.rs
 /// `collapse_from`) — because a client redraws the same way for each.
 pub const EV_PIECE_REMOVED: u8 = 11;
-/// EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row.
+/// EV_DEPLOY_REMOVED: a = build cell key, b = level << 16 | loc << 8 | row,
+/// c = owner player id (sim-side, like the placement's: the wire record is
+/// the address alone).
 pub const EV_DEPLOY_REMOVED: u8 = 12;
 /// EV_STOCK: a = feeder player id, b = hearth cell key, c = level — the
 /// feed ack; the wire reads the hearth's stock from the world at encode.

@@ -3,9 +3,9 @@
 //!
 //! What a player knows here and nothing more: the bags it placed itself
 //! (it watched each go down), the own-bag list the death screen shows
-//! (`ClientCore::own_bags`, sent at each death), and where its last death
-//! backpack lies (`ClientCore::own_bag`, the map mark a player walks back
-//! to). Nobody else's bags, boxes or bases.
+//! (`ClientCore::own_bags`, re-sent as its bags change and at each death),
+//! and where its last death backpack lies (`ClientCore::own_bag`, the map
+//! mark a player walks back to). Nobody else's bags, boxes or bases.
 //!
 //! The skills are small state machines that return what to do next
 //! ([`Do`]); `explorer.rs` owns the outbox and turns a `Do` into the verb.

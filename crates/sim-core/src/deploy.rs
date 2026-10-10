@@ -3556,7 +3556,9 @@ pub(crate) fn drop_piece(
 
 /// Remove the deployable at store index `di`, unsealing its doorway if it
 /// was a door, and broadcast the removal. The other half of the one
-/// removal path.
+/// removal path. The event names the record's owner in `c`, as the
+/// placement did: the server re-tells a bag's owner their own-bag list
+/// off it (`SUB_BAGS`), and this is the last moment the owner is known.
 fn drop_deploy(
     dc: &DeployContent,
     pieces: &mut Pieces,
@@ -3599,7 +3601,7 @@ fn drop_deploy(
         EV_DEPLOY_REMOVED,
         crate::gather::cell_key(rec.cx, rec.cz),
         ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-        0,
+        rec.owner,
     );
 }
 

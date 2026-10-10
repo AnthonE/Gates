@@ -310,6 +310,9 @@ const SUB_GATHER_REFUSED: u32 = 49;
 /// have, or hide one it does, with no event left to correct it. Eight
 /// entries is `BAG_CAP`, which placement already enforces.
 ///
+/// *When*: at a join and after a resync, on the tick one of the owner's
+/// bags is placed or taken down, and on their death, ahead of the `Death`.
+///
 /// The `ready` bit is a **snapshot at send**, not a subscription: a
 /// cooldown lapses on a clock that emits nothing. `world.rs`'s respawn is
 /// still the authority and still falls back to the beach, and the client
