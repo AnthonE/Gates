@@ -10,7 +10,8 @@
 //! rule rather than a preference: **no gameplay state in the ECS.**
 //!
 //! `--capture <dir>` runs the probe harness instead of a player: settle on
-//! observable state, warm the pipelines, shoot a fixed vantage list, exit.
+//! observable state, warm the pipelines, shoot a fixed vantage list, exit,
+//! leaving a `manifest.json` of what was logged while it shot.
 //!
 //! `--server` and `--identity` are how the **elo launcher** starts this
 //! binary — a depot's launch block names them (`ci/depot.py`). Parsing lives
@@ -196,13 +197,21 @@ fn main() -> AppExit {
     }
     // bevy_audio's rodio stream would open the device a second time and mix
     // nothing: the engine owns the device through cpal (`render/audio_out.rs`).
-    app.add_plugins(
-        DefaultPlugins
-            .build()
-            .disable::<bevy::audio::AudioPlugin>()
-            .set(assets)
-            .set(window),
-    );
+    let mut plugins = DefaultPlugins
+        .build()
+        .disable::<bevy::audio::AudioPlugin>()
+        .set(assets)
+        .set(window);
+    if capture.is_some() {
+        // Every warning and error the client logs goes into the probe's
+        // `manifest.json` as well as to the terminal — the `Path not found`
+        // above reached only the terminal, and the frame did not show it.
+        plugins = plugins.set(bevy::log::LogPlugin {
+            custom_layer: client::render::capture::log_layer,
+            ..default()
+        });
+    }
+    app.add_plugins(plugins);
     if let Some((script, replay)) = film {
         // One frame is 1/fps of screen time however long lavapipe took to
         // draw it — the film's frame clock (`render::film`).

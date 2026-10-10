@@ -1889,7 +1889,14 @@ impl Plugin for GatesRenderPlugin {
 
         if let Some(dir) = &self.capture {
             let _ = std::fs::create_dir_all(dir);
-            app.insert_resource(capture::Capture::new(dir.clone()));
+            // The log `capture::log_layer` started under `LogPlugin`, which
+            // built first; absent if nothing installed it.
+            let log = app
+                .world()
+                .get_resource::<capture::CaptureLog>()
+                .cloned()
+                .unwrap_or_default();
+            app.insert_resource(capture::Capture::new(dir.clone(), log));
             // Ahead of `gather`, because it owns the view on a capture run
             // and `gather` must not fight it for the same frame. Gated on
             // `world_running` rather than on `InWorld`: a capture run now

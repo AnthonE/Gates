@@ -19,10 +19,22 @@
 //! form: not one frame, from one spawn, at one bearing. Three defects shipped
 //! green through the beach's blind spot because every material assertion in
 //! `browser_smoke` fired from a single yaw.
+//!
+//! **Every run leaves a `manifest.json` beside its frames** (NOW §0vj): each
+//! shot with its frame, eye and aim, and every warning and error the client
+//! logged while it was taken — Bevy's own (`Path not found`, which draws the
+//! white fallback and is invisible in the image) and the probe's own lines.
+//! A frame with no record of what went wrong while it was shot is a frame a
+//! judge has to take on trust. Rewritten after every shot with outcome
+//! `running`, so a run that hangs or is killed still says how far it got.
 
+use bevy::log::{tracing, tracing_subscriber};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
-use std::path::PathBuf;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::clutter::ClutterRing;
 use super::input::Look;
@@ -194,6 +206,13 @@ pub const RANGE_FRAMES: u32 = 60;
 /// spawned still has to be proven to have reached disk for the reason the
 /// tail check exists at all.
 pub const EXTRA_SHOTS: usize = 3;
+/// Distinct lines the manifest's log keeps. A repeat of a line already held
+/// bumps its count rather than taking a slot, so per-frame spam costs one
+/// entry; past the cap the NEWEST line is dropped and counted, because the
+/// first error of a run is usually the cause of the rest.
+pub const LOG_CAP: usize = 512;
+/// `manifest.json`'s schema version. Bump it when a field changes meaning.
+pub const MANIFEST_VERSION: u32 = 1;
 
 /// `(label, yaw radians, pitch radians)`.
 ///
@@ -339,6 +358,188 @@ enum Scene {
     Done,
 }
 
+/// Which pass took a shot, as the manifest names it.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Kind {
+    /// One of [`VANTAGES`] — required, verified by name at the tail.
+    Vantage,
+    Swing,
+    Player,
+    Build,
+    /// A `GATES_CAPTURE_AIM` portrait.
+    Aim,
+}
+
+/// One shutter, as the manifest reports it.
+struct ShotRec {
+    path: PathBuf,
+    kind: Kind,
+    frame: u32,
+    eye: Vec3,
+    yaw: f32,
+    pitch: f32,
+    /// The world point the camera was held on, for the shots that aim at a
+    /// thing rather than a bearing.
+    aim: Option<Vec3>,
+}
+
+/// One distinct line the client logged during a capture run.
+#[derive(Clone, Serialize)]
+struct LogLine {
+    /// `WARN`/`ERROR` from the tracing log; the probe's own narration is
+    /// `INFO` and its complaints `WARN`.
+    level: &'static str,
+    /// The tracing target (`bevy_asset::server`, or a `log` record's own
+    /// target), or `capture` for the probe's own lines.
+    source: String,
+    message: String,
+    /// Probe frame it was first seen on; 0 is before the probe's first frame.
+    frame: u32,
+    last_frame: u32,
+    /// Times seen. Repeats fold into one line rather than filling the cap.
+    count: u32,
+}
+
+#[derive(Default)]
+struct LogRing {
+    lines: Vec<LogLine>,
+    dropped: u32,
+}
+
+impl LogRing {
+    fn push(&mut self, level: &'static str, source: &str, message: String, frame: u32) {
+        if let Some(l) = self
+            .lines
+            .iter_mut()
+            .find(|l| l.level == level && l.source == source && l.message == message)
+        {
+            l.count = l.count.saturating_add(1);
+            l.last_frame = frame;
+        } else if self.lines.len() < LOG_CAP {
+            self.lines.push(LogLine {
+                level,
+                source: source.to_string(),
+                message,
+                frame,
+                last_frame: frame,
+                count: 1,
+            });
+        } else {
+            self.dropped = self.dropped.saturating_add(1);
+        }
+    }
+}
+
+/// What the client logged during a capture run, shared between the tracing
+/// layer ([`log_layer`]) and the probe.
+///
+/// **A resource only to cross one gap**: `LogPlugin::custom_layer` is a bare
+/// `fn(&mut App)`, so the layer's half can reach the probe only through the
+/// app it is handed. The plugin clones it into [`Capture`] and the probe uses
+/// it from there. Behind a mutex because the log is written from whatever
+/// thread logs (render, asset IO), and the frame is an atomic for the same
+/// reason.
+#[derive(Resource, Clone, Default)]
+pub struct CaptureLog {
+    ring: Arc<Mutex<LogRing>>,
+    frame: Arc<AtomicU32>,
+}
+
+impl CaptureLog {
+    fn set_frame(&self, frame: u32) {
+        self.frame.store(frame, Ordering::Relaxed);
+    }
+
+    /// Never logs: this runs inside the tracing layer, and a log from here
+    /// would re-enter it holding the lock.
+    fn push(&self, level: &'static str, source: &str, message: String) {
+        let frame = self.frame.load(Ordering::Relaxed);
+        self.ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(level, source, message, frame);
+    }
+
+    fn snapshot(&self) -> (Vec<LogLine>, u32) {
+        let ring = self.ring.lock().unwrap_or_else(PoisonError::into_inner);
+        (ring.lines.clone(), ring.dropped)
+    }
+}
+
+/// `LogPlugin::custom_layer` for a capture run: every WARN and ERROR the
+/// client logs lands in the manifest, stamped with the probe's frame.
+///
+/// `bin/gates.rs` installs it only with `--capture`. `LogPlugin` builds
+/// before the render plugin, so the [`CaptureLog`] this inserts is there for
+/// [`Capture`] to pick up.
+pub fn log_layer(app: &mut App) -> Option<bevy::log::BoxedLayer> {
+    let log = CaptureLog::default();
+    app.insert_resource(log.clone());
+    Some(Box::new(RingLayer(log)))
+}
+
+struct RingLayer(CaptureLog);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RingLayer {
+    // **Filter in `on_event`, never in `enabled`.** This layer sits under
+    // `LogPlugin`'s stack without a per-layer filter, so an `enabled` that
+    // refused INFO would refuse it for the whole subscriber, and the terminal
+    // would go quiet.
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let meta = event.metadata();
+        let level = match *meta.level() {
+            tracing::Level::ERROR => "ERROR",
+            tracing::Level::WARN => "WARN",
+            _ => return,
+        };
+        let mut f = Fields::default();
+        event.record(&mut f);
+        let source = f.log_target.as_deref().unwrap_or(meta.target());
+        self.0.push(level, source, f.message + &f.rest);
+    }
+}
+
+/// An event's fields as the terminal formatter would print them: the
+/// message, then ` key=value` for the rest.
+///
+/// `log` records (wgpu logs through `log`) arrive through `LogTracer` with
+/// the target `log` and the real one in a `log.target` field, so that field
+/// is taken as the source and the other `log.*` bookkeeping is skipped.
+#[derive(Default)]
+struct Fields {
+    message: String,
+    rest: String,
+    log_target: Option<String>,
+}
+
+impl tracing::field::Visit for Fields {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        use std::fmt::Write;
+        match field.name() {
+            "message" => self.message.push_str(value),
+            "log.target" => self.log_target = Some(value.to_string()),
+            n if n.starts_with("log.") => {}
+            n => {
+                let _ = write!(self.rest, " {n}={value}");
+            }
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        match field.name() {
+            "message" => {
+                let _ = write!(self.message, "{value:?}");
+            }
+            n if n.starts_with("log.") => {}
+            n => {
+                let _ = write!(self.rest, " {n}={value:?}");
+            }
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct Capture {
     pub dir: PathBuf,
@@ -346,6 +547,12 @@ pub struct Capture {
     /// Frames since the world reported itself built.
     since_built: u32,
     built: bool,
+    /// The frame the world reported itself built on, for the manifest.
+    built_at: Option<u32>,
+    /// Every shutter in order, for the manifest.
+    shots: Vec<ShotRec>,
+    /// The client's log and the probe's own lines (see [`CaptureLog`]).
+    log: CaptureLog,
     finished_at: Option<u32>,
     frame: u32,
     /// The probe's intent for `input::gather`, `None` whenever the probe is
@@ -395,12 +602,18 @@ fn aim_points(spec: &str) -> Vec<Vec3> {
 }
 
 impl Capture {
-    pub fn new(dir: PathBuf) -> Self {
+    /// `log` is the [`CaptureLog`] [`log_layer`] inserted, or a fresh one
+    /// when nothing installed the layer (the manifest then holds only the
+    /// probe's own lines).
+    pub fn new(dir: PathBuf, log: CaptureLog) -> Self {
         Self {
             dir,
             taken: 0,
             since_built: 0,
             built: false,
+            built_at: None,
+            shots: Vec::new(),
+            log,
             finished_at: None,
             frame: 0,
             intent: None,
@@ -429,23 +642,61 @@ impl Capture {
     /// Over the cap the shot is still taken and simply unverified, which is
     /// wall 4's bounded-with-a-stated-policy in its mildest form: the cap is
     /// the number of conditional shots this file can take.
-    fn shoot(&mut self, commands: &mut Commands, path: PathBuf, extra: bool) {
+    ///
+    /// `eye`, `look` and `aim` are the view the shot is taken from, for the
+    /// manifest, which is rewritten here so a run that never reaches its
+    /// tail still leaves a record of every frame it took.
+    fn shoot(
+        &mut self,
+        commands: &mut Commands,
+        path: PathBuf,
+        kind: Kind,
+        eye: Vec3,
+        look: &Look,
+        aim: Option<Vec3>,
+    ) {
         println!("capture: {}", path.display());
-        if extra {
+        if kind != Kind::Vantage {
             if self.n_extra < EXTRA_SHOTS {
                 self.extra[self.n_extra] = Some(path.clone());
                 self.n_extra += 1;
             } else {
-                eprintln!(
-                    "capture: over {EXTRA_SHOTS} conditional shots — {} is unverified",
+                self.warn(format!(
+                    "over {EXTRA_SHOTS} conditional shots — {} is unverified",
                     path.display()
-                );
+                ));
             }
         }
+        self.shots.push(ShotRec {
+            path: path.clone(),
+            kind,
+            frame: self.frame,
+            eye,
+            yaw: look.yaw,
+            pitch: look.pitch,
+            aim,
+        });
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path));
         self.taken += 1;
+        write_manifest(self, "running", &[]);
+    }
+
+    /// A line of the probe's narration: printed as it always was, and kept
+    /// for the manifest.
+    fn say(&self, text: impl Into<String>) {
+        let text = text.into();
+        println!("capture: {text}");
+        self.log.push("INFO", "capture", text);
+    }
+
+    /// A probe complaint: printed to stderr as it always was, and kept for
+    /// the manifest as a warning.
+    fn warn(&self, text: impl Into<String>) {
+        let text = text.into();
+        eprintln!("capture: {text}");
+        self.log.push("WARN", "capture", text);
     }
 
     /// The verb pass is over; the scene pass begins. Every terminal arm of
@@ -488,6 +739,7 @@ pub fn drive(
     screen: Res<State<super::screen::Screen>>,
 ) {
     cap.frame += 1;
+    cap.log.set_frame(cap.frame);
     look.frozen = true;
 
     // **The probe is a player, and things kill it** (`RENDER.md`: three of
@@ -508,13 +760,13 @@ pub fn drive(
         let core = &n.session.core;
         if core.hp_max > 0 && core.hp != cap.last_hp {
             if core.hp < cap.last_hp {
-                eprintln!(
-                    "capture: probe hp {} -> {} at frame {}{}",
+                cap.warn(format!(
+                    "probe hp {} -> {} at frame {}{}",
                     cap.last_hp,
                     core.hp,
                     cap.frame,
                     if core.wounded { " (wounded)" } else { "" }
-                );
+                ));
             }
             cap.last_hp = core.hp;
         }
@@ -528,13 +780,14 @@ pub fn drive(
                 n.session.core.own_death_killer,
             )
         });
-        eprintln!(
-            "capture: the probe DIED at frame {} (cause {cause}, killer {killer}) — {} \
+        cap.warn(format!(
+            "the probe DIED at frame {} (cause {cause}, killer {killer}) — {} \
              frame(s) written, the rest are not coming. Nothing below this line is \
              evidence about a build. Pin `dev_spawn` somewhere the mob roster has not \
              homed on (RENDER.md).",
             cap.frame, cap.taken
-        );
+        ));
+        write_manifest(&cap, "died", &[]);
         exit.write(AppExit::error());
         return;
     }
@@ -545,10 +798,11 @@ pub fn drive(
     // Waiting here is correct; waiting forever is not.
     if !eye.placed {
         if cap.frame >= PLACE_FRAMES {
-            eprintln!(
-                "capture: the shard never placed us — no snapshot carrying our own \
+            cap.warn(format!(
+                "the shard never placed us — no snapshot carrying our own \
                  entity in {PLACE_FRAMES} frames. Nothing was built and nothing was shot."
-            );
+            ));
+            write_manifest(&cap, "never_placed", &[]);
             exit.write(AppExit::error());
         }
         return;
@@ -560,13 +814,14 @@ pub fn drive(
     if !cap.built {
         if ring.is_full() && props.is_full() && clutter.is_full() {
             cap.built = true;
-            println!(
-                "capture: world built at frame {} — {} chunks, {} scatter, {} clutter tiles",
+            cap.built_at = Some(cap.frame);
+            cap.say(format!(
+                "world built at frame {} — {} chunks, {} scatter, {} clutter tiles",
                 cap.frame,
                 ring.len(),
                 props.len(),
                 clutter.len()
-            );
+            ));
         } else {
             // Aim at the first vantage while the world builds, so the frames
             // that warm the pipelines are the frames that will be shot.
@@ -604,38 +859,36 @@ pub fn drive(
             let vantages: &[_] = if cap.aim.is_empty() { &VANTAGES } else { &[] };
             for (idx, (label, _, _)) in vantages.iter().enumerate() {
                 let path = cap.dir.join(format!("{idx}-{label}.png"));
-                // `is_file()` as well as non-empty: a directory reports a
-                // non-zero length, so a size check alone would accept one.
-                match std::fs::metadata(&path) {
-                    Ok(m) if m.is_file() && m.len() > 0 => {}
-                    _ => missing.push(path),
+                if !landed(&path) {
+                    missing.push(path);
                 }
             }
             // The conditional shots, by the paths actually spawned. A
             // skipped subject recorded nothing and is therefore not missed —
             // absence is honest here, a spawned shot that never landed is not.
             for path in cap.extra[..cap.n_extra].iter().flatten() {
-                match std::fs::metadata(path) {
-                    Ok(m) if m.is_file() && m.len() > 0 => {}
-                    _ => missing.push(path.clone()),
+                if !landed(path) {
+                    missing.push(path.clone());
                 }
             }
             if missing.is_empty() {
-                println!(
-                    "capture: {} frame(s) written to {}",
+                cap.say(format!(
+                    "{} frame(s) written to {}",
                     cap.taken,
                     cap.dir.display()
-                );
+                ));
+                write_manifest(&cap, "ok", &missing);
                 exit.write(AppExit::Success);
             } else {
                 for p in &missing {
-                    eprintln!("capture: MISSING or empty: {}", p.display());
+                    cap.warn(format!("MISSING or empty: {}", p.display()));
                 }
-                eprintln!(
-                    "capture: {} of {} frames did not reach disk",
+                cap.warn(format!(
+                    "{} of {} frames did not reach disk",
                     missing.len(),
                     VANTAGES.len() + cap.n_extra
-                );
+                ));
+                write_manifest(&cap, "missing", &missing);
                 exit.write(AppExit::error());
             }
         }
@@ -657,7 +910,7 @@ pub fn drive(
         }
         if phase == FRAMES_PER_SHOT - 1 {
             let path = cap.dir.join(format!("aim-{idx}.png"));
-            cap.shoot(&mut commands, path, true);
+            cap.shoot(&mut commands, path, Kind::Aim, eye.pos, &look, Some(at));
         }
         return;
     }
@@ -704,7 +957,7 @@ pub fn drive(
     // have been at this bearing for a frame before the frame is worth reading.
     if phase == FRAMES_PER_SHOT - 1 {
         let path = cap.dir.join(format!("{idx}-{label}.png"));
-        cap.shoot(&mut commands, path, false);
+        cap.shoot(&mut commands, path, Kind::Vantage, eye.pos, &look, None);
     }
 }
 
@@ -753,10 +1006,10 @@ fn clear_of_a_base(
         .fold(f32::INFINITY, f32::min);
     if !inside && nearest >= CLEAR_STANDOFF_M * CLEAR_STANDOFF_M {
         if cap.clearing > 0 {
-            println!(
-                "capture: walked clear of a base in {} frame(s) before the vantages",
+            cap.say(format!(
+                "walked clear of a base in {} frame(s) before the vantages",
                 cap.clearing
-            );
+            ));
         }
         cap.cleared = true;
         cap.intent = None;
@@ -764,10 +1017,10 @@ fn clear_of_a_base(
     }
     cap.clearing += 1;
     if cap.clearing > CLEAR_FRAMES {
-        eprintln!(
-            "capture: still inside a base after {CLEAR_FRAMES} frames — shooting the \
+        cap.warn(format!(
+            "still inside a base after {CLEAR_FRAMES} frames — shooting the \
              vantages from here, so they will show the inside of a wall."
-        );
+        ));
         cap.cleared = true;
         cap.intent = None;
         return true;
@@ -873,10 +1126,10 @@ fn verb_pass(
             }
             match best {
                 Some((x, z, d2)) => {
-                    println!(
-                        "capture: quarry at {x:.1},{z:.1} — {:.1} m off, walking",
+                    cap.say(format!(
+                        "quarry at {x:.1},{z:.1} — {:.1} m off, walking",
                         d2.sqrt()
-                    );
+                    ));
                     cap.verb = Verb::Walk {
                         x,
                         z,
@@ -889,12 +1142,12 @@ fn verb_pass(
                     // Loud, never silent: an absent frame with no line
                     // printed is indistinguishable from a broken renderer,
                     // which is this repo's worst bug class.
-                    eprintln!(
-                        "capture: SKIPPED the verb pass — no swingable node with a \
+                    cap.warn(format!(
+                        "SKIPPED the verb pass — no swingable node with a \
                          surface within {QUARRY_CELLS} cells of {:.0},{:.0}. The \
                          vantages stand; nothing was swung.",
                         eye.pos.x, eye.pos.z
-                    );
+                    ));
                     cap.verb = Verb::Done;
                     cap.begin_scene();
                 }
@@ -925,20 +1178,20 @@ fn verb_pass(
                 cap.intent = Some(Intent::default());
                 cap.verb = Verb::Swing { since: cap.frame };
             } else if stalled {
-                eprintln!(
-                    "capture: SKIPPED the verb pass — the walk stalled {d:.1} m from \
+                cap.warn(format!(
+                    "SKIPPED the verb pass — the walk stalled {d:.1} m from \
                      the quarry, past the sim's {:.1} m reach. Something is between \
                      the probe and it, or the quarry is bigger than the reach.",
                     sim_core::gather::REACH_M
-                );
+                ));
                 cap.intent = None;
                 cap.verb = Verb::Done;
                 cap.begin_scene();
             } else if cap.frame - since > WALK_FRAMES {
-                eprintln!(
-                    "capture: SKIPPED the verb pass — {WALK_FRAMES} frames of walking \
+                cap.warn(format!(
+                    "SKIPPED the verb pass — {WALK_FRAMES} frames of walking \
                      did not reach the quarry (still {d:.1} m off, closest {best:.1} m)."
-                );
+                ));
                 cap.intent = None;
                 cap.verb = Verb::Done;
                 cap.begin_scene();
@@ -994,8 +1247,8 @@ fn verb_pass(
                     qy as f32 * sim_core::movement::POS_Y_Q,
                     qz as f32 * sim_core::movement::POS_XZ_Q,
                 );
-                println!(
-                    "capture: mark at {:.2},{:.2},{:.2} (surf {surf}) — eye at \
+                cap.say(format!(
+                    "mark at {:.2},{:.2},{:.2} (surf {surf}) — eye at \
                      {:.2},{:.2},{:.2}, {:.2} m away",
                     at.x,
                     at.y,
@@ -1004,17 +1257,17 @@ fn verb_pass(
                     eye.pos.y,
                     eye.pos.z,
                     at.distance(eye.pos)
-                );
+                ));
                 cap.intent = Some(Intent::default());
                 cap.verb = Verb::Settle {
                     since: cap.frame,
                     at,
                 };
             } else if cap.frame - since > SWING_FRAMES {
-                eprintln!(
-                    "capture: swung for {SWING_FRAMES} frames and heard no impact — \
+                cap.warn(format!(
+                    "swung for {SWING_FRAMES} frames and heard no impact — \
                      shooting anyway, but this frame is evidence of nothing."
-                );
+                ));
                 cap.intent = Some(Intent::default());
                 cap.verb = Verb::Settle {
                     since: cap.frame,
@@ -1035,7 +1288,7 @@ fn verb_pass(
             }
             if cap.frame - since > MARK_SETTLE_FRAMES {
                 let path = cap.dir.join(format!("{}-swing.png", VANTAGES.len()));
-                cap.shoot(commands, path, true);
+                cap.shoot(commands, path, Kind::Swing, eye.pos, look, Some(at));
                 cap.intent = None;
                 cap.verb = Verb::Done;
                 cap.begin_scene();
@@ -1073,7 +1326,7 @@ fn scene_pass(
         // than asserted anyway: this is the one path that could end a run
         // with no frames and no reason printed.
         if !matches!(cap.scene, Scene::Done) {
-            eprintln!("capture: SKIPPED the scene pass — no session to read bodies from.");
+            cap.warn("SKIPPED the scene pass — no session to read bodies from.");
             cap.scene = Scene::Done;
             cap.finished_at = Some(cap.frame);
         }
@@ -1160,17 +1413,17 @@ fn scene_pass(
                     // is pointed at a body that a tree is probably standing
                     // in front of, which is a photograph of the tree.
                     if best.is_none() && any.is_some() {
-                        eprintln!(
-                            "capture: every body in range has a tree or a wall across it — \
+                        cap.warn(
+                            "every body in range has a tree or a wall across it — \
                              shooting the nearest anyway. The aim is right; expect something \
-                             in front of it."
+                             in front of it.",
                         );
                     }
                     if stale > 0 && best.or(any).is_some() {
-                        println!(
-                            "capture: {stale} of the bodies in range are clamps (their updates \
+                        cap.say(format!(
+                            "{stale} of the bodies in range are clamps (their updates \
                              stopped); they are drawn where they are aimed."
-                        );
+                        ));
                     }
                     best.or(any)
                 }
@@ -1224,10 +1477,10 @@ fn scene_pass(
                 Some((at, d2)) => {
                     let d = d2.sqrt();
                     let (_, label) = subject.label();
-                    println!(
-                        "capture: {label} at {:.1},{:.1},{:.1} — {d:.1} m off",
+                    cap.say(format!(
+                        "{label} at {:.1},{:.1},{:.1} — {d:.1} m off",
                         at.x, at.y, at.z
-                    );
+                    ));
                     // Each subject has a distance it reads well at, and
                     // they miss it in opposite directions: a base is usually
                     // too close (the probe spawned inside it) and a body is
@@ -1257,15 +1510,15 @@ fn scene_pass(
                 }
                 None if cap.frame - since > SUBJECT_FRAMES => {
                     let (_, label) = subject.label();
-                    eprintln!(
-                        "capture: SKIPPED the {label} shot — {SUBJECT_FRAMES} frames and no \
+                    cap.warn(format!(
+                        "SKIPPED the {label} shot — {SUBJECT_FRAMES} frames and no \
                          {} in the world. Seat a shard with `population` (see ci/scene.sh); \
                          a probe alone on an island has nothing to photograph.",
                         match subject {
                             Subject::Player => "other body",
                             Subject::Build => "placed piece",
                         }
-                    );
+                    ));
                     advance(cap, subject);
                 }
                 None => {}
@@ -1301,15 +1554,15 @@ fn scene_pass(
                     // "this was always going to take longer" are different
                     // reads of the same distance.
                     let (_, label) = subject.label();
-                    eprintln!(
-                        "capture: stopped {d:.1} m from the {label}, wanting {want:.0} m ({}). \
+                    cap.warn(format!(
+                        "stopped {d:.1} m from the {label}, wanting {want:.0} m ({}). \
                          Shooting from here.",
                         if stalled {
                             "something is in the way"
                         } else {
                             "out of frames"
                         }
-                    );
+                    ));
                 }
                 cap.intent = Some(Intent::default());
                 cap.scene = Scene::Hold {
@@ -1362,7 +1615,11 @@ fn scene_pass(
             if cap.frame - since > SUBJECT_SETTLE_FRAMES {
                 let (idx, label) = subject.label();
                 let path = cap.dir.join(format!("{idx}-{label}.png"));
-                cap.shoot(commands, path, true);
+                let kind = match subject {
+                    Subject::Player => Kind::Player,
+                    Subject::Build => Kind::Build,
+                };
+                cap.shoot(commands, path, kind, eye.pos, look, Some(at));
                 advance(cap, subject);
             }
         }
@@ -1483,6 +1740,118 @@ fn advance(cap: &mut Capture, done: Subject) {
     }
 }
 
+/// Did a frame reach disk? `is_file()` as well as non-empty: a directory
+/// reports a non-zero length, so a size check alone would accept one.
+fn landed(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0)
+}
+
+/// Read by whatever judges the frames, so it says what its fields mean.
+const MANIFEST_ABOUT: &str = "One capture run. `frame` is the probe's own frame counter \
+    (0 = before its first frame: boot, connect, asset loading). `log` is every distinct \
+    WARN/ERROR line the client logged plus the probe's own lines (source `capture`: INFO \
+    narration, WARN complaints), each with the frame it was first and last seen on and \
+    how many times; `warnings`/`errors` total those counts. A shot's `log` is \
+    the lines seen in (previous shot's frame, this shot's frame]. `landed` = the PNG was \
+    on disk and non-empty when this file was written. `outcome` is `running` until the \
+    run ends, then `ok`, `missing`, `died` or `never_placed`.";
+
+#[derive(Serialize)]
+struct Manifest<'a> {
+    manifest: u32,
+    about: &'static str,
+    proto_ver: u16,
+    outcome: &'a str,
+    frame: u32,
+    built_at_frame: Option<u32>,
+    shots: Vec<ShotOut<'a>>,
+    missing: Vec<String>,
+    warnings: u32,
+    errors: u32,
+    log_dropped: u32,
+    log: &'a [LogLine],
+}
+
+#[derive(Serialize)]
+struct ShotOut<'a> {
+    file: String,
+    kind: Kind,
+    frame: u32,
+    eye: [f32; 3],
+    yaw: f32,
+    pitch: f32,
+    aim: Option<[f32; 3]>,
+    landed: bool,
+    log: Vec<&'a LogLine>,
+}
+
+/// Write `manifest.json` beside the frames: what was shot, from where, and
+/// what the client logged while it was shot.
+///
+/// Through a temporary and a rename, so a reader polling the directory never
+/// parses half a file. A failure is printed and swallowed: the frames are the
+/// run's evidence and a manifest that cannot be written must not cost them.
+fn write_manifest(cap: &Capture, outcome: &str, missing: &[PathBuf]) {
+    let (log, log_dropped) = cap.log.snapshot();
+    let file = |p: &Path| {
+        p.file_name().map_or_else(
+            || p.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    };
+    let mut shots = Vec::with_capacity(cap.shots.len());
+    let mut prev = 0;
+    for s in &cap.shots {
+        shots.push(ShotOut {
+            file: file(&s.path),
+            kind: s.kind,
+            frame: s.frame,
+            eye: s.eye.to_array(),
+            yaw: s.yaw,
+            pitch: s.pitch,
+            aim: s.aim.map(|a| a.to_array()),
+            landed: landed(&s.path),
+            // Seen at any point in this shot's window: a line that repeats
+            // every frame belongs to every shot it was repeating through.
+            log: log
+                .iter()
+                .filter(|l| l.frame <= s.frame && l.last_frame > prev)
+                .collect(),
+        });
+        prev = s.frame;
+    }
+    let count = |level: &str| {
+        log.iter()
+            .filter(|l| l.level == level)
+            .fold(0u32, |n, l| n.saturating_add(l.count))
+    };
+    let m = Manifest {
+        manifest: MANIFEST_VERSION,
+        about: MANIFEST_ABOUT,
+        proto_ver: protocol::PROTO_VER,
+        outcome,
+        frame: cap.frame,
+        built_at_frame: cap.built_at,
+        shots,
+        missing: missing.iter().map(|p| file(p)).collect(),
+        warnings: count("WARN"),
+        errors: count("ERROR"),
+        log_dropped,
+        log: &log,
+    };
+    let tmp = cap.dir.join("manifest.json.tmp");
+    let wrote = serde_json::to_vec_pretty(&m)
+        .map_err(std::io::Error::other)
+        .and_then(|json| std::fs::write(&tmp, json))
+        .and_then(|()| std::fs::rename(&tmp, cap.dir.join("manifest.json")));
+    if let Err(e) = wrote {
+        eprintln!(
+            "capture: could not write {}: {e}",
+            cap.dir.join("manifest.json").display()
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1529,7 +1898,7 @@ mod tests {
     /// falls through to the keyboard.
     #[test]
     fn a_fresh_probe_drives_nothing() {
-        let cap = Capture::new(PathBuf::from("/nonexistent"));
+        let cap = Capture::new(PathBuf::from("/nonexistent"), CaptureLog::default());
         assert!(cap.intent.is_none());
         assert!(cap.verb == Verb::Hunt);
     }
@@ -1586,7 +1955,7 @@ mod tests {
     /// nothing. Asserted as the two transitions plus the ending.
     #[test]
     fn every_subject_hands_over_or_ends_the_run() {
-        let mut cap = Capture::new(PathBuf::from("/nonexistent"));
+        let mut cap = Capture::new(PathBuf::from("/nonexistent"), CaptureLog::default());
         cap.frame = 7;
         advance(&mut cap, Subject::Player);
         assert!(
@@ -1638,5 +2007,122 @@ mod tests {
         // Degenerate segment (subject at the eye) is a point distance, not a
         // divide by zero.
         assert!((seg_dist2(3.0, 4.0, 1.0, 1.0, 1.0, 1.0) - 13.0).abs() < 1e-3);
+    }
+
+    /// **The layer keeps warnings and errors, once each, and nothing else.**
+    /// INFO is the terminal's business; a repeat folds into its first line
+    /// with a count and a last frame rather than taking a slot; fields print
+    /// as the terminal prints them; and past [`LOG_CAP`] the newest lines are
+    /// counted and dropped, so the first error of a run survives any spam.
+    #[test]
+    fn the_log_keeps_warnings_and_errors_once_each() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let log = CaptureLog::default();
+        let sub = tracing_subscriber::Registry::default().with(RingLayer(log.clone()));
+        tracing::subscriber::with_default(sub, || {
+            log.set_frame(3);
+            info!("chatter");
+            warn!("Path not found: textures/rock_albedo.jpg");
+            log.set_frame(9);
+            warn!("Path not found: textures/rock_albedo.jpg");
+            error!(code = 7, "Cannot save screenshot");
+            for i in 0..LOG_CAP + 10 {
+                warn!("spam {i}");
+            }
+        });
+        let (lines, dropped) = log.snapshot();
+        assert_eq!(lines.len(), LOG_CAP);
+        assert_eq!(
+            dropped, 12,
+            "2 distinct lines + LOG_CAP + 10 spam, cap LOG_CAP"
+        );
+        assert!(
+            lines.iter().all(|l| l.message != "chatter"),
+            "INFO was kept"
+        );
+        let p = &lines[0];
+        assert_eq!(
+            (p.level, p.message.as_str()),
+            ("WARN", "Path not found: textures/rock_albedo.jpg")
+        );
+        assert_eq!((p.frame, p.last_frame, p.count), (3, 9, 2));
+        assert!(
+            p.source.contains("capture"),
+            "source is the target: {}",
+            p.source
+        );
+        let e = &lines[1];
+        assert_eq!(
+            (e.level, e.message.as_str()),
+            ("ERROR", "Cannot save screenshot code=7")
+        );
+    }
+
+    /// **The manifest names every shot and files each line under the shots it
+    /// was logged during** — the point of §0vj. A line seen before the probe
+    /// ran (frame 0) belongs to no shot; a one-off belongs to the shot whose
+    /// window it fell in; a line repeating across two windows belongs to
+    /// both. `landed` is read off the disk, and the rename leaves no
+    /// temporary behind.
+    #[test]
+    fn the_manifest_files_each_line_under_its_shots() {
+        let dir = std::env::temp_dir().join(format!("gates-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cap = Capture::new(dir.clone(), CaptureLog::default());
+        cap.built_at = Some(20);
+        cap.log
+            .push("WARN", "bevy_asset::server", "Path not found".into());
+        cap.log.set_frame(33);
+        cap.warn("probe hp 100 -> 90");
+        cap.log.set_frame(35);
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        cap.log.set_frame(40);
+        cap.log.push("ERROR", "wgpu", "spam".into());
+        let shot = |path: PathBuf, kind, frame| ShotRec {
+            path,
+            kind,
+            frame,
+            eye: Vec3::new(1.0, 2.0, 3.0),
+            yaw: 0.5,
+            pitch: -0.15,
+            aim: None,
+        };
+        let (a, b) = (dir.join("0-design.png"), dir.join("6-swing.png"));
+        cap.shots.push(shot(a.clone(), Kind::Vantage, 35));
+        cap.shots.push(shot(b.clone(), Kind::Swing, 41));
+        std::fs::write(&a, b"png").unwrap();
+        cap.frame = 60;
+        write_manifest(&cap, "missing", std::slice::from_ref(&b));
+
+        let text = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(!dir.join("manifest.json.tmp").exists());
+        assert_eq!(v["manifest"], MANIFEST_VERSION);
+        assert_eq!(v["outcome"], "missing");
+        assert_eq!(v["frame"], 60);
+        assert_eq!(v["built_at_frame"], 20);
+        assert_eq!(v["missing"], serde_json::json!(["6-swing.png"]));
+        assert_eq!(v["log"].as_array().unwrap().len(), 3);
+        assert_eq!(v["warnings"], 2);
+        assert_eq!(v["errors"], 2);
+        let msgs = |i: usize| -> Vec<String> {
+            v["shots"][i]["log"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["message"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(msgs(0), ["probe hp 100 -> 90", "spam"]);
+        assert_eq!(msgs(1), ["spam"]);
+        let s0 = &v["shots"][0];
+        assert_eq!(s0["file"], "0-design.png");
+        assert_eq!(s0["kind"], "vantage");
+        assert_eq!(s0["landed"], true);
+        assert_eq!(s0["eye"], serde_json::json!([1.0, 2.0, 3.0]));
+        assert_eq!(v["shots"][1]["kind"], "swing");
+        assert_eq!(v["shots"][1]["landed"], false);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
