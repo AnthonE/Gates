@@ -298,6 +298,14 @@ pub fn feed_due(core: &ClientCore, home: &Home, stored: &Ledger, grades: u32, ti
         && home.can_feed(|i| carried(core, i) > 0 || stored.units(i) > 0, tick)
 }
 
+/// Does the pack carry something a feed now would take for nothing
+/// ([`Home::feed_wastes`])?
+fn wasted(core: &ClientCore, home: &Home, grades: u32) -> bool {
+    core.inv[..INV_SLOTS]
+        .iter()
+        .any(|s| s.count > 0 && home.feed_wastes(s.item, grades))
+}
+
 /// Rows a visit's bill holds: the base's, and a feed's worth per upkeep
 /// material.
 pub const VISIT_ROWS: usize = build::BILL_ROWS + HEARTH_STOCK_ROWS;
@@ -405,6 +413,11 @@ pub struct StashJob {
     /// A stock ack for the cupboard has reached this visit: what the next
     /// one's `stock_grew` is measured against is a reading of this visit.
     stocked: bool,
+    /// The feed waits on the box: the pack carries something the cupboard
+    /// would take for nothing ([`Home::feed_wastes`]), which goes in the
+    /// box first, whatever the base's bill says, and is taken out again
+    /// once the feed is in.
+    stow: bool,
 }
 
 impl StashJob {
@@ -576,11 +589,12 @@ impl StashJob {
                 },
                 // The panel is shut (or the close waits on its pace, which
                 // `explorer.rs` sees to before ending the visit). A feed
-                // put off for what the box held comes now.
+                // put off for what the box held comes now; after a stow,
+                // the box again.
                 Wait::Close => {
                     self.waiting = None;
                     self.closed = true;
-                    if self.fed {
+                    if self.fed && !self.stow {
                         return Chore::Done;
                     }
                 }
@@ -599,14 +613,20 @@ impl StashJob {
         let yaw = hands.view().0;
         // The cupboard first, while the pack still carries what it eats;
         // short of that, once the box has given it up and the panel is
-        // shut.
+        // shut. A feed takes a chunk of everything the cupboard eats, so a
+        // pack carrying something it would take for nothing (the kit's
+        // fragments, under a base of wood and stone) goes to the box first,
+        // the feed after, and the box again for what the bill wants back.
         let grades = builder.charged();
         if !self.fed {
             let due = hearth.filter(|_| home.upkeep_due(tick, grades));
             let carries = home.can_feed(|i| carried(core, i) > 0, tick);
+            let boxable = chest.is_some() && !self.closed;
+            self.stow |= due.is_some() && boxable && wasted(core, home, grades);
+            let box_first = boxable && (!carries || self.stow);
             match due {
                 None => self.fed = true,
-                Some(_) if !carries && chest.is_some() && !self.closed => {}
+                Some(_) if box_first => {}
                 Some(_) if !carries => self.fed = true,
                 Some(h) => match self.aim(core, seed, haven, hands, h, x, z, yaw, tick) {
                     Aim::Press(intent) => return Chore::Feed { at: h, intent },
@@ -620,8 +640,20 @@ impl StashJob {
                     }
                 },
             }
-            if !self.fed && (carries || self.closed) {
+            if !self.fed && !box_first && (carries || self.closed) {
                 return Chore::Go(Intent::IDLE);
+            }
+        }
+        if self.stow && self.fed && self.closed {
+            // The feed is in: what went in the box past the bill for its
+            // sake comes out again, as any visit takes it.
+            self.stow = false;
+            if matches!(
+                self.sort(core, builder, home, book, grades, tick),
+                Some(Transfer::Take { .. })
+            ) {
+                self.closed = false;
+                self.opened = false;
             }
         }
         let (Some(b), Some(key), false) = (chest, key, self.closed) else {
@@ -658,15 +690,7 @@ impl StashJob {
             self.cut_short = true;
             None
         } else {
-            let mut bill = [(0, 0); VISIT_ROWS];
-            let n = visit_bill(builder.survey().bill(), home, grades, tick, &mut bill);
-            let furnace = builder.stations(core).furnace.is_some();
-            plan(
-                core,
-                |item| keeps(core, book, furnace, item),
-                &bill[..n],
-                &core.cont[..BOX_SLOTS],
-            )
+            self.sort(core, builder, home, book, grades, tick)
         };
         match next {
             Some(transfer) => Chore::Move {
@@ -728,6 +752,40 @@ impl StashJob {
 }
 
 impl StashJob {
+    /// The next move between the pack and the box as its panel last showed
+    /// it ([`plan`] over the visit's bill). Ahead of a feed that waits on
+    /// the box ([`Self::stow`]), what the cupboard would take for nothing
+    /// is neither billed nor kept: it all goes in.
+    fn sort(
+        &self,
+        core: &ClientCore,
+        builder: &Builder,
+        home: &Home,
+        book: &Book,
+        grades: u32,
+        tick: u32,
+    ) -> Option<Transfer> {
+        let waste = |item: u16| self.stow && home.feed_wastes(item, grades);
+        let mut bill = [(0, 0); VISIT_ROWS];
+        let n = visit_bill(builder.survey().bill(), home, grades, tick, &mut bill);
+        for row in bill[..n].iter_mut().filter(|r| waste(r.0)) {
+            row.1 = 0;
+        }
+        let furnace = builder.stations(core).furnace.is_some();
+        plan(
+            core,
+            |item| {
+                if waste(item) {
+                    0
+                } else {
+                    keeps(core, book, furnace, item)
+                }
+            },
+            &bill[..n],
+            &core.cont[..BOX_SLOTS],
+        )
+    }
+
     /// The look while a press waits on its answer: where it was pressed.
     fn stay(&self, seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> Intent {
         match self.pressed {
