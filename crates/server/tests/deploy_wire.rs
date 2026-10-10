@@ -4,8 +4,9 @@
 //! claim refuses a stranger's placement with its reason, feed moves
 //! materials and acks the stock, a late joiner receives the placed set by
 //! the sync walk, a decay removal broadcasts, a removal *storm* leaves the
-//! piece walk of every client standing, and a decay *cliff* cannot run a
-//! fresh walk's cursor off the end of the store. Deterministic, no
+//! piece walk and the deployable walk of every client standing, a decay
+//! *cliff* cannot run a fresh walk's cursor off the end of the store, and
+//! the deployable walk is aimed with the owner exempt. Deterministic, no
 //! sockets; asserts are structural and exact (the build_wire shape).
 
 use client_core::core::{
@@ -650,10 +651,11 @@ fn the_crew_in_their_claim_hear_the_stock_unasked() {
 /// and anyone in reach may work it, a code lock bolted on and armed makes
 /// it answer only to who it remembers, a refused press **knocks** to the
 /// whole shard while the refusal itself stays with its sender, the right
-/// code grants — to that sender alone — every client's mirror and its
-/// predictor collision index follow, a late joiner learns all three bits
-/// from the sync walk (not from having been there), and a use aimed at
-/// something that isn't a door bounces with its reason.
+/// code grants — to that sender alone — every nearby client's mirror and
+/// its predictor collision index follow, a client 400 m off is never told
+/// the door exists, a late joiner learns all three bits from the sync walk
+/// (not from having been there), and a use aimed at something that isn't
+/// a door bounces with its reason.
 #[test]
 fn doors_toggle_across_the_wire() {
     let stats = ShardStats::default();
@@ -665,11 +667,14 @@ fn doors_toggle_across_the_wire() {
     core.catalog = ItemCatalog::EMPTY;
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
-    // A third client, a long way off. It is here for the knock: the door's
-    // own state must still reach it (the deploy walk is unaimed, so it
-    // holds every deployable on the island) while the knock must not.
-    // Slot 3, not 2: this test adds a late joiner at slot 2 further down.
+    // A third client, a long way off. It is here for the aim: the door's
+    // placement must not reach it (class-S interest, `NOW.md` §0n1 item
+    // 2), so it holds no record of the door, and nor must the knock. The
+    // door's STATE events still do (`EV_DOOR` is unfiltered; `core.rs`
+    // says why). Slot 3, not 2: this test adds a late joiner at slot 2
+    // further down.
     assert!(core.connect(3, id_of(3)));
+    const FAR: usize = 3;
     let mut clients = vec![
         (0usize, ClientCore::new(SEED, id_of(0), 0)),
         (1usize, ClientCore::new(SEED, id_of(1), 0)),
@@ -757,9 +762,10 @@ fn doors_toggle_across_the_wire() {
     );
     let mut seen = Vec::new();
     let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
-    // The *broadcast* itself must carry the lock — not merely the sync
-    // walk riding behind it, which would repair a wrong record and hide
-    // an encoder that dropped the bit.
+    // The *broadcast* itself must carry the lock. Since the deploy walk
+    // went tail-down (`NOW.md` §0n1 item 2) no walk rides behind a
+    // placement to repair a wrong record, so the broadcast is the only
+    // path this record has to a client that already walked.
     let placed: Vec<_> = seen
         .iter()
         .filter_map(|(slot, m)| match m {
@@ -769,16 +775,16 @@ fn doors_toggle_across_the_wire() {
             _ => None,
         })
         .collect();
-    // Three, not two, and the third is the client 400 m away: unlike
-    // `EV_PIECE_PLACED`, the deployable placement broadcast is **unaimed**
-    // — `core.rs` says why in as many words, that "the deployable walk was
-    // left reading upward until its own placement seam is proven". When
-    // that seam is aimed this becomes 2, and this line is where you will
-    // find out: it is a tripwire for a deliberate change, not a bound.
+    // Two, not three: the client 400 m away is outside the door's class-S
+    // interest, and the deployable placement is aimed like a piece's now.
     assert_eq!(
         placed.len(),
-        3,
-        "the placement must reach every client, aimed or not"
+        2,
+        "the placement must reach the two clients at the door and not the far one"
+    );
+    assert!(
+        placed.iter().all(|(slot, _)| **slot != FAR),
+        "the placement reached the client 400 m away"
     );
     for (slot, rec) in placed {
         assert!(
@@ -790,7 +796,7 @@ fn doors_toggle_across_the_wire() {
     }
     assert_ne!(flags[0] & APPLIED_DEPLOYS, 0, "owner never saw the door");
     assert_ne!(flags[1] & APPLIED_DEPLOYS, 0, "broadcast missed bystander");
-    for (_, c) in &clients {
+    for (_, c) in clients.iter().filter(|(s, _)| *s != FAR) {
         let rec = c
             .deploys
             .entries()
@@ -879,11 +885,11 @@ fn doors_toggle_across_the_wire() {
         3,
         "bolting a lock on must announce has_lock to EVERY client — three, \
          including the one 400 m away, because `EV_DOOR` is deliberately \
-         unfiltered: the deploy walk is unaimed, so that client holds this \
-         door's record and a state change it never hears leaves the record \
-         wrong forever. Contrast the knock below, which is an instant and \
-         is filtered. And it must not announce it as locked — an unarmed \
-         lock is not a locked door"
+         unfiltered: a client keeps every deploy record it was ever told \
+         about, and a state change it never hears leaves that record wrong \
+         forever. Contrast the knock below, which is an instant and is \
+         filtered. And it must not announce it as locked — an unarmed lock \
+         is not a locked door"
     );
 
     // ...and arms it with a code. Now it is shut to everyone else.
@@ -900,7 +906,7 @@ fn doors_toggle_across_the_wire() {
         },
     );
     pump(&mut core, &stats, &mut clients);
-    for (_, c) in &clients {
+    for (_, c) in clients.iter().filter(|(s, _)| *s != FAR) {
         let rec = c
             .deploys
             .entries()
@@ -951,19 +957,18 @@ fn doors_toggle_across_the_wire() {
         clients[2].1.pop_knock().is_none(),
         "a client 400 m from the door heard somebody knock on it"
     );
-    // The door's own STATE is a different question and must still reach
-    // it: `EV_DOOR` is not filtered, because the deploy walk is unaimed
-    // and a client 400 m away is holding this door's record. Filtering
-    // state onto a record somebody keeps leaves it wrong forever.
+    // And the far client holds no record of the door at all: neither the
+    // aimed placement nor the aimed walk told it, and the unfiltered
+    // `EV_DOOR`s it did hear name an address it does not hold.
     assert!(
-        clients[2]
+        !clients[2]
             .1
             .deploys
             .entries()
             .iter()
-            .any(|r| r.loc == LOC_EDGE_XLO && r.locked && r.has_lock),
-        "the distant client lost the door's state, so EV_DOOR is being \
-         filtered like the knock — it must not be"
+            .any(|r| r.loc == LOC_EDGE_XLO),
+        "a client 400 m from the door holds its record — the deploy walk or \
+         its placement broadcast is not aimed"
     );
     assert!(
         !core
@@ -1052,7 +1057,7 @@ fn doors_toggle_across_the_wire() {
             .expect("door in the world")
             .open
     );
-    for (_, c) in &clients {
+    for (_, c) in clients.iter().filter(|(s, _)| *s != FAR) {
         let rec = c
             .deploys
             .entries()
@@ -1086,7 +1091,8 @@ fn doors_toggle_across_the_wire() {
         )),
         "the sync walk must carry all three of the door's bits"
     );
-    let late = &clients[2].1;
+    // By slot: index 2 of the vec is the far client at slot 3.
+    let late = &clients.iter().find(|(s, _)| *s == 2).expect("slot 2").1;
     let rec = late
         .deploys
         .entries()
@@ -1117,8 +1123,9 @@ fn doors_toggle_across_the_wire() {
     seen.clear();
     let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
     // By SLOT, not by position: the vec is no longer in slot order once a
-    // late joiner takes slot 2 behind a client seated at 3.
-    for (slot, _) in clients.iter() {
+    // late joiner takes slot 2 behind a client seated at 3. The far client
+    // holds no record to change.
+    for (slot, _) in clients.iter().filter(|(s, _)| *s != FAR) {
         assert_ne!(
             flags[*slot] & APPLIED_DEPLOYS,
             0,
@@ -1140,7 +1147,7 @@ fn doors_toggle_across_the_wire() {
         "the unlock must cross to all four clients with the leaf untouched \
          — the fourth is 400 m off and `EV_DOOR` is unfiltered on purpose"
     );
-    for (_, c) in &clients {
+    for (_, c) in clients.iter().filter(|(s, _)| *s != FAR) {
         let rec = c
             .deploys
             .entries()
@@ -1618,6 +1625,288 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
         ShardStats::get(&stats.piece_walk_restarts),
         0,
         "a removal restarted a piece walk"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// The addresses a deploy store holds, sorted — `addrs` for deployables.
+fn daddrs(recs: &[sim_core::deploy::DeployRec]) -> Vec<(u16, u16, u8, u8, u8)> {
+    let mut v: Vec<_> = recs
+        .iter()
+        .map(|r| (r.cx, r.cz, r.level, r.loc, r.row))
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// **A decay storm must not walk a joiner's deployable walk back to the
+/// start** (`NOW.md` §0n1 item 2) — `a_removal_storm_leaves_every_walk_
+/// standing`, one store over.
+///
+/// The deployable walk used to read upward and restart with a reset batch
+/// on every removal that landed mid-walk, so a base rotting faster than
+/// `len / DEPLOY_SYNC_BATCH` ticks could hold a joiner at zero for as long
+/// as it rotted. It reads tail-down now, like the piece walk.
+///
+/// The fixture is six batches of workbenches laid before anyone connects,
+/// their upkeep hours staggered so decay takes them over ten ticks, with
+/// one batch stamped far in the future so the world ends with something in
+/// it. The workbench row's hp is cut to 1 so one unpaid period kills it:
+/// the subject is the walk, not the decay curve. The second client joins
+/// one tick in, so its walk is in flight while the storm runs, and that is
+/// asserted rather than assumed.
+#[test]
+fn a_decay_storm_leaves_every_deploy_walk_standing() {
+    use protocol::DEPLOY_SYNC_BATCH;
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.catalog = ItemCatalog::EMPTY;
+    const WORKBENCH: u16 = 1;
+    assert_eq!(
+        core.world.deploy.defs[WORKBENCH as usize].arch,
+        sim_core::deploy::ARCH_WORKBENCH
+    );
+    core.world.deploy.defs[WORKBENCH as usize].hp = 1;
+
+    const HOURS: u64 = 10;
+    const PER_HOUR: usize = 12;
+    const STANDING: usize = DEPLOY_SYNC_BATCH;
+    const STAND_HOUR: u64 = 1000;
+    let total = HOURS as usize * PER_HOUR + STANDING;
+    // A block with room to spare: a workbench is refused on a cell whose
+    // ground tilts too far for a solid, and the fixture counts what stood.
+    let (bx, bz) = buildable_block(SEED, CX, CZ, (total as u16).div_ceil(24) + 2, 24);
+    core.world.dev_spawn = Some(sim_core::build::anchor(bx, bz, LOC_PLANE));
+
+    let builder = sim_core::limits::MAX_PLAYERS - 1;
+    let mut cell = 0u16;
+    let mut place = |core: &mut ShardCore, hour: u64| -> bool {
+        while cell < ((total as u16).div_ceil(24) + 2) * 24 {
+            let (cx, cz) = (bx + cell / 24, bz + cell % 24);
+            cell += 1;
+            let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
+            let w = &mut core.world;
+            let p = &mut w.players[builder];
+            p.body = sim_core::movement::Body::at(SEED, hv(SEED), ax, az);
+            p.id = 0x00ab_cdef;
+            p.inv[0] = ItemStack {
+                item: w.deploy.defs[WORKBENCH as usize].item,
+                count: 10,
+                cond: 0,
+                skin: 0,
+            };
+            let before = w.deploys.len();
+            sim_core::deploy::place_deploy(
+                SEED,
+                hv(SEED),
+                &w.deploy,
+                &w.build,
+                &mut w.pieces,
+                &mut w.deploys,
+                &mut w.players[builder],
+                hour * UPKEEP_PERIOD_TICKS,
+                WORKBENCH,
+                cx,
+                cz,
+                0,
+                LOC_PLANE,
+                sim_core::footprint::Pose::CENTRE,
+                &mut w.events,
+            );
+            if w.deploys.len() > before {
+                return true;
+            }
+        }
+        false
+    };
+    for hour in 1..=HOURS {
+        for _ in 0..PER_HOUR {
+            assert!(place(&mut core, hour), "the block ran out of cells");
+        }
+    }
+    for _ in 0..STANDING {
+        assert!(place(&mut core, STAND_HOUR), "the block ran out of cells");
+    }
+    core.world.players[builder] = sim_core::world::Player::default();
+    let built = core.world.deploys.len();
+    assert_eq!(built, total);
+
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    const JOIN_AT: u64 = 1;
+    const TICKS: u64 = 24;
+    let joined_at = [0u64, JOIN_AT];
+    let mut mid_walk = 0usize;
+    let mut mirror_was = [0usize; 2];
+    for t in 0..TICKS {
+        if t == JOIN_AT {
+            assert!(core.connect(1, id_of(1)));
+            clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+        }
+        // One upkeep hour per tick through the storm, then the clock
+        // stands still and the standing batch is never due.
+        if t <= HOURS + 2 {
+            core.world.tick += UPKEEP_PERIOD_TICKS;
+        }
+        let walking = t > JOIN_AT && {
+            let c = &core.clients[1];
+            c.deploy_sync_reset || c.deploy_sync_cursor > 0
+        };
+        let before = core.world.deploys.len();
+        let flags = pump(&mut core, &stats, &mut clients);
+        let removed = before.saturating_sub(core.world.deploys.len());
+        if walking && removed > 0 {
+            mid_walk += 1;
+        }
+        for (i, (slot, c)) in clients.iter().enumerate() {
+            let now = c.deploys.len();
+            assert!(
+                now + removed >= mirror_was[i],
+                "client {slot} lost mirror ground at t={t}: {} → {now} with {removed} removed",
+                mirror_was[i]
+            );
+            mirror_was[i] = now;
+            if t > joined_at[i] {
+                assert_eq!(
+                    flags[*slot] & APPLIED_DEPLOY_RESET,
+                    0,
+                    "client {slot} was sent a second deploy reset batch at t={t}"
+                );
+            }
+        }
+    }
+
+    // The condition, before the outcome: removals really did land while
+    // the joiner's walk was in flight.
+    assert!(
+        mid_walk >= 2,
+        "only {mid_walk} removal ticks met the joiner mid-walk"
+    );
+    let world = daddrs(core.world.deploys.entries());
+    assert_eq!(
+        world.len(),
+        STANDING,
+        "the storm took the wrong deployables"
+    );
+    for (slot, c) in &clients {
+        assert_eq!(
+            daddrs(c.deploys.entries()),
+            world,
+            "client {slot}'s deploy mirror is not the world"
+        );
+    }
+    assert_eq!(
+        ShardStats::get(&stats.deploy_walk_completes),
+        clients.len() as u64,
+        "not every client's deploy walk reached the end"
+    );
+    assert_eq!(ShardStats::get(&stats.piece_walk_restarts), 0);
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// **The deploy walk is aimed, and a client's own records are exempt**
+/// (`NOW.md` §0n1 item 2).
+///
+/// Slot 0 builds a hearth at spawn; slot 1 is a stranger beside it. Both
+/// then stand 400 m off — the same spot, so the only difference left
+/// between them is ownership — and resync, which clears their mirrors and
+/// re-walks the store from the new anchor. The owner's walk must bring the
+/// hearth back (its map draws it), the stranger's must skip it, and the
+/// skip must be the walk's own filter at work.
+#[test]
+fn a_far_resync_keeps_your_own_hearth_and_not_a_strangers() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 50,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    for a in [
+        ActionMsg::Place {
+            row: 0,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+            freehand: false,
+            plate: 0,
+        },
+        ActionMsg::Deploy {
+            row: 0,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        },
+    ] {
+        act(&mut core, 0, a);
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(core.world.deploys.len(), 1, "the hearth stands");
+    for (slot, c) in &clients {
+        assert_eq!(c.deploys.len(), 1, "client {slot} never saw the hearth");
+    }
+
+    for id in [id_of(0), id_of(1)] {
+        let w = world_slot(&core, id);
+        core.world.players[w].body =
+            sim_core::movement::Body::at(SEED, hv(SEED), SPAWN.0 + 400.0, SPAWN.1);
+    }
+    // One tick to re-arm at the far spot; the re-arm keeps what each
+    // mirror holds (no reset), which is why the resync is the test.
+    pump(&mut core, &stats, &mut clients);
+    let skipped_before = ShardStats::get(&stats.deploy_sync_skipped);
+    core.clients[0].ev_resync();
+    core.clients[1].ev_resync();
+    let mut resets = [0u32; 2];
+    for _ in 0..6 {
+        let flags = pump(&mut core, &stats, &mut clients);
+        for (s, r) in resets.iter_mut().enumerate() {
+            *r += u32::from(flags[s] & APPLIED_DEPLOY_RESET != 0);
+        }
+    }
+    assert_eq!(resets, [1, 1], "each resync is one reset batch");
+    assert_eq!(
+        clients[0].1.deploys.len(),
+        1,
+        "the owner's far resync dropped its own hearth"
+    );
+    assert_eq!(
+        clients[1].1.deploys.len(),
+        0,
+        "a stranger 400 m off was walked a hearth outside its interest"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.deploy_sync_skipped),
+        skipped_before + 1,
+        "the stranger's walk did not skip the hearth by its filter"
     );
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }

@@ -333,13 +333,14 @@ pub struct ShardStats {
     /// finishes loading, which reads as anything but a network problem
     /// (`reference/NETWORK.md` §9.2.1 has the arithmetic).
     ///
-    /// ⚠ **The piece walk no longer restarts and no longer bumps this.**
-    /// It reads the store from the tail down, where the entry a
-    /// swap-remove moves is always one already sent, so the cursor
-    /// survives (`core.rs` `drip_client` carries the argument). What is
-    /// still counted here is the **deployable** walk, which still reads
-    /// upward and still restarts on a removal — the same defect, one store
-    /// over, and the reason this counter keeps its name.
+    /// ⚠ **Nothing bumps this any more.** The piece walk stopped first,
+    /// and the deployable and backpack walks followed (`NOW.md` §0n1 item
+    /// 2): all three read their store from the tail down, where the entry
+    /// a swap-remove moves is always one already sent, so no removal
+    /// restarts any of them (`core.rs` `drip_client` carries the argument).
+    /// Kept, and still watched, as the tripwire the wire tests assert stays
+    /// at zero: a class-S walk that ever restarts on a removal again is
+    /// expected to count itself here.
     pub piece_walk_restarts: AtomicU64,
     /// Piece walks that reached the end — a client that has been sent every
     /// piece the store held when its walk began.
@@ -375,6 +376,16 @@ pub struct ShardStats {
     /// `EV_PIECE_PLACED` broadcasts a connection was not sent because the
     /// piece is outside its class-S interest.
     pub piece_events_skipped: AtomicU64,
+    /// The deployable walk's `piece_walk_completes`, `piece_sync_skipped`
+    /// and `piece_events_skipped` (`EV_DEPLOY_PLACED`): the same walk, aimed
+    /// from the same anchor, over `world.deploys` (`NOW.md` §0n1 item 2).
+    pub deploy_walk_completes: AtomicU64,
+    pub deploy_sync_skipped: AtomicU64,
+    pub deploy_events_skipped: AtomicU64,
+    /// The same three for the backpack walk and `EV_BAG_DROPPED`.
+    pub bag_walk_completes: AtomicU64,
+    pub bag_sync_skipped: AtomicU64,
+    pub bag_events_skipped: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,

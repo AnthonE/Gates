@@ -245,8 +245,8 @@ struct EventTally {
     /// join's `DeploySync` and every `DeployPlaced` since — so an owner never
     /// settles inside somebody else's claim (a person's base included). The
     /// wire carries no owner (`DeployRec::owner` stays off it, so a raider
-    /// gets no census), so this is every hearth, and the owner leaves out the
-    /// one at its own plan's address. `HEARTHS_KEPT` slots, each a
+    /// gets no census), so this is every hearth it has heard of, and the owner
+    /// leaves out the one at its own plan's address. `HEARTHS_KEPT` slots, each a
     /// [`hearth_key`] or 0 for empty: atomics and not a lock because the
     /// event lane writes it and the frame loop reads it, and the server's
     /// inter-thread rule is rings plus atomics. Empty unless a base owner.
@@ -258,7 +258,8 @@ struct EventTally {
 }
 
 /// How many foreign hearths a bot remembers. A settling owner only needs the
-/// ones near it, and the join sync hands over the whole island.
+/// ones near it; the deploy walk hands over those within the class-S radius
+/// and re-arms as the bot travels (`interest.rs`).
 const HEARTHS_KEPT: usize = 256;
 
 /// A hearth's `(cx, cz, level)` as one slot word; never 0, which is empty.

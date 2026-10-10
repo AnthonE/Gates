@@ -1552,6 +1552,11 @@ impl Deploys {
         self.entries[i].hp = hp;
     }
 
+    /// ⚠ Every runtime caller must push `EV_DEPLOY_PLACED` for what it
+    /// inserted (`place_deploy` does; `stand_authored` is boot-only). The
+    /// server's deploy walk reads tail-down and never re-derives an append,
+    /// so the broadcast is the only way a record placed mid-walk reaches a
+    /// client.
     fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;

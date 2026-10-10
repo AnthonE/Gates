@@ -229,7 +229,9 @@ pub struct ClientNetState {
     pub piece_sync_reset: bool,
     /// Where this client's piece walk is **aimed**, in centimetres — the
     /// player position the walk was armed at, not where the player is now
-    /// (class-S interest v0, `interest.rs` carries the argument).
+    /// (class-S interest v0, `interest.rs` carries the argument). The
+    /// deployable and backpack walks are aimed from it too, and re-armed
+    /// with it.
     ///
     /// Fixed for a walk's duration on purpose. The filter has to answer the
     /// same way for every batch of one walk, or "this client has been sent
@@ -246,23 +248,20 @@ pub struct ClientNetState {
     pub piece_anchor_valid: bool,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
-    /// Placed-deployable walk: the next `world.deploys` entry index to
-    /// send, read upward, and a decay removal mid-walk restarts it (the
-    /// store swap-removes). **Not** the piece walk's semantics any more —
-    /// that one reads downward and never restarts, and this one is left as
-    /// it was until its own placement seam is proven (`core.rs`).
+    /// Placed-deployable walk: entries **still owed**, the piece walk's
+    /// semantics exactly — read from the tail down, aimed from
+    /// `piece_anchor_cm`, never restarted by a removal, clamped where it
+    /// is read (`NOW.md` §0n1 item 2; `core.rs` carries the argument).
     pub deploy_sync_cursor: usize,
     /// The next deploy batch carries the reset bit.
     pub deploy_sync_reset: bool,
-    /// Standing-backpack walk cursor, restart semantics like the
-    /// deployables' — a bag looted or despawned mid-walk swap-removes
-    /// under it.
+    /// Standing-backpack walk: entries still owed, the same semantics as
+    /// the deployables' — tail-down, aimed, never restarted.
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
-    /// Loose-stack walk cursor (ground items v0), the bag walk's
-    /// semantics — the store swap-removes, so a take or a despawn
-    /// mid-walk restarts it.
+    /// Loose-stack walk cursor (ground items v0): read upward, and the
+    /// store swap-removes, so a take or a despawn mid-walk restarts it.
     pub gitem_sync_cursor: usize,
     /// The next loose-stack batch carries the reset bit.
     pub gitem_sync_reset: bool,

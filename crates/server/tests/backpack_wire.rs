@@ -2,8 +2,10 @@
 //! real encoded bytes — a kill drops a bag both clients see, a late joiner
 //! is handed the standing set by the sync walk, and the loot action moves
 //! the loot into the killer's inventory and takes the bag off every
-//! client's map. Deterministic, no sockets; asserts are structural and
-//! exact (the deploy_wire shape).
+//! client's map; a despawn storm leaves a joiner's bag walk standing, and
+//! bags are aimed by class-S interest with the owner exempt.
+//! Deterministic, no sockets; asserts are structural and exact (the
+//! deploy_wire shape).
 //!
 //! The composition this closes is the one the sim tests cannot: a bag
 //! exists in the sim whether or not the wire says so, and a client can
@@ -377,4 +379,257 @@ fn a_bag_out_of_reach_is_refused_by_distance_alone() {
             .any(|(_, m)| matches!(m, EventMsg::BagRemoved { .. })),
         "nor did the wire announce a removal that never happened"
     );
+}
+
+/// **A despawn storm must not walk a joiner's bag walk back to the start**
+/// (`NOW.md` §0n1 item 2).
+///
+/// The bag walk used to read upward and restart with a reset batch on every
+/// removal that landed mid-walk; a fight's worth of bags timing out one
+/// after another could hold a joiner at zero for as long as they kept
+/// timing out. It reads tail-down now, like the piece and deploy walks.
+///
+/// Six batches of bags stood before anyone connects, their expiries
+/// staggered six a tick, plus two batches that outlive the test so the
+/// agreement at the end is not two empty sets. The second client joins
+/// while the storm runs, and that is asserted rather than assumed.
+#[test]
+fn a_despawn_storm_leaves_every_bag_walk_standing() {
+    use protocol::BAG_SYNC_BATCH;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    // A clock with room behind it, so a bag can be stood "earlier" than
+    // now and expire a few ticks into the test.
+    core.world.tick = 1_000;
+    let now = core.world.tick;
+    const DOOMED: usize = 6 * BAG_SYNC_BATCH;
+    const STANDING: usize = 2 * BAG_SYNC_BATCH;
+    const STRANGER: u32 = 0x0077_7777;
+    let filler = {
+        let mut items = [ItemStack::default(); sim_core::limits::INV_SLOTS];
+        items[0] = ItemStack {
+            item: FILLER,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        items
+    };
+    let rare = {
+        let mut items = filler;
+        items[0].item = SPEAR; // the fixture's long-lived half
+        items
+    };
+    let short = core.world.backpack.lifetime_ticks(&filler) as u64;
+    let long = core.world.backpack.lifetime_ticks(&rare) as u64;
+    assert!(
+        long > short + 64,
+        "the fixture's two lifetimes are too close"
+    );
+    let (sx, sz) = ((SPAWN.0 / POS_XZ_Q) as i32, (SPAWN.1 / POS_XZ_Q) as i32);
+    for k in 0..DOOMED + STANDING {
+        let (qx, qz) = (sx + (k % 16) as i32 * 30, sz + (k / 16) as i32 * 30);
+        let (items, stood) = if k < DOOMED {
+            // Expires `3 + k / 6` ticks from now.
+            (&filler, now + 3 + (k / 6) as u64 - short)
+        } else {
+            (&rare, now)
+        };
+        let w = &mut core.world;
+        w.backpacks
+            .stand_up(
+                &w.backpack,
+                qx,
+                0,
+                qz,
+                STRANGER,
+                items,
+                stood,
+                &mut w.events,
+            )
+            .expect("the bag stands");
+    }
+    let built = core.world.backpacks.len();
+    assert_eq!(built, DOOMED + STANDING);
+
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    const JOIN_AT: u64 = 2;
+    const TICKS: u64 = 30;
+    let mut mid_walk = 0usize;
+    let mut mirror_was = [0usize; 2];
+    let mut seen = Vec::new();
+    for t in 0..TICKS {
+        if t == JOIN_AT {
+            assert!(core.connect(1, id_of(1)));
+            clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+        }
+        let walking = t > JOIN_AT && {
+            let c = &core.clients[1];
+            c.bag_sync_reset || c.bag_sync_cursor > 0
+        };
+        let before = core.world.backpacks.len();
+        pump(&mut core, &stats, &mut clients, &mut seen);
+        let removed = before.saturating_sub(core.world.backpacks.len());
+        if walking && removed > 0 {
+            mid_walk += 1;
+        }
+        for (i, (slot, c)) in clients.iter().enumerate() {
+            let held = c.bags.len();
+            assert!(
+                held + removed >= mirror_was[i],
+                "client {slot} lost mirror ground at t={t}: {} → {held} with {removed} removed",
+                mirror_was[i]
+            );
+            mirror_was[i] = held;
+        }
+    }
+
+    assert!(
+        mid_walk >= 2,
+        "only {mid_walk} despawn ticks met the joiner mid-walk"
+    );
+    for (slot, _) in &clients {
+        let resets = seen
+            .iter()
+            .filter(|(s, m)| s == slot && matches!(m, EventMsg::BagSync { reset: true, .. }))
+            .count();
+        assert_eq!(
+            resets, 1,
+            "client {slot} was sent {resets} bag reset batches"
+        );
+    }
+    let mut world: Vec<u32> = core
+        .world
+        .backpacks
+        .entries()
+        .iter()
+        .map(|b| b.id)
+        .collect();
+    world.sort_unstable();
+    assert_eq!(world.len(), STANDING, "the storm took the wrong bags");
+    for (slot, c) in &clients {
+        let mut held: Vec<u32> = c.bags.entries().iter().map(|b| b.id).collect();
+        held.sort_unstable();
+        assert_eq!(held, world, "client {slot}'s bag mirror is not the world");
+    }
+    assert_eq!(
+        ShardStats::get(&stats.bag_walk_completes),
+        clients.len() as u64,
+        "not every client's bag walk reached the end"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// **Bags are aimed, and a bag's owner is exempt** (`NOW.md` §0n1 item 2).
+///
+/// A kill at spawn with a third client 400 m off: the drop reaches the
+/// killer and the victim and not the stranger. Then the victim stands
+/// where the stranger stands and both resync, which clears their mirrors
+/// and re-walks the store from the far anchor. The victim's walk must
+/// bring its own bag back — the client finds `own_bag` by id in this
+/// mirror, so the map would lose it otherwise — and the stranger's must
+/// not. The victim is moved rather than respawned: the subject is where
+/// its walk is aimed from, and a respawn is `bag_choice.rs`'s.
+#[test]
+fn a_bag_reaches_who_is_near_and_its_owner_wherever_they_stand() {
+    use server::interest::{body_cm, d2_cm, PIECE_INTEREST_CM};
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    for s in 0..3 {
+        assert!(core.connect(s, id_of(s)));
+    }
+    let mut clients: Vec<(usize, ClientCore)> = (0..3)
+        .map(|s| (s, ClientCore::new(SEED, id_of(s), 0)))
+        .collect();
+    let mut warm = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut warm);
+    }
+    let far = Body::at(SEED, hv(SEED), SPAWN.0 + 400.0, SPAWN.1);
+    let w2 = world_slot(&core, id_of(2));
+    core.world.players[w2].body = far;
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut warm);
+    }
+
+    let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w1].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let skipped_before = ShardStats::get(&stats.bag_events_skipped);
+    let seen = fight_to_a_kill(&mut core, &stats, &mut clients);
+    assert_eq!(core.world.backpacks.len(), 1, "the death dropped one bag");
+    let bag = core.world.backpacks.entries()[0];
+    assert_eq!(bag.owner, id_of(1), "the bag is the victim's");
+    let dropped: Vec<usize> = seen
+        .iter()
+        .filter_map(|(slot, m)| match m {
+            EventMsg::BagDropped { id, .. } if *id == bag.id => Some(*slot),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        dropped,
+        vec![0, 1],
+        "the drop must reach the two at the kill only"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.bag_events_skipped),
+        skipped_before + 1,
+        "the stranger's copy was not skipped by the filter"
+    );
+    assert!(
+        clients[2].1.bags.is_empty(),
+        "a client 400 m off holds the bag"
+    );
+
+    // The victim joins the stranger out there, and both resync.
+    let w1 = world_slot(&core, id_of(1));
+    core.world.players[w1].body = far;
+    let mut seen = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut seen);
+    assert!(
+        d2_cm(body_cm(far.qx, far.qz), body_cm(bag.qx, bag.qz))
+            > PIECE_INTEREST_CM * PIECE_INTEREST_CM,
+        "the far spot is not out of the bag's interest"
+    );
+    core.clients[1].ev_resync();
+    core.clients[2].ev_resync();
+    seen.clear();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    for slot in [1usize, 2] {
+        assert!(
+            seen.iter()
+                .any(|(s, m)| *s == slot && matches!(m, EventMsg::BagSync { reset: true, .. })),
+            "client {slot}'s resync never reached its bag walk"
+        );
+    }
+    assert_eq!(
+        clients[1]
+            .1
+            .bags
+            .entries()
+            .iter()
+            .map(|b| b.id)
+            .collect::<Vec<_>>(),
+        vec![bag.id],
+        "the owner's far resync dropped its own bag"
+    );
+    assert!(
+        clients[2].1.bags.is_empty(),
+        "a stranger 400 m off was walked a bag outside its interest"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
