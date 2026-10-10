@@ -31,7 +31,7 @@ use web_sys::{
     WritableStream, WritableStreamDefaultWriter,
 };
 
-use super::Wire;
+use super::{PathCounts, Wire};
 
 /// Turn a rejected promise or a thrown value into a sentence.
 ///
@@ -91,6 +91,9 @@ pub struct WebWire {
     /// The last `getStats()` answer's `smoothedRtt`, ms; negative before the
     /// first (or on a browser without `getStats`).
     rtt: std::rc::Rc<Cell<f64>>,
+    /// The same answer's `packetsSent`, `packetsLost` and `bytesReceived`,
+    /// negative while unknown: [`PathCounts`] as the page reports them.
+    counts: std::rc::Rc<[Cell<f64>; 3]>,
     /// A `getStats()` is in flight, so a second ask starts nothing.
     polling: std::rc::Rc<Cell<bool>>,
 }
@@ -108,6 +111,7 @@ impl WebWire {
             over_mtu: Cell::new(0),
             backpressured: Cell::new(0),
             rtt: std::rc::Rc::new(Cell::new(-1.0)),
+            counts: std::rc::Rc::new([Cell::new(-1.0), Cell::new(-1.0), Cell::new(-1.0)]),
             polling: std::rc::Rc::new(Cell::new(false)),
         })
     }
@@ -138,11 +142,12 @@ fn datagram_writable(
 }
 
 impl WebWire {
-    /// Ask the page for `transport.getStats()` and keep its `smoothedRtt`.
-    /// Read by name rather than through a `web-sys` binding: the stats
-    /// dictionary is newer than WebTransport itself, and a browser without
-    /// it answers `undefined` here instead of throwing.
-    fn poll_rtt(&self) {
+    /// Ask the page for `transport.getStats()` and keep its `smoothedRtt`
+    /// and packet counters. Read by name rather than through a `web-sys`
+    /// binding: the stats dictionary is newer than WebTransport itself, and a
+    /// browser without it (or without one of its fields) answers `undefined`
+    /// here instead of throwing, which leaves that reading unknown.
+    fn poll_stats(&self) {
         if self.polling.get() {
             return;
         }
@@ -159,14 +164,22 @@ impl WebWire {
             return;
         };
         self.polling.set(true);
-        let (rtt, polling) = (self.rtt.clone(), self.polling.clone());
+        let (rtt, counts, polling) = (self.rtt.clone(), self.counts.clone(), self.polling.clone());
         spawn_local(async move {
             if let Ok(stats) = JsFuture::from(promise).await {
-                if let Some(ms) = js_sys::Reflect::get(&stats, &JsValue::from_str("smoothedRtt"))
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                {
+                let field = |name: &str| {
+                    js_sys::Reflect::get(&stats, &JsValue::from_str(name))
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                };
+                if let Some(ms) = field("smoothedRtt") {
                     rtt.set(ms);
+                }
+                // In `PathCounts` order; a missing field is unknown again,
+                // not the last answer kept.
+                let names = ["packetsSent", "packetsLost", "bytesReceived"];
+                for (cell, name) in counts.iter().zip(names) {
+                    cell.set(field(name).unwrap_or(-1.0));
                 }
             }
             polling.set(false);
@@ -176,9 +189,21 @@ impl WebWire {
 
 impl Wire for WebWire {
     fn rtt_ms(&self) -> Option<f32> {
-        self.poll_rtt();
+        self.poll_stats();
         let ms = self.rtt.get();
         (ms >= 0.0).then_some(ms as f32)
+    }
+
+    /// Unknown unless the page reports all three counters: a missing one
+    /// is `loss --` on the F4 row, never a zero that reads as measured.
+    fn path_counts(&self) -> Option<PathCounts> {
+        self.poll_stats();
+        let [sent, lost, rx] = [0, 1, 2].map(|i| self.counts[i].get());
+        (sent >= 0.0 && lost >= 0.0 && rx >= 0.0).then_some(PathCounts {
+            sent: sent as u64,
+            lost: lost as u64,
+            rx_bytes: rx as u64,
+        })
     }
 
     /// **The clamp `CLAUDE.md`'s trap list has demanded since the first

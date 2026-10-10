@@ -986,6 +986,14 @@ impl Session {
         self.wire.rtt_ms()
     }
 
+    /// The transport's packet counters (`net::PathCounts`: upstream loss,
+    /// bytes in), `None` for a replay or a browser that does not report
+    /// them. Takes quinn's lock natively and starts a `getStats()` in a page,
+    /// so ask at a reading's cadence; `net::PathMeter` turns two into a rate.
+    pub fn path_counts(&self) -> Option<net::PathCounts> {
+        self.wire.path_counts()
+    }
+
     /// Is this session talking to a shard? `false` for a replay (`film`).
     pub fn live(&self) -> bool {
         self.wire.live()

@@ -22,6 +22,7 @@ use sim_core::limits::HOTBAR_SLOTS;
 
 use super::verbs::Aimed;
 use super::Net;
+use crate::net::PathMeter;
 
 /// How long a toast stays up, seconds. Cosmetic (`DECISIONS.md` §open,
 /// client cosmetics). A clock is fine here and would not be in a gate: this
@@ -2945,11 +2946,17 @@ pub fn readout(
 /// samples — which matters, because the defect this row exists to expose is
 /// exactly one that shows up as an offset the eye can see and the sample rate
 /// cannot.
+///
+/// Beside the ping, the transport's own counters (`NOW.md` §0tx item 3):
+/// loss on what this client sends (`up`: the only direction an endpoint can
+/// detect; the shard's `net_lost_packets` is the other) and the bytes the
+/// shard is sending, both smoothed over ~2 s by [`PathMeter`].
 pub fn net_line(
     net: NonSend<super::Net>,
     time: Res<Time>,
     mut since: Local<f32>,
     mut peak: Local<f32>,
+    mut meter: Local<PathMeter>,
     mut line: Query<&mut Text, With<NetLine>>,
 ) {
     let p = &net.session.core.predict;
@@ -2958,6 +2965,7 @@ pub fn net_line(
     if *since < NET_LINE_PERIOD_S {
         return;
     }
+    let path = meter.update(net.session.path_counts(), *since);
     *since = 0.0;
     let Ok(mut text) = line.single_mut() else {
         return;
@@ -2970,13 +2978,17 @@ pub fn net_line(
         .session
         .rtt_ms()
         .map_or_else(|| "ping --".to_string(), |ms| format!("ping {ms:.0} ms"));
+    let path = match (path.loss_pct, path.down_kbs) {
+        (Some(loss), Some(down)) => format!("loss {loss:.1}% up · down {down:.0} kB/s"),
+        _ => "loss --".to_string(),
+    };
     // The second row is netcode v2's own gauges (`NOW.md` §0nc item 2): the
     // server's input-buffer depth and starved-tick repeats off the newest
     // snapshot, the playout delay and arrival jitter the client steers on,
     // the sub-quantum corrections, and snapshots the ring dropped.
     let core = &net.session.core;
     text.0 = format!(
-        "{ping} · net {:.2}% ok · {} miss · err {:.2} m\n\
+        "{ping} · {path} · net {:.2}% ok · {} miss · err {:.2} m\n\
          buf {} · rep {} · playout {:.1} t · jit {:.1} ms · minor {} · drop {}",
         100.0 * p.confirmations as f64 / total as f64,
         p.mispredictions,
@@ -2992,9 +3004,10 @@ pub fn net_line(
 }
 
 /// Rust's "connection problem" warning: an amber line top-left, up only
-/// while the link is bad — no fresh snapshot for [`CONN_STALL_S`], or a round
-/// trip past [`CONN_SLOW_MS`]. Always on screen when it applies, unlike the
-/// F4 diagnostics, because it is the one net fact a player has to act on.
+/// while the link is bad — no fresh snapshot for [`CONN_STALL_S`], upstream
+/// loss at [`CONN_LOSSY_PCT`], or a round trip past [`CONN_SLOW_MS`]. Always
+/// on screen when it applies, unlike the F4 diagnostics, because it is the
+/// one net fact a player has to act on.
 #[derive(Component)]
 pub struct ConnWarn;
 
@@ -3003,13 +3016,22 @@ pub struct ConnWarn;
 pub const CONN_STALL_S: f32 = 1.5;
 /// A round trip past this is called out too.
 pub const CONN_SLOW_MS: f32 = 250.0;
+/// Upstream loss (percent, [`PathMeter`]'s ~2 s smoothing) at which the line
+/// speaks. A taste number: prediction measured 99.68 % confirmed at 10 %
+/// loss (`server/tests/client_loop.rs`), so 5 % is a link worth naming well
+/// before it is one the player can feel.
+pub const CONN_LOSSY_PCT: f32 = 5.0;
 
-/// What [`ConnWarn`] says, or `None` for a healthy link.
-pub fn conn_warning(stalled_s: f32, rtt_ms: Option<f32>) -> Option<String> {
+/// What [`ConnWarn`] says, or `None` for a healthy link. A stall outranks
+/// loss, which outranks ping: each is the likelier cause of the next.
+pub fn conn_warning(stalled_s: f32, rtt_ms: Option<f32>, loss_pct: Option<f32>) -> Option<String> {
     if stalled_s >= CONN_STALL_S {
         return Some(format!(
             "CONNECTION PROBLEM  ·  no update for {stalled_s:.0} s"
         ));
+    }
+    if let Some(loss) = loss_pct.filter(|&l| l >= CONN_LOSSY_PCT) {
+        return Some(format!("PACKET LOSS  ·  {loss:.0}%"));
     }
     match rtt_ms {
         Some(ms) if ms >= CONN_SLOW_MS => Some(format!("HIGH PING  ·  {ms:.0} ms")),
@@ -3022,6 +3044,7 @@ pub fn conn_warn(
     net: NonSend<super::Net>,
     time: Res<Time>,
     mut seen: Local<(u64, f32, f32)>,
+    mut meter: Local<PathMeter>,
     mut q: Query<(&mut Text, &mut Visibility), With<ConnWarn>>,
 ) {
     let (applied, stalled, since) = &mut *seen;
@@ -3037,9 +3060,13 @@ pub fn conn_warn(
     if *since < NET_LINE_PERIOD_S {
         return;
     }
+    // Its own meter rather than `net_line`'s: both see the same counters on
+    // the same frames, and one more 4 Hz `stats()` is cheaper than a
+    // resource to share a reading through.
+    let loss = meter.update(net.session.path_counts(), *since).loss_pct;
     *since = 0.0;
     let want = if net.session.live() {
-        conn_warning(*stalled, net.session.rtt_ms())
+        conn_warning(*stalled, net.session.rtt_ms(), loss)
     } else {
         None
     };
@@ -3980,6 +4007,30 @@ pub fn pickups(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The connection line's order (`NOW.md` §0tx item 3): a stall beats
+    /// loss, loss at the threshold beats a high ping, loss under it is
+    /// silent, and a page with no loss reading still hears about its ping.
+    #[test]
+    fn the_connection_line_names_loss_between_a_stall_and_a_ping() {
+        let lossy = Some(CONN_LOSSY_PCT);
+        let slow = Some(CONN_SLOW_MS + 50.0);
+        assert!(conn_warning(CONN_STALL_S, slow, lossy)
+            .unwrap()
+            .starts_with("CONNECTION PROBLEM"));
+        assert_eq!(
+            conn_warning(0.0, slow, lossy).as_deref(),
+            Some("PACKET LOSS  ·  5%")
+        );
+        assert_eq!(conn_warning(0.0, Some(40.0), Some(4.9)), None);
+        assert!(conn_warning(0.0, slow, Some(4.9))
+            .unwrap()
+            .starts_with("HIGH PING"));
+        assert!(conn_warning(0.0, slow, None)
+            .unwrap()
+            .starts_with("HIGH PING"));
+        assert_eq!(conn_warning(0.0, None, None), None);
+    }
 
     /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that
     /// is working is said to be working.

@@ -74,9 +74,90 @@ pub trait Wire {
     /// browser answers its last poll and starts the next.
     fn rtt_ms(&self) -> Option<f32>;
 
+    /// The transport's own packet counters (`NOW.md` §0tx item 3), or `None`
+    /// where it has none: a replay, or a browser whose `getStats()` lacks the
+    /// fields. Natively this takes quinn's connection lock, so ask at a
+    /// reading's cadence (the HUD's 4 Hz), never per frame.
+    fn path_counts(&self) -> Option<PathCounts>;
+
     /// Is there a far end at all? `false` only for a replay's detached wire.
     fn live(&self) -> bool {
         true
+    }
+}
+
+/// The transport's counters, cumulative since connect: QUIC's own `stats()`
+/// natively, `getStats()` in a page.
+///
+/// ⚠ **`lost` is loss on what THIS end sends** (C→S), because that is the
+/// direction a QUIC endpoint can detect: it is quinn's `lost_packets` and the
+/// spec's `packetsLost`, both counted against unacked sends. S→C loss is the
+/// shard's `net_lost_packets`. Labels that print this say "up".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PathCounts {
+    /// Packets sent (quinn counts its MTU probes here too).
+    pub sent: u64,
+    /// Of those, packets declared lost (quinn leaves lost MTU probes out).
+    pub lost: u64,
+    /// Bytes received in UDP datagrams: the S→C stream, headers included.
+    pub rx_bytes: u64,
+}
+
+/// What a [`PathMeter`] reads off two successive [`PathCounts`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PathReading {
+    /// Upstream loss, percent of packets sent; `None` before a window has
+    /// sent anything.
+    pub loss_pct: Option<f32>,
+    /// Downstream rate, kB/s (1000 bytes).
+    pub down_kbs: Option<f32>,
+}
+
+/// Turns cumulative [`PathCounts`] into a smoothed loss and rate.
+///
+/// **A ratio of decayed sums, not a decayed ratio.** A 250 ms window holds
+/// ~15 sent packets, so one loss in it reads as 7% and the next window as 0;
+/// an average of those ratios weights a quiet window as much as a busy one.
+/// Decaying the sent and lost counts themselves (each reading keeps
+/// [`PathMeter::KEEP`] of the last) is a ~2 s memory at 4 Hz in which every
+/// packet weighs the same.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PathMeter {
+    prev: Option<PathCounts>,
+    sent: f32,
+    lost: f32,
+    rx: f32,
+    secs: f32,
+}
+
+impl PathMeter {
+    /// What one reading keeps of the last: 1/(1−0.875) = 8 readings, 2 s at
+    /// the HUD's 4 Hz.
+    pub const KEEP: f32 = 0.875;
+
+    /// Fold in a reading taken `dt` seconds after the last. `None` (no
+    /// counters) forgets everything, so a later session starts clean.
+    /// Counters that go backwards (a new connection under the same reader)
+    /// read as a quiet window rather than wrapping.
+    pub fn update(&mut self, now: Option<PathCounts>, dt: f32) -> PathReading {
+        let Some(now) = now else {
+            *self = Self::default();
+            return PathReading::default();
+        };
+        let Some(prev) = self.prev.replace(now) else {
+            return PathReading::default();
+        };
+        let k = Self::KEEP;
+        self.sent = self.sent * k + now.sent.saturating_sub(prev.sent) as f32;
+        self.lost = self.lost * k + now.lost.saturating_sub(prev.lost) as f32;
+        self.rx = self.rx * k + now.rx_bytes.saturating_sub(prev.rx_bytes) as f32;
+        self.secs = self.secs * k + dt.max(0.0);
+        PathReading {
+            // Loss is declared an RTT or so after the send, so a burst can
+            // briefly out-count its window: clamp rather than print 120%.
+            loss_pct: (self.sent > 0.0).then(|| (100.0 * self.lost / self.sent).min(100.0)),
+            down_kbs: (self.secs > 0.0).then(|| self.rx / self.secs / 1000.0),
+        }
     }
 }
 
@@ -294,4 +375,60 @@ pub(crate) fn drain_datagram(
         each(b);
     }
     gone
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn counts(sent: u64, lost: u64, rx_bytes: u64) -> Option<PathCounts> {
+        Some(PathCounts {
+            sent,
+            lost,
+            rx_bytes,
+        })
+    }
+
+    /// The F4 row's loss and rate (`NOW.md` §0tx item 3): the first reading
+    /// is only a baseline, a steady 1-in-20 reads 5%, the rate is bytes over
+    /// seconds, and counters that run backwards neither wrap nor go negative.
+    #[test]
+    fn the_path_meter_reads_loss_and_rate_off_cumulative_counts() {
+        let mut m = PathMeter::default();
+        assert_eq!(
+            m.update(counts(500, 9, 1_000_000), 0.25),
+            PathReading::default()
+        );
+        let mut r = PathReading::default();
+        for i in 1..=40u64 {
+            r = m.update(counts(500 + 20 * i, 9 + i, 1_000_000 + 10_000 * i), 0.25);
+        }
+        assert!((r.loss_pct.unwrap() - 5.0).abs() < 1e-3, "{r:?}");
+        assert!((r.down_kbs.unwrap() - 40.0).abs() < 1e-2, "{r:?}");
+
+        // A clean burst decays the loss toward zero without a step.
+        let before = r.loss_pct.unwrap();
+        r = m.update(counts(1300 + 20, 49, 1_410_000), 0.25);
+        let after = r.loss_pct.unwrap();
+        assert!(after < before && after > 0.0, "{before} -> {after}");
+
+        // A new connection under the same reader: smaller counters are a
+        // quiet window, not 2^64 packets.
+        r = m.update(counts(3, 0, 2_000), 0.25);
+        assert!(
+            r.loss_pct.unwrap() <= 100.0 && r.down_kbs.unwrap() < 100.0,
+            "{r:?}"
+        );
+
+        // Nothing sent yet: no loss to speak of. Detection outrunning its
+        // window clamps at 100%.
+        let mut fresh = PathMeter::default();
+        fresh.update(counts(10, 0, 0), 0.25);
+        assert_eq!(fresh.update(counts(10, 0, 0), 0.25).loss_pct, None);
+        assert_eq!(fresh.update(counts(11, 4, 0), 0.25).loss_pct, Some(100.0));
+
+        // No counters (a replay, a browser without the fields) forgets.
+        assert_eq!(fresh.update(None, 0.25), PathReading::default());
+        assert_eq!(fresh.update(counts(50, 0, 0), 0.25), PathReading::default());
+    }
 }
