@@ -404,9 +404,14 @@ const FLOOR_WEAR: f32 = 0.8;
 /// the road's sand half buried in litter, a little grass left in it.
 const FLOOR_GROUND: [f32; 4] = [105.0, 30.0, 120.0, 0.0];
 
-/// Wear a splat `t` of the way toward [`FLOOR_GROUND`]. Both sum to 255, so
-/// the blend does too, to rounding.
-fn floor_wear(w: [u8; 4], t: f32) -> [u8; 4] {
+/// Wear a splat toward [`FLOOR_GROUND`] by a landmark floor's sweep
+/// (`sim_core::landmark::floor_sweep`), [`FLOOR_WEAR`] of the way at a full
+/// sweep. Both sum to 255, so the blend does too, to rounding.
+pub fn floor_wear(w: [u8; 4], floor: f32) -> [u8; 4] {
+    if floor <= 0.0 {
+        return w;
+    }
+    let t = floor * FLOOR_WEAR;
     std::array::from_fn(|i| {
         let v = w[i] as f32 + (FLOOR_GROUND[i] - w[i] as f32) * t;
         v.round().clamp(0.0, 255.0) as u8
@@ -1381,10 +1386,7 @@ pub fn heightfield(
             // does, so a slab or a quarry's gravel that the slope half buries
             // still stands on worked ground and not on lawn. Floors are a
             // dozen metres and more, so every mesh can draw one.
-            let floor = sim_core::landmark::floor_sweep(&haven.marks, x, z);
-            if floor > 0.0 {
-                w = floor_wear(w, floor * FLOOR_WEAR);
-            }
+            w = floor_wear(w, sim_core::landmark::floor_sweep(&haven.marks, x, z));
             roads.push(coverage);
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts

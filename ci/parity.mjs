@@ -18,7 +18,7 @@ const wasmPath = join(
 // Keep in lockstep with examples/probe.rs — a mismatch shows up as a diff.
 const TERRAIN_SEEDS = [0x4741544553n, 0x1n, 0xdeadbeefn];
 const PARITY_MASTER_SEED = 0x4741544553n;
-const PARITY_SEQUENCES = 10000;
+const PARITY_SEQUENCES = 1000;
 const PARITY_TICKS = 16;
 const COMBAT_SEQUENCES = 500;
 const COMBAT_TICKS = 256;

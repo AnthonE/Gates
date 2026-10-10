@@ -14,7 +14,9 @@ use sim_core::probe::{
 // Keep in lockstep with ci/parity.mjs — a mismatch shows up as a diff.
 const TERRAIN_SEEDS: [u64; 3] = [0x0047_4154_4553, 0x1, 0xDEAD_BEEF];
 const PARITY_MASTER_SEED: u64 = 0x0047_4154_4553;
-const PARITY_SEQUENCES: u32 = 10_000;
+// Each sequence is a fresh `World::new`, i.e. a whole worldgen (~0.3 s),
+// so this count is the gate's cost: 10,000 ran past CI's 3 h job limit.
+const PARITY_SEQUENCES: u32 = 1_000;
 const PARITY_TICKS: u32 = 16;
 // Combat needs depth, not breadth: a kill is three landed hits and a
 // swing is one per 38 ticks, so 16-tick sequences would never reach a
