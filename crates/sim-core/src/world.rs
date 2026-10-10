@@ -6831,12 +6831,11 @@ impl World {
         // ordering a raid and a decay have to agree on.
         // A planter grows by day under open sky (crops v1): the shelter
         // question a body asks of the rain, asked at the planter's feet.
+        // The same rain waters it.
         let night = is_night(tick);
+        let rain_pm = crate::weather::now(self.seed, tick, &self.env).rain;
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
-        let sunlit = |b: &crate::deploy::BoxRec| {
-            if night {
-                return false;
-            }
+        let open_sky = |b: &crate::deploy::BoxRec| {
             let (x, z) = b.xz();
             let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
                 + crate::build::level_y(b.level);
@@ -6852,7 +6851,9 @@ impl World {
                 self.works.unlocks,
                 crate::works::KNOB_SMELT_PCT,
             ),
-            &sunlit,
+            &open_sky,
+            night,
+            rain_pm,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point

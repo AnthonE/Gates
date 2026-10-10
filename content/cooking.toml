@@ -209,11 +209,18 @@ seconds = 5
 # A full waterskin in the planter's water slot is drunk and left there empty;
 # it waters every bed for `seconds` of growth — one corn crop, so a farm is a
 # trip to fresh water per harvest. Rust's planters drink far more and from a
-# pipe; this is the hand-carried version until water storage exists.
+# pipe.
+#
+# Rain waters a planter under open sky, as the reference's rain fills its
+# beds: `rain_pct` of the time it rains, at full strength, banks as water, up
+# to one skin's `seconds`. A heavy shower (rain 800 per mille) banks 3.2 s a
+# second, so five minutes of it fills a planter for a crop; a mild one
+# (350) takes about eleven.
 [planter]
 item = "item.waterskin_full"
 emptied = "item.waterskin"
 seconds = 900
+rain_pct = 400
 
 [[cook]]
 input = "item.corn_seed"

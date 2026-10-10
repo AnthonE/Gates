@@ -1398,6 +1398,7 @@ impl Content {
                     w.seconds
                 )
             })?;
+        cc.rain_pct = w.rain_pct;
         Ok(cc)
     }
 

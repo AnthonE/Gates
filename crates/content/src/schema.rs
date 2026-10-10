@@ -650,6 +650,10 @@ pub struct PlanterWater {
     pub item: String,
     pub emptied: String,
     pub seconds: u32,
+    /// Rain on an unroofed planter banks water: per cent of the elapsed time
+    /// under full rain, up to `seconds` (`CookContent::rain_pct`).
+    #[serde(default)]
+    pub rain_pct: u16,
 }
 
 /// Which container runs a cook row. The archetype names of

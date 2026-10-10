@@ -1184,6 +1184,40 @@ fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
     assert_eq!(slot(&w, key, bed), ItemStack::default(), "the bed is empty");
 }
 
+/// **Rain waters an open planter** (`NOW.md` §5 item 7): a storm over a
+/// planter with no skin in it banks water, and the bed grows on it; a clear
+/// sky banks none.
+#[test]
+fn rain_waters_an_open_planter() {
+    use sim_core::oven::PLANTER_LAYOUT;
+    use sim_core::weather::{CLEAR, FORCE_FADE_TICKS, KEEP_TIME, STORM};
+    let (mut w, key, _, _) = planter_world();
+    w.cook.water_full = SKIN_FULL;
+    w.cook.water_empty = SKIN_EMPTY;
+    w.cook.water_ticks = 600;
+    w.cook.rain_pct = 400;
+    let bed = PLANTER_LAYOUT.input_slots().start;
+    w.tick(&[Command::AdminEnv {
+        weather: CLEAR,
+        time_pm: KEEP_TIME,
+    }]);
+    idle(&mut w, FORCE_FADE_TICKS);
+    load(&mut w, key, bed, SEED_ITEM, 3);
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert_eq!(total(&w, key, CROP), 0, "a clear sky watered a planter");
+
+    w.tick(&[Command::AdminEnv {
+        weather: STORM,
+        time_pm: KEEP_TIME,
+    }]);
+    idle(&mut w, FORCE_FADE_TICKS);
+    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
+    assert!(
+        total(&w, key, CROP) >= 5,
+        "a storm did not water an open planter"
+    );
+}
+
 /// **Crops v1: a planter grows by daylight, and on water** (`NOW.md` §5
 /// item 7). Dry, its bed holds; a full skin in the water slot is drunk and
 /// left empty, and the bed grows; after dusk it holds again.
