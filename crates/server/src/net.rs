@@ -591,6 +591,9 @@ pub async fn spawn_shard(
     // the same reason — and a full ring refuses the act out loud rather
     // than queueing a kick nobody remembers ordering.
     let (admin_tx, admin_rx) = RingBuffer::<crate::admin::AdminAct>::new(CTRL_RING_CAP);
+    // And back, accept → sim: how each act went, for the admin's screen.
+    // One answer per act, so the same depth; a full ring drops the line.
+    let (answer_tx, answer_rx) = RingBuffer::<crate::admin::AdminReply>::new(CTRL_RING_CAP);
     // The skins path, accept → sim, one direction: what the platform said a
     // player owns (`skins.rs`), read off the sim thread and entered as a
     // command. One read in flight per slot, so a slot's worth of depth is a
@@ -669,6 +672,7 @@ pub async fn spawn_shard(
                     world_tx,
                     world_done_rx,
                     admin_tx,
+                    answer_rx,
                     log,
                     admins,
                     trust,
@@ -728,6 +732,7 @@ pub async fn spawn_shard(
         save_rx,
         write_tx,
         admin_rx,
+        answer_tx,
         saves.store,
         slots,
         stats.clone(),
@@ -963,6 +968,7 @@ async fn accept_loop(
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
     mut admin_rx: rtrb::Consumer<crate::admin::AdminAct>,
+    mut answer_tx: rtrb::Producer<crate::admin::AdminReply>,
     mut store: SaveStore,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
@@ -1068,6 +1074,15 @@ async fn accept_loop(
                 ));
             }
             Some(done) = done_rx.recv() => {
+                // A banned wallet stops here, before it claims anything,
+                // refused with the code its ban closed it on — so the
+                // screen says what it said then. A watcher too: a ban is
+                // the wallet's, not the body's.
+                if done.key.as_ref().is_some_and(|k| bans.contains(k)) {
+                    ShardStats::bump(&stats.refused_banned);
+                    spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
+                    continue;
+                }
                 // Before the claim, never after: a record for the slot's
                 // previous tenant has to be filed under the key it was
                 // written for, and installing first would overwrite that key.
@@ -1252,19 +1267,40 @@ async fn accept_loop(
                     }
                     *seat = SeatSlot::default();
                 }
-                // Admin kicks and bans, on the same cadence as the
+                // Admin kicks, bans and unbans, on the same cadence as the
                 // graveyard: an admin is a person typing, so 100 ms is
-                // immediate and the arm costs a pop on an empty ring.
+                // immediate and the arm costs a pop on an empty ring. Each
+                // act answers its admin, because only this loop knows how
+                // it went.
                 while let Ok(act) = admin_rx.pop() {
-                    let (id, ban_key) = match act {
-                        crate::admin::AdminAct::Kick { id } => (id, None),
-                        crate::admin::AdminAct::Ban { id, key } => (id, Some(key)),
+                    let (by, id, ban_key) = match act {
+                        crate::admin::AdminAct::Kick { by, id } => (by, id, None),
+                        crate::admin::AdminAct::Ban { by, id, key } => (by, id, Some(key)),
+                        crate::admin::AdminAct::Unban { by, prefix } => {
+                            let how = bans.remove_prefix(&prefix);
+                            match how {
+                                Ok(_) => {
+                                    ShardStats::bump(&stats.admin_unbanned);
+                                    // Written whole, like a ban: the lift
+                                    // has to outlive a restart too.
+                                    if bans.save().is_err() {
+                                        ShardStats::bump(&stats.save_write_errors);
+                                    }
+                                }
+                                Err(_) => ShardStats::bump(&stats.admin_refused),
+                            }
+                            let line = crate::admin::unban_line(&prefix, &how);
+                            answer_admin(&mut answer_tx, by, &line, &stats);
+                            continue;
+                        }
                     };
                     if let Some(key) = ban_key {
                         // Recorded before the kick, so a full list refuses
                         // the BAN rather than kicking and forgetting why.
                         if !bans.insert(key) {
                             ShardStats::bump(&stats.admin_refused);
+                            let line = crate::admin::ban_full_line(id);
+                            answer_admin(&mut answer_tx, by, &line, &stats);
                             continue;
                         }
                         // Written whole on each ban: an admin typing, a few
@@ -1274,33 +1310,17 @@ async fn accept_loop(
                             ShardStats::bump(&stats.save_write_errors);
                         }
                     }
-                    // The slot is found by id rather than carried, because
-                    // the sim named a player and slots are the accept
-                    // loop's business — and a reconnect between the two
-                    // must not be kicked in the first one's name.
-                    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some())
-                    else {
-                        ShardStats::bump(&stats.admin_refused);
-                        continue;
+                    let kicked = admin_kick(id, &mut keys, &slots);
+                    let counter = if kicked { &stats.admin_kicked } else { &stats.admin_refused };
+                    ShardStats::bump(counter);
+                    // A ban whose target already left still took: the door
+                    // refuses them next time, which is what the admin wants
+                    // to hear.
+                    let line = match ban_key {
+                        Some(key) => crate::admin::banned_line(id, &key),
+                        None => crate::admin::kicked_line(id, kicked),
                     };
-                    let word = slots.load(slot);
-                    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
-                        ShardStats::bump(&stats.admin_refused);
-                        continue;
-                    }
-                    ShardStats::bump(&stats.admin_kicked);
-                    slots.mark_leaving_why(
-                        slot,
-                        crate::slot::generation_of(word),
-                        protocol::REFUSE_ADMIN,
-                    );
-                    if let Some(conn) = keys[slot].conn.take() {
-                        // Closed with a posted reason, the entitle kick's
-                        // rule: a silent close reads as a network fault,
-                        // and "my internet broke" is the wrong thing for a
-                        // kicked player to believe.
-                        close_with_reason(conn, protocol::REFUSE_ADMIN);
-                    }
+                    answer_admin(&mut answer_tx, by, &line, &stats);
                 }
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 if shutdown.load(Ordering::Relaxed) {
@@ -2879,6 +2899,50 @@ async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
     write_frame(send, &payload[..len]).await
 }
 
+/// Close player `id`'s connection for an admin, with `REFUSE_ADMIN` posted.
+/// False ⇒ nobody live holds that id (they left between the verb and this).
+///
+/// The slot is found by id rather than carried, because the sim named a
+/// player and slots are the accept loop's business — and a reconnect between
+/// the two must not be kicked in the first one's name.
+fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> bool {
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some()) else {
+        return false;
+    };
+    let word = slots.load(slot);
+    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
+        return false;
+    }
+    slots.mark_leaving_why(
+        slot,
+        crate::slot::generation_of(word),
+        protocol::REFUSE_ADMIN,
+    );
+    if let Some(conn) = keys[slot].conn.take() {
+        // Closed with a posted reason, the entitle kick's rule: a silent
+        // close reads as a network fault, and "my internet broke" is the
+        // wrong thing for a kicked player to believe.
+        close_with_reason(conn, protocol::REFUSE_ADMIN);
+    }
+    true
+}
+
+/// Tell admin `to` how an act went (`admin::AdminReply`). A full ring loses
+/// the line, never the act, and counts it like any other undelivered line.
+fn answer_admin(
+    tx: &mut rtrb::Producer<crate::admin::AdminReply>,
+    to: u32,
+    line: &str,
+    stats: &ShardStats,
+) {
+    let Some(reply) = crate::admin::AdminReply::new(to, line) else {
+        return;
+    };
+    if tx.push(reply).is_err() {
+        ShardStats::bump(&stats.chat_undelivered);
+    }
+}
+
 /// Refusals are posted, never hung (DESIGN.md §5.9) — and never block the
 /// accept loop. A buffered write dies with the dropped connection, so
 /// delivery needs `finish` (retransmit-until-acked) before the drop; that
@@ -3098,6 +3162,7 @@ fn sim_thread(
     mut world_tx: rtrb::Producer<WorldMsg>,
     mut world_done_rx: rtrb::Consumer<WorldDone>,
     mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
+    mut answer_rx: rtrb::Consumer<crate::admin::AdminReply>,
     mut log: crate::anomaly::Sink,
     admins: crate::admin::Admins,
     trust: crate::trustlog::Tap,
@@ -3414,12 +3479,13 @@ fn sim_thread(
             core.wipe_poll(now);
             ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
         }
-        // Tick + publish. `Ops` is the tick's three side channels (admin
-        // v0) — the anomaly log, the kick ring, and `/save`'s flag.
+        // Tick + publish. `Ops` is the tick's side channels (admin v0) —
+        // the anomaly log, the kick ring and its answers, `/save`'s flag.
         let mut save_now = false;
         let mut ops = crate::core::Ops {
             log: &mut log,
             admin_tx: Some(&mut admin_tx),
+            admin_answers: Some(&mut answer_rx),
             save_now: &mut save_now,
         };
         core.tick(&stats, &mut ops, |lane, slot, bytes| {

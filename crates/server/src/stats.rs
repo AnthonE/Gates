@@ -231,6 +231,9 @@ pub struct ShardStats {
     pub skin_prices_read: AtomicU64,
     pub skin_prices_unknown: AtomicU64,
     pub refused_full: AtomicU64,
+    /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
+    /// the door before claiming a slot (`admin::Bans`).
+    pub refused_banned: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.
     pub input_dg_ok: AtomicU64,
@@ -679,6 +682,9 @@ pub struct ShardStats {
     /// because the anomaly log carries which — a counter answers "is this
     /// happening", the log answers "what happened".
     pub admin_refused: AtomicU64,
+    /// Bans lifted by `/unban` (a miss or an ambiguous prefix is an
+    /// `admin_refused`).
+    pub admin_unbanned: AtomicU64,
     /// Anomaly records the log ring refused (`anomaly.rs`, wall 4's drop
     /// policy). **Deliberately not in `anomaly::WATCHED`**: a full log ring
     /// logging its own overflow is the one line guaranteed to make the
@@ -972,6 +978,7 @@ impl ShardStats {
             "refused_auth" => &self.refused_auth,
             "refused_ticket" => &self.refused_ticket,
             "refused_full" => &self.refused_full,
+            "refused_banned" => &self.refused_banned,
             "entitle_unknown" => &self.entitle_unknown,
             "entitle_kicked" => &self.entitle_kicked,
             "skins_unknown" => &self.skins_unknown,

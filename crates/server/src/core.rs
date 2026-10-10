@@ -292,11 +292,11 @@ struct Seat {
 const NO_SEAT: u8 = u8::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
-/// The three side channels an admin verb needs and the sim's own state
+/// The side channels an admin verb needs and the sim's own state
 /// cannot provide — passed into [`ShardCore::tick`] rather than held,
 /// because every one of them belongs to a thread that is not this one.
 ///
-/// A bundle rather than three parameters for `charge::tick_fuses`' reason
+/// A bundle rather than four parameters for `charge::tick_fuses`' reason
 /// inverted: these are not distinct owners of the world, they are one
 /// answer to "what does this tick owe the outside".
 pub struct Ops<'a> {
@@ -310,6 +310,9 @@ pub struct Ops<'a> {
     /// close. It takes the same path a full ring takes — the act is
     /// refused, counted and logged — so the two cannot diverge.
     pub admin_tx: Option<&'a mut rtrb::Producer<crate::admin::AdminAct>>,
+    /// The accept loop's answers to those acts, said to the admin by the
+    /// chat pump (`admin::AdminReply`). `None` ⇒ no accept loop, no answers.
+    pub admin_answers: Option<&'a mut rtrb::Consumer<crate::admin::AdminReply>>,
     /// Raised by `/save`, read and cleared by the sim thread's world-save
     /// cadence — a flag rather than a call because the blob is written by
     /// a different thread again, and this tick has no business waiting.
@@ -1284,6 +1287,7 @@ impl ShardCore {
         let mut ops = Ops {
             log: &mut log,
             admin_tx: None,
+            admin_answers: None,
             save_now: &mut save_now,
         };
         self.tick(stats, &mut ops, send);
@@ -1975,9 +1979,9 @@ impl ShardCore {
                         );
                         return;
                     };
-                    AdminAct::Ban { id, key }
+                    AdminAct::Ban { by: who, id, key }
                 } else {
-                    AdminAct::Kick { id }
+                    AdminAct::Kick { by: who, id }
                 };
                 let sent = ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok());
                 if !sent {
@@ -1990,6 +1994,18 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(id as i64, 0, 0);
+            }
+            AdminCmd::Unban { prefix } => {
+                // The list is the accept loop's, so it decides whether the
+                // prefix names one ban and answers on `admin_answers`.
+                let act = AdminAct::Unban { by: who, prefix };
+                if !ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok()) {
+                    ops.log.push(
+                        Record::new(tick, Kind::AdminRefused, verb, who).note(prefix.as_bytes()),
+                    );
+                    return;
+                }
+                logged = logged.note(prefix.as_bytes());
             }
             AdminCmd::Say { text } => {
                 // The house's line, marked and sent from `from = 0` — an
@@ -2124,6 +2140,21 @@ impl ShardCore {
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
         self.pump_wipe(stats, send);
+        // How the accept loop's half of an admin verb went, to the admin
+        // alone. One who left meanwhile hears nothing, which is counted.
+        if let Some(rx) = ops.admin_answers.as_mut() {
+            while let Ok(r) = rx.pop() {
+                match (0..MAX_PLAYERS)
+                    .find(|&s| self.clients[s].connected && self.clients[s].id == r.to)
+                {
+                    Some(slot) => {
+                        let line = crate::admin::server_line(&r.text);
+                        self.say_server(Some(slot), &line, stats, send);
+                    }
+                    None => ShardStats::bump(&stats.chat_undelivered),
+                }
+            }
+        }
         for from_slot in 0..MAX_PLAYERS {
             let Some(msg) = self.clients[from_slot].pending_chat.take() else {
                 continue;
@@ -6336,6 +6367,7 @@ mod tests {
         let mut ops = Ops {
             log: &mut log,
             admin_tx: None,
+            admin_answers: None,
             save_now: &mut save_now,
         };
         core.fan_out(&live, stats, &mut ops, &mut |lane, slot, bytes: &[u8]| {
