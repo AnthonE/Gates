@@ -647,8 +647,8 @@ act):
 1. Trim bevy's default features (`crates/client/Cargo.toml`): `bevy_gilrs` (drops `libudev`), `vorbis`, `wav`,
    `bevy_audio`; keep `bevy_gltf`/`bevy_animation`, x11, wayland, `alsa`. Needs disk headroom and a looked-at
    `--capture`: a missing decoder draws white, so a green compile proves nothing.
-2. World-space anchors are unbuilt (the wall's number at the wall, a clock on the charge mesh); `charge_deploy`
-   is unread (`stock_addr` is read now: the hearth panel says which hearth).
+2. World-space tags are in (`render/anchor.rs`: the charge clock on the charge, your blow's readout at
+   the wall); nothing else is anchored yet.
 
 ## 0z · The Bevy-draws rule's missing gate *(client lane)*
 
@@ -696,12 +696,10 @@ its countdown, padlock, notices over the vitals, colour icons).
 
 2. The pipeline count is unasserted (`PipelineCache::pipelines()` needs a GPU); `tests/prewarm.rs` gates the ECS side.
 
-## 0pf · The client's CPU frame — four measured leftovers *(client lane)*
+## 0pf · The client's CPU frame — one measured leftover *(client lane)*
 
 2. `water::animate` deep-clones ~677 KiB per frame (`Assets::get_mut`; `examples/frame_cost.rs`): the fix is the
    vertex shader `render/water.rs` §57 names, after a GPU boot.
-3. Under 50 µs together: `verbs::resolve` (use the 3×3 `ColIndex`), the `bodies`/`mobs::stream` slot scans,
-   `audio::fell`'s `GlobalTransform` fetch, `hud::update`'s strings, the ring streamers' full-map probe.
 
 ## 0u · the frame budgets are browser numbers and nobody has re-derived them
 
