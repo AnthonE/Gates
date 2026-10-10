@@ -677,6 +677,25 @@ pub struct ColIndex {
     keys: Box<[u32; COL_INDEX_SLOTS]>,
     masks: Box<[ColMasks; COL_INDEX_SLOTS]>,
     len: u32,
+    /// Each occupied slot's terrain band (`build::terrain_band`), slot-aligned
+    /// to `masks`, or [`NO_BAND`] until [`ColIndex::fill_bands`] reaches it —
+    /// the memo that keeps [`col_base_y`] off `terrain::ground` (`NOW.md`
+    /// §0bl 2: a volley through a base sampled the ground at every tap).
+    ///
+    /// **Exact, not approximate**: it holds the same integer the fallback
+    /// computes from the same (seed, cell), so a filled slot and an unfilled
+    /// one answer bit-identically and a missed fill only costs time. A
+    /// parallel array rather than a `ColMasks` field because the masks are
+    /// occupancy, compared whole by the churn gates; this is a property of
+    /// the ground under the slot. `remove_slot` moves the two together.
+    bands: Box<[i32; COL_INDEX_SLOTS]>,
+    /// The seed `bands` was filled under. A query under another seed reads
+    /// past the memo, so an index can never answer one island's height on
+    /// another (the haven is a function of the seed, `terrain::haven`).
+    band_seed: u64,
+    /// A slot opened since the last fill. Keeps `fill_bands` a compare on
+    /// the ticks nothing was built, and it is called every tick.
+    unbanded: bool,
     /// The blocking deployables, one row each, keyed by the cell their
     /// centre is in — a multimap (several rows may share a key), linear
     /// probing and backward-shift deletion like the column table. Derived
@@ -690,6 +709,10 @@ pub struct ColIndex {
 }
 
 const OCCUPIED: u32 = 1 << 31;
+
+/// `ColIndex::bands`' "not filled yet". No cell's terrain band is anywhere
+/// near it (a band is half a metre, the island a few hundred metres tall).
+const NO_BAND: i32 = i32::MIN;
 
 /// One blocking deployable as the collision walks read it: its address, its
 /// archetype (which names its volume, `deploy::solid_vol`) and its pose.
@@ -758,6 +781,9 @@ impl ColIndex {
             keys: crate::boxed_array(0),
             masks: crate::boxed_array(ColMasks::EMPTY),
             len: 0,
+            bands: crate::boxed_array(NO_BAND),
+            band_seed: 0,
+            unbanded: false,
             solid_keys: crate::boxed_array(0),
             solids: crate::boxed_array(SolidPose::EMPTY),
             solid_len: 0,
@@ -779,6 +805,8 @@ impl ColIndex {
         self.keys.fill(0);
         self.masks.fill(ColMasks::EMPTY);
         self.len = 0;
+        self.bands.fill(NO_BAND);
+        self.unbanded = false;
         self.solid_keys.fill(0);
         self.solids.fill(SolidPose::EMPTY);
         self.solid_len = 0;
@@ -928,6 +956,7 @@ impl ColIndex {
             if k == 0 {
                 self.keys[i] = key;
                 self.len += 1;
+                self.unbanded = true;
                 break;
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
@@ -976,6 +1005,61 @@ impl ColIndex {
             }
             if k == key {
                 return self.masks[i].has_piece().then_some(self.masks[i].plate);
+            }
+            i = (i + 1) & (COL_INDEX_SLOTS - 1);
+        }
+    }
+
+    /// Fill the terrain band of every slot opened since the last fill
+    /// ([`ColIndex::bands`]), so [`col_base_y`] answers from the table instead
+    /// of sampling the ground. The sim calls it once a tick after the
+    /// commands (`World::tick`), the client before its predictor steps
+    /// (`ClientCore::advance`); a slot opened later waits a tick, and pays
+    /// only the sample it would have paid anyway.
+    ///
+    /// A compare when nothing opened; otherwise one pass over the slots and
+    /// one `terrain::ground` per new column. A restored shard pays its whole
+    /// base once, on the first tick. No allocation, so it may sit in the tick.
+    pub fn fill_bands(&mut self, seed: u64, haven: &crate::terrain::Haven) {
+        if seed != self.band_seed {
+            self.bands.fill(NO_BAND);
+            self.band_seed = seed;
+            self.unbanded = self.len > 0;
+        }
+        if !self.unbanded {
+            return;
+        }
+        for i in 0..COL_INDEX_SLOTS {
+            let k = self.keys[i];
+            if k != 0 && self.bands[i] == NO_BAND {
+                let (cx, cz) = (((k >> 12) & 0xFFF) as u16, (k & 0xFFF) as u16);
+                self.bands[i] = crate::build::terrain_band(seed, haven, cx, cz);
+            }
+        }
+        self.unbanded = false;
+    }
+
+    /// One probe for [`col_base_y`]: the column's memoized terrain band under
+    /// `seed` ([`NO_BAND`] when it is not in the table, not filled yet, or
+    /// filled under another seed) and the plate its floor stands on — 0
+    /// unless it holds a piece, [`ColIndex::plate`]'s rule.
+    #[inline]
+    fn floor_band(&self, seed: u64, cx: u16, cz: u16) -> (i32, i8) {
+        let key = Self::key(cx, cz);
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == 0 {
+                return (NO_BAND, 0);
+            }
+            if k == key {
+                let band = if seed == self.band_seed {
+                    self.bands[i]
+                } else {
+                    NO_BAND
+                };
+                let m = &self.masks[i];
+                return (band, if m.has_piece() { m.plate } else { 0 });
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
@@ -1090,6 +1174,7 @@ impl ColIndex {
             if k == 0 {
                 self.keys[i] = key;
                 self.len += 1;
+                self.unbanded = true;
                 break;
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
@@ -1106,6 +1191,7 @@ impl ColIndex {
     fn remove_slot(&mut self, mut i: usize) {
         self.keys[i] = 0;
         self.masks[i] = ColMasks::EMPTY;
+        self.bands[i] = NO_BAND;
         self.len -= 1;
         let mut j = i;
         loop {
@@ -1122,8 +1208,10 @@ impl ColIndex {
             if jh >= ji {
                 self.keys[i] = k;
                 self.masks[i] = self.masks[j];
+                self.bands[i] = self.bands[j];
                 self.keys[j] = 0;
                 self.masks[j] = ColMasks::EMPTY;
+                self.bands[j] = NO_BAND;
                 i = j;
             }
         }
@@ -1152,6 +1240,13 @@ impl Default for ColIndex {
 /// Only the plate rides the wire, never the height itself: the client
 /// recomputes the terrain band from (seed, cell) exactly as before, so a
 /// float height still never crosses the network.
+///
+/// **The terrain band is memoized on the index** ([`ColIndex::fill_bands`]):
+/// the shot walk asks this at every 170 mm tap that lands in a built
+/// column, and a `terrain::ground` per tap more than doubled a volley fired
+/// through a base (`examples/shot_cost --base`). The memo holds the integer
+/// band, so the answer is `build::column_floor_y`'s to the bit whether the
+/// slot was filled or not.
 #[inline]
 pub(crate) fn col_base_y(
     seed: u64,
@@ -1160,7 +1255,28 @@ pub(crate) fn col_base_y(
     cx: u16,
     cz: u16,
 ) -> f32 {
-    crate::build::column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
+    let (band, plate) = col_band(seed, haven, cols, cx, cz);
+    crate::build::band_floor_y(band, plate)
+}
+
+/// The column's terrain band — the memo when it holds one, a ground sample
+/// when it does not — and its plate (0 with no piece). The two halves of
+/// [`col_base_y`], split so [`edge_foot_drop`] can put its own plate on the
+/// band.
+#[inline]
+fn col_band(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    cx: u16,
+    cz: u16,
+) -> (i32, i8) {
+    let (band, plate) = cols.floor_band(seed, cx, cz);
+    if band == NO_BAND {
+        (crate::build::terrain_band(seed, haven, cx, cz), plate)
+    } else {
+        (band, plate)
+    }
 }
 
 /// How far an edge's solid foot continues to the lower adjoining floor.
@@ -1194,7 +1310,7 @@ pub fn edge_foot_drop(
     if level as usize >= MAX_BUILD_SOCKETS || planes & (1 << level) == 0 {
         return 0.0;
     }
-    let here = crate::build::column_floor_y(seed, haven, cx, cz, plate);
+    let here = crate::build::band_floor_y(col_band(seed, haven, cols, cx, cz).0, plate);
     (here - col_base_y(seed, haven, cols, ox, oz)).max(0.0)
 }
 
@@ -3296,6 +3412,100 @@ mod tests {
         }
         assert_eq!(idx.len(), 0);
         assert!(idx.keys.iter().all(|&k| k == 0), "a slot leaked");
+    }
+
+    #[test]
+    fn band_memo_answers_what_the_ground_does() {
+        // `ColIndex::bands` (NOW §0bl 2) is a memo, so the only thing it may
+        // change is the time: every floor read through it is the unmemoized
+        // rule's to the bit, filled or not, and every filled band belongs to
+        // the cell its slot holds — which is what pins `remove_slot` moving
+        // the two arrays together.
+        const W: u16 = 48;
+        let (x0, z0) = (CX - W / 2, CZ - W / 2);
+        // Every piece in a column carries the column's plate (`build::place`).
+        let plate_of = |cx: u16, cz: u16| ((cx ^ cz) % 7) as i8 - 3;
+        let rule = |idx: &ColIndex, seed: u64, cx: u16, cz: u16| {
+            crate::build::column_floor_y(seed, hv(), cx, cz, idx.plate(cx, cz).unwrap_or(0))
+        };
+        let cells = || (x0..x0 + W + 2).flat_map(|cx| (z0..z0 + W).map(move |cz| (cx, cz)));
+        let mut idx = Box::new(ColIndex::new());
+        for cx in x0..x0 + W {
+            for cz in z0..z0 + W {
+                idx.add(cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION, plate_of(cx, cz));
+            }
+        }
+        // A strip of shut-only slots beside it: in the table, no piece, so
+        // plate 0 over a memoized band. The column past it is bare ground.
+        for cz in z0..z0 + W {
+            idx.set_door(x0 + W, cz, 0, LOC_EDGE_XLO, true);
+        }
+        let cold: Vec<u32> = cells()
+            .map(|(cx, cz)| col_base_y(SEED, hv(), &idx, cx, cz).to_bits())
+            .collect();
+        assert!(idx.unbanded, "opening slots must mark the memo stale");
+        idx.fill_bands(SEED, hv());
+        assert!(!idx.unbanded);
+        assert!(
+            (0..COL_INDEX_SLOTS).all(|i| idx.keys[i] == 0 || idx.bands[i] != NO_BAND),
+            "a slot the fill missed"
+        );
+        // Probe chains exist, so the deletions below really shift slots.
+        assert!((0..COL_INDEX_SLOTS).any(|i| idx.keys[i] != 0 && ColIndex::home(idx.keys[i]) != i));
+        let warm: Vec<u32> = cells()
+            .map(|(cx, cz)| col_base_y(SEED, hv(), &idx, cx, cz).to_bits())
+            .collect();
+        assert_eq!(cold, warm, "the memo moved a floor");
+
+        let own_cells = |idx: &ColIndex| {
+            for i in 0..COL_INDEX_SLOTS {
+                let k = idx.keys[i];
+                if k != 0 && idx.bands[i] != NO_BAND {
+                    let (cx, cz) = (((k >> 12) & 0xFFF) as u16, (k & 0xFFF) as u16);
+                    assert_eq!(
+                        idx.bands[i],
+                        crate::build::terrain_band(SEED, hv(), cx, cz),
+                        "slot {i} holds another cell's band"
+                    );
+                }
+            }
+        };
+        // Take two columns in five down to nothing, backward-shifting the
+        // chains behind them.
+        for cx in x0..x0 + W {
+            for cz in z0..z0 + W {
+                if (cx as u32 * 7 + cz as u32 * 3) % 5 < 2 {
+                    idx.del(cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION);
+                }
+            }
+        }
+        assert!(!idx.unbanded, "a removal opens nothing");
+        own_cells(&idx);
+        for (cx, cz) in cells() {
+            assert_eq!(
+                col_base_y(SEED, hv(), &idx, cx, cz).to_bits(),
+                rule(&idx, SEED, cx, cz).to_bits(),
+                "({cx},{cz}) after the removals"
+            );
+        }
+        // A rebuilt column takes the plate it is rebuilt with, on a fresh slot.
+        let (rx, rz) = (x0, z0);
+        assert_eq!(idx.plate(rx, rz), None, "the fixture removes this one");
+        idx.add(rx, rz, 0, LOC_PLANE, SHAPE_FOUNDATION, plate_of(rx, rz) + 1);
+        assert!(idx.unbanded);
+        let unfilled = col_base_y(SEED, hv(), &idx, rx, rz);
+        idx.fill_bands(SEED, hv());
+        let filled = col_base_y(SEED, hv(), &idx, rx, rz);
+        assert_eq!(unfilled.to_bits(), rule(&idx, SEED, rx, rz).to_bits());
+        assert_eq!(filled.to_bits(), unfilled.to_bits());
+        own_cells(&idx);
+        // Another seed reads past the memo rather than answering this island.
+        for (cx, cz) in cells().step_by(37) {
+            assert_eq!(
+                col_base_y(SEED ^ 1, hv(), &idx, cx, cz).to_bits(),
+                rule(&idx, SEED ^ 1, cx, cz).to_bits()
+            );
+        }
     }
 
     #[test]

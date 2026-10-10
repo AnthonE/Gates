@@ -748,6 +748,12 @@ impl PieceSet {
         &self.cols
     }
 
+    /// Memoize the terrain band of any column the mirror opened since the
+    /// last call — the sim's `Pieces::fill_bands`, for the predictor's walks.
+    fn fill_bands(&mut self, seed: u64, haven: &Haven) {
+        self.cols.fill_bands(seed, haven);
+    }
+
     /// Set or clear a closed-door bit in the predictor's index. Doors
     /// live in the deploy mirror, but they seal *pieces*, so the bit
     /// belongs to this index — `ClientCore` is what keeps the two
@@ -4615,6 +4621,11 @@ impl ClientCore {
                 self.input_due = true;
             }
             return steps;
+        }
+        // Before the walks, as the sim does after its commands: any column a
+        // sync opened gets its terrain band memoized (`ColIndex::fill_bands`).
+        if steps > 0 {
+            self.pieces.fill_bands(self.predict.seed(), &self.haven);
         }
         for _ in 0..steps {
             let frame = InputFrame {

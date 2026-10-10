@@ -5809,6 +5809,10 @@ impl World {
             let seat = self.trust.seat();
             self.apply(cmd, seat, &mut removals, &mut favour, &mut catchup);
         }
+        // Every column the commands opened gets its terrain band memoized
+        // before the walks below ask for floors (`ColIndex::fill_bands`) —
+        // a compare on a tick that built nothing.
+        self.pieces.fill_bands(self.seed, &self.haven);
         // One helper per target. Existing ownership wins; otherwise lowest
         // slot wins. Two hands never add their time together.
         let mut assisting = [None; MAX_PLAYERS];

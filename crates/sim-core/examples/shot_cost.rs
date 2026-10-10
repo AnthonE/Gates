@@ -17,6 +17,7 @@
 //! cargo run -p sim-core --release --example shot_cost -- --lonely # nobody in range
 //! cargo run -p sim-core --release --example shot_cost -- --ground # standing on the island
 //! cargo run -p sim-core --release --example shot_cost -- --base   # firing through a base
+//! cargo run -p sim-core --release --example shot_cost -- --base --cold # ...without the band memo
 //! ```
 //!
 //! `--lonely` is the worst case and the reason the mark is bounded: with no
@@ -31,6 +32,12 @@
 //! so the default runs above are the no-base control and this is the paid
 //! case: a hundred shooters standing on and firing along a slab. Run it
 //! against the same invocation without the flag; the difference is the walk.
+//!
+//! That tap is memoized now (`ColIndex::fill_bands`, `NOW.md` §0bl 2), and
+//! `--cold` skips the fill so the walk samples the ground as it used to: the
+//! A/B of the memo in one binary. Measured on a loaded 4-core box, median of
+//! seven runs of the tick mean: no base 1.50 ms, `--base --cold` 3.54 ms,
+//! `--base` 1.84 ms.
 
 // Host-side timing probe: the clock and the printing are its job. The wall-1
 // and wall-3 lists bind SIM code, and an example binary is not sim code —
@@ -109,6 +116,7 @@ fn base_index(haven: &sim_core::terrain::Haven) -> Box<ColIndex> {
 fn main() {
     let (lonely, on_ground) = (flag("--lonely"), flag("--ground"));
     let on_base = flag("--base");
+    let cold = flag("--cold");
     let haven = sim_core::terrain::haven(SEED);
     let mut cc = CombatContent::EMPTY;
     cc.player_hp = 100;
@@ -132,11 +140,16 @@ fn main() {
     };
     let mut pristine = Scratch::with(SEED, Pristine);
     let mut barren = Scratch::barren();
-    let cols = if on_base {
+    let mut cols = if on_base {
         base_index(&haven)
     } else {
         Box::new(ColIndex::new())
     };
+    // What `World::tick` does after its commands: memoize every column's
+    // terrain band, so `col_base_y` answers from the table.
+    if !cold {
+        cols.fill_bands(SEED, &haven);
+    }
 
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
     for (i, p) in players.iter_mut().enumerate() {
@@ -186,6 +199,13 @@ fn main() {
     // volley — the case a cap has to survive, not the case play produces.
     for t in 0..(12 * 40u64) {
         let mut events = EventQueue::default();
+        // Top the magazine up off the clock. Since firearms spend
+        // `Player::mag` an empty one dry-clicks, and this probe read
+        // 0.00 ms for every mode because nobody fired at all.
+        for p in players.iter_mut() {
+            p.mag[0] = 8;
+            p.mag_round[0] = ROUND;
+        }
         let start = std::time::Instant::now();
         ranged::hitscan(
             SEED,
@@ -219,10 +239,10 @@ fn main() {
         "{MAX_PLAYERS} shooters, {} occupants, {}, {}: {n} firing ticks, mean {:.2} ms, \
          worst {:.2} ms (tick budget 33 ms)",
         if on_ground { "pristine" } else { "barren" },
-        if on_base {
-            "on a slab"
-        } else {
-            "nothing built"
+        match (on_base, cold) {
+            (false, _) => "nothing built",
+            (true, false) => "on a slab",
+            (true, true) => "on a slab, no band memo",
         },
         if lonely {
             "nobody in range"

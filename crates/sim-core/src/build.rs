@@ -348,7 +348,8 @@ pub const BUILD_BASE_Q_M: f32 = 0.5;
 
 /// The world y of a column's level-0 floor surface — **the one
 /// implementation** of the piece height rule, and deliberately the only
-/// one: `collide::col_base_y` (the sim's movement/raid/charge walks), the
+/// one: `collide::col_base_y` (the sim's movement/raid/charge walks, through
+/// [`band_floor_y`] with the band it memoized), the
 /// client renderer's `level_base_y` and `deploy::box_drop_pos` all call
 /// this rather than restating the formula, because the formula existed in
 /// two crates before this function did and a third copy is how the drawn
@@ -371,7 +372,15 @@ pub const BUILD_BASE_Q_M: f32 = 0.5;
 /// `movement::STEP_UP`.
 #[inline]
 pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8) -> f32 {
-    band_y(terrain_band(seed, haven, cx, cz) + plate as i32)
+    band_floor_y(terrain_band(seed, haven, cx, cz), plate)
+}
+
+/// [`column_floor_y`] with the column's [`terrain_band`] already in hand —
+/// `collide::col_base_y`'s memoized path (`ColIndex::fill_bands`), kept here
+/// so the rule still has one spelling.
+#[inline]
+pub fn band_floor_y(band: i32, plate: i8) -> f32 {
+    band_y(band + plate as i32)
 }
 
 /// The band a column's level-0 floor takes with **nothing built on it** —
@@ -916,6 +925,13 @@ impl Pieces {
     /// The collision view movement steps against (collide.rs).
     pub fn cols(&self) -> &crate::collide::ColIndex {
         &self.cols
+    }
+
+    /// Memoize the terrain band of any column opened since the last call
+    /// (`ColIndex::fill_bands`). Derived like the rest of `cols`: never
+    /// hashed, never saved, and no answer depends on whether it ran.
+    pub(crate) fn fill_bands(&mut self, seed: u64, haven: &terrain::Haven) {
+        self.cols.fill_bands(seed, haven);
     }
 
     pub fn len(&self) -> usize {
