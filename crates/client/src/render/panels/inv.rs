@@ -1159,7 +1159,17 @@ fn cell(
         // Its name under the pointer (`panels::tooltip`), with the skin it
         // wears and how worn it is — the two things the picture alone does
         // not say.
-        .insert_if(super::Tip(slot_tip(core, stack)), || filled)
+        .insert_if(
+            super::Tip({
+                let mut tip = slot_tip(core, stack);
+                // The gun in your hand unloads on `R` (`panels::keys`).
+                if active && core.mag().1 > 0 {
+                    tip.push_str(" · R to unload");
+                }
+                tip
+            }),
+            || filled,
+        )
         .with_children(|c| {
             if filled {
                 // **A picture, not a word.** `Gunpowde` and `Workbenc` are

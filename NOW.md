@@ -145,9 +145,9 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0mag · Reload v1 — what the magazine still cannot do *(systems+client lane)*
 
-2. No unload, no ammo switch (the reference refunds a partial magazine and adopts the
-   new round at `StartReload`; ours refuses, `REFUSE_RL_DRY`). Both need `reload` to
-   see a stack ceiling: `GatherContent` reaching a `CombatContent` caller.
+2. Unload (`R` on the inventory page, wire v103) and the switch when the loaded round
+   runs out are in; picking a kind by hand (the reference's hold-`R` menu) waits on
+   a gun that takes two rounds.
 3. The dry click rides `rate_ticks` (0.4 s on the revolver); the reference gives it
    its own 1.0 s (`BaseProjectile.ServerUse`). Unspoken knob in `DECISIONS.md` §open.
 

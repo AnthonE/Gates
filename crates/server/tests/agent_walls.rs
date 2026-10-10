@@ -240,6 +240,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Respawn { .. } => "respawn",
         ActionMsg::RespawnGate => "respawn_gate",
         ActionMsg::Reload => "reload",
+        ActionMsg::Unload => "unload",
         ActionMsg::Loot => "loot",
         ActionMsg::Pickup => "pickup",
         ActionMsg::Place { .. } => "place",

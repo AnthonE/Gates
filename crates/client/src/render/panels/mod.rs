@@ -921,6 +921,13 @@ pub fn keys(
     } else if !typing && keyboard.just_pressed(KeyCode::KeyQ) {
         want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Crafting));
     }
+    // `R` on the inventory page unloads the gun in your hand — the
+    // reference's *Unload Ammo*, which lives on its inventory screen too.
+    // `verbs::keys` stands down while this page owns the pointer, so the
+    // key reloads nowhere else at the same time.
+    if ui.panel == Panel::Inventory && !down && keyboard.just_pressed(KeyCode::KeyR) {
+        super::verbs::unload_held(&net, &mut toast);
+    }
     // `O`: the island (`ARC.md` F4). A toggle, and it takes over from any
     // other screen the way `Tab` takes over from the tree.
     if !typing && keyboard.just_pressed(KeyCode::KeyO) {

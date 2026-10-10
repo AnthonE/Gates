@@ -110,6 +110,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Access { .. }
         | ActionMsg::Feed { .. }
         | ActionMsg::Reload
+        | ActionMsg::Unload
         | ActionMsg::Respawn { .. }
         | ActionMsg::RespawnAt { .. }
         | ActionMsg::RespawnGate

@@ -122,11 +122,11 @@
 use crate::collide::{self, ColIndex, Part, CAPSULE_RADIUS_M, HEAD_BAND_M};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
-use crate::gather::NO_ITEM;
+use crate::gather::{inv_add_spilling, GatherContent, ItemStack, NO_ITEM};
 use crate::input::{BTN_AIM, BTN_PRIMARY};
 use crate::limits::{
-    ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
-    MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
+    ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS,
+    MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -176,10 +176,12 @@ pub const REFUSE_RL_EMPTY: u32 = 4;
 /// one kind tops up with that kind or not at all, because mixing would fire
 /// the wrong item and hand back the wrong item on the next unload.
 pub const REFUSE_RL_DRY: u32 = 5;
+/// An unload asked of a magazine that holds nothing (`unload`).
+pub const REFUSE_RL_UNLOADED: u32 = 6;
 /// The highest reason above, named rather than counted — the discipline
 /// `REFUSE_G_MAX` and `EV_MAX` apply to a value domain, so the wire's
 /// field width is checked against a constant and not against a memory.
-pub const REFUSE_RL_MAX: u32 = REFUSE_RL_DRY;
+pub const REFUSE_RL_MAX: u32 = REFUSE_RL_UNLOADED;
 
 /// Pack a magazine's state into one `u32` event field: loaded in the high
 /// half, the weapon's ceiling in the low half.
@@ -219,7 +221,14 @@ pub fn mag_ceiling(pair: u32) -> u16 {
 /// against the wrong side of the mutation. So every refusal here is decided
 /// before `inv_take` is called, and the pack is debited by exactly what the
 /// magazine is credited in the same two statements.
-pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Player) -> bool {
+pub fn reload(
+    tick: u64,
+    cc: &CombatContent,
+    gc: &GatherContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    spill: &mut [ItemStack; INV_SLOTS],
+) -> bool {
     let item = held_item(p);
     let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
         events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
@@ -257,10 +266,18 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         return false;
     }
     // Which round. A magazine already holding one kind tops up with that
-    // kind or not at all; an empty one takes the first round in the
-    // weapon's preference order the shooter is actually carrying, which is
-    // `draw`'s rule and `hitscan`'s.
-    let round = if p.mag_round[slot] != NO_ITEM && loaded > 0 {
+    // kind while the pack carries it; an empty one takes the first round in
+    // the weapon's preference order the shooter is actually carrying, which
+    // is `draw`'s rule and `hitscan`'s.
+    //
+    // **The ammo switch** (`NOW.md` §0mag 2): a part-full magazine whose
+    // kind the pack has run out of adopts the next carried kind, and the
+    // rounds it held go back to the pack first — the reference's
+    // `StartReload`, which refunds the partial magazine and loads the new
+    // round. Mixing is still never done: the old kind leaves before the new
+    // one goes in.
+    let held_kind = p.mag_round[slot] != NO_ITEM && loaded > 0;
+    let round = if held_kind && inv_count(&p.inv, p.mag_round[slot]) > 0 {
         p.mag_round[slot]
     } else {
         let Some(r) = def
@@ -275,7 +292,10 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         };
         r
     };
-    let want = def.magazine - loaded;
+    // A switch empties the magazine first, so it wants a full one's worth.
+    let switching = held_kind && round != p.mag_round[slot];
+    let kept = if switching { 0 } else { loaded };
+    let want = def.magazine - kept;
     // `u32` down to `u16`: `inv_count` totals a whole inventory and
     // `want` is at most a magazine, so the `min` is taken in the wider
     // type and the result is bounded by `want` before it narrows. Doing
@@ -288,9 +308,14 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
     // The mutation, after every refusal has had its say. `inv_take` moves
     // exactly `got` because `got` was clamped to `inv_count` one line up:
     // the pack is debited by what the magazine is credited, and there is no
-    // ordering in which one happens without the other.
+    // ordering in which one happens without the other. The new round leaves
+    // the pack before the old one returns, so the slots it frees take the
+    // refund; what still does not fit spills at the shooter's feet.
     inv_take(&mut p.inv, round, got as u32);
-    p.mag[slot] = loaded + got;
+    if switching {
+        refund(gc, p, slot, spill);
+    }
+    p.mag[slot] = kept + got;
     p.mag_round[slot] = round;
     // The beat you are helpless for, on the shared cadence field.
     p.next_swing = tick + def.reload_ticks.max(1) as u64;
@@ -300,6 +325,68 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
         mag_pair(p.mag[slot], def.magazine),
         got as u32,
     );
+    true
+}
+
+/// Empty magazine `slot` into the pack: what fits joins it, the rest goes
+/// to `spill` for the caller to drop at the shooter's feet (`inv_add`'s
+/// round-ceiling rule, `World::shed`'s reasoning for `cond_max_of`).
+fn refund(gc: &GatherContent, p: &mut Player, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) {
+    let (n, round) = (p.mag[slot], p.mag_round[slot]);
+    if n > 0 && round != NO_ITEM {
+        inv_add_spilling(
+            &mut p.inv,
+            spill,
+            round,
+            n,
+            gc.stack_max_of(round),
+            gc.cond_max_of(round),
+        );
+    }
+    p.mag[slot] = 0;
+    p.mag_round[slot] = NO_ITEM;
+}
+
+/// Empty the held weapon's magazine back into the pack (`NOW.md` §0mag 2,
+/// the reference's *Unload Ammo*). Free, with no beat: an empty gun is its
+/// own price. Refused, with one `EV_RELOAD_REFUSED`, for a hand with no
+/// magazine, an arm still busy (a reload in progress must not be undone
+/// half-way) or a magazine with nothing in it.
+///
+/// Returns `true` when rounds moved; `EV_RELOAD` restates the magazine as
+/// empty (`c == 0`, the spend half of that event's partition), and the pack
+/// update shows where the rounds went.
+pub fn unload(
+    tick: u64,
+    cc: &CombatContent,
+    gc: &GatherContent,
+    events: &mut EventQueue,
+    p: &mut Player,
+    spill: &mut [ItemStack; INV_SLOTS],
+) -> bool {
+    let item = held_item(p);
+    let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
+        events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
+    };
+    let Some(def) = cc
+        .held_ranged(item)
+        .filter(|d| d.magazine > 0 && (d.mag_slot as usize) < MAX_MAGS)
+    else {
+        refuse(events, REFUSE_RL_HAND, 0);
+        return false;
+    };
+    let slot = def.mag_slot as usize;
+    let pair = mag_pair(p.mag[slot], def.magazine);
+    if tick < p.next_swing {
+        refuse(events, REFUSE_RL_BUSY, pair);
+        return false;
+    }
+    if p.mag[slot] == 0 || p.mag_round[slot] == NO_ITEM {
+        refuse(events, REFUSE_RL_UNLOADED, pair);
+        return false;
+    }
+    refund(gc, p, slot, spill);
+    events.push(EV_RELOAD, p.id, mag_pair(0, def.magazine), 0);
     true
 }
 

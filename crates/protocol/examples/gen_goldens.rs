@@ -196,6 +196,9 @@ fn main() {
     let (slot, count, target) = goldens::action_give();
     let len = protocol::encode_action_give(slot, count, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[156], &buf[..len]);
+    // A magazine emptied into the pack (v103).
+    let len = protocol::encode_action_unload(&mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[157], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

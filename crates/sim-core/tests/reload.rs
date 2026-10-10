@@ -28,7 +28,7 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::MAX_MAGS;
 use sim_core::ranged::{
     mag_ceiling, mag_loaded, mag_pair, REFUSE_RL_BUSY, REFUSE_RL_DRY, REFUSE_RL_EMPTY,
-    REFUSE_RL_FULL, REFUSE_RL_HAND, REFUSE_RL_MAX,
+    REFUSE_RL_FULL, REFUSE_RL_HAND, REFUSE_RL_MAX, REFUSE_RL_UNLOADED,
 };
 use sim_core::world::{Command, World, EV_RELOAD, EV_RELOAD_REFUSED, EV_SHOT};
 
@@ -310,6 +310,7 @@ fn every_reload_refusal_has_a_cause() {
         REFUSE_RL_FULL,
         REFUSE_RL_EMPTY,
         REFUSE_RL_DRY,
+        REFUSE_RL_UNLOADED,
     ];
     for (i, a) in all.iter().enumerate() {
         assert_ne!(*a, 0, "zero is reserved as `no reason` at both ends");
@@ -383,42 +384,6 @@ fn two_of_a_kind_share_one_magazine() {
          known cost of `RangedDef::mag_slot`, not a bug, and if it ever \
          stops being true the doc there has to move with it"
     );
-}
-
-/// A magazine holding one kind tops up with that kind or not at all.
-///
-/// Mixing would fire the wrong item and hand back the wrong item on the
-/// next unload. There is no `SwitchAmmoTo` verb here, so the refusal is the
-/// whole of the policy — the reference refunds the partial magazine and
-/// adopts the new round instead, which needs a verb we do not have.
-#[test]
-fn a_partly_loaded_magazine_will_not_mix_rounds() {
-    const OTHER: u16 = 9;
-    let mut w = armed();
-    w.combat.ranged[GUN as usize].ammo = [ROUND, OTHER, NO_ITEM, NO_ITEM];
-    w.players[0].mag[0] = 2;
-    w.players[0].mag_round[0] = ROUND;
-    // No more of the loaded round, plenty of the other.
-    w.players[0].inv[1] = ItemStack {
-        item: OTHER,
-        count: PACK,
-        cond: 0,
-        skin: 0,
-    };
-    w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(
-        first(&w, EV_RELOAD_REFUSED).b & 0xFFFF,
-        REFUSE_RL_DRY,
-        "a cylinder with two of one round does not take a third of another"
-    );
-    assert_eq!(w.players[0].mag[0], 2, "and nothing moved");
-
-    // Spend it to zero, and the same press now takes the other round —
-    // an EMPTY magazine remembers nothing.
-    w.players[0].mag[0] = 0;
-    w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag_round[0], OTHER);
-    assert_eq!(w.players[0].mag[0], MAG);
 }
 
 /// The packing helpers are each other's inverse over the whole domain.
@@ -717,4 +682,78 @@ fn the_hash_sees_the_magazine_and_a_save_carries_it() {
         a.state_hash(),
         "the same world saved twice restored differently"
     );
+}
+
+/// Tick past the beat a reload just paid.
+fn settle(w: &mut World) {
+    for _ in 0..=RELOAD_TICKS {
+        w.tick(&[]);
+    }
+}
+
+/// **Unload puts the magazine back in the pack** (`NOW.md` §0mag 2), says
+/// the cylinder is empty, and refuses with its own sentence when there is
+/// nothing to take out, a reload still running, or no magazine in hand.
+#[test]
+fn unload_returns_the_magazine_to_the_pack() {
+    let mut w = armed();
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.tick(&[Command::Reload { id: ME }]);
+    // BUSY: mid-reload, an unload would undo the fill half-way.
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(first(&w, EV_RELOAD_REFUSED).b & 0xFFFF, REFUSE_RL_BUSY);
+    assert_eq!(w.players[0].mag[0], MAG);
+    settle(&mut w);
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(w.players[0].mag[0], 0);
+    assert_eq!(w.players[0].mag_round[0], NO_ITEM);
+    assert_eq!(inv_count(&w.players[0].inv, ROUND), PACK as u32);
+    let ev = first(&w, EV_RELOAD);
+    assert_eq!(ev.b, mag_pair(0, MAG));
+    assert_eq!(ev.c, 0, "nothing left the pack");
+    // UNLOADED: a second press finds nothing in it.
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(first(&w, EV_RELOAD_REFUSED).b & 0xFFFF, REFUSE_RL_UNLOADED);
+    assert_eq!(inv_count(&w.players[0].inv, ROUND), PACK as u32);
+    // HAND: a bow has no magazine to empty.
+    w.tick(&[input(2, false)]);
+    w.tick(&[Command::Unload { id: ME }]);
+    assert_eq!(first(&w, EV_RELOAD_REFUSED).b & 0xFFFF, REFUSE_RL_HAND);
+}
+
+/// **A part-full magazine whose round ran out adopts the next one** — the
+/// reference's ammo switch at `StartReload`: the old rounds go back to the
+/// pack, and the two kinds never share the cylinder.
+#[test]
+fn a_reload_switches_to_the_next_carried_round() {
+    const ROUND2: u16 = 9;
+    let mut w = armed();
+    w.combat.ranged[GUN as usize].ammo = [ROUND, ROUND2, NO_ITEM, NO_ITEM];
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.gather.stack_max[ROUND2 as usize] = 128;
+    w.players[0].inv[1].count = 3;
+    w.players[0].inv[3] = ItemStack {
+        item: ROUND2,
+        count: PACK,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!((w.players[0].mag[0], w.players[0].mag_round[0]), (3, ROUND));
+    settle(&mut w);
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(
+        (w.players[0].mag[0], w.players[0].mag_round[0]),
+        (MAG, ROUND2),
+        "the cylinder holds only the new round"
+    );
+    assert_eq!(
+        inv_count(&w.players[0].inv, ROUND),
+        3,
+        "the old rounds came back"
+    );
+    assert_eq!(inv_count(&w.players[0].inv, ROUND2), (PACK - MAG) as u32);
+    let ev = first(&w, EV_RELOAD);
+    assert_eq!(ev.b, mag_pair(MAG, MAG));
+    assert_eq!(ev.c, MAG as u32);
 }

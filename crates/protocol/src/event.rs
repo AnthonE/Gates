@@ -637,7 +637,7 @@ const _: () = assert!(
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
 const REFUSE_G_BITS: u32 = 4;
-/// Reload-refusal reason width (`ranged::REFUSE_RL_*`: five codes today,
+/// Reload-refusal reason width (`ranged::REFUSE_RL_*`: six codes today,
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
 const REFUSE_RL_BITS: u32 = 3;
@@ -8438,9 +8438,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_RL_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 5,
+            min_members: 6,
             bits: REFUSE_RL_BITS,
-            live_max: 5,
+            live_max: 6,
         },
         Domain {
             what: "gather refusal",

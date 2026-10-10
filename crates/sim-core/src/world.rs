@@ -1998,6 +1998,11 @@ pub enum Command {
     Reload {
         id: u32,
     },
+    /// Empty the held weapon's magazine into the pack (`ranged::unload`).
+    /// No payload, `Reload`'s reasoning: the sim reads the hand it has.
+    Unload {
+        id: u32,
+    },
 }
 
 pub struct World {
@@ -5537,12 +5542,32 @@ impl World {
                 // for the reason `hitscan` restates the same rule — the
                 // arm belongs to a body somebody is driving.
                 if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     ranged::reload(
                         self.tick,
                         &self.combat,
+                        &self.gather,
                         &mut self.events,
                         &mut self.players[slot],
+                        &mut spill,
                     );
+                    self.announce_spill(slot, &spill);
+                    self.drain_spill(slot, &mut spill);
+                }
+            }
+            Command::Unload { id } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    ranged::unload(
+                        self.tick,
+                        &self.combat,
+                        &self.gather,
+                        &mut self.events,
+                        &mut self.players[slot],
+                        &mut spill,
+                    );
+                    self.announce_spill(slot, &spill);
+                    self.drain_spill(slot, &mut spill);
                 }
             }
         }
