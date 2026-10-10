@@ -239,6 +239,11 @@ pub struct ShardCore {
     /// it ([`Self::adopt_identities`]) so the bodies it restored are
     /// claimable.
     sleepers: SleeperIndex,
+    /// Eviction records the store may not have filed yet ([`EvictMemo`]): a
+    /// victim back before its record lands rejoins from this, not from the
+    /// stale copy the accept loop read. In memory only: after a restart the
+    /// store's copy is what a victim gets back.
+    evicted: EvictMemo,
     /// The wallets this shard trusts with the admin lane (admin v0). Pure
     /// config, read once at boot and never written — the same standing as
     /// the baked content tables, and the reason it may live on a struct
@@ -420,6 +425,72 @@ impl SleeperIndex {
     }
 }
 
+/// The sim's own copy of every eviction record it has handed out, by key
+/// (NOW §0y 2). `connect_as` reads it ahead of the record a joiner brings.
+///
+/// The eviction record leaves the sim on the save ring and reaches the
+/// store a hop later, but a reconnecting victim's `install` reads the store
+/// on the accept loop, *before* its `Connect` reaches the sim. Inside the
+/// eviction's window — or for good, if a full save ring dropped the record
+/// — it brings the copy its leave filed, frozen before the raid, and
+/// `JoinAs` would undo the raid that the current-body save exists to keep.
+/// The current record is already in hand here, so it wins.
+///
+/// It may always win. The store's only other source for a key is that
+/// key's own connection (its leave, its autosaves), so an entry is spent at
+/// any admission of its key and dropped at any leave of it, and while it
+/// stands it is at least as new as anything the store holds. Nothing
+/// expires on a clock for that reason; a full table drops its oldest put,
+/// which costs that one victim only the hole this closes. Boxed at `new`,
+/// and `PlayerSave` is `Copy`, so a put never allocates.
+struct EvictMemo {
+    entries: Box<[Option<(PlayerKey, PlayerSave, u64)>]>,
+    /// The next put's stamp: oldest-first replacement with no ties when one
+    /// window evicts more than once.
+    next: u64,
+}
+
+impl EvictMemo {
+    fn new() -> Self {
+        Self {
+            entries: vec![None; MAX_PLAYERS].into_boxed_slice(),
+            next: 0,
+        }
+    }
+
+    fn find(&self, key: &PlayerKey) -> Option<PlayerSave> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|(k, _, _)| k == key)
+            .map(|(_, s, _)| *s)
+    }
+
+    fn forget(&mut self, key: &PlayerKey) {
+        for e in self.entries.iter_mut() {
+            if e.map(|(k, _, _)| k == *key).unwrap_or(false) {
+                *e = None;
+            }
+        }
+    }
+
+    /// File `save` under `key`, replacing any earlier one for the same key,
+    /// else into a free row, else over the oldest put.
+    fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
+        self.forget(key);
+        let stamp = |e: &Option<(PlayerKey, PlayerSave, u64)>| e.map_or(0, |(_, _, n)| n);
+        let row = self
+            .entries
+            .iter()
+            .position(|e| e.is_none())
+            .or_else(|| (0..self.entries.len()).min_by_key(|&i| stamp(&self.entries[i])));
+        if let Some(i) = row {
+            self.entries[i] = Some((*key, save, self.next));
+            self.next += 1;
+        }
+    }
+}
+
 /// One player slot's tag (`ShardCore::tags`). `id == 0` is an empty row —
 /// a guest or a slot nobody has joined — and is never sent.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -463,6 +534,7 @@ impl ShardCore {
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
             sleepers: SleeperIndex::new(),
+            evicted: EvictMemo::new(),
             watching: [None; MAX_SPECTATORS],
             trust: crate::trustlog::Tap::off(),
             wipe: crate::wipe::Clock::off(),
@@ -905,6 +977,14 @@ impl ShardCore {
     /// keyless victim with no record to file. The record returns rather
     /// than being pushed here because `ShardCore` holds no rings — the
     /// same seam `disconnect` and `autosave` already cross by returning.
+    ///
+    /// **`save` is what the accept loop read, and it can be stale.** It
+    /// fetched the store before this join's `Connect` reached the sim, so a
+    /// victim reconnecting in its own eviction's window (or after the save
+    /// ring dropped the eviction record) brings the copy its leave filed,
+    /// raid not included. The record this function kept at the pick
+    /// ([`EvictMemo`]) outranks it whenever the world has no body for the
+    /// key (NOW §0y 2).
     #[must_use]
     pub fn connect_as(
         &mut self,
@@ -921,6 +1001,13 @@ impl ShardCore {
             .and_then(|k| self.sleepers.find(&k))
             .filter(|&s| self.world.is_sleeper(s))
             .filter(|&s| !self.spoken_for(s));
+        // No body, so a record: this shard's own eviction record first, the
+        // store's (as the accept loop read it) only if it has none. Peeked,
+        // not taken — it is spent below only once the join is queued.
+        let save = match key {
+            Some(k) if sleeper.is_none() => self.evicted.find(&k).or(save),
+            _ => save,
+        };
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
@@ -947,10 +1034,12 @@ impl ShardCore {
                     // (`world.rs`) so evaluating it eagerly costs a slot
                     // lookup on the guest path and changes nothing else.
                     let record = self.sleepers.key_of(victim).zip(self.world.save_of(victim));
-                    if let Some((k, _)) = record.as_ref() {
+                    if let Some((k, s)) = record.as_ref() {
                         // The arrow points at a body the command below is
-                        // about to remove.
+                        // about to remove. The record is kept for the
+                        // victim's return, which may beat the store to it.
                         self.sleepers.forget(k);
+                        self.evicted.put(k, *s);
                     }
                     let roomed = self.queue(Command::Evict { id: victim });
                     debug_assert!(roomed, "room for two was checked above");
@@ -976,6 +1065,10 @@ impl ShardCore {
             // answer, wrong reason, and one that stops being right the
             // moment ids are reused.
             self.sleepers.forget(k);
+            // Whichever door opened, the world has a body for this key now,
+            // and every record the store gets for it from here on is newer
+            // than an eviction's.
+            self.evicted.forget(k);
         }
         self.keys[slot] = key;
         self.clients[slot].reset(id);
@@ -1099,6 +1192,9 @@ impl ShardCore {
         if let Some(k) = self.keys[slot] {
             let world = &self.world;
             self.sleepers.put(&k, id, |s| world.is_sleeper(s));
+            // This leave's record supersedes any eviction record for the
+            // key — reachable only when one key held two connections.
+            self.evicted.forget(&k);
         }
         self.keys[slot] = None;
         self.clients[slot].connected = false;
@@ -6626,5 +6722,28 @@ mod tests {
             "past the seats"
         );
         assert_eq!(core.spectators(), 0);
+    }
+
+    /// A full eviction memo gives up its oldest put, never a newer one, and
+    /// a key filed twice holds one row (its newer record).
+    #[test]
+    fn a_full_evict_memo_drops_its_oldest_put() {
+        let key = |n: usize| PlayerKey::new(format!("victim-{n}").as_bytes()).unwrap();
+        let save = |n: usize| PlayerSave {
+            hp: n as u16,
+            ..PlayerSave::EMPTY
+        };
+        let mut memo = EvictMemo::new();
+        for n in 0..MAX_PLAYERS {
+            memo.put(&key(n), save(n));
+        }
+        memo.put(&key(3), save(1000));
+        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
+        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
+        assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
+        assert_eq!(memo.find(&key(1)), Some(save(1)));
+        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
+        memo.forget(&key(1));
+        assert_eq!(memo.find(&key(1)), None);
     }
 }

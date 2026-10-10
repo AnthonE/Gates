@@ -1359,9 +1359,11 @@ async fn accept_loop(
 /// key, in place.
 ///
 /// One caller passes `key`: the eviction save, whose ring-drop story is
-/// different and still freshness — the store keeps the record the victim's
-/// leave filed, stale by the raid but present, and the same interval the
-/// autosave sweep already leaves at risk.
+/// different. The store keeps the record the victim's leave filed, stale by
+/// the raid, but the sim kept its own copy at the pick (`core.rs`
+/// `EvictMemo`) and a returning victim rejoins from that, not from the
+/// store's. A drop still costs the raid if a restart, or `MAX_PLAYERS`
+/// later evictions, come before the victim does.
 fn push_save(
     save_tx: &mut rtrb::Producer<SaveMsg>,
     id: u32,
@@ -1878,6 +1880,8 @@ async fn install(
     };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
+    // A hit can be stale — an eviction record still on the save ring — and
+    // the sim, which kept that record, decides (`ShardCore::connect_as`).
     let save = key.and_then(|k| store.find(&k));
 
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
