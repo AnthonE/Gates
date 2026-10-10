@@ -161,7 +161,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
 
 /// The cue whose bank a cue plays. The remote halves are the same boot on the
 /// same ground and the same arm (`sound::synth` delegates them the same way),
-/// so they share its takes.
+/// so they share its takes; so does a frame's second hurt.
 pub fn source(cue: Cue) -> Cue {
     match cue {
         Cue::RemoteStepSand => Cue::StepSand,
@@ -180,6 +180,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteSplash => Cue::Splash,
         Cue::RemoteBowDraw => Cue::BowDraw,
         Cue::RemoteBrush => Cue::Brush,
+        Cue::HurtAgain => Cue::Hurt,
         c => c,
     }
 }

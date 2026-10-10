@@ -1644,12 +1644,13 @@ pub struct LastHp(pub u16);
 
 /// Being hurt, as a **blow** rather than as a health bar.
 ///
-/// Two producers, one voice. The fall carries coverage — see
+/// Two witnesses, up to two voices. The fall carries coverage — see
 /// [`crate::sound::hurt`] for why reading `EV_HURT` alone would silence
 /// starvation, thirst and the keypad shock — and this frame's announced blows
-/// carry the weight. `Feed` is taken immutably, which is the shape
-/// `CLAUDE.md`'s two-drains trap requires of every reader that is not
-/// `feed::drain` itself; scheduling puts this after it.
+/// carry the weight, and a second voice when there were two. `Feed` is taken
+/// immutably, which is the shape `CLAUDE.md`'s two-drains trap requires of
+/// every reader that is not `feed::drain` itself; scheduling puts this after
+/// it.
 pub fn hurt(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
@@ -1675,6 +1676,12 @@ pub fn hurt(
         // blow armor ate whole now tenses the music too — it is the shooting
         // that matters to the score, not the bookkeeping.
         sound.music.bump(music::BUMP_HURT);
+    }
+    // Two blows in one frame are two voices, not one heavier one: the second
+    // is its own row, so the per-row cooldown that binds inside a frame
+    // does not fold it into the first (`sound::hurt::again`).
+    if let Some(req) = crate::sound::hurt::again(feed.hurt_damage, feed.hurts, core.hp_max) {
+        sound.play(req);
     }
 }
 

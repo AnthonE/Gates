@@ -259,8 +259,9 @@ impl Mixer {
                 1.0
             };
             let gain = def.gain * req.gain * fall * mix.bus_gain(def.bus) * duck;
-            // Below the cull radius, silenced by the mix, or on cooldown.
-            let ok = fall > 0.0 && gain > 0.0 && self.cool[req.cue.idx()] <= 0.0;
+            // Below the cull radius, silenced by the mix, or on cooldown —
+            // the clock of the row it is a second voice of (`Cue::lead`).
+            let ok = fall > 0.0 && gain > 0.0 && self.cool[req.cue.lead().idx()] <= 0.0;
             *slot = if ok {
                 (def.priority, gain, dist)
             } else {
@@ -298,7 +299,7 @@ impl Mixer {
             taken[i] = true;
             let req = self.queue[i];
             let def = req.cue.def();
-            self.cool[req.cue.idx()] = def.cooldown_ms as f32;
+            self.cool[req.cue.lead().idx()] = def.cooldown_ms as f32;
             // **The cooldown binds WITHIN the frame too**, and it did not
             // until the gate said so: the scoring pass above reads `cool`
             // once, so four footsteps requested in one frame all scored as
@@ -306,7 +307,9 @@ impl Mixer {
             // three of them never had to pass. A cue with a cooldown may
             // start once a frame; a cue without one (a tree falling) may
             // start as often as the budget allows, which is what a zero
-            // cooldown means.
+            // cooldown means. **By row, not by clock:** this is what lets
+            // `HurtAgain` start beside `Hurt` in a frame of two blows, while
+            // across frames the scoring pass reads the lead's clock.
             if def.cooldown_ms > 0 {
                 for (j, s) in scored.iter_mut().enumerate().take(self.queued) {
                     if j != i && !taken[j] && self.queue[j].cue == req.cue {
@@ -388,6 +391,9 @@ impl Takes {
         x ^= x >> 17;
         x ^= x << 5;
         self.rng = x;
+        // The lead's memory: a second voice plays its lead's takes, and
+        // must not start the one its lead just did beside it.
+        let cue = cue.lead();
         let last = self.last[cue.idx()];
         let t = if last < takes {
             let t = (x % (takes as u32 - 1)) as u8;

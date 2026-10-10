@@ -110,9 +110,8 @@ pub enum Refused {
 /// has no entry here at all (`crate::sound::hurt`).
 ///
 /// **The per-sector split is still the arc's alone.** `Cue::Hurt` is
-/// non-positional and its cooldown is per-cue, so three light blows from
-/// three directions are one voice at the weight of their sum — `NOW.md`
-/// §0hrt item 1 carries what that costs and why it is a second slice.
+/// non-positional, so three light blows from three directions are two voices
+/// (`sound::hurt::again`) that say how many and how hard, never from where.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Hurt {
     pub from: u8,
