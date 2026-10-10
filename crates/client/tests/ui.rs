@@ -4332,7 +4332,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 ///
 /// An empty list means the row is not a discrete button — `LOOK` is mouse
 /// motion — and is exempt by name rather than by falling through.
-const BIND_IDENTS: [(&str, &[&str]); 24] = [
+const BIND_IDENTS: [(&str, &[&str]); 25] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
     ("CROUCH", &["ControlLeft", "KeyZ"]),
@@ -4341,6 +4341,7 @@ const BIND_IDENTS: [(&str, &[&str]); 24] = [
     ("LOOK", &[]),
     ("USE / ATTACK", &["MouseButton::Left"]),
     ("INTERACT / OPEN", &["KeyE"]),
+    ("GIVE", &["KeyB"]),
     (
         "HOTBAR",
         &["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"],

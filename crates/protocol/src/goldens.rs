@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 156] = [
+pub const FIXTURES: [&str; 157] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -279,6 +279,8 @@ pub const FIXTURES: [&str; 156] = [
     "event_stump_grubbed.bin",
     // Stock taken back out of a hearth (v101).
     "action_take_stock.bin",
+    // A stack handed to another player (v102).
+    "action_give.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2335,6 +2337,11 @@ pub fn event_worn() -> (u32, [u16; sim_core::limits::WEAR_SLOTS]) {
 /// Inject inventory slot 6 into downed player 0x0100_0009 (wire v99).
 pub fn action_treat() -> (u8, u32) {
     (6, 0x0100_0009)
+}
+
+/// Hand 37 of inventory slot 4 to player 0x0100_000B (wire v102).
+pub fn action_give() -> (u8, u16, u32) {
+    (4, 37, 0x0100_000B)
 }
 
 /// Drop 250 of inventory slot 9 (wire v97).

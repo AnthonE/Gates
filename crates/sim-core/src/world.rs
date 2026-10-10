@@ -90,12 +90,14 @@ const UNSTICK_EVERY_TICKS: u64 = crate::limits::TICK_HZ as u64;
 /// deliberately — the client's `+N Item` toast is the right feedback for
 /// both, and loot pays in the currency gathering already pays in.
 ///
-/// **Every producer owes the zero its meaning.** All three only push when
+/// **Every producer owes the zero its meaning.** All of them only push when
 /// something was actually owed — `gather::swing` guards on `pay > 0` and
 /// on `sec_pay > 0`, `backpack`'s loot walk skips a slot it took nothing
-/// from — so a zero here is never "nothing happened". A fourth producer
-/// that pushes an unowed zero silently turns the client's "pack full" line
-/// into a lie, which is why the guards are stated rather than assumed.
+/// from, a give (`World::give`, to the receiver) refuses before it pushes
+/// when nothing fit — so a zero here is never "nothing happened". A new
+/// producer that pushes an unowed zero silently turns the client's "pack
+/// full" line into a lie, which is why the guards are stated rather than
+/// assumed.
 pub const EV_GATHER: u8 = 1;
 /// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = terrain occupant
 /// ordinal (`terrain::Occupant as u32`) — *what* stopped standing there,
@@ -587,10 +589,10 @@ pub const EV_IMPACT: u8 = 38;
 /// **No address.** Three fields are spent on who/whom/what, and the
 /// address is not lost: every push here rides the same tick as the verb's
 /// own addressed event — `EV_DOOR` for a leaf, `EV_AUTH` for a grant or a
-/// crew seat, `EV_MOVED` for a container — so a reader joins the two by
-/// tick and loses nothing. That is a claim, so each of the four causes in
-/// `tests/event_roles.rs` asserts its verb's own event is on the tick
-/// beside the trust row.
+/// crew seat, `EV_MOVED` for a container, the receiver's `EV_GATHER` for a
+/// give — so a reader joins the two by tick and loses nothing. That is a
+/// claim, so each of the causes in `tests/event_roles.rs` asserts its
+/// verb's own event is on the tick beside the trust row.
 pub const EV_TRUST: u8 = 39;
 
 /// EV_SWING: a = the swinging player's id, or a biting animal's tagged id
@@ -678,6 +680,12 @@ pub const TRUST_AUTH: u8 = 2;
 /// A world container has no owner and is therefore never this: nobody's
 /// crate is nobody's trust.
 pub const TRUST_CONT: u8 = 3;
+/// A stack handed from this hand into another player's pack
+/// (`Command::Give`). The counterparty is the **receiver**: the act is
+/// the giver's, and the record it answers to is the pack it filled. The
+/// receiver is always awake — a give needs a standing body to aim at — so
+/// what this row measures is who gives to whom, not who was watching.
+pub const TRUST_GIVE: u8 = 4;
 /// The highest verb above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a value domain, exactly as `DEATH_BY_MAX` is.
 ///
@@ -689,12 +697,11 @@ pub const TRUST_CONT: u8 = 3;
 /// and an unclassified log column is this constant and the ledger that
 /// reads it (`event_roles.rs`).
 ///
-/// `PLAYERS.md`'s verb list names a fourth — **give** — and it is
-/// deliberately absent: there is no player-to-player give verb in the sim
-/// yet, so a `TRUST_GIVE` declared now would be a value with no cause,
-/// which is the one thing this lane's discipline refuses. It lands in the
-/// commit that lands the verb.
-pub const TRUST_VERB_MAX: u8 = TRUST_CONT;
+/// `PLAYERS.md`'s verb list names a fourth — **give** — and it waited,
+/// deliberately, for the verb: a `TRUST_GIVE` declared before
+/// `Command::Give` existed would have been a value with no cause. It
+/// landed in the same commit as the verb.
+pub const TRUST_VERB_MAX: u8 = TRUST_GIVE;
 
 /// Whether the counterparty was online, in `EV_TRUST.c`'s low byte.
 ///
@@ -1457,6 +1464,15 @@ pub enum Command {
     Treat {
         id: u32,
         slot: u8,
+        target: u32,
+    },
+    /// Hand up to `count` of inventory slot `slot` to `target`, a standing,
+    /// awake player the sender is aiming at in hand reach (`World::give`,
+    /// `NOW.md` §5d). What fits in their pack moves; the rest stays put.
+    Give {
+        id: u32,
+        slot: u8,
+        count: u16,
         target: u32,
     },
     Join {
@@ -3492,9 +3508,73 @@ impl World {
         survival::start_heal(def, &mut self.players[t], heal_pct);
     }
 
+    /// Hand up to `count` of inventory slot `inv` to `target`
+    /// (`Command::Give`): a standing, awake player — not down, not dead, not
+    /// a sleeper, not yourself — aimed at in hand reach with nothing in the
+    /// way (`reaches_body`, the syringe's test). What fits in their pack
+    /// moves, top-ups first exactly as a payout lands (`inv_add_skinned`,
+    /// so a stack keeps its condition and its skin), and the rest stays in
+    /// the giver's slot — nothing spills, because a give is a hand-over and
+    /// not a drop. The receiver hears `EV_GATHER` (the "+N Item" line) and
+    /// the ledger keeps `TRUST_GIVE`.
+    ///
+    /// A target out of reach or in the wrong state is silent, as a syringe
+    /// out of reach is; a pack with no room for any of it is
+    /// `REFUSE_M_GIVE`, because the giver pressed a key and is owed why
+    /// nothing left their hand.
+    fn give(&mut self, seat: TrustSeat, slot: usize, inv: usize, count: u16, target: u32) {
+        let id = self.players[slot].id;
+        let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
+        if stack.count == 0 || count == 0 {
+            return;
+        }
+        let Some(t) = self.slot_of(target).filter(|&t| {
+            let q = &self.players[t];
+            t != slot && q.active && !q.wounded && !q.dead && !q.sleeping
+        }) else {
+            return;
+        };
+        if !self.reaches_body(slot, t) {
+            return;
+        }
+        let n = count.min(stack.count);
+        // A copy out and back rather than two live borrows of `players`:
+        // 30 stacks by value, no allocation.
+        let mut pack = self.players[t].inv;
+        let added = gather::inv_add_skinned(
+            &mut pack,
+            stack.item,
+            n,
+            self.gather.stack_max_of(stack.item),
+            stack.cond,
+            stack.skin,
+        );
+        if added == 0 {
+            let addr = inventory::addr(
+                inventory::CONT_SELF,
+                inv as u8,
+                inventory::CONT_SELF,
+                inv as u8,
+            );
+            self.events
+                .push(EV_MOVE_REFUSED, id, inventory::REFUSE_M_GIVE, addr);
+            return;
+        }
+        self.players[t].inv = pack;
+        let s = &mut self.players[slot].inv[inv];
+        s.count -= added;
+        if s.count == 0 {
+            *s = ItemStack::default();
+        }
+        let to = self.players[t].id;
+        self.events
+            .push(EV_GATHER, to, ((stack.item as u32) << 16) | added as u32, 0);
+        self.log_trust(seat, id, to, TRUST_GIVE);
+    }
+
     /// Whether `helper`'s look reaches `target`'s body inside hand reach
     /// with nothing in the way — the hand revive's test, shared with a
-    /// syringe.
+    /// syringe and a give.
     fn reaches_body(&mut self, helper: usize, target: usize) -> bool {
         let (p, q) = (&self.players[helper], &self.players[target]);
         let ray = crate::assist::ray(&p.body, &p.frame, p.crouched());
@@ -4548,8 +4628,8 @@ impl World {
     }
 
     /// `seat` is this command's right to one trust row (`trust.rs`). The
-    /// three trust-bearing arms move it into `log_trust`; every other arm
-    /// drops it unspent.
+    /// trust-bearing arms (a door, an access op, a container move or loot, a
+    /// give) move it into `log_trust`; every other arm drops it unspent.
     fn apply(
         &mut self,
         cmd: &Command,
@@ -4571,6 +4651,16 @@ impl World {
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     self.treat(slot, inv as usize, target);
+                }
+            }
+            Command::Give {
+                id,
+                slot: inv,
+                count,
+                target,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.give(seat, slot, inv as usize, count, target);
                 }
             }
             Command::Join { id } => self.seat(id, None),

@@ -192,6 +192,10 @@ fn main() {
     let (cx, cz, level, row) = goldens::action_take_stock();
     let len = protocol::encode_action_take_stock(cx, cz, level, row, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[155], &buf[..len]);
+    // A stack handed to another player (v102).
+    let (slot, count, target) = goldens::action_give();
+    let len = protocol::encode_action_give(slot, count, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[156], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

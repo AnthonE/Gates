@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 156] = [
+const GOLDEN: [&[u8]; 157] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -219,6 +219,7 @@ const GOLDEN: [&[u8]; 156] = [
     include_bytes!("golden/event_planter.bin"),
     include_bytes!("golden/event_stump_grubbed.bin"),
     include_bytes!("golden/action_take_stock.bin"),
+    include_bytes!("golden/action_give.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -479,8 +480,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 154);
     // Stock taken back out of a hearth (v101).
     g!(seen, golden_action, 155);
+    // A stack handed to another player (v102).
+    g!(seen, golden_action, 156);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 156, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 157, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -592,6 +595,19 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_treat(slot, target, &mut buf).unwrap()
+        }
+        "action_give.bin" => {
+            let (slot, count, target) = protocol::goldens::action_give();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Give {
+                    slot,
+                    count,
+                    target
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_give(slot, count, target, &mut buf).unwrap()
         }
         "action_drop.bin" => {
             let (slot, count) = protocol::goldens::action_drop();

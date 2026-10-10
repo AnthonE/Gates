@@ -1835,6 +1835,158 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
     best
 }
 
+/// What the give key would hand over this frame (`Command::Give`, `NOW.md`
+/// §5d): the whole stack in the selected hotbar slot, to the standing player
+/// the crosshair is on in hand reach.
+///
+/// **Its own key, never `E`.** `E` on a body already means help up, inject
+/// and nothing else; a give on the same key would turn a press meant for a
+/// door behind a friend into a weapon handed over. So it is `B`, held for
+/// [`GIVE_HOLD_S`] (`GiveHold`), and the prompt names the item, the count
+/// and the person before anything leaves the hand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GivePick {
+    pub target: u32,
+    pub slot: u8,
+    pub item: u16,
+    pub count: u16,
+}
+
+/// How long the give key is held before the stack goes, seconds. Long
+/// enough that a tap or a brush of the key never gives, short enough that a
+/// deliberate hand-over is not a wait.
+pub const GIVE_HOLD_S: f64 = 0.5;
+
+/// The give key's target: the nearest standing, awake player (not down, not
+/// dead, not a sleeper, not an animal, not you) whose body the aim enters
+/// inside hand reach — the syringe's ray and reach (`sim_core::assist`), so
+/// the prompt is offered exactly where the sim's `reaches_body` would pass
+/// on open ground. `held` is the selected slot and its stack; an empty hand
+/// gives nothing.
+pub fn resolve_give(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+    held: (u8, sim_core::gather::ItemStack),
+) -> Option<GivePick> {
+    let (slot, stack) = held;
+    if stack.count == 0 {
+        return None;
+    }
+    let body = Body {
+        qx: quant_xz(aim.x),
+        qy: quant_y(aim.y),
+        qz: quant_xz(aim.z),
+        ..Default::default()
+    };
+    let ray = sim_core::assist::ray(
+        &body,
+        &sim_core::input::InputFrame {
+            yaw: aim.yaw,
+            pitch: aim.pitch,
+            ..Default::default()
+        },
+        aim.crouched,
+    );
+    let mut best: Option<(f32, u32)> = None;
+    for &(id, e) in entities {
+        if id == own || e.wounded || e.dead || e.sleeping || sim_core::mob::slot_of_id(id).is_some()
+        {
+            continue;
+        }
+        let target = Body {
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            ..Default::default()
+        };
+        if let Some(t) = sim_core::assist::aimed(&ray, &target) {
+            // Identity breaks an exact tie, `resolve_assist`'s rule.
+            if best.is_none_or(|(d, b)| t < d || (t == d && id < b)) {
+                best = Some((t, id));
+            }
+        }
+    }
+    best.map(|(_, target)| GivePick {
+        target,
+        slot,
+        item: stack.item,
+        count: stack.count,
+    })
+}
+
+/// The give key's line: what, how many and to whom, and while the key is
+/// held, how long is left. `who` is the receiver's label (`ui::names`).
+pub fn give_prompt(
+    pick: &GivePick,
+    catalog: &ItemCatalog,
+    who: &str,
+    left_s: Option<f64>,
+) -> String {
+    let item = crate::ui::craft::item_label(catalog, pick.item).to_uppercase();
+    match left_s {
+        Some(s) => format!(
+            "GIVING {item} ×{} TO {who} · {s:.1} s · HOLD [B]",
+            pick.count
+        ),
+        None => format!("HOLD [B] GIVE {item} ×{} TO {who}", pick.count),
+    }
+}
+
+/// The hold on the give key. A hold starts only on the key's **press** with
+/// a give aimed, and it gives only if that same pick — same person, same
+/// slot, same item, same count — is still aimed when [`GIVE_HOLD_S`] runs
+/// out. Anything else cancels it until the key comes up and goes down
+/// again: holding `B` and sweeping the crosshair across a friend gives
+/// nothing, and one hold gives once.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GiveHold {
+    on: Option<(GivePick, f64)>,
+}
+
+impl GiveHold {
+    /// One frame. `pressed` is the key's down edge, `down` whether it is
+    /// held, `pick` this frame's [`resolve_give`]. Returns the pick to send,
+    /// on the one frame the hold completes.
+    pub fn step(
+        &mut self,
+        pressed: bool,
+        down: bool,
+        pick: Option<GivePick>,
+        now: f64,
+    ) -> Option<GivePick> {
+        if !down {
+            self.on = None;
+            return None;
+        }
+        if pressed {
+            self.on = pick.map(|p| (p, now));
+            return None;
+        }
+        let (on, t0) = self.on?;
+        if pick != Some(on) {
+            self.on = None;
+            return None;
+        }
+        if now - t0 >= GIVE_HOLD_S {
+            self.on = None;
+            return Some(on);
+        }
+        None
+    }
+
+    /// Seconds left on the hold under way, if one is.
+    pub fn left(&self, now: f64) -> Option<f64> {
+        self.on.map(|(_, t0)| (GIVE_HOLD_S - (now - t0)).max(0.0))
+    }
+
+    /// Drop the hold without giving (a panel took the keys, the body went
+    /// down).
+    pub fn cancel(&mut self) {
+        self.on = None;
+    }
+}
+
 /// A nametag's target: the player id, the eye the aim leaves from, and
 /// their head.
 pub type NametagHit = (u32, (f32, f32, f32), (f32, f32, f32));
@@ -1932,5 +2084,122 @@ mod assist_tests {
             resolve_assist(aim, 1, &[(3, target), (2, target)]).handle,
             2
         );
+    }
+
+    #[test]
+    fn a_give_needs_a_held_stack_and_an_aimed_standing_player() {
+        use sim_core::gather::ItemStack;
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: 128,
+            crouched: false,
+        };
+        let friend = protocol::EntityState {
+            qx: quant_xz(10.0),
+            qy: quant_y(0.0),
+            qz: quant_xz(11.5),
+            ..Default::default()
+        };
+        let held = (
+            2,
+            ItemStack {
+                item: 9,
+                count: 40,
+                cond: 0,
+                skin: 0,
+            },
+        );
+        assert_eq!(
+            resolve_give(aim, 1, &[(2, friend)], held),
+            Some(GivePick {
+                target: 2,
+                slot: 2,
+                item: 9,
+                count: 40
+            })
+        );
+        assert_eq!(
+            resolve_give(aim, 1, &[(2, friend)], (2, ItemStack::default())),
+            None,
+            "an empty hand gives nothing"
+        );
+        assert_eq!(resolve_give(aim, 2, &[(2, friend)], held), None, "yourself");
+        let animal = sim_core::mob::mob_id(3);
+        assert_eq!(resolve_give(aim, 1, &[(animal, friend)], held), None);
+        for absent in [
+            protocol::EntityState {
+                wounded: true,
+                ..friend
+            },
+            protocol::EntityState {
+                dead: true,
+                ..friend
+            },
+            protocol::EntityState {
+                sleeping: true,
+                ..friend
+            },
+            protocol::EntityState {
+                qz: quant_xz(14.0),
+                ..friend
+            },
+        ] {
+            assert_eq!(resolve_give(aim, 1, &[(2, absent)], held), None);
+        }
+        assert_eq!(
+            resolve_give(SwingAim { yaw: 32768, ..aim }, 1, &[(2, friend)], held),
+            None,
+            "not aimed at"
+        );
+        let p = resolve_give(aim, 1, &[(3, friend), (2, friend)], held).unwrap();
+        assert_eq!(p.target, 2, "identity breaks a dead tie");
+        let line = give_prompt(&p, &ItemCatalog::EMPTY, "ANNA", None);
+        assert!(line.contains("[B]") && line.contains("×40") && line.contains("ANNA"));
+    }
+
+    #[test]
+    fn a_give_takes_a_held_press_on_one_unchanged_pick() {
+        let p = GivePick {
+            target: 2,
+            slot: 0,
+            item: 9,
+            count: 4,
+        };
+        let other = GivePick { target: 3, ..p };
+        // A full hold from the press gives once, then nothing more until
+        // the key comes up and goes down again.
+        let mut h = GiveHold::default();
+        assert_eq!(h.step(true, true, Some(p), 0.0), None);
+        assert_eq!(h.step(false, true, Some(p), 0.3), None);
+        assert!(h.left(0.3).is_some_and(|s| (s - 0.2).abs() < 1e-9));
+        assert_eq!(h.step(false, true, Some(p), GIVE_HOLD_S), Some(p));
+        assert_eq!(
+            h.step(false, true, Some(p), 5.0),
+            None,
+            "one hold, one give"
+        );
+        assert_eq!(h.left(5.0), None);
+        // A tap gives nothing.
+        let mut h = GiveHold::default();
+        h.step(true, true, Some(p), 0.0);
+        assert_eq!(h.step(false, false, Some(p), 0.1), None);
+        assert_eq!(h.step(false, true, Some(p), 1.0), None);
+        // Holding the key and sweeping onto somebody gives nothing.
+        let mut h = GiveHold::default();
+        h.step(true, true, None, 0.0);
+        assert_eq!(h.step(false, true, Some(p), 1.0), None);
+        // A pick that changes mid-hold cancels it, even if it changes back.
+        let mut h = GiveHold::default();
+        h.step(true, true, Some(p), 0.0);
+        assert_eq!(h.step(false, true, Some(other), 0.2), None);
+        assert_eq!(h.step(false, true, Some(p), 1.0), None);
+        // So does a stack that changed under the hold.
+        let mut h = GiveHold::default();
+        h.step(true, true, Some(p), 0.0);
+        let more = GivePick { count: 5, ..p };
+        assert_eq!(h.step(false, true, Some(more), 1.0), None);
     }
 }

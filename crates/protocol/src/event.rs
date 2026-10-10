@@ -7895,7 +7895,10 @@ mod wire_domains {
             //
             // 12 -> 13 at wire v92: `REFUSE_M_SAFE`, THE GATE's "No
             // Looting" — another player's bag in the safe zone.
-            live_max: 13,
+            //
+            // 13 -> 14 at wire v102: `REFUSE_M_GIVE`, a give with no room
+            // in the receiver's pack.
+            live_max: 14,
         },
         Domain {
             what: "wear slot",

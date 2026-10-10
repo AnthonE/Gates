@@ -105,7 +105,7 @@ use sim_core::world::{
     EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
     EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
-    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
+    TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
@@ -5623,6 +5623,70 @@ fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
     assert!(
         w.deploys.hearths()[0].crew.contains(OUTSIDER),
         "the seat was never taken, so this row is about nothing"
+    );
+}
+
+/// Cause five: **a give** (`Command::Give`). The actor is the hand that
+/// gave and the counterparty is the RECEIVER — the pack the verb filled —
+/// who is standing there, so the presence is awake. The verb's own event
+/// is the receiver's `EV_GATHER` on the same tick.
+#[test]
+fn trust_names_the_giver_the_receiver_and_a_give() {
+    let mut w = duel_world();
+    for s in w.players[1].inv.iter_mut() {
+        *s = ItemStack::default();
+    }
+    w.players[0].inv[2] = ItemStack {
+        item: FILLER,
+        count: JUNK_COUNT,
+        cond: 0,
+        skin: 0,
+    };
+    let frame = InputFrame {
+        seq: 1,
+        yaw: YAW,
+        pitch: aim_at(&w, 0, 1),
+        ..Default::default()
+    };
+    w.tick(&[
+        Command::Input {
+            id: ATTACKER,
+            frame,
+            favour: 0,
+        },
+        Command::Give {
+            id: ATTACKER,
+            slot: 2,
+            count: JUNK_COUNT,
+            target: VICTIM,
+        },
+    ]);
+
+    let t = only(&w, EV_TRUST);
+    ledger_mirrors(&w, t);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, ATTACKER, "EV_TRUST.a is the hand that GAVE");
+    assert_eq!(
+        t.b, VICTIM,
+        "EV_TRUST.b is the RECEIVER, whose pack the give filled"
+    );
+    assert_eq!(t.c >> 8, TRUST_GIVE as u32, "a hand-over is TRUST_GIVE");
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_AWAKE as u32,
+        "a give needs a standing body, so the receiver is awake"
+    );
+    let g = only(&w, EV_GATHER);
+    assert_eq!(
+        (g.a, g.b, g.c),
+        (VICTIM, (FILLER as u32) << 16 | JUNK_COUNT as u32, 0),
+        "the give's own event is the receiver's EV_GATHER on the same tick"
+    );
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[1].inv, FILLER),
+        JUNK_COUNT as u32,
+        "the stack never arrived, so this row is about nothing"
     );
 }
 

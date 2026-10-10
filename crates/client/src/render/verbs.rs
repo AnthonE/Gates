@@ -1,5 +1,5 @@
-//! The in-world keys: what the crosshair is on, and what `E`, `J` and `H` do
-//! about it.
+//! The in-world keys: what the crosshair is on, and what `E`, `J`, `H` and
+//! `B` do about it.
 //!
 //! **Twelve of the wire's sixteen action verbs had no key in this client.**
 //! `ACT_USE`, `ACT_LOOT`, `ACT_CONTAINER`, `ACT_DRINK` and `ACT_FEED` are the
@@ -90,6 +90,17 @@ impl Bite {
     }
 }
 
+/// What the give key is on this frame, and the hold on it (`NOW.md` §5d).
+/// Its own resource beside [`Aimed`] because it is its own key: `B` hands
+/// the held stack to the standing player the crosshair is on, and `E` never
+/// does — see `ui::interact::GivePick` for why. Written by [`resolve`], held
+/// by [`keys`], drawn by the HUD prompt, so the three cannot disagree.
+#[derive(Resource, Default)]
+pub struct Give {
+    pub pick: Option<interact::GivePick>,
+    pub hold: interact::GiveHold,
+}
+
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
@@ -111,6 +122,9 @@ pub struct Near(pub Option<Target>);
 /// with the very cells this frame's movement step just resolved — and a memo
 /// is written to. It costs no extra scheduling: `keys` below already takes
 /// the session mutably, so these two were serialized before this line changed.
+// One output per pick (`E`'s, the swing's, the weak sector, the structure,
+// the give key's) plus the session, the look and the world: each distinct.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve(
     mut net: NonSendMut<Net>,
     look: Res<Look>,
@@ -118,8 +132,10 @@ pub fn resolve(
     mut near: ResMut<Near>,
     mut swung: ResMut<Swung>,
     mut in_weak: ResMut<InWeak>,
+    mut give: ResMut<Give>,
     world: Option<Res<crate::render::WorldId>>,
 ) {
+    let sel = net.sel;
     let core = &mut net.session.core;
     let [x, y, z] = core.predict.render_position();
     // The wire's own two bytes for the look, so the swing prompt is cast
@@ -312,6 +328,26 @@ pub fn resolve(
             aimed.0 = help;
         }
     }
+    // The give key's target, on the same aim (`B`, never `E`). A downed or
+    // dead hand gives nothing: the sim reads neither (`live_slot_of`).
+    give.pick = if core.wounded || core.dead {
+        None
+    } else {
+        let held = core.inv.get(sel as usize).copied().unwrap_or_default();
+        interact::resolve_give(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                crouched,
+            },
+            core.player_id,
+            &core.view.entities,
+            (sel, held),
+        )
+    };
     // A loose stack (ground items v0), last of the three `E` picks.
     //
     // **Outside the island block on purpose**: `core.island()` holds the
@@ -444,6 +480,7 @@ pub fn keys(
     // The arm, for the hammer's repair swing: a repair is an action, not
     // the swing button, so nothing else moves it.
     mut motion: ResMut<super::viewmodel::Motion>,
+    mut give: ResMut<Give>,
 ) {
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
@@ -458,6 +495,7 @@ pub fn keys(
         .unwrap_or(false)
         || chat.map(|c| c.open()).unwrap_or(false)
     {
+        give.hold.cancel();
         return;
     }
     // `R` and `F` belong to the build ghost while the wheel is up, and to
@@ -475,7 +513,9 @@ pub fn keys(
     if net.session.core.wounded {
         pad.0.close();
         hearth.0 = None;
-        const HAND_KEYS: [KeyCode; 11] = [
+        give.hold.cancel();
+        const HAND_KEYS: [KeyCode; 12] = [
+            KeyCode::KeyB,
             KeyCode::KeyE,
             KeyCode::KeyL,
             KeyCode::KeyK,
@@ -500,6 +540,27 @@ pub fn keys(
         return;
     }
 
+    // **`B`, held, hands the stack in your hand to the player you are
+    // looking at** (`Command::Give`). Held for `interact::GIVE_HOLD_S` on
+    // one unchanged pick, so a tap, a brush, or a crosshair swept across a
+    // friend with the key down gives nothing; the prompt names the item, the
+    // count and the person first. Whether it lands — reach, their state,
+    // their room — is the sim's verdict, and a full pack says so.
+    let pick = give.pick;
+    let b = keys.just_pressed(KeyCode::KeyB);
+    if let Some(p) = give.hold.step(b, keys.pressed(KeyCode::KeyB), pick, now) {
+        send(&net, &mut toast, "give", |buf| {
+            protocol::encode_action_give(p.slot, p.count, p.target, buf)
+        });
+    } else if b && pick.is_none() {
+        let core = &net.session.core;
+        let empty = core.inv.get(net.sel as usize).is_none_or(|s| s.count == 0);
+        toast.warn(if empty {
+            "nothing in your hand to give"
+        } else {
+            "look at a player within reach to give them what you hold"
+        });
+    }
     if keys.just_pressed(KeyCode::KeyE) {
         // A second `E` closes the hearth's panel rather than feeding again.
         if hearth.0.is_some() {

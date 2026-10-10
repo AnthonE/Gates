@@ -259,6 +259,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Arc { .. } => "arc",
         ActionMsg::Drop { .. } => "drop",
         ActionMsg::Treat { .. } => "treat",
+        ActionMsg::Give { .. } => "give",
         ActionMsg::RespawnAt { .. } => "respawn",
     }
 }

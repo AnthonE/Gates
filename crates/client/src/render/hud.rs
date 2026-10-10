@@ -2967,7 +2967,8 @@ const NET_LINE_PERIOD_S: f32 = 0.25;
 
 /// The centre prompt and the compass.
 // Eight sources and each is a distinct input: the two picks, the swing,
-// the near structure, the look, the pad, and the two text nodes.
+// the near structure, the look, the pad, and the two text nodes — plus the
+// give key's pick and the clock its hold runs on.
 #[allow(clippy::too_many_arguments)]
 pub fn prompt(
     // The catalog arrived with `Verb::Take` (ground items v0): a loose
@@ -2980,6 +2981,8 @@ pub fn prompt(
     look: Res<super::input::Look>,
     pad: Res<super::verbs::Pad>,
     pins: Option<Res<super::map::MapPins>>,
+    give: Res<super::verbs::Give>,
+    time: Res<Time>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
 ) {
@@ -3039,6 +3042,24 @@ pub fn prompt(
                     _ => side_line(&near.0),
                 },
             }
+        };
+        // The give key names its own line (`B`, `verbs::Give`): beside an
+        // `E` prompt when there is one, over the swing and side lines when
+        // there is not, and alone while the hold runs — the countdown is
+        // the one thing the player is watching then.
+        let want = match give.pick.filter(|_| !pad.0.is_open()) {
+            Some(p) => {
+                let core = &net.session.core;
+                let who = crate::ui::names::label(core.tag(p.target), p.target);
+                let left = give.hold.left(time.elapsed_secs_f64());
+                let line = crate::ui::interact::give_prompt(&p, &core.catalog, &who, left);
+                if left.is_none() && !aimed.0.is_none() {
+                    format!("{want}  ·  {line}")
+                } else {
+                    line
+                }
+            }
+            None => want,
         };
         if text.0 != want {
             text.0 = want;

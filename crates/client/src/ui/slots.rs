@@ -362,9 +362,9 @@ pub fn move_args(
 /// this side's.
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
-        REFUSE_M_BUSY, REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT,
-        REFUSE_M_NO_ROOM, REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SAFE, REFUSE_M_SLOT,
-        REFUSE_M_TABLE, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
+        REFUSE_M_BUSY, REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_GIVE, REFUSE_M_NO_CONTAINER,
+        REFUSE_M_NO_INPUT, REFUSE_M_NO_ROOM, REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SAFE,
+        REFUSE_M_SLOT, REFUSE_M_TABLE, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -394,6 +394,8 @@ pub fn refusal_text(reason: u8) -> &'static str {
         REFUSE_M_BUSY => "the table is researching - wait for it to finish",
         // THE GATE's "No Looting" (v92), Rust's popup.
         REFUSE_M_SAFE => "you can't loot other players in a safe zone",
+        // A give (v102): their pack, not a slot you dragged to.
+        REFUSE_M_GIVE => "their pack has no room for that",
         _ => "refused",
     }
 }

@@ -1577,6 +1577,16 @@ impl ShardCore {
                         slot,
                         target,
                     },
+                    ActionMsg::Give {
+                        slot,
+                        count,
+                        target,
+                    } => Command::Give {
+                        id: c.id,
+                        slot,
+                        count,
+                        target,
+                    },
                     ActionMsg::Craft {
                         recipe,
                         count,

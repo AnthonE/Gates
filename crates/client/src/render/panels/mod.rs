@@ -1123,8 +1123,12 @@ pub fn sync_refusals(
     }
     *seen = core.move_seq;
     // THE GATE's "No Looting" is Rust's popup, not a panel line: the loot
-    // verb that hears it may have no panel open at all.
-    if core.last_move_refused as u32 == sim_core::inventory::REFUSE_M_SAFE {
+    // verb that hears it may have no panel open at all. A give's full pack
+    // is the same shape — `B` opens no panel.
+    if matches!(
+        core.last_move_refused as u32,
+        sim_core::inventory::REFUSE_M_SAFE | sim_core::inventory::REFUSE_M_GIVE
+    ) {
         toast.warn(crate::ui::slots::refusal_text(core.last_move_refused));
     }
     if core.last_move_refused > 0 {

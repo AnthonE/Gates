@@ -606,6 +606,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bow::DrawArm>()
             .init_resource::<viewmodel::DrawZoom>()
             .init_resource::<verbs::Aimed>()
+            .init_resource::<verbs::Give>()
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
