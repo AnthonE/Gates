@@ -1152,7 +1152,9 @@ pub fn event_catalog() -> ItemCatalog {
             },
         ),
         // The eat columns' coverage (v81): a heal with only hp, and a food
-        // with all three at the width's corner on each column.
+        // with all three set and distinct, so the golden pins their order:
+        // food at the width's corner, water at its floor (1) and health one
+        // under the corner.
         (
             b"Bandage",
             ItemRow {
@@ -1591,6 +1593,8 @@ pub fn event_deploy_placed() -> DeployRec {
         open: true,
         locked: true,
         has_lock: true,
+        // The fourth state bit (v102), set so the golden pins its place.
+        lit: true,
         grow: 0b11_00_10_01,
         // `event_piece_placed`'s rule for the hp (v102).
         hp: 0x5AC3,
@@ -1627,6 +1631,9 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
             has_lock: rng.next_bounded(2) == 0,
             // Off the index, not `rng` (v102): `event_piece_sync`'s rule.
             hp: u16::MAX - i as u16 * 2731,
+            // The lit bit (v102) off the index too, so the draws above
+            // stay where they were.
+            lit: i % 3 == 0,
             ..DeployRec::default()
         };
         // A body slot stands anywhere; an insert hangs at the centre.

@@ -1083,24 +1083,35 @@ impl LitOvens {
 
     /// Absolute, never a toggle — the event carries the state and this
     /// stores exactly what it carried, so two announcements crossing can
-    /// never leave a client inverted (`EV_OVEN`'s own argument).
-    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) {
+    /// never leave a client inverted (`EV_OVEN`'s own argument). True if
+    /// the set changed.
+    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) -> bool {
         let at = self.addrs[..self.len]
             .iter()
             .position(|a| *a == (cx, cz, level, loc));
         match (lit, at) {
-            (true, None) => {
-                if self.len < MAX_BOXES {
-                    self.addrs[self.len] = (cx, cz, level, loc);
-                    self.len += 1;
-                }
+            (true, None) if self.len < MAX_BOXES => {
+                self.addrs[self.len] = (cx, cz, level, loc);
+                self.len += 1;
+                true
             }
             (false, Some(i)) => {
                 self.len -= 1;
                 self.addrs[i] = self.addrs[self.len];
+                true
             }
-            _ => {}
+            _ => false,
         }
+    }
+
+    /// File a deploy record's lit bit (wire v102) and hand back the record
+    /// without it: this set is the one copy `EV_OVEN` keeps current, so the
+    /// mirrored record must not hold a second that a snuff would leave
+    /// stale. The bool is whether the set changed.
+    fn file(&mut self, mut rec: DeployRec) -> (DeployRec, bool) {
+        let changed = self.set(rec.cx, rec.cz, rec.level, rec.loc, rec.lit);
+        rec.lit = false;
+        (rec, changed)
     }
 
     pub fn is_lit(&self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
@@ -1171,9 +1182,9 @@ impl ClientCore {
     /// deployable burns (a running recycler is lit and warms nothing) and
     /// the reach the defs drip carries, through the one rule both sides
     /// call (`exposure::fire_reaches`). A fire whose record or row has not
-    /// arrived yet, or that was lit before this client joined and has not
-    /// toggled since (`EV_OVEN` is the only carrier of the bit, and its
-    /// flame is not drawn either), warms nothing here: the shy answer.
+    /// arrived yet warms nothing here: the shy answer. One lit before this
+    /// client joined is lit here once the deploy walk brings its record,
+    /// which carries the bit (wire v102).
     pub fn fire_warms(&self, x: f32, z: f32, feet: f32) -> bool {
         let r = self.heat_radius_cm;
         if r == 0 {
@@ -2000,13 +2011,12 @@ pub struct ClientCore {
     deploy_refusal_len: usize,
     /// Which ovens this client has heard are lit, by address.
     ///
-    /// Its own store rather than a bit on the mirrored `DeployRec`, and
-    /// that is the same argument the sim makes one layer down: the deploy
-    /// record is what the deploy-sync packet carries, the burn state
-    /// deliberately is not on it, and a client that wrote `lit` into the
-    /// record would lose every fire the moment a resync walked the store
-    /// and overwrote it with the server's own (unlit) copy. Keyed by
-    /// address, so a resync leaves it standing and the next toggle still
+    /// Its own store rather than the bit on the mirrored `DeployRec`: the
+    /// record's `lit` (wire v102) is a snapshot filled at encode, and
+    /// `EV_OVEN` is what moves it after. So the deploy walk and the placed
+    /// broadcast file their bit here (`LitOvens::file`) and the record is
+    /// mirrored without it, one copy that every toggle and snuff lands on.
+    /// Keyed by address, so a toggle heard before its record arrived still
     /// lands on the right fire.
     ovens: LitOvens,
     /// The address of a door this client toggled optimistically on its
@@ -2931,6 +2941,12 @@ impl ClientCore {
                 flags |= APPLIED_PIECE_DEFS;
             }
             EventMsg::DeployPlaced { rec } => {
+                // Its lit bit to the lit set, absolute (a fresh placement is
+                // unlit, which also clears a fire that stood here before).
+                let (rec, relit) = self.ovens.file(rec);
+                if relit {
+                    flags |= APPLIED_DEPLOYS;
+                }
                 if self.deploys.insert(rec) {
                     self.seal_for(rec);
                     self.push_deploy_change(rec);
@@ -2948,20 +2964,20 @@ impl ClientCore {
                     // prediction has nothing left to roll back onto.
                     self.pending_door = None;
                     self.deploys.clear();
-                    // The fires go out with them, and that is the honest
-                    // reading rather than a loss: a deploy reset means
-                    // this client's picture of the furniture is being
-                    // rebuilt from the server's, and the walk carries no
-                    // burn state, so keeping a lit address across it
+                    // The fires go out with them, and the walk relights
+                    // them: each record carries its lit bit (wire v102),
+                    // filed below. Keeping a lit address across the reset
                     // would be keeping a fire that may no longer stand.
-                    // The next toggle or self-snuff re-lights it, which
-                    // is at most one fuel unit away.
                     self.ovens.clear();
                     self.pieces
                         .rebuild_cols(&self.piece_defs, self.piece_defs_have);
                     flags |= APPLIED_DEPLOY_RESET;
                 }
                 for &rec in recs.iter().take(count as usize) {
+                    let (rec, relit) = self.ovens.file(rec);
+                    if relit {
+                        flags |= APPLIED_DEPLOYS;
+                    }
                     if self.deploys.insert(rec) {
                         self.seal_for(rec);
                         self.push_deploy_change(rec);
@@ -3294,6 +3310,8 @@ impl ClientCore {
                 if self.pending_door == Some((cx, cz, level, loc)) {
                     self.pending_door = None; // predicted a door that's gone
                 }
+                // A fire that is gone burns nowhere.
+                self.ovens.set(cx, cz, level, loc, false);
                 if let Some(gone) = self.deploys.remove(cx, cz, level, loc) {
                     if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, gone.row) {
                         self.pieces.set_insert(
@@ -5587,6 +5605,69 @@ mod tests {
         let (len, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!c.fire_warms(fx, fz, fy), "a zero reach warms nothing");
+    }
+
+    /// A fire lit before this client came is lit here off the deploy walk
+    /// (wire v102: the record carries `EV_OVEN`'s bit), and a deploy reset
+    /// that clears the lit set relights it from the walk that follows —
+    /// no toggle needed. The mirrored record keeps no copy of the bit, so a
+    /// snuff heard later is the whole truth; a removal puts the fire out.
+    #[test]
+    fn a_fire_lit_before_the_join_is_lit_off_the_walk() {
+        use protocol::{
+            encode_event_deploy_defs, encode_event_deploy_sync, encode_event_oven,
+            encode_event_removed,
+        };
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let dc = DeployContent::probe_fixture();
+        let (len, _) = encode_event_deploy_defs(&dc, 450, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        // Row 4 is the probe fixture's campfire.
+        let fire = DeployRec {
+            cx: 341,
+            cz: 682,
+            row: 4,
+            lit: true,
+            ..DeployRec::default()
+        };
+        let (fx, fz) = fire.xz();
+        let fy = terrain::ground(1, c.haven(), fx, fz);
+        let walk = |c: &mut ClientCore, reset: bool, recs: &[DeployRec]| {
+            let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_deploy_sync(reset, recs, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        };
+
+        walk(&mut c, true, &[fire]);
+        assert!(c.ovens().is_lit(fire.cx, fire.cz, fire.level, fire.loc));
+        assert!(c.fire_warms(fx, fz, fy), "lit before the join, warm on it");
+        assert!(
+            !c.deploys.entries()[0].lit,
+            "the mirror holds no second copy of the bit"
+        );
+
+        // A deploy reset (ev_resync) clears the set; the walk relights it.
+        walk(&mut c, true, &[]);
+        assert!(!c.fire_warms(fx, fz, fy), "the reset forgets the fire");
+        walk(&mut c, false, &[fire]);
+        assert!(c.fire_warms(fx, fz, fy), "and the walk brings it back lit");
+
+        // A snuff after the walk is the truth; a walk saying unlit is too.
+        let len = encode_event_oven(fire.cx, fire.cz, 0, fire.loc, false, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(!c.fire_warms(fx, fz, fy), "snuffed");
+        walk(&mut c, false, &[fire]);
+        walk(&mut c, false, &[DeployRec { lit: false, ..fire }]);
+        assert!(!c.fire_warms(fx, fz, fy), "an unlit record puts it out");
+
+        // A lit fire that is removed burns nowhere.
+        walk(&mut c, false, &[fire]);
+        let len = encode_event_removed(false, fire.cx, fire.cz, 0, fire.loc, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(c.ovens().addrs().is_empty(), "removed, out");
     }
 
     /// The predictor collides against the same closed doors the sim does,

@@ -756,18 +756,20 @@ const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + DMG_BAND_BITS
     + PLATE_BITS
     + STRUCT_HP_BITS) as usize;
-/// `write_deploy_rec`'s: address, row, the three state bits, band, the
-/// pose's three bytes, the beds, and the exact hp (v102).
+/// `write_deploy_rec`'s: address, row, the four state bits (v102's lit
+/// the fourth), band, the pose's three bytes, the beds, and the exact hp
+/// (v102).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + BUILD_LEVEL_BITS
     + BUILD_LOC_BITS
     + DEPLOY_ROW_BITS
-    + 3
+    + 4
     + DMG_BAND_BITS
     + 4 * 8
     + STRUCT_HP_BITS) as usize;
 // A full batch of either store's records still fits one message (v102's hp
-// took 16 bits a record): a field added after it must shrink the batch first.
+// took 16 bits a record, and the deploy record's lit bit one more): a field
+// added after them must shrink the batch first.
 const _: () = assert!(
     (KIND_BITS + SUB_BITS + 1 + PIECE_SYNC_COUNT_BITS) as usize + PIECE_SYNC_BATCH * PIECE_REC_BITS
         <= MAX_EVENT_MSG_BYTES * 8
@@ -2762,9 +2764,9 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 89 bits (`DEPLOY_REC_BITS`),
+/// One placed-deployable record on the wire: 90 bits (`DEPLOY_REC_BITS`),
 /// shared by the placed broadcast and the sync batches — the address, the
-/// row, the three state bits, the damage band, since wire v100 a planter's
+/// row, the four state bits, the damage band, since wire v100 a planter's
 /// beds, since v102 the exact hp, and since wire v89 the **pose** (free
 /// placement): the offset from the cell centre and the facing, a byte each,
 /// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
@@ -2774,7 +2776,10 @@ pub fn encode_event_piece_defs(
 /// box (`sim_core::deploy::lockable`) — and all three are 0 for the rest,
 /// so they cost three bits and save a second lane for the join walk (a
 /// client that walked in must see which doors stand open, and which
-/// leaves stand locked or carry a keypad at all).
+/// leaves stand locked or carry a keypad at all). The fourth (v102) is
+/// lit, an oven row's `EV_OVEN` bit, for the same join walk: a fire lit
+/// before a client came, or before a deploy reset rebuilt its mirror, is
+/// otherwise unheard until it next toggles.
 fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
@@ -2794,6 +2799,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.open)?;
     w.write_bit(rec.locked)?;
     w.write_bit(rec.has_lock)?;
+    w.write_bit(rec.lit)?;
     // The damage band (wire v44) — `write_piece_rec`'s note applies here.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
     // The pose (v89). Three whole bytes, so every value is a legal pose and
@@ -2827,6 +2833,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         open: r.read_bit()?,
         locked: r.read_bit()?,
         has_lock: r.read_bit()?,
+        lit: r.read_bit()?,
         // Width is the range check — see `read_piece_rec`.
         dmg: r.read(DMG_BAND_BITS)? as u8,
         pose: sim_core::footprint::Pose {
@@ -7357,13 +7364,14 @@ mod tests {
             loc: sim_core::build::LOC_PLANE,
             row: 7,
             hp: 1234,
+            lit: true,
             ..DeployRec::default()
         };
         let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
             EventMsg::DeployPlaced { rec },
-            "hp crosses (v102); owner/uh stay sim-side and decode as defaults"
+            "hp and lit cross (v102); owner/uh stay sim-side and decode as defaults"
         );
         // A record the sim could never hold refuses at encode.
         let bad = DeployRec {
@@ -7383,6 +7391,8 @@ mod tests {
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
             hp: u16::MAX - i as u16 * 2731,
+            // The join walk's lit bit (v102), every other record.
+            lit: i % 2 == 1,
             ..DeployRec::default()
         });
         let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();

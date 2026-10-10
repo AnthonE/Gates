@@ -244,7 +244,10 @@ pub fn update(
         c.cover_at(now.sun, super::sky::deck_cover(now.cloud), now.drift)
     });
 
-    // Under a roof, or under the sea: what the rain and its sound ask.
+    // Under a roof, or under the sea: what the rain and its sound ask. The
+    // flat sea, not the drawn one: a storm's crests (`water::SeaState`,
+    // ~2.7 m) pass over an eye this calls dry, and no height at a point is
+    // kept client-side to ask instead (NOW §0y 2 residual).
     now.underwater = eye.pos.y < sim_core::terrain::SEA_LEVEL;
     now.sheltered = net.as_ref().is_some_and(|net| {
         sim_core::collide::roofed(

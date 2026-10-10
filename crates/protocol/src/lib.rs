@@ -1116,7 +1116,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// And a skin: `WireGItem` ends in a bit and, when set, the stack's `skin`
 /// u16 (`GITEM_SYNC_BATCH` went 16 → 14 to keep a full batch under the cap),
 /// and each `SUB_WORN` slot follows its item with the same, so a dropped or
-/// worn skinned item keeps its look.
+/// worn skinned item keeps its look. And the placed-deployable record grows
+/// a fourth state bit, `lit` (after has-lock, `EV_OVEN`'s bit filled at
+/// encode), so a joiner or a deploy reset's walk learns a fire lit before
+/// it came.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

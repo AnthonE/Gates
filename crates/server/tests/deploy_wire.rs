@@ -1903,3 +1903,91 @@ fn a_far_resync_keeps_your_own_hearth_and_not_a_strangers() {
     );
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
+
+/// A lit oven reaches a client that was not there to hear it lit, and
+/// survives a deploy reset (wire v102): the walk's record carries
+/// `EV_OVEN`'s bit, filled at encode off the oven row. Before it, a joiner
+/// drew no flame and its WET/COLD chips confirmed no fire until the next
+/// toggle, and an `ev_resync` put out every fire its client knew. A
+/// recycler is the oven here because its switch wants no fuel; the bit is
+/// the same one a fire's toggle sets.
+#[test]
+fn a_lit_oven_reaches_a_joiner_and_outlives_a_resync() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+
+    // A recycler beside the spawn, lit by the one client there.
+    let (ox, oz) = (CX + 1, CZ);
+    let w = &mut core.world;
+    assert!(sim_core::deploy::stand_authored(
+        SEED,
+        hv(SEED),
+        &w.deploy,
+        &mut w.pieces,
+        &mut w.deploys,
+        sim_core::deploy::ARCH_RECYCLER,
+        ox,
+        oz,
+        0,
+    ));
+    act(
+        &mut core,
+        0,
+        ActionMsg::Use {
+            cx: ox,
+            cz: oz,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    let key = sim_core::deploy::box_key(ox, oz, 0, LOC_PLANE);
+    let i = core.world.deploys.oven_index(key).expect("the oven stands");
+    assert!(core.world.deploys.oven_states()[i].lit, "the switch took");
+    assert!(
+        clients[0].1.ovens().is_lit(ox, oz, 0, LOC_PLANE),
+        "the one there heard it lit"
+    );
+
+    // A joiner after the fact learns it off the walk, not a toggle.
+    assert!(core.connect(1, id_of(1)));
+    clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+    for _ in 0..8 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let joiner = &clients[1].1;
+    assert!(
+        joiner
+            .deploys
+            .entries()
+            .iter()
+            .any(|d| (d.cx, d.cz) == (ox, oz)),
+        "the walk brought the record"
+    );
+    assert!(
+        joiner.ovens().is_lit(ox, oz, 0, LOC_PLANE),
+        "and the record said it was lit"
+    );
+
+    // A resync resets the first client's deploy mirror, which clears its lit
+    // set; the walk that follows relights it.
+    core.clients[0].ev_resync();
+    for _ in 0..8 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(
+        clients[0].1.ovens().is_lit(ox, oz, 0, LOC_PLANE),
+        "the resync's walk relit it"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}

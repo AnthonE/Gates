@@ -888,6 +888,14 @@ pub struct DeployRec {
     /// posture — the sim keeps it on the planter's `OvenState::bank` and
     /// announces a change with `EV_GROW`. Zero for everything else.
     pub grow: u8,
+    /// Whether the oven row here is lit — a burning fire or furnace, a
+    /// running recycler, a studying table — the bit `EV_OVEN` announces
+    /// (wire v102). Wire-only and filled at encode, `grow`'s posture: the
+    /// sim keeps it on `OvenState::lit`. It rides the record so a joiner,
+    /// or a client whose deploy mirror a reset rebuilt, learns a fire lit
+    /// before it came without waiting for the next toggle. False for
+    /// everything else.
+    pub lit: bool,
 }
 
 /// One of your own bags, as the death screen needs to know it: where it
@@ -2578,6 +2586,7 @@ pub fn stand_authored(
         locked: false,
         dmg: 0,
         grow: 0,
+        lit: false,
     };
     if !deploys.insert(rec, tick) {
         return false;
@@ -2829,6 +2838,7 @@ pub fn place_deploy(
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
         grow: 0,
+        lit: false,
     };
     if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -5592,6 +5602,7 @@ mod tests {
                 locked: false,
                 dmg: 0,
                 grow: 0,
+                lit: false,
             },
             0,
         ));

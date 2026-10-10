@@ -90,6 +90,7 @@ pub fn class_label(class: u8) -> &'static str {
         CLASS_WEAPONS => "WEAPONS",
         CLASS_AMMO => "AMMO",
         CLASS_FOOD => "FOOD",
+        CLASS_OTHER => "OTHER",
         _ => "OTHER",
     }
 }

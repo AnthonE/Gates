@@ -1330,7 +1330,13 @@ mod hammer_refresh_tests {
         ui.dirty = false;
         detect_changes(&mut ui, &core, Some(target));
         assert!(!ui.dirty, "a still wheel must not rebuild every frame");
-        let damaged = Target { dmg: 1, ..target };
+        // Damaged by the exact hp (`Target::damaged`), not the band alone.
+        let damaged = Target {
+            dmg: 1,
+            hp: 400,
+            ..target
+        };
+        assert!(damaged.damaged() && !target.damaged());
         detect_changes(&mut ui, &core, Some(damaged));
         assert!(ui.dirty, "repair becomes available while the wheel is open");
         ui.dirty = false;

@@ -108,6 +108,8 @@ pub fn surf_gain(exposure: f32) -> f32 {
 ///
 /// Takes the *ear* height, not the feet: the mix changes when your head goes
 /// under, and a player wading chest-deep is still hearing the world above.
+/// Against the flat [`SEA_LEVEL`], like the camera's fog (`render/weather.rs`):
+/// a storm's drawn crests reach ~2.7 m above it and are not consulted.
 pub fn submerged(ear_y: f32) -> bool {
     ear_y < SEA_LEVEL
 }

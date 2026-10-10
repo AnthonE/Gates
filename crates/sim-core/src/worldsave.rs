@@ -1301,6 +1301,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // Not saved — see the piece load above.
             dmg: 0,
             grow: 0,
+            lit: false,
         };
         bag_ready[i] = ready;
     }

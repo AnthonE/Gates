@@ -293,8 +293,9 @@ fn a_store_price_reaches_every_client_and_replaces_the_row() {
 }
 
 /// A worn piece's skin reaches every other client (`SUB_WORN`, v102), so
-/// the body is drawn in it; a plain piece beside it stays plain, and taking
-/// the skinned piece off says so.
+/// the body is drawn in it; a plain piece beside it stays plain, a reskin of
+/// the same piece is a change of its own, and taking the skinned piece off
+/// says so.
 #[test]
 fn a_worn_skin_reaches_every_other_client() {
     let stats = ShardStats::default();
@@ -327,6 +328,16 @@ fn a_worn_skin_reaches_every_other_client() {
     let look = clients[1].1.worn_of(id_of(0));
     assert_eq!(look.items, [4, OUTPUT]);
     assert_eq!(look.skins, [0, SKIN], "the bystander sees the worn skin");
+
+    // A reskin of the worn piece: the same item, a new skin, owes a
+    // `SUB_WORN` of its own (the items alone did not move).
+    core.world.players[w0].worn[1].skin = OTHER;
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let look = clients[1].1.worn_of(id_of(0));
+    assert_eq!(look.items, [4, OUTPUT], "the same piece");
+    assert_eq!(look.skins, [0, OTHER], "the bystander sees the new skin");
 
     core.world.players[w0].worn[1] = ItemStack::default();
     for _ in 0..4 {

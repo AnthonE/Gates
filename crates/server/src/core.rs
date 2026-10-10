@@ -3522,12 +3522,10 @@ impl ShardCore {
                     // A lit fire is a world fact and is visible from
                     // outside the base it is in, so it broadcasts exactly
                     // as a door's state does — with the same consequence
-                    // when a client misses one, except that no sync
-                    // record carries the bit yet: the deploy walk mirrors
-                    // `DeployRec`, and the burn state deliberately does
-                    // not ride on it (`oven.rs`). A client that missed
-                    // this hears the next toggle, or the snuff when the
-                    // fuel runs out, which is at most one fuel unit away.
+                    // when a client misses one: the resync's deploy walk
+                    // carries the bit on each record (v102, filled at
+                    // encode off `OvenState::lit`), so a joiner or a
+                    // client whose stream overflowed relearns it there.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
                     let loc = (ev.b >> 8) as u8;
@@ -5185,16 +5183,21 @@ impl ShardCore {
                 let dst = &mut wire[n];
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
-                // A planter's beds (crops v1), off the oven row's mirror.
-                dst.grow = self
+                // The container row's state, if one stands here: a planter's
+                // beds (crops v1) and whether it is lit (v102), so a fire
+                // lit before this walk began burns on the joiner's screen
+                // and its WET/COLD chips without waiting for a toggle.
+                let st = self
                     .world
                     .deploys
-                    .oven_index(sim_core::deploy::box_key(
+                    .box_index(sim_core::deploy::box_key(
                         src.cx, src.cz, src.level, src.loc,
                     ))
-                    .map(|i| self.world.deploys.oven_states()[i])
+                    .map(|i| self.world.deploys.oven_states()[i]);
+                dst.grow = st
                     .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
                     .map_or(0, |o| o.bank as u8);
+                dst.lit = st.is_some_and(|o| o.lit);
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
                     break;
@@ -5612,10 +5615,11 @@ impl ShardCore {
                                     // Whether what was opened is burning,
                                     // told to the hand that opened it: the
                                     // lit bit is broadcast only when it
-                                    // changes (`EV_OVEN`), so a fire lit
-                                    // before this client arrived would
-                                    // otherwise offer TURN ON while it
-                                    // burns. Absolute, so a repeat is free.
+                                    // changes (`EV_OVEN`) and otherwise
+                                    // rides the deploy walk (v102), so this
+                                    // is the panel's belt and braces against
+                                    // a TURN ON offered while it burns.
+                                    // Absolute, so a repeat is free.
                                     // `i` indexes the box store only for
                                     // a box: a bag's or a crate's index is
                                     // into its own store.
