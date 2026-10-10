@@ -319,39 +319,18 @@ pub struct ShardStats {
     /// the entity records inside them, and excludes the own entity for the
     /// reason `snap_candidates` gives.
     pub snap_entities_sent: AtomicU64,
-    /// Class-S join walks restarted from zero (`core.rs`, the swap-remove
-    /// rule): a removal landed while a client's sync cursor was still
-    /// inside the store, so that client's walk begins again with a reset
-    /// batch.
-    ///
-    /// Correct under the store's swap-remove — a walk reading *upward*
-    /// cannot trust a cursor into a set that reshuffled beneath it — and
-    /// **unbounded in cost**, which is the half worth counting. A full walk
-    /// is `store_len / 32` ticks; removals arriving faster than that walk
-    /// the client back to zero indefinitely, and a raid removes pieces far
-    /// faster than that. The client's symptom is a world that never
-    /// finishes loading, which reads as anything but a network problem
-    /// (`reference/NETWORK.md` §9.2.1 has the arithmetic).
-    ///
-    /// ⚠ **Nothing bumps this any more.** The piece walk stopped first,
-    /// and the deployable and backpack walks followed (`NOW.md` §0n1 item
-    /// 2): all three read their store from the tail down, where the entry
-    /// a swap-remove moves is always one already sent, so no removal
-    /// restarts any of them (`core.rs` `drip_client` carries the argument).
-    /// Kept, and still watched, as the tripwire the wire tests assert stays
-    /// at zero: a class-S walk that ever restarts on a removal again is
-    /// expected to count itself here.
-    pub piece_walk_restarts: AtomicU64,
     /// Piece walks that reached the end — a client that has been sent every
     /// piece the store held when its walk began.
     ///
-    /// The other half of `piece_walk_restarts`, and it exists because that
-    /// counter alone cannot answer the only question an operator has: a
-    /// shard reporting restarts cannot be told apart from a shard where the
-    /// walk restarted twice and then *finished* — the first is a world that
-    /// never arrives, the second is a hiccup. One completion per client per
-    /// walk, so `completes` short of the join count is a shard where
-    /// somebody is still waiting.
+    /// Born as the other half of a restart counter, retired once nothing
+    /// restarted: the class-S walks (pieces, then deployables and backpacks,
+    /// `NOW.md` §0n1 item 2) read their store from the tail down, where the
+    /// entry a swap-remove moves is always one already sent, so no removal
+    /// walks a client back to zero (`core.rs` `drip_client` carries the
+    /// argument; `reference/NETWORK.md` §9.2.1 the history). What is left
+    /// is the operator's question: one completion per client per walk, so
+    /// `completes` short of the join count is a shard where somebody is
+    /// still waiting.
     pub piece_walk_completes: AtomicU64,
     /// Piece walks re-armed because the player walked `PIECE_REARM_CM` out
     /// from under the anchor the walk was aimed from (class-S interest v0,
@@ -362,8 +341,8 @@ pub struct ShardStats {
     /// the difference, so `rearms` × the local base is the redundancy v0
     /// pays for having no chunk grid to subscribe to. Bounded by movement —
     /// at most one per 32 m travelled, ~5.8 s of sprinting — which is what
-    /// keeps it apart from `piece_walk_restarts`, whose bound was a raid's
-    /// removal rate and therefore was not one.
+    /// kept it apart from the retired removal restart, whose bound was a
+    /// raid's removal rate and therefore was not one.
     pub piece_walk_rearms: AtomicU64,
     /// Piece-store entries a walk scanned and skipped as out of interest.
     ///
@@ -1015,7 +994,6 @@ impl ShardStats {
             "chat_rate_limited" => &self.chat_rate_limited,
             "chat_ring_drops" => &self.chat_ring_drops,
             "chat_undelivered" => &self.chat_undelivered,
-            "piece_walk_restarts" => &self.piece_walk_restarts,
             "save_ring_drops" => &self.save_ring_drops,
             "saves_evicted" => &self.saves_evicted,
             "save_write_errors" => &self.save_write_errors,

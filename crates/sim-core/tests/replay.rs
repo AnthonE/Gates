@@ -1128,6 +1128,14 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     .clamp(0, 2047) as u16
             };
             hearth_cell = (cell(b.qx), cell(b.qz));
+            // The roof block's control (below) stands one cell over in +X,
+            // which the grid's last column has no room for: say so here
+            // rather than as a refused placement eighteen ticks on.
+            assert!(
+                usize::from(hearth_cell.0) + 1 < sim_core::limits::MAX_BUILD_COORD,
+                "the hearth cell {hearth_cell:?} has no cell past it in +X for \
+                 the inside-discount control"
+            );
         }
         if (150..=166).contains(&t) {
             let (cx, cz) = hearth_cell;
@@ -1263,12 +1271,17 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 // rather than as `REFUSE_B_INTACT` — and a repair mutates
                 // a structure store *and* `Player::inv`, which is what
                 // puts the verb inside this gate instead of beside it.
-                // Demolish v1, both stores and both sides of the window:
-                // 167 lands (the doorway at 152 is still inside its ten
-                // minutes at this tick) and 168 is refused, because the
-                // foundation this arc stands on went up hundreds of ticks
-                // earlier. A verb whose refusal never replays is a verb
-                // half-covered.
+                // Demolish v1, both stores and both sides of the window —
+                // as written. **This arm is dead**: the guard above stops at
+                // 166, so neither tick reaches it and demolish does not
+                // replay (the golden was read with it off). It was meant to
+                // land at 167 (the doorway at 152 still inside its ten
+                // minutes) and be refused at 168 (the foundation went up
+                // hundreds of ticks earlier). Switching it on is a golden
+                // move, and 168 now collides: the roof block below places
+                // its bare-twig control at t=168, and this arm's 168 aims at
+                // the very foundation that block roofs and then measures.
+                // Move it to free ticks rather than widening the guard.
                 167 | 168 => cmds.push(Command::Demolish {
                     id,
                     deploy: false,

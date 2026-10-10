@@ -1301,6 +1301,29 @@ impl Deploys {
         self.hearth_gen += 1;
     }
 
+    /// [`Deploys::push_hearth_for_test`] with the deploy record under it
+    /// (the probe fixture's hearth row, 0) standing at `pose` in its cell,
+    /// so [`Deploys::hearth_xz`] reads the body and not the cell's centre.
+    /// **Fixtures only**, for the same reason.
+    #[cfg(test)]
+    pub(crate) fn stand_hearth_for_test(&mut self, cx: u16, cz: u16, pose: Pose, owner: u32) {
+        assert!(self.insert(
+            DeployRec {
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+                pose,
+                row: 0,
+                owner,
+                hp: 100,
+                ..DeployRec::default()
+            },
+            0,
+        ));
+        self.push_hearth_for_test(cx, cz, 0, owner);
+    }
+
     /// The hearth records, writable. **Tests and fixtures only** — every
     /// live path reaches a crew through `crew_op`, which is where the
     /// rights checks are; a second writer would be a second place for

@@ -315,6 +315,14 @@ pub struct ClientNetState {
     /// and the tail stays zero on both sides, so it never manufactures a
     /// change.
     pub last_cont: [ItemStack; INV_SLOTS],
+    /// Whether this client was last *told* a ground container is open: set
+    /// when a container batch gets away, cleared when a close does (or when
+    /// its own press shut the panel). Not the subscription above, which
+    /// `ev_resync` drops without a word — a player asks again, but a seat
+    /// cannot, so `ShardCore::sync_seat_container` reads this to owe the
+    /// watcher the close a resync swallowed. Survives `close_container`
+    /// and `ev_resync` on purpose.
+    pub cont_shown: bool,
     /// The **body's** slots as last successfully queued — `last_cont`'s
     /// twin, for a stream that runs beside the ground container rather
     /// than taking its place.
@@ -475,6 +483,7 @@ impl ClientNetState {
             open_cont_handle: 0,
             open_cont_reset: false,
             last_cont: [ItemStack::default(); INV_SLOTS],
+            cont_shown: false,
             last_wear: [ItemStack::default(); WEAR_SLOTS],
             wear_reset: true,
             pending_action: None,

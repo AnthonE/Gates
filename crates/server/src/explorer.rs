@@ -4225,8 +4225,9 @@ impl Survivor {
                 self.home.lost_hearth();
             }
         }
-        // Its own deploys' answers, and the bag list each death screen
-        // brings: home takes the facts.
+        // Its own deploys' answers: home takes the facts. (The own-bag
+        // list comes in below, `APPLIED2_BAGS`: at the join, as its bags go
+        // down or come up, on a wake and at each death.)
         while let Some((cx, cz, level, loc, deploy)) = core.pop_placed() {
             self.home.on_placed(cx, cz, level, loc, deploy);
             self.builder.on_placed(cx, cz, level, loc, deploy);

@@ -689,7 +689,7 @@ mod tests {
         // address: it loads as the lowercase key a handshake proves.
         let text = std::fs::read_to_string(&path).unwrap();
         let pasted = "0xFFeeDDccBBaa99887766554433221100FFeeDDcc";
-        std::fs::write(&path, format!("{text}\n# lifted by hand:\n{pasted}\n")).unwrap();
+        std::fs::write(&path, format!("{text}\n# added by hand:\n{pasted}\n")).unwrap();
         let back = Bans::load(&path).unwrap();
         assert_eq!(back.len(), 3);
         assert!(back.contains(&key(A)));

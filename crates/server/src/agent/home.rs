@@ -3,7 +3,8 @@
 //!
 //! What a player knows here and nothing more: the bags it placed itself
 //! (it watched each go down), the own-bag list the death screen shows
-//! (`ClientCore::own_bags`, re-sent as its bags change and at each death),
+//! (`ClientCore::own_bags`, sent at the join and re-sent as its bags go
+//! down or come up, on a wake and at each death),
 //! and where its last death backpack lies (`ClientCore::own_bag`, the map
 //! mark a player walks back to). Nobody else's bags, boxes or bases.
 //!
@@ -531,7 +532,7 @@ impl Home {
         self.wake_on(core.own_bags(), tick, fell)
     }
 
-    /// [`Home::wake_on_bag`] over the death screen's list of its bags.
+    /// [`Home::wake_on_bag`] over a list of its bags (the own-bag list).
     pub fn wake_on(&self, bags: &[BagAnchor], tick: u32, fell: [f32; 2]) -> bool {
         let ready = bags.iter().filter(|b| b.ready);
         if !self.under_attack(tick) {
@@ -942,7 +943,7 @@ mod tests {
         assert!(home.under_attack(40) && !home.alarmed(40, 10));
         home.on_shot([x + 205.0, z], 50);
         assert!(home.alarmed(50, 10), "shots at the base itself");
-        // The death screen's list is the truth.
+        // The own-bag list is the truth.
         home.on_bags(&[]);
         assert_eq!(home.bags(), 0);
         // A refusal answers only a deploy in flight.
@@ -996,7 +997,8 @@ mod tests {
         assert!(!home.bag_held([100.0 + BAG_RETRY_M + 1.0, 100.0], 51));
         assert!(!home.bag_held([100.0, 100.0], 50 + BAG_RETRY_TICKS));
         // Bags from an earlier session fill the cap: the server's word
-        // stands until a death screen lists them.
+        // stands until the next own-bag list (the join's, a bag placed or
+        // taken down, a wake, a death) names them.
         home.asked(5, 5, 0, LOC_PLANE);
         home.on_refused(REFUSE_D_BAG_CAP as u8);
         assert_eq!((home.bags(), home.bags_known()), (0, BAG_CAP as u8));

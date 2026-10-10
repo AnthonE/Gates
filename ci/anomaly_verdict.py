@@ -50,7 +50,6 @@ PRESSURE = {
     "snap_entities_shed",
     "forced_resyncs",
     "ev_resyncs",
-    "piece_walk_restarts",
     "saves_evicted",
     "sleepers_evicted",
     "chat_undelivered",

@@ -623,6 +623,55 @@ fn a_seat_sees_the_container_its_player_has_open() {
     }
 }
 
+/// **A seat's close survives a refused push and the resync after it.** The
+/// player closes while the seat's ring is full, so the close push is
+/// refused; the resync that follows drops the seat's subscription without
+/// a word, and after it the two subscriptions agree (nothing open) while
+/// the watcher's panel is still up. The close is owed by what the watcher
+/// was told, so the next tick sends it, once.
+#[test]
+fn a_seat_is_told_the_close_a_refused_push_and_a_resync_swallowed() {
+    use sim_core::limits::MAX_PLAYERS;
+    let seat = MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut clients = two_clients(&mut core, &stats);
+    let bag = bag_from_a_kill(&mut core, &stats, &mut clients);
+    assert!(core.connect_spectator(seat, id_of(0), 0), "seated");
+    let mut open = Vec::new();
+    ask(&mut core, 0, CONT_BAG, bag);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut open);
+    }
+    assert!(
+        syncs(&open)
+            .iter()
+            .any(|s| (s.0, s.1, s.2, s.3) == (seat, CONT_BAG, bag, true)),
+        "the seat was never shown the bag: {:?}",
+        syncs(&open)
+    );
+
+    // The close, on a tick whose every push to the seat is refused.
+    ask(&mut core, 0, CONT_SELF, 0);
+    core.tick_bare(&stats, |_, slot, _| slot != seat);
+    core.clients[seat].ev_resync();
+    assert_eq!(
+        core.clients[seat].open_cont_kind, CONT_SELF,
+        "the resync dropped the seat's subscription"
+    );
+
+    let mut after = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+    let got: Vec<_> = syncs(&after).into_iter().filter(|s| s.0 == seat).collect();
+    assert_eq!(got.len(), 1, "one close owed to the seat: {got:?}");
+    assert_eq!(
+        (got[0].1, got[0].2, got[0].3, got[0].4.len()),
+        (CONT_SELF, 0, true, 0)
+    );
+}
+
 #[test]
 fn walking_away_closes_the_panel_rather_than_starving_it() {
     let stats = ShardStats::default();

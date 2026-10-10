@@ -859,6 +859,9 @@ pub fn keys(
         if was_inventory {
             super::verbs::close_container(&net, &mut toast);
         }
+        // Forced shut: a page the follow raised is not up any more, so a
+        // later close must not shut one the watcher opens for themselves.
+        follow.1 = false;
         chars.clear();
         return;
     }
@@ -869,6 +872,12 @@ pub fn keys(
     // raised the player's own (`verbs::open_panel`: only over no panel), and
     // shuts it with the container if that is what raised it.
     if net.session.watching.is_some() {
+        // The raised page stops being the follow's once it is down — the
+        // watcher shut it or switched away, or something forced it shut —
+        // so a later close never shuts an inventory the watcher opened.
+        if follow.1 && ui.panel != Panel::Inventory {
+            follow.1 = false;
+        }
         let open = (core.cont_kind, core.cont_handle);
         if open != follow.0 {
             follow.0 = open;

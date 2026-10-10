@@ -198,7 +198,6 @@ pub const WATCHED: &[&str] = &[
     "chat_rate_limited",
     "chat_ring_drops",
     "chat_undelivered",
-    "piece_walk_restarts",
     "save_ring_drops",
     "saves_evicted",
     "save_write_errors",

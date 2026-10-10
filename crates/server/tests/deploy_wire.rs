@@ -1242,9 +1242,9 @@ fn addrs(recs: &[sim_core::build::PieceRec]) -> Vec<(u16, u16, u8, u8, u8)> {
 /// end is convergence on a world with something in it.
 ///
 /// Asserted on client state and on counters, never on the mechanism: no
-/// client sees a reset batch after its first, no walk restarts, no client
-/// ever loses mirror ground it had gained, both walks report completing,
-/// and both mirrors end address-exact with the world.
+/// client sees a reset batch after its first (a restart's own mark), no
+/// client ever loses mirror ground it had gained, both walks report
+/// completing, and both mirrors end address-exact with the world.
 #[test]
 fn a_removal_storm_leaves_every_walk_standing() {
     let stats = ShardStats::default();
@@ -1427,11 +1427,6 @@ fn a_removal_storm_leaves_every_walk_standing() {
         );
     }
 
-    assert_eq!(
-        ShardStats::get(&stats.piece_walk_restarts),
-        0,
-        "a removal restarted a piece walk"
-    );
     assert_eq!(
         ShardStats::get(&stats.piece_walk_completes),
         clients.len() as u64,
@@ -1625,11 +1620,6 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
         clients.len() as u64,
         "not every client's walk reached the end"
     );
-    assert_eq!(
-        ShardStats::get(&stats.piece_walk_restarts),
-        0,
-        "a removal restarted a piece walk"
-    );
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
 
@@ -1807,7 +1797,6 @@ fn a_decay_storm_leaves_every_deploy_walk_standing() {
         clients.len() as u64,
         "not every client's deploy walk reached the end"
     );
-    assert_eq!(ShardStats::get(&stats.piece_walk_restarts), 0);
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
 

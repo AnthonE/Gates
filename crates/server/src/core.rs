@@ -1580,6 +1580,11 @@ impl ShardCore {
                     // rate limit on the roll.
                     ActionMsg::Container { kind, cont } => {
                         c.open_container(kind, cont);
+                        // A close is the client's own press: its panel is
+                        // already shut, so it is owed no word back.
+                        if kind == CONT_SELF {
+                            c.cont_shown = false;
+                        }
                         if kind == sim_core::inventory::CONT_WORLD {
                             Command::OpenWorldCont { id: c.id, cont }
                         } else {
@@ -2006,6 +2011,12 @@ impl ShardCore {
     /// (gone, out of reach, locked) already reads `CONT_SELF` here. A close
     /// is told to the seat directly, since its drip has nothing open to
     /// close; a refused push leaves the seat open and retries next tick.
+    ///
+    /// The close is owed by what the watcher was **told**, not by the
+    /// subscription (`cont_shown`): a refused close followed by a resync
+    /// (`ev_resync` drops the subscription silently, which a player answers
+    /// by asking again and a seat cannot) would otherwise leave the
+    /// subscriptions agreeing and the watcher's panel up, stale, for good.
     fn sync_seat_container(
         &mut self,
         i: usize,
@@ -2019,11 +2030,13 @@ impl ShardCore {
         let t = &self.clients[seat.target];
         let want = (t.open_cont_kind, t.open_cont_handle);
         let me = &self.clients[slot];
-        if want == (me.open_cont_kind, me.open_cont_handle) {
+        if want.0 != CONT_SELF {
+            if want != (me.open_cont_kind, me.open_cont_handle) {
+                self.clients[slot].open_container(want.0, want.1);
+            }
             return;
         }
-        if want.0 != CONT_SELF {
-            self.clients[slot].open_container(want.0, want.1);
+        if me.open_cont_kind == CONT_SELF && !me.cont_shown {
             return;
         }
         match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
@@ -2031,6 +2044,7 @@ impl ShardCore {
                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                     ShardStats::bump(&stats.ev_sent);
                     self.clients[slot].close_container();
+                    self.clients[slot].cont_shown = false;
                 }
             }
             Err(_) => ShardStats::bump(&stats.encode_range_errors),
@@ -3352,10 +3366,13 @@ impl ShardCore {
                     // reason domain tops out at BAG_GONE_MAX. Since the
                     // §5b decode pass the encoder bounds the DOMAIN too
                     // (`encode_event_bag_removed` refuses `why == 3`), so
-                    // this pump check is the belt to that suspender — it
-                    // still runs first because validation goes ahead of
-                    // mutation (the item-move trap), into
+                    // this pump check is the belt to that suspender, into
                     // the same counter the encoder's own range check uses.
+                    // The arm no longer moves any walk state (the cursor
+                    // reset it once guarded is gone, below), so all it
+                    // spares is the encode; the unit test
+                    // `bag_removed_refuses_the_reason_the_sim_cannot_mean`
+                    // pins both.
                     if ev.b > BAG_GONE_MAX {
                         ShardStats::bump(&stats.encode_range_errors);
                         continue;
@@ -5484,6 +5501,7 @@ impl ShardCore {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
                                 self.clients[slot].close_container();
+                                self.clients[slot].cont_shown = false;
                             } else {
                                 return;
                             }
@@ -5558,6 +5576,7 @@ impl ShardCore {
                                     let opened = c.open_cont_reset;
                                     c.open_cont_reset = false;
                                     c.last_cont = now;
+                                    c.cont_shown = true;
                                     // The lid, heard by whoever is near —
                                     // once, off the player's own open: a
                                     // seat mirroring it (`sync_seat_container`)

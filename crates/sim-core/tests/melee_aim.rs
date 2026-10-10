@@ -40,8 +40,9 @@ use sim_core::fmath::fabs;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+use sim_core::ranged::{IMPACT_MELEE, SURF_GROUND};
 use sim_core::terrain;
-use sim_core::world::{Command, World, EV_STRUCT_HIT, EV_SWING};
+use sim_core::world::{impact_parts, Command, World, EV_IMPACT, EV_STRUCT_HIT, EV_SWING};
 use sim_core::yaw_dir;
 
 const SEED: u64 = 20260802;
@@ -274,16 +275,24 @@ fn swing_once(w: &mut World, yaw: u16, pitch: u8) -> Swung {
         }]);
         let mut swung = false;
         let mut structure = 0;
+        let mut impact = None;
         for e in w.events.entries() {
             swung |= e.code == EV_SWING;
             if e.code == EV_STRUCT_HIT {
                 structure += e.c >> 16;
+            }
+            if e.code == EV_IMPACT {
+                let (surf, kind, _) = impact_parts(e.a);
+                if kind == IMPACT_MELEE {
+                    impact = Some(surf);
+                }
             }
         }
         if swung {
             return Swung {
                 hp: before.saturating_sub(w.players[1].hp),
                 structure,
+                impact,
             };
         }
     }
@@ -297,6 +306,10 @@ struct Swung {
     /// Structure damage announced on `EV_STRUCT_HIT` (`c` packs
     /// `damage << 16 | hp_left`).
     structure: u32,
+    /// The surface of the swing's own `EV_IMPACT` (`ranged::SURF_*`), if
+    /// the ray stopped on the world: what tells a blow into the dirt from
+    /// a whiff, which leaves no mark.
+    impact: Option<u8>,
 }
 
 /// One swing's damage to the body.
@@ -871,9 +884,21 @@ fn a_landed_blow_wears_the_weapon_and_a_whiff_does_not() {
     heal(&mut w);
 
     w.combat.melee[SPEAR as usize].wear = WEAR;
-    assert_eq!(swing_at(&mut w, YAW_PLUS_X, STRAIGHT_UP), 0);
+    let sky = swing_once(&mut w, YAW_PLUS_X, STRAIGHT_UP);
+    assert_eq!(
+        (sky.hp, sky.impact),
+        (0, None),
+        "fixture: the sky is a whiff"
+    );
     assert_eq!(held_cond(&w), COND, "a swing at the sky wore the weapon");
-    assert_eq!(swing_at(&mut w, YAW_PLUS_X, 0), 0);
+    // Straight down stops on the ground at the swinger's feet: a stop, not
+    // a whiff, so the mark is asserted or this would only repeat the sky.
+    let dirt = swing_once(&mut w, YAW_PLUS_X, 0);
+    assert_eq!(
+        (dirt.hp, dirt.impact),
+        (0, Some(SURF_GROUND)),
+        "fixture: straight down must meet the terrain"
+    );
     assert_eq!(held_cond(&w), COND, "a blow into the dirt wore the weapon");
     assert_eq!(swing_at(&mut w, YAW_PLUS_X, chest), SPEAR_DAMAGE);
     assert_eq!(

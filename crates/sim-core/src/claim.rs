@@ -885,21 +885,47 @@ mod tests {
     /// re-point a panel open at the other. A stranger has no hearth, a
     /// preferred hearth that is gone is passed over, and off the base no
     /// preference makes one.
+    ///
+    /// "Nearer" is measured to where each hearth's deploy record stands,
+    /// not its cell's centre: both stand off-centre, posed so that the two
+    /// measures disagree about which is nearer.
     #[test]
     fn the_crew_vital_keeps_the_hearth_the_client_holds() {
+        use crate::footprint::{Pose, POSE_Q_M};
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         for cx in 100..120u16 {
             pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, &bc);
         }
-        deploys.push_hearth_for_test(100, 100, 0, OWNER);
-        deploys.push_hearth_for_test(119, 100, 0, OWNER);
+        // Each about 1.2 m toward -X of its cell's centre.
+        let west = Pose {
+            ox: -102,
+            oz: 0,
+            yaw: 0,
+        };
+        deploys.stand_hearth_for_test(109, 100, west, OWNER);
+        deploys.stand_hearth_for_test(112, 100, west, OWNER);
         deploys.refresh_claims(&pieces, &bc);
-        let (x, z) = centre(117, 100);
+        // A quarter cell east of cell 110's centre: 1.25 cells from 109's
+        // centre and 1.75 from 112's, but 1.65 from 109's hearth and 1.35
+        // from 112's.
+        let (x, z) = centre(110, 100);
+        let x = x + BUILD_CELL_M * 0.25;
+        let d2 = |(hx, hz): (f32, f32)| (hx - x) * (hx - x) + (hz - z) * (hz - z);
+        let h = deploys.hearths();
+        assert_eq!(
+            deploys.hearth_xz(&h[0]).0,
+            centre(109, 100).0 - 102.0 * POSE_Q_M
+        );
+        assert!(
+            d2(centre(109, 100)) < d2(centre(112, 100))
+                && d2(deploys.hearth_xz(&h[1])) < d2(deploys.hearth_xz(&h[0])),
+            "the fixture no longer tells nearest-by-body from nearest-by-cell"
+        );
         assert_eq!(deploys.crew_hearth_at(x, z, OWNER, None), Some(1), "nearer");
         assert_eq!(
-            deploys.crew_hearth_at(x, z, OWNER, Some((100, 100, 0))),
+            deploys.crew_hearth_at(x, z, OWNER, Some((109, 100, 0))),
             Some(0),
             "the hearth the client holds"
         );
@@ -911,7 +937,7 @@ mod tests {
         assert_eq!(deploys.crew_hearth_at(x, z, STRANGER, None), None);
         let off = centre(160, 100);
         assert_eq!(
-            deploys.crew_hearth_at(off.0, off.1, OWNER, Some((100, 100, 0))),
+            deploys.crew_hearth_at(off.0, off.1, OWNER, Some((109, 100, 0))),
             None,
             "off the base, preferred or not"
         );
