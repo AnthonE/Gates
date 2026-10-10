@@ -10,7 +10,7 @@
 //! be one screen with the recipe browser stacked over these grids, and to
 //! craft while looting you had to close the box.
 //!
-//! ## The gestures, and why they are three and not one
+//! ## The gestures, and why five of the six are one verb
 //!
 //! | gesture | what it sends |
 //! |---|---|
@@ -21,7 +21,7 @@
 //! | right-click, no drag, container open | move the whole stack across ([`crate::ui::slots::quick_move_stack`]) |
 //! | hold Shift, sweep over a container's cells | take each stack passed over ([`crate::ui::slots::Sweep`]) |
 //!
-//! All four drags are the same wire verb with a different `count`. The
+//! All three drags are the same wire verb with a different `count`. The
 //! fifth row is the same verb again and it is the one the operator asked
 //! for — *"right clicking should put it into ur inventory u dont have to
 //! drag"* — and what makes it a quick-move rather than a second path is
@@ -29,6 +29,9 @@
 //! `move_args` like any drag. Both no-drag rows fall out of one `if`: a
 //! right-press released on the slot it started on is a move to its own
 //! address, which `move_args` refuses, and that refusal is the branch.
+//! The sixth is the fifth again, fired by the pointer entering a cell
+//! rather than by a click (`hover_loot`); only the fourth, the use, is a
+//! different verb.
 //!
 //! ## The three regions are titled, and the container's says what it is
 //!
@@ -316,8 +319,12 @@ pub fn take_all_clicks(
         ui.say("nothing to take, or no room for it");
         return;
     }
+    // A prefix only, as the right-click's scatter: each move was planned
+    // against the ones before it, so none goes after one the lane refused.
     for args in moves {
-        send_move(&mut ui, &net, args);
+        if !send_move(&mut ui, &net, args) {
+            break;
+        }
     }
 }
 
@@ -1704,10 +1711,18 @@ pub fn drag_pointer(
                 )
             };
             match quick {
-                Quick::Send(args) if moves.is_empty() => send_move(&mut ui, &net, args),
+                Quick::Send(args) if moves.is_empty() => {
+                    send_move(&mut ui, &net, args);
+                }
                 Quick::Send(_) => {
+                    // Stop at a full lane: what went is a prefix of the
+                    // plan, which the sim can play as it stands, and the
+                    // refusal stays on the status line rather than being
+                    // cleared by a later move that did go.
                     for args in moves {
-                        send_move(&mut ui, &net, args);
+                        if !send_move(&mut ui, &net, args) {
+                            break;
+                        }
                     }
                 }
                 Quick::Use(slot) => use_item(&mut ui, &net, bite, time.elapsed_secs_f64(), slot),
@@ -1806,8 +1821,12 @@ pub fn drag_pointer(
 ///
 /// **Armed by a press made with the panel up**, never by a Shift already
 /// down: Shift is sprint, and a player who runs up to a box and opens it
-/// still holding it has not asked for a sweep. Releasing it, a drag, the
-/// panel closing or the container changing ends the hold.
+/// still holding it has not asked for a sweep. Releasing it, a drag (or
+/// any mouse press), the panel closing or the container changing ends the
+/// hold, and only a fresh press re-arms it. A drag in particular ends it
+/// rather than pausing it: its move is not in the sweep's copy, and a
+/// paused hold would wake on the drop and fire the cell the stack was just
+/// dropped on, planned against a copy that never saw the drop.
 pub fn hover_loot(
     mut ui: ResMut<Ui>,
     net: NonSend<super::super::Net>,
@@ -1827,8 +1846,17 @@ pub fn hover_loot(
         && looting(core.cont_kind)
         && open_fire(core).is_none()
         && open_table(core).is_none();
+    if !plain {
+        // The copy goes with the panel, so an answer the lane never
+        // delivered cannot pin a stale one past the next open.
+        *armed = false;
+        *sweep = None;
+        return;
+    }
     if !keyboard.any_pressed(shift)
-        || !plain
+        || ui.drag.is_some()
+        || mouse.pressed(MouseButton::Left)
+        || mouse.pressed(MouseButton::Right)
         || (*armed && sweep.as_ref().is_some_and(|s| s.open() != open))
     {
         *armed = false;
@@ -1849,21 +1877,17 @@ pub fn hover_loot(
             &core.worn,
         ));
     }
-    if ui.drag.is_some() || mouse.pressed(MouseButton::Left) || mouse.pressed(MouseButton::Right) {
-        return;
-    }
-    let (Some(s), Some((cell, _))) = (
-        sweep.as_mut(),
-        cells.iter().find(|(_, i)| !matches!(i, Interaction::None)),
-    ) else {
+    let Some(s) = sweep.as_mut() else {
         return;
     };
-    let mut moves = Vec::new();
-    if let Some(why) = s.over(cell.kind, cell.slot, &core.catalog, &mut moves) {
+    s.refresh(core.move_seq, &core.inv, &core.cont, &core.worn);
+    let Some((cell, _)) = cells.iter().find(|(_, i)| !matches!(i, Interaction::None)) else {
+        return;
+    };
+    if let Some(why) = s.over(cell.kind, cell.slot, &core.catalog, |args| {
+        send_move(&mut ui, &net, args)
+    }) {
         ui.say(why);
-    }
-    for args in moves {
-        send_move(&mut ui, &net, args);
     }
 }
 
@@ -1915,12 +1939,16 @@ fn drop_item(ui: &mut Ui, net: &super::super::Net, slot: usize, count: u16) {
 /// in this file**, shared by the drag and the quick-move, which is the same
 /// reason `MoveArgs` exists at all: the argument order is written down once
 /// (in `ui::slots`) and a second marshalling path here would be a second
-/// place to transpose two `u8`s.
-fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveArgs) {
+/// place to transpose two `u8`s. `true` when the move is on the lane; a
+/// refusal (a full lane, a watcher's seat) is said and is `false`.
+fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveArgs) -> bool {
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match args.encode(&mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
-            Ok(()) => ui.status.clear(),
+            Ok(()) => {
+                ui.status.clear();
+                return true;
+            }
             Err(e) => ui.say(e.to_string()),
         },
         // An encoder refusal is a client bug, not a player one, and it is
@@ -1929,6 +1957,7 @@ fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveA
         // panel instead of arriving as a disconnect.
         Err(e) => ui.say(format!("the move would not encode ({e:?})")),
     }
+    false
 }
 
 /// Use an inventory slot: read it if it is a blueprint (`ACT_RESEARCH`,

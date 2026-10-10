@@ -887,11 +887,25 @@ pub fn take_all(
 /// **One plan for the whole hold.** A sweep fires far faster than the sim
 /// answers (moves are paced at fifteen a second, `server::pace`), so
 /// planning each cell against the client's view would aim every stack at
-/// the same free slot. The sweep owns a copy of both sides taken when the
-/// hold began, plays every move it plans onto it, and plans the next cell
-/// against that — and a hold that begins while the last one's moves are
-/// still unanswered carries the same copy on ([`Sweep::arm`]). Never
-/// drawn: the cells still draw the sync.
+/// the same free slot. The sweep owns a copy of both sides, plays every
+/// move that goes onto it, and plans the next cell against that — and a
+/// hold that begins while the last one's moves are still unanswered
+/// carries the same copy on ([`Sweep::arm`]). Never drawn: the cells still
+/// draw the sync.
+///
+/// **Re-read whenever it is caught up.** Each time the sim has answered
+/// every move played onto the copy, the copy is taken again from the views
+/// ([`Sweep::refresh`]), so another looter's take under a long hold is
+/// seen within one round trip instead of being over-asked for the rest of
+/// it.
+///
+/// **Only a move that went is played.** The action lane holds
+/// `ACTION_RING_CAP` and answers a full one with a refusal, so `over`
+/// hands each planned move to the caller's `send` and stops at the first
+/// it could not send: what did not go is neither played onto the copy nor
+/// counted as owed (an owed answer that never comes would pin a stale copy
+/// for the rest of the hold), and the cell is forgotten so the next frame
+/// over it plans the rest again.
 #[derive(Clone, Debug)]
 pub struct Sweep {
     /// The container the copy is of: `(cont_kind, cont_handle)`.
@@ -904,8 +918,7 @@ pub struct Sweep {
     cont: [ItemStack; INV_SLOTS],
     worn: [ItemStack; WEAR_SLOTS],
     /// `ClientCore::move_seq` when the copy was taken, and the moves
-    /// planned against it since: the answers still owed are the
-    /// difference.
+    /// sent against it since: the answers still owed are the difference.
     seq: u32,
     sent: u32,
 }
@@ -914,7 +927,7 @@ impl Sweep {
     /// Begin a hold over the container `(cont_kind, cont_handle)`.
     ///
     /// `prev` is the last hold's sweep. Its copy carries on when it is of
-    /// the same container and the sim has not answered every move planned
+    /// the same container and the sim has not answered every move sent
     /// against it (`move_seq` counts answers, accepted or refused): the
     /// views passed here are then behind moves already on the lane, and a
     /// fresh copy of them would aim at slots those moves are about to
@@ -928,25 +941,53 @@ impl Sweep {
         cont: &[ItemStack; INV_SLOTS],
         worn: &[ItemStack],
     ) -> Sweep {
-        if let Some(mut s) = prev {
-            if s.open == (cont_kind, cont_handle) && move_seq.wrapping_sub(s.seq) < s.sent {
+        match prev {
+            Some(mut s) if s.open == (cont_kind, cont_handle) => {
                 s.last = None;
-                return s;
+                s.refresh(move_seq, inv, cont, worn);
+                s
             }
+            _ => Sweep {
+                open: (cont_kind, cont_handle),
+                last: None,
+                inv: *inv,
+                cont: *cont,
+                worn: body_of(worn),
+                seq: move_seq,
+                sent: 0,
+            },
         }
-        let mut body = [ItemStack::default(); WEAR_SLOTS];
-        for (d, s) in body.iter_mut().zip(worn) {
-            *d = *s;
+    }
+
+    /// Re-take the copy from the views once every move sent against it
+    /// has been answered — the views have then caught up with the plan,
+    /// and are the better picture of anything the plan could not know
+    /// (another looter's take, a stack the sim refused). While any answer
+    /// is owed the copy stands: the views are behind the lane. The cell
+    /// last fired is kept, so resting on it still fires nothing.
+    ///
+    /// The panel calls this every frame of a hold. The answer and the
+    /// diff it caused ride one lane in that order, written in the same
+    /// shard tick (`server/core.rs` `route_events` then `drip_client`), so
+    /// a caught-up `move_seq` all but always arrives with views that show
+    /// it. A frame that splits them can aim one cell at the slot that
+    /// answer just filled (a refusal, or at worst a swap of that one
+    /// stack, never a lost item), and the next frame's re-read is right.
+    pub fn refresh(
+        &mut self,
+        move_seq: u32,
+        inv: &[ItemStack; INV_SLOTS],
+        cont: &[ItemStack; INV_SLOTS],
+        worn: &[ItemStack],
+    ) {
+        if move_seq.wrapping_sub(self.seq) < self.sent {
+            return;
         }
-        Sweep {
-            open: (cont_kind, cont_handle),
-            last: None,
-            inv: *inv,
-            cont: *cont,
-            worn: body,
-            seq: move_seq,
-            sent: 0,
-        }
+        self.inv = *inv;
+        self.cont = *cont;
+        self.worn = body_of(worn);
+        self.seq = move_seq;
+        self.sent = 0;
     }
 
     /// The container this hold was armed over. A re-aim mid-hold ends the
@@ -957,14 +998,16 @@ impl Sweep {
 
     /// The pointer is over `(kind, slot)`. Fires when it is a new cell, of
     /// the open container, holding something by the copy: the stack's
-    /// moves are planned and appended to `out`. Returns the line to print
-    /// when the stack had nowhere to go.
+    /// moves are planned and handed to `send` first to last, and each one
+    /// `send` took (returned `true` for) is played onto the copy. The
+    /// first it refuses ends the cell for this frame, as the type's doc
+    /// says. Returns the line to print when the stack had nowhere to go.
     pub fn over(
         &mut self,
         kind: u8,
         slot: usize,
         catalog: &ItemCatalog,
-        out: &mut Vec<MoveArgs>,
+        mut send: impl FnMut(MoveArgs) -> bool,
     ) -> Option<&'static str> {
         if self.last == Some((kind, slot)) {
             return None;
@@ -973,24 +1016,43 @@ impl Sweep {
         if kind != self.open.0 || self.cont.get(slot).is_none_or(|s| s.count == 0) {
             return None;
         }
-        let before = out.len();
+        // Planned on a scratch copy, played onto the real one a move at a
+        // time as each goes: the plan is `quick_move_stack`'s, unchanged.
+        let (mut inv, mut cont, mut worn) = (self.inv, self.cont, self.worn);
+        let mut plan = Vec::new();
         let quick = quick_move_stack(
             self.open.0,
             self.open.1,
             kind,
             slot,
             catalog,
-            &mut self.inv,
-            &mut self.cont,
-            &mut self.worn,
-            out,
+            &mut inv,
+            &mut cont,
+            &mut worn,
+            &mut plan,
         );
-        self.sent = self.sent.wrapping_add((out.len() - before) as u32);
+        for a in plan {
+            if !send(a) {
+                self.last = None;
+                break;
+            }
+            apply(&a, &mut self.inv, &mut self.cont, &mut self.worn);
+            self.sent = self.sent.wrapping_add(1);
+        }
         match quick {
             Quick::Refused(why) => Some(why),
             Quick::Send(_) | Quick::Use(_) => None,
         }
     }
+}
+
+/// The body's slots as a fixed copy, zero past what the view holds.
+fn body_of(worn: &[ItemStack]) -> [ItemStack; WEAR_SLOTS] {
+    let mut body = [ItemStack::default(); WEAR_SLOTS];
+    for (d, s) in body.iter_mut().zip(worn) {
+        *d = *s;
+    }
+    body
 }
 
 /// The container panel's title. `CONT_SELF` has no panel, so it is named

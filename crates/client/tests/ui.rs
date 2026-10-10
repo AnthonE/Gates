@@ -5657,6 +5657,37 @@ mod quick {
         );
     }
 
+    /// **Two skins of one item do not merge** (`plan_move` swaps them
+    /// rather than stacking), so the pile of a different skin is passed
+    /// over and the whole stack lands in the first free grid slot — and a
+    /// pile of the same skin further on still takes the top-up.
+    #[test]
+    fn a_quick_move_passes_a_pile_of_another_skin_for_an_empty_slot() {
+        let skinned = |count, skin| ItemStack {
+            skin,
+            ..stack(WOOD, count)
+        };
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS] = skinned(500, 2);
+        let mut cont = empty();
+        cont[0] = skinned(40, 0);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot as usize, args.count),
+            (HOTBAR_SLOTS + 1, 40),
+            "a top-up was aimed across skins: the sim swaps those, it does \
+             not merge them"
+        );
+
+        inv[HOTBAR_SLOTS + 3] = skinned(900, 0);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot as usize, args.count),
+            (HOTBAR_SLOTS + 3, 40),
+            "the pile of the same skin was not topped up"
+        );
+    }
+
     /// A ceiling of zero is *unknown*, not *unstackable* — an undelivered
     /// catalog row reads the same as one with no ladder, and only one of
     /// the two readings is safe. Unknown skips the merge and lands on an
@@ -5895,6 +5926,14 @@ mod quick {
         (q, out)
     }
 
+    /// A lane with room: every move handed to it goes, into `out`.
+    fn lane(out: &mut Vec<MoveArgs>) -> impl FnMut(MoveArgs) -> bool + '_ {
+        |a| {
+            out.push(a);
+            true
+        }
+    }
+
     /// **A stack that half fits still goes across whole**: 40 wood out of a
     /// bag into a pack holding 990 tops the pile up by ten and lands the
     /// other thirty in a free grid slot — two moves from one right-click,
@@ -5995,7 +6034,7 @@ mod quick {
         let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
         let mut out = Vec::new();
 
-        assert_eq!(s.over(CONT_BAG, 0, &cat, &mut out), None);
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
         assert_eq!(out.len(), 1);
         assert_eq!(
             (out[0].to_slot as usize, out[0].count),
@@ -6003,11 +6042,11 @@ mod quick {
         );
 
         // Resting on it, or coming back to it, sends nothing more.
-        assert_eq!(s.over(CONT_BAG, 0, &cat, &mut out), None);
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
         assert_eq!(out.len(), 1, "a cell fired twice");
 
         // The second stack tops up the pile the first made: 960, not 990.
-        assert_eq!(s.over(CONT_BAG, 1, &cat, &mut out), None);
+        assert_eq!(s.over(CONT_BAG, 1, &cat, lane(&mut out)), None);
         assert_eq!(out.len(), 2);
         assert_eq!(
             (out[1].to_slot as usize, out[1].count),
@@ -6016,15 +6055,15 @@ mod quick {
         );
 
         // The pack's own cells never fire: take, never give.
-        assert_eq!(s.over(CONT_SELF, 0, &cat, &mut out), None);
+        assert_eq!(s.over(CONT_SELF, 0, &cat, lane(&mut out)), None);
         assert_eq!(out.len(), 2, "a sweep deposited out of the pack");
 
         // Nowhere left for the hatchet: said, not sent.
-        assert!(s.over(CONT_BAG, 2, &cat, &mut out).is_some());
+        assert!(s.over(CONT_BAG, 2, &cat, lane(&mut out)).is_some());
         assert_eq!(out.len(), 2);
 
         // Back over the first cell: empty by the copy, so silent.
-        assert_eq!(s.over(CONT_BAG, 0, &cat, &mut out), None);
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
         assert_eq!(out.len(), 2);
 
         // **A new hold while two moves are unanswered keeps the plan**: the
@@ -6032,7 +6071,7 @@ mod quick {
         // would aim at the hole the first move is about to fill.
         let mut again = Sweep::arm(Some(s.clone()), CONT_BAG, BAG, 8, &inv, &cont, &worn);
         let mut out2 = Vec::new();
-        assert_eq!(again.over(CONT_BAG, 0, &cat, &mut out2), None);
+        assert_eq!(again.over(CONT_BAG, 0, &cat, lane(&mut out2)), None);
         assert!(
             out2.is_empty(),
             "a carried-on sweep took a stack it already took"
@@ -6041,10 +6080,113 @@ mod quick {
         // Once both are answered, a new hold reads the views afresh, and a
         // different container never inherits a plan.
         let mut fresh = Sweep::arm(Some(s.clone()), CONT_BAG, BAG, 9, &inv, &cont, &worn);
-        assert_eq!(fresh.over(CONT_BAG, 0, &cat, &mut out2), None);
+        assert_eq!(fresh.over(CONT_BAG, 0, &cat, lane(&mut out2)), None);
         assert_eq!(out2.len(), 1, "an answered sweep did not re-read the views");
         let other = Sweep::arm(Some(s), CONT_BOX, BAG, 8, &inv, &cont, &worn);
         assert_eq!(other.open(), (CONT_BOX, BAG));
+    }
+
+    /// **A full lane plays nothing it did not send.** The action lane
+    /// holds eight and refuses the ninth; a sweep that played the refused
+    /// move onto its copy anyway would think the stack gone (the cell
+    /// silent for good) and owe an answer that never comes (the copy never
+    /// re-read). So the half that went is played, the half that did not is
+    /// planned again when the pointer is next over the cell — the next
+    /// frame, if it rests there — and the count owed is only what went.
+    #[test]
+    fn a_sweep_plays_only_the_moves_that_went() {
+        let cat = catalog();
+        let mut inv = empty();
+        inv[HOTBAR_SLOTS + 2] = stack(WOOD, 990);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
+
+        // Room for one: the top-up goes, the rest is refused.
+        let (mut went, mut tried) = (Vec::new(), 0);
+        let quiet = s.over(CONT_BAG, 0, &cat, |a| {
+            tried += 1;
+            let room = went.is_empty();
+            if room {
+                went.push(a);
+            }
+            room
+        });
+        assert_eq!(quiet, None);
+        assert_eq!(tried, 2, "the sweep kept sending past a full lane");
+        assert_eq!(
+            (went[0].to_slot as usize, went[0].count),
+            (HOTBAR_SLOTS + 2, 10)
+        );
+
+        // Still over the cell, the lane drained: the thirty that did not
+        // go are asked for, and only they.
+        let mut out = Vec::new();
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(
+            out.iter()
+                .map(|m| (m.to_slot as usize, m.count))
+                .collect::<Vec<_>>(),
+            vec![(HOTBAR_SLOTS, 30)],
+            "the refused move was played onto the copy, or re-planned whole"
+        );
+
+        // Two went, so two answers re-read the views: a third owed (the
+        // refused one counted) would pin this copy for the whole hold.
+        let mut seen = Sweep::arm(Some(s), CONT_BAG, BAG, 9, &inv, &cont, &worn);
+        let mut again = Vec::new();
+        assert_eq!(seen.over(CONT_BAG, 0, &cat, lane(&mut again)), None);
+        assert_eq!(
+            again.len(),
+            2,
+            "two answers did not re-read the views: the sweep counted a \
+             move the lane refused"
+        );
+    }
+
+    /// **The copy is re-read once every move is answered**, not held for
+    /// the whole hold: another looter takes most of a stack mid-sweep, and
+    /// the next cell is asked for what is there, not for what the hold
+    /// began over. While an answer is owed the copy stands, because the
+    /// views are then behind the lane.
+    #[test]
+    fn a_sweep_rereads_the_views_once_its_moves_are_answered() {
+        let cat = catalog();
+        let mut inv = empty();
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        cont[1] = stack(WOOD, 300);
+        let worn = [ItemStack::default(); WEAR_SLOTS];
+        let mut s = Sweep::arm(None, CONT_BAG, BAG, 7, &inv, &cont, &worn);
+        let mut out = Vec::new();
+        assert_eq!(s.over(CONT_BAG, 0, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 1);
+
+        // The move landed, and someone else took 200 of the second stack.
+        inv[HOTBAR_SLOTS] = stack(WOOD, 40);
+        cont[0] = ItemStack::default();
+        cont[1] = stack(WOOD, 100);
+
+        // Unanswered: the copy stands (and asks for the 300 it saw).
+        let mut owed = s.clone();
+        owed.refresh(7, &inv, &cont, &worn);
+        let mut stale = Vec::new();
+        assert_eq!(owed.over(CONT_BAG, 1, &cat, lane(&mut stale)), None);
+        assert_eq!(stale.iter().map(|m| m.count).collect::<Vec<_>>(), vec![300]);
+
+        // Answered: the views are read again, and the 100 is what is asked.
+        s.refresh(8, &inv, &cont, &worn);
+        assert_eq!(s.over(CONT_BAG, 1, &cat, lane(&mut out)), None);
+        assert_eq!(
+            (out[1].to_slot as usize, out[1].count),
+            (HOTBAR_SLOTS, 100),
+            "the sweep over-asked from the copy it took when the hold began"
+        );
+        // The re-read keeps the cell it last fired: resting there is quiet.
+        s.refresh(9, &inv, &cont, &worn);
+        assert_eq!(s.over(CONT_BAG, 1, &cat, lane(&mut out)), None);
+        assert_eq!(out.len(), 2, "a re-read made the rested-on cell fire again");
     }
 }
 
