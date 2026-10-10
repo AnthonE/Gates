@@ -1097,7 +1097,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// give: `ACT_GIVE` (32) carries a slot, a count and the receiver's id
 /// (`Command::Give`), the thirty-third action, so `ACTION_SUB_BITS` widened
 /// 5 → 6 and every action message moved by one bit; `SUB_MOVE_REFUSED`
-/// grows a reason (`REFUSE_M_GIVE`, 14: no room in their pack).
+/// grows a reason (`REFUSE_M_GIVE`, 14: no room in their pack). And a
+/// loose stack carries its condition: `WireGItem` ends in a bit and, when
+/// set, the stack's `cond` u16, so a blueprint sheet on the ground can say
+/// what it teaches.
 pub const PROTO_VER: u16 = 102;
 
 /// This game's slug in the elo catalog.

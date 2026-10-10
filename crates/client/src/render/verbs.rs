@@ -1549,14 +1549,20 @@ pub fn hearth_close(
 /// The pick `E` takes from where the player stands: a loose stack, or an
 /// arrow standing in a body in reach — their own, where they stand, or one
 /// they can see, where it is drawn.
+///
+/// A blueprint sheet's target is stamped here (v102), `lit`'s way: the
+/// resolver is handed the stacks, and the research table that reads a
+/// sheet's `cond` lives on the core.
 fn take_or_pull(core: &client_core::core::ClientCore, x: f32, z: f32) -> interact::Pick {
     let at = core.render_tick();
     let mut rs = client_core::interp::RemoteState::default();
-    interact::resolve_take_or_pull(x, z, core.ground_items(), core.lodged(), |id| {
+    let mut pick = interact::resolve_take_or_pull(x, z, core.ground_items(), core.lodged(), |id| {
         if id == core.player_id {
             Some((x, z))
         } else {
             core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
         }
-    })
+    });
+    pick.stamp_teaches(&core.research);
+    pick
 }

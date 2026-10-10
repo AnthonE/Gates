@@ -106,17 +106,25 @@ fn armed_core() -> Box<ShardCore> {
 /// barrel would — through the store's own verb, so the fixture cannot
 /// scatter something the sim would refuse.
 fn drop_one(core: &mut ShardCore, wslot: usize, item: u16, count: u16) -> u32 {
+    drop_stack(
+        core,
+        wslot,
+        ItemStack {
+            item,
+            count,
+            cond: 0,
+            skin: 0,
+        },
+    )
+}
+
+fn drop_stack(core: &mut ShardCore, wslot: usize, stack: ItemStack) -> u32 {
     let (qx, qz) = (
         core.world.players[wslot].body.qx,
         core.world.players[wslot].body.qz,
     );
     let mut items = [ItemStack::default(); INV_SLOTS];
-    items[0] = ItemStack {
-        item,
-        count,
-        cond: 0,
-        skin: 0,
-    };
+    items[0] = stack;
     let (bc, seed, tick) = (core.world.backpack, core.world.seed, core.world.tick);
     let made = core
         .world
@@ -124,6 +132,49 @@ fn drop_one(core: &mut ShardCore, wslot: usize, item: u16, count: u16) -> u32 {
         .scatter(&bc, seed, hv(seed), 0xB0_0B, qx, qz, &items, tick);
     assert_eq!(made, 1, "the fixture scattered nothing");
     core.world.ground_items.entries()[0].id
+}
+
+/// A stack's condition crosses (wire v102), so a blueprint sheet on the
+/// ground reaches the client knowing what it teaches — the prompt reads
+/// `research::blueprint_target` off it. Before, the record dropped `cond`
+/// and every sheet on the ground was just "Blueprint".
+#[test]
+fn a_stacks_condition_reaches_the_client() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    let mut warm = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut warm);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    // Any stack with a condition; a sheet's is its target plus one.
+    let sheet = ItemStack {
+        item: FILLER,
+        count: 1,
+        cond: 5,
+        skin: 0,
+    };
+    let id = drop_stack(&mut core, w0, sheet);
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let g = clients[0].1.ground_items()[0];
+    assert_eq!(
+        (g.id, g.item, g.cond),
+        (id, FILLER, 5),
+        "the mirror lost the cond"
+    );
+    assert!(
+        seen.iter().any(|(_, m)| matches!(
+            m,
+            EventMsg::GItemSync { count, recs, .. }
+                if *count == 1 && recs[0].id == id && recs[0].cond == 5
+        )),
+        "the bytes the server sent do not carry the cond"
+    );
 }
 
 #[test]

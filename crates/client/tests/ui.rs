@@ -6109,6 +6109,7 @@ mod take {
             item,
             count,
             dir: [0; 3],
+            cond: 0,
         }
     }
 
@@ -6221,6 +6222,7 @@ mod take {
             item: 1,
             count: 1,
             dir: [0; 3],
+            cond: 0,
         };
         let p = resolve_take(100.0, 100.0, &[one_q]);
         assert_eq!(p.verb, Verb::Take);
@@ -6374,6 +6376,47 @@ mod research_table {
             "RESEARCH TABLE",
             "and the name bar says what it is, not BOX"
         );
+    }
+
+    /// A sheet on the GROUND names what it teaches too (v102): the wire
+    /// carries the stack's `cond`, `resolve_take` copies it onto the pick,
+    /// and `stamp_teaches` (what `render::verbs::take_or_pull` calls) reads
+    /// it with the research table. Before, the prompt said "Blueprint" for
+    /// every sheet. A blank, and anything else, keeps its own name.
+    #[test]
+    fn a_sheet_on_the_ground_says_which_blueprint_it_is() {
+        use client::ui::interact::resolve_take;
+        use protocol::event::WireGItem;
+        use sim_core::movement::quant_xz;
+        let (rc, cat) = (rc(), catalog());
+        let take = |s: ItemStack| {
+            let rec = WireGItem {
+                id: 1,
+                qx: quant_xz(100.0),
+                qz: quant_xz(100.0),
+                item: s.item,
+                count: s.count,
+                cond: s.cond,
+                ..WireGItem::default()
+            };
+            let mut p = resolve_take(100.0, 100.0, &[rec]);
+            p.stamp_teaches(&rc);
+            p
+        };
+        let sheet = take(blueprint_of(&rc, SAMPLE));
+        assert_eq!(sheet.teaches, Some(SAMPLE));
+        assert_eq!(sheet.prompt(&cat), "[E] TAKE REVOLVER BLUEPRINT ×1");
+        let blank = take(stack(PAPER, 1));
+        assert_eq!(blank.teaches, None);
+        assert_eq!(blank.prompt(&cat), "[E] TAKE BLUEPRINT ×1");
+        assert_eq!(take(stack(7, 30)).prompt(&cat), "[E] TAKE WOOD ×30");
+        // Another verb is never a sheet, whatever its fields say.
+        let mut door = Pick {
+            verb: Verb::Door,
+            ..sheet
+        };
+        door.stamp_teaches(&rc);
+        assert_eq!(door.teaches, None);
     }
 
     /// A sheet is named and drawn as what it teaches; a blank is honestly

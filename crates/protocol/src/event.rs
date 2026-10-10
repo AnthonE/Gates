@@ -87,8 +87,11 @@ pub const VEND_BATCH: usize = 8;
 pub const VENDOR_NAME_BYTES: usize = 16;
 
 /// Loose ground stacks one sync message carries (ground items v0).
-/// Sixteen × 14 B is ~230 B, inside `MAX_EVENT_MSG_BYTES` with the
-/// headroom the catalog batch leaves. Overflow policy: the next message
+/// A lying stack is 116 bits; the widest record — an arrow stuck where it
+/// went in, carrying a condition (v94, v102) — is 156, so sixteen of those
+/// are 315 B, inside `MAX_EVENT_MSG_BYTES` but only just: the assert at
+/// `GITEM_SYNC_COUNT_BITS` and `gitem_sync_widest_batch_fits_the_cap`
+/// hold it there. Overflow policy: the next message
 /// continues the walk, exactly as the bag walk does — and the walk
 /// restarts whenever the store moves, which for litter is often, so a
 /// batch much larger than this would spend a tick's lane on a set the
@@ -746,6 +749,18 @@ const BAG_SYNC_COUNT_BITS: u32 = 5;
 /// drip sends per tick, not what the store holds.
 const GITEM_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
+/// The widest loose-stack record `write_gitem` can put down: id, the three
+/// position quanta, item and count, then the stuck direction and the
+/// condition, each behind its own bit.
+const GITEM_REC_MAX_BITS: usize =
+    32 + 2 * POS_XZ_BITS as usize + POS_Y_BITS as usize + 16 + 16 + (1 + 24) + (1 + 16);
+// A full batch of the widest records still fits one message (v102 left
+// five bytes): a field added to the record must shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + GITEM_SYNC_COUNT_BITS) as usize
+        + GITEM_SYNC_BATCH * GITEM_REC_MAX_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
 /// Width of the lodged-arrow batch count — `GITEM_SYNC_COUNT_BITS`' shape.
 const LODGED_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(LODGED_SYNC_BATCH < (1usize << LODGED_SYNC_COUNT_BITS));
@@ -3739,10 +3754,10 @@ impl WireBag {
 /// open, so its contents answer a `ContSync` when you do, and shipping
 /// them unasked would put the shard's loot on every wire. A loose stack
 /// has nothing to open — the client draws the thing itself and the prompt
-/// names it — so those two fields ARE the object. `cond` deliberately
-/// stays behind: nothing on screen reads a loose stack's condition, and
-/// durability V7 means a stack carrying one is a stack of exactly 1, so
-/// the pip has nothing to divide either.
+/// names it — so those two fields ARE the object. `cond` rides too since
+/// v102, as an optional field: a blueprint's target lives in it
+/// (`research::blueprint_target`), so without it a sheet on the ground
+/// could only say "Blueprint", never which one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WireGItem {
     pub id: u32,
@@ -3755,6 +3770,10 @@ pub struct WireGItem {
     /// the position is where it went in, and the client stands it there at
     /// this angle. Zero for a stack lying on the ground.
     pub dir: [i8; 3],
+    /// The stack's `ItemStack::cond` (wire v102): a blueprint's target plus
+    /// one, a worn tool's wear, zero for ordinary litter — which costs one
+    /// bit on the wire.
+    pub cond: u16,
 }
 
 impl WireGItem {
@@ -3767,6 +3786,7 @@ impl WireGItem {
             item: g.stack.item,
             count: g.stack.count,
             dir: g.dir,
+            cond: g.stack.cond,
         }
     }
 
@@ -3868,6 +3888,12 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
             w.write(d as u8 as u32, 8)?;
         }
     }
+    // The condition (v102), the same shape: a bit, and sixteen only when
+    // there is one, so litter pays one bit and a sheet names what it teaches.
+    w.write_bit(g.cond != 0)?;
+    if g.cond != 0 {
+        w.write(g.cond as u32, 16)?;
+    }
     Ok(())
 }
 
@@ -3880,6 +3906,7 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         item: r.read(16)? as u16,
         count: r.read(16)? as u16,
         dir: [0; 3],
+        cond: 0,
     };
     if r.read_bit()? {
         for d in g.dir.iter_mut() {
@@ -3887,6 +3914,13 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         }
         // Set says stuck, and a stuck arrow points somewhere.
         if !g.stuck() {
+            return Err(WireError::Malformed);
+        }
+    }
+    if r.read_bit()? {
+        g.cond = r.read(16)? as u16;
+        // Set says there is a condition, and zero is the absence of one.
+        if g.cond == 0 {
             return Err(WireError::Malformed);
         }
     }
@@ -6802,6 +6836,82 @@ mod tests {
             encode_event_piece_sync(false, &[], &mut buf),
             Err(WireError::Cap)
         );
+    }
+
+    /// The loose-stack batch at its widest (v102): every record an arrow
+    /// stuck where it went in AND carrying a condition, every field at the
+    /// top of its range. It must encode inside the message cap and come
+    /// back whole — the const assert beside `GITEM_SYNC_COUNT_BITS` sums
+    /// the widths, this measures the bytes.
+    #[test]
+    fn gitem_sync_widest_batch_fits_the_cap() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let recs: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
+            id: u32::MAX - i as u32,
+            qx: (1 << POS_XZ_BITS) - 1,
+            qy: (1 << POS_Y_BITS) - 1 - POS_Y_BIAS,
+            qz: (1 << POS_XZ_BITS) - 1 - i as i32,
+            item: (MAX_ITEM_DEFS - 1 - i) as u16,
+            count: u16::MAX,
+            dir: [-128, 127, -(i as i8) - 1],
+            cond: u16::MAX - i as u16,
+        });
+        let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
+        assert!(len <= MAX_EVENT_MSG_BYTES);
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::GItemSync {
+                reset,
+                recs: got,
+                count,
+            } => {
+                assert!(reset);
+                assert_eq!(count as usize, GITEM_SYNC_BATCH);
+                assert_eq!(got, recs);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // Litter pays one bit for the condition it does not have, and a
+        // sheet's target survives the trip.
+        let lying = WireGItem {
+            id: 9,
+            qx: 100,
+            qz: 200,
+            item: 3,
+            count: 1,
+            ..WireGItem::default()
+        };
+        let sheet = WireGItem { cond: 42, ..lying };
+        let bare = encode_event_gitem_sync(false, &[lying], &mut buf).unwrap();
+        let with = encode_event_gitem_sync(false, &[sheet], &mut buf).unwrap();
+        assert!(with > bare, "the condition took no room");
+        match decode_event(&buf[..with]).unwrap() {
+            EventMsg::GItemSync { recs, count, .. } => {
+                assert_eq!(count, 1);
+                assert_eq!(recs[0], sheet);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        // Forged by hand: the condition bit set over a zero condition. The
+        // encoder never writes it (zero IS no condition), so the decoder
+        // refuses it rather than holding a record two spellings can mean.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_GITEM_SYNC, SUB_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(1, GITEM_SYNC_COUNT_BITS).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(100, POS_XZ_BITS).unwrap();
+        w.write(POS_Y_BIAS as u32, POS_Y_BITS).unwrap();
+        w.write(200, POS_XZ_BITS).unwrap();
+        w.write(3, 16).unwrap();
+        w.write(1, 16).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(0, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }
 
     #[test]

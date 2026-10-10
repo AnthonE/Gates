@@ -260,6 +260,12 @@ pub struct Pick {
     /// every other dynamic word in a prompt (`open`, `lit`, `locked`).
     pub item: u16,
     pub count: u16,
+    /// A `Verb::Take` stack's condition, straight off the wire (v102), and
+    /// what it teaches if it is a blueprint sheet. `teaches` is stamped by
+    /// the caller, as `lit` is: the research table lives in `ClientCore`,
+    /// and `research::blueprint_target` is the one reading of `cond`.
+    pub cond: u16,
+    pub teaches: Option<u16>,
     /// What a `Verb::Pick` is picking — the terrain occupant ordinal, so the
     /// prompt can say berries or hemp. Zero for every other verb.
     pub occupant: u8,
@@ -296,6 +302,27 @@ pub struct Pick {
 impl Pick {
     pub fn is_none(&self) -> bool {
         self.verb == Verb::None
+    }
+
+    /// Stamp what a `Verb::Take` sheet teaches (v102) from the research
+    /// table the caller holds — `research::blueprint_target` on the stack
+    /// this pick resolved, so the prompt reads `cond` exactly as the panels
+    /// do. `None` for a blank, for anything that is not paper, and for
+    /// every other verb.
+    pub fn stamp_teaches(&mut self, rc: &sim_core::research::ResearchContent) {
+        self.teaches = (self.verb == Verb::Take)
+            .then(|| {
+                sim_core::research::blueprint_target(
+                    rc,
+                    sim_core::gather::ItemStack {
+                        item: self.item,
+                        count: self.count,
+                        cond: self.cond,
+                        skin: 0,
+                    },
+                )
+            })
+            .flatten();
     }
 
     /// What the centre prompt says, or `""` for nothing in reach.
@@ -433,9 +460,19 @@ impl Pick {
             // holding 4 cloth and a sack holding 300 metal are the same
             // picture. `×` and the same `item_label` the panels use, so
             // one item has one name everywhere.
+            // A sheet names what it teaches, the way `research::stack_label`
+            // does in the panels: "Revolver Blueprint", not "Blueprint".
             Verb::Take => format!(
                 "[E] TAKE {} ×{}",
-                crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
+                match self.teaches {
+                    Some(t) => format!(
+                        "{} {}",
+                        crate::ui::craft::item_label(catalog, t),
+                        crate::ui::craft::item_label(catalog, self.item)
+                    ),
+                    None => crate::ui::craft::item_label(catalog, self.item),
+                }
+                .to_uppercase(),
                 self.count
             ),
             // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
@@ -690,6 +727,7 @@ pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pic
             handle: items[i].id,
             item: items[i].item,
             count: items[i].count,
+            cond: items[i].cond,
             d2,
             ..Pick::default()
         },

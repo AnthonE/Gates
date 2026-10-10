@@ -1868,6 +1868,14 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
             } else {
                 [0; 3]
             },
+            // Every fourth carries a condition (v102), past a byte so a
+            // narrowed field reddens; two of them (0 and 12) are stuck too,
+            // so the two optional fields are seen side by side.
+            cond: if i % 4 == 0 {
+                256 + rng.next_bounded(60_000) as u16
+            } else {
+                0
+            },
         };
     }
     (true, recs)
