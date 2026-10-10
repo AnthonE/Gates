@@ -250,7 +250,9 @@ pub fn upgrade_row(near: &Target, defs: &BuildContent, have: u16) -> Option<u16>
 /// pro rata to the hp it is missing, at the table's repair percent. That is
 /// `sim_core::build::repair_quote`, the function `build::repair` charges
 /// with, so the wheel names the bill rather than "cost depends on damage"
-/// (wire v102 carries each record's hp and the percent).
+/// (wire v102 carries each record's hp and the percent) — for the hp the
+/// client was last told, which decay can have lowered since. The rows are
+/// therefore a floor on the bill, and [`repair_line`] says so.
 ///
 /// `None` while the client cannot name it: the row or the percent has not
 /// dripped, or the hp is unknown. Zero rows is an answer, not a wait —
@@ -297,6 +299,30 @@ pub fn repair_rows(
         };
     }
     Some((out, n))
+}
+
+/// The repair readout's headline, over [`repair_rows`]' row count.
+///
+/// **A floor, and it says so.** Decay drains a structure's hp with no
+/// event (a broadcast per decay step would be every unpaid wall in the
+/// world, every period), so between one record and the next `StructHit`
+/// or `PieceRepaired` the mirror's hp can stand above the store's. Never
+/// below it: every edge that raises hp (a repair, an upgrade, a placement)
+/// is sent. `repair_quote` never falls as the hp missing grows, so the
+/// quoted rows are the bill or less, row by row, and the hp restored is
+/// this or more. The line promises that much and no more, rather than an
+/// exact price the server may raise.
+pub fn repair_line(t: Option<&Target>, rows: Option<usize>) -> String {
+    match (t, rows) {
+        // `repair`'s own refusal for a row with no price.
+        (_, Some(0)) => "cannot be repaired".into(),
+        (Some(t), Some(_)) => format!(
+            "Restores {}+ HP to {} · costs at least",
+            t.hp_max.saturating_sub(t.hp),
+            t.hp_max
+        ),
+        _ => "Waiting for repair details".into(),
+    }
 }
 
 /// Human-readable target identity, read from the same rows as the action.

@@ -786,7 +786,8 @@ impl PieceSet {
     /// `EV_PIECE_REPAIRED` the way back, so both edges are on the wire
     /// already and this costs no byte. (Decay drains hp without a word, so
     /// between records the mirror's hp can stand a little above the
-    /// store's — the band always could.)
+    /// store's — the band always could — which is why the hammer words its
+    /// repair quote as a floor, `client::ui::hammer::repair_line`.)
     fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
         for r in self.recs[..self.len].iter_mut() {
             if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {

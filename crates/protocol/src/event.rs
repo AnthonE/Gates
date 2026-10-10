@@ -740,6 +740,10 @@ const N_COSTS_BITS: u32 = 2;
 /// quotes no recipe for bakes unpriced and `build::repair` refuses it.
 const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
+/// A structure's exact hp on the piece and deploy records (wire v102): the
+/// stores' own `u16` at its full width, so every hp the sim can hold
+/// crosses as itself and there is no value past it to refuse.
+const STRUCT_HP_BITS: u32 = u16::BITS;
 /// The widths `write_piece_rec` puts down: address, row, facing, band,
 /// plate, and the exact hp (v102).
 const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
@@ -749,7 +753,7 @@ const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + 1
     + DMG_BAND_BITS
     + PLATE_BITS
-    + 16) as usize;
+    + STRUCT_HP_BITS) as usize;
 /// `write_deploy_rec`'s: address, row, the three state bits, band, the
 /// pose's three bytes, the beds, and the exact hp (v102).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
@@ -759,7 +763,7 @@ const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + 3
     + DMG_BAND_BITS
     + 4 * 8
-    + 16) as usize;
+    + STRUCT_HP_BITS) as usize;
 // A full batch of either store's records still fits one message (v102's hp
 // took 16 bits a record): a field added after it must shrink the batch first.
 const _: () = assert!(
@@ -2536,7 +2540,7 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     // defs drip — and this is what the hammer prices a repair from
     // (`build::repair_quote`), where a band could only bound it. No new
     // secret: `StructHit` already tells the island `left` on every blow.
-    w.write(rec.hp as u32, 16)?;
+    w.write(rec.hp as u32, STRUCT_HP_BITS)?;
     Ok(())
 }
 
@@ -2555,7 +2559,7 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         // so this needs no range check — the width is the check.
         dmg: r.read(DMG_BAND_BITS)? as u8,
         plate: (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8,
-        hp: r.read(16)? as u16,
+        hp: r.read(STRUCT_HP_BITS)? as u16,
         ..rec
     };
     // Coord/level/facing widths are exact; the row — and, since v40's
@@ -2787,7 +2791,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     // A planter's beds (v100); zero for everything else.
     w.write(rec.grow as u32, 8)?;
     // The exact hp (v102) — `write_piece_rec`'s note applies.
-    w.write(rec.hp as u32, 16)?;
+    w.write(rec.hp as u32, STRUCT_HP_BITS)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -2818,7 +2822,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         grow: r.read(8)? as u8,
-        hp: r.read(16)? as u16,
+        hp: r.read(STRUCT_HP_BITS)? as u16,
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -8878,6 +8882,9 @@ mod wire_domains {
             // The repair percent (v102): a unit, bounded at 100 by content
             // and by `REPAIR_PCT_MAX` on both ends.
             "REPAIR_PCT_BITS",
+            // A structure's exact hp (v102): a magnitude at the stores'
+            // own `u16` width, so it cannot be outgrown.
+            "STRUCT_HP_BITS",
             // A grow-sync batch length, bounded by `GROW_SYNC_BATCH`.
             "GROW_SYNC_COUNT_BITS",
             "MOVE_SLOT_BITS",

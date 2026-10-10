@@ -2261,7 +2261,12 @@ const _: () = assert!(
 /// **The one price.** [`repair`] checks and takes exactly these rows, and a
 /// client quotes them before the press (`client::ui::hammer::repair_rows`,
 /// off the hp and `repair_pct` the record and the defs drip carry since
-/// wire v102), so the hammer's readout cannot disagree with the bill.
+/// wire v102), so the readout and the bill are one function and can only
+/// differ in the hp they are handed. They can differ there: decay lowers a
+/// store's hp with no event, so a client's mirror can stand above the
+/// store, never below it. The price never falls as the hp missing grows,
+/// so a stale quote is a floor on the bill, which is how the hammer words
+/// it (`hammer::repair_line`).
 ///
 /// Zero rows means nothing is for sale, and those are `repair`'s own
 /// refusals: nothing missing, an unbaked table (`repair_pct == 0`), or a
@@ -3835,6 +3840,31 @@ mod tests {
         assert_eq!(repair_quote(&[(0, 3)], 100, 100, 100, &mut out), 0);
         assert_eq!(repair_quote(&[(0, 3)], 40, 100, 0, &mut out), 0);
         assert_eq!(repair_quote(&[], 40, 100, 100, &mut out), 0);
+    }
+
+    /// Decay lowers a store's hp without an event, so a client quotes from
+    /// an hp at or above the store's, and the hammer calls its quote a floor
+    /// ("costs at least"). That is only true while the price never falls as
+    /// the hp missing grows, row by row; the rounding up and the floor at
+    /// one are where a non-monotone price would hide.
+    #[test]
+    fn a_quote_from_a_stale_higher_hp_is_a_floor_on_the_bill() {
+        let costs = [(0u16, 7u16), (1, 1000), (2, 1)];
+        for pct in [1u16, 35, 100] {
+            let mut prev = [0u32; 3];
+            for hp in (1..=1000u16).rev() {
+                let mut out = [(0u16, 0u32); MAX_REPAIR_COSTS];
+                let n = repair_quote(&costs, hp, 1000, pct, &mut out);
+                for (k, &(_, units)) in out.iter().take(n).enumerate() {
+                    assert!(
+                        units >= prev[k],
+                        "pct {pct}: row {k} fell from {} to {units} at hp {hp}",
+                        prev[k]
+                    );
+                    prev[k] = units;
+                }
+            }
+        }
     }
 
     /// An unbaked table refuses rather than healing free.

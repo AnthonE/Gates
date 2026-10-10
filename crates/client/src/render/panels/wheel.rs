@@ -344,9 +344,11 @@ pub fn build_hammer_screen(
                     ));
                     let action =
                         verb.map(|v| hammer::act(v, near, &core.piece_defs, core.piece_defs_have));
-                    // The repair's exact bill (wire v102), the rows
-                    // `build::repair` will take — `None` until the hp, the
-                    // row and the percent are all known.
+                    // The repair's bill (wire v102), the rows
+                    // `build::repair` takes for the hp last reported — a
+                    // floor, since decay drains hp unannounced
+                    // (`hammer::repair_line`). `None` until the hp, the row
+                    // and the percent are all known.
                     let repair = match action {
                         Some(hammer::Act::Repair { .. }) => near.and_then(|t| {
                             hammer::repair_rows(
@@ -363,16 +365,9 @@ pub fn build_hammer_screen(
                     let line = match action {
                         Some(hammer::Act::Say(why)) => why.to_string(),
                         Some(hammer::Act::Upgrade { .. }) => "Upgrade cost".into(),
-                        Some(hammer::Act::Repair { .. }) => match (near, repair) {
-                            // `repair`'s own refusal for a row with no price.
-                            (_, Some((_, 0))) => "cannot be repaired".into(),
-                            (Some(t), Some(_)) => format!(
-                                "Restores {} HP to {}",
-                                t.hp_max.saturating_sub(t.hp),
-                                t.hp_max
-                            ),
-                            _ => "Waiting for repair details".into(),
-                        },
+                        Some(hammer::Act::Repair { .. }) => {
+                            hammer::repair_line(near, repair.map(|(_, n)| n))
+                        }
                         _ => verb.map(hammer::blurb).unwrap_or("sweep to a verb").into(),
                     };
                     c.spawn((
@@ -707,10 +702,13 @@ mod tests {
                 );
             }
             if verb == hammer::Verb::Repair {
-                // Half of a 10-unit wall's hp is 5 units — the exact bill,
-                // not "cost depends on damage".
+                // Half of a 10-unit wall's hp is 5 units — the bill for the
+                // hp reported, not "cost depends on damage", and said as a
+                // floor because decay can have taken more since.
                 assert!(
-                    words.iter().any(|s| s == "Restores 250 HP to 500"),
+                    words
+                        .iter()
+                        .any(|s| s == "Restores 250+ HP to 500 · costs at least"),
                     "{words:?}"
                 );
                 assert!(

@@ -2968,6 +2968,32 @@ fn hammer_repair_quote_is_the_bill_for_either_store() {
     );
 }
 
+/// The headline says what the quote is: a floor. Decay lowers the store's hp
+/// with no event, so the mirror can stand above it and the server's bill can
+/// only be these rows or more (`build::repair_quote` never falls as the hp
+/// missing grows) — "costs at least", never an exact price the server may
+/// raise. It waits while the rows do, and a row with no price says so.
+#[test]
+fn hammer_repair_line_names_the_quote_as_a_floor() {
+    let wall = target(Store::Piece, 0, 300, 500);
+    assert_eq!(
+        hammer::repair_line(Some(&wall), Some(2)),
+        "Restores 200+ HP to 500 · costs at least"
+    );
+    assert_eq!(
+        hammer::repair_line(Some(&wall), None),
+        "Waiting for repair details"
+    );
+    assert_eq!(
+        hammer::repair_line(None, None),
+        "Waiting for repair details"
+    );
+    assert_eq!(
+        hammer::repair_line(Some(&wall), Some(0)),
+        "cannot be repaired"
+    );
+}
+
 #[test]
 fn refusals_before_the_round_trip_match_the_key_paths() {
     let (defs, have) = hammer_piece_defs();

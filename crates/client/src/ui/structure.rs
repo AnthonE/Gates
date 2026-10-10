@@ -63,8 +63,8 @@ pub struct Target {
     /// one thing it gates, `hammer.rs`'s "not damaged" refusal, was
     /// therefore unreachable: every repair swing at an intact wall took a
     /// server round trip to come back refused, by a client-side check that
-    /// had never once fired. A band is what the wire carries now, and it is
-    /// all this needs — `damaged()` is a comparison against 0.
+    /// had never once fired. The band fixed that, and since v102 it is the
+    /// fallback: `damaged()` reads [`Self::hp`] whenever the row is known.
     pub dmg: u8,
     /// The exact hp the server last stated (wire v102: every record carries
     /// it, `StructHit` and `PieceRepaired` move it). What the hammer prices
@@ -87,8 +87,25 @@ impl Target {
     /// Is there damage to pay for? `build.rs` refuses a repair on an intact
     /// piece (`REFUSE_B_INTACT`), so a client that offered one would be
     /// advertising a refusal.
+    ///
+    /// **The exact hp decides once the def row is known** (v102): `hp <
+    /// hp_max` is `repair`'s own test. The band is a 3-bit rounding of it,
+    /// and only as good as the maximum the banding side held: a `StructHit`
+    /// that lands before the def drip bands to 0 (`damage_band`'s
+    /// unknown-maximum rule), and that wall must not read "not damaged"
+    /// with its hp below full. The band answers while the row or the hp is
+    /// unknown, which is the case it was made for.
+    ///
+    /// Both answer for what the client was told. Decay drains hp with no
+    /// event, so a wall whose mirror reads full can have rotted since and
+    /// reads "not damaged" until a record, a hit or a repair moves it (the
+    /// band shared that blind spot).
     pub fn damaged(&self) -> bool {
-        self.dmg > 0
+        if self.hp > 0 && self.hp_max > 0 {
+            self.hp < self.hp_max
+        } else {
+            self.dmg > 0
+        }
     }
 }
 
@@ -525,6 +542,48 @@ mod tests {
         .unwrap();
         assert_eq!((t.dmg, t.hp, t.hp_max), (0, 200, 200));
         assert!(!t.damaged(), "an intact door has nothing to buy");
+    }
+
+    /// A `StructHit` that lands before the def drip bands to 0 (an unknown
+    /// maximum), but the hp beside it is exact: once the row is known the
+    /// hp decides, so a wall below full never reads "not damaged". The band
+    /// answers only while the row or the hp is unknown.
+    #[test]
+    fn the_exact_hp_decides_damage_once_the_row_is_known() {
+        let t = Target {
+            store: Store::Piece,
+            cx: 5,
+            cz: 5,
+            level: 0,
+            loc: LOC_PLANE,
+            row: 0,
+            dmg: 0,
+            hp: 499,
+            hp_max: 500,
+            side: None,
+        };
+        assert!(t.damaged(), "one point down under a zero band is damage");
+        assert!(
+            !Target {
+                dmg: 1,
+                hp: 500,
+                ..t
+            }
+            .damaged(),
+            "a band does not outvote a full hp"
+        );
+        assert!(
+            Target {
+                hp_max: 0,
+                dmg: 1,
+                ..t
+            }
+            .damaged(),
+            "undripped row"
+        );
+        assert!(!Target { hp_max: 0, ..t }.damaged());
+        assert!(Target { hp: 0, dmg: 1, ..t }.damaged(), "unknown hp");
+        assert!(!Target { hp: 0, ..t }.damaged());
     }
 
     /// A row the def table has not dripped reports max 0 — and since wire

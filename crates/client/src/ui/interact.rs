@@ -461,8 +461,8 @@ impl Pick {
             // picture. `×` and the same `item_label` the panels use, so
             // one item has one name everywhere.
             // A sheet names what it teaches with the panels' own words
-            // (`research::stack_label`'s composition): "Revolver Blueprint",
-            // not "Blueprint".
+            // (`research::teaching_label`, the spelling `stack_label` uses):
+            // "Revolver Blueprint", not "Blueprint".
             Verb::Take => format!(
                 "[E] TAKE {} ×{}",
                 crate::ui::research::teaching_label(catalog, self.item, self.teaches)

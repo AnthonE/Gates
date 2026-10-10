@@ -74,8 +74,11 @@ impl Cat {
     }
 }
 
-/// A class's word on the rail. A code past the ledger reads OTHER, which
-/// is where `ItemCatalog` files it too.
+/// A class's word on the rail. Every code a catalog row can hold is named
+/// here: a code past `CLASS_MAX` never reaches the catalog, because
+/// `ItemCatalog::set` and the catalog decoder both refuse it. The `_` arm
+/// is a defensive fallback for a raw byte from elsewhere, not a bucket a
+/// row can land in.
 pub fn class_label(class: u8) -> &'static str {
     match class {
         CLASS_CONSTRUCTION => "CONSTRUCTION",

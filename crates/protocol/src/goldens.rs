@@ -1104,23 +1104,41 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
 /// length — the fixture encodes the batch at `first = 0`, rows 0..7 since
-/// v102 cut the batch to seven. The ceilings (v46) mix 0 (no condition)
-/// with real values and the u16 corner so the golden pins the column's
-/// width and order, not just its presence; the armor columns (v52) do the
-/// same across both slots, the cap and the not-armor row. Every row names
-/// its class (v102), and the food rows carry the ledger's top.
+/// v102 cut the batch to seven, and **only those rows are pinned in
+/// bytes**: a column's coverage belongs in rows 0..7 or it is asserted and
+/// never encoded. The ceilings (v46) mix 0 (no condition) with real values
+/// and the u16 corner so the golden pins the column's width and order, not
+/// just its presence; the armor columns (v52) do the same across both
+/// slots, the cap and the not-armor row. Every row names its class (v102),
+/// and the food rows carry the ledger's top.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
     let rows: [(&[u8], ItemRow); 11] = [
-        // The oven column's coverage (v89): wood is fuel at both burners
-        // (the fire's bit and the furnace's).
+        // The oven column's coverage (v89), both rows in the first batch so
+        // two distinct values pin the column's order and width: wood is
+        // fuel at both burners (the fire's bit and the furnace's), and low
+        // grade fuel carries the width's corner, every role at every
+        // converter.
         (
             b"Wood",
             ItemRow {
                 oven: 0b001_001,
                 class: CLASS_RESOURCES,
                 ..row(0, 0, WEAR_NONE, 1000)
+            },
+        ),
+        // It also carries the `stack_max` column's corner (v64). The
+        // column's three values sit in the first batch: a real ladder
+        // (1,000, the resources), the V7 floor a condition item is pinned
+        // to by `coherent` (1, row 6 — so the invariant is *pinned in
+        // bytes* and not only asserted), and the width's own corner, here.
+        (
+            b"Low Grade Fuel",
+            ItemRow {
+                oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
+                class: CLASS_RESOURCES,
+                ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
         // The draw columns' coverage (v82), at the byte's corner.
@@ -1133,9 +1151,8 @@ pub fn event_catalog() -> ItemCatalog {
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
-        // The eat columns' coverage (v81): a food with all three, a heal
-        // with only hp, and the width's corner on each column.
-        (b"Mushrooms", food(10, 15, 5, 3)),
+        // The eat columns' coverage (v81): a heal with only hp, and a food
+        // with all three at the width's corner on each column.
         (
             b"Bandage",
             ItemRow {
@@ -1161,8 +1178,10 @@ pub fn event_catalog() -> ItemCatalog {
                 ..row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1)
             },
         ),
-        // Past the first batch: charcoal what both burners make, a slot
-        // named with no reduction behind it (legal), and the rest.
+        // Past the first batch: a plain food, charcoal what both burners
+        // make, a slot named with no reduction behind it (legal), and the
+        // rest.
+        (b"Mushrooms", food(10, 15, 5, 3)),
         (
             b"Charcoal",
             ItemRow {
@@ -1177,20 +1196,6 @@ pub fn event_catalog() -> ItemCatalog {
             ItemRow {
                 class: CLASS_RESOURCES,
                 ..row(1, 0, WEAR_NONE, 1)
-            },
-        ),
-        // The `stack_max` column's own coverage (v64), and the three
-        // values it needs are already spread across the table above: a
-        // real ladder (1,000, the resources), the V7 floor a condition
-        // item is pinned to by `coherent` (1, row 6 — so the invariant is
-        // *pinned in bytes* and not only asserted), and the width's own
-        // corner, here.
-        (
-            b"Low Grade Fuel",
-            ItemRow {
-                oven: (1 << sim_core::oven::PACKED_ROLE_BITS) - 1,
-                class: CLASS_RESOURCES,
-                ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
     ];
