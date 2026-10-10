@@ -413,7 +413,9 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 3. The hearth panel shows each resource's day and the time left, and its crew takes
    stock back with `1`–`4` (wire v101, `deploy::take_stock`); crew in their claim see an
    UPKEEP chip off a staggered `Stock` push.
-5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
+5. The group tax is in (`upkeep::group_pct`, Facepunch's "Breach and Clear", 3 Sep 2026) on the
+   hearth's crew; theirs also counts code-lock lists and anyone deauthed in the last day, and
+   `HEARTH_CREW_CAP` (10) holds ours to +12 %.
 
 ## 0aa · Building rights: the turret's own list *(systems lane)*
 

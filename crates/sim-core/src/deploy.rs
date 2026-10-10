@@ -3937,11 +3937,11 @@ fn pay_hour(
             continue;
         }
         let cost = row_cost(costs, item);
-        let due = |hi: u16| crate::upkeep::tax(dc, deploys.claim_graded(hi as usize)).due(cost, k);
+        let due = |hi: u16| crate::upkeep::hearth_tax(dc, deploys, hi as usize).due(cost, k);
         let payer = cover
             .iter()
             .find(|&&hi| {
-                let t = crate::upkeep::tax(dc, deploys.claim_graded(hi as usize));
+                let t = crate::upkeep::hearth_tax(dc, deploys, hi as usize);
                 let need = if t.num == 0 { 0 } else { due(hi).max(1) };
                 deploys.hearths[hi as usize].stock[m] >= need
             })

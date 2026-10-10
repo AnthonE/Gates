@@ -79,6 +79,42 @@ impl Tax {
     }
 }
 
+/// **The group tax** (`NOW.md` §0up 5): Facepunch's "Breach and Clear"
+/// (3 Sep 2026, `rust.facepunch.com/news/breach-and-clear`). The first four
+/// members cost nothing, the fifth to the tenth add 2 % each, every one
+/// past ten 4 %, capped at 300 %. Theirs counts the cupboard's list, the
+/// base's code-lock lists and anyone deauthed in the last day; ours counts
+/// the hearth's crew, which is the list a claim has.
+pub const GROUP_FREE: u32 = 4;
+pub const GROUP_TEN: u32 = 10;
+pub const GROUP_PCT_TO_TEN: u32 = 2;
+pub const GROUP_PCT_PAST_TEN: u32 = 4;
+pub const GROUP_CAP_PCT: u32 = 300;
+
+/// The group tax's surcharge for a crew of `n`, in per cent.
+pub fn group_pct(n: u32) -> u32 {
+    let to_ten = n.min(GROUP_TEN).saturating_sub(GROUP_FREE) * GROUP_PCT_TO_TEN;
+    let past = n.saturating_sub(GROUP_TEN) * GROUP_PCT_PAST_TEN;
+    (to_ten + past).min(GROUP_CAP_PCT)
+}
+
+impl Tax {
+    /// This rent with `pct` per cent on top.
+    pub fn plus_pct(self, pct: u32) -> Tax {
+        Tax {
+            num: self.num * (100 + pct as u64),
+            den: self.den * 100,
+        }
+    }
+}
+
+/// Hearth `hi`'s rent: the ladder at its claim's size, plus the group tax
+/// on its crew. What the sweep charges and the readout quotes.
+pub fn hearth_tax(dc: &DeployContent, deploys: &Deploys, hi: usize) -> Tax {
+    let crew = deploys.hearths().get(hi).map_or(1, |h| h.crew.len() as u32);
+    tax(dc, deploys.claim_graded(hi)).plus_pct(group_pct(crew))
+}
+
 /// The rent on a base holding `graded` pieces that pay upkeep (twig does
 /// not, `deploy::upkeep_sweep`), read off `dc`'s ladder. See [`tax_parts`].
 pub fn tax(dc: &DeployContent, graded: u32) -> Tax {
@@ -335,7 +371,7 @@ pub fn bill(
     if hi >= deploys.hearths().len() {
         return out;
     }
-    let t = tax(dc, deploys.claim_graded(hi));
+    let t = hearth_tax(dc, deploys, hi);
     let mats = &dc.mats[..(dc.mat_count as usize).min(HEARTH_STOCK_ROWS)];
     let mut cost = [0u64; HEARTH_STOCK_ROWS];
     for rec in pieces.entries() {
@@ -432,6 +468,20 @@ mod tests {
         let t = tax_parts(10, &REF, 1);
         assert_eq!((1..=24).map(|h| t.due(100, h)).sum::<u32>(), 10);
         assert_eq!(t.per_day(100), 10);
+    }
+
+    #[test]
+    fn the_group_tax_is_breach_and_clears() {
+        // Their worked examples: six players +4 %, twelve +20 %.
+        assert_eq!(group_pct(1), 0);
+        assert_eq!(group_pct(4), 0);
+        assert_eq!(group_pct(6), 4);
+        assert_eq!(group_pct(10), 12);
+        assert_eq!(group_pct(12), 20);
+        assert_eq!(group_pct(1000), GROUP_CAP_PCT);
+        // A 100-wood piece at 10 % a day pays 10; with six on the crew, 10.4.
+        let t = tax_parts(10, &[], 1).plus_pct(group_pct(6));
+        assert_eq!(t.per_day(1000), 104);
     }
 
     #[test]
