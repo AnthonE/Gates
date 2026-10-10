@@ -1015,10 +1015,12 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<map::MapPins>()
             .init_resource::<map::MapCursor>()
             // The mouse is the map's while it is held: the crosshair and the
-            // marks, and nothing in the world sees a click (`map::aim`).
+            // marks, and nothing in the world sees a click (`map::aim`). The
+            // keyboard is too while a mark's label is typed (`map::label`).
             .add_systems(
                 PreUpdate,
-                map::aim
+                (map::label, map::aim)
+                    .chain()
                     .after(bevy::input::InputSystems)
                     .run_if(in_state(Screen::Map)),
             )

@@ -3238,10 +3238,11 @@ pub fn prompt(
     if let Ok(mut text) = compass.single_mut() {
         let mut want = compass_strip(look.yaw);
         // The nearest of your map marks, the way the reference pins them to
-        // its compass: which, how far, which way.
+        // its compass: which (its label's three characters, or its number),
+        // how far, which way.
         let [x, _, z] = net.session.core.predict.render_position();
-        if let Some((n, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
-            want.push_str(&mark_strip(n, d, b));
+        if let Some((n, style, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
+            want.push_str(&mark_strip(n, style.compass_label(), d, b));
         }
         if text.0 != want {
             text.0 = want;
@@ -3739,14 +3740,20 @@ fn swing_prompt(pick: &crate::ui::interact::SwingPick) -> String {
     }
 }
 
-/// A map mark on the compass line: `      mark 2 · 340 m · 045°`.
-fn mark_strip(n: usize, dist_m: f32, bearing: f32) -> String {
+/// A map mark on the compass line: `      mark 2 · 340 m · 045°`, or
+/// `      HQ · 340 m · 045°` once it has a label (`label` is already the
+/// compass's three characters, `PinStyle::compass_label`).
+fn mark_strip(n: usize, label: &str, dist_m: f32, bearing: f32) -> String {
     let d = if dist_m >= 1000.0 {
         format!("{:.1} km", dist_m / 1000.0)
     } else {
         format!("{dist_m:.0} m")
     };
-    format!("      mark {n} · {d} · {bearing:03.0}°")
+    if label.is_empty() {
+        format!("      mark {n} · {d} · {bearing:03.0}°")
+    } else {
+        format!("      {label} · {d} · {bearing:03.0}°")
+    }
 }
 
 /// The eight-point bearing plus degrees, e.g. `NE  045°`.

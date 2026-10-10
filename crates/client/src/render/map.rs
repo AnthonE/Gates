@@ -23,6 +23,8 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
+use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
@@ -141,7 +143,16 @@ pub struct MapCursor {
     pub fy: f32,
     /// The marks layer needs redrawing.
     dirty: bool,
+    /// The mark whose label is being typed, and how it looked before, for
+    /// `Esc` to put back. While it is `Some` the map stays up with `G` let
+    /// go and the keyboard is the label's (`label`).
+    typing: Option<(usize, map::PinStyle)>,
 }
+
+/// The help line under the island; [`aim`] rewrites it while a label is
+/// being typed.
+#[derive(Component)]
+pub struct MapHelp;
 
 /// The layer the player's marks are drawn in, inside the island's frame.
 #[derive(Component)]
@@ -151,10 +162,14 @@ pub struct PinLayer;
 #[derive(Component)]
 pub struct MapCrosshair;
 
-/// A mark's badge, screen px, and its colour: amber, unlike every authored
-/// mark and the red arrow.
-const PIN_PX: f32 = 14.0;
-const PIN_INK: Color = Color::srgb(1.0, 0.72, 0.22);
+/// A mark's badge, screen px (a diamond, unlike every authored mark), and
+/// the picture inside it. Its colour is the player's (`map::PIN_COLOURS`).
+const PIN_PX: f32 = 16.0;
+const PIN_ICON_PX: f32 = 11.0;
+/// The ink of a mark's number and picture, and of its edge: dark, on any of
+/// its light colours.
+const PIN_TEXT: Color = Color::srgb(0.12, 0.08, 0.02);
+const PIN_EDGE: Color = Color::srgba(0.1, 0.07, 0.02, 0.9);
 
 /// How far the crosshair moves for a pixel of mouse travel, in map
 /// fractions: one pixel of mouse is one pixel of the drawn island.
@@ -278,7 +293,18 @@ pub fn open(
 /// one frame produces a `just_pressed` that `open` sees and a `just_released`
 /// that this system never observes, and the map would be stuck up with no key
 /// held. Asking whether the key is down now cannot miss that edge.
-pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<Screen>>) {
+///
+/// **Except while a mark's label is being typed** (`label`): nobody types
+/// with one finger on `G`, so `Enter` on a mark latches the map up until the
+/// label is kept (`Enter`) or put back (`Esc`), and then it follows `G` again.
+pub fn keys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    cursor: Res<MapCursor>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    if cursor.typing.is_some() {
+        return;
+    }
     if !keyboard.pressed(KeyCode::KeyG) || keyboard.just_pressed(KeyCode::Escape) {
         next.set(Screen::InWorld);
     }
@@ -332,6 +358,7 @@ pub fn setup(
         fx: px,
         fy: py,
         dirty: true,
+        typing: None,
     };
     let bearing = bearing_text(look.yaw);
 
@@ -569,11 +596,8 @@ pub fn setup(
                 ));
             });
             root.spawn((
-                ui::label(
-                    "mouse: aim  ·  right click: mark the spot  ·  right click a mark: clear it",
-                    12.0,
-                    ui::FAINT,
-                ),
+                MapHelp,
+                ui::label(help_text(false), 12.0, ui::FAINT),
                 Node {
                     margin: UiRect::top(Val::Px(6.0)),
                     ..default()
@@ -846,19 +870,40 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MapRoot>>) {
     }
 }
 
+/// The line under the island: every gesture the held map answers, so none
+/// of them has to be learned from anywhere else. One function so `setup` and
+/// [`aim`] cannot write it two ways.
+fn help_text(typing: bool) -> &'static str {
+    if typing {
+        "type the label  ·  Enter: keep it  ·  Esc: put it back  ·  Backspace: rub out"
+    } else {
+        "mouse: aim  ·  right click: mark the spot / clear a mark  ·  \
+         on a mark: left click colour, wheel picture, Enter label"
+    }
+}
+
 /// While the map is held the mouse is the map's: it moves the crosshair
 /// instead of turning the view (`input::gather` stands down), and a right
-/// click marks the spot under it or clears the mark that is there. Runs in
+/// click marks the spot under it or clears the mark that is there. On a mark,
+/// a left click steps its colour and the wheel its picture. Runs in
 /// `PreUpdate`, after the input is read and before anything else sees it, and
 /// takes the buttons for itself — so no click on the map also swings, draws a
-/// bow, lights a torch or places a piece in the world behind it.
+/// bow, lights a torch or places a piece in the world behind it — and the
+/// wheel when it turned a mark's picture, so that does not also walk the
+/// hotbar.
+// Each is a distinct input: the mouse's three channels, the marks and the
+// crosshair, and the three things drawn from them.
+#[allow(clippy::too_many_arguments)]
 pub fn aim(
     mut commands: Commands,
-    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    motion: Res<AccumulatedMouseMotion>,
+    mut scroll: ResMut<AccumulatedMouseScroll>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     mut cursor: ResMut<MapCursor>,
     mut pins: ResMut<MapPins>,
+    icons: Option<Res<super::icons::Icons>>,
     mut cross: Query<&mut Node, With<MapCrosshair>>,
+    mut help: Query<&mut Text, With<MapHelp>>,
     layer: Query<(Entity, Option<&Children>), With<PinLayer>>,
 ) {
     let d = motion.delta * CURSOR_PER_PX;
@@ -870,10 +915,31 @@ pub fn aim(
             node.top = Val::Percent(cursor.fy * 100.0);
         }
     }
-    if mouse.just_pressed(MouseButton::Right) {
+    // Not while a label is being typed: the mark it is going into must stay
+    // where it is in the list, and clearing it mid-word would type into
+    // whichever mark slid into its place.
+    if cursor.typing.is_none() {
         let (fx, fy) = (cursor.fx, cursor.fy);
-        pins.0.toggle(fx, fy);
-        cursor.dirty = true;
+        if mouse.just_pressed(MouseButton::Right) {
+            pins.0.toggle(fx, fy);
+            cursor.dirty = true;
+        }
+        let on = pins.0.hit(fx, fy);
+        if let Some(i) = on.filter(|_| mouse.just_pressed(MouseButton::Left)) {
+            pins.0.cycle_colour(i, 1);
+            cursor.dirty = true;
+        }
+        // `input::gather`'s units: a mouse notch is a line and is counted, a
+        // trackpad's pixels are one step a frame in their direction.
+        let notches = match scroll.unit {
+            MouseScrollUnit::Line => scroll.delta.y.round() as i32,
+            MouseScrollUnit::Pixel => scroll.delta.y.signum() as i32,
+        };
+        if let Some(i) = on.filter(|_| notches != 0) {
+            pins.0.cycle_icon(i, -notches);
+            scroll.delta = Vec2::ZERO;
+            cursor.dirty = true;
+        }
     }
     mouse.reset_all();
     if !cursor.dirty {
@@ -883,35 +949,176 @@ pub fn aim(
         return;
     };
     cursor.dirty = false;
+    let typing = cursor.typing.map(|(i, _)| i);
+    if let Ok(mut text) = help.single_mut() {
+        let want = help_text(typing.is_some());
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
+    }
     for k in kids.into_iter().flatten() {
         commands.entity(*k).despawn();
     }
+    let icons = icons.as_deref();
     commands.entity(layer).with_children(|l| {
-        for (i, &(x, z)) in pins.0.marks().iter().enumerate() {
-            let (px, py) = map::world_to_map(x, z, 1);
-            l.spawn((
+        for (i, (&at, &style)) in pins.0.marks().iter().zip(pins.0.styles()).enumerate() {
+            spawn_pin(l, i + 1, at, style, icons, typing == Some(i));
+        }
+    });
+}
+
+/// `Enter` with the crosshair on a mark: type its label. The map latches up
+/// (`keys`) so `G` can be let go, and until `Enter` keeps the label or `Esc`
+/// puts the old one back, every key is the label's — the keyboard is wiped
+/// each frame, before `input::gather` reads it, so typing `WASD` into a label
+/// does not also walk the body (`chat::keys`' rule for its composer).
+///
+/// Runs in `PreUpdate` beside [`aim`], before anything in `Update` reads a
+/// key. Reads the typed text off `KeyboardInput` rather than off key codes,
+/// as chat does, so a layout's own letters come out as printed on the key.
+pub fn label(
+    mut keyboard: ResMut<ButtonInput<KeyCode>>,
+    mut chars: MessageReader<KeyboardInput>,
+    mut cursor: ResMut<MapCursor>,
+    mut pins: ResMut<MapPins>,
+    reports: Option<Res<super::report::Reports>>,
+) {
+    let Some((i, was)) = cursor.typing else {
+        // The bug-report composer draws on every screen and reads `Enter`
+        // itself; two text fields open at once is one eating the other.
+        let free = !reports.is_some_and(|r| r.open);
+        let enter = keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
+        if free && enter {
+            if let Some(i) = pins.0.hit(cursor.fx, cursor.fy) {
+                cursor.typing = Some((i, pins.0.style(i)));
+                cursor.dirty = true;
+                keyboard.reset_all();
+            }
+        }
+        // Not typing: drain, so a key pressed before does not arrive in the
+        // label the moment it opens — the `Enter` that opened it included.
+        chars.clear();
+        return;
+    };
+    let (mut done, mut changed) = (false, false);
+    for ev in chars.read() {
+        if done || !ev.state.is_pressed() {
+            continue;
+        }
+        let Some(style) = pins.0.style_mut(i) else {
+            done = true;
+            continue;
+        };
+        match &ev.logical_key {
+            Key::Enter => done = true,
+            Key::Escape => {
+                *style = was;
+                done = true;
+            }
+            Key::Backspace => changed |= style.pop_label(),
+            Key::Space => changed |= style.push_label(' '),
+            Key::Character(s) => {
+                for c in s.chars() {
+                    changed |= style.push_label(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    if done {
+        cursor.typing = None;
+    }
+    cursor.dirty |= done || changed;
+    keyboard.reset_all();
+}
+
+/// One of the player's own marks: a diamond in its colour with its picture
+/// (or its number, `n`) in it, and its label under it in the same colour.
+/// `typing` is the mark whose label is being typed: a white edge and a caret.
+///
+/// The diamond turns 45° and the label must not, so the two are siblings
+/// under an upright anchor rather than parent and child. `pub` for
+/// `tests/map_marks.rs`, which spawns every look — a bundle with a component
+/// twice dies at spawn, not at compile (`spawn_mark`'s note).
+pub fn spawn_pin(
+    layer: &mut ChildSpawnerCommands,
+    n: usize,
+    (x, z): (f32, f32),
+    style: map::PinStyle,
+    icons: Option<&super::icons::Icons>,
+    typing: bool,
+) {
+    let (px, py) = map::world_to_map(x, z, 1);
+    let [r, g, b] = style.rgb();
+    let fill = Color::srgb_u8(r, g, b);
+    let picture = style
+        .icon_stem()
+        .and_then(|k| icons.and_then(|i| i.glyph(k)));
+    let label = if typing {
+        format!("{}_", style.label_raw())
+    } else {
+        style.label().to_string()
+    };
+    layer
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(px * 100.0),
+            top: Val::Percent(py * 100.0),
+            width: Val::Px(PIN_PX),
+            height: Val::Px(PIN_PX),
+            margin: UiRect::all(Val::Px(-PIN_PX * 0.5)),
+            ..default()
+        })
+        .with_children(|pin| {
+            let mut diamond = pin.spawn((
                 Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(px * 100.0),
-                    top: Val::Percent(py * 100.0),
-                    width: Val::Px(PIN_PX),
-                    height: Val::Px(PIN_PX),
-                    margin: UiRect::all(Val::Px(-PIN_PX * 0.5)),
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
                     border: UiRect::all(Val::Px(1.5)),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
                 },
                 UiTransform::from_rotation(Rot2::degrees(45.0)),
-                BackgroundColor(PIN_INK),
-                BorderColor::all(Color::srgba(0.1, 0.07, 0.02, 0.9)),
-            ))
-            .with_child((
-                ui::strong(format!("{}", i + 1), 10.0, Color::srgb(0.12, 0.08, 0.02)),
-                UiTransform::from_rotation(Rot2::degrees(-45.0)),
+                BackgroundColor(fill),
+                BorderColor::all(if typing { Color::WHITE } else { PIN_EDGE }),
             ));
-        }
-    });
+            // Turned back upright inside the diamond. A picture that has not
+            // loaded (or was never baked) falls back to the number rather
+            // than an empty badge — `render/icons.rs`'s rule.
+            let upright = UiTransform::from_rotation(Rot2::degrees(-45.0));
+            match picture {
+                Some(h) => {
+                    diamond.with_child((
+                        ImageNode::new(h).with_color(PIN_TEXT),
+                        Node {
+                            width: Val::Px(PIN_ICON_PX),
+                            height: Val::Px(PIN_ICON_PX),
+                            ..default()
+                        },
+                        upright,
+                    ));
+                }
+                None => {
+                    diamond.with_child((ui::strong(format!("{n}"), 10.0, PIN_TEXT), upright));
+                }
+            }
+            // Just under the diamond's lower point (half a diagonal below
+            // its centre: 1.21 sides below the anchor's top), centred on its
+            // axis the way a site's name is (`spawn_mark_named`).
+            if !label.is_empty() {
+                pin.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(PIN_PX * 1.25),
+                    left: Val::Percent(50.0),
+                    width: Val::Px(SITE_LABEL_W),
+                    margin: UiRect::left(Val::Px(-SITE_LABEL_W * 0.5)),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                })
+                .with_child((ui::strong(label, SITE_LABEL_PX, fill), ui::TEXT_SHADOW));
+            }
+        });
 }
 
 /// Forget the painted island when the shard goes: the next one has its own

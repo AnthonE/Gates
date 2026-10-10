@@ -220,17 +220,120 @@ pub fn map_to_world(fx: f32, fy: f32) -> (f32, f32) {
 /// How many marks a player can put on their map (Rust's five).
 pub const PINS_MAX: usize = 5;
 
-/// How close a right click must land to a mark to take it away, as a
-/// fraction of the map's side: about the badge's own size at 640 px.
+/// How close a click must land to a mark to mean that mark, as a fraction
+/// of the map's side: about the badge's own size at 640 px.
 pub const PIN_PICK_FRAC: f32 = 0.018;
 
-/// The marks a player put on their own map: world XZ, oldest first, for
-/// one island (`seed`) — a new island starts with none. Client-only: no one
-/// else sees them, and they are not saved.
+/// The colours a mark cycles through, sRGB bytes; the first is every new
+/// mark's. Amber first because that is what a mark was before it had a
+/// choice, and no red: the player's arrow is the one red thing on the map
+/// (`render::map::PLAYER_INK`).
+pub const PIN_COLOURS: [[u8; 3]; 6] = [
+    [255, 184, 56],  // amber
+    [140, 224, 90],  // green
+    [102, 191, 255], // sky
+    [199, 140, 255], // violet
+    [255, 148, 199], // rose
+    [242, 242, 235], // white
+];
+
+/// The pictures a mark cycles through: `None` is its number, the rest are
+/// white silhouettes from the icon atlas (`ui::icons::STEMS`), tinted dark
+/// on the mark's colour. Item pictures are full-colour and would not tint.
+pub const PIN_ICONS: [Option<&str>; 6] = [
+    None,
+    Some("ui_star"),
+    Some("map_hearth"),
+    Some("backpack"),
+    Some("ui_lock"),
+    Some("ui_clock"),
+];
+
+/// A mark's label, characters. Short, because it prints under a 16 px badge.
+pub const PIN_LABEL_MAX: usize = 10;
+
+/// What a label prints as on the compass: the reference's three characters
+/// (*"slimmed down to three characters when displayed on the compass"*,
+/// `reference/MAP.md` §3).
+pub const PIN_COMPASS_CHARS: usize = 3;
+
+/// How a mark looks: its colour, its picture and its label, as indexes into
+/// [`PIN_COLOURS`] and [`PIN_ICONS`] and ASCII bytes. Client-only like the
+/// mark itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PinStyle {
+    pub colour: u8,
+    pub icon: u8,
+    label: [u8; PIN_LABEL_MAX],
+    label_len: u8,
+}
+
+impl PinStyle {
+    /// The colour, sRGB bytes.
+    pub fn rgb(&self) -> [u8; 3] {
+        PIN_COLOURS[self.colour as usize % PIN_COLOURS.len()]
+    }
+
+    /// The picture's icon stem, or `None` for the mark's number.
+    pub fn icon_stem(&self) -> Option<&'static str> {
+        PIN_ICONS[self.icon as usize % PIN_ICONS.len()]
+    }
+
+    /// The label as typed, trailing space and all (the composer draws it).
+    pub fn label_raw(&self) -> &str {
+        // Only `push_label` writes it, and it takes printable ASCII only.
+        std::str::from_utf8(&self.label[..self.label_len as usize]).unwrap_or("")
+    }
+
+    /// The label, or empty for none.
+    pub fn label(&self) -> &str {
+        self.label_raw().trim_end()
+    }
+
+    /// The label on the compass: its first three characters.
+    pub fn compass_label(&self) -> &str {
+        let l = self.label();
+        l[..l.len().min(PIN_COMPASS_CHARS)].trim_end()
+    }
+
+    /// Type one character: printable ASCII, upper-cased like every other
+    /// name on the map, no leading space, at most [`PIN_LABEL_MAX`]. False
+    /// when it was refused.
+    pub fn push_label(&mut self, c: char) -> bool {
+        let len = self.label_len as usize;
+        let ok = (c.is_ascii_graphic() || (c == ' ' && len > 0)) && len < PIN_LABEL_MAX;
+        if ok {
+            self.label[len] = c.to_ascii_uppercase() as u8;
+            self.label_len += 1;
+        }
+        ok
+    }
+
+    /// Rub out the last character. False when there was none. The byte is
+    /// zeroed too, so two looks with the same label compare equal.
+    pub fn pop_label(&mut self) -> bool {
+        let Some(len) = self.label_len.checked_sub(1) else {
+            return false;
+        };
+        self.label[len as usize] = 0;
+        self.label_len = len;
+        true
+    }
+}
+
+/// `i + step` around a ring of `n`, either way.
+fn cycled(i: u8, step: i32, n: usize) -> u8 {
+    (i as i32 + step).rem_euclid(n as i32) as u8
+}
+
+/// The marks a player put on their own map: world XZ and how each looks,
+/// oldest first, for one island (`seed`) — a new island starts with none.
+/// Client-only: no one else sees them, and they are not saved.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pins {
     seed: u64,
     at: [(f32, f32); PINS_MAX],
+    style: [PinStyle; PINS_MAX],
     len: usize,
 }
 
@@ -250,38 +353,83 @@ impl Pins {
         &self.at[..self.len]
     }
 
+    /// How each of [`Self::marks`] looks, in the same order.
+    pub fn styles(&self) -> &[PinStyle] {
+        &self.style[..self.len]
+    }
+
+    /// The mark under map fraction `(fx, fy)`, if any: the nearest within
+    /// [`PIN_PICK_FRAC`] on both axes, and the newest of a tie — it is the
+    /// one drawn on top, so it is the one a click on the pile means.
+    pub fn hit(&self, fx: f32, fy: f32) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (i, &(x, z)) in self.marks().iter().enumerate() {
+            let (mx, my) = world_to_map(x, z, 1);
+            let d = (mx - fx).abs().max((my - fy).abs());
+            if d < PIN_PICK_FRAC && best.is_none_or(|(_, b)| d <= b) {
+                best = Some((i, d));
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
     /// A right click at map fraction `(fx, fy)`: take away the mark under
     /// it, or put one there — dropping the oldest when all five are down.
+    /// A mark's look travels with it when an older one goes.
     pub fn toggle(&mut self, fx: f32, fy: f32) {
-        let hit = self.marks().iter().position(|&(x, z)| {
-            let (mx, my) = world_to_map(x, z, 1);
-            (mx - fx).abs() < PIN_PICK_FRAC && (my - fy).abs() < PIN_PICK_FRAC
-        });
-        if let Some(i) = hit {
+        if let Some(i) = self.hit(fx, fy) {
             self.at.copy_within(i + 1..self.len, i);
+            self.style.copy_within(i + 1..self.len, i);
             self.len -= 1;
             return;
         }
         if self.len == PINS_MAX {
             self.at.copy_within(1.., 0);
+            self.style.copy_within(1.., 0);
             self.len -= 1;
         }
         self.at[self.len] = map_to_world(fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0));
+        self.style[self.len] = PinStyle::default();
         self.len += 1;
     }
 
+    /// Mark `i`'s look (the default past the end).
+    pub fn style(&self, i: usize) -> PinStyle {
+        self.styles().get(i).copied().unwrap_or_default()
+    }
+
+    /// Mark `i`'s look, to change it; `None` past the end.
+    pub fn style_mut(&mut self, i: usize) -> Option<&mut PinStyle> {
+        self.style[..self.len].get_mut(i)
+    }
+
+    /// Step mark `i` round [`PIN_COLOURS`], either way.
+    pub fn cycle_colour(&mut self, i: usize, step: i32) {
+        if let Some(s) = self.style_mut(i) {
+            s.colour = cycled(s.colour, step, PIN_COLOURS.len());
+        }
+    }
+
+    /// Step mark `i` round [`PIN_ICONS`], either way.
+    pub fn cycle_icon(&mut self, i: usize, step: i32) {
+        if let Some(s) = self.style_mut(i) {
+            s.icon = cycled(s.icon, step, PIN_ICONS.len());
+        }
+    }
+
     /// The nearest mark to world `(x, z)`: its number (1-based, oldest
-    /// first), how far in metres and its compass bearing in degrees.
-    pub fn nearest(&self, x: f32, z: f32) -> Option<(usize, f32, f32)> {
+    /// first), how it looks, how far in metres and its compass bearing in
+    /// degrees.
+    pub fn nearest(&self, x: f32, z: f32) -> Option<(usize, PinStyle, f32, f32)> {
         self.marks()
             .iter()
             .enumerate()
             .map(|(i, &(mx, mz))| {
                 let (dx, dz) = (mx - x, mz - z);
-                (i + 1, (dx * dx + dz * dz).sqrt(), dx, dz)
+                (i, (dx * dx + dz * dz).sqrt(), dx, dz)
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(n, d, dx, dz)| (n, d, crate::look::bearing_of(dx, dz)))
+            .map(|(i, d, dx, dz)| (i + 1, self.style[i], d, crate::look::bearing_of(dx, dz)))
     }
 }
 
@@ -1184,10 +1332,123 @@ mod tests {
         let (x, z) = (2000.0, 2000.0);
         let (fx, fy) = world_to_map(x, z + 300.0, 1);
         p.toggle(fx, fy);
-        let (n, d, b) = p.nearest(x, z).expect("a mark");
+        let (n, style, d, b) = p.nearest(x, z).expect("a mark");
         assert_eq!(n, 1);
+        assert_eq!(style, PinStyle::default());
         assert!((d - 300.0).abs() < 1.0, "{d}");
         assert!(!(1.0..359.0).contains(&b), "due north, got {b}");
+    }
+
+    /// A mark's colour, picture and label are its own: they go with it when
+    /// an older mark is cleared or pushed off the end, and a new mark starts
+    /// plain rather than inheriting the slot's last look.
+    #[test]
+    fn a_marks_look_travels_with_it() {
+        let mut p = Pins::default();
+        let spot = |i: usize| (0.1 * i as f32 + 0.05, 0.5);
+        for i in 0..3 {
+            p.toggle(spot(i).0, spot(i).1);
+        }
+        // Mark 3 (index 2) gets a look; mark 1 is cleared from under it.
+        p.cycle_colour(2, 2);
+        p.cycle_icon(2, -1);
+        for c in "hq".chars() {
+            assert!(p.style_mut(2).unwrap().push_label(c));
+        }
+        let look = p.style(2);
+        p.toggle(spot(0).0, spot(0).1);
+        assert_eq!(p.marks().len(), 2);
+        assert_eq!(p.style(1), look, "the look moved down with its mark");
+        assert_eq!(p.hit(spot(2).0, spot(2).1), Some(1));
+        // Fill to five and one more: the oldest goes, the look still follows.
+        for i in 3..7 {
+            p.toggle(spot(i).0, spot(i).1);
+        }
+        assert_eq!(p.marks().len(), PINS_MAX);
+        assert_eq!(p.style(0), look, "{:?}", p.styles());
+        assert_eq!(
+            p.style(PINS_MAX - 1),
+            PinStyle::default(),
+            "new marks start plain"
+        );
+        assert_eq!(look.rgb(), PIN_COLOURS[2]);
+        assert_eq!(look.icon_stem(), PIN_ICONS[PIN_ICONS.len() - 1]);
+        // The compass reads the same look off `nearest`.
+        let (x, z) = p.marks()[0];
+        let (n, style, ..) = p.nearest(x, z).expect("a mark");
+        assert_eq!((n, style.compass_label()), (1, "HQ"));
+        // Clear it and put a mark back in its place: plain, not the old look.
+        p.toggle(spot(2).0, spot(2).1);
+        p.toggle(spot(2).0, spot(2).1);
+        assert_eq!(p.style(PINS_MAX - 1), PinStyle::default());
+        assert!(!p.styles().contains(&look));
+    }
+
+    #[test]
+    fn colour_and_icon_wrap_both_ways() {
+        let mut p = Pins::default();
+        p.toggle(0.5, 0.5);
+        p.cycle_colour(0, -1);
+        assert_eq!(p.style(0).colour as usize, PIN_COLOURS.len() - 1);
+        p.cycle_colour(0, 1);
+        assert_eq!(p.style(0).colour, 0);
+        p.cycle_icon(0, PIN_ICONS.len() as i32 + 1);
+        assert_eq!(p.style(0).icon, 1);
+        // Past the end is a no-op, not a panic.
+        p.cycle_colour(3, 1);
+        p.cycle_icon(3, 1);
+        assert!(p.style_mut(3).is_none());
+        // Every picture is one the atlas ships.
+        for stem in PIN_ICONS.iter().flatten() {
+            assert!(crate::ui::icons::STEMS.contains(stem), "{stem}");
+        }
+    }
+
+    #[test]
+    fn a_label_is_short_upper_case_ascii() {
+        let mut s = PinStyle::default();
+        assert!(!s.push_label(' '), "no leading space");
+        assert!(!s.push_label('é'), "ASCII only");
+        assert!(!s.push_label('\n'));
+        for c in "Big rock base".chars() {
+            s.push_label(c);
+        }
+        assert_eq!(s.label(), "BIG ROCK B");
+        assert_eq!(s.label().len(), PIN_LABEL_MAX);
+        assert_eq!(s.compass_label(), "BIG");
+        // A trailing space is kept while typing and gone when read.
+        let mut s = PinStyle::default();
+        for c in "HQ ".chars() {
+            s.push_label(c);
+        }
+        assert_eq!((s.label_raw(), s.label()), ("HQ ", "HQ"));
+        let mut s = PinStyle::default();
+        for c in "A B".chars() {
+            s.push_label(c);
+        }
+        assert_eq!(s.compass_label(), "A B");
+        assert!(s.pop_label() && s.pop_label());
+        assert_eq!(
+            s.compass_label(),
+            "A",
+            "trailing space trimmed on the compass"
+        );
+        assert!(s.pop_label() && !s.pop_label());
+        assert_eq!(s.label(), "");
+    }
+
+    /// A click on two overlapping marks means the nearer, and the newer of
+    /// a tie (the one drawn on top) — the same pick for clear, colour,
+    /// picture and label.
+    #[test]
+    fn a_click_means_the_nearest_mark() {
+        let mut p = Pins::default();
+        p.toggle(0.5, 0.5);
+        p.toggle(0.5 + PIN_PICK_FRAC * 1.5, 0.5);
+        assert_eq!(p.marks().len(), 2, "outside the first's pick square");
+        assert_eq!(p.hit(0.5 + PIN_PICK_FRAC * 0.6, 0.5), Some(0));
+        assert_eq!(p.hit(0.5 + PIN_PICK_FRAC * 0.9, 0.5), Some(1));
+        assert_eq!(p.hit(0.5, 0.5 + PIN_PICK_FRAC * 1.1), None);
     }
 
     use super::*;
