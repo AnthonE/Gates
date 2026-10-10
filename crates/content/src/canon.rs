@@ -125,6 +125,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.rate_per_min);
         h.u(w.range_m);
         h.u(w.lit_damage.unwrap_or(0));
+        h.u(w.condition_loss.unwrap_or(0));
         // The round list walks in **declared order, not sorted**, and that
         // is deliberate: order is the ammo policy (the sim spends the first
         // round the shooter carries), so two bows differing only in which

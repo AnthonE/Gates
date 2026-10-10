@@ -785,6 +785,10 @@ impl Content {
             // ranged row's reason (`RangedDef::head_pct`).
             let lit_bonus = u16::try_from(w.lit_damage.unwrap_or(0))
                 .map_err(|_| format!("bake: `{}` lit_damage overflows u16", w.id))?;
+            // Validate held it inside u16 (V1's shape); the bake says so
+            // again rather than truncating.
+            let wear = u16::try_from(w.condition_loss.unwrap_or(0))
+                .map_err(|_| format!("bake: `{}` condition_loss overflows u16", w.id))?;
             cc.melee[idx] = MeleeDef {
                 damage,
                 structure,
@@ -792,6 +796,7 @@ impl Content {
                 head_pct: w.headshot_pct as u16,
                 limb_pct: w.limb_pct as u16,
                 lit_bonus,
+                wear,
             };
         }
         Ok(cc)

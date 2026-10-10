@@ -227,8 +227,9 @@ rarity = "common"
 slot = "hand"
 class = "tools"
 # 50 pts, the reference's ceiling. No node pays a torch, so no
-# condition_loss row names it (V3 forbids an unreachable one) -- what
-# spends this is the flame itself.
+# gatherable condition_loss row names it (V3 forbids an unreachable one);
+# what spends this is the flame itself and the blows it lands
+# (weapons.toml's condition_loss, 7 pts a hit).
 condition_max = 5000
 # Hundredths of condition per minute while lit (torch fuel v0). The
 # reference burns 1/6 of a point per second, which is 1000 hundredths a

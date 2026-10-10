@@ -491,6 +491,14 @@ pub struct Weapon {
     /// declares `light_burn` — a bonus for burning on something that cannot
     /// burn is a number nothing reads (`validate.rs`).
     pub lit_damage: Option<u32>,
+    /// Hundredths of condition one **landed** blow takes off the item — a
+    /// body, an animal or a built thing (`sim_core::combat::MeleeDef::wear`;
+    /// the reference's torch, ~7 points a swing). A node hit wears by
+    /// `gatherables.toml`'s `(tool, node)` table instead, and a whiff wears
+    /// nothing. Only on a melee row whose item declares `condition_max`,
+    /// nonzero and inside `u16` — the durability rules' V1/V5/V6 shapes
+    /// (`validate.rs`).
+    pub condition_loss: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

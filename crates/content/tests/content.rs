@@ -1998,6 +1998,71 @@ fn the_shipped_torch_is_five_minutes_of_light() {
     );
 }
 
+/// **A torch blow wears the torch** (NOW §0tl 3): the shipped row's
+/// `condition_loss` reaches the sim's melee row and the content hash, and
+/// the rules that keep it honest refuse what they name.
+#[test]
+fn the_torch_wears_by_the_blow() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let row = c
+        .weapons
+        .iter()
+        .find(|w| w.id == "item.torch")
+        .expect("content/weapons.toml no longer arms the torch");
+    assert_eq!(
+        row.condition_loss,
+        Some(700),
+        "the torch's ~7 points a blow (the reference's) moved"
+    );
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let torch = c.item_index("item.torch").unwrap();
+    assert_eq!(
+        cc.wear_of(torch),
+        700,
+        "the blow's wear never reached the sim"
+    );
+    // Only the torch wears by the blow so far: the tools wear on their
+    // nodes, the spears carry no condition.
+    let hatchet = c.item_index("item.hatchet_stone").unwrap();
+    assert_eq!(cc.wear_of(hatchet), 0);
+
+    let mut srcs = sources();
+    let w = srcs.iter_mut().find(|(n, _)| *n == "weapons.toml").unwrap();
+    w.1 = w.1.replace("condition_loss = 700", "condition_loss = 600");
+    assert_ne!(
+        c.hash(),
+        build(&srcs).unwrap().hash(),
+        "a blow's wear must move the content hash"
+    );
+
+    refuses(
+        "weapons.toml",
+        "condition_loss = 700",
+        "condition_loss = 0",
+        "(V5)",
+    );
+    refuses(
+        "weapons.toml",
+        "condition_loss = 700",
+        "condition_loss = 70000",
+        "(V1)",
+    );
+    // A spear carries no condition, so a blow has nothing to wear.
+    refuses(
+        "weapons.toml",
+        "id = \"item.spear_stone\"\nkind = \"melee\"",
+        "id = \"item.spear_stone\"\nkind = \"melee\"\ncondition_loss = 30",
+        "(V6)",
+    );
+    // A shot never reads it.
+    refuses(
+        "weapons.toml",
+        "draw_ms = 1000",
+        "draw_ms = 1000\ncondition_loss = 30",
+        "non-melee",
+    );
+}
+
 /// The ladder's two failure modes are refused at the boot edge: a base
 /// nobody set, and a ladder that does not rise. A falling ladder would
 /// make a rarer bag despawn *sooner* than a common one — the exact

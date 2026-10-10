@@ -2553,6 +2553,31 @@ impl World {
         }
     }
 
+    /// One landed blow's wear on the weapon that dealt it — the melee row's
+    /// `condition_loss` (`CombatContent::wear_of`; the torch's, NOW §0tl 3).
+    /// Called by the three arms whose blow did something: a body hit, an
+    /// animal hit, a built thing chipped. A whiff, a scuff in the dirt and
+    /// a refused swing wear nothing, `gather::land`'s rule and its reason (a
+    /// `SUB_INV` diff on every empty swing), and a node hit is the node's
+    /// own `(tool, node)` wear, so no blow is billed twice.
+    ///
+    /// `held` is the swing's read of the selected slot and is checked
+    /// again: an item with no condition (`cond_max_of == 0`) has a `cond`
+    /// that may mean something else (the research paper's target), so it
+    /// is never touched. `saturating_sub` for the node's reason: the last
+    /// point is spent, never owed.
+    fn wear_weapon(&mut self, i: usize, held: u16) {
+        let wear = self.combat.wear_of(held);
+        if wear == 0 || self.gather.cond_max_of(held) == 0 {
+            return;
+        }
+        let sel = self.players[i].frame.sel as usize;
+        let s = &mut self.players[i].inv[sel];
+        if s.count > 0 && s.item == held {
+            s.cond = s.cond.saturating_sub(wear);
+        }
+    }
+
     fn log_trust(&mut self, seat: TrustSeat, actor: u32, counterparty: u32, verb: u8) {
         if counterparty == 0
             || counterparty == actor
@@ -6152,11 +6177,7 @@ impl World {
                         // A burning torch hits with its heat too
                         // (`MeleeDef::lit_bonus`).
                         let lit = crate::light::is_lit(&self.players[i], &self.gather);
-                        if let combat::Strike::Killed {
-                            victim,
-                            item,
-                            range_cm,
-                        } = combat::strike_body(
+                        match combat::strike_body(
                             &self.combat,
                             i,
                             &hit,
@@ -6166,14 +6187,23 @@ impl World {
                             &mut self.players,
                             &mut self.events,
                         ) {
-                            let by = self.players[i].id;
-                            // A swing wounds whatever it hit (`wound::wounds`).
-                            self.down_or_die(victim, by, DEATH_BY_HAND, item, range_cm, false);
+                            combat::Strike::Missed => {}
+                            combat::Strike::Hit => self.wear_weapon(i, held),
+                            combat::Strike::Killed {
+                                victim,
+                                item,
+                                range_cm,
+                            } => {
+                                self.wear_weapon(i, held);
+                                let by = self.players[i].id;
+                                // A swing wounds whatever it hit (`wound::wounds`).
+                                self.down_or_die(victim, by, DEATH_BY_HAND, item, range_cm, false);
+                            }
                         }
                     }
                     melee::Reached::Mob(m) => {
                         let lit = crate::light::is_lit(&self.players[i], &self.gather);
-                        mob::strike_slot(
+                        if mob::strike_slot(
                             &self.combat,
                             &self.backpack,
                             &self.mob,
@@ -6185,7 +6215,9 @@ impl World {
                             &mut self.backpacks,
                             &mut self.events,
                             m.slot,
-                        );
+                        ) {
+                            self.wear_weapon(i, held);
+                        }
                     }
                     melee::Reached::Carcass(c) => {
                         self.butcher(i, held, c, &mut spill);
@@ -6225,6 +6257,7 @@ impl World {
                                 by: self.players[i].id,
                             };
                             self.chip(&chip, &mut removals);
+                            self.wear_weapon(i, held);
                         }
                     }
                     melee::Reached::Nothing => {}

@@ -839,3 +839,84 @@ fn a_wall_interrupts_the_hand_helping_the_body_behind_it() {
         "help must not pass through a wall"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 3 · A landed blow wears the hand that dealt it (NOW §0tl 3).
+// ---------------------------------------------------------------------------
+
+/// The fixture's wear for these tests: not the shipped torch's 700, and not
+/// item 0's 400-point ceiling, so a bake or a lookup that read the wrong
+/// column cannot land on the right number.
+const WEAR: u16 = 70;
+/// `GatherContent::probe_fixture`'s `cond_max[0]`: the spear carries
+/// condition, which is what lets `World::wear_weapon` touch it at all.
+const COND: u16 = 400;
+
+fn held_cond(w: &World) -> u16 {
+    w.players[0].inv[0].cond
+}
+
+/// **Only a blow that lands wears**: the sky and the dirt cost nothing, the
+/// man in front costs exactly the row's `wear`, a row without one costs
+/// nothing, and the last point is spent rather than wrapped.
+#[test]
+fn a_landed_blow_wears_the_weapon_and_a_whiff_does_not() {
+    let mut w = duel();
+    stand_east_of_attacker(&mut w, 1, 1.2);
+    let chest = look_at_height(&w, 1.0);
+    w.players[0].inv[0].cond = COND;
+
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, chest), SPEAR_DAMAGE);
+    assert_eq!(held_cond(&w), COND, "a row with no wear wore on a hit");
+    heal(&mut w);
+
+    w.combat.melee[SPEAR as usize].wear = WEAR;
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, STRAIGHT_UP), 0);
+    assert_eq!(held_cond(&w), COND, "a swing at the sky wore the weapon");
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, 0), 0);
+    assert_eq!(held_cond(&w), COND, "a blow into the dirt wore the weapon");
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, chest), SPEAR_DAMAGE);
+    assert_eq!(
+        held_cond(&w),
+        COND - WEAR,
+        "a landed blow must take exactly the row's wear"
+    );
+    heal(&mut w);
+
+    w.players[0].inv[0].cond = WEAR - 1;
+    swing_at(&mut w, YAW_PLUS_X, chest);
+    assert_eq!(held_cond(&w), 0, "the last point is spent, not owed");
+    heal(&mut w);
+    swing_at(&mut w, YAW_PLUS_X, chest);
+    assert_eq!(held_cond(&w), 0, "a spent weapon's condition wrapped");
+}
+
+/// **A wall is a landed blow too**, and an item that carries no condition is
+/// never touched, whatever its row says: its `cond` may be another field's
+/// (the research paper's target).
+#[test]
+fn a_blow_at_a_wall_wears_the_weapon_and_a_conditionless_item_never() {
+    let mut w = duel();
+    let (cx, cz) = two_at_a_buildable_edge(&mut w);
+    let chest = look_at_height(&w, 1.0);
+    place_at(&mut w, cx, cz, PIECE_WALL, LOC_EDGE_XLO);
+    w.combat.melee[SPEAR as usize].wear = WEAR;
+    w.players[0].inv[0].cond = COND;
+
+    let blow = swing_once(&mut w, YAW_PLUS_X, chest);
+    assert!(blow.structure > 0, "fixture: the swing must reach the wall");
+    assert_eq!(held_cond(&w), COND - WEAR, "the wall took a blow for free");
+
+    // Item 2 is a fixture weapon with no `cond_max`.
+    let plain = 2u16;
+    assert_eq!(w.gather.cond_max_of(plain), 0, "fixture rot: item 2 wears");
+    w.combat.melee[plain as usize].wear = WEAR;
+    w.players[0].inv[0] = ItemStack {
+        item: plain,
+        count: 1,
+        cond: 123,
+        skin: 0,
+    };
+    assert!(swing_for_structure(&mut w, YAW_PLUS_X, chest) > 0);
+    assert_eq!(held_cond(&w), 123, "an item with no condition was worn");
+}

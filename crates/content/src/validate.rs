@@ -577,6 +577,43 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
+        // Wear on a blow (NOW §0tl 3), held to the gather table's shapes
+        // for a loss row. Melee only: a shot and a charge land through
+        // verbs that never read it. V5 (a zero is an inert row — omit it),
+        // V1 (it fits the sim's u16), V6 (the item has a condition to
+        // lose). V3 has no twin here: every melee row deals body and
+        // structure damage (the bake refuses one that does not), so a
+        // landed blow always reaches the row.
+        if let Some(loss) = w.condition_loss {
+            if w.kind != WeaponKind::Melee {
+                return Err(format!(
+                    "weapon `{}`: condition_loss on a non-melee row — only a \
+                     landed swing wears the hand that dealt it",
+                    w.id
+                ));
+            }
+            if loss == 0 {
+                return Err(format!(
+                    "weapon `{}`: condition_loss is 0 — drop the row (no wear \
+                     on a blow) instead of shipping an inert one (V5)",
+                    w.id
+                ));
+            }
+            if loss > u16::MAX as u32 {
+                return Err(format!(
+                    "weapon `{}`: condition_loss {loss} overflows the sim's u16 \
+                     hundredths (V1)",
+                    w.id
+                ));
+            }
+            if !c.item(&w.id).is_some_and(|i| i.condition_max > 0) {
+                return Err(format!(
+                    "weapon `{}`: condition_loss on an item whose condition_max \
+                     is 0 — nothing wears on an item with no condition (V6)",
+                    w.id
+                ));
+            }
+        }
         // The fuse belongs to exactly one kind, checked both ways for the
         // reason `ballistic` is: a throwable without one is a charge that
         // never blows, and a fuse on a hatchet is a number nothing reads,
