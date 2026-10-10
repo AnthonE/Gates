@@ -319,6 +319,10 @@ respawn_seconds = 300
 # The site guards are on top of these (`mob::SITE_GUARDS`).
 per_km2 = 2.0
 habitat = { meadow = 0.4, forest = 1.0, highland = 1.0 }
+# The night doubles them (`NOW.md` §0pr 3): the extra wolves hatch after dusk
+# and leave at daybreak once nobody is near — a night out costs more than
+# the cold. Ours, not the reference's (its wolves keep one population).
+night_extra = 1.0
 # 1.6 m long and 0.85 m high on the client (`render/mobs.rs` WOLF_LEN_M / WOLF_H_M).
 body_r_cm = 60
 body_h_cm = 85

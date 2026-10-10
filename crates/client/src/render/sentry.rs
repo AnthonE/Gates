@@ -15,13 +15,44 @@ use bevy::prelude::*;
 
 use super::props::{boxes_mesh_with, linear};
 use super::Net;
+use sim_core::limits::MAX_TURRETS;
 use sim_core::mob;
 use sim_core::sentry::{is_sentry_slot, SENTRIES, SENTRY_SLOT0};
+use sim_core::turret::{is_turret_slot, TURRET_SLOT0};
 
-/// Is this wire id one of the town's sentries?
+/// Is this wire id one of the town's sentries, or a player's turret?
 #[inline]
 pub fn is_sentry(id: u32) -> bool {
-    mob::slot_of_id(id).is_some_and(is_sentry_slot)
+    mob::slot_of_id(id).is_some_and(|s| is_sentry_slot(s) || is_turret_slot(s))
+}
+
+/// Is this wire id a player's auto turret (`sim_core::turret`)?
+#[inline]
+pub fn is_turret(id: u32) -> bool {
+    mob::slot_of_id(id).is_some_and(is_turret_slot)
+}
+
+/// Every gun drawn here: the town's sentries, then the player turrets.
+const GUNS: usize = SENTRIES + MAX_TURRETS;
+
+/// Gun `k`'s roster slot.
+const fn gun_slot(k: usize) -> usize {
+    if k < SENTRIES {
+        SENTRY_SLOT0 + k
+    } else {
+        TURRET_SLOT0 + k - SENTRIES
+    }
+}
+
+/// A gun's index here from its roster slot.
+fn gun_of_slot(s: usize) -> Option<usize> {
+    if is_sentry_slot(s) {
+        Some(s - SENTRY_SLOT0)
+    } else if is_turret_slot(s) {
+        Some(SENTRIES + s - TURRET_SLOT0)
+    } else {
+        None
+    }
 }
 
 const STEEL: u32 = 0x2b2d2f;
@@ -35,6 +66,12 @@ const BASE: &[([f32; 3], [f32; 3], u32)] = &[
     ([0.0, 0.87, 0.0], [0.55, 0.07, 0.55], DARK),
     ([0.0, 1.12, 0.0], [0.18, 0.22, 0.18], STEEL),
 ];
+
+/// A player turret's neck: the deployable's own box (`render/structures.rs`)
+/// is its base, 0.6 m tall, and the sim's gun is `turret::GUN_M` over that
+/// base — 1.6 m over the record's feet, like a sentry's — so the neck
+/// bridges the top of the box to the head.
+const NECK: &[([f32; 3], [f32; 3], u32)] = &[([0.0, 1.42, 0.0], [0.09, 0.13, 0.09], STEEL)];
 
 /// The head, facing **+Z** (the sim's yaw 0), about the pedestal's top.
 const HEAD: &[([f32; 3], [f32; 3], u32)] = &[
@@ -65,6 +102,7 @@ const ALARM: LinearRgba = LinearRgba::rgb(6.0, 0.3, 0.2);
 #[derive(Resource)]
 pub struct SentryAssets {
     base: Handle<Mesh>,
+    neck: Handle<Mesh>,
     head: Handle<Mesh>,
     lamp: Handle<Mesh>,
     material: Handle<StandardMaterial>,
@@ -75,8 +113,8 @@ pub struct SentryAssets {
 /// The drawn turrets, by sentry index, and how long each lamp stays red.
 #[derive(Resource, Default)]
 pub struct Drawn {
-    live: [Option<Entity>; SENTRIES],
-    alarm: [f32; SENTRIES],
+    live: [Option<Entity>; GUNS],
+    alarm: [f32; GUNS],
 }
 
 /// Marks a turret's pedestal, the root the head hangs on.
@@ -104,6 +142,7 @@ pub fn load(
     };
     commands.insert_resource(SentryAssets {
         base: meshes.add(boxes_mesh_with(BASE, linear, 1.0)),
+        neck: meshes.add(boxes_mesh_with(NECK, linear, 1.0)),
         head: meshes.add(boxes_mesh_with(HEAD, linear, 1.0)),
         lamp: meshes.add(Cuboid::new(0.07, 0.07, 0.07)),
         material: materials.add(StandardMaterial {
@@ -136,17 +175,17 @@ pub fn stream(
     let core = &net.session.core;
     let dt = time.delta_secs();
     for &(gun, _) in feed.sentry_locks() {
-        if let Some(k) = mob::slot_of_id(gun)
-            .filter(|&s| is_sentry_slot(s))
-            .map(|s| s - SENTRY_SLOT0)
-        {
+        if let Some(k) = mob::slot_of_id(gun).and_then(gun_of_slot) {
             drawn.alarm[k] = ALARM_S;
         }
     }
     let mut rs = client_core::interp::RemoteState::default();
-    for k in 0..SENTRIES {
+    for k in 0..GUNS {
         drawn.alarm[k] = (drawn.alarm[k] - dt).max(0.0);
-        let id = mob::mob_id(SENTRY_SLOT0 + k);
+        let id = mob::mob_id(gun_slot(k));
+        // A town sentry stands on its pedestal and draws big for the street
+        // below; a player's turret stands on its own box at true size.
+        let town = k < SENTRIES;
         let present = core.interp.ids().any(|i| i == id);
         if !present {
             if let Some(e) = drawn.live[k].take() {
@@ -170,7 +209,11 @@ pub fn stream(
                     .spawn((
                         super::WorldEntity,
                         SentryBase,
-                        Mesh3d(assets.base.clone()),
+                        Mesh3d(if town {
+                            assets.base.clone()
+                        } else {
+                            assets.neck.clone()
+                        }),
                         MeshMaterial3d(assets.material.clone()),
                         Transform::from_translation(pos),
                     ))
@@ -184,7 +227,7 @@ pub fn stream(
                                 MeshMaterial3d(assets.material.clone()),
                                 Transform::from_translation(HEAD_AT)
                                     .with_rotation(aim)
-                                    .with_scale(Vec3::splat(HEAD_SCALE)),
+                                    .with_scale(Vec3::splat(if town { HEAD_SCALE } else { 1.0 })),
                             ))
                             .with_children(|head| {
                                 head.spawn((

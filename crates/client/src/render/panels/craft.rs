@@ -581,6 +581,15 @@ fn detail_body(
                 font_bold(18.0),
                 TextColor(TEXT),
             ));
+            // What it is for, in a line (`SUB_ITEM_DESC`, `NOW.md` §0cq 7).
+            let desc = core.item_descs.get(def.output as usize);
+            if !desc.is_empty() {
+                mid.spawn((
+                    Text::new(String::from_utf8_lossy(desc).into_owned()),
+                    font(12.0),
+                    TextColor(TEXT_DIM),
+                ));
+            }
             if let Some(badge) = station_label(def.station) {
                 // Green where the station stands in reach, red where it
                 // does not — the badge is the reason CRAFT is dark.
@@ -1287,7 +1296,7 @@ pub fn build_queue(parent: &mut ChildSpawnerCommands, _ui: &Ui, core: &ClientCor
                 queue_tile(strip, core, icons, i, output, *remaining);
             }
             strip.spawn((
-                Text::new("click a job to cancel it".to_string()),
+                Text::new("click a job to cancel it, right-click to make it next".to_string()),
                 font(10.0),
                 TextColor(TEXT_DIM),
                 Node {
@@ -1316,7 +1325,11 @@ fn queue_tile(
         .spawn((
             Button,
             CancelJob(i),
-            super::Tip(format!("{name} x{remaining} · click to cancel")),
+            super::Tip(if head {
+                format!("{name} x{remaining} · click to cancel")
+            } else {
+                format!("{name} x{remaining} · click to cancel · right-click to make it next")
+            }),
             Node {
                 width: Val::Px(QUEUE_TILE_PX),
                 height: Val::Px(QUEUE_TILE_PX),
@@ -1466,6 +1479,9 @@ pub fn clicks(
     steps: Query<(&Interaction, &Step), Changed<Interaction>>,
     go: Query<&Interaction, (Changed<Interaction>, With<CraftGo>)>,
     cancels: Query<(&Interaction, &CancelJob), Changed<Interaction>>,
+    // Every queue tile, for the right button's fast-track: `Interaction`
+    // is the left button's alone, so a right press is read off the hover.
+    tiles: Query<(&Interaction, &CancelJob)>,
     chips: Query<(&Interaction, &SkinChip), Changed<Interaction>>,
     search: Query<&Interaction, (Changed<Interaction>, With<SearchBox>)>,
     quick: Query<(&Interaction, &QuickCraft)>,
@@ -1632,6 +1648,26 @@ pub fn clicks(
         if *interaction == Interaction::Pressed {
             ui.skin = chip.0;
             ui.dirty = true;
+        }
+    }
+
+    // Right-click a queued job: make it next (`ACT_FASTTRACK`). It carries
+    // the recipe the tile showed, so a queue that moved refuses it.
+    if mouse.just_pressed(MouseButton::Right) {
+        let n = (core.jobs_count as usize).min(core.jobs.len());
+        let hot = tiles
+            .iter()
+            .find(|(i, j)| matches!(i, Interaction::Hovered) && j.0 > 0 && j.0 < n)
+            .map(|(_, j)| j.0);
+        if let Some(i) = hot {
+            let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+            match protocol::encode_action_fasttrack(i as u16, core.jobs[i].0 as u16, &mut buf) {
+                Ok(len) => match net.session.send_action(&buf[..len]) {
+                    Ok(()) => ui.status.clear(),
+                    Err(e) => ui.say(e.to_string()),
+                },
+                Err(e) => ui.say(format!("that fast-track would not encode ({e:?})")),
+            }
         }
     }
 

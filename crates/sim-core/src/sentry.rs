@@ -39,7 +39,7 @@ pub const SENTRY_SLOT0: usize = crate::heli::HELI_SLOT - SENTRIES;
 pub const NO_TARGET: u8 = u8::MAX;
 
 /// Ticks between two looks (a target's sight line, or a scan for one).
-const LOOK_TICKS: u64 = 10;
+pub(crate) const LOOK_TICKS: u64 = 10;
 /// Candidates one scan tests for line of sight, nearest first.
 const LOOK_TRIES: usize = 3;
 /// A sight line is walked at most this many samples (`ARROW_STEP_MM`
@@ -50,7 +50,7 @@ const ROUND_SAMPLES: usize = 600;
 /// Where on a body it aims, above the feet.
 const CHEST_MM: f32 = 1100.0;
 /// Traverse, wire yaw units per tick: four LUT steps, ~170°/s.
-const TURN_STEP: u16 = 4 << 8;
+pub(crate) const TURN_STEP: u16 = 4 << 8;
 /// It fires only with the target within this of where the gun points.
 const FACE_GAP: u16 = 12 << 8;
 
@@ -136,7 +136,7 @@ impl Sentry {
         b
     }
 
-    fn engaged(&self) -> bool {
+    pub(crate) fn engaged(&self) -> bool {
         self.target != NO_TARGET
     }
 
@@ -206,7 +206,18 @@ pub fn step(
         let s = &mut guns[k];
         if tick.is_multiple_of(LOOK_TICKS) {
             look(
-                seed, haven, tick, def, cols, occ, s, k, gun, players, events,
+                seed,
+                haven,
+                tick,
+                def,
+                cols,
+                occ,
+                s,
+                SENTRY_SLOT0 + k,
+                gun,
+                players,
+                events,
+                &|p| wanted(&town, p),
             );
         }
         if s.engaged() {
@@ -219,15 +230,28 @@ pub fn step(
             slot.yaw = nav::turn_toward(slot.yaw, want, TURN_STEP);
         }
         rounds[k] = fire(
-            seed, haven, tick, def, cols, occ, s, k, gun, slot, players, events,
+            seed,
+            haven,
+            tick,
+            def,
+            cols,
+            occ,
+            s,
+            (SENTRY_SLOT0 + k, k as i32),
+            gun,
+            slot,
+            players,
+            events,
         );
     }
 }
 
 /// The look: keep the target while it is wanted and in sight, or find the
-/// nearest wanted player in sight.
+/// nearest wanted player in sight. `slot` is the gun's roster slot (its
+/// wire id); `wanted` is who it shoots — the town's hostiles, or a player
+/// turret's strangers (`turret.rs`).
 #[allow(clippy::too_many_arguments)]
-fn look(
+pub(crate) fn look(
     seed: u64,
     haven: &Haven,
     tick: u64,
@@ -235,15 +259,15 @@ fn look(
     cols: &ColIndex,
     occ: &mut Occupants,
     s: &mut Sentry,
-    k: usize,
+    slot: usize,
     gun: (f32, f32, f32),
     players: &[Player; MAX_PLAYERS],
     events: &mut EventQueue,
+    wanted: &dyn Fn(&Player) -> bool,
 ) {
-    let town = haven.town;
     if s.engaged() {
         let p = &players[s.target as usize];
-        if p.id != s.target_id || !wanted(&town, p) {
+        if p.id != s.target_id || !wanted(p) {
             s.drop_target();
         } else if sees(seed, haven, cols, occ, gun, p) {
             s.seen_at = tick;
@@ -259,7 +283,7 @@ fn look(
     for t in 0..LOOK_TRIES {
         let mut best: Option<(f32, usize)> = None;
         for (i, p) in players.iter().enumerate() {
-            if !wanted(&town, p) || tried[..t].contains(&i) {
+            if !wanted(p) || tried[..t].contains(&i) {
                 continue;
             }
             let (dx, dz) = (
@@ -284,15 +308,17 @@ fn look(
                 next_shot: tick + def.lock_ticks.max(1) as u64,
                 burst_left: 0,
             };
-            events.push(EV_SENTRY_LOCK, mob::mob_id(SENTRY_SLOT0 + k), p.id, 0);
+            events.push(EV_SENTRY_LOCK, mob::mob_id(slot), p.id, 0);
             return;
         }
     }
 }
 
 /// The gun: a burst while the target is in sight, in reach and in line.
+/// `(slot, aim)` is the gun's roster slot and the key its aim wobble is
+/// drawn off.
 #[allow(clippy::too_many_arguments)]
-fn fire(
+pub(crate) fn fire(
     seed: u64,
     haven: &Haven,
     tick: u64,
@@ -300,7 +326,7 @@ fn fire(
     cols: &ColIndex,
     occ: &mut Occupants,
     s: &mut Sentry,
-    k: usize,
+    (slot_ix, aim): (usize, i32),
     gun: (f32, f32, f32),
     slot: &Mob,
     players: &[Player; MAX_PLAYERS],
@@ -339,7 +365,7 @@ fn fire(
             def.rate_ticks.max(1)
         } as u64;
 
-    let h = cell_hash(seed, k as i32, tick as i32, CH_SENTRY_AIM);
+    let h = cell_hash(seed, aim, tick as i32, CH_SENTRY_AIM);
     let r = dist * def.spread_pm as f32 / MM_PER_M;
     let unit = |shift: u32| ((h >> shift) & 0xFFFF) as f32 / 65_535.0;
     let (ax, ay, az) = (
@@ -349,7 +375,7 @@ fn fire(
     );
     let yaw = nav::yaw_toward(ax, az, slot.yaw);
     let pitch = pitch_toward(ay, (ax * ax + az * az).sqrt());
-    let id = mob::mob_id(SENTRY_SLOT0 + k);
+    let id = mob::mob_id(slot_ix);
     events.push(
         EV_SHOT,
         id,

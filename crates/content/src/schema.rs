@@ -74,6 +74,10 @@ impl ItemClass {
 pub struct Item {
     pub id: String,
     pub name: String,
+    /// One line for the craft pane (`protocol::MAX_ITEM_DESC_BYTES`, checked
+    /// when the server bakes it). Absent means none.
+    #[serde(default)]
+    pub description: String,
     pub stack: u32,
     pub tier: u32,
     pub rarity: Rarity,
@@ -495,9 +499,10 @@ pub struct Weapon {
     /// body, an animal or a built thing (`sim_core::combat::MeleeDef::wear`;
     /// the reference's torch, ~7 points a swing). A node hit wears by
     /// `gatherables.toml`'s `(tool, node)` table instead, and a whiff wears
-    /// nothing. Only on a melee row whose item declares `condition_max`,
-    /// nonzero and inside `u16` — the durability rules' V1/V5/V6 shapes
-    /// (`validate.rs`).
+    /// nothing. On a bow or a firearm it is what **each shot** takes
+    /// (`CombatContent::shot_wear`; the reference's 0.25 a pull). Never on a
+    /// throwable; only on an item that declares `condition_max`, nonzero and
+    /// inside `u16` — the durability rules' V1/V5/V6 shapes (`validate.rs`).
     pub condition_loss: Option<u32>,
 }
 
@@ -591,6 +596,9 @@ pub enum DeployArchetype {
     /// A planter box (crops v0): a container that grows what is planted in
     /// it, by `cooking.toml`'s `planter` rows.
     Planter,
+    /// A player's auto turret (`sim-core/src/turret.rs`): a container of
+    /// rounds and a gun, `deployables.toml` `[turret]`.
+    Turret,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -650,6 +658,10 @@ pub struct PlanterWater {
     pub item: String,
     pub emptied: String,
     pub seconds: u32,
+    /// Rain on an unroofed planter banks water: per cent of the elapsed time
+    /// under full rain, up to `seconds` (`CookContent::rain_pct`).
+    #[serde(default)]
+    pub rain_pct: u16,
 }
 
 /// Which container runs a cook row. The archetype names of
@@ -795,6 +807,10 @@ pub struct Mob {
     /// `boar.population` (5) and `wolf.population` (2). The island's
     /// roster of this species is this times its habitat-weighted land.
     pub per_km2: f32,
+    /// More after dark, as a multiple of `per_km2` (`MobDef::night_extra_pct`):
+    /// the extra animals hatch after dusk and leave at daybreak. 0–4.
+    #[serde(default)]
+    pub night_extra: f32,
     /// Where the species lives — a weight per biome the home draw is
     /// accepted at (the reference's spawn filter). Beach is never a home.
     pub habitat: Habitat,
@@ -894,6 +910,24 @@ pub struct Sentry {
     pub lose_ms: u32,
     /// Aim wobble: within this many centimetres per 10 m, on each axis.
     pub spread_cm_per_10m: u32,
+}
+
+/// A player auto turret's gun (`deployables.toml` `[turret]`,
+/// `sim-core/src/turret.rs`): the sentry's numbers, and the round it spends
+/// out of its own box. Optional — without it a placed turret never fires.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurretGun {
+    pub range_m: u32,
+    pub damage: u32,
+    pub burst: u32,
+    pub rate_ms: u32,
+    pub burst_gap_ms: u32,
+    pub lock_ms: u32,
+    pub lose_ms: u32,
+    pub spread_cm_per_10m: u32,
+    /// The item it fires, one a round, out of its box.
+    pub ammo: String,
 }
 
 /// A site guard's own loot (`mobs.toml` `[guard]`): stacks its carcass

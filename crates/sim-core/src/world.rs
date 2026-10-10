@@ -1698,6 +1698,13 @@ pub enum Command {
         id: u32,
         index: u16,
     },
+    /// Pull the queue job at `index` to the head (`craft::fast_track`), if
+    /// it is still a job of `recipe` — the reference's `FastTrackTask`.
+    CraftFastTrack {
+        id: u32,
+        index: u16,
+        recipe: u16,
+    },
     /// Place baked building-piece row `row` at grid address (cx, cz,
     /// level, loc) (build.rs validates and refuses by event, never by
     /// panic).
@@ -1998,6 +2005,11 @@ pub enum Command {
     Reload {
         id: u32,
     },
+    /// Empty the held weapon's magazine into the pack (`ranged::unload`).
+    /// No payload, `Reload`'s reasoning: the sim reads the hand it has.
+    Unload {
+        id: u32,
+    },
 }
 
 pub struct World {
@@ -2092,6 +2104,12 @@ pub struct World {
     /// The sentries' brains — sim state, hashed whenever one is not
     /// `Default`. Their bodies are the roster's `sentry::SENTRY_SLOT0..`.
     pub sentries: [crate::sentry::Sentry; crate::sentry::SENTRIES],
+    /// Player auto turrets (`turret.rs`): the gun and its round, baked from
+    /// `[turret]`; `TurretDef::INERT` holds every turret silent.
+    pub turret_def: crate::turret::TurretDef,
+    /// The turret table — derived from the deploy store each look, hashed
+    /// while live, never saved. Bodies are `turret::TURRET_SLOT0..`.
+    pub turrets: [crate::turret::Turret; crate::limits::MAX_TURRETS],
     /// The animal roster — sim state, hashed. Homes are drawn from the
     /// seed at construction beside `haven` and never move; everything else
     /// in it is a tick's business.
@@ -2263,6 +2281,8 @@ impl World {
             heli: crate::heli::Heli::default(),
             sentry_def: crate::sentry::SentryDef::INERT,
             sentries: [crate::sentry::Sentry::default(); crate::sentry::SENTRIES],
+            turret_def: crate::turret::TurretDef::INERT,
+            turrets: [crate::turret::Turret::default(); crate::limits::MAX_TURRETS],
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
@@ -4870,6 +4890,19 @@ impl World {
                     );
                 }
             }
+            Command::CraftFastTrack { id, index, recipe } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    craft::fast_track(
+                        &self.craft,
+                        &self.deploy,
+                        &self.deploys,
+                        self.tick,
+                        &mut self.players[slot],
+                        index,
+                        recipe,
+                    );
+                }
+            }
             Command::CraftCancel { id, index } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
@@ -5537,12 +5570,32 @@ impl World {
                 // for the reason `hitscan` restates the same rule — the
                 // arm belongs to a body somebody is driving.
                 if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     ranged::reload(
                         self.tick,
                         &self.combat,
+                        &self.gather,
                         &mut self.events,
                         &mut self.players[slot],
+                        &mut spill,
                     );
+                    self.announce_spill(slot, &spill);
+                    self.drain_spill(slot, &mut spill);
+                }
+            }
+            Command::Unload { id } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    ranged::unload(
+                        self.tick,
+                        &self.combat,
+                        &self.gather,
+                        &mut self.events,
+                        &mut self.players[slot],
+                        &mut spill,
+                    );
+                    self.announce_spill(slot, &spill);
+                    self.drain_spill(slot, &mut spill);
                 }
             }
         }
@@ -6641,6 +6694,67 @@ impl World {
             }
         }
 
+        // Player turrets (`turret.rs`): the sentries' split again. A round
+        // lands as a sentry's does, minus the hostile clock — a turret is
+        // not the town's law, it is somebody's door.
+        let mut trounds = [None; crate::limits::MAX_TURRETS];
+        {
+            let t0 = crate::turret::TURRET_SLOT0;
+            crate::turret::step(
+                seed,
+                &self.haven,
+                tick,
+                &self.turret_def,
+                &self.deploy,
+                &self.pieces,
+                &mut crate::occupy::Occupants {
+                    doors: self.card_door_bits,
+                    table: &self.scatter,
+                    haven: &self.haven,
+                    harvested: &self.slot_lives,
+                    cache: &mut self.slot_cache,
+                },
+                &mut self.deploys,
+                &mut self.turrets,
+                &mut self.mobs.m[t0..t0 + crate::limits::MAX_TURRETS],
+                &self.players,
+                &mut self.events,
+                &mut trounds,
+            );
+        }
+        for (k, round) in trounds.iter().enumerate() {
+            let Some(r) = round else {
+                continue;
+            };
+            let slot = crate::turret::TURRET_SLOT0 + k;
+            let victim = r.victim as usize;
+            let (gx, gz) = {
+                let body = &self.mobs.m[slot].body;
+                (body.qx as i64, body.qz as i64)
+            };
+            let v = &mut self.players[victim];
+            if !v.active || v.hp == 0 || crate::combat::protected(v) {
+                continue;
+            }
+            let sector =
+                crate::combat::bearing_sector(gx - v.body.qx as i64, gz - v.body.qz as i64);
+            let crate::combat::Hurt { left, died, .. } =
+                crate::combat::hurt(&self.combat, v, r.damage);
+            let victim_id = v.id;
+            self.events
+                .push(EV_HURT, victim_id, sector as u32, r.damage as u32);
+            self.events.push(
+                EV_HEALTH,
+                victim_id,
+                left as u32,
+                self.combat.player_hp as u32,
+            );
+            if died {
+                let by = mob::mob_id(slot);
+                self.down_or_die(victim, by, DEATH_BY_MOB, NO_ITEM, r.range_cm, false);
+            }
+        }
+
         // Arrows fly after the player loop, never inside it. Two reasons,
         // both structural: every body has already taken its step, so a shot
         // resolves against final positions instead of positions that are
@@ -6806,12 +6920,11 @@ impl World {
         // ordering a raid and a decay have to agree on.
         // A planter grows by day under open sky (crops v1): the shelter
         // question a body asks of the rain, asked at the planter's feet.
+        // The same rain waters it.
         let night = is_night(tick);
+        let rain_pm = crate::weather::now(self.seed, tick, &self.env).rain;
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
-        let sunlit = |b: &crate::deploy::BoxRec| {
-            if night {
-                return false;
-            }
+        let open_sky = |b: &crate::deploy::BoxRec| {
             let (x, z) = b.xz();
             let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
                 + crate::build::level_y(b.level);
@@ -6827,7 +6940,9 @@ impl World {
                 self.works.unlocks,
                 crate::works::KNOB_SMELT_PCT,
             ),
-            &sunlit,
+            &open_sky,
+            night,
+            rain_pm,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point
@@ -7326,6 +7441,12 @@ impl World {
         for g in self.sentries.iter() {
             if *g != crate::sentry::Sentry::default() {
                 h.update(&g.hash_bytes());
+            }
+        }
+        // The turret table, the same rule: an empty one folds nothing.
+        for t in self.turrets.iter() {
+            if *t != crate::turret::Turret::default() {
+                h.update(&t.hash_bytes());
             }
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());

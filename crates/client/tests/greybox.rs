@@ -371,7 +371,7 @@ fn every_solid_deploy_blocks_what_it_draws() {
 
     assert_eq!(
         DEPLOY_VOL.len(),
-        sim_core::deploy::ARCH_PLANTER as usize + 1,
+        sim_core::deploy::ARCH_TURRET as usize + 1,
         "the sim volume table and the archetype space drifted"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {

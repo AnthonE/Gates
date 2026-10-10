@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_PLANTER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_TURRET, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -525,7 +525,17 @@ const SUB_PLANTER: u32 = 90;
 /// `EV_STUMP_GRUBBED`): the cell, broadcast. A joiner reads the same fact
 /// off the slot sync's per-cell bit.
 const SUB_STUMP_GRUBBED: u32 = 91;
-const SUB_MAX: u32 = SUB_STUMP_GRUBBED;
+/// One item's description line (wire v103, `NOW.md` §0cq 7): the index and
+/// up to `MAX_ITEM_DESC_BYTES` of text, dripped once to a joiner after the
+/// catalog, one a tick.
+const SUB_ITEM_DESC: u32 = 92;
+const SUB_MAX: u32 = SUB_ITEM_DESC;
+/// The longest item description, bytes: one line in the craft pane, and an
+/// event under `MAX_STREAM_MSG_BYTES` with its header.
+pub const MAX_ITEM_DESC_BYTES: usize = 96;
+/// Width of a description's length: 0..=127.
+const DESC_LEN_BITS: u32 = 7;
+const _: () = assert!(MAX_ITEM_DESC_BYTES < (1 << DESC_LEN_BITS));
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -637,7 +647,7 @@ const _: () = assert!(
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
 const REFUSE_G_BITS: u32 = 4;
-/// Reload-refusal reason width (`ranged::REFUSE_RL_*`: five codes today,
+/// Reload-refusal reason width (`ranged::REFUSE_RL_*`: six codes today,
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
 const REFUSE_RL_BITS: u32 = 3;
@@ -1182,6 +1192,43 @@ impl SkinRow {
     }
 }
 
+/// Every item's description line, by item index (`SUB_ITEM_DESC`). Filled
+/// by the server at boot and by the client as the lines arrive; an empty
+/// line is an item with none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemDescs {
+    pub text: [[u8; MAX_ITEM_DESC_BYTES]; MAX_ITEM_DEFS],
+    pub lens: [u8; MAX_ITEM_DEFS],
+}
+
+impl ItemDescs {
+    pub const EMPTY: Self = Self {
+        text: [[0; MAX_ITEM_DESC_BYTES]; MAX_ITEM_DEFS],
+        lens: [0; MAX_ITEM_DEFS],
+    };
+
+    /// Install item `idx`'s line. Refuses one past the table or too long;
+    /// an empty line clears it.
+    pub fn set(&mut self, idx: usize, text: &[u8]) -> Result<(), WireError> {
+        if idx >= MAX_ITEM_DEFS || text.len() > MAX_ITEM_DESC_BYTES {
+            return Err(WireError::Range);
+        }
+        self.text[idx][..text.len()].copy_from_slice(text);
+        self.text[idx][text.len()..].fill(0);
+        self.lens[idx] = text.len() as u8;
+        Ok(())
+    }
+
+    /// Item `idx`'s line; empty out of table or when it has none.
+    pub fn get(&self, idx: usize) -> &[u8] {
+        if idx < MAX_ITEM_DEFS {
+            &self.text[idx][..self.lens[idx] as usize]
+        } else {
+            &[]
+        }
+    }
+}
+
 /// The skin catalog, in content order: row `i` here is bit `i` of the
 /// owned set (`sim_core::skin::SkinSet`). Fixed storage, `MAX_SKINS` rows,
 /// filled by the server at boot and by the client from `SUB_SKINS`.
@@ -1310,6 +1357,12 @@ pub enum EventMsg {
     /// A felled tree's stump was grubbed out: the cell stays harvested
     /// until the sapling, with nothing standing in it.
     StumpGrubbed { cx: u16, cz: u16 },
+    /// One item's description line: `text[..len]`, UTF-8.
+    ItemDesc {
+        item: u16,
+        len: u8,
+        text: [u8; MAX_ITEM_DESC_BYTES],
+    },
     /// One batch of the harvested-cell walk. `reset` (first batch of a
     /// join or an event-lane resync) clears the client's set first. Bit `i`
     /// of `grubbed` says `cells[i]`'s stump is gone (wire v101).
@@ -2225,6 +2278,21 @@ pub fn encode_event_slot_sync(
     Ok(w.finish())
 }
 
+/// Item `item`'s description line. Refuses an item past the table, an
+/// empty line and one past `MAX_ITEM_DESC_BYTES`.
+pub fn encode_event_item_desc(item: u16, text: &[u8], buf: &mut [u8]) -> Result<usize, WireError> {
+    if item as usize >= MAX_ITEM_DEFS || text.is_empty() || text.len() > MAX_ITEM_DESC_BYTES {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ITEM_DESC)?;
+    w.write(item as u32, 16)?;
+    w.write(text.len() as u32, DESC_LEN_BITS)?;
+    for &b in text {
+        w.write(b as u32, 8)?;
+    }
+    Ok(w.finish())
+}
+
 /// A felled tree's stump at (`cx`, `cz`) was grubbed out (broadcast).
 pub fn encode_event_stump_grubbed(cx: u16, cz: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_STUMP_GRUBBED)?;
@@ -2910,7 +2978,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_PLANTER || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_TURRET || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -4759,6 +4827,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             cx: r.read(16)? as u16,
             cz: r.read(16)? as u16,
         },
+        SUB_ITEM_DESC => {
+            let item = r.read(16)? as u16;
+            let len = r.read(DESC_LEN_BITS)? as usize;
+            if item as usize >= MAX_ITEM_DEFS || len == 0 || len > MAX_ITEM_DESC_BYTES {
+                return Err(WireError::Malformed);
+            }
+            let mut text = [0u8; MAX_ITEM_DESC_BYTES];
+            for b in text.iter_mut().take(len) {
+                *b = r.read(8)? as u8;
+            }
+            EventMsg::ItemDesc {
+                item,
+                len: len as u8,
+                text,
+            }
+        }
         SUB_CATALOG => {
             let total = r.read(CATALOG_TOTAL_BITS)? as usize;
             let first = r.read(CATALOG_TOTAL_BITS)? as usize;
@@ -5178,7 +5262,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_PLANTER
+                if arch > ARCH_TURRET
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -8064,6 +8148,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/sentry.rs"),
         },
         Module {
+            file: "turret.rs",
+            src: include_str!("../../sim-core/src/turret.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -8438,9 +8526,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_RL_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 5,
+            min_members: 6,
             bits: REFUSE_RL_BITS,
-            live_max: 5,
+            live_max: 6,
         },
         Domain {
             what: "gather refusal",
@@ -8572,10 +8660,10 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            // 17 → 18 at wire v99: `ARCH_PLANTER`.
-            min_members: 18,
+            // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`.
+            min_members: 19,
             bits: ARCH_BITS,
-            live_max: 17,
+            live_max: 18,
         },
         Domain {
             what: "deploy matter",
@@ -9021,6 +9109,9 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // An item description's length (v103): bounded by
+            // `MAX_ITEM_DESC_BYTES`, const-asserted beside the width.
+            "DESC_LEN_BITS",
             // Which deed a `SUB_HEARD` names (v93): the wire's own short
             // list, bounded by `DEED_MAX`, which a const-assert beside the
             // width guards, and both ends refuse past it.

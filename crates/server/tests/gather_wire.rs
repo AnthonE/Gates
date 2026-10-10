@@ -169,6 +169,7 @@ fn gather_rides_the_wire() {
     core.world.gather = fixture;
     core.world.dev_spawn = Some(pos);
     core.catalog = probe_catalog();
+    core.item_descs.set(3, b"three").unwrap();
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
     let mut clients = vec![
@@ -266,6 +267,9 @@ fn gather_rides_the_wire() {
     for (slot, c) in &clients {
         assert_eq!(c.catalog.count, 8, "client {slot} catalog count");
         assert_eq!(c.catalog.name(0), b"P0", "client {slot} catalog name");
+        // And the description lines after it, skipping items with none.
+        assert_eq!(c.item_descs.get(3), b"three", "client {slot} description");
+        assert!(c.item_descs.get(0).is_empty());
     }
 
     // A late joiner is synced by the reset walk: the harvested cell

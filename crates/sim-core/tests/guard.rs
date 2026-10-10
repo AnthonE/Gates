@@ -593,7 +593,7 @@ fn guards_are_on_top_of_the_density() {
     for seed in SEEDS {
         let w = hatched(seed);
         assert_eq!(w.mobs.m.len(), MAX_MOBS);
-        let want = mob::targets(&w.mob, &w.mobs.survey);
+        let want = mob::targets(&w.mob, &w.mobs.survey, false);
         let guards = (0..MAX_MOBS)
             .filter(|&s| mob::guard_site_of(s).is_some() && w.mobs.m[s].homed)
             .count();

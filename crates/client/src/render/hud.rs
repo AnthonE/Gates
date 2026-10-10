@@ -2474,9 +2474,13 @@ pub fn gate_watch(
         _ => {}
     }
     *was_in = Some(in_town);
-    for &(_, target) in feed.sentry_locks() {
+    for &(gun, target) in feed.sentry_locks() {
         if target == core.player_id {
-            toast.warn("a sentry has locked on to you - you are hostile");
+            toast.warn(if super::sentry::is_turret(gun) {
+                "an auto turret has locked on to you"
+            } else {
+                "a sentry has locked on to you - you are hostile"
+            });
         }
     }
     let in_world = screen.is_some_and(|s| *s.get() == super::Screen::InWorld);
@@ -2756,6 +2760,7 @@ pub fn feedback(
         // A roster id is an animal or a machine, named by its kind — never
         // the wire's tagged number.
         let name = |id: u32| match sim_core::mob::slot_of_id(id).map(sim_core::mob::kind_of) {
+            _ if super::sentry::is_turret(id) => "an auto turret".to_string(),
             Some(sim_core::mob::MOB_SENTRY) => "THE GATE's sentry".to_string(),
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),

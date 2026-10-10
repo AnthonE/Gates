@@ -288,6 +288,10 @@ pub struct CookContent {
     pub water_full: u16,
     pub water_empty: u16,
     pub water_ticks: u16,
+    /// Rain on an unroofed planter banks water (`NOW.md` §5 item 7): per
+    /// step under full rain, this per cent of the step, scaled by the rain's
+    /// per mille and capped at `water_ticks`. Zero ⇒ rain waters nothing.
+    pub rain_pct: u16,
 }
 
 impl CookContent {
@@ -303,6 +307,7 @@ impl CookContent {
         water_full: 0,
         water_empty: 0,
         water_ticks: 0,
+        rain_pct: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -666,15 +671,20 @@ pub fn toggle(
 /// and is the reference's: an oven that runs dry this step does not also
 /// cook this step.
 ///
-/// `sunlit` answers for a planter: does daylight reach it (crops v1)? A
-/// planter in the dark, or dry, holds its beds where they are.
+/// `open_sky` answers for a planter: is it unroofed (crops v1)? It grows
+/// only by day under open sky, and a planter in the dark, or dry, holds its
+/// beds where they are. `rain_pm` is the rain falling now (`weather::Wx`):
+/// on an open planter it banks water ([`CookContent::rain_pct`]).
+#[allow(clippy::too_many_arguments)]
 pub fn sweep(
     cc: &CookContent,
     gather: &GatherContent,
     deploys: &mut Deploys,
     tick: u64,
     smelt_pct: u32,
-    sunlit: &dyn Fn(&crate::deploy::BoxRec) -> bool,
+    open_sky: &dyn Fn(&crate::deploy::BoxRec) -> bool,
+    night: bool,
+    rain_pm: u16,
     events: &mut EventQueue,
 ) {
     let period = OVEN_PERIOD_TICKS;
@@ -756,7 +766,21 @@ pub fn sweep(
                 let st = boxes[i].items[s];
                 st.count > 0 && cc.row_for(arch, st.item).is_some()
             });
-            if !growing || !sunlit(&boxes[i]) {
+            // Rain fills the water clock of an open planter, day or night,
+            // growing or idle — the reference's rain-fed beds. The roof is
+            // asked once, and only when it rains or the beds could grow.
+            let rains = rain_pm > 0 && cc.rain_pct > 0 && cc.water_ticks > 0;
+            if !rains && (!growing || night) {
+                continue;
+            }
+            let open = open_sky(&boxes[i]);
+            if rains && open {
+                let gain =
+                    u32::from(step) * u32::from(cc.rain_pct) * u32::from(rain_pm) / (100 * 1000);
+                ovens[i].burn =
+                    (u32::from(ovens[i].burn) + gain).min(u32::from(cc.water_ticks)) as u16;
+            }
+            if !growing || night || !open {
                 continue;
             }
             if cc.water_ticks > 0 {

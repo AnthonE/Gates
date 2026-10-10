@@ -199,3 +199,28 @@ archetype = "window_shutter"
 placement = "window"
 matter = "wood"
 hp = 200
+
+# A player's auto turret (`sim-core/src/turret.rs`, `NOW.md` §0aa 1): a box of
+# rounds with a gun on top that shoots anybody in reach who is not its owner
+# or the crew of the claim it stands in. Rust's turret hp; unpowered, since
+# nothing here carries power.
+[[deployable]]
+id = "item.autoturret"
+archetype = "turret"
+placement = "foundation"
+matter = "metal"
+hp = 1000
+
+# The turret's gun. Range is the reference's 30 m; the rest is the revolver it
+# is built from — its 20 a round, eight to a burst at its 150 a minute, and
+# its 3.4 s reload between bursts. The 1 s beep before it opens up is ours.
+[turret]
+range_m = 30
+damage = 20
+burst = 8
+rate_ms = 400
+burst_gap_ms = 3400
+lock_ms = 1000
+lose_ms = 3000
+spread_cm_per_10m = 15
+ammo = "item.pistol_ammo"

@@ -11,6 +11,10 @@ use std::collections::BTreeSet;
 /// (`protocol::MAX_ITEM_NAME_BYTES`), pinned equal by the server's tests.
 pub const SKIN_NAME_MAX_BYTES: usize = 24;
 
+/// Longest item description, in bytes: the wire's line
+/// (`protocol::MAX_ITEM_DESC_BYTES`), which refuses the boot past it too.
+pub const ITEM_DESC_MAX_BYTES: usize = 96;
+
 /// The furthest a species may hear any noise, metres (`mobs.toml` `hear_m`).
 const HEAR_MAX_M: u32 = 500;
 
@@ -63,6 +67,13 @@ pub fn structural(c: &Content) -> Result<(), String> {
     };
     for i in &c.items {
         check_id(&i.id, "item.", "item")?;
+        if i.description.len() > ITEM_DESC_MAX_BYTES {
+            return Err(format!(
+                "item `{}`: description is {} bytes, over {ITEM_DESC_MAX_BYTES}",
+                i.id,
+                i.description.len()
+            ));
+        }
         unique(&i.id)?;
         if i.stack == 0 {
             return Err(format!("item `{}`: stack must be ≥ 1", i.id));
@@ -588,10 +599,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // structure damage (the bake refuses one that does not), so a
         // landed blow always reaches the row.
         if let Some(loss) = w.condition_loss {
-            if w.kind != WeaponKind::Melee {
+            if w.kind == WeaponKind::Throwable {
                 return Err(format!(
-                    "weapon `{}`: condition_loss on a non-melee row — only a \
-                     landed swing wears the hand that dealt it",
+                    "weapon `{}`: condition_loss on a throwable — the charge \
+                     is spent whole, so there is nothing left to wear",
                     w.id
                 ));
             }
@@ -1550,6 +1561,9 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",
                 m.id
             ));
+        }
+        if !(0.0..=4.0).contains(&m.night_extra) {
+            return Err(format!("mob `{}`: night_extra is 0–4", m.id));
         }
         if m.per_km2 > 0.0 && weights.iter().all(|w| *w == 0.0) {
             return Err(format!(

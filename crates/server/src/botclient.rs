@@ -505,6 +505,7 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
         // picks the weapon and the amount, so there is nothing in the frame
         // to forge (`Command::Reload`'s own doc says why).
         Command::Reload { .. } => encode_action_reload(buf),
+        Command::Unload { .. } => protocol::encode_action_unload(buf),
         Command::Upgrade {
             cx,
             cz,

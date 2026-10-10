@@ -103,6 +103,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Pick { .. } => Kind::Take,
         ActionMsg::Craft { .. }
         | ActionMsg::CraftCancel { .. }
+        | ActionMsg::CraftFastTrack { .. }
         | ActionMsg::Reskin { .. }
         | ActionMsg::SkinsRefresh
         | ActionMsg::Research { .. }
@@ -110,6 +111,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Access { .. }
         | ActionMsg::Feed { .. }
         | ActionMsg::Reload
+        | ActionMsg::Unload
         | ActionMsg::Respawn { .. }
         | ActionMsg::RespawnAt { .. }
         | ActionMsg::RespawnGate

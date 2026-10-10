@@ -227,6 +227,7 @@ ITEMS = {
     "corn_seed": "delapouite/plant-seed",
     "hemp_seed": "delapouite/sesame",
     "planter": "lorc/sprout",
+    "autoturret": "lorc/sentry-gun",
     # The food loop's pair. A flat marbled cut and a drumstick are the two
     # most different meat silhouettes in the set, which is what a hotbar
     # holding both at 44 px needs — and a drumstick is the universal

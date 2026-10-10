@@ -91,6 +91,8 @@ struct ConsumablesFile {
 #[serde(deny_unknown_fields)]
 struct DeployablesFile {
     deployable: Vec<Deployable>,
+    #[serde(default)]
+    turret: Option<schema::TurretGun>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -213,6 +215,8 @@ pub struct Content {
     pub vendors: Vec<Vendor>,
     /// THE GATE's sentry guns (`sites.toml` `[sentry]`), or none.
     pub sentry: Option<schema::Sentry>,
+    /// A player auto turret's gun (`deployables.toml` `[turret]`), or none.
+    pub turret: Option<schema::TurretGun>,
     /// The arc (`arc.toml`, `ARC.md`): how works burn, the works, and the
     /// effects their unlocks turn on.
     pub arc: ArcGlobals,
@@ -320,6 +324,7 @@ impl Content {
             skins: skins.skin,
             vendors: sites.vendor,
             sentry: sites.sentry,
+            turret: deployables.turret,
             arc: arc.arc,
             works: arc.work,
             arc_effects: arc.effect,

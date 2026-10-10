@@ -196,6 +196,17 @@ fn main() {
     let (slot, count, target) = goldens::action_give();
     let len = protocol::encode_action_give(slot, count, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[156], &buf[..len]);
+    // A magazine emptied into the pack (v103).
+    let len = protocol::encode_action_unload(&mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[157], &buf[..len]);
+    // An item's description line (v103).
+    let (item, text) = goldens::event_item_desc();
+    let len = protocol::encode_event_item_desc(item, text, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[158], &buf[..len]);
+    // A queued craft pulled to the head (v103).
+    let (index, recipe) = goldens::action_fasttrack();
+    let len = protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[159], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

@@ -161,7 +161,7 @@ fn armed_content_hatches_the_whole_roster() {
     // Both species are present, in the numbers their density asks for:
     // habitat-weighted land × per km² (the reference's population), the
     // wolves' site guards on top.
-    let want = mob::targets(&fixture, &w.mobs.survey);
+    let want = mob::targets(&fixture, &w.mobs.survey, false);
     let live = |kind| {
         w.mobs
             .m
@@ -185,20 +185,20 @@ fn armed_content_hatches_the_whole_roster() {
 fn the_roster_is_density_times_habitat() {
     let survey = mob::survey(11);
     let mut mc = MobContent::probe_fixture();
-    let base = mob::targets(&mc, &survey);
+    let base = mob::targets(&mc, &survey, false);
     mc.defs[MOB_PIG as usize].per_km2_milli *= 2;
-    let doubled = mob::targets(&mc, &survey);
+    let doubled = mob::targets(&mc, &survey, false);
     let d = doubled[MOB_PIG as usize] as i64 - 2 * base[MOB_PIG as usize] as i64;
     assert!(d.abs() <= 1, "{base:?} doubled to {doubled:?}");
     assert_eq!(doubled[MOB_WOLF as usize], base[MOB_WOLF as usize]);
     // A species that only lives in highland is a fraction of one that
     // lives everywhere.
     mc.defs[MOB_PIG as usize].habitat_pm = [0, 0, 0, 1_000];
-    assert!(mob::targets(&mc, &survey)[MOB_PIG as usize] < doubled[MOB_PIG as usize] / 3);
+    assert!(mob::targets(&mc, &survey, false)[MOB_PIG as usize] < doubled[MOB_PIG as usize] / 3);
     mc.defs[MOB_PIG as usize].per_km2_milli = 1_000_000;
     mc.defs[MOB_PIG as usize].habitat_pm = [0, 1_000, 1_000, 1_000];
     assert_eq!(
-        mob::targets(&mc, &survey)[MOB_PIG as usize],
+        mob::targets(&mc, &survey, false)[MOB_PIG as usize],
         mob::capacity(MOB_PIG)
     );
 }
@@ -1177,4 +1177,42 @@ fn dusk_does_not_call_off_a_chase_already_running() {
         w.mobs.m[slot].roused_until > w.tick,
         "the chase must still be running on the far side of dusk"
     );
+}
+
+/// **The night brings more wolves, and the day takes them back** (`NOW.md`
+/// §0pr 3, `reference/ANIMALS.md` §3's night-only spawn). The extra slots
+/// `night_extra_pct` enrols stay empty by day, hatch after dusk, and leave
+/// at daybreak once dormant — here, with nobody on the island, at once.
+#[test]
+fn the_night_brings_more_wolves_and_the_day_takes_them_back() {
+    use sim_core::weather::KEEP_WEATHER;
+    let mut w = armed(11);
+    w.mob.defs[MOB_WOLF as usize].night_extra_pct = 100;
+    let wolves = |w: &World| {
+        w.mobs
+            .m
+            .iter()
+            .filter(|m| m.alive && m.kind == MOB_WOLF)
+            .count()
+    };
+    let env = |pm: u16| Command::AdminEnv {
+        weather: KEEP_WEATHER,
+        time_pm: pm,
+    };
+    w.tick(&[env(300)]);
+    w.tick(&[]);
+    let by_day = mob::targets(&w.mob, &w.mobs.survey, false)[MOB_WOLF as usize] + mob::SITE_GUARDS;
+    let by_night = mob::targets(&w.mob, &w.mobs.survey, true)[MOB_WOLF as usize] + mob::SITE_GUARDS;
+    assert!(by_night > by_day, "{by_day} by day, {by_night} by night");
+    assert_eq!(wolves(&w), by_day, "a night wolf hatched by day");
+
+    w.tick(&[env(950)]);
+    w.tick(&[]);
+    assert_eq!(wolves(&w), by_night, "the night's wolves did not come");
+
+    w.tick(&[env(300)]);
+    for _ in 0..=MOB_THINK_TICKS {
+        w.tick(&[]);
+    }
+    assert_eq!(wolves(&w), by_day, "the night's wolves stayed into the day");
 }

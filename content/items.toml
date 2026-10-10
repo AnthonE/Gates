@@ -23,6 +23,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Chopped from trees. Builds, burns, and goes into almost every recipe."
 
 [[item]]
 id = "item.stone"
@@ -32,6 +33,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Struck from rock. Tools, arrowheads, furnaces and stone walls."
 
 [[item]]
 id = "item.metal_ore"
@@ -41,6 +43,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Raw ore from metal nodes. Smelt it in a furnace into fragments."
 
 [[item]]
 id = "item.sulfur_ore"
@@ -50,6 +53,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Raw ore from sulfur nodes. Smelt it in a furnace into sulfur."
 
 [[item]]
 id = "item.cloth"
@@ -59,6 +63,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Woven fibre from hemp or salvage. Bandages, bows, clothing and fuel."
 
 # Theirs (RIPLIST §1e, closed 2026-08-14 at the page): 1000. 500 was ours
 # while the row was open.
@@ -70,6 +75,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Rendered from animals. Mixed with cloth into low grade fuel."
 
 [[item]]
 id = "item.charcoal"
@@ -79,6 +85,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Left behind when wood burns in a fire or furnace. Half of gunpowder."
 
 [[item]]
 id = "item.metal_frags"
@@ -88,6 +95,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Smelted metal. The workhorse of tools, doors, locks and guns."
 
 [[item]]
 id = "item.sulfur"
@@ -97,6 +105,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Smelted sulfur. Mixed with charcoal into gunpowder."
 
 # Theirs (RIPLIST §1e): 1000 [APPROX — one source states it, and every
 # other craft resource already sits there]. 500 was ours.
@@ -108,6 +117,7 @@ tier = 2
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Charcoal and sulfur. Rounds and satchel charges are made of it."
 
 # Stack 500 confirmed theirs (RIPLIST §1e).
 [[item]]
@@ -118,6 +128,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Fat and cloth. Keeps torches lit and furnaces running."
 
 # Components: barrel-only (CONTENT §2) — the reason the coast road matters.
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): gears 20,
@@ -131,6 +142,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Salvaged machinery. Recycle it, or build guns and garage doors."
 
 [[item]]
 id = "item.rope"
@@ -140,6 +152,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Salvaged rope. Strings crossbows and binds satchel charges."
 
 [[item]]
 id = "item.tarp"
@@ -149,6 +162,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "resources"
+description = "Salvaged canvas. Wraps satchels and lines a roadsign vest."
 
 # The working coin (DESIGN.md §3.1) — **scrap's job in this game**, and an
 # ordinary item stack on purpose: it is dropped on death, raidable in your
@@ -179,6 +193,7 @@ tier = 0
 rarity = "rare"
 slot = "none"
 class = "resources"
+description = "Scrap. Trade it at a kiosk, or spend it on benches and research."
 
 # The blueprint (research table v1, 2026-09-23) — the paper a research
 # table makes. ONE item for every recipe: which recipe a sheet teaches is
@@ -194,6 +209,7 @@ tier = 1
 rarity = "rare"
 slot = "none"
 class = "other"
+description = "Read it to learn a recipe for good."
 
 # --- T0, the naked era -------------------------------------------------
 
@@ -217,6 +233,7 @@ rarity = "common"
 slot = "hand"
 class = "weapons"
 condition_max = 10000
+description = "A plain wooden club. Better than fists, not by much."
 
 [[item]]
 id = "item.torch"
@@ -226,6 +243,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
+description = "Light in the dark. F lights or snuffs it; it burns down as it goes."
 # 50 pts, the reference's ceiling. No node pays a torch, so no
 # gatherable condition_loss row names it (V3 forbids an unreachable one);
 # what spends this is the flame itself and the blows it lands
@@ -246,6 +264,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "weapons"
+description = "A sharpened pole. Twice the reach of a club."
 
 # Rust's stone spear: the wooden one with a stone head, no bench.
 [[item]]
@@ -256,6 +275,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "weapons"
+description = "A wooden spear with a stone head: harder hits at the same reach."
 
 [[item]]
 id = "item.hatchet_stone"
@@ -265,6 +285,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
+description = "Chops wood. Wears out; make another when it breaks."
 # 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.
 condition_max = 10000
 
@@ -277,6 +298,7 @@ rarity = "common"
 slot = "hand"
 class = "tools"
 condition_max = 10000
+description = "Breaks rock and ore nodes. Wears out; make another when it breaks."
 
 [[item]]
 id = "item.bow"
@@ -286,6 +308,8 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "weapons"
+condition_max = 5000
+description = "Hold right mouse to draw, left to loose. R picks the arrow kind."
 
 # Theirs (RIPLIST §1e): the arrow class stacks 64 [APPROX — ×64 stated
 # for the high-velocity arrow; wooden shares the class].
@@ -297,6 +321,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "ammo"
+description = "The common arrow. Cheap, and it can be picked up again."
 
 # Theirs (RIPLIST §1e): 3 [APPROX — stated once, corroborated by a player
 # petition to raise it *to 5*]. The spawn kit's grant moved 5 → 3 with it
@@ -309,6 +334,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "medical"
+description = "Heals a little, quickly."
 
 [[item]]
 id = "item.sleeping_bag"
@@ -318,6 +344,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "items"
+description = "Place it to wake here after you die."
 
 [[item]]
 id = "item.box_small"
@@ -327,6 +354,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "items"
+description = "A small wooden chest for your things."
 
 # Rust's key lock: wood, no bench, the prim base's first security.
 [[item]]
@@ -337,6 +365,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "construction"
+description = "Fits a door or box. Whoever holds the key gets in."
 
 # Rust's wooden barricade: a log wall that stands anywhere and stops a body.
 [[item]]
@@ -347,6 +376,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "construction"
+description = "A free-standing wooden barrier to fight behind."
 
 # A water vessel, empty and full: H at fresh water with the empty one in
 # hand fills it, and drinking the full one gives the empty one back
@@ -359,6 +389,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
+description = "Empty. Fill it at fresh water to carry a drink with you."
 
 [[item]]
 id = "item.waterskin_full"
@@ -368,6 +399,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
+description = "Fresh water to drink, or to water a planter."
 
 [[item]]
 id = "item.fire_pit"
@@ -377,6 +409,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "items"
+description = "Cooks meat and keeps you warm. Burns wood."
 
 # --- T1, the workbench era ---------------------------------------------
 
@@ -388,6 +421,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "items"
+description = "The first bench: unlocks the next tier of recipes."
 
 # The bench ladder's upper rungs (bench ladder v0, the pre-Oct-2025
 # scrap-era shape — operator 2026-08-15, DECISIONS.md). Both tier 2: each
@@ -401,6 +435,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "items"
+description = "The second bench: metal tools, armour and better weapons."
 
 [[item]]
 id = "item.workbench3"
@@ -410,6 +445,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "items"
+description = "The third bench: the best this island makes."
 
 [[item]]
 id = "item.hearth"
@@ -419,6 +455,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "items"
+description = "Claims your base. Stock it to pay upkeep; its crew may build here."
 
 [[item]]
 id = "item.hatchet_metal"
@@ -428,6 +465,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "tools"
+description = "Chops wood fast and lasts four times a stone one."
 # 400 pts: the 4x stone->metal step is the reference's own tool ladder.
 condition_max = 40000
 
@@ -440,6 +478,7 @@ rarity = "uncommon"
 slot = "hand"
 class = "tools"
 condition_max = 40000
+description = "Breaks rock fast and lasts four times a stone one."
 
 [[item]]
 id = "item.spear_metal"
@@ -449,6 +488,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "weapons"
+description = "A metal-headed spear: the hardest-hitting reach weapon."
 
 [[item]]
 id = "item.furnace"
@@ -458,6 +498,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "items"
+description = "Smelts ore into metal and sulfur. Burns wood."
 
 [[item]]
 id = "item.box_large"
@@ -467,6 +508,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "items"
+description = "A large wooden chest with room for a base's stock."
 
 [[item]]
 id = "item.lock_code"
@@ -476,6 +518,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "construction"
+description = "A keypad lock. Set a code and share it, or not."
 
 # The research table (research v0) — where a found thing becomes a thing
 # you can make. Workbench era and priced there, because it is the second
@@ -488,6 +531,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "items"
+description = "Turns an item and some scrap into its blueprint."
 
 # The recycler (recycler v0). Priced beside the furnace it resembles —
 # both are workbench-era converters you place once and feed forever — and
@@ -501,6 +545,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "items"
+description = "Breaks salvage back down into useful parts."
 
 [[item]]
 id = "item.door_wood"
@@ -510,6 +555,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "construction"
+description = "A wooden door. Put a lock on it."
 
 [[item]]
 id = "item.building_plan"
@@ -519,6 +565,7 @@ tier = 1
 rarity = "common"
 slot = "hand"
 class = "construction"
+description = "Hold right mouse to pick a shape; left click places it."
 
 [[item]]
 id = "item.hammer"
@@ -528,6 +575,7 @@ tier = 1
 rarity = "common"
 slot = "hand"
 class = "tools"
+description = "Upgrades, repairs, turns and removes your building pieces."
 
 [[item]]
 id = "item.armor_burlap_head"
@@ -537,6 +585,7 @@ tier = 1
 rarity = "uncommon"
 slot = "head"
 class = "clothing"
+description = "A cloth hood. Light protection."
 
 [[item]]
 id = "item.armor_burlap_body"
@@ -546,6 +595,7 @@ tier = 1
 rarity = "uncommon"
 slot = "body"
 class = "clothing"
+description = "A cloth tunic. Light protection and some warmth."
 
 # Our item (§1c refused its recipe — theirs is the high-velocity arrow),
 # but the stack is class-wide there, so 64 travels (RIPLIST §1e).
@@ -557,6 +607,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "ammo"
+description = "A heavy crossbow bolt with a metal tip."
 
 [[item]]
 id = "item.crossbow"
@@ -566,6 +617,8 @@ tier = 1
 rarity = "rare"
 slot = "hand"
 class = "weapons"
+condition_max = 10000
+description = "Slow to reload, hits hard. Loads metal arrows."
 
 # --- T2, the powder era ------------------------------------------------
 
@@ -577,6 +630,8 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "weapons"
+condition_max = 10000
+description = "A sidearm that takes pistol rounds. R reloads."
 
 # Theirs (RIPLIST §1e): pistol/rifle ammo stacks 128 [EXACT — multiple
 # independent summaries agree].
@@ -588,6 +643,7 @@ tier = 2
 rarity = "uncommon"
 slot = "none"
 class = "ammo"
+description = "Rounds for the revolver."
 
 # Stack 10 confirmed theirs (RIPLIST §1e).
 [[item]]
@@ -598,6 +654,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "weapons"
+description = "A crude bomb. Plant it on a wall or door; it may not go off."
 
 [[item]]
 id = "item.door_metal"
@@ -607,6 +664,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "construction"
+description = "A metal door. Much harder to break than wood."
 
 [[item]]
 id = "item.armor_roadsign_body"
@@ -616,6 +674,8 @@ tier = 2
 rarity = "rare"
 slot = "body"
 class = "clothing"
+condition_max = 50000
+description = "A vest of beaten road signs. Heavy protection, but cold and slow."
 
 [[item]]
 id = "item.medkit"
@@ -625,6 +685,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "medical"
+description = "Heals a lot, slowly. On your belt, it gets you up when you go down."
 
 # The medical syringe: the one item that picks a downed body back up
 # (`consumables.toml` `revive`, `NOW.md` §0wnd item 1). Used on yourself it is
@@ -637,6 +698,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "medical"
+description = "Heals a little, fast, and brings a downed player back up."
 
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): berry 20,
@@ -652,6 +714,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "food"
+description = "Picked from bushes. A little food and a little water."
 
 [[item]]
 id = "item.mushrooms"
@@ -661,6 +724,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "food"
+description = "Found on the forest floor. A little food."
 
 [[item]]
 id = "item.corn"
@@ -670,6 +734,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "food"
+description = "Grown in a planter. Good food, and seeds for the next crop."
 
 # Crops v0 (`NOW.md` §5): seeds grow in a planter box (`deployables.toml`,
 # `cooking.toml`'s `planter` rows). Corn seed comes off barrels and crates
@@ -682,6 +747,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Plant it in a planter box to grow corn."
 
 [[item]]
 id = "item.hemp_seed"
@@ -691,6 +757,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Plant it in a planter box to grow cloth."
 
 [[item]]
 id = "item.planter"
@@ -700,6 +767,17 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "items"
+description = "Grows seeds by daylight under open sky, on water or rain."
+
+[[item]]
+id = "item.autoturret"
+name = "Auto Turret"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "construction"
+description = "Shoots strangers on sight. Load it with pistol rounds; your crew it spares."
 
 # Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
 # it and nothing could cook it, and both halves stopped being true on one
@@ -720,6 +798,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "food"
+description = "From a butchered animal. Cook it before you eat it."
 
 [[item]]
 id = "item.cooked_meat"
@@ -729,6 +808,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "food"
+description = "Good food. Leave it on the fire too long and it burns."
 
 # The overcook. A meal left on a lit fire keeps cooking — the burnt row in
 # `cooking.toml` has the cooked half as its INPUT — so walking away from
@@ -744,6 +824,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "food"
+description = "Overcooked. Still food, barely."
 
 # Socket inserts: Facepunch item tables, checked 2026-09-21.
 [[item]]
@@ -754,6 +835,7 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 class = "construction"
+description = "Metal bars for a window frame."
 
 [[item]]
 id = "item.garage_door"
@@ -763,6 +845,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "construction"
+description = "A heavy metal door that fits a wall frame."
 
 # Window fittings: Facepunch item tables, 2026-09-21.
 [[item]]
@@ -773,6 +856,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "construction"
+description = "A glass pane for a window frame. You can see out."
 
 [[item]]
 id = "item.window_shutters"
@@ -782,6 +866,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "construction"
+description = "Wooden shutters for a window frame."
 
 # Keycards: the Black Ziggurat's doors (`sim-core/src/monument.rs`), Rust's
 # green → blue → red loop. Green is found out in the world, blue only in the
@@ -797,6 +882,7 @@ rarity = "uncommon"
 slot = "none"
 class = "tools"
 condition_max = 400
+description = "Opens the green doors."
 
 [[item]]
 id = "item.keycard_blue"
@@ -807,6 +893,7 @@ rarity = "rare"
 slot = "none"
 class = "tools"
 condition_max = 400
+description = "Opens the blue doors."
 
 [[item]]
 id = "item.keycard_red"
@@ -817,6 +904,7 @@ rarity = "rare"
 slot = "none"
 class = "tools"
 condition_max = 200
+description = "Opens the red doors."
 
 # Rust's arrow kinds beside the wooden one; `weapons.toml`'s `[[ammo]]`
 # says how each flies and hits, and `R` on the bow picks between them.
@@ -829,6 +917,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "ammo"
+description = "Flies faster and flatter, but hits softer."
 
 [[item]]
 id = "item.arrow_bone"
@@ -838,6 +927,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "ammo"
+description = "A cheap arrow tipped with bone."
 
 # Rust's fire arrow: it leaves a fire where it lands rather than an arrow.
 [[item]]
@@ -848,6 +938,7 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 class = "ammo"
+description = "Hits softer, but starts a fire where it lands."
 
 # Rust's leather: what a carcass pays toward hide clothing. Stack 1000, a
 # resource's.
@@ -859,6 +950,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "Skinned from animals. Ponchos, helmets and waterskins."
 
 # Rust's prim clothing, no bench: a hide poncho and a bone helmet.
 [[item]]
@@ -869,6 +961,8 @@ tier = 0
 rarity = "common"
 slot = "body"
 class = "clothing"
+condition_max = 25000
+description = "A leather poncho. Light protection, and the warmest thing you can wear."
 
 [[item]]
 id = "item.armor_bone_head"
@@ -878,6 +972,8 @@ tier = 0
 rarity = "common"
 slot = "head"
 class = "clothing"
+condition_max = 10000
+description = "A helmet of bone and leather. Solid protection for the head."
 
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.
@@ -889,3 +985,4 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
+description = "From butchered animals. Bone arrows and bone helmets."

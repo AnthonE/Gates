@@ -89,6 +89,7 @@ range_m = 1
 [[weapon]]
 id = "item.hatchet_stone"
 kind = "melee"
+condition_loss = 100
 damage = 25
 structure = 2
 headshot_pct = 200
@@ -99,6 +100,7 @@ range_m = 1
 [[weapon]]
 id = "item.pickaxe_stone"
 kind = "melee"
+condition_loss = 100
 damage = 25
 structure = 1
 headshot_pct = 200
@@ -109,6 +111,7 @@ range_m = 1
 [[weapon]]
 id = "item.hatchet_metal"
 kind = "melee"
+condition_loss = 100
 damage = 30
 structure = 3
 headshot_pct = 200
@@ -119,6 +122,7 @@ range_m = 1
 [[weapon]]
 id = "item.pickaxe_metal"
 kind = "melee"
+condition_loss = 100
 damage = 30
 structure = 2
 headshot_pct = 200
@@ -171,6 +175,7 @@ range_m = 2
 [[weapon]]
 id = "item.bow"
 kind = "bow"
+condition_loss = 25
 damage = 50
 structure = 1
 headshot_pct = 150
@@ -191,6 +196,7 @@ draw_ms = 1000
 [[weapon]]
 id = "item.crossbow"
 kind = "bow"
+condition_loss = 25
 damage = 60
 structure = 1
 headshot_pct = 150
@@ -202,6 +208,7 @@ ammo = ["item.arrow_metal"]
 [[weapon]]
 id = "item.revolver"
 kind = "firearm"
+condition_loss = 25
 damage = 20
 structure = 1
 headshot_pct = 200

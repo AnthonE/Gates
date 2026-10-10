@@ -1505,6 +1505,13 @@ pub fn hearth_rows_known(core: &client_core::core::ClientCore, at: (u16, u16, u8
     core.stock_addr == at && core.stock_count > 0
 }
 
+/// `R` with the inventory up: empty the held weapon's magazine into the
+/// pack (`Command::Unload`). Sent blind, `R`'s reload posture: a hand with
+/// no magazine or an empty one comes back as its own refusal sentence.
+pub(crate) fn unload_held(net: &Net, toast: &mut Toast) {
+    send(net, toast, "unload", protocol::encode_action_unload);
+}
+
 fn send(
     net: &Net,
     toast: &mut Toast,

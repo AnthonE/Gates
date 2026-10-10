@@ -145,9 +145,9 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 
 ## 0mag · Reload v1 — what the magazine still cannot do *(systems+client lane)*
 
-2. No unload, no ammo switch (the reference refunds a partial magazine and adopts the
-   new round at `StartReload`; ours refuses, `REFUSE_RL_DRY`). Both need `reload` to
-   see a stack ceiling: `GatherContent` reaching a `CombatContent` caller.
+2. Unload (`R` on the inventory page, wire v103) and the switch when the loaded round
+   runs out are in; picking a kind by hand (the reference's hold-`R` menu) waits on
+   a gun that takes two rounds.
 3. The dry click rides `rate_ticks` (0.4 s on the revolver); the reference gives it
    its own 1.0 s (`BaseProjectile.ServerUse`). Unspoken knob in `DECISIONS.md` §open.
 
@@ -199,7 +199,7 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 3. Bodies are drawn wearing what they wear (`SUB_WORN`, wire v98; `render/worn.rs`):
    rigid procedural pieces on the head, spine and hips bones, ids only on the wire.
    Real art is `assets/models/WANTED.md` §6; `examples/worn_look.rs` is the bench.
-6. Armor does not wear out (§9.4; the catalog has `cond_max`). `§0dur` owns it.
+6. Armor wears (`combat::hurt`, §0dur 2); burlap carries no condition, as the reference's does not.
 
 ## 0gs · What ground surface v1 left open *(client lane)*
 
@@ -289,8 +289,9 @@ Routing candidates are not shipped roads (`findings/road-network-prototype-20260
 Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTILES.md` §9).
 7. Crops v1 (wire v100): a planter grows by daylight under open sky and on a carried
    waterskin (`content/cooking.toml` `[planter]`), and each bed draws a cone by stage
-   (`render/structures.rs` `PlanterBed`). Left: genes, a real plant and planter model,
-   and water storage beyond a hand-carried skin.
+   (`render/structures.rs` `PlanterBed`); rain waters an open planter (`[planter]
+   rain_pct`). Left: genes, a real plant and planter model, and a water catcher or
+   barrel (a new deployable, so it waits on its model).
 
 ## 0pvp · What a fight still cannot do *(systems lane)*
 
@@ -330,10 +331,6 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 1b. `takes_deposits` keys on kind; a fuel slot or vending machine needs it per instance.
 2b. Ground items: no tumble (`reference/LOOT.md` §9.3), most draw as a pouch
     (`HELD_MODELS`), barrels pay 1–2 rolls plus 2 junk (`content/loot.toml`, `ci/haven_prize.mjs`).
-
-## 0pr · What predator v0 still owes *(systems lane)*
-
-3. No night-only roster variant; the night's cost so far is the cold (`exposure.rs`).
 
 ## 0m · The pig is in — what the roster still owes *(systems lane)*
 
@@ -416,11 +413,16 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 3. The hearth panel shows each resource's day and the time left, and its crew takes
    stock back with `1`–`4` (wire v101, `deploy::take_stock`); crew in their claim see an
    UPKEEP chip off a staggered `Stock` push.
-5. Group tax: rent per authorized player past four, unmeasured vs `HEARTH_CREW_CAP`.
+5. The group tax is in (`upkeep::group_pct`, Facepunch's "Breach and Clear", 3 Sep 2026) on the
+   hearth's crew; theirs also counts code-lock lists and anyone deauthed in the last day, and
+   `HEARTH_CREW_CAP` (10) holds ours to +12 %.
 
-## 0aa · Building rights: the roster's third customer is missing *(systems lane)*
+## 0aa · Building rights: the turret's own list *(systems lane)*
 
-1. No `AutoTurret`: `sim-core/roster.rs` serves only the lock lists and hearth crew.
+1. The auto turret is in (`sim-core/turret.rs`, `[turret]` in `deployables.toml`): unpowered, it
+   fires pistol rounds out of its own box at anybody but its owner and the covering claim's crew.
+   It has no list of its own — a saved roster is a world-format change, so it waits on the next
+   bump. No model yet: the base is a cuboid and the gun is the town sentry's head.
 
 ## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
 
@@ -622,8 +624,11 @@ act):
 
 ## 0dur · Durability: the words, the wearers, the bench *(client lane)*
 
-2. Weapons and armour don't wear (`condition_loss` only in `content/gatherables.toml` and `mobs.toml`'s `[butcher]`; no `sim-core/src/armor.rs`):
-   a research row first (`reference/DURABILITY.md` §5); on-swing wear is `DECISIONS.md` §open "tools as weapons".
+2. Weapons and armour wear, on the reference's decompiled rules (Assembly-CSharp via
+   `github.com/MillionthOdin16/RustChangelog`, 2024-08): a shot takes 0.25 off the gun or bow, a landed
+   blow 1 off the tool, and a worn piece the damage it absorbed; broken, a gun or bow refuses and armour
+   protects at a quarter. Left: the per-round `barrelConditionLoss` (unsourced), and the reference's
+   melee extra of 0.2 × the damage armour soaked.
 3. Repair is re-craft in v1 (Q3). A repair bench is `Station::Workbench1..3` (`content/src/schema.rs`) + a blueprint
    check, never a new deployable; `DURABILITY.md` §3's 0.20 stays DISPUTED until checked against the in-game price.
 
@@ -681,8 +686,10 @@ its countdown, padlock, notices over the vitals, colour icons).
 5. CRAFT dims when short; the community plugin paints it green — a palette knob, `DECISIONS.md` §open.
 6b. 8 of 78 icons are 3D renders (`iconbake.rs` `SUBJECTS`); thin tools render as hairlines, so the rest are
    painted silhouettes (`ci/finish_icons.py`) until chunkier models land (§0hand item 3).
-7. The class byte landed (wire v102: the rail groups by class); left are a description column, then
-   fast-track by task id (§1.1/1.4). The bench rebate landed (`craft.rs` `REBATE_MAX_RUNGS`).
+7. The class byte landed (wire v102: the rail groups by class), every item carries a description
+   line (`items.toml` `description`, `SUB_ITEM_DESC`) and a right-click fast-tracks a queued job
+   (`ACT_FASTTRACK`, both wire v103). A cancel still names an index, not a task id (§1.1); the
+   fast-track carries the recipe it saw instead. The bench rebate landed (`REBATE_MAX_RUNGS`).
 
 ## 0w · The native menus — the untested gesture *(client lane)*
 
@@ -986,7 +993,8 @@ last text `git show 0edb5f1:NOW.md`. `§0sp2` (the spill's amount rides `Gather`
 `dropped`, wire v102), 2026-10-10 — last text `git show f8de16d:NOW.md`. `§0vj` (the capture probe writes
 `manifest.json`), 2026-10-10 — last text `git show 9625bfa:NOW.md`. `§0rc` (a throw waits
 for the frames buffered ahead of it, `ClientNetState::hand_ready`), 2026-10-10 — last text
-`git show 884c675:NOW.md`.
+`git show 884c675:NOW.md`. `§0pr` (the night doubles the wolves, `mobs.toml` `night_extra`),
+2026-10-10 — last text `git show 10835f4:NOW.md`.
 
 **Retitled 2026-09-24**, same label: `§0mk`, `§0tt`, `§0tree`, `§0gc`, `§0rk`.
 
