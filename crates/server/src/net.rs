@@ -680,6 +680,7 @@ pub async fn spawn_shard(
             .as_deref()
             .or(cfg.save_file.as_deref())
             .map(std::path::PathBuf::from);
+        let prizes = cfg.prizes.clone();
         // The trust log's tap rides the save boot artifact (`store::Saves`).
         let trust = saves.trust;
         std::thread::Builder::new()
@@ -696,6 +697,7 @@ pub async fn spawn_shard(
                     world_clamp,
                     wipe,
                     standings_base,
+                    prizes,
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
@@ -1950,6 +1952,7 @@ async fn install(
             save,
             key,
             watch: None,
+            agent: hello.is_agent(),
             link,
         })
         .is_err()
@@ -2169,6 +2172,7 @@ async fn install_spectator(
             save: None,
             key: None,
             watch: Some(target),
+            agent: false,
             link,
         })
         .is_err()
@@ -3204,6 +3208,7 @@ fn sim_thread(
     world_clamp: bool,
     wipe: crate::wipe::Clock,
     standings_base: Option<std::path::PathBuf>,
+    prizes: crate::standings::Prizes,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
@@ -3290,8 +3295,12 @@ fn sim_thread(
     core.install_admins(admins);
     core.trust = trust;
     // The standings, beside the files the wipe archives with them.
-    core.standings =
-        crate::standings::Standings::open(standing_rules, standings_base.as_deref(), wipe.number());
+    core.standings = crate::standings::Standings::open(
+        standing_rules,
+        prizes,
+        standings_base.as_deref(),
+        wipe.number(),
+    );
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
     let mut watch = crate::anomaly::Watch::new();
@@ -3389,6 +3398,7 @@ fn sim_thread(
                 // Who this is, for everyone's chat and nametags: the proven
                 // address now, the platform name when its read lands.
                 core.tag_join(c.slot, c.id, key.as_ref());
+                core.note_agent(c.slot, c.agent);
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
                 // as it stands NOW — raid included — not as its leave left
@@ -3541,6 +3551,7 @@ fn sim_thread(
         // The standings, once a minute: every base recounted, the boards
         // rebuilt, the file handed to its writer (`standings.rs`).
         if core.world.tick % (60 * sim_core::limits::TICK_HZ as u64) == 13 {
+            core.standings_minute();
             core.standings_recount();
             core.standings.rebuild();
             core.standings.flush();

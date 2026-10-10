@@ -7245,3 +7245,48 @@ fn standings_words_read_like_a_scoreboard() {
     b.board = 4;
     assert_eq!(standing_you(&b), "YOU  finished #3 of 41 · 1,240");
 }
+
+/// The purse reads as what each place pays, and tells this player what it
+/// means for them: the minutes still owed, what they would take, or what
+/// they won.
+#[test]
+fn the_purse_says_what_it_pays_and_what_it_means_for_you() {
+    use client::ui::arc::{prize_you, purse_line};
+    let mut b = protocol::StandingBoard {
+        board: 0,
+        ..protocol::StandingBoard::EMPTY
+    };
+    assert_eq!(purse_line(&b), None, "no purse, no line");
+    assert_eq!(prize_you(&b), None);
+    b.set_purse("ORBS", &[500, 300, 1_000]);
+    assert_eq!(
+        purse_line(&b).as_deref(),
+        Some("PURSE  #1 500 · #2 300 · #3 1,000 ORBS")
+    );
+    b.min_minutes = 120;
+    b.my_minutes = 119;
+    assert_eq!(
+        prize_you(&b).as_deref(),
+        Some("play 1 more minute this wipe to be paid")
+    );
+    b.my_minutes = 120;
+    assert_eq!(
+        prize_you(&b).as_deref(),
+        Some("climb into the top 3 to be paid")
+    );
+    b.my_prize = 300;
+    assert_eq!(
+        prize_you(&b).as_deref(),
+        Some("if the wipe ended now: 300 ORBS to your wallet")
+    );
+    let mut last = protocol::StandingBoard {
+        board: 4,
+        my_prize: 350,
+        ..protocol::StandingBoard::EMPTY
+    };
+    last.set_purse("ORBS", &[]);
+    assert_eq!(
+        prize_you(&last).as_deref(),
+        Some("YOU WON 350 ORBS — it goes to your wallet")
+    );
+}

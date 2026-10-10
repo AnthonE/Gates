@@ -230,3 +230,48 @@ pub fn board_heading(b: &protocol::StandingBoard, board: u8) -> String {
         format!("{} · WIPE {}", board_title(board), b.wipe)
     }
 }
+
+/// A board's purse: `PURSE  #1 500 · #2 300 · #3 100 ORBS`, or `None` when
+/// it pays nothing.
+pub fn purse_line(b: &protocol::StandingBoard) -> Option<String> {
+    if b.n_prizes == 0 || b.ticker().is_empty() {
+        return None;
+    }
+    let places: Vec<String> = b.prizes[..b.n_prizes as usize]
+        .iter()
+        .enumerate()
+        .map(|(i, a)| format!("#{} {}", i + 1, thousands(*a)))
+        .collect();
+    Some(format!("PURSE  {} {}", places.join(" · "), b.ticker()))
+}
+
+/// What the purse means for this player: what they won (last wipe), what
+/// they would take now, how long they must still play, or how far to climb.
+pub fn prize_you(b: &protocol::StandingBoard) -> Option<String> {
+    let ticker = b.ticker();
+    if b.board == 4 {
+        return (b.my_prize > 0 && !ticker.is_empty()).then(|| {
+            format!(
+                "YOU WON {} {ticker} — it goes to your wallet",
+                thousands(b.my_prize)
+            )
+        });
+    }
+    if b.n_prizes == 0 || ticker.is_empty() {
+        return None;
+    }
+    Some(if b.my_minutes < b.min_minutes {
+        let left = b.min_minutes - b.my_minutes;
+        format!(
+            "play {left} more minute{} this wipe to be paid",
+            if left == 1 { "" } else { "s" }
+        )
+    } else if b.my_prize > 0 {
+        format!(
+            "if the wipe ended now: {} {ticker} to your wallet",
+            thousands(b.my_prize)
+        )
+    } else {
+        format!("climb into the top {} to be paid", b.n_prizes)
+    })
+}

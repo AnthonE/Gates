@@ -1110,7 +1110,8 @@ pub fn action_fasttrack() -> (u16, u16) {
     (3, 41)
 }
 
-/// THE WORKS in wipe 7 (wire v104): two rows, the receiver third of 41.
+/// THE WORKS in wipe 7 (wire v104): two rows, the receiver third of 41,
+/// a three-place ORBS purse, 90 of 120 minutes played.
 pub fn event_standing() -> crate::StandingBoard {
     let mut b = crate::StandingBoard {
         board: 1,
@@ -1122,6 +1123,10 @@ pub fn event_standing() -> crate::StandingBoard {
     };
     b.push("ALICE", 98_765);
     b.push("0x12ab..cdef", 4_321);
+    b.set_purse("ORBS", &[500, 300, 100]);
+    b.my_prize = 100;
+    b.my_minutes = 90;
+    b.min_minutes = 120;
     b
 }
 

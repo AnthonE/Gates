@@ -321,6 +321,8 @@ pub struct ShardCore {
     standings_owed: [u8; MAX_PLAYERS],
     /// The board generation everyone was last owed at.
     standings_gen_seen: u32,
+    /// Per slot, whether its tenant declared itself an agent.
+    standings_agent: [bool; MAX_PLAYERS],
 }
 
 /// Every standings board, one bit each (`protocol::STANDING_BOARDS`).
@@ -613,6 +615,7 @@ impl ShardCore {
             standings_freeze_said: false,
             standings_owed: [0; MAX_PLAYERS],
             standings_gen_seen: 0,
+            standings_agent: [false; MAX_PLAYERS],
         }
     }
 
@@ -806,6 +809,34 @@ impl ShardCore {
         self.owe_tag(slot);
         if let Some(key) = self.key_str(slot) {
             self.standings.name(&key, name.as_str());
+        }
+    }
+
+    /// Whether `slot`'s new tenant declared itself an agent (`HELLO_AGENT`).
+    pub fn note_agent(&mut self, slot: usize, agent: bool) {
+        if let Some(a) = self.standings_agent.get_mut(slot) {
+            *a = agent;
+        }
+    }
+
+    /// A minute of play for every connected wallet: what a purse's
+    /// `prize_min_minutes` is measured in. From the boundary loop's minute.
+    pub fn standings_minute(&mut self) {
+        for slot in 0..MAX_PLAYERS {
+            if !self.clients[slot].connected {
+                continue;
+            }
+            let Some(key) = self.key_str(slot) else {
+                continue;
+            };
+            let tag = &self.tags[slot];
+            let name = if tag.id == self.clients[slot].id {
+                tag.name.as_str().to_string()
+            } else {
+                String::new()
+            };
+            let agent = self.standings_agent[slot];
+            self.standings.minute(&key, &name, agent);
         }
     }
 
@@ -4589,6 +4620,32 @@ impl ShardCore {
         for (name, score) in &board.top {
             wire.push(name, (*score).min(u32::MAX as u64) as u32);
         }
+        // The purse: what each place pays, what this wallet would take now,
+        // and its minutes against the minimum (`standings::Prizes`). On the
+        // last-wipe board, what it won.
+        let clamp = |v: u64| v.min(u32::MAX as u64) as u32;
+        let prizes = &self.standings.prizes;
+        if b == crate::standings::BOARD_LAST {
+            let hall = &self.standings.hall;
+            if let Some(won) = key.as_deref().and_then(|k| hall.last_paid.get(k)) {
+                wire.set_purse(&hall.last_ticker, &[]);
+                wire.my_prize = clamp(*won);
+            }
+        } else if prizes.armed() {
+            let places: Vec<u32> = prizes.places[b as usize]
+                .iter()
+                .map(|&a| clamp(a))
+                .collect();
+            wire.set_purse(&prizes.ticker, &places);
+            wire.my_prize = key
+                .as_deref()
+                .map_or(0, |k| clamp(self.standings.would_win(b, k)));
+            wire.min_minutes = prizes.min_minutes.min(u16::MAX as u32) as u16;
+            wire.my_minutes = key
+                .as_deref()
+                .and_then(|k| self.standings.row_of(k))
+                .map_or(0, |r| r.played.min(u16::MAX as u32) as u16);
+        }
         match protocol::encode_event_standing(&wire, &mut self.ev_buf) {
             Ok(len) => {
                 if !send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -6875,6 +6932,12 @@ mod tests {
             worth: vec![100, 250],
             ..crate::standings::Rules::default()
         };
+        core.standings.prizes = crate::standings::Prizes {
+            ticker: "ORBS".into(),
+            places: [vec![], vec![200, 100], vec![], vec![]],
+            min_minutes: 0,
+            agents: false,
+        };
         let key = PlayerKey::new(format!("0x{:040x}", 0xa1).as_bytes()).unwrap();
         let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();
         assert!(core.connect_as(0, 256, Some(key), None).is_some());
@@ -6938,6 +7001,11 @@ mod tests {
             .expect("the works board was dripped");
         assert_eq!((works.my_rank, works.my_score, works.n), (1, 622, 1));
         assert_eq!(works.name(0), "Ash");
+        // The purse rides with it: first place pays 200, and that is what
+        // this wallet would take now.
+        assert_eq!(works.ticker(), "ORBS");
+        assert_eq!(&works.prizes[..works.n_prizes as usize], &[200, 100]);
+        assert_eq!(works.my_prize, 200);
     }
 
     /// Tags (v85): each player learns who every tagged player is, a name

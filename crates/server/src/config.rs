@@ -225,6 +225,13 @@ pub struct ShardConfig {
     /// Where a player's platform name and picture are read (`faces.rs`):
     /// `faces_origin`. Off by default — everyone is their short address.
     pub faces: crate::faces::Config,
+    /// What the wipe pays each board's top places, to the wallet that took
+    /// them (`standings.rs`): `prize_ticker`, `prize_island`, `prize_works`,
+    /// `prize_hoard`, `prize_fight`, `prize_min_minutes`, `prize_agents`.
+    /// Off by default — a shard pays nothing until its operator says so.
+    pub prizes: crate::standings::Prizes,
+    /// A Discord webhook the wipe's results are posted to. Off by default.
+    pub discord_webhook: Option<String>,
     /// The oldest client **release** this shard will admit, packed by
     /// [`protocol::version::pack`]. A joiner below it meets `REFUSE_BUILD`.
     ///
@@ -386,6 +393,8 @@ impl ShardConfig {
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
             faces: crate::faces::Config::off(),
+            prizes: crate::standings::Prizes::default(),
+            discord_webhook: None,
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
@@ -453,6 +462,10 @@ fn parse_dev_env(value: &str) -> Option<(u8, u16)> {
 /// Parse `key = value` lines; `#` comments and blanks skipped; string
 /// values may be double-quoted. Refuses unknown keys, missing keys, and
 /// unparseable values.
+/// Minutes of play a wallet needs this wipe before a purse can pay it: two
+/// hours, enough that a wallet farm has to actually play.
+pub const DEFAULT_PRIZE_MIN_MINUTES: u32 = 120;
+
 pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
@@ -489,6 +502,11 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut spectate_human_delay_s: Option<u32> = None;
     let mut skins_origin: Option<String> = None;
     let mut faces_origin: Option<String> = None;
+    let mut prizes = crate::standings::Prizes {
+        min_minutes: DEFAULT_PRIZE_MIN_MINUTES,
+        ..crate::standings::Prizes::default()
+    };
+    let mut discord_webhook: Option<String> = None;
     let mut skins_all: Option<bool> = None;
     let mut skins_timeout_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
@@ -845,6 +863,56 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 faces_origin = Some(value.trim_end_matches('/').to_string());
             }
+            // Prizes (`standings.rs`): a coin, and each board's purse by
+            // place. Paid by the operator from the payout file the wipe
+            // writes; the shard holds no keys.
+            "prize_ticker" => {
+                if !crate::standings::Prizes::valid_ticker(value) {
+                    return Err(format!(
+                        "shard.toml line {}: prize_ticker `{value}` — a bare ticker \
+                         in capitals, e.g. ORBS (BUSINESS.md: never a `$`)",
+                        n + 1
+                    ));
+                }
+                prizes.ticker = value.to_string();
+            }
+            "prize_island" | "prize_works" | "prize_hoard" | "prize_fight" => {
+                let board = match key {
+                    "prize_island" => crate::standings::BOARD_ISLAND,
+                    "prize_works" => crate::standings::BOARD_WORKS,
+                    "prize_hoard" => crate::standings::BOARD_HOARD,
+                    _ => crate::standings::BOARD_FIGHT,
+                };
+                prizes.places[board as usize] = crate::standings::Prizes::parse_places(value)
+                    .map_err(|e| format!("shard.toml line {}: {key}: {e}", n + 1))?;
+            }
+            "prize_min_minutes" => {
+                prizes.min_minutes = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: prize_min_minutes must be whole minutes",
+                        n + 1
+                    )
+                })?;
+            }
+            "prize_agents" => match value {
+                "true" => prizes.agents = true,
+                "false" => prizes.agents = false,
+                _ => {
+                    return Err(format!(
+                        "shard.toml line {}: prize_agents must be true or false",
+                        n + 1
+                    ))
+                }
+            },
+            "discord_webhook" => {
+                if !value.starts_with("https://") {
+                    return Err(format!(
+                        "shard.toml line {}: discord_webhook must be an https:// url",
+                        n + 1
+                    ));
+                }
+                discord_webhook = Some(value.to_string());
+            }
             "skins_all" => match value {
                 "true" => skins_all = Some(true),
                 "false" => skins_all = Some(false),
@@ -1104,6 +1172,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    if prizes.places.iter().any(|p| !p.is_empty()) && prizes.ticker.is_empty() {
+        return Err("shard.toml: prize places without prize_ticker — paid in what?".into());
+    }
     if wipe_anchor.is_some() && wipe_days.is_none() {
         return Err("shard.toml: wipe_anchor without wipe_days — the anchor of no schedule".into());
     }
@@ -1115,6 +1186,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         );
     }
     Ok(ShardConfig {
+        prizes,
+        discord_webhook,
         wipe: wipe_days.map(|d| {
             crate::wipe::Schedule::days(d, wipe_anchor.unwrap_or(crate::wipe::DEFAULT_ANCHOR))
         }),
@@ -1247,6 +1320,36 @@ mod tests {
     /// boot failure rather than a silent fallback** — the failure mode this
     /// refuses is a `shard.toml` reading `cc = "bbr2"` while the shard runs
     /// CUBIC and the operator reads the measurement as BBR's.
+    /// The purse: a bare ticker and up to a board's worth of places; places
+    /// with no coin, a `$`, or more places than a board shows are refused.
+    #[test]
+    fn prizes_parse_or_refuse_what_cannot_be_paid() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+        let cfg = parse_shard_toml(base).unwrap();
+        assert!(!cfg.prizes.armed(), "a shard pays nothing by default");
+        assert_eq!(cfg.prizes.min_minutes, DEFAULT_PRIZE_MIN_MINUTES);
+        let cfg = parse_shard_toml(&format!(
+            "{base}prize_ticker = \"ORBS\"\nprize_island = \"500, 300,200\"\n\
+             prize_fight = 50\nprize_min_minutes = 60\nprize_agents = true\n\
+             discord_webhook = \"https://discord.com/api/webhooks/1/x\"\n"
+        ))
+        .unwrap();
+        assert!(cfg.prizes.armed());
+        assert_eq!(cfg.prizes.places[0], vec![500, 300, 200]);
+        assert_eq!(cfg.prizes.places[3], vec![50]);
+        assert_eq!((cfg.prizes.min_minutes, cfg.prizes.agents), (60, true));
+        assert!(cfg.discord_webhook.is_some());
+        for bad in [
+            "prize_island = \"500\"\n",
+            "prize_ticker = \"$ORBS\"\nprize_island = \"500\"\n",
+            "prize_ticker = \"ORBS\"\nprize_island = \"6,5,4,3,2,1\"\n",
+            "prize_ticker = \"ORBS\"\nprize_works = \"lots\"\n",
+            "discord_webhook = \"http://insecure\"\n",
+        ] {
+            assert!(parse_shard_toml(&format!("{base}{bad}")).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn the_wipe_schedule_parses_or_refuses() {
         let base = "bind = \"127.0.0.1:0\"\nseed = 1\nworld_file = \"w\"\n";

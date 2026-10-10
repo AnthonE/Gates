@@ -236,7 +236,9 @@ fn standings(p: &mut ChildSpawnerCommands, core: &ClientCore) {
     kit::line(
         p,
         "Ranked all wipe. What you give the works is yours for good; what \
-         your base holds counts only if it is still yours when the wipe lands.",
+         your base holds counts only if it is still yours when the wipe lands. \
+         Where a board has a purse, its top places are paid to the wallet you \
+         play with after the wipe.",
         12.0,
         TEXT_DIM,
     );
@@ -248,6 +250,9 @@ fn standings(p: &mut ChildSpawnerCommands, core: &ClientCore) {
         }
         kit::section(p, &words::board_heading(b, board));
         kit::line(p, words::board_blurb(board), 11.0, TEXT_DIM);
+        if let Some(purse) = words::purse_line(b) {
+            kit::strong(p, purse, 12.0, TEXT);
+        }
         if b.n == 0 {
             kit::line(p, "nobody yet — the board is open", 12.0, TEXT_DIM);
         }
@@ -259,6 +264,9 @@ fn standings(p: &mut ChildSpawnerCommands, core: &ClientCore) {
             });
         }
         kit::strong(p, words::standing_you(b), 12.0, LINE_HOT);
+        if let Some(prize) = words::prize_you(b) {
+            kit::line(p, prize, 12.0, LINE_HOT);
+        }
     }
 }
 

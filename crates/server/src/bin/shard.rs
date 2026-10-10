@@ -752,10 +752,31 @@ fn end_world(cfg: &server::config::ShardConfig, now: u64, n: u32, blueprints: bo
     }
     // The hall first: each board's podium and everyone's placing, read
     // from the standings the shutdown wrote, before the archive moves them.
+    // Then what is owed to whom (`<world>.payout-<n>.csv`), for the operator
+    // to send, and the results to Discord if the shard posts there.
     if let Some(base) = world.or(save) {
-        match server::standings::close_wipe(base, n) {
-            Ok(Some(w)) => println!("wipe {n}: the island goes to {w}"),
-            Ok(None) => {}
+        match server::standings::close_wipe(base, n, &cfg.prizes) {
+            Ok(closed) => {
+                if let Some(w) = &closed.winner {
+                    println!("wipe {n}: the island goes to {w}");
+                }
+                if !closed.paid.is_empty() {
+                    let total: u64 = closed.paid.iter().map(|p| p.2).sum();
+                    println!(
+                        "wipe {n}: {total} {} owed to {} wallets — {} (the operator sends it)",
+                        closed.ticker,
+                        closed.paid.len(),
+                        server::standings::payout_path(base, n, "csv").display()
+                    );
+                }
+                if let Some(url) = cfg.discord_webhook.as_deref() {
+                    let next = cfg.wipe.map(|s| server::wipe::fmt_utc(s.next_after(now)));
+                    let text = server::standings::discord_text(n, &closed, next.as_deref());
+                    if let Err(e) = server::standings::post_discord(url, &text) {
+                        eprintln!("shard: wipe {n}: {e}");
+                    }
+                }
+            }
             Err(e) => eprintln!("shard: wipe {n}: the hall was not written: {e}"),
         }
     }

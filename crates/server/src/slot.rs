@@ -215,6 +215,9 @@ pub struct Connect {
     /// seats the watcher, so a target who left between the accept loop's
     /// check and this message is never watched in someone else's name.
     pub watch: Option<usize>,
+    /// It declared itself an agent (`HELLO_AGENT`): ranked like anyone, paid
+    /// only where `prize_agents` says (`standings.rs`).
+    pub agent: bool,
     pub link: Link,
 }
 

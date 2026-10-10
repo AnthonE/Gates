@@ -530,8 +530,10 @@ const SUB_STUMP_GRUBBED: u32 = 91;
 /// catalog, one a tick.
 const SUB_ITEM_DESC: u32 = 92;
 /// One board of the wipe's standings (wire v104, `server::standings`): its
-/// top rows, how many are ranked, and where the receiver stands. Per client,
-/// when the boards move and to a joiner, one board a tick.
+/// top rows, how many are ranked, where the receiver stands, and the purse:
+/// what each place pays in which coin, what the receiver would take now, and
+/// their minutes played against the minimum a purse needs. Per client, when
+/// the boards move and to a joiner, one board a tick.
 const SUB_STANDING: u32 = 93;
 const SUB_MAX: u32 = SUB_STANDING;
 /// Rows a standings board carries.
@@ -540,7 +542,10 @@ pub const STANDING_TOP: usize = 5;
 pub const STANDING_BOARDS: u8 = 5;
 /// The longest name on a board: the platform's (`NAME_MAX_BYTES`).
 pub const STANDING_NAME_BYTES: usize = crate::NAME_MAX_BYTES;
+/// The longest prize ticker (`ELO`, `JUNK`, `ORBS`).
+pub const STANDING_TICKER_BYTES: usize = 8;
 const _: () = assert!(STANDING_TOP < 8 && STANDING_NAME_BYTES < 32);
+const _: () = assert!(STANDING_TICKER_BYTES < 16);
 
 /// One standings board as the wire carries it (`SUB_STANDING`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -560,6 +565,19 @@ pub struct StandingBoard {
     /// Printable ASCII, `names[i][..name_lens[i]]`.
     pub names: [[u8; STANDING_NAME_BYTES]; STANDING_TOP],
     pub name_lens: [u8; STANDING_TOP],
+    /// The purse's coin, capitals, `ticker[..ticker_len]`; empty for none.
+    pub ticker: [u8; STANDING_TICKER_BYTES],
+    pub ticker_len: u8,
+    /// What place `i + 1` pays, for the first `n_prizes` places.
+    pub n_prizes: u8,
+    pub prizes: [u32; STANDING_TOP],
+    /// What the receiver would take if the wipe ended now (on the last-wipe
+    /// board: what they won).
+    pub my_prize: u32,
+    /// The receiver's minutes played this wipe, and the minimum a purse
+    /// pays on.
+    pub my_minutes: u16,
+    pub min_minutes: u16,
 }
 
 impl StandingBoard {
@@ -573,7 +591,38 @@ impl StandingBoard {
         scores: [0; STANDING_TOP],
         names: [[0; STANDING_NAME_BYTES]; STANDING_TOP],
         name_lens: [0; STANDING_TOP],
+        ticker: [0; STANDING_TICKER_BYTES],
+        ticker_len: 0,
+        n_prizes: 0,
+        prizes: [0; STANDING_TOP],
+        my_prize: 0,
+        my_minutes: 0,
+        min_minutes: 0,
     };
+
+    /// The purse's coin, or empty.
+    pub fn ticker(&self) -> &str {
+        let len = (self.ticker_len as usize).min(STANDING_TICKER_BYTES);
+        core::str::from_utf8(&self.ticker[..len]).unwrap_or("")
+    }
+
+    /// Set the purse: its coin (capitals, cut to the wire's length) and what
+    /// each place pays, best first.
+    pub fn set_purse(&mut self, ticker: &str, places: &[u32]) {
+        let mut len = 0;
+        for b in ticker.bytes().filter(u8::is_ascii_uppercase) {
+            if len == STANDING_TICKER_BYTES {
+                break;
+            }
+            self.ticker[len] = b;
+            len += 1;
+        }
+        self.ticker_len = len as u8;
+        self.n_prizes = places.len().min(STANDING_TOP) as u8;
+        for (p, a) in self.prizes.iter_mut().zip(places) {
+            *p = *a;
+        }
+    }
 
     /// Row `i`'s name.
     pub fn name(&self, i: usize) -> &str {
@@ -2388,6 +2437,24 @@ pub fn encode_event_standing(b: &StandingBoard, buf: &mut [u8]) -> Result<usize,
     w.write(b.ranked as u32, 16)?;
     w.write(b.my_rank as u32, 16)?;
     w.write(b.my_score, 32)?;
+    let tlen = b.ticker_len as usize;
+    if tlen > STANDING_TICKER_BYTES
+        || !b.ticker[..tlen].iter().all(u8::is_ascii_uppercase)
+        || b.n_prizes as usize > STANDING_TOP
+    {
+        return Err(WireError::Range);
+    }
+    w.write(tlen as u32, 4)?;
+    for &c in &b.ticker[..tlen] {
+        w.write(c as u32, 8)?;
+    }
+    w.write(b.n_prizes as u32, 3)?;
+    for &p in &b.prizes[..b.n_prizes as usize] {
+        w.write(p, 32)?;
+    }
+    w.write(b.my_prize, 32)?;
+    w.write(b.my_minutes as u32, 16)?;
+    w.write(b.min_minutes as u32, 16)?;
     w.write(b.n as u32, 3)?;
     for i in 0..b.n as usize {
         let len = b.name_lens[i] as usize;
@@ -4945,9 +5012,30 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 ranked: r.read(16)? as u16,
                 my_rank: r.read(16)? as u16,
                 my_score: r.read(32)?,
-                n: r.read(3)? as u8,
                 ..StandingBoard::EMPTY
             };
+            let tlen = r.read(4)? as usize;
+            if tlen > STANDING_TICKER_BYTES {
+                return Err(WireError::Malformed);
+            }
+            for c in b.ticker.iter_mut().take(tlen) {
+                *c = r.read(8)? as u8;
+                if !c.is_ascii_uppercase() {
+                    return Err(WireError::Malformed);
+                }
+            }
+            b.ticker_len = tlen as u8;
+            b.n_prizes = r.read(3)? as u8;
+            if b.n_prizes as usize > STANDING_TOP {
+                return Err(WireError::Malformed);
+            }
+            for p in b.prizes.iter_mut().take(b.n_prizes as usize) {
+                *p = r.read(32)?;
+            }
+            b.my_prize = r.read(32)?;
+            b.my_minutes = r.read(16)? as u16;
+            b.min_minutes = r.read(16)? as u16;
+            b.n = r.read(3)? as u8;
             if b.board >= STANDING_BOARDS || b.n as usize > STANDING_TOP {
                 return Err(WireError::Malformed);
             }
