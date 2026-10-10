@@ -27,7 +27,9 @@
 //!    it (see [`band_weight`]) — the same "retire an octave on its own
 //!    footprint" law the ground's material already runs on (`TERRAIN.md` §4).
 //!    Below the shortest of them the detail is a tiling ripple normal map that
-//!    scrolls (see [`ripple_map`]).
+//!    scrolls (see [`ripple_map`]). The weather's wind raises them, longest
+//!    most ([`SeaState`]): a storm is a different sea, not the same one lit
+//!    darker.
 //! 4. **The reflection is the sky, and only the sky** (§5 and §6 read
 //!    together): screen-space reflection is the expensive half of water in
 //!    the reference's own settings screen, and the payoff they name is putting
@@ -159,7 +161,9 @@ pub struct Wave {
 /// How many waves the swell is made of.
 pub const WAVE_COUNT: usize = 4;
 
-/// The swell (`DECISIONS.md` §open, "water v0").
+/// The swell (`DECISIONS.md` §open, "water v0") — the CLEAR sea's. Wind above
+/// the clear preset's raises each of these by its own gain ([`SeaState`],
+/// [`STORM_GAIN`]); every gate on this table is a gate on the calm end.
 ///
 /// Four lengths roughly an octave apart, on four bearings inside a ~50° fan —
 /// a real sea state is a narrow-ish directional spectrum, and four wave trains
@@ -265,7 +269,8 @@ pub fn shoal(depth_m: f32) -> f32 {
 }
 
 /// The wave field: surface height above [`SEA_LEVEL`] and its world-XZ
-/// gradient, at one point.
+/// gradient, at one point, with each wave of [`WAVES`] raised by its `swell`
+/// gain ([`SeaState::swell`]; all ones for the clear sea).
 ///
 /// `phase` is per-wave and advanced by the caller, never `k·x − ω·t` off a
 /// clock: an `f32` elapsed-seconds multiplied by a wavenumber loses its low
@@ -283,6 +288,7 @@ pub fn wave_field(
     x: f32,
     z: f32,
     phase: &[f32; WAVE_COUNT],
+    swell: &[f32; WAVE_COUNT],
     spacing_m: f32,
     shoal: f32,
 ) -> (f32, f32, f32) {
@@ -294,7 +300,7 @@ pub fn wave_field(
         }
         let k = std::f32::consts::TAU / w.len_m;
         let (s, ds) = shape(k * (w.dir[0] * x + w.dir[1] * z) + phase[i]);
-        let a = w.amp_m * weight;
+        let a = w.amp_m * swell[i] * weight;
         h += a * s;
         gx += a * ds * k * w.dir[0];
         gz += a * ds * k * w.dir[1];
@@ -321,6 +327,7 @@ pub fn resolve_field(
     spacing: &[f32],
     shoal: &[f32],
     phase: &[f32; WAVE_COUNT],
+    swell: &[f32; WAVE_COUNT],
     out: &mut [[f32; 3]],
 ) {
     let n = coords.len();
@@ -330,7 +337,7 @@ pub fn resolve_field(
             let x = centre.x + coords[ix];
             let z = centre.y + coords[iz];
             let sp = spacing[ix].max(spacing[iz]);
-            let (h, gx, gz) = wave_field(x, z, phase, sp, shoal[i]);
+            let (h, gx, gz) = wave_field(x, z, phase, swell, sp, shoal[i]);
             out[i] = [h, gx, gz];
         }
     }
@@ -339,6 +346,99 @@ pub fn resolve_field(
 /// The surface normal for a gradient out of [`wave_field`].
 pub fn wave_normal(gx: f32, gz: f32) -> Vec3 {
     Vec3::new(-gx, 1.0, -gz).normalize()
+}
+
+// ---------------------------------------------------------------------------
+// The sea state: what the weather's wind does to the swell.
+// ---------------------------------------------------------------------------
+
+/// The wind (`WeatherNow::wind`, `0..=1`) at and under which the sea is
+/// [`WAVES`] as authored: the clear preset's own 200‰ (`sim_core::weather`'s
+/// table), so a clear day draws exactly the sea every gate on the wave set
+/// measures, and the fog preset's lull (100‰) does not flatten it further.
+/// `tests/water.rs` pins it to the sim's table.
+pub const CALM_WIND: f32 = 0.2;
+
+/// What a full storm multiplies each wave of [`WAVES`] by, in the same order.
+///
+/// **Longest first and most**, because that is what wind does to a sea: the
+/// energy it adds piles into ever longer waves (a wind sea's spectral peak
+/// moves down in frequency as the wind rises), while short chop is already
+/// near the steepness at which it breaks and turns to foam instead. One gain
+/// on all four would draw the clear sea taller; this draws a different sea,
+/// one the 52 m swell dominates. The wavelengths stay put: a length that
+/// moved with the weather would slide every far crest sideways as `k·x`
+/// changed under it, and [`band_weight`]'s retirement would move with it.
+///
+/// Held by `tests/water.rs` to the same Gerstner limit as the clear sea, and
+/// to never baring the seabed in a trough.
+pub const STORM_GAIN: [f32; WAVE_COUNT] = [2.8, 2.4, 1.9, 1.6];
+
+/// What a full storm multiplies the breakers by ([`SURF_AMP_M`]).
+pub const STORM_SURF_GAIN: f32 = 2.0;
+
+/// How rough the sea is, `0` (the clear sea) to `1` (a storm), off the
+/// weather's wind.
+///
+/// Quadratic in the wind over [`CALM_WIND`], because a sea's height goes as
+/// the square of the wind that raised it (a fully developed sea's significant
+/// height is `∝ U²`): mild rain (400‰) barely lifts it, heavy rain (600‰) is
+/// a quarter of the way, a storm (1000‰) is all of it.
+///
+/// **A function of the wind and nothing else**, like the sky it sits under
+/// (`render/weather.rs`): the wind is `weather::now(seed, tick, env)`, so
+/// every client at one campfire draws one sea without a byte of it on the
+/// wire, and the weather's own fades — 20 s for an admin's `/weather`, 15 min
+/// on the schedule — are the sea building and dropping. A local lag on top
+/// would be a sea that differed by when you joined.
+pub fn sea_state(wind: f32) -> f32 {
+    let t = ((wind - CALM_WIND) / (1.0 - CALM_WIND)).clamp(0.0, 1.0);
+    t * t
+}
+
+/// The gains a sea state puts on the authored waves: per wave of the swell,
+/// and on the breakers.
+///
+/// **Gains on the amplitudes and nothing else.** The phases are advanced at
+/// each wave's own `ω` whatever the weather, so a sea that rises mid-swell
+/// rises in place rather than jumping; the shoaling and the band weights are
+/// multiplied in after, so the swell still dies at the waterline and still
+/// retires on the skirt's spacing in a storm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeaState {
+    /// Per wave of [`WAVES`], on its `amp_m`.
+    pub swell: [f32; WAVE_COUNT],
+    /// On the breakers' envelope ([`surf_envelope`]).
+    pub surf: f32,
+}
+
+impl SeaState {
+    /// The clear sea: [`WAVES`] and [`SURF_AMP_M`] as authored.
+    pub const CALM: Self = Self {
+        swell: [1.0; WAVE_COUNT],
+        surf: 1.0,
+    };
+
+    /// The sea at roughness `s` ([`sea_state`], `0..=1`). Exactly
+    /// [`SeaState::CALM`] at zero, bit for bit.
+    pub fn at(s: f32) -> Self {
+        let s = s.clamp(0.0, 1.0);
+        Self {
+            swell: core::array::from_fn(|i| 1.0 + (STORM_GAIN[i] - 1.0) * s),
+            surf: 1.0 + (STORM_SURF_GAIN - 1.0) * s,
+        }
+    }
+
+    /// The sea this wind raises.
+    pub fn of_wind(wind: f32) -> Self {
+        Self::at(sea_state(wind))
+    }
+}
+
+impl Default for SeaState {
+    fn default() -> Self {
+        Self::CALM
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +643,13 @@ pub fn foam_surge(x: f32, z: f32, phase0: f32) -> f32 {
 }
 
 /// Whitecaps: foam on the top of the swell itself.
+///
+/// `reach_m` is the **clear** sea's crest reach at this vertex (`Sea::reach`),
+/// whatever the weather, and that is what makes a storm white: a whitecap is a
+/// crest higher than the calm sea raises, a storm's crests pass that most of
+/// the time, and no second threshold has to be tuned for it. A breeze keeps
+/// the old scatter of caps exactly; a storm caps every big crest, at the same
+/// [`CREST_FOAM_MAX`], so it is a streaked sea and not a white sheet.
 pub fn crest_foam(h: f32, reach_m: f32) -> f32 {
     if reach_m <= 0.0 {
         return 0.0;
@@ -1211,9 +1318,11 @@ pub struct Sea {
     /// How much swell each vertex may carry: the shoaling fade times the
     /// open-sea share (`terrain::height_open` — a lake carries none), cached.
     shoal: Vec<f32>,
-    /// Peak displacement available at each vertex — what `crest_foam` measures
-    /// a crest against, so a whitecap is relative to the local sea state and
-    /// not to a constant.
+    /// Peak displacement the CLEAR sea has at each vertex — what `crest_foam`
+    /// measures a crest against, so a whitecap is relative to the local swell
+    /// and not to a constant. Calm on purpose, whatever the weather: a storm
+    /// whitens because its crests pass it (see [`crest_foam`]), and the cache
+    /// stays a function of *where* only, so it still slides on a snap.
     reach: Vec<f32>,
     /// How much of each vertex's water is open sea (`terrain::height_open`):
     /// the breakers' share, cached like the swell's.
@@ -1669,7 +1778,8 @@ pub fn stream(
             let sh = shoal(d) * open;
             shoal_cache[i] = sh;
             // What a crest could reach here, for `crest_foam` to measure
-            // against: every wave that survives this spacing, at this shoaling.
+            // against: every wave that survives this spacing, at this shoaling,
+            // in the clear sea (the weather's gain is `animate`'s, per frame).
             let mut r = 0.0;
             for w in WAVES.iter() {
                 r += w.amp_m * band_weight(sp, w.len_m);
@@ -1816,6 +1926,11 @@ pub fn animate(
     };
     let n = sea.coords.len();
     let phase = sea.phase;
+    // How high the weather has the sea this frame. Headless (no weather) it is
+    // the clear sea, like the sky above.
+    let state = weather
+        .as_deref()
+        .map_or(SeaState::CALM, |w| SeaState::of_wind(w.wind));
 
     // The trig, once. Split the borrows the way `stream` does: the field is
     // written while the coordinate and shoaling caches are read, and all four
@@ -1834,6 +1949,7 @@ pub fn animate(
             spacing,
             shoal_cache,
             &phase,
+            &state.swell,
             field,
         );
     }
@@ -1857,11 +1973,14 @@ pub fn animate(
             // or every breaker in the shallows would read as a whitecap on a
             // swell that has shoaled to nothing.
             let caps = crest_foam(field[i][0], reach[i]);
-            let (h, gx, gz, trail) = surf_at(surf_amp[i], surf_dist[i], surf_dir[i], *surf_phase);
+            // A storm's bores are taller and whiter: the gain rides on the
+            // cached envelope, so `breaker_foam` sees the breaker as drawn.
+            let amp = surf_amp[i] * state.surf;
+            let (h, gx, gz, trail) = surf_at(amp, surf_dist[i], surf_dir[i], *surf_phase);
             field[i][0] += h;
             field[i][1] += gx;
             field[i][2] += gz;
-            surf_foam[i] = caps + breaker_foam(surf_amp[i], depth[i], trail);
+            surf_foam[i] = caps + breaker_foam(amp, depth[i], trail);
             surf_trail[i] = trail;
         }
     }

@@ -1798,10 +1798,12 @@ pub fn bed(
     sound.bed_target[0] = (1.0 - 0.45 * cover) * (0.6 + 0.8 * gale);
     // The surf reads how much sea is within earshot, from the same
     // `terrain::height` the water is drawn from — 24 taps, a fixed pattern, so
-    // the level cannot flicker as a search finds different water.
+    // the level cannot flicker as a search finds different water. A storm's
+    // sea is louder than a breeze's, by the roughness the drawn swell is
+    // raised by (`water::sea_state`).
     sound.bed_target[1] = crate::sound::water::surf_gain(crate::sound::water::shore_exposure(
         world.seed, eye.pos.x, eye.pos.z,
-    ));
+    )) * (1.0 + 0.6 * super::water::sea_state(weather.wind));
     // The submerged bed has no world level of its own: it is entirely the
     // snapshot's, which is the point of a snapshot.
     sound.bed_target[2] = 1.0;
