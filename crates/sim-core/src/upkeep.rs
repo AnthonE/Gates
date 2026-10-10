@@ -32,7 +32,7 @@ use crate::build::{
     SHAPE_DOORWAY, SHAPE_FRAME, SHAPE_WALL, SHAPE_WINDOW,
 };
 use crate::collide::{ColIndex, ColMasks};
-use crate::deploy::{cell_center, DeployContent, Deploys, PERIODS_PER_DAY};
+use crate::deploy::{cell_center, pays_rent, DeployContent, Deploys, PERIODS_PER_DAY, WORLD_OWNER};
 use crate::limits::{HEARTH_STOCK_ROWS, MAX_BUILD_LEVELS, MAX_BUILD_SOCKETS};
 
 // ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ pub fn scale(dc: &DeployContent, inside: bool) -> u32 {
 
 /// What hearth `hi` charges in a **day** for everything it covers, per
 /// stock row (aligned to `dc.mats`): each material's cost over the covered
-/// pieces, priced at the hearth's rent and rounded up once.
+/// pieces, doors and inserts, priced at the hearth's rent and rounded up once.
 ///
 /// Read off the cached claim volume the sweep reads, so a readout and the
 /// rent cannot disagree about which pieces are this hearth's; like the
@@ -318,9 +318,10 @@ pub fn scale(dc: &DeployContent, inside: bool) -> u32 {
 /// over-statement in the direction that makes a player feed early, never
 /// late.
 ///
-/// Bounded by the piece store (`MAX_PIECES` visits, each O(1) for a piece
-/// in the base itself — `claim::ClaimCache::covers`' membership probe), and
-/// asked per feed press, never per tick.
+/// Bounded by the piece and deploy stores (`MAX_PIECES` + `MAX_DEPLOYS`
+/// visits, each O(1) for an address in the base itself —
+/// `claim::ClaimCache::covers`' membership probe), and asked per feed
+/// press, never per tick.
 pub fn bill(
     dc: &DeployContent,
     bc: &BuildContent,
@@ -341,6 +342,23 @@ pub fn bill(
             continue;
         }
         let (x, z) = cell_center(rec.cx, rec.cz);
+        if !deploys.hearth_covers(hi, x, z) {
+            continue;
+        }
+        for &(item, c) in def.costs.iter().take(def.n_costs as usize) {
+            if let Some(m) = mats.iter().position(|&mi| mi == item) {
+                cost[m] += c as u64;
+            }
+        }
+    }
+    // The doors and inserts the sweep charges (`deploy::pays_rent`), at
+    // their own build cost.
+    for rec in deploys.entries() {
+        let def = dc.defs[rec.row as usize];
+        if rec.owner == WORLD_OWNER || !pays_rent(&def) {
+            continue;
+        }
+        let (x, z) = rec.xz();
         if !deploys.hearth_covers(hi, x, z) {
             continue;
         }
