@@ -87,6 +87,7 @@ pub use event::{
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
+pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
 pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
@@ -1133,7 +1134,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// wipe, how many are ranked, the receiver's rank and score, the purse (a
 /// ticker and what each place pays), what the receiver would take now, their
 /// minutes played against the purse's minimum, and up to `STANDING_TOP`
-/// named rows.
+/// named rows. And `SUB_BANK` (94), the receiver's way out through THE
+/// EXCHANGE: open or not, fee, coin, cap, taken, credited. `ACT_ARC` gains
+/// op 5, `OP_EXTRACT`, and `REFUSE_A_SHUT` (9) and `REFUSE_A_CAP` (10)
+/// join the arc refusals.
 pub const PROTO_VER: u16 = 104;
 
 /// This game's slug in the elo catalog.

@@ -232,6 +232,10 @@ pub struct ShardConfig {
     pub prizes: crate::standings::Prizes,
     /// A Discord webhook the wipe's results are posted to. Off by default.
     pub discord_webhook: Option<String>,
+    /// What may leave through THE EXCHANGE (`standings::Exits`):
+    /// `extract_cap` JUNK a wallet a wipe, less `extract_fee_pct`. Zero by
+    /// default — nothing leaves until the operator arms it (`ALPHA.md` §2).
+    pub exits: crate::standings::Exits,
     /// The oldest client **release** this shard will admit, packed by
     /// [`protocol::version::pack`]. A joiner below it meets `REFUSE_BUILD`.
     ///
@@ -395,6 +399,10 @@ impl ShardConfig {
             faces: crate::faces::Config::off(),
             prizes: crate::standings::Prizes::default(),
             discord_webhook: None,
+            exits: crate::standings::Exits {
+                cap: 0,
+                fee_pct: DEFAULT_EXTRACT_FEE_PCT,
+            },
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
@@ -462,9 +470,14 @@ fn parse_dev_env(value: &str) -> Option<(u8, u16)> {
 /// Parse `key = value` lines; `#` comments and blanks skipped; string
 /// values may be double-quoted. Refuses unknown keys, missing keys, and
 /// unparseable values.
-/// Minutes of play a wallet needs this wipe before a purse can pay it: two
-/// hours, enough that a wallet farm has to actually play.
-pub const DEFAULT_PRIZE_MIN_MINUTES: u32 = 120;
+/// Minutes of play a wallet needs this wipe before a purse can pay it:
+/// twelve hours (operator, 2026-10-10: *"you're not going to be making money
+/// unless you're pulling like 12 hours"*). The money is an extra for the
+/// players who live here, and a wallet farm has to actually play.
+pub const DEFAULT_PRIZE_MIN_MINUTES: u32 = 720;
+
+/// Per cent of extracted JUNK burnt at the exchange (`DESIGN.md` §3.1: 2%).
+pub const DEFAULT_EXTRACT_FEE_PCT: u64 = 2;
 
 pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
@@ -507,6 +520,10 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         ..crate::standings::Prizes::default()
     };
     let mut discord_webhook: Option<String> = None;
+    let mut exits = crate::standings::Exits {
+        cap: 0,
+        fee_pct: DEFAULT_EXTRACT_FEE_PCT,
+    };
     let mut skins_all: Option<bool> = None;
     let mut skins_timeout_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
@@ -904,6 +921,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ))
                 }
             },
+            "extract_cap" => {
+                exits.cap = value.parse().map_err(|_| {
+                    format!("shard.toml line {}: extract_cap must be whole JUNK", n + 1)
+                })?;
+            }
+            "extract_fee_pct" => {
+                exits.fee_pct = value.parse().ok().filter(|p| *p <= 100).ok_or_else(|| {
+                    format!("shard.toml line {}: extract_fee_pct is 0..=100", n + 1)
+                })?;
+            }
             "discord_webhook" => {
                 if !value.starts_with("https://") {
                     return Err(format!(
@@ -1188,6 +1215,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     Ok(ShardConfig {
         prizes,
         discord_webhook,
+        exits,
         wipe: wipe_days.map(|d| {
             crate::wipe::Schedule::days(d, wipe_anchor.unwrap_or(crate::wipe::DEFAULT_ANCHOR))
         }),
@@ -1328,6 +1356,11 @@ mod tests {
         let cfg = parse_shard_toml(base).unwrap();
         assert!(!cfg.prizes.armed(), "a shard pays nothing by default");
         assert_eq!(cfg.prizes.min_minutes, DEFAULT_PRIZE_MIN_MINUTES);
+        assert_eq!(cfg.exits.cap, 0, "and lets nothing leave by default");
+        let cfg =
+            parse_shard_toml(&format!("{base}extract_cap = 1000\nextract_fee_pct = 5\n")).unwrap();
+        assert_eq!((cfg.exits.cap, cfg.exits.fee_pct), (1000, 5));
+        assert!(parse_shard_toml(&format!("{base}extract_fee_pct = 101\n")).is_err());
         let cfg = parse_shard_toml(&format!(
             "{base}prize_ticker = \"ORBS\"\nprize_island = \"500, 300,200\"\n\
              prize_fight = 50\nprize_min_minutes = 60\nprize_agents = true\n\

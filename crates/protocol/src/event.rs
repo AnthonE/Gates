@@ -535,7 +535,12 @@ const SUB_ITEM_DESC: u32 = 92;
 /// their minutes played against the minimum a purse needs. Per client, when
 /// the boards move and to a joiner, one board a tick.
 const SUB_STANDING: u32 = 93;
-const SUB_MAX: u32 = SUB_STANDING;
+/// The receiver's way out (wire v104, `server::standings`, `WORLD.md` §4):
+/// which work is the exchange, whether it is open, its fee, the coin, and
+/// this wallet's cap, what it has put through and what was credited this
+/// wipe. Own-fact, at join and when any of it moves.
+const SUB_BANK: u32 = 94;
+const SUB_MAX: u32 = SUB_BANK;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -654,6 +659,28 @@ impl StandingBoard {
         true
     }
 }
+
+/// The receiver's way out (`SUB_BANK`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BankView {
+    /// The exchange's work index, `BANK_NO_WORK` for none on this shard.
+    pub work: u8,
+    /// Lit: coin may leave.
+    pub open: bool,
+    /// Per cent burnt on the way out, 0..=100.
+    pub fee_pct: u8,
+    /// The item that leaves (JUNK).
+    pub coin: u16,
+    /// What this wallet may put through this wipe (0: nothing leaves).
+    pub cap: u32,
+    /// What it has put through, before the fee.
+    pub taken: u32,
+    /// What it was credited, after the fee.
+    pub credited: u32,
+}
+
+/// `BankView::work` when the shard has no exchange.
+pub const BANK_NO_WORK: u8 = 0xFF;
 
 impl Default for StandingBoard {
     fn default() -> Self {
@@ -1489,6 +1516,8 @@ pub enum EventMsg {
     StumpGrubbed { cx: u16, cz: u16 },
     /// One board of the wipe's standings.
     Standing(StandingBoard),
+    /// The receiver's way out through the exchange.
+    Bank(BankView),
     /// One item's description line: `text[..len]`, UTF-8.
     ItemDesc {
         item: u16,
@@ -2422,6 +2451,22 @@ pub fn encode_event_item_desc(item: u16, text: &[u8], buf: &mut [u8]) -> Result<
     for &b in text {
         w.write(b as u32, 8)?;
     }
+    Ok(w.finish())
+}
+
+/// The receiver's way out. Refuses a fee past 100.
+pub fn encode_event_bank(b: &BankView, buf: &mut [u8]) -> Result<usize, WireError> {
+    if b.fee_pct > 100 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_BANK)?;
+    w.write(b.work as u32, 8)?;
+    w.write_bit(b.open)?;
+    w.write(b.fee_pct as u32, 7)?;
+    w.write(b.coin as u32, 16)?;
+    w.write(b.cap, 32)?;
+    w.write(b.taken, 32)?;
+    w.write(b.credited, 32)?;
     Ok(w.finish())
 }
 
@@ -5005,6 +5050,21 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             cx: r.read(16)? as u16,
             cz: r.read(16)? as u16,
         },
+        SUB_BANK => {
+            let b = BankView {
+                work: r.read(8)? as u8,
+                open: r.read_bit()?,
+                fee_pct: r.read(7)? as u8,
+                coin: r.read(16)? as u16,
+                cap: r.read(32)?,
+                taken: r.read(32)?,
+                credited: r.read(32)?,
+            };
+            if b.fee_pct > 100 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Bank(b)
+        }
         SUB_STANDING => {
             let mut b = StandingBoard {
                 board: r.read(3)? as u8,

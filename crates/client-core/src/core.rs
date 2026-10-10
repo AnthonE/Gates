@@ -1538,6 +1538,10 @@ pub struct ClientCore {
     pub standings: [protocol::StandingBoard; protocol::STANDING_BOARDS as usize],
     /// Moves whenever a board lands (what the STANDINGS page compares).
     pub standings_gen: u32,
+    /// This player's way out through THE EXCHANGE (`SUB_BANK`), and a
+    /// generation that moves when it lands.
+    pub bank: protocol::BankView,
+    pub bank_gen: u32,
     /// The skin catalog (skins v0), dripped at join like `catalog`: row `i`
     /// is bit `i` of [`Self::skins_owned`]. Boxed, `slot_cache`'s reason:
     /// ~9 kB of fixed capacity.
@@ -2126,6 +2130,11 @@ impl ClientCore {
             item_descs: Box::new(protocol::ItemDescs::EMPTY),
             standings: [protocol::StandingBoard::EMPTY; protocol::STANDING_BOARDS as usize],
             standings_gen: 0,
+            bank: protocol::BankView {
+                work: protocol::BANK_NO_WORK,
+                ..protocol::BankView::default()
+            },
+            bank_gen: 0,
             skins: Box::new(protocol::SkinCatalog::EMPTY),
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
@@ -2493,6 +2502,10 @@ impl ClientCore {
                     self.harvested.set_grow(cell_key(cx, cz), g);
                 }
                 flags |= APPLIED_SLOTS;
+            }
+            EventMsg::Bank(b) => {
+                self.bank = b;
+                self.bank_gen = self.bank_gen.wrapping_add(1);
             }
             EventMsg::Standing(b) => {
                 if let Some(slot) = self.standings.get_mut(b.board as usize) {

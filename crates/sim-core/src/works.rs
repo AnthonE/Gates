@@ -19,6 +19,13 @@
 //!
 //! The arc clock is the world's own tick: a wipe is a fresh world, which
 //! starts at tick 0, and a saved world keeps its tick (`worldsave.rs`).
+//!
+//! **Extraction is a work too** (`WORLD.md` §4.4: one machine, not two).
+//! The work whose floor is [`WorksContent::extract_unlock`] is the exchange:
+//! once it is lit — by its quota or its fallback hour — carried coin can be
+//! put through its terminal and leaves the island for the player's wallet
+//! ([`extract`]). Its ceiling turns [`KNOB_EXTRACT_PCT`], so feeding it
+//! raises how much may leave.
 
 use crate::craft::{inv_count, inv_take};
 use crate::limits::{
@@ -26,7 +33,7 @@ use crate::limits::{
 };
 use crate::spot::Spot;
 use crate::terrain::Haven;
-use crate::world::{EventQueue, Player, EV_ARC_REFUSED, EV_GAVE, EV_WORK};
+use crate::world::{EventQueue, Player, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_WORK};
 
 /// Not open yet.
 pub const WORK_SEALED: u8 = 0;
@@ -54,8 +61,13 @@ pub const WORK_EV_MAX: u32 = WORK_EV_REKINDLED;
 pub const OP_DEPOSIT: u8 = 0;
 /// Top up lit work `target`'s tank.
 pub const OP_FUEL: u8 = 1;
-/// The highest op this module answers; `lore.rs` and `mech.rs` own the rest.
+/// The highest deposit op this module answers; `lore.rs` and `mech.rs` own
+/// the ones after it.
 pub const OP_MAX: u8 = OP_FUEL;
+/// Put carried coin through the exchange `target` (`Command::Extract`). It
+/// rides the action lane as an arc op, and the server turns it into the
+/// command with the wallet's allowance (`server::core`).
+pub const OP_EXTRACT: u8 = 5;
 /// `arg` for every input at once.
 pub const ARG_ALL: u8 = 0xFF;
 
@@ -75,7 +87,11 @@ pub const REFUSE_A_COLD: u32 = 6;
 pub const REFUSE_A_FULL: u32 = 7;
 /// A mechanism resting after a solve (`mech.rs`).
 pub const REFUSE_A_RESTING: u32 = 8;
-pub const REFUSE_A_MAX: u32 = REFUSE_A_RESTING;
+/// The exchange has not opened: nothing leaves the island yet.
+pub const REFUSE_A_SHUT: u32 = 9;
+/// This wallet has taken out all the wipe allows (or has no wallet).
+pub const REFUSE_A_CAP: u32 = 10;
+pub const REFUSE_A_MAX: u32 = REFUSE_A_CAP;
 
 /// How close to a work's terminal a deposit must be, metres.
 pub const WORK_REACH_M: f32 = 4.0;
@@ -99,7 +115,10 @@ pub const KNOB_HEAL_PCT: u8 = 1;
 pub const KNOB_RESEARCH_PCT: u8 = 2;
 /// What a swing at a node pays (`gather::land`).
 pub const KNOB_GATHER_PCT: u8 = 3;
-pub const KNOB_MAX: u8 = KNOB_GATHER_PCT;
+/// How much coin a wallet may take out through the exchange this wipe
+/// (`server::standings`, applied to `extract_cap`).
+pub const KNOB_EXTRACT_PCT: u8 = 4;
+pub const KNOB_MAX: u8 = KNOB_EXTRACT_PCT;
 
 /// One quota line: `need` of `item`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -152,6 +171,11 @@ pub struct WorksContent {
     pub quiet_players: u16,
     pub busy_players: u16,
     pub quiet_burn_pct: u16,
+    /// The unlock that opens extraction, `NO_UNLOCK` for none: the work
+    /// whose floor it is, is the exchange.
+    pub extract_unlock: u8,
+    /// The item that leaves through it (the coin, JUNK).
+    pub coin: u16,
 }
 
 impl WorksContent {
@@ -185,6 +209,8 @@ impl WorksContent {
         quiet_players: 10,
         busy_players: 100,
         quiet_burn_pct: 100,
+        extract_unlock: NO_UNLOCK,
+        coin: 0,
     };
 
     /// One work over the gather fixture's items, for the gates: it opens at
@@ -570,4 +596,59 @@ pub fn act(
         }
         _ => refuse(events, REFUSE_A_KIND),
     }
+}
+
+/// `p` puts up to `max` of the coin they carry through the exchange at work
+/// `target`: the work whose floor is the extraction unlock, lit, and within
+/// reach. `max` is what the server says this wallet may still take out this
+/// wipe — the sim knows no wallets (`persist.rs`), so the cap rides in the
+/// command. What was taken is `EV_EXTRACTED`; refusals are events.
+#[allow(clippy::too_many_arguments)]
+pub fn extract(
+    wc: &WorksContent,
+    works: &Works,
+    haven: &Haven,
+    p: &mut Player,
+    target: u8,
+    max: u32,
+    events: &mut EventQueue,
+) {
+    let pid = p.id;
+    let refuse = |events: &mut EventQueue, code: u32| {
+        events.push(
+            EV_ARC_REFUSED,
+            pid,
+            code,
+            (OP_EXTRACT as u32) << 8 | target as u32,
+        );
+    };
+    let Some(def) = wc.get(target as usize).copied() else {
+        return refuse(events, REFUSE_A_KIND);
+    };
+    if wc.extract_unlock == NO_UNLOCK
+        || def.floor != wc.extract_unlock
+        || p.dead
+        || p.sleeping
+        || p.wounded
+    {
+        return refuse(events, REFUSE_A_KIND);
+    }
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
+    if !crate::spot::within(haven, &def.spot, px, feet, pz, WORK_REACH_M) {
+        return refuse(events, REFUSE_A_REACH);
+    }
+    if !holds(works.unlocks, wc.extract_unlock) {
+        return refuse(events, REFUSE_A_SHUT);
+    }
+    if max == 0 {
+        return refuse(events, REFUSE_A_CAP);
+    }
+    let take = inv_count(&p.inv, wc.coin).min(max);
+    if take == 0 {
+        return refuse(events, REFUSE_A_NOTHING);
+    }
+    inv_take(&mut p.inv, wc.coin, take);
+    events.push(EV_EXTRACTED, pid, target as u32, take);
 }

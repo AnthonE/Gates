@@ -275,3 +275,48 @@ pub fn prize_you(b: &protocol::StandingBoard) -> Option<String> {
         format!("climb into the top {} to be paid", b.n_prizes)
     })
 }
+
+// ---- the way out (`SUB_BANK`, `WORLD.md` §4) ----------------------------------
+
+/// THE EXCHANGE's state line, and what it means for this wallet.
+pub fn exit_lines(b: &protocol::BankView) -> (String, String) {
+    if !b.open {
+        return (
+            "NOTHING LEAVES UNTIL IT IS LIT".into(),
+            "light it, and the JUNK you carry here goes to your wallet".into(),
+        );
+    }
+    if b.cap == 0 {
+        return ("THIS ISLAND PAYS NOTHING OUT".into(), String::new());
+    }
+    (
+        format!(
+            "{} / {} JUNK OUT THIS WIPE · FEE {}%",
+            thousands(b.taken),
+            thousands(b.cap),
+            b.fee_pct
+        ),
+        if b.credited > 0 {
+            format!(
+                "{} JUNK credited — paid to your wallet after the wipe",
+                thousands(b.credited)
+            )
+        } else {
+            "what you put through is paid to your wallet after the wipe".into()
+        },
+    )
+}
+
+/// `1,200 more may leave`, or why none may.
+pub fn exit_room(b: &protocol::BankView) -> String {
+    match b.cap.saturating_sub(b.taken) {
+        0 if b.cap > 0 => "your limit is reached".into(),
+        0 => String::new(),
+        n => format!("{} more may leave", thousands(n)),
+    }
+}
+
+/// Whether EXTRACT does anything now.
+pub fn can_extract(b: &protocol::BankView, carry: u32) -> bool {
+    b.open && carry > 0 && b.taken < b.cap
+}

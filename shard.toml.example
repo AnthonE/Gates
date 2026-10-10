@@ -160,19 +160,28 @@ seed = 20260731
 # wipe_anchor = "2026-10-08 19:00"
 # blueprint_wipe_every = 2
 
+# EXTRACTION (crates/server/src/standings.rs, `WORLD.md` §4). Carried JUNK
+# put through THE EXCHANGE (a work in the town: it lights by its quota or at
+# its fallback hour) is credited to the player's wallet, up to `extract_cap`
+# JUNK a wallet a wipe (half again while the exchange burns), less
+# `extract_fee_pct` (default 2), which burns. Unset cap = nothing leaves.
+# What was extracted lands in the wipe's payout file beside the prizes.
+# extract_cap = 1000
+# extract_fee_pct = 2
+
 # PRIZES (crates/server/src/standings.rs). Each board's top places are paid
 # in one coin to the wallet the player logs in with. A place counts only
-# wallets that played `prize_min_minutes` this wipe (default 120) and are not
+# wallets that played `prize_min_minutes` this wipe (default 720, 12 h) and are not
 # declared agents (unless `prize_agents = true`). At the wipe the shard writes
 # `<world_file>.payout-<wipe>.csv` and `.json`: address, amount, places. The
 # shard holds no keys and sends nothing; the operator pays from that file.
 # Unset = no prizes. Places are best first, at most 5 a board.
-# prize_ticker = "ORBS"
+# prize_ticker = "JUNK"
 # prize_island = "500,300,200,100,50"
 # prize_works = "300,200,100"
 # prize_hoard = "200,100,50"
 # prize_fight = "100,50"
-# prize_min_minutes = 120
+# prize_min_minutes = 720
 # prize_agents = false
 #
 # Post each wipe's podiums and prizes (names, never addresses) to Discord.

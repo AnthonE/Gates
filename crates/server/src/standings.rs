@@ -39,6 +39,19 @@
 //! operator's** (`CLAUDE.md`: anything on-chain): the shard holds no keys
 //! and mints nothing; it says who earned what.
 //!
+//! ## Extraction: the other road out
+//!
+//! Carried JUNK put through THE EXCHANGE (`sim_core::works::extract`) is
+//! credited here to the wallet, less `extract_fee_pct`, up to `extract_cap`
+//! a wipe (more while the exchange burns: `KNOB_EXTRACT_PCT`). It lands in
+//! the same payout file as the prizes. A shard with no `extract_cap` lets
+//! nothing leave.
+//!
+//! The file is written only after the world save it was taken with has
+//! landed ([`Standings::snapshot`], [`Standings::release`]): a crash rolls
+//! both back together, so a credit never outlives the world that still
+//! has the coin in a pack.
+//!
 //! ## Where this runs
 //!
 //! Server-side only: nothing here is sim state or hashed. The sim's events
@@ -80,8 +93,11 @@ pub const LABEL_MAX: usize = protocol::NAME_MAX_BYTES;
 /// Saves waiting for the writer. One is all that matters: the newest.
 const FLUSH_RING: usize = 2;
 /// A row line's fields: `row key given deeds kills deaths hoard island
-/// played flags label`, the label last because it may hold spaces.
-const ROW_FIELDS: usize = 11;
+/// played flags extracted taken label`, the label last because it may hold
+/// spaces.
+const ROW_FIELDS: usize = 13;
+/// The coin extraction pays in (`content::bake::EXTRACT_COIN`).
+pub const EXTRACT_TICKER: &str = "JUNK";
 /// `flags`: joined as a declared agent.
 const FLAG_AGENT: u64 = 1;
 
@@ -176,6 +192,16 @@ impl Prizes {
     }
 }
 
+/// What may leave through the exchange (`shard.toml` `extract_cap`,
+/// `extract_fee_pct`). A zero cap lets nothing out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Exits {
+    /// JUNK a wallet may take out a wipe, before the exchange's ceiling.
+    pub cap: u64,
+    /// Per cent of what goes through that is burnt, never credited.
+    pub fee_pct: u64,
+}
+
 /// A key that is a real wallet: `0x` and forty hex digits, not the guest.
 pub fn is_wallet(key: &str) -> bool {
     protocol::Address::from_hex(key.as_bytes()).is_some_and(|a| !a.is_guest())
@@ -197,6 +223,10 @@ pub struct Row {
     pub played: u32,
     /// Ever joined as a declared agent this wipe.
     pub agent: bool,
+    /// JUNK credited through the exchange, after the fee.
+    pub extracted: u64,
+    /// JUNK put through the exchange, before the fee: what the cap counts.
+    pub taken: u64,
 }
 
 impl Row {
@@ -315,17 +345,27 @@ pub struct Hall {
     /// What each wallet was paid last wipe, all boards, and in what.
     pub last_paid: BTreeMap<String, u64>,
     pub last_ticker: String,
+    /// What each wallet took out through the exchange last wipe.
+    pub last_extracted: BTreeMap<String, u64>,
 }
 
 impl Hall {
     pub fn load(base: &Path) -> Hall {
         let mut h = Hall::default();
         let mut prizes: Vec<(u32, u64, String, String)> = Vec::new();
+        let mut extracts: Vec<(u32, u64, String)> = Vec::new();
         if let Ok(text) = std::fs::read_to_string(hall_path(base)) {
             for line in text.lines() {
-                if let ["prize", w, _, _, amount, ticker, key] =
-                    line.split('\t').collect::<Vec<_>>().as_slice()
-                {
+                let fields: Vec<&str> = line.split('\t').collect();
+                if let ["extract", w, amount, key] = fields.as_slice() {
+                    extracts.push((
+                        w.parse::<u32>().unwrap_or(0),
+                        amount.parse::<u64>().unwrap_or(0),
+                        key.to_string(),
+                    ));
+                    continue;
+                }
+                if let ["prize", w, _, _, amount, ticker, key] = fields.as_slice() {
                     prizes.push((
                         w.parse::<u32>().unwrap_or(0),
                         amount.parse::<u64>().unwrap_or(0),
@@ -376,6 +416,11 @@ impl Hall {
             if wipe == h.last_wipe && amount > 0 {
                 *h.last_paid.entry(key).or_insert(0) += amount;
                 h.last_ticker = ticker;
+            }
+        }
+        for (wipe, amount, key) in extracts {
+            if wipe == h.last_wipe && amount > 0 {
+                *h.last_extracted.entry(key).or_insert(0) += amount;
             }
         }
         h
@@ -465,6 +510,7 @@ struct Saved {
     scores: [u64; BOARDS],
     played: u32,
     agent: bool,
+    extracted: u64,
 }
 
 fn read_saved(text: &str) -> Vec<Saved> {
@@ -482,6 +528,7 @@ fn read_saved(text: &str) -> Vec<Saved> {
             scores: [island, (given + deeds) / 100, hoard / 100, kills],
             played: n(8) as u32,
             agent: n(9) & FLAG_AGENT != 0,
+            extracted: n(10),
         });
     }
     out
@@ -494,13 +541,14 @@ pub struct Closed {
     pub winner: Option<String>,
     /// Each board's podium, `(board, place, label, score)`.
     pub podiums: Vec<(u8, u32, String, u64)>,
-    /// Per wallet, everything it won: `(address, label, total)`.
-    pub paid: Vec<(String, String, u64)>,
+    /// Per wallet and coin, everything it is owed — prizes and what it
+    /// extracted: `(address, label, total, ticker)`.
+    pub paid: Vec<(String, String, u64, String)>,
     pub ticker: String,
 }
 
-/// What one wallet is owed: the total, and each `(board, place, amount)`.
-type Owed = (u64, Vec<(u8, u32, u64)>);
+/// What one wallet is owed in one coin: the total, and what it is for.
+type Owed = (u64, Vec<String>);
 
 /// **The wipe's last word**, on the closed files (`bin/shard.rs`'s
 /// `end_world`, before `wipe::apply` archives the standings): each board's
@@ -523,7 +571,16 @@ pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, Str
             .map_or(String::new(), |r| r.label.clone())
     };
     let mut hall = String::new();
-    let mut owed: BTreeMap<String, Owed> = BTreeMap::new();
+    // Keyed (address, ticker): prizes and extraction may be different coins.
+    let mut owed: BTreeMap<(String, String), Owed> = BTreeMap::new();
+    for r in rows.iter().filter(|r| r.extracted > 0 && is_wallet(&r.key)) {
+        let e = owed
+            .entry((r.key.clone(), EXTRACT_TICKER.to_string()))
+            .or_default();
+        e.0 += r.extracted;
+        e.1.push(format!("EXTRACTED {}", r.extracted));
+        hall.push_str(&format!("extract\t{wipe}\t{}\t{}\n", r.extracted, r.key));
+    }
     for board in 0..BOARDS as u8 {
         let b = Board::rank(
             rows.iter()
@@ -560,9 +617,11 @@ pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, Str
                 if amount == 0 {
                     continue;
                 }
-                let e = owed.entry(key.clone()).or_default();
+                let e = owed
+                    .entry((key.clone(), prizes.ticker.clone()))
+                    .or_default();
                 e.0 += amount;
-                e.1.push((board, *place, amount));
+                e.1.push(format!("{} #{place} {amount}", SHORT_NAMES[board as usize]));
                 hall.push_str(&format!(
                     "prize\t{wipe}\t{board}\t{place}\t{amount}\t{}\t{key}\n",
                     prizes.ticker
@@ -584,30 +643,24 @@ pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, Str
         }
     }
     if !owed.is_empty() {
-        let t = &prizes.ticker;
-        let mut csv = String::from("address,amount,ticker,places\n");
-        let mut json = format!("{{\"wipe\":{wipe},\"ticker\":\"{t}\",\"payouts\":[");
-        for (i, (key, (total, places))) in owed.iter().enumerate() {
-            let named: Vec<String> = places
-                .iter()
-                .map(|(b, p, a)| format!("{} #{p} {a}", SHORT_NAMES[*b as usize]))
-                .collect();
-            csv.push_str(&format!("{key},{total},{t},{}\n", named.join(" | ")));
+        let mut csv = String::from("address,amount,ticker,for\n");
+        let mut json = format!("{{\"wipe\":{wipe},\"payouts\":[");
+        for (i, ((key, t), (total, parts))) in owed.iter().enumerate() {
+            csv.push_str(&format!("{key},{total},{t},{}\n", parts.join(" | ")));
             if i > 0 {
                 json.push(',');
             }
             json.push_str(&format!(
-                "{{\"address\":\"{key}\",\"amount\":{total},\"places\":[{}]}}",
-                places
+                "{{\"address\":\"{key}\",\"amount\":{total},\"ticker\":\"{t}\",\"for\":[{}]}}",
+                parts
                     .iter()
-                    .map(|(b, p, a)| format!(
-                        "{{\"board\":\"{}\",\"place\":{p},\"amount\":{a}}}",
-                        BOARD_NAMES[*b as usize]
-                    ))
+                    .map(|p| format!("\"{p}\""))
                     .collect::<Vec<_>>()
                     .join(",")
             ));
-            closed.paid.push((key.clone(), label_of(key), *total));
+            closed
+                .paid
+                .push((key.clone(), label_of(key), *total, t.clone()));
         }
         json.push_str("]}\n");
         write_atomic(&payout_path(base, wipe, "csv"), &csv)
@@ -649,7 +702,7 @@ pub fn discord_text(wipe: u32, c: &Closed, next: Option<&str>) -> String {
         let paid: Vec<String> = c
             .paid
             .iter()
-            .map(|(_, l, a)| format!("{l} {} {}", thousands(*a), c.ticker))
+            .map(|(_, l, a, t)| format!("{l} {} {t}", thousands(*a)))
             .collect();
         t.push_str(&format!("**Paid**  {}\n", paid.join("  ·  ")));
     }
@@ -693,6 +746,9 @@ struct Flush {
 pub struct Standings {
     pub rules: Rules,
     pub prizes: Prizes,
+    pub exits: Exits,
+    /// The file as of the last world save, held until that save lands.
+    pending: Option<Flush>,
     rows: BTreeMap<String, Row>,
     /// `(who, what)`: "lit THE CRUCIBLE".
     deeds: Vec<(String, String)>,
@@ -725,6 +781,8 @@ impl Standings {
         Standings {
             rules: Rules::default(),
             prizes: Prizes::default(),
+            exits: Exits::default(),
+            pending: None,
             rows: BTreeMap::new(),
             deeds: Vec::new(),
             wipe: 1,
@@ -810,6 +868,8 @@ impl Standings {
                             hoard: n(6),
                             played: n(8) as u32,
                             agent: n(9) & FLAG_AGENT != 0,
+                            extracted: n(10),
+                            taken: n(11),
                         },
                     );
                 }
@@ -928,6 +988,33 @@ impl Standings {
         }
     }
 
+    /// `units` of JUNK went through the exchange for `key`: the fee burns,
+    /// the rest is credited.
+    pub fn extracted(&mut self, key: &str, label: &str, units: u32) {
+        let fee = units as u64 * self.exits.fee_pct.min(100) / 100;
+        if let Some(row) = self.row(key, label) {
+            row.taken = row.taken.saturating_add(units as u64);
+            row.extracted = row.extracted.saturating_add(units as u64 - fee);
+            self.dirty = true;
+        }
+    }
+
+    /// The most `key` may take out this wipe, the exchange's ceiling at
+    /// `pct` per cent (`works::knob_pct`). Zero for anything that is not a
+    /// wallet: the coin goes to an address or nowhere.
+    pub fn cap(&self, pct: u32) -> u64 {
+        self.exits.cap * pct as u64 / 100
+    }
+
+    /// What `key` may still take out this wipe.
+    pub fn allowance(&self, key: &str, pct: u32) -> u64 {
+        if !is_wallet(key) {
+            return 0;
+        }
+        let taken = self.rows.get(key).map_or(0, |r| r.taken);
+        self.cap(pct).saturating_sub(taken)
+    }
+
     /// What `key` would be paid on `board` if the wipe ended now.
     pub fn would_win(&self, board: u8, key: &str) -> u64 {
         if !self.prizes.armed() || board as usize >= BOARDS {
@@ -992,13 +1079,13 @@ impl Standings {
         let mut t = format!(
             "# Gates standings, written by the shard. Hundredths of a point except\n\
              # kills, deaths, island and minutes played: row key given deeds kills deaths\n\
-             # hoard island played flags label\n\
+             # hoard island played flags extracted taken label\n\
              wipe\t{}\n",
             self.wipe
         );
         for (k, r) in &self.rows {
             t.push_str(&format!(
-                "row\t{k}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "row\t{k}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 r.given,
                 r.deeds,
                 r.kills,
@@ -1007,6 +1094,8 @@ impl Standings {
                 r.score(BOARD_ISLAND, &self.rules),
                 r.played,
                 if r.agent { FLAG_AGENT } else { 0 },
+                r.extracted,
+                r.taken,
                 r.label
             ));
         }
@@ -1082,18 +1171,23 @@ impl Standings {
         j
     }
 
-    /// Hand the file to the writer thread. A full ring skips this one: the
-    /// next minute's is newer anyway.
-    pub fn flush(&mut self) {
+    /// Take the file as it stands, beside a world save: held until that
+    /// save lands ([`Self::release`]), so the two roll back together.
+    pub fn snapshot(&mut self) {
         if self.out.is_none() || self.flushed == Some(self.gen) {
             return;
         }
         self.flushed = Some(self.gen);
-        let f = Flush {
+        self.pending = Some(Flush {
             text: self.text(),
             json: self.json(),
-        };
-        if let Some(out) = self.out.as_mut() {
+        });
+    }
+
+    /// The world save the snapshot rode with has landed: hand the file to
+    /// the writer thread. A full ring skips this one; the next is newer.
+    pub fn release(&mut self) {
+        if let (Some(f), Some(out)) = (self.pending.take(), self.out.as_mut()) {
             let _ = out.push(f);
         }
     }
@@ -1138,6 +1232,9 @@ impl Standings {
             out.push(format!("wipe {} went to {}", w.wipe, w.label));
             if let Some((rank, _)) = key.and_then(|k| self.hall.last.get(k)) {
                 out.push(format!("you finished #{rank} of {}", self.hall.last_of));
+            }
+            if let Some(n) = key.and_then(|k| self.hall.last_extracted.get(k)) {
+                out.push(format!("{} JUNK extracted last wipe", thousands(*n)));
             }
             if let Some(paid) = key.and_then(|k| self.hall.last_paid.get(k)) {
                 out.push(format!(
@@ -1292,6 +1389,20 @@ mod tests {
             s.minute(CAROL, "", false);
             s.minute(BOT, "", true);
         }
+        // Carol puts 100 JUNK through the exchange at a 2% fee, cap 150.
+        s.exits = Exits {
+            cap: 150,
+            fee_pct: 2,
+        };
+        assert_eq!(s.allowance(CAROL, 100), 150);
+        s.extracted(CAROL, "", 100);
+        assert_eq!(s.allowance(CAROL, 100), 50);
+        assert_eq!(
+            s.allowance(CAROL, 150),
+            125,
+            "the burning exchange lets more out"
+        );
+        assert_eq!(s.allowance("dev-key", 100), 0, "no wallet, nothing leaves");
         s.rebuild();
         assert_eq!(s.would_win(BOARD_ISLAND, ALICE), 500);
         assert_eq!(
@@ -1315,15 +1426,18 @@ mod tests {
         assert_eq!(closed.winner.as_deref(), Some("ALICE (1600)"));
         // Alice: island #1 (500) and works #1 (200). Carol: island #2 among
         // the payable (300) and the fight's first payable place (50).
+        // And Carol's 98 extracted JUNK, in its own coin.
         assert_eq!(
             closed.paid,
             vec![
-                (ALICE.to_string(), "ALICE".to_string(), 700),
-                (CAROL.to_string(), "CAROL".to_string(), 350),
+                (ALICE.to_string(), "ALICE".into(), 700, "ORBS".into()),
+                (CAROL.to_string(), "CAROL".into(), 98, "JUNK".into()),
+                (CAROL.to_string(), "CAROL".into(), 350, "ORBS".into()),
             ]
         );
         let csv = std::fs::read_to_string(payout_path(&base, 3, "csv")).unwrap();
         assert!(csv.contains(&format!("{ALICE},700,ORBS,ISLAND #1 500 | WORKS #1 200")));
+        assert!(csv.contains(&format!("{CAROL},98,JUNK,EXTRACTED 98")));
         assert!(!csv.contains(BOT), "an agent is not paid");
         let text = discord_text(3, &closed, Some("Thu 15 Oct 19:00 UTC"));
         assert!(text.contains("ALICE 700 ORBS") && !text.contains("0x"));
@@ -1337,9 +1451,10 @@ mod tests {
         let lines = Standings::open(rules(), prizes, Some(&base), 4).join_lines(Some(CAROL));
         assert_eq!(lines[0], "wipe 3 went to ALICE");
         assert_eq!(lines[1], "you finished #3 of 3");
-        assert_eq!(lines[2], "you won 350 ORBS - check your wallet");
-        assert_eq!(lines[3], "your hall: 2 podiums, best #2");
-        assert_eq!(lines[4], "ORBS to the top 2 of each board");
+        assert_eq!(lines[2], "98 JUNK extracted last wipe");
+        assert_eq!(lines[3], "you won 350 ORBS - check your wallet");
+        assert_eq!(lines[4], "your hall: 2 podiums, best #2");
+        assert_eq!(lines[5], "ORBS to the top 2 of each board");
         for l in &lines {
             assert!(
                 l.len() + 9 <= protocol::CHAT_MAX_BYTES,

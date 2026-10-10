@@ -159,6 +159,39 @@ unlock = "unlock.current"
 knob = "gather_pct"
 pct = 150
 
+# THE EXCHANGE — the gate JUNK leaves the island through (`WORLD.md` §4). On
+# the town's main street, short of the first kiosk. Nothing leaves until it is
+# lit: by its quota, or at its fallback hour whatever anybody does (the floor
+# is guaranteed). Lit, carried JUNK put through its terminal goes to the
+# wallet the player logs in with, up to the shard's `extract_cap` a wipe, less
+# `extract_fee_pct`. While its tank burns, half as much again may leave (the
+# ceiling is contested). It eats JUNK to open, so the first coin out of the
+# island is the coin somebody put back in.
+[[work]]
+id = "work.exchange"
+name = "THE EXCHANGE"
+site = "town"
+nth = 0
+at = [0.0, 0.0, 6.0]
+act = 2
+opens_hour = 24
+fallback_hour = 72
+floor_unlock = "unlock.extraction"
+ceiling_unlock = "unlock.wide_gate"
+fuel = "item.lowgrade"
+fuel_max = 3000
+burn_per_hour = 100
+inputs = [
+    { item = "item.metal_frags", count = 8000 },
+    { item = "item.gears", count = 30 },
+    { item = "item.junk", count = 2000 },
+]
+
+[[effect]]
+unlock = "unlock.wide_gate"
+knob = "extract_pct"
+pct = 150
+
 # ── The ancients' script (`ARC.md` F6) ────────────────────────────────────
 # One glyph per character, fixed forever, so learning it is mastery that
 # lasts. A player learns glyphs by reading the stones that teach them; a

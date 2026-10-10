@@ -681,6 +681,7 @@ pub async fn spawn_shard(
             .or(cfg.save_file.as_deref())
             .map(std::path::PathBuf::from);
         let prizes = cfg.prizes.clone();
+        let exits = cfg.exits;
         // The trust log's tap rides the save boot artifact (`store::Saves`).
         let trust = saves.trust;
         std::thread::Builder::new()
@@ -698,6 +699,7 @@ pub async fn spawn_shard(
                     wipe,
                     standings_base,
                     prizes,
+                    exits,
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
@@ -1572,13 +1574,19 @@ fn store_thread(
         // the world before the thread notices its producers are gone.
         while let Ok(msg) = world_rx.pop() {
             idle = false;
-            match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
-                Ok(true) => ShardStats::bump(&stats.world_saves_written),
+            let ok = match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
+                Ok(true) => {
+                    ShardStats::bump(&stats.world_saves_written);
+                    true
+                }
                 // No file: nothing written, nothing counted — the same rule
                 // `SaveFile::write` states, and for the same reason.
-                Ok(false) => {}
-                Err(_) => ShardStats::bump(&stats.world_save_errors),
-            }
+                Ok(false) => true,
+                Err(_) => {
+                    ShardStats::bump(&stats.world_save_errors);
+                    false
+                }
+            };
             // The buffer goes home whatever happened. A write that failed
             // must not also cost the pool a buffer, or a shard with a full
             // disk would stop being *able* to save once the disk was fixed.
@@ -1586,7 +1594,7 @@ fn store_thread(
                 buf, mut idents, ..
             } = msg;
             idents.clear();
-            let _ = world_done_tx.push(WorldDone { buf, idents });
+            let _ = world_done_tx.push(WorldDone { buf, idents, ok });
         }
         while let Ok(msg) = write_rx.pop() {
             idle = false;
@@ -3209,6 +3217,7 @@ fn sim_thread(
     wipe: crate::wipe::Clock,
     standings_base: Option<std::path::PathBuf>,
     prizes: crate::standings::Prizes,
+    exits: crate::standings::Exits,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
@@ -3301,6 +3310,7 @@ fn sim_thread(
         standings_base.as_deref(),
         wipe.number(),
     );
+    core.standings.exits = exits;
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
     let mut watch = crate::anomaly::Watch::new();
@@ -3516,10 +3526,15 @@ fn sim_thread(
         if let Some((id, save)) = core.autosave() {
             push_save(&mut save_tx, id, None, save, &stats);
         }
-        // Buffers coming home from the store thread.
+        // Buffers coming home from the store thread — and with them the
+        // standings taken beside that save, now safe to write: a crash
+        // rolls the world and the credits back together.
         while let Ok(done) = world_done_rx.pop() {
             world_pool.push(done.buf);
             ident_pool.push(done.idents);
+            if done.ok {
+                core.standings.release();
+            }
         }
         // The world, on its cadence. Before the tick for the reason the
         // autosave sweep is: the blob is then the state the *previous* tick
@@ -3533,6 +3548,7 @@ fn sim_thread(
                 &mut world_tx,
                 &stats,
             );
+            core.standings.snapshot();
         }
         // The wipe clock, once a second off the wall clock (this loop is the
         // boundary: the clock read lives here, never in the tick). Before the
@@ -3548,13 +3564,13 @@ fn sim_thread(
             core.wipe_poll(now);
             ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
         }
-        // The standings, once a minute: every base recounted, the boards
-        // rebuilt, the file handed to its writer (`standings.rs`).
+        // The standings, once a minute: minutes played, every base
+        // recounted, the boards rebuilt (`standings.rs`). The file itself
+        // rides the world save, below.
         if core.world.tick % (60 * sim_core::limits::TICK_HZ as u64) == 13 {
             core.standings_minute();
             core.standings_recount();
             core.standings.rebuild();
-            core.standings.flush();
         }
         // Tick + publish. `Ops` is the tick's side channels (admin v0) —
         // the anomaly log, the kick ring and its answers, `/save`'s flag.

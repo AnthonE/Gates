@@ -301,6 +301,9 @@ pub struct WorldMsg {
 pub struct WorldDone {
     pub buf: Box<[u8]>,
     pub idents: Vec<(PlayerKey, u32)>,
+    /// The save landed (or there is no world file to land in): what the
+    /// standings taken beside it wait on (`standings::Standings::release`).
+    pub ok: bool,
 }
 
 /// Accept→storage thread: one record and where in the file it goes. The

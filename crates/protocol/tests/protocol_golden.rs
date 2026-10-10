@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 161] = [
+const GOLDEN: [&[u8]; 162] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -224,6 +224,7 @@ const GOLDEN: [&[u8]; 161] = [
     include_bytes!("golden/event_item_desc.bin"),
     include_bytes!("golden/action_fasttrack.bin"),
     include_bytes!("golden/event_standing.bin"),
+    include_bytes!("golden/event_bank.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -494,8 +495,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 159);
     // One standings board (v104).
     g!(seen, golden_event, 160);
+    // The way out through the exchange (v104).
+    g!(seen, golden_event, 161);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 161, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 162, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1219,6 +1222,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 other => panic!("{name}: wrong variant {other:?}"),
             }
             encode_event_slot_sync(reset, &cells, grubbed, &mut buf).unwrap()
+        }
+        "event_bank.bin" => {
+            let want = protocol::goldens::event_bank();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Bank(want),
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_bank(&want, &mut buf).unwrap()
         }
         "event_standing.bin" => {
             let want = protocol::goldens::event_standing();

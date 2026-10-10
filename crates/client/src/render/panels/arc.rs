@@ -18,7 +18,7 @@ use crate::render::feed::{Feed, Refused};
 use crate::ui::arc as words;
 use crate::ui::craft::item_label;
 use client_core::core::ClientCore;
-use sim_core::works::{ARG_ALL, OP_DEPOSIT, OP_FUEL, WORK_LIT, WORK_OPEN};
+use sim_core::works::{ARG_ALL, OP_DEPOSIT, OP_EXTRACT, OP_FUEL, WORK_LIT, WORK_OPEN};
 
 const WORK_W: f32 = 600.0;
 const ISLAND_W: f32 = 640.0;
@@ -148,6 +148,37 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                 11.0,
                 TEXT_DIM,
             );
+        }
+        if core.bank.work as usize == k {
+            // THE EXCHANGE: carried JUNK leaves for the wallet here.
+            let bank = core.bank;
+            let carry = have(bank.coin);
+            let (state, mine) = words::exit_lines(&bank);
+            kit::section(p, "THE WAY OUT");
+            kit::strong(p, state, 13.0, TEXT);
+            kit::row(p, |r| {
+                kit::cell(
+                    r,
+                    item_label(&core.catalog, bank.coin).to_uppercase(),
+                    150.0,
+                    TEXT,
+                );
+                kit::cell(r, format!("you carry {carry}"), 140.0, TEXT_DIM);
+                kit::cell(r, words::exit_room(&bank), 130.0, TEXT_DIM);
+                kit::button(
+                    r,
+                    "EXTRACT",
+                    ArcButton {
+                        op: OP_EXTRACT,
+                        target: k as u8,
+                        arg: 0,
+                    },
+                    words::can_extract(&bank, carry),
+                );
+            });
+            if !mine.is_empty() {
+                kit::line(p, mine, 11.0, LINE_HOT);
+            }
         }
         if let Some(share) = words::share_line(&w) {
             kit::strong(p, share, 12.0, LINE_HOT);
@@ -324,10 +355,10 @@ pub fn clicks(
         let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         match protocol::encode_action_arc(b.op, b.target, b.arg, &mut buf) {
             Ok(len) => match net.session.send_action(&buf[..len]) {
-                Ok(()) => ui.say(if b.op == OP_FUEL {
-                    "feeding it…"
-                } else {
-                    "giving it what you carry…"
+                Ok(()) => ui.say(match b.op {
+                    OP_FUEL => "feeding it…",
+                    OP_EXTRACT => "putting it through the exchange…",
+                    _ => "giving it what you carry…",
                 }),
                 Err(e) => ui.say(e.to_string()),
             },

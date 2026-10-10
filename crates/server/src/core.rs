@@ -61,7 +61,9 @@ use sim_core::world::{
     EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_WORK};
+use sim_core::world::{
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_WORK,
+};
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
 ///
@@ -323,6 +325,9 @@ pub struct ShardCore {
     standings_gen_seen: u32,
     /// Per slot, whether its tenant declared itself an agent.
     standings_agent: [bool; MAX_PLAYERS],
+    /// Per slot, its way out is owed (`SUB_BANK`): at join, after its own
+    /// extraction, and to everyone when the exchange changes.
+    bank_owed: [bool; MAX_PLAYERS],
 }
 
 /// Every standings board, one bit each (`protocol::STANDING_BOARDS`).
@@ -616,6 +621,7 @@ impl ShardCore {
             standings_owed: [0; MAX_PLAYERS],
             standings_gen_seen: 0,
             standings_agent: [false; MAX_PLAYERS],
+            bank_owed: [false; MAX_PLAYERS],
         }
     }
 
@@ -780,6 +786,7 @@ impl ShardCore {
         // Then the standings: last wipe, your hall, where you stand.
         self.standings_tell[slot] = self.world.tick + 7 * sim_core::limits::TICK_HZ as u64;
         self.standings_owed[slot] = STANDINGS_ALL;
+        self.bank_owed[slot] = true;
         let address = key.and_then(|k| protocol::Address::from_hex(k.as_bytes()));
         self.tags[slot] = match address {
             Some(address) if !address.is_guest() => TagRow {
@@ -810,6 +817,21 @@ impl ShardCore {
         if let Some(key) = self.key_str(slot) {
             self.standings.name(&key, name.as_str());
         }
+    }
+
+    /// How much JUNK `slot`'s wallet may still put through the exchange this
+    /// wipe: the shard's cap, raised while the exchange burns, less what it
+    /// already took. Zero for a guest.
+    fn extract_allowance(&self, slot: usize) -> u32 {
+        let Some(key) = self.key_str(slot) else {
+            return 0;
+        };
+        let pct = sim_core::works::knob_pct(
+            &self.world.works_def,
+            self.world.works.unlocks,
+            sim_core::works::KNOB_EXTRACT_PCT,
+        );
+        self.standings.allowance(&key, pct).min(u32::MAX as u64) as u32
     }
 
     /// Whether `slot`'s new tenant declared itself an agent (`HELLO_AGENT`).
@@ -875,26 +897,23 @@ impl ShardCore {
                         self.standings.gave(&k, &l, (ev.b >> 16) as u16, ev.c);
                     }
                 }
+                // The exchange opening, lighting or going to embers moves
+                // everyone's way out.
+                EV_WORK if Some(ev.a as usize) == self.exchange() => {
+                    self.bank_owed = [true; MAX_PLAYERS];
+                    if ev.b == WORK_EV_LIT || ev.b == WORK_EV_REKINDLED {
+                        self.note_work_deed(ev);
+                    }
+                }
                 EV_WORK if ev.b == WORK_EV_LIT || ev.b == WORK_EV_REKINDLED => {
-                    let Some((k, l)) = self.standing_who(ev.c) else {
-                        continue;
-                    };
-                    let name = self
-                        .work_names
-                        .get(ev.a as usize)
-                        .map_or("a work", |n| n.as_str());
-                    if ev.b == WORK_EV_LIT {
-                        let act = self
-                            .world
-                            .works_def
-                            .get(ev.a as usize)
-                            .map_or(1, |d| d.act.max(1)) as u64;
-                        let what = format!("lit {name}");
-                        let points = self.standings.rules.lit_points * act;
-                        self.standings.deed(&k, &l, points, Some(&what));
-                    } else {
-                        let points = self.standings.rules.rekindled_points;
-                        self.standings.deed(&k, &l, points, None);
+                    self.note_work_deed(ev);
+                }
+                EV_EXTRACTED => {
+                    if let Some((k, l)) = self.standing_who(ev.a) {
+                        self.standings.extracted(&k, &l, ev.c);
+                    }
+                    if let Some(slot) = self.client_slot_of(ev.a) {
+                        self.bank_owed[slot] = true;
                     }
                 }
                 EV_MECH_SOLVED => {
@@ -921,6 +940,88 @@ impl ShardCore {
                 _ => {}
             }
         }
+    }
+
+    /// A work lit or rekindled by a player (`EV_WORK`): the deed, on their
+    /// row. Lighting is worth more the later the work's act.
+    fn note_work_deed(&mut self, ev: sim_core::world::SimEvent) {
+        let Some((k, l)) = self.standing_who(ev.c) else {
+            return;
+        };
+        let name = self
+            .work_names
+            .get(ev.a as usize)
+            .map_or("a work", |n| n.as_str());
+        if ev.b == sim_core::works::WORK_EV_LIT {
+            let act = self
+                .world
+                .works_def
+                .get(ev.a as usize)
+                .map_or(1, |d| d.act.max(1)) as u64;
+            let what = format!("lit {name}");
+            let points = self.standings.rules.lit_points * act;
+            self.standings.deed(&k, &l, points, Some(&what));
+        } else {
+            let points = self.standings.rules.rekindled_points;
+            self.standings.deed(&k, &l, points, None);
+        }
+    }
+
+    /// The exchange's work index: the work whose floor opens extraction.
+    fn exchange(&self) -> Option<usize> {
+        let wc = &self.world.works_def;
+        if wc.extract_unlock == sim_core::works::NO_UNLOCK {
+            return None;
+        }
+        (0..wc.count as usize).find(|&k| wc.defs[k].floor == wc.extract_unlock)
+    }
+
+    /// `slot`'s way out, if owed (`SUB_BANK`). False when the ring refused
+    /// it: the rest of the drip waits too.
+    fn drip_bank(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        if !self.bank_owed.get(slot).copied().unwrap_or(false) {
+            return true;
+        }
+        let wc = &self.world.works_def;
+        let key = self.key_str(slot);
+        let pct = sim_core::works::knob_pct(
+            wc,
+            self.world.works.unlocks,
+            sim_core::works::KNOB_EXTRACT_PCT,
+        );
+        let wallet = key.as_deref().is_some_and(crate::standings::is_wallet);
+        let row = key.as_deref().and_then(|k| self.standings.row_of(k));
+        let clamp = |v: u64| v.min(u32::MAX as u64) as u32;
+        let view = protocol::BankView {
+            work: self.exchange().map_or(protocol::BANK_NO_WORK, |k| k as u8),
+            open: wc.extract_unlock != sim_core::works::NO_UNLOCK
+                && sim_core::works::holds(self.world.works.unlocks, wc.extract_unlock),
+            fee_pct: self.standings.exits.fee_pct.min(100) as u8,
+            coin: wc.coin,
+            cap: if wallet {
+                clamp(self.standings.cap(pct))
+            } else {
+                0
+            },
+            taken: row.map_or(0, |r| clamp(r.taken)),
+            credited: row.map_or(0, |r| clamp(r.extracted)),
+        };
+        match protocol::encode_event_bank(&view, &mut self.ev_buf) {
+            Ok(len) => {
+                if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    return false;
+                }
+                ShardStats::bump(&stats.ev_sent);
+            }
+            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+        }
+        self.bank_owed[slot] = false;
+        true
     }
 
     /// Count every base: its boxes' contents, its hearth's stock and the
@@ -1835,6 +1936,21 @@ impl ShardCore {
         // when it pressed is the one in force (`ClientNetState::hand_ready`).
         // Asked before the pace, so a wait does not start the kind's clock.
         let now = self.world.tick;
+        // What each extractor may still take out (`standings::allowance`),
+        // asked only for the slots holding one: the cap rides the command,
+        // because the sim knows no wallets.
+        let mut allowance = [0u32; MAX_PLAYERS];
+        for (slot, a) in allowance.iter_mut().enumerate() {
+            if matches!(
+                self.clients[slot].pending_action,
+                Some(ActionMsg::Arc {
+                    op: sim_core::works::OP_EXTRACT,
+                    ..
+                })
+            ) {
+                *a = self.extract_allowance(slot);
+            }
+        }
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
             if !c.connected || n == MAX_COMMANDS_PER_TICK {
@@ -2079,6 +2195,15 @@ impl ShardCore {
                         times,
                     },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
+                    ActionMsg::Arc {
+                        op: sim_core::works::OP_EXTRACT,
+                        target,
+                        ..
+                    } => Command::Extract {
+                        id: c.id,
+                        target,
+                        max: allowance.get(slot).copied().unwrap_or(0),
+                    },
                     ActionMsg::Arc { op, target, arg } => Command::Arc {
                         id: c.id,
                         op,
@@ -4673,7 +4798,7 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
-        if !self.drip_standing(slot, stats, send) {
+        if !self.drip_standing(slot, stats, send) || !self.drip_bank(slot, stats, send) {
             return;
         }
         let assist = self.live_wslot(slot).map_or((0, 0, 0), |wslot| {
@@ -7006,6 +7131,96 @@ mod tests {
         assert_eq!(works.ticker(), "ORBS");
         assert_eq!(&works.prizes[..works.n_prizes as usize], &[200, 100]);
         assert_eq!(works.my_prize, 200);
+    }
+
+    /// Extraction end to end: a wallet's EXTRACT becomes `Command::Extract`
+    /// carrying its allowance, the sim takes no more than that, the fee
+    /// burns, the wallet is credited, and `SUB_BANK` says so. A second try
+    /// past the cap takes nothing.
+    #[test]
+    fn extraction_credits_the_wallet_up_to_its_cap() {
+        use sim_core::gather::{GatherContent, ItemStack};
+        use sim_core::works::{WorksContent, ARG_ALL, OP_DEPOSIT, OP_EXTRACT, WORK_OPEN};
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        core.world.gather = GatherContent::probe_fixture();
+        let mut wc = WorksContent::probe_fixture();
+        wc.extract_unlock = 1;
+        wc.coin = 2;
+        core.world.works_def = wc;
+        core.standings.exits = crate::standings::Exits {
+            cap: 300,
+            fee_pct: 10,
+        };
+        let key = PlayerKey::new(format!("0x{:040x}", 0xb2).as_bytes()).unwrap();
+        let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();
+        assert!(core.connect_as(0, 256, Some(key), None).is_some());
+        core.tag_join(0, 256, Some(&key));
+        core.tick_bare(&stats, |_, _, _| true);
+        let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+        let spot = core.world.works_def.defs[0].spot;
+        let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
+        let p = &mut core.world.players[w];
+        p.body = sim_core::movement::Body::at(SEED, &core.world.haven, x, z);
+        let stack = |item, count| ItemStack {
+            item,
+            count,
+            cond: 0,
+            skin: 0,
+        };
+        p.inv[0] = stack(0, 6);
+        p.inv[1] = stack(1, 2);
+        p.inv[2] = stack(2, 500);
+        for _ in 0..sim_core::works::WORKS_PERIOD_TICKS {
+            if core.world.works.w[0].state == WORK_OPEN {
+                break;
+            }
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        assert!(core.queue(Command::Arc {
+            id: 256,
+            op: OP_DEPOSIT,
+            target: 0,
+            arg: ARG_ALL,
+        }));
+        core.tick_bare(&stats, |_, _, _| true);
+        let mut bank = None;
+        let mut run = |core: &mut ShardCore, ticks: u64| {
+            for _ in 0..ticks {
+                core.tick_bare(&stats, |lane, _, bytes| {
+                    if lane == Lane::Event {
+                        if let Ok(EventMsg::Bank(b)) = decode_event(bytes) {
+                            bank = Some(b);
+                        }
+                    }
+                    true
+                });
+            }
+        };
+        let extract = ActionMsg::Arc {
+            op: OP_EXTRACT,
+            target: 0,
+            arg: 0,
+        };
+        core.push_action(0, extract);
+        run(&mut core, 4);
+        let row = core.standings.row_of(&wallet).expect("credited");
+        assert_eq!((row.taken, row.extracted), (300, 270), "the cap, less 10%");
+        assert_eq!(
+            sim_core::craft::inv_count(&core.world.players[w].inv, 2),
+            200,
+            "the rest stays in the pack"
+        );
+        // Past the cap: the action goes through as a zero allowance.
+        core.push_action(0, extract);
+        run(&mut core, 2 * sim_core::limits::TICK_HZ as u64);
+        let row = core.standings.row_of(&wallet).unwrap();
+        assert_eq!(row.taken, 300, "nothing more left");
+        let b = bank.expect("the way out was dripped");
+        assert_eq!(
+            (b.work, b.open, b.fee_pct, b.cap, b.taken, b.credited),
+            (0, true, 10, 300, 300, 270)
+        );
     }
 
     /// Tags (v85): each player learns who every tagged player is, a name

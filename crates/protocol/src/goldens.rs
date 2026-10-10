@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 161] = [
+pub const FIXTURES: [&str; 162] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -290,6 +290,8 @@ pub const FIXTURES: [&str; 161] = [
     "action_fasttrack.bin",
     // One standings board (v104).
     "event_standing.bin",
+    // The way out through the exchange (v104).
+    "event_bank.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1128,6 +1130,20 @@ pub fn event_standing() -> crate::StandingBoard {
     b.my_minutes = 90;
     b.min_minutes = 120;
     b
+}
+
+/// The exchange is work 4, open, a 2% fee on item 9; 1,500 a wipe, 900
+/// put through, 882 credited (wire v104).
+pub fn event_bank() -> crate::BankView {
+    crate::BankView {
+        work: 4,
+        open: true,
+        fee_pct: 2,
+        coin: 9,
+        cap: 1_500,
+        taken: 900,
+        credited: 882,
+    }
 }
 
 /// Item 17's description line (wire v103).

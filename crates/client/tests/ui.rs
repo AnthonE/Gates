@@ -7290,3 +7290,34 @@ fn the_purse_says_what_it_pays_and_what_it_means_for_you() {
         Some("YOU WON 350 ORBS — it goes to your wallet")
     );
 }
+
+/// THE EXCHANGE's way out: shut, unarmed, room left, the limit reached; and
+/// EXTRACT lights only when something can actually leave.
+#[test]
+fn the_way_out_says_whether_anything_can_leave() {
+    use client::ui::arc::{can_extract, exit_lines, exit_room};
+    let mut b = protocol::BankView {
+        work: 4,
+        fee_pct: 2,
+        cap: 1_500,
+        ..protocol::BankView::default()
+    };
+    assert_eq!(exit_lines(&b).0, "NOTHING LEAVES UNTIL IT IS LIT");
+    assert!(!can_extract(&b, 10), "shut");
+    b.open = true;
+    assert_eq!(exit_lines(&b).0, "0 / 1,500 JUNK OUT THIS WIPE · FEE 2%");
+    assert_eq!(exit_room(&b), "1,500 more may leave");
+    assert!(can_extract(&b, 10));
+    assert!(!can_extract(&b, 0), "nothing carried");
+    b.taken = 1_500;
+    b.credited = 1_470;
+    assert_eq!(exit_room(&b), "your limit is reached");
+    assert!(!can_extract(&b, 10));
+    assert_eq!(
+        exit_lines(&b).1,
+        "1,470 JUNK credited — paid to your wallet after the wipe"
+    );
+    b.cap = 0;
+    b.taken = 0;
+    assert_eq!(exit_lines(&b).0, "THIS ISLAND PAYS NOTHING OUT");
+}

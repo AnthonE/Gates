@@ -1373,7 +1373,7 @@ pub struct Work {
 pub struct ArcEffect {
     pub unlock: String,
     /// A knob the sim knows: `smelt_pct`, `heal_pct`, `research_pct`,
-    /// `gather_pct` (`sim_core::works::KNOB_*`).
+    /// `gather_pct`, `extract_pct` (`sim_core::works::KNOB_*`).
     pub knob: String,
     pub pct: u16,
 }
