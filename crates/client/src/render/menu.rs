@@ -1060,9 +1060,13 @@ fn row(
                 .with_children(|n| {
                     n.spawn(ui::strong(listing.name.clone(), 18.0, ui::TEXT));
                     // Said before the click: this build would be refused at
-                    // the handshake (`REFUSE_VERSION`).
+                    // the handshake (`REFUSE_VERSION`). Which side moves
+                    // decides the words: a newer shard wants a newer game, an
+                    // older one is mid-release and will catch up.
                     if listing.needs_update() {
                         n.spawn(ui::strong("UPDATE NEEDED", 11.0, ui::MARK));
+                    } else if listing.server_updating() {
+                        n.spawn(ui::strong("SERVER UPDATING", 11.0, ui::DIM));
                     }
                 });
                 c.spawn(ui::label(listing.sub_line(now_unix), 12.0, ui::DIM));

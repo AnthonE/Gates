@@ -61,7 +61,7 @@ class Route:
 
 ROUTES = (
     Route("GET", "/api/launcher/servers/gates", "/launcher/servers/{slug}",
-          "client menu, browser shell", ("servers[].addr", "servers[].status_url"),
+          "client menu, browser shell", ("servers[].addr",),
           ("crates/client/src/shardlist.rs", "MAX_DOC_BYTES")),
     Route("GET", "/api/launcher/manifest/gates", "/launcher/manifest/{slug}",
           "client hub, ci/release.sh", ("builds[].platform", "store.url", "news.url"),
@@ -423,8 +423,14 @@ def self_test() -> int:
                   "no configured and no items"), "neither side fails")
     ok(fails_with(run(dict(good, **{"/api/launcher/servers/gates": {"servers": []}})), "servers is empty"),
        "an empty server list fails")
-    ok(fails_with(run(dict(good, **{"/api/launcher/servers/gates": {"servers": [{"addr": "a:1"}]}})),
-                  "no servers[0].status_url"), "a server row without status_url fails")
+    ok(run(dict(good, **{"/api/launcher/servers/gates": {"servers": [{"addr": "a:1"}]}})) == [],
+       "a server row without status_url passes: Gates draws it without a count")
+    ok(run(dict(good, **{"/api/launcher/servers/gates": {"servers": [{"addr": "a:1", "status_url": None}]}})) == [],
+       "and so does a null status_url")
+    ok(fails_with(run(dict(good, **{"/api/launcher/servers/gates": {"servers": [{"status_url": "https://a/s"}]}})),
+                  "no servers[0].addr"), "a server row without addr fails")
+    ok(fails_with(run(dict(good, **{"/api/launcher/servers/gates": {"servers": [{"addr": None}]}})),
+                  "servers[0].addr is null"), "a null addr fails")
 
     endpoints = [{"method": r.method, "path": r.template} for r in ROUTES if r.method == "GET"]
     ok(fails_with(run(good, endpoints), "POST /ticket/{game}/check is not in /api/catalog"),

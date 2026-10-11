@@ -158,12 +158,21 @@ impl Listing {
         before != seen(self)
     }
 
-    /// The shard speaks another wire than this build, so a join would be
-    /// refused at the handshake (`REFUSE_VERSION`). Unknown is not a
-    /// mismatch: a shard that does not say is not marked.
+    /// The shard speaks a NEWER wire than this build, so a join would be
+    /// refused at the handshake (`REFUSE_VERSION`) and updating the game is
+    /// what fixes it. Unknown is not a mismatch: a shard that does not say is
+    /// not marked.
     pub fn needs_update(&self) -> bool {
         self.proto
-            .is_some_and(|p| p != u32::from(protocol::PROTO_VER))
+            .is_some_and(|p| p > u32::from(protocol::PROTO_VER))
+    }
+
+    /// The shard speaks an OLDER wire than this build: it is the one behind,
+    /// mid-release, and updating the game would change nothing. Said the way
+    /// the browser page says it.
+    pub fn server_updating(&self) -> bool {
+        self.proto
+            .is_some_and(|p| p < u32::from(protocol::PROTO_VER))
     }
 
     /// `2 people, 1 agent` — the players split, when the shard says how many
@@ -180,13 +189,16 @@ impl Listing {
         ))
     }
 
-    /// `wipes in 3d` / `wipes in 5h` / `wipe due`, against `now_unix`.
-    /// `None` when the shard names no wipe (absent, or 0).
+    /// `wipes in 3d` / `wipes in 5h` / `wipes within the hour` / `wipe due`,
+    /// against `now_unix`. Floored, the browser page's rule too: `3d` is at
+    /// least three whole days. `None` when the shard names no wipe (absent,
+    /// or 0).
     pub fn wipe_in(&self, now_unix: u64) -> Option<String> {
         let at = self.next_wipe.filter(|&t| t > 0)?;
         Some(match at.saturating_sub(now_unix) {
             0 => "wipe due".to_string(),
-            left if left < 86_400 => format!("wipes in {}h", left.div_ceil(3_600)),
+            left if left < 3_600 => "wipes within the hour".to_string(),
+            left if left < 86_400 => format!("wipes in {}h", left / 3_600),
             left => format!("wipes in {}d", left / 86_400),
         })
     }

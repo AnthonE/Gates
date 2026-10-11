@@ -447,12 +447,18 @@ pub const SIWE_DOMAINS_MAX: usize = 4;
 /// host a client signs — a TOML array (`["a", "b"]`) included, since this
 /// parser is one `key = value` per line and would read its brackets and
 /// quotes as part of each name.
+///
+/// Lowercased on the way in: a page signs `location.hostname`, which a
+/// browser always reports lowercase, and the shard rebuilds the message byte
+/// for byte, so `Game.Example` as written could never match a signature.
 fn parse_siwe_domains(value: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::with_capacity(SIWE_DOMAINS_MAX);
     for entry in value.split(',').map(str::trim) {
         if entry.is_empty() {
             continue;
         }
+        let entry = entry.to_ascii_lowercase();
+        let entry = entry.as_str();
         if entry.len() > protocol::DOMAIN_MAX || !is_siwe_host(entry) {
             return Err(format!(
                 "siwe_domains names `{entry}`, which is not a bare host of 1..={} bytes \
@@ -1309,6 +1315,13 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     // which is `domain`. Leaving it out would refuse every desktop login as
     // a wrong signature, so it refuses the boot instead.
     if let (Some(list), Some(d)) = (&siwe_domains, &domain) {
+        if !list.contains(d) && list.iter().any(|e| e.eq_ignore_ascii_case(d)) {
+            return Err(format!(
+                "shard.toml: domain `{d}` has capitals, and siwe_domains is read lowercase \
+                 (a browser signs its hostname lowercase) — write `domain` lowercase, as \
+                 players dial it"
+            ));
+        }
         if !list.contains(d) {
             return Err(format!(
                 "shard.toml: siwe_domains must name `{d}` (the `domain` key, or the bind \
@@ -1505,6 +1518,13 @@ mod tests {
         let cfg =
             parse_shard_toml(&format!("{base}siwe_domains = \"127.0.0.1, [::1]\"\n")).unwrap();
         assert_eq!(cfg.siwe_accepts(), ["127.0.0.1", "[::1]"]);
+        // Capitals are read lowercase: a browser signs its hostname that way,
+        // so a capital as written could never match a signature.
+        let cfg = parse_shard_toml(&format!(
+            "{named}siwe_domains = \"Game.Example, EXAMPLE\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.siwe_accepts(), ["game.example", "example"]);
         for bad in [
             // the TOML array this parser cannot read
             "siwe_domains = [\"game.example\", \"example\"]\n",
@@ -1513,6 +1533,11 @@ mod tests {
             "siwe_domains = \"game.example:61234\"\n",
             "siwe_domains = \"https://game.example\"\n",
             "siwe_domains = \"game.example, game.example\"\n",
+            // the same host twice once lowercased
+            "siwe_domains = \"game.example, Game.Example\"\n",
+            // lowercasing is not a licence for anything else
+            "siwe_domains = \"Game.Example:61234\"\n",
+            "siwe_domains = \"game.example, ex ample\"\n",
             "siwe_domains = \"game.example, a, b, c, d\"\n",
             "siwe_domains = \"\"\n",
             "siwe_domains = \" , \"\n",
@@ -1525,6 +1550,11 @@ mod tests {
             parse_shard_toml(&format!("{base}siwe_domains = \"example\"\n")).is_err(),
             "the bind-host default counts as `domain` and must be listed too"
         );
+        let capital = parse_shard_toml(&format!(
+            "{base}domain = \"Game.Example\"\nsiwe_domains = \"Game.Example\"\n"
+        ))
+        .unwrap_err();
+        assert!(capital.contains("lowercase"), "{capital}");
     }
 
     #[test]

@@ -258,12 +258,15 @@ function population(r, kind) {
   if (agents > 0) bits.push(plural(agents, "agent"));
   return bits.join(" · ");
 }
-/* "wipes in 3d": `next_wipe` is unix seconds, 0 for none (`server::wipe`). */
+/* "wipes in 3d": `next_wipe` is unix seconds, 0 for none (`server::wipe`).
+   Floored, the desktop list's rule too (`ui::servers::Listing::wipe_in`):
+   "3d" is at least three whole days. */
 function wipeIn(r) {
-  const left = r.nextWipe > 0 ? r.nextWipe - Date.now() / 1000 : 0;
-  if (left <= 0) return null;
-  return left >= 86400 ? `wipes in ${Math.round(left / 86400)}d`
-    : left >= 3600 ? `wipes in ${Math.round(left / 3600)}h` : "wipes within the hour";
+  if (!(r.nextWipe > 0)) return null;
+  const left = Math.floor(r.nextWipe - Date.now() / 1000);
+  return left <= 0 ? "wipe due"
+    : left >= 86400 ? `wipes in ${Math.floor(left / 86400)}d`
+    : left >= 3600 ? `wipes in ${Math.floor(left / 3600)}h` : "wipes within the hour";
 }
 
 /* **The shard's wire against the page's.** A shard on another `PROTO_VER`
@@ -1036,6 +1039,10 @@ async function join(kind, audio, identity) {
     if (code === REFUSE_VERSION && skewOf(row) === "older") {
       /* The shard is the one behind: a reload would change nothing. */
       say("This server is updating to the new Gates. Try again in a few minutes.", "bad", line);
+    } else if (code === REFUSE_VERSION && skewOf(row) === "newer" && reloadedFor(row)) {
+      /* Already reloaded for this wire and still behind: the shard moved
+         before the browser build was published. Another reload is the loop. */
+      say("Gates just updated. The browser version follows soon. Try again in a few minutes.", "bad", line);
     } else if (code !== null || walletAsked || !(e instanceof Error) || !(row && row.statusUrl)) {
       say(raw, "bad", line);
     } else {

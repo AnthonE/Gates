@@ -3694,7 +3694,8 @@ fn a_row_says_its_wire_its_wipe_and_who_is_on_it() {
     assert_eq!(row.wipe_in(0), None);
     assert_eq!(row.sub_line(0), "h:1");
 
-    // Another wire is "update needed"; this build's is not.
+    // A newer wire is "update needed"; an older one is the shard catching
+    // up, which no update of ours fixes; this build's is neither.
     let doc = |proto: u16| {
         format!(
             r#"{{"players":3,"agents":1,"max_players":100,"proto":{proto},"next_wipe":1000000}}"#
@@ -3702,23 +3703,39 @@ fn a_row_says_its_wire_its_wipe_and_who_is_on_it() {
     };
     let other = client::shardlist::parse_status(doc(protocol::PROTO_VER + 1).as_bytes()).unwrap();
     assert!(row.apply_status(&other), "a new wire must redraw");
-    assert!(row.needs_update());
+    assert!(row.needs_update() && !row.server_updating());
+    let older = client::shardlist::parse_status(doc(protocol::PROTO_VER - 1).as_bytes()).unwrap();
+    row.apply_status(&older);
+    assert!(!row.needs_update() && row.server_updating());
     let same = client::shardlist::parse_status(doc(protocol::PROTO_VER).as_bytes()).unwrap();
     row.apply_status(&same);
-    assert!(!row.needs_update());
+    assert!(!row.needs_update() && !row.server_updating());
 
     // People and agents apart, and the total still in the PLAYERS column.
     assert_eq!(row.crowd().as_deref(), Some("2 people, 1 agent"));
     assert_eq!(row.population(), "3/100");
 
-    // The wipe, counted down from now.
+    // The wipe, counted down from now and floored, as the browser page
+    // does: `3d` is at least three whole days.
     assert_eq!(
         row.wipe_in(1_000_000 - 3 * 86_400).as_deref(),
         Some("wipes in 3d")
     );
     assert_eq!(
-        row.wipe_in(1_000_000 - 5 * 3_600 + 1).as_deref(),
+        row.wipe_in(1_000_000 - 4 * 86_400 + 1).as_deref(),
+        Some("wipes in 3d")
+    );
+    assert_eq!(
+        row.wipe_in(1_000_000 - 5 * 3_600).as_deref(),
         Some("wipes in 5h")
+    );
+    assert_eq!(
+        row.wipe_in(1_000_000 - 5 * 3_600 + 1).as_deref(),
+        Some("wipes in 4h")
+    );
+    assert_eq!(
+        row.wipe_in(1_000_000 - 3_599).as_deref(),
+        Some("wipes within the hour")
     );
     assert_eq!(row.wipe_in(1_000_000).as_deref(), Some("wipe due"));
     assert_eq!(

@@ -171,8 +171,9 @@ pub struct Status {
     #[serde(default)]
     pub tick: u64,
     /// `protocol::PROTO_VER` on the shard. Another number than this build's
-    /// is a handshake `REFUSE_VERSION`, so the row says "update needed"
-    /// before the player clicks rather than after.
+    /// is a handshake `REFUSE_VERSION`, so the row says so before the player
+    /// clicks rather than after: "update needed" when the shard is newer,
+    /// "server updating" when it is the one behind.
     #[serde(default)]
     pub proto: Option<u32>,
     /// Unix seconds of the next wipe; 0 is "none scheduled".
@@ -202,7 +203,7 @@ pub fn parse_status(bytes: &[u8]) -> Result<Status, String> {
     if !v.is_object() {
         return Err("status: top level is not an object".into());
     }
-    let s: Status = serde_json::from_value(v).map_err(|e| format!("status: {e}"))?;
+    let mut s: Status = serde_json::from_value(v).map_err(|e| format!("status: {e}"))?;
     // A shard reporting more players than it can hold is broken or hostile,
     // and the row it would draw (`412/100`) is nonsense either way. Refuse it
     // rather than render it — the row keeps its previous, honest count.
@@ -215,11 +216,11 @@ pub fn parse_status(bytes: &[u8]) -> Result<Status, String> {
             s.players, s.max_players
         ));
     }
-    // Same rule one level down: agents are a share of the players, so more
-    // agents than players is a document that cannot be drawn honestly.
-    if let Some(a) = s.agents.filter(|&a| a > s.players) {
-        return Err(format!("status: {a} agents among {} players", s.players));
-    }
+    // Agents are a share of the players. The shard reads the two counts as
+    // separate loads, so one can land either side of a join and a document
+    // can briefly say more agents than players: clamp, as the browser page
+    // does, rather than drop a count that is otherwise good.
+    s.agents = s.agents.map(|a| a.min(s.players));
     Ok(s)
 }
 
@@ -606,8 +607,9 @@ mod tests {
         assert_eq!(st.proto, Some(104));
         assert_eq!(st.next_wipe, Some(1_790_000_000));
         assert_eq!(st.agents, Some(1));
-        // More agents than players is not a count anyone can draw.
-        assert!(parse_status(br#"{"players":1,"agents":2,"max_players":100}"#).is_err());
+        // More agents than players is two loads straddling a join: clamped.
+        let st = parse_status(br#"{"players":1,"agents":2,"max_players":100}"#).unwrap();
+        assert_eq!((st.players, st.agents), (1, Some(1)));
         assert!(parse_status(br#"{"players":1,"proto":"104","max_players":100}"#).is_err());
     }
 
