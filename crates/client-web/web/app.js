@@ -81,7 +81,7 @@ const say = (text, cls, el = status) => {
   el.removeAttribute("title");
 };
 /* Where a link to the game points, whichever host this copy is served from. */
-const GAME_URL = "https://elopros.com/games/gates/";
+const GAME_URL = "https://elopros.com/games/gates/play/";
 /* `protocol::REFUSE_VERSION`: the one refusal code the page itself reads. */
 const REFUSE_VERSION = 0;
 
