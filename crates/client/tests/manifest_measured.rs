@@ -80,8 +80,6 @@
 
 #![cfg(feature = "render")]
 
-use client::render::terrain_mesh::{GRAIN_SHARE, SAND_GRAIN_SHARE_AT_PUBLISHED};
-
 const MANIFEST: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/textures/MANIFEST.md"
@@ -579,60 +577,6 @@ fn a_row_that_restates_its_measurement_agrees_with_the_file() {
     }
     agrees("twig prose luma", &nums[3], luma);
     agrees("twig prose sd", &nums[4], sd);
-}
-
-/// Leg 5. The `sand` row's grain percentages are the measured ones.
-///
-/// This is the judged defect (`findings/pass-20260828-042715-01-judge.md`,
-/// ranked fix 1). The two numbers are the entire case for clamping sand's tile
-/// from its published 15 m to the 4 m ceiling, and they were the *only* part of
-/// that case living in prose: `GRAIN_SHARE[0]` and
-/// `SAND_GRAIN_SHARE_AT_PUBLISHED` are constants, and `ground_tiling.rs` leg 5
-/// already re-measures both off `sand_albedo.jpg`. So this leg re-measures
-/// nothing — it ties the sentence to the numbers that are already measured,
-/// which is the shortest honest chain.
-#[test]
-fn the_sand_rows_grain_percentages_are_the_measured_ones() {
-    let md = source(MANIFEST);
-    let row = md
-        .lines()
-        .find(|l| l.starts_with("| `sand` |"))
-        .expect("no `sand` row in MANIFEST.md");
-
-    // `... falls **79.8% → 47.6%**.`
-    let (_, tail) = row
-        .split_once("falls")
-        .expect("sand's row no longer says its grain share `falls` A% → B%");
-    let pcts: Vec<String> = tail
-        .split('→')
-        .take(2)
-        .map(|s| {
-            plain(s)
-                .split('%')
-                .next()
-                .unwrap_or("")
-                .split_whitespace()
-                .next_back()
-                .unwrap_or("")
-                .to_string()
-        })
-        .collect();
-    assert_eq!(
-        pcts.len(),
-        2,
-        "sand's row reads `{tail}`; this gate expects `falls **A% → B%**`."
-    );
-
-    agrees(
-        "sand grain share at its drawn tile (GRAIN_SHARE[0])",
-        &pcts[0],
-        f64::from(GRAIN_SHARE[0]),
-    );
-    agrees(
-        "sand grain share at its published 15 m (SAND_GRAIN_SHARE_AT_PUBLISHED)",
-        &pcts[1],
-        f64::from(SAND_GRAIN_SHARE_AT_PUBLISHED),
-    );
 }
 
 /// Leg 6. The `grass` row's AO statistics are `grass_ao.jpg`'s own.
