@@ -108,7 +108,8 @@ use sim_core::world::{
     TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE,
+    EV_STUMP_GRUBBED, EV_WORK,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -1493,6 +1494,29 @@ fn stump_grubbed_names_the_cell() {
         0,
         "a grub is not a second fell"
     );
+}
+
+/// `EV_NODE_STAGE: a = cell key, b = stage, c = terrain occupant ordinal`, on
+/// a stone node's first crumble. Three different numbers from three spaces,
+/// so a swap of any two shows.
+#[test]
+fn node_stage_names_the_cell_then_the_stage_then_the_occupant() {
+    let mut w = duel_world();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::StoneNode);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    until_looking(&mut w, EV_NODE_STAGE, 0);
+    let ev = only(&w, EV_NODE_STAGE);
+    assert_eq!(ev.a, cell_key(cx, cz), "EV_NODE_STAGE.a is the cell key");
+    assert_eq!(
+        ev.b, 1,
+        "EV_NODE_STAGE.b is the stage: the first crumble is 1"
+    );
+    assert_eq!(
+        ev.c,
+        terrain::Occupant::StoneNode as u32,
+        "EV_NODE_STAGE.c is the occupant ordinal"
+    );
+    assert_eq!(count(&w, EV_SLOT_HARVESTED), 0, "a crumble is not a break");
 }
 
 /// `EV_BAG_DROPPED: a = backpack id, b = the player whose body it came off`.
@@ -4365,8 +4389,9 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 62] = [
+    const COVERED: [(&str, u8); 63] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_NODE_STAGE", EV_NODE_STAGE),
         ("EV_EXTRACTED", EV_EXTRACTED),
         ("EV_GAVE", EV_GAVE),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),

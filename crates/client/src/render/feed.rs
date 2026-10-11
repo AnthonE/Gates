@@ -302,6 +302,10 @@ pub struct Feed {
     /// wire v76), by tagged roster id. A sound and nothing else.
     howls: [u32; FEED_CAP],
     n_howls: usize,
+    /// Ore nodes that crumbled or broke this frame (`ClientCore::pop_crumble`,
+    /// wire v105): (cell key, stage), `ORE_STAGES` for a break.
+    crumbles: [(u32, u8); FEED_CAP],
+    n_crumbles: usize,
     /// Other bodies' hands heard this frame (`EventMsg::Heard`, wire v93):
     /// (body id, `protocol::DEED_*`, item). A sound and nothing else.
     heard: [(u32, u8, u16); FEED_CAP],
@@ -418,6 +422,11 @@ impl Feed {
     /// Animals that called their pack this frame, oldest first.
     pub fn howls(&self) -> &[u32] {
         &self.howls[..self.n_howls]
+    }
+
+    /// Ore nodes that crumbled (or broke, at `ORE_STAGES`) this frame.
+    pub fn crumbles(&self) -> &[(u32, u8)] {
+        &self.crumbles[..self.n_crumbles]
     }
 
     /// Other bodies' deeds heard this frame, oldest first: (body id,
@@ -538,6 +547,7 @@ impl Feed {
         self.n_impacts = 0;
         self.n_swings = 0;
         self.n_howls = 0;
+        self.n_crumbles = 0;
         self.n_heard = 0;
         self.n_sentry_locks = 0;
         self.n_placed = 0;
@@ -765,6 +775,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_howls;
             feed.howls[n] = h;
             feed.n_howls += 1;
+        }
+    }
+    while let Some(c) = core.pop_crumble() {
+        if feed.n_crumbles >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_crumbles;
+            feed.crumbles[n] = c;
+            feed.n_crumbles += 1;
         }
     }
     while let Some(h) = core.pop_heard() {

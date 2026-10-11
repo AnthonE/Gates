@@ -31,6 +31,9 @@ pub enum Layer {
     Fireball,
     /// The little grey breath a muzzle puts out.
     GunSmoke,
+    /// A big slow cloud in the struck matter's colour: what a rock coming
+    /// apart leaves hanging.
+    Plume,
 }
 
 impl Layer {
@@ -374,6 +377,22 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.6,
             ..base
         },
+        Layer::Plume => Spec {
+            cells: 3,
+            speed: (0.5, 2.0),
+            spray: 0.5,
+            up: 0.5,
+            gravity: -0.12,
+            drag: 2.2,
+            life: (1.4, 2.4),
+            size: (0.14, 0.24),
+            grow: 4.0,
+            c0: [0.95, 0.95, 0.95, 0.42],
+            c1: [1.05, 1.05, 1.05, 0.0],
+            tinted: true,
+            spin: 0.4,
+            ..base
+        },
         Layer::Fireball => Spec {
             cell: GLOW,
             speed: (1.0, 4.0),
@@ -399,9 +418,15 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 /// `matter`. Sparks and grit bounce once off the plane through `at` facing
 /// `dir` — the surface they came off.
 pub fn emit(pool: &mut Pool, layer: Layer, n: usize, at: Vec3, dir: Vec3, matter: Matter) {
+    emit_tint(pool, layer, n, at, dir, dust_tint(matter));
+}
+
+/// [`emit`] in a colour of the caller's rather than a matter's: sulfur's
+/// yellow, a metal node's rust. A layer that is not tinted ignores it.
+pub fn emit_tint(pool: &mut Pool, layer: Layer, n: usize, at: Vec3, dir: Vec3, tint: Color) {
     let s = spec(layer);
     let tint = if s.tinted {
-        dust_tint(matter).to_linear().to_f32_array_no_alpha()
+        tint.to_linear().to_f32_array_no_alpha()
     } else {
         [1.0; 3]
     };

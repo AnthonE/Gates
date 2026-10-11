@@ -130,6 +130,13 @@ pub struct Removed {
 /// drawing.
 pub const SWING_RING: usize = 8;
 
+/// Ore node crumbles held between two frames: `(cell key, stage)`, where
+/// `sim_core::gather::ORE_STAGES` means the slot broke (every live
+/// `SlotHarvested` lands here too; the renderer knows which cells are ore).
+/// A node crumbles at most every few swings, so sixteen is a crowd mining.
+/// Drop-oldest, the swing ring's policy.
+pub const CRUMBLE_RING: usize = 16;
+
 /// Pack calls held between two frames (`EventMsg::Howl`). A wolf howls at
 /// most once in twenty seconds, so eight is a whole pack's worth with room.
 /// Drop-oldest, the swing ring's policy: a howl is a sound, and the newest
@@ -515,6 +522,10 @@ pub struct HarvestedSet {
     /// One bit per felled tree whose stump was grubbed out (wire v101):
     /// harvested, and nothing standing. Cleared with the harvested bit.
     grubbed: Box<[u64]>,
+    /// A worn ore node's stage (wire v105), two bits a cell over two
+    /// bitsets. Cleared when the slot breaks or stands back up.
+    stage_lo: Box<[u64]>,
+    stage_hi: Box<[u64]>,
     /// The tick growth is measured at: the predictor's, stamped before each
     /// step so a sapling collides here exactly as the server sizes it.
     now: u32,
@@ -547,6 +558,8 @@ impl HarvestedSet {
             grow_len: 0,
             growing_bits: vec![0; WORDS].into_boxed_slice(),
             grubbed: vec![0; WORDS].into_boxed_slice(),
+            stage_lo: vec![0; WORDS].into_boxed_slice(),
+            stage_hi: vec![0; WORDS].into_boxed_slice(),
             now: 0,
         }
     }
@@ -623,6 +636,28 @@ impl HarvestedSet {
         test_bit(&self.cells, key)
     }
 
+    /// The stage the ore node at `key` is drawn at: 0 whole, up to
+    /// `sim_core::gather::ORE_STAGES - 1`.
+    pub fn stage(&self, key: u32) -> u8 {
+        test_bit(&self.stage_lo, key) as u8 | (test_bit(&self.stage_hi, key) as u8) << 1
+    }
+
+    fn set_stage(&mut self, key: u32, stage: u8) {
+        let Some((w, m)) = bit(key) else {
+            return;
+        };
+        self.stage_lo[w] = if stage & 1 != 0 {
+            self.stage_lo[w] | m
+        } else {
+            self.stage_lo[w] & !m
+        };
+        self.stage_hi[w] = if stage & 2 != 0 {
+            self.stage_hi[w] | m
+        } else {
+            self.stage_hi[w] & !m
+        };
+    }
+
     /// The felled tree at `key` has had its stump grubbed out.
     pub fn grubbed(&self, key: u32) -> bool {
         test_bit(&self.grubbed, key)
@@ -642,6 +677,8 @@ impl HarvestedSet {
             self.cells[w] |= m;
             self.len += 1;
         }
+        self.stage_lo[w] &= !m;
+        self.stage_hi[w] &= !m;
     }
 
     fn remove(&mut self, key: u32) {
@@ -653,12 +690,16 @@ impl HarvestedSet {
             self.len -= 1;
         }
         self.grubbed[w] &= !m;
+        self.stage_lo[w] &= !m;
+        self.stage_hi[w] &= !m;
     }
 
     fn clear(&mut self) {
         self.cells.fill(0);
         self.growing_bits.fill(0);
         self.grubbed.fill(0);
+        self.stage_lo.fill(0);
+        self.stage_hi.fill(0);
         self.len = 0;
         self.grow_len = 0;
     }
@@ -1970,6 +2011,10 @@ pub struct ClientCore {
     swings: [u32; SWING_RING],
     swing_head: usize,
     swing_len: usize,
+    /// Ore nodes that just crumbled or broke (`CRUMBLE_RING`).
+    crumbles: [(u32, u8); CRUMBLE_RING],
+    crumble_head: usize,
+    crumble_len: usize,
     /// Tagged roster ids of animals that howled for their pack.
     howls: [u32; HOWL_RING],
     howl_head: usize,
@@ -2252,6 +2297,9 @@ impl ClientCore {
             swings: [0; SWING_RING],
             swing_head: 0,
             swing_len: 0,
+            crumbles: [(0, 0); CRUMBLE_RING],
+            crumble_head: 0,
+            crumble_len: 0,
             howls: [0; HOWL_RING],
             locks: [(0, 0); LOCK_RING],
             lock_head: 0,
@@ -2483,6 +2531,7 @@ impl ClientCore {
                 flags |= APPLIED_INV;
             }
             EventMsg::SlotHarvested { cx, cz } => {
+                self.push_crumble(cell_key(cx, cz), sim_core::gather::ORE_STAGES);
                 self.harvested.insert(cell_key(cx, cz));
                 // A sapling felled is a stump again.
                 self.harvested.unset_grow(cell_key(cx, cz));
@@ -2516,6 +2565,15 @@ impl ClientCore {
             EventMsg::ItemDesc { item, len, text } => {
                 // The decoder bounded both, so this cannot refuse.
                 let _ = self.item_descs.set(item as usize, &text[..len as usize]);
+            }
+            EventMsg::NodeStage { live, cells, count } => {
+                for &(cx, cz, st) in cells.iter().take(count as usize) {
+                    self.harvested.set_stage(cell_key(cx, cz), st);
+                    if live {
+                        self.push_crumble(cell_key(cx, cz), st);
+                    }
+                }
+                flags |= APPLIED_SLOTS;
             }
             EventMsg::StumpGrubbed { cx, cz } => {
                 self.harvested.grub(cell_key(cx, cz));
@@ -4062,6 +4120,28 @@ impl ClientCore {
         Some(h)
     }
 
+    fn push_crumble(&mut self, key: u32, stage: u8) {
+        if self.crumble_len == CRUMBLE_RING {
+            self.crumble_head = (self.crumble_head + 1) % CRUMBLE_RING;
+            self.crumble_len -= 1;
+        }
+        self.crumbles[(self.crumble_head + self.crumble_len) % CRUMBLE_RING] = (key, stage);
+        self.crumble_len += 1;
+    }
+
+    /// Oldest buffered crumble: an ore node's cell key and the stage it just
+    /// reached, `ORE_STAGES` for a slot that broke. Drained once a frame by
+    /// `render::feed`, like every ring here.
+    pub fn pop_crumble(&mut self) -> Option<(u32, u8)> {
+        if self.crumble_len == 0 {
+            return None;
+        }
+        let c = self.crumbles[self.crumble_head];
+        self.crumble_head = (self.crumble_head + 1) % CRUMBLE_RING;
+        self.crumble_len -= 1;
+        Some(c)
+    }
+
     /// Oldest buffered pack call: the tagged roster id of the animal that
     /// howled. Drained once a frame by `render::feed`, like every ring here.
     pub fn pop_howl(&mut self) -> Option<u32> {
@@ -5350,6 +5430,34 @@ mod tests {
             c.on_stream(&buf[..len]).unwrap();
         }
         assert_eq!(c.pop_toast(), Some((2, 1)), "two oldest dropped");
+    }
+
+    #[test]
+    fn node_stages_crumble_live_and_clear_when_the_slot_breaks() {
+        use protocol::encode_event_node_stage;
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (a, b) = (cell_key(10, 20), cell_key(11, 21));
+        // The join walk says what was already so: drawn, but no burst.
+        let len = encode_event_node_stage(false, &[(10, 20, 2)], &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_SLOTS);
+        assert_eq!(c.harvested.stage(a), 2);
+        assert_eq!(c.pop_crumble(), None);
+        // A live crumble is both.
+        let len = encode_event_node_stage(true, &[(11, 21, 3)], &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.harvested.stage(b), 3);
+        assert_eq!(c.harvested.stage(a), 2, "a neighbour's bits are its own");
+        assert_eq!(c.pop_crumble(), Some((b, 3)));
+        // The break clears the stage and is a crumble past the last one.
+        let len = encode_event_slot_change(true, 11, 21, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.harvested.stage(b), 0);
+        assert_eq!(c.pop_crumble(), Some((b, sim_core::gather::ORE_STAGES)));
+        // And a respawn stands it back up whole.
+        let len = encode_event_slot_change(false, 10, 20, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.harvested.stage(a), 0);
     }
 
     #[test]

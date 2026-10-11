@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 162] = [
+pub const FIXTURES: [&str; 163] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -292,6 +292,8 @@ pub const FIXTURES: [&str; 162] = [
     "event_standing.bin",
     // The way out through the exchange (v104).
     "event_bank.bin",
+    // Ore nodes crumbled past a stage (v105).
+    "event_node_stage.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1079,6 +1081,18 @@ pub fn event_slot_change() -> (u16, u16) {
 
 /// The tick a golden sapling is full-grown by (tree growth v0).
 pub const EVENT_SLOT_GROWN_AT: u32 = 0x0A0B_0C0D;
+
+/// A full batch of worn ore nodes, at the cap, every stage among them.
+pub fn event_node_stage() -> [(u16, u16, u8); crate::NODE_STAGE_BATCH] {
+    let mut rng = Pcg32::new(0x004e_4f44_4553, 23);
+    core::array::from_fn(|i| {
+        (
+            rng.next_bounded(256) as u16,
+            rng.next_bounded(256) as u16,
+            (i % sim_core::gather::ORE_STAGES as usize) as u8,
+        )
+    })
+}
 
 /// A full batch of regrowing trees, at the cap.
 pub fn event_slot_grow_sync() -> [(u16, u16, u32); crate::GROW_SYNC_BATCH] {

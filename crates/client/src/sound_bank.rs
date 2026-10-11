@@ -115,6 +115,8 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::Flyby, takes!("freesound", "flyby", 0 1 2 3)),
     (Cue::Blast, takes!("freesound", "blast", 0 1 2)),
     (Cue::Collapse, takes!("freesound", "collapse", 0 1)),
+    (Cue::OreCrumble, takes!("freesound", "ore_crumble", 0 1 2)),
+    (Cue::OreGlint, takes!("kenney", "ore_glint", 0 1)),
     (Cue::TreeFall, takes!("freesound", "tree_fall", 0 1)),
     (Cue::Thunder, takes!("freesound", "thunder", 0 1 2)),
     (Cue::Splash, takes!("freesound", "splash", 0 1 2)),
@@ -181,6 +183,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteBowDraw => Cue::BowDraw,
         Cue::RemoteBrush => Cue::Brush,
         Cue::HurtAgain => Cue::Hurt,
+        Cue::OreBreak => Cue::Collapse,
         c => c,
     }
 }

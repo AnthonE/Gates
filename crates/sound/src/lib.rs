@@ -397,11 +397,20 @@ pub enum Cue {
     /// a per-row cooldown binds inside a frame, so two blows asked of one row
     /// are one voice; it keeps Hurt's clock across frames ([`Cue::lead`]).
     HurtAgain,
+    /// An ore node crumbling past a stage (wire v105): a short rattle of rock
+    /// coming off it, at the node. Masks the look changing, the reference's
+    /// own trick. Appended, the enum's append-order rule.
+    OreCrumble,
+    /// An ore node's last hit: the whole thing coming apart, at the node.
+    /// [`Cue::Collapse`]'s debris crash, by its own row.
+    OreBreak,
+    /// A blow that landed on the node's hotspot: a bright tink, at the node.
+    OreGlint,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 95;
+pub const CUE_COUNT: usize = 98;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -505,6 +514,9 @@ impl Cue {
         Cue::TorchOut,
         Cue::Bellow,
         Cue::HurtAgain,
+        Cue::OreCrumble,
+        Cue::OreBreak,
+        Cue::OreGlint,
     ];
 
     /// Is this cue a piece of music?
@@ -641,7 +653,12 @@ impl Cue {
             | Cue::RemoteEquip
             | Cue::RemoteLand
             | Cue::RemoteSplash
-            | Cue::RemoteBowDraw => 0.07,
+            | Cue::RemoteBowDraw
+            | Cue::OreCrumble
+            | Cue::OreBreak => 0.07,
+            // The bonus answering you: nearly a symbol, but struck on rock,
+            // and two in a row in unison would ring.
+            Cue::OreGlint => 0.03,
             // A different handful of leaves every stride.
             Cue::Brush | Cue::RemoteBrush => 0.12,
             // A fire never crackles the same twice, and a bullet's whiz is
@@ -1038,6 +1055,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 60.0, 0.55, 400, 2, true),   // bellow
     // The second blow in a frame: Hurt's row, read off it (`Cue::lead`).
     HURT,
+    // Mining: a node crumbling and breaking carry like the blow that did it,
+    // the break a little further; the glint is a reward, heard close.
+    row(GAME, 40.0, 0.62, 120, 4, true),   // ore crumble
+    row(GAME, 56.0, 0.80, 200, 5, true),   // ore break
+    row(GAME, 24.0, 0.55,  60, 5, true),   // ore glint
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

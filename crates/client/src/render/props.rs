@@ -2849,6 +2849,12 @@ pub fn spawn_slot(
         if let Some(skin) = skin {
             c.entity(id).insert(skin);
         }
+        // An ore node crumbles through stages as it is mined (`ore.rs`).
+        if let Some(kind) = super::ore::OreKind::of(slot.occupant) {
+            let foot = transform.translation - Vec3::Y * super::ore::MESH_HALF_H_M * slot.scale;
+            c.entity(id)
+                .insert(super::ore::OreNode::new(key, kind, foot, slot.scale, yaw));
+        }
         if let Some(span) = regrow {
             c.entity(id).insert(Grow {
                 base: slot.scale,

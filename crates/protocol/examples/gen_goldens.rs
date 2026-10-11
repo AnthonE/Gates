@@ -213,6 +213,10 @@ fn main() {
     // The way out through the exchange (v104).
     let len = protocol::encode_event_bank(&goldens::event_bank(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[161], &buf[..len]);
+    // Ore nodes crumbled past a stage (v105).
+    let len =
+        protocol::encode_event_node_stage(true, &goldens::event_node_stage(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[162], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

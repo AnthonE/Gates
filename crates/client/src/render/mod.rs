@@ -129,6 +129,7 @@ pub mod input;
 pub mod loading;
 pub mod loot;
 pub mod lore;
+pub mod ore;
 pub mod surface;
 pub mod works;
 // The island map. Painted from the same `terrain::splat_from` the ground
@@ -627,6 +628,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<arrow_fire::ArrowFires>()
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
+            .init_resource::<ore::Debris>()
             .init_resource::<impact::Contacts>()
             .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
@@ -776,6 +778,8 @@ impl Plugin for GatesRenderPlugin {
                 // blow must not spawn an entity inside a fight
                 // (`impact.rs`).
                 impact::setup,
+                // The ore chunks, the chip pool's reason exactly.
+                ore::setup,
                 // The spark and dust pools, the chip pool's reason exactly.
                 fx::setup,
                 // The shared warm mesh. Before anything that could create a
@@ -1021,7 +1025,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Menu),
-                (map::forget, viewmodel::forget, impact::forget, fx::forget),
+                (
+                    map::forget,
+                    viewmodel::forget,
+                    impact::forget,
+                    fx::forget,
+                    ore::forget,
+                ),
             );
 
         // ---- settings ------------------------------------------------
@@ -1230,6 +1240,14 @@ impl Plugin for GatesRenderPlugin {
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
                 fx::flash.after(impact::strike),
+                // Ore nodes: a blow's shudder and chunk, a crumble, a break,
+                // off the snapped contacts and the drained crumbles; then the
+                // pose and the chunks in flight; and the hotspot's shimmer
+                // after the resolver that writes `InWeak`.
+                ore::react.after(impact::snap).after(feed::drain),
+                ore::pose.after(ore::react),
+                ore::fly.after(ore::react),
+                ore::hotspot.after(verbs::resolve).after(ore::pose),
             )
                 .run_if(world_running)
                 .run_if(move || !plate || filming),

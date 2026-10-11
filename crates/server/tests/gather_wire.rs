@@ -500,3 +500,82 @@ fn a_bow_draw_is_heard_once_by_the_neighbour() {
         "a held draw is one creak, heard by the neighbour alone"
     );
 }
+
+/// **A crumble reaches every client, and a late joiner sees the node worn.**
+///
+/// The stage rides its own broadcast (`SUB_NODE_STAGE`, wire v105) and the
+/// join walk's third message; both are a `pump_events` arm or a walk branch
+/// that, missing, sends nothing with every other gate green.
+#[test]
+fn a_crumble_reaches_everyone_and_a_joiner_sees_it() {
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    let (cx, cz, stone) = (40..216i32)
+        .flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)))
+        .map(|(cx, cz)| (cx, cz, terrain::scatter(SEED, &table, &haven, cx, cz)))
+        .find(|(_, _, s)| {
+            s.occupant == Occupant::StoneNode
+                && s.y > 1.0
+                && (terrain::height(SEED, s.x, s.z) - s.y).abs() < 0.5
+        })
+        .expect("the fixture seed has a stone node");
+    let key = cell_key(cx as u16, cz as u16);
+
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    // Standing in the node, looking straight down at it: the ray starts
+    // inside and bites at once (`melee::cylinder_span`).
+    core.world.dev_spawn = Some((stone.x, stone.z));
+    core.catalog = probe_catalog();
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        for (_, c) in clients.iter_mut() {
+            c.set_input(0, 0, 0, 0, 0, 0);
+        }
+        pump(&mut core, &stats, &mut clients, &[]);
+    }
+    let mut crumbled = false;
+    for _ in 0..SWING_INTERVAL_TICKS * 4 {
+        clients[0].1.set_input(BTN_PRIMARY, 0, 0, 0, 0, 0);
+        clients[1].1.set_input(0, 0, 0, 0, 0, 0);
+        pump(&mut core, &stats, &mut clients, &[]);
+        if clients[1].1.harvested.stage(key) > 0 {
+            crumbled = true;
+            break;
+        }
+    }
+    assert!(crumbled, "the bystander never saw the node crumble");
+    let stage = clients[1].1.harvested.stage(key);
+    assert_eq!(clients[0].1.harvested.stage(key), stage, "swinger's stage");
+    assert_eq!(
+        clients[1].1.pop_crumble(),
+        Some((key, stage)),
+        "a live crumble"
+    );
+
+    assert!(core.connect(2, id_of(2)));
+    clients.push((2usize, ClientCore::new(SEED, id_of(2), 0)));
+    for _ in 0..8 {
+        for (_, c) in clients.iter_mut() {
+            c.set_input(0, 0, 0, 0, 0, 0);
+        }
+        pump(&mut core, &stats, &mut clients, &[]);
+    }
+    assert_eq!(
+        clients[2].1.harvested.stage(key),
+        stage,
+        "late joiner synced"
+    );
+    assert_eq!(
+        clients[2].1.pop_crumble(),
+        None,
+        "a joiner's sync is not a crumble"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}

@@ -576,6 +576,9 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         // The second blow of a frame: the same grunt, by delegation for the
         // remote swing's reason. What makes it a second voice is its row.
         Cue::HurtAgain => render_take(Cue::Hurt, take),
+        // Mining: the debris crash, and the light metal ping, by delegation.
+        Cue::OreCrumble | Cue::OreBreak => render_take(Cue::Collapse, take),
+        Cue::OreGlint => render_take(Cue::BulletMetal, take),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm

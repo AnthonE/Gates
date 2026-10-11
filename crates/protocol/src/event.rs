@@ -57,6 +57,10 @@ const _: () = assert!(SLOT_SYNC_BATCH <= 64);
 /// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
 pub const GROW_SYNC_BATCH: usize = 32;
 
+/// Worn ore nodes one stage message carries: a live crumble is one, the join
+/// walk fills it. 33 bits a node, 32 of them in 136 B.
+pub const NODE_STAGE_BATCH: usize = 32;
+
 /// Item names one catalog message carries. Seven since v102: a worst-case
 /// row is 320 bits with the class nibble, and eight of them would pass
 /// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
@@ -540,7 +544,11 @@ const SUB_STANDING: u32 = 93;
 /// this wallet's cap, what it has put through and what was credited this
 /// wipe. Own-fact, at join and when any of it moves.
 const SUB_BANK: u32 = 94;
-const SUB_MAX: u32 = SUB_BANK;
+/// Ore nodes crumbled past a stage (wire v105, sim `EV_NODE_STAGE`): each
+/// cell and the stage it is drawn at. Broadcast one at a time as they
+/// crumble, and walked to a joiner after the harvested set.
+const SUB_NODE_STAGE: u32 = 95;
+const SUB_MAX: u32 = SUB_NODE_STAGE;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -695,6 +703,12 @@ const DESC_LEN_BITS: u32 = 7;
 const _: () = assert!(MAX_ITEM_DESC_BYTES < (1 << DESC_LEN_BITS));
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
+/// A node-stage batch's count: 1..=`NODE_STAGE_BATCH` in six bits.
+const NODE_STAGE_COUNT_BITS: u32 = 6;
+const _: () = assert!(NODE_STAGE_BATCH < (1 << NODE_STAGE_COUNT_BITS));
+/// An ore node's stage: `0..sim_core::gather::ORE_STAGES`.
+const NODE_STAGE_BITS: u32 = 2;
+const _: () = assert!((sim_core::gather::ORE_STAGES as u32) <= (1 << NODE_STAGE_BITS));
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
 const EXPOSURE_PCT_BITS: u32 = 7;
 /// Width of each per-mille weather field: 0..=1000 in ten bits.
@@ -1514,6 +1528,14 @@ pub enum EventMsg {
     /// A felled tree's stump was grubbed out: the cell stays harvested
     /// until the sapling, with nothing standing in it.
     StumpGrubbed { cx: u16, cz: u16 },
+    /// Ore nodes and the stage each is drawn at (`SUB_NODE_STAGE`). `live`
+    /// is a crumble that just happened; clear, the join walk saying what
+    /// was already so.
+    NodeStage {
+        live: bool,
+        cells: [(u16, u16, u8); NODE_STAGE_BATCH],
+        count: u8,
+    },
     /// One board of the wipe's standings.
     Standing(StandingBoard),
     /// The receiver's way out through the exchange.
@@ -2409,6 +2431,30 @@ pub fn encode_event_slot_grow_sync(
         w.write(cx as u32, 16)?;
         w.write(cz as u32, 16)?;
         w.write(g, 32)?;
+    }
+    Ok(w.finish())
+}
+
+/// One batch of worn ore nodes: `(cx, cz, stage)`, `live` for a crumble that
+/// just happened. Never empty, and a stage past `ORE_STAGES` is refused.
+pub fn encode_event_node_stage(
+    live: bool,
+    cells: &[(u16, u16, u8)],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cells.is_empty() || cells.len() > NODE_STAGE_BATCH {
+        return Err(WireError::Cap);
+    }
+    if cells.iter().any(|c| c.2 >= sim_core::gather::ORE_STAGES) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_NODE_STAGE)?;
+    w.write_bit(live)?;
+    w.write(cells.len() as u32, NODE_STAGE_COUNT_BITS)?;
+    for &(cx, cz, st) in cells {
+        w.write(cx as u32, 16)?;
+        w.write(cz as u32, 16)?;
+        w.write(st as u32, NODE_STAGE_BITS)?;
     }
     Ok(w.finish())
 }
@@ -5021,6 +5067,29 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 *c = (r.read(16)? as u16, r.read(16)? as u16, r.read(32)?);
             }
             EventMsg::SlotGrowSync {
+                cells,
+                count: count as u8,
+            }
+        }
+        SUB_NODE_STAGE => {
+            let live = r.read_bit()?;
+            let count = r.read(NODE_STAGE_COUNT_BITS)? as usize;
+            if count == 0 || count > NODE_STAGE_BATCH {
+                return Err(WireError::Malformed);
+            }
+            let mut cells = [(0u16, 0u16, 0u8); NODE_STAGE_BATCH];
+            for c in cells.iter_mut().take(count) {
+                *c = (
+                    r.read(16)? as u16,
+                    r.read(16)? as u16,
+                    r.read(NODE_STAGE_BITS)? as u8,
+                );
+                if c.2 >= sim_core::gather::ORE_STAGES {
+                    return Err(WireError::Malformed);
+                }
+            }
+            EventMsg::NodeStage {
+                live,
                 cells,
                 count: count as u8,
             }
@@ -9431,6 +9500,11 @@ mod wire_domains {
             "STRUCT_HP_BITS",
             // A grow-sync batch length, bounded by `GROW_SYNC_BATCH`.
             "GROW_SYNC_COUNT_BITS",
+            // A node-stage batch length, bounded by `NODE_STAGE_BATCH`, and
+            // the stage, bounded by sim-core's `gather::ORE_STAGES` — a
+            // count, guarded by the compile-time assert beside the width.
+            "NODE_STAGE_COUNT_BITS",
+            "NODE_STAGE_BITS",
             "MOVE_SLOT_BITS",
             "INV_COUNT_BITS",
             "INV_SLOT_BITS",

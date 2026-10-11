@@ -62,7 +62,8 @@ use sim_core::world::{
     STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_WORK,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_NODE_STAGE,
+    EV_WORK,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -4509,6 +4510,25 @@ impl ShardCore {
                         }
                     }
                 }
+                EV_NODE_STAGE => {
+                    let cell = [((ev.a >> 16) as u16, ev.a as u16, ev.b as u8)];
+                    match protocol::encode_event_node_stage(true, &cell, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED | EV_STUMP_GRUBBED => {
                     let cx = (ev.a >> 16) as u16;
                     let cz = ev.a as u16;
@@ -5453,20 +5473,27 @@ impl ShardCore {
         // and when it will be grown, or it would walk through what it sees
         // as a full tree's trunk. Sent after the harvested batch, so a
         // reset has cleared both of the client's sets before any arrive.
+        //
+        // And the worn ore nodes in a third: a node half mined before the
+        // joiner arrived is drawn half mined (`SUB_NODE_STAGE`).
         let c = &self.clients[slot];
         let lives = &self.world.slot_lives;
         if c.sync_reset || c.sync_cursor < lives.len() {
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
             let mut grubbed = 0u64;
             let mut grows = [(0u16, 0u16, 0u32); protocol::GROW_SYNC_BATCH];
+            let mut stages = [(0u16, 0u16, 0u8); protocol::NODE_STAGE_BATCH];
             let mut n_cells = 0usize;
             let mut n_grows = 0usize;
+            let mut n_stages = 0usize;
             let mut scanned = 0usize;
             let entries = lives.entries();
+            let w = &self.world;
             while c.sync_cursor + scanned < entries.len()
                 && scanned < SYNC_SCAN_PER_TICK
                 && n_cells < SLOT_SYNC_BATCH
                 && n_grows < protocol::GROW_SYNC_BATCH
+                && n_stages < protocol::NODE_STAGE_BATCH
             {
                 let e = entries[c.sync_cursor + scanned];
                 if e.respawn_at != 0 {
@@ -5478,6 +5505,11 @@ impl ShardCore {
                 } else if e.grown_at != 0 {
                     grows[n_grows] = (e.cx, e.cz, e.grown_at as u32);
                     n_grows += 1;
+                } else if let Some(st) =
+                    sim_core::gather::worn_stage(w.seed, &w.scatter, &w.haven, &w.gather, &e)
+                {
+                    stages[n_stages] = (e.cx, e.cz, st);
+                    n_stages += 1;
                 }
                 scanned += 1;
             }
@@ -5514,8 +5546,26 @@ impl ShardCore {
                     }
                 }
             }
-            // Past this window: its harvested and growing entries are said,
-            // and the standing-damage ones had nothing to say.
+            if said && n_stages > 0 {
+                match protocol::encode_event_node_stage(
+                    false,
+                    &stages[..n_stages],
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            return;
+                        }
+                        ShardStats::bump(&stats.ev_sent);
+                    }
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        said = false;
+                    }
+                }
+            }
+            // Past this window: its harvested, growing and worn entries are
+            // said, and the rest of the standing damage had nothing to say.
             if said {
                 self.clients[slot].sync_cursor += scanned;
             }
