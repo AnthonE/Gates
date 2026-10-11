@@ -112,6 +112,11 @@ $NICE python3 ci/anomaly_verdict.py --self-test || fail "anomaly verdict"
 echo "== gate: elo manifest (the repo desk, GAME-REPO.md)"
 $NICE python3 ci/elo_manifest.py --self-test || fail "elo manifest"
 
+# The checker the nightly `elo-routes` job runs against the live origin
+# (every platform call Gates makes, and skin-catalog parity), on fixtures.
+echo "== gate: elo routes (ci/elo_routes.py --self-test)"
+$NICE python3 ci/elo_routes.py --self-test || fail "elo routes"
+
 # The other end of the bug-report key. `report.rs` writes one `.json` per
 # report and this folds a directory of them onto their fingerprints — which is
 # the claim that two reports sharing one are ONE piece of work, and the only
