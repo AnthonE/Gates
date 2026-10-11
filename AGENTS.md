@@ -156,15 +156,15 @@ lands clean, and they are judged one at a time.
    content hash pinned into the WAL header. Gate: `test_content`.
 8. What we sell is `BUSINESS.md` — product, not an engineering wall.
    Tickers are bare: ELO, JUNK, ORBS — never a `$` prefix. Gate:
-   `ci/elo_manifest.py`, over `elo.json` and **only** over `elo.json`.
+   `ci/elo_manifest.py`, over `scry.json` and **only** over `scry.json`.
    ⚠ This wall named a `ci/gates.sh` docs check and **there has never been
    one**, so the rule was ungated everywhere. It is now gated at the one
    place it costs money: an update's text becomes a public post on elo's
    feed and elo refuses a `$`-prefixed ticker outright, so a `$` there is
    not a style slip — it is a store row that silently stops moving.
    Elsewhere in the corpus this is still a rule a reader enforces.
-9. Our store row is a file in this repo. `elo.json` says what this game
-   is; `elo.sig.json` signs its exact bytes; elo reads the pair off this
+9. Our store row is a file in this repo. `scry.json` says what this game
+   is; `scry.sig.json` signs its exact bytes; elo reads the pair off this
    repo's default branch and applies what changed — no commit to elo, no
    key of theirs, no webhook. **Re-sign whenever you edit it**
    (`./ci/elo_manifest.py --sign`): an unsigned edit applies nothing, and

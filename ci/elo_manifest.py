@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Gates' end of elo's repo desk — `elo.json` and the signature over it.
+"""Gates' end of elo's repo desk — `scry.json` and the signature over it.
 
     ./ci/elo_manifest.py --self-test    the gate: no network, no key, stdlib only
     ./ci/elo_manifest.py --check        the same, plus recover the signature
     ./ci/elo_manifest.py --print        the exact text to sign, for a signer we do not hold
-    ./ci/elo_manifest.py --sign         write elo.sig.json (needs a key)
+    ./ci/elo_manifest.py --sign         write scry.sig.json (needs a key)
 
 ## What this seam is
 
 elo reads two files from this repo's default branch and nothing else:
 
-    elo.json        what this game is, right now — its store row and its feed
-    elo.sig.json    a detached EIP-191 signature over elo.json's exact bytes
+    scry.json        what this game is, right now — its store row and its feed
+    scry.sig.json    a detached EIP-191 signature over scry.json's exact bytes
 
 It applies what changed. Nothing here runs on elo's box and nothing of elo's
 runs here: the whole transport is a commit, and the authority is the signature.
@@ -21,9 +21,9 @@ The standard is `GET https://elopros.com/api/library/GAME-REPO.md`.
 
 Two properties, both **local**, both fully decidable with the standard library:
 
-  1. `elo.json` is a JSON object naming this game and standard 1.
+  1. `scry.json` is a JSON object naming this game and standard 1.
   2. `version` equals the workspace version in `Cargo.toml`.
-  3. If `elo.sig.json` exists, its `sha256` is the sha256 of `elo.json`'s
+  3. If `scry.sig.json` exists, its `sha256` is the sha256 of `scry.json`'s
      bytes — i.e. the signature was written for the manifest that is here.
 
 Property 3 is the one that earns this gate. The failure it catches is not
@@ -55,7 +55,7 @@ wrong reason.
 
 The anti-replay counter, and it only goes up. elo refuses a manifest whose seq
 it has already applied, so bump it on every publish. `--sign` bumps it from the
-current `elo.sig.json` by default; ask elo what it will take with:
+current `scry.sig.json` by default; ask elo what it will take with:
 
     curl -s https://elopros.com/api/store/repo/gates | python3 -m json.tool
 """
@@ -71,8 +71,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "elo.json"
-SIG = ROOT / "elo.sig.json"
+MANIFEST = ROOT / "scry.json"
+SIG = ROOT / "scry.sig.json"
 SLUG = "gates"
 STANDARD = 1
 
@@ -135,16 +135,15 @@ def self_test(*, recover: bool) -> int:
     digest = hashlib.sha256(raw).hexdigest()
     print(f"== elo manifest ({MANIFEST.name}, {len(raw)} bytes, sha256 {digest[:16]}…)")
 
-    # The standard's key is `elo` (`/api/library/GAME-REPO.md`). The desk
-    # still reads the `scry` key and the `scry.json` pair it replaced, so a
-    # manifest committed before the rename keeps working; this repo writes
-    # the current pair, and a `scry` key here would be a half-done rename.
-    if doc.get("elo") != STANDARD:
-        bad(f'"elo" is {json.dumps(doc.get("elo"))}; this desk speaks standard {STANDARD}')
+    # ⚠ The standard's key is `scry`, not `elo`, and that is not an oversight.
+    # It names the manifest FORMAT the platform reads, and the platform still
+    # spells it `scry` (`/api/library/GAME-REPO.md`, read 2026-08-21). The
+    # brand renamed; the wire word did not. Renaming this reads a key that is
+    # not there, which is `null` — the exact failure this line reports.
+    if doc.get("scry") != STANDARD:
+        bad(f'"scry" is {json.dumps(doc.get("scry"))}; this desk speaks standard {STANDARD}')
     else:
         ok(f"standard {STANDARD}")
-    if "scry" in doc:
-        bad('the manifest still carries the old "scry" key beside "elo"; drop it')
 
     if doc.get("game") != SLUG:
         bad(f'"game" is {json.dumps(doc.get("game"))}, not "{SLUG}" — elo refuses a '
@@ -172,7 +171,7 @@ def self_test(*, recover: bool) -> int:
     # Wall 8, on the text that actually leaves this repo. `AGENTS.md` states the
     # bare-ticker rule as this repo's own law and names a `ci/gates.sh` docs
     # check as its gate — that check does not exist, so the rule has been
-    # ungated. This closes it for `elo.json` and ONLY for `elo.json`, which is
+    # ungated. This closes it for `scry.json` and ONLY for `scry.json`, which is
     # where it now has teeth: an update's title and body become a public post on
     # elo's feed, and elo refuses a `$`-prefixed ticker outright — so a `$` here
     # is not a style slip, it is a manifest that silently stops applying.
@@ -291,7 +290,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Gates' elo manifest and its signature")
     ap.add_argument("--self-test", action="store_true", help="the gate (no key, no network)")
     ap.add_argument("--check", action="store_true", help="the gate plus signature recovery")
-    ap.add_argument("--sign", action="store_true", help="write elo.sig.json")
+    ap.add_argument("--sign", action="store_true", help="write scry.sig.json")
     ap.add_argument("--print", dest="show", action="store_true",
                     help="print the text to sign and exit — no key is touched")
     ap.add_argument("--seq", type=int)
