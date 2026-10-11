@@ -32,6 +32,12 @@ use std::path::PathBuf;
 
 pub const DEFAULT_SERVER: &str = "127.0.0.1:4433";
 
+/// The public shard list: the platform's copy of this game's
+/// `elo-shardlist-v1` (`ci/shardlist.py` publishes it here). What a run that
+/// opens the menu fetches when nothing names another list, so a player who
+/// double-clicked the game sees the public shards rather than a bare Direct row.
+pub const PUBLIC_SERVERS: &str = "https://elopros.com/api/launcher/servers/gates";
+
 pub const USAGE: &str = "\
 gates — the Gates desktop client
 
@@ -49,8 +55,10 @@ gates — the Gates desktop client
                        address the link carries — a link is a way of spelling
                        an address, never a second way to connect
   --servers URL        where to fetch the elo-shardlist-v1 document the menu
-                       lists. Absent, the menu offers the default shard only
-                       and says why the rest of it is empty
+                       lists. Absent, the menu fetches the public list
+                       (elopros.com) - except on a run that names a shard, a
+                       capture, a film or a seat, which opens no menu and so
+                       fetches nothing. --servers \"\" fetches no list at all
   --cert-hash SHA256   trust ONLY the shard certificate with this SHA-256,
                        as the shard prints it at boot (aa:bb:...). For a dev
                        shard that is not on loopback: without it such a shard
@@ -111,8 +119,10 @@ pub struct Args {
     /// on this: an address the launcher chose must not be second-guessed by
     /// a screen asking the player to choose again.
     pub server_given: bool,
-    /// `--servers URL`: the `elo-shardlist-v1` document. `None` is normal
-    /// and is a *stated* empty menu, never a silent one.
+    /// `--servers URL`: the `elo-shardlist-v1` document. Absent on a run
+    /// that opens the menu, it is [`PUBLIC_SERVERS`]; `None` (`--servers ""`,
+    /// or a run that names a shard, a capture, a film or a seat) is a
+    /// *stated* empty menu, never a silent one.
     pub servers_url: Option<String>,
     /// `None` when absent OR empty — see the module docs; the launcher's
     /// empty substitution is how "no wallet set" arrives.
@@ -294,10 +304,17 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         return Parsed::Bad(format!("bad address: {why}"));
     }
 
+    // A run that opens the menu, as opposed to one that names a shard, a
+    // probe, a tape or a seat. Only this one fetches the public list unasked:
+    // `ci/film.sh`, `ci/scene.sh` and `ci/drive.sh` run `gates` without
+    // `--servers`, and a gate must not reach for elopros.com.
+    let interactive = !server_given && capture.is_none() && film.is_none() && spectate.is_none();
     let servers_url = match servers_url.map(|s| s.trim().to_string()) {
-        // An empty `--servers` is an unfilled placeholder, not a bad url —
-        // the same rule `--identity ""` follows.
+        None if interactive => Some(PUBLIC_SERVERS.to_string()),
         None => None,
+        // An empty `--servers` is an unfilled placeholder, not a bad url —
+        // the same rule `--identity ""` follows — and the way to opt out of
+        // the public list.
         Some(u) if u.is_empty() => None,
         // Refused rather than carried: a url the menu cannot fetch would
         // become a dark panel blaming the network for a typo.
@@ -558,8 +575,46 @@ mod tests {
     }
 
     #[test]
+    fn the_menu_fetches_the_public_list_unless_told_otherwise() {
+        // A double-clicked game opens the menu, and the menu lists the public
+        // shards rather than a bare Direct row.
+        assert_eq!(run(&[]).servers_url.as_deref(), Some(PUBLIC_SERVERS));
+        assert_eq!(
+            run(&["--no-launcher"]).servers_url.as_deref(),
+            Some(PUBLIC_SERVERS)
+        );
+        // An unfilled placeholder is a server that was NOT chosen, so the
+        // menu still opens and still fetches.
+        assert_eq!(
+            run(&["--server", ""]).servers_url.as_deref(),
+            Some(PUBLIC_SERVERS)
+        );
+        // `--servers ""` opts out.
+        assert_eq!(run(&["--servers", ""]).servers_url, None);
+        // A run that opens no menu fetches nothing: these are the shapes the
+        // film, scene and drive scripts run, and a gate must stay offline.
+        for argv in [
+            vec!["--film", "/tmp/shots.json"],
+            vec!["--server", "127.0.0.1:4455"],
+            vec!["127.0.0.1:4455"],
+            vec!["--join", "elo://join/gates/h:1"],
+            vec!["--capture", "/tmp/shots", "--server", "127.0.0.1:4455"],
+            vec!["--capture", "/tmp/shots"],
+            vec!["--spectate", "any"],
+        ] {
+            assert_eq!(run(&argv).servers_url, None, "{argv:?}");
+        }
+        // ...while a list named by hand is carried on any of them.
+        assert_eq!(
+            run(&["--server", "h:1", "--servers", "https://a.test/s.json"])
+                .servers_url
+                .as_deref(),
+            Some("https://a.test/s.json")
+        );
+    }
+
+    #[test]
     fn the_shard_list_url_is_optional_and_checked() {
-        assert_eq!(run(&[]).servers_url, None);
         let x = run(&["--servers", "https://example.test/servers.json"]);
         assert_eq!(
             x.servers_url.as_deref(),

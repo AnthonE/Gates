@@ -131,10 +131,16 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
     // is not shareable — a friend who follows `elo://join/gates/127.0.0.1:4433`
     // arrives at their own machine. Say nothing rather than offer a link that
     // is wrong for everyone but the person reading it.
-    let invite = match connecting.addr.split_once(':').map(|(h, _)| h) {
-        Some(host) if is_shareable(host) => {
-            format!("invite  {}", crate::deeplink::link_for(&connecting.addr))
-        }
+    //
+    // A browser build shares the play page instead (`deeplink::web_link_for`):
+    // a tab has no launcher to open `elo://`, and the friend reading the link
+    // in a browser may have none either.
+    #[cfg(target_arch = "wasm32")]
+    let link_for = crate::deeplink::web_link_for;
+    #[cfg(not(target_arch = "wasm32"))]
+    let link_for = crate::deeplink::link_for;
+    let invite = match connecting.addr.rsplit_once(':').map(|(h, _)| h) {
+        Some(host) if is_shareable(host) => format!("invite  {}", link_for(&connecting.addr)),
         _ => String::new(),
     };
 
@@ -362,7 +368,8 @@ mod tests {
             assert!(is_shareable(theirs), "{theirs:?} is shareable");
         }
         // A bracketed v6 literal arrives with its brackets on, from the same
-        // `split_once(':')` that produces every other host here.
+        // `rsplit_once(':')` that produces every other host here (the last
+        // colon: a v6 literal is full of them).
         assert!(!is_shareable("[::1]"));
         assert!(is_shareable("[2001:db8::1]"));
     }

@@ -17,9 +17,10 @@
 //! category with nothing behind it says so in a sentence rather than drawing
 //! greyed rows that imply a feature exists* — so the rail here is the two
 //! categories that are real. The same goes for the reference's WIPE SCHEDULE
-//! group and its coloured region tags: real columns of their document, absent
-//! from ours, and a chip that always reads the same word is a decoration
-//! pretending to be data.
+//! filter group and its coloured region tags: real columns of their document,
+//! absent from ours, and a chip that always reads the same word is a
+//! decoration pretending to be data. (A row does say when its own shard
+//! wipes, because the shard's `/status.json` says so — that one is data.)
 //!
 //! **Pure, and not feature-gated**, for the reason [`crate::ui`]'s header
 //! gives: filtering, sorting and the favourite set are arithmetic, they are
@@ -64,6 +65,12 @@ pub struct Listing {
     pub ping_ms: Option<u32>,
     /// Where this row's live count is polled from, if anywhere.
     pub status_url: Option<String>,
+    /// The wire the shard speaks, off its status poll (`Status::proto`).
+    pub proto: Option<u32>,
+    /// Unix seconds of the shard's next wipe, off its status poll; 0 is none.
+    pub next_wipe: Option<u64>,
+    /// How many of `players` are declared agents, off its status poll.
+    pub agents: Option<u32>,
     /// The address this binary was started with, rather than a shard anybody
     /// published.
     ///
@@ -95,6 +102,9 @@ impl Listing {
             max_players: None,
             ping_ms: None,
             status_url: None,
+            proto: None,
+            next_wipe: None,
+            agents: None,
             direct: true,
         }
     }
@@ -118,6 +128,9 @@ impl Listing {
             max_players: s.max_players,
             ping_ms: s.ping_ms,
             status_url: s.status_url.clone(),
+            proto: None,
+            next_wipe: None,
+            agents: None,
             direct: false,
         }
     }
@@ -133,10 +146,49 @@ impl Listing {
         if self.direct {
             return false;
         }
-        let before = (self.players, self.max_players);
+        let seen = |r: &Self| (r.players, r.max_players, r.proto, r.next_wipe, r.agents);
+        let before = seen(self);
         self.players = Some(s.players);
         self.max_players = Some(s.max_players);
-        before != (self.players, self.max_players)
+        // A field the shard left out keeps what the row had, the same rule a
+        // failed poll follows: absence is "not said", never "changed to none".
+        self.proto = s.proto.or(self.proto);
+        self.next_wipe = s.next_wipe.or(self.next_wipe);
+        self.agents = s.agents.or(self.agents);
+        before != seen(self)
+    }
+
+    /// The shard speaks another wire than this build, so a join would be
+    /// refused at the handshake (`REFUSE_VERSION`). Unknown is not a
+    /// mismatch: a shard that does not say is not marked.
+    pub fn needs_update(&self) -> bool {
+        self.proto
+            .is_some_and(|p| p != u32::from(protocol::PROTO_VER))
+    }
+
+    /// `2 people, 1 agent` — the players split, when the shard says how many
+    /// of them are agents. `None` rather than a guess when it does not.
+    pub fn crowd(&self) -> Option<String> {
+        let (players, agents) = (self.players?, self.agents?);
+        let people = players.saturating_sub(agents);
+        let plural =
+            |n: u32, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+        Some(format!(
+            "{people} {}, {agents} {}",
+            plural(people, "person", "people"),
+            plural(agents, "agent", "agents")
+        ))
+    }
+
+    /// `wipes in 3d` / `wipes in 5h` / `wipe due`, against `now_unix`.
+    /// `None` when the shard names no wipe (absent, or 0).
+    pub fn wipe_in(&self, now_unix: u64) -> Option<String> {
+        let at = self.next_wipe.filter(|&t| t > 0)?;
+        Some(match at.saturating_sub(now_unix) {
+            0 => "wipe due".to_string(),
+            left if left < 86_400 => format!("wipes in {}h", left.div_ceil(3_600)),
+            left => format!("wipes in {}d", left / 86_400),
+        })
     }
 
     /// `47/100`, `47/?`, or `?` — whatever the row actually states. Never
@@ -161,13 +213,18 @@ impl Listing {
     }
 
     /// The dim second line under the name — the reference puts the map and
-    /// the wipe age there. Ours has the map and the address, which are the
-    /// two things a player picking between shards can act on.
-    pub fn sub_line(&self) -> String {
-        match &self.map {
-            Some(m) => format!("{}   {m}", self.addr),
-            None => self.addr.clone(),
+    /// the wipe there. Ours has the address and the map, then whatever the
+    /// shard's status said: who is on it and when it wipes.
+    pub fn sub_line(&self, now_unix: u64) -> String {
+        let mut line = self.addr.clone();
+        for part in [self.map.clone(), self.crowd(), self.wipe_in(now_unix)]
+            .into_iter()
+            .flatten()
+        {
+            line.push_str("   ");
+            line.push_str(&part);
         }
+        line
     }
 
     /// Is anybody on it? `None` is not empty — it is unknown, and the two

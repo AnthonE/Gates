@@ -64,7 +64,11 @@ impl Section {
 
     /// What the pane says this section *is*. Written so a player who has
     /// never opened the launcher still knows what they are being offered.
-    pub fn blurb(self) -> &'static str {
+    ///
+    /// The workshop promises earnings only when the manifest names a workshop
+    /// to open: a pay line over a door that leads nowhere is a reward nothing
+    /// can pay.
+    pub fn blurb(self, hub: &Hub) -> &'static str {
         match self {
             Section::News => {
                 "Patch notes, wipe announcements and what the community is \
@@ -76,10 +80,16 @@ impl Section {
                  damage, gather rate, or anything else another player has to \
                  live with."
             }
-            Section::Workshop => {
+            Section::Workshop
+                if hub
+                    .manifest
+                    .as_ref()
+                    .is_some_and(|m| self.of(m).link().is_some()) =>
+            {
                 "Community-made items. Make one, put it up, and earn when \
                  players use it."
             }
+            Section::Workshop => "Community-made items, made by players.",
         }
     }
 
@@ -296,13 +306,22 @@ mod tests {
         // explain itself — a player who is about to be sent elsewhere to
         // spend money is owed the sentence.
         for s in Section::ALL {
-            assert!(!s.blurb().is_empty());
+            assert!(!s.blurb(&Hub::default()).is_empty());
             assert!(s.handoff_reason().contains("launcher"));
         }
         assert!(
             Section::Store.handoff_reason().contains("payment"),
             "the store must say why it will not take money in this window"
         );
+    }
+
+    #[test]
+    fn the_workshop_promises_earnings_only_where_there_is_a_workshop() {
+        let ready = with(r#"{"workshop":{"url":"https://elopros.com/gates/workshop"}}"#);
+        assert!(Section::Workshop.blurb(&ready).contains("earn"));
+        for h in [Hub::default(), with("{}")] {
+            assert!(!Section::Workshop.blurb(&h).contains("earn"), "{h:?}");
+        }
     }
 
     #[test]

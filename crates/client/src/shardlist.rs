@@ -160,12 +160,28 @@ impl Shard {
 /// liveness half — a number that stops moving is a shard that stopped
 /// ticking — and defaulted rather than required, so a shard that trims the
 /// document to the two counts a list needs still parses.
+///
+/// `proto`, `next_wipe` and `agents` are optional for the same reason: a
+/// shard that predates them still answers, and its row simply does not say
+/// what it does not know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct Status {
     pub players: u32,
     pub max_players: u32,
     #[serde(default)]
     pub tick: u64,
+    /// `protocol::PROTO_VER` on the shard. Another number than this build's
+    /// is a handshake `REFUSE_VERSION`, so the row says "update needed"
+    /// before the player clicks rather than after.
+    #[serde(default)]
+    pub proto: Option<u32>,
+    /// Unix seconds of the next wipe; 0 is "none scheduled".
+    #[serde(default)]
+    pub next_wipe: Option<u64>,
+    /// How many of `players` joined as declared agents. A share of
+    /// `players`, never a second population.
+    #[serde(default)]
+    pub agents: Option<u32>,
 }
 
 /// Parse a shard's `/status.json`.
@@ -198,6 +214,11 @@ pub fn parse_status(bytes: &[u8]) -> Result<Status, String> {
             "status: {} players over a cap of {}",
             s.players, s.max_players
         ));
+    }
+    // Same rule one level down: agents are a share of the players, so more
+    // agents than players is a document that cannot be drawn honestly.
+    if let Some(a) = s.agents.filter(|&a| a > s.players) {
+        return Err(format!("status: {a} agents among {} players", s.players));
     }
     Ok(s)
 }
@@ -568,6 +589,26 @@ mod tests {
         assert_eq!(st.tick, 123_456);
         s.apply_status(&st);
         assert_eq!(s.population(), "3/100");
+    }
+
+    #[test]
+    fn a_status_may_carry_the_wire_the_wipe_and_the_agents() {
+        // The minimal shape still parses, and says nothing it does not know.
+        let st = parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
+        assert_eq!((st.proto, st.next_wipe, st.agents), (None, None, None));
+        // The shape `crates/server/src/status.rs` writes today.
+        let st = parse_status(
+            br#"{"players":3,"agents":1,"spectators":1,"max_players":100,"proto":104,
+                 "tick":9,"next_wipe":1790000000}"#,
+        )
+        .unwrap();
+        assert_eq!(st.players, 3);
+        assert_eq!(st.proto, Some(104));
+        assert_eq!(st.next_wipe, Some(1_790_000_000));
+        assert_eq!(st.agents, Some(1));
+        // More agents than players is not a count anyone can draw.
+        assert!(parse_status(br#"{"players":1,"agents":2,"max_players":100}"#).is_err());
+        assert!(parse_status(br#"{"players":1,"proto":"104","max_players":100}"#).is_err());
     }
 
     #[test]

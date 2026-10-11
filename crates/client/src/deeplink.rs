@@ -241,6 +241,30 @@ pub fn link_for(addr: &str) -> String {
     format!("elo://join/{SLUG}/{addr}")
 }
 
+/// The page that plays Gates in a browser — the wasm build `ci/publish_web.sh`
+/// ships. Its `?server=` picks a shard (`client-web/web/app.js`).
+pub const WEB_PLAY: &str = "https://elopros.com/games/gates/";
+
+/// The invite a **browser** build shows: the play page with `addr` picked.
+///
+/// A tab has no launcher to hand an `elo://` link to, and neither does the
+/// friend it is pasted to, so the link a page shares is one a page opens.
+/// Encoded the way the page's own invite button encodes it
+/// (`encodeURIComponent`), so the two copies of one invite are one string.
+pub fn web_link_for(addr: &str) -> String {
+    let mut out = String::with_capacity(WEB_PLAY.len() + 8 + addr.len() * 3);
+    out.push_str(WEB_PLAY);
+    out.push_str("?server=");
+    for b in addr.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +283,23 @@ mod tests {
             parse(&link_for("game.elopros.com:61234")).unwrap().addr,
             "game.elopros.com:61234"
         );
+    }
+
+    #[test]
+    fn a_browser_invite_opens_the_play_page_on_the_shard() {
+        assert_eq!(
+            web_link_for("game.elopros.com:61234"),
+            "https://elopros.com/games/gates/?server=game.elopros.com%3A61234"
+        );
+        // Everything past the unreserved set is escaped, so a bracketed v6
+        // literal survives a query string, and decoding gives the address back.
+        let v6 = web_link_for("[2001:db8::1]:4433");
+        assert_eq!(
+            v6,
+            "https://elopros.com/games/gates/?server=%5B2001%3Adb8%3A%3A1%5D%3A4433"
+        );
+        let q = v6.split_once("?server=").unwrap().1;
+        assert_eq!(percent_decode(q).unwrap(), "[2001:db8::1]:4433");
     }
 
     #[test]

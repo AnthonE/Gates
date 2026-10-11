@@ -714,7 +714,7 @@ fn hub_pane(body: &mut ChildSpawnerCommands, section: Section, hub: &Hub) {
     body.spawn(ui::panel(PANEL_W)).with_children(|panel| {
         panel.spawn(ui::strong(label.clone(), 22.0, ui::TITLE));
         panel.spawn((
-            ui::label(section.blurb(), 13.0, ui::DIM),
+            ui::label(section.blurb(hub), 13.0, ui::DIM),
             Node {
                 margin: UiRect::top(Val::Px(6.0)),
                 ..default()
@@ -932,12 +932,15 @@ fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
         });
 
         // ---- the rows ------------------------------------------------
+        // One clock read per build, so every row's "wipes in" agrees.
+        let now = unix_now();
         for i in &shown {
             row(
                 pane,
                 &menu.rows[*i],
                 *i,
                 browse.favourites.has(&menu.rows[*i].id),
+                now,
             );
         }
 
@@ -985,7 +988,22 @@ fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
 /// reserves the same width so the two agree.
 const STAR_W: f32 = 26.0;
 
-fn row(pane: &mut ChildSpawnerCommands, listing: &Listing, index: usize, starred: bool) {
+/// Unix seconds, for a row's "wipes in". Guarded like the module itself
+/// (`render/mod.rs` compiles `menu` off wasm32), where `SystemTime::now` traps.
+#[cfg(not(target_arch = "wasm32"))]
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn row(
+    pane: &mut ChildSpawnerCommands,
+    listing: &Listing,
+    index: usize,
+    starred: bool,
+    now_unix: u64,
+) {
     pane.spawn((ui::table_row(), RowButton(index)))
         .with_children(|r| {
             // The star. A button inside a button: Bevy's `Interaction` picks
@@ -1033,8 +1051,21 @@ fn row(pane: &mut ChildSpawnerCommands, listing: &Listing, index: usize, starred
                 ..default()
             })
             .with_children(|c| {
-                c.spawn(ui::strong(listing.name.clone(), 18.0, ui::TEXT));
-                c.spawn(ui::label(listing.sub_line(), 12.0, ui::DIM));
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(10.0),
+                    ..default()
+                })
+                .with_children(|n| {
+                    n.spawn(ui::strong(listing.name.clone(), 18.0, ui::TEXT));
+                    // Said before the click: this build would be refused at
+                    // the handshake (`REFUSE_VERSION`).
+                    if listing.needs_update() {
+                        n.spawn(ui::strong("UPDATE NEEDED", 11.0, ui::MARK));
+                    }
+                });
+                c.spawn(ui::label(listing.sub_line(now_unix), 12.0, ui::DIM));
             });
 
             r.spawn(ui::column(PLAYERS_W)).with_children(|c| {

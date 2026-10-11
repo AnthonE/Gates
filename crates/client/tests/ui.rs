@@ -3387,6 +3387,9 @@ fn shard(name: &str, players: Option<u32>) -> Listing {
         max_players: Some(100),
         ping_ms: Some(20),
         status_url: None,
+        proto: None,
+        next_wipe: None,
+        agents: None,
         direct: false,
     }
 }
@@ -3678,6 +3681,62 @@ fn a_poll_rewrites_the_count_and_the_direct_row_takes_none() {
     assert!(!direct.apply_status(&st));
     assert_eq!(direct.population(), "?", "never a count nobody published");
     assert_eq!(direct.ping(), "?");
+}
+
+#[test]
+fn a_row_says_its_wire_its_wipe_and_who_is_on_it() {
+    let mut row = Listing::from_shard(&shardlist_shard("h:1"));
+    // A shard that says none of it is marked with none of it.
+    let bare = client::shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap();
+    row.apply_status(&bare);
+    assert!(!row.needs_update(), "unknown is not a mismatch");
+    assert_eq!(row.crowd(), None);
+    assert_eq!(row.wipe_in(0), None);
+    assert_eq!(row.sub_line(0), "h:1");
+
+    // Another wire is "update needed"; this build's is not.
+    let doc = |proto: u16| {
+        format!(
+            r#"{{"players":3,"agents":1,"max_players":100,"proto":{proto},"next_wipe":1000000}}"#
+        )
+    };
+    let other = client::shardlist::parse_status(doc(protocol::PROTO_VER + 1).as_bytes()).unwrap();
+    assert!(row.apply_status(&other), "a new wire must redraw");
+    assert!(row.needs_update());
+    let same = client::shardlist::parse_status(doc(protocol::PROTO_VER).as_bytes()).unwrap();
+    row.apply_status(&same);
+    assert!(!row.needs_update());
+
+    // People and agents apart, and the total still in the PLAYERS column.
+    assert_eq!(row.crowd().as_deref(), Some("2 people, 1 agent"));
+    assert_eq!(row.population(), "3/100");
+
+    // The wipe, counted down from now.
+    assert_eq!(
+        row.wipe_in(1_000_000 - 3 * 86_400).as_deref(),
+        Some("wipes in 3d")
+    );
+    assert_eq!(
+        row.wipe_in(1_000_000 - 5 * 3_600 + 1).as_deref(),
+        Some("wipes in 5h")
+    );
+    assert_eq!(row.wipe_in(1_000_000).as_deref(), Some("wipe due"));
+    assert_eq!(
+        row.sub_line(1_000_000 - 3 * 86_400),
+        "h:1   2 people, 1 agent   wipes in 3d"
+    );
+    // 0 is "none scheduled", not "wipe due".
+    let none = client::shardlist::parse_status(br#"{"players":3,"max_players":100,"next_wipe":0}"#)
+        .unwrap();
+    row.apply_status(&none);
+    assert_eq!(row.wipe_in(0), None);
+    // A poll that leaves a field out keeps what the row had.
+    assert!(!row.needs_update() && row.crowd().is_some());
+
+    // The Direct row is nobody's published shard and takes none of it.
+    let mut direct = Listing::direct("127.0.0.1:4433");
+    assert!(!direct.apply_status(&other));
+    assert!(!direct.needs_update());
 }
 
 #[test]

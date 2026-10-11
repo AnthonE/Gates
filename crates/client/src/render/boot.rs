@@ -242,7 +242,10 @@ pub fn update(
 ///    so a player who started the game from elo still got *"no shard
 ///    list to fetch - pass --servers URL"* on a menu the launcher had just
 ///    told us how to fill. `--servers` still wins, because a flag typed by
-///    hand is more specific than a default.
+///    hand is more specific than a default — and the launcher's url beats
+///    the public list `args` fills in when no flag was typed, for the same
+///    reason. (A `--servers` that spells the public url itself reads as that
+///    default here, which costs nothing: the launcher names the same list.)
 /// 3. **The manifest url**, which is what NEWS / ITEM STORE / WORKSHOP hang
 ///    off — the fetch starts here so it is in flight while the splash is
 ///    still up, rather than when the player first clicks one.
@@ -259,7 +262,11 @@ fn land(
     who.0 = elo.player.clone();
     info!("gates: {}", who.0.line());
 
-    if menu.servers_url.is_none() {
+    let defaulted = menu
+        .servers_url
+        .as_deref()
+        .is_none_or(|u| u == crate::args::PUBLIC_SERVERS);
+    if defaulted && elo.servers_url.as_deref() != menu.servers_url.as_deref() {
         if let Some(url) = elo.servers_url.clone() {
             info!("gates: the launcher names a shard list - {url}");
             menu.status = format!("fetching the shard list from {url}");
