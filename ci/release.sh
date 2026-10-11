@@ -17,8 +17,10 @@
 # is built before anything moves, so a failed build strands nobody. A step that
 # fails stops the release and prints the commands that finish it by hand.
 #
-# --wipe stops the shard (which flushes), moves the world and the player store
-# into `<world_file>.wipes/<unix>/` (the shard's own archive layout,
+# --wipe stops the shard (which flushes), closes the wipe into the hall the way
+# the shard's own wipe does (`shard --close-wipe N`: podiums, last wipe's
+# placings, the payout files), then moves the world and the player store into
+# `<world_file>.wipes/<unix>/` (the shard's own archive layout,
 # crates/server/src/wipe.rs) and counts the wipe in `<world_file>.wipe`. Players
 # keep nothing, blueprints included: a wipe the shard runs keeps them by
 # rewriting each record, and a release that changes the record cannot. A HEAD
@@ -29,6 +31,9 @@ cd "$(dirname "$0")/.." || exit 1
 
 UNIT=gates-shard.service
 CFG=shard-public.toml
+# Where deploy_shard.sh stages the running shard: its config is the one the
+# live world was posted under, so the wipe closes it with those prizes.
+DEPLOY=/home/master/gates-deploy
 STATUS_URL=https://game.elopros.com/gates/status.json
 PAGE_URL=https://elopros.com/games/gates/build.json
 MANIFEST_URL=https://elopros.com/api/launcher/manifest/gates
@@ -173,11 +178,16 @@ elif ! printf '%s\n' "$saves" | grep -q '^ok'; then
   echo "  (no live saves here: not the shard box, or a fresh shard)"
 fi
 
-# The wipe, as a function so the dry run lists exactly what --go would move.
+# The wipe, as a function so the dry run lists exactly what --go would do.
+# The close runs HEAD's shard (built in step 3) on the config the world ran
+# under; HEAD's own file can post prizes that world never had.
+CLOSE_CFG=$CFG
+[ -f "$DEPLOY/$CFG" ] && CLOSE_CFG=$DEPLOY/$CFG
 wipe_files() {
-  python3 - "$WORLD" "$SAVE" "$1" <<'PY'
-import os, pathlib, sys, time
+  python3 - "$WORLD" "$SAVE" "$1" target/release/shard "$CLOSE_CFG" <<'PY'
+import os, pathlib, re, subprocess, sys, time
 world, save, go = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+shard, close_cfg = sys.argv[4], sys.argv[5]
 if not world or not save:
     sys.exit("shard-public.toml names no world_file or save_file to wipe")
 now = int(time.time())
@@ -199,6 +209,28 @@ if state.exists():
             sys.exit(f"wipe state {state}: bad line {raw!r}, which the shard refuses too")
         st[k] = int(v)
 n = st["wipes"] + 1
+# The close, as end_world in bin/shard.rs runs it before wipe::apply. The
+# shard decides; this only says what it will find.
+stand, last = pathlib.Path(world + ".standings"), pathlib.Path(world + ".lastwipe")
+hall = pathlib.Path(world + ".hall")
+def lines(p):
+    return [l.split("\t") for l in p.read_text().splitlines()] if p.exists() else []
+closed = any(f[:2] == ["wipe", str(n)] for f in lines(last)) \
+    or any(f[:2] == ["podium", str(n)] for f in lines(hall))
+rows = [f for f in lines(stand) if f[0] == "row"]
+if closed:
+    print(f"  wipe {n} is closed already (the hall beside {world} has it); not twice")
+elif stand.exists():
+    cfg_text = pathlib.Path(close_cfg).read_text() if os.path.exists(close_cfg) else ""
+    prizes = re.search(r'^prize_ticker\s*=\s*"([A-Z]+)"', cfg_text, re.M) and re.search(
+        r'^prize_(island|works|hoard|fight)\s*=\s*"[^"]*[1-9]', cfg_text, re.M)
+    extracted = any(len(f) > 10 and f[10].isdigit() and int(f[10]) > 0 for f in rows)
+    owes = f", what it owes into {world}.payout-{n}.csv" if prizes or extracted else ""
+    print(f"  close wipe {n} ({len(rows)} standings rows, prizes as {close_cfg} posts them):")
+    print(f"    its podiums into {hall}, its island placings into {last}{owes}")
+else:
+    print(f"  no {stand}: the shard that ran this world kept no standings,")
+    print(f"    so the hall gets no entry for wipe {n} and nothing is owed for it")
 for p in moving:
     print(f"  {p} ({os.path.getsize(p):,} bytes) -> {arch}/")
 if not moving:
@@ -206,6 +238,9 @@ if not moving:
 print(f"  {state}: wipes {st['wipes']} -> {n}, last -> {now}. The hall stays.")
 if not go:
     sys.exit()
+print(f"+ {shard} --close-wipe {n} {close_cfg}", flush=True)
+if subprocess.run([shard, "--close-wipe", str(n), close_cfg]).returncode != 0:
+    sys.exit(f"  wipe {n} was not closed (above), so nothing moved")
 arch.mkdir(parents=True)
 for p in moving:
     os.rename(p, arch / os.path.basename(p))
@@ -220,7 +255,7 @@ PY
 }
 if [ "$WIPE" = 1 ]; then
   echo
-  echo "== 2b. what --wipe moves =="
+  echo "== 2b. what --wipe closes and moves =="
   wipe_files 0 || refuse "the wipe could not be planned (above)"
 fi
 
@@ -283,10 +318,11 @@ if [ "$WIPE" = 1 ]; then
     fi
     if ! wipe_files 1; then
       echo "  !! the wipe failed part way; $UNIT is STOPPED. Look in ${WORLD%/*} before anything else."
+      echo "     If nothing moved, sudo systemctl start $UNIT brings the old world back."
       exit 1
     fi
   else
-    echo "  would move what 2b lists, then count the wipe"
+    echo "  would close the wipe and move what 2b lists, then count it"
   fi
 fi
 

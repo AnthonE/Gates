@@ -580,6 +580,14 @@ fn read_saved(text: &str) -> Vec<Saved> {
     out
 }
 
+/// Whether wipe `wipe` is already closed into the hall beside `base`: its
+/// island placings are last wipe's, or a podium line names it. A second
+/// close would append its podiums and prizes again and sum them twice.
+pub fn is_closed(base: &Path, wipe: u32) -> bool {
+    let hall = Hall::load(base);
+    hall.last_wipe == wipe || hall.lines.iter().any(|l| l.wipe == wipe)
+}
+
 /// What a wipe's close found, for the boot log and the Discord post.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Closed {
@@ -1528,7 +1536,10 @@ mod tests {
         let next = Standings::open(rules(), prizes.clone(), Some(&base), 4);
         assert!(next.row_of(ALICE).is_none());
 
+        assert!(!is_closed(&base, 3));
         let closed = close_wipe(&base, 3, &prizes).unwrap();
+        assert!(is_closed(&base, 3), "a closed wipe is not closed twice");
+        assert!(!is_closed(&base, 4));
         assert_eq!(closed.winner.as_deref(), Some("ALICE (1600)"));
         // Alice: island #1 (500) and works #1 (200). Carol: island #2 among
         // the payable (300) and the fight's first payable place (50).
