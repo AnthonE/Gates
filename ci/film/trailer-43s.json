@@ -18,7 +18,7 @@
   },
   "clips": [
     {"shot": "dawn-sea", "in": 1.0, "len": 5.38, "game": 0.5},
-    {"shot": "aerial-zig", "in": 2.0, "len": 2.83, "game": 0.3, "transition": "cut"},
+    {"shot": "aerial-zig", "in": 2.0, "len": 2.83, "game": 0.3, "transition": "cut", "grade": "eq=contrast=1.14:saturation=0.7:gamma=0.88,colorbalance=rs=-0.04:gs=-0.01:bs=0.03:rh=0.02:bh=-0.03"},
     {"shot": "build-lapse2", "in": 1.0, "len": 2.83, "game": 0.3, "transition": "cut"},
     {"shot": "base-golden", "in": 2.5, "len": 2.84, "game": 0.4, "transition": "cut"},
     {"shot": "base-storm", "in": 1.5, "len": 2.83, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.14:saturation=0.6:gamma=1.0,colorbalance=rs=-0.04:bs=0.05"},
@@ -49,10 +49,10 @@
   ],
   "sfx": [
     {"src": "46_Thunder_0.wav", "at": 13.9, "gain": 0.6},
-    {"src": "trailer_pulse.wav", "at": 20.3, "gain": 0.7},
-    {"src": "trailer_pulse.wav", "at": 21.72, "gain": 0.7},
-    {"src": "trailer_pulse.wav", "at": 23.13, "gain": 0.8},
-    {"src": "trailer_reverse.wav", "at": 22.61, "gain": 0.6},
+    {"src": "trailer_pulse.wav", "at": 20.3, "gain": 0.5},
+    {"src": "trailer_pulse.wav", "at": 21.72, "gain": 0.5},
+    {"src": "trailer_pulse.wav", "at": 23.13, "gain": 0.6},
+    {"src": "trailer_reverse.wav", "at": 22.61, "gain": 0.5},
     {"src": "trailer_boom.wav", "at": 25.21, "gain": 1.0},
     {"src": "trailer_braam.wav", "at": 35.6, "gain": 0.8}
   ],
