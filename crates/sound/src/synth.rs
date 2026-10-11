@@ -578,6 +578,9 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         // The second blow of a frame: the same grunt, by delegation for the
         // remote swing's reason. What makes it a second voice is its row.
         Cue::HurtAgain => render_take(Cue::Hurt, take),
+        // The crossbow's fallback is the bow's string; its recording is its
+        // own (`client::sound_bank`).
+        Cue::ShotCrossbow => render_take(Cue::ShotBow, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

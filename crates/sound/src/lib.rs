@@ -375,11 +375,16 @@ pub enum Cue {
     /// a per-row cooldown binds inside a frame, so two blows asked of one row
     /// are one voice; it keeps Hurt's clock across frames ([`Cue::lead`]).
     HurtAgain,
+    /// A crossbow loosed, heard from where the shooter stands: the bow's
+    /// radius, a heavier thunk. Until this it played the bow's string
+    /// (`render/audio.rs::shots` tells them apart by what is in the hand).
+    /// Appended last — the enum's append-order rule.
+    ShotCrossbow,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 86;
+pub const CUE_COUNT: usize = 87;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -474,6 +479,7 @@ impl Cue {
         Cue::TorchOut,
         Cue::Bellow,
         Cue::HurtAgain,
+        Cue::ShotCrossbow,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -622,7 +628,7 @@ impl Cue {
             // mechanism with a fixed bore and a bow's is a fixed string —
             // both vary with the shooter and the round, not with the
             // weapon's pitch.
-            Cue::ShotBow | Cue::ShotGun | Cue::ShotGunFar => 0.05,
+            Cue::ShotBow | Cue::ShotCrossbow | Cue::ShotGun | Cue::ShotGunFar => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -959,6 +965,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 60.0, 0.55, 400, 2, true),   // bellow
     // The second blow in a frame: Hurt's row, read off it (`Cue::lead`).
     HURT,
+    // The crossbow: the bow's disclosure radius (the reference's 40 m), a
+    // little louder at the shooter — a stock and a steel prod, not a stave.
+    row(GAME,  40.0, 0.50,  60, 4, true),  // crossbow released
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

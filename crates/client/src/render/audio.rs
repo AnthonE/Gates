@@ -1093,9 +1093,12 @@ pub fn shots(
         // The one bit that separates the two weapons, and it is the same
         // bit the tracer reads: a projectile cannot leave a muzzle at rest,
         // so zero means the shot was instantaneous and instantaneous means
-        // a firearm. No item on the wire and none needed.
-        let cue = shot_cue(speed_mmpt);
+        // a firearm. Which projectile weapon is the hand's: a crossbow is
+        // heard as one (`projectile_cue`).
+        let mut cue = shot_cue(speed_mmpt);
         let at = if shooter == core.player_id {
+            let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
+            cue = projectile_cue(&core.catalog, cue, (s.count > 0).then_some(s.item));
             let p = core.predict.position();
             [p[0], p[1], p[2]]
         } else if let Some(t) = bodies
@@ -1103,6 +1106,9 @@ pub fn shots(
             .find(|(b, _)| b.0 == shooter)
             .map(|(_, t)| t.translation)
         {
+            if core.interp.sample(shooter, core.render_tick(), &mut rs) {
+                cue = projectile_cue(&core.catalog, cue, rs.held);
+            }
             [t.x, t.y, t.z]
         } else if (super::heli::is_heli(shooter) || super::sentry::is_sentry(shooter))
             && core.interp.sample(shooter, core.render_tick(), &mut rs)
@@ -1115,6 +1121,17 @@ pub fn shots(
         };
         let d = eye.pos.distance(Vec3::from(at));
         sound.play(Request::at(far_layer(cue, d), at));
+    }
+}
+
+/// A flying shot's cue by what loosed it: a crossbow in the hand is a
+/// crossbow, anything else that flies is a bow. A gunshot is left alone.
+pub fn projectile_cue(catalog: &protocol::ItemCatalog, cue: Cue, held: Option<u16>) -> Cue {
+    match held {
+        Some(item) if cue == Cue::ShotBow && crate::ui::hold::is_crossbow(catalog, item) => {
+            Cue::ShotCrossbow
+        }
+        _ => cue,
     }
 }
 
