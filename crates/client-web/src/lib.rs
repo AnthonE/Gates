@@ -110,10 +110,28 @@ impl Gates {
                 )
             })?,
         };
-        let session =
-            client::Session::connect(&server, cert_hash.as_deref(), address, sign.as_ref())
-                .await
-                .map_err(join_error)?;
+        // **The page signs its own name where it can vouch for the shard.** A
+        // wallet compares a sign-in's domain with the page asking, and the
+        // page on elopros.com signing `game.elopros.com` is the mismatch it
+        // warns about. `page_domain` has the rule (https, not loopback, and
+        // the shard is this host or under it); everything else keeps the
+        // dialled host, so local dev and other people's shards are unchanged.
+        let page = web_sys::window().map(|w| w.location());
+        let scheme = page.as_ref().and_then(|l| l.protocol().ok());
+        let hostname = page.as_ref().and_then(|l| l.hostname().ok());
+        let signs_as = match (&scheme, &hostname) {
+            (Some(s), Some(h)) => client::net::handshake::page_domain(s, h, &server),
+            _ => None,
+        };
+        let session = client::Session::connect(
+            &server,
+            cert_hash.as_deref(),
+            address,
+            sign.as_ref(),
+            signs_as,
+        )
+        .await
+        .map_err(join_error)?;
         let last = client::Frame {
             tick: 0,
             snapshots: 0,

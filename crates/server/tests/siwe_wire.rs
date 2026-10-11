@@ -87,10 +87,19 @@ fn key(byte: u8) -> SigningKey {
 }
 
 async fn shard(require_auth: bool) -> server::net::ShardHandle {
+    shard_listing(require_auth, None).await
+}
+
+/// A shard that also answers to `siwe_domains` — `None` is the key absent.
+async fn shard_listing(
+    require_auth: bool,
+    siwe_domains: Option<&[&str]>,
+) -> server::net::ShardHandle {
     let tables = baked_content();
     let mut cfg = ShardConfig::ephemeral(20_260_807);
     cfg.require_auth = require_auth;
     cfg.domain = DOMAIN.into();
+    cfg.siwe_domains = siwe_domains.map(|l| l.iter().map(|d| d.to_string()).collect());
     spawn_shard(
         cfg,
         tables,
@@ -359,6 +368,154 @@ async fn a_signed_join_is_admitted_where_guests_are_taken() {
     handle
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+// ── a shard with more than one name ──────────────────────────────────────────
+//
+// `siwe_domains` lets a shard accept a proof bound to a name beside `domain`:
+// the browser page signs its own host (`elopros.com`) so a wallet does not
+// warn that the page and the message disagree. Each case below is a real
+// signature over the real handshake, and the refusals are the half that
+// matter: one more name must not mean any name.
+
+/// The page's name, as the public shard lists it (`shard-public.toml`).
+const PAGE: &str = "elopros.com";
+
+/// Join with a proof bound to `signed_for`, signed by `sk`, through the real
+/// client handshake — which signs whatever domain it is handed, so a test can
+/// sign the name a page would.
+async fn join_signed_for(
+    handle: &server::net::ShardHandle,
+    signed_for: &str,
+    sk: &SigningKey,
+) -> Result<protocol::Welcome, String> {
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        client_handshake(&mut send, &mut recv, signed_for, address_of(sk), |text| {
+            Some(wallet_sign(sk, std::str::from_utf8(text).expect("utf-8")))
+        }),
+    )
+    .await
+    .expect("inside 5 s")
+}
+
+/// **A proof bound to a listed name is admitted**, and the shard is one that
+/// refuses guests, so the admission is the proof. Both names: the page's and
+/// the dialled one a desktop client signs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_proof_bound_to_a_listed_name_is_admitted() {
+    let handle = shard_listing(true, Some(&[DOMAIN, PAGE])).await;
+    for (byte, name) in [(21u8, PAGE), (22u8, DOMAIN)] {
+        let welcome = join_signed_for(&handle, name, &key(byte))
+            .await
+            .unwrap_or_else(|e| panic!("a proof bound to the listed `{name}` was refused: {e}"));
+        assert_ne!(welcome.player_id, 0, "welcomed with no player id");
+    }
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 0);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **A name outside the list is refused**, on a shard that takes guests —
+/// so the refusal is the signature's, not the guest door's. The near misses
+/// are the ones a sloppy match would let through: a parent of a listed name,
+/// a child of one, another case, a trailing dot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_proof_bound_to_an_unlisted_name_is_refused() {
+    let handle = shard_listing(false, Some(&[DOMAIN, PAGE])).await;
+    let unlisted = [
+        "evil.example",
+        "game.elopros.com",
+        "com",
+        "ELOPROS.COM",
+        "elopros.com.",
+    ];
+    for (i, name) in unlisted.iter().enumerate() {
+        let err = join_signed_for(&handle, name, &key(30 + i as u8))
+            .await
+            .expect_err("a proof bound to an unlisted name must be refused");
+        assert!(err.contains("refused"), "{name}: {err}");
+    }
+    assert_eq!(
+        ShardStats::get(&handle.stats.refused_auth),
+        unlisted.len() as u64
+    );
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **Without the key, the shard is the one-name shard it was**: the dialled
+/// name is admitted and the page's is refused, exactly as before
+/// `siwe_domains` existed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_the_key_only_the_domain_is_accepted() {
+    let cfg = ShardConfig::ephemeral(1);
+    assert_eq!(cfg.siwe_domains, None);
+    assert_eq!(cfg.siwe_accepts(), std::slice::from_ref(&cfg.domain));
+
+    let handle = shard_listing(false, None).await;
+    join_signed_for(&handle, DOMAIN, &key(40))
+        .await
+        .expect("the dialled name is admitted as it always was");
+    let err = join_signed_for(&handle, PAGE, &key(41))
+        .await
+        .expect_err("a name the operator never listed must be refused");
+    assert!(err.contains("refused"), "{err}");
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 1);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **The public shard accepts the name its browser page signs, and the name
+/// its desktop clients sign.** The page's rule (`page_domain`) and the
+/// shard's list (`shard-public.toml`) live in two crates and one config
+/// file; this is the one place that holds them to agreeing, through the
+/// shard's real verifier.
+#[test]
+fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shard-public.toml");
+    let text = std::fs::read_to_string(&path).expect("shard-public.toml is tracked");
+    let cfg = server::config::parse_shard_toml(&text).expect("shard-public.toml parses");
+    let dialled = format!("{}:61234", cfg.domain);
+    let page = client::net::handshake::page_domain("https:", PAGE, &dialled)
+        .expect("the page on elopros.com vouches for the shard under it");
+
+    let sk = key(42);
+    let address = address_of(&sk);
+    let nonce = [0x33u8; protocol::NONCE_BYTES];
+    let issued_at = 1_700_000_000;
+    for (who, domain) in [
+        ("the page", page),
+        ("a desktop client", cfg.domain.as_str()),
+    ] {
+        let proof = client::net::handshake::Proof {
+            domain: domain.to_string(),
+            nonce,
+            issued_at,
+        };
+        let auth = protocol::Auth {
+            address,
+            signature: wallet_sign(&sk, &proof.message(address)),
+        };
+        assert!(
+            server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_ok(),
+            "the public shard refuses what {who} signs (`{domain}`)"
+        );
+    }
 }
 
 // ── the browser's half ───────────────────────────────────────────────────────

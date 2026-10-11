@@ -207,6 +207,19 @@ pub struct ShardConfig {
     /// Defaults to the bind host, which is right for a dev shard and wrong
     /// for anything behind a name, so a public shard sets it.
     pub domain: String,
+    /// Every name a SIWE proof may be bound to (`siwe_domains`), when one
+    /// name is not enough: a browser page signs its OWN host, because a
+    /// wallet (EIP-4361) compares the message's domain with the page that
+    /// asked and warns on a mismatch — and the page is on `elopros.com`
+    /// while the shard is dialled at `game.elopros.com`.
+    ///
+    /// `None` — the key absent — is exactly the one-name shard above:
+    /// [`ShardConfig::siwe_accepts`] is `[domain]` and nothing else changes.
+    /// Set, it is the WHOLE list and the parser holds it to naming `domain`
+    /// too, since that is what a desktop client signs. **Every name here is
+    /// one whose pages may collect a signature this shard accepts**, so list
+    /// only names you serve.
+    pub siwe_domains: Option<Vec<String>>,
     /// The ticket door (`entitle.rs`): does a joiner own a copy of this game?
     ///
     /// [`entitle::Config::off`] is the shipping default and checks **nothing**
@@ -394,6 +407,7 @@ impl ShardConfig {
             blueprint_wipe_every: 2,
             status_addr: None,
             domain: "127.0.0.1".into(),
+            siwe_domains: None,
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
             faces: crate::faces::Config::off(),
@@ -411,6 +425,71 @@ impl ShardConfig {
             spectate: Spectate::OFF,
         }
     }
+
+    /// The names a SIWE proof may be bound to: `siwe_domains` when the
+    /// operator listed them, and otherwise `domain` alone — which is the
+    /// shard as it was before the list existed, byte for byte.
+    pub fn siwe_accepts(&self) -> &[String] {
+        match &self.siwe_domains {
+            Some(list) => list,
+            None => std::slice::from_ref(&self.domain),
+        }
+    }
+}
+
+/// Most names `siwe_domains` may list. Each one is an `ecrecover` a refused
+/// signature costs the handshake, so the list is short by construction: the
+/// shard's own name and the page that plays on it.
+pub const SIWE_DOMAINS_MAX: usize = 4;
+
+/// `siwe_domains`' value: this file's quoted comma string,
+/// `"game.example, example"`. Refused whole on any entry that could not be a
+/// host a client signs — a TOML array (`["a", "b"]`) included, since this
+/// parser is one `key = value` per line and would read its brackets and
+/// quotes as part of each name.
+fn parse_siwe_domains(value: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::with_capacity(SIWE_DOMAINS_MAX);
+    for entry in value.split(',').map(str::trim) {
+        if entry.is_empty() {
+            continue;
+        }
+        if entry.len() > protocol::DOMAIN_MAX || !is_siwe_host(entry) {
+            return Err(format!(
+                "siwe_domains names `{entry}`, which is not a bare host of 1..={} bytes \
+                 (no port, no scheme) — write the names as one quoted comma string, \
+                 \"game.example, example\"",
+                protocol::DOMAIN_MAX
+            ));
+        }
+        if out.iter().any(|d| d == entry) {
+            return Err(format!("siwe_domains names `{entry}` twice"));
+        }
+        // Checked before the push, so a long line cannot grow the list past
+        // the cap it is about to be refused for.
+        if out.len() >= SIWE_DOMAINS_MAX {
+            return Err(format!(
+                "siwe_domains names more than {SIWE_DOMAINS_MAX} hosts"
+            ));
+        }
+        out.push(entry.to_string());
+    }
+    if out.is_empty() {
+        return Err("siwe_domains names no host — omit the key to accept `domain` alone".into());
+    }
+    Ok(out)
+}
+
+/// A host as a client signs it: what `client::net::handshake` leaves of the
+/// address it dialled once the port is gone, or what a page's
+/// `location.hostname` reads. A name, a bracketed IPv6 literal (`[::1]`, the
+/// dialled spelling), or a bare one (`::1`, the bind-host default's).
+fn is_siwe_host(s: &str) -> bool {
+    if let Some(v6) = s.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        return v6.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    s.parse::<std::net::Ipv6Addr>().is_ok()
+        || s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
 }
 
 /// `"0.1.0"` → the packed [`protocol::version::VER`] form. Rejects anything
@@ -500,6 +579,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut blueprint_wipe_every: u32 = 2;
     let mut status_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
+    let mut siwe_domains: Option<Vec<String>> = None;
     let mut entitle_origin: Option<String> = None;
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
@@ -818,6 +898,14 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ));
                 }
                 domain = Some(value.to_string());
+            }
+            // More names a proof may be bound to (`ShardConfig::siwe_domains`).
+            // Absent ⇒ `domain` alone, which is every shard before the key.
+            "siwe_domains" => {
+                siwe_domains = Some(
+                    parse_siwe_domains(value)
+                        .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
+                );
             }
             // The ticket door (`entitle.rs`). Absent ⇒ this shard checks no
             // copies, which is what every test, every community shard and
@@ -1212,6 +1300,23 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    // Unset ⇒ the bind host, which is what a dev shard on loopback wants and
+    // what a shard behind a DNS name must override. (No bind is refused by
+    // the literal below, before `domain` is read.)
+    let domain = domain.or_else(|| bind.map(|b| b.ip().to_string()));
+    // The list is the WHOLE set of names a proof may be bound to, so it has
+    // to carry the one every desktop client signs: the host it dialled,
+    // which is `domain`. Leaving it out would refuse every desktop login as
+    // a wrong signature, so it refuses the boot instead.
+    if let (Some(list), Some(d)) = (&siwe_domains, &domain) {
+        if !list.contains(d) {
+            return Err(format!(
+                "shard.toml: siwe_domains must name `{d}` (the `domain` key, or the bind \
+                 host when that is unset) — it is what a desktop client signs, and a \
+                 list without it refuses every desktop sign-in"
+            ));
+        }
+    }
     Ok(ShardConfig {
         prizes,
         discord_webhook,
@@ -1239,12 +1344,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         // Unset ⇒ 0, which admits every client that can talk to this shard at
         // all. `PROTO_VER` is still exact; this floor is the operator's extra.
         min_client: min_client.unwrap_or(0),
-        // Unset ⇒ the bind host, which is what a dev shard on loopback
-        // wants and what a shard behind a DNS name must override.
-        domain: domain.unwrap_or_else(|| {
-            let b = bind.expect("checked above");
-            b.ip().to_string()
-        }),
+        domain: domain.expect("`bind` is read above, and its host is the default"),
+        siwe_domains,
         entitle,
         skins,
         faces,
@@ -1381,6 +1482,49 @@ mod tests {
         ] {
             assert!(parse_shard_toml(&format!("{base}{bad}")).is_err(), "{bad}");
         }
+    }
+
+    /// `siwe_domains`: absent is `domain` alone, set is the whole list and
+    /// must carry `domain`, and anything that could not be a signed host is
+    /// a boot failure rather than a name nobody can ever match.
+    #[test]
+    fn siwe_domains_parse_or_refuse() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+        let cfg = parse_shard_toml(base).unwrap();
+        assert_eq!(cfg.siwe_domains, None);
+        assert_eq!(cfg.siwe_accepts(), ["127.0.0.1"], "the bind host, alone");
+        let named = format!("{base}domain = \"game.example\"\n");
+        let cfg = parse_shard_toml(&named).unwrap();
+        assert_eq!(cfg.siwe_accepts(), ["game.example"]);
+        let cfg = parse_shard_toml(&format!(
+            "{named}siwe_domains = \"game.example, example\"\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.siwe_accepts(), ["game.example", "example"]);
+        assert_eq!(cfg.domain, "game.example", "the list leaves `domain` alone");
+        let cfg =
+            parse_shard_toml(&format!("{base}siwe_domains = \"127.0.0.1, [::1]\"\n")).unwrap();
+        assert_eq!(cfg.siwe_accepts(), ["127.0.0.1", "[::1]"]);
+        for bad in [
+            // the TOML array this parser cannot read
+            "siwe_domains = [\"game.example\", \"example\"]\n",
+            "siwe_domains = [game.example, example]\n",
+            // a host as dialled, not as signed
+            "siwe_domains = \"game.example:61234\"\n",
+            "siwe_domains = \"https://game.example\"\n",
+            "siwe_domains = \"game.example, game.example\"\n",
+            "siwe_domains = \"game.example, a, b, c, d\"\n",
+            "siwe_domains = \"\"\n",
+            "siwe_domains = \" , \"\n",
+            // without `domain`, every desktop sign-in would be refused
+            "siwe_domains = \"example\"\n",
+        ] {
+            assert!(parse_shard_toml(&format!("{named}{bad}")).is_err(), "{bad}");
+        }
+        assert!(
+            parse_shard_toml(&format!("{base}siwe_domains = \"example\"\n")).is_err(),
+            "the bind-host default counts as `domain` and must be listed too"
+        );
     }
 
     #[test]

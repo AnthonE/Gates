@@ -519,6 +519,15 @@ async fn main() {
             }
         );
     }
+    // The names a sign-in may be bound to, said once where the operator
+    // listed more than `domain` (`config.rs`). Without the key this prints
+    // nothing, and the shard is the one-name shard it always was.
+    if cfg.siwe_domains.is_some() {
+        println!(
+            "sign-in: proofs bound to {} are accepted",
+            cfg.siwe_accepts().join(", ")
+        );
+    }
     world_boot.wipe = wipe_clock;
     let handle = match spawn_shard(cfg, tables, saves, world_boot).await {
         Ok(h) => h,

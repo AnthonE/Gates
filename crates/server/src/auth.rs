@@ -140,19 +140,38 @@ pub fn verify(
     issued_at: u64,
     auth: &Auth,
 ) -> Result<PlayerKey, AuthError> {
+    verify_any(&[domain], nonce, issued_at, auth)
+}
+
+/// [`verify`] against a shard that answers to more than one name
+/// (`ShardConfig::siwe_accepts`): the proof is good if it is bound to ANY of
+/// `domains`, and to nothing else.
+///
+/// **The client still never says which name it signed.** The wire carries an
+/// address and a signature and no text, so the shard rebuilds the message
+/// once per listed name and keeps the one whose recovered signer is the
+/// claimed address. A name outside the list is never rebuilt, so a proof
+/// bound to it recovers nobody it could match — which is the whole of the
+/// domain binding, widened by exactly the names the operator wrote.
+///
+/// One name is [`verify`] exactly: the same checks in the same order, the
+/// same refusal for each failure. An empty list proves nothing and refuses —
+/// there is no message the signature could have been over.
+pub fn verify_any<S: AsRef<str>>(
+    domains: &[S],
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    auth: &Auth,
+) -> Result<PlayerKey, AuthError> {
     if auth.address.is_guest() {
         return Err(AuthError::Guest);
     }
-    let mut text = [0u8; SIWE_MESSAGE_MAX];
     // EIP-55, not `Address::to_hex`'s lowercase: the launcher binds the
     // checksummed spelling into the bytes it signs, so recomputing with a
     // lowercase address recovers a different digest and every honest login
     // fails as `WrongSigner`. The case is part of the message.
     let checksummed = auth.address.to_checksum_hex();
     let addr = core::str::from_utf8(&checksummed).map_err(|_| AuthError::Malformed)?;
-    let len = siwe_message(domain, addr, protocol::SLUG, nonce, issued_at, &mut text);
-    let len = len.min(SIWE_MESSAGE_MAX);
-    let digest = personal_sign_digest(&text[..len]);
 
     let Signature(raw) = auth.signature;
     // `v` is 27/28 from every wallet and 0/1 from some libraries. Both are
@@ -165,20 +184,43 @@ pub fn verify(
     };
     let sig = EcdsaSig::from_slice(&raw[..64]).map_err(|_| AuthError::Malformed)?;
     let rec_id = RecoveryId::from_byte(rec).ok_or(AuthError::BadRecoveryId)?;
-    let vk = VerifyingKey::recover_from_prehash(&digest, &sig, rec_id)
-        .map_err(|_| AuthError::Malformed)?;
 
-    let signer = address_of(&vk);
-    if signer != auth.address {
-        return Err(AuthError::WrongSigner);
+    // `WrongSigner` outranks `Malformed`: if any name recovered somebody,
+    // somebody signed something, which is the more useful count.
+    let mut refused = None;
+    for domain in domains {
+        let mut text = [0u8; SIWE_MESSAGE_MAX];
+        let len = siwe_message(
+            domain.as_ref(),
+            addr,
+            protocol::SLUG,
+            nonce,
+            issued_at,
+            &mut text,
+        );
+        let len = len.min(SIWE_MESSAGE_MAX);
+        let digest = personal_sign_digest(&text[..len]);
+        match VerifyingKey::recover_from_prehash(&digest, &sig, rec_id) {
+            Ok(vk) => {
+                let signer = address_of(&vk);
+                if signer == auth.address {
+                    // The key is the lowercase `0x…` text of the address.
+                    // Text rather than the 20 raw bytes because `PlayerKey`
+                    // is what an operator reads out of a save file when they
+                    // have to support it, and 20 bytes of binary in a hexdump
+                    // is a worse afternoon than 42 characters that are
+                    // obviously an address.
+                    let hex = signer.to_hex();
+                    return PlayerKey::new(&hex).ok_or(AuthError::Malformed);
+                }
+                refused = Some(AuthError::WrongSigner);
+            }
+            Err(_) => {
+                refused.get_or_insert(AuthError::Malformed);
+            }
+        }
     }
-    // The key is the lowercase `0x…` text of the address. Text rather than
-    // the 20 raw bytes because `PlayerKey` is what an operator reads out of
-    // a save file when they have to support it, and 20 bytes of binary in a
-    // hexdump is a worse afternoon than 42 characters that are obviously an
-    // address.
-    let hex = signer.to_hex();
-    PlayerKey::new(&hex).ok_or(AuthError::Malformed)
+    Err(refused.unwrap_or(AuthError::WrongSigner))
 }
 
 /// The key for an address that has already been proved — the one place that
@@ -206,6 +248,17 @@ mod tests {
     /// Sign the challenge exactly as a wallet would, so these tests exercise
     /// the real path rather than a convenient one.
     fn sign_as(sk: &SigningKey, nonce: &[u8; NONCE_BYTES], issued_at: u64, v_style: u8) -> Auth {
+        sign_for(sk, DOMAIN, nonce, issued_at, v_style)
+    }
+
+    /// [`sign_as`] for a page on another name.
+    fn sign_for(
+        sk: &SigningKey,
+        domain: &str,
+        nonce: &[u8; NONCE_BYTES],
+        issued_at: u64,
+        v_style: u8,
+    ) -> Auth {
         let address = address_of(sk.verifying_key());
         let mut text = [0u8; SIWE_MESSAGE_MAX];
         // Checksummed, exactly as `verify` recomputes it and a launcher signs
@@ -213,7 +266,7 @@ mod tests {
         // verifier that did the same and fail against every real wallet.
         let checksummed = address.to_checksum_hex();
         let addr = core::str::from_utf8(&checksummed).expect("utf-8");
-        let len = siwe_message(DOMAIN, addr, protocol::SLUG, nonce, issued_at, &mut text);
+        let len = siwe_message(domain, addr, protocol::SLUG, nonce, issued_at, &mut text);
         let digest = personal_sign_digest(&text[..len]);
         let (sig, rec) = sk.sign_prehash_recoverable(&digest).expect("signs");
         let mut raw = [0u8; 65];
@@ -350,5 +403,58 @@ mod tests {
         let auth = sign_as(&sk, &nonce, 7, 27);
         let verified = verify(DOMAIN, &nonce, 7, &auth).expect("verifies");
         assert_eq!(Some(verified), key_of(&auth.address));
+    }
+
+    /// **A shard with two names takes a proof bound to either, and to
+    /// nothing else.** The second name is a page's (`elopros.com`) beside the
+    /// dialled one, and the refusal is the half that matters: widening the
+    /// list by one name must not widen it by any other.
+    #[test]
+    fn a_listed_name_verifies_and_an_unlisted_one_is_refused() {
+        let listed = ["game.test", "test"];
+        let sk = signer_for(12);
+        let nonce = [6u8; NONCE_BYTES];
+        for domain in listed {
+            let auth = sign_for(&sk, domain, &nonce, 9, 27);
+            assert_eq!(
+                verify_any(&listed, &nonce, 9, &auth),
+                Ok(key_of(&auth.address).expect("a key")),
+                "a proof bound to the listed `{domain}` was refused"
+            );
+        }
+        for domain in ["evil.test", "sub.game.test", "game.test.", "TEST", ""] {
+            let auth = sign_for(&sk, domain, &nonce, 9, 27);
+            assert_eq!(
+                verify_any(&listed, &nonce, 9, &auth),
+                Err(AuthError::WrongSigner),
+                "a proof bound to the unlisted `{domain}` was accepted"
+            );
+        }
+    }
+
+    /// One name is `verify`, refusal for refusal — the shard without
+    /// `siwe_domains` is the shard before it.
+    #[test]
+    fn one_listed_name_is_verify_exactly() {
+        let sk = signer_for(13);
+        let nonce = [4u8; NONCE_BYTES];
+        let good = sign_for(&sk, DOMAIN, &nonce, 5, 27);
+        let mut bad_v = good;
+        bad_v.signature.0[64] = 30;
+        let mut zero_sig = good;
+        zero_sig.signature.0[..64].fill(0);
+        let mut wrong = good;
+        wrong.address = address_of(signer_for(14).verifying_key());
+        for auth in [good, bad_v, zero_sig, wrong, Auth::default()] {
+            assert_eq!(
+                verify_any(&[DOMAIN], &nonce, 5, &auth),
+                verify(DOMAIN, &nonce, 5, &auth)
+            );
+        }
+        assert_eq!(
+            verify_any::<&str>(&[], &nonce, 5, &good),
+            Err(AuthError::WrongSigner),
+            "an empty list proves nothing"
+        );
     }
 }

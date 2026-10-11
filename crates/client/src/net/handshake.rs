@@ -232,7 +232,8 @@ pub fn watch_from(frame: &[u8]) -> Result<protocol::Watch, JoinError> {
 /// for the incident that made that inversion the rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proof {
-    /// The SIWE domain — the host we dialled with its port stripped.
+    /// The SIWE domain — the host we dialled with its port stripped, or, in
+    /// a browser, the page's own host where [`page_domain`] chose it.
     pub domain: String,
     /// The shard's nonce, raw. Rendered as lowercase hex by
     /// [`Proof::nonce_hex`] for a signer that wants text, and passed as bytes
@@ -308,6 +309,12 @@ impl Proof {
 /// because the two messages differ, and letting the server name itself would
 /// hand that away.
 ///
+/// `signs_as` replaces that host with the **page's own** — the one other
+/// name a client may sign, and only a browser passes it ([`page_domain`]
+/// says when). It still comes from this side and never from the shard; the
+/// shard accepts it only if its operator listed it (`siwe_domains`), and
+/// every desktop caller passes `None`.
+///
 /// ⚠ **This is half of what used to be [`auth_for`], and the split exists for
 /// one reason: a browser signature cannot be obtained synchronously.**
 /// `window.ethereum.request` returns a Promise and the nonce only exists
@@ -319,6 +326,7 @@ impl Proof {
 pub fn proof_wanted(
     frame: &[u8],
     server: &str,
+    signs_as: Option<&str>,
     address: protocol::Address,
 ) -> Result<Option<Proof>, JoinError> {
     match peek_kind(frame) {
@@ -345,12 +353,71 @@ pub fn proof_wanted(
         return Ok(None);
     }
 
-    let domain = server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server);
+    let domain = signs_as.unwrap_or_else(|| dialled_host(server));
     Ok(Some(Proof {
         domain: domain.to_string(),
         nonce: challenge.nonce,
         issued_at: challenge.issued_at,
     }))
+}
+
+/// The host of a `host:port`, as a SIWE message names it: the port is not
+/// part of the domain. A bare host is its own.
+fn dialled_host(server: &str) -> &str {
+    server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server)
+}
+
+/// **Which name a browser page signs: its own, or the host it dialled.**
+///
+/// A wallet (EIP-4361; MetaMask's sign-in check) compares the message's
+/// domain with the page that asked and warns when they differ — and a page at
+/// `https://elopros.com` signing for `game.elopros.com` is exactly that
+/// mismatch, on a player's own sign-in. The page's host is the right name
+/// when the page is ours to vouch for, and this answers `Some(hostname)` only
+/// then:
+///
+/// - the page is `https:` — a wallet's check is about an origin worth
+///   checking, and a plain-http page is a local build;
+/// - its host is not loopback, so local dev signs what it always signed;
+/// - and the shard dialled IS that host or sits under it. A page on
+///   `elopros.com` signs `elopros.com` for `game.elopros.com`, and still
+///   signs `play.example` for somebody else's shard — a community shard has
+///   never heard of our page's name and would refuse a proof bound to it.
+///
+/// `scheme` is `location.protocol` (`"https:"`) and `hostname` is
+/// `location.hostname`, which carries no port. `None` keeps the dialled host,
+/// which is also every desktop join. The shard has the last word either way:
+/// it accepts only the names its `siwe_domains` lists.
+pub fn page_domain<'a>(scheme: &str, hostname: &'a str, server: &str) -> Option<&'a str> {
+    if !scheme.trim_end_matches(':').eq_ignore_ascii_case("https") {
+        return None;
+    }
+    if hostname.is_empty() || hostname.len() > protocol::DOMAIN_MAX || is_loopback_host(hostname) {
+        return None;
+    }
+    let dialled = dialled_host(server).as_bytes();
+    let page = hostname.as_bytes();
+    let under = dialled.len() > page.len()
+        && dialled[..dialled.len() - page.len()].ends_with(b".")
+        && dialled[dialled.len() - page.len()..].eq_ignore_ascii_case(page);
+    (dialled.eq_ignore_ascii_case(page) || under).then_some(hostname)
+}
+
+/// `localhost`, anything under it, and the loopback addresses in either
+/// IPv6 spelling.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .rsplit_once('.')
+            .is_some_and(|(_, tld)| tld.eq_ignore_ascii_case("localhost"))
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Step 2b — the auth frame, from whatever the signer answered.
@@ -407,7 +474,8 @@ pub fn auth_for(
     sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
     buf: &mut [u8],
 ) -> Result<usize, JoinError> {
-    let signature = proof_wanted(frame, server, address)?
+    // `None`: the desktop signs the host it dialled, always.
+    let signature = proof_wanted(frame, server, None, address)?
         .and_then(|p| sign(&p.domain, &p.nonce_hex(), p.issued_at));
     auth_frame(address, signature, buf)
 }
@@ -517,6 +585,96 @@ mod tests {
             &mut buf,
         );
         assert_eq!(seen.as_deref(), Some("localhost"));
+    }
+
+    /// **A page's own name replaces the dialled host, and only where the
+    /// caller said so.** `None` is the dialled host exactly as before; the
+    /// override changes the domain and nothing else in the proof.
+    #[test]
+    fn signs_as_replaces_the_dialled_host_and_nothing_else() {
+        let frame = challenge_frame([3u8; protocol::NONCE_BYTES], 77);
+        let dialled = proof_wanted(&frame, "game.elopros.com:61234", None, someone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(dialled.domain, "game.elopros.com");
+        let paged = proof_wanted(
+            &frame,
+            "game.elopros.com:61234",
+            Some("elopros.com"),
+            someone(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(paged.domain, "elopros.com");
+        assert_eq!(
+            (paged.nonce, paged.issued_at),
+            (dialled.nonce, dialled.issued_at)
+        );
+        assert_eq!(
+            proof_wanted(&frame, "h:1", Some("elopros.com"), Address::GUEST).unwrap(),
+            None,
+            "a guest still has nothing to prove"
+        );
+    }
+
+    /// **When a page signs its own name.** Our page, our shard: the page's
+    /// host. Local dev, plain http, or somebody else's shard: the dialled host
+    /// (`None`), which is what every one of those signed before.
+    #[test]
+    fn a_page_signs_its_own_host_only_for_a_shard_under_it() {
+        let ours = "game.elopros.com:61234";
+        assert_eq!(
+            page_domain("https:", "elopros.com", ours),
+            Some("elopros.com")
+        );
+        assert_eq!(
+            page_domain("https", "elopros.com", "GAME.Elopros.com:1"),
+            Some("elopros.com")
+        );
+        assert_eq!(
+            page_domain("https:", "game.elopros.com", ours),
+            Some("game.elopros.com"),
+            "a page on the shard's own host signs that host"
+        );
+        for (scheme, host, server, why) in [
+            ("http:", "elopros.com", ours, "plain http"),
+            ("file:", "", ours, "no host"),
+            ("https:", "localhost", "localhost:4433", "loopback name"),
+            (
+                "https:",
+                "gates.localhost",
+                "a.gates.localhost:4433",
+                "under localhost",
+            ),
+            ("https:", "127.0.0.1", "127.0.0.1:4433", "loopback v4"),
+            ("https:", "[::1]", "[::1]:4433", "loopback v6"),
+            (
+                "https:",
+                "elopros.com",
+                "play.example:4433",
+                "somebody else's shard",
+            ),
+            (
+                "https:",
+                "elopros.com",
+                "notelopros.com:4433",
+                "a suffix that is not a label",
+            ),
+            (
+                "https:",
+                "game.elopros.com",
+                "elopros.com:4433",
+                "the shard is above the page",
+            ),
+            (
+                "https:",
+                "play.elopros.com",
+                ours,
+                "a sibling, not a parent",
+            ),
+        ] {
+            assert_eq!(page_domain(scheme, host, server), None, "{why}");
+        }
     }
 
     /// A declined prompt or an absent launcher answers `None`, and `None`
@@ -652,7 +810,7 @@ mod tests {
 
         // The way a page must do it: decode, hand the three values out, come
         // back with a signature, encode.
-        let want = proof_wanted(&frame, "shard.example:4433", someone())
+        let want = proof_wanted(&frame, "shard.example:4433", None, someone())
             .expect("decodes")
             .expect("not a guest");
         assert_eq!(want.domain, "shard.example");
@@ -702,7 +860,7 @@ mod tests {
     fn a_guest_has_nothing_to_prove() {
         let frame = challenge_frame([1; protocol::NONCE_BYTES], 42);
         assert_eq!(
-            proof_wanted(&frame, "shard.example:4433", Address::GUEST).expect("decodes"),
+            proof_wanted(&frame, "shard.example:4433", None, Address::GUEST).expect("decodes"),
             None
         );
     }
@@ -763,7 +921,9 @@ mod tests {
         nonce[0] = 0xAB;
         nonce[protocol::NONCE_BYTES - 1] = 0x0F;
         let frame = challenge_frame(nonce, 1);
-        let p = proof_wanted(&frame, "s:1", someone()).unwrap().unwrap();
+        let p = proof_wanted(&frame, "s:1", None, someone())
+            .unwrap()
+            .unwrap();
         let hex = p.nonce_hex();
         assert_eq!(hex.len(), protocol::NONCE_BYTES * 2);
         assert!(hex.starts_with("ab"), "{hex}");
