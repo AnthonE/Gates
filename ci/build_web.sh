@@ -125,6 +125,9 @@ sed -i "s|src=\"app.js\"|src=\"app.js?v=$appv\"|" "$out/index.html"
 # The image an X post shows for the page's link (`twitter:image` in index.html):
 # a crop of `assets/menu/dusk.jpg`, our own island, with the wordmark on it.
 cp crates/client-web/web/card.jpg "$out/"
+# The tab and home-screen icon: the Gates sigil, the same plate the desktop
+# window carries (`crates/client/icon/`).
+cp crates/client-web/web/favicon.png crates/client-web/web/apple-touch-icon.png "$out/"
 # The menu's face is the game's (`render/ui.rs` embeds the same two files), and
 # the page's CSP is `font-src 'self'`, so they ship beside it with their licence.
 mkdir -p "$out/fonts"
