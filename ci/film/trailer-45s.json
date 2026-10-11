@@ -1,0 +1,77 @@
+{
+  "out": "film/ads/gates-trailer-45s-16x9.mp4",
+  "size": [1920, 1080],
+  "fps": 30,
+  "shots": ["film/shots/raid", "film/shots/raid-b"],
+  "bank": "film/bank",
+  "fade_in": 1.0,
+  "fade_out": 1.2,
+  "loudness": -14,
+  "crf": 16,
+  "maxrate": "9M",
+  "grade": "eq=contrast=1.12:saturation=0.82:gamma=0.96,colorbalance=rs=-0.03:gs=-0.01:bs=0.02:rh=0.03:gh=0.01:bh=-0.04",
+  "finish": {
+    "halation": 0.08,
+    "vignette": 0.5,
+    "grain": 7,
+    "letterbox": 2.39
+  },
+  "clips": [
+    {"shot": "dawn-sea", "in": 1.0, "len": 5.38, "game": 0.5},
+    {"shot": "aerial-zig", "in": 2.0, "len": 2.83, "game": 0.3, "transition": "cut"},
+    {"shot": "build-lapse2", "in": 1.0, "len": 2.83, "game": 0.3, "transition": "cut"},
+    {"shot": "base-golden", "in": 2.5, "len": 2.84, "game": 0.4, "transition": "cut"},
+    {"shot": "base-storm", "in": 1.5, "len": 2.83, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.14:saturation=0.6:gamma=1.0,colorbalance=rs=-0.04:bs=0.05"},
+    {"shot": "base-night", "in": 1.5, "len": 2.83, "game": 0.5, "transition": "cut"},
+    {"shot": "raid-plant", "in": 0.25, "len": 4.25, "game": 0.8, "transition": "cut"},
+    {"shot": "raid-blast", "in": 0.73, "len": 4.25, "game": 1.0, "transition": "cut"},
+    {"shot": "raid-wide", "in": 2.6, "len": 2.84, "game": 1.0, "transition": "cut"},
+    {"shot": "aftermath", "in": 1.0, "len": 2.83, "game": 0.8, "transition": "cut"},
+    {"shot": "dawn-sea", "in": 4.6, "len": 2.83, "game": 0.4, "transition": "black", "fade": 0.4}
+  ],
+  "captions": [
+    {"at": 0.8, "len": 3.8, "text": "YOU WAKE UP WITH NOTHING", "size": 0.055, "y": 0.78},
+    {"at": 5.6, "len": 2.4, "text": "NOBODY IS COMING TO HELP", "size": 0.05, "y": 0.78},
+    {"at": 8.4, "len": 2.4, "text": "BUILD", "size": 0.13, "y": 0.5},
+    {"at": 11.25, "len": 2.4, "text": "LOCK THE DOOR", "size": 0.06, "y": 0.76},
+    {"at": 14.1, "len": 2.4, "text": "SURVIVE", "size": 0.13, "y": 0.5},
+    {"at": 16.9, "len": 2.4, "text": "THE NIGHTS ARE LONG", "size": 0.06, "y": 0.76},
+    {"at": 20.1, "len": 4.7, "text": "EVERYONE WANTS WHAT YOU HAVE", "size": 0.055, "y": 0.78},
+    {"at": 25.3, "len": 2.5, "text": "RAID", "size": 0.15, "y": 0.5},
+    {"at": 30.95, "len": 2.55, "text": "DIE, AND THEY TAKE EVERYTHING", "size": 0.06, "y": 0.5},
+    {"at": 34.0, "len": 2.2, "text": "GO AGAIN", "size": 0.1, "y": 0.5}
+  ],
+  "flashes": [
+    {"at": 25.21, "len": 0.25}
+  ],
+  "music": [
+    {"src": "safe-zone.mp3", "in": 80.0, "at": 0.0, "gain": 1.0, "fade_in": 1.5, "cut": 43.2, "fade_out": 3.0}
+  ],
+  "sfx": [
+    {"src": "46_Thunder_0.wav", "at": 13.9, "gain": 0.6},
+    {"src": "trailer_pulse.wav", "at": 20.3, "gain": 0.7},
+    {"src": "trailer_pulse.wav", "at": 21.72, "gain": 0.7},
+    {"src": "trailer_pulse.wav", "at": 23.13, "gain": 0.8},
+    {"src": "trailer_reverse.wav", "at": 22.61, "gain": 0.6},
+    {"src": "trailer_boom.wav", "at": 25.21, "gain": 1.0},
+    {"src": "trailer_braam.wav", "at": 36.0, "gain": 0.8}
+  ],
+  "card": {
+    "len": 7.0,
+    "fade": 0.6,
+    "shot": "zig-reveal",
+    "at": 5.0,
+    "title": "GATES",
+    "lines": ["TRUST NO ONE", "PLAY NOW IN YOUR BROWSER  ·  ELOPROS.COM/GAMES/GATES"]
+  },
+  "poster": {
+    "out": "film/ads/gates-trailer-poster.png",
+    "shot": "raid-blast",
+    "at": 2.4,
+    "size": [1920, 1080],
+    "title": "GATES",
+    "lines": ["TRUST NO ONE"],
+    "dim": 0.25,
+    "y": 0.2
+  }
+}
