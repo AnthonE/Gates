@@ -66,6 +66,9 @@ have="$(wasm-bindgen --version | awk '{print $2}')"
 # `WEB_PROFILE=release` keeps the function names for the day a browser stack
 # is the thing being read (findings §16); the default is what ships.
 profile="${WEB_PROFILE:-web}"
+# Where cargo puts what it builds: `CARGO_TARGET_DIR` when one is set (a
+# shared cache), `target/` otherwise. Every module below is read from here.
+tgt="${CARGO_TARGET_DIR:-target}"
 
 # ── the game, twice: WebGPU and WebGL2 ──────────────────────────────────────
 # Bevy picks its GPU API at COMPILE time (`crates/client/build.rs`): under
@@ -98,7 +101,7 @@ for m in $modules; do
     --remove-producers-section \
     --out-name "$stem" \
     --out-dir "$out" \
-    "target/wasm32-unknown-unknown/$profile/client_web.wasm"
+    "$tgt/wasm32-unknown-unknown/$profile/client_web.wasm"
   # **Prove which one was bound.** Only wgpu's WebGPU backend imports
   # `requestAdapter`; a module that has it under the WebGL2 name (a feature
   # unified in from somewhere) or lacks it under the WebGPU one is the wrong
@@ -110,6 +113,15 @@ for m in $modules; do
   }
 done
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
+# **The page's script by its own hash.** The edge in front of the origin keeps
+# a `.js` for hours whatever the origin says (measured: `max-age=14400` on
+# app.js, audio.js and the glue, while index.html and build.json revalidate),
+# so a script under a fixed name is last publish's script on this publish's
+# page. index.html is the no-cache file, so it carries the hash.
+appv="$(sha256sum "$out/app.js" | cut -c1-12)"
+sed -i "s|src=\"app.js\"|src=\"app.js?v=$appv\"|" "$out/index.html"
+[ "$(grep -c 'app.js?v=' "$out/index.html" || true)" = 1 ] || {
+  echo "index.html: expected exactly one src=\"app.js\" to version" >&2; exit 1; }
 # The image an X post shows for the page's link (`twitter:image` in index.html):
 # a crop of `assets/menu/dusk.jpg`, our own island, with the wordmark on it.
 cp crates/client-web/web/card.jpg "$out/"
@@ -140,7 +152,7 @@ trap 'rm -rf "$wk"' EXIT
 wasm-bindgen --target no-modules --no-typescript \
   --remove-producers-section \
   --out-dir "$wk" \
-  "target/wasm32-unknown-unknown/$profile/sound_worklet.wasm"
+  "$tgt/wasm32-unknown-unknown/$profile/sound_worklet.wasm"
 cp "$wk/sound_worklet_bg.wasm" "$out/"
 # The prelude goes FIRST: it supplies the `TextDecoder` a worklet scope lacks
 # and the glue constructs at top level (`audio-prelude.js` has the measurement).
@@ -270,6 +282,10 @@ raw=$(stat -c%s "$out/client_web_bg.wasm" 2>/dev/null || echo 0)
 # the fly; without either, measured 2026-09-12, the module went over the
 # wire raw.
 gzip -9 -n -c "$out/sound_worklet_bg.wasm" > "$out/sound_worklet_bg.wasm.gz"
+# The audio pair's hash, AFTER wasm-opt has had its turn at the module: the
+# page asks for `audio.js` and `sound_worklet_bg.wasm` by it (`app.js`,
+# openAudio), for the reason the game modules carry theirs.
+audio_sha=$(cat "$out/audio.js" "$out/sound_worklet_bg.wasm" | sha256sum | cut -c1-64)
 gz=$(stat -c%s "$out/client_web_bg.wasm.gz" 2>/dev/null || echo 0)
 
 # What the menu reads before the module arrives: the download bar's
@@ -278,7 +294,7 @@ gz=$(stat -c%s "$out/client_web_bg.wasm.gz" 2>/dev/null || echo 0)
 version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 proto="$(sed -n 's/^pub const PROTO_VER: u16 = \([0-9]*\);$/\1/p' crates/protocol/src/lib.rs)"
 commit="${GATES_GIT_SHA:-$(git rev-parse --short=9 HEAD 2>/dev/null || echo unknown)}"
-printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d,"modules":{%s}}\n' \
-  "$version" "$commit" "${proto:-null}" "$raw" "$gz" "$mods" > "$out/build.json"
+printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d,"modules":{%s},"audio":{"sha256":"%s"}}\n' \
+  "$version" "$commit" "${proto:-null}" "$raw" "$gz" "$mods" "$audio_sha" > "$out/build.json"
 echo "   build.json: $(cat "$out/build.json")"
 echo "== done: python3 -m http.server 8080 --directory $out"

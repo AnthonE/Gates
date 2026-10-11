@@ -73,40 +73,53 @@ pub const LAUNCHER_REACHABLE: bool = cfg!(not(target_arch = "wasm32"));
 /// both sides, no browser sentence may mention a launcher, and the two tables
 /// may differ only for codes listed there with a reason.
 pub fn refusal_sentence(code: u8, launcher_reachable: bool) -> String {
-    // The overrides. There is exactly one today, so this is an `if` rather
-    // than a `match` with a lone arm (clippy's `single_match`, and it is
-    // right — a one-armed match here would be a shape claiming to be a table).
-    // The second one turns it into a `match` and that is the moment to write
-    // the table.
-    //
-    // `REFUSE_AUTH`'s shared wording is "sign in through the elo launcher".
-    // There is no launcher in a tab, so on this platform that sentence names
-    // an act the reader cannot perform. The honest one states the shard's
-    // requirement and points at the door a page actually has.
-    //
-    // ⚠ **This sentence changed on 2026-09-10 and the old one is now wrong,
-    // not merely worse.** It read *"a browser cannot sign in yet - try a shard
-    // that takes guests"*, which was true while `elo::sign_siwe`'s wasm arm
-    // returned `None` by construction. `elo::sign_siwe_web` gives it a body:
-    // a page with a wallet signs the same SIWE message the desktop client
-    // does. Telling that player to go and find a different shard would send
-    // them away from a door they can open.
-    //
-    // It still has to cover both ways a shard says `REFUSE_AUTH` — a guest on
-    // a locked shard, and a signature that recovered somebody else — so it
-    // names the requirement rather than guessing which happened.
-    if !launcher_reachable && code == protocol::REFUSE_AUTH {
-        return "refused: this shard needs a signed identity - connect a wallet in this \
-                browser and join again"
-            .to_string();
-    }
-    match protocol::refuse_text(code) {
-        Some(why) => format!("refused: {why}"),
-        // A code this build has no sentence for. Still shows the number rather
-        // than swallowing it, because a shard refusing for a reason we cannot
-        // name is a build skew and the number is what identifies it.
-        None => format!("refused: code {code}"),
-    }
+    // The overrides: the codes whose shared wording assumes a door the
+    // reader does not have. Each arm names the code and the platform, so the
+    // table reads as one, and `tests/refusals.rs`'s `MAY_DIFFER` carries the
+    // argument for each.
+    let why = match (launcher_reachable, code) {
+        // `REFUSE_AUTH`'s shared wording is "sign in through the elo
+        // launcher". There is no launcher in a tab, so on this platform that
+        // sentence names an act the reader cannot perform. The honest one
+        // states the shard's requirement and points at the door a page
+        // actually has.
+        //
+        // ⚠ **This sentence changed on 2026-09-10 and the old one is now
+        // wrong, not merely worse.** It read *"a browser cannot sign in yet -
+        // try a shard that takes guests"*, which was true while
+        // `elo::sign_siwe`'s wasm arm returned `None` by construction.
+        // `elo::sign_siwe_web` gives it a body: a page with a wallet signs the
+        // same SIWE message the desktop client does. Telling that player to
+        // go and find a different shard would send them away from a door they
+        // can open.
+        //
+        // It still has to cover both ways a shard says `REFUSE_AUTH` — a guest
+        // on a locked shard, and a signature that recovered somebody else — so
+        // it names the requirement rather than guessing which happened.
+        (false, protocol::REFUSE_AUTH) => {
+            "this shard needs a signed identity - connect a wallet in this browser and join \
+             again"
+        }
+        // "Update the game" is a download on the desktop. In a tab the game IS
+        // the page, and the update is a reload: the page's files are asked for
+        // by their own hash (`ci/build_web.sh`), so a reload fetches the build
+        // the shard speaks once it is published.
+        (false, protocol::REFUSE_VERSION) => {
+            "this server is on a different version of Gates - reload the page to get the latest"
+        }
+        (false, protocol::REFUSE_BUILD) => {
+            "this server runs a newer release of Gates - reload the page to get the latest"
+        }
+        _ => match protocol::refuse_text(code) {
+            Some(why) => why,
+            // A code this build has no sentence for. Still shows the number
+            // rather than swallowing it, because a shard refusing for a reason
+            // we cannot name is a build skew and the number is what
+            // identifies it.
+            None => return format!("refused: code {code}"),
+        },
+    };
+    format!("refused: {why}")
 }
 
 impl std::fmt::Display for JoinError {
