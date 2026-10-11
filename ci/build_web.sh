@@ -297,4 +297,11 @@ commit="${GATES_GIT_SHA:-$(git rev-parse --short=9 HEAD 2>/dev/null || echo unkn
 printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d,"modules":{%s},"audio":{"sha256":"%s"}}\n' \
   "$version" "$commit" "${proto:-null}" "$raw" "$gz" "$mods" "$audio_sha" > "$out/build.json"
 echo "   build.json: $(cat "$out/build.json")"
+
+# The website's guide tab (`/games/gates/guide/` reads `play/guide.json`):
+# every item, recipe and animal off this build's content, its icons the
+# assets staged above.
+GUIDE_BUILT="$commit" cargo run -q --release -p content --example guide_json -- content assets \
+  > "$out/guide.json"
+echo "   guide.json: $(stat -c%s "$out/guide.json") bytes"
 echo "== done: python3 -m http.server 8080 --directory $out"

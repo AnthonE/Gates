@@ -1138,7 +1138,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// EXCHANGE: open or not, fee, coin, cap, taken, credited. `ACT_ARC` gains
 /// op 5, `OP_EXTRACT`, and `REFUSE_A_SHUT` (9) and `REFUSE_A_CAP` (10)
 /// join the arc refusals.
-pub const PROTO_VER: u16 = 104;
+/// v105 — `SUB_BANK` gains `pays`, one bit after `open`: the island pays out
+/// at all, so a guest (cap 0, nothing to pay) is told to sign in rather than
+/// that the island pays nothing.
+pub const PROTO_VER: u16 = 105;
 
 /// This game's slug in the elo catalog.
 ///

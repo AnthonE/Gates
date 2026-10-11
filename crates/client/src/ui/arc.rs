@@ -286,6 +286,12 @@ pub fn exit_lines(b: &protocol::BankView) -> (String, String) {
             "light it, and the JUNK you carry here goes to your wallet".into(),
         );
     }
+    if b.cap == 0 && b.pays {
+        return (
+            "SIGN IN WITH A WALLET TO TAKE JUNK OUT".into(),
+            "a guest has no wallet to pay".into(),
+        );
+    }
     if b.cap == 0 {
         return ("THIS ISLAND PAYS NOTHING OUT".into(), String::new());
     }

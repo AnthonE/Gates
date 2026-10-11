@@ -284,3 +284,39 @@ fn agents_are_counted_among_the_connected() {
     let _ = core.disconnect(0);
     assert_eq!((core.connected(), core.agents_connected()), (1, 0));
 }
+
+/// A closed wipe's payout file is served at `/payout/<wipe>.json` beside the
+/// standings, for the platform's cashier to read and pay. Only a bare wipe
+/// number names a file: anything else is a 404, never a path walk.
+#[test]
+fn serves_a_closed_wipes_payout_file() {
+    let dir = std::env::temp_dir().join(format!("gates-status-payout-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let base = dir.join("world.bin");
+    let doc = "{\"wipe\":3,\"payouts\":[{\"address\":\"0x1111111111111111111111111111111111111111\",\"amount\":120,\"ticker\":\"JUNK\",\"for\":[\"EXTRACTED 120\"]}]}\n";
+    std::fs::write(server::standings::payout_path(&base, 3, "json"), doc).expect("write payout");
+    std::fs::write(dir.join("secret.json"), "{}").expect("write decoy");
+    let addr = server::status::spawn_status_with(
+        "127.0.0.1:0".parse().expect("static addr"),
+        Arc::new(ShardStats::default()),
+        Some(base),
+    )
+    .expect("bind loopback");
+
+    let text = String::from_utf8(exchange(addr, b"GET /payout/3.json HTTP/1.1\r\n\r\n"))
+        .expect("the response is text");
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    assert!(text.contains("Cache-Control: no-store"), "{text}");
+    assert_eq!(text.split("\r\n\r\n").nth(1), Some(doc));
+
+    for req in [
+        &b"GET /payout/4.json HTTP/1.1\r\n\r\n"[..],
+        b"GET /payout/.json HTTP/1.1\r\n\r\n",
+        b"GET /payout/../secret.json HTTP/1.1\r\n\r\n",
+        b"GET /payout/3.json.bak HTTP/1.1\r\n\r\n",
+    ] {
+        let text = String::from_utf8(exchange(addr, req)).expect("text");
+        assert!(text.starts_with("HTTP/1.1 404"), "{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
