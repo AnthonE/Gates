@@ -87,7 +87,12 @@ pub use event::{
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
+pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
+pub use event::{
+    encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
+    STANDING_TICKER_BYTES, STANDING_TOP,
+};
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
@@ -1124,7 +1129,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// description line to a joiner, and `ACT_FASTTRACK` (34) pulls a queued
 /// craft to the head. And `ARCH_TURRET` (18) is a deploy archetype both
 /// ends admit.
-pub const PROTO_VER: u16 = 103;
+/// v104 — the standings: `SUB_STANDING` (93) carries one board of the
+/// wipe's standings to one client (`server::standings`): which board, the
+/// wipe, how many are ranked, the receiver's rank and score, the purse (a
+/// ticker and what each place pays), what the receiver would take now, their
+/// minutes played against the purse's minimum, and up to `STANDING_TOP`
+/// named rows. And `SUB_BANK` (94), the receiver's way out through THE
+/// EXCHANGE: open or not, fee, coin, cap, taken, credited. `ACT_ARC` gains
+/// op 5, `OP_EXTRACT`, and `REFUSE_A_SHUT` (9) and `REFUSE_A_CAP` (10)
+/// join the arc refusals.
+pub const PROTO_VER: u16 = 104;
 
 /// This game's slug in the elo catalog.
 ///

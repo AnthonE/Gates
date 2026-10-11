@@ -261,6 +261,8 @@ pub fn arc(code: u8) -> String {
         REFUSE_A_COLD => "it is cold — fill its quota first".into(),
         REFUSE_A_FULL => "its tank is full".into(),
         REFUSE_A_RESTING => "the lock is resting — somebody opened it a while ago".into(),
+        REFUSE_A_SHUT => "the exchange is not lit — nothing leaves the island yet".into(),
+        REFUSE_A_CAP => "nothing more can leave with you this wipe".into(),
         _ => "it does not answer".into(),
     }
 }

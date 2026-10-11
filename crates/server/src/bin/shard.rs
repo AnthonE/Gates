@@ -489,6 +489,11 @@ async fn main() {
         }
     };
     let status_addr = cfg.status_addr;
+    let standings_json = cfg
+        .world_file
+        .as_deref()
+        .or(cfg.save_file.as_deref())
+        .map(|b| server::standings::json_path(Path::new(b)));
     // **The shard's own inhabitants** (`population.rs`), resolved before the
     // config moves into `spawn_shard`. The rows come off the content this
     // process already loaded and validated, by id — `bin/bots` has to read a
@@ -546,8 +551,8 @@ async fn main() {
     // the parser refuses everywhere else. Daemon thread — shutdown neither
     // signals nor joins it, so the flush path above cannot hang on it.
     if let Some(addr) = status_addr {
-        match server::status::spawn_status(addr, handle.stats.clone()) {
-            Ok(bound) => println!("status on http://{bound}/status.json"),
+        match server::status::spawn_status_with(addr, handle.stats.clone(), standings_json) {
+            Ok(bound) => println!("status on http://{bound}/status.json and /standings.json"),
             Err(e) => {
                 eprintln!("shard: status endpoint bind {addr}: {e}");
                 std::process::exit(1);
@@ -744,6 +749,36 @@ fn end_world(cfg: &server::config::ShardConfig, now: u64, n: u32, blueprints: bo
         // A shard that keeps nothing: the restart is the whole wipe.
         println!("wipe {n}: nothing on disk — the next boot is a fresh island anyway");
         return;
+    }
+    // The hall first: each board's podium and everyone's placing, read
+    // from the standings the shutdown wrote, before the archive moves them.
+    // Then what is owed to whom (`<world>.payout-<n>.csv`), for the operator
+    // to send, and the results to Discord if the shard posts there.
+    if let Some(base) = world.or(save) {
+        match server::standings::close_wipe(base, n, &cfg.prizes) {
+            Ok(closed) => {
+                if let Some(w) = &closed.winner {
+                    println!("wipe {n}: the island goes to {w}");
+                }
+                if !closed.paid.is_empty() {
+                    let total: u64 = closed.paid.iter().map(|p| p.2).sum();
+                    println!(
+                        "wipe {n}: {total} {} owed to {} wallets — {} (the operator sends it)",
+                        closed.ticker,
+                        closed.paid.len(),
+                        server::standings::payout_path(base, n, "csv").display()
+                    );
+                }
+                if let Some(url) = cfg.discord_webhook.as_deref() {
+                    let next = cfg.wipe.map(|s| server::wipe::fmt_utc(s.next_after(now)));
+                    let text = server::standings::discord_text(n, &closed, next.as_deref());
+                    if let Err(e) = server::standings::post_discord(url, &text) {
+                        eprintln!("shard: wipe {n}: {e}");
+                    }
+                }
+            }
+            Err(e) => eprintln!("shard: wipe {n}: the hall was not written: {e}"),
+        }
     }
     match server::wipe::apply(world, save, now, blueprints) {
         Ok(r) => println!(

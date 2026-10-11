@@ -1200,7 +1200,7 @@ impl Deploys {
     /// landed the only coverage question the sweep asks: the base's own
     /// shape, not a circle. Callers hold the cache fresh via
     /// [`Deploys::refresh_claims`].
-    pub(crate) fn hearth_covers(&self, hi: usize, x: f32, z: f32) -> bool {
+    pub fn hearth_covers(&self, hi: usize, x: f32, z: f32) -> bool {
         self.claim.covers(hi, x, z)
     }
 

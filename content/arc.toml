@@ -17,6 +17,30 @@ quiet_players = 10
 busy_players = 100
 quiet_burn_pct = 25
 
+# The standings: what a wipe's players are ranked on (`server::standings`).
+# Every score is farm-minutes of goods (balance.toml's currency), so a
+# base's hoard, a deposit and a kill sit on one scale. Four boards: THE
+# ISLAND (everything), THE WORKS (given + deeds), THE HOARD (what your base
+# holds now, split across its crew) and THE FIGHT (kills). The hoard is
+# raidable and freezes at the wipe; what you gave the works never leaves.
+[standings]
+# A deposit counts this per cent of what it is worth: the public good
+# outranks a hoard, so a player raided on day two still has a board to climb.
+given_pct = 200
+# The deposit that lights a work, per act of that work.
+lit_points = 300
+# Fuel into a dry tank.
+rekindled_points = 50
+# Solving a lock.
+solved_points = 200
+# Killing another player.
+kill_points = 30
+# What a base holds, per cent toward THE ISLAND.
+hoard_pct = 100
+# Farm-minutes a unit for what no recipe or farm rate prices (drops, food,
+# loot). Everything else is priced by recipe expansion.
+worth = { "item.junk" = 0.33, "item.blueprint" = 10.0, "item.keycard_green" = 20.0, "item.keycard_blue" = 40.0, "item.keycard_red" = 60.0, "item.leather" = 0.5, "item.bone_frags" = 0.2, "item.raw_meat" = 0.3, "item.cooked_meat" = 0.3, "item.berries" = 0.1, "item.mushrooms" = 0.1, "item.corn" = 0.2, "item.hemp_seed" = 0.2, "item.waterskin_full" = 5.0 }
+
 # THE CRUCIBLE — the first work, act II. No gunpowder exists on the island
 # until it burns, so the first days of a wipe are bows and spears. Its
 # terminal is a cold forge under the anvil rock nearest the island's middle.
@@ -133,6 +157,39 @@ inputs = [
 [[effect]]
 unlock = "unlock.current"
 knob = "gather_pct"
+pct = 150
+
+# THE EXCHANGE — the gate JUNK leaves the island through (`WORLD.md` §4). On
+# the town's main street, short of the first kiosk. Nothing leaves until it is
+# lit: by its quota, or at its fallback hour whatever anybody does (the floor
+# is guaranteed). Lit, carried JUNK put through its terminal goes to the
+# wallet the player logs in with, up to the shard's `extract_cap` a wipe, less
+# `extract_fee_pct`. While its tank burns, half as much again may leave (the
+# ceiling is contested). It eats JUNK to open, so the first coin out of the
+# island is the coin somebody put back in.
+[[work]]
+id = "work.exchange"
+name = "THE EXCHANGE"
+site = "town"
+nth = 0
+at = [0.0, 0.0, 6.0]
+act = 2
+opens_hour = 24
+fallback_hour = 72
+floor_unlock = "unlock.extraction"
+ceiling_unlock = "unlock.wide_gate"
+fuel = "item.lowgrade"
+fuel_max = 3000
+burn_per_hour = 100
+inputs = [
+    { item = "item.metal_frags", count = 8000 },
+    { item = "item.gears", count = 30 },
+    { item = "item.junk", count = 2000 },
+]
+
+[[effect]]
+unlock = "unlock.wide_gate"
+knob = "extract_pct"
 pct = 150
 
 # ── The ancients' script (`ARC.md` F6) ────────────────────────────────────

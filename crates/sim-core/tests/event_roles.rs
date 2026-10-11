@@ -107,7 +107,9 @@ use sim_core::world::{
     PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
     TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK};
+use sim_core::world::{
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_STUMP_GRUBBED, EV_WORK,
+};
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
@@ -4363,8 +4365,10 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 60] = [
+    const COVERED: [(&str, u8); 62] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_EXTRACTED", EV_EXTRACTED),
+        ("EV_GAVE", EV_GAVE),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_WORK", EV_WORK),
         ("EV_ARC_REFUSED", EV_ARC_REFUSED),
@@ -5860,10 +5864,12 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
     assert_eq!(sim_core::craft::inv_count(inv, 2), 8, "got 4 × 2");
 }
 
-/// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`, and
-/// `EV_WORK: a = work, b = what, c = who` — a deposit while the work is
-/// sealed, its opening (nobody did it), a deposit out of reach, then the
-/// whole quota at the terminal, which lights it in the depositor's name.
+/// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`,
+/// `EV_WORK: a = work, b = what, c = who`, and `EV_GAVE: a = player,
+/// b = item << 16 | work, c = units` — a deposit while the work is sealed,
+/// its opening (nobody did it), a deposit out of reach, one line, then the
+/// rest of the quota at the terminal, which lights it in the depositor's
+/// name.
 #[test]
 fn a_work_names_itself_what_happened_and_who() {
     use sim_core::works::{
@@ -5920,12 +5926,90 @@ fn a_work_names_itself_what_happened_and_who() {
     assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_A_REACH, 0));
 
     w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.tick(&[Command::Arc {
+        id: BUILDER,
+        op: OP_DEPOSIT,
+        target: 0,
+        arg: 1,
+    }]);
+    let ev = only(&w, EV_GAVE);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 1 << 16, 2), "two of item 1");
+    assert_eq!(count(&w, EV_WORK), 0, "half a quota lights nothing");
+
     w.tick(&[deposit]);
+    let ev = only(&w, EV_GAVE);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 0, 6), "six of item 0");
     let ev = only(&w, EV_WORK);
     assert_eq!((ev.a, ev.b, ev.c), (0, WORK_EV_LIT, BUILDER));
     assert_eq!(w.works.w[0].state, WORK_LIT);
     assert_eq!(w.works.unlocks, 0b11, "floor and ceiling both held");
     assert_eq!(w.works.w[0].points_of(BUILDER), 20_000, "two whole lines");
+}
+
+/// `EV_EXTRACTED: a = player, b = the exchange, c = units` — coin through the
+/// exchange: refused while it is shut, refused at a zero allowance, then
+/// taken up to the allowance the command carries and no further.
+#[test]
+fn extraction_names_the_player_the_exchange_and_what_left() {
+    use sim_core::works::{
+        WorksContent, ARG_ALL, OP_DEPOSIT, OP_EXTRACT, REFUSE_A_CAP, REFUSE_A_SHUT,
+        WORKS_PERIOD_TICKS, WORK_OPEN,
+    };
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    let mut wc = WorksContent::probe_fixture();
+    // The fixture work's floor (unlock 1) opens extraction; item 2 is coin.
+    wc.extract_unlock = 1;
+    wc.coin = 2;
+    w.works_def = wc;
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let spot = w.works_def.defs[0].spot;
+    let (x, _, z) = sim_core::spot::world(&w.haven, &spot).expect("the fixture seed has a town");
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    let stack = |item, count| ItemStack {
+        item,
+        count,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[0] = stack(0, 6);
+    w.players[0].inv[1] = stack(1, 2);
+    w.players[0].inv[2] = stack(2, 50);
+    let extract = |max| Command::Extract {
+        id: BUILDER,
+        target: 0,
+        max,
+    };
+    w.tick(&[extract(10)]);
+    let ev = only(&w, EV_ARC_REFUSED);
+    assert_eq!(
+        (ev.a, ev.b, ev.c),
+        (BUILDER, REFUSE_A_SHUT, (OP_EXTRACT as u32) << 8),
+        "nothing leaves before the exchange is lit"
+    );
+    for _ in 0..WORKS_PERIOD_TICKS {
+        if w.works.w[0].state == WORK_OPEN {
+            break;
+        }
+        w.tick(&[]);
+    }
+    w.tick(&[Command::Arc {
+        id: BUILDER,
+        op: OP_DEPOSIT,
+        target: 0,
+        arg: ARG_ALL,
+    }]);
+    w.tick(&[extract(0)]);
+    let ev = only(&w, EV_ARC_REFUSED);
+    assert_eq!(ev.b, REFUSE_A_CAP, "a spent allowance takes nothing");
+    w.tick(&[extract(30)]);
+    let ev = only(&w, EV_EXTRACTED);
+    assert_eq!(
+        (ev.a, ev.b, ev.c),
+        (BUILDER, 0, 30),
+        "taken up to the allowance"
+    );
+    assert_eq!(sim_core::craft::inv_count(&w.players[0].inv, 2), 20);
 }
 
 /// `EV_ARC_DID: a = player, b = op, c = target << 8 | arg` for a word and a

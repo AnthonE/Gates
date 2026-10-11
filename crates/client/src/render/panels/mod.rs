@@ -279,6 +279,10 @@ pub(crate) struct Seen {
     /// `ClientCore::lore.gen` at the last redraw: a place, an answer, a dial
     /// or a glyph arriving.
     pub lore_gen: u32,
+    /// `ClientCore::standings_gen` at the last redraw: a board arriving.
+    pub standings_gen: u32,
+    /// `ClientCore::bank_gen` at the last redraw: the way out moving.
+    pub bank_gen: u32,
 }
 
 impl Default for Ui {
@@ -1283,6 +1287,8 @@ fn detect_changes(
             || core.skins_gen != ui.seen.skins_have
             || core.arc.gen != ui.seen.arc_gen
             || core.lore.gen != ui.seen.lore_gen
+            || (ui.panel == Panel::Island && core.standings_gen != ui.seen.standings_gen)
+            || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
         {
             ui.seen.inv = inv;
             ui.seen.cont = cont;
@@ -1302,6 +1308,8 @@ fn detect_changes(
             ui.seen.skins_have = core.skins_gen;
             ui.seen.arc_gen = core.arc.gen;
             ui.seen.lore_gen = core.lore.gen;
+            ui.seen.standings_gen = core.standings_gen;
+            ui.seen.bank_gen = core.bank_gen;
             ui.dirty = true;
         }
     }

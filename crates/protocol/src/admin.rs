@@ -145,6 +145,9 @@ pub enum AdminCmd {
     Brain,
     /// `/who`: the connected player ids, said to the asker only.
     Who,
+    /// `/top` (or `/standings`, `/lb`): the wipe's standings and where the
+    /// asker stands, said to the asker only. Anyone may ask.
+    Top,
 }
 
 /// Is this line addressed to the server at all? Cheap enough to ask
@@ -211,6 +214,7 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         "save" => Some(AdminCmd::SaveNow),
         "brain" => Some(AdminCmd::Brain),
         "who" => Some(AdminCmd::Who),
+        "top" | "standings" | "lb" | "leaderboard" => Some(AdminCmd::Top),
         "wipe" => match parts.next() {
             None => Some(AdminCmd::WipeWhen),
             Some("cancel") => (parts.next().is_none()).then_some(AdminCmd::WipeCancel),
@@ -290,6 +294,8 @@ mod tests {
     #[test]
     fn wipe_parses() {
         assert_eq!(parse(&text("/wipe")), Some(AdminCmd::WipeWhen));
+        assert_eq!(parse(&text("/top")), Some(AdminCmd::Top));
+        assert_eq!(parse(&text("/lb")), Some(AdminCmd::Top));
         assert_eq!(parse(&text("/wipe cancel")), Some(AdminCmd::WipeCancel));
         assert_eq!(
             parse(&text("/wipe 10")),

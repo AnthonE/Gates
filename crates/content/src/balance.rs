@@ -90,6 +90,35 @@ fn farm_minutes(c: &Content, item: &str, qty: f64, depth: u32) -> Result<f64, St
     Ok(total)
 }
 
+/// What one unit of `item` is worth on the standings, farm-minutes:
+/// `[standings] worth` first, then [`farm_minutes`], else nothing.
+/// The override is consulted at every level of the expansion, so a recipe
+/// that eats JUNK is priced by what JUNK is worth.
+pub fn worth_minutes(c: &Content, item: &str) -> f64 {
+    worth_at(c, item, 0)
+}
+
+fn worth_at(c: &Content, item: &str, depth: u32) -> f64 {
+    if let Some(w) = c.standings.worth.get(item) {
+        return *w;
+    }
+    let g = &c.balance.globals;
+    if let Some(rate) = g.farm_per_min.get(item) {
+        return 1.0 / f64::from(*rate);
+    }
+    if let Some(minutes) = g.component_minutes.get(item) {
+        return f64::from(*minutes);
+    }
+    let Some(recipe) = c.recipe_for(item).filter(|_| depth <= 12) else {
+        return 0.0;
+    };
+    let mut total = 0.0;
+    for input in &recipe.inputs {
+        total += f64::from(input.count) * worth_at(c, &input.item, depth + 1);
+    }
+    total / f64::from(recipe.count.max(1))
+}
+
 fn in_band(value: u32, band: [u32; 2], what: &str) -> Result<(), String> {
     if value < band[0] || value > band[1] {
         return Err(format!(

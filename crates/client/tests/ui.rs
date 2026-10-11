@@ -7220,3 +7220,104 @@ mod research_table {
         assert!(busy.contains("[C] RESEARCHING"), "{busy}");
     }
 }
+
+/// The STANDINGS page's words: a board's score reads as points or kills,
+/// and "you" says where you stand or how to get on the board.
+#[test]
+fn standings_words_read_like_a_scoreboard() {
+    use client::ui::arc::{board_score, standing_you, thousands};
+    assert_eq!(thousands(0), "0");
+    assert_eq!(thousands(98_765), "98,765");
+    assert_eq!(thousands(1_000_000), "1,000,000");
+    assert_eq!(board_score(1, 1_240), "1,240");
+    assert_eq!(board_score(3, 1), "1 kill");
+    assert_eq!(board_score(3, 12), "12 kills");
+    let mut b = protocol::StandingBoard {
+        board: 1,
+        wipe: 7,
+        ranked: 41,
+        ..protocol::StandingBoard::EMPTY
+    };
+    assert!(standing_you(&b).contains("feed a work"));
+    b.my_rank = 3;
+    b.my_score = 1_240;
+    assert_eq!(standing_you(&b), "YOU  stand #3 of 41 · 1,240");
+    b.board = 4;
+    assert_eq!(standing_you(&b), "YOU  finished #3 of 41 · 1,240");
+}
+
+/// The purse reads as what each place pays, and tells this player what it
+/// means for them: the minutes still owed, what they would take, or what
+/// they won.
+#[test]
+fn the_purse_says_what_it_pays_and_what_it_means_for_you() {
+    use client::ui::arc::{prize_you, purse_line};
+    let mut b = protocol::StandingBoard {
+        board: 0,
+        ..protocol::StandingBoard::EMPTY
+    };
+    assert_eq!(purse_line(&b), None, "no purse, no line");
+    assert_eq!(prize_you(&b), None);
+    b.set_purse("ORBS", &[500, 300, 1_000]);
+    assert_eq!(
+        purse_line(&b).as_deref(),
+        Some("PURSE  #1 500 · #2 300 · #3 1,000 ORBS")
+    );
+    b.min_minutes = 120;
+    b.my_minutes = 119;
+    assert_eq!(
+        prize_you(&b).as_deref(),
+        Some("play 1 more minute this wipe to be paid")
+    );
+    b.my_minutes = 120;
+    assert_eq!(
+        prize_you(&b).as_deref(),
+        Some("climb into the top 3 to be paid")
+    );
+    b.my_prize = 300;
+    assert_eq!(
+        prize_you(&b).as_deref(),
+        Some("if the wipe ended now: 300 ORBS to your wallet")
+    );
+    let mut last = protocol::StandingBoard {
+        board: 4,
+        my_prize: 350,
+        ..protocol::StandingBoard::EMPTY
+    };
+    last.set_purse("ORBS", &[]);
+    assert_eq!(
+        prize_you(&last).as_deref(),
+        Some("YOU WON 350 ORBS — it goes to your wallet")
+    );
+}
+
+/// THE EXCHANGE's way out: shut, unarmed, room left, the limit reached; and
+/// EXTRACT lights only when something can actually leave.
+#[test]
+fn the_way_out_says_whether_anything_can_leave() {
+    use client::ui::arc::{can_extract, exit_lines, exit_room};
+    let mut b = protocol::BankView {
+        work: 4,
+        fee_pct: 2,
+        cap: 1_500,
+        ..protocol::BankView::default()
+    };
+    assert_eq!(exit_lines(&b).0, "NOTHING LEAVES UNTIL IT IS LIT");
+    assert!(!can_extract(&b, 10), "shut");
+    b.open = true;
+    assert_eq!(exit_lines(&b).0, "0 / 1,500 JUNK OUT THIS WIPE · FEE 2%");
+    assert_eq!(exit_room(&b), "1,500 more may leave");
+    assert!(can_extract(&b, 10));
+    assert!(!can_extract(&b, 0), "nothing carried");
+    b.taken = 1_500;
+    b.credited = 1_470;
+    assert_eq!(exit_room(&b), "your limit is reached");
+    assert!(!can_extract(&b, 10));
+    assert_eq!(
+        exit_lines(&b).1,
+        "1,470 JUNK credited — paid to your wallet after the wipe"
+    );
+    b.cap = 0;
+    b.taken = 0;
+    assert_eq!(exit_lines(&b).0, "THIS ISLAND PAYS NOTHING OUT");
+}

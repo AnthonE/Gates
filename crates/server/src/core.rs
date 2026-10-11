@@ -61,7 +61,9 @@ use sim_core::world::{
     EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
     STRUCT_DEPLOY_BIT,
 };
-use sim_core::world::{EV_ARC_DID, EV_ARC_REFUSED, EV_GROW, EV_MECH_SOLVED, EV_WORK};
+use sim_core::world::{
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_WORK,
+};
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
 ///
@@ -305,7 +307,33 @@ pub struct ShardCore {
     /// The clock reached zero: `Some(blueprints)` until the boundary loop
     /// takes it ([`Self::take_wipe`]) and stops the shard.
     wipe_fired: Option<bool>,
+    /// The wipe's standings (`standings.rs`), tallied here off the sim's
+    /// events per wallet, recounted by the boundary loop once a minute.
+    pub standings: crate::standings::Standings,
+    /// Per slot, the tick from which it is owed the standings' join lines.
+    standings_tell: [u64; MAX_PLAYERS],
+    /// Lines owed to everyone by the next chat pump.
+    standings_say: Vec<String>,
+    /// The act at the last look, 0 before the first: an act turning over
+    /// is told to everyone.
+    standings_act: u8,
+    /// The wipe's last hour was told: what a base holds at the wipe counts.
+    standings_freeze_said: bool,
+    /// Per slot, the boards it is owed (`SUB_STANDING`), one bit each.
+    standings_owed: [u8; MAX_PLAYERS],
+    /// The board generation everyone was last owed at.
+    standings_gen_seen: u32,
+    /// Per slot, whether its tenant declared itself an agent.
+    standings_agent: [bool; MAX_PLAYERS],
+    /// Per slot, its way out is owed (`SUB_BANK`): at join, after its own
+    /// extraction, and to everyone when the exchange changes.
+    bank_owed: [bool; MAX_PLAYERS],
 }
+
+/// Every standings board, one bit each (`protocol::STANDING_BOARDS`).
+const STANDINGS_ALL: u8 = (1 << protocol::STANDING_BOARDS) - 1;
+const _: () = assert!(crate::standings::TOP == protocol::STANDING_TOP);
+const _: () = assert!(crate::standings::BOARD_LAST + 1 == protocol::STANDING_BOARDS);
 
 /// One spectator seat's sim-side state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -585,6 +613,15 @@ impl ShardCore {
             wipe_say: None,
             wipe_tell: [0; MAX_PLAYERS],
             wipe_fired: None,
+            standings: crate::standings::Standings::off(),
+            standings_tell: [0; MAX_PLAYERS],
+            standings_say: Vec::new(),
+            standings_act: 0,
+            standings_freeze_said: false,
+            standings_owed: [0; MAX_PLAYERS],
+            standings_gen_seen: 0,
+            standings_agent: [false; MAX_PLAYERS],
+            bank_owed: [false; MAX_PLAYERS],
         }
     }
 
@@ -596,8 +633,26 @@ impl ShardCore {
         self.wipe_now = now;
         match self.wipe.poll(now) {
             crate::wipe::Tick::Quiet => {}
-            crate::wipe::Tick::Say(line) => self.wipe_say = crate::wipe::chat(&line),
+            crate::wipe::Tick::Say(line) => {
+                self.wipe_say = crate::wipe::chat(&line);
+                let left = self
+                    .wipe
+                    .next()
+                    .map_or(u64::MAX, |p| p.at.saturating_sub(now));
+                if left <= 3_600 && !self.standings_freeze_said {
+                    self.standings_freeze_said = true;
+                    self.standings_say
+                        .push("the hoard freezes at the wipe".into());
+                    self.standings_say
+                        .push("what your base holds then counts".into());
+                }
+            }
             crate::wipe::Tick::Wipe { blueprints, line } => {
+                // The last count: what every base holds as the island ends.
+                self.standings_recount();
+                self.standings.rebuild();
+                let last = self.standings.final_lines();
+                self.standings_say.extend(last);
                 self.wipe_say = crate::wipe::chat(&line);
                 self.wipe_fired = Some(blueprints);
             }
@@ -728,6 +783,10 @@ impl ShardCore {
         if self.wipe.next().is_some() {
             self.wipe_tell[slot] = self.world.tick + 5 * sim_core::limits::TICK_HZ as u64;
         }
+        // Then the standings: last wipe, your hall, where you stand.
+        self.standings_tell[slot] = self.world.tick + 7 * sim_core::limits::TICK_HZ as u64;
+        self.standings_owed[slot] = STANDINGS_ALL;
+        self.bank_owed[slot] = true;
         let address = key.and_then(|k| protocol::Address::from_hex(k.as_bytes()));
         self.tags[slot] = match address {
             Some(address) if !address.is_guest() => TagRow {
@@ -755,6 +814,319 @@ impl ShardCore {
         row.name = name;
         row.pic = pic;
         self.owe_tag(slot);
+        if let Some(key) = self.key_str(slot) {
+            self.standings.name(&key, name.as_str());
+        }
+    }
+
+    /// How much JUNK `slot`'s wallet may still put through the exchange this
+    /// wipe: the shard's cap, raised while the exchange burns, less what it
+    /// already took. Zero for a guest.
+    fn extract_allowance(&self, slot: usize) -> u32 {
+        let Some(key) = self.key_str(slot) else {
+            return 0;
+        };
+        let pct = sim_core::works::knob_pct(
+            &self.world.works_def,
+            self.world.works.unlocks,
+            sim_core::works::KNOB_EXTRACT_PCT,
+        );
+        self.standings.allowance(&key, pct).min(u32::MAX as u64) as u32
+    }
+
+    /// Whether `slot`'s new tenant declared itself an agent (`HELLO_AGENT`).
+    pub fn note_agent(&mut self, slot: usize, agent: bool) {
+        if let Some(a) = self.standings_agent.get_mut(slot) {
+            *a = agent;
+        }
+    }
+
+    /// A minute of play for every connected wallet: what a purse's
+    /// `prize_min_minutes` is measured in. From the boundary loop's minute.
+    pub fn standings_minute(&mut self) {
+        for slot in 0..MAX_PLAYERS {
+            if !self.clients[slot].connected {
+                continue;
+            }
+            let Some(key) = self.key_str(slot) else {
+                continue;
+            };
+            let tag = &self.tags[slot];
+            let name = if tag.id == self.clients[slot].id {
+                tag.name.as_str().to_string()
+            } else {
+                String::new()
+            };
+            let agent = self.standings_agent[slot];
+            self.standings.minute(&key, &name, agent);
+        }
+    }
+
+    /// The wallet on `slot`, as the standings file it. `None` for a guest.
+    fn key_str(&self, slot: usize) -> Option<String> {
+        let k = self.keys.get(slot)?.as_ref()?;
+        core::str::from_utf8(k.as_bytes()).ok().map(str::to_string)
+    }
+
+    /// Who player `id` is to the standings: their wallet and what the
+    /// platform calls them (empty for not yet). A connected player, else a
+    /// sleeper; a guest, an animal or a gone body is nobody.
+    fn standing_who(&self, id: u32) -> Option<(String, String)> {
+        if let Some(slot) =
+            (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
+        {
+            let key = self.key_str(slot)?;
+            let tag = &self.tags[slot];
+            let name = if tag.id == id { tag.name.as_str() } else { "" };
+            return Some((key, name.to_string()));
+        }
+        let k = self.sleepers.key_of(id)?;
+        let key = core::str::from_utf8(k.as_bytes()).ok()?.to_string();
+        Some((key, String::new()))
+    }
+
+    /// This tick's events, tallied: what was given to the works, the deeds,
+    /// the kills. After `World::tick`, before the events are routed.
+    fn note_standings(&mut self) {
+        use sim_core::works::{WORK_EV_LIT, WORK_EV_REKINDLED};
+        for i in 0..self.world.events.len() {
+            let ev = self.world.events.entries()[i];
+            match ev.code {
+                EV_GAVE => {
+                    if let Some((k, l)) = self.standing_who(ev.a) {
+                        self.standings.gave(&k, &l, (ev.b >> 16) as u16, ev.c);
+                    }
+                }
+                // The exchange opening, lighting or going to embers moves
+                // everyone's way out.
+                EV_WORK if Some(ev.a as usize) == self.exchange() => {
+                    self.bank_owed = [true; MAX_PLAYERS];
+                    if ev.b == WORK_EV_LIT || ev.b == WORK_EV_REKINDLED {
+                        self.note_work_deed(ev);
+                    }
+                }
+                EV_WORK if ev.b == WORK_EV_LIT || ev.b == WORK_EV_REKINDLED => {
+                    self.note_work_deed(ev);
+                }
+                EV_EXTRACTED => {
+                    if let Some((k, l)) = self.standing_who(ev.a) {
+                        self.standings.extracted(&k, &l, ev.c);
+                    }
+                    if let Some(slot) = self.client_slot_of(ev.a) {
+                        self.bank_owed[slot] = true;
+                    }
+                }
+                EV_MECH_SOLVED => {
+                    let Some((k, l)) = self.standing_who(ev.b) else {
+                        continue;
+                    };
+                    let name = self
+                        .arc_text
+                        .mech_names
+                        .get(ev.a as usize)
+                        .map_or("a lock", |n| n.as_str());
+                    let what = format!("opened {name}");
+                    let points = self.standings.rules.solved_points;
+                    self.standings.deed(&k, &l, points, Some(&what));
+                }
+                EV_DEATH => {
+                    let victim = self.standing_who(ev.a);
+                    let killer = (ev.b != ev.a).then(|| self.standing_who(ev.b)).flatten();
+                    self.standings.kill(
+                        killer.as_ref().map(|(k, l)| (k.as_str(), l.as_str())),
+                        victim.as_ref().map(|(k, l)| (k.as_str(), l.as_str())),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A work lit or rekindled by a player (`EV_WORK`): the deed, on their
+    /// row. Lighting is worth more the later the work's act.
+    fn note_work_deed(&mut self, ev: sim_core::world::SimEvent) {
+        let Some((k, l)) = self.standing_who(ev.c) else {
+            return;
+        };
+        let name = self
+            .work_names
+            .get(ev.a as usize)
+            .map_or("a work", |n| n.as_str());
+        if ev.b == sim_core::works::WORK_EV_LIT {
+            let act = self
+                .world
+                .works_def
+                .get(ev.a as usize)
+                .map_or(1, |d| d.act.max(1)) as u64;
+            let what = format!("lit {name}");
+            let points = self.standings.rules.lit_points * act;
+            self.standings.deed(&k, &l, points, Some(&what));
+        } else {
+            let points = self.standings.rules.rekindled_points;
+            self.standings.deed(&k, &l, points, None);
+        }
+    }
+
+    /// The exchange's work index: the work whose floor opens extraction.
+    fn exchange(&self) -> Option<usize> {
+        let wc = &self.world.works_def;
+        if wc.extract_unlock == sim_core::works::NO_UNLOCK {
+            return None;
+        }
+        (0..wc.count as usize).find(|&k| wc.defs[k].floor == wc.extract_unlock)
+    }
+
+    /// `slot`'s way out, if owed (`SUB_BANK`). False when the ring refused
+    /// it: the rest of the drip waits too.
+    fn drip_bank(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        if !self.bank_owed.get(slot).copied().unwrap_or(false) {
+            return true;
+        }
+        let wc = &self.world.works_def;
+        let key = self.key_str(slot);
+        let pct = sim_core::works::knob_pct(
+            wc,
+            self.world.works.unlocks,
+            sim_core::works::KNOB_EXTRACT_PCT,
+        );
+        let wallet = key.as_deref().is_some_and(crate::standings::is_wallet);
+        let row = key.as_deref().and_then(|k| self.standings.row_of(k));
+        let clamp = |v: u64| v.min(u32::MAX as u64) as u32;
+        let view = protocol::BankView {
+            work: self.exchange().map_or(protocol::BANK_NO_WORK, |k| k as u8),
+            open: wc.extract_unlock != sim_core::works::NO_UNLOCK
+                && sim_core::works::holds(self.world.works.unlocks, wc.extract_unlock),
+            fee_pct: self.standings.exits.fee_pct.min(100) as u8,
+            coin: wc.coin,
+            cap: if wallet {
+                clamp(self.standings.cap(pct))
+            } else {
+                0
+            },
+            taken: row.map_or(0, |r| clamp(r.taken)),
+            credited: row.map_or(0, |r| clamp(r.extracted)),
+        };
+        match protocol::encode_event_bank(&view, &mut self.ev_buf) {
+            Ok(len) => {
+                if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    return false;
+                }
+                ShardStats::bump(&stats.ev_sent);
+            }
+            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+        }
+        self.bank_owed[slot] = false;
+        true
+    }
+
+    /// Count every base: its boxes' contents, its hearth's stock and the
+    /// deployables standing in its claim, split evenly across the crew the
+    /// standings can name. Once a minute from the boundary loop, and at the
+    /// wipe and the shutdown before the last save. Against the claim cache
+    /// the last tick's sweep refreshed (`Deploys::crew_hearth_at`'s
+    /// contract).
+    pub fn standings_recount(&mut self) {
+        let d = &self.world.deploys;
+        let dc = &self.world.deploy;
+        let rules = &self.standings.rules;
+        let hearths = d.hearths();
+        let mut value = vec![0u64; hearths.len()];
+        let covering = |x: f32, z: f32| (0..hearths.len()).find(|&hi| d.hearth_covers(hi, x, z));
+        for b in d.boxes() {
+            let (x, z) = b.xz();
+            if let Some(hi) = covering(x, z) {
+                for st in b.items.iter().filter(|st| st.count > 0) {
+                    value[hi] += rules.worth(st.item, st.count as u32);
+                }
+            }
+        }
+        for e in d.entries() {
+            let (x, z) = e.xz();
+            if let (Some(hi), Some(def)) = (covering(x, z), dc.defs.get(e.row as usize)) {
+                value[hi] += rules.worth(def.item, 1);
+            }
+        }
+        for (hi, h) in hearths.iter().enumerate() {
+            for (i, &n) in h.stock.iter().enumerate().take(dc.mat_count as usize) {
+                value[hi] += rules.worth(dc.mats[i], n);
+            }
+        }
+        let mut shares = Vec::new();
+        for (hi, h) in hearths.iter().enumerate() {
+            if value[hi] == 0 {
+                continue;
+            }
+            let crew: Vec<(String, String)> = h
+                .crew
+                .members()
+                .iter()
+                .filter_map(|&id| self.standing_who(id))
+                .collect();
+            if crew.is_empty() {
+                continue;
+            }
+            let each = value[hi] / crew.len() as u64;
+            shares.extend(crew.into_iter().map(|(k, l)| (k, l, each)));
+        }
+        self.standings.set_hoards(&shares);
+    }
+
+    /// What the standings owe chat this tick: the join lines, an act
+    /// turning over, the leaders every two hours, the wipe's last word.
+    fn pump_standings(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let tick = self.world.tick;
+        let act = self.world.works.act(&self.world.works_def);
+        if self.standings_act != 0 && act > self.standings_act {
+            self.standings_say.push(format!(
+                "ACT {}: the works wake",
+                ["I", "II", "III", "IV"][(act as usize).clamp(1, 4) - 1]
+            ));
+            self.standings_say
+                .push("what you give them counts: /top".into());
+        }
+        self.standings_act = act;
+        let every = 2 * 3_600 * sim_core::limits::TICK_HZ as u64;
+        if tick > 0 && tick.is_multiple_of(every) {
+            self.standings.rebuild();
+            if !self
+                .standings
+                .board(crate::standings::BOARD_ISLAND)
+                .top
+                .is_empty()
+            {
+                let line = self.standings.leader_line(crate::standings::BOARD_ISLAND);
+                self.standings_say.push(format!("leads: {line}"));
+            }
+        }
+        for line in std::mem::take(&mut self.standings_say) {
+            if let Some(text) = crate::wipe::chat(&line) {
+                self.say_server(None, &text, stats, send);
+            }
+        }
+        for slot in 0..MAX_PLAYERS {
+            let at = self.standings_tell[slot];
+            if at == 0 || tick < at {
+                continue;
+            }
+            self.standings_tell[slot] = 0;
+            if !self.clients[slot].connected {
+                continue;
+            }
+            self.standings.rebuild();
+            let key = self.key_str(slot);
+            for line in self.standings.join_lines(key.as_deref()) {
+                self.answer(slot, line, stats, send);
+            }
+        }
     }
 
     /// Look at what every body wears, and owe each connection the ones that
@@ -1564,6 +1936,21 @@ impl ShardCore {
         // when it pressed is the one in force (`ClientNetState::hand_ready`).
         // Asked before the pace, so a wait does not start the kind's clock.
         let now = self.world.tick;
+        // What each extractor may still take out (`standings::allowance`),
+        // asked only for the slots holding one: the cap rides the command,
+        // because the sim knows no wallets.
+        let mut allowance = [0u32; MAX_PLAYERS];
+        for (slot, a) in allowance.iter_mut().enumerate() {
+            if matches!(
+                self.clients[slot].pending_action,
+                Some(ActionMsg::Arc {
+                    op: sim_core::works::OP_EXTRACT,
+                    ..
+                })
+            ) {
+                *a = self.extract_allowance(slot);
+            }
+        }
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
             if !c.connected || n == MAX_COMMANDS_PER_TICK {
@@ -1808,6 +2195,15 @@ impl ShardCore {
                         times,
                     },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
+                    ActionMsg::Arc {
+                        op: sim_core::works::OP_EXTRACT,
+                        target,
+                        ..
+                    } => Command::Extract {
+                        id: c.id,
+                        target,
+                        max: allowance.get(slot).copied().unwrap_or(0),
+                    },
                     ActionMsg::Arc { op, target, arg } => Command::Arc {
                         id: c.id,
                         op,
@@ -1843,6 +2239,20 @@ impl ShardCore {
             }
         }
         self.world.tick(&self.cmd_buf[..n]);
+        self.note_standings();
+        // The boards, rebuilt at most every five seconds; whatever moved
+        // them since the last look is owed to everyone.
+        if self
+            .world
+            .tick
+            .is_multiple_of(5 * sim_core::limits::TICK_HZ as u64)
+        {
+            self.standings.rebuild();
+        }
+        if self.standings.gen() != self.standings_gen_seen {
+            self.standings_gen_seen = self.standings.gen();
+            self.standings_owed = [STANDINGS_ALL; MAX_PLAYERS];
+        }
         // This tick's trust rows leave for the log before the next
         // `World::tick` clears them (`trustlog.rs`).
         crate::trustlog::Tap::drain(self, stats);
@@ -2173,6 +2583,16 @@ impl ShardCore {
             return;
         }
 
+        // `/top` is everybody's: the standings, to the asker.
+        if let AdminCmd::Top = cmd {
+            let key = self.key_str(from_slot);
+            self.standings.rebuild();
+            for line in self.standings.top_lines(key.as_deref()) {
+                self.answer(from_slot, line, stats, send);
+            }
+            return;
+        }
+
         // Everything else needs the allowlist.
         let allowed = self.keys[from_slot]
             .as_ref()
@@ -2355,7 +2775,7 @@ impl ShardCore {
                 self.answer(from_slot, format!("{n} on:{line}"), stats, send);
             }
             // Handled above, before the allowlist.
-            AdminCmd::Bug { .. } | AdminCmd::WipeWhen => return,
+            AdminCmd::Bug { .. } | AdminCmd::WipeWhen | AdminCmd::Top => return,
         }
         ops.log.push(logged);
     }
@@ -2377,6 +2797,7 @@ impl ShardCore {
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
         self.pump_wipe(stats, send);
+        self.pump_standings(stats, send);
         // How the accept loop's half of an admin verb went, to the admin
         // alone. One who left meanwhile hears nothing, which is counted.
         if let Some(rx) = ops.admin_answers.as_mut() {
@@ -4290,6 +4711,82 @@ impl ShardCore {
         }
     }
 
+    /// One owed standings board to `slot`, the lowest first: the board's
+    /// top rows and where this player stands on it.
+    /// False when the ring refused it: the rest of the drip waits too.
+    fn drip_standing(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        // A spectator seat watches a body; it is ranked on nothing.
+        let owed = self.standings_owed.get(slot).copied().unwrap_or(0);
+        if owed == 0 {
+            return true;
+        }
+        let b = owed.trailing_zeros() as u8;
+        let key = self.key_str(slot);
+        let board = self.standings.board(b);
+        let mine = key.as_deref().and_then(|k| board.of(k));
+        let wipe = if b == crate::standings::BOARD_LAST {
+            self.standings.hall.last_wipe
+        } else {
+            self.standings.wipe
+        };
+        let mut wire = protocol::StandingBoard {
+            board: b,
+            wipe: wipe.min(u16::MAX as u32) as u16,
+            ranked: board.ranked.min(u16::MAX as u32) as u16,
+            my_rank: mine.map_or(0, |m| m.0.min(u16::MAX as u32) as u16),
+            my_score: mine.map_or(0, |m| m.1.min(u32::MAX as u64) as u32),
+            ..protocol::StandingBoard::EMPTY
+        };
+        for (name, score) in &board.top {
+            wire.push(name, (*score).min(u32::MAX as u64) as u32);
+        }
+        // The purse: what each place pays, what this wallet would take now,
+        // and its minutes against the minimum (`standings::Prizes`). On the
+        // last-wipe board, what it won.
+        let clamp = |v: u64| v.min(u32::MAX as u64) as u32;
+        let prizes = &self.standings.prizes;
+        if b == crate::standings::BOARD_LAST {
+            let hall = &self.standings.hall;
+            if let Some(won) = key.as_deref().and_then(|k| hall.last_paid.get(k)) {
+                wire.set_purse(&hall.last_ticker, &[]);
+                wire.my_prize = clamp(*won);
+            }
+        } else if prizes.armed() {
+            let places: Vec<u32> = prizes.places[b as usize]
+                .iter()
+                .map(|&a| clamp(a))
+                .collect();
+            wire.set_purse(&prizes.ticker, &places);
+            wire.my_prize = key
+                .as_deref()
+                .map_or(0, |k| clamp(self.standings.would_win(b, k)));
+            wire.min_minutes = prizes.min_minutes.min(u16::MAX as u32) as u16;
+            wire.my_minutes = key
+                .as_deref()
+                .and_then(|k| self.standings.row_of(k))
+                .map_or(0, |r| r.played.min(u16::MAX as u32) as u16);
+        }
+        match protocol::encode_event_standing(&wire, &mut self.ev_buf) {
+            Ok(len) => {
+                if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    return false;
+                }
+                self.standings_owed[slot] &= !(1 << b);
+                ShardStats::bump(&stats.ev_sent);
+            }
+            Err(_) => {
+                self.standings_owed[slot] &= !(1 << b);
+                ShardStats::bump(&stats.encode_range_errors);
+            }
+        }
+        true
+    }
+
     /// One client's drip work: catalog batch, harvested-set sync batch,
     /// inventory diff — each at most one message per tick, so per-client
     /// event work is bounded regardless of world size. A refused push
@@ -4301,6 +4798,9 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        if !self.drip_standing(slot, stats, send) || !self.drip_bank(slot, stats, send) {
+            return;
+        }
         let assist = self.live_wslot(slot).map_or((0, 0, 0), |wslot| {
             let p = &self.world.players[wslot];
             if p.assist_by != 0 {
@@ -6536,6 +7036,191 @@ mod tests {
         core.world.tick(&[]);
         assert!(core.world.events.is_empty(), "ring quiet after setup");
         core
+    }
+
+    /// The standings are tallied per wallet off the sim's own events: a
+    /// keyed player's deposit lights the fixture work, and the WORKS board
+    /// credits what they gave and the deed, under their platform name; the
+    /// drip then carries the board to them with their rank on it.
+    #[test]
+    fn a_deposit_lands_on_the_givers_wallet_and_rides_the_wire() {
+        use sim_core::gather::{GatherContent, ItemStack};
+        use sim_core::works::{WorksContent, ARG_ALL, OP_DEPOSIT, WORK_LIT, WORK_OPEN};
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        core.world.gather = GatherContent::probe_fixture();
+        core.world.works_def = WorksContent::probe_fixture();
+        core.work_names = vec!["THE KILN".into()];
+        core.standings.rules = crate::standings::Rules {
+            given_pct: 200,
+            lit_points: 300,
+            worth: vec![100, 250],
+            ..crate::standings::Rules::default()
+        };
+        core.standings.prizes = crate::standings::Prizes {
+            ticker: "ORBS".into(),
+            places: [vec![], vec![200, 100], vec![], vec![]],
+            min_minutes: 0,
+            agents: false,
+        };
+        let key = PlayerKey::new(format!("0x{:040x}", 0xa1).as_bytes()).unwrap();
+        let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();
+        assert!(core.connect_as(0, 256, Some(key), None).is_some());
+        core.tag_join(0, 256, Some(&key));
+        core.tick_bare(&stats, |_, _, _| true);
+        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 0);
+        let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+        let spot = core.world.works_def.defs[0].spot;
+        let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
+        let p = &mut core.world.players[w];
+        p.body = sim_core::movement::Body::at(SEED, &core.world.haven, x, z);
+        let stack = |item, count| ItemStack {
+            item,
+            count,
+            cond: 0,
+            skin: 0,
+        };
+        p.inv[0] = stack(0, 6);
+        p.inv[1] = stack(1, 2);
+        for _ in 0..sim_core::works::WORKS_PERIOD_TICKS {
+            if core.world.works.w[0].state == WORK_OPEN {
+                break;
+            }
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        assert!(core.queue(Command::Arc {
+            id: 256,
+            op: OP_DEPOSIT,
+            target: 0,
+            arg: ARG_ALL,
+        }));
+        let mut boards = Vec::new();
+        // Past one rebuild (every five seconds) and its drip.
+        for _ in 0..6 * sim_core::limits::TICK_HZ as u64 {
+            core.tick_bare(&stats, |lane, _, bytes| {
+                if lane == Lane::Event {
+                    if let Ok(EventMsg::Standing(b)) = decode_event(bytes) {
+                        boards.push(b);
+                    }
+                }
+                true
+            });
+        }
+        assert_eq!(core.world.works.w[0].state, WORK_LIT);
+        let row = core.standings.row_of(&wallet).expect("the giver is ranked");
+        // 6 × 1.00 + 2 × 2.50, doubled; and the lighting deed at act 2.
+        assert_eq!((row.given, row.deeds), (2_200, 60_000));
+        assert_eq!(row.label, "Ash");
+        assert_eq!(core.standings.deeds()[0].1, "lit THE KILN");
+        core.standings.rebuild();
+        assert_eq!(
+            core.standings
+                .board(crate::standings::BOARD_WORKS)
+                .of(&wallet),
+            Some((1, 622))
+        );
+        let works = boards
+            .iter()
+            .rev()
+            .find(|b| b.board == crate::standings::BOARD_WORKS)
+            .expect("the works board was dripped");
+        assert_eq!((works.my_rank, works.my_score, works.n), (1, 622, 1));
+        assert_eq!(works.name(0), "Ash");
+        // The purse rides with it: first place pays 200, and that is what
+        // this wallet would take now.
+        assert_eq!(works.ticker(), "ORBS");
+        assert_eq!(&works.prizes[..works.n_prizes as usize], &[200, 100]);
+        assert_eq!(works.my_prize, 200);
+    }
+
+    /// Extraction end to end: a wallet's EXTRACT becomes `Command::Extract`
+    /// carrying its allowance, the sim takes no more than that, the fee
+    /// burns, the wallet is credited, and `SUB_BANK` says so. A second try
+    /// past the cap takes nothing.
+    #[test]
+    fn extraction_credits_the_wallet_up_to_its_cap() {
+        use sim_core::gather::{GatherContent, ItemStack};
+        use sim_core::works::{WorksContent, ARG_ALL, OP_DEPOSIT, OP_EXTRACT, WORK_OPEN};
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        core.world.gather = GatherContent::probe_fixture();
+        let mut wc = WorksContent::probe_fixture();
+        wc.extract_unlock = 1;
+        wc.coin = 2;
+        core.world.works_def = wc;
+        core.standings.exits = crate::standings::Exits {
+            cap: 300,
+            fee_pct: 10,
+        };
+        let key = PlayerKey::new(format!("0x{:040x}", 0xb2).as_bytes()).unwrap();
+        let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();
+        assert!(core.connect_as(0, 256, Some(key), None).is_some());
+        core.tag_join(0, 256, Some(&key));
+        core.tick_bare(&stats, |_, _, _| true);
+        let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+        let spot = core.world.works_def.defs[0].spot;
+        let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
+        let p = &mut core.world.players[w];
+        p.body = sim_core::movement::Body::at(SEED, &core.world.haven, x, z);
+        let stack = |item, count| ItemStack {
+            item,
+            count,
+            cond: 0,
+            skin: 0,
+        };
+        p.inv[0] = stack(0, 6);
+        p.inv[1] = stack(1, 2);
+        p.inv[2] = stack(2, 500);
+        for _ in 0..sim_core::works::WORKS_PERIOD_TICKS {
+            if core.world.works.w[0].state == WORK_OPEN {
+                break;
+            }
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        assert!(core.queue(Command::Arc {
+            id: 256,
+            op: OP_DEPOSIT,
+            target: 0,
+            arg: ARG_ALL,
+        }));
+        core.tick_bare(&stats, |_, _, _| true);
+        let mut bank = None;
+        let mut run = |core: &mut ShardCore, ticks: u64| {
+            for _ in 0..ticks {
+                core.tick_bare(&stats, |lane, _, bytes| {
+                    if lane == Lane::Event {
+                        if let Ok(EventMsg::Bank(b)) = decode_event(bytes) {
+                            bank = Some(b);
+                        }
+                    }
+                    true
+                });
+            }
+        };
+        let extract = ActionMsg::Arc {
+            op: OP_EXTRACT,
+            target: 0,
+            arg: 0,
+        };
+        core.push_action(0, extract);
+        run(&mut core, 4);
+        let row = core.standings.row_of(&wallet).expect("credited");
+        assert_eq!((row.taken, row.extracted), (300, 270), "the cap, less 10%");
+        assert_eq!(
+            sim_core::craft::inv_count(&core.world.players[w].inv, 2),
+            200,
+            "the rest stays in the pack"
+        );
+        // Past the cap: the action goes through as a zero allowance.
+        core.push_action(0, extract);
+        run(&mut core, 2 * sim_core::limits::TICK_HZ as u64);
+        let row = core.standings.row_of(&wallet).unwrap();
+        assert_eq!(row.taken, 300, "nothing more left");
+        let b = bank.expect("the way out was dripped");
+        assert_eq!(
+            (b.work, b.open, b.fee_pct, b.cap, b.taken, b.credited),
+            (0, true, 10, 300, 300, 270)
+        );
     }
 
     /// Tags (v85): each player learns who every tagged player is, a name

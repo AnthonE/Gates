@@ -401,6 +401,8 @@ pub struct SimTables {
     pub lore: sim_core::lore::LoreContent,
     pub mechs: sim_core::mech::MechContent,
     pub arc_text: content::bake::ArcText,
+    /// What the standings weigh (`standings.rs`, `arc.toml` `[standings]`).
+    pub standing_rules: crate::standings::Rules,
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -437,6 +439,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         lore: content.bake_lore()?,
         mechs: content.bake_mechs()?,
         arc_text: content.bake_arc_text()?,
+        standing_rules: crate::standings::Rules::bake_from(content, content.bake_worth()),
         combat,
         gather,
         survival,
@@ -672,6 +675,13 @@ pub async fn spawn_shard(
         let dev_spawn = cfg.dev_spawn;
         let dev_env = cfg.dev_env;
         let admins = cfg.admins.clone();
+        let standings_base = cfg
+            .world_file
+            .as_deref()
+            .or(cfg.save_file.as_deref())
+            .map(std::path::PathBuf::from);
+        let prizes = cfg.prizes.clone();
+        let exits = cfg.exits;
         // The trust log's tap rides the save boot artifact (`store::Saves`).
         let trust = saves.trust;
         std::thread::Builder::new()
@@ -687,6 +697,9 @@ pub async fn spawn_shard(
                     world_interval,
                     world_clamp,
                     wipe,
+                    standings_base,
+                    prizes,
+                    exits,
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
@@ -1561,13 +1574,19 @@ fn store_thread(
         // the world before the thread notices its producers are gone.
         while let Ok(msg) = world_rx.pop() {
             idle = false;
-            match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
-                Ok(true) => ShardStats::bump(&stats.world_saves_written),
+            let ok = match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
+                Ok(true) => {
+                    ShardStats::bump(&stats.world_saves_written);
+                    true
+                }
                 // No file: nothing written, nothing counted — the same rule
                 // `SaveFile::write` states, and for the same reason.
-                Ok(false) => {}
-                Err(_) => ShardStats::bump(&stats.world_save_errors),
-            }
+                Ok(false) => true,
+                Err(_) => {
+                    ShardStats::bump(&stats.world_save_errors);
+                    false
+                }
+            };
             // The buffer goes home whatever happened. A write that failed
             // must not also cost the pool a buffer, or a shard with a full
             // disk would stop being *able* to save once the disk was fixed.
@@ -1575,7 +1594,7 @@ fn store_thread(
                 buf, mut idents, ..
             } = msg;
             idents.clear();
-            let _ = world_done_tx.push(WorldDone { buf, idents });
+            let _ = world_done_tx.push(WorldDone { buf, idents, ok });
         }
         while let Ok(msg) = write_rx.pop() {
             idle = false;
@@ -1941,6 +1960,7 @@ async fn install(
             save,
             key,
             watch: None,
+            agent: hello.is_agent(),
             link,
         })
         .is_err()
@@ -2160,6 +2180,7 @@ async fn install_spectator(
             save: None,
             key: None,
             watch: Some(target),
+            agent: false,
             link,
         })
         .is_err()
@@ -3194,6 +3215,9 @@ fn sim_thread(
     world_interval: u64,
     world_clamp: bool,
     wipe: crate::wipe::Clock,
+    standings_base: Option<std::path::PathBuf>,
+    prizes: crate::standings::Prizes,
+    exits: crate::standings::Exits,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
@@ -3246,6 +3270,7 @@ fn sim_thread(
         lore,
         mechs,
         arc_text,
+        standing_rules,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -3278,6 +3303,14 @@ fn sim_thread(
     core.arc_text = arc_text;
     core.install_admins(admins);
     core.trust = trust;
+    // The standings, beside the files the wipe archives with them.
+    core.standings = crate::standings::Standings::open(
+        standing_rules,
+        prizes,
+        standings_base.as_deref(),
+        wipe.number(),
+    );
+    core.standings.exits = exits;
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
     let mut watch = crate::anomaly::Watch::new();
@@ -3375,6 +3408,7 @@ fn sim_thread(
                 // Who this is, for everyone's chat and nametags: the proven
                 // address now, the platform name when its read lands.
                 core.tag_join(c.slot, c.id, key.as_ref());
+                core.note_agent(c.slot, c.agent);
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
                 // as it stands NOW — raid included — not as its leave left
@@ -3492,10 +3526,15 @@ fn sim_thread(
         if let Some((id, save)) = core.autosave() {
             push_save(&mut save_tx, id, None, save, &stats);
         }
-        // Buffers coming home from the store thread.
+        // Buffers coming home from the store thread — and with them the
+        // standings taken beside that save, now safe to write: a crash
+        // rolls the world and the credits back together.
         while let Ok(done) = world_done_rx.pop() {
             world_pool.push(done.buf);
             ident_pool.push(done.idents);
+            if done.ok {
+                core.standings.release();
+            }
         }
         // The world, on its cadence. Before the tick for the reason the
         // autosave sweep is: the blob is then the state the *previous* tick
@@ -3509,6 +3548,7 @@ fn sim_thread(
                 &mut world_tx,
                 &stats,
             );
+            core.standings.snapshot();
         }
         // The wipe clock, once a second off the wall clock (this loop is the
         // boundary: the clock read lives here, never in the tick). Before the
@@ -3523,6 +3563,14 @@ fn sim_thread(
                 .map_or(0, |d| d.as_secs());
             core.wipe_poll(now);
             ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
+        }
+        // The standings, once a minute: minutes played, every base
+        // recounted, the boards rebuilt (`standings.rs`). The file itself
+        // rides the world save, below.
+        if core.world.tick % (60 * sim_core::limits::TICK_HZ as u64) == 13 {
+            core.standings_minute();
+            core.standings_recount();
+            core.standings.rebuild();
         }
         // Tick + publish. `Ops` is the tick's side channels (admin v0) —
         // the anomaly log, the kick ring and its answers, `/save`'s flag.
@@ -3637,6 +3685,13 @@ fn sim_thread(
     while let Ok(done) = world_done_rx.pop() {
         world_pool.push(done.buf);
         ident_pool.push(done.idents);
+    }
+    // The standings' last count, while everyone is still connected (the
+    // world save's reason, below): a wipe reads this file for its hall.
+    core.standings_recount();
+    core.standings.rebuild();
+    if let Err(e) = core.standings.save_now() {
+        eprintln!("shard: standings at shutdown: {e}");
     }
     take_world_save(
         &mut core,

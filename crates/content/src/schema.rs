@@ -1279,6 +1279,47 @@ pub struct Offer {
     pub unlock: Option<String>,
 }
 
+/// `content/arc.toml` `[standings]`: what a wipe's players are ranked on
+/// (`server::standings`). Every score is farm-minutes of goods, the balance
+/// math's currency, so a base's hoard, a deposit to a work and a kill sit on
+/// one scale. Absent means these defaults.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Standings {
+    /// A deposit to a work counts this per cent of what it is worth: the
+    /// public good outranks a hoard, so a player raided on day two still
+    /// has a board to climb.
+    pub given_pct: u32,
+    /// The deposit that lights a work, per act of that work.
+    pub lit_points: u32,
+    /// Fuel into a dry tank.
+    pub rekindled_points: u32,
+    /// Solving a lock.
+    pub solved_points: u32,
+    /// Killing another player.
+    pub kill_points: u32,
+    /// What a base holds counts this per cent toward the island score.
+    pub hoard_pct: u32,
+    /// Farm-minutes a unit, for items the balance math cannot price (loot
+    /// and drops). Anything it can price and this does not name is priced
+    /// by recipe expansion; anything neither prices is worth nothing.
+    pub worth: BTreeMap<String, f64>,
+}
+
+impl Default for Standings {
+    fn default() -> Self {
+        Standings {
+            given_pct: 200,
+            lit_points: 300,
+            rekindled_points: 50,
+            solved_points: 200,
+            kill_points: 30,
+            hoard_pct: 100,
+            worth: BTreeMap::new(),
+        }
+    }
+}
+
 /// `content/arc.toml` `[arc]`: how a quiet shard's works burn
 /// (`sim_core::works`, `ARC.md` F1).
 #[derive(Debug, Clone, Deserialize)]
@@ -1332,7 +1373,7 @@ pub struct Work {
 pub struct ArcEffect {
     pub unlock: String,
     /// A knob the sim knows: `smelt_pct`, `heal_pct`, `research_pct`,
-    /// `gather_pct` (`sim_core::works::KNOB_*`).
+    /// `gather_pct`, `extract_pct` (`sim_core::works::KNOB_*`).
     pub knob: String,
     pub pct: u16,
 }

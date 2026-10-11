@@ -18,7 +18,7 @@ use crate::render::feed::{Feed, Refused};
 use crate::ui::arc as words;
 use crate::ui::craft::item_label;
 use client_core::core::ClientCore;
-use sim_core::works::{ARG_ALL, OP_DEPOSIT, OP_FUEL, WORK_LIT, WORK_OPEN};
+use sim_core::works::{ARG_ALL, OP_DEPOSIT, OP_EXTRACT, OP_FUEL, WORK_LIT, WORK_OPEN};
 
 const WORK_W: f32 = 600.0;
 const ISLAND_W: f32 = 640.0;
@@ -149,6 +149,37 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                 TEXT_DIM,
             );
         }
+        if core.bank.work as usize == k {
+            // THE EXCHANGE: carried JUNK leaves for the wallet here.
+            let bank = core.bank;
+            let carry = have(bank.coin);
+            let (state, mine) = words::exit_lines(&bank);
+            kit::section(p, "THE WAY OUT");
+            kit::strong(p, state, 13.0, TEXT);
+            kit::row(p, |r| {
+                kit::cell(
+                    r,
+                    item_label(&core.catalog, bank.coin).to_uppercase(),
+                    150.0,
+                    TEXT,
+                );
+                kit::cell(r, format!("you carry {carry}"), 140.0, TEXT_DIM);
+                kit::cell(r, words::exit_room(&bank), 130.0, TEXT_DIM);
+                kit::button(
+                    r,
+                    "EXTRACT",
+                    ArcButton {
+                        op: OP_EXTRACT,
+                        target: k as u8,
+                        arg: 0,
+                    },
+                    words::can_extract(&bank, carry),
+                );
+            });
+            if !mine.is_empty() {
+                kit::line(p, mine, 11.0, LINE_HOT);
+            }
+        }
         if let Some(share) = words::share_line(&w) {
             kit::strong(p, share, 12.0, LINE_HOT);
         }
@@ -156,7 +187,7 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     });
 }
 
-/// An ISLAND tab: 0 the works, 1 the journal.
+/// An ISLAND tab: 0 the works, 1 the journal, 2 the standings.
 #[derive(Component, Clone, Copy)]
 pub struct IslandTab(pub u8);
 
@@ -171,12 +202,13 @@ pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
         );
         kit::row(p, |r| {
             kit::button(r, "THE WORKS", IslandTab(0), ui.island_tab == 0);
+            kit::button(r, "STANDINGS", IslandTab(2), ui.island_tab == 2);
             kit::button(r, "JOURNAL", IslandTab(1), ui.island_tab == 1);
         });
-        if ui.island_tab == 1 {
-            journal(p, core);
-        } else {
-            works(p, core);
+        match ui.island_tab {
+            1 => journal(p, core),
+            2 => standings(p, core),
+            _ => works(p, core),
         }
         kit::hint(p, "[O] OR [ESC] CLOSE");
     });
@@ -226,6 +258,46 @@ fn works(p: &mut ChildSpawnerCommands, core: &ClientCore) {
         kit::line(p, "nothing yet — it starts broken", 12.0, TEXT_DIM);
     } else {
         kit::strong(p, held.join("  ·  "), 13.0, TEXT);
+    }
+}
+
+/// The wipe's standings: four boards and the last wipe's island, each with
+/// its top rows and where this player stands (`SUB_STANDING`).
+fn standings(p: &mut ChildSpawnerCommands, core: &ClientCore) {
+    kit::line(
+        p,
+        "Ranked all wipe. What you give the works is yours for good; what \
+         your base holds counts only if it is still yours when the wipe lands. \
+         Where a board has a purse, its top places are paid to the wallet you \
+         play with after the wipe.",
+        12.0,
+        TEXT_DIM,
+    );
+    let last = &core.standings[protocol::STANDING_BOARDS as usize - 1];
+    for (board, b) in core.standings.iter().enumerate() {
+        let board = board as u8;
+        if board == protocol::STANDING_BOARDS - 1 && last.n == 0 {
+            continue;
+        }
+        kit::section(p, &words::board_heading(b, board));
+        kit::line(p, words::board_blurb(board), 11.0, TEXT_DIM);
+        if let Some(purse) = words::purse_line(b) {
+            kit::strong(p, purse, 12.0, TEXT);
+        }
+        if b.n == 0 {
+            kit::line(p, "nobody yet — the board is open", 12.0, TEXT_DIM);
+        }
+        for i in 0..b.n as usize {
+            kit::row(p, |r| {
+                kit::cell(r, format!("#{}", i + 1), 40.0, TEXT_DIM);
+                kit::cell(r, b.name(i), 260.0, TEXT);
+                kit::cell(r, words::board_score(board, b.scores[i]), 140.0, TEXT);
+            });
+        }
+        kit::strong(p, words::standing_you(b), 12.0, LINE_HOT);
+        if let Some(prize) = words::prize_you(b) {
+            kit::line(p, prize, 12.0, LINE_HOT);
+        }
     }
 }
 
@@ -283,10 +355,10 @@ pub fn clicks(
         let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         match protocol::encode_action_arc(b.op, b.target, b.arg, &mut buf) {
             Ok(len) => match net.session.send_action(&buf[..len]) {
-                Ok(()) => ui.say(if b.op == OP_FUEL {
-                    "feeding it…"
-                } else {
-                    "giving it what you carry…"
+                Ok(()) => ui.say(match b.op {
+                    OP_FUEL => "feeding it…",
+                    OP_EXTRACT => "putting it through the exchange…",
+                    _ => "giving it what you carry…",
                 }),
                 Err(e) => ui.say(e.to_string()),
             },

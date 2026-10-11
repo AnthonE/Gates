@@ -892,7 +892,19 @@ pub const EV_GROW: u8 = 59;
 /// posture: every client stops drawing the stump and offering a swing at it.
 pub const EV_STUMP_GRUBBED: u8 = 60;
 
-pub const EV_MAX: u8 = EV_STUMP_GRUBBED;
+/// EV_GAVE: a = player id, b = item << 16 | work, c = units. One per quota
+/// line a deposit took from, and one for fuel into a tank (`works.rs`).
+/// Server-only: it rides no wire, and the standings value it
+/// (`server::standings`), which the works' bounded ledger cannot do for
+/// every giver.
+pub const EV_GAVE: u8 = 61;
+
+/// EV_EXTRACTED: a = player id, b = the exchange (work index), c = units of
+/// coin taken (`works::extract`). Server-only: the standings credit the
+/// wallet, which the sim never sees.
+pub const EV_EXTRACTED: u8 = 62;
+
+pub const EV_MAX: u8 = EV_EXTRACTED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1959,6 +1971,14 @@ pub enum Command {
         op: u8,
         target: u8,
         arg: u8,
+    },
+    /// Put up to `max` carried coin through the exchange `target`
+    /// (`works::extract`). `max` is the wallet's allowance this wipe, which
+    /// only the server knows, so it rides here rather than in the sim.
+    Extract {
+        id: u32,
+        target: u8,
+        max: u32,
     },
     /// Drink from the water under your own feet (survival.rs). No target
     /// and no position: the heightfield is a pure function of the seed,
@@ -5310,6 +5330,19 @@ impl World {
                         &mut self.players[slot],
                         offer as usize,
                         times,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Extract { id, target, max } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::works::extract(
+                        &self.works_def,
+                        &self.works,
+                        &self.haven,
+                        &mut self.players[slot],
+                        target,
+                        max,
                         &mut self.events,
                     );
                 }

@@ -215,6 +215,9 @@ pub struct Connect {
     /// seats the watcher, so a target who left between the accept loop's
     /// check and this message is never watched in someone else's name.
     pub watch: Option<usize>,
+    /// It declared itself an agent (`HELLO_AGENT`): ranked like anyone, paid
+    /// only where `prize_agents` says (`standings.rs`).
+    pub agent: bool,
     pub link: Link,
 }
 
@@ -298,6 +301,9 @@ pub struct WorldMsg {
 pub struct WorldDone {
     pub buf: Box<[u8]>,
     pub idents: Vec<(PlayerKey, u32)>,
+    /// The save landed (or there is no world file to land in): what the
+    /// standings taken beside it wait on (`standings::Standings::release`).
+    pub ok: bool,
 }
 
 /// Accept→storage thread: one record and where in the file it goes. The

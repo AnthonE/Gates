@@ -56,6 +56,7 @@ pub mod pace;
 pub mod population;
 pub mod skins;
 pub mod slot;
+pub mod standings;
 pub mod stats;
 pub mod status;
 pub mod store;

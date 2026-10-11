@@ -155,3 +155,168 @@ pub fn locked_line(arc: &ArcView, u: u8) -> Option<String> {
         None => "THE ISLAND CANNOT MAKE THIS YET — [O] ISLAND".into(),
     })
 }
+
+// ---- the standings (`server::standings`, wire v104) ----------------------------
+
+/// Board `b`'s name, in `SUB_STANDING` order.
+pub fn board_title(board: u8) -> &'static str {
+    match board {
+        0 => "THE ISLAND",
+        1 => "THE WORKS",
+        2 => "THE HOARD",
+        3 => "THE FIGHT",
+        _ => "LAST WIPE",
+    }
+}
+
+/// What a board ranks, in one line.
+pub fn board_blurb(board: u8) -> &'static str {
+    match board {
+        0 => "all of it on one scale: given, held, and the fights won",
+        1 => "what you gave the works, and the deeds; a raid cannot take it back",
+        2 => "what your bases hold now, split across the crew; it freezes at the wipe",
+        3 => "players killed",
+        _ => "where the last island ended",
+    }
+}
+
+/// `12,345`.
+pub fn thousands(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A row's score as the board counts it: kills on THE FIGHT, points
+/// elsewhere.
+pub fn board_score(board: u8, score: u32) -> String {
+    match (board, score) {
+        (3, 1) => "1 kill".into(),
+        (3, n) => format!("{} kills", thousands(n)),
+        (_, n) => thousands(n),
+    }
+}
+
+/// Where this player stands on a board, or the way onto it.
+pub fn standing_you(b: &protocol::StandingBoard) -> String {
+    if b.my_rank == 0 {
+        return match b.board {
+            1 => "YOU  unranked — feed a work at its terminal".into(),
+            2 => "YOU  unranked — a hearth, and boxes in its claim".into(),
+            4 => "YOU  were not on the last island".into(),
+            _ => "YOU  unranked".into(),
+        };
+    }
+    let verb = if b.board == 4 { "finished" } else { "stand" };
+    format!(
+        "YOU  {verb} #{} of {} · {}",
+        b.my_rank,
+        b.ranked,
+        board_score(b.board, b.my_score)
+    )
+}
+
+/// A board's heading: its name, and the wipe it ranks once one landed.
+pub fn board_heading(b: &protocol::StandingBoard, board: u8) -> String {
+    if b.wipe == 0 {
+        board_title(board).into()
+    } else {
+        format!("{} · WIPE {}", board_title(board), b.wipe)
+    }
+}
+
+/// A board's purse: `PURSE  #1 500 · #2 300 · #3 100 ORBS`, or `None` when
+/// it pays nothing.
+pub fn purse_line(b: &protocol::StandingBoard) -> Option<String> {
+    if b.n_prizes == 0 || b.ticker().is_empty() {
+        return None;
+    }
+    let places: Vec<String> = b.prizes[..b.n_prizes as usize]
+        .iter()
+        .enumerate()
+        .map(|(i, a)| format!("#{} {}", i + 1, thousands(*a)))
+        .collect();
+    Some(format!("PURSE  {} {}", places.join(" · "), b.ticker()))
+}
+
+/// What the purse means for this player: what they won (last wipe), what
+/// they would take now, how long they must still play, or how far to climb.
+pub fn prize_you(b: &protocol::StandingBoard) -> Option<String> {
+    let ticker = b.ticker();
+    if b.board == 4 {
+        return (b.my_prize > 0 && !ticker.is_empty()).then(|| {
+            format!(
+                "YOU WON {} {ticker} — it goes to your wallet",
+                thousands(b.my_prize)
+            )
+        });
+    }
+    if b.n_prizes == 0 || ticker.is_empty() {
+        return None;
+    }
+    Some(if b.my_minutes < b.min_minutes {
+        let left = b.min_minutes - b.my_minutes;
+        format!(
+            "play {left} more minute{} this wipe to be paid",
+            if left == 1 { "" } else { "s" }
+        )
+    } else if b.my_prize > 0 {
+        format!(
+            "if the wipe ended now: {} {ticker} to your wallet",
+            thousands(b.my_prize)
+        )
+    } else {
+        format!("climb into the top {} to be paid", b.n_prizes)
+    })
+}
+
+// ---- the way out (`SUB_BANK`, `WORLD.md` §4) ----------------------------------
+
+/// THE EXCHANGE's state line, and what it means for this wallet.
+pub fn exit_lines(b: &protocol::BankView) -> (String, String) {
+    if !b.open {
+        return (
+            "NOTHING LEAVES UNTIL IT IS LIT".into(),
+            "light it, and the JUNK you carry here goes to your wallet".into(),
+        );
+    }
+    if b.cap == 0 {
+        return ("THIS ISLAND PAYS NOTHING OUT".into(), String::new());
+    }
+    (
+        format!(
+            "{} / {} JUNK OUT THIS WIPE · FEE {}%",
+            thousands(b.taken),
+            thousands(b.cap),
+            b.fee_pct
+        ),
+        if b.credited > 0 {
+            format!(
+                "{} JUNK credited — paid to your wallet after the wipe",
+                thousands(b.credited)
+            )
+        } else {
+            "what you put through is paid to your wallet after the wipe".into()
+        },
+    )
+}
+
+/// `1,200 more may leave`, or why none may.
+pub fn exit_room(b: &protocol::BankView) -> String {
+    match b.cap.saturating_sub(b.taken) {
+        0 if b.cap > 0 => "your limit is reached".into(),
+        0 => String::new(),
+        n => format!("{} more may leave", thousands(n)),
+    }
+}
+
+/// Whether EXTRACT does anything now.
+pub fn can_extract(b: &protocol::BankView, carry: u32) -> bool {
+    b.open && carry > 0 && b.taken < b.cap
+}

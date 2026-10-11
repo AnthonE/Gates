@@ -97,6 +97,12 @@ fn node_slot(a: NodeArchetype) -> usize {
     sim_core::gather::node_index(o).expect("every archetype is a gather node")
 }
 
+/// The unlock that opens extraction: the work whose floor it is, is the
+/// exchange (`sim_core::works::extract`).
+pub const EXTRACT_UNLOCK: &str = "unlock.extraction";
+/// The coin that leaves through it.
+pub const EXTRACT_COIN: &str = "item.junk";
+
 impl Content {
     /// Rank of `id` among all item ids, sorted — the sim-side item index.
     /// The wire slice will ship this same mapping in the join bundle.
@@ -1831,6 +1837,19 @@ impl Content {
         self.works.iter().map(|w| w.name.clone()).collect()
     }
 
+    /// What one unit of every item is worth on the standings, hundredths of
+    /// a farm-minute, by sim item index (`server::standings`).
+    pub fn bake_worth(&self) -> Vec<u32> {
+        let mut out = vec![0u32; self.items.len()];
+        for it in &self.items {
+            if let Some(i) = self.item_index(&it.id) {
+                let w = crate::balance::worth_minutes(self, &it.id) * 100.0;
+                out[i as usize] = w.round().clamp(0.0, u32::MAX as f64) as u32;
+            }
+        }
+        out
+    }
+
     /// The works and their effects (`sim_core::works`, `content/arc.toml`).
     /// Hours become ticks and metres centimetres here; every reference is
     /// resolved or the boot is refused.
@@ -1958,6 +1977,7 @@ impl Content {
                 "heal_pct" => sim_core::works::KNOB_HEAL_PCT,
                 "research_pct" => sim_core::works::KNOB_RESEARCH_PCT,
                 "gather_pct" => sim_core::works::KNOB_GATHER_PCT,
+                "extract_pct" => sim_core::works::KNOB_EXTRACT_PCT,
                 k => return Err(format!("arc: effect {i}: no knob `{k}`")),
             };
             if e.pct == 0 || e.pct > 1000 {
@@ -1970,6 +1990,24 @@ impl Content {
             };
         }
         wc.n_effects = self.arc_effects.len() as u8;
+        // Extraction: the work whose floor is this unlock is the exchange,
+        // and JUNK is what leaves through it (`WORLD.md` §4).
+        if let Some(u) = self.unlock_code(EXTRACT_UNLOCK) {
+            if !self
+                .works
+                .iter()
+                .any(|w| w.floor_unlock.as_deref() == Some(EXTRACT_UNLOCK))
+            {
+                return Err(format!(
+                    "arc: `{EXTRACT_UNLOCK}` must be a work's floor — extraction is \
+                     guaranteed, never only while something burns"
+                ));
+            }
+            wc.extract_unlock = u;
+            wc.coin = self
+                .item_index(EXTRACT_COIN)
+                .ok_or_else(|| format!("arc: extraction needs the coin `{EXTRACT_COIN}`"))?;
+        }
         Ok(wc)
     }
 
