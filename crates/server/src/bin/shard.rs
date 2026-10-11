@@ -777,18 +777,40 @@ fn close_world(cfg: &server::config::ShardConfig, now: u64, n: u32, base: &Path)
         println!("wipe {n}: already in the hall — it is closed once, not again");
         return true;
     }
+    // No standings is a close that writes nothing (`close_wipe`), so it is
+    // not reported as one.
+    let kept = server::standings::standings_path(base).exists();
     match server::standings::close_wipe(base, n, &cfg.prizes) {
         Ok(closed) => {
             if let Some(w) = &closed.winner {
                 println!("wipe {n}: the island goes to {w}");
             }
             if !closed.paid.is_empty() {
-                let total: u64 = closed.paid.iter().map(|p| p.2).sum();
+                // `paid` is one row per (wallet, coin): prizes and extraction
+                // can be different coins, so total each coin on its own and
+                // count wallets, not rows.
+                let mut coins: std::collections::BTreeMap<&str, u64> = Default::default();
+                for p in &closed.paid {
+                    *coins.entry(p.3.as_str()).or_default() += p.2;
+                }
+                let owed: Vec<String> = coins.iter().map(|(t, a)| format!("{a} {t}")).collect();
+                let wallets = closed
+                    .paid
+                    .iter()
+                    .map(|p| p.0.as_str())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
                 println!(
-                    "wipe {n}: {total} {} owed to {} wallets — {} (the operator sends it)",
-                    closed.ticker,
-                    closed.paid.len(),
+                    "wipe {n}: {} owed to {wallets} wallets — {} (the operator sends it)",
+                    owed.join(" + "),
                     server::standings::payout_path(base, n, "csv").display()
+                );
+            }
+            if kept {
+                println!(
+                    "wipe {n}: closed into {} ({} podium places)",
+                    server::standings::hall_path(base).display(),
+                    closed.podiums.len()
                 );
             }
             if let Some(url) = cfg.discord_webhook.as_deref() {
