@@ -210,7 +210,7 @@ fn main() {
     // One standings board (v104).
     let len = protocol::encode_event_standing(&goldens::event_standing(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[160], &buf[..len]);
-    // The way out through the exchange (v104).
+    // The way out through the exchange (v105).
     let len = protocol::encode_event_bank(&goldens::event_bank(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[161], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
