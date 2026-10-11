@@ -1310,6 +1310,15 @@ impl ShardCore {
             .count()
     }
 
+    /// Of [`Self::connected`], the players that joined as a declared agent
+    /// (`HELLO_AGENT`, [`Self::note_agent`]) — the `agents` gauge
+    /// (`stats.rs`). The same O(MAX_PLAYERS) scan, for the same reason.
+    pub fn agents_connected(&self) -> usize {
+        (0..MAX_PLAYERS)
+            .filter(|&s| self.clients[s].connected && self.standings_agent[s])
+            .count()
+    }
+
     /// Occupied spectator seats — the `spectators` gauge (`stats.rs`).
     pub fn spectators(&self) -> usize {
         self.watching.iter().filter(|w| w.is_some()).count()

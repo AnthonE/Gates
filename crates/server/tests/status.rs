@@ -254,11 +254,13 @@ fn names_the_wire_it_speaks() {
 }
 
 /// Watchers ride the document beside `players` (NOW §5sp), each off its own
-/// gauge: a seat has no body and is never counted as a player.
+/// gauge: a seat has no body and is never counted as a player. Declared
+/// agents are a share of `players`, off theirs.
 #[test]
 fn serves_spectators_apart_from_players() {
     let stats = Arc::new(ShardStats::default());
     ShardStats::set(&stats.players, 5);
+    ShardStats::set(&stats.agents, 1);
     ShardStats::set(&stats.spectators, 2);
     let addr = start(stats);
     let resp = exchange(addr, b"GET /status.json HTTP/1.1\r\nHost: t\r\n\r\n");
@@ -266,4 +268,19 @@ fn serves_spectators_apart_from_players() {
     let body = text.split("\r\n\r\n").nth(1).expect("a body after headers");
     assert_eq!(field(body, "spectators"), 2);
     assert_eq!(field(body, "players"), 5);
+    assert_eq!(field(body, "agents"), 1);
+}
+
+/// `agents` counts connected slots whose tenant declared `HELLO_AGENT`: a
+/// flag left on a slot its agent has left is not counted.
+#[test]
+fn agents_are_counted_among_the_connected() {
+    let mut core = Box::new(ShardCore::new(SEED));
+    assert!(core.connect(0, 1));
+    assert!(core.connect(1, 2));
+    core.note_agent(0, true);
+    core.note_agent(1, false);
+    assert_eq!((core.connected(), core.agents_connected()), (2, 1));
+    let _ = core.disconnect(0);
+    assert_eq!((core.connected(), core.agents_connected()), (1, 0));
 }

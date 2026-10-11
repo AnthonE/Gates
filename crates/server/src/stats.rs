@@ -177,6 +177,11 @@ pub struct ShardStats {
     /// endpoint (`status.rs`) reads this, and it is the honest count the
     /// shard list's `players` column has been waiting on.
     pub players: AtomicU64,
+    /// Of `players`, those that joined as a declared agent (`HELLO_AGENT`)
+    /// — mirrored off `ShardCore::agents_connected` beside `players`. A
+    /// share of that population, never a second one: `players - agents` is
+    /// the people.
+    pub agents: AtomicU64,
     pub refused_version: AtomicU64,
     /// Joins refused for being below this shard's `min_client`
     /// (`REFUSE_BUILD`). **Counted apart from `refused_version` because the

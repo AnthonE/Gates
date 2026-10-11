@@ -11,7 +11,7 @@
 //! (`stats.rs` L5: diagnostics are numbers, not strings):
 //!
 //! ```json
-//! {"players":3,"spectators":1,"max_players":100,"proto":62,"tick":123456,
+//! {"players":3,"agents":1,"spectators":1,"max_players":100,"proto":62,"tick":123456,
 //!  "dg_out_bytes":0,"dg_out_pkts":0,"dg_in_bytes":0,"dg_in_pkts":0,
 //!  "stream_out_bytes":0,"stream_out_frames":0,
 //!  "stream_in_bytes":0,"stream_in_frames":0,
@@ -28,6 +28,10 @@
 //!   sim loop mirrors from `ShardCore::connected` each tick. A gauge and
 //!   not `joins - leaves`, because that pair legitimately drifts
 //!   (`stats.rs` says how).
+//! - `agents` — how many of `players` joined as a declared agent
+//!   (`HELLO_AGENT`), off the gauge the sim loop mirrors from
+//!   `ShardCore::agents_connected`. A share of `players`, never a separate
+//!   population: the people on the shard are `players - agents`.
 //! - `spectators` — occupied spectator seats (`NETCODE.md` §2.3), off the
 //!   gauge the sim loop mirrors from `ShardCore::spectators`. Never counted
 //!   in `players`: a seat has no body and does not take a player slot.
@@ -266,7 +270,7 @@ fn answer(
     }
     hist.push(']');
     let body = format!(
-        "{{\"players\":{},\"spectators\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
+        "{{\"players\":{},\"agents\":{},\"spectators\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
          \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
          \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
          \"stream_out_bytes\":{},\"stream_out_frames\":{},\
@@ -277,6 +281,7 @@ fn answer(
          \"favour_granted\":{},\"favour_sum\":{},\
          \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{}}}",
         ShardStats::get(&stats.players),
+        ShardStats::get(&stats.agents),
         ShardStats::get(&stats.spectators),
         sim_core::limits::MAX_PLAYERS,
         protocol::PROTO_VER,
