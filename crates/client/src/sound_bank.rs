@@ -1,7 +1,8 @@
 //! The bank the engine plays, cue by cue — **every cue a recording**: CC0
-//! Freesound field recordings, Kenney's CC0 packs and the nine music pieces
-//! rendered from the CC0 VSCO-2 orchestral samples (`assets/sound/MANIFEST.md`
-//! lists every file and where it came from). The synthesizer
+//! Freesound field recordings and Kenney's CC0 packs
+//! (`assets/sound/MANIFEST.md` lists every file and where it came from). The
+//! score is not here: it is whole tracks streamed beside the engine
+//! (`sound::music`). The synthesizer
 //! (`sound::synth`) is only the fallback for a recording that fails to
 //! decode, and `tests/sound.rs` fails if any cue lacks one.
 //!
@@ -11,10 +12,8 @@
 //! Rust's own answer to a repeated sound (several recorded variations per
 //! action); the pitch nudge (`Cue::pitch_var`) rides on top of it.
 //!
-//! The beds and the music are **whole files**: a bed is a seamless loop whose
-//! last sample flows into its first, and a piece's downbeat is its first
-//! sample and its length is the director's grid (`music::PIECE_S`), so
-//! neither is trimmed or faded the way a take is.
+//! The beds are **whole files**: a bed is a seamless loop whose last sample
+//! flows into its first, so it is not trimmed or faded the way a take is.
 //!
 //! The recordings are decoded here at boot rather than shipped decoded: a few
 //! MB of OGG against many MB of PCM, and the browser decodes the same bytes
@@ -42,19 +41,6 @@ macro_rules! five {
 macro_rules! takes {
     ($dir:literal, $name:literal, $($n:literal)+) => {
         &[$(include_bytes!(concat!("../../../assets/sound/", $dir, "/", $name, "_", $n, ".ogg"))),+]
-    };
-}
-
-/// One whole file (a bed's loop, a piece of music), compiled in.
-macro_rules! whole {
-    ($dir:literal, $name:literal) => {
-        &[include_bytes!(concat!(
-            "../../../assets/sound/",
-            $dir,
-            "/",
-            $name,
-            ".ogg"
-        ))]
     };
 }
 
@@ -148,15 +134,6 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::Bellow, takes!("freesound", "bellow", 0 1)),
     (Cue::Snort, takes!("freesound", "snort", 0 1 2)),
     (Cue::Bird, takes!("freesound", "bird", 0 1 2 3 4 5)),
-    (Cue::MusicOpenCalm, whole!("vsco", "music_open_calm")),
-    (Cue::MusicOpenTense, whole!("vsco", "music_open_tense")),
-    (Cue::MusicOpenCombat, whole!("vsco", "music_open_combat")),
-    (Cue::MusicTurnCalm, whole!("vsco", "music_turn_calm")),
-    (Cue::MusicTurnTense, whole!("vsco", "music_turn_tense")),
-    (Cue::MusicTurnCombat, whole!("vsco", "music_turn_combat")),
-    (Cue::MusicCloseCalm, whole!("vsco", "music_close_calm")),
-    (Cue::MusicCloseTense, whole!("vsco", "music_close_tense")),
-    (Cue::MusicCloseCombat, whole!("vsco", "music_close_combat")),
 ];
 
 /// The cue whose bank a cue plays. The remote halves are the same boot on the
@@ -190,10 +167,10 @@ pub fn recorded(cue: Cue) -> bool {
     RECORDED.iter().any(|(c, _)| *c == source(cue))
 }
 
-/// Is this cue one whole file rather than takes: a looping bed or a piece of
-/// music, neither of which may be trimmed or faded.
+/// Is this cue one whole file rather than takes: a looping bed, which may not
+/// be trimmed or faded.
 pub fn whole(cue: Cue) -> bool {
-    cue.is_bed() || cue.is_music()
+    cue.is_bed()
 }
 
 /// How many takes the synthesizer renders for a cue whose recording failed:

@@ -15,7 +15,7 @@
 
 use client::sound::birds::Birds;
 use client::sound::mixer::{Mixer, Request};
-use client::sound::music::{self, Director, Mode, Piece, Tier};
+use client::sound::music::{self, Director, Mode, Tier, Track};
 use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
 use client::sound::synth;
 use client::sound::{hit, hurt};
@@ -925,7 +925,7 @@ fn every_take_in_the_bank_is_a_sound() {
     use client::sound::engine::MAX_TAKES;
     use client::sound_bank;
     for cue in Cue::ALL {
-        if cue.is_bed() || cue.is_music() {
+        if cue.is_bed() {
             continue;
         }
         let (pcm, takes) = sound_bank::pcm(cue);
@@ -1877,300 +1877,230 @@ fn destructive_verbs() -> Vec<String> {
 // The score. `reference/AUDIO.md` §8's design, one rule per test.
 // ---------------------------------------------------------------------------
 
-/// Drive a director for `secs` at 60 Hz and return every piece it started,
+/// Drive a director for `secs` at 60 Hz and return every track it started,
 /// with the second it started at. A whole session's music in a few thousand
 /// float adds — the reason `sound::music` is pure.
-fn run(d: &mut Director, secs: f32) -> Vec<(f32, Piece)> {
+fn run(d: &mut Director, secs: f32) -> Vec<(f32, Track)> {
     let dt = 1.0 / 60.0;
     let mut out = Vec::new();
-    let mut t = 0.0;
-    while t < secs {
+    // Counted in frames, not summed in f32: six hours of sixtieths summed in
+    // f32 drifts by seconds.
+    let frames = (secs as f64 * 60.0).ceil() as u64;
+    for i in 0..frames {
         if let Some(p) = d.tick(dt) {
-            out.push((t, p));
+            out.push(((i as f64 / 60.0) as f32, p));
         }
-        t += dt;
     }
     out
 }
 
+/// **A session opens on the intro**, in a world as on the menu.
+#[test]
+fn a_session_opens_on_the_intro() {
+    for mode in [Mode::World, Mode::Menu] {
+        let mut d = Director::new(mode);
+        let played = run(&mut d, 1.0);
+        assert_eq!(played.len(), 1, "{mode:?}: {played:?}");
+        assert_eq!(played[0].1, music::INTRO);
+        assert!(played[0].0 < 0.1, "{mode:?}: the intro waited");
+    }
+}
+
 /// **Music is not continuous, and this is the whole point of the system.**
-/// The reference's `music.songgapmin` / `songgapmax` are 240 and 480 seconds;
-/// a director that played back to back would be a soundtrack, which is the
-/// thing §8 says it deliberately is not.
+/// The reference's `music.songgapmin` / `songgapmax` are 240 and 480 seconds,
+/// measured from the end of one song to the start of the next.
 #[test]
 fn songs_are_separated_by_minutes_of_silence() {
     let mut d = Director::new(Mode::World);
-    let played = run(&mut d, 3_600.0);
-    assert!(
-        played.len() > 8,
-        "only {} pieces in an hour - the director stalled",
-        played.len()
-    );
-    // Every gap between two consecutive pieces is either a section boundary
-    // or a real gap; there is nothing in between.
-    let mut gaps = 0;
+    let played = run(&mut d, 6.0 * 3600.0);
+    assert!(played.len() > 10, "{} songs in six hours", played.len());
     for w in played.windows(2) {
-        let d_s = w[1].0 - w[0].0;
-        if d_s < music::SECTION_S * 1.5 {
-            continue;
-        }
-        gaps += 1;
-        // The gap is measured from the END of the last piece's body, so the
-        // interval between two STARTS is one section longer.
-        let gap = d_s - music::SECTION_S;
+        let (t0, a) = w[0];
+        let (t1, _) = w[1];
+        let gap = t1 - t0 - a.len_s();
         assert!(
             (music::SONG_GAP_MIN_S - 1.0..=music::SONG_GAP_MAX_S + 1.0).contains(&gap),
-            "a gap of {gap:.0}s is outside the reference's {}..{}",
+            "{gap:.1}s of silence after {a:?}, outside {}..{}",
             music::SONG_GAP_MIN_S,
             music::SONG_GAP_MAX_S
         );
     }
-    assert!(gaps >= 3, "only {gaps} gaps in an hour");
 }
 
-/// The first song is the one departure, and it is a knob rather than an
-/// accident: at the reference's own gap a player who joins for three minutes
-/// hears no music at all, including the operator on the pass that decides
-/// whether it is any good.
+/// After the intro a world plays its own tracks, never the same one twice
+/// running and never the intro again.
 #[test]
-fn the_first_song_does_not_wait_four_minutes() {
+fn a_world_rotates_its_tracks() {
     let mut d = Director::new(Mode::World);
-    let played = run(&mut d, music::FIRST_GAP_S + 1.0);
-    assert_eq!(played.len(), 1, "the first song did not open on time");
-    assert!((played[0].0 - music::FIRST_GAP_S).abs() < 0.1);
-}
-
-/// A song walks the theme's sections **in order**, wrapping, and a new song
-/// starts at the top of the theme. That is what makes several pieces a song
-/// rather than several stings — and it is why `SONG_SECTIONS_MIN` is four:
-/// A-B-C-A is the shortest walk that has come round.
-#[test]
-fn a_song_walks_the_theme_in_order() {
-    // A WORLD director, because its gaps are what delimit one song from the
-    // next — on the menus a song runs straight into the one after it and
-    // "where did this song end" has no observable answer.
-    let mut d = Director::new(Mode::World);
-    let played = run(&mut d, 7_200.0);
-    let mut songs: Vec<Vec<usize>> = vec![vec![]];
-    let mut last = 0.0f32;
-    for (t, p) in &played {
-        if !songs.last().unwrap().is_empty() && t - last > music::SECTION_S * 1.5 {
-            songs.push(vec![]);
-        }
-        songs.last_mut().unwrap().push(p.section);
-        last = *t;
-    }
-    assert!(songs.len() >= 8, "only {} songs in two hours", songs.len());
-    // The last one is still running when the clock stops.
-    songs.pop();
-    for song in &songs {
-        assert!(
-            song.len() >= music::SONG_SECTIONS_MIN as usize
-                && song.len() <= music::SONG_SECTIONS_MAX as usize,
-            "a song of {} sections: {song:?}",
-            song.len()
-        );
-        for (i, s) in song.iter().enumerate() {
-            assert_eq!(
-                *s,
-                i % music::SECTIONS,
-                "the theme is out of order: {song:?}"
-            );
-        }
+    let played = run(&mut d, 12.0 * 3600.0);
+    assert_eq!(played[0].1, music::INTRO);
+    let rest: Vec<Track> = played[1..].iter().map(|p| p.1).collect();
+    assert!(rest.iter().all(|t| music::WORLD.contains(t)), "{rest:?}");
+    assert!(rest.windows(2).all(|w| w[0] != w[1]), "a repeat: {rest:?}");
+    for t in music::WORLD {
+        assert!(rest.contains(&t), "{t:?} never played in twelve hours");
     }
 }
 
-/// On the menus there is no gap and nothing to be tense about.
+/// **The menu loops the intro**, with no gap, and nothing on it is tense.
 #[test]
-fn the_menu_plays_continuously_and_calm() {
+fn the_menu_loops_the_intro() {
     let mut d = Director::new(Mode::Menu);
-    let played = run(&mut d, 600.0);
-    for w in played.windows(2) {
-        let gap = w[1].0 - w[0].0;
+    d.bump(1.0);
+    assert_eq!(d.intensity(), 0.0, "the menu took a bump");
+    let played = run(&mut d, music::INTRO.len_s() * 3.0 + 1.0);
+    assert_eq!(played.len(), 4, "{played:?}");
+    for (i, (t, track)) in played.iter().enumerate() {
+        assert_eq!(*track, music::INTRO);
+        let want = i as f32 * music::INTRO.len_s();
         assert!(
-            (gap - music::SECTION_S).abs() < 0.1,
-            "a {gap:.1}s gap on the menu - it is supposed to be continuous"
+            (t - want).abs() < 0.1,
+            "loop {i} at {t:.2}s, not {want:.2}s"
         );
     }
-    // 600 s of menu at one piece per section.
-    assert!(played.len() > 70, "only {} pieces", played.len());
 }
 
-/// **Taking damage is the biggest bump and a swing is the smallest** — the
-/// reference's published order, which is the part of §8 that is a design
-/// rather than a number.
+/// **The intro carries across a join**: entering a world while it plays
+/// lets it finish, and the gap is measured from its end.
+#[test]
+fn the_intro_plays_on_into_a_world() {
+    let mut d = Director::new(Mode::Menu);
+    run(&mut d, 60.0);
+    d.reset(Mode::World);
+    assert_eq!(d.playing(), Some(music::INTRO), "joining cut the intro");
+    let played = run(&mut d, 1200.0);
+    let (t, track) = played[0];
+    assert!(music::WORLD.contains(&track));
+    let gap = t - (music::INTRO.len_s() - 60.0);
+    assert!(
+        (music::SONG_GAP_MIN_S - 1.0..=music::SONG_GAP_MAX_S + 1.0).contains(&gap),
+        "the first world song came {gap:.1}s after the intro ended"
+    );
+}
+
+/// **Leaving a world asks for the intro at once**, whatever was playing.
+#[test]
+fn the_menu_replaces_a_world_song() {
+    let mut d = Director::new(Mode::World);
+    let played = run(&mut d, 3600.0);
+    assert!(played.len() >= 2);
+    // Find a moment a world track is playing.
+    let mut t = 0.0;
+    while !d.playing().is_some_and(|p| p != music::INTRO) && t < 7200.0 {
+        d.tick(1.0);
+        t += 1.0;
+    }
+    assert!(d.playing().is_some_and(|p| music::WORLD.contains(&p)));
+    d.reset(Mode::Menu);
+    assert_eq!(d.tick(1.0 / 60.0), Some(music::INTRO));
+}
+
+/// A page that started the intro before the game existed is taken over, not
+/// restarted.
+#[test]
+fn an_adopted_intro_is_not_started_again() {
+    let mut d = Director::new(Mode::World);
+    d.adopt(music::INTRO, 100.0);
+    let played = run(&mut d, music::INTRO.len_s() - 101.0);
+    assert!(played.is_empty(), "{played:?}");
+    assert_eq!(d.playing(), Some(music::INTRO));
+    run(&mut d, 2.0);
+    assert_eq!(d.playing(), None, "the adopted intro never ended");
+}
+
 #[test]
 fn the_bumps_are_ordered_as_the_reference_orders_them() {
     const { assert!(music::BUMP_SWING < music::BUMP_HIT) };
     const { assert!(music::BUMP_HIT < music::BUMP_HURT) };
-    // A single swing must not reach a tier: a player chopping wood is not in
-    // a fight, and the small bump's whole job is to be small.
+    assert_eq!(Tier::of(0.0), Tier::Calm);
     assert_eq!(Tier::of(music::BUMP_SWING), Tier::Calm);
-    // Two of the biggest, inside two sections, is the top tier. That is what
-    // makes the tier reachable at all — a threshold nothing can cross is a
-    // clip that never plays.
+    assert_eq!(Tier::of(music::BUMP_HURT), Tier::Tense);
     assert_eq!(Tier::of(music::BUMP_HURT * 2.0), Tier::Combat);
 }
 
-/// **The intensity is read at a section boundary and nowhere else.** This is
-/// the mechanism §8 calls the good one: bumps land whenever they land, and
-/// the music changes only where a change can sound like a change.
+/// **A song never opens in the middle of a fight.** The gap ends, the
+/// intensity reads combat, and the song waits until it has decayed.
 #[test]
-fn intensity_moves_the_music_only_at_a_boundary() {
-    let mut d = Director::new(Mode::Menu);
-    // One tick to open the first piece, which is calm.
-    let first = d.tick(0.001).expect("the menu opens immediately");
-    assert_eq!(first.tier, Tier::Calm);
-
-    // Get hurt twice, mid-section. Nothing may start.
-    d.tick(1.0);
-    d.bump(music::BUMP_HURT);
-    d.bump(music::BUMP_HURT);
-    assert_eq!(d.tier(), Tier::Combat, "the bumps did not land");
-    for _ in 0..100 {
-        assert!(
-            d.tick(1.0 / 60.0).is_none(),
-            "a piece started mid-section - the music lurched"
-        );
-    }
-    // The boundary is where it shows up.
-    let next = run(&mut d, music::SECTION_S);
-    assert_eq!(next.len(), 1);
-    assert_eq!(
-        next[0].1.tier,
-        Tier::Combat,
-        "the boundary did not read the intensity"
-    );
-}
-
-/// **If nothing happens during a section, the intensity falls at the end of
-/// it** — a musical boundary, not a timer. And it decays in the gap too, on
-/// the same cadence: a fight during four minutes of silence must not open the
-/// next song in combat.
-#[test]
-fn intensity_decays_at_boundaries_and_in_the_gap() {
-    let mut d = Director::new(Mode::Menu);
-    d.tick(0.001);
-    d.bump(music::BUMP_HURT);
-    d.bump(music::BUMP_HURT);
-    let hot = d.intensity();
-    // **The section the bumps landed in does not decay** — that is the rule,
-    // and it is the first boundary this crosses. The second one is quiet, and
-    // it must fall by exactly one step rather than by a per-frame fraction of
-    // one.
-    run(&mut d, music::SECTION_S + 0.1);
-    assert_eq!(
-        d.intensity(),
-        hot,
-        "the section the damage landed in decayed anyway"
-    );
-    run(&mut d, music::SECTION_S);
-    let after = d.intensity();
-    assert!(
-        (hot - after - music::SECTION_DECAY).abs() < 1e-3,
-        "one quiet section took {hot} to {after} - not one decay step"
-    );
-    // Bumping keeps it up: a section in which something happened does not
-    // decay, however long it is.
-    let held = d.intensity();
-    for _ in 0..(60.0 * music::SECTION_S) as u32 {
-        d.tick(1.0 / 60.0);
-        d.bump(0.0001);
-    }
-    assert!(
-        d.intensity() >= held,
-        "a section with events in it decayed anyway"
-    );
-
-    // And in the gap, where there is no section playing at all.
-    let mut w = Director::new(Mode::World);
-    w.bump(music::BUMP_HURT);
-    run(&mut w, music::SECTION_S * 3.0);
-    assert_eq!(w.intensity(), 0.0, "intensity survived the silence");
-}
-
-/// A director in a gap is not playing a song, and one that just started a
-/// song is. The flag the render layer reads has to mean what it says.
-#[test]
-fn the_gap_and_the_song_are_distinguishable() {
+fn a_song_waits_out_a_fight() {
     let mut d = Director::new(Mode::World);
-    assert!(!d.in_song(), "a fresh world director is mid-song");
-    run(&mut d, music::FIRST_GAP_S + 0.1);
-    assert!(d.in_song(), "the first song did not start");
-}
-
-/// Leaving a world starts the director over, and the mode is what makes the
-/// menus continuous. The random stream must NOT reset with it — every world
-/// in a session drawing the identical gap sequence is the one thing this
-/// determinism is not for.
-#[test]
-fn a_reset_changes_the_mode_and_keeps_the_stream() {
-    let mut a = Director::new(Mode::World);
-    let first = run(&mut a, 1_200.0);
-    a.reset(Mode::World);
-    let second = run(&mut a, 1_200.0);
-    let starts = |v: &[(f32, Piece)]| v.iter().map(|(t, _)| *t).collect::<Vec<_>>();
-    assert_ne!(
-        starts(&first),
-        starts(&second),
-        "two worlds in one session drew the same gaps"
-    );
-
-    // And the mode takes effect immediately.
-    let mut m = Director::new(Mode::World);
-    m.reset(Mode::Menu);
-    assert!(m.tick(0.001).is_some(), "the menu did not open on music");
-}
-
-/// At most one piece per call, which is what lets the render layer spawn
-/// without a loop and what exempts the music from
-/// `stackable_cues_carry_a_cooldown`.
-#[test]
-fn a_tick_starts_at_most_one_piece() {
-    let mut d = Director::new(Mode::Menu);
-    // A ten-minute frame. Absurd, and the point: no `dt` may produce two.
-    assert!(d.tick(600.0).is_some());
-    assert!(d.tick(600.0).is_some());
-}
-
-/// The table is the only place the mapping lives, and `piece_of` is the only
-/// reader — so the two cannot drift, and `Cue::is_music` cannot be a
-/// remembered list.
-#[test]
-fn every_piece_is_findable_and_only_pieces_are_music() {
-    let mut seen = 0;
-    for cue in Cue::ALL {
-        if !cue.is_music() {
-            continue;
+    run(&mut d, 1.0);
+    // Run out the intro and most of the gap.
+    let to_gap_end = music::INTRO.len_s() + music::SONG_GAP_MAX_S + 1.0;
+    let dt = 1.0 / 60.0;
+    let mut t = 0.0;
+    let mut started = None;
+    while t < to_gap_end + 60.0 && started.is_none() {
+        if t > music::INTRO.len_s() + music::SONG_GAP_MIN_S - 5.0 && t < to_gap_end {
+            d.bump(music::BUMP_HURT);
         }
-        seen += 1;
-        let (s, t) = music::piece_of(cue).expect("is_music but not in PIECES");
-        assert_eq!(music::PIECES[s][t.idx()], cue);
-        assert_eq!(cue.def().bus, Bus::Music, "{cue:?} is not on the music bus");
-        assert!(!cue.def().positional, "{cue:?} is somewhere - music is not");
+        if let Some(track) = d.tick(dt) {
+            started = Some((t, track, d.intensity()));
+        }
+        t += dt;
     }
-    assert_eq!(
-        seen,
-        music::SECTIONS * music::TIERS,
-        "the enum and the table disagree about how many pieces there are"
+    let (at, _, intensity) = started.expect("the song never started after the fight");
+    assert!(at >= to_gap_end, "a song opened at {at:.1}s, mid-fight");
+    assert!(
+        intensity < music::COMBAT_AT,
+        "opened at intensity {intensity}"
     );
-    // And nothing else may claim to be music.
-    assert!(!Cue::BedWind.is_music());
-    assert!(!Cue::Swing.is_music());
 }
 
-/// **The mixer never starts a piece.** It would be scored against
-/// `STARTS_PER_FRAME` and `VOICE_CAP`, so a busy frame could refuse the score
-/// — or the score could refuse an axe.
+/// **A song that opens tense is the tense track.**
 #[test]
-fn the_mixer_refuses_a_piece_of_music() {
-    let mut m = Mixer::new();
-    for cue in Cue::ALL.iter().filter(|c| c.is_music()) {
-        m.push(Request::own(*cue));
+fn a_tense_song_is_the_tense_track() {
+    let mut d = Director::new(Mode::World);
+    run(&mut d, music::INTRO.len_s() + 1.0);
+    let mut t = 0.0;
+    let dt = 1.0 / 60.0;
+    let started = loop {
+        // Keep it tense, never combat.
+        if d.intensity() < music::TENSE_AT + 0.05 {
+            d.bump(music::BUMP_HIT);
+        }
+        if let Some(track) = d.tick(dt) {
+            break track;
+        }
+        t += dt;
+        assert!(t < 1000.0, "no song");
+    };
+    assert_eq!(started, music::TENSE_TRACK);
+}
+
+/// **Intensity falls only when nothing happened**, on its own clock, and in
+/// the gap too.
+#[test]
+fn intensity_decays_when_nothing_happens() {
+    let mut d = Director::new(Mode::World);
+    d.bump(music::BUMP_HURT);
+    let start = d.intensity();
+    run(&mut d, music::DECAY_S * 0.5);
+    assert_eq!(d.intensity(), start, "fell inside its first period");
+    run(&mut d, music::DECAY_S * 4.0);
+    assert_eq!(d.intensity(), 0.0, "never decayed to calm");
+}
+
+/// **The track table is the files.** Each `len_s` is read off the shipped
+/// Ogg's last granule, so a re-encode that changed a length fails here
+/// rather than cutting a song short or leaving a dead gap.
+#[test]
+fn the_track_table_is_the_files() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    for t in Track::ALL {
+        let path = root.join(t.file());
+        let b = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let at = b
+            .windows(4)
+            .rposition(|w| w == b"OggS")
+            .expect("not an Ogg file");
+        let granule = u64::from_le_bytes(b[at + 6..at + 14].try_into().unwrap());
+        assert_eq!(
+            granule,
+            t.samples(),
+            "{t:?}'s table length is not its file's"
+        );
+        assert_eq!(Track::of_file(t.file()), Some(t));
     }
-    let starts = m.tick(16.0, AT_ORIGIN, 0, &Mix::default());
-    assert!(starts.is_empty(), "the mixer started a piece of music");
-    assert_eq!(m.dropped, (music::SECTIONS * music::TIERS) as u32);
 }
 
 /// **The music bus opens at a fifth, and that is the reference's number.**
@@ -2185,63 +2115,6 @@ fn the_music_bus_opens_where_the_reference_opens_it() {
         mix.bus_gain(Bus::Music) < mix.bus_gain(Bus::Game),
         "music is not under the game bus"
     );
-}
-
-/// **Every piece is `SECTION_S` of body and `TAIL_S` of ring-out**, and the
-/// ring-out is not decoration: it is what lets the director cut from any
-/// piece to any other without stopping playback and without fading
-/// (`reference/AUDIO.md` §8). A piece whose length drifted from the table
-/// would have the next one starting over its body.
-#[test]
-fn a_piece_is_a_body_and_a_tail() {
-    let body = (music::SECTION_S * SAMPLE_RATE as f32) as usize;
-    for cue in Cue::ALL.iter().filter(|c| c.is_music()) {
-        let s = pcm(&synth::wav(*cue));
-        let secs = s.len() as f32 / SAMPLE_RATE as f32;
-        assert!(
-            (secs - music::PIECE_S).abs() < 0.05,
-            "{cue:?} is {secs:.2}s, not {:.2}",
-            music::PIECE_S
-        );
-        // The tail must be quieter than the body — it is a decay, not more
-        // music — and it must not be silence, or there is nothing covering
-        // the join.
-        let tail = rms(&s[body..]);
-        let mid = rms(&s[body / 4..body]);
-        assert!(
-            tail < mid * 0.6,
-            "{cue:?}'s tail ({tail:.3}) is as loud as its body ({mid:.3}) - it is not a tail"
-        );
-        assert!(
-            tail > 0.002,
-            "{cue:?} has no tail ({tail:.4}) - a cut to the next piece would be audible"
-        );
-    }
-}
-
-/// The tiers have to be **audibly** ordered or the whole intensity system is
-/// a table nobody can hear.
-///
-/// Measured on the body rather than the tail, and **through the cue's gain**,
-/// because that is what reaches the mixer: `synth::PEAK` normalizes every cue
-/// in the bank to one peak, so the waveforms alone say nothing about level and
-/// a test that read them would be measuring crest factor — under which a
-/// sustained calm pad scores *above* a transient-heavy combat piece. The level
-/// is the table's (`M_CALM` / `M_TENSE` / `M_COMBAT`), which is the module's
-/// own law, and this is the gate on it.
-#[test]
-fn the_tiers_get_louder_as_they_climb() {
-    let body = (music::SECTION_S * SAMPLE_RATE as f32) as usize;
-    for (s, row) in music::PIECES.iter().enumerate() {
-        let e: Vec<f32> = row
-            .iter()
-            .map(|c| rms(&pcm(&synth::wav(*c))[..body]) * c.def().gain)
-            .collect();
-        assert!(
-            e[1] > e[0] * 1.1 && e[2] > e[1] * 1.1,
-            "section {s} is not audibly ordered by intensity: {e:?}"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2714,10 +2587,7 @@ fn the_wolf_registers_are_a_table_pair() {
             cue.pitch_var() > 0.0,
             "{cue:?} must vary - a pack in unison is one wolf"
         );
-        assert!(
-            !cue.is_bed() && !cue.is_music(),
-            "{cue:?} is not a one-shot"
-        );
+        assert!(!cue.is_bed(), "{cue:?} is not a one-shot");
         assert!(
             d.radius_m > 0.0 && d.radius_m <= MAX_AUDIBLE_M,
             "{cue:?} carries {} m",
@@ -3415,30 +3285,6 @@ fn every_cue_is_a_recording() {
         if sound_bank::whole(cue) {
             assert_eq!(takes, 1, "{cue:?} is a whole file, not takes");
         }
-    }
-}
-
-/// The recorded score is on the director's grid: each piece decodes to
-/// `music::PIECE_S` (a piece that drifted would start its successor over its
-/// body), its tail is quieter than its body, and the tail is not silence.
-#[test]
-fn the_recorded_pieces_are_on_the_grid() {
-    use client::sound_bank;
-    let want = (music::PIECE_S * SAMPLE_RATE as f32).round() as usize;
-    let body = (music::SECTION_S * SAMPLE_RATE as f32) as usize;
-    for cue in Cue::ALL.iter().filter(|c| c.is_music()) {
-        let (pcm, _) = sound_bank::recording(*cue).expect("a recorded piece");
-        assert!(
-            pcm.len().abs_diff(want) <= 64,
-            "{cue:?} is {} samples, not {want}",
-            pcm.len()
-        );
-        let s: Vec<f32> = pcm.iter().map(|v| *v as f32 / i16::MAX as f32).collect();
-        let tail = rms(&s[body..]);
-        let mid = rms(&s[body / 4..body]);
-        assert!(tail < mid * 0.6, "{cue:?}'s tail is as loud as its body");
-        assert!(tail > 0.002, "{cue:?} has no tail ({tail:.4})");
-        assert!(s[0].abs() < 0.05, "{cue:?} starts on a click");
     }
 }
 

@@ -942,6 +942,61 @@ async function openAudio() {
   }
 }
 
+/* ── the score, started inside the gesture ─────────────────────────────────
+   The music is whole tracks, four to five minutes each, streamed by the
+   browser's own `<audio>` element from `assets/music/` rather than decoded
+   into the game's memory (`crates/sound/src/music.rs`). The intro starts HERE,
+   inside the PLAY or WATCH press, because a page may only start sound inside
+   a gesture — so it plays through the download, the join and the loading
+   screen. `render/audio_web.rs` takes it over when the game boots: it reads
+   `track` and `time()` to know how far in it is, and from then on calls
+   `play`, `stop` and `gain`. Volume is the element's own (`volume`, linear):
+   the game sends the level every frame, fades included. Never fatal: a
+   browser that cannot play Ogg Vorbis plays the game without music. */
+const INTRO = "music/safe_zone.ogg";
+const MUSIC_DEFAULT = 0.2;   /* `sound::MUSIC_DEFAULT`, until the game sends its own */
+let music = null;
+function startMusic() {
+  if (music) return music;
+  const el = new Audio();
+  el.preload = "auto";
+  el.volume = MUSIC_DEFAULT;
+  const canOgg = el.canPlayType('audio/ogg; codecs="vorbis"') !== "";
+  if (!canOgg) console.warn("gates music: this browser cannot play Ogg Vorbis; no score");
+  let blocked = false;
+  const kick = () => {
+    const p = el.play();
+    if (p && p.catch) p.catch(() => { blocked = true; });
+  };
+  /* A play refused for want of a gesture is retried on the next one. */
+  const retry = () => { if (blocked && music.track) { blocked = false; kick(); } };
+  addEventListener("pointerdown", retry, { passive: true });
+  addEventListener("keydown", retry, { passive: true });
+  music = {
+    track: null,
+    play(file) {
+      if (!canOgg) return;
+      music.track = file;
+      el.src = "assets/" + file;
+      kick();
+    },
+    stop() {
+      music.track = null;
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
+    },
+    gain(g) {
+      el.volume = Math.min(1, Math.max(0, Number(g) || 0));
+    },
+    time() { return music.track ? el.currentTime || 0 : 0; },
+  };
+  el.addEventListener("ended", () => { music.track = null; });
+  globalThis.gatesMusic = music;
+  music.play(INTRO);
+  return music;
+}
+
 /* ── PLAY and WATCH ────────────────────────────────────────────────────────
    One button each, and each draws its own state: how far the download is,
    who it will sign in as, and what it is waiting on once pressed. */
@@ -1096,6 +1151,7 @@ async function play({ guest = false } = {}) {
   if (dl.failed) { location.reload(); return; }
   if (staleFor(current())) { freshReload(current()); return; }
   const audio = startAudio();   /* synchronously inside the press */
+  startMusic();
   let identity = guest ? null : address;
   if (!identity && !guest && wallet.has()) {
     busy = { label: "Signing in", sub: "check your wallet" };
@@ -1117,6 +1173,7 @@ async function watch() {
   if (dl.failed) { location.reload(); return; }
   if (staleFor(current())) { freshReload(current()); return; }
   const audio = startAudio();
+  startMusic();
   if (!glue) {
     busy = { label: "Watch", sub: "starting when the download finishes" };
     paintGo();

@@ -25,11 +25,10 @@
 //!   occlusion or reverb. [`Bus`] is that, at the size ours can be honest
 //!   about: three groups, mirroring `audio.game`, `audio.ambience` and
 //!   `audio.musicvolume`.
-//! - **Music is a gap-and-intensity system, not a soundtrack.** Four to eight
-//!   minutes of silence between songs; a theme divided into sections; each
-//!   section holding clips of differing intensity; the tier read only at a
-//!   section boundary so the music never lurches. [`music`] is that design,
-//!   whole, and the pieces are cues like everything else here.
+//! - **Music is a gap system, not a soundtrack.** Four to eight minutes of
+//!   silence between songs, the intensity read so a song never opens in the
+//!   middle of a fight. [`music`] is that director; the songs are whole
+//!   recorded tracks streamed beside the engine, not cues.
 //! - **Occlusion is a knob and it shipped OFF.** The reference gated its first
 //!   pass behind `audio.occlusion` for a week, and a later build was still
 //!   fixing excess DSP from it on surround setups. There is no occlusion in
@@ -167,27 +166,6 @@ pub enum Cue {
     /// A bird, somewhere in the trees. `sound::birds` is the cadence; the
     /// perch is a drawn prop, so the layer cannot call from an empty sky.
     Bird,
-    /// The nine music pieces: three sections of the theme, three intensity
-    /// clips each (`sound::music::PIECES` is the table, and it is the only
-    /// place the mapping is written). They are cues so that they get the one
-    /// bank, the one gain table, the one WAV dump and the whole of
-    /// `tests/sound.rs`'s structural gates for free — and, like the beds,
-    /// the mixer refuses to start one ([`Cue::is_music`]): music must not
-    /// compete with an axe for a voice out of `VOICE_CAP`.
-    ///
-    /// Appended after the remote steps — the enum's append-order rule, which
-    /// is not cosmetic: every cue's noise is seeded off its own discriminant
-    /// (`synth::render`), so inserting mid-enum regenerates waveforms that
-    /// have nothing to do with the change.
-    MusicOpenCalm,
-    MusicOpenTense,
-    MusicOpenCombat,
-    MusicTurnCalm,
-    MusicTurnTense,
-    MusicTurnCombat,
-    MusicCloseCalm,
-    MusicCloseTense,
-    MusicCloseCombat,
     /// The wolf's far voice: a contact call, heard from further than any
     /// other diegetic cue but the falling tree. Appended after the score —
     /// the enum's append-order rule, for the reason `Snort` states.
@@ -401,7 +379,7 @@ pub enum Cue {
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 95;
+pub const CUE_COUNT: usize = 86;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -439,15 +417,6 @@ impl Cue {
         Cue::RemoteStepRock,
         Cue::RemoteStepWater,
         Cue::Bird,
-        Cue::MusicOpenCalm,
-        Cue::MusicOpenTense,
-        Cue::MusicOpenCombat,
-        Cue::MusicTurnCalm,
-        Cue::MusicTurnTense,
-        Cue::MusicTurnCombat,
-        Cue::MusicCloseCalm,
-        Cue::MusicCloseTense,
-        Cue::MusicCloseCombat,
         Cue::Howl,
         Cue::Growl,
         Cue::RemoteSwing,
@@ -507,22 +476,11 @@ impl Cue {
         Cue::HurtAgain,
     ];
 
-    /// Is this cue a piece of music?
-    ///
-    /// The same rule [`Cue::is_bed`] states, for the same reason and one
-    /// system over: the mixer refuses to start one ([`mixer::Mixer::push`]),
-    /// because `render/audio.rs`'s music systems own exactly one voice at a
-    /// time and a second copy started as a one-shot would play the same
-    /// phrase over itself. Derived from `music::piece_of` rather than from a
-    /// remembered list, so a tenth piece cannot be forgotten from it.
-    pub fn is_music(self) -> bool {
-        music::piece_of(self).is_some()
-    }
-
-    /// May the mixer start this cue? False for the beds and the music, which
-    /// are voices the render layer holds rather than events it fires.
+    /// May the mixer start this cue? False for the beds, which are voices
+    /// the render layer holds rather than events it fires. (The score is not
+    /// a cue at all: whole tracks streamed beside the engine, `sound::music`.)
     pub fn mixer_started(self) -> bool {
-        !self.is_bed() && !self.is_music()
+        !self.is_bed()
     }
 
     /// Is this cue a looping bed?
@@ -701,27 +659,6 @@ impl Cue {
             | Cue::BedRotor
             | Cue::BedTown
             | Cue::BedNight => 0.0,
-            // **Zero, and it is not the signal-cue argument.** A piece played
-            // at 1.03× is a piece in a different key, and the next piece
-            // would be in a third — the tail that covers a join would be
-            // covering a modulation. Music is the one family where varying
-            // the rate is not variation, it is being out of tune.
-            //
-            // Spelled out rather than caught by a `_` arm: this match is
-            // exhaustive on purpose, so that adding a cue is a compile error
-            // until somebody decides what it should do. `CLAUDE.md`'s
-            // feature-gated-`match` trap is the same lesson from the other
-            // side — an arm you did not have to write is a decision you did
-            // not have to make.
-            Cue::MusicOpenCalm
-            | Cue::MusicOpenTense
-            | Cue::MusicOpenCombat
-            | Cue::MusicTurnCalm
-            | Cue::MusicTurnTense
-            | Cue::MusicTurnCombat
-            | Cue::MusicCloseCalm
-            | Cue::MusicCloseTense
-            | Cue::MusicCloseCombat => 0.0,
         }
     }
 }
@@ -858,22 +795,6 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // it is the whole flock's stagger, not one bird's, which is what
     // `sound::birds` already spaces.
     row(AMB,   44.0, 0.30, 700, 1, true),  // bird
-    // The nine music pieces: three sections down, three intensity tiers
-    // across. Non-positional (music is not anywhere), radius 0 (never culled
-    // — see `positional`), no cooldown and priority 0 because the mixer never
-    // starts one at all (`Cue::is_music`).
-    //
-    // **The tiers differ in GAIN and the sections do not**, which is this
-    // table's own law rather than a taste call: `synth::PEAK` normalizes every
-    // cue in the bank to one peak precisely so that `CueDef::gain` is the only
-    // thing deciding relative loudness — and that erases the level a denser
-    // arrangement would otherwise have had. A tier a player cannot hear
-    // arriving is a table nobody can hear, so the step back is taken here,
-    // where every other level in the client lives, instead of in the
-    // generator where the normalizer would eat it.
-    M_CALM, M_TENSE, M_COMBAT,
-    M_CALM, M_TENSE, M_COMBAT,
-    M_CALM, M_TENSE, M_COMBAT,
     // The wolf, in two registers (`sound::voice`). Both GAME rather than
     // AMBIENCE for the pig's reason: an animal is a thing in the world, not
     // scenery, and a player who turns the bed down must not turn the
@@ -1110,29 +1031,6 @@ const RSTEP: CueDef = CueDef {
     priority: 2,
     positional: true,
 };
-
-/// A music piece at intensity `gain`. The three tiers are the only thing that
-/// separates the nine rows — see [`CUES`].
-///
-/// The steps are ~5 dB and ~2 dB (`DECISIONS.md` §open, "music v0"), sized so
-/// that each tier is audibly above the one below it *after* the bank's peak
-/// normalization has flattened them, and so the top tier is the one that runs
-/// at the bus's full level rather than the middle one having headroom above
-/// it.
-const fn music_row(gain: f32) -> CueDef {
-    CueDef {
-        bus: Bus::Music,
-        radius_m: 0.0,
-        gain,
-        cooldown_ms: 0,
-        priority: 0,
-        positional: false,
-    }
-}
-
-const M_CALM: CueDef = music_row(0.55);
-const M_TENSE: CueDef = music_row(0.78);
-const M_COMBAT: CueDef = music_row(1.0);
 
 /// The furthest any cue carries, metres — the table's own ceiling, asserted
 /// against [`CUES`] in `tests/sound.rs`: the cull, the AOI arithmetic and the

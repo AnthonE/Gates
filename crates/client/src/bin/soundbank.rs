@@ -1,4 +1,5 @@
-//! Write the generated sound bank to a directory, so somebody can listen to it.
+//! Write the sound bank to a directory, so somebody can listen to it — every
+//! cue's takes as WAVs, and the score's tracks as they ship.
 //!
 //! ```text
 //! cargo run -p client --bin soundbank -- /tmp/bank
@@ -61,4 +62,17 @@ fn main() {
         total / 1024,
         client::sound::SAMPLE_RATE
     );
+    // The score is not in the bank (`sound::music` streams whole tracks), so
+    // its files are copied beside it as they ship: `music_<name>.ogg`, what
+    // `ci/film/*.json` cut trailers from.
+    let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+    for track in client::sound::music::Track::ALL {
+        let from = assets.join(track.file());
+        let name = from.file_name().map(|n| n.to_string_lossy().into_owned());
+        let to = dir.join(format!("music_{}", name.unwrap_or_default()));
+        match std::fs::copy(&from, &to) {
+            Ok(_) => println!("{:>6.1}s  {}", track.len_s(), to.display()),
+            Err(e) => eprintln!("soundbank: cannot copy {}: {e}", from.display()),
+        }
+    }
 }

@@ -17,8 +17,8 @@ PIL in the game's own face (Roboto Condensed), since ads mostly play muted.
                  "game": 0.8, "fade": 0.5}],
       "captions": [{"at": 0.6, "len": 2.4, "text": "WAKE WITH NOTHING",
                     "size": 0.07, "y": 0.78}],
-      "music": [{"src": "29_MusicOpenCalm.wav", "at": 0, "gain": 0.9}],
-      "sfx": [{"src": "54_Blast_0.wav", "at": 12.3, "gain": 1.0}],
+      "music": [{"src": "music_safe_zone.ogg", "at": 0, "in": 100, "gain": 0.9}],
+      "sfx": [{"src": "45_Blast_0.wav", "at": 12.3, "gain": 1.0}],
       "card": {"len": 4, "shot": "beach", "at": 2.0,
                "title": "GATES", "lines": ["...", "..."]}
     }

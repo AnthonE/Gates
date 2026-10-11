@@ -465,14 +465,14 @@ fn a_play_onto_a_busy_slot_cuts_what_was_there_and_counts_it() {
     let mut out = block();
     r.push(Cmd::Play {
         slot: 3,
-        cue: Cue::MusicOpenCalm,
+        cue: Cue::Howl,
         gain: 1.0,
     });
     r.render(&mut out);
     assert_eq!(r.cut, 0);
     r.push(Cmd::Play {
         slot: 3,
-        cue: Cue::MusicTurnTense,
+        cue: Cue::Thunder,
         gain: 1.0,
     });
     r.render(&mut out);
@@ -490,14 +490,14 @@ fn a_play_onto_a_busy_slot_cuts_what_was_there_and_counts_it() {
     r.push(Cmd::Stop { slot: 3 });
     r.push(Cmd::Play {
         slot: 3,
-        cue: Cue::MusicCloseCalm,
+        cue: Cue::Growl,
         gain: 1.0,
     });
     r.render(&mut out);
     assert_eq!(r.cut, 2, "a Play onto a stopped slot cuts nothing");
     // The piece that replaced the first starts from ITS sample 0, so the
     // first output sample is that piece's first sample and not a leftover.
-    let want = pcm(Cue::MusicCloseCalm)[0] as f32 * (1.0 / 32768.0);
+    let want = pcm(Cue::Growl)[0] as f32 * (1.0 / 32768.0);
     assert_eq!(
         out[0].to_bits(),
         want.to_bits(),
@@ -522,7 +522,7 @@ fn malformed_commands_are_refused_and_counted() {
     r.apply(start(Cue::Swing, f32::NAN, 1.0, 1.0));
     r.apply(Cmd::Play {
         slot: 0,
-        cue: Cue::MusicOpenCalm,
+        cue: Cue::Howl,
         gain: f32::INFINITY,
     });
     // Outside the mixer's speed band, by a hair on either side. At the bank's
@@ -552,7 +552,7 @@ fn an_uninstalled_cue_is_silence_and_counted_except_a_loop_which_waits() {
     r.apply(start(Cue::Swing, 1.0, 1.0, 1.0));
     r.apply(Cmd::Play {
         slot: 4,
-        cue: Cue::MusicOpenCalm,
+        cue: Cue::Howl,
         gain: 1.0,
     });
     r.apply(Cmd::Loop {
@@ -1050,7 +1050,7 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
         },
         Cmd::Play {
             slot: 3,
-            cue: Cue::MusicOpenCalm,
+            cue: Cue::Howl,
             gain: 1.0,
         },
         Cmd::Gain { slot: 3, gain: 0.2 },

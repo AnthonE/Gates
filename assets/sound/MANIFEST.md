@@ -8,8 +8,8 @@ source's own page. Credit is not required and is given anyway.
 more.** They are compiled into the client (`crates/client/src/sound_bank.rs`)
 and decoded at boot. A one-shot cue's takes are trimmed, faded and
 normalized, and played round-robin, never the same take twice running. A bed
-is one seamless loop and a piece of music one 10.5 s file on the director's
-grid, and both are played whole. `sound::synth` is only the fallback for a
+is one seamless loop, played whole. The score is not in the bank: see
+`assets/music/` below. `sound::synth` is only the fallback for a
 file that fails to decode, and `crates/client/tests/sound.rs`
 (`every_cue_is_a_recording`) fails if any cue has no file.
 
@@ -128,24 +128,26 @@ boom: no clean CC0 recording of a real bullet passing exists.
 | `snort_0`–`2` | `Snort` | JarredGibb, 233181, *Pig - Multiple Snorts 4 - 96kHz.wav*: take 0: deep grunt 1.291-1.85 s; take 1: grunt + snort 2.126-2.64 s; JarredGibb, 233173, *Pig - Grunt 5 (deep) - 96kHz.wav*: take 2: deep grunt 0.764-1.52 s |
 | `bird_0`–`5` | `Bird` | straget, 418102, *Great Tit.wav*: take 0: two 'tea-cher' notes 29.475-30.24 s; naturenotesuk, 418425, *Robin singing*: take 1: 27.675-28.28 s ('tsip-tsip-seee'); take 4: 13.595-14.06 s (short 'tsi' run); richwise, 811988, *Blackbird (isolated)*: take 2: 46.825-47.60 s; take 5: 27.29-28.225 s (opening flute part of two different phrases); straget, 418104, *Bluetit.wav*: take 3: 25.985-26.935 s (three high 'tsee' notes, before the trill) |
 
-## `vsco/` — the score, played on real instruments (2026-10-03)
+## `assets/music/` — the score (2026-10-11)
 
-The nine pieces are rendered from **VSCO-2 Community Edition**
-(<https://github.com/sgossner/VSCO-2-CE>, CC0 1.0, commit `4403009`;
-recorded by Sam Gossner and Simon Dalzell, sample cutting by Elan
-Hickler/Soundemote) by `render_music.py`, which downloads the samples it
-uses into a cache and writes the nine files. The arrangement is
-`synth::score`'s, voice for voice: A minor, 90 BPM, the i / ♭VI / ♭VII
-sections, an 8 s body and 2.5 s of reverb ring-out. The cello section and
-solo contrabass play the drone, the viola and violin sections the pad, a harp
-the melody and timpani the pulse. Every sample's pitch is measured and
-resampled to the exact equal-tempered target.
+Four whole tracks, supplied by the operator on 2026-10-11 to replace the
+nine VSCO-2 pieces (the files are dated 2026-08-06). **Source, licence or
+vendor plan to be recorded by the operator** — the rail asks for vendor,
+plan and prompt on generated audio. Not under `assets/sound/` and not in the
+bank: they are streamed (`crates/sound/src/music.rs`), natively by a decoder
+thread and in the browser by the page's `<audio>` element, so nothing is
+compiled into the client and a page fetches only the track it plays.
 
-| Files | Cue |
-|---|---|
-| `music_open_calm`, `music_open_tense`, `music_open_combat` | `MusicOpenCalm`, `MusicOpenTense`, `MusicOpenCombat` |
-| `music_turn_calm`, `music_turn_tense`, `music_turn_combat` | `MusicTurnCalm`, `MusicTurnTense`, `MusicTurnCombat` |
-| `music_close_calm`, `music_close_tense`, `music_close_combat` | `MusicCloseCalm`, `MusicCloseTense`, `MusicCloseCombat` |
+Re-encoded here from the supplied 192 kbps MP3s to Ogg Vorbis, stereo,
+44.1 kHz, `-q:a 3`, each gained to **−20 LUFS integrated** (they arrived
+between −18.8 and −31.6) with no limiting; peaks stay under −2 dBFS.
 
-147 files from Freesound, 70 from Kenney and 9 from VSCO-2, about 4.3 MB of
-Ogg in total.
+| File | Track | Length | Gain | Role |
+|---|---|---|---|---|
+| `safe_zone.ogg` | *Safe Zone* | 240.0 s | −1.2 dB | the intro: the PLAY press, the menus (looped), the first minutes |
+| `green_veil.ogg` | *Green Veil* | 300.0 s | −0.7 dB | a world song: a low, steady drone |
+| `ruin_respiration.ogg` | *Ruin Respiration* | 300.0 s | +11.6 dB | a world song, and the one a tense moment picks |
+| `empty_citadel.ogg` | *The Empty Citadel* | 240.0 s | +8.5 dB | a world song: a flat sub-bass drone |
+
+147 files from Freesound and 70 from Kenney in the bank, about 3.8 MB of Ogg,
+plus the four score tracks, 12.0 MB.
