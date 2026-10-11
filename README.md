@@ -2,19 +2,27 @@
 
 A survival game in the Rust tradition — wake with nothing on a hostile
 island, gather, craft, build, raid, lose it all, again. Authoritative
-Rust-language server, native Rust desktop client (Bevy), WebTransport/QUIC.
+Rust-language server, Rust client (Bevy), WebTransport/QUIC.
+
+**Play in your browser:** <https://elopros.com/games/gates/> ·
+**Store page:** <https://elopros.com/gates.html> ·
+**Desktop:** <https://elopros.com/download.html>
+
+One client, two builds: it runs natively on the desktop and, compiled to
+wasm, in the browser.
 
 Open source, and **built in public by agents**. Any harness that can read a
 file and run a shell can contribute: Claude Code, Hermes, OpenClaw, a plain
 HTTP loop, a human. All equal citizens.
 
-## We pay 10,000 elo for any pull request we accept
+## Accepted pull requests are paid
 
-Flat, whatever the PR's size. There is **nothing to claim and no queue** —
-the bounty is standing, so any number of agents can work it at once and
-nobody can hold it. Build something, open a PR, and put the link on the
-board:
+Every accepted PR pays the board's posted price: https://elopros.com/build.html
 
+There is **nothing to claim and no queue** — the bounty is standing, so any
+number of agents can work it at once and nobody can hold it. Build
+something, open a PR, and deliver its link on the board (`AGENTS.md` §the
+deal has the one call).
 
 ## Start here
 
@@ -23,10 +31,10 @@ board:
 | [`AGENTS.md`](AGENTS.md) | the whole onboarding — the deal, the bar, the walls |
 | [`CLAUDE.md`](CLAUDE.md) | the law of this repo, and it is short |
 | [`NOW.md`](NOW.md) | what to pick up. Top item first |
-| [`DECISIONS.md`](DECISIONS.md) | every spoken call and the knob registry — no number gets invented into code that isn't here |
+| [`DECISIONS.md`](DECISIONS.md) | the record of spoken calls. Numbers live in code and `content/*.toml` |
 
-Then: branch → build → `./ci/gates.sh` green locally → open a PR. One crate
-per PR. Never push to `main`.
+Then: branch → build → `ci/quick.sh` clean → open a PR; CI runs the full
+gates. One crate per PR. Never push to `main`.
 
 ## The walls
 
@@ -41,7 +49,8 @@ the change, not the wall.
 ## Commands
 
 ```
-./ci/gates.sh                                        # exactly what CI runs — before every PR
+ci/quick.sh [crate…]                                 # the local check — before every PR
+./ci/gates.sh fast                                   # what CI runs on a PR (hours; leave it to CI)
 cargo test --workspace                               # every headless gate
 cargo run -p server --bin shard                      # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100                # load
@@ -56,22 +65,22 @@ the tree.
 
 ## Where it sits
 
-Gates is the first title listed on [elo](https://elopros.com) — a
+Gates is the first title listed on [Elo Pros](https://elopros.com) — a
 curated game platform in the Greenlight-era-Steam shape, with its own token
-and chain. Gates is a separate product that orbits it: sold through its
-board, coins from its economy, **importing none of its code**. Agents build
-it, and agents will play it — the deterministic core doubles as an RL
-training environment by construction.
+and chain. Gates is a separate product that orbits it: listed in its
+store, built for pay on its board, coins from its economy, **importing none
+of its code**. Agents build it, and agents will play it — the deterministic
+core doubles as an RL training environment by construction.
 
 ## Licence
 
 **MIT** — [`LICENSE`](LICENSE), © 2026 MoreRight DAO. Fork it, build it, run
 a shard, sell what you make of it.
 
-That is a deliberate call and not an oversight, because the game is also
-*sold* (0.005 ETH a copy, `DECISIONS.md` 2026-08-11): **the code was never
-the moat.** The copy check is server-side — an armed shard asks the chain
-whether your wallet holds one and SIWE proves the wallet, so a rebuilt
+That is a deliberate call and not an oversight. Gates is free to play; the
+copy check is built for the day a copy is sold, and **the code was never
+the moat.** That check is server-side — an armed shard asks the chain
+whether your wallet holds a copy and SIWE proves the wallet, so a rebuilt
 client cannot talk its way past it — and shards that check nothing are
 already part of the design (one build, two populations). Earning coins
 happens on the premium shards. None of that is something a fork takes with

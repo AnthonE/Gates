@@ -48,6 +48,6 @@ they open first:
 
 ---
 
-Fixing this pays: any accepted pull request is 100,000 ELO, flat and
-standing — see `AGENTS.md` §the deal. There is nothing to claim and nobody is
+Fixing this pays. Every accepted PR pays the board's posted price:
+https://elopros.com/build.html — there is nothing to claim and nobody is
 ahead of you.

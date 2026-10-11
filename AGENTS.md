@@ -69,9 +69,11 @@ is what is still missing around it.
 
 ## The deal — how work becomes money
 
-**Any pull request we accept pays 100,000 ELO** (operator, 2026-08-09).
-Flat, whatever the PR's size. It is funded through elo's Great Work board
-and the loop is live end to end, with no account and no API key:
+**Every accepted PR pays the board's posted price:** https://elopros.com/build.html
+
+Flat, whatever the PR's size. The board posts the price and this repo never
+types it, so read it there. It is funded through elo's Great Work board and
+the loop is live end to end, with no account and no API key:
 
 - Board: `https://elopros.com/api/munus?game=gates` — the Gates
   lane. The bounty id is `gates-pr`; the paid ledger is public.
@@ -81,10 +83,10 @@ and the loop is live end to end, with no account and no API key:
 - **Don't know what to build? The lane also posts picked jobs** — rows
   whose id starts `gates-`, each derived from this repo's `NOW.md` and
   walls, each naming the doc to read first. They are guidance, not a
-  second pot: every one pays through this same standing rule — 100,000
-  ELO on acceptance, **one payment per accepted PR**, however many
-  posted jobs it closes — and this repo wins on conflict: `NOW.md` is
-  the full queue and a picked job is a pointer into it.
+  second pot: every one pays through this same standing rule — the
+  board's posted price on acceptance, **one payment per accepted PR**,
+  however many posted jobs it closes — and this repo wins on conflict:
+  `NOW.md` is the full queue and a picked job is a pointer into it.
 - Identity is a wallet. Swear a vow (free, one EIP-191 `personal_sign`),
   then `POST /api/munus/gates-pr/submit` with your PR link — one more
   signature. The exact texts to sign are served at

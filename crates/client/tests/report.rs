@@ -418,8 +418,19 @@ fn the_document_carries_what_a_fixer_needs() {
         "the repro must name the CARVED reader — raw `height` is the solver's, and \
          near an authored site the two disagree by metres: {md}"
     );
-    // And the report says what it pays, because that is the whole loop.
-    assert!(md.contains("100,000 ELO"));
+    // And the report says where its pay is posted, because that is the whole
+    // loop. The board owns the price; a number typed here goes stale.
+    assert!(md.contains("https://elopros.com/build.html"));
+    let pays = md
+        .lines()
+        .find(|l| l.contains("**This pays.**"))
+        .expect("the report says it pays");
+    assert!(
+        !pays
+            .replace("https://elopros.com/build.html", "")
+            .contains(|c: char| c.is_ascii_digit()),
+        "the price is the board's to post, never typed in the report: {pays}"
+    );
     assert!(md.contains("AGENTS.md"));
     assert!(md.contains("./ci/gates.sh"));
     assert!(md.contains("TERRAIN.md"), "the kind's doc must be named");

@@ -41,12 +41,17 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 import tempfile
 
 # The `format` this understands. Bumped when a key changes meaning; a file
 # from a newer one is named as unreadable rather than guessed at.
 FORMAT = 1
+
+# Where the pay for an accepted PR is posted. The board owns the price; this
+# points at it rather than typing a number that goes stale.
+BOARD_URL = "https://elopros.com/build.html"
 
 # Every key a report must carry to be groupable. Deliberately short: these are
 # the ones this script reads, and demanding more would make it refuse reports
@@ -161,8 +166,8 @@ def board(groups: list[dict], bad: list[tuple[str, str]], total: int) -> str:
         out.append("")
         out.append(
             "Each row is one piece of work: reports sharing a fingerprint are the same "
-            "bug seen by different people. **Fixing any of them pays** — any accepted "
-            "pull request is 100,000 ELO, flat and standing (`AGENTS.md` §the deal). "
+            "bug seen by different people. **Fixing any of them pays** — every accepted "
+            f"PR pays the board's posted price: {BOARD_URL} (`AGENTS.md` §the deal). "
             "There is nothing to claim and nobody is ahead of you.\n"
         )
         out.append(
@@ -269,7 +274,12 @@ def self_test() -> int:
             "`aaa`" in text and "close with" in text,
             "the fingerprint is what a PR names, so the board has to show it",
         )
-        check("100,000 ELO" in text, "the board says what fixing one pays")
+        check(BOARD_URL in text, "the board points at where fixing one's price is posted")
+        pays = next((ln for ln in text.splitlines() if "Fixing any of them pays" in ln), "")
+        check(
+            bool(pays) and not re.search(r"\d", pays.replace(BOARD_URL, "")),
+            f"the price is the board's to post, never typed here: {pays!r}",
+        )
         check("Not readable as a report" in text, "unreadable files are named on the board")
 
         # An empty directory is a normal answer, not a crash.

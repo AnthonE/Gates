@@ -6,9 +6,9 @@
 //! at when they pressed it. [`crate::report`] owns what goes in them and why;
 //! this file owns nodes, keys, and the live facts.
 //!
-//! **Why a key rather than a website.** `AGENTS.md` §the deal has paid a flat
-//! 100,000 ELO for any accepted pull request since 2026-08-09 and `NOW.md`
-//! §0gh records the ledger as `[]` — the loop works and nothing has ever
+//! **Why a key rather than a website.** `AGENTS.md` §the deal has paid the
+//! board's posted price for every accepted pull request since 2026-08-09, and
+//! `NOW.md` §0gh records the ledger as `[]` — the loop works and nothing has ever
 //! walked through it. The distance between *a player noticing a bug* and *a
 //! report anybody can act on* is the whole gap, and every step in it (find the
 //! repo, read the walls, describe the build, remember the seed) is a step
