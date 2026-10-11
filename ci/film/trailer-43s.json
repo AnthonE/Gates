@@ -1,5 +1,5 @@
 {
-  "out": "film/ads/gates-trailer-45s-16x9.mp4",
+  "out": "film/ads/gates-trailer-43s-16x9.mp4",
   "size": [1920, 1080],
   "fps": 30,
   "shots": ["film/shots/raid", "film/shots/raid-b"],
@@ -39,13 +39,13 @@
     {"at": 20.1, "len": 4.7, "text": "EVERYONE WANTS WHAT YOU HAVE", "size": 0.055, "y": 0.78},
     {"at": 25.3, "len": 2.5, "text": "RAID", "size": 0.15, "y": 0.5},
     {"at": 30.95, "len": 2.55, "text": "DIE, AND THEY TAKE EVERYTHING", "size": 0.06, "y": 0.5},
-    {"at": 34.0, "len": 2.2, "text": "GO AGAIN", "size": 0.1, "y": 0.5}
+    {"at": 33.7, "len": 1.8, "text": "GO AGAIN", "size": 0.1, "y": 0.5}
   ],
   "flashes": [
     {"at": 25.21, "len": 0.25}
   ],
   "music": [
-    {"src": "safe-zone.mp3", "in": 80.0, "at": 0.0, "gain": 1.0, "fade_in": 1.5, "cut": 43.2, "fade_out": 3.0}
+    {"src": "safe-zone.mp3", "in": 80.0, "at": 0.0, "gain": 1.0, "fade_in": 1.5, "cut": 42.6, "fade_out": 3.0}
   ],
   "sfx": [
     {"src": "46_Thunder_0.wav", "at": 13.9, "gain": 0.6},
@@ -54,7 +54,7 @@
     {"src": "trailer_pulse.wav", "at": 23.13, "gain": 0.8},
     {"src": "trailer_reverse.wav", "at": 22.61, "gain": 0.6},
     {"src": "trailer_boom.wav", "at": 25.21, "gain": 1.0},
-    {"src": "trailer_braam.wav", "at": 36.0, "gain": 0.8}
+    {"src": "trailer_braam.wav", "at": 35.6, "gain": 0.8}
   ],
   "card": {
     "len": 7.0,
