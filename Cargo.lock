@@ -83,7 +83,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentkey"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "k256",
  "protocol",
@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "agentkey",
  "basis-universal",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "client-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "protocol",
  "sim-core",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "client-web"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bevy",
  "client",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "content"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde",
  "sim-core",
@@ -4654,7 +4654,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "sim-core",
  "tiny-keccak",
@@ -5281,7 +5281,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "agentkey",
  "bevy",
@@ -5368,7 +5368,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "xxhash-rust",
 ]
@@ -5482,7 +5482,7 @@ dependencies = [
 
 [[package]]
 name = "sound"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "rtrb",
  "sim-core",
@@ -5490,7 +5490,7 @@ dependencies = [
 
 [[package]]
 name = "sound-worklet"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "sound",
  "wasm-bindgen",
