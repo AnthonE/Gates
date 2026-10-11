@@ -18,6 +18,10 @@
   "shots": [
     {"name": "island", "at": 20, "still": true, "hour": 0.3, "weather": "clear", "fov": 48, "keys": [{"t": 0, "pos": [2190, 128, 2720], "look": [2496, 20, 3168]}], "look": {"saturation": 1.1}},
     {"name": "beach-morning", "at": 20.2, "still": true, "hour": 0.1, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [1070, 1.4, 760], "look": [1150, 7, 905]}], "look": {"exposure": 0.2, "temperature": 0.03, "saturation": 1.1}},
+    {"name": "town-gate", "at": 20.4, "still": true, "hour": 0.38, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [1840, 2.4, 2118], "look": [1848, 12, 2040]}], "look": {"exposure": 0.1, "temperature": 0.03, "saturation": 1.1}},
+    {"name": "town-street", "at": 20.6, "still": true, "hour": 0.4, "weather": "clear", "fov": 50, "keys": [{"t": 0, "pos": [1850, 1.7, 2076], "look": [1848, 14, 2040]}], "look": {"exposure": 0.1, "temperature": 0.03, "saturation": 1.1}},
+    {"name": "town-aerial", "at": 20.8, "still": true, "hour": 0.42, "weather": "clear", "fov": 45, "keys": [{"t": 0, "pos": [1912, 48, 2128], "look": [1848, 6, 2040]}], "look": {"saturation": 1.1}},
+    {"name": "town-night", "at": 21, "still": true, "hour": 0.93, "weather": "clear", "fov": 50, "keys": [{"t": 0, "pos": [1850, 1.7, 2076], "look": [1848, 14, 2040]}], "look": {"exposure": 0.5, "temperature": -0.04, "saturation": 1.1}},
     {"name": "camp-crown", "at": 55, "still": true, "hour": 0.79, "weather": "clear", "fov": 46, "keys": [{"t": 0, "pos": [2321, 4.5, 3091], "look": [2356, 6, 3100]}], "look": {"focus": "look", "fstop": 5.6, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}}
   ]
 }

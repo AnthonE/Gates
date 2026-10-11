@@ -2,12 +2,13 @@
 //! that a stranger's prose is evidence rather than instructions.
 //!
 //! **Why this module exists at all.** This repo already pays for a fix:
-//! `AGENTS.md` §the deal is a standing 100,000 ELO on any accepted pull
-//! request, funded through elo's Great Work board, live end to end since
-//! 2026-08-09. What it has never had is *supply* — `NOW.md` §0gh records the
-//! board's paid ledger as `[]`, no outside fork having opened a PR. The
-//! missing half is not the money and not the merge; it is that a player who
-//! hits a bug has nothing to hand anybody. They have a feeling and a window.
+//! `AGENTS.md` §the deal: every accepted pull request pays the board's
+//! posted price (<https://elopros.com/build.html>), funded through elo's
+//! Great Work board, live end to end since 2026-08-09. What it has never had
+//! is *supply* — `NOW.md` §0gh records the board's paid ledger as `[]`, no
+//! outside fork having opened a PR. The missing half is not the money and not
+//! the merge; it is that a player who hits a bug has nothing to hand anybody.
+//! They have a feeling and a window.
 //!
 //! So this is the artifact that closes it: one file, written where the
 //! screenshots go, complete enough that a person or an agent can open it and
@@ -759,8 +760,9 @@ impl Report {
             "- The doc that owns this: `{}`\n\
              - Reproduce the build: `git checkout {}` (release {})\n\
              - Every gate must be green before it merges: `./ci/gates.sh`\n\
-             - **This pays.** Any accepted pull request is 100,000 ELO, flat, standing —\n  \
-             `AGENTS.md` §the deal. There is nothing to claim and nobody ahead of you.\n\
+             - **This pays.** Every accepted PR pays the board's posted price: \
+             https://elopros.com/build.html\n  \
+             Standing, `AGENTS.md` §the deal: nothing to claim and nobody ahead of you.\n\
              - Name this in the PR so the reporter is paid too:\n  \
              `Closes reports: {}`\n\n",
             self.kind.read_first(),

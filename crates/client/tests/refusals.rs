@@ -38,14 +38,28 @@ use client::refusal_sentence;
 /// on one platform cannot do what the other is being told to do — and that
 /// claim should cost somebody an entry here and a sentence of argument, the
 /// way `tests/sound.rs` makes `pop_chat`'s exemption cost one.
-const MAY_DIFFER: &[(&str, &str)] = &[(
-    "REFUSE_AUTH",
-    "the shared sentence says `sign in through the elo launcher`. A page has no local \
-     launcher and never will — the launcher is a desktop process reached over a local \
-     socket — so on the browser that sentence names an act the reader cannot perform. \
-     The browser sentence points at the door a page DOES have: a wallet extension, \
-     signing the same SIWE message through `elo::sign_siwe_web`.",
-)];
+const MAY_DIFFER: &[(&str, &str)] = &[
+    (
+        "REFUSE_AUTH",
+        "the shared sentence says `sign in through the elo launcher`. A page has no local \
+         launcher and never will — the launcher is a desktop process reached over a local \
+         socket — so on the browser that sentence names an act the reader cannot perform. \
+         The browser sentence points at the door a page DOES have: a wallet extension, \
+         signing the same SIWE message through `elo::sign_siwe_web`.",
+    ),
+    (
+        "REFUSE_VERSION",
+        "the shared sentence says `update the game`, which on the desktop is a download. A \
+         tab has nothing to download: the game is the page, and its files are asked for by \
+         their own hash (`ci/build_web.sh`), so the update is a reload. Telling a browser \
+         player to update a game they never installed names a step they cannot find.",
+    ),
+    (
+        "REFUSE_BUILD",
+        "REFUSE_VERSION's reason, for the release gate: the shared `update the game` is a \
+         download on the desktop and a reload in a tab.",
+    ),
+];
 
 /// Every `pub const REFUSE_<NAME>: u8 = <n>;` the protocol declares, read out
 /// of its source.

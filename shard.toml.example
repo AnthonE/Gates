@@ -65,6 +65,12 @@ seed = 20260731
 # it (see shard-public.toml).
 # domain = "127.0.0.1"
 
+# Every name a sign-in may be bound to, when one is not enough: a browser
+# page signs its own host, which can differ from the one players dial.
+# Absent means `domain` alone. Set, it is the whole list and must name
+# `domain` too. List only names whose pages you serve.
+# siwe_domains = "game.example.com, example.com"
+
 # Where content/*.toml lives (CLAUDE.md wall 7). Default "content",
 # resolved against the CWD. The shard refuses to boot on content that
 # fails schema, reference, or balance-band checks.

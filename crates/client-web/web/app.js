@@ -78,7 +78,12 @@ const watchStatus = $("watch-status");
 const say = (text, cls, el = status) => {
   el.textContent = text;
   el.className = "status" + (cls ? " " + cls : "");
+  el.removeAttribute("title");
 };
+/* Where a link to the game points, whichever host this copy is served from. */
+const GAME_URL = "https://elopros.com/games/gates/";
+/* `protocol::REFUSE_VERSION`: the one refusal code the page itself reads. */
+const REFUSE_VERSION = 0;
 
 /* A same-origin JSON read with a deadline. Never throws: null is "could not
    look", which every caller draws as a sentence rather than as an empty list. */
@@ -172,9 +177,8 @@ async function loadServers() {
   const doc = await getJSON("/api/launcher/servers/gates");
   const listed = doc && Array.isArray(doc.servers) ? doc.servers : null;
   if (listed && listed.length) {
-    const keep = rows.filter((r) => r.direct);
     const known = new Map(rows.map((r) => [r.id, r]));
-    rows = keep.concat(listed.slice(0, 64).map((s) => {
+    const fresh = listed.slice(0, 64).map((s) => {
       const was = known.get(String(s.id));
       return {
         id: String(s.id || s.addr),
@@ -182,15 +186,25 @@ async function loadServers() {
         addr: String(s.addr),
         map: s.map ? String(s.map) : null,
         players: Number.isInteger(s.players) ? s.players : (was ? was.players : undefined),
+        agents: was ? was.agents : undefined,
         max: Number.isInteger(s.max_players) ? s.max_players : null,
+        proto: was ? was.proto : null,
+        nextWipe: was ? was.nextWipe : 0,
+        live: was ? was.live : false,
         statusUrl: /^https:\/\/[^\s/]+\/\S*$/.test(String(s.status_url || "")) ? s.status_url : null,
       };
-    }));
+    });
+    /* A link or a typed address that IS a listed server becomes that row, so
+       an invite link shows the count, the wipe and the version like the list. */
+    const listedAt = new Map(fresh.map((r) => [r.addr, r.id]));
+    const chosen = rows.find((r) => r.id === picked);
+    rows = rows.filter((r) => r.direct && !listedAt.has(r.addr)).concat(fresh);
+    if (chosen && chosen.direct && listedAt.has(chosen.addr)) picked = listedAt.get(chosen.addr);
     /* the public fallback row is the listed one under another name */
-    if (picked === "public" || !rows.some((r) => r.id === picked)) picked = rows[0].id;
+    else if (picked === "public" || !rows.some((r) => r.id === picked)) picked = rows[0].id;
   }
   renderServers();
-  rows.forEach(pollStatus);
+  rows.forEach((r) => pollStatus(r));
 }
 
 /* A shard answers `GET /status.json` about itself (`server::status`), and
@@ -198,25 +212,82 @@ async function loadServers() {
    that read needs the status host in the page's `connect-src` and an
    `Access-Control-Allow-Origin` on the status vhost; without both it fails
    here, and the count stays `?` exactly as the desktop menu draws a shard
-   that did not answer. One read per load and per REFRESH, never a timer. */
-async function pollStatus(row) {
-  if (!row.statusUrl) return;
+   that did not answer. One read per load and per REFRESH, and once more
+   after a join that never reached the shard (`join`, below) — never a timer.
+   True when the shard answered. */
+async function pollStatus(row, ms = 8000) {
+  if (!row || !row.statusUrl) return false;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
   try {
-    const r = await fetch(row.statusUrl, { cache: "no-store" });
-    if (!r.ok) return;
+    const r = await fetch(row.statusUrl, { cache: "no-store", signal: ac.signal });
+    if (!r.ok) return false;
     const s = await r.json();
-    if (Number.isInteger(s.players)) row.players = s.players;
+    if (!Number.isInteger(s.players)) return false;
+    row.players = s.players;
+    /* `agents` is a share of `players`, never a second population */
+    row.agents = Number.isInteger(s.agents) ? Math.min(s.agents, s.players) : 0;
     if (Number.isInteger(s.max_players)) row.max = s.max_players;
-    row.live = Number.isInteger(s.players);
+    row.proto = Number.isInteger(s.proto) ? s.proto : null;
+    row.nextWipe = Number.isInteger(s.next_wipe) ? s.next_wipe : 0;
+    row.live = true;
     renderServers();
+    return true;
   } catch (err) {
     /* not answered, or not allowed to ask: unknown, never zero */
+    return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-const population = (r) => Number.isInteger(r.players)
-  ? `${r.players} / ${r.max ?? "?"}`
-  : (r.max ? `? / ${r.max}` : "?");
+/* What a row says about who is on it. People and agents are counted apart
+   (`agents` is how many of `players` declared themselves one), and a count
+   is never drawn as a bare 0: an empty shard that answered is "up now". */
+const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+function population(r, kind) {
+  if (!Number.isInteger(r.players)) return "? players";
+  const agents = Number.isInteger(r.agents) && r.agents > 0 ? r.agents : 0;
+  const people = Math.max(0, r.players - agents);
+  const full = !!r.max && r.players >= r.max;
+  const bits = [];
+  if (full) bits.push("full");
+  if (people > 0) bits.push(plural(people, "player"));
+  else if (!full && r.live) bits.push(kind === "watch" ? "up now" : "up now · be first in");
+  else if (!full) bits.push("be first in");
+  if (agents > 0) bits.push(plural(agents, "agent"));
+  return bits.join(" · ");
+}
+/* "wipes in 3d": `next_wipe` is unix seconds, 0 for none (`server::wipe`).
+   Floored, the desktop list's rule too (`ui::servers::Listing::wipe_in`):
+   "3d" is at least three whole days. */
+function wipeIn(r) {
+  if (!(r.nextWipe > 0)) return null;
+  const left = Math.floor(r.nextWipe - Date.now() / 1000);
+  return left <= 0 ? "wipe due"
+    : left >= 86400 ? `wipes in ${Math.floor(left / 86400)}d`
+    : left >= 3600 ? `wipes in ${Math.floor(left / 3600)}h` : "wipes within the hour";
+}
+
+/* **The shard's wire against the page's.** A shard on another `PROTO_VER`
+   refuses this page at the handshake (`REFUSE_VERSION`), so the row says so
+   before PLAY is pressed. A newer shard means a newer page is out (or about
+   to be): reload. An older one means the shard is the one behind. */
+let pageProto = null;   /* `build.json`'s `proto`, once read */
+const skewOf = (r) => !r || !Number.isInteger(r.proto) || !Number.isInteger(pageProto) || r.proto === pageProto
+  ? null : r.proto > pageProto ? "newer" : "older";
+/* The reload asks for the page under the shard's wire number, so a cache
+   between here and the origin cannot hand back the page it already had. A
+   page that arrives under that number and is STILL older is a shard that
+   moved before the browser build was published: that is said, not looped. */
+const reloadedFor = (r) => q.get("fresh") === String(r.proto);
+const staleFor = (r) => skewOf(r) === "newer" && !reloadedFor(r);
+function freshReload(r) {
+  const u = new URL(location.href);
+  u.searchParams.set("fresh", String(r.proto));
+  location.replace(u.toString());
+}
+
 const current = () => rows.find((r) => r.id === picked) || rows[0];
 
 function pick(id) {
@@ -224,7 +295,7 @@ function pick(id) {
   renderServers();
 }
 
-function rowEl(r, onGo) {
+function rowEl(r, onGo, kind) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "srv";
@@ -239,7 +310,6 @@ function rowEl(r, onGo) {
   const sub = document.createElement("span");
   sub.className = "sub";
   sub.textContent = [r.addr, r.map].filter(Boolean).join("  ·  ");
-  mid.append(nm, sub);
   const pop = document.createElement("span");
   pop.className = "pop num" + (Number.isInteger(r.players) ? "" : " unknown");
   if (r.live) {
@@ -247,11 +317,19 @@ function rowEl(r, onGo) {
     live.className = "live";
     pop.append(live);
   }
-  pop.append(population(r));
-  const label = document.createElement("small");
-  label.textContent = "PLAYERS";
-  pop.append(label);
-  b.append(dot, mid, pop);
+  pop.append([population(r, kind), wipeIn(r)].filter(Boolean).join(" · "));
+  mid.append(nm, sub, pop);
+  const skew = skewOf(r);
+  if (skew) {
+    const s = document.createElement("span");
+    const act = staleFor(r);
+    s.className = "skew" + (act ? " act" : "");
+    s.textContent = skew === "older" ? "this server is updating"
+      : act ? "Gates just updated: reload" : "Gates just updated: the browser version follows soon";
+    if (act) s.addEventListener("click", (ev) => { ev.stopPropagation(); freshReload(r); });
+    mid.append(s);
+  }
+  b.append(dot, mid);
   b.addEventListener("click", () => pick(r.id));
   b.addEventListener("dblclick", () => { pick(r.id); onGo(); });
   return b;
@@ -259,16 +337,33 @@ function rowEl(r, onGo) {
 
 const serverInput = $("server");
 function renderServers() {
-  $("servers").replaceChildren(...rows.map((r) => rowEl(r, () => goPlay())));
-  $("watch-servers").replaceChildren(...rows.map((r) => rowEl(r, () => watch())));
+  $("servers").replaceChildren(...rows.map((r) => rowEl(r, () => goPlay(), "play")));
+  $("watch-servers").replaceChildren(...rows.map((r) => rowEl(r, () => watch(), "watch")));
   const r = current();
   if (r && document.activeElement !== serverInput) serverInput.value = r.addr;
   /* The embed has no server list, so it says how busy the island is instead:
-     a count the shard reported, and only while somebody is on. */
-  const n = r && Number.isInteger(r.players) ? r.players : 0;
+     the people the shard reported, and only while somebody is on. */
+  const n = r && Number.isInteger(r.players)
+    ? r.players - (Number.isInteger(r.agents) ? r.agents : 0) : 0;
   $("pop-line").hidden = !EMBED || n < 1;
   $("pop-line").textContent = n === 1 ? "1 player on the island now" : `${n} players on the island now`;
+  paintGo();
 }
+
+/* A link that opens this page with a server picked (`?server=`, read by
+   `baseRows`), copied; or, where the clipboard is refused, said. */
+async function copyLink(url, done) {
+  try {
+    await navigator.clipboard.writeText(url);
+    say(done, "good");
+  } catch (err) {
+    say("Copy this link: " + url);
+  }
+}
+$("invite").addEventListener("click", () => {
+  const r = current();
+  if (r) copyLink(GAME_URL + "?server=" + encodeURIComponent(r.addr), "Invite link copied. It opens Gates on this server.");
+});
 
 /* Typing an address in OPTIONS is a row of its own, picked. */
 serverInput.addEventListener("change", () => {
@@ -523,26 +618,46 @@ if (wallet.has() && typeof window.ethereum.on === "function") {
 
 /* ── the download ──────────────────────────────────────────────────────────
    The module is the game — Bevy, the transport and the client core, ~34 MB
-   before gzip — and it starts downloading the moment the page opens, with
-   the bar at the bottom and the PLAY button showing how far it is. PLAY
-   pressed early is kept, and goes the moment the module is ready.
+   before gzip — and it starts downloading the moment the page opens (on a
+   phone, when PLAY is pressed: `start`, below), with the bar at the bottom
+   and the PLAY button showing how far it is. PLAY pressed early is kept, and
+   goes the moment the module is ready.
 
    `build.json` sits beside the module (`ci/build_web.sh`) and carries its
    size: with gzip on the wire, Content-Length is the compressed size and the
    bytes read here are the decompressed ones, so the header cannot be the
    denominator. No `build.json` means a bar that counts megabytes instead. */
 let glue = null;     /* the wasm-bindgen module, once instantiated */
-let dl = { got: 0, want: 0, done: false, failed: null };
+let dl = { started: false, got: 0, want: 0, done: false, failed: null };
 const MB = (n) => (n / 1048576).toFixed(1);
+
+/* `build.json`, read once at load whether or not the module is wanted yet: it
+   is the page's own wire (`proto`, held against each shard's), the footer's
+   build line, the module sizes and the audio pair's hash. No-cache, like the
+   page: it is what says which files the page asks for. */
+const built = (async () => {
+  try {
+    const r = await fetch("build.json", { cache: "no-cache" });
+    return r.ok ? await r.json() : null;
+  } catch (err) {
+    return null;   /* a dev build without it: the bar counts megabytes */
+  }
+})();
+const buildBits = (b) => b ? [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean) : [];
+built.then((b) => {
+  if (b && Number.isInteger(b.proto)) pageProto = b.proto;
+  if (!dl.started) $("build").textContent = ("Gates " + buildBits(b).join(" · ")).trim();
+  renderServers();
+});
 
 function paintDownload() {
   const box = $("dl");
   const pct = dl.want ? Math.min(1, dl.got / dl.want) : 0;
   box.classList.toggle("done", dl.done);
-  $("dl-bar").style.width = dl.done ? "100%" : (dl.want ? (pct * 100).toFixed(1) + "%" : "8%");
-  $("dl-what").textContent = dl.failed ? "Download failed" : dl.done ? "Ready"
+  $("dl-bar").style.width = dl.done ? "100%" : !dl.started ? "0" : (dl.want ? (pct * 100).toFixed(1) + "%" : "8%");
+  $("dl-what").textContent = dl.failed ? "Download failed" : dl.done ? "Ready" : !dl.started ? "Game files"
     : dl.want && dl.got >= dl.want ? "Preparing" : "Downloading";
-  $("dl-n").textContent = dl.done || dl.failed ? ""
+  $("dl-n").textContent = dl.done || dl.failed || !dl.started ? ""
     : dl.want ? `${MB(dl.got)} / ${MB(dl.want)} MB` : `${MB(dl.got)} MB`;
   paintGo();
 }
@@ -718,16 +833,14 @@ async function load(gfx, sizes) {
 }
 
 async function boot() {
-  let bits = [];
-  try {
-    const r = await fetch("build.json", { cache: "no-cache" });
-    if (r.ok) {
-      const b = await r.json();
-      builtModules = b.modules || null;
-      bits = [b.version && "v" + b.version, b.commit, b.proto && "wire " + b.proto].filter(Boolean);
-      if (!builtModules && Number(b.wasm_bytes) > 0) builtModules = { webgl2: { wasm_bytes: b.wasm_bytes } };
-    }
-  } catch (err) { /* a dev build without it: the bar counts megabytes */ }
+  dl.started = true;
+  paintDownload();
+  const b = await built;
+  const bits = buildBits(b);
+  if (b) {
+    builtModules = b.modules || null;
+    if (!builtModules && Number(b.wasm_bytes) > 0) builtModules = { webgl2: { wasm_bytes: b.wasm_bytes } };
+  }
   let { gfx, why } = await pickModule(builtModules);
   const footer = () => {
     $("build").textContent = "Gates " + [...bits, MODULES[gfx].name].join(" · ");
@@ -782,18 +895,24 @@ function startAudio() {
 async function openAudio() {
   const ctx = new AudioContext({ latencyHint: "interactive" });
   try {
+    /* The script and its module are a pair, as the game's glue and module
+       are, so both are asked for by the pair's own hash (`build.json`'s
+       `audio.sha256`, `ci/build_web.sh`): a cached `audio.js` from the last
+       publish cannot meet this publish's `.wasm`. */
+    const b = await built;
+    const v = b && b.audio && b.audio.sha256 ? "?v=" + String(b.audio.sha256).slice(0, 12) : "";
     /* `addModule` loads the CONCATENATION of `audio-prelude.js`, the
        sound-worklet glue and `audio-processor.js` (see `ci/build_web.sh`) —
        one script, no imports, because a worklet scope has no module graph
        worth relying on. */
-    await ctx.audioWorklet.addModule("./audio.js");
+    await ctx.audioWorklet.addModule("./audio.js" + v);
     /* Fetched HERE, because a worklet scope has no `fetch`, and posted down
        the port as BYTES, transferred, for the worklet to compile itself.
        ⚠ **Not as a compiled `WebAssembly.Module`**: Chromium 151 does not
        deserialize a Module in the AudioWorklet scope, so the processor got
        `messageerror`, never ran `init`, and the page was silent (measured
        2026-09-17). */
-    const res = await fetch("./sound_worklet_bg.wasm");
+    const res = await fetch("./sound_worklet_bg.wasm" + v);
     if (!res.ok) throw new Error(`sound_worklet_bg.wasm: ${res.status}`);
     const bytes = await res.arrayBuffer();
     const node = new AudioWorkletNode(ctx, "gates-audio", {
@@ -831,7 +950,7 @@ const canTransport = "WebTransport" in window;
 const touchOnly = matchMedia("(pointer: coarse)").matches && !matchMedia("(any-pointer: fine)").matches;
 
 function paintButton(btn, fill, sub, idleSub) {
-  const loading = !dl.done && !dl.failed;
+  const loading = dl.started && !dl.done && !dl.failed;
   btn.classList.toggle("busy", !!busy);
   btn.classList.toggle("wait", loading && !busy);
   btn.disabled = !!busy || !canTransport;
@@ -844,12 +963,28 @@ function paintButton(btn, fill, sub, idleSub) {
     : idleSub;
 }
 
+/* On a phone the page does not download the game until asked (`start`,
+   below): PLAY says what it needs, and pressing it anyway is the opt-in. */
+const askFirst = () => touchOnly && !EMBED && !dl.started;
+
 function paintGo() {
-  const idle = address ? `as ${(who && who.name) || short(address)}`
+  const idle = askFirst() ? "needs a keyboard and mouse"
+    : address ? `as ${(who && who.name) || short(address)}`
     : wallet.has() && !EMBED ? "signs in with your wallet" : "as a guest";
   paintButton($("go"), $("go-fill"), $("go-sub"), idle);
   $("go-label").textContent = busy ? busy.label : dl.failed ? "Reload" : "Play";
   paintButton($("watch-go"), $("watch-fill"), $("watch-sub"), "no wallet needed");
+  /* A picked shard on a newer wire than this page refuses it at the
+     handshake, so PLAY and WATCH become the reload that fixes it. */
+  if (!busy && canTransport && staleFor(current())) {
+    for (const [btn, fill, sub] of [[$("go"), $("go-fill"), $("go-sub")], [$("watch-go"), $("watch-fill"), $("watch-sub")]]) {
+      btn.classList.remove("wait");
+      fill.style.width = "0";
+      sub.textContent = "Gates just updated";
+    }
+    $("go-label").textContent = "Reload";
+  }
+  $("send").hidden = !touchOnly || EMBED;
   /* The other way in, under PLAY. The public shard takes guests again
      (`shard-public.toml`, 2026-10-07): a guest plays a fresh character and
      keeps nothing, a wallet keeps your base. The full page leads with the
@@ -872,6 +1007,9 @@ async function join(kind, audio, identity) {
   const hash = $("hash").value.trim() || undefined;
   const { Gates } = glue;
   let g;
+  /* A wallet asked to sign means the shard answered: whatever fails after
+     that is not the network, and its own words say what it was. */
+  let walletAsked = false;
   try {
     if (kind === "watch") {
       const target = $("watch-who").value.trim();
@@ -887,6 +1025,7 @@ async function join(kind, audio, identity) {
          pair rather than dropping half of it. */
       g = await Gates.join(server, hash, identity ?? undefined, identity
         ? (text) => {
+          walletAsked = true;
           busy = { label: "Signing in", sub: "approve the sign-in in your wallet" };
           paintGo();
           return wallet.sign(text, identity);
@@ -894,7 +1033,31 @@ async function join(kind, audio, identity) {
         : undefined);
     }
   } catch (e) {
-    say(e.message ?? String(e), "bad", line);
+    const raw = e && e.message !== undefined ? String(e.message) : String(e);
+    const code = e && Number.isInteger(e.code) ? e.code : null;
+    console.warn("gates: the join failed -", raw);
+    if (code === REFUSE_VERSION && skewOf(row) === "older") {
+      /* The shard is the one behind: a reload would change nothing. */
+      say("This server is updating to the new Gates. Try again in a few minutes.", "bad", line);
+    } else if (code === REFUSE_VERSION && skewOf(row) === "newer" && reloadedFor(row)) {
+      /* Already reloaded for this wire and still behind: the shard moved
+         before the browser build was published. Another reload is the loop. */
+      say("Gates just updated. The browser version follows soon. Try again in a few minutes.", "bad", line);
+    } else if (code !== null || walletAsked || !(e instanceof Error) || !(row && row.statusUrl)) {
+      say(raw, "bad", line);
+    } else {
+      /* No code: the shard never answered. Its status endpoint is plain
+         HTTPS, so asking it again splits "the server is down" from "this
+         network will not carry QUIC" (UDP), which the browser's own error
+         does not. The browser's words stay on the line's title. */
+      busy = { label: "Connecting", sub: "checking the server" };
+      paintGo();
+      const up = await pollStatus(row, 6000);
+      say(up && staleFor(row) ? "Gates just updated. Reload the page to play."
+        : up ? "Couldn't reach the game server from this network. Gates uses UDP (QUIC), which some office, school and VPN networks block."
+        : "The server isn't answering. It may be restarting. Try again in a minute.", "bad", line);
+      line.title = raw;
+    }
     busy = null;
     paintGo();
     return;
@@ -931,6 +1094,7 @@ async function enter(g, audio, row) {
 async function play({ guest = false } = {}) {
   if (busy || !canTransport) return;
   if (dl.failed) { location.reload(); return; }
+  if (staleFor(current())) { freshReload(current()); return; }
   const audio = startAudio();   /* synchronously inside the press */
   let identity = guest ? null : address;
   if (!identity && !guest && wallet.has()) {
@@ -943,7 +1107,7 @@ async function play({ guest = false } = {}) {
     busy = { label: "Play", sub: "starting when the download finishes" };
     paintGo();
     say("Got it — the game starts as soon as it has downloaded.");
-    if (!(await ready)) { busy = null; paintGo(); return; }
+    if (!(await ready())) { busy = null; paintGo(); return; }
   }
   await join("play", audio, identity);
 }
@@ -951,11 +1115,12 @@ async function play({ guest = false } = {}) {
 async function watch() {
   if (busy || !canTransport) return;
   if (dl.failed) { location.reload(); return; }
+  if (staleFor(current())) { freshReload(current()); return; }
   const audio = startAudio();
   if (!glue) {
     busy = { label: "Watch", sub: "starting when the download finishes" };
     paintGo();
-    if (!(await ready)) { busy = null; paintGo(); return; }
+    if (!(await ready())) { busy = null; paintGo(); return; }
   }
   await join("watch", audio, null);
 }
@@ -966,6 +1131,19 @@ $("go").addEventListener("click", goPlay);
 $("guest").addEventListener("click", () => play({ guest: true }));
 $("wallet-in").addEventListener("click", () => play());
 $("watch-go").addEventListener("click", () => watch());
+/* A phone cannot play, but it found the game: hand the link to the machine
+   that can — the share sheet where there is one, the clipboard where not. */
+$("send").addEventListener("click", async () => {
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: "Gates", text: "Gates, a survival game you play in the browser", url: GAME_URL });
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return;   /* closed the sheet */
+    }
+  }
+  copyLink(GAME_URL, "Link copied. Open it on your computer to play.");
+});
 $("watch-who").addEventListener("keydown", (ev) => { if (ev.key === "Enter") watch(); });
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Enter" || ev.repeat || busy) return;
@@ -1141,7 +1319,7 @@ paintAccount();
 // everywhere yet. Say so before the button is pressed rather than after.
 if (!canTransport) say("This browser has no WebTransport, which Gates needs to reach its servers. Chrome, Edge and Firefox have it.", "bad");
 else if (cameBack) say(cameBack + " — press Play to go back in.");
-else if (touchOnly) say("Gates plays with a keyboard and mouse.");
+else if (touchOnly && EMBED) say("Gates plays with a keyboard and mouse.");
 /* A dev server is self-signed, and a page cannot skip certificate checks, so
    its hash has to be pasted — the old page opened those fields off the
    origin for exactly this. */
@@ -1159,7 +1337,14 @@ if (q.has("spectate")) {
 } else {
   show((location.hash || "").slice(1) || "play");
 }
-const ready = boot();
+/* **The download, and on a phone only when asked.** The module is ~34 MB a
+   phone cannot play, so a touch-only visitor downloads nothing until PLAY
+   (or WATCH) says to; the embed and a player coming back from the world
+   start at once, as everyone else does. */
+let booting = null;
+const ready = () => booting || (booting = boot());
+if (!touchOnly || EMBED || cameBack) ready();
+paintDownload();
 loadServers();
 fillFeature();
 resume();

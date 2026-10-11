@@ -17,5 +17,5 @@ Closes reports: -->
       reported — one line, as many as it genuinely closes. It is what pays them
       (`AGENTS.md` §the deal); a fix that names none pays only its author
 - [ ] delivered on the board if you want paying — `POST /api/munus/gates-pr/submit`
-      with this PR's link. Standing bounty: **no claim needed**, 100,000 ELO
-      per accepted PR, see `AGENTS.md` §the deal
+      with this PR's link. Standing bounty: **no claim needed**. Every
+      accepted PR pays the board's posted price: https://elopros.com/build.html

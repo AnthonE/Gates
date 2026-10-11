@@ -2,6 +2,9 @@
 //! CLAUDE.md commands). Prints the bound address and the dev-cert hash
 //! (WebTransport `serverCertificateHashes` format), then a stats line every
 //! 10 s. Runs until killed.
+//!
+//! `shard --close-wipe N shard.toml` serves nothing: it closes wipe N into
+//! the hall on a stopped shard's files and exits (`ci/release.sh --wipe`).
 
 use server::config::parse_shard_toml;
 use server::net::spawn_shard;
@@ -85,9 +88,27 @@ impl Stop {
 
 #[tokio::main]
 async fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "shard.toml".into());
+    // `shard [config]` serves. `shard --close-wipe N [config]` closes wipe N
+    // on a stopped shard's files and exits (`close_only`).
+    let mut path = None;
+    let mut close = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--close-wipe" {
+            match args.next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) if n > 0 => close = Some(n),
+                _ => {
+                    eprintln!(
+                        "shard: --close-wipe takes the wipe number: --close-wipe 3 shard.toml"
+                    );
+                    std::process::exit(2);
+                }
+            }
+        } else if path.is_none() {
+            path = Some(a);
+        }
+    }
+    let path = path.unwrap_or_else(|| "shard.toml".into());
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -105,6 +126,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    if let Some(n) = close {
+        std::process::exit(close_only(&cfg, n));
+    }
     // Content validates at boot (CLAUDE.md wall 7): a set that fails
     // schema, reference, or balance-band checks does not get a shard. The
     // hash pins into the WAL header when the WAL file format lands.
@@ -519,6 +543,15 @@ async fn main() {
             }
         );
     }
+    // The names a sign-in may be bound to, said once where the operator
+    // listed more than `domain` (`config.rs`). Without the key this prints
+    // nothing, and the shard is the one-name shard it always was.
+    if cfg.siwe_domains.is_some() {
+        println!(
+            "sign-in: proofs bound to {} are accepted",
+            cfg.siwe_accepts().join(", ")
+        );
+    }
     world_boot.wipe = wipe_clock;
     let handle = match spawn_shard(cfg, tables, saves, world_boot).await {
         Ok(h) => h,
@@ -733,6 +766,120 @@ async fn main() {
     }
 }
 
+/// Wipe `n`'s last word: each board's podium and everyone's placing, read
+/// from the standings the shutdown wrote, into the hall; what is owed to whom
+/// (`<world>.payout-<n>.csv`), for the operator to send; and the results to
+/// Discord if the shard posts there. Once per wipe: a wipe the hall already
+/// holds is not closed again, so a retried wipe never pays a podium twice.
+/// `false` if the hall could not be written.
+fn close_world(cfg: &server::config::ShardConfig, now: u64, n: u32, base: &Path) -> bool {
+    if server::standings::is_closed(base, n) {
+        println!("wipe {n}: already in the hall — it is closed once, not again");
+        return true;
+    }
+    // No standings is a close that writes nothing (`close_wipe`), so it is
+    // not reported as one.
+    let kept = server::standings::standings_path(base).exists();
+    match server::standings::close_wipe(base, n, &cfg.prizes) {
+        Ok(closed) => {
+            if let Some(w) = &closed.winner {
+                println!("wipe {n}: the island goes to {w}");
+            }
+            if !closed.paid.is_empty() {
+                // `paid` is one row per (wallet, coin): prizes and extraction
+                // can be different coins, so total each coin on its own and
+                // count wallets, not rows.
+                let mut coins: std::collections::BTreeMap<&str, u64> = Default::default();
+                for p in &closed.paid {
+                    *coins.entry(p.3.as_str()).or_default() += p.2;
+                }
+                let owed: Vec<String> = coins.iter().map(|(t, a)| format!("{a} {t}")).collect();
+                let wallets = closed
+                    .paid
+                    .iter()
+                    .map(|p| p.0.as_str())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+                println!(
+                    "wipe {n}: {} owed to {wallets} wallets — {} (the operator sends it)",
+                    owed.join(" + "),
+                    server::standings::payout_path(base, n, "csv").display()
+                );
+            }
+            if kept {
+                println!(
+                    "wipe {n}: closed into {} ({} podium places)",
+                    server::standings::hall_path(base).display(),
+                    closed.podiums.len()
+                );
+            }
+            if let Some(url) = cfg.discord_webhook.as_deref() {
+                let next = cfg.wipe.map(|s| server::wipe::fmt_utc(s.next_after(now)));
+                let text = server::standings::discord_text(n, &closed, next.as_deref());
+                if let Err(e) = server::standings::post_discord(url, &text) {
+                    eprintln!("shard: wipe {n}: {e}");
+                }
+            }
+            true
+        }
+        Err(e) => {
+            eprintln!("shard: wipe {n}: the hall was not written: {e}");
+            false
+        }
+    }
+}
+
+/// `shard --close-wipe N <config>`: [`close_world`] on a STOPPED shard's
+/// files, and nothing else — no file moves, no store rewrite, no new state.
+/// `ci/release.sh --wipe` runs it before it moves the world aside itself: a
+/// release that changes the save layout cannot let a shard wipe in place
+/// (`wipe::apply` rewrites the store), and without this a release wipe would
+/// end a world without its podium or its payouts. `N` must be the world the
+/// wipe state says is running. The exit code: 0 closed (or already was), 1 not.
+fn close_only(cfg: &server::config::ShardConfig, n: u32) -> i32 {
+    let Some(base) = cfg
+        .world_file
+        .as_deref()
+        .or(cfg.save_file.as_deref())
+        .map(Path::new)
+    else {
+        println!("wipe {n}: this shard keeps nothing on disk, so there is nothing to close");
+        return 0;
+    };
+    if let Some(path) =
+        server::wipe::state_path(cfg.world_file.as_deref(), cfg.save_file.as_deref())
+    {
+        match server::wipe::read_state(&path) {
+            Ok(st) => {
+                let running = st.map_or(1, |s| s.wipes + 1);
+                if n != running {
+                    eprintln!(
+                        "shard: --close-wipe {n}, but {} says the world on disk is wipe {running}",
+                        path.display()
+                    );
+                    return 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("shard: {e}");
+                return 1;
+            }
+        }
+    }
+    if !server::standings::standings_path(base).exists() {
+        println!(
+            "wipe {n}: no standings beside {} — the shard that ran this world kept none, \
+             so the hall gets no entry for it",
+            base.display()
+        );
+    }
+    if close_world(cfg, unix_now(), n, base) {
+        0
+    } else {
+        1
+    }
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -750,35 +897,10 @@ fn end_world(cfg: &server::config::ShardConfig, now: u64, n: u32, blueprints: bo
         println!("wipe {n}: nothing on disk — the next boot is a fresh island anyway");
         return;
     }
-    // The hall first: each board's podium and everyone's placing, read
-    // from the standings the shutdown wrote, before the archive moves them.
-    // Then what is owed to whom (`<world>.payout-<n>.csv`), for the operator
-    // to send, and the results to Discord if the shard posts there.
+    // The hall first, before the archive moves the standings. A hall that
+    // could not be written does not stop the wipe; the line says so.
     if let Some(base) = world.or(save) {
-        match server::standings::close_wipe(base, n, &cfg.prizes) {
-            Ok(closed) => {
-                if let Some(w) = &closed.winner {
-                    println!("wipe {n}: the island goes to {w}");
-                }
-                if !closed.paid.is_empty() {
-                    let total: u64 = closed.paid.iter().map(|p| p.2).sum();
-                    println!(
-                        "wipe {n}: {total} {} owed to {} wallets — {} (the operator sends it)",
-                        closed.ticker,
-                        closed.paid.len(),
-                        server::standings::payout_path(base, n, "csv").display()
-                    );
-                }
-                if let Some(url) = cfg.discord_webhook.as_deref() {
-                    let next = cfg.wipe.map(|s| server::wipe::fmt_utc(s.next_after(now)));
-                    let text = server::standings::discord_text(n, &closed, next.as_deref());
-                    if let Err(e) = server::standings::post_discord(url, &text) {
-                        eprintln!("shard: wipe {n}: {e}");
-                    }
-                }
-            }
-            Err(e) => eprintln!("shard: wipe {n}: the hall was not written: {e}"),
-        }
+        close_world(cfg, now, n, base);
     }
     match server::wipe::apply(world, save, now, blueprints) {
         Ok(r) => println!(

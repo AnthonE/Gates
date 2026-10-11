@@ -751,7 +751,7 @@ pub async fn spawn_shard(
             // with a pinned spawn — the client's dev affordances key on this.
             dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some(),
             require_auth: cfg.require_auth,
-            domain: cfg.domain.clone(),
+            siwe_domains: cfg.siwe_accepts().into(),
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
             faces: cfg.faces.clone(),
@@ -798,9 +798,11 @@ struct ShardFacts {
     dev: bool,
     /// `shard.toml require_auth`. See `config.rs` for why it is a knob.
     require_auth: bool,
-    /// The SIWE domain: what this shard calls itself in the message players
-    /// sign. Must be the host they dialled (`config.rs`).
-    domain: String,
+    /// The SIWE domains: every name this shard answers to in the message
+    /// players sign — `domain` alone unless `siwe_domains` lists more
+    /// (`ShardConfig::siwe_accepts`). Shared, because every handshake task
+    /// gets a handle and none of them needs its own copy.
+    siwe_domains: Arc<[String]>,
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
@@ -1103,7 +1105,7 @@ async fn accept_loop(
                     done_tx,
                     stats,
                     facts.require_auth,
-                    facts.domain.clone(),
+                    facts.siwe_domains.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
@@ -1639,7 +1641,7 @@ async fn handshake_task(
     done_tx: tokio::sync::mpsc::Sender<Handshaken>,
     stats: Arc<ShardStats>,
     require_auth: bool,
-    facts_domain: String,
+    siwe_domains: Arc<[String]>,
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
@@ -1793,7 +1795,7 @@ async fn handshake_task(
     let key = if auth.address.is_guest() {
         None
     } else {
-        match crate::auth::verify(&facts_domain, &nonce, issued_at, &auth) {
+        match crate::auth::verify_any(&siwe_domains, &nonce, issued_at, &auth) {
             Ok(key) => Some(key),
             Err(_) => {
                 // Counted, never explained to the caller: which of the four
@@ -3638,16 +3640,18 @@ fn sim_thread(
             watch.sweep(core.world.tick, &stats, &mut log);
         }
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
-        // Three gauges, mirrored off the state rather than accumulated here:
+        // The gauges, mirrored off the state rather than accumulated here:
         // the eviction policy lives in `World::seat` and nothing on this
         // thread is told when it fires, so the counter is read, not bumped.
-        // `sleepers()` and `connected()` are each an O(MAX_PLAYERS) scan of
-        // a 100-element array on a thread that has just done a tick's work —
-        // measured against the alternative, which is a second copy of the
-        // count that can drift from the array it describes.
+        // `sleepers()`, `connected()` and `agents_connected()` are each an
+        // O(MAX_PLAYERS) scan of a 100-element array on a thread that has
+        // just done a tick's work — measured against the alternative, which
+        // is a second copy of the count that can drift from the array it
+        // describes.
         ShardStats::set(&stats.sleepers_evicted, core.world.evictions);
         ShardStats::set(&stats.sleepers, core.world.sleepers() as u64);
         ShardStats::set(&stats.players, core.connected() as u64);
+        ShardStats::set(&stats.agents, core.agents_connected() as u64);
         ShardStats::set(&stats.spectators, core.spectators() as u64);
 
         // Pace (the boundary).

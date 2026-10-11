@@ -54,7 +54,9 @@ wasm-bindgen-futures = "0.4"
 # `js_sys::Error` and `Reflect::set` — how a refusal reaches the page carrying
 # the shard's own code instead of only a sentence to match on.
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["console"] }
+# `Window` and `Location`: the page's own host, which a sign-in names
+# (`client::net::handshake::page_domain`).
+web-sys = { version = "0.3", features = ["console", "Window", "Location"] }
 # **`cpal`'s Web Audio host, named explicitly.** cpal 0.15 compiles
 # `host::webaudio` only under its implicit `wasm-bindgen` feature, and this line
 # makes that a fact of this crate rather than of whatever `bevy_audio` and

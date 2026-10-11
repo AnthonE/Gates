@@ -5,6 +5,8 @@
 <title>Gates</title>
 <meta name="description" content="Gates in your browser. Wake with nothing on a hostile island: gather, craft, build, raid, and go again.">
 <meta name="theme-color" content="#1b1916">
+<link rel="canonical" href="https://elopros.com/games/gates/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <!-- The post card. A post on X with this page's link shows card.jpg with a
      play button, and the play button loads `twitter:player` in a frame inside
      the post: this same page in embed mode (`app.js`, EMBED). The origin lets
@@ -216,7 +218,7 @@
 
   /* ── the server list, inside the panel ───────────────────────────────────── */
   .list { display: flex; flex-direction: column; border: 1px solid var(--rule); background: rgba(0,0,0,.2); }
-  .srv { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto;
+  .srv { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr);
          align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--rule); cursor: pointer; }
   .srv:last-child { border-bottom: 0; }
   .srv:hover { background: var(--row-hi); }
@@ -227,9 +229,13 @@
   .srv .nm, .srv .sub { display: block; }
   .srv .nm { font: 700 16px/1.2 var(--sans); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .srv .sub { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .srv .pop { font: 700 15px/1 var(--sans); color: var(--text); text-align: right; white-space: nowrap; }
-  .srv .pop.unknown { color: var(--dim); }
-  .srv .pop small { display: block; margin-top: 3px; font: 700 10px/1 var(--sans); letter-spacing: .1em; color: var(--faint); }
+  /* who is on it, and when it wipes: "2 players · 1 agent · wipes in 3d" */
+  .srv .pop { display: block; margin-top: 4px; font: 700 13px/1.2 var(--sans); color: var(--text);
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srv .pop.unknown { color: var(--dim); font-weight: 400; }
+  /* the shard and the page on different wires (`app.js`, skewOf) */
+  .srv .skew { display: block; margin-top: 4px; font: 700 12.5px/1.2 var(--sans); color: var(--dim); }
+  .srv .skew.act { color: var(--go-hi); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
   .srv .live { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 6px;
                box-shadow: 0 0 10px rgba(166,207,109,.8); vertical-align: 1px; }
   .icon-btn { all: unset; cursor: pointer; order: 2; width: 22px; height: 22px; display: grid; place-items: center; color: var(--faint); border-radius: 2px; }
@@ -443,6 +449,7 @@
 
         <div class="group full-only">Server <button class="icon-btn" id="refresh" type="button" title="Refresh the server list" aria-label="Refresh the server list"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></div>
         <div class="list full-only" id="servers" role="radiogroup" aria-label="Servers"></div>
+        <button class="linkish full-only" id="invite" type="button">Copy invite link</button>
 
         <div class="spacer full-only"></div>
         <button class="go" id="go" type="button">
@@ -453,6 +460,7 @@
         <p class="fine embed-only" id="drag-line" hidden>Drag to look around · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> to move</p>
         <button class="linkish" id="guest" type="button" hidden>or join as a guest</button>
         <button class="linkish" id="wallet-in" type="button" hidden>or sign in with your wallet</button>
+        <button class="linkish full-only" id="send" type="button" hidden>Send to my computer</button>
         <a class="linkish embed-only" id="full" href="./" target="_blank" rel="noopener">Play in a new tab</a>
         <p class="status" id="status" role="status" aria-live="polite"></p>
       </div>

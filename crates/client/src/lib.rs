@@ -739,13 +739,19 @@ impl Session {
 impl Session {
     /// Join as a person playing — [`Session::connect_as`] with
     /// [`Join::PLAYER`], the desktop twin's wrapper for the same reason.
+    ///
+    /// `signs_as` is the name the proof is bound to when it is not the host
+    /// dialled: the page's own, chosen by `net::handshake::page_domain` and
+    /// passed by `client-web`. `None` signs the dialled host, as the desktop
+    /// always does.
     pub async fn connect(
         server: &str,
         cert_hash: Option<&str>,
         address: protocol::Address,
         sign: Option<&js_sys::Function>,
+        signs_as: Option<&str>,
     ) -> Result<Self, JoinError> {
-        Self::connect_as(server, cert_hash, address, &Join::PLAYER, sign).await
+        Self::connect_as(server, cert_hash, address, &Join::PLAYER, sign, signs_as).await
     }
 
     /// Take a read-only seat watching `target` (v73), anonymously — the
@@ -760,6 +766,7 @@ impl Session {
             cert_hash,
             protocol::Address::GUEST,
             &Join::Watch { target },
+            None,
             None,
         )
         .await
@@ -783,6 +790,9 @@ impl Session {
         // the wallet renders it for the human, which is a page's version of
         // the same guarantee. `elo::sign_siwe_web` argues it in full.
         sign: Option<&js_sys::Function>,
+        // The page's own host, where the page signs that rather than the host
+        // dialled (`net::handshake::page_domain`); `None` is the dialled host.
+        signs_as: Option<&str>,
     ) -> Result<Self, JoinError> {
         use wasm_bindgen_futures::{spawn_local, JsFuture};
         use web_sys::WritableStreamDefaultWriter;
@@ -815,7 +825,7 @@ impl Session {
         // desktop path composes, and `net::handshake`'s
         // `the_two_step_path_and_the_composition_agree` holds the two
         // assemblies to producing byte-identical frames.
-        let want = net::handshake::proof_wanted(&reply, server, address)?;
+        let want = net::handshake::proof_wanted(&reply, server, signs_as, address)?;
         let signature = match (&want, sign) {
             (Some(proof), Some(f)) => Some(elo::sign_siwe_web(f, address, proof).await?),
             // A guest address, or a page that offered no wallet: nothing is

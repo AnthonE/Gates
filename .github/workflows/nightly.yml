@@ -356,3 +356,18 @@ jobs:
         env:
           SCRY_FORGE_TOKEN: ${{ secrets.SCRY_FORGE_TOKEN }}
         run: ./ci/elo_drift.sh
+
+  # Does elopros.com still answer every call Gates makes (the shard's, the
+  # client's, the browser shell's, the release scripts'), in the keys Gates
+  # reads and under its readers' byte caps, and does its item store name the
+  # skins content/skins.toml ships? Public routes, so no secret. Its own job
+  # for the same reason as elo-drift.
+  elo-routes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: the platform routes Gates calls, and the skin catalog
+        run: python3 ci/elo_routes.py
