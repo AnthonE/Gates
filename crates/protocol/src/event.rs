@@ -549,7 +549,10 @@ const SUB_BANK: u32 = 94;
 /// cell and the stage it is drawn at. Broadcast one at a time as they
 /// crumble, and walked to a joiner after the harvested set.
 const SUB_NODE_STAGE: u32 = 95;
-const SUB_MAX: u32 = SUB_NODE_STAGE;
+/// Player `id` declared itself an agent at its hello (wire v107,
+/// `HELLO_AGENT`): guests and wallets alike, so every client can mark it.
+const SUB_AGENT: u32 = 96;
+const SUB_MAX: u32 = SUB_AGENT;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -2048,6 +2051,14 @@ pub enum EventMsg {
         name: crate::Name,
         pic: u32,
     },
+    /// Player `id` is a program (v107): it declared `HELLO_AGENT` at its
+    /// hello. Self-declared, never inferred. Unlike [`EventMsg::Tag`] a
+    /// guest gets one too, because agents often play as guests. Sent to
+    /// every session when the agent joins and in full to a late joiner, one
+    /// per tick; never for id 0 or an animal, and both ends refuse one. An
+    /// id names one tenancy of a slot, so a new tenant is never marked by
+    /// an old one's event.
+    Agent { id: u32 },
     /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
     /// for an empty one, and each piece's skin (v102), zero for none and
     /// always zero on an empty slot. Appearance only, for drawing the body.
@@ -4959,6 +4970,16 @@ pub fn encode_event_tag(
     Ok(w.finish())
 }
 
+/// Player `id` declared itself an agent — see [`EventMsg::Agent`].
+pub fn encode_event_agent(id: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if id == 0 || id & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_AGENT)?;
+    w.write(id, 32)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -6311,6 +6332,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 pic,
             }
         }
+        SUB_AGENT => {
+            let id = r.read(32)?;
+            if id == 0 || id & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Agent { id }
+        }
         SUB_CHAT => {
             let from = r.read(32)?;
             let global = r.read_bit()?;
@@ -7648,6 +7676,28 @@ mod tests {
         w.write(0, 16).unwrap();
         let len = w.finish();
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// An agent's mark (v107) crosses for a guest-shaped id, and neither
+    /// end takes one for nobody or for an animal.
+    #[test]
+    fn agent_marks_a_guest_and_refuses_nobody_and_animals() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let id = 0x0001_2307;
+        let len = encode_event_agent(id, &mut buf).unwrap();
+        assert_eq!(decode_event(&buf[..len]), Ok(EventMsg::Agent { id }));
+        let mob = sim_core::limits::MOB_ID_TAG | 7;
+        for bad in [0, mob] {
+            assert_eq!(encode_event_agent(bad, &mut buf), Err(WireError::Range));
+            // Forged: the encoder would not write it, so the decoder will
+            // not take it either.
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_AGENT, SUB_BITS).unwrap();
+            w.write(bad, 32).unwrap();
+            let n = w.finish();
+            assert_eq!(decode_event(&buf[..n]), Err(WireError::Malformed));
+        }
     }
 
     /// A worn piece's skin crosses (v102) so a skinned tunic is drawn

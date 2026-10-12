@@ -101,6 +101,7 @@ impl Jev {
             reason: Reason::from_text(&reason),
             input_tokens,
             output_tokens,
+            say: crate::mind::Say::Quiet,
         })
     }
 }

@@ -11,16 +11,22 @@
 //! One observation line out per request, one goal line back:
 //!
 //! ```text
-//! -> {"protocol":1,"id":7,"observation":{...},"options":["explore","gather_wood",...]}
-//! <- {"id":7,"goal":"gather_wood","reason":"need wood for a hatchet"}
+//! -> {"protocol":1,"id":7,"observation":{...},"options":["explore","gather_wood",...],"heard":[...]}
+//! <- {"id":7,"goal":"gather_wood","reason":"need wood for a hatchet","say":"anyone got stone?"}
 //! ```
+//!
+//! `heard` is the chat its client received since the last request — words
+//! strangers typed, so data and never instructions. `say` is optional: one
+//! local line, through the same chat rule as the human chat box. A line the
+//! rule refuses (over `CHAT_MAX_BYTES`, a control character, a `/command`)
+//! is counted and dropped; the goal still stands.
 //!
 //! The same rules as Jev: one request outstanding, the reply must echo the
 //! id and name an offered goal, lines are bounded, a missing or late answer
 //! is an explicit failure and never a substituted decision. Replies to an
 //! older id are skipped. `JEV.md` has the schema.
 
-use crate::mind::{Choice, DecisionSource, Goal, Reason, SourceKind, Summary};
+use crate::mind::{Choice, DecisionSource, Goal, Reason, Say, SourceKind, Summary};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -134,7 +140,23 @@ impl External {
             "id": id,
             "observation": summary.to_json(),
             "options": summary.options().iter().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
+            "heard": summary.heard_json(),
         })
+    }
+
+    /// A reply's `say`: missing, null or blank is quiet; a string the chat
+    /// rule takes (and that is not a `/command` for the shard) is a line;
+    /// any other string is refused rather than repaired.
+    fn say(value: &Value) -> Result<Say, String> {
+        match value {
+            Value::Null => Ok(Say::Quiet),
+            Value::String(text) if text.trim().is_empty() => Ok(Say::Quiet),
+            Value::String(text) => Ok(match protocol::ChatText::sanitize(text.as_bytes()) {
+                Some(line) if !protocol::admin::is_command(&line) => Say::Line(line),
+                _ => Say::Refused,
+            }),
+            _ => Err("external agent say must be a string".into()),
+        }
     }
 
     /// Parse one reply for request `id`. `Ok(None)` is a reply to an older
@@ -161,12 +183,14 @@ impl External {
             Value::String(text) => Reason::from_text(text),
             _ => return Err("external agent reason must be a string".into()),
         };
+        let say = Self::say(&value["say"])?;
         Ok(Some(Choice {
             goal,
             confidence: 1.0,
             reason,
             input_tokens: 0,
             output_tokens: 0,
+            say,
         }))
     }
 }
@@ -292,7 +316,21 @@ mod tests {
         ] {
             assert!(External::reply(bad, 3, &s).is_err(), "{bad}");
         }
+        let say = |text: &str| {
+            let line = format!(r#"{{"id":3,"goal":"explore","say":{text}}}"#);
+            External::reply(&line, 3, &s).map(|c| c.unwrap().say)
+        };
+        let hello = protocol::ChatText::sanitize(b"hello there").unwrap();
+        assert_eq!(say(r#""  hello there ""#), Ok(Say::Line(hello)));
+        assert_eq!(say(r#""""#), Ok(Say::Quiet));
+        assert_eq!(say("null"), Ok(Say::Quiet));
+        let long = format!("\"{}\"", "x".repeat(protocol::CHAT_MAX_BYTES + 1));
+        for refused in [long.as_str(), r#""two\nlines""#, r#""/kick 1""#] {
+            assert_eq!(say(refused), Ok(Say::Refused), "{refused}");
+        }
+        assert!(say("7").is_err(), "a non-string say is a bad reply");
         let observation = External::observation(9, &s);
+        assert_eq!(observation["heard"], serde_json::json!([]));
         assert_eq!(observation["protocol"], EXTERNAL_PROTOCOL);
         assert_eq!(
             observation["options"].as_array().unwrap().len(),

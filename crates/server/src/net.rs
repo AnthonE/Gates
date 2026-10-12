@@ -178,8 +178,8 @@ const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(5);
 /// answer a question fast. Proposed defaults, DECISIONS.md §open
 /// ("chat v0"). Refused lines are counted, not announced: the limiter is
 /// the shard's business, not a conversation with the spammer.
-const CHAT_BURST: u32 = 3;
-const CHAT_REFILL: Duration = Duration::from_secs(2);
+const CHAT_BURST: u32 = protocol::chat::CHAT_BURST;
+const CHAT_REFILL: Duration = Duration::from_millis(protocol::chat::CHAT_REFILL_MS);
 
 /// One connection's chat token bucket. Lives in the reader task, so it is
 /// per stream — a reconnect buys a fresh bucket, and the handshake costs

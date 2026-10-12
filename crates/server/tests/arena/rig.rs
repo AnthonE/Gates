@@ -986,6 +986,7 @@ impl server::mind::DecisionSource for Sentry {
             reason: server::mind::Reason::from_text("arena: stand about"),
             input_tokens: 0,
             output_tokens: 0,
+            say: server::mind::Say::Quiet,
         })
     }
 }

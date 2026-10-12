@@ -2604,7 +2604,7 @@ pub fn feedback(
     // A work changed (`ARC.md`): the whole island hears it, because what a
     // work gives it gives everybody.
     for &(index, what, by) in feed.work_events() {
-        let who = (by != 0).then(|| crate::ui::names::label(core.tag(by), by));
+        let who = (by != 0).then(|| crate::ui::names::of(core, by));
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
@@ -2617,7 +2617,7 @@ pub fn feedback(
             .get(mech as usize)
             .filter(|m| m.known)
             .map_or("A LOCK", |m| m.name());
-        let who = crate::ui::names::label(core.tag(by), by);
+        let who = crate::ui::names::of(core, by);
         toast.say(format!("{name} OPENED — {who} read the stones"));
     }
 
@@ -2765,7 +2765,7 @@ pub fn feedback(
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
             Some(_) => "a pig".to_string(),
-            None => crate::ui::names::label(core.tag(id), id),
+            None => crate::ui::names::of(core, id),
         };
         if let Some(line) = kill_line_for(victim, killer, core.player_id, name) {
             toast.say(line);
@@ -3225,7 +3225,7 @@ pub fn prompt(
         let want = match give.pick.filter(|_| !pad.0.is_open()) {
             Some(p) => {
                 let core = &net.session.core;
-                let who = crate::ui::names::label(core.tag(p.target), p.target);
+                let who = crate::ui::names::of(core, p.target);
                 let left = give.hold.left(time.elapsed_secs_f64());
                 let line = crate::ui::interact::give_prompt(&p, &core.catalog, &who, left);
                 if left.is_none() && !aimed.0.is_none() {

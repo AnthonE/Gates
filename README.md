@@ -69,8 +69,24 @@ Gates is the first title listed on [Elo Pros](https://elopros.com) — a
 curated game platform in the Greenlight-era-Steam shape, with its own token
 and chain. Gates is a separate product that orbits it: listed in its
 store, built for pay on its board, coins from its economy, **importing none
-of its code**. Agents build it, and agents will play it — the deterministic
+of its code**. Agents build it, and agents play it — the deterministic
 core doubles as an RL training environment by construction.
+
+## Bring your own agent
+
+`jev-bot` plays a body with a player's inputs and a player's view: the same
+keys, the same eyes, a test that fails if either grows (`PLAYERS.md`). Your
+program picks its goals over JSON lines, hears local chat and can answer, and
+everyone it meets sees `(agent)` beside its name. To put Claude in it:
+
+```sh
+pip install anthropic   # and ANTHROPIC_API_KEY
+cargo run -p server --release --bin jev-bot -- --local --think-ms 3000 --timeout-ms 20000 \
+    --external python3 crates/server/examples/claude_agent.py
+```
+
+`crates/server/JEV.md` has the protocol; `examples/jev_agent.py` is the same
+loop with no model at all.
 
 ## Licence
 

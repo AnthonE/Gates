@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 163] = [
+pub const FIXTURES: [&str; 164] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -294,6 +294,8 @@ pub const FIXTURES: [&str; 163] = [
     "event_bank.bin",
     // Ore nodes crumbled past a stage (v106).
     "event_node_stage.bin",
+    // A declared agent's mark (v107).
+    "event_agent.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1092,6 +1094,12 @@ pub fn event_node_stage() -> [(u16, u16, u8); crate::NODE_STAGE_BATCH] {
             (i % sim_core::gather::ORE_STAGES as usize) as u8,
         )
     })
+}
+
+/// A declared agent's mark (wire v107): a slot/generation id with bits in
+/// both halves, the shape a guest's id has.
+pub fn event_agent() -> u32 {
+    (0x0123 << 8) | 9
 }
 
 /// A full batch of regrowing trees, at the cap.

@@ -324,7 +324,8 @@ pub struct ShardCore {
     standings_owed: [u8; MAX_PLAYERS],
     /// The board generation everyone was last owed at.
     standings_gen_seen: u32,
-    /// Per slot, whether its tenant declared itself an agent.
+    /// Per slot, whether its tenant declared itself an agent: the standings
+    /// file it, and every client is owed its mark (`EventMsg::Agent`).
     standings_agent: [bool; MAX_PLAYERS],
     /// Per slot, its way out is owed (`SUB_BANK`): at join, after its own
     /// extraction, and to everyone when the exchange changes.
@@ -836,9 +837,16 @@ impl ShardCore {
     }
 
     /// Whether `slot`'s new tenant declared itself an agent (`HELLO_AGENT`).
+    /// An agent's mark is owed to everyone, so chat and nametags can say so.
     pub fn note_agent(&mut self, slot: usize, agent: bool) {
         if let Some(a) = self.standings_agent.get_mut(slot) {
             *a = agent;
+            if agent {
+                let bit = 1u128 << slot;
+                for c in self.clients.iter_mut() {
+                    c.agents_owed |= bit;
+                }
+            }
         }
     }
 
@@ -5385,6 +5393,34 @@ impl ShardCore {
             }
         }
 
+        // Who is a program (v107): one owed mark per tick, `tags_owed`'s
+        // shape. A slot whose tenant is not an agent (or is not here) owes
+        // nothing and clears; the id sent is this tenancy's, so a later
+        // tenant of the slot is never marked by it.
+        let owed = self.clients[slot].agents_owed;
+        if owed != 0 {
+            let i = owed.trailing_zeros() as usize;
+            let bit = 1u128 << i;
+            let target = self.clients.get(i).filter(|c| c.connected).map(|c| c.id);
+            match target.filter(|_| self.standings_agent.get(i) == Some(&true)) {
+                None => self.clients[slot].agents_owed &= !bit,
+                Some(id) => match protocol::encode_event_agent(id, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].agents_owed &= !bit;
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        self.clients[slot].agents_owed &= !bit;
+                        ShardStats::bump(&stats.encode_range_errors);
+                    }
+                },
+            }
+        }
+
         // What every body wears (v98): one owed per tick, `tags_owed`'s
         // shape. An empty world slot, or a body that has never worn
         // anything, has nothing to say.
@@ -7329,6 +7365,50 @@ mod tests {
         }
         late.sort_unstable();
         assert_eq!(late, vec![256, 257, 258]);
+    }
+
+    /// Agent marks (v107): a guest agent is marked to everyone, a human
+    /// beside it is not, a late joiner catches up, and the slot's next
+    /// tenant is never marked for its predecessor.
+    #[test]
+    fn every_player_learns_who_is_an_agent_guest_or_not() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let marks = |core: &mut ShardCore| {
+            let mut got = Vec::new();
+            for _ in 0..4 {
+                core.tick_bare(&stats, |lane, slot, bytes| {
+                    if lane == Lane::Event {
+                        if let Ok(EventMsg::Agent { id }) = decode_event(bytes) {
+                            got.push((slot, id));
+                        }
+                    }
+                    true
+                });
+            }
+            got
+        };
+        for (slot, id, agent) in [(0usize, 256u32, true), (1, 257, false)] {
+            assert!(core.connect_as(slot, id, None, None).is_some());
+            core.note_agent(slot, agent);
+        }
+        let seen = marks(&mut core);
+        assert!(
+            seen.contains(&(0, 256)) && seen.contains(&(1, 256)),
+            "{seen:?}"
+        );
+        assert!(!seen.iter().any(|m| m.1 == 257), "a human is not marked");
+
+        assert!(core.connect_as(2, 258, None, None).is_some());
+        core.note_agent(2, false);
+        assert_eq!(marks(&mut core), vec![(2, 256)], "the late joiner, once");
+
+        core.disconnect(0);
+        assert!(core.connect_as(0, 512, None, None).is_some());
+        core.note_agent(0, false);
+        assert!(core.connect_as(3, 259, None, None).is_some());
+        core.note_agent(3, false);
+        assert!(marks(&mut core).is_empty(), "a human tenant of the slot");
     }
 
     /// **A client eating every tick eats about once a second** (`pace.rs`).

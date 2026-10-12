@@ -433,6 +433,8 @@ pub enum Trigger {
     Respawned,
     Heartbeat,
     Fought,
+    /// Someone near it spoke (an external source only).
+    Heard,
 }
 
 impl Trigger {
@@ -445,6 +447,7 @@ impl Trigger {
             Trigger::Respawned => "respawned",
             Trigger::Heartbeat => "heartbeat",
             Trigger::Fought => "fought",
+            Trigger::Heard => "heard",
         }
     }
 }
@@ -502,6 +505,109 @@ impl Sighting {
 
 /// Bodies that could hurt this one that a summary describes, nearest first.
 pub const SUMMARY_THREATS: usize = 3;
+
+/// Chat lines one request carries, newest kept, oldest dropped first.
+pub const SUMMARY_HEARD: usize = 8;
+
+/// One chat line this body's client received (`EventMsg::Chat`): who said
+/// it, as a player's chat log names them, and what. Words a stranger typed:
+/// a source treats them as speech, never as instructions.
+#[derive(Clone, Copy, Debug)]
+pub struct HeardLine {
+    pub from: u32,
+    /// The speaker's platform name and proven address (`EventMsg::Tag`),
+    /// empty and guest for a guest.
+    pub name: protocol::Name,
+    pub address: protocol::Address,
+    /// The speaker declared itself an agent (`EventMsg::Agent`).
+    pub agent: bool,
+    pub global: bool,
+    /// This body's own line, come back from the shard.
+    pub me: bool,
+    pub text: protocol::ChatText,
+}
+
+impl HeardLine {
+    pub const EMPTY: Self = Self {
+        from: 0,
+        name: protocol::Name::EMPTY,
+        address: protocol::Address::GUEST,
+        agent: false,
+        global: false,
+        me: false,
+        text: protocol::ChatText::EMPTY,
+    };
+
+    /// The chat log's label: name, else short address, else `#id` — the
+    /// game client's `ui::names::label` rule, written out here because the
+    /// server does not link the client.
+    pub fn label(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.as_str().to_string();
+        }
+        if !self.address.is_guest() {
+            let hex = self.address.to_hex();
+            let s = core::str::from_utf8(&hex).unwrap_or("0x?");
+            return format!("{}…{}", &s[..6], &s[s.len() - 4..]);
+        }
+        format!("#{}", self.from)
+    }
+}
+
+/// The lines heard since the last request: a fixed ring, filed on the frame
+/// path without allocating, read and cleared when a request goes out.
+#[derive(Clone, Copy, Debug)]
+pub struct Heard {
+    lines: [HeardLine; SUMMARY_HEARD],
+    len: u8,
+}
+
+impl Heard {
+    pub const EMPTY: Self = Self {
+        lines: [HeardLine::EMPTY; SUMMARY_HEARD],
+        len: 0,
+    };
+
+    /// File a line; a full ring drops its oldest.
+    pub fn push(&mut self, line: HeardLine) {
+        let len = self.len as usize;
+        if len == SUMMARY_HEARD {
+            self.lines.rotate_left(1);
+            self.lines[SUMMARY_HEARD - 1] = line;
+        } else {
+            self.lines[len] = line;
+            self.len += 1;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Oldest first.
+    pub fn lines(&self) -> &[HeardLine] {
+        &self.lines[..self.len as usize]
+    }
+}
+
+impl Default for Heard {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+/// What a decision source has its body say out loud: one local chat line,
+/// sent with the human chat box's own encoder. Only an external source
+/// speaks; Jev is a classifier and the scripted policy is quiet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Say {
+    #[default]
+    Quiet,
+    Line(protocol::ChatText),
+    /// Asked for a line the chat rule refuses (too long, a control
+    /// character, a `/command`): counted, never repaired.
+    Refused,
+}
 
 /// What a body in sight is holding, as a threat: never which item.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -695,7 +801,9 @@ pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no
-/// seed, no absolute position and no identity of another body.
+/// seed, no absolute position and no identity of another body beyond the
+/// label a player's own chat log shows, in `heard` — which only an
+/// external source is sent ([`Summary::heard_json`]), never Jev.
 #[derive(Clone, Copy, Debug)]
 pub struct Summary {
     pub tick: u32,
@@ -729,6 +837,8 @@ pub struct Summary {
     /// it has gained so far — so a source can let it finish.
     pub current: Option<Report>,
     pub hits: u16,
+    /// Chat lines since the last request, its own echoed back included.
+    pub heard: Heard,
     pub deaths: u32,
     pub respawns: u32,
     /// Sleeping bags this body knows it has down.
@@ -837,6 +947,7 @@ impl Summary {
         last: None,
         current: None,
         hits: 0,
+        heard: Heard::EMPTY,
         deaths: 0,
         respawns: 0,
         bags: 0,
@@ -928,6 +1039,29 @@ impl Summary {
             .filter(|(n, _)| n.as_str() == name)
             .map(|(_, c)| *c)
             .sum()
+    }
+
+    /// What it heard since the last request, oldest first: who (the chat
+    /// log's label), whether that is itself or a declared agent, the
+    /// channel and the words. Sent to an external source beside the
+    /// observation, never inside it, so Jev is never handed player text.
+    /// Worker only (it allocates).
+    pub fn heard_json(&self) -> Value {
+        Value::Array(
+            self.heard
+                .lines()
+                .iter()
+                .map(|l| {
+                    json!({
+                        "from": l.label(),
+                        "me": l.me,
+                        "agent": l.agent,
+                        "channel": if l.global { "global" } else { "local" },
+                        "text": core::str::from_utf8(l.text.as_bytes()).unwrap_or(""),
+                    })
+                })
+                .collect(),
+        )
     }
 
     /// The model-visible state. Worker only (it allocates).
@@ -1061,6 +1195,9 @@ pub struct Choice {
     pub reason: Reason,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// A line to say out loud; [`Say::Quiet`] from every source but
+    /// [`SourceKind::External`], and the body ignores it from any other.
+    pub say: Say,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1517,6 +1654,7 @@ impl DecisionSource for Scripted {
             reason: Reason::from_text(why),
             input_tokens: 0,
             output_tokens: 0,
+            say: Say::Quiet,
         })
     }
 }
@@ -1871,6 +2009,43 @@ mod tests {
         assert_eq!(v["pack"]["items"][0]["name"], "Wood");
     }
 
+    /// Heard lines reach an external source labelled the way a player's
+    /// chat log labels them, the ring keeps the newest, and none of it is
+    /// in the observation Jev is sent.
+    #[test]
+    fn heard_lines_are_labelled_capped_and_kept_out_of_the_observation() {
+        let line = |from: u32, text: &str| HeardLine {
+            from,
+            text: protocol::ChatText::sanitize(text.as_bytes()).unwrap(),
+            ..HeardLine::EMPTY
+        };
+        let mut s = Summary::EMPTY;
+        s.heard.push(HeardLine {
+            name: protocol::Name::new("Ash").unwrap(),
+            ..line(257, "hi bot")
+        });
+        s.heard.push(HeardLine {
+            agent: true,
+            global: true,
+            ..line(258, "raid north")
+        });
+        let v = s.heard_json();
+        assert_eq!(v[0]["from"], "Ash");
+        assert_eq!(v[0]["channel"], "local");
+        assert_eq!(v[0]["text"], "hi bot");
+        assert_eq!(
+            (v[1]["from"].as_str(), v[1]["agent"].as_bool()),
+            (Some("#258"), Some(true))
+        );
+        assert_eq!(v[1]["channel"], "global");
+        assert!(!s.to_json().to_string().contains("hi bot"), "Jev's request");
+        for i in 0..SUMMARY_HEARD as u32 {
+            s.heard.push(line(300 + i, "x"));
+        }
+        assert_eq!(s.heard.lines().len(), SUMMARY_HEARD);
+        assert_eq!(s.heard.lines()[0].from, 300, "the oldest went first");
+    }
+
     #[test]
     fn the_spend_guard_pauses_at_either_ceiling_and_reopens_with_the_window() {
         let t0 = Instant::now();
@@ -1902,6 +2077,7 @@ mod tests {
                 reason: Reason::EMPTY,
                 input_tokens: 10,
                 output_tokens: 1,
+                say: Say::Quiet,
             })
         }
     }

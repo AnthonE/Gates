@@ -348,12 +348,18 @@ fn nametag(
             crouched: core.crouched(),
         };
         let own = core.player_id;
-        interact::resolve_nametag(aim, own, &core.view.entities, |id| core.tag(id).is_some())
-            .filter(|&(_, eye, head)| names::clear_line(core, eye, head))
-            .and_then(|(id, _, _)| core.tag(id).copied())
+        // A guest agent has no tag but is named all the same: `#id (agent)`.
+        interact::resolve_nametag(aim, own, &core.view.entities, |id| {
+            core.tag(id).is_some() || core.is_agent(id)
+        })
+        .filter(|&(_, eye, head)| names::clear_line(core, eye, head))
+        .map(|(id, _, _)| (id, core.tag(id).copied()))
     };
-    let handle = who.and_then(|t| pics.want(t.address, t.pic));
-    let next = who.map(|t| (t.id, names::label(Some(&t), t.id), handle.is_some()));
+    let handle = who.and_then(|(_, t)| t.and_then(|t| pics.want(t.address, t.pic)));
+    let next = who.map(|(id, t)| {
+        let label = names::label(t.as_ref(), core.is_agent(id), id);
+        (id, label, handle.is_some())
+    });
     if next == shown.who {
         return;
     }

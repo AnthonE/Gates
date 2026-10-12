@@ -363,6 +363,7 @@ impl server::mind::DecisionSource for Healer {
             reason: server::mind::Reason::from_text("test: heal when offered"),
             input_tokens: 0,
             output_tokens: 0,
+            say: server::mind::Say::Quiet,
         })
     }
 }
@@ -438,6 +439,7 @@ impl server::mind::DecisionSource for Hunter {
             reason: server::mind::Reason::from_text("test: hunt what is in view"),
             input_tokens: 0,
             output_tokens: 0,
+            say: server::mind::Say::Quiet,
         })
     }
 }

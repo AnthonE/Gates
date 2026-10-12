@@ -406,6 +406,10 @@ pub struct ClientNetState {
     /// `i` is slot `i`. All set on a fresh connection, so a late joiner
     /// learns everyone already here; cleared one per tick as each is sent.
     pub tags_owed: u128,
+    /// Which player slots' agent marks (`EventMsg::Agent`, v107) this client
+    /// is owed: `tags_owed`'s shape, all at join and on a resync. A bit for a
+    /// slot whose tenant is not an agent clears without a send.
+    pub agents_owed: u128,
     /// World slots whose worn set this connection is owed (`SUB_WORN`),
     /// `tags_owed`'s shape: all of them at join and on a resync.
     pub worn_owed: u128,
@@ -513,6 +517,7 @@ impl ClientNetState {
             last_glyphs: None,
             last_skins: None,
             tags_owed: TAGS_ALL,
+            agents_owed: TAGS_ALL,
             worn_owed: TAGS_ALL,
             skins_pending: None,
             last_expo: None,
@@ -546,6 +551,7 @@ impl ClientNetState {
         self.last_glyphs = None;
         self.last_skins = None;
         self.tags_owed = TAGS_ALL;
+        self.agents_owed = TAGS_ALL;
         self.worn_owed = TAGS_ALL;
         self.recipes_cursor = 0;
         self.research_cursor = 0;

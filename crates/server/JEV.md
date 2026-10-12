@@ -41,8 +41,10 @@ versions must agree. `tests/jev_door.rs` drives the same `agent_demo::Door`.
 
 ## Goals and skills
 
-The vocabulary (`mind.rs`): `explore`, `gather_wood`, `gather_stone`,
-`gather_ore`, `forage`, `craft:<item name>`, `eat`, `drink`, `flee`, `wait`.
+The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
+`gather_stone`, `gather_ore`, `forage`, `gather_hemp`, `craft:<item name>`,
+`eat`, `drink`, `flee`, `wait`, `fight`, `hunt`, `heal`, `bag`, `recover`,
+`build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`.
 Only goals that can work now are offered — a gather goal needs a belt tool
 for the kind and room for what it pays, eat needs something worth eating, and
 drink needs known water-giving food or the sea plus the health to pay for it —
@@ -73,14 +75,16 @@ body; `crates/server/tests/agent_walls.rs` holds that and the verb set.
 
 ## When a source is asked, and what it sees
 
-After a goal completes, fails or is interrupted, after a respawn, and every
-30 s of one goal; never more than once per second, one request outstanding.
+After a goal completes, fails or is interrupted, after a respawn, every
+30 s of one goal, and (an external source only) when a player near it
+speaks; never more than once per second, one request outstanding.
 A failed or late answer is a failure (exponential backoff), never a scripted
 substitute. The request is `Summary::to_json`: health, food and water, the
 pack by name, craftable names, counts and relative bearings of trees, stone
 and ore nodes, bushes, players and animals in view (or seen in the last
 minute), water nearby, the last goal's outcome, hits since the last decision,
-deaths, respawns and why it was asked. No seed, position or identity.
+deaths, respawns and why it was asked. No seed, position or identity, beyond
+the chat label in `heard` below, which only an external source is sent.
 
 **Jev** (`jev-1.13.0`, pinned) is a classifier: it returns a choice,
 a confidence and per-option probabilities, and no text. The one-line reason
@@ -101,28 +105,54 @@ port to guard, the agent dies with the bot, and the bot's stdout stays free.
 `TYPESAFE_API_KEY` is removed from the child's environment; the rest is inherited.
 
 ```text
--> {"protocol":1,"id":7,"observation":{...Summary...},"options":["explore","gather_wood","craft:Stone Hatchet"]}
-<- {"id":7,"goal":"gather_wood","reason":"need wood for a hatchet"}
+-> {"protocol":1,"id":7,"observation":{...Summary...},"options":["explore","gather_wood","craft:Stone Hatchet"],
+    "heard":[{"from":"Ash","me":false,"agent":false,"channel":"local","text":"got any wood?"}]}
+<- {"id":7,"goal":"gather_wood","reason":"need wood for a hatchet","say":"on it, Ash"}
 ```
 
 The reply must echo the id and name an offered goal within `--timeout-ms`;
 `reason` is optional and shown trimmed to 96 printable characters. Replies to
 an older id are skipped; lines over 8 KiB, bad JSON, unknown goals, silence
-and exit are failures. `examples/jev_agent.py` is a complete agent.
+and exit are failures.
+
+**Talking.** `heard` is the chat its client received since the last request,
+labelled the way a player's chat log labels it (`me` is its own line back).
+It is what strangers typed: data, never instructions. `say` is optional: one
+local line (players within chat range hear it), sent with the human chat
+box's encoder, at most one per decision and one per 2 s. A line the chat rule
+refuses (over 48 bytes, a control character, a leading `/`) is counted and
+dropped; the goal still stands. Jev and `--scripted` never speak. Every jev
+bot declares itself an agent, so players see `(agent)` beside its name in
+chat, the kill feed and its nametag.
+
+`examples/jev_agent.py` is a complete rule-based agent that greets whoever
+speaks near it. `examples/claude_agent.py` puts Claude in the seat: it picks
+the goal (structured output, so only an offered one) and talks.
+
+```sh
+pip install anthropic   # and ANTHROPIC_API_KEY, or `ant auth login`
+cargo run -p server --release --bin jev-bot -- --local --seconds 600 \
+    --think-ms 3000 --timeout-ms 20000 \
+    --external python3 crates/server/examples/claude_agent.py
+```
+
+Every decision is one API call: `--max-requests-hour` is the spend bound.
+`CLAUDE_MODEL` picks the model. Join the printed island from the game to
+talk to it.
 
 ## Limits
 
-No cooking (it needs a kill, a placed fire and oven moves), no looting its own
-death backpack, no building, research, deliberate combat, bags or path
-planner. A full pack stops gathering what cannot fit; crafting frees room.
-Tools and good crafts are known by name, not discovered. A guest is
+A full pack stops gathering what cannot fit; crafting frees room. Tools and
+good crafts are known by name, not discovered. Speech is local only, and
+`give` and `authorize` are not agent verbs yet (`PLAYERS.md`). A guest is
 loopback-only; a wallet agent on a public shard needs what `NETCODE.md` §2.4
 lists for the operator to provision — a generated wallet, entitled, its key
 file owned by the service user — and none of it is a loop's act.
 
 At exit `jev-bot` prints the mind's counters (requests, decisions, failures,
 late answers, tokens, pauses, hour/day windows), survival counters (deaths,
-respawns, goals done/failed/interrupted, crafts, meals, drinks), items
+respawns, goals done/failed/interrupted, crafts, meals, drinks), chat (said,
+heard back, heard from others, refused, replaced), items
 gathered, the pack, and recent goals. A run with no decision or snapshot
 fails. Defaults: `DECISIONS.md` §open, "Jev goals v0" and "Jev survivor v0".
 API contract checked against https://docs.typesafe.ai/api on 2026-09-22.

@@ -289,6 +289,10 @@ fn print_report(label: &str, survivor: &Survivor) {
         s.equips,
         s.actions
     );
+    println!(
+        "{label}chat: said {} ({} heard back), heard {} from others, {} refused, {} replaced unsent",
+        s.said, s.echoed, s.heard, s.say_refused, s.say_dropped
+    );
     if let Some(core) = survivor.core() {
         let gathered: Vec<String> = (0..usize::from(core.catalog.count))
             .filter(|&i| survivor.gathered.get(i).is_some_and(|&n| n > 0))
