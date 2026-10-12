@@ -242,7 +242,7 @@ look the way they do.
    asking the sim, and the second is the one that would be correct. It is a
    slice with a prerequisite, not a tuning pass.
 8. **Music was the highest-value unbuilt thing here, and it is built**
-   (2026-08-11). §8 is a complete design and `sound/music.rs` is that design
+   (2026-08-11). §8 is a complete design and `sound/music.rs` was that design
    with nothing added: a gap timer at their own 240–480 s, a theme of three
    sections holding three intensity clips each, a tier read **only at a
    section boundary**, an intensity that falls at the end of any section in
@@ -252,13 +252,19 @@ look the way they do.
    your head < taking damage — mapped onto the two events we have (a swing, a
    hit) and the one state change we track (a fall in `hp`).
 
-   **The blocker this section named is exactly the part still outstanding, and
-   it was called correctly**: it was a content blocker, not an engineering
-   one. `synth::score` generates nine placeholder pieces from a drone, a pad,
-   a plucked line and a Schroeder reverb — which makes the SYSTEM real and
-   audible while the music stays programmer art. Nothing in `render/audio.rs`
-   knows its `AudioSource` came from arithmetic, so recorded pieces are a
-   change to one function.
+   **The score is recorded now, and it is whole tracks** (2026-10-11): four
+   ElevenLabs songs, 4–5 minutes each, streamed rather than banked. So the
+   clip machinery above is gone. The gaps stay, and so do the bumps and the
+   decay, but the intensity now does two things only: a song never opens in a
+   fight, and a song that opens tense is the tense track. The intro (Safe
+   Zone) loops on the menu and plays on into the world.
+
+   Worth knowing before building clips again: the devblogs show the reference
+   **left** the clip design in June 2016 (devblog 113) for layers — an
+   ambience base, a calm melodic layer and mid and high layers on the same
+   key and chords — faded in on the next downbeat. Its menu plays a flagged
+   subset of the in-game songs, shuffled before the first one (devblogs 116,
+   186).
 
    Two of their inputs we still cannot bump on: a weapon *equipped* (a state,
    where ours is the swing) and a projectile near-miss. The second arrives

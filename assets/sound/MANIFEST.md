@@ -1,15 +1,17 @@
 # assets/sound — what ships
 
 **Every file here is CC0** (Creative Commons Zero,
-<http://creativecommons.org/publicdomain/zero/1.0/>), checked on each
-source's own page. Credit is not required and is given anyway.
+<http://creativecommons.org/publicdomain/zero/1.0/>) **or public domain**
+(US-government works, the Public Domain Mark: `pd/`), checked on each
+source's own page. Credit is not required and is given anyway. The score
+(`assets/music/`, last section) is generated under a vendor licence instead.
 
 **Every cue the game plays is one of these files; nothing is synthesized any
 more.** They are compiled into the client (`crates/client/src/sound_bank.rs`)
 and decoded at boot. A one-shot cue's takes are trimmed, faded and
 normalized, and played round-robin, never the same take twice running. A bed
-is one seamless loop and a piece of music one 10.5 s file on the director's
-grid, and both are played whole. `sound::synth` is only the fallback for a
+is one seamless loop, played whole. The score is not in the bank: see
+`assets/music/` below. `sound::synth` is only the fallback for a
 file that fails to decode, and `crates/client/tests/sound.rs`
 (`every_cue_is_a_recording`) fails if any cue has no file.
 
@@ -23,7 +25,6 @@ file that fails to decode, and `crates/client/tests/sound.rs`
 | Files | Cue | Heard as |
 |---|---|---|
 | `impactMining` | `ImpactStone` | a blow on stone or ground |
-| `impactWood_medium` | `ImpactWood` | a blow on wood |
 | `impactMetal_heavy` | `ImpactMetal` | a blow on metal |
 | `impactPlank_medium` | `Place` | a piece going down |
 | `impactSoft_medium` | `BulletSoil` | a round into soil, sand or grass |
@@ -86,8 +87,7 @@ were additionally gained up into a look-ahead limiter (+12 dB and +8 dB,
 the loop limited across its own seam) so the bank's peak normalization
 leaves them dense rather than a few loud drops. The town loop's crossfade
 compensates for its very steady engine, which an equal-power crossfade
-would have swelled at the join. The flyby is a whip crack, a small sonic
-boom: no clean CC0 recording of a real bullet passing exists.
+would have swelled at the join.
 
 | Files | Cue | Source (author, id, what was used) |
 |---|---|---|
@@ -101,9 +101,6 @@ boom: no clean CC0 recording of a real bullet passing exists.
 | `reload_0`–`1` | `Reload` | Dredile, 177863, *Clean Revolver Reload*: take 0: events at 0.298 (cylinder out), 1.056 and 1.43 (rounds in), 2.00 s (cylinder shut), re-spaced into 1.03 s; tkane0512, 722902, *Revolver Reload Break 2*: take 1: break 0.12, speed-loader 1.024 and 1.376, close 2.258 s, re-spaced into 0.94 s |
 | `ricochet_0`–`3` | `Ricochet` | cedarstudios, 148840, *ricochet.mp3*: takes 0-3: the four ricochets in the file, at 0.000, 0.435, 0.850 and 1.362 s |
 | `fuse_0` | `Fuse` | elonen, 45650, *fuse_burning_48khz.wav*: 0.03-7.75 s at 0 (fade 0.6 s) plus 2.00-4.85 s at 7.12 s to reach 9.97 s |
-| `torch_out_0`–`1` | `TorchOut` | cut here from two files above: `fuse_0` (elonen, 45650) 1.20-2.10 s / 4.40-5.30 s, high-passed 900 Hz and faded out over 0.78 s, over the first 0.35 s of `fire_crackle_2` / `fire_crackle_5` (ahriik, 508110), high-passed 300 Hz |
-| `bellow_0`–`1` | `Bellow` | cut here from two files above, a stand-in until a CC0 red deer roar can be fetched (Freesound is blocked from the box that cut it): `growl_0` / `growl_2` (coldvet, 404920) slowed to 0.62× (pitch and length), over the first 1.1 s of `howl_0` / `howl_1` (betchkal, 500646) slowed to 0.5× at −5 dB, band-limited 60–2200 Hz, 1.7 s with a 0.55 s fade out, peak 0.85 |
-| `flyby_0`–`3` | `Flyby` | G.Lamont, 118068, *Whip Cracks.WAV*: takes 0-3: whip cracks at 19.793, 23.994, 17.685 and 9.569 s, cut 3 ms before the crack to +0.30 s, excluding the swish before it |
 | `blast_0`–`2` | `Blast` | felix.blume, 251401, *Dynamite explosion in the mountain*: take 0: the single dynamite blast (onset 0.058 s) with its mountain roll, 0.054-3.554 s; alienistcog, 125937, *merrimack-st-demolition.aif*: take 1: the main demolition charge (onset 10.04 s), 10.036-12.9 s; julujanus, 768370, *2024-11-16 0750 field recording czestochowa zawodzie power plant chimney detonation explosion zoom h4npro*: take 2: the chimney detonation (onset 5.188 s), 5.184-7.5 s |
 | `collapse_0`–`1` | `Collapse` | xkeril, 703247, *Big falling debris (crash)*: take 0: the whole crash from 0.0 s, cut 0.0-2.5 s; xkeril, 703248, *Fall debris (crash)*: take 1: the whole crash from 0.0 s, cut 0.0-2.3 s |
 | `tree_fall_0`–`1` | `TreeFall` | Kinoton, 494071, *Big Tree Fall in Forest*: take 0: trunk cracks 0.29-0.95 s placed at 0.0; creak/rush 3.487-6.40 s placed at 0.50 so the ground thud (source 4.587 s) lands at 1.600 s; bruno.auzet, 670300, *tree cut down.wav*: take 1: first crack burst 2.74-3.35 s (+6 dB) placed at 0.0; cracking/rush 4.887-7.60 s placed at 0.50 so the ground thud (source 5.987 s) lands at 1.600 s (the 'bravo' voices at 11 s are not used) |
@@ -128,24 +125,46 @@ boom: no clean CC0 recording of a real bullet passing exists.
 | `snort_0`–`2` | `Snort` | JarredGibb, 233181, *Pig - Multiple Snorts 4 - 96kHz.wav*: take 0: deep grunt 1.291-1.85 s; take 1: grunt + snort 2.126-2.64 s; JarredGibb, 233173, *Pig - Grunt 5 (deep) - 96kHz.wav*: take 2: deep grunt 0.764-1.52 s |
 | `bird_0`–`5` | `Bird` | straget, 418102, *Great Tit.wav*: take 0: two 'tea-cher' notes 29.475-30.24 s; naturenotesuk, 418425, *Robin singing*: take 1: 27.675-28.28 s ('tsip-tsip-seee'); take 4: 13.595-14.06 s (short 'tsi' run); richwise, 811988, *Blackbird (isolated)*: take 2: 46.825-47.60 s; take 5: 27.29-28.225 s (opening flute part of two different phrases); straget, 418104, *Bluetit.wav*: take 3: 25.985-26.935 s (three high 'tsee' notes, before the trill) |
 
-## `vsco/` — the score, played on real instruments (2026-10-03)
+## `pd/` — public domain and CC0 beyond Freesound (2026-10-11)
 
-The nine pieces are rendered from **VSCO-2 Community Edition**
-(<https://github.com/sgossner/VSCO-2-CE>, CC0 1.0, commit `4403009`;
-recorded by Sam Gossner and Simon Dalzell, sample cutting by Elan
-Hickler/Soundemote) by `render_music.py`, which downloads the samples it
-uses into a cache and writes the nine files. The arrangement is
-`synth::score`'s, voice for voice: A minor, 90 BPM, the i / ♭VI / ♭VII
-sections, an 8 s body and 2.5 s of reverb ring-out. The cello section and
-solo contrabass play the drone, the viola and violin sections the pad, a harp
-the melody and timpani the pulse. Every sample's pitch is measured and
-resampled to the exact equal-tempered target.
+Cut here from originals fetched off OpenGameArt, archive.org, the National
+Park Service and Wikimedia Commons (Freesound still refuses this box), the
+licence read on each page at download. Each take mono 44.1 kHz, filtered as
+stated, faded both ends, peak 0.85, Ogg Vorbis q4. Where a row names two
+recordings the take is the two layered.
 
-| Files | Cue |
-|---|---|
-| `music_open_calm`, `music_open_tense`, `music_open_combat` | `MusicOpenCalm`, `MusicOpenTense`, `MusicOpenCombat` |
-| `music_turn_calm`, `music_turn_tense`, `music_turn_combat` | `MusicTurnCalm`, `MusicTurnTense`, `MusicTurnCombat` |
-| `music_close_calm`, `music_close_tense`, `music_close_combat` | `MusicCloseCalm`, `MusicCloseTense`, `MusicCloseCombat` |
+| Files | Cue | Source (author, licence, what was used) |
+|---|---|---|
+| `shot_crossbow_0`–`2` | `ShotCrossbow` | Still North Media, *Crossbow Shoot* (<https://opengameart.org/content/medieval-sound-effects-weapon-textures>, uploaded by MedicineStorm; CC0 in the page's licence box, the authors' words "use freely… no credit needs to be given"): releases at 0.319, 1.407, 2.973 s, 0.30 s each, HP 90 Hz |
+| `bellow_0`–`3` | `Bellow` | Emmanuel Faivre, *Brame du cerf à 7h*, Forêt de Mormal (<https://archive.org/details/aporee_58365_66958>, radio aporee, Public Domain Mark 1.0): four red deer roars at 81.4, 155.3, 232.6, 267.1 s, HP 200 Hz / LP 6 kHz against the forest rumble. A real stag at medium distance; replaces the growl-and-howl stand-in |
+| `flyby_0`–`3` | `Flyby` | a real supersonic crack — *The Free Firearm Sound Library* (<https://opengameart.org/content/the-free-firearm-sound-library>, Jaszczak, Nelson, Heras, Nanney; CC0), `C_31P` (AK-47) cracks at 0.3380 / 4.4015 s, 16 ms each, ahead of the muzzle blast — 4 ms in front of a whizz from USC Sunset Editorial *Heavy ammunition bullets flying overhead* (1.59, 2.64 s) and *Bullets flying overhead and hitting objects* (0.13, 0.82 s) (<https://archive.org/details/SSE_Library_BULLETS>, CC0), whizz at −3 dB. Replaces the whip crack |
+| `torch_out_0`–`1` | `TorchOut` | take 0: stephan (pdsounds), *Zzrrrp sizzle* (<https://commons.wikimedia.org/wiki/File:Zzrrrp_sizzle.ogg>, public domain), 0.10–2.50 s; take 1: USC Red Library *R30-16 Gas Flame Hisses and Sputters* (<https://archive.org/details/Red_Library_Air_Industry>, CC0), the flame cutting out, 33.3–35.0 s; HP 300 Hz |
+| `bird_6`–`11` | `Bird` (with `freesound/bird_0`–`5`) | National Park Service (public domain, credit "National Park Service"): hermit thrush, Yosemite (<https://www.nps.gov/subjects/sound/sounds-hermit-thrush.htm>) 1.15 / 4.90 s; western meadowlark, Yellowstone, NPS & MSU Acoustic Atlas / Jennifer Jerrett (<https://www.nps.gov/yell/learn/photosmultimedia/sounds-westernmeadowlark.htm>) 2.38 / 11.91 s; warbling vireo, Yellowstone, NPS / Jennifer Jerrett (<https://www.nps.gov/yell/learn/photosmultimedia/sounds-warblingvireo.htm>) 1.76 / 9.25 s; HP 1.2 kHz |
+| `chop_0`–`4` | `ImpactWood` | USC Sunset Editorial, *Two people chopping a tree with axes* (<https://archive.org/details/SSE_Library_WOOD>, CC0): chops at 0.48, 1.77, 7.63, 10.48, 13.95 s, 0.32 s each, HP 80 Hz. A real axe in a trunk, energy to ~4 kHz, where Kenney's `impactWood_medium` had almost none above 500 Hz |
 
-147 files from Freesound, 70 from Kenney and 9 from VSCO-2, about 4.3 MB of
-Ogg in total.
+The USC library is the same Sunset/Red/Gold editorial collections, digitized
+by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).
+
+## `assets/music/` — the score (2026-10-11)
+
+Four whole tracks, generated with **ElevenLabs** on the operator's plan
+that licenses commercial use (`DECISIONS.md` 2026-08-11: paid plan only),
+on 2026-08-06; supplied 2026-10-11 to replace the nine VSCO-2 pieces. The
+prompts were not kept. Not under `assets/sound/` and not in the
+bank: they are streamed (`crates/sound/src/music.rs`), natively by a decoder
+thread and in the browser by the page's `<audio>` element, so nothing is
+compiled into the client and a page fetches only the track it plays.
+
+Re-encoded here from the supplied 192 kbps MP3s to Ogg Vorbis, stereo,
+44.1 kHz, `-q:a 3`, each gained to **−20 LUFS integrated** (they arrived
+between −18.8 and −31.6) with no limiting; peaks stay under −2 dBFS.
+
+| File | Track | Length | Gain | Role |
+|---|---|---|---|---|
+| `safe_zone.ogg` | *Safe Zone* | 240.0 s | −1.2 dB | the intro: the PLAY press, the menus (looped), the first minutes |
+| `green_veil.ogg` | *Green Veil* | 300.0 s | −0.7 dB | a world song: a low, steady drone |
+| `ruin_respiration.ogg` | *Ruin Respiration* | 300.0 s | +11.6 dB | a world song, and the one a tense moment picks |
+| `empty_citadel.ogg` | *The Empty Citadel* | 240.0 s | +8.5 dB | a world song: a flat sub-bass drone |
+
+147 files from Freesound, 65 from Kenney and 24 in `pd/` in the bank, about 4.2 MB of Ogg,
+plus the four score tracks, 12.0 MB.

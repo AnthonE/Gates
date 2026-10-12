@@ -67,9 +67,9 @@
 //!   level, so distant ground would drift dark and muddy as it recedes. That
 //!   is a *different* visible defect from the static and it is what a naive
 //!   fix ships. `tests/mipmap.rs` gates the checkerboard.
-//!   Measured on the shipped files rather than argued: filtering
-//!   `rock_albedo.jpg` down five levels sRGB-correctly holds its linear luma
-//!   at **0.2450 → 0.2450**, and a byte-wise average of the same file lands
+//!   Measured on the shipped files rather than argued (2026-08, when `rock`
+//!   was `Gravel004`): filtering `rock_albedo.jpg` down five levels
+//!   sRGB-correctly holds its linear luma at **0.2450 → 0.2450**, and a byte-wise average of the same file lands
 //!   at 0.2182 — **10.9% dark**, with `gravel` 12.3% and `grass` 2.6%. A mip
 //!   chain has to conserve energy or the LOD boundary becomes a tonal seam
 //!   across the island. (0.245 is also `textures::PropMaps`' own manifested

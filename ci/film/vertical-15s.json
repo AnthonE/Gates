@@ -74,18 +74,7 @@
     }
   ],
   "music": [
-    {
-      "src": "30_MusicOpenTense.wav",
-      "at": 0.0,
-      "gain": 0.85
-    },
-    {
-      "src": "37_MusicCloseCombat.wav",
-      "at": 8.0,
-      "gain": 0.85,
-      "cut": 7.0,
-      "fade_out": 1.5
-    }
+    {"src": "music_safe_zone.ogg", "at": 0.0, "in": 100.0, "gain": 0.85, "fade_in": 1.0, "cut": 15.0, "fade_out": 3.0}
   ],
   "card": {
     "len": 3.1,

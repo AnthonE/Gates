@@ -336,7 +336,7 @@ def _good() -> dict[str, dict]:
              "status_url": "https://game.example/gates/status.json"}]},
         "/api/launcher/manifest/gates": {
             "builds": [{"kind": "native", "platform": "linux-x86_64"},
-                       {"kind": "browser", "platform": "any", "url": "https://elopros.com/games/gates/"}],
+                       {"kind": "browser", "platform": "any", "url": "https://elopros.com/games/gates/play/"}],
             "store": {"url": "https://elopros.com/game.html?slug=gates#items", "label": "Skins"},
             "news": {"url": "https://elopros.com/community.html?slug=gates", "label": "News"}},
         "/api/items/store/gates": store,

@@ -1225,10 +1225,11 @@ missing it survivable.
   engine renders, Bevy draws** — with the model AND the samples in
   `crates/sound/src/` (pure, code tier) and `render/audio.rs` owning nothing
   but the bank's hand-over, the producers and the frame's command buffer.
-  **The score (2026-08-11) is the same rule under load**: `sound::music` is a
-  gap-and-intensity director (`reference/AUDIO.md` §8) that decides which
-  piece plays and when, headless and testable; `render/audio.rs::music` sends
-  what it names to a held slot and holds the level. It is also the one audio
+  **The score is the same rule under load**: `sound::music` is a gap director
+  (`reference/AUDIO.md` §8) that decides which track plays and when, headless
+  and testable; `render/audio.rs::music` hands what it names to the music
+  output — a decoder thread feeding cpal natively (`render/music_out.rs`), the
+  page's `<audio>` element in the browser — and holds the level. It is also the one audio
   system with no run condition at all, because the menus have music and have
   no world.
   **`bevy_gltf`, `bevy_scene` and `bevy_animation` stopped being unused with

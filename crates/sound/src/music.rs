@@ -1,144 +1,137 @@
-//! The music director: when a song plays, which piece plays next, and what
-//! the fight has to do before the music notices.
+//! The music director: when a song plays and which one.
 //!
-//! **Music here is a gap-and-intensity system, not a soundtrack**, which is
-//! the reference game's design and is the most transferable thing in
-//! `reference/AUDIO.md` (§8). Five findings, and every one of them is a rule
-//! in this file:
+//! **Music here is a gap system, not a soundtrack**, which is the reference
+//! game's design (`reference/AUDIO.md` §8):
 //!
 //! - **Music is not continuous.** Their `music.songgapmin` /
 //!   `music.songgapmax` default to **240 and 480 seconds** — four to eight
-//!   minutes of silence between songs. Taken verbatim
-//!   ([`SONG_GAP_MIN_S`], [`SONG_GAP_MAX_S`]); `reference/BALANCE.md` §6 says
-//!   a case is owed for *differing*, not for taking.
-//! - **Themes hold pieces, not tracks.** A theme is divided into sections
-//!   (verses and choruses); each section holds clips of differing intensity.
-//!   [`PIECES`] is that table, and it is the whole of what a "song" is here:
-//!   a walk through [`SECTIONS`], picking one clip per section.
-//! - **Each piece carries an intensity level**, and the current in-game
-//!   intensity picks which piece plays next. [`Tier`].
-//! - **Pieces end with tails rather than looping cleanly**, so the system can
-//!   cut from any piece to any other in any order without stopping playback
-//!   and without fading — the tail covers the join. That is why a piece is
-//!   [`SECTION_S`] of body plus [`TAIL_S`] of ring-out, why the next piece
-//!   starts at the end of the *body*, and why `render/audio.rs` never
-//!   despawns a music voice: it lets it finish under its successor.
-//! - **Intensity changes only at section boundaries.** Bumps land whenever
-//!   they land, but the tier is read once per boundary, so the music never
-//!   lurches mid-phrase. If nothing happened during a section, intensity
-//!   falls at the end of it — a musical boundary, not a timer.
+//!   minutes of silence between songs. Taken verbatim ([`SONG_GAP_MIN_S`],
+//!   [`SONG_GAP_MAX_S`]).
+//! - **The intensity is read at a boundary, never mid-song.** Bumps land
+//!   whenever they land and decay when nothing happens; the director reads the
+//!   tier only when a song is due to start.
 //!
-//! ## What is ours rather than theirs
+//! The score is four whole recorded tracks ([`Track`], `assets/music/`, listed
+//! in `assets/sound/MANIFEST.md`), not the reference's clip-per-section
+//! themes: [`INTRO`] opens a session — the menus loop it, and it carries on
+//! into the world until it ends — and the three [`WORLD`] tracks take turns
+//! after it, a gap apart, never the same one twice running. With whole
+//! tracks the intensity decides two things: **a song never opens in the
+//! middle of a fight** (the combat tier holds the gap until it calms down),
+//! and a song that opens tense is [`TENSE_TRACK`].
 //!
-//! Three things, all in `DECISIONS.md` §open ("music v0"), and none of them
-//! pretending to be measured:
+//! The tracks are streamed, never banked: five minutes of PCM is ~26 MB a
+//! track, so they are read off disk natively (`render/audio_out.rs`) and
+//! fetched by the page's own `<audio>` element in the browser
+//! (`render/audio_web.rs`, `web/app.js`), outside the engine's bank and
+//! its voice pool alike.
 //!
-//! - **[`FIRST_GAP_S`]**, because a player who never hears the music cannot
-//!   tell you it is wrong. Four to eight minutes is the gap *between* songs;
-//!   opening a session with one is a different question and the reference
-//!   does not answer it in anything published.
-//! - **[`Mode::Menu`]**, where the gap is zero and the intensity is pinned
-//!   calm. The reference ships `audio.menumusicvolume` as a *separate convar*
-//!   from `audio.musicvolume`, so the menu having its own music behaviour is
-//!   theirs; that it is continuous is ours.
-//! - **The bumps** ([`BUMP_SWING`], [`BUMP_HIT`], [`BUMP_HURT`]). Their
-//!   published *order* is taken exactly — a weapon in play is a small bump, a
-//!   bullet past your head is bigger, taking damage is the biggest — and the
-//!   magnitudes are ours because they published none.
-//!
-//! Pure, allocation-free, no clock of its own: `dt_s` comes in and a piece
+//! Pure, allocation-free, no clock of its own: `dt_s` comes in and a track
 //! comes out, so `crates/client/tests/sound.rs` drives a whole session's
 //! worth of music headless in microseconds.
-
-use super::Cue;
 
 /// Shortest gap between two songs, seconds. The reference's
 /// `music.songgapmin`, verbatim.
 pub const SONG_GAP_MIN_S: f32 = 240.0;
 
 /// Longest gap between two songs, seconds. The reference's
-/// `music.songgapmax`, verbatim.
-///
-/// **They tuned these in both directions** across their own devblogs —
-/// shortened when music was too rare, lengthened again when it played too
-/// often — which is the best evidence available that the pair is a taste
-/// knob rather than a derived number, and the reason ours are knobs too.
+/// `music.songgapmax`, verbatim. They tuned the pair in both directions
+/// across their devblogs, which is why it is a knob and not a derivation.
 pub const SONG_GAP_MAX_S: f32 = 480.0;
 
-/// How long after entering a world the first song plays, seconds.
-///
-/// **Ours, and the one number here that is a deliberate departure**
-/// (`DECISIONS.md` §open, "music v0"). Drawing the first gap from the same
-/// 240–480 s range would mean a player who joins, plays for three minutes and
-/// leaves hears no music at all — including the operator, on the pass that is
-/// supposed to decide whether the music is any good. The gap *between* songs
-/// is the reference's number and is untouched.
+/// How long after entering a world the first world song plays when nothing
+/// is playing and the intro has already been heard this session, seconds.
+/// Ours: a player who joins for three minutes should hear the score.
 pub const FIRST_GAP_S: f32 = 30.0;
 
-/// How long a section's body is, seconds — and therefore how often the
-/// director makes a decision.
-///
-/// One constant for both because they are one thing: a section IS a piece's
-/// body, and the boundary where the next piece starts is the boundary where
-/// the intensity is read. Twelve beats at 90 BPM (`synth::music`), so a piece
-/// is a phrase rather than a fragment.
-pub const SECTION_S: f32 = 8.0;
+/// How often the intensity gets its chance to fall, seconds.
+pub const DECAY_S: f32 = 8.0;
 
-/// How long a piece rings out past its body, seconds.
-///
-/// This is the reference's "pieces end with reverb tails and delays rather
-/// than looping cleanly", as arithmetic: the generator writes
-/// `SECTION_S + TAIL_S` of audio and puts no note in the last [`TAIL_S`], so
-/// what is left there is reverb. The next piece starts at the end of the body
-/// and the tail plays under it, which is what makes a cut from any piece to
-/// any other sound like a join instead of an edit.
-pub const TAIL_S: f32 = 2.5;
+/// How much intensity falls at the end of a [`DECAY_S`] in which nothing
+/// happened. One [`BUMP_HURT`] decays to calm over two quiet periods.
+pub const DECAY: f32 = 0.34;
 
-/// How long one piece's audio is, seconds. What `synth::music` renders and
-/// what `tests/sound.rs` checks it against.
-pub const PIECE_S: f32 = SECTION_S + TAIL_S;
-
-/// Sections in the theme.
-pub const SECTIONS: usize = 3;
-
-/// Intensity levels a section holds a clip for.
-pub const TIERS: usize = 3;
-
-/// Shortest song, in sections. Four sections is A-B-C-A: the theme has come
-/// round, which is the shortest thing that reads as a song rather than as a
-/// sting.
-pub const SONG_SECTIONS_MIN: u32 = 4;
-/// Longest song, in sections.
-pub const SONG_SECTIONS_MAX: u32 = 7;
-
-/// How much intensity falls at the end of a section in which nothing
-/// happened.
-///
-/// Sized against the bumps rather than picked: one [`BUMP_HURT`] decays to
-/// calm over two quiet sections (~16 s), and a sustained fight has to *keep*
-/// producing events to hold the top tier. A decay that outran the bumps would
-/// make the tiers unreachable; one that lagged them would leave the music in
-/// combat over an empty forest.
-pub const SECTION_DECAY: f32 = 0.34;
-
-/// Intensity at or above which a section plays its [`Tier::Tense`] clip.
+/// Intensity at or above which a song opens as [`Tier::Tense`].
 pub const TENSE_AT: f32 = 0.30;
-/// Intensity at or above which a section plays its [`Tier::Combat`] clip.
+/// Intensity at or above which no song opens at all ([`Tier::Combat`]).
 pub const COMBAT_AT: f32 = 0.70;
 
-/// A tool swung — the reference's "a weapon equipped or a helicopter around",
-/// which is the *small* bump. Ours is the swing rather than the equip because
-/// a swing is an event the client already produces (`render/input.rs`) and an
-/// equipped-weapon state is not.
+/// A tool swung — the reference's "a weapon equipped", the *small* bump.
 pub const BUMP_SWING: f32 = 0.08;
 /// You connected with something — their "a bullet passing your head", the
-/// middle bump. It is the nearest thing we have to *combat is happening*
-/// until a projectile can miss you (`reference/PROJECTILES.md`).
+/// middle bump.
 pub const BUMP_HIT: f32 = 0.22;
 /// You took damage. **The biggest**, and theirs is too.
 pub const BUMP_HURT: f32 = 0.55;
 
-/// Which clip of a section plays.
+/// One recorded track of the score.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Track {
+    /// The intro: the menus, the page's PLAY press, the first minutes.
+    SafeZone = 0,
+    /// A low, steady drone.
+    GreenVeil = 1,
+    /// Thin, high and wide; the uneasy one.
+    RuinRespiration = 2,
+    /// A sub-bass drone, flat from end to end.
+    EmptyCitadel = 3,
+}
+
+/// The track that opens a session.
+pub const INTRO: Track = Track::SafeZone;
+
+/// The tracks a world plays, a gap apart.
+pub const WORLD: [Track; 3] = [
+    Track::GreenVeil,
+    Track::EmptyCitadel,
+    Track::RuinRespiration,
+];
+
+/// The track a song opens on when the intensity reads tense.
+pub const TENSE_TRACK: Track = Track::RuinRespiration;
+
+impl Track {
+    /// Every track, in discriminant order.
+    pub const ALL: [Track; 4] = [
+        Track::SafeZone,
+        Track::GreenVeil,
+        Track::RuinRespiration,
+        Track::EmptyCitadel,
+    ];
+
+    /// The file, relative to the asset root (`assets/`): what the native
+    /// stream opens and the page fetches.
+    pub fn file(self) -> &'static str {
+        match self {
+            Track::SafeZone => "music/safe_zone.ogg",
+            Track::GreenVeil => "music/green_veil.ogg",
+            Track::RuinRespiration => "music/ruin_respiration.ogg",
+            Track::EmptyCitadel => "music/empty_citadel.ogg",
+        }
+    }
+
+    /// The track's length, seconds: its last Ogg granule over 44.1 kHz.
+    /// `tests/sound.rs` reads the files and holds these to them.
+    pub fn len_s(self) -> f32 {
+        self.samples() as f32 / 44_100.0
+    }
+
+    /// The track's length in samples at 44.1 kHz.
+    pub fn samples(self) -> u64 {
+        match self {
+            Track::SafeZone | Track::EmptyCitadel => 10_585_728,
+            Track::GreenVeil | Track::RuinRespiration => 13_231_872,
+        }
+    }
+
+    /// The track whose [`Track::file`] is `file`, if any.
+    pub fn of_file(file: &str) -> Option<Track> {
+        Track::ALL.into_iter().find(|t| t.file() == file)
+    }
+}
+
+/// How the intensity reads when a song is due.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Tier {
@@ -148,11 +141,6 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// The tier's column in [`PIECES`].
-    pub fn idx(self) -> usize {
-        self as usize
-    }
-
     /// The tier an intensity reads as.
     pub fn of(intensity: f32) -> Tier {
         if intensity >= COMBAT_AT {
@@ -165,98 +153,37 @@ impl Tier {
     }
 }
 
-/// The theme: three sections, three clips each, `[section][tier]`.
-///
-/// **This is the whole of what a theme is** — the reference's structure at
-/// the size ours can honestly be. Their themes hold more sections and more
-/// clips per section; the shape is the same and the count is a content
-/// question, not an engineering one (`synth::music` generates all nine, and
-/// swapping in recorded ones is a change to one function).
-pub const PIECES: [[Cue; TIERS]; SECTIONS] = [
-    [
-        Cue::MusicOpenCalm,
-        Cue::MusicOpenTense,
-        Cue::MusicOpenCombat,
-    ],
-    [
-        Cue::MusicTurnCalm,
-        Cue::MusicTurnTense,
-        Cue::MusicTurnCombat,
-    ],
-    [
-        Cue::MusicCloseCalm,
-        Cue::MusicCloseTense,
-        Cue::MusicCloseCombat,
-    ],
-];
-
-/// Which section and tier a cue is, if it is a piece at all.
-///
-/// A scan rather than a second table, so the two cannot drift: [`PIECES`] is
-/// the one place the mapping is written and this reads it. Nine comparisons,
-/// called once per piece generated at boot.
-pub fn piece_of(cue: Cue) -> Option<(usize, Tier)> {
-    for (s, row) in PIECES.iter().enumerate() {
-        for (t, c) in row.iter().enumerate() {
-            if *c == cue {
-                return Some((s, [Tier::Calm, Tier::Tense, Tier::Combat][t]));
-            }
-        }
-    }
-    None
-}
-
 /// Where the music is playing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
     /// In a world: gaps between songs, intensity from what happens.
     #[default]
     World,
-    /// On the menus: no gaps, and nothing to be tense about. The reference
-    /// ships a separate `audio.menumusicvolume`, so the menu having its own
-    /// behaviour is theirs; that ours is continuous is ours.
+    /// On the menus: the intro, looped, and nothing to be tense about. The
+    /// reference ships a separate `audio.menumusicvolume`, so the menu
+    /// having its own behaviour is theirs; that it is continuous is ours.
     Menu,
 }
 
-/// A piece the director wants started.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Piece {
-    pub cue: Cue,
-    /// Which section of the theme this is — for tests and for a reader; the
-    /// render layer only needs the cue.
-    pub section: usize,
-    pub tier: Tier,
-}
-
-/// The music director.
-///
-/// Two clocks, and the second one is the interesting half:
-///
-/// - `next_s` is time to the next *piece*, which is the end of the current
-///   section's body while a song plays and the end of the gap while none
-///   does. One clock for both because the two never overlap and the question
-///   is the same: how long until something starts.
-/// - `decay_s` is time to the intensity's next chance to fall, paced by
-///   [`SECTION_S`] **whether or not a section is playing**. A fight during a
-///   four-minute gap must not open the next song in combat five minutes
-///   later, and the gap has no musical boundaries of its own to decay at.
+/// The music director. See the module docs.
 pub struct Director {
     mode: Mode,
-    next_s: f32,
-    decay_s: f32,
-    /// Sections of the current song still to start. **Zero is the gap**, and
-    /// it is the only state flag there is.
-    left: u32,
-    /// Which section of the theme comes next.
-    section: usize,
+    /// The track the director last started and has not yet run out.
+    playing: Option<Track>,
+    /// Seconds left of [`Self::playing`].
+    left_s: f32,
+    /// Seconds until the next song, while nothing plays.
+    gap_s: f32,
+    /// The last track started, so the next is never the same one.
+    last: Option<Track>,
+    /// Has the intro started this session? A session opens on it once.
+    intro_heard: bool,
     intensity: f32,
-    /// Did anything bump during the section now running? The reference's rule
-    /// is that intensity falls only when nothing happened.
+    /// Did anything bump during the running decay period?
     bumped: bool,
-    /// The gap and song-length stream. Deterministic and owned here rather
-    /// than pulled from the OS — the house style (`mixer::Mixer::rng`,
-    /// `synth`'s seeding, `voice::hash01`), and what makes a whole session's
-    /// music replayable in a test.
+    decay_s: f32,
+    /// The gap and pick stream. Deterministic and owned here, so a whole
+    /// session's music is replayable in a test.
     rng: u32,
 }
 
@@ -267,153 +194,162 @@ impl Default for Director {
 }
 
 impl Director {
+    /// A fresh session: nothing playing, and the intro starts on the first
+    /// tick in either mode.
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
-            next_s: first_gap(mode),
-            decay_s: SECTION_S,
-            left: 0,
-            section: 0,
+            playing: None,
+            left_s: 0.0,
+            gap_s: 0.0,
+            last: None,
+            intro_heard: false,
             intensity: 0.0,
             bumped: false,
+            decay_s: DECAY_S,
             rng: 0x1BAD_C0DE,
         }
     }
 
-    /// Start over in `mode` — entering a world, or falling back to the menu.
+    /// Put the director on a new screen's schedule — entering a world, or
+    /// falling back to the menu.
     ///
-    /// **The random stream survives**, deliberately: resetting it too would
-    /// make every world in a session draw the identical gap sequence, which
-    /// is the one thing determinism is not for. It is the same distinction
-    /// `Steps::reset` draws — forget where the player was, not who they are.
+    /// The intro carries across either way: a menu that is already playing
+    /// it keeps it, and a world joined from the menu lets it finish before
+    /// the first gap. A world track playing when the menu opens is dropped
+    /// here and the intro asked for at once; the render layer fades the old
+    /// one out under it. The random stream and the session's history
+    /// survive.
     pub fn reset(&mut self, mode: Mode) {
-        let rng = self.rng;
-        *self = Self::new(mode);
-        self.rng = rng;
+        self.mode = mode;
+        self.intensity = 0.0;
+        self.bumped = false;
+        self.decay_s = DECAY_S;
+        match mode {
+            Mode::Menu => {
+                if self.playing != Some(INTRO) {
+                    self.playing = None;
+                    self.gap_s = 0.0;
+                }
+            }
+            Mode::World => {
+                if self.playing.is_none() {
+                    self.gap_s = if self.intro_heard { FIRST_GAP_S } else { 0.0 };
+                }
+            }
+        }
     }
 
-    /// Raise the intensity. Clamped at 1, and marks the running section as
-    /// one in which something happened, which is what stops it decaying.
-    ///
-    /// Bumps land whenever they land; the *tier* is only read at a boundary
-    /// ([`Self::tick`]), which is the reference's no-lurch rule.
+    /// Take over a track something else started — the page starts the intro
+    /// inside the PLAY press, before the game exists — `elapsed_s` into it.
+    pub fn adopt(&mut self, track: Track, elapsed_s: f32) {
+        self.playing = Some(track);
+        self.left_s = (track.len_s() - elapsed_s.max(0.0)).max(0.0);
+        self.last = Some(track);
+        self.intro_heard |= track == INTRO;
+    }
+
+    /// Raise the intensity. Clamped at 1. Ignored on the menus, where there
+    /// is nothing to be tense about.
     pub fn bump(&mut self, amount: f32) {
-        if amount <= 0.0 {
+        if amount <= 0.0 || self.mode == Mode::Menu {
             return;
         }
         self.intensity = (self.intensity + amount).clamp(0.0, 1.0);
         self.bumped = true;
     }
 
-    /// Where the intensity is, 0..1. For tests and for a reader; nothing in
-    /// the client draws it.
+    /// Where the intensity is, 0..1.
     pub fn intensity(&self) -> f32 {
         self.intensity
     }
 
-    /// The tier a boundary right now would pick.
+    /// The tier a song starting now would read.
     pub fn tier(&self) -> Tier {
         Tier::of(self.intensity)
     }
 
-    /// Is a song running? False in the gap.
-    pub fn in_song(&self) -> bool {
-        self.left > 0
+    /// The track playing, if one is.
+    pub fn playing(&self) -> Option<Track> {
+        self.playing
     }
 
-    /// Seconds until the next piece starts.
-    pub fn next_in_s(&self) -> f32 {
-        self.next_s
+    /// Seconds until the next song may start (zero while one plays or is
+    /// due).
+    pub fn gap_s(&self) -> f32 {
+        if self.playing.is_some() {
+            0.0
+        } else {
+            self.gap_s.max(0.0)
+        }
     }
 
-    /// Advance the clocks. Returns a piece on the frame one should start.
-    ///
-    /// At most one piece per call by construction — the two clocks are
-    /// reloaded from constants that are never zero, so no `dt` can cross two
-    /// boundaries and no loop is needed. A hitch that swallowed a whole
-    /// section costs that section, which is the `voice::Voices` rule
-    /// (assign on fire, never bank).
-    pub fn tick(&mut self, dt_s: f32) -> Option<Piece> {
-        // The intensity's own clock, and it runs in the gap too.
+    /// Advance the clocks. Returns a track on the frame one should start.
+    pub fn tick(&mut self, dt_s: f32) -> Option<Track> {
         self.decay_s -= dt_s;
         if self.decay_s <= 0.0 {
-            self.decay_s = SECTION_S;
+            self.decay_s = DECAY_S;
             if !self.bumped {
-                self.intensity = (self.intensity - SECTION_DECAY).max(0.0);
+                self.intensity = (self.intensity - DECAY).max(0.0);
             }
             self.bumped = false;
         }
 
-        self.next_s -= dt_s;
-        if self.next_s > 0.0 {
+        if self.playing.is_some() {
+            self.left_s -= dt_s;
+            if self.left_s > 0.0 {
+                return None;
+            }
+            self.playing = None;
+            let gap = match self.mode {
+                Mode::Menu => 0.0,
+                Mode::World => SONG_GAP_MIN_S + (SONG_GAP_MAX_S - SONG_GAP_MIN_S) * self.roll01(),
+            };
+            // The frame's overshoot past the song's end counts toward the
+            // gap, so a looped intro on the menu starts the same frame the
+            // last one ended.
+            self.gap_s = gap + self.left_s;
+        } else {
+            self.gap_s -= dt_s;
+        }
+        if self.gap_s > 0.0 {
             return None;
         }
-
-        if self.left == 0 {
-            // The gap ended. A song is however many sections it is, and it
-            // opens on whatever the intensity has become — a fight during the
-            // silence is exactly what should decide the first clip.
-            self.left = self.draw_sections();
-            self.section = 0;
-            // The decay clock realigns to the song, so a section boundary and
-            // a decay boundary are the same instant for the whole song. They
-            // drift apart again in the gap, where there is no section to
-            // align to.
-            self.decay_s = SECTION_S;
-            self.bumped = false;
-        }
-
-        let tier = self.tier();
-        let section = self.section;
-        let cue = PIECES[section][tier.idx()];
-        self.section = (section + 1) % SECTIONS;
-        self.left -= 1;
-        // The gap is measured from the END of the song, so the last piece's
-        // own body is added to it — `songgapmin` is a gap *between songs*.
-        self.next_s = if self.left == 0 {
-            SECTION_S + self.draw_gap()
-        } else {
-            SECTION_S
+        let track = match self.mode {
+            Mode::Menu => INTRO,
+            Mode::World if !self.intro_heard => INTRO,
+            Mode::World => match self.tier() {
+                // Held, not dropped: the gap stays spent and the song opens
+                // the moment the fight has decayed below combat.
+                Tier::Combat => return None,
+                Tier::Tense if self.last != Some(TENSE_TRACK) => TENSE_TRACK,
+                _ => self.pick(),
+            },
         };
-        Some(Piece { cue, section, tier })
+        self.playing = Some(track);
+        self.left_s = track.len_s();
+        self.last = Some(track);
+        self.intro_heard |= track == INTRO;
+        Some(track)
     }
 
-    /// How long the next gap is, seconds.
-    fn draw_gap(&mut self) -> f32 {
-        match self.mode {
-            // No gap on the menus: the next song follows the last one's body,
-            // so the music is continuous and the tail still covers the join.
-            Mode::Menu => 0.0,
-            Mode::World => SONG_GAP_MIN_S + (SONG_GAP_MAX_S - SONG_GAP_MIN_S) * self.roll01(),
-        }
+    /// A world track other than the last one.
+    fn pick(&mut self) -> Track {
+        let pool: [Track; 3] = WORLD;
+        let start = (self.roll01() * pool.len() as f32) as usize % pool.len();
+        (0..pool.len())
+            .map(|i| pool[(start + i) % pool.len()])
+            .find(|t| Some(*t) != self.last)
+            .unwrap_or(pool[start])
     }
 
-    /// How many sections the next song runs for, inclusive of both ends.
-    fn draw_sections(&mut self) -> u32 {
-        let span = SONG_SECTIONS_MAX - SONG_SECTIONS_MIN + 1;
-        // `roll01` is never 1.0, so the cast lands in `0..span` — the `min` is
-        // the belt for the day somebody widens that guarantee.
-        SONG_SECTIONS_MIN + ((self.roll01() * span as f32) as u32).min(span - 1)
-    }
-
-    /// xorshift32 in [0, 1) — see [`Self::rng`].
+    /// xorshift32 in [0, 1).
     fn roll01(&mut self) -> f32 {
         let mut x = self.rng;
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
         self.rng = x;
-        // Top 24 bits: exact in f32, uniform, never 1.0 — `voice::hash01`'s
-        // convention, so two draws in this module cannot disagree about what
-        // "uniform" means.
         (x >> 8) as f32 / (1u32 << 24) as f32
-    }
-}
-
-/// The gap a fresh director opens on.
-fn first_gap(mode: Mode) -> f32 {
-    match mode {
-        Mode::Menu => 0.0,
-        Mode::World => FIRST_GAP_S,
     }
 }

@@ -226,7 +226,9 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
 /// ⚠ **And 4.0820 → 9.9542 on 2026-09-24** (`Gravel004` → aCG `Rock032`, a
 /// weathered slab): scree read as a cobbled road at a player's feet above the
 /// treeline. Gravel004 stayed as the road's aggregate, at [`AGGREGATE_GAIN`].
-pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 9.9542];
+/// ⚠ **2026-10-11: sand 5.5398 → 10.1466 and rock 9.9542 → 3.6626**, two
+/// swaps to sources with a published size (PH `sand_02`, aCG `Rock043L`).
+pub const GRAIN_GAIN: [f32; 4] = [10.1466, 4.0292, 9.6954, 3.6626];
 
 /// `1 / linear-luma mean` of the road's aggregate map (`aggregate_albedo.jpg`,
 /// `Gravel004`) — [`GRAIN_GAIN`]'s construction for the one layer that is not
@@ -263,7 +265,9 @@ pub const AGGREGATE_GAIN: f32 = 4.0820;
 /// sentence this block already carried about 0.88 → 0.611, one swap later.
 /// ⚠ **And back up to 0.6971 with the 2026-09-24 slab (`Rock032`)** — still
 /// the smoothest identity by 0.22.
-pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.6971];
+/// ⚠ **2026-10-11: sand 0.9631 → 0.8417 (`sand_02`) and rock → 0.6408
+/// (`Rock043L`).** Granite stays the smoothest, by 0.20.
+pub const ROUGH_MEAN: [f32; 4] = [0.8417, 0.9364, 0.9197, 0.6408];
 
 /// What a soaked surface keeps of its **dry roughness**.
 ///
@@ -512,7 +516,7 @@ pub fn tile_multipliers() -> [f32; 4] {
 // shelf edge `terrain::REMAP_LUT` manufactures, and every summit, at the one
 // granite value `GROUND_ALBEDO` gives them (the operator's frames, 2026-09-23:
 // *"our world is still weak terrain wise"*). The photograph cannot answer it:
-// it tiles at 4 m and averages to its own mean by thirty.
+// it tiles at 1.8 m and averages to its own mean by thirty.
 //
 // So the rock carries structure the mesh does not have, all of it procedural
 // and all of it in world space, so a scarp and a flat summit cut the same

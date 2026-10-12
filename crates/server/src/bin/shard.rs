@@ -513,11 +513,11 @@ async fn main() {
         }
     };
     let status_addr = cfg.status_addr;
-    let standings_json = cfg
+    let status_base = cfg
         .world_file
         .as_deref()
         .or(cfg.save_file.as_deref())
-        .map(|b| server::standings::json_path(Path::new(b)));
+        .map(|b| Path::new(b).to_path_buf());
     // **The shard's own inhabitants** (`population.rs`), resolved before the
     // config moves into `spawn_shard`. The rows come off the content this
     // process already loaded and validated, by id — `bin/bots` has to read a
@@ -584,8 +584,10 @@ async fn main() {
     // the parser refuses everywhere else. Daemon thread — shutdown neither
     // signals nor joins it, so the flush path above cannot hang on it.
     if let Some(addr) = status_addr {
-        match server::status::spawn_status_with(addr, handle.stats.clone(), standings_json) {
-            Ok(bound) => println!("status on http://{bound}/status.json and /standings.json"),
+        match server::status::spawn_status_with(addr, handle.stats.clone(), status_base) {
+            Ok(bound) => println!(
+                "status on http://{bound}/status.json, /standings.json and /payout/<wipe>.json"
+            ),
             Err(e) => {
                 eprintln!("shard: status endpoint bind {addr}: {e}");
                 std::process::exit(1);

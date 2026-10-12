@@ -37,8 +37,7 @@
 
 use client::render::ground_splat::tile_multipliers;
 use client::render::terrain_mesh::{
-    GRAIN_SHARE, GROUND_TILE_M, GROUND_TILE_MAX_M, GROUND_TILE_MIN_M,
-    SAND_GRAIN_SHARE_AT_PUBLISHED, UV_PER_M,
+    GRAIN_SHARE, GROUND_TILE_M, GROUND_TILE_MAX_M, GROUND_TILE_MIN_M, UV_PER_M,
 };
 use client::render::textures::{FAMILY_LAYERS, ROUGH_AO_LAYER0};
 
@@ -128,10 +127,7 @@ fn grain_share(f: &[f64], n: usize, tile_m: f64) -> f64 {
 #[test]
 fn every_tile_is_its_sources_published_size_or_the_ceiling() {
     let manifest = std::fs::read_to_string(MANIFEST).expect("MANIFEST.md");
-    // `sand` publishes 15000 mm and is deliberately NOT drawn there; the
-    // manifest row says so and `GROUND_TILE_M` clamps it. `rock` publishes
-    // nothing at all. Both are checked below rather than here.
-    let published: [Option<f64>; 4] = [Some(15.0), Some(2.0), Some(1.3), None];
+    let published: [Option<f64>; 4] = [Some(2.14), Some(2.0), Some(1.3), Some(1.8)];
     let mut seen = 0;
     for (k, role) in ROLES.iter().enumerate() {
         let row = manifest
@@ -237,17 +233,6 @@ fn the_multiplier_puts_each_identity_at_its_own_tile() {
             GROUND_TILE_M[k]
         );
     }
-    // Sand and rock sit at the reference, so their sampling must be untouched
-    // by this whole mechanism — the one claim that says the change is
-    // additive rather than a re-tune of what already shipped.
-    assert!(
-        (mult[0] - 1.0).abs() < 1e-6 && (mult[3] - 1.0).abs() < 1e-6,
-        "sand and rock are drawn at the {} m reference, so their multipliers \
-         must be exactly 1.0 — got {} and {}",
-        1.0 / UV_PER_M,
-        mult[0],
-        mult[3]
-    );
 }
 
 /// Leg 4. Every tap of an identity's maps uses that identity's UV.
@@ -564,15 +549,4 @@ fn the_grain_shares_are_the_shipped_files_own() {
             GROUND_TILE_M[k]
         );
     }
-    // The counterfactual that carries the whole case for clamping sand.
-    let (f, n) = luma_field("sand");
-    let got = grain_share(&f, n, 15.0);
-    let want = f64::from(SAND_GRAIN_SHARE_AT_PUBLISHED);
-    assert!(
-        (got - want).abs() < 0.5,
-        "sand at its published 15 m measures {got:.3}% and \
-         SAND_GRAIN_SHARE_AT_PUBLISHED records {want:.3}%. This number is the \
-         reason `GROUND_TILE_M[0]` refuses the size Poly Haven publishes; if it \
-         has moved, the refusal wants re-arguing rather than re-recording."
-    );
 }

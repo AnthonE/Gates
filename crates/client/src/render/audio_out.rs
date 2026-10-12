@@ -64,6 +64,7 @@ use crate::sound::engine::{self, Cmd, In, Renderer, Stats, BLOCK};
 use crate::sound::{Cue, SAMPLE_RATE};
 
 use super::audio;
+use super::music_out::{self, Feeder, Stream, Tap};
 
 /// The audio thread's half of the seam: the renderer, its input rings, the
 /// one-block scratch and its carry, and the two gauges it publishes back
@@ -82,6 +83,9 @@ pub struct Feed {
     live: Arc<AtomicU32>,
     /// Set the first time a callback fills: the device exists and is asking.
     alive: Arc<AtomicBool>,
+    /// The score's ring, mixed into each block as it is rendered
+    /// (`render/music_out.rs`).
+    music: Tap,
 }
 
 impl Feed {
@@ -109,6 +113,7 @@ impl Feed {
         for frame in out.chunks_exact_mut(ch) {
             if self.at >= 2 * BLOCK {
                 self.renderer.render(&mut self.buf);
+                self.music.mix(&mut self.buf);
                 self.at = 0;
             }
             let (l, r) = (self.buf[self.at], self.buf[self.at + 1]);
@@ -170,6 +175,10 @@ pub struct Native {
     pub unrouted: u32,
     /// The renderer's rate: the device's, or [`SAMPLE_RATE`] with no device.
     pub out_rate: u32,
+    /// The score's decoder, before [`open`] starts its thread.
+    feeder: Option<Feeder>,
+    /// The score's decoder thread, once a device is playing.
+    music: Option<Stream>,
 }
 
 impl Native {
@@ -239,6 +248,7 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
     let (out, input) = engine::channel();
     let live = Arc::new(AtomicU32::new(0));
     let alive = Arc::new(AtomicBool::new(false));
+    let (feeder, tap) = music_out::pair(out_rate);
     (
         Native {
             out,
@@ -250,6 +260,8 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
             install_refused: 0,
             unrouted: 0,
             out_rate,
+            feeder: Some(feeder),
+            music: None,
         },
         Feed {
             renderer: Box::new(Renderer::new(out_rate)),
@@ -259,6 +271,7 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
             at: 2 * BLOCK,
             live,
             alive,
+            music: tap,
         },
     )
 }
@@ -327,6 +340,10 @@ pub fn open(app: &mut App) -> Native {
         return unrouted(native, &format!("cannot start the output stream ({e})"));
     }
     native._stream = Some(stream);
+    native.music = native.feeder.take().and_then(Feeder::spawn);
+    if native.music.is_none() {
+        info!("music: no decoder thread; the score is silent");
+    }
     // The rate `audio::pump` builds every `Start` against from now on.
     app.world_mut().resource_mut::<audio::Engine>().out_rate = rate;
     info!(
@@ -388,6 +405,16 @@ pub fn flush(mut engine: ResMut<audio::Engine>, mut out: NonSendMut<Native>) {
     } else {
         let n = engine.take_installs().count() + engine.take().count();
         out.unrouted = out.unrouted.saturating_add(n as u32);
+    }
+    let score = engine.score;
+    if let Some(music) = out.music.as_mut() {
+        if score.stop {
+            music.stop();
+        }
+        if let Some(track) = score.start {
+            music.play(track);
+        }
+        music.set_gain(score.gain);
     }
     out.reclaim();
     if let Some(stats) = out.stats() {
