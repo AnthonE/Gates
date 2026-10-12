@@ -162,7 +162,7 @@ pub fn warm(
 
 /// Warm the models [`warm`] cannot: the animals' bodies and legs (their
 /// glTF meshes carry no vertex colour, so the shared triangle's layout is
-/// not theirs) and a player's skinned body in both shades. Each was a cold
+/// not theirs) and a player's skinned body. Each was a cold
 /// pipeline until the first wolf or the first other player walked into
 /// view, which in a browser is a frame-long compile mid-fight. Once each,
 /// as soon as the assets are in: a pipeline outlives the world it was
@@ -204,17 +204,15 @@ pub fn warm_models(
     }
     if let (false, Some(rig)) = (done.1, rig) {
         if let Some(scene) = rig.scene.clone() {
-            // Both shades `reshade` paints a body in. The scene spawns a
+            // The shade `reshade` paints a body in. The scene spawns a
             // frame or two later and `retire` waits for it: the count starts
             // once `Reshade` has painted it and come off.
-            for sleeping in [false, true] {
-                commands.entity(cam).with_child((
-                    Warming(WARM_FRAMES),
-                    super::anim::Reshade::body(sleeping),
-                    SceneRoot(scene.clone()),
-                    at.with_scale(Vec3::splat(WARM_SIZE_M * rig.scale * 0.5)),
-                ));
-            }
+            commands.entity(cam).with_child((
+                Warming(WARM_FRAMES),
+                super::anim::Reshade::body(),
+                SceneRoot(scene.clone()),
+                at.with_scale(Vec3::splat(WARM_SIZE_M * rig.scale * 0.5)),
+            ));
             done.1 = true;
         }
     }

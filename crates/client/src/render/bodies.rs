@@ -112,13 +112,6 @@ pub struct BodyFlame;
 struct Live {
     entity: Entity,
     seen: u64,
-    /// Which of the two materials this body is currently wearing. Kept so
-    /// the swap below is written on a *transition* and not every frame:
-    /// assigning `MeshMaterial3d` unconditionally would mark the component
-    /// changed 60 times a second for every remote, which is a per-frame
-    /// cost on the client's hot path for a value that changes twice in a
-    /// body's life.
-    sleeping: bool,
     /// The two hand entities, kept rather than looked up: this system
     /// already owns the map from wire id to `Entity` and a `Children`
     /// walk per body per frame would be a scan on the client's hot path
@@ -265,7 +258,7 @@ pub fn stream(
         // while looking like a pure optimisation.
         let known = store.live.get_mut(&id).map(|live| {
             live.seen = gen;
-            (live.entity, live.sleeping)
+            live.entity
         });
         if !core.interp.sample(id, at, &mut rs) {
             continue;
@@ -279,8 +272,12 @@ pub fn stream(
         // read it: bodies faced +Z no matter where they were looking or
         // walking. A capsule hid that; a figure with a face cannot.
         let facing = Quat::from_rotation_y(wire_yaw_to_radians(rs.yaw));
+        // A sleeper lies on its back; a corpse or a downed body is laid down
+        // by `Death01` instead.
+        let asleep = rs.sleeping && !rs.dead && !rs.wounded;
+        let (root, turn) = super::anim::root_pose(pos, facing, asleep);
         match known {
-            Some((entity, was_sleeping)) => {
+            Some(entity) => {
                 if let Ok((_, mut t, mut anim)) = q.get_mut(entity) {
                     // Compared before written, and the guard is not a micro-
                     // optimisation: a `Transform` written through `DerefMut`
@@ -289,11 +286,11 @@ pub fn stream(
                     // for this rig. A camp of sleepers, a corpse, or anyone
                     // standing still costs that every frame for a value that
                     // is bit-identical to the one already there.
-                    if t.translation != pos {
-                        t.translation = pos;
+                    if t.translation != root {
+                        t.translation = root;
                     }
-                    if t.rotation != facing {
-                        t.rotation = facing;
+                    if t.rotation != turn {
+                        t.rotation = turn;
                     }
                     // The clip choice, off state the sim already sent.
                     // `dead` is the v48 bit: a corpse keeps its slot until
@@ -348,15 +345,6 @@ pub fn stream(
                     &rs,
                     core,
                 );
-                if was_sleeping != rs.sleeping {
-                    // The shade lives on the scene's descendants now, so the
-                    // swap is a marker the walk consumes rather than a
-                    // component on this entity — see `anim::Reshade`.
-                    commands.entity(entity).insert(Reshade::body(rs.sleeping));
-                    if let Some(live) = store.live.get_mut(&id) {
-                        live.sleeping = rs.sleeping;
-                    }
-                }
             }
             None => {
                 let mut anim = BodyAnim {
@@ -400,10 +388,10 @@ pub fn stream(
                         // Painted as soon as the scene's meshes exist; until
                         // then the body wears the library's own preview
                         // colours, which is one or two frames.
-                        Reshade::body(rs.sleeping),
+                        Reshade::body(),
                         SceneRoot(scene.clone()),
-                        Transform::from_translation(pos)
-                            .with_rotation(facing)
+                        Transform::from_translation(root)
+                            .with_rotation(turn)
                             .with_scale(Vec3::splat(rig.scale)),
                     ))
                     .id();
@@ -459,7 +447,6 @@ pub fn stream(
                     Live {
                         entity,
                         seen: gen,
-                        sleeping: rs.sleeping,
                         hand,
                         flame,
                         // Deliberately not resolved here. The body is
