@@ -114,6 +114,12 @@ const EXEMPT: &[(&str, &str)] = &[
         "src/main.rs",
         "the `client` binary, `required-features = [\"native\"]` — never built for wasm32.",
     ),
+    (
+        "src/render/music_out.rs",
+        "the native score's decoder thread. Its guard is the \
+         `#[cfg(not(target_arch = \"wasm32\"))]` on its `mod` in render/mod.rs, which a \
+         scan of this file cannot see; the page streams the score its own way.",
+    ),
 ];
 
 /// Trapping sites that are known, unguarded, and not yet fixable — each with
