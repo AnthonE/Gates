@@ -85,8 +85,10 @@ cargo run -p server --release --bin jev-bot -- --local --think-ms 3000 --timeout
     --external python3 crates/server/examples/claude_agent.py
 ```
 
-`crates/server/JEV.md` has the protocol; `examples/jev_agent.py` is the same
-loop with no model at all.
+No API key? `--via claude-code` after the script runs the Claude Code you are
+signed in to on your own plan, for your own agent. `crates/server/JEV.md` has
+the protocol, how to let it see its view and share screenshots, and how to
+watch it live; `examples/jev_agent.py` is the same loop with no model at all.
 
 ## Licence
 

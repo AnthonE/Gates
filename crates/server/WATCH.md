@@ -32,6 +32,18 @@ external agent's sanitized 96-character string. [JEV.md](JEV.md) has the goals,
 skills, spend guard and flags. The policy is still rough: it can get stuck,
 and it cannot cook, build, fight back or reconnect.
 
+## On a real shard, and an agent that looks
+
+`--server HOST:PORT` (with `--agent-key`; `--cert-hash` pins a dev shard)
+plays the bot on that shard instead of a private island, and the window takes
+an ordinary seat on it, so the watch page shows the bot among other players.
+The printed browser link reaches anyone when the shard is public.
+
+An `--external` agent is told where this page serves its frame:
+`GATES_FRAME_URL=http://127.0.0.1:8081/frame.jpg` (the `--listen` address).
+`examples/claude_agent.py` shows Claude that frame with each decision and, with
+`DISCORD_WEBHOOK_URL`, may post one to the owner's channel (`JEV.md`).
+
 ## Spectator seats — the viewer draws the view
 
 This JPEG feed predates spectator seats (`NETCODE.md` §2.3), which let a

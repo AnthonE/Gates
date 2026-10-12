@@ -156,7 +156,9 @@ same welcome seed, slot deltas and geometry as the human client. It does not
 yet answer what is in a container or whether a base's owner is online. An
 external source is also sent `heard`: the chat its client received, labelled
 as a player's chat log labels it — outside the observation, so Jev never sees
-player text.
+player text. Under `jev-watch` it may also look at its rendered first-person
+frame (`GATES_FRAME_URL`): a picture drawn from what its own seat was sent,
+so it holds wall 1 the way the summary does.
 
 ## The model does not drive at frame rate
 

@@ -59,6 +59,11 @@ pub fn guest_secret_path() -> std::path::PathBuf {
 /// The display name a jev bot declares to its spectators when none is given.
 pub const AGENT_NAME: &str = "jev";
 
+/// The Gates web page an agent off this machine is watched from. nginx
+/// sends `/games/gates/?server=…` on to the build wherever it lives, so the
+/// link holds across the build's move to `/games/gates/play/`.
+pub const PUBLIC_WATCH_PAGE: &str = "https://elopros.com/games/gates/";
+
 /// Where a jev bot plays and who it says it is (`NETCODE.md` §2.3, §2.4).
 ///
 /// Without a key it is a **guest agent**: unsigned, loopback only, declared an
@@ -107,6 +112,24 @@ impl Door {
             .ok_or_else(|| {
                 "a guest agent joins only a loopback shard (127.0.0.1:PORT); pass --agent-key PATH to join any other".into()
             })
+    }
+
+    /// The shard is on this machine, so its seats reach nobody else.
+    pub fn loopback(&self) -> bool {
+        self.server
+            .parse::<SocketAddr>()
+            .map_or(self.server.starts_with("localhost:"), |a| {
+                a.ip().is_loopback()
+            })
+    }
+
+    /// Where a person watches this body: `page` with this door's spectator
+    /// query, or — off this machine, with no page named — the public Gates
+    /// page. `None` for a loopback shard with no page: there is no page
+    /// this machine is known to serve.
+    pub fn watch_url(&self, page: Option<&str>) -> Option<String> {
+        let page = page.or((!self.loopback()).then_some(PUBLIC_WATCH_PAGE))?;
+        Some(spectate_url(page, &self.spectate_query()))
     }
 
     /// The dial: certificate-validating, permissive only on loopback.
@@ -228,6 +251,10 @@ pub struct MindArgs {
     pub skill: Preset,
     /// When the survivor fights, likewise.
     pub temperament: Temperament,
+    /// Where the body's rendered view is served, told to an external
+    /// source as `GATES_FRAME_URL` (`jev-watch` only: `jev-bot` renders
+    /// nothing).
+    pub frame_url: Option<String>,
 }
 
 impl Default for MindArgs {
@@ -237,6 +264,7 @@ impl Default for MindArgs {
             cfg: MindConfig::default(),
             skill: Preset::default(),
             temperament: Temperament::default(),
+            frame_url: None,
         }
     }
 }
@@ -306,10 +334,22 @@ impl MindArgs {
         self.cfg.check()?;
         match &self.source {
             Source::Scripted => Mind::new(Scripted::default(), self.cfg),
-            Source::External(program, args) => Mind::new(
-                crate::external::External::spawn(program, args, self.cfg.timeout)?,
-                self.cfg,
-            ),
+            Source::External(program, args) => {
+                let env: Vec<(&str, String)> = self
+                    .frame_url
+                    .iter()
+                    .map(|url| ("GATES_FRAME_URL", url.clone()))
+                    .collect();
+                Mind::new(
+                    crate::external::External::spawn_with_env(
+                        program,
+                        args,
+                        &env,
+                        self.cfg.timeout,
+                    )?,
+                    self.cfg,
+                )
+            }
             Source::Jev => {
                 let key = std::env::var("TYPESAFE_API_KEY").map_err(|_| {
                     "set TYPESAFE_API_KEY, or choose --scripted or --external explicitly"
@@ -390,5 +430,32 @@ mod tests {
         assert_eq!(kos.opts().temperament, Temperament::Kos);
         assert!(parse("--temperament").is_err());
         assert!(parse("--temperament berserk").is_err());
+    }
+
+    /// Off this machine the owner is handed the public page, which takes
+    /// the shard and the wallet; on it, only a page they name.
+    #[test]
+    fn an_owner_is_handed_a_watch_link_that_reaches_their_agent() {
+        let key = AgentKey::from_secret(&[0x11; 32]).unwrap();
+        let wallet = String::from_utf8_lossy(&key.address().to_hex()).into_owned();
+        let public = Door::new("game.elopros.com:61234", None, Some(key)).unwrap();
+        assert!(!public.loopback());
+        assert_eq!(
+            public.watch_url(None).unwrap(),
+            format!(
+                "https://elopros.com/games/gates/?server=game.elopros.com:61234&spectate={wallet}"
+            )
+        );
+        let local = Door::new("127.0.0.1:4433", Some("aa:bb".into()), None).unwrap();
+        assert!(local.loopback());
+        assert_eq!(local.watch_url(None), None);
+        assert_eq!(
+            local.watch_url(Some("http://127.0.0.1:8000/")).unwrap(),
+            "http://127.0.0.1:8000/?server=127.0.0.1:4433&hash=aa:bb&spectate"
+        );
+        assert!(
+            Door::new("localhost:4433", None, None).is_err(),
+            "a guest names an address"
+        );
     }
 }

@@ -39,6 +39,13 @@ query for a Gates web page (`?server=…&hash=…&spectate`, bare for a guest,
 `=0x…` for a wallet) and the desktop command (`--spectate any|0x…`). Wire
 versions must agree. `tests/jev_door.rs` drives the same `agent_demo::Door`.
 
+**Watch your own agent.** On a shard off this machine a wallet agent prints
+`watch it live: https://elopros.com/games/gates/?server=…&spectate=0x…`
+(`--spectate-page URL` names another Gates page). Open it and your browser
+draws the agent's own first-person view, its HUD and the chat it hears; the
+public shard follows agents live (`spectate = true`). Its goals and reasons
+stay in your terminal.
+
 ## Goals and skills
 
 The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
@@ -139,6 +146,34 @@ cargo run -p server --release --bin jev-bot -- --local --seconds 600 \
 Every decision is one API call: `--max-requests-hour` is the spend bound.
 `CLAUDE_MODEL` picks the model. Join the printed island from the game to
 talk to it.
+
+**On your Claude plan.** Three ways to pay for the decisions:
+
+- An API key, as above.
+- Max 5x and 20x include monthly API credits: make a key in the Console
+  organization your plan links to, and the same command spends them.
+- `--via claude-code` (after the program) runs the unmodified `claude` CLI you
+  are signed in to, once per decision, with no tools. It removes API keys from
+  that child's environment so your plan is what is used, and never touches a
+  credential. For your own agent on your own machine; it counts against the
+  plan's 5-hour and weekly limits, so give it room:
+  `--think-ms 10000 --timeout-ms 30000`, and `CLAUDE_MODEL=sonnet` to stretch
+  them. Hosting agents for other people takes an API key, not a plan.
+
+**Let it see.** Under `jev-watch` the agent is told where its rendered view is
+(`GATES_FRAME_URL`, the page's `frame.jpg`), and `claude_agent.py` shows Claude
+that picture with every decision, by either route. A frame is what its own
+seat was sent, so it sees nothing a player standing there could not.
+
+```sh
+cargo run -p server --release --features watch --bin jev-watch -- \
+    --server game.elopros.com:61234 --agent-key /path/to/agent.key \
+    --external python3 crates/server/examples/claude_agent.py
+```
+
+**Share.** With `DISCORD_WEBHOOK_URL` set as well, Claude may post a moment
+worth showing (the frame and a one-line caption) to that channel, at most once
+every `SHARE_EVERY_S` (300). Its caption can never ping anyone.
 
 ## Limits
 

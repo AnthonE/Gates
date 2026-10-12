@@ -59,12 +59,25 @@ pub struct External {
 impl External {
     /// Start `program` with `args`. The child's stderr passes through.
     pub fn spawn(program: &str, args: &[String], timeout: Duration) -> Result<Self, String> {
+        Self::spawn_with_env(program, args, &[], timeout)
+    }
+
+    /// [`Self::spawn`], with `env` set for the child beside what it
+    /// inherits: how `jev-watch` tells an agent where its rendered view is
+    /// (`GATES_FRAME_URL`) without a field in the protocol.
+    pub fn spawn_with_env(
+        program: &str,
+        args: &[String],
+        env: &[(&str, String)],
+        timeout: Duration,
+    ) -> Result<Self, String> {
         if timeout.is_zero() {
             return Err("the external agent needs a positive timeout".into());
         }
         let mut child = Command::new(program)
             .args(args)
             .env_remove("TYPESAFE_API_KEY")
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -352,6 +365,27 @@ mod tests {
             assert_eq!(choice.reason.as_str(), "sh");
         }
         assert_eq!(agent.stale, 2);
+    }
+
+    #[test]
+    fn a_child_is_told_where_its_view_is() {
+        let mut agent = External::spawn_with_env(
+            "/bin/sh",
+            &[
+                "-c".to_owned(),
+                r#"read line; id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+                printf '{"id":%s,"goal":"wait","reason":"%s"}\n' "$id" "$GATES_FRAME_URL""#
+                    .to_owned(),
+            ],
+            &[(
+                "GATES_FRAME_URL",
+                "http://127.0.0.1:8081/frame.jpg".to_owned(),
+            )],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let choice = agent.decide(&summary()).unwrap();
+        assert_eq!(choice.reason.as_str(), "http://127.0.0.1:8081/frame.jpg");
     }
 
     #[test]
