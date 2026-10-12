@@ -24,7 +24,7 @@
     {"shot": "base-storm", "in": 1.5, "len": 2.83, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.14:saturation=0.6:gamma=1.0,colorbalance=rs=-0.04:bs=0.05"},
     {"shot": "base-night", "in": 1.5, "len": 2.83, "game": 0.5, "transition": "cut"},
     {"shot": "raid-plant", "in": 0.25, "len": 4.25, "game": 0.8, "transition": "cut"},
-    {"shot": "raid-blast", "in": 0.73, "len": 4.25, "game": 1.0, "transition": "cut"},
+    {"shot": "raid-blast", "in": 0.68, "len": 4.25, "game": 1.0, "transition": "cut"},
     {"shot": "raid-wide", "in": 2.6, "len": 2.84, "game": 1.0, "transition": "cut"},
     {"shot": "aftermath", "in": 1.0, "len": 2.83, "game": 0.8, "transition": "cut"},
     {"shot": "dawn-sea", "in": 4.6, "len": 2.83, "game": 0.4, "transition": "black", "fade": 0.4}
@@ -67,7 +67,7 @@
   "poster": {
     "out": "film/ads/gates-trailer-poster.png",
     "shot": "raid-blast",
-    "at": 2.4,
+    "at": 3.0,
     "size": [1920, 1080],
     "title": "GATES",
     "lines": ["TRUST NO ONE"],
