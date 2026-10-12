@@ -656,23 +656,29 @@ pub fn build(
                 // grass: `NOW.md` §0dk), so players read as silhouettes and
                 // the first-person hand as a dark glove. Lift the shared
                 // material in place, which reaches every body and both arms
-                // at once; the sleeper and keeper shades set their own colour.
+                // at once. The sleeper and keeper shades replace `base_color`,
+                // so each carries the lift times its own tint — a tint alone
+                // drew sleepers at 0.007 luma, a black cut-out.
+                let lifted = |t: Color| {
+                    let c = t.to_linear();
+                    Color::LinearRgba(LinearRgba::rgb(
+                        c.red * BODY_ALBEDO_LIFT,
+                        c.green * BODY_ALBEDO_LIFT,
+                        c.blue * BODY_ALBEDO_LIFT,
+                    ))
+                };
                 if let Some(m) = materials.get_mut(only) {
-                    m.base_color = Color::LinearRgba(LinearRgba::rgb(
-                        BODY_ALBEDO_LIFT,
-                        BODY_ALBEDO_LIFT,
-                        BODY_ALBEDO_LIFT,
-                    ));
+                    m.base_color = lifted(Color::WHITE);
                 }
                 if let Some(base) = materials.get(only) {
                     let mut tinted = base.clone();
-                    tinted.base_color = Color::srgb(0.34, 0.38, 0.46);
+                    tinted.base_color = lifted(SLEEPER_TINT);
                     tinted.perceptual_roughness = (tinted.perceptual_roughness + 0.1).min(1.0);
                     // THE GATE's shopkeepers: the same bark gone mossy, so
                     // a vendor never reads as a player standing at a stall
                     // (Rust's vendors wear what no player can).
                     let mut moss = base.clone();
-                    moss.base_color = Color::srgb(0.62, 0.86, 0.50);
+                    moss.base_color = lifted(Color::srgb(0.62, 0.86, 0.50));
                     shades.awake = only.clone();
                     shades.sleeping = materials.add(tinted);
                     shades.keeper = materials.add(moss);
@@ -1308,6 +1314,12 @@ pub struct BodyShades {
 /// luma to litter's 0.135 and clips 0.14% of texels (measured in `NOW.md`
 /// §0dk); 3.0 would reach twig's 0.167 at 0.34%.
 pub const BODY_ALBEDO_LIFT: f32 = 2.4;
+
+/// A sleeper's shade over the lifted skin, linear: half as bright and cold,
+/// so the bark still reads and the body is plainly not awake (never
+/// brighter — `BodyShades`). The old `srgb(0.34, 0.38, 0.46)`'s hue at
+/// luma 0.5 instead of 0.12.
+pub const SLEEPER_TINT: Color = Color::LinearRgba(LinearRgba::rgb(0.40, 0.50, 0.76));
 
 /// How far a body may look from level, radians (~74°), against a wire that
 /// can carry ~88°. A clamp and not a scale: scaling makes every glance an
