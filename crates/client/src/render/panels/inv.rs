@@ -97,7 +97,14 @@ pub struct SlotCell {
 /// the page is being used for: quick craft, or the container you opened.
 /// The crafting menu is its own page (`craft::build_screen`, `Q`), reached
 /// by the tab strip across the top of both.
-pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons, sel: u8) {
+pub fn build_screen(
+    commands: &mut Commands,
+    ui: &Ui,
+    core: &ClientCore,
+    icons: &Icons,
+    sel: u8,
+    portrait: Option<&crate::render::portrait::Portrait>,
+) {
     super::page_root(commands, ui, |zone| {
         // **The body is drawn unconditionally** (`NOW.md` §0eq item 4). It
         // used to be a branch inside `container_grid`, so it appeared only
@@ -119,7 +126,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             ..default()
         })
         .with_children(|row| {
-            wear_panel(row, core, icons);
+            wear_panel(row, core, icons, portrait);
             own_grid(row, core, icons, sel as usize);
             if open_table(core).is_some() {
                 table_grid(row, ui, core, icons);
@@ -873,6 +880,8 @@ pub fn table_clock(
 const DOLL_HEAD_PX: f32 = 26.0;
 const DOLL_TORSO_PX: f32 = 52.0;
 const DOLL_W_PX: f32 = 40.0;
+/// The portrait's height in the wear panel: about the pack grid beside it.
+const DOLL_PORTRAIT_H_PX: f32 = 240.0;
 
 /// The worn container, drawn as a paperdoll rather than as a grid
 /// (`NOW.md` §0eq.1, off `inventory.jpeg`).
@@ -891,7 +900,12 @@ const DOLL_W_PX: f32 = 40.0;
 /// know this panel is shaped differently: `drag_pointer` finds a
 /// `SlotCell { kind: CONT_WEAR, slot }` by query and neither knows nor
 /// cares what is drawn around it.
-fn wear_panel(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
+fn wear_panel(
+    row: &mut ChildSpawnerCommands,
+    core: &ClientCore,
+    icons: &Icons,
+    portrait: Option<&crate::render::portrait::Portrait>,
+) {
     let pct = worn_pct(&core.catalog, &core.worn);
     row.spawn((
         Node {
@@ -923,7 +937,18 @@ fn wear_panel(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) 
                     wear_slot(stack, core, icons, slot);
                 }
             });
-            silhouette(body);
+            // You, as everyone else sees you (Triple T, `render/portrait.rs`);
+            // the two-block figure only until the portrait exists.
+            match portrait {
+                Some(p) => {
+                    body.spawn(crate::render::portrait::view(
+                        p,
+                        DOLL_PORTRAIT_H_PX * 2.0 / 3.0,
+                        DOLL_PORTRAIT_H_PX,
+                    ));
+                }
+                None => silhouette(body),
+            }
         });
         protection_bar(col, pct);
     });

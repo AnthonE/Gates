@@ -78,6 +78,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::BulletWood, five!("impactWood_light")),
     (Cue::BulletMetal, five!("impactMetal_light")),
     (Cue::Knock, five!("impactWood_heavy")),
+    (Cue::Tung, takes!("kenney", "tung", 0 1 2)),
     (Cue::UiClick, takes!("kenney", "ui_click", 0)),
     (Cue::Hit, takes!("kenney", "hit", 0)),
     (Cue::HitHead, takes!("kenney", "hit_head", 0)),

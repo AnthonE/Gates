@@ -98,6 +98,8 @@ pub mod highlight;
 pub mod landmarks;
 pub mod lodged;
 pub mod poles;
+// Triple T on the menu and in the inventory.
+pub mod portrait;
 // The fires fire arrows leave.
 pub mod arrow_fire;
 pub mod town;
@@ -594,6 +596,16 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<moon::MoonMaterial>::default());
         app.add_plugins(MaterialPlugin::<deck::DeckMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
+        // The portrait's layer reaches every node its scene spawns, before
+        // visibility is worked out (`portrait.rs`).
+        app.add_plugins(bevy::app::HierarchyPropagatePlugin::<
+            bevy::camera::visibility::RenderLayers,
+        >::new(PostUpdate))
+            .configure_sets(
+                PostUpdate,
+                bevy::app::PropagateSet::<bevy::camera::visibility::RenderLayers>::default()
+                    .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+            );
         app.insert_resource(day_pin)
             .insert_resource(weather_pin)
             .init_resource::<rig::FlameGain>()
@@ -794,6 +806,8 @@ impl Plugin for GatesRenderPlugin {
                 // The menu's footage. Wanted on the first screen after the
                 // splash, so it warms while everything else does.
                 ui::load_backdrop,
+                // Triple T's camera, its target and its lights.
+                portrait::setup,
             ),
         );
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
@@ -1314,11 +1328,31 @@ impl Plugin for GatesRenderPlugin {
                 anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
-                // What other players wear (wire v98), hung on their bones.
-                (worn::bind.after(Stream), worn::dress).chain(),
             )
+                // The menu's Triple T is a body too (`portrait.rs`).
+                .run_if(world_running.or(portrait::on_menu)),
+        )
+        // What other players wear (wire v98), hung on their bones.
+        .add_systems(
+            Update,
+            (worn::bind.after(Stream), worn::dress)
+                .chain()
                 .run_if(world_running),
         )
+        // Triple T: spawned once the rig is in, dressed in what you wear and
+        // hold, filmed while a screen shows him.
+        .add_systems(
+            Update,
+            (
+                portrait::spawn,
+                portrait::bind,
+                portrait::idle.before(anim::drive),
+                portrait::dress,
+                portrait::activate,
+            )
+                .chain(),
+        )
+        .add_systems(OnEnter(Screen::Menu), portrait::undress)
         // **The spine override lives in `PostUpdate`, between the animation
         // and the propagation, and that window is the whole reason it is
         // cheap.** The clip has posed the skeleton and nothing has turned
@@ -1331,7 +1365,7 @@ impl Plugin for GatesRenderPlugin {
             anim::pose_spine
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate)
-                .run_if(world_running),
+                .run_if(world_running.or(portrait::on_menu)),
         )
         // The bow's drawing hand, in the same window and for the same
         // reason: it overrides the hold clip's left arm for the frame.
@@ -1353,7 +1387,7 @@ impl Plugin for GatesRenderPlugin {
             fingers::pose
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate)
-                .run_if(world_running),
+                .run_if(world_running.or(portrait::on_menu)),
         )
         .add_systems(
             PostUpdate,
@@ -1794,6 +1828,8 @@ impl Plugin for GatesRenderPlugin {
                     .after(impact::contacts)
                     .after(fx::gun::shots)
                     .after(impact::snap),
+                // The bat's tung over the same contacts (Triple T).
+                audio::tungs,
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

@@ -421,6 +421,7 @@ pub fn poll_status(mut menu: ResMut<Menu>) {
 
 /// Build the screen. Rebuilt from scratch on entry, so the row list is
 /// whatever `Menu` holds at that moment.
+#[allow(clippy::too_many_arguments)]
 pub fn setup(
     mut commands: Commands,
     menu: Res<Menu>,
@@ -429,6 +430,7 @@ pub fn setup(
     my: Res<MyFace>,
     state: Res<HubState>,
     backdrop: Option<Res<ui::Backdrop>>,
+    portrait: Option<Res<super::portrait::Portrait>>,
 ) {
     build(
         &mut commands,
@@ -437,7 +439,7 @@ pub fn setup(
         &who,
         &my,
         &state.hub,
-        backdrop.as_deref(),
+        (backdrop.as_deref(), portrait.as_deref()),
     );
 }
 
@@ -527,6 +529,7 @@ pub fn rebuild(
     my: Res<MyFace>,
     mut state: ResMut<HubState>,
     backdrop: Option<Res<ui::Backdrop>>,
+    portrait: Option<Res<super::portrait::Portrait>>,
     roots: Query<Entity, With<MenuRoot>>,
 ) {
     // Either resource landing something redraws the one screen they share —
@@ -547,7 +550,7 @@ pub fn rebuild(
         &who,
         &my,
         &state.hub,
-        backdrop.as_deref(),
+        (backdrop.as_deref(), portrait.as_deref()),
     );
 }
 
@@ -568,7 +571,7 @@ fn build(
     who: &Who,
     my: &MyFace,
     hub: &Hub,
-    backdrop: Option<&ui::Backdrop>,
+    (backdrop, portrait): (Option<&ui::Backdrop>, Option<&super::portrait::Portrait>),
 ) {
     // A camera, because the menu may be the first thing that ever exists —
     // the render rig only spawns on entering the world.
@@ -595,6 +598,9 @@ fn build(
                 root.spawn(ui::backdrop(b.0.clone()));
                 root.spawn(ui::scrim());
             }
+            if let Some(p) = portrait {
+                hero(root, p);
+            }
             header(root, who, my);
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
@@ -616,6 +622,37 @@ fn build(
             });
         });
 }
+
+/// Triple T, bottom left under the nav: over the wash, under every panel,
+/// so the server table covers him rather than the other way round.
+fn hero(root: &mut ChildSpawnerCommands, portrait: &super::portrait::Portrait) {
+    use super::portrait::{view, H_PX, W_PX};
+    root.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(HERO_LEFT_PX),
+            bottom: Val::Px(14.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        // The scrim's index, and spawned after it, so drawn over it.
+        ZIndex(-1),
+        Pickable::IGNORE,
+    ))
+    .with_children(|col| {
+        let (w, h) = (HERO_H_PX * W_PX as f32 / H_PX as f32, HERO_H_PX);
+        col.spawn(view(portrait, w, h));
+        if let Some(name) = crate::ui::HERO {
+            col.spawn(ui::strong(name, 15.0, ui::DIM));
+        }
+    });
+}
+
+/// The menu's Triple T: tall enough to read at 720p without reaching the
+/// nav's last entry, and centred under the nav column.
+const HERO_H_PX: f32 = 300.0;
+const HERO_LEFT_PX: f32 = NAV_W / 2.0 - HERO_H_PX / 3.0;
 
 /// The wordmark, and who the launcher says is playing.
 ///
