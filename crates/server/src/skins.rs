@@ -4,7 +4,8 @@
 //! platform instead, over the route elo already serves for its inventory
 //! page: `GET {origin}/api/items/of/{wallet}` (`meter/items.py` in
 //! `AnthonE/scry-forge`), which lists the wallet's item-contract tokens and
-//! re-reads each one's `catalogId` off the chain. A catalog id is exactly
+//! re-reads each one's `catalogId` off the chain, keeping only this title's
+//! catalog rows (`&title=gates`). A catalog id is exactly
 //! what `content/skins.toml` calls `catalog`, so the answer maps straight
 //! onto the baked rows (`sim_core::skin`).
 //!
@@ -117,7 +118,9 @@ pub fn owned_of(cfg: &Config, wallet: Option<&str>, sc: &SkinContent) -> Owned {
         // door gives it.
         return Owned::Unknown;
     }
-    let url = format!("{origin}/api/items/of/{wallet}?limit={ITEMS_LIMIT}");
+    // `title` keeps the answer to this title's catalog rows, so another
+    // title's catalog ids can never read as Gates skins.
+    let url = format!("{origin}/api/items/of/{wallet}?limit={ITEMS_LIMIT}&title={STORE_TITLE}");
     match crate::entitle::get_capped(&url, cfg.timeout, MAX_RESPONSE_BYTES) {
         Some(body) => parse(&body, sc),
         None => Owned::Unknown,
