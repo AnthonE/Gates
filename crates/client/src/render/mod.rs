@@ -629,6 +629,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<ore::Debris>()
+            .init_resource::<ore::OreCuts>()
             .init_resource::<impact::Contacts>()
             .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
@@ -1245,7 +1246,8 @@ impl Plugin for GatesRenderPlugin {
                 // pose and the chunks in flight; and the hotspot's shimmer
                 // after the resolver that writes `InWeak`.
                 ore::react.after(impact::snap).after(feed::drain),
-                ore::pose.after(ore::react),
+                ore::cut,
+                ore::pose.after(ore::react).after(ore::cut),
                 ore::fly.after(ore::react),
                 ore::hotspot.after(verbs::resolve).after(ore::pose),
             )

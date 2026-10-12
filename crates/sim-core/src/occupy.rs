@@ -86,6 +86,26 @@ pub trait Harvested {
     fn stump_standing(&self, _cx: u16, _cz: u16) -> bool {
         false
     }
+
+    /// How much of a worn ore node's height still stands, per mille
+    /// (`gather::ORE_STAGE_TOP_PM`): a node mined down is struck and stood on
+    /// at what is left of it. Asked only of a standing slot. The default
+    /// knows no wear.
+    fn ore_top_pm(&self, _cx: u16, _cz: u16, _o: Occupant) -> u16 {
+        1000
+    }
+}
+
+/// A slot sunk to `pm` per mille of its height: the same radius, its top
+/// where a worn ore node's top is now. Nothing that asks reaches below the
+/// ground it sinks through.
+#[inline]
+pub fn sunk(slot: &Slot, pm: u16) -> Slot {
+    let (_, top) = terrain::occupant_volume(slot.occupant);
+    Slot {
+        y: slot.y - top * slot.scale * ((1000 - pm.min(1000)) as f32 * 0.001),
+        ..*slot
+    }
 }
 
 /// A slot at `pm` per mille of its size — a regrowing sapling is the tree
@@ -138,6 +158,10 @@ impl Harvested for crate::gather::SlotLives {
     fn stump_standing(&self, cx: u16, cz: u16) -> bool {
         self.find(cx, cz)
             .is_some_and(|e| e.respawn_at != 0 && e.hits != crate::gather::STUMP_GRUBBED)
+    }
+
+    fn ore_top_pm(&self, cx: u16, cz: u16, o: Occupant) -> u16 {
+        crate::gather::SlotLives::ore_top_pm(self, cx, cz, o)
     }
 }
 
@@ -565,7 +589,13 @@ impl Occupants<'_> {
                 // full-size answer keeps this as cheap as it was.
                 let g = match self.harvested.standing_pm(cx as u16, cz as u16) {
                     0 => continue,
-                    1000 => g,
+                    1000 => match self
+                        .harvested
+                        .ore_top_pm(cx as u16, cz as u16, slot.occupant)
+                    {
+                        1000 => g,
+                        pm => terrain::slot_ground(&sunk(&slot, pm), x, z, feet_y, r),
+                    },
                     pm => terrain::slot_ground(&grown(&slot, pm), x, z, feet_y, r),
                 };
                 if g <= best {
@@ -644,7 +674,15 @@ impl Occupants<'_> {
                 // because an out-of-island cell resolved to `None` above.
                 match self.harvested.standing_pm(cx as u16, cz as u16) {
                     0 => continue,
-                    1000 => {}
+                    1000 => {
+                        let pm = self
+                            .harvested
+                            .ore_top_pm(cx as u16, cz as u16, slot.occupant);
+                        if pm < 1000 && !terrain::slot_blocks(&sunk(&slot, pm), x, z, feet_y, r, h)
+                        {
+                            continue;
+                        }
+                    }
                     pm => {
                         if !terrain::slot_blocks(&grown(&slot, pm), x, z, feet_y, r, h) {
                             continue;

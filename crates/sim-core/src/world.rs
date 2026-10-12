@@ -5937,6 +5937,8 @@ impl World {
         let tick = self.tick;
         // A sapling's size is measured at this tick (tree growth v0).
         self.slot_lives.set_now(tick);
+        // A worn ore node stands at its stage's height (`ORE_STAGE_TOP_PM`).
+        self.slot_lives.set_ore_hits(&self.gather);
         // The weather and the hour this tick (weather v0): the players'
         // exposure reads them in the loop below, the animals after it.
         let wx = crate::weather::now(seed, tick, &self.env);

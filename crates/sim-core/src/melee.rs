@@ -529,7 +529,30 @@ pub fn occupant_cast(
                     (slot, t)
                 }
                 0 => continue,
-                1000 => (slot, t_in),
+                // A worn ore node is struck at what is left of it.
+                1000 => match occ
+                    .harvested
+                    .ore_top_pm(cx as u16, cz as u16, slot.occupant)
+                {
+                    1000 => (slot, t_in),
+                    pm => {
+                        let low = crate::occupy::sunk(&slot, pm);
+                        let Some((t, _)) = cylinder_span(
+                            o,
+                            u,
+                            (low.x, low.z),
+                            r * low.scale + MELEE_PROBE_M,
+                            low.y,
+                            low.y + top * low.scale,
+                        ) else {
+                            continue;
+                        };
+                        if best.is_some_and(|b| t >= b.t) {
+                            continue;
+                        }
+                        (low, t)
+                    }
+                },
                 pm => {
                     let small = crate::occupy::grown(&slot, pm);
                     let Some((t, _)) = cylinder_span(

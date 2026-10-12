@@ -731,6 +731,15 @@ impl Harvested for HarvestedSet {
         let key = cell_key(cx, cz);
         self.contains(key) && !self.grubbed(key)
     }
+
+    /// A worn ore node stands at the height of the stage the wire last said
+    /// (`SUB_NODE_STAGE`), the server's own table.
+    fn ore_top_pm(&self, cx: u16, cz: u16, o: sim_core::terrain::Occupant) -> u16 {
+        if sim_core::gather::node_index(o).is_none_or(|ni| !sim_core::gather::is_ore(ni)) {
+            return 1000;
+        }
+        sim_core::gather::ORE_STAGE_TOP_PM[self.stage(cell_key(cx, cz)) as usize]
+    }
 }
 
 /// The client's mirror of the placed-piece set, keyed by grid address —
