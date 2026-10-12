@@ -3,7 +3,8 @@
 **Every file here is CC0** (Creative Commons Zero,
 <http://creativecommons.org/publicdomain/zero/1.0/>) **or public domain**
 (US-government works, the Public Domain Mark: `pd/`), checked on each
-source's own page. Credit is not required and is given anyway.
+source's own page. Credit is not required and is given anyway. The score
+(`assets/music/`, last section) is generated under a vendor licence instead.
 
 **Every cue the game plays is one of these files; nothing is synthesized any
 more.** They are compiled into the client (`crates/client/src/sound_bank.rs`)
@@ -86,8 +87,7 @@ were additionally gained up into a look-ahead limiter (+12 dB and +8 dB,
 the loop limited across its own seam) so the bank's peak normalization
 leaves them dense rather than a few loud drops. The town loop's crossfade
 compensates for its very steady engine, which an equal-power crossfade
-would have swelled at the join. The flyby is a whip crack, a small sonic
-boom: no clean CC0 recording of a real bullet passing exists.
+would have swelled at the join.
 
 | Files | Cue | Source (author, id, what was used) |
 |---|---|---|
@@ -147,10 +147,10 @@ by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).
 
 ## `assets/music/` — the score (2026-10-11)
 
-Four whole tracks, supplied by the operator on 2026-10-11 to replace the
-nine VSCO-2 pieces (the files are dated 2026-08-06). **Source, licence or
-vendor plan to be recorded by the operator** — the rail asks for vendor,
-plan and prompt on generated audio. Not under `assets/sound/` and not in the
+Four whole tracks, generated with **ElevenLabs** on the operator's plan
+that licenses commercial use (`DECISIONS.md` 2026-08-11: paid plan only),
+on 2026-08-06; supplied 2026-10-11 to replace the nine VSCO-2 pieces. The
+prompts were not kept. Not under `assets/sound/` and not in the
 bank: they are streamed (`crates/sound/src/music.rs`), natively by a decoder
 thread and in the browser by the page's `<audio>` element, so nothing is
 compiled into the client and a page fetches only the track it plays.

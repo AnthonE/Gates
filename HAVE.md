@@ -148,12 +148,13 @@ header so a replay replays the content it was played under — wall 7.
 | `mobs.toml` | **2** | pig (80 hp), wolf (100 hp) |
 | `balance.toml` | — | spawn kit, decay ladder, survival rates, the TTK anchors |
 
-**45 sound cues**, generated at boot rather than shipped as files
-(`sound/synth.rs`) — footsteps per surface, impacts per material, swings,
-gather, craft-done, refusals, hit, hurt, death, place, splash, tree-fall, UI,
-three bed layers, birds, a nine-part adaptive music bed (calm/tense/combat ×
-open/turn/close), wolf howl and growl, pig snort, bow and gun reports, and
-head/limb hit confirms.
+**87 sound cues**, every one a recording (`assets/sound/MANIFEST.md`:
+Freesound, Kenney and public-domain sources) — footsteps per surface, impacts
+per material, swings, gather, craft-done, refusals, hit, hurt, death, place,
+splash, tree-fall, UI, seven beds, birds, wolf howl and growl, pig snort, stag
+roar, bow, crossbow and gun reports, flybys, and head/limb hit confirms. **The
+score** is four ElevenLabs tracks streamed from `assets/music/`: Safe Zone is
+the intro, the other three play 4–8 minutes apart (`sound/music.rs`).
 
 **24 3D models**, **78 icons**, **42 textures** shipped and licence-audited
 (`assets/*/MANIFEST.md`, `CREDITS.md`).

@@ -204,8 +204,8 @@ Pieces are dressed procedurally now (`render/piece_dress.rs`) and vary by addres
 ## 0gs · What ground surface v1 left open *(client lane)*
 
 3. **`rock` still does two jobs**: alpine ground and the cliff face the slope
-   veto forces (plus the prop fallback), all on the `Rock032` slab since
-   2026-09-24; the road has its own aggregate layer (`aggregate_*`, array
+   veto forces (plus the prop fallback), all on the `Rock043L` granite since
+   2026-10-11; the road has its own aggregate layer (`aggregate_*`, array
    layer 4). Splitting cliff from ground is a fifth splat channel, and
    `ATTRIBUTE_COLOR` carries four weights and is full — a new vertex channel,
    ~30 files (sized 2026-08-28). `gravel_*` (unbundled) is the obvious cliff
@@ -334,8 +334,7 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
 
 ## 0m · The pig is in — what the roster still owes *(systems lane)*
 
-2. Holding a charge is free. The stag's bellow is a stand-in cut from the howl and a
-   growl (`assets/sound/MANIFEST.md`): a CC0 red deer roar replaces it.
+2. Holding a charge is free.
 4. `MAX_MOBS = 256` (a u8 slot ceiling; shipped densities fill about a quarter) has never met a playtest.
 5. Should `ttk_melee` widen (rock vs spear)? `DECISIONS.md` §open "tools as weapons".
 8. The brain's state is `/brain` (admin, the nearest animal, said to the asker); no overlay or log.

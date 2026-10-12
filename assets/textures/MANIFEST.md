@@ -24,18 +24,14 @@ Fetched at 1K, re-encoded: albedo 1024 q82, normal 1024 q90, roughness and AO
 512 greyscale q80. **Baseline JPEG, never progressive** (2026-10-11): the browser decodes these
 on one wasm thread, and progressive costs ~1.8× the decode; 18 files were
 converted losslessly with `jpegtran -copy none -optimize` (decoded pixels
-identical, decode 433 → 230 ms, +333 KB). **10 materials, 38 files, 7.1 MB total.** (`twig` is the
-tenth, 2026-08-22, encoded to that same spec — a file joining a documented set
-matches the set, and re-spec'ing is the separate call the ⚠ below describes.)
+identical, decode 433 → 230 ms, +333 KB). **60 files, 15.2 MB total** (2026-10-11).
 
-⚠ **That encode spec was chosen for a first-visit browser download and the
-constraint is gone** (the browser client was cut 2026-08-06; the client
-installs a depot and reads from disk). `ART.md` §7 retires the 12 MB payload
-ceiling with it and says re-sourcing at 2K/4K is unblocked — what is real
-natively is VRAM and disk, and nothing has measured either. **Treat every
-size and quality number below as a browser-era artifact, not a budget.**
+**That encode spec is the budget: the browser is the main client again**
+(2026-10), and every file here is a download and a decode on one wasm thread.
+`ART.md` §7 has the measured cost of 2K (about four times the download and
+the memory) and the cheaper lever: draw a source at its published size.
 
-**`rock` is the one exception to that encode spec — albedo q74, normal q82.** It
+**`rock` was the one exception to that encode spec until 2026-10-11 — albedo q74, normal q82.** It
 holds the swap at **553 KB against `cliff_side`'s 562 KB**, so the only identity
 here that costs client boot time does not cost more of it than what it replaced.
 (⚠ **Every number in this paragraph and the three below it is `Rock023`'s** —
