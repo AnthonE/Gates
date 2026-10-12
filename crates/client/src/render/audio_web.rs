@@ -62,6 +62,10 @@ use super::audio::{self, CMD_FRAME_CAP};
 /// Where the page leaves the node it built inside the PLAY click.
 const HANDOFF: &str = "gatesAudio";
 
+/// Where the page leaves the score's `<audio>` element, already playing the
+/// intro it started inside the same click (`web/app.js`, `startMusic`).
+const MUSIC: &str = "gatesMusic";
+
 /// What the processor posts back, as the page's side sees it.
 #[derive(Default)]
 struct Inbox {
@@ -104,6 +108,11 @@ pub struct Web {
     /// The renderer's rate: the `AudioContext`'s, or [`SAMPLE_RATE`] with no
     /// context.
     pub out_rate: u32,
+    /// The page's music object, if it built one. Independent of the worklet:
+    /// a page whose `AudioWorklet` failed still streams the score.
+    music: Option<JsValue>,
+    /// The level last sent to it, so a steady level sends nothing.
+    music_sent: f32,
 }
 
 impl Web {
@@ -119,6 +128,21 @@ impl Web {
             unrouted: 0,
             install_refused: 0,
             out_rate: SAMPLE_RATE,
+            music: None,
+            music_sent: -1.0,
+        }
+    }
+
+    /// Call `name` on the page's music object, if there is one.
+    fn music_call(&self, name: &str, arg: &JsValue) {
+        let Some(m) = self.music.as_ref() else {
+            return;
+        };
+        if let Some(f) = Reflect::get(m, &JsValue::from_str(name))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        {
+            let _ = f.call1(m, arg);
         }
     }
 
@@ -189,6 +213,37 @@ impl Web {
 /// `engine::rate`'s resample the only one in the chain, exactly as `open`
 /// does with cpal's device rate natively.
 pub fn open(app: &mut App) -> Web {
+    let mut web = open_worklet(app);
+    web.music = adopt_music(app);
+    web
+}
+
+/// The page's music object, and the track it is already playing handed to
+/// the score (`audio::Score::adopt`) so the director picks up where the page
+/// is rather than starting the intro over.
+fn adopt_music(app: &mut App) -> Option<JsValue> {
+    let window = web_sys::window()?;
+    let m = Reflect::get(&window, &JsValue::from_str(MUSIC))
+        .ok()
+        .filter(|v| !v.is_undefined() && !v.is_null())?;
+    let track = Reflect::get(&m, &JsValue::from_str("track"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .and_then(|f| crate::sound::music::Track::of_file(&f));
+    if let Some(track) = track {
+        let at = Reflect::get(&m, &JsValue::from_str("time"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+            .and_then(|f| f.call0(&m).ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32;
+        app.world_mut().resource_mut::<audio::Engine>().score.adopt = Some((track, at));
+        info!("music: the page is {at:.1} s into {}", track.file());
+    }
+    Some(m)
+}
+
+fn open_worklet(app: &mut App) -> Web {
     let Some(window) = web_sys::window() else {
         return Web::unrouted("no window");
     };
@@ -256,6 +311,8 @@ pub fn open(app: &mut App) -> Web {
         unrouted: 0,
         install_refused: 0,
         out_rate: rate,
+        music: None,
+        music_sent: -1.0,
     }
 }
 
@@ -303,6 +360,18 @@ pub fn flush(mut engine: ResMut<audio::Engine>, mut out: NonSendMut<Web>) {
     } else {
         let n = engine.take_installs().count() + engine.take().count();
         out.unrouted = out.unrouted.saturating_add(n as u32);
+    }
+
+    let score = engine.score;
+    if score.stop {
+        out.music_call("stop", &JsValue::UNDEFINED);
+    }
+    if let Some(track) = score.start {
+        out.music_call("play", &JsValue::from_str(track.file()));
+    }
+    if (score.gain - out.music_sent).abs() > 1e-4 {
+        out.music_sent = score.gain;
+        out.music_call("gain", &JsValue::from_f64(score.gain as f64));
     }
 
     if let Some(report) = out.inbox.report.take() {

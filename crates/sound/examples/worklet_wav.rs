@@ -78,7 +78,7 @@ fn main() {
 
     // ── the scene ───────────────────────────────────────────────────────────
     // A walk across surfaces with the wind under it, someone else moving on
-    // the right, a gather, a swing into wood, and a piece of music over the
+    // the right, a gather, a swing into wood, and a wolf on a held slot over the
     // top: enough of the bank in one take to tell whether the pan, the pitch
     // and the mix are right, rather than whether a sound exists.
     let mut script: Vec<(f32, Cmd)> = vec![
@@ -91,12 +91,12 @@ fn main() {
                 gain: 0.28,
             },
         ),
-        // Music, on a held slot of its own.
+        // A held one-shot, on a slot of its own.
         (
             0.4,
             Cmd::Play {
                 slot: 3,
-                cue: Cue::MusicOpenCalm,
+                cue: Cue::Howl,
                 gain: 0.30,
             },
         ),

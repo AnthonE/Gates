@@ -44,7 +44,7 @@ use client::render::mobs::{Animal, Gait};
 use client::render::props::{FellPart, Fellable};
 use client::render::structures::FireLight;
 use client::render::{Eye, Settings};
-use client::sound::engine::{Cmd, HELD, HELD_BEDS};
+use client::sound::engine::{Cmd, HELD_BEDS};
 use client::sound::music::Mode;
 use client::sound::Cue;
 
@@ -518,29 +518,20 @@ fn a_broken_node_is_heard_as_stone() {
 }
 
 /// Leaving a world stops every bed, cuts every one-shot — on the renderer
-/// and in the ledger — and forgets the last health. A piece of music that is
-/// sounding is not the world's: it rings out over the loading screen
-/// (`MusicSlot`'s doc), so no `Stop` reaches its slot.
+/// and in the ledger — and forgets the last health. The music is not the
+/// engine's and not the world's: teardown sends it nothing.
 #[test]
 fn teardown_ends_what_the_world_started() {
     let mut app = app();
-    // A piece on a music slot first. The menu's director opens at once
-    // (`tests/music.rs`); `register_system` for `music.rs`'s reason, a
+    // The menu's music first. `register_system` for `music.rs`'s reason, a
     // capturing closure the cached path refuses.
     app.add_systems(Update, music);
     let id = app.world_mut().register_system(music_mode(Mode::Menu));
     app.world_mut().run_system(id).expect("music_mode ran");
-    let opened = frames(&mut app, 2);
-    let tune = opened
-        .iter()
-        .find_map(|c| match *c {
-            Cmd::Play { slot, .. } => Some(slot),
-            _ => None,
-        })
-        .expect("the menu opened on no piece");
+    let _ = frames(&mut app, 2);
     assert!(
-        (HELD_BEDS as u8..HELD as u8).contains(&tune),
-        "the piece went to slot {tune}, which is not a music slot"
+        app.world().resource::<Sound>().music.playing().is_some(),
+        "the menu opened on no music"
     );
 
     let _ = once(&mut app, setup);
@@ -578,22 +569,20 @@ fn teardown_ends_what_the_world_started() {
     want.push(Cmd::CutVoices);
     assert_eq!(cmds, want);
     assert!(
-        !cmds
-            .iter()
-            .any(|c| matches!(c, Cmd::Stop { slot } if *slot == tune)),
-        "teardown cut the piece on slot {tune}"
+        !app.world().resource::<Engine>().score.stop,
+        "teardown stopped the music"
     );
     assert_eq!(app.world().resource::<Engine>().live.count(), 0);
     assert_eq!(app.world().resource::<LastHp>().0, 0);
 
-    // And it rings on: nothing after teardown stops it either.
-    let after = frames(&mut app, 5);
-    assert!(
-        !after
-            .iter()
-            .any(|c| matches!(c, Cmd::Stop { slot } if *slot == tune)),
-        "the piece was stopped after teardown: {after:?}"
-    );
+    // And it plays on: nothing after teardown stops it either.
+    for _ in 0..5 {
+        let _ = frames(&mut app, 1);
+        assert!(
+            !app.world().resource::<Engine>().score.stop,
+            "the music was stopped after teardown"
+        );
+    }
 }
 
 /// The frame buffer's cap: drop the newest and count it, never grow.

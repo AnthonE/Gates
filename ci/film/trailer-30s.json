@@ -105,32 +105,11 @@
     }
   ],
   "music": [
-    {
-      "src": "29_MusicOpenCalm.wav",
-      "at": 0.0,
-      "gain": 0.85
-    },
-    {
-      "src": "33_MusicTurnTense.wav",
-      "at": 8.0,
-      "gain": 0.85
-    },
-    {
-      "src": "37_MusicCloseCombat.wav",
-      "at": 16.0,
-      "gain": 0.85
-    },
-    {
-      "src": "31_MusicOpenCombat.wav",
-      "at": 24.0,
-      "gain": 0.85,
-      "cut": 6.0,
-      "fade_out": 2.0
-    }
+    {"src": "music_safe_zone.ogg", "at": 0.0, "in": 100.0, "gain": 0.85, "fade_in": 1.0, "cut": 30.0, "fade_out": 3.0}
   ],
   "sfx": [
     {
-      "src": "46_Thunder.wav",
+      "src": "37_Thunder.wav",
       "at": 21.7,
       "gain": 0.6
     }

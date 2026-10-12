@@ -816,8 +816,9 @@ mannequin at human proportions reads as "player, untextured" rather than as the
 wrong style, so it can be replaced by a clothed survivor later without anything
 around it changing. The clips are the durable half; the mesh is scaffolding.
 
-**Sourcing note, and it is a constraint on this box rather than a preference.**
-Every 3D asset host is refused by this environment's egress policy — Poly Haven,
+**Sourcing note, and it was a constraint on this box rather than a preference**
+(2026-08; since 2026-10 Poly Haven, ambientCG, Kenney and OpenGameArt answer).
+Every 3D asset host was refused by this environment's egress policy — Poly Haven,
 ambientCG, Quaternius's own site, poly.pizza, itch.io, Sketchfab, OpenGameArt.
 GitHub is reachable and `git clone` works, which is the only reason this is here
 at all. Mixamo was the operator's first suggestion and is **not** used: it needs

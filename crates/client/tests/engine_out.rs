@@ -43,7 +43,7 @@ use client::render::audio_out::{pair, Feed, Native};
 use client::sound::engine::{rate, Cmd, Renderer, BLOCK, CMD_RING_CAP_NATIVE, HELD};
 use client::sound::{synth, Cue, CUE_COUNT, SAMPLE_RATE};
 
-/// The cues a script here plays: two beds, a music piece and three
+/// The cues a script here plays: two beds and four
 /// one-shots — enough to exercise every command against real samples
 /// without rendering the whole ~12 MB bank in a debug build.
 const CUES: [Cue; 6] = [

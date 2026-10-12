@@ -27,6 +27,10 @@ pub mod audio;
 // renderer through an `AudioWorklet`, so nothing here is for wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio_out;
+// The native score: a decoder thread streaming whole tracks into a ring that
+// `audio_out`'s callback mixes beside the engine. The page has its own.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod music_out;
 // The browser's output: the same renderer inside an `AudioWorklet`, and the
 // flush that posts each frame's commands to it. `audio_out`'s twin, in the
 // same shape and with the same refusal policy.

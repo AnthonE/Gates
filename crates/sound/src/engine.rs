@@ -24,7 +24,7 @@
 //! [`Cmd`] is the whole vocabulary, and it is deliberately dumb: a one-shot
 //! with two ear gains and a rate already computed; a held slot that loops (a
 //! bed) or plays once (a piece); a gain target; a stop; a cut. Every slow law
-//! — a bed's fade, a snapshot crossfade, a music orphan's fade-out — stays on
+//! — a bed's fade, a snapshot crossfade — stays on
 //! the game thread, which sends the renderer a fresh target each frame and
 //! the renderer ramps to it linearly across one block. That keeps the
 //! de-clicking here (a step in gain is a click) and every *decision* in the
@@ -134,12 +134,12 @@ const _: () = assert!(VOICE_SLOTS == VOICE_CAP + STARTS_PER_FRAME * VOICE_SLACK_
 /// Held slots for the beds: wind, surf, submerged, rain, rotor, town, night,
 /// one each.
 pub const HELD_BEDS: usize = 7;
-/// Held slots for music: consecutive pieces overlap by
-/// `PIECE_S − SECTION_S` (2.5 s) → 2; a menu transition adds an orphan fading
-/// over the client's `MUSIC_FADE_S` → 3; one spare.
+/// Held one-shot slots ([`Cmd::Play`]). The score used them while it was nine
+/// short pieces; it is whole tracks streamed beside the engine now
+/// (`sound::music`), so nothing in the client plays on them today.
 pub const HELD_MUSIC: usize = 4;
 /// All held slots. A `slot` byte in a [`Cmd`] is an index below this; which
-/// slots are beds and which are music is the game thread's convention
+/// slots are beds and which are one-shots is the game thread's convention
 /// ([`HELD_BEDS`] first), not a rule the renderer enforces.
 pub const HELD: usize = 11;
 const _: () = assert!(HELD == HELD_BEDS + HELD_MUSIC);
@@ -182,7 +182,7 @@ pub enum Cmd {
     /// A held looping voice — a bed. If the cue is not installed yet the slot
     /// remembers the ask and starts from sample 0 the block the bank lands.
     Loop { slot: u8, cue: Cue, gain: f32 },
-    /// A held one-shot — a music piece. Frees the slot when it ends; on an
+    /// A held one-shot. Frees the slot when it ends; on an
     /// uninstalled cue it is silence, counted in [`Renderer::unbanked`].
     Play { slot: u8, cue: Cue, gain: f32 },
     /// A gain target the renderer ramps to linearly across the next block.

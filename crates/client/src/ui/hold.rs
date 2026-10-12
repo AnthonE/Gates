@@ -1101,6 +1101,12 @@ pub fn is_arrow(catalog: &ItemCatalog, item: u16) -> bool {
     core::str::from_utf8(catalog.name(item as usize)).is_ok_and(|n| stem(n).ends_with("arrow"))
 }
 
+/// Whether an item is a crossbow: a shot it looses is heard as a crossbow,
+/// not a bow (`render/audio.rs::shots`).
+pub fn is_crossbow(catalog: &ItemCatalog, item: u16) -> bool {
+    core::str::from_utf8(catalog.name(item as usize)).is_ok_and(|n| stem(n) == "crossbow")
+}
+
 /// [`held_model`] on the selected hotbar slot. Clamped for [`held_in_hand`]'s
 /// reason: `sel` is a keypress, not a checked index.
 pub fn held_model_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Option<usize> {
