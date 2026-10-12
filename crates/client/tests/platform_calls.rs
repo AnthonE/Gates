@@ -219,16 +219,6 @@ fn unguarded(path: &Path) -> Vec<(u32, String)> {
         if line.starts_with("//") {
             continue;
         }
-        // An inner `#![cfg]` outside every block is the file's own: it gates
-        // the whole file, so a shielding one leaves nothing to report.
-        if depth == 0 {
-            if let Some(rest) = line.strip_prefix("#![cfg") {
-                if shields_wasm(&format!("cfg{rest}")) {
-                    return Vec::new();
-                }
-                continue;
-            }
-        }
         if let Some(rest) = line.strip_prefix("#[cfg") {
             // Several attributes may stack on one item; a single shielding one
             // is enough, so OR them together until the item arrives.
@@ -387,26 +377,6 @@ fn the_scan_still_finds_what_it_is_looking_for() {
         "render/settings.rs's `thread::sleep` IS guarded, and the scan reported it anyway: \
          {:?}. The block tracker is broken, and a broken tracker fails open on every other \
          file.",
-        unguarded(path)
-    );
-}
-
-/// **A file gated whole is shielded whole.** `render/music_out.rs` opts out of
-/// wasm32 with an inner `#![cfg]` at its top (and its `mod` line is gated too);
-/// its decoder thread sleeps and times a flush, and none of that is ever
-/// compiled for a browser. The scan once skipped every `#` line and flagged it.
-#[test]
-fn a_file_gated_whole_by_its_inner_attribute_is_shielded() {
-    let path = Path::new("src/render/music_out.rs");
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    assert!(
-        text.contains("#![cfg(not(target_arch = \"wasm32\"))]") && text.contains("thread::sleep("),
-        "render/music_out.rs no longer opts out whole or no longer sleeps — re-point this at \
-         another file gated by its inner attribute."
-    );
-    assert!(
-        unguarded(path).is_empty(),
-        "music_out.rs is gated off wasm32 by its inner attribute, and the scan reported {:?}",
         unguarded(path)
     );
 }
