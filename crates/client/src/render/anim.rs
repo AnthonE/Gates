@@ -155,8 +155,8 @@ impl Clip {
             // loops play at the rate that keeps their feet planted at the
             // body's real speed — see [`Clip::stride_mps`].
             Clip::Sprint => "Sprint_Loop",
-            // Deliberately not a T-pose: a sleeper is a person standing
-            // still, and the T-pose is a rig artifact.
+            // The rig has no lying clip: the idle, breathing, on a root
+            // `bodies::stream` lays on its back ([`root_pose`]).
             Clip::Sleep => "Idle_Loop",
             // **`Sword_Attack`, retimed at import to fit exactly** — see
             // [`SWING_CLIP_S`]. It was `Punch_Cross` for a day, chosen
@@ -475,6 +475,26 @@ pub const ANIM_RIG_H_M: f32 = 1.800;
 /// the sim about how tall a player is draws a head that cannot be shot.
 pub const ANIM_BODY_H_M: f32 = 1.8;
 
+/// How far a sleeper's root is raised when it is laid on its back: the
+/// mesh's half-depth (`stumpy.glb` spans ±0.228 m front to back), so the
+/// back rests on the ground instead of in it.
+pub const SLEEP_LIFT_M: f32 = 0.23;
+
+/// Where a body's root is drawn and how it is turned. Awake: standing on the
+/// wire's feet. Asleep: tipped onto its back, face up, head behind where it
+/// faced, and centred over the feet — the sim still tests the standing
+/// cylinder there, so the torso is what a shot at a sleeper connects with.
+pub fn root_pose(pos: Vec3, facing: Quat, asleep: bool) -> (Vec3, Quat) {
+    if !asleep {
+        return (pos, facing);
+    }
+    let at = pos + facing * Vec3::new(0.0, SLEEP_LIFT_M, ANIM_BODY_H_M * 0.5);
+    (
+        at,
+        facing * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+    )
+}
+
 /// The rig: the scene to spawn per body, and the graph every player shares.
 #[derive(Resource)]
 pub struct Rig {
@@ -579,11 +599,6 @@ pub fn load(
             perceptual_roughness: 0.75,
             ..default()
         }),
-        sleeping: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.24, 0.26, 0.30),
-            perceptual_roughness: 0.9,
-            ..default()
-        }),
         keeper: materials.add(StandardMaterial {
             base_color: Color::srgb(0.30, 0.38, 0.22),
             perceptual_roughness: 0.8,
@@ -631,12 +646,8 @@ pub fn build(
     // albedo that is the entire reason it was commissioned, so painting over
     // it would throw away the asset and leave a brown pill with a face.
     //
-    // The sleeper still has to be distinguishable — `BodyShades` says why at
-    // length, and it is the one thing here that is load-bearing rather than
-    // decorative — so it is the same material, TINTED. `base_color` multiplies
-    // the base-colour texture in Bevy, so a cold dark factor darkens the bark
-    // without replacing it: still obviously the same character, obviously not
-    // awake.
+    // A sleeper wears it too: what tells one apart is that it lies on its
+    // back ([`root_pose`]). Only THE GATE's shopkeepers are tinted.
     //
     // **One material only, and the guard is loud.** Repainting every mesh with
     // `materials[0]` is exactly right for a single-material character and
@@ -656,9 +667,8 @@ pub fn build(
                 // grass: `NOW.md` §0dk), so players read as silhouettes and
                 // the first-person hand as a dark glove. Lift the shared
                 // material in place, which reaches every body and both arms
-                // at once. The sleeper and keeper shades replace `base_color`,
-                // so each carries the lift times its own tint — a tint alone
-                // drew sleepers at 0.007 luma, a black cut-out.
+                // at once. The keeper shade replaces `base_color`, so it
+                // carries the lift times its own tint.
                 let lifted = |t: Color| {
                     let c = t.to_linear();
                     Color::LinearRgba(LinearRgba::rgb(
@@ -671,16 +681,12 @@ pub fn build(
                     m.base_color = lifted(Color::WHITE);
                 }
                 if let Some(base) = materials.get(only) {
-                    let mut tinted = base.clone();
-                    tinted.base_color = lifted(SLEEPER_TINT);
-                    tinted.perceptual_roughness = (tinted.perceptual_roughness + 0.1).min(1.0);
                     // THE GATE's shopkeepers: the same bark gone mossy, so
                     // a vendor never reads as a player standing at a stall
                     // (Rust's vendors wear what no player can).
                     let mut moss = base.clone();
                     moss.base_color = lifted(Color::srgb(0.62, 0.86, 0.50));
                     shades.awake = only.clone();
-                    shades.sleeping = materials.add(tinted);
                     shades.keeper = materials.add(moss);
                     shades.from_gltf = true;
                     rig.shaded = true;
@@ -688,7 +694,7 @@ pub fn build(
             }
             many => {
                 error!(
-                    "anim: models/stumpy.glb carries {} materials, not 1 — the sleeper \
+                    "anim: models/stumpy.glb carries {} materials, not 1 — the keeper \
                      shade cannot repaint a multi-material body without losing one of \
                      them, so bodies keep the untextured fallback",
                     many.len()
@@ -1200,12 +1206,9 @@ fn wrap_pi(a: f32) -> f32 {
 /// preview rig — so a body spawned untouched arrived in another game's
 /// colours; that half is gone, because the commissioned character's material
 /// IS what we want a waking body to wear (`build` assigns it as `awake`).
-/// What remains is the half that was always load-bearing:
-/// `bodies.rs` distinguishes a sleeper from a waking player by SHADE, which
-/// it calls load-bearing in its own comment: "is that player about to shoot me,
-/// or is nobody home" is the question sleepers create, and a client that draws
-/// both identically makes it unanswerable. A `SceneRoot` has no material of its
-/// own, so both have to reach the spawned descendants.
+/// What remains: a body spawned before `build` has the lifted material still
+/// needs it, and THE GATE's shopkeepers wear their own. A `SceneRoot` has no
+/// material of its own, so it has to reach the spawned descendants.
 ///
 /// Carried as a component and cleared when it lands, because **the scene
 /// spawns asynchronously**: at the frame `bodies::stream` inserts this there
@@ -1217,24 +1220,20 @@ pub struct Reshade(pub Shade);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shade {
     Awake,
-    Sleeping,
     /// One of THE GATE's shopkeepers — never a player.
     Keeper,
 }
 
 impl Reshade {
-    /// A player's body, awake or asleep.
-    pub fn body(sleeping: bool) -> Self {
-        Reshade(if sleeping {
-            Shade::Sleeping
-        } else {
-            Shade::Awake
-        })
+    /// A player's body, awake or asleep: a sleeper is told apart by lying
+    /// down ([`root_pose`]), not by colour.
+    pub fn body() -> Self {
+        Reshade(Shade::Awake)
     }
 }
 
 /// Paint our materials onto a scene's meshes. Runs only for bodies carrying
-/// [`Reshade`] — at spawn, and again on a sleep transition — so the descendant
+/// [`Reshade`] — at spawn — so the descendant
 /// walk is not a per-frame cost.
 pub fn reshade(
     mut commands: Commands,
@@ -1247,7 +1246,6 @@ pub fn reshade(
     for (body, want) in &pending {
         let mat = match want.0 {
             Shade::Awake => waking.awake.clone(),
-            Shade::Sleeping => waking.sleeping.clone(),
             Shade::Keeper => waking.keeper.clone(),
         };
         // Bounded breadth-first walk. The rig is 55 nodes; the cap is a wall-4
@@ -1281,25 +1279,12 @@ pub fn reshade(
     }
 }
 
-/// The two body shades — lifted out of `bodies.rs`, which could hold them on a
-/// mesh entity when a body WAS one mesh. A resource so `reshade` does not
-/// rebuild them and so every body shares one handle, which is what lets Bevy
-/// batch a crowd of players into few draws.
-///
-/// **Same mesh, same pose, different shade** — and the pose is the deliberate
-/// half. A sleeper stands (`NOW.md` §0y item 1), because the sim hits it with
-/// the standing capsule `combat.rs` uses for everyone; laying the mesh down
-/// would draw a body outside the volume the server blocks and shoots at, which
-/// is the one thing `CLAUDE.md` still says is worth gating about a frame. A
-/// colour cannot disagree with the sim about where anything is.
-///
-/// It is programmer art and it is load-bearing anyway: "is that player about
-/// to shoot me, or is nobody home" is the question sleepers create, and a
-/// client that draws both identically makes the answer unknowable.
+/// The body shades. A resource so `reshade` does not rebuild them and so
+/// every body shares one handle, which is what lets Bevy batch a crowd of
+/// players into few draws. Sleepers wear `awake`: they lie down instead.
 #[derive(Resource)]
 pub struct BodyShades {
     pub awake: Handle<StandardMaterial>,
-    pub sleeping: Handle<StandardMaterial>,
     /// THE GATE's shopkeepers ([`Shade::Keeper`]).
     pub keeper: Handle<StandardMaterial>,
     /// False while these are [`load`]'s untextured placeholders, true once
@@ -1314,12 +1299,6 @@ pub struct BodyShades {
 /// luma to litter's 0.135 and clips 0.14% of texels (measured in `NOW.md`
 /// §0dk); 3.0 would reach twig's 0.167 at 0.34%.
 pub const BODY_ALBEDO_LIFT: f32 = 2.4;
-
-/// A sleeper's shade over the lifted skin, linear: half as bright and cold,
-/// so the bark still reads and the body is plainly not awake (never
-/// brighter — `BodyShades`). The old `srgb(0.34, 0.38, 0.46)`'s hue at
-/// luma 0.5 instead of 0.12.
-pub const SLEEPER_TINT: Color = Color::LinearRgba(LinearRgba::rgb(0.40, 0.50, 0.76));
 
 /// How far a body may look from level, radians (~74°), against a wire that
 /// can carry ~88°. A clamp and not a scale: scaling makes every glance an
@@ -1581,8 +1560,9 @@ pub fn pose_spine(
         // the pitch a body died holding, and composing it onto `Death01`'s
         // fallen pose cranks the head of a body lying on the ground. Both
         // turns drop to nothing, through the same bookkeeping, so the delta
-        // already written is still removed.
-        let dead = anim.clip == Some(Clip::Death);
+        // already written is still removed. Nor is a sleeper, lying on its
+        // back with the pitch it logged off holding.
+        let dead = matches!(anim.clip, Some(Clip::Death | Clip::Sleep));
         let pitch = if dead {
             0.0
         } else {
@@ -1746,6 +1726,7 @@ pub fn drive(
                 Some(t / rig.duration(from) - mark)
             });
             let first = playing.base.is_none();
+            let from = playing.base;
             playing.fading = playing.base.filter(|c| c.stride_mark().is_some());
             playing.base = Some(want);
             playing.base_seq = anim.transient_seq;
@@ -1768,6 +1749,10 @@ pub fn drive(
                 } else if first {
                     active.set_seek_time(desync(owner.0) * d);
                 }
+            } else if want == Clip::Death && from == Some(Clip::Sleep) {
+                // A sleeper killed where it lies is already down: straight
+                // to the fallen pose rather than standing up to fall.
+                active.set_seek_time(d);
             }
         }
         // The gait's rate, every frame: the body's speed changes under a
@@ -2317,6 +2302,19 @@ mod tests {
             a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         }
         assert_eq!(a.wants(), Some(Clip::Idle), "the flinch outlived its clip");
+    }
+
+    #[test]
+    fn a_sleeper_lies_face_up_centred_over_its_feet() {
+        let facing = Quat::from_rotation_y(0.7);
+        let pos = Vec3::new(3.0, 2.0, -1.0);
+        assert_eq!(root_pose(pos, facing, false), (pos, facing));
+        let (at, turn) = root_pose(pos, facing, true);
+        assert!((turn * Vec3::Z).y > 0.999, "the face points up");
+        // Midway between the feet and the head is where the sim's cylinder
+        // stands, raised by the lift so the back rests on the ground.
+        let mid = at + turn * Vec3::Y * (ANIM_BODY_H_M * 0.5);
+        assert!((mid - (pos + Vec3::Y * SLEEP_LIFT_M)).length() < 1e-4);
     }
 
     #[test]
