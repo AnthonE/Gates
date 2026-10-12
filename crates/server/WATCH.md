@@ -73,12 +73,11 @@ supervisor to start a fresh private island (no saves).
 
 ## What carries the picture
 
-`jev-watch` embeds the existing Rust `GatesRenderPlugin` and ordinary client
-`Session`. The bot supplies input before the client's normal pump, prediction
-and camera update. One bounded observer copies accepted reliable messages to
-the collector, which uses the same received inventory and procedural scenery
-as a player. If that observer overflows or rejects an event, both client
-output lanes stop. This is the bot's own first-person session.
+`jev-watch` embeds the existing Rust `GatesRenderPlugin`. The bot plays its
+own session at the shard's tick rate on the runtime's threads; the window is a
+spectator seat on that bot (`Session::watch`, `NETCODE.md` §2.3), drawn from
+the ordinary snapshot stream like any viewer's, so what it shows is the bot's
+first-person view as its own client received it.
 
 The renderer targets 30 fps at 640×360. At most four frames per second are
 captured as JPEGs; actual delivery depends on render speed. This prototype
@@ -143,9 +142,33 @@ operator supplied the key and enabled this configuration on 2026-09-22.
 To explicitly return to scripted mode, remove the drop-in and reload/restart
 the service. Never put the key in the unit, command arguments, page or git.
 
+## Run Claude instead of Jev
+
+`watch-deploy/claude.conf` swaps the controller for
+`examples/claude_agent.py` on Claude Haiku 5.5, which also sees the frame this
+page serves. One-time, on the render host:
+
+```sh
+python3 -m venv /mnt/hive-data/gates-watch/venv
+/mnt/hive-data/gates-watch/venv/bin/pip install anthropic
+```
+
+Put `ANTHROPIC_API_KEY=…` (a key from the Console organization the plan's API
+credits are linked to; optionally `DISCORD_WEBHOOK_URL=…`) in
+`/etc/gates-watch/anthropic.env`, root-owned, mode 0600, in a root-only
+directory. Stage a bundle (`ci/deploy_shard.sh` copies `claude_agent.py` beside
+`jev-watch`), install `claude.conf` as
+`/etc/systemd/system/gates-watch.service.d/claude.conf`, **remove `jev.conf`**
+(drop-ins apply in name order), then `systemctl daemon-reload` and restart
+only `gates-watch`. `frame.jpg`'s `X-Bot-State` then reads
+`"controller":"External agent"` and `decisions` climbs. A request that fails
+is never replaced by a scripted decision; when the credits run out, requests
+stop and the page says it is backing off. `--max-requests-day 4000` caps a day.
+
 ## Running cost
 
-The live service uses Jev and makes paid model requests. Explicit `--scripted`
+The live service uses Jev and makes paid model requests (with `claude.conf`,
+Claude Haiku 5.5 on the linked API credits, a fraction of a cent a decision). Explicit `--scripted`
 runs make none; an `--external` agent's costs are its own. It uses the existing server,
 with no additional machine provisioned; its
 CPU, memory and viewer bandwidth still consume that server's capacity.
