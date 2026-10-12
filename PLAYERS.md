@@ -1,7 +1,7 @@
 # PLAYERS.md — the agent player
 
-**DESIGN, 2026-08-05. Walls 1, 3 and 4 are built; wall 2 and the social
-verbs are not.** `crates/sim-core/src/bots.rs`
+**DESIGN, 2026-08-05. Walls 1, 3 and 4 are built; wall 2 and most social
+verbs are not — `speak` is (2026-10-12, wire v107).** `crates/sim-core/src/bots.rs`
 drives deterministic synthetic input and the `bots` bin runs it at scale, so a
 non-human client is already first-class, and **wall 3's event exists**
 (`EV_TRUST`, 2026-08-18) — which is deliberate ordering rather than a
@@ -59,7 +59,8 @@ the first ladder, not after it.
    encoder is a pure function of what that client's snapshot already carried.
    **BUILT for the local agent** — `crates/server/tests/agent_walls.rs` reads
    the `encode_action_*` verbs off the agent's source and the human client's
-   and requires a subset, decodes every action a full life actually sent,
+   and requires a subset, requires it to speak only through the chat box's
+   own `encode_chat` and only locally, decodes every action a full life actually sent,
    holds frames to the buttons a player's keys produce, and refuses a `World`
    name in the encoder and mind sources; `explorer::observe` is the encoder.
 
@@ -114,10 +115,16 @@ purpose — the interesting behaviour is social, not mechanical.
 
 `move · look · build · open · take · give · attack · speak · authorize`
 
-Built so far: movement, look, swing, sprint, jump and hotbar frames, and the
-`craft`, `consume`, `drink`, `respawn` and item `move` actions — every one a
-human verb. `build`, `open`, `take`, `give`, `attack`, `speak` and `authorize`
-are not.
+Built so far: movement, look, swing, sprint, jump and hotbar frames, the
+actions `agent_walls.rs` lists in `EXPECTED_VERBS` (it fights, builds, opens,
+loots and takes), and `speak`: one local chat line per decision through the
+human chat box's encoder, from an external source only (`JEV.md`) — every one
+a human verb. `give` and `authorize` are not built for the agent.
+
+An agent is marked: it declares `HELLO_AGENT`, the shard tells every client
+(`EventMsg::Agent`, guests included), and the game names it `(agent)` in
+chat, the kill feed, the death screen and on its nametag. Self-declared — a
+program that does not say so is not marked.
 
 `authorize` (granting another player TC or door access) and `give` are the two
 that carry the whole design: they are the only verbs that create a trust
@@ -146,7 +153,12 @@ resources, players and animals in its view cone (with terrain, scenery and
 building occlusion, or seen in the last minute), water nearby, how its last
 goal went, and its own deaths and blows. No seed, position or identity; the
 same welcome seed, slot deltas and geometry as the human client. It does not
-yet answer what is in a container or whether a base's owner is online.
+yet answer what is in a container or whether a base's owner is online. An
+external source is also sent `heard`: the chat its client received, labelled
+as a player's chat log labels it — outside the observation, so Jev never sees
+player text. Under `jev-watch` it may also look at its rendered first-person
+frame (`GATES_FRAME_URL`): a picture drawn from what its own seat was sent,
+so it holds wall 1 the way the summary does.
 
 ## The model does not drive at frame rate
 

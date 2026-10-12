@@ -132,6 +132,10 @@ impl BotDriver for Watched {
     fn action(&mut self, out: &mut [u8]) -> Option<usize> {
         self.survivor.action(out)
     }
+
+    fn say(&mut self, out: &mut [u8]) -> Option<usize> {
+        self.survivor.say(out)
+    }
 }
 
 /// The page record: the survivor's own client state and its controller's

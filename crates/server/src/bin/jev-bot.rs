@@ -1,6 +1,6 @@
 //! One local agent player. See crates/server/JEV.md for running it.
 
-use server::agent_demo::{bot_name, Door, MindArgs, Source, AGENT_NAME, MIND_USAGE};
+use server::agent_demo::{bot_name, check_page, Door, MindArgs, Source, AGENT_NAME, MIND_USAGE};
 use server::explorer::Survivor;
 use sim_core::limits::TICK_HZ;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ const MAX_BOTS: usize = 8;
 
 fn usage() -> String {
     format!(
-        "jev-bot (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot."
+        "jev-bot (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
     )
 }
 
@@ -24,6 +24,7 @@ struct Options {
     agent_key: Option<PathBuf>,
     agent_name: String,
     cert_hash: Option<String>,
+    spectate_page: Option<String>,
     duration: Duration,
     bots: usize,
     mind: MindArgs,
@@ -37,6 +38,7 @@ impl Options {
             agent_key: None,
             agent_name: AGENT_NAME.into(),
             cert_hash: None,
+            spectate_page: None,
             duration: Duration::from_secs(RUN_SECONDS),
             bots: 1,
             mind: MindArgs::default(),
@@ -63,6 +65,11 @@ impl Options {
                 }
                 "--cert-hash" => {
                     options.cert_hash = Some(args.next().ok_or("--cert-hash needs a digest")?)
+                }
+                "--spectate-page" => {
+                    let page = args.next().ok_or("--spectate-page needs a URL")?;
+                    check_page(&page)?;
+                    options.spectate_page = Some(page);
                 }
                 "--bots" => {
                     options.bots = args
@@ -165,10 +172,16 @@ async fn run(options: Options) -> Result<(), String> {
             .map(|k| format!("{:?}", k.address()))
             .unwrap_or_else(|| "unsigned, loopback only".into())
     );
-    println!(
-        "watch it (NETCODE.md §2.3; a loopback shard is this machine only): a Gates web page with ?{}",
-        door.spectate_query()
-    );
+    // Where the owner watches its own view (NETCODE.md §2.3): the public
+    // page off this machine, a named page on it, else the bare query.
+    match door.watch_url(options.spectate_page.as_deref()) {
+        Some(url) if door.loopback() => println!("watch it (this machine only): {url}"),
+        Some(url) => println!("watch it live: {url}"),
+        None => println!(
+            "watch it (this machine only): a Gates web page with ?{}",
+            door.spectate_query()
+        ),
+    }
     println!("  or the desktop client: {}", door.desktop_command());
     let endpoint = Arc::new(door.endpoint()?);
     let door = Arc::new(door);
@@ -288,6 +301,10 @@ fn print_report(label: &str, survivor: &Survivor) {
         s.drinks,
         s.equips,
         s.actions
+    );
+    println!(
+        "{label}chat: said {} ({} heard back), heard {} from others, {} refused, {} replaced unsent",
+        s.said, s.echoed, s.heard, s.say_refused, s.say_dropped
     );
     if let Some(core) = survivor.core() {
         let gathered: Vec<String> = (0..usize::from(core.catalog.count))

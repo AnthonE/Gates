@@ -217,6 +217,9 @@ fn main() {
     let len =
         protocol::encode_event_node_stage(true, &goldens::event_node_stage(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[162], &buf[..len]);
+    // A declared agent's mark (v107).
+    let len = protocol::encode_event_agent(goldens::event_agent(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[163], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

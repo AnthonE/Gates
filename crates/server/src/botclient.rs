@@ -128,6 +128,9 @@ pub struct BotReport {
     /// Writes the action lane refused. Non-zero means the stream died; the
     /// bot keeps walking afterwards rather than ending the run.
     pub action_lane_errors: u64,
+    /// Chat frames a driven agent wrote (`BotDriver::say`), on the same
+    /// stream the human chat box writes to.
+    pub chats_sent: u64,
     /// Times the plan was re-seated from a live body — so `> 0` is the
     /// proof the plot came from the snapshot stream and not from a literal.
     pub raid_cycles: u64,
@@ -780,6 +783,13 @@ pub trait BotDriver: Send {
     fn action(&mut self, _out: &mut [u8]) -> Option<usize> {
         None
     }
+    /// At most one already-encoded chat frame (`protocol::encode_chat`, the
+    /// human chat box's encoder), asked every tick beside the action slot:
+    /// a player can press a key and send a line in the same frame. The
+    /// driver keeps the shard's chat pace itself.
+    fn say(&mut self, _out: &mut [u8]) -> Option<usize> {
+        None
+    }
 }
 
 /// A cancelled or finished bot must not leave its stream reader running.
@@ -1409,6 +1419,19 @@ async fn run_bot_inner(
                             report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
                             took_the_tick = true;
                         }
+                    }
+                }
+
+                // ---- a driven agent's chat ---------------------------
+                // Its own frame, never the action slot's: speech does not
+                // cost a verb. The same failure rule as an action.
+                if let Some(d) = driver.as_deref_mut() {
+                    if let Some(len) = d.say(&mut act_buf) {
+                        if write_frame(&mut send, &act_buf[..len]).await.is_err() {
+                            return Err("agent chat lane closed".into());
+                        }
+                        report.chats_sent += 1;
+                        report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
                     }
                 }
 

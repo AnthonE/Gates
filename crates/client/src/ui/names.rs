@@ -2,9 +2,11 @@
 //! each player id is (`EventMsg::Tag`, `ClientCore::tag`): the proven wallet
 //! and the name and picture that wallet set on its Elo Pros account page.
 //! One rule turns that into a label, so chat, the kill feed, the death screen
-//! and the nametag cannot disagree about somebody.
+//! and the nametag cannot disagree about somebody — including about whether
+//! it is a program: a player that declared itself an agent (`EventMsg::Agent`,
+//! v107) carries ` (agent)` everywhere its name appears.
 
-use client_core::core::Tag;
+use client_core::core::{ClientCore, Tag};
 
 /// How far a nametag reaches (`DECISIONS.md`: "nametag range | 8 m,
 /// aim-only"). Past it, or not aimed at, a player has no name.
@@ -15,13 +17,26 @@ pub const NAMETAG_REACH_M: f32 = 8.0;
 pub const PLATFORM_ORIGIN: &str = "https://elopros.com";
 
 /// The label for player `id`: their platform name, else their short
-/// address, else `#id` (a guest, or a tag that has not landed yet).
-pub fn label(tag: Option<&Tag>, id: u32) -> String {
-    match tag {
+/// address, else `#id` (a guest, or a tag that has not landed yet), with
+/// ` (agent)` after it for a player that declared itself one — the
+/// spectate line's `(guest)` style.
+pub fn label(tag: Option<&Tag>, agent: bool, id: u32) -> String {
+    let name = match tag {
         Some(t) if !t.name.is_empty() => t.name.as_str().to_string(),
         Some(t) if !t.address.is_guest() => super::spectate::short(&t.address),
         _ => format!("#{id}"),
+    };
+    if agent {
+        format!("{name} (agent)")
+    } else {
+        name
     }
+}
+
+/// [`label`] for player `id`, as `core` knows them: what every surface
+/// that names a player calls.
+pub fn of(core: &ClientCore, id: u32) -> String {
+    label(core.tag(id), core.is_agent(id), id)
 }
 
 /// The picture's url, if this player set one. `?v=` is the picture's
@@ -129,9 +144,15 @@ mod tests {
 
     #[test]
     fn a_name_then_an_address_then_an_id() {
-        assert_eq!(label(Some(&tag("Ash", 0)), 259), "Ash");
-        assert_eq!(label(Some(&tag("", 0)), 259), "0x7e5f…5bdf");
-        assert_eq!(label(None, 259), "#259");
+        assert_eq!(label(Some(&tag("Ash", 0)), false, 259), "Ash");
+        assert_eq!(label(Some(&tag("", 0)), false, 259), "0x7e5f…5bdf");
+        assert_eq!(label(None, false, 259), "#259");
+    }
+
+    #[test]
+    fn an_agent_says_so_wherever_it_is_named() {
+        assert_eq!(label(Some(&tag("jev", 0)), true, 259), "jev (agent)");
+        assert_eq!(label(None, true, 259), "#259 (agent)");
     }
 
     #[test]

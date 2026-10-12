@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 163] = [
+const GOLDEN: [&[u8]; 164] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -226,6 +226,7 @@ const GOLDEN: [&[u8]; 163] = [
     include_bytes!("golden/event_standing.bin"),
     include_bytes!("golden/event_bank.bin"),
     include_bytes!("golden/event_node_stage.bin"),
+    include_bytes!("golden/event_agent.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -500,8 +501,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 161);
     // Ore nodes crumbled past a stage (v106).
     g!(seen, golden_event, 162);
+    // A declared agent's mark (v107).
+    g!(seen, golden_event, 163);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 163, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 164, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1225,6 +1228,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 other => panic!("{name}: wrong variant {other:?}"),
             }
             encode_event_slot_sync(reset, &cells, grubbed, &mut buf).unwrap()
+        }
+        "event_agent.bin" => {
+            let id = protocol::goldens::event_agent();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Agent { id },
+                "{name}"
+            );
+            protocol::encode_event_agent(id, &mut buf).unwrap()
         }
         "event_node_stage.bin" => {
             let cells = protocol::goldens::event_node_stage();

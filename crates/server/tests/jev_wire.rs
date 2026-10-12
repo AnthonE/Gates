@@ -53,6 +53,7 @@ impl DecisionSource for Alternating {
                 reason: Reason::from_text("alternating"),
                 input_tokens: 7,
                 output_tokens: 1,
+                say: server::mind::Say::Quiet,
             })
         } else {
             Err("an allocated error must be dropped on the worker".to_owned())
@@ -167,7 +168,12 @@ async fn a_survivor_gathers_over_real_webtransport_from_announced_inventory() {
 
 /// Fells a tree, then crafts whatever the wood allows: the craft travels
 /// the ordinary action lane and its completion comes back on the event lane.
-struct Crafty;
+/// It says one line on its first decision, which travels the chat lane and
+/// comes back to it as any player's line does.
+#[derive(Default)]
+struct Crafty {
+    spoke: bool,
+}
 impl DecisionSource for Crafty {
     fn kind(&self) -> SourceKind {
         SourceKind::External
@@ -186,6 +192,11 @@ impl DecisionSource for Crafty {
             reason: Reason::from_text("test: craft when possible"),
             input_tokens: 0,
             output_tokens: 0,
+            say: if std::mem::replace(&mut self.spoke, true) {
+                server::mind::Say::Quiet
+            } else {
+                server::mind::Say::Line(protocol::ChatText::sanitize(b"hello island").unwrap())
+            },
         })
     }
 }
@@ -207,7 +218,7 @@ async fn actions_ride_the_ordinary_action_lane_and_their_verdicts_return() {
     .await
     .unwrap();
     let endpoint = bot_endpoint().unwrap();
-    let mut bot = Survivor::new(Mind::new(Crafty, MindConfig::default()).unwrap());
+    let mut bot = Survivor::new(Mind::new(Crafty::default(), MindConfig::default()).unwrap());
     let result = run_driven_bot(
         &endpoint,
         shard.local_addr,
@@ -221,6 +232,11 @@ async fn actions_ride_the_ordinary_action_lane_and_their_verdicts_return() {
     assert!(!report.walk_truncated);
     assert!(report.actions_sent > 0, "{report:?}");
     assert_eq!(report.actions_sent, bot.stats.actions);
+    assert!(
+        report.chats_sent == 1 && bot.stats.said == 1 && bot.stats.echoed == 1,
+        "its line went out and came back through the shard's chat: {report:?} {:?}",
+        bot.stats
+    );
     assert!(
         bot.stats.crafted > 0,
         "a craft's completion came back over the event lane: {:?} {:?}",

@@ -42,9 +42,9 @@ use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
-    Arms, BodyState, Choice, Distance, Goal, History, HomeSense, HomeState, Mind, Name, Outcome,
-    Place, Range, Report, Sighting, Summary, Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS,
-    SUMMARY_THREATS,
+    Arms, BodyState, Choice, Distance, Goal, Heard, HeardLine, History, HomeSense, HomeState, Mind,
+    Name, Outcome, Place, Range, Report, Say, Sighting, SourceKind, Summary, Threat, Trigger, Why,
+    SUMMARY_CRAFTS, SUMMARY_ITEMS, SUMMARY_THREATS,
 };
 use crate::pace::Pace;
 use client_core::core::{
@@ -459,6 +459,12 @@ pub struct Memory {
     /// A blow, blast or shot at the base fresh enough to call it back
     /// (`defend::DEFEND_ALARM_TICKS`).
     pub alarm: bool,
+    /// Chat its client received since it last asked (`EventMsg::Chat`).
+    /// `chat` because `tracks` already hears sounds.
+    pub chat: Heard,
+    /// Someone else spoke locally since it last asked: an external source
+    /// is asked early (`Trigger::Heard`).
+    pub chat_wake: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -507,6 +513,14 @@ pub struct SurvivorStats {
     /// Frames an action waited in the hand for its kind's pace.
     pub paced: u64,
     pub unencodable: u64,
+    /// Chat (an external source only): lines it said, its own lines heard
+    /// back, other bodies' lines heard, lines the chat rule refused, and
+    /// unsent lines a newer one replaced.
+    pub said: u64,
+    pub echoed: u64,
+    pub heard: u64,
+    pub say_refused: u64,
+    pub say_dropped: u64,
 }
 
 /// How a survivor is set up beyond its mind.
@@ -724,6 +738,11 @@ pub struct Survivor {
     last_hurt: Option<(u32, u16)>,
     heading: Option<u16>,
     outbox: Option<([u8; MAX_STREAM_MSG_BYTES], usize)>,
+    /// A line to say (`BotDriver::say`), and the first tick it may go: the
+    /// shard's chat refill, kept on this side so a line is never sent into
+    /// the limiter to be dropped there.
+    say_line: Option<protocol::ChatText>,
+    say_at: u32,
     /// The server's per-kind pace, kept on this side the way an honest
     /// client keeps it: an early action waits in the outbox rather than in
     /// the server's hand, where it would block the next one.
@@ -820,6 +839,8 @@ impl Survivor {
             last_hurt: None,
             heading: None,
             outbox: None,
+            say_line: None,
+            say_at: 0,
             pace: Pace::default(),
             rules: None,
             book: Book::EMPTY,
@@ -1204,6 +1225,9 @@ impl Survivor {
             self.deferred = None;
         }
         if let Some(choice) = self.mind.poll(now) {
+            // Speech is not a goal: a fight that holds the goal does not
+            // hold the line.
+            self.take_say(choice.say);
             let busy = self.combat.engaged() || !self.at_checkpoint();
             if logging_off {
                 self.stats.deferred_dropped += 1;
@@ -1320,6 +1344,20 @@ impl Survivor {
                     && !self.mind.pending()
                 {
                     self.memory.trigger = Trigger::Heartbeat;
+                    if self.request(core, view, player, tick, now) {
+                        if let Some(a) = self.goal.as_mut() {
+                            a.asked = tick;
+                        }
+                    }
+                } else if self.memory.chat_wake
+                    && self.mind.kind() == SourceKind::External
+                    && !self.mind.pending()
+                {
+                    // Somebody near spoke: an external source may answer
+                    // now rather than at the heartbeat. The mind's floor,
+                    // backoff and spend guard still decide whether it is
+                    // asked.
+                    self.memory.trigger = Trigger::Heard;
                     if self.request(core, view, player, tick, now) {
                         if let Some(a) = self.goal.as_mut() {
                             a.asked = tick;
@@ -1469,10 +1507,29 @@ impl Survivor {
             return false;
         }
         self.memory.hits = 0;
+        self.memory.chat.clear();
+        self.memory.chat_wake = false;
         if let Some(a) = self.goal.as_mut() {
             a.asked = tick;
         }
         true
+    }
+
+    /// An answer's line, kept for [`BotDriver::say`]. Only an external
+    /// source speaks; a newer line replaces one not yet sent.
+    fn take_say(&mut self, say: Say) {
+        if self.mind.kind() != SourceKind::External {
+            return;
+        }
+        match say {
+            Say::Quiet => {}
+            Say::Refused => self.stats.say_refused += 1,
+            Say::Line(line) => {
+                if self.say_line.replace(line).is_some() {
+                    self.stats.say_dropped += 1;
+                }
+            }
+        }
     }
 
     fn adopt(&mut self, choice: Choice, tick: u32) {
@@ -4144,6 +4201,27 @@ impl Survivor {
                 self.home.on_hurt([own.pos[0], own.pos[2]], tick);
             }
         }
+        // What is said around it: filed for the next request, its own
+        // line coming back included; another body's local line asks early.
+        while let Some((from, global, text)) = core.pop_chat() {
+            let me = from == core.player_id;
+            if me {
+                self.stats.echoed += 1;
+            } else {
+                self.stats.heard += 1;
+                self.memory.chat_wake |= !global;
+            }
+            let tag = core.tag(from);
+            self.memory.chat.push(HeardLine {
+                from,
+                name: tag.map_or(protocol::Name::EMPTY, |t| t.name),
+                address: tag.map_or(protocol::Address::GUEST, |t| t.address),
+                agent: core.is_agent(from),
+                global,
+                me,
+                text,
+            });
+        }
         while let Some(victim) = core.pop_death() {
             self.tracks.on_death(victim, tick);
             if victim == core.player_id {
@@ -4468,6 +4546,10 @@ impl BotDriver for Survivor {
         self.book = Book::EMPTY;
         self.pace = Pace::default();
         self.outbox = None;
+        self.say_line = None;
+        self.say_at = 0;
+        self.memory.chat.clear();
+        self.memory.chat_wake = false;
         self.seen_tick = Some(welcome.tick);
         self.seen_at = Instant::now();
     }
@@ -4505,6 +4587,27 @@ impl BotDriver for Survivor {
         out[..len].copy_from_slice(&buf[..len]);
         self.stats.actions += 1;
         Some(len)
+    }
+
+    fn say(&mut self, out: &mut [u8]) -> Option<usize> {
+        let tick = self.seen_tick?;
+        if tick < self.say_at {
+            return None;
+        }
+        let line = self.say_line.take()?;
+        // Local only: a body speaks to the bodies near it.
+        match protocol::encode_chat(line.as_bytes(), false, out) {
+            Ok(len) => {
+                let refill = protocol::chat::CHAT_REFILL_MS * u64::from(sim_core::limits::TICK_HZ);
+                self.say_at = tick.saturating_add((refill / 1000) as u32);
+                self.stats.said += 1;
+                Some(len)
+            }
+            Err(_) => {
+                self.stats.say_refused += 1;
+                None
+            }
+        }
     }
 }
 
@@ -4863,6 +4966,7 @@ pub fn observe(
     s.last_fight = memory.fight;
     s.last = memory.last;
     s.hits = memory.hits;
+    s.heard = memory.chat;
     s.deaths = memory.deaths;
     s.respawns = memory.respawns;
     s.bags = memory.bags;
@@ -5354,6 +5458,7 @@ mod tests {
                 reason: crate::mind::Reason::EMPTY,
                 input_tokens: 0,
                 output_tokens: 0,
+                say: crate::mind::Say::Quiet,
             },
             tick,
         );
@@ -6122,6 +6227,7 @@ mod tests {
                 reason: crate::mind::Reason::EMPTY,
                 input_tokens: 0,
                 output_tokens: 0,
+                say: crate::mind::Say::Quiet,
             },
             now,
         ));
@@ -6158,6 +6264,7 @@ mod tests {
             reason: crate::mind::Reason::EMPTY,
             input_tokens: 0,
             output_tokens: 0,
+            say: crate::mind::Say::Quiet,
         };
         goal(&mut bot, Goal::GatherWood, 1);
         hurt(&mut bot);

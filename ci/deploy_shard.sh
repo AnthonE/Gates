@@ -235,6 +235,11 @@ if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
   REL="$WATCH/releases/$(git rev-parse --short=12 HEAD)"
   run mkdir -p "$REL"
   run cp -f target/release/jev-watch "$REL/jev-watch"
+  # The decision program `watch-deploy/claude.conf` runs, pinned with its binary.
+  run cp -f crates/server/examples/claude_agent.py "$REL/claude_agent.py"
+  if [ ! -x "$WATCH/venv/bin/python" ]; then
+    echo "  note: claude.conf needs $WATCH/venv with anthropic (crates/server/WATCH.md)"
+  fi
   run rsync -a --delete content/ "$REL/content/"
   # Tracked files only: an untracked asset is not ours to ship.
   if [ "$GO" = 1 ]; then

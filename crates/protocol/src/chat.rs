@@ -32,6 +32,13 @@ use crate::{expect_zero_padding, KIND_BITS, KIND_CHAT};
 /// and a margin. Proposed default, DECISIONS.md §open ("chat v0").
 pub const CHAT_MAX_BYTES: usize = 48;
 
+/// The shard's chat token bucket (`server/net.rs`): `CHAT_BURST` lines
+/// back to back, then one more every `CHAT_REFILL_MS`. Here rather than in
+/// the shard so a client that paces itself (`server/explorer.rs`, an agent
+/// that speaks) paces to the same number. Not a wire field.
+pub const CHAT_BURST: u32 = 3;
+pub const CHAT_REFILL_MS: u64 = 2_000;
+
 /// Length field width: 6 bits hold 0..63, covering `CHAT_MAX_BYTES`.
 /// A forged length past the cap is refused at decode.
 const CHAT_LEN_BITS: u32 = 6;

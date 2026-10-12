@@ -2207,7 +2207,8 @@ pub type NametagHit = (u32, (f32, f32, f32), (f32, f32, f32));
 
 /// The player a nametag belongs to: the nearest one whose capsule the aim
 /// ray enters within `ui::names::NAMETAG_REACH_M` (aim-only, `DECISIONS.md`),
-/// skipping yourself, the dead, animals and anyone the shard has not tagged.
+/// skipping yourself, the dead, animals and anyone the shard has neither
+/// tagged nor marked as an agent (a guest agent is named; a guest is not).
 /// Returns the id, the eye the ray leaves from and the head it reaches —
 /// the two ends a caller checks for a clear line before drawing a name.
 pub fn resolve_nametag(

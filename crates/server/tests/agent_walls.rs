@@ -360,6 +360,39 @@ fn shipped_text_cuts_only_the_test_items() {
     assert_eq!(strip.split_whitespace().collect::<String>(), "abc");
 }
 
+/// Wall 1 for the voice: the agent speaks only through the encoder the
+/// human chat box calls, and nothing it, its mind or the external source
+/// ships names a server-side way to put words in the room.
+#[test]
+fn the_agent_speaks_only_through_the_human_clients_chat_encoder() {
+    let human: String = rs_files(&root().join("crates/client/src"))
+        .iter()
+        .map(|f| shipped(f))
+        .collect();
+    assert!(
+        human.contains("encode_chat("),
+        "the human chat box was not read"
+    );
+    let agent: String = agent_sources().iter().map(|f| shipped(f)).collect();
+    assert!(
+        agent.contains("encode_chat("),
+        "the agent speaks some other way"
+    );
+    let src = root().join("crates/server/src");
+    let mut files = agent_sources();
+    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    for file in files {
+        let shipped = shipped(&file);
+        for banned in ["encode_event_chat", "push_chat", "say_server", "KIND_CHAT"] {
+            assert!(
+                !shipped.contains(banned),
+                "{} names {banned}: an agent says a line the way a player types one",
+                file.display()
+            );
+        }
+    }
+}
+
 #[test]
 fn the_observation_encoder_and_the_mind_read_no_world() {
     let src = root().join("crates/server/src");
@@ -419,6 +452,8 @@ struct Harness {
     /// box moves sent with that box's panel open.
     pick_checks: u32,
     panel_checks: u32,
+    /// Chat lines the puppet's client was sent: (speaker, global, text).
+    puppet_chat: Vec<(u32, bool, protocol::ChatText)>,
 }
 
 impl Harness {
@@ -491,7 +526,18 @@ impl Harness {
             use_checks: 0,
             pick_checks: 0,
             panel_checks: 0,
+            puppet_chat: Vec::new(),
         }
+    }
+
+    /// The puppet types a line into its chat box, in both shards.
+    fn puppet_says(&mut self, text: &str) {
+        let msg = protocol::ChatMsg {
+            global: false,
+            text: protocol::ChatText::sanitize(text.as_bytes()).unwrap(),
+        };
+        self.shard.push_chat(self.puppet_slot, msg);
+        self.replay.push_chat(self.puppet_slot, msg);
     }
 
     /// The item the human client makes a player hold to send this verb,
@@ -615,8 +661,10 @@ impl Harness {
         let now = self.t0 + Duration::from_secs_f64(f64::from(self.tick) / f64::from(TICK_HZ));
         let mut act = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         ALLOCS.with(|c| c.set(Some(0)));
+        let mut said = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         let frame = self.bot.frame_at(&self.view, ID, self.tick as u16, now);
         let action = self.bot.action(&mut act);
+        let say = self.bot.say(&mut said);
         self.heap_ops += ALLOCS.with(|c| c.replace(None).unwrap());
         self.buttons |= frame.buttons;
         assert!(usize::from(frame.sel) < HOTBAR_SLOTS);
@@ -827,11 +875,28 @@ impl Harness {
             let again = decode_action(&act[..len]).unwrap();
             self.replay.push_action(0, again);
         }
+        // Wall 1, the voice: a line goes out through the human chat box's
+        // encoder, local, and the shard reads it as any player's line.
+        if let Some(len) = say {
+            let msg =
+                protocol::decode_chat(&said[..len]).expect("agent chat decodes as a player's");
+            assert!(!msg.global, "an agent speaks only to the bodies near it");
+            self.shard.push_chat(0, msg);
+            self.replay.push_chat(0, msg);
+        }
         if let Some(weapon) = self.puppet {
             self.puppet_step(weapon);
         }
         let (view, bot) = (&mut self.view, &mut self.bot);
+        let (puppet_slot, puppet_chat) = (self.puppet_slot, &mut self.puppet_chat);
         self.shard.tick_bare(&self.stats, |lane, slot, bytes| {
+            if slot == puppet_slot && lane == Lane::Event {
+                if let Ok(protocol::EventMsg::Chat { from, global, text }) =
+                    protocol::decode_event(bytes)
+                {
+                    puppet_chat.push((from, global, text));
+                }
+            }
             if slot != 0 {
                 return true;
             }
@@ -1801,8 +1866,119 @@ impl server::mind::DecisionSource for LootWhenSeen {
             reason: server::mind::Reason::EMPTY,
             input_tokens: 0,
             output_tokens: 0,
+            say: server::mind::Say::Quiet,
         })
     }
+}
+
+/// The test's talking source, of the external kind the body lets speak: it
+/// greets on its first decision and answers once when it has heard the
+/// puppet. It notes what it heard where the test can read it, and decides
+/// without allocating, inside the harness's counted window.
+struct Talker {
+    greeted: bool,
+    answered: bool,
+    /// Bit 0: heard the puppet's line, labelled and local. Bit 1: asked
+    /// because of it (`Trigger::Heard`). Bit 2: heard its own line back.
+    seen: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl server::mind::DecisionSource for Talker {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::External
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use server::mind::{Say, Trigger};
+        use std::sync::atomic::Ordering;
+        let mut seen = 0;
+        for l in s.heard.lines() {
+            if l.me {
+                seen |= 4;
+            } else if l.from == PUPPET && !l.global && !l.agent && l.text.as_bytes() == b"hi bot" {
+                seen |= 1;
+            }
+        }
+        if seen & 1 != 0 && s.trigger == Trigger::Heard {
+            seen |= 2;
+        }
+        self.seen.fetch_or(seen, Ordering::Relaxed);
+        let line = |t: &[u8]| Say::Line(protocol::ChatText::sanitize(t).unwrap());
+        let say = if !self.greeted {
+            self.greeted = true;
+            line(b"hello")
+        } else if seen & 1 != 0 && !self.answered {
+            self.answered = true;
+            line(b"hi puppet")
+        } else {
+            Say::Quiet
+        };
+        let goal = if s.offers(Goal::Wait) {
+            Goal::Wait
+        } else {
+            s.options()[0]
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say,
+        })
+    }
+}
+
+/// Agents meet humans: the body says its line through the chat box's
+/// encoder, a player beside it hears it from the agent, the player's answer
+/// reaches the source labelled as a player's chat log labels it and wakes
+/// it early, and the answer to that is heard too — local throughout, the
+/// two shards hash-identical and the frame path allocation-free.
+#[test]
+fn a_survivor_speaks_locally_and_hears_who_spoke() {
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let talker = Talker {
+        greeted: false,
+        answered: false,
+        seen: seen.clone(),
+    };
+    let mind = Mind::inline(talker, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    let greeted = |h: &Harness| h.puppet_chat.iter().any(|c| c.0 == ID && !c.1);
+    for _ in 0..600 {
+        if greeted(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        greeted(&h),
+        "the puppet never heard the agent: {}",
+        h.explain()
+    );
+    assert_eq!(h.puppet_chat[0].2.as_bytes(), b"hello");
+    h.puppet_says("hi bot");
+    let answered = |h: &Harness| h.puppet_chat.iter().filter(|c| c.0 == ID).count() >= 2;
+    for _ in 0..900 {
+        if answered(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(answered(&h), "the agent never answered: {}", h.explain());
+    let bits = seen.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(bits & 1, 1, "the source never heard the puppet's line");
+    assert_eq!(bits & 2, 2, "a line nearby did not wake the source early");
+    assert_eq!(bits & 4, 4, "its own line never came back to it");
+    assert!(h.puppet_chat.iter().all(|c| !c.1), "every line was local");
+    let s = h.bot.stats;
+    assert_eq!((s.said, s.say_refused, s.say_dropped), (2, 0, 0));
+    assert!(s.heard >= 1 && s.echoed >= 1, "{s:?}");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
 /// Units of `item` in a player's pack and belt.
@@ -2922,6 +3098,7 @@ impl server::mind::DecisionSource for HomeGuard {
             reason: server::mind::Reason::EMPTY,
             input_tokens: 0,
             output_tokens: 0,
+            say: server::mind::Say::Quiet,
         })
     }
 }
@@ -3087,6 +3264,7 @@ impl server::mind::DecisionSource for RaidWhenOffered {
             reason: server::mind::Reason::EMPTY,
             input_tokens: 0,
             output_tokens: 0,
+            say: server::mind::Say::Quiet,
         })
     }
 }

@@ -1174,6 +1174,12 @@ impl ClientCore {
             .filter(|t| t.id == id && t.id != 0)
     }
 
+    /// Whether player `id` declared itself an agent (`EventMsg::Agent`).
+    /// Self-declared: a program that never said so reads `false`.
+    pub fn is_agent(&self, id: u32) -> bool {
+        id != 0 && self.agents.get((id & 0xFF) as usize) == Some(&id)
+    }
+
     /// What player `id` is wearing, as the shard last said (`EventMsg::Worn`):
     /// the item in each wear slot and its skin, [`WornLook::NONE`] for a body
     /// the shard has not described yet.
@@ -1608,12 +1614,17 @@ pub struct ClientCore {
     /// (the id's low byte) and answered only for the full id — a reused slot
     /// never speaks for its previous tenant. Read with [`Self::tag`].
     tags: Box<[Tag]>,
+    /// Which players declared themselves agents (`EventMsg::Agent`, v107):
+    /// the full id by slot, 0 for none, so a reused slot never marks its new
+    /// tenant. Read with [`Self::is_agent`].
+    agents: Box<[u32]>,
     /// What each body wears (`EventMsg::Worn`, v98), by player id.
     bodies_worn: Box<[(u32, WornLook)]>,
     worn_next: usize,
     /// Bumped on every `Worn`, so a renderer re-dresses only when it moved.
     pub worn_gen: u32,
-    /// Bumped whenever a tag lands, so a view can redraw names only then.
+    /// Bumped whenever a tag or an agent's mark lands, so a view can redraw
+    /// names only then.
     pub tags_gen: u32,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
@@ -2193,6 +2204,7 @@ impl ClientCore {
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
             tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
+            agents: vec![0; sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
             bodies_worn: vec![(0, WornLook::NONE); 2 * sim_core::limits::MAX_PLAYERS]
                 .into_boxed_slice(),
             worn_next: 0,
@@ -2848,6 +2860,12 @@ impl ClientCore {
                         name,
                         pic,
                     };
+                    self.tags_gen = self.tags_gen.wrapping_add(1);
+                }
+            }
+            EventMsg::Agent { id } => {
+                if let Some(row) = self.agents.get_mut((id & 0xFF) as usize) {
+                    *row = id;
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }
             }
@@ -5012,6 +5030,25 @@ mod tests {
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// An agent's mark answers for the full id it was sent for: the next
+    /// tenant of the same slot (a new generation) is not an agent because
+    /// its predecessor was, and a mark redraws names.
+    #[test]
+    fn an_agent_mark_belongs_to_one_tenancy_of_a_slot() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let agent = (3 << 8) | 5;
+        assert!(!c.is_agent(agent));
+        let gen = c.tags_gen;
+        let len = protocol::encode_event_agent(agent, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(c.is_agent(agent));
+        assert_ne!(c.tags_gen, gen, "a mark must redraw names");
+        assert!(!c.is_agent((4 << 8) | 5), "the slot's next tenant");
+        assert!(!c.is_agent((3 << 8) | 6), "the next slot");
+        assert!(!c.is_agent(0));
     }
 
     /// The playout delay breathes with measured jitter and never leaves
