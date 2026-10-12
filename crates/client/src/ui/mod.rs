@@ -73,6 +73,12 @@
 /// (wall 4, applied to a client-driven path).
 pub const MAX_QUERY_CHARS: usize = 32;
 
+/// **Triple T**, the base body every player starts as (operator, 2026-10-12),
+/// named wherever the client names him: the menu's figure, the loading line.
+/// `None` when he is phased out for a realistic base body — the figures stay
+/// (they are whoever the base body is), the name goes.
+pub const HERO: Option<&str> = Some("TRIPLE T");
+
 pub mod arc;
 pub mod boot;
 pub mod build;

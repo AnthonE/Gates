@@ -248,6 +248,21 @@ pub fn bind(
             }
         }
         let Some(body) = body else { continue };
+        commands
+            .entity(body)
+            .insert(WornRig::under(body, &children, &names, &skinned));
+    }
+}
+
+impl WornRig {
+    /// The bones and the skinned mesh under `body`, once its scene has
+    /// spawned. [`bind`]'s walk, and the portrait's (`portrait.rs`).
+    pub fn under(
+        body: Entity,
+        children: &Query<&Children>,
+        names: &Query<&Name>,
+        skinned: &Query<(), With<SkinnedMesh>>,
+    ) -> Self {
         let mut rig = WornRig {
             bones: [None; 3],
             skin: None,
@@ -274,7 +289,18 @@ pub fn bind(
                 stack.extend(kids.iter());
             }
         }
-        commands.entity(body).insert(rig);
+        rig
+    }
+
+    /// Take everything off: the portrait's, back on the menu.
+    pub fn strip(&mut self, commands: &mut Commands) {
+        for p in self.parts.iter_mut() {
+            if let Some(e) = p.take() {
+                commands.entity(e).despawn();
+            }
+        }
+        self.shown = WornLook::NONE;
+        self.pending = false;
     }
 }
 
@@ -319,44 +345,61 @@ pub fn dress(
         if !moved && !rig.pending {
             continue;
         }
-        let (want, tints) = drawable(core.worn_of(body.0), &core.skins);
-        if want == rig.shown && !rig.pending {
-            continue;
-        }
-        let Some(skin) = rig.skin.and_then(|e| skins.get(e).ok()) else {
-            continue;
-        };
-        let Some(ibm) = binds.get(&skin.inverse_bindposes) else {
-            rig.pending = true;
-            continue;
-        };
-        let mut pending = false;
-        let mut names: [&str; WEAR_SLOTS] = [""; WEAR_SLOTS];
-        for (name, &item) in names.iter_mut().zip(want.items.iter()) {
-            if item == sim_core::gather::NO_ITEM {
-                continue;
-            }
-            match crate::ui::craft::item_name(&core.catalog, item) {
-                Some(n) => *name = n,
-                None => pending = true, // the catalog has not dripped this row yet
-            }
-        }
-        hang(
+        put_on(
             &mut commands,
             &kit,
-            skin,
-            ibm,
+            (&binds, &skins),
+            (&mut skin_mats, &mut materials),
+            core,
             &mut rig,
-            &names,
-            |slot, base| {
-                tints[slot]
-                    .and_then(|t| skin_mats.for_part(want.skins[slot], t, base, &mut materials))
-                    .unwrap_or_else(|| base.clone())
-            },
+            core.worn_of(body.0),
         );
-        rig.shown = want;
-        rig.pending = pending;
     }
+}
+
+/// Dress one rig in `look`, if it is not already showing it: [`dress`]'s
+/// body, and the portrait's (`portrait.rs`), which wears your own.
+pub fn put_on(
+    commands: &mut Commands,
+    kit: &WornKit,
+    (binds, skins): (&Assets<SkinnedMeshInverseBindposes>, &Query<&SkinnedMesh>),
+    (skin_mats, materials): (
+        &mut super::viewmodel::SkinMats,
+        &mut Assets<StandardMaterial>,
+    ),
+    core: &client_core::core::ClientCore,
+    rig: &mut WornRig,
+    look: WornLook,
+) {
+    let (want, tints) = drawable(look, &core.skins);
+    if want == rig.shown && !rig.pending {
+        return;
+    }
+    let Some(skin) = rig.skin.and_then(|e| skins.get(e).ok()) else {
+        return;
+    };
+    let Some(ibm) = binds.get(&skin.inverse_bindposes) else {
+        rig.pending = true;
+        return;
+    };
+    let mut pending = false;
+    let mut names: [&str; WEAR_SLOTS] = [""; WEAR_SLOTS];
+    for (name, &item) in names.iter_mut().zip(want.items.iter()) {
+        if item == sim_core::gather::NO_ITEM {
+            continue;
+        }
+        match crate::ui::craft::item_name(&core.catalog, item) {
+            Some(n) => *name = n,
+            None => pending = true, // the catalog has not dripped this row yet
+        }
+    }
+    hang(commands, kit, skin, ibm, rig, &names, |slot, base| {
+        tints[slot]
+            .and_then(|t| skin_mats.for_part(want.skins[slot], t, base, materials))
+            .unwrap_or_else(|| base.clone())
+    });
+    rig.shown = want;
+    rig.pending = pending;
 }
 
 /// Take off whatever `rig` shows and hang the pieces named in `names` (the

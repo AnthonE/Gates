@@ -389,11 +389,14 @@ pub enum Cue {
     OreBreak,
     /// A blow that landed on the node's hotspot: a bright tink, at the node.
     OreGlint,
+    /// The bat landing a blow: Triple T's hollow-log "tung", on top of
+    /// whatever the blow struck, at the point it struck.
+    Tung,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 90;
+pub const CUE_COUNT: usize = 91;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -492,6 +495,7 @@ impl Cue {
         Cue::OreCrumble,
         Cue::OreBreak,
         Cue::OreGlint,
+        Cue::Tung,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -619,7 +623,8 @@ impl Cue {
             | Cue::RemoteSplash
             | Cue::RemoteBowDraw
             | Cue::OreCrumble
-            | Cue::OreBreak => 0.07,
+            | Cue::OreBreak
+            | Cue::Tung => 0.07,
             // The bonus answering you: nearly a symbol, but struck on rock,
             // and two in a row in unison would ring.
             Cue::OreGlint => 0.03,
@@ -990,6 +995,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 40.0, 0.62, 120, 4, true),   // ore crumble
     row(GAME, 56.0, 0.80, 200, 5, true),   // ore break
     row(GAME, 24.0, 0.55,  60, 5, true),   // ore glint
+    // The bat's tung: an impact's reach, under the impact it rides on.
+    row(GAME, 40.0, 0.60,  60, 4, true),   // tung
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

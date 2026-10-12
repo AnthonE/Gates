@@ -836,6 +836,59 @@ pub fn impacts(
     }
 }
 
+/// Triple T's tung: a blow with the bat knocks like a hollow log, laid over
+/// whatever [`impacts`] says it struck, at the same point. Your own blows off
+/// your own hand; anyone else's off the swinger standing at it with a bat in
+/// theirs (a melee impact carries no striker, and the swing and its impact
+/// land on the same tick).
+pub fn tungs(
+    contacts: Res<super::impact::Contacts>,
+    net: Option<NonSend<Net>>,
+    feed: Res<super::feed::Feed>,
+    eye: Res<Eye>,
+    mut sound: ResMut<Sound>,
+) {
+    use super::impact::{ContactKind, Weapon};
+    if contacts.is_empty() {
+        return;
+    }
+    let Some(n) = net else { return };
+    let core = &n.session.core;
+    let bat =
+        |row: Option<usize>| row.is_some_and(|r| crate::ui::hold::HELD_MODELS[r].key == "bat");
+    let mine = bat(crate::ui::hold::held_model_in_hand(
+        &core.catalog,
+        &core.inv,
+        n.sel,
+    ));
+    let at_tick = core.render_tick();
+    let mut rs = client_core::interp::RemoteState::default();
+    for c in contacts.iter() {
+        if c.weapon != Weapon::Melee {
+            continue;
+        }
+        let tung = match c.kind {
+            ContactKind::Swing | ContactKind::Flesh => mine,
+            // Yours too, when the sim's mark and the pick did not agree.
+            ContactKind::Impact => feed.swings().iter().any(|&id| {
+                if id == core.player_id {
+                    return mine && eye.pos.distance(c.at) < TUNG_REACH_M;
+                }
+                core.interp.sample(id, at_tick, &mut rs)
+                    && Vec3::new(rs.x, rs.y, rs.z).distance(c.at) < TUNG_REACH_M
+                    && bat(crate::ui::hold::held_model_of(&core.catalog, rs.held))
+            }),
+        };
+        if tung {
+            sound.play(Request::at(Cue::Tung, [c.at.x, c.at.y, c.at.z]));
+        }
+    }
+}
+
+/// How far from a swinger's feet its blow can land, metres: arm and bat,
+/// with room for the contact's lift up a trunk.
+const TUNG_REACH_M: f32 = 4.0;
+
 /// How often a round on stone or metal glances off whining, percent.
 pub const RICOCHET_PCT: u32 = 30;
 

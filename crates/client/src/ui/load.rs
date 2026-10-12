@@ -103,7 +103,10 @@ impl Progress {
     /// stage in which no ring has been asked for anything.
     pub fn line(&self) -> String {
         if !self.placed {
-            return "WAITING FOR THE SERVER TO PLACE YOU".to_string();
+            return match super::HERO {
+                Some(name) => format!("WAITING FOR THE SERVER TO PLACE {name}"),
+                None => "WAITING FOR THE SERVER TO PLACE YOU".to_string(),
+            };
         }
         format!(
             "GROUND {}/{}      SCATTER {}/{}      CLUTTER {}/{}",

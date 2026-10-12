@@ -1204,6 +1204,7 @@ pub fn rebuild(
     // the labels it drew before rather than an empty ring.
     icons: Option<Res<super::icons::Icons>>,
     near: Res<super::verbs::Near>,
+    portrait: Option<Res<super::portrait::Portrait>>,
 ) {
     let core = &net.session.core;
 
@@ -1223,7 +1224,14 @@ pub fn rebuild(
         Panel::Inventory => {
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
-            inv::build_screen(&mut commands, &ui, core, icons, net.sel)
+            inv::build_screen(
+                &mut commands,
+                &ui,
+                core,
+                icons,
+                net.sel,
+                portrait.as_deref(),
+            )
         }
         Panel::Craft => {
             let fallback = super::icons::Icons::default();
