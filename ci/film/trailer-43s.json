@@ -22,7 +22,7 @@
     {"shot": "build-lapse2", "in": 1.0, "len": 2.83, "game": 0.3, "transition": "cut"},
     {"shot": "base-golden", "in": 2.5, "len": 2.84, "game": 0.4, "transition": "cut"},
     {"shot": "base-storm", "in": 1.5, "len": 2.83, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.14:saturation=0.6:gamma=1.0,colorbalance=rs=-0.04:bs=0.05"},
-    {"shot": "base-night", "in": 1.5, "len": 2.83, "game": 0.5, "transition": "cut"},
+    {"shot": "zig-reveal", "in": 0.6, "len": 2.83, "game": 0.4, "transition": "cut", "grade": "eq=gamma=0.72:saturation=0.45:contrast=1.15,colorbalance=rs=-0.12:gs=-0.04:bs=0.14:rm=-0.08:bm=0.10:rh=-0.05:bh=0.05"},
     {"shot": "raid-plant", "in": 0.25, "len": 4.25, "game": 0.8, "transition": "cut"},
     {"shot": "raid-blast", "in": 0.68, "len": 4.25, "game": 1.0, "transition": "cut"},
     {"shot": "raid-wide", "in": 2.6, "len": 2.84, "game": 1.0, "transition": "cut"},
