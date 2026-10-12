@@ -147,7 +147,7 @@ const KNOWN: &[(&str, u32, &str)] = &[
     // chip's own platform read, like the shard list beside it.
     (
         "src/render/menu.rs",
-        484,
+        486,
         "your name and picture for the identity chip",
     ),
     (

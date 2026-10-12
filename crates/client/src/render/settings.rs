@@ -1067,7 +1067,8 @@ pub fn setup(
     mut commands: Commands,
     settings: Res<Settings>,
     disk: Option<Res<Disk>>,
-    cameras: Query<(), With<Camera>>,
+    // Not Triple T's: it films into an image, never the window.
+    cameras: Query<(), (With<Camera>, Without<super::portrait::PortraitCam>)>,
 ) {
     // Entered from the Esc menu there is a `Camera3d` up and the UI draws
     // against it; entered from the intro screen the menu's own camera went

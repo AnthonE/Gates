@@ -5879,7 +5879,7 @@ fn the_wear_panel_draws_what_the_wire_now_carries() {
 fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
     let code = inv_code();
     assert!(
-        !code.contains("wear_panel(row, core, icons);\n        return;"),
+        !code.contains("wear_panel(row, core, icons, portrait);\n        return;"),
         "`container_grid` still short-circuits into `wear_panel` — the body \
          is drawn only when it IS the open container, which is never now \
          and was a box's eviction before"
@@ -5889,7 +5889,7 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
     // container *if* one is open. Matched on the pack call's head: its own
     // arguments (the belt slot in hand) are not this test's.
     let row = code
-        .split("wear_panel(row, core, icons);")
+        .split("wear_panel(row, core, icons, portrait);")
         .nth(1)
         .expect("`build_screen` must draw the body");
     let head = &row[..row.len().min(200)];
@@ -5898,7 +5898,7 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
         "the body is not drawn beside the pack: {head}"
     );
     let before = code
-        .split("wear_panel(row, core, icons);")
+        .split("wear_panel(row, core, icons, portrait);")
         .next()
         .expect("there is text before the call");
     let tail = &before[before.len().saturating_sub(300)..];

@@ -233,7 +233,7 @@ rarity = "common"
 slot = "hand"
 class = "weapons"
 condition_max = 10000
-description = "A plain wooden club. Better than fists, not by much."
+description = "Triple T's bat. Tung tung tung. Better than fists, not by much."
 
 [[item]]
 id = "item.torch"
