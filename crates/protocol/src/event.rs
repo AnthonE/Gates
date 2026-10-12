@@ -540,11 +540,12 @@ const SUB_ITEM_DESC: u32 = 92;
 /// the boards move and to a joiner, one board a tick.
 const SUB_STANDING: u32 = 93;
 /// The receiver's way out (wire v104, `server::standings`, `WORLD.md` §4):
-/// which work is the exchange, whether it is open, its fee, the coin, and
+/// which work is the exchange, whether it is open, whether the island pays
+/// out at all (v105), its fee, the coin, and
 /// this wallet's cap, what it has put through and what was credited this
 /// wipe. Own-fact, at join and when any of it moves.
 const SUB_BANK: u32 = 94;
-/// Ore nodes crumbled past a stage (wire v105, sim `EV_NODE_STAGE`): each
+/// Ore nodes crumbled past a stage (wire v106, sim `EV_NODE_STAGE`): each
 /// cell and the stage it is drawn at. Broadcast one at a time as they
 /// crumble, and walked to a joiner after the harvested set.
 const SUB_NODE_STAGE: u32 = 95;
@@ -675,6 +676,10 @@ pub struct BankView {
     pub work: u8,
     /// Lit: coin may leave.
     pub open: bool,
+    /// The island pays out at all (`extract_cap` > 0, wire v105). With `cap`
+    /// 0 it tells a guest, who has no wallet to pay, from an island that
+    /// pays nobody.
+    pub pays: bool,
     /// Per cent burnt on the way out, 0..=100.
     pub fee_pct: u8,
     /// The item that leaves (JUNK).
@@ -2508,6 +2513,7 @@ pub fn encode_event_bank(b: &BankView, buf: &mut [u8]) -> Result<usize, WireErro
     let mut w = begin(buf, SUB_BANK)?;
     w.write(b.work as u32, 8)?;
     w.write_bit(b.open)?;
+    w.write_bit(b.pays)?;
     w.write(b.fee_pct as u32, 7)?;
     w.write(b.coin as u32, 16)?;
     w.write(b.cap, 32)?;
@@ -5123,6 +5129,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let b = BankView {
                 work: r.read(8)? as u8,
                 open: r.read_bit()?,
+                pays: r.read_bit()?,
                 fee_pct: r.read(7)? as u8,
                 coin: r.read(16)? as u16,
                 cap: r.read(32)?,

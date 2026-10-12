@@ -378,33 +378,29 @@ The rule that replaces it:
   (`browser_smoke` 15i) was deleted with the browser client**; `ci/native_bar.py`
   computes the same statistic on the native captures and prints it beside the
   reference, but nothing fails on it. Read it; do not assume it is walled.
-- **Budget — browser-era, and it is spent.** The working set is 6.0 MB at 1K
-  against a **12 MB** ceiling, and that ceiling was a *download*: a first-visit
-  cost paid over the network before the browser drew anything. The shipping
-  client is a native binary that installs a depot once (`ci/depot.py`) and
-  reads from disk after, so the constraint that produced the number is gone —
-  `crates/client/src/render/textures.rs` already says so at the load site.
-  What remains real is **VRAM and disk**, which are much larger and which
-  nothing here has measured. So: 12 MB is no longer a wall, re-sourcing at
-  2K/4K is unblocked, and the replacement ceiling is **unset on purpose** —
-  it goes to `DECISIONS.md` §open when someone measures it, not into this
-  line. KTX2/Basis stays an optimisation, not a prerequisite.
+- **Budget — the browser is the main client again (2026-10), so stay at 1K.**
+  Measured 2026-10-11: textures are 14.8 MB of a first visit (5.5 MB of it the
+  ground), ~0.8 s of decode on the page's one wasm thread, and ~84 MB of
+  ground arrays plus ~160 MB of other maps in VRAM (held again in the wasm
+  heap). 2K makes that ~56 MB, ~3 s and four times the memory, and at 1080p
+  it adds visible detail only within 2–3 m of the eye. Get near-field detail
+  by drawing a source at its **published size** instead — sand and rock went
+  from the 4 m ceiling to 2.14 m and 1.8 m that way, the gain 2K would have
+  bought, at 1K's bytes. Encode baseline JPEG, never progressive (~1.8× the
+  decode). KTX2 saves VRAM, not download.
 - **Anisotropy is browser-era too.** `BASE_ANISOTROPY_MAX = 4` is registered
   in `DECISIONS.md` §open and its stated reason is explicitly a browser one —
   at 16, *"a second browser tab did not reach the world at all on this box"*,
   a software rasterizer running two tabs. Every real GPU answers 16 and the
   native client is one process. The knob is **not** raised here — it is
-  spoken, and a spoken knob moves by being spoken again — but a native
-  value is now a legitimate proposal rather than a re-litigation, because
-  **the reason on the row no longer describes anything that exists.** The
-  browser client that produced it is deleted; nothing ships this ceiling for
-  the stated cause.
+  spoken, and a spoken knob moves by being spoken again — and with the
+  browser the main client again its stated reason applies again.
 - **Meshes are the same deal** when the time comes, but procedural vegetation
   may well win on variety — and now does: the native conifer is generated
   (`crates/client/src/render/tree.rs`). The three.js skill pack
   (`.claude/skills/threejs-procedural-vegetation`) is **guidance about
-  technique only** — there is no browser build for it to describe, and its
-  API is not ours. Reach for it for the physics, never for the calls
+  technique only** — our browser build is the Rust client in wasm, not
+  three.js, and its API is not ours. Reach for it for the physics, never for the calls
   (`CLAUDE.md` §third-party credit).
 
 ## 8 · What passes review

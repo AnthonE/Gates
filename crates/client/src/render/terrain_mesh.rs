@@ -808,11 +808,11 @@ impl Ring {
 /// | source | linear mean rgb | gain span | albedo sd |
 /// |---|---|---|---|
 /// | grass | 0.292 0.248 0.120 | **2.444** | 0.0753 |
-/// | sand | 0.228 0.174 0.110 | **2.066** | 0.0499 |
+/// | sand | 0.122 0.095 0.067 | **1.836** | 0.0318 |
 /// | litter | 0.140 0.098 0.039 | **3.559** | 0.0635 |
-/// | rock | 0.101 0.101 0.094 | **1.076** | 0.0368 |
+/// | rock | 0.283 0.273 0.241 | **1.174** | 0.1131 |
 ///
-/// Only `rock` clears the rule. Reducing each source to its own mean-1
+/// Only `Rock032`, the rock of the day, cleared the rule. Reducing each source to its own mean-1
 /// luminance field gives every one of them a span of 1.000 by construction, so
 /// all four may now ship their relief where before only granite's could — which
 /// is the whole of what this slice buys. The colour stays entirely the authored
@@ -1026,14 +1026,13 @@ pub const UV_PER_M: f32 = 0.25;
 /// what stands against, and which **no gate here can see and nobody has
 /// booted** (`NOW.md` §LOOK).
 ///
-/// **Rock keeps 4 m because ambientCG does not publish a size for it.**
-/// `Rock032`'s `dimensionX/Y/Z` are all `0`, their sentinel for unknown (as
-/// `Gravel004`'s were before it) — the same answer `CorrugatedSteel009` gives
-/// in `structures::TIER`, and that row's response is the one copied here:
-/// count a feature instead. The median-energy wavelength of `rock_albedo.jpg`
-/// is 11.1 texels, so at 4 m its finest relief draws **4.3 cm**, a coarse
-/// granite's grain and pitting, with its joints a metre or so apart.
-pub const GROUND_TILE_M: [f32; 4] = [4.0, 2.0, 1.3, 4.0];
+/// **Since 2026-10-11 every identity is drawn at its own published size**:
+/// sand (PH `sand_02`, 2.14 m) and rock (aCG `Rock043L`, 1.8 m) replaced a
+/// 15 m beach drawn clamped at the 4 m ceiling and a slab with no published
+/// size drawn at it. That halves their texel size — the near-field detail a
+/// 2K source would have bought, at 1K's bytes, which is what a browser-first
+/// client can afford.
+pub const GROUND_TILE_M: [f32; 4] = [2.14, 2.0, 1.3, 1.8];
 
 /// Percent of each identity's albedo variance finer than `ART.md` rule 1's
 /// 5 cm grain, **at the tile [`GROUND_TILE_M`] draws it at**.
@@ -1044,22 +1043,7 @@ pub const GROUND_TILE_M: [f32; 4] = [4.0, 2.0, 1.3, 4.0];
 /// be pinned to the file or it rots into a claim nobody re-checks.
 /// `tests/ground_tiling.rs` re-measures all four.
 ///
-/// Sand and rock are the low pair because both are drawn at the 4 m ceiling
-/// rather than at a size of their own — sand because 15 m is over the band,
-/// rock because ambientCG publishes no size to take. Rock is the lowest since
-/// 2026-09-24 (`Gravel004`'s 78.4% → `Rock032`'s 69.3%): a slab keeps more of
-/// its contrast in metre-scale joints than scree does, which is the point of
-/// the swap — the fine grain is still the majority of it.
-pub const GRAIN_SHARE: [f32; 4] = [79.811, 94.683, 96.071, 69.308];
-
-/// What sand's grain share would be at its published 15 m, and the whole of
-/// the case for clamping it.
-///
-/// Kept as a constant rather than as prose so the same gate that re-measures
-/// [`GRAIN_SHARE`] re-measures the counterfactual too. If a future sand source
-/// holds its grain at 15 m, this is the number that says so and the clamp can
-/// be revisited on evidence instead of on memory.
-pub const SAND_GRAIN_SHARE_AT_PUBLISHED: f32 = 47.562;
+pub const GRAIN_SHARE: [f32; 4] = [97.847, 94.683, 96.071, 86.405];
 
 /// Widest tile any ground identity may be drawn at, metres.
 ///

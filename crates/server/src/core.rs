@@ -1002,6 +1002,7 @@ impl ShardCore {
             work: self.exchange().map_or(protocol::BANK_NO_WORK, |k| k as u8),
             open: wc.extract_unlock != sim_core::works::NO_UNLOCK
                 && sim_core::works::holds(self.world.works.unlocks, wc.extract_unlock),
+            pays: self.standings.exits.cap > 0,
             fee_pct: self.standings.exits.fee_pct.min(100) as u8,
             coin: wc.coin,
             cap: if wallet {

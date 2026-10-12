@@ -49,21 +49,14 @@
   ],
   "music": [
     {"src": "trailer_drone.wav", "at": 0.0, "gain": 0.45},
-    {"src": "29_MusicOpenCalm.wav", "at": 0.0, "gain": 0.8, "fade_in": 1.5},
-    {"src": "32_MusicTurnCalm.wav", "at": 8.0, "gain": 0.8},
-    {"src": "35_MusicCloseCalm.wav", "at": 16.0, "gain": 0.8},
-    {"src": "30_MusicOpenTense.wav", "at": 24.0, "gain": 0.85},
-    {"src": "33_MusicTurnTense.wav", "at": 32.0, "gain": 0.85},
-    {"src": "34_MusicTurnCombat.wav", "at": 40.0, "gain": 0.9},
-    {"src": "37_MusicCloseCombat.wav", "at": 48.0, "gain": 0.9},
-    {"src": "29_MusicOpenCalm.wav", "at": 56.0, "gain": 0.8, "cut": 8.0, "fade_out": 3.0}
+    {"src": "music_safe_zone.ogg", "at": 0.0, "in": 100.0, "gain": 0.9, "fade_in": 1.0, "cut": 64.0, "fade_out": 3.0}
   ],
   "sfx": [
     {"src": "trailer_whoosh.wav", "at": 12.7, "gain": 0.45},
     {"src": "trailer_boom.wav", "at": 18.667, "gain": 0.7},
     {"src": "trailer_boom.wav", "at": 24.0, "gain": 0.55},
     {"src": "trailer_riser.wav", "at": 34.0, "gain": 0.55},
-    {"src": "46_Thunder_0.wav", "at": 35.2, "gain": 0.6},
+    {"src": "37_Thunder_0.wav", "at": 35.2, "gain": 0.6},
     {"src": "trailer_pulse.wav", "at": 37.333, "gain": 0.7},
     {"src": "trailer_pulse.wav", "at": 38.0, "gain": 0.7},
     {"src": "trailer_pulse.wav", "at": 38.667, "gain": 0.75},

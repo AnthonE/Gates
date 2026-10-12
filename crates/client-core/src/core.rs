@@ -522,7 +522,7 @@ pub struct HarvestedSet {
     /// One bit per felled tree whose stump was grubbed out (wire v101):
     /// harvested, and nothing standing. Cleared with the harvested bit.
     grubbed: Box<[u64]>,
-    /// A worn ore node's stage (wire v105), two bits a cell over two
+    /// A worn ore node's stage (wire v106), two bits a cell over two
     /// bitsets. Cleared when the slot breaks or stands back up.
     stage_lo: Box<[u64]>,
     stage_hi: Box<[u64]>,

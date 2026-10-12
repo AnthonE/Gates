@@ -210,10 +210,10 @@ fn main() {
     // One standings board (v104).
     let len = protocol::encode_event_standing(&goldens::event_standing(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[160], &buf[..len]);
-    // The way out through the exchange (v104).
+    // The way out through the exchange (v105).
     let len = protocol::encode_event_bank(&goldens::event_bank(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[161], &buf[..len]);
-    // Ore nodes crumbled past a stage (v105).
+    // Ore nodes crumbled past a stage (v106).
     let len =
         protocol::encode_event_node_stage(true, &goldens::event_node_stage(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[162], &buf[..len]);

@@ -52,6 +52,8 @@ render = [
     "dep:ureq",
     # Player pictures (`render/faces.rs`) are PNGs decoded off the frame.
     "dep:png",
+    # The desktop window's icon (`bin/gates.rs`, `window_icon`).
+    "dep:winit",
     "dep:basis-universal",
     "dep:ktx2",
     "dep:ruzstd",
@@ -59,6 +61,8 @@ render = [
     # not-wasm32 table below, so on a browser build this line enables nothing —
     # `ureq`'s mechanism, and probed the same way.
     "dep:cpal",
+    # The native music stream's ring into that callback (`render/music_out.rs`).
+    "dep:rtrb",
 ]
 # Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
 # reloads it into the running client instead of asking for a rebuild and a
@@ -742,6 +746,9 @@ basis-universal = { version = "0.3", optional = true }
 # build never sees it. cpal 0.15 has no default features and ALSA is its
 # Linux host, so this adds no feature and no crate.
 cpal = { version = "0.15", optional = true }
+# The ring the music decoder thread fills and cpal's callback drains
+# (`render/music_out.rs`). Already in `Cargo.lock` through `sound`.
+rtrb = { version = "0.3", optional = true }
 # The runtime half of tokio. Unioned with the `sync` above by cargo, so a
 # native build sees exactly the five features it saw before this split.
 #
@@ -798,6 +805,9 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "dangerous-configuration",
     "quinn",
 ] }
+# The window icon's type. Bevy 0.18 has no icon field and does not re-export
+# `winit::window::Icon`; this is the same winit Bevy already links.
+winit = { version = "0.30", default-features = false, optional = true }
 # An agent player's wallet key (`NETCODE.md` §2.4) — **`native` only, and
 # that is the rule it exists to keep**: a page must never hold a key, so the
 # one crate that can load one is not a dependency of the browser build at all.

@@ -12,7 +12,7 @@
 //! Ours, off facts the sim already announced (`RENDER.md` §1: it decides
 //! nothing):
 //!
-//! - **Stages** (`EV_NODE_STAGE`, wire v105). Each quarter mined, the node
+//! - **Stages** (`EV_NODE_STAGE`, wire v106). Each quarter mined, the node
 //!   sinks, squats and settles to a new lean and turn ([`stage_pose`]), rubble
 //!   cut from its own mesh piles up at its foot, and a crumble covers it.
 //! - **Every blow** shudders the node and flicks a chunk of it off, in its own

@@ -125,6 +125,9 @@ sed -i "s|src=\"app.js\"|src=\"app.js?v=$appv\"|" "$out/index.html"
 # The image an X post shows for the page's link (`twitter:image` in index.html):
 # a crop of `assets/menu/dusk.jpg`, our own island, with the wordmark on it.
 cp crates/client-web/web/card.jpg "$out/"
+# The tab and home-screen icon: the Gates sigil, the same plate the desktop
+# window carries (`crates/client/icon/`).
+cp crates/client-web/web/favicon.png crates/client-web/web/apple-touch-icon.png "$out/"
 # The menu's face is the game's (`render/ui.rs` embeds the same two files), and
 # the page's CSP is `font-src 'self'`, so they ship beside it with their licence.
 mkdir -p "$out/fonts"
@@ -297,4 +300,11 @@ commit="${GATES_GIT_SHA:-$(git rev-parse --short=9 HEAD 2>/dev/null || echo unkn
 printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d,"modules":{%s},"audio":{"sha256":"%s"}}\n' \
   "$version" "$commit" "${proto:-null}" "$raw" "$gz" "$mods" "$audio_sha" > "$out/build.json"
 echo "   build.json: $(cat "$out/build.json")"
+
+# The website's guide tab (`/games/gates/guide/` reads `play/guide.json`):
+# every item, recipe and animal off this build's content, its icons the
+# assets staged above.
+GUIDE_BUILT="$commit" cargo run -q --release -p content --example guide_json -- content assets \
+  > "$out/guide.json"
+echo "   guide.json: $(stat -c%s "$out/guide.json") bytes"
 echo "== done: python3 -m http.server 8080 --directory $out"

@@ -4,7 +4,7 @@ A survival game in the Rust tradition — wake with nothing on a hostile
 island, gather, craft, build, raid, lose it all, again. Authoritative
 Rust-language server, Rust client (Bevy), WebTransport/QUIC.
 
-**Play in your browser:** <https://elopros.com/games/gates/> ·
+**Play in your browser:** <https://elopros.com/games/gates/play/> ·
 **Store page:** <https://elopros.com/gates.html> ·
 **Desktop:** <https://elopros.com/download.html>
 

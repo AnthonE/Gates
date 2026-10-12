@@ -496,9 +496,9 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 159);
     // One standings board (v104).
     g!(seen, golden_event, 160);
-    // The way out through the exchange (v104).
+    // The way out through the exchange (v105).
     g!(seen, golden_event, 161);
-    // Ore nodes crumbled past a stage (v105).
+    // Ore nodes crumbled past a stage (v106).
     g!(seen, golden_event, 162);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
     assert_eq!(GOLDEN.len(), 163, "a new fixture must be dispatched above");

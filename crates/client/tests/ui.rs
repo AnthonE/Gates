@@ -7396,4 +7396,10 @@ fn the_way_out_says_whether_anything_can_leave() {
     b.cap = 0;
     b.taken = 0;
     assert_eq!(exit_lines(&b).0, "THIS ISLAND PAYS NOTHING OUT");
+    b.pays = true;
+    assert_eq!(
+        exit_lines(&b).0,
+        "SIGN IN WITH A WALLET TO TAKE JUNK OUT",
+        "an island that pays, seen by a guest"
+    );
 }

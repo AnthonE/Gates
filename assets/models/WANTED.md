@@ -375,7 +375,7 @@ leaves, so a generator is exactly right.
 | 9.3 | **Root plate** | 2.5 × 2.2 × 0.8 | ≤ 1.5 k | The disc of roots and soil an uprooted tree tears up. Stands near-vertical; the single most legible "a tree fell here" silhouette. |
 | 9.4 | **Rotting stump** | 0.7 ⌀ × 0.5 | ≤ 600 | Older and softer than §2.2's fresh cut — no clean face, collapsed centre. |
 
-**Textures — 6 sets**, and this is where the actual gap is. Alpha cut-out
+**Textures — 6 sets**, four of them shipped (2026-10). Alpha cut-out
 atlases unless noted; `ART.md` §7's sourcing rules apply and are not a
 formality — score candidates on gain span with the shipped estimator *before*
 committing, since that lever took `rock` from keep 0.17 to 0.97 on a file swap
@@ -383,17 +383,17 @@ with no code change.
 
 | # | set | why | priority |
 |---|---|---|---|
-| 9.5 | **Conifer sprig atlas** | Replaces `tree::needle_image`, which is *generated* and is the weakest link in the canopy today. Highest-value texture on this page. | 1 |
-| 9.6 | **Broadleaf atlas** | Needed the moment `TreeType::Deciduous` is switched on. Ash / aspen / oak read very differently — one sheet with all three is fine. | 2 |
-| 9.7 | **Grass blade atlas** | Blades are vertex-coloured today with **no map at all**, on the layer `ART.md` calls the largest structural gap. | 3 |
-| 9.8 | **Fern / frond atlas** | The shrub layer's one irreducible texture — a branch generator has no grammar for a frond. | 4 |
-| 9.9 | **Bark ×2–3** (not alpha) | We ship one. Birch and a dead/weathered bark carry most of the species read at trunk level. | 5 |
-| 9.10 | **Flower / forb atlas** | Meadow-biome variety. Small, cheap, last. | 6 |
+| 9.5 | **Conifer sprig atlas** | ✅ shipped: `needle_card` (Poly Haven `pine_tree_01` twigs, `assets/textures/MANIFEST.md`). | — |
+| 9.6 | **Broadleaf atlas** | ✅ shipped: `leaf_card` (ambientCG `LeafSet014` + `LeafSet001`). | — |
+| 9.7 | **Grass blade atlas** | ✅ the cards shipped (`grass_card`); the solid blades in the clutter ring are still vertex-coloured with no map. | 3 |
+| 9.8 | **Fern / frond atlas** | ✅ shipped: `fern_card` (Poly Haven `fern_02`). | — |
+| 9.9 | **Bark ×2–3** (not alpha) | Birch shipped (`birch`, TextureCan). A dead/weathered bark is still wanted, but nothing would draw it yet; the best candidate measured is Poly Haven `bark_willow_02` (2.15 m). | 5 |
+| 9.10 | **Flower / forb atlas** | Meadow-biome variety. Poly Haven has the sheets with alpha (`dandelion_01`, `celandine_01`, `flower_gazania`, `periwinkle_plant`); they are loose parts and need a baker like `ci/bake_fern_atlas.py`. | 6 |
 
 Sources to start from: [`madjin/awesome-cc0`](https://github.com/madjin/awesome-cc0)
 indexes the CC0 collections; ambientCG and Poly Haven are the usual bark
-sources. Every asset host is blocked by this box's egress proxy, so these are
-the operator's to fetch — a loop cannot pull them.
+sources. Poly Haven, ambientCG, Kenney and OpenGameArt answer from the cloud
+box since 2026-10 (Freesound does not), so a session can fetch these.
 
 ---
 
@@ -414,9 +414,6 @@ stand-in is:
    root plate turn "ground with trees on it" into a forest floor, and unlike
    everything else here they need no code change to be placeable
 
-And separately from the fifteen, **§9.5 the conifer sprig atlas** — it is a
-texture rather than a model, so it does not compete for the same budget, and
-it replaces a canopy card the client is currently *generating*.
 
 Everything in §5's food and utility block is small, cheap, and rarely the
 thing on screen; do it last.

@@ -20,8 +20,8 @@
 //!   already put the cue gain, the caller's gain, the falloff and the bus
 //!   into it, and nothing downstream attenuates again.
 //! - **The game thread decides and sends bounded commands; the renderer
-//!   owns time.** A bed's fade, a snapshot crossfade and a music orphan's
-//!   [`MUSIC_FADE_S`] are computed here per frame and sent as gain TARGETS
+//!   owns time.** A bed's fade and a snapshot crossfade are computed here
+//!   per frame and sent as gain TARGETS
 //!   the renderer ramps to across one block; it runs no law of its own. Why
 //!   this shape is `findings/browser-audio-20260913.md`: the previous path
 //!   made every play a `bevy_audio` entity — a decoder and a sink per cue,
@@ -38,9 +38,9 @@
 use bevy::prelude::*;
 
 use crate::sound::birds::{self, Birds};
-use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS, HELD_MUSIC};
+use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS};
 use crate::sound::mixer::{Mixer, Request, Start, Takes};
-use crate::sound::music::{self, Director};
+use crate::sound::music::{self, Director, Track};
 use crate::sound::steps::Steps;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
@@ -52,8 +52,7 @@ use super::{Eye, Net};
 /// and count it** ([`Engine::dropped`]) — the mixer's rule one queue up, and
 /// for its reason: a cue's value is that it happened, so the earlier asks
 /// win. A frame's worst case is arithmetic and well under it — three bed
-/// gains, `STARTS_PER_FRAME` starts, one music play and four music gains or
-/// stops, plus three loops or three stops and a cut on a screen transition
+/// gains, `STARTS_PER_FRAME` starts, plus three loops or three stops and a cut on a screen transition
 /// (`DECISIONS.md` §open, audio engine v0).
 pub const CMD_FRAME_CAP: usize = 32;
 
@@ -207,6 +206,28 @@ pub struct Engine {
     /// frame by [`pump`], so a `Start` already in the ring when it moves
     /// plays at the old rate for that one frame, which is accepted.
     pub out_rate: u32,
+    /// The frame's ask of the music output, which is not the engine: the
+    /// score is whole tracks streamed beside it (`sound::music`). [`music`]
+    /// fills it and each target's flush carries it out.
+    pub score: Score,
+}
+
+/// What the score asks of the music output: the native stream
+/// (`audio_out::Music`) or the page's `<audio>` element (`audio_web`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Score {
+    /// A track to start from its beginning this frame, replacing whatever the
+    /// output was playing.
+    pub start: Option<Track>,
+    /// End what is playing this frame. Applied before `start`.
+    pub stop: bool,
+    /// The level to hold the music at, linear. A target: each output ramps to
+    /// it rather than stepping.
+    pub gain: f32,
+    /// Something else already started a track — the page starts the intro
+    /// inside the PLAY press, before the game exists — and how far into it,
+    /// seconds. Written by the output's open, taken by [`music`] once.
+    pub adopt: Option<(Track, f32)>,
 }
 
 impl Default for Engine {
@@ -220,6 +241,7 @@ impl Default for Engine {
             live: Live::new(),
             diag: Diag::default(),
             out_rate: SAMPLE_RATE,
+            score: Score::default(),
         }
     }
 }
@@ -280,9 +302,9 @@ pub struct Sound {
     /// Each roster slot's voice clock (`sound::voice` — pure; [`voices`] is
     /// the producer that reads it against the drawn herd).
     pub voices: Voices,
-    /// When a song plays and which piece it is (`sound::music`). Lives on
-    /// the resource rather than on a world entity because it runs on the
-    /// menus too, where there is no world.
+    /// When a song plays and which one (`sound::music`). Lives on the
+    /// resource rather than on a world entity because it runs on the menus
+    /// too, where there is no world.
     pub music: Director,
     /// The forest layer's clock (`sound::birds`), driven by [`bed`], which
     /// already has the cover score and the props to perch on.
@@ -299,13 +321,8 @@ pub struct Sound {
     /// The snapshot crossfade, and this frame's resolved mixer state.
     snapshots: Snapshots,
     snap: SnapshotDef,
-    /// The pieces sounding, one per held music slot (`engine::HELD_MUSIC`),
-    /// and the round-robin cursor: with four slots the one a new piece
-    /// overwrites has always ended (two overlap by the tail, a transition
-    /// adds one orphan, one spare), and if it has not the renderer counts
-    /// the cut (`Diag::stats.cut`) rather than this file assuming.
-    music_slots: [MusicSlot; HELD_MUSIC],
-    next_music: usize,
+    /// The track the output is playing, as this side last asked for it.
+    sounding: Sounding,
 }
 
 impl Sound {
@@ -315,61 +332,37 @@ impl Sound {
     }
 }
 
-/// A piece of music on one of the engine's held music slots.
-///
-/// **Deliberately a held slot and not a one-shot voice, and deliberately
-/// untouched by [`teardown`]**, and both are load-bearing:
-///
-/// - A held slot, so music does not count against `VOICE_CAP` and cannot
-///   be the reason an axe was refused (`sound::mixer` refuses to start a
-///   music cue at all — `Cue::is_music`).
-/// - Not cut on leaving a world (`teardown` stops the beds and the voices
-///   and leaves the music slots alone), so a piece is not cut off
-///   mid-phrase. A menu piece rings out over the loading screen, which is
-///   how music is supposed to carry a transition.
-#[derive(Clone, Copy, Debug)]
-struct MusicSlot {
-    /// Which piece this is, so its level comes from the cue table like every
-    /// other level in the client rather than from a constant here.
-    cue: Cue,
-    /// The piece's own gain, 1 while it is playing normally and ramping to
-    /// zero once [`ending`](Self::ending) is set.
-    fade: f32,
-    /// Set when a screen change orphaned this piece: the director under it
-    /// has been reset, and something else is about to start on top of it.
-    ending: bool,
-    /// Seconds until the renderer frees the slot on its own — the bank's
-    /// length, counted down here so the slot is released without reading
-    /// the audio thread back.
+/// The track the music output is playing, as the game thread knows it — the
+/// output is asked, never read back, so the countdown here is what says a
+/// track has run out.
+#[derive(Clone, Copy, Debug, Default)]
+struct Sounding {
+    track: Option<Track>,
+    /// Seconds of it left.
     left_s: f32,
-    /// The level last sent, so a steady piece sends nothing.
-    sent: f32,
-    active: bool,
+    /// Its own fade, 1 while it plays and falling once [`Self::next`] is set.
+    fade: f32,
+    /// The track the director asked for while this one was still audible:
+    /// it starts when this one has faded out.
+    next: Option<Track>,
 }
 
-impl Default for MusicSlot {
-    fn default() -> Self {
-        Self {
-            cue: Cue::ALL[0],
-            fade: 1.0,
-            ending: false,
-            left_s: 0.0,
-            sent: 0.0,
-            active: false,
-        }
+/// How long a track takes to fade out when the menu replaces it, seconds.
+/// The only fade the score has: songs otherwise begin and end as recorded.
+pub const MUSIC_FADE_S: f32 = 1.2;
+
+/// The fade's level at `x` of the way through it (1 → 0), on a dB curve: the
+/// reference made its volume curves logarithmic because linear fades sounded
+/// abrupt (devblog 80), and a linear gain is most of its travel in the last
+/// few dB. −60 dB at the end, then silence.
+pub fn fade_curve(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x >= 1.0 {
+        0.0
+    } else {
+        10f32.powf(-3.0 * x)
     }
 }
-
-/// How long an orphaned piece takes to fade out, seconds.
-///
-/// **The one place music fades, and the reference's rule is not being
-/// broken.** `reference/AUDIO.md` §8 says pieces cut to each other *without*
-/// fading, and they still do — the tail covers that join. This is the other
-/// case: leaving a world starts the menu's music immediately, and two pieces
-/// playing over each other is not a join, it is two songs. Short enough not
-/// to be a swell, long enough not to click (`DECISIONS.md` §open,
-/// "music v0").
-pub const MUSIC_FADE_S: f32 = 1.2;
 
 /// Build the bank, at plugin-build time rather than in a schedule.
 ///
@@ -521,8 +514,8 @@ pub fn setup(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>) {
 /// stale one measures the distance between two worlds as ground covered and
 /// fires a burst of footsteps on the first frame of the next.
 ///
-/// Music is not touched: a piece rings out over the transition
-/// ([`MusicSlot`]), and [`music_mode`] decides whether it fades.
+/// Music is not touched: the output is not the engine, and [`music_mode`]
+/// decides what the next screen hears.
 pub fn teardown(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>, mut last_hp: ResMut<LastHp>) {
     for i in 0..BEDS.len() {
         engine.push(Cmd::Stop { slot: i as u8 });
@@ -1100,9 +1093,12 @@ pub fn shots(
         // The one bit that separates the two weapons, and it is the same
         // bit the tracer reads: a projectile cannot leave a muzzle at rest,
         // so zero means the shot was instantaneous and instantaneous means
-        // a firearm. No item on the wire and none needed.
-        let cue = shot_cue(speed_mmpt);
+        // a firearm. Which projectile weapon is the hand's: a crossbow is
+        // heard as one (`projectile_cue`).
+        let mut cue = shot_cue(speed_mmpt);
         let at = if shooter == core.player_id {
+            let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
+            cue = projectile_cue(&core.catalog, cue, (s.count > 0).then_some(s.item));
             let p = core.predict.position();
             [p[0], p[1], p[2]]
         } else if let Some(t) = bodies
@@ -1110,6 +1106,9 @@ pub fn shots(
             .find(|(b, _)| b.0 == shooter)
             .map(|(_, t)| t.translation)
         {
+            if core.interp.sample(shooter, core.render_tick(), &mut rs) {
+                cue = projectile_cue(&core.catalog, cue, rs.held);
+            }
             [t.x, t.y, t.z]
         } else if (super::heli::is_heli(shooter) || super::sentry::is_sentry(shooter))
             && core.interp.sample(shooter, core.render_tick(), &mut rs)
@@ -1122,6 +1121,17 @@ pub fn shots(
         };
         let d = eye.pos.distance(Vec3::from(at));
         sound.play(Request::at(far_layer(cue, d), at));
+    }
+}
+
+/// A flying shot's cue by what loosed it: a crossbow in the hand is a
+/// crossbow, anything else that flies is a bow. A gunshot is left alone.
+pub fn projectile_cue(catalog: &protocol::ItemCatalog, cue: Cue, held: Option<u16>) -> Cue {
+    match held {
+        Some(item) if cue == Cue::ShotBow && crate::ui::hold::is_crossbow(catalog, item) => {
+            Cue::ShotCrossbow
+        }
+        _ => cue,
     }
 }
 
@@ -1912,110 +1922,96 @@ pub fn water(
     }
 }
 
-/// The score: tick the director, start the piece it asks for, and hold every
-/// sounding piece at the player's music level.
+/// The score: tick the director, start the track it asks for, and hold the
+/// music output at the player's music level.
 ///
 /// **Runs everywhere, unlike every other system in this file.** There is no
 /// `world_running`, no `Net` and no `Eye` in its arguments, because music
 /// plays on the menus too — `sound::music::Mode::Menu` is what makes that a
 /// different behaviour rather than a different code path.
 ///
-/// Starting a piece is a `Play` on the next music slot and nothing else: the
-/// previous piece is left alone to ring out under it, which is the whole of
-/// `reference/AUDIO.md` §8's transition design. The renderer frees the slot
-/// when the piece ends and the countdown here releases it the same frame,
-/// so the stop it sends then lands on a free slot and is a no-op by the
-/// engine's own rule.
+/// One track sounds at a time. A track asked for while another is still
+/// audible (the menu opening over a world song) waits for that one to fade
+/// out over [`MUSIC_FADE_S`]; otherwise it starts the frame it is asked for.
 pub fn music(
     mut sound: ResMut<Sound>,
     mut engine: ResMut<Engine>,
-    bank: Res<Bank>,
     time: Res<Time>,
     settings: Res<super::Settings>,
 ) {
     let dt = time.delta_secs();
-    let mix = mix_of(&settings);
-    // The music sits under the same duck the beds do (`Mixer::duck`): a
-    // gunshot or a blast pulls it down with them.
-    let duck = sound.mixer.duck();
-    if let Some(piece) = sound.music.tick(dt) {
-        let i = sound.next_music;
-        sound.next_music = (i + 1) % HELD_MUSIC;
-        let def = piece.cue.def();
-        // **Its real level, not silence.** A `Play` sets the slot's gain
-        // immediately and the loop below only sends a CHANGE, so starting
-        // it silent would put a step from zero to full one frame into every
-        // piece, which is the click `synth::edges` exists to prevent at the
-        // other end of the same sample. The loop's job is to FOLLOW the
-        // slider, not to set the opening level.
-        let level = def.gain * mix.bus_gain(def.bus) * duck;
-        sound.music_slots[i] = MusicSlot {
-            cue: piece.cue,
+    let sound = &mut *sound;
+    let score = &mut engine.score;
+    score.start = None;
+    score.stop = false;
+    if let Some((track, at)) = score.adopt.take() {
+        sound.music.adopt(track, at);
+        sound.sounding = Sounding {
+            track: Some(track),
+            left_s: (track.len_s() - at).max(0.0),
             fade: 1.0,
-            ending: false,
-            left_s: bank.len_s(piece.cue),
-            sent: level,
-            active: true,
+            next: None,
         };
-        engine.push(Cmd::Play {
-            slot: (HELD_BEDS + i) as u8,
-            cue: piece.cue,
-            gain: level,
-        });
     }
 
-    let step = if MUSIC_FADE_S > 0.0 {
-        dt / MUSIC_FADE_S
+    let now = &mut sound.sounding;
+    if now.track.is_some() {
+        now.left_s -= dt;
+        if now.left_s <= 0.0 && now.next.is_none() {
+            now.track = None;
+        }
+    }
+    if let Some(track) = sound.music.tick(dt) {
+        if now.track.is_some() {
+            now.next = Some(track);
+        } else {
+            *now = Sounding {
+                track: Some(track),
+                left_s: track.len_s(),
+                fade: 1.0,
+                next: None,
+            };
+            score.start = Some(track);
+        }
+    }
+    if let Some(next) = now.next {
+        now.fade -= if MUSIC_FADE_S > 0.0 {
+            dt / MUSIC_FADE_S
+        } else {
+            1.0
+        };
+        if now.fade <= 0.0 {
+            score.stop = true;
+            *now = Sounding {
+                track: Some(next),
+                left_s: next.len_s(),
+                fade: 1.0,
+                next: None,
+            };
+            score.start = Some(next);
+        }
+    }
+
+    // The music sits under the same duck the beds do (`Mixer::duck`): a
+    // gunshot or a blast pulls it down with them.
+    let fade = if now.next.is_some() {
+        fade_curve(1.0 - now.fade)
     } else {
         1.0
     };
-    for (i, slot) in sound.music_slots.iter_mut().enumerate() {
-        if !slot.active {
-            continue;
-        }
-        slot.left_s -= dt;
-        if slot.ending {
-            slot.fade -= step;
-        }
-        if slot.fade <= 0.0 || slot.left_s <= 0.0 {
-            slot.active = false;
-            engine.push(Cmd::Stop {
-                slot: (HELD_BEDS + i) as u8,
-            });
-            continue;
-        }
-        let def = slot.cue.def();
-        let level = def.gain * mix.bus_gain(def.bus) * slot.fade * duck;
-        if level != slot.sent {
-            slot.sent = level;
-            engine.push(Cmd::Gain {
-                slot: (HELD_BEDS + i) as u8,
-                gain: level,
-            });
-        }
-    }
+    score.gain = mix_of(&settings).bus_gain(crate::sound::Bus::Music) * sound.mixer.duck() * fade;
 }
 
 /// Put the director on a new screen's schedule.
 ///
 /// Called on entering the menu and on entering a world, which are the only
-/// two transitions music has. One function because the rule is one rule, and
-/// it is stated in the condition rather than in the caller: **a sounding
-/// piece is ended only when the new mode is about to start one on top of
-/// it.** Leaving a world does (the menu has no gap), so the old piece fades;
-/// joining one does not (`music::FIRST_GAP_S` is half a minute), so the menu
-/// piece rings out over the loading screen, which is what music is for.
+/// two transitions music has. The intro carries across both: it loops on the
+/// menu and plays on into a world joined from it; a world song is replaced
+/// by the intro when the menu opens (`Director::reset`, then [`music`]'s
+/// fade).
 pub fn music_mode(mode: music::Mode) -> impl Fn(ResMut<Sound>) {
     move |mut sound: ResMut<Sound>| {
         sound.music.reset(mode);
-        if sound.music.next_in_s() > crate::sound::music::PIECE_S {
-            return;
-        }
-        for slot in sound.music_slots.iter_mut() {
-            if slot.active {
-                slot.ending = true;
-            }
-        }
     }
 }
 

@@ -1,0 +1,4 @@
+/* The icon Explorer, the taskbar and Alt-Tab show for the .exe. Windows uses
+ * the lowest-numbered icon group as the executable's own, so this stays 1.
+ * Compiled by `build.rs` (`windres`, `rc.exe` or `llvm-rc`). */
+1 ICON "gates.ico"

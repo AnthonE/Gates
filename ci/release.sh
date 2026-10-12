@@ -35,7 +35,7 @@ CFG=shard-public.toml
 # live world was posted under, so the wipe closes it with those prizes.
 DEPLOY=/home/master/gates-deploy
 STATUS_URL=https://game.elopros.com/gates/status.json
-PAGE_URL=https://elopros.com/games/gates/build.json
+PAGE_URL=https://elopros.com/games/gates/play/build.json
 MANIFEST_URL=https://elopros.com/api/launcher/manifest/gates
 PULL_URL=https://elopros.com/api/store/repo/pull
 

@@ -35,15 +35,12 @@
     {"at": 17.3, "len": 0.2}
   ],
   "music": [
-    {"src": "30_MusicOpenTense.wav", "at": 0.0, "gain": 0.85, "fade_in": 0.8},
-    {"src": "33_MusicTurnTense.wav", "at": 8.0, "gain": 0.85},
-    {"src": "34_MusicTurnCombat.wav", "at": 16.0, "gain": 0.9},
-    {"src": "35_MusicCloseCalm.wav", "at": 24.0, "gain": 0.8, "cut": 7.0, "fade_out": 2.5}
+    {"src": "music_safe_zone.ogg", "at": 0.0, "in": 100.0, "gain": 0.9, "fade_in": 1.0, "cut": 31.0, "fade_out": 3.0}
   ],
   "sfx": [
     {"src": "trailer_boom.wav", "at": 4.0, "gain": 0.6},
     {"src": "trailer_riser.wav", "at": 11.3, "gain": 0.5},
-    {"src": "46_Thunder_0.wav", "at": 13.4, "gain": 0.6},
+    {"src": "37_Thunder_0.wav", "at": 13.4, "gain": 0.6},
     {"src": "trailer_boom.wav", "at": 17.3, "gain": 1.0},
     {"src": "trailer_reverse.wav", "at": 21.4, "gain": 0.6},
     {"src": "trailer_braam.wav", "at": 23.95, "gain": 0.9}

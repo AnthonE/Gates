@@ -148,30 +148,59 @@ pub fn spawn_status(addr: SocketAddr, stats: Arc<ShardStats>) -> std::io::Result
     spawn_status_with(addr, stats, None)
 }
 
-/// [`spawn_status`], also serving `GET /standings.json` from the file the
-/// standings' writer keeps (`standings::json_path`) — a website's or a
-/// bot's leaderboard, read from disk so this thread still never speaks to
-/// the sim thread.
+/// [`spawn_status`], also serving two files kept beside the world `base`
+/// (the `world_file`, else the `save_file`), read from disk so this thread
+/// still never speaks to the sim thread:
+///
+/// - `GET /standings.json` (`standings::json_path`) — a website's or a
+///   bot's leaderboard;
+/// - `GET /payout/<wipe>.json` (`standings::payout_path`) — what a closed
+///   wipe owes each wallet, which the platform's cashier reads and pays.
+///   The shard still holds no keys: it says who earned what, and the
+///   operator names which shards the cashier believes.
 pub fn spawn_status_with(
     addr: SocketAddr,
     stats: Arc<ShardStats>,
-    standings: Option<PathBuf>,
+    base: Option<PathBuf>,
 ) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
     std::thread::Builder::new()
         .name("status".into())
-        .spawn(move || serve(listener, stats, standings))?;
+        .spawn(move || serve(listener, stats, base))?;
     Ok(bound)
 }
 
 /// The most of the standings file this will serve.
 pub const STANDINGS_JSON_CAP: u64 = 256 * 1024;
 
+/// The most of a payout file this will serve.
+pub const PAYOUT_JSON_CAP: u64 = 256 * 1024;
+
+/// `/payout/<wipe>.json` → the wipe, or `None` for any other path.
+fn payout_wipe(path: &str) -> Option<u32> {
+    let n = path.strip_prefix("/payout/")?.strip_suffix(".json")?;
+    if n.is_empty() || n.len() > 10 || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    n.parse().ok()
+}
+
+/// Up to `cap` bytes of `p` as text, or `None` when it cannot be read.
+fn read_capped(p: &Path, cap: u64) -> Option<String> {
+    let f = std::fs::File::open(p).ok()?;
+    let mut text = String::new();
+    f.take(cap).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+const NOT_FOUND: &[u8] =
+    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
 /// The thread body: accept, answer, close, forever. An accept error backs
 /// off briefly rather than spinning — the errors that recur (fd
 /// exhaustion) are not fixed by asking again in the same microsecond.
-fn serve(listener: TcpListener, stats: Arc<ShardStats>, standings: Option<PathBuf>) {
+fn serve(listener: TcpListener, stats: Arc<ShardStats>, base: Option<PathBuf>) {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -179,7 +208,7 @@ fn serve(listener: TcpListener, stats: Arc<ShardStats>, standings: Option<PathBu
                 // worth a counter, let alone a panic. The one observable
                 // that matters is that the NEXT request is answered, and
                 // `tests/status.rs` asserts exactly that.
-                let _ = answer(stream, &stats, standings.as_deref());
+                let _ = answer(stream, &stats, base.as_deref());
             }
             Err(_) => std::thread::sleep(Duration::from_millis(50)),
         }
@@ -188,11 +217,7 @@ fn serve(listener: TcpListener, stats: Arc<ShardStats>, standings: Option<PathBu
 
 /// Read one request, bounded; answer it or close. Every early `Ok(())` is
 /// a deliberate refusal — the connection closes with nothing written.
-fn answer(
-    mut stream: TcpStream,
-    stats: &ShardStats,
-    standings: Option<&Path>,
-) -> std::io::Result<()> {
+fn answer(mut stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io::Result<()> {
     let timeout = Some(Duration::from_millis(STATUS_IO_TIMEOUT_MS));
     stream.set_read_timeout(timeout)?;
     stream.set_write_timeout(timeout)?;
@@ -228,17 +253,29 @@ fn answer(
     if method != "GET" {
         return Ok(()); // this endpoint speaks GET and nothing else
     }
-    if path == "/standings.json" {
-        let body = standings.and_then(|p| {
-            let f = std::fs::File::open(p).ok()?;
-            let mut text = String::new();
-            f.take(STANDINGS_JSON_CAP).read_to_string(&mut text).ok()?;
-            Some(text)
+    if let Some(wipe) = payout_wipe(path) {
+        let body = base.and_then(|b| {
+            read_capped(
+                &crate::standings::payout_path(b, wipe, "json"),
+                PAYOUT_JSON_CAP,
+            )
         });
         let Some(body) = body else {
-            return stream.write_all(
-                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            );
+            return stream.write_all(NOT_FOUND);
+        };
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Cache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        return stream.write_all(body.as_bytes());
+    }
+    if path == "/standings.json" {
+        let body =
+            base.and_then(|b| read_capped(&crate::standings::json_path(b), STANDINGS_JSON_CAP));
+        let Some(body) = body else {
+            return stream.write_all(NOT_FOUND);
         };
         // Open to any origin: a leaderboard is for a website to show.
         let head = format!(
@@ -250,9 +287,7 @@ fn answer(
         return stream.write_all(body.as_bytes());
     }
     if path != "/status.json" {
-        return stream.write_all(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
+        return stream.write_all(NOT_FOUND);
     }
 
     // The response string is this thread's one allocation per request, and

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the browser client to the origin: elopros.com/games/gates/.
+# Publish the browser client to the origin: elopros.com/games/gates/play/.
 #
 #   ./ci/publish_web.sh                  # build, stage, upload, flip `current`
 #   ./ci/publish_web.sh --no-build       # upload what target/webdist already holds
@@ -123,5 +123,5 @@ rsync -a --info=stats1 --link-dest="../current" "$OUT/" "$HOST:$DEST/"
 # Flip last, atomically: a new symlink beside the old one, then one rename.
 ssh -o BatchMode=yes "$HOST" "ln -sfn '$ID' '$ROOT/current.new' && mv -T '$ROOT/current.new' '$ROOT/current' && ls -l '$ROOT/current'"
 
-echo "== live: https://elopros.com/games/gates/"
+echo "== live: https://elopros.com/games/gates/play/"
 echo "   the store's play button is play_url on the Gates listing — set it now if this is the first publish"

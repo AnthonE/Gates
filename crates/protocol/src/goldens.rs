@@ -290,9 +290,9 @@ pub const FIXTURES: [&str; 163] = [
     "action_fasttrack.bin",
     // One standings board (v104).
     "event_standing.bin",
-    // The way out through the exchange (v104).
+    // The way out through the exchange (v105).
     "event_bank.bin",
-    // Ore nodes crumbled past a stage (v105).
+    // Ore nodes crumbled past a stage (v106).
     "event_node_stage.bin",
 ];
 
@@ -1146,12 +1146,13 @@ pub fn event_standing() -> crate::StandingBoard {
     b
 }
 
-/// The exchange is work 4, open, a 2% fee on item 9; 1,500 a wipe, 900
-/// put through, 882 credited (wire v104).
+/// The exchange is work 4, open, paying, a 2% fee on item 9; 1,500 a wipe,
+/// 900 put through, 882 credited (wire v105).
 pub fn event_bank() -> crate::BankView {
     crate::BankView {
         work: 4,
         open: true,
+        pays: true,
         fee_pct: 2,
         coin: 9,
         cap: 1_500,

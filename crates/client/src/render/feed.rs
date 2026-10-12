@@ -303,7 +303,7 @@ pub struct Feed {
     howls: [u32; FEED_CAP],
     n_howls: usize,
     /// Ore nodes that crumbled or broke this frame (`ClientCore::pop_crumble`,
-    /// wire v105): (cell key, stage), `ORE_STAGES` for a break.
+    /// wire v106): (cell key, stage), `ORE_STAGES` for a break.
     crumbles: [(u32, u8); FEED_CAP],
     n_crumbles: usize,
     /// Other bodies' hands heard this frame (`EventMsg::Heard`, wire v93):
