@@ -189,7 +189,15 @@ fn main() -> AppExit {
             assets.file_path = repo.to_string_lossy().into_owned();
         }
     }
-    let mut window = WindowPlugin::default();
+    let mut window = WindowPlugin {
+        primary_window: Some(Window {
+            title: "Gates".into(),
+            // WM_CLASS on X11, app_id on Wayland: what a desktop entry matches.
+            name: Some("gates".into()),
+            ..default()
+        }),
+        ..default()
+    };
     if let Some((script, _)) = &film {
         // The frame is the film's, not the box's: exactly the shot list's
         // size (times its supersample), and never resized by a window manager.
@@ -258,6 +266,7 @@ fn main() -> AppExit {
         pin_weather: a.pin_weather,
     };
     app.add_plugins(GatesRenderPlugin { start, capture });
+    app.add_systems(Update, window_icon);
     // **Returned, not discarded.** `App::run` hands back an `AppExit`, which
     // implements `Termination` — dropping it means a capture run that failed
     // its own file check still exits 0, and a gate reading that exit code
@@ -265,4 +274,51 @@ fn main() -> AppExit {
     // that wrote five of six vantages printed "1 of 6 vantages did not reach
     // disk" and exited 0 anyway.
     app.run()
+}
+
+/// The Gates sigil on the window and the taskbar: the same plate as the
+/// store's `gates-square.jpg`, cut from `art/gates/gates-sigil.png` in
+/// scry-forge (`crates/client/icon/`). Bevy 0.18 has no icon field, so it goes
+/// on the winit window the first frame that window exists. X11 and Windows
+/// draw it; Wayland and macOS read an icon from the desktop entry or bundle.
+fn window_icon(
+    mut done: Local<bool>,
+    primary: Query<Entity, With<bevy::window::PrimaryWindow>>,
+    _main_thread: bevy::ecs::system::NonSendMarker,
+) {
+    if *done {
+        return;
+    }
+    let Ok(entity) = primary.single() else {
+        return;
+    };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|windows| {
+        let Some(w) = windows.get_window(entity) else {
+            return;
+        };
+        *done = true;
+        match icon() {
+            Some(icon) => w.set_window_icon(Some(icon)),
+            None => warn!("window icon did not decode; the window keeps the default"),
+        }
+    });
+}
+
+fn icon() -> Option<winit::window::Icon> {
+    let bytes: &[u8] = include_bytes!("../../icon/gates-256.png");
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(frame.buffer_size());
+    let rgba = match frame.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    winit::window::Icon::from_rgba(rgba, frame.width, frame.height).ok()
 }

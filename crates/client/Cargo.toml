@@ -52,6 +52,8 @@ render = [
     "dep:ureq",
     # Player pictures (`render/faces.rs`) are PNGs decoded off the frame.
     "dep:png",
+    # The desktop window's icon (`bin/gates.rs`, `window_icon`).
+    "dep:winit",
     "dep:basis-universal",
     "dep:ktx2",
     "dep:ruzstd",
@@ -803,6 +805,9 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "dangerous-configuration",
     "quinn",
 ] }
+# The window icon's type. Bevy 0.18 has no icon field and does not re-export
+# `winit::window::Icon`; this is the same winit Bevy already links.
+winit = { version = "0.30", default-features = false, optional = true }
 # An agent player's wallet key (`NETCODE.md` §2.4) — **`native` only, and
 # that is the rule it exists to keep**: a page must never hold a key, so the
 # one crate that can load one is not a dependency of the browser build at all.
