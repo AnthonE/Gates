@@ -720,7 +720,7 @@ pub fn register(app: &mut App) {
                 inv::skin_keys,
                 inv::table_clicks,
                 (inv::fire_clicks, inv::take_all_clicks).chain(),
-                craft::clicks,
+                (craft::clicks, craft::skin_store).chain(),
                 craft::scroll,
                 tech::clicks,
                 tech::scroll,

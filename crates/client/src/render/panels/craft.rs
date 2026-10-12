@@ -31,7 +31,7 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 
 use super::{
     font, font_bold, Hover, Panel, Ui, ACCENT, BADGE, BROWSER_COLS, BROWSER_GRID_H, CELL_BG,
-    CELL_FULL, CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PANEL_H,
+    CELL_FULL, CELL_GAP_PX, CELL_HOVER, CELL_PX, CELL_SEL, LINE, LINE_HOT, PANEL_BG, PANEL_H,
     SCROLL_PX_PER_LINE, SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::{Icons, LOCK_TINT, PICTURE, PICTURE_DIM};
@@ -92,10 +92,15 @@ pub const STEP_MAX: i32 = i32::MAX;
 #[derive(Component)]
 pub struct CraftGo;
 
-/// A skin chip on the detail pane (skins v0): the catalog id it picks, 0 for
-/// the item's own look. Only owned skins are buttons.
+/// A look on the detail pane's SKINS strip that you own: the catalog id it
+/// picks, 0 for the item's own look.
 #[derive(Component)]
 pub struct SkinChip(pub u16);
+
+/// A skin on the SKINS strip that you do not own: a click opens the ITEM
+/// STORE ([`skin_store`]).
+#[derive(Component)]
+pub struct SkinStore(pub u16);
 
 /// A queue job; the index is its position, which is what `ACT_CANCEL`
 /// carries. The queue is dense and the head is 0, so an index is only valid
@@ -557,9 +562,15 @@ fn detail_body(
                         height: Val::Px(52.0),
                         ..default()
                     },
+                    // In the look the next craft is minted in: Rust's
+                    // picture follows the SKINS pick.
                     ImageNode {
                         image,
-                        color: if locked { PICTURE_DIM } else { PICTURE },
+                        color: match crate::ui::skins::tint_of(&core.skins, ui.skin) {
+                            _ if locked => PICTURE_DIM,
+                            Some([r, g, b]) => Color::srgb(r, g, b),
+                            None => PICTURE,
+                        },
                         ..default()
                     },
                 ));
@@ -698,6 +709,10 @@ fn detail_body(
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
 
+    // The look it is made in, between what it is and what it costs — where
+    // the reference puts it.
+    skin_strip(pane, ui, core, icons, def.output, &name);
+
     // The ingredient table, headed exactly as the reference heads it, with
     // each ingredient's picture beside its name.
     let (lines, n) = ingredients(def, count, &core.inv);
@@ -734,8 +749,6 @@ fn detail_body(
             );
         }
     });
-
-    skin_picker(pane, ui, core, def.output);
 
     // The stepper and the button.
     let max = affordable(def, &core.inv);
@@ -860,95 +873,227 @@ fn fav_toggle(parent: &mut ChildSpawnerCommands, ui: &Ui, icons: &Icons, recipe:
         });
 }
 
-/// Rust's craft-menu skin picker (skins v0): the item's own look and every
-/// skin you own for it, plus the ones you do not, dimmed with their price —
-/// the store is the launcher's, so a skin you have not bought is shown, not
-/// offered. Drawn only when some skin fits the output.
-fn skin_picker(pane: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, output: u16) {
+/// Rust's craft-menu SKINS strip: a header naming the look the next craft
+/// is minted in, then one picture per look — the item's own first, then
+/// every skin that fits it — the picked one on Rust's green. A skin you own
+/// is a button; one you do not is drawn dimmed under a padlock with its
+/// price, and a click on it opens the ITEM STORE in the launcher
+/// ([`skin_store`]) — the game never takes a payment in its own window
+/// (`ui::hub::Section::handoff_reason`). Drawn only when some skin fits.
+fn skin_strip(
+    pane: &mut ChildSpawnerCommands,
+    ui: &Ui,
+    core: &ClientCore,
+    icons: &Icons,
+    output: u16,
+    item: &str,
+) {
     let rows: Vec<(usize, protocol::SkinRow, bool)> = core.skins_for(output).collect();
     if rows.is_empty() {
         return;
     }
-    pane.spawn((
-        Text::new("SKIN".to_string()),
-        font_bold(11.0),
-        TextColor(TEXT_DIM),
-        Node {
-            margin: UiRect::top(Val::Px(6.0)),
-            ..default()
-        },
-    ));
+    let picked = crate::ui::skins::name(&core.skins, ui.skin).unwrap_or_else(|| "Default".into());
+    pane.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(8.0),
+        margin: UiRect::top(Val::Px(4.0)),
+        ..default()
+    })
+    .with_children(|head| {
+        head.spawn((Text::new("SKINS"), font_bold(13.0), TextColor(TEXT)));
+        head.spawn((
+            Node {
+                padding: UiRect::axes(Val::Px(7.0), Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(CELL_SEL),
+        ))
+        .with_children(|tag| {
+            tag.spawn((
+                Text::new(picked.to_uppercase()),
+                font_bold(11.0),
+                TextColor(TEXT),
+            ));
+        });
+    });
+    let picture = icons.item(item);
     pane.spawn(Node {
         flex_direction: FlexDirection::Row,
         flex_wrap: FlexWrap::Wrap,
         column_gap: Val::Px(6.0),
-        row_gap: Val::Px(4.0),
+        row_gap: Val::Px(6.0),
         ..default()
     })
-    .with_children(|row| {
-        skin_chip(row, 0, "Default".to_string(), None, true, ui.skin == 0);
+    .with_children(|strip| {
+        skin_tile(
+            strip,
+            icons,
+            picture.clone(),
+            SkinTile {
+                catalog: sim_core::skin::NO_SKIN,
+                tip: format!("{item} · its own look"),
+                tint: None,
+                owned: true,
+                price: None,
+                picked: ui.skin == sim_core::skin::NO_SKIN,
+            },
+        );
         for (i, r, owned) in rows {
             let name = String::from_utf8_lossy(core.skins.name(i)).into_owned();
-            let label = if owned {
-                name
-            } else {
-                format!("{name} · {}", crate::ui::skins::price_label(&r))
-            };
-            let tint = crate::ui::skins::tint_factors(r.tint);
-            skin_chip(
-                row,
-                r.catalog,
-                label,
-                Some(tint),
-                owned,
-                ui.skin == r.catalog,
+            let price = crate::ui::skins::price_label(&r);
+            let on_sale = r.coin != protocol::COIN_NONE;
+            skin_tile(
+                strip,
+                icons,
+                picture.clone(),
+                SkinTile {
+                    catalog: r.catalog,
+                    tip: if owned {
+                        name
+                    } else if on_sale {
+                        format!("{name} · {price} · click for the ITEM STORE")
+                    } else {
+                        format!("{name} · {price}")
+                    },
+                    tint: Some(crate::ui::skins::tint_factors(r.tint)),
+                    owned,
+                    price: (!owned && on_sale).then_some(price),
+                    picked: ui.skin == r.catalog,
+                },
             );
         }
     });
 }
 
-fn skin_chip(
-    parent: &mut ChildSpawnerCommands,
+/// One look on the SKINS strip.
+struct SkinTile {
     catalog: u16,
-    label: String,
+    tip: String,
     tint: Option<[f32; 3]>,
     owned: bool,
+    /// Drawn across the foot of a skin you do not own and can buy.
+    price: Option<String>,
     picked: bool,
+}
+
+/// A SKINS tile's edge, px: the browser's own cell.
+const SKIN_TILE_PX: f32 = CELL_PX;
+
+fn skin_tile(
+    parent: &mut ChildSpawnerCommands,
+    icons: &Icons,
+    picture: Option<Handle<Image>>,
+    t: SkinTile,
 ) {
-    let rest = if picked { CELL_FULL } else { CELL_BG };
-    let mut chip = parent.spawn((
+    let rest = if t.picked { QUEUE_HEAD } else { CELL_BG };
+    let mut tile = parent.spawn((
+        Button,
         Node {
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(5.0),
-            align_items: AlignItems::Center,
-            padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+            width: Val::Px(SKIN_TILE_PX),
+            height: Val::Px(SKIN_TILE_PX),
             border: UiRect::all(Val::Px(1.0)),
+            overflow: Overflow::clip(),
             ..default()
         },
         BackgroundColor(rest),
-        BorderColor::all(if picked { LINE_HOT } else { LINE }),
+        BorderColor::all(if t.picked { LINE_HOT } else { LINE }),
+        super::Tip(t.tip),
     ));
-    if owned {
-        chip.insert((Button, SkinChip(catalog), Hover::on(rest)));
+    if t.owned {
+        tile.insert((
+            SkinChip(t.catalog),
+            Hover {
+                rest,
+                hot: if t.picked { QUEUE_HEAD_HOT } else { CELL_HOVER },
+            },
+        ));
+    } else {
+        tile.insert((SkinStore(t.catalog), Hover::on(rest)));
     }
-    chip.with_children(|c| {
-        if let Some([r, g, b]) = tint {
+    tile.with_children(|c| {
+        let [r, g, b] = t.tint.unwrap_or([1.0, 1.0, 1.0]);
+        // A skin you do not own is the look, dimmed: seen, not offered.
+        let colour = if t.owned {
+            Color::srgb(r, g, b)
+        } else {
+            Color::srgba(r * 0.55, g * 0.55, b * 0.55, 0.80)
+        };
+        let inset = 4.0;
+        match picture {
+            Some(image) => {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(inset),
+                        top: Val::Px(inset),
+                        width: Val::Px(SKIN_TILE_PX - 2.0 - inset * 2.0),
+                        height: Val::Px(SKIN_TILE_PX - 2.0 - inset * 2.0),
+                        ..default()
+                    },
+                    ImageNode {
+                        image,
+                        color: colour,
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ));
+            }
+            // No picture baked for this item: the skin's colour, as a
+            // swatch, so the tiles still differ.
+            None => {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(12.0),
+                        top: Val::Px(12.0),
+                        width: Val::Px(SKIN_TILE_PX - 26.0),
+                        height: Val::Px(SKIN_TILE_PX - 26.0),
+                        ..default()
+                    },
+                    BackgroundColor(colour),
+                    Pickable::IGNORE,
+                ));
+            }
+        }
+        if !t.owned {
+            if let Some(h) = icons.glyph("ui_lock") {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: Val::Px(3.0),
+                        top: Val::Px(3.0),
+                        width: Val::Px(12.0),
+                        height: Val::Px(12.0),
+                        ..default()
+                    },
+                    ImageNode::new(h).with_color(LOCK_TINT),
+                    Pickable::IGNORE,
+                ));
+            }
+        }
+        if let Some(price) = t.price {
             c.spawn((
                 Node {
-                    width: Val::Px(10.0),
-                    height: Val::Px(10.0),
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    right: Val::Px(0.0),
+                    bottom: Val::Px(0.0),
+                    justify_content: JustifyContent::Center,
                     ..default()
                 },
-                BackgroundColor(Color::srgb(r, g, b)),
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
                 Pickable::IGNORE,
-            ));
+            ))
+            .with_children(|foot| {
+                foot.spawn((
+                    Text::new(price),
+                    font_bold(9.0),
+                    TextColor(BADGE),
+                    Pickable::IGNORE,
+                ));
+            });
         }
-        c.spawn((
-            Text::new(label),
-            font_bold(11.0),
-            TextColor(if owned { TEXT } else { TEXT_DIM }),
-            Pickable::IGNORE,
-        ));
     });
 }
 
@@ -976,6 +1121,53 @@ fn step_button(parent: &mut ChildSpawnerCommands, by: i32, glyph: &str) {
                 Pickable::IGNORE,
             ));
         });
+}
+
+/// A click on a skin you do not own: open the ITEM STORE in the launcher,
+/// the same door as the main menu's (`render::hub::open`), and say what
+/// happened. Without a launcher or a published store link — and always in a
+/// browser, which has no launcher — it says where the skin is sold and what
+/// it costs instead: a dead click is worse than a sentence.
+pub fn skin_store(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    #[cfg(not(target_arch = "wasm32"))] hub: Option<Res<crate::render::hub::HubState>>,
+    #[cfg(not(target_arch = "wasm32"))] mut elo: Option<NonSendMut<crate::elo::Elo>>,
+    tiles: Query<(&Interaction, &SkinStore), Changed<Interaction>>,
+) {
+    let Some(catalog) = tiles
+        .iter()
+        .find(|(i, _)| **i == Interaction::Pressed)
+        .map(|(_, t)| t.0)
+    else {
+        return;
+    };
+    let core = &net.session.core;
+    let Some((i, row)) = core.skin_row(catalog) else {
+        return;
+    };
+    let name = String::from_utf8_lossy(core.skins.name(i)).into_owned();
+    let price = crate::ui::skins::price_label(&row);
+    if row.coin == protocol::COIN_NONE {
+        ui.say(format!("{name} is {price}"));
+        return;
+    }
+    let fallback = format!("{name} is {price} in the ITEM STORE on elopros.com");
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(hub) = hub {
+        use crate::render::hub::Opened;
+        let store = crate::ui::hub::Section::Store;
+        let label = store.label(&hub.hub);
+        ui.say(
+            match crate::render::hub::open(elo.as_deref_mut(), &hub.hub, store) {
+                Opened::Opened => format!("{label} is open in your browser - {name} is {price}"),
+                outcome @ Opened::Refused => outcome.line(&label),
+                Opened::NoLauncher | Opened::NoLink => fallback,
+            },
+        );
+        return;
+    }
+    ui.say(fallback);
 }
 
 /// One line of the ingredient table: AMOUNT, ITEM TYPE (with its picture
