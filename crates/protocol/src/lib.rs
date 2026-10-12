@@ -61,10 +61,10 @@ pub use event::{
     encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
     encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
     encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_planter, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_planter, encode_event_recipes, encode_event_recovered,
+    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_sentry_lock, encode_event_shot, encode_event_skins, encode_event_skins_owned,
     encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
@@ -75,8 +75,8 @@ pub use event::{
     InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK,
     BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
     DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
@@ -1141,7 +1141,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v105 — `SUB_BANK` gains `pays`, one bit after `open`: the island pays out
 /// at all, so a guest (cap 0, nothing to pay) is told to sign in rather than
 /// that the island pays nothing.
-pub const PROTO_VER: u16 = 105;
+/// v106 — ore nodes crumble through stages: `SUB_NODE_STAGE` (95) carries
+/// `(cx, cz, stage)` batches, one per crumble broadcast and walked to a
+/// joiner after the harvested set.
+pub const PROTO_VER: u16 = 106;
 
 /// This game's slug in the elo catalog.
 ///

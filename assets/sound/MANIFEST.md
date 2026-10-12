@@ -32,6 +32,7 @@ file that fails to decode, and `crates/client/tests/sound.rs`
 | `impactWood_light` | `BulletWood` | a round into wood |
 | `impactMetal_light` | `BulletMetal` | a round on metal |
 | `impactWood_heavy` | `Knock` | a knock on a door |
+| `ore_glint_0`–`1` | `OreGlint` | cut here from `impactMetal_light_000` / `_002`: whole, sped to 1.65× / 1.80× (pitch and length), faded out over the last 90 / 80 ms, mono (cut 2026-10-11) |
 
 ### *Interface Sounds*, *UI Audio*, *RPG Audio* (2026-10-03)
 
@@ -103,6 +104,7 @@ would have swelled at the join.
 | `fuse_0` | `Fuse` | elonen, 45650, *fuse_burning_48khz.wav*: 0.03-7.75 s at 0 (fade 0.6 s) plus 2.00-4.85 s at 7.12 s to reach 9.97 s |
 | `blast_0`–`2` | `Blast` | felix.blume, 251401, *Dynamite explosion in the mountain*: take 0: the single dynamite blast (onset 0.058 s) with its mountain roll, 0.054-3.554 s; alienistcog, 125937, *merrimack-st-demolition.aif*: take 1: the main demolition charge (onset 10.04 s), 10.036-12.9 s; julujanus, 768370, *2024-11-16 0750 field recording czestochowa zawodzie power plant chimney detonation explosion zoom h4npro*: take 2: the chimney detonation (onset 5.188 s), 5.184-7.5 s |
 | `collapse_0`–`1` | `Collapse` | xkeril, 703247, *Big falling debris (crash)*: take 0: the whole crash from 0.0 s, cut 0.0-2.5 s; xkeril, 703248, *Fall debris (crash)*: take 1: the whole crash from 0.0 s, cut 0.0-2.3 s |
+| `ore_crumble_0`–`2` | `OreCrumble` | cut here from `collapse_0` / `collapse_1` / `collapse_0` (xkeril, 703247 / 703248): the first 0.75 / 0.70 / 0.66 s, sped to 1.12× / 1.18× / 1.28× (pitch and length), faded out over the last 0.27 / 0.23 / 0.21 s (cut 2026-10-11) |
 | `tree_fall_0`–`1` | `TreeFall` | Kinoton, 494071, *Big Tree Fall in Forest*: take 0: trunk cracks 0.29-0.95 s placed at 0.0; creak/rush 3.487-6.40 s placed at 0.50 so the ground thud (source 4.587 s) lands at 1.600 s; bruno.auzet, 670300, *tree cut down.wav*: take 1: first crack burst 2.74-3.35 s (+6 dB) placed at 0.0; cracking/rush 4.887-7.60 s placed at 0.50 so the ground thud (source 5.987 s) lands at 1.600 s (the 'bravo' voices at 11 s are not used) |
 | `thunder_0`–`2` | `Thunder` | TRP, 567945, *200817 Thunder, pretty close crack 4pm.flac*: take 0: the isolated clap (onset 1.79 s), 1.78-7.78 s; TRP, 717907, *230713 Thunder, close crack crash big, mixpre6 AT875r EM272s, Stratford ON 2am*: take 1: the single clap (onset 0.625 s), 0.615-6.615 s; TRP, 717888, *230812 Thunder, med crack, rain stops dry rolling, Stratford 9am 2am*: take 2: the second strike (onset 9.445 s), 9.44-15.24 s |
 | `splash_0`–`2` | `Splash` | Nox_Sound, 585744, *Foley_Natural_Water_Jump_Mono.wav*: takes 0-2: the three jumps at 0.05 s, 5.20 s and 9.65 s, 1.2 s each (splash plus the start of droplets falling back) |

@@ -2837,6 +2837,11 @@ pub fn spawn_slot(
         } else {
             FellPart::Vanish
         };
+        // An ore node crumbles through stages as it is mined (`ore.rs`).
+        let ore = super::ore::OreKind::of(slot.occupant).map(|kind| {
+            let foot = transform.translation - Vec3::Y * super::ore::MESH_HALF_H_M * slot.scale;
+            super::ore::OreNode::new(key, kind, foot, slot.scale, yaw, mesh.clone())
+        });
         let mut c = e.commands();
         let id = c
             .spawn((
@@ -2848,6 +2853,9 @@ pub fn spawn_slot(
             .id();
         if let Some(skin) = skin {
             c.entity(id).insert(skin);
+        }
+        if let Some(ore) = ore {
+            c.entity(id).insert(ore);
         }
         if let Some(span) = regrow {
             c.entity(id).insert(Grow {

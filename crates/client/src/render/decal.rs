@@ -402,6 +402,8 @@ pub struct Marks {
     weak_step: i32,
     weak_cell: u32,
     weak_mark8: u8,
+    /// The marked node is ore, whose hotspot is a shimmer (`ore::hotspot`).
+    weak_ore: bool,
     /// Clears asked for this frame ([`Marks::forget_later`]), applied by
     /// [`fade`] — which runs after [`mark`], so a killing blow's own mark,
     /// laid this same frame, goes with the thing it hit whichever system
@@ -433,6 +435,7 @@ impl Default for Marks {
             weak_step: -1,
             weak_cell: NO_CELL,
             weak_mark8: 0,
+            weak_ore: false,
             pending: [(Vec3::ZERO, 0.0); FORGET_QUEUE],
             n_pending: 0,
             patch: Patch::default(),
@@ -1523,6 +1526,7 @@ pub fn weak_spot(
             (core.mark_cell & 0xFFFF) as i32,
         );
         let slot = terrain::scatter(world.seed, &world.table, &world.haven, cx, cz);
+        pool.weak_ore = super::ore::OreKind::of(slot.occupant).is_some();
         let Some((at, n)) = weak_spot_pose(&slot, core.mark8) else {
             hide(&mut vis, &mut pool);
             return;
@@ -1566,6 +1570,12 @@ pub fn weak_spot(
         pool.weak_cell = core.mark_cell;
         pool.weak_mark8 = core.mark8;
         pool.weak_step = -1;
+    }
+    if pool.weak_ore {
+        if *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        }
+        return;
     }
     *vis = Visibility::Visible;
     let alpha = weak_spot_alpha(time.elapsed_secs(), in_weak.0);

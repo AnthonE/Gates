@@ -21,7 +21,8 @@ use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
 use crate::terrain::Occupant;
 use crate::world::{
-    EventQueue, Player, EV_GATHER, EV_GATHER_REFUSED, EV_SLOT_HARVESTED, EV_WEAK_MARK,
+    EventQueue, Player, EV_GATHER, EV_GATHER_REFUSED, EV_NODE_STAGE, EV_SLOT_HARVESTED,
+    EV_WEAK_MARK,
 };
 use crate::yaw_lut::yaw_dir;
 
@@ -47,6 +48,52 @@ pub const REFUSE_G_BROKEN: u32 = 2;
 /// The highest live reason, named rather than counted — the ledger the
 /// wire's field width is bounded against (`protocol::event`).
 pub const REFUSE_G_MAX: u32 = REFUSE_G_BROKEN;
+
+/// How many looks an ore node is drawn through: whole, then a quarter, a half
+/// and three quarters mined (`EV_NODE_STAGE`). The last hit breaks it.
+pub const ORE_STAGES: u8 = 4;
+
+/// How much of an ore node's height stands at each stage, per mille: what a
+/// swing strikes and a body stands on, and what the drawn node is cut down to
+/// (`client::render::ore`). Whole, then four fifths, three fifths, under half.
+pub const ORE_STAGE_TOP_PM: [u16; ORE_STAGES as usize] = [1000, 780, 600, 440];
+
+/// Whether gatherable row `ni` is an ore node: stone, metal or sulfur — the
+/// three that crumble through [`ORE_STAGES`].
+#[inline]
+pub const fn is_ore(ni: usize) -> bool {
+    matches!(ni, 1..=3)
+}
+
+/// The stage an ore node is drawn at with `spent` of its `budget` gone: 0
+/// whole, `ORE_STAGES - 1` nearly broken.
+#[inline]
+pub fn ore_stage(spent: u32, budget: u32) -> u8 {
+    if budget == 0 {
+        return 0;
+    }
+    (spent.saturating_mul(ORE_STAGES as u32) / budget).min(ORE_STAGES as u32 - 1) as u8
+}
+
+/// The stage a slot record draws its ore node at, or `None` when the record
+/// is not a worn ore node: felled, regrowing, untouched or not ore at all.
+/// The join walk's reading of [`ore_stage`] — the occupant comes off the
+/// shared worldgen, so the record carries no field for it.
+pub fn worn_stage(
+    seed: u64,
+    table: &crate::terrain::ScatterTable,
+    haven: &crate::terrain::Haven,
+    gc: &GatherContent,
+    e: &SlotLife,
+) -> Option<u8> {
+    if e.respawn_at != 0 || e.grown_at != 0 || e.hits == 0 {
+        return None;
+    }
+    let slot = crate::terrain::scatter(seed, table, haven, e.cx as i32, e.cz as i32);
+    let ni = node_index(slot.occupant).filter(|&ni| is_ore(ni))?;
+    let st = ore_stage(e.hits as u32, gc.nodes[ni].hits as u32 * HIT_UNIT);
+    (st > 0).then_some(st)
+}
 
 /// Sentinel cell key: no weak-spot chase in progress (`Player::ws_cell`).
 pub const NO_CELL: u32 = u32::MAX;
@@ -805,6 +852,10 @@ pub struct SlotLives {
     /// each tick, so a collision query needs no clock of its own. Not sim
     /// state: it is the tick, restated.
     now: u64,
+    /// The three ore nodes' unmarked hits (`NodeDef::hits`), stamped beside
+    /// `now` so a collision query can read a worn node's stage without the
+    /// content table. Not sim state: it is the content, restated.
+    ore_hits: [u16; 3],
 }
 
 impl SlotLives {
@@ -813,6 +864,28 @@ impl SlotLives {
             entries: crate::boxed_array(SlotLife::default()),
             len: 0,
             now: 0,
+            ore_hits: [0; 3],
+        }
+    }
+
+    /// Stamp the ore nodes' hits off the baked content (`World::tick`).
+    #[inline]
+    pub fn set_ore_hits(&mut self, gc: &GatherContent) {
+        self.ore_hits = [gc.nodes[1].hits, gc.nodes[2].hits, gc.nodes[3].hits];
+    }
+
+    /// How much of the ore node `o` at this cell still stands, per mille
+    /// ([`ORE_STAGE_TOP_PM`]): 1000 for anything whole, felled or not ore.
+    pub fn ore_top_pm(&self, cx: u16, cz: u16, o: crate::terrain::Occupant) -> u16 {
+        let Some(ni) = node_index(o).filter(|&ni| is_ore(ni)) else {
+            return 1000;
+        };
+        match self.find(cx, cz) {
+            Some(e) if e.respawn_at == 0 && e.hits > 0 => {
+                let budget = self.ore_hits[ni - 1] as u32 * HIT_UNIT;
+                ORE_STAGE_TOP_PM[ore_stage(e.hits as u32, budget) as usize]
+            }
+            _ => 1000,
         }
     }
 
@@ -1198,9 +1271,14 @@ pub fn land(
         HIT_UNIT
     };
     let take = want.min(budget.saturating_sub(life.hits as u32));
+    let stage_before = ore_stage(life.hits as u32, budget);
     life.hits += take as u16;
     let spent_after = life.hits as u64;
     let exhausted = life.hits as u32 >= budget;
+    let stage = ore_stage(life.hits as u32, budget);
+    if is_ore(ni) && !exhausted && stage != stage_before {
+        events.push(EV_NODE_STAGE, ck, stage as u32, occupant_of(ni));
+    }
     if exhausted && stump {
         life.hits = STUMP_GRUBBED;
     } else if exhausted {
@@ -1533,6 +1611,36 @@ fn smash(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A worn ore node stands at its stage's height, and nothing else does:
+    /// not a tree, not a felled node, not a node with no content stamped.
+    #[test]
+    fn a_worn_ore_node_stands_at_its_stage() {
+        use crate::terrain::Occupant;
+        let gc = GatherContent::probe_fixture();
+        let mut lives = SlotLives::new();
+        let budget = gc.nodes[1].hits as u32 * HIT_UNIT;
+        lives.find_or_insert(3, 4).unwrap().hits = (budget / 2) as u16;
+        assert_eq!(
+            lives.ore_top_pm(3, 4, Occupant::StoneNode),
+            1000,
+            "no content stamped"
+        );
+        lives.set_ore_hits(&gc);
+        assert_eq!(
+            lives.ore_top_pm(3, 4, Occupant::StoneNode),
+            ORE_STAGE_TOP_PM[ore_stage(budget / 2, budget) as usize]
+        );
+        assert!(lives.ore_top_pm(3, 4, Occupant::StoneNode) < 1000);
+        assert_eq!(lives.ore_top_pm(3, 4, Occupant::Tree), 1000);
+        assert_eq!(
+            lives.ore_top_pm(9, 9, Occupant::StoneNode),
+            1000,
+            "untouched"
+        );
+        lives.find_or_insert(3, 4).unwrap().respawn_at = 7;
+        assert_eq!(lives.ore_top_pm(3, 4, Occupant::StoneNode), 1000, "felled");
+    }
 
     #[test]
     fn inv_add_stacks_then_fills_then_loses() {

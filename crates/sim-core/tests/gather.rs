@@ -62,6 +62,9 @@ struct Aim {
 /// every gatherable's swing volume, the barrel's 0.79 m top at scale 0.9
 /// being the lowest.
 const AIM_UP_M: f32 = 0.7;
+/// The same for an ore node: under the last stage's top, so a node worn down
+/// is still in the ray's path.
+const ORE_AIM_UP_M: f32 = 0.3;
 /// The eye above the feet, `ranged::ARROW_EYE_MM` in metres — the origin
 /// the swing's ray leaves from.
 const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
@@ -133,8 +136,14 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
                     best_yaw = yaw;
                 }
             }
-            // Down at the node from the eye: the ray has to enter it.
-            let pitch = pitch_toward(s.y + AIM_UP_M - (py + EYE_M), 1.2);
+            // Down at the node from the eye: the ray has to enter it. An ore
+            // node is aimed at low, because it is struck at what is left of
+            // it (`gather::ORE_STAGE_TOP_PM`) and a worn one is knee-high.
+            let up = match sim_core::gather::node_index(want) {
+                Some(ni) if sim_core::gather::is_ore(ni) => ORE_AIM_UP_M,
+                _ => AIM_UP_M,
+            };
+            let pitch = pitch_toward(s.y + up - (py + EYE_M), 1.2);
             return (
                 (px, pz),
                 Aim {

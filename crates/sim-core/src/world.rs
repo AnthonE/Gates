@@ -904,7 +904,15 @@ pub const EV_GAVE: u8 = 61;
 /// wallet, which the sim never sees.
 pub const EV_EXTRACTED: u8 = 62;
 
-pub const EV_MAX: u8 = EV_EXTRACTED;
+/// EV_NODE_STAGE: a = cell key, b = the stage the ore node is drawn at now
+/// (`1..gather::ORE_STAGES`), c = terrain occupant ordinal. An ore node
+/// crumbled past a quarter of its budget (`gather::ore_stage`): the reference
+/// swaps a node to a smaller, broken-down mesh at each stage and masks the
+/// swap with a burst of rock. **Broadcast**, `EV_SLOT_HARVESTED`'s posture:
+/// how far a node is mined is visible to anyone looking at it.
+pub const EV_NODE_STAGE: u8 = 63;
+
+pub const EV_MAX: u8 = EV_NODE_STAGE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -5929,6 +5937,8 @@ impl World {
         let tick = self.tick;
         // A sapling's size is measured at this tick (tree growth v0).
         self.slot_lives.set_now(tick);
+        // A worn ore node stands at its stage's height (`ORE_STAGE_TOP_PM`).
+        self.slot_lives.set_ore_hits(&self.gather);
         // The weather and the hour this tick (weather v0): the players'
         // exposure reads them in the loop below, the animals after it.
         let wx = crate::weather::now(seed, tick, &self.env);
