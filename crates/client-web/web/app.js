@@ -1146,6 +1146,27 @@ async function enter(g, audio, row) {
   g.play("#gates");
 }
 
+/* ── fullscreen that Esc does not end ───────────────────────────────────────
+   Esc is the game's back key (the menu, the settings screen, a panel), and a
+   browser also ends a page's fullscreen on Esc. Two answers:
+   - F11 stays the browser's own fullscreen, which Esc does not end. winit
+     calls preventDefault on every key the canvas gets, so F11 is stopped
+     here, before the canvas, and the browser keeps it (the desktop client
+     binds F11 itself: `settings::FULLSCREEN_KEY`).
+   - FULLSCREEN on the settings screen is the page's (the Fullscreen API).
+     While it is up, Keyboard Lock (Chromium) hands Esc to the game, and
+     holding Esc still leaves, as the browser says. Where there is no lock,
+     the settings screen's BACK button is the way out that keeps it. */
+const keepF11 = (ev) => { if (ev.key === "F11") ev.stopImmediatePropagation(); };
+window.addEventListener("keydown", keepF11, true);
+window.addEventListener("keyup", keepF11, true);
+document.addEventListener("fullscreenchange", () => {
+  const kb = navigator.keyboard;
+  if (!kb || !kb.lock) return;
+  if (document.fullscreenElement) kb.lock(["Escape"]).catch(() => {});
+  else kb.unlock();
+});
+
 async function play({ guest = false } = {}) {
   if (busy || !canTransport) return;
   if (dl.failed) { location.reload(); return; }

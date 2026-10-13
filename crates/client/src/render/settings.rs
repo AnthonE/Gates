@@ -975,7 +975,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is a stance** (v83): slower, lower, quieter, smaller to hit, and
 /// the sneak the animal brain listens for (`sim-core/src/brain.rs`). `Z` is
 /// named beside Ctrl because the browser closes a tab on Ctrl+W.
-pub const BINDS: [(&str, &str); 31] = [
+pub const BINDS: [(&str, &str); 32] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -1059,9 +1059,16 @@ pub const BINDS: [(&str, &str); 31] = [
         "REPORT A BUG",
         "F7 (writes a file next to your screenshots)",
     ),
+    ("FULLSCREEN", "F11"),
     ("MENU", "Esc"),
     ("QUIT", "Esc from the server list"),
 ];
+/// The footer's BACK button: the way out that is not Esc. In a browser, Esc
+/// also ends fullscreen (the browser's rule, not one a page can opt out of),
+/// so a player who just turned FULLSCREEN on needs a way out that keeps it.
+#[derive(Component)]
+pub struct Back;
+
 /// Marks everything this screen owns.
 #[derive(Component)]
 pub struct SettingsRoot;
@@ -1152,8 +1159,8 @@ pub fn rebuild(
 /// same drawing — the shape `menu::build` already uses for the same reason.
 fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
     let back = match settings.back {
-        Screen::Paused => "Esc goes back to the game",
-        _ => "Esc goes back to the server list",
+        Screen::Paused => "BACK or Esc returns to the game",
+        _ => "BACK or Esc returns to the server list",
     };
     // The footer names the file, or says that nothing is being kept — the
     // honest states are "saved to <path>" and "not saved this run" (a
@@ -1256,13 +1263,24 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                     });
                 });
 
-            root.spawn((
-                ui::label(format!("{back}    -    {saved}"), 12.0, ui::FAINT),
-                Node {
-                    margin: UiRect::new(Val::Px(34.0), Val::Px(0.0), Val::Px(0.0), Val::Px(16.0)),
-                    ..default()
-                },
-            ));
+            root.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(18.0),
+                margin: UiRect::new(Val::Px(34.0), Val::Px(0.0), Val::Px(0.0), Val::Px(16.0)),
+                ..default()
+            })
+            .with_children(|foot| {
+                foot.spawn((ui::button(120.0, true), Back))
+                    .with_children(|b| {
+                        b.spawn(ui::strong("BACK", 14.0, ui::TITLE));
+                    });
+                foot.spawn(ui::label(
+                    format!("{back}    -    {saved}"),
+                    12.0,
+                    ui::FAINT,
+                ));
+            });
         });
 }
 
@@ -1401,8 +1419,14 @@ fn spawn_row(
 pub fn click(
     cats: Query<(&Interaction, &Category), Changed<Interaction>>,
     controls: Query<(&Interaction, &Adjust), Changed<Interaction>>,
+    backs: Query<&Interaction, (Changed<Interaction>, With<Back>)>,
     mut settings: ResMut<Settings>,
+    mut next: ResMut<NextState<Screen>>,
 ) {
+    if backs.iter().any(|i| *i == Interaction::Pressed) {
+        next.set(settings.back.clone());
+        return;
+    }
     for (interaction, cat) in cats.iter() {
         if *interaction == Interaction::Pressed {
             settings.cat = cat.0;
@@ -1424,6 +1448,40 @@ pub fn keys(
     if keyboard.just_pressed(KeyCode::Escape) {
         next.set(settings.back.clone());
     }
+}
+
+/// Toggles FULLSCREEN from any screen, the settings screen included.
+///
+/// Desktop only in effect: the page (`client-web/web/app.js`) stops F11
+/// before the canvas sees it, so a browser does its own fullscreen, which
+/// Esc does not end.
+pub const FULLSCREEN_KEY: KeyCode = KeyCode::F11;
+
+/// Runs in every state. Goes through `adjust`, so an open settings pane
+/// redraws its FULLSCREEN row.
+pub fn fullscreen_key(keyboard: Res<ButtonInput<KeyCode>>, mut settings: ResMut<Settings>) {
+    if keyboard.just_pressed(FULLSCREEN_KEY) {
+        settings.adjust(Knob::Fullscreen, 0);
+    }
+}
+
+/// wasm only in effect: when the browser leaves fullscreen on its own (Esc,
+/// or its own UI), turn the setting off to match. Bevy never hears about
+/// that exit, so without this the row reads ON over a windowed canvas and
+/// the next click on it is spent turning off something already off.
+///
+/// Edge-triggered on the browser's state, so a request still pending at
+/// boot (the page's default is ON) is not mistaken for an exit. No file
+/// to write in a browser, so this costs no saved preference.
+pub fn follow_browser_fullscreen(mut settings: ResMut<Settings>, mut was: Local<bool>) {
+    let Some(now) = super::web::browser_fullscreen() else {
+        return;
+    };
+    if *was && !now && settings.fullscreen {
+        settings.fullscreen = false;
+        settings.dirty = true;
+    }
+    *was = now;
 }
 
 pub fn teardown(mut commands: Commands, roots: Query<Entity, With<SettingsRoot>>) {
