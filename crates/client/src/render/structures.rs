@@ -2846,10 +2846,23 @@ pub fn stream(
         // A killed animal's bag is its carcass, lying where it fell (v84),
         // at a bearing hashed off the bag id: the wire carries no facing,
         // and a field of dead pigs all pointing north reads as a pattern.
-        let carcass = bag.species().and_then(|s| {
-            kit.carcass_mesh
-                .get(s as usize)
-                .zip(kit.carcass_mat.get(s as usize))
+        // The pig and the wolf die as the fel animal the island has bred
+        // (`beasts.rs`), loaded here on first need: the asset server dedups a
+        // path, and a carcass is a rare event, not a frame's work.
+        let fel = bag.species().and_then(|s| {
+            let sp = super::beasts::fel_species_of_kind(s)?;
+            let tier = super::beasts::tier_of(&core.arc);
+            Some(super::mobs::model(
+                &assets,
+                super::beasts::BEAST_CARCASS_GLB[sp][tier],
+            ))
+        });
+        let carcass = fel.as_ref().map(|(m, t)| (m, t)).or_else(|| {
+            bag.species().and_then(|s| {
+                kit.carcass_mesh
+                    .get(s as usize)
+                    .zip(kit.carcass_mat.get(s as usize))
+            })
         });
         let entity = match carcass {
             Some((mesh, mat)) => {

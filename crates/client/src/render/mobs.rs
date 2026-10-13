@@ -511,12 +511,14 @@ pub struct Herd {
     gen: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     mut herd: ResMut<Herd>,
-    mut q: Query<(&mut Transform, &mut Gait), With<Animal>>,
+    mut q: Query<(&mut Transform, &mut Gait, Has<super::beasts::Skinned>), With<Animal>>,
     time: Res<Time>,
     assets: Option<Res<HerdAssets>>,
+    beasts: Res<super::beasts::Beasts>,
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
 ) {
@@ -525,6 +527,9 @@ pub fn stream(
     };
     let core = &net.session.core;
     let at = core.render_tick();
+    // The island's corruption tier, which the next animal out of the fog
+    // wears (`beasts.rs`).
+    let tier = super::beasts::tier_of(&core.arc);
     let mut rs = client_core::interp::RemoteState::default();
 
     herd.gen = herd.gen.wrapping_add(1);
@@ -557,9 +562,20 @@ pub fn stream(
         }
         let pos = Vec3::new(rs.x, rs.y, rs.z);
         let facing = Quat::from_rotation_y(wire_yaw_to_radians(rs.yaw));
+        let fel = beasts.scene_for(slot, tier);
+        // Drawn in the rigid kit because its fel model had not loaded when it
+        // came into view: drop it, and the next frame spawns it skinned.
+        let known = match known {
+            Some(entity) if fel.is_some() && matches!(q.get(entity), Ok((_, _, false))) => {
+                commands.entity(entity).despawn();
+                herd.live.remove(&id);
+                None
+            }
+            k => k,
+        };
         match known {
             Some(entity) => {
-                if let Ok((mut t, mut gait)) = q.get_mut(entity) {
+                if let Ok((mut t, mut gait, skinned)) = q.get_mut(entity) {
                     let dt = time.delta_secs();
                     gait.observe(pos, dt);
                     gait.settle(rs.sleeping, dt);
@@ -570,6 +586,17 @@ pub fn stream(
                     }
                     if feed.howls().contains(&id) {
                         gait.howl();
+                    }
+                    if skinned {
+                        // The clips carry the lunge, the raised head and the
+                        // lying down; the root only goes where the sim says
+                        // and faces where it turns. `pose` still runs, for
+                        // the bite and howl clocks `beasts::drive` reads.
+                        let _ = gait.pose(dt);
+                        t.translation = pos;
+                        t.rotation =
+                            Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
+                        continue;
                     }
                     let drop = gait.lie * gait.hip * LIE_DROP + (1.0 - gait.lie) * gait.bob();
                     let yaw = Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
@@ -584,6 +611,20 @@ pub fn stream(
                         + yaw * Vec3::Z * pose.reach;
                     t.rotation = yaw * pitch;
                 }
+            }
+            None if fel.is_some() => {
+                let (species, scene) = fel.expect("guarded");
+                let entity = commands
+                    .spawn((
+                        super::WorldEntity,
+                        Animal(id),
+                        Gait::new(slot),
+                        super::beasts::Skinned { species, tier },
+                        SceneRoot(scene),
+                        Transform::from_translation(pos).with_rotation(facing),
+                    ))
+                    .id();
+                herd.live.insert(id, Live { entity, seen: gen });
             }
             None => {
                 // Which animal this is, off the slot — the same pure
