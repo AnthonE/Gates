@@ -248,9 +248,22 @@ pub struct TownGlow {
     /// The lit weight (night × the eye's gain) last written, so a still
     /// dusk costs nothing.
     at: Option<f32>,
+    /// How much of the night it is this frame, 0 day to 1 full dark — what
+    /// `gate_fx` and `town_fx` light by.
+    night: f32,
 }
 
 impl TownGlow {
+    /// The lapis seams' materials. `gate_fx` owns their glow: they breathe.
+    pub fn lapis(&self) -> &[Handle<StandardMaterial>] {
+        &self.lapis
+    }
+
+    /// This frame's [`night_weight`].
+    pub fn night(&self) -> f32 {
+        self.night
+    }
+
     fn track(&mut self, surface: Surface, h: &Handle<StandardMaterial>) {
         match surface {
             Surface::Bulb => self.bulbs.push(h.clone()),
@@ -268,17 +281,14 @@ const LIT_BELOW: f32 = 0.10;
 const LIT_SPAN: f32 = 0.22;
 /// The bulbs' glow at full night (`depot::material`'s value), linear.
 pub(super) const BULB_GLOW: LinearRgba = LinearRgba::rgb(6.0, 4.5, 2.2);
-/// The lapis seams by day and at full night, linear. **(knob)**
-const LAPIS_DAY: LinearRgba = LinearRgba::rgb(0.25, 0.55, 1.6);
-const LAPIS_NIGHT: LinearRgba = LinearRgba::rgb(1.0, 2.3, 6.5);
 
 /// How much of the night it is, 0 at day to 1 at full dark, off the sun.
 pub fn night_weight(day_frac: f32) -> f32 {
     ((LIT_BELOW - super::rig::sun_elevation(day_frac)) / LIT_SPAN).clamp(0.0, 1.0)
 }
 
-/// Lamps, bulbs and seams follow the dark (the server's clock, as the birds
-/// read it), fading through dusk and dawn.
+/// Lamps and bulbs follow the dark (the server's clock, as the birds read
+/// it), fading through dusk and dawn. The seams are `gate_fx`'s: they breathe.
 pub fn lamps(
     feed: Res<super::feed::Feed>,
     pin: Res<super::rig::DayPin>,
@@ -290,6 +300,7 @@ pub fn lamps(
     let Some(mut glow) = glow else { return };
     let tick = pin.day_tick(feed.server_tick_est, &feed.env);
     let w = night_weight(sim_core::world::day_frac(tick));
+    glow.night = w;
     // The night eye's gain (`rig::flame_gain`): against the fixed exposure a
     // lamp at its own lumens draws black after dark, as a flame did.
     let g = gain.0;
@@ -306,11 +317,6 @@ pub fn lamps(
     for h in &glow.bulbs {
         if let Some(m) = materials.get_mut(h) {
             m.emissive = BULB_GLOW * w * g;
-        }
-    }
-    for h in &glow.lapis {
-        if let Some(m) = materials.get_mut(h) {
-            m.emissive = LAPIS_DAY * (1.0 - w) + LAPIS_NIGHT * w;
         }
     }
 }
