@@ -139,7 +139,8 @@ impl Rules {
 /// `ticker` for each place on each board, to the wallet that took it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Prizes {
-    /// The coin, bare (`BUSINESS.md`: ELO, JUNK, ORBS). Empty: no prizes.
+    /// The coin, bare: JUNK or ELO (`BUSINESS.md`). Never ORBS: new ORBS comes
+    /// only from the elo farm, and `config.rs` refuses it. Empty: no prizes.
     pub ticker: String,
     /// Amount by place (index 0 is first), per board in wire order.
     pub places: [Vec<u64>; BOARDS],
@@ -1486,7 +1487,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let base = dir.join("world.bin");
         let prizes = Prizes {
-            ticker: "ORBS".into(),
+            ticker: "ELO".into(),
             places: [vec![500, 300], vec![200], vec![], vec![50]],
             min_minutes: 2,
             agents: false,
@@ -1547,17 +1548,17 @@ mod tests {
         assert_eq!(
             closed.paid,
             vec![
-                (ALICE.to_string(), "ALICE".into(), 700, "ORBS".into()),
+                (ALICE.to_string(), "ALICE".into(), 700, "ELO".into()),
+                (CAROL.to_string(), "CAROL".into(), 350, "ELO".into()),
                 (CAROL.to_string(), "CAROL".into(), 98, "JUNK".into()),
-                (CAROL.to_string(), "CAROL".into(), 350, "ORBS".into()),
             ]
         );
         let csv = std::fs::read_to_string(payout_path(&base, 3, "csv")).unwrap();
-        assert!(csv.contains(&format!("{ALICE},700,ORBS,ISLAND #1 500 | WORKS #1 200")));
+        assert!(csv.contains(&format!("{ALICE},700,ELO,ISLAND #1 500 | WORKS #1 200")));
         assert!(csv.contains(&format!("{CAROL},98,JUNK,EXTRACTED 98")));
         assert!(!csv.contains(BOT), "an agent is not paid");
         let text = discord_text(3, &closed, Some("Thu 15 Oct 19:00 UTC"));
-        assert!(text.contains("ALICE 700 ORBS") && !text.contains("0x"));
+        assert!(text.contains("ALICE 700 ELO") && !text.contains("0x"));
         let hall = Hall::load(&base);
         assert_eq!(hall.last_wipe, 3);
         assert_eq!(hall.last.get(CAROL), Some(&(3, 30)));
@@ -1569,9 +1570,9 @@ mod tests {
         assert_eq!(lines[0], "wipe 3 went to ALICE");
         assert_eq!(lines[1], "you finished #3 of 3");
         assert_eq!(lines[2], "98 JUNK extracted last wipe");
-        assert_eq!(lines[3], "you won 350 ORBS - check your wallet");
+        assert_eq!(lines[3], "you won 350 ELO - check your wallet");
         assert_eq!(lines[4], "your hall: 2 podiums, best #2");
-        assert_eq!(lines[5], "ORBS to the top 2 of each board");
+        assert_eq!(lines[5], "ELO to the top 2 of each board");
         for l in &lines {
             assert!(
                 l.len() + 9 <= protocol::CHAT_MAX_BYTES,

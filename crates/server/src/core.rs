@@ -7154,7 +7154,7 @@ mod tests {
             ..crate::standings::Rules::default()
         };
         core.standings.prizes = crate::standings::Prizes {
-            ticker: "ORBS".into(),
+            ticker: "ELO".into(),
             places: [vec![], vec![200, 100], vec![], vec![]],
             min_minutes: 0,
             agents: false,
@@ -7224,7 +7224,7 @@ mod tests {
         assert_eq!(works.name(0), "Ash");
         // The purse rides with it: first place pays 200, and that is what
         // this wallet would take now.
-        assert_eq!(works.ticker(), "ORBS");
+        assert_eq!(works.ticker(), "ELO");
         assert_eq!(&works.prizes[..works.n_prizes as usize], &[200, 100]);
         assert_eq!(works.my_prize, 200);
     }
