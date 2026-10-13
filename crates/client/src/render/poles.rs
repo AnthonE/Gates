@@ -9,6 +9,7 @@
 //! which still read as a line along the coast, over [`POLE_FADE_M`].
 
 use bevy::asset::RenderAssetUsages;
+#[cfg(not(webgl2))]
 use bevy::camera::visibility::VisibilityRange;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -37,6 +38,23 @@ const WIRE_R_M: f32 = 0.016;
 const TRANSFORMER_EVERY: usize = 6;
 const WIRE_FADE_M: std::ops::Range<f32> = 260.0..340.0;
 const POLE_FADE_M: std::ops::Range<f32> = 900.0..1100.0;
+
+/// A run's fade as the component it carries — `tree::lod_band`'s shape: the
+/// `VisibilityRange` on the desktop, and nothing under WebGL2, which cannot
+/// bind the table it dithers by (the pipeline panics at creation). A browser
+/// draws the poles and wires unfaded.
+#[cfg(not(webgl2))]
+fn fade_band(end_margin: std::ops::Range<f32>) -> VisibilityRange {
+    VisibilityRange {
+        start_margin: 0.0..0.0,
+        end_margin,
+        use_aabb: false,
+    }
+}
+
+/// See the desktop half above.
+#[cfg(webgl2)]
+fn fade_band(_end_margin: std::ops::Range<f32>) {}
 
 const WOOD: [f32; 4] = [0.6, 0.53, 0.45, 1.0];
 const HARDWARE: [f32; 4] = [0.36, 0.37, 0.38, 1.0];
@@ -270,11 +288,7 @@ pub fn spawn(
             Mesh3d(meshes.add(soup.mesh())),
             MeshMaterial3d(mat.clone()),
             Transform::from_translation(mid),
-            VisibilityRange {
-                start_margin: 0.0..0.0,
-                end_margin: fade,
-                use_aabb: false,
-            },
+            fade_band(fade),
         ));
     };
     for chunk in 0..RING_BEARINGS / CHUNK {

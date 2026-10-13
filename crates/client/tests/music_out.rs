@@ -5,7 +5,7 @@
 //! drives it, one block at a time, while the real decoder thread fills the
 //! ring from `assets/music/`.
 
-#![cfg(feature = "render")]
+#![cfg(all(feature = "render", not(target_arch = "wasm32")))]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
