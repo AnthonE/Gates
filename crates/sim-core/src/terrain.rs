@@ -1531,7 +1531,87 @@ pub fn moisture_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
 }
 
 fn moisture_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
-    fbm(c, seed, CH_MOIST, x, z, MOIST_FREQ, MOIST_OCTAVES)
+    let m = fbm(c, seed, CH_MOIST, x, z, MOIST_FREQ, MOIST_OCTAVES);
+    let a = aridity_in(c, seed, x, z);
+    // North of the desert's reach `a` is exactly 0 and the field is the bits
+    // it always was.
+    if a > 0.0 {
+        m - DESERT_DRY * a
+    } else {
+        m
+    }
+}
+
+// --- The desert (Rust's arid biome) ---------------------------------------
+//
+// Rust's maps run snowy in the north, temperate through the middle and arid
+// in the south. This is the south: a desert across about a fifth of the
+// island, its edge wandering on a slow noise so the border reads as a climate
+// rather than a ruled line. North is +z (`ui/map.rs`), so south is -z.
+//
+// It is folded INTO `moisture` rather than added beside it, so everything
+// that classifies ground — `biome`, `splat_from`, the scatter row, the mob
+// census, the clutter — sees the desert without a new argument: a desert is
+// ground too dry to be meadow. The same fold makes the border a gradient, the
+// forest thinning to meadow before the meadow turns to sand.
+//
+// Measured in units of the continent's radius rather than metres, so a bigger
+// island gets a proportionally bigger desert, and it is a pure function of the
+// point — no raster, no pass over the island — so it costs a huge map nothing.
+
+/// Where the desert starts and where it is full, as a distance SOUTH of the
+/// island centre in units of `CONTINENT_RADIUS`, before the edge wanders.
+/// **(knob)**
+const DESERT_LAT: (f32, f32) = (0.28, 0.46);
+/// How far the desert's edge wanders north and south, same units. **(knob)**
+const DESERT_WANDER: f32 = 0.22;
+const DESERT_WANDER_FREQ: f32 = 1.0 / 700.0;
+const CH_ARID: u32 = 224; // +octave index, 3 octaves
+/// How much drier full desert is than the island's moisture field, in that
+/// field's units (it spans about ±0.6). **(knob)**
+const DESERT_DRY: f32 = 1.6;
+/// Ground drier than this is [`Biome::Desert`].
+pub const DESERT_MOIST: f32 = -0.9;
+/// The half-width of the sand's soft edge around [`DESERT_MOIST`].
+const DESERT_SPLAT_HALF: f32 = 0.1;
+
+const _: () = {
+    // The golden's scatter cells sit within ~64 m of the island centre; the
+    // desert's nearest possible reach must stay south of them.
+    assert!((DESERT_LAT.0 - DESERT_WANDER) * CONTINENT_RADIUS > 96.0);
+    assert!(DESERT_LAT.1 > DESERT_LAT.0);
+};
+
+/// How arid a point is, 0..1: 0 across the temperate north and middle, 1 in
+/// the deep south.
+pub fn aridity(seed: u64, x: f32, z: f32) -> f32 {
+    aridity_in(&mut Direct, seed, x, z)
+}
+
+/// [`aridity`] against a caller-owned [`Lattice`].
+pub fn aridity_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    aridity_in(lat, seed, x, z)
+}
+
+fn aridity_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let south = (ISLAND_SIZE * 0.5 - z) * (1.0 / CONTINENT_RADIUS);
+    // `fbm` is within ±1, so nothing north of this can reach the desert:
+    // most of the island pays one compare and no noise tap.
+    if south <= DESERT_LAT.0 - DESERT_WANDER {
+        return 0.0;
+    }
+    let s = south + fbm(c, seed, CH_ARID, x, z, DESERT_WANDER_FREQ, 3) * DESERT_WANDER;
+    fade(((s - DESERT_LAT.0) / (DESERT_LAT.1 - DESERT_LAT.0)).clamp(0.0, 1.0))
+}
+
+/// How much of the open ground at this moisture is desert sand, 0..1 — the
+/// soft edge of [`Biome::Desert`] (`biome()` is its hard one).
+fn dune_of(moist: f32) -> f32 {
+    1.0 - ramp(
+        DESERT_MOIST - DESERT_SPLAT_HALF,
+        DESERT_MOIST + DESERT_SPLAT_HALF,
+        moist,
+    )
 }
 
 /// The grove/clearing field: a multiplier on the scatter weight row, mean 1
@@ -1597,7 +1677,7 @@ fn species_share_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     (n * SPECIES_GAIN * 0.5 + 0.5).clamp(0.0, 1.0)
 }
 
-/// The four alpha biomes (TERRAIN.md §1 stage 6). Data, not behavior.
+/// The biomes (TERRAIN.md §1 stage 6). Data, not behavior.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Biome {
@@ -1605,7 +1685,14 @@ pub enum Biome {
     Meadow = 1,
     Forest = 2,
     Highland = 3,
+    /// The arid south (see the block above `DESERT_LAT`): sand, cactus,
+    /// scattered palms and ore. Its ground is the sand identity, so the splat
+    /// stays four channels; the scatter row is its own.
+    Desert = 4,
 }
+
+/// How many biomes there are — the length of every per-biome table.
+pub const BIOMES: usize = 5;
 
 /// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
 /// level. One definition — `biome` classifies by it and `World::spawn_pos`
@@ -1639,6 +1726,8 @@ pub fn biome(h: f32, moist: f32) -> Biome {
         Biome::Beach
     } else if h > TREELINE_H {
         Biome::Highland
+    } else if moist < DESERT_MOIST {
+        Biome::Desert
     } else if moist > 0.05 {
         Biome::Forest
     } else {
@@ -6763,14 +6852,25 @@ impl Occupant {
 /// assert, because a mismatch is silent: `species % pool` still indexes, and
 /// what you get is a forest whose painted regions do not line up with
 /// anything.
-pub const SLOT_SPECIES: u8 = 2;
+pub const SLOT_SPECIES: u8 = PAINTED_SPECIES + 1;
+
+/// How many species the painted draw chooses between — the `bool` against
+/// [`species_share`]. Every occupant but a desert tree is one of these, so a
+/// rock pool groups by this and not by [`SLOT_SPECIES`].
+pub const PAINTED_SPECIES: u8 = 2;
+
+/// The desert's tree: a palm. Not painted — every tree standing in
+/// [`Biome::Desert`] is one, so the arid south reads as the reference game's
+/// does, palms over sand.
+pub const PALM_SPECIES: u8 = PAINTED_SPECIES;
 
 const _: () = {
-    // The draw below is a `bool` against `species_share`, which can only
+    // The painted draw is a `bool` against `species_share`, which can only
     // produce 0 or 1. Raising this constant without changing that draw would
     // declare species the client's pools do not get — silently, since
     // `species % pool` still indexes. Make it a compile error instead.
-    assert!(SLOT_SPECIES == 2);
+    assert!(PAINTED_SPECIES == 2);
+    assert!(SLOT_SPECIES == 3);
 };
 
 pub const OCCUPANT_KINDS: usize = 7;
@@ -6797,11 +6897,12 @@ pub const ROW_BUSH: usize = 4;
 /// AND berries, so the prompt was on everything green. Hemp is the
 /// meadow's plant and the berry bush the forest edge's, which is where the
 /// treeline transfer puts most of the column.
-pub const PLANT_SHARES: [[u16; 2]; 4] = [
+pub const PLANT_SHARES: [[u16; 2]; BIOMES] = [
     [100, 150], // Beach
     [200, 330], // Meadow
     [280, 140], // Forest
     [150, 80],  // Highland
+    [0, 40],    // Desert — no berries; the rest is cactus and dry scrub
 ];
 
 const _: () = {
@@ -6851,21 +6952,22 @@ pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
 
 /// How much of the bush column is a ground pickup, per biome, per mille of
 /// the column's draws (taken out of what was scenery). **(knob)**
-pub const PICKUP_SHARES: [u16; 4] = [120, 120, 150, 200];
+pub const PICKUP_SHARES: [u16; BIOMES] = [120, 120, 150, 200, 180];
 
 /// Which pickup, per biome, percent: `[stone, wood, metal, sulfur,
 /// mushrooms]`. Driftwood and stone on the beach, mushrooms under the trees,
 /// ore up high.
-pub const PICKUP_KINDS: [[u8; 5]; 4] = [
+pub const PICKUP_KINDS: [[u8; 5]; BIOMES] = [
     [50, 30, 10, 10, 0],  // Beach
     [35, 25, 20, 10, 10], // Meadow
     [20, 35, 10, 0, 35],  // Forest
     [40, 0, 30, 30, 0],   // Highland
+    [45, 10, 25, 20, 0],  // Desert — loose ore in the sand, little wood
 ];
 
 const _: () = {
     let mut b = 0;
-    while b < 4 {
+    while b < BIOMES {
         assert!(PLANT_SHARES[b][0] + PLANT_SHARES[b][1] + PICKUP_SHARES[b] <= 1000);
         let w = PICKUP_KINDS[b];
         assert!(w[0] as u16 + w[1] as u16 + w[2] as u16 + w[3] as u16 + w[4] as u16 == 100);
@@ -6889,7 +6991,7 @@ const _: () = {
 /// landing to 2026-09-14. [`Self::clump_cap`] is the way past it.
 #[derive(Clone, Copy)]
 pub struct ScatterTable {
-    pub weights: [[u16; OCCUPANT_KINDS]; 4],
+    pub weights: [[u16; OCCUPANT_KINDS]; BIOMES],
     /// Per biome, the ceiling the grove field is held to before it scales
     /// this biome's row — the field's own units, where the island mean is
     /// 1.0. `f32::INFINITY` is no ceiling: the biome draws against the field
@@ -6905,7 +7007,7 @@ pub struct ScatterTable {
     /// whole and flattens only the top, so a forest is dense stands with
     /// bald ground between them, which is the shape the reference's own
     /// forest reads as (`reference/FORESTS.md` §3).
-    pub clump_cap: [f32; 4],
+    pub clump_cap: [f32; BIOMES],
     /// Per biome, the reciprocal of the island mean of `min(clump, cap)` —
     /// so a capped field still redistributes this biome's density without
     /// spending it, exactly as `CLUMP_NORM` does for the whole field. `1.0`
@@ -6913,7 +7015,7 @@ pub struct ScatterTable {
     /// `CLUMP_NORM`'s construction). **Measured, never chosen**, and
     /// `tests/scatter.rs::test_clump_cap_normalizer_holds` re-derives it
     /// the way `test_clump_normalizer_holds` re-derives `CLUMP_NORM`.
-    pub clump_cap_norm: [f32; 4],
+    pub clump_cap_norm: [f32; BIOMES],
 }
 
 impl ScatterTable {
@@ -6955,14 +7057,21 @@ impl ScatterTable {
                 [640, 12, 0, 0, 20, 28, 0],
                 // Highland: the ore, the exposure.
                 [20, 70, 60, 45, 10, 80, 0],
+                // Desert: open sand. A palm now and then, cactus and dry
+                // scrub in the bush column, sandstone boulders, and ore —
+                // the reason to cross it, as in Rust's arid biome. The ore
+                // budget scales metal and sulfur island-wide, so this row
+                // moves where ore stands, not how much an island has.
+                [22, 30, 18, 18, 80, 70, 0],
             ],
             clump_cap: [
                 f32::INFINITY,
                 f32::INFINITY,
                 FOREST_CLUMP_CAP,
                 f32::INFINITY,
+                f32::INFINITY,
             ],
-            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0],
+            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0, 1.0],
         }
     }
 }
@@ -7014,7 +7123,7 @@ const _: () = {
 
 // ── The ore budget ─────────────────────────────────────────────────────────
 //
-// Metal and sulfur come from the Highland row alone, so an island's ore is
+// Metal and sulfur come from the Highland and Desert rows, so an island's ore is
 // its rock area times that row — and the interior ranges made rock area a
 // property of the seed: summed over the four probe islands the ranges moved
 // ore 3–5%, but island by island −26% to +56%, and raiding is priced in
@@ -7048,10 +7157,16 @@ pub const ORE_PM_UNIT: [u16; 2] = [1000, 1000];
 const ORE_SAMPLE_STRIDE: i32 = 3;
 
 const _: () = {
-    let row = ScatterTable::alpha_default().weights[Biome::Highland as usize];
-    let rest = (row[0] + row[1] + row[4] + row[5] + row[6]) as f32;
-    let ore = (row[2] + row[3]) as f32 * (ORE_PM_MAX as f32 / 1000.0);
-    assert!((rest + ore) * CLUMP_NORM < 1000.0);
+    let mut b = 0;
+    while b < BIOMES {
+        if b != Biome::Forest as usize {
+            let row = ScatterTable::alpha_default().weights[b];
+            let rest = (row[0] + row[1] + row[4] + row[5] + row[6]) as f32;
+            let ore = (row[2] + row[3]) as f32 * (ORE_PM_MAX as f32 / 1000.0);
+            assert!((rest + ore) * CLUMP_NORM < 1000.0);
+        }
+        b += 1;
+    }
     assert!(ORE_PM_MIN <= 1000 && ORE_PM_MAX >= 1000);
 };
 
@@ -7591,9 +7706,14 @@ fn scatter_in<C: Corners>(
         // `species_share` so a region is DOMINATED by one kind rather than
         // painted pure, and the fBm is read here rather than above the veto
         // because three cells in four are empty and owe nothing.
-        species: u8::from(
-            ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z),
-        ),
+        // A tree in the desert is a palm, whatever the painted field says.
+        species: if occupant == Occupant::Tree
+            && biome(hy, moisture_in(c, seed, x, z)) == Biome::Desert
+        {
+            PALM_SPECIES
+        } else {
+            u8::from(((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z))
+        },
     }
 }
 
@@ -7737,12 +7857,26 @@ pub fn splat_from(h: f32, moist: f32, slope: f32) -> [u8; 4] {
     let wood = ramp(SPLAT_MOIST_BAND.0, SPLAT_MOIST_BAND.1, moist);
     let cliff = ramp(SPLAT_CLIFF_BAND.0, SPLAT_CLIFF_BAND.1, slope);
     let land = 1.0 - sand;
-    let mut w = [
-        sand,
-        land * (1.0 - alpine) * (1.0 - wood),
-        land * (1.0 - alpine) * wood,
-        land * alpine,
-    ];
+    let dune = dune_of(moist);
+    // The desert's ground is the sand identity: open land below the treeline
+    // goes to sand as it dries out. Outside the desert `dune` is exactly 0 and
+    // this is the arithmetic it always was.
+    let mut w = if dune > 0.0 {
+        let open = land * (1.0 - alpine);
+        [
+            sand + open * dune,
+            open * (1.0 - dune) * (1.0 - wood),
+            open * (1.0 - dune) * wood,
+            land * alpine,
+        ]
+    } else {
+        [
+            sand,
+            land * (1.0 - alpine) * (1.0 - wood),
+            land * (1.0 - alpine) * wood,
+            land * alpine,
+        ]
+    };
     // The cliff mask FORCES rock (TERRAIN.md §4) — the one veto that
     // overrides the biome rather than blending with it.
     w[0] += -w[0] * cliff;
@@ -7889,7 +8023,35 @@ fn splat_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> [u8; 4] {
 /// mean is `clump_cap_norm`, above 1, because its cap has moved density
 /// from the field's peak into the rest of the biome.
 pub fn scatter_row(table: &ScatterTable, h: f32, moist: f32, sl: f32) -> [u16; OCCUPANT_KINDS] {
-    blend_rows(table, splat_from(h, moist, sl), [1.0; 4])
+    blend_rows(
+        table,
+        splat_from(h, moist, sl),
+        desert_share(h, moist),
+        [1.0; BIOMES],
+    )
+}
+
+/// How much of the sand channel at a point is DESERT rather than beach, 0..1.
+///
+/// The splat has four ground identities and there are five biomes: the
+/// desert's ground is sand, so the sand channel is shared, and this says
+/// which row it draws — the beach's barrels at the waterline, the desert's
+/// cactus and ore inland. The same arithmetic `splat_from` splits it with,
+/// and the cliff veto scales both halves alike, so the share survives it.
+pub fn desert_share(h: f32, moist: f32) -> f32 {
+    let dune = dune_of(moist);
+    if dune <= 0.0 {
+        return 0.0;
+    }
+    let beach = 1.0 - ramp(SPLAT_BEACH_BAND.0, SPLAT_BEACH_BAND.1, h);
+    let alpine = ramp(SPLAT_ALPINE_BAND.0, SPLAT_ALPINE_BAND.1, h);
+    let desert = (1.0 - beach) * (1.0 - alpine) * dune;
+    let sum = beach + desert;
+    if sum > 0.0 {
+        desert / sum
+    } else {
+        0.0
+    }
 }
 
 /// How much of a cell's TREE weight the treeline hands to the bush, at the
@@ -7937,13 +8099,27 @@ fn edge_factor(w: [u8; 4]) -> f32 {
     4.0 * a * b / (sum * sum)
 }
 
-/// The splat-weighted blend of the four rows, each scaled by its own factor
+/// The splat-weighted blend of the biome rows, each scaled by its own factor
 /// — the one arithmetic both [`scatter_row`] and [`scatter_draw_row`] are.
-fn blend_rows(table: &ScatterTable, w: [u8; 4], gb: [f32; 4]) -> [u16; OCCUPANT_KINDS] {
+/// The sand channel is split between the beach row and the desert row by
+/// `desert` ([`desert_share`]).
+fn blend_rows(
+    table: &ScatterTable,
+    w: [u8; 4],
+    desert: f32,
+    gb: [f32; BIOMES],
+) -> [u16; OCCUPANT_KINDS] {
+    let d = Biome::Desert as usize;
     let mut row = [0u16; OCCUPANT_KINDS];
     for (i, out) in row.iter_mut().enumerate() {
         let mut acc = 0.0f32;
         for (b, ch) in w.iter().enumerate() {
+            if b == 0 && desert > 0.0 {
+                let ch = *ch as f32;
+                acc += table.weights[0][i] as f32 * gb[0] * ch * (1.0 - desert);
+                acc += table.weights[d][i] as f32 * gb[d] * ch * desert;
+                continue;
+            }
             acc += table.weights[b][i] as f32 * gb[b] * *ch as f32;
         }
         // `splat_from` rounds to bytes summing to ~255, so dividing by 255
@@ -7987,11 +8163,11 @@ pub fn scatter_draw_row(
     sl: f32,
     g: f32,
 ) -> [u16; OCCUPANT_KINDS] {
-    let mut gb = [0.0f32; 4];
+    let mut gb = [0.0f32; BIOMES];
     for (b, out) in gb.iter_mut().enumerate() {
         *out = g.min(table.clump_cap[b]) * table.clump_cap_norm[b];
     }
-    blend_rows(table, splat_from(h, moist, sl), gb)
+    blend_rows(table, splat_from(h, moist, sl), desert_share(h, moist), gb)
 }
 
 /// What one clutter cell grew.
@@ -9356,7 +9532,11 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     // meant to be walked through. A tree is the one archetype whose drawn
     // geometry intentionally exceeds its collision; `tree.rs`'s two gates say
     // so in both directions.
-    0.2398,
+    //
+    // **0.4687 since the trees tripled in height (2026-10-13)**: a 42 m pine
+    // on the old 0.24 m trunk was a pole. Re-measured off the pine, which is
+    // now the wider of the two at the base.
+    0.4687,
     // The three ore nodes share one mesh, so they share one measurement:
     // `blob_mesh(1.0, 0.46, …)` reaches 0.914739 m, NOT the nominal 1.0 —
     // the jitter displaces inward. Rounded outward at 4 dp, the convention
@@ -9403,13 +9583,13 @@ pub const OCCUPANT_R_M: [f32; 28] = [
 /// meter so it reads as embedded rather than dropped — so their tops are 1.5
 /// and not 2.0.
 ///
-/// The tree is solid to 11 m, the broadleaf's drawn apex (the pine is drawn
-/// 14 m; the sim cannot tell the species apart, so the shorter one wins and
+/// The tree is solid to 33 m, the broadleaf's drawn apex (the pine is drawn
+/// 42 m; the sim cannot tell the species apart, so the shorter one wins and
 /// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
 pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.0,  // None
-    11.0, // Tree — the broadleaf's drawn height
+    33.0, // Tree — the broadleaf's drawn height (×3 on 2026-10-13)
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
     // radius` — the same correction the radii above take, and for the same
     // reason: the blob never reaches its nominal radius in any axis.
@@ -9494,7 +9674,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         // The trunk at its base, measured off the drawn bark by
         // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
         // not the 0.26 a deleted three.js cylinder used to justify.
-        Occupant::Tree => (0.2398, 11.0),
+        Occupant::Tree => (0.4687, 33.0),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),

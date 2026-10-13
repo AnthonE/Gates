@@ -125,6 +125,11 @@ struct GroundSplat {
     // The water's colour on the bed under it: xyz = `water::EXTINCT` per
     // metre, w = the path a ray takes through it per metre of depth.
     water_tint: vec4<f32>,
+    // The desert (`ground_splat::DESERT_SAND_ALBEDO`): xyz the sand it turns
+    // to, w how far the grass goes to `dry_grass` at full aridity.
+    desert: vec4<f32>,
+    // xyz the straw the grass dries to. w reserved and zero.
+    dry_grass: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -428,7 +433,7 @@ fn wall_tap(wall: Wall, layer: i32, tile: f32) -> WallTap {
 }
 
 @fragment
-fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) arid: f32, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Keep the standard view vector, flags and material coverage. The splat
     // assigns its surface colour below.
     // COLOR.a is the rock weight, not opacity. Only the material's resident
@@ -716,14 +721,22 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let bw = terrain_bw * ground + vec4(dirt * (1.0 - splat.blend.w), 0.0, 0.0, 0.0);
     let road_weight = paving + dirt * splat.blend.w;
 
-    // The authored colour, per pixel rather than per vertex.
+    // The authored colour, per pixel rather than per vertex — with the sand
+    // warmed and the grass dried toward the desert.
+    let dry = clamp(arid, 0.0, 1.0);
+    var ident = array<vec3<f32>, 4>(
+        mix(splat.identity[0].xyz, splat.desert.xyz, dry),
+        mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w),
+        splat.identity[2].xyz,
+        splat.identity[3].xyz,
+    );
     var base = vec3(0.0);
     for (var i = 0u; i < 4u; i = i + 1u) {
         var k = terrain_bw[i];
         if i == 3u {
             k = k * rock_shade;
         }
-        base = base + splat.identity[i].xyz * k;
+        base = base + ident[i] * k;
     }
     base = base * ground + splat.pavement.xyz * paving + splat.road_dirt.xyz * dirt;
     // Coordinates extend into the shoulder; validity is independent. A

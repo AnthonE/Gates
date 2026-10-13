@@ -91,9 +91,18 @@ fn pitch_toward(rise: f32, run: f32) -> u8 {
 /// (of 256 headings) that best faces it. Panics if the seed offers no
 /// sufficiently isolated node — that is a test-setup failure, not a skip.
 fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
+    find_isolated_in(seed, want, 40..216)
+}
+
+/// [`find_isolated`] over the scatter rows `rows` (cell z).
+fn find_isolated_in(
+    seed: u64,
+    want: Occupant,
+    rows: std::ops::Range<i32>,
+) -> ((f32, f32), Aim, (i32, i32)) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    for cz in 40..216i32 {
+    for cz in rows {
         for cx in 40..216i32 {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
             if s.occupant != want {
@@ -1802,7 +1811,12 @@ fn a_bush_pays_but_has_no_skin_to_mark() {
 /// comes out at eye height and the first assert fails.
 #[test]
 fn the_mark_is_at_the_height_the_ray_entered_the_node() {
-    let (pos, aim, (cx, cz)) = find_isolated(SEED, Occupant::StoneNode);
+    // From the island's middle rows: the south-west rows `find_isolated`
+    // walks are desert now, and the first stone node there is grazed at its
+    // very top, where the mark is clamped to the span — a different question
+    // from this one.
+    let n = terrain::CELLS_PER_SIDE;
+    let (pos, aim, (cx, cz)) = find_isolated_in(SEED, Occupant::StoneNode, n / 2 - 40..n - 40);
     let table = ScatterTable::alpha_default();
     let s = terrain::scatter(SEED, &table, hv(SEED), cx, cz);
     let (r_m, top_m) = terrain::occupant_volume(s.occupant);

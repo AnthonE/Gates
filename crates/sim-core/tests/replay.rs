@@ -534,7 +534,10 @@ const TICKS: u64 = 900;
 /// twig** (2026-10-10, NOW §0up 6): the script roofs its hearth cell with a
 /// stone floor and lays a bare twig beside it, so the hut under the roof rots
 /// at the inside discount and stands a leap longer.
-const GOLDEN_FINAL_HASH: u64 = 0xB77C_36B0_AD7E_998A;
+/// **Moved `0xB77C_36B0_AD7E_998A` → `0xFB86_4690_D2DC_E2C5` at the desert and
+/// the 3× trees** (2026-10-13): a tree's trunk is 0.4687 m and solid to 33 m,
+/// the south is desert, and the mob roster is counted over five biomes.
+const GOLDEN_FINAL_HASH: u64 = 0xFB86_4690_D2DC_E2C5;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -638,7 +641,9 @@ const GOLDEN_FINAL_HASH: u64 = 0xB77C_36B0_AD7E_998A;
 /// **Moved `0x9E70_29A8_C726_FA3D` → `0x36ED_1524_BB94_8B0B` at the roofed twig**
 /// (NOW §0up 6), with the final hash: the hut under the new roof rots at
 /// the inside discount from the t=191 leap on.
-const GOLDEN_TRACE_HASH: u64 = 0x36ED_1524_BB94_8B0B;
+/// **Moved → `0x0EEA_36EE_CC35_7178` at the desert and the 3× trees**, with
+/// the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x0EEA_36EE_CC35_7178;
 
 /// Fold a stamped trace into one number.
 ///

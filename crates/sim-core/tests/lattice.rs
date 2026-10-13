@@ -540,10 +540,14 @@ fn the_early_out_refuses_exactly_what_the_rate_refuses() {
         // accept it — is hit hundreds of times rather than hoped for. Measured
         // on this island: 36% of land samples sit at the rate's ceiling, so the
         // coincidence is ~1 land cell in 710.
+        //
+        // North of the centre: the same block in the south-west is desert
+        // now, and sand grows no rich clutter at all.
         let c = (900.0 / CLUTTER_CELL_M) as i32;
+        let cn = ((terrain::ISLAND_SIZE - 900.0) / CLUTTER_CELL_M) as i32 - 380;
         for j in 0..380 {
             for i in 0..380 {
-                let (cx, cz) = (c + i, c + j);
+                let (cx, cz) = (c + i, cn + j);
                 let refused = terrain::clutter_rich_cell(s, &haven, cx, cz).kind == Clutter::None;
                 assert_eq!(
                     refused,

@@ -108,6 +108,12 @@ pub const FERN_ATLAS: &str = "textures/fern_card_albedo.png";
 /// (`props.rs`'s `photo` states the law). What the card takes instead is a
 /// per-instance mean-1 grey, which is rule 7's variation and not a colour.
 const PEBBLE_C: u32 = 0x8a8880;
+/// A pebble in the desert: sandstone, warm, where the beach's is grey
+/// granite. Mixed in by the ground's aridity (`terrain::aridity`). **(knob)**
+const DESERT_PEBBLE_C: u32 = 0xa07850;
+/// The share of the sand's pebbles a full desert leaves out: open sand is
+/// mostly sand, and a grey dot every metre read as polka dots. **(knob)**
+const DESERT_PEBBLE_THIN: f32 = 0.6;
 const TWIG_C: u32 = 0x5a4630;
 const SHARD_C: u32 = 0x7d7a73;
 /// A stone lying in the turf: pale, weathered — the reference game's
@@ -460,7 +466,11 @@ pub const STONE_VERTS: usize = 24;
 /// (`STONE_VERTS`, cheaper than a litter clump). Same sink and the same
 /// volume-blended normals as a chip.
 fn stone(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
-    let base = linear(hex);
+    stone_lin(s, at, yaw, size, linear(hex), seed);
+}
+
+/// [`stone`] in a linear colour.
+fn stone_lin(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, base: [f32; 3], seed: u32) {
     let (sy, cy) = (yaw.sin(), yaw.cos());
     let rot = |p: Vec3| Vec3::new(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
     let sink = size.y * CHIP_SINK;
@@ -490,6 +500,25 @@ fn stone(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
     tri(lo[3], h1, lo[4]);
     tri(lo[4], h1, h0);
     tri(lo[4], h0, lo[5]);
+}
+
+/// A sand pebble on arid ground: the `Clutter::Pebble` arm of `element`, its
+/// grey warmed toward sandstone by `arid`.
+fn desert_pebble(s: &mut Soup, e: &ClutterElem, arid: f32) {
+    let (g, d) = (linear(PEBBLE_C), linear(DESERT_PEBBLE_C));
+    let c = [
+        g[0] + (d[0] - g[0]) * arid,
+        g[1] + (d[1] - g[1]) * arid,
+        g[2] + (d[2] - g[2]) * arid,
+    ];
+    stone_lin(
+        s,
+        Vec3::new(e.x, e.y, e.z),
+        e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+        Vec3::new(0.06, 0.028, 0.05) * e.scale,
+        c,
+        seed_of(e),
+    );
 }
 
 /// Share of the rock channel's clutter cells that draw a stone at all.
@@ -809,6 +838,22 @@ pub fn stream(
             // in front of a cut or sink into a buttress.
             let mut lat = terrain::Lattice::new();
             for e in buf.iter().take(n) {
+                // The desert's pebbles: fewer, and sandstone.
+                if e.kind == Clutter::Pebble {
+                    let arid = terrain::aridity_memo(&mut lat, world.seed, e.x, e.z);
+                    if arid > 0.0 {
+                        let roll = hash01(
+                            (e.x * 64.0) as i32 as u32,
+                            (e.z * 64.0) as i32 as u32 ^ 0xa41d,
+                        );
+                        if roll < arid * DESERT_PEBBLE_THIN {
+                            continue;
+                        }
+                        n_solid += 1;
+                        desert_pebble(&mut solid, e, arid);
+                        continue;
+                    }
+                }
                 if e.kind == Clutter::Shard
                     && hash01(
                         (e.x * 64.0) as i32 as u32,

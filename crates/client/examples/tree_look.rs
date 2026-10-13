@@ -83,6 +83,18 @@ fn poses() -> Vec<(String, Vec3, Vec3)> {
             Vec3::new(rx + 2.5 * PITCH_M, 6.5, 0.0),
         ));
     }
+    // The three species side by side from across a clearing: pine, birch,
+    // palm (variants 0, 3, 6 in the pair row).
+    v.push((
+        "trio".into(),
+        Vec3::new(3.0 * PITCH_M, 2.0, 75.0),
+        Vec3::new(3.0 * PITCH_M, 17.0, 0.0),
+    ));
+    v.push((
+        "palm_18m".into(),
+        Vec3::new(6.0 * PITCH_M + 2.0, 1.6, 22.0),
+        Vec3::new(6.0 * PITCH_M, 20.0, 0.0),
+    ));
     // Under a crown, looking up — the near canopy as a player sees it.
     v.push((
         "under_conifer".into(),
@@ -339,7 +351,7 @@ fn place_cards(
     }
     *done = true;
     let spawn_pair = |commands: &mut Commands, v: usize, at: Transform| {
-        let (card, trunk) = if species_of(v) == 0 {
+        let (card, trunk) = if species_of(v) != 1 {
             (&near.needle, &near.bark)
         } else {
             (&near.leaf, &near.birch)

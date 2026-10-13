@@ -57,7 +57,7 @@ use sim_core::terrain::{
 /// particular carries a third less forest than seed 1.
 const SEEDS: [u64; 4] = [0, 1, 7, 12345];
 
-const BIOMES: usize = 4;
+const BIOMES: usize = terrain::BIOMES;
 
 /// Square metres of ground one scatter cell owns. The grid draws at most one
 /// occupant per cell, so `10_000 / CELL_AREA_M2` — **156.25 per hectare** —
@@ -639,6 +639,20 @@ fn a_species_region_is_dominated_and_not_pure() {
                     s.species,
                     terrain::SLOT_SPECIES
                 );
+                // A palm is the desert's, not the painted field's: every
+                // desert tree is one and no other tree is.
+                let desert = terrain::biome(s.y, terrain::moisture(seed, s.x, s.z))
+                    == terrain::Biome::Desert;
+                assert_eq!(
+                    s.species == terrain::PALM_SPECIES,
+                    desert,
+                    "seed {seed}: a tree at ({}, {}) is a palm iff it stands in the desert",
+                    s.x,
+                    s.z
+                );
+                if desert {
+                    continue;
+                }
                 seen[s.species as usize] += 1;
                 let share = terrain::species_share(seed, s.x, s.z);
                 if share < SPECIES_RAIL_LO {

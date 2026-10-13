@@ -153,6 +153,25 @@ pub const ATTRIBUTE_MARKINGS: MeshVertexAttribute =
 pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadCoverage", 0x726f6164, VertexFormat::Float32x2);
 
+/// How arid the ground under a vertex is, 0..1 (`terrain::aridity`): the
+/// desert's warm sand and the dry grass at its border are a tint on the sand
+/// and grass identities, not identities of their own, so the splat stays four.
+pub const ATTRIBUTE_ARID: MeshVertexAttribute =
+    MeshVertexAttribute::new("Aridity", 0x61726964, VertexFormat::Float32);
+
+/// The desert's sand, linear: a warm tan, where the beach's sand is a pale
+/// grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about (170, 137, 95),
+/// the colour of the reference game's arid biome. **(knob)**
+pub const DESERT_SAND_ALBEDO: [f32; 3] = [0.40, 0.25, 0.115];
+
+/// The grass at the desert's border, linear: straw, sRGB about (120, 110, 58).
+/// **(knob)**
+pub const DRY_GRASS_ALBEDO: [f32; 3] = [0.188, 0.155, 0.042];
+
+/// How far the grass identity goes to [`DRY_GRASS_ALBEDO`] at full aridity.
+/// Short of 1 so the last turf before the sand keeps a little green. **(knob)**
+pub const DRY_GRASS_MIX: f32 = 0.85;
+
 /// Proposed material defaults, DECISIONS.md §open, road surface v1.
 /// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
 /// the CC0 Gravel004 map (`textures::GroundMaps::aggregate`, array layer 4),
@@ -408,6 +427,11 @@ pub struct GroundSplatParams {
     /// xyz = `water::EXTINCT`, w = [`SEABED_PATH`]: the water's own colour,
     /// put on the bed under it.
     pub water_tint: Vec4,
+    /// xyz = [`DESERT_SAND_ALBEDO`], w = [`DRY_GRASS_MIX`]: what the sand and
+    /// the grass go to as the ground dries (`ATTRIBUTE_ARID`).
+    pub desert: Vec4,
+    /// xyz = [`DRY_GRASS_ALBEDO`]. w reserved and zero.
+    pub dry_grass: Vec4,
 }
 
 impl GroundSplatParams {
@@ -491,6 +515,18 @@ impl GroundSplatParams {
                 super::water::EXTINCT[1],
                 super::water::EXTINCT[2],
                 SEABED_PATH,
+            ),
+            desert: Vec4::new(
+                DESERT_SAND_ALBEDO[0],
+                DESERT_SAND_ALBEDO[1],
+                DESERT_SAND_ALBEDO[2],
+                DRY_GRASS_MIX,
+            ),
+            dry_grass: Vec4::new(
+                DRY_GRASS_ALBEDO[0],
+                DRY_GRASS_ALBEDO[1],
+                DRY_GRASS_ALBEDO[2],
+                0.0,
             ),
         }
     }
@@ -729,6 +765,7 @@ impl MaterialExtension for GroundSplat {
         let road = layout.0.get_layout(&[
             ATTRIBUTE_ROAD.at_shader_location(8),
             ATTRIBUTE_MARKINGS.at_shader_location(9),
+            ATTRIBUTE_ARID.at_shader_location(10),
         ])?;
         descriptor.vertex.buffers[0]
             .attributes

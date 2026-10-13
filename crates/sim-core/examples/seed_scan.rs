@@ -63,7 +63,7 @@ struct Island {
     p50_h: f32,
     max_slope: f32,
     rock_permille: u32,
-    biome_permille: [u32; 4],
+    biome_permille: [u32; terrain::BIOMES],
     sites_live: u32,
     sites_complete: bool,
 }
@@ -83,7 +83,7 @@ struct Disc {
 fn scan(seed: u64, at: Option<Disc>) -> Island {
     let (mut land, mut rock, mut samples) = (0u32, 0u32, 0u32);
     let (mut max_h, mut max_slope) = (0f32, 0f32);
-    let mut biomes = [0u32; 4];
+    let mut biomes = [0u32; terrain::BIOMES];
     let mut heights: Vec<f32> = Vec::new();
 
     let mut z = LO + STEP * 0.5;
@@ -146,6 +146,7 @@ fn scan(seed: u64, at: Option<Disc>) -> Island {
             per_mille(biomes[Biome::Meadow as usize]),
             per_mille(biomes[Biome::Forest as usize]),
             per_mille(biomes[Biome::Highland as usize]),
+            per_mille(biomes[Biome::Desert as usize]),
         ],
         sites_live: terrain::sites_live(&haven),
         sites_complete: terrain::sites_complete(&haven),

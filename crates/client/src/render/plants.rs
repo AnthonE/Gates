@@ -89,6 +89,7 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::Shrub, Scenery::Fern) => 0.85,
         (Occupant::Shrub, Scenery::Juniper) => 0.9,
         (Occupant::Shrub, Scenery::DeadScrub) => 0.45,
+        (Occupant::Shrub, Scenery::Cactus) => 0.3,
         (Occupant::Shrub, Scenery::Flowers) => 0.3,
         (Occupant::Shrub, Scenery::Shrub) if super::props::tall_bush(key) => 0.85,
         (Occupant::Shrub, Scenery::Shrub) => 0.8,
@@ -116,20 +117,24 @@ pub enum Scenery {
     DeadScrub,
     /// A clump of wildflowers over a leafy base.
     Flowers,
+    /// A saguaro: the desert's tall plant, over a player's head.
+    Cactus,
 }
 
 /// Per biome (`terrain::Biome`'s order) and slot species, per mille of shrub
-/// cells growing `[fern, juniper, dead scrub, wildflowers]`; the rest grow
-/// the leafy shrub. **(knob)**
-pub const SCENERY_SHARES: [[[u16; 4]; 2]; 4] = [
+/// cells growing `[fern, juniper, dead scrub, wildflowers, cactus]`; the rest
+/// grow the leafy shrub. **(knob)**
+pub const SCENERY_SHARES: [[[u16; 5]; 2]; terrain::BIOMES] = [
     // Beach: dead scrub and flowers in the dunes, the odd low pine.
-    [[0, 100, 300, 250], [0, 50, 400, 100]],
+    [[0, 100, 300, 250, 0], [0, 50, 400, 100, 0]],
     // Meadow: wildflowers in drifts between the shrubs.
-    [[50, 50, 50, 550], [100, 100, 50, 200]],
+    [[50, 50, 50, 550, 0], [100, 100, 50, 200, 0]],
     // Forest: fern beds under the canopy.
-    [[650, 0, 50, 0], [250, 50, 50, 0]],
+    [[650, 0, 50, 0, 0], [250, 50, 50, 0, 0]],
     // Highland: low pines and dead scrub on the granite.
-    [[0, 550, 250, 0], [50, 300, 350, 0]],
+    [[0, 550, 250, 0, 0], [50, 300, 350, 0, 0]],
+    // Desert: cactus stands and dry scrub, nothing leafy.
+    [[0, 50, 500, 50, 400], [0, 30, 620, 0, 350]],
 ];
 
 const _: () = {
@@ -138,7 +143,7 @@ const _: () = {
         let mut k = 0;
         while k < 2 {
             let r = SCENERY_SHARES[b][k];
-            assert!(r[0] + r[1] + r[2] + r[3] <= 1000);
+            assert!(r[0] + r[1] + r[2] + r[3] + r[4] <= 1000);
             k += 1;
         }
         b += 1;
@@ -155,6 +160,7 @@ pub fn scenery_of(b: Biome, species: u8, key: u32) -> Scenery {
         Scenery::Juniper,
         Scenery::DeadScrub,
         Scenery::Flowers,
+        Scenery::Cactus,
     ];
     let mut edge = 0;
     for (share, kind) in shares.into_iter().zip(kinds) {
@@ -1080,6 +1086,95 @@ pub fn juniper(variant: u32) -> (Mesh, Mesh) {
     let mut wood = Soup::default();
     twigs(&mut wood, seed ^ 0x0d0d, 4, 0.5, 0.65, 0.022);
     (wood.mesh(), leaves.mesh())
+}
+
+/// A saguaro's height at scale 1, metres: over a standing player's head.
+pub const CACTUS_H: f32 = 3.2;
+
+/// A cactus's skin at the root and at the crown, linear: a dusty
+/// blue-green, darker at the foot.
+const CACTUS_ROOT: [f32; 3] = [0.045, 0.075, 0.035];
+const CACTUS_TIP: [f32; 3] = [0.10, 0.155, 0.07];
+
+/// Ribs round a cactus stem, and how deep they are as a share of its radius.
+const CACTUS_RIBS: usize = 12;
+const CACTUS_RIB_DEPTH: f32 = 0.08;
+
+/// A saguaro: a ribbed column with a rounded crown, and up to two arms that
+/// leave it near level and turn up. Opaque and vertex-coloured, worn with the
+/// plant wood material — there is no leaf on it.
+pub fn cactus(variant: u32) -> Mesh {
+    let seed = seed_of(0xcac7_0051, variant);
+    let mut s = Soup::default();
+    let h = CACTUS_H * (0.75 + 0.4 * hash01(seed, 1));
+    let r = 0.2 + 0.07 * hash01(seed, 2);
+    let col = |y: f32| lerp3(CACTUS_ROOT, CACTUS_TIP, smooth01(y / (CACTUS_H * 1.1)));
+    cactus_stem(&mut s, -Vec3::Y * 0.1, Vec3::Y, h + 0.1, r, &col);
+    // Most carry an arm or two; a quarter are a bare column.
+    let arms = (0.75 + hash01(seed, 3) * 2.25) as u32;
+    let a0 = hash01(seed, 4) * TAU;
+    for k in 0..arms {
+        let a = a0 + k as f32 * PI + (hash01(seed, 10 + k) - 0.5) * 0.9;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let y = h * (0.35 + 0.2 * hash01(seed, 20 + k));
+        let ra = r * 0.72;
+        let reach = r + 0.22 + 0.2 * hash01(seed, 30 + k);
+        // The limb rises a little as it leaves the column, and runs past the
+        // elbow by its own radius so the upright starts inside it.
+        let elbow = Vec3::Y * (y + 0.12) + out * reach;
+        let from = Vec3::Y * y;
+        let limb = elbow - from;
+        cactus_stem(&mut s, from, limb, limb.length() + ra * 0.5, ra, &col);
+        let up = (h - y) * (0.35 + 0.3 * hash01(seed, 40 + k)) + 0.4;
+        cactus_stem(&mut s, elbow - Vec3::Y * ra * 0.3, Vec3::Y, up, ra, &col);
+    }
+    s.mesh()
+}
+
+/// One ribbed tube from `a` along `dir` for `len` metres, its far end rounded
+/// into a dome of its own radius.
+fn cactus_stem(s: &mut Soup, a: Vec3, dir: Vec3, len: f32, r: f32, col: &dyn Fn(f32) -> [f32; 3]) {
+    let dir = dir.normalize_or(Vec3::Y);
+    let side = dir.cross(Vec3::X).normalize_or(Vec3::Z);
+    let other = dir.cross(side);
+    // Stations along the axis: a straight run, then a quarter circle down to
+    // a point.
+    let straight = (len - r).max(0.0);
+    let mut st: Vec<(Vec3, f32)> = (0..=5)
+        .map(|i| (a + dir * (straight * i as f32 / 5.0), r))
+        .collect();
+    for j in 1..=4 {
+        let phi = j as f32 / 4.0 * PI * 0.5;
+        st.push((a + dir * (straight + r * phi.sin()), r * phi.cos()));
+    }
+    let ring = |c: Vec3, rr: f32| -> [Vec3; CACTUS_RIBS] {
+        core::array::from_fn(|i| {
+            let t = i as f32 * TAU / CACTUS_RIBS as f32;
+            let rib = if i % 2 == 0 {
+                1.0
+            } else {
+                1.0 - CACTUS_RIB_DEPTH
+            };
+            c + (side * t.cos() + other * t.sin()) * rr * rib
+        })
+    };
+    for w in st.windows(2) {
+        let (ca, ra) = w[0];
+        let (cb, rb) = w[1];
+        let (pa, pb) = (ring(ca, ra), ring(cb, rb));
+        let mid = (ca + cb) * 0.5;
+        let c = |v: Vec3| {
+            let k = col(v.y);
+            [k[0], k[1], k[2], 1.0]
+        };
+        for i in 0..CACTUS_RIBS {
+            let j = (i + 1) % CACTUS_RIBS;
+            s.tri(pa[i], pa[j], pb[i], c, Some(mid), 0.8);
+            if rb > 0.0 {
+                s.tri(pa[j], pb[j], pb[i], c, Some(mid), 0.8);
+            }
+        }
+    }
 }
 
 /// A dead scrub's height at scale 1, metres.

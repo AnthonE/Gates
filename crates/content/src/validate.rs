@@ -1563,7 +1563,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // live. Zero density is legal (a wolf row can arm only the site
         // guards); a density with nowhere to live is a row that cannot be.
         let h = &m.habitat;
-        let weights = [h.meadow, h.forest, h.highland];
+        let weights = [h.meadow, h.forest, h.highland, h.desert];
         if !(0.0..=50.0).contains(&m.per_km2) || weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
             return Err(format!(
                 "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",
