@@ -205,6 +205,15 @@ pub enum Goal {
     /// Take what the nearest open work takes to it and put it in, or fuel
     /// a lit one (`ARC.md`).
     FeedWork,
+    /// Walk to the nearest stone it has not read and read it: it teaches
+    /// the glyphs it names, and some hold a lock's answer (`ARC.md` F6).
+    ReadStone,
+    /// Turn a lock's dials to the answer a stone gave it; the last turn
+    /// pays (`ARC.md` F7).
+    SolveLock,
+    /// Swipe the keycard it carries at its door in the Black Ziggurat and
+    /// walk into the room behind it.
+    SwipeCard,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -232,7 +241,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 31] = [
+    pub const FIXED: [Goal; 34] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -264,6 +273,9 @@ impl Goal {
         Goal::SupplyOre,
         Goal::SupplyHemp,
         Goal::FeedWork,
+        Goal::ReadStone,
+        Goal::SolveLock,
+        Goal::SwipeCard,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -303,6 +315,9 @@ impl Goal {
             Goal::Buy(_) => "buy",
             Goal::Sell(_) => "sell",
             Goal::FeedWork => "feed_work",
+            Goal::ReadStone => "read_stone",
+            Goal::SolveLock => "solve_lock",
+            Goal::SwipeCard => "swipe_card",
         }
     }
 
@@ -358,7 +373,7 @@ impl Goal {
             Goal::Fight => "Fight the nearest player in view; backs off if losing.".into(),
             Goal::Hunt => "Kill the nearest animal in view for meat and hide.".into(),
             Goal::Heal => "Use bandages or a medkit.".into(),
-            Goal::Bag => "Put a sleeping bag down here, to wake beside after a death.".into(),
+            Goal::Bag => "Put a sleeping bag down to wake beside: here, or on the team's floor if you live there.".into(),
             Goal::Recover => "Walk back to the death backpack and take what it holds.".into(),
             Goal::Build => "Build the next part of the base from the pack; choose a plot if none.".into(),
             Goal::GoHome => "Walk home and in, shutting the doors.".into(),
@@ -380,6 +395,9 @@ impl Goal {
             Goal::Buy(name) => format!("Buy {} with junk at the gate.", name.as_str()),
             Goal::Sell(name) => format!("Sell {} for junk at the gate.", name.as_str()),
             Goal::FeedWork => "Give the nearest open work what it needs, or fuel a lit one.".into(),
+            Goal::ReadStone => "Read the nearest unread stone: learn its glyphs; some give a lock's answer.".into(),
+            Goal::SolveLock => "Turn a lock's dials to the answer a stone gave; the last turn pays.".into(),
+            Goal::SwipeCard => "Swipe your keycard at its ziggurat door and walk into the room.".into(),
         }
     }
 }
@@ -552,8 +570,11 @@ pub struct TeamSense {
     /// the pack lacks (food, meds, a better tool).
     pub lives_there: bool,
     pub home_has_needs: bool,
-    /// A teammate gave the team's lock code.
+    /// A teammate gave the team's lock code; the team's cupboard has it on
+    /// its crew (the code entered there); its own bag is down in the base.
     pub code: bool,
+    pub on_cupboard: bool,
+    pub bag_there: bool,
     /// Whose invite waits, and the teammates, as a chat log names them.
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
@@ -605,6 +626,8 @@ impl TeamSense {
             "i_live_there": self.lives_there,
             "home_has_what_i_need": self.home_has_needs,
             "code_known": self.code,
+            "on_cupboard": self.on_cupboard,
+            "my_bag_there": self.bag_there,
         })
     }
 }
@@ -661,6 +684,66 @@ impl WorkSense {
             "still_needs": self.needs[..usize::from(self.needs_len)].iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             "fuel": (self.state == sim_core::works::WORK_LIT).then(|| json!({"name": self.fuel.as_str(), "room": self.fuel_room})),
             "unlocks": self.unlocks.as_str(),
+        })
+    }
+}
+
+/// A lock (`ARC.md` F7) as its client knows it: where it is, how many
+/// dials, whether it rests after a solve, and whether a stone it read
+/// gave the answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockSense {
+    pub name: Name,
+    pub at: Option<Place>,
+    pub dials: u8,
+    pub resting: bool,
+    pub answer_known: bool,
+}
+
+impl LockSense {
+    pub const EMPTY: Self = Self {
+        name: Name::EMPTY,
+        at: None,
+        dials: 0,
+        resting: false,
+        answer_known: false,
+    };
+
+    fn json(&self) -> Value {
+        json!({
+            "name": self.name.as_str(),
+            "where": self.at.map(|p| p.json()),
+            "dials": self.dials,
+            "resting": self.resting,
+            "answer_known": self.answer_known,
+        })
+    }
+}
+
+/// One of the Black Ziggurat's card doors: the card it takes, where its
+/// reader is, whether the pack holds that card, and whether it stands open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardDoorSense {
+    pub card: Name,
+    pub at: Option<Place>,
+    pub have_card: bool,
+    pub open: bool,
+}
+
+impl CardDoorSense {
+    pub const EMPTY: Self = Self {
+        card: Name::EMPTY,
+        at: None,
+        have_card: false,
+        open: false,
+    };
+
+    fn json(&self) -> Value {
+        json!({
+            "card": self.card.as_str(),
+            "reader": self.at.map(|p| p.json()),
+            "have_card": self.have_card,
+            "open": self.open,
         })
     }
 }
@@ -1086,6 +1169,18 @@ pub struct Summary {
     pub gate: Option<Place>,
     pub works: [WorkSense; sim_core::limits::MAX_WORKS],
     pub works_len: u8,
+    /// The ancients' stones (how many it has read of those it knows of,
+    /// the nearest unread one in walking range, the glyphs it reads of the
+    /// alphabet), their locks, and the ziggurat's card doors.
+    pub stones_read: u8,
+    pub stones_known: u8,
+    pub unread_stone: Option<Place>,
+    pub glyphs: u8,
+    pub alphabet: u8,
+    pub locks: [LockSense; sim_core::limits::MAX_MECHS],
+    pub locks_len: u8,
+    pub card_doors: [CardDoorSense; sim_core::monument::CARD_DOORS],
+    pub card_doors_len: u8,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -1219,6 +1314,8 @@ impl Summary {
             lives_there: false,
             home_has_needs: false,
             code: false,
+            on_cupboard: false,
+            bag_there: false,
             invite_from: Who {
                 id: 0,
                 name: protocol::Name::EMPTY,
@@ -1236,6 +1333,15 @@ impl Summary {
         gate: None,
         works: [WorkSense::EMPTY; sim_core::limits::MAX_WORKS],
         works_len: 0,
+        stones_read: 0,
+        stones_known: 0,
+        unread_stone: None,
+        glyphs: 0,
+        alphabet: 0,
+        locks: [LockSense::EMPTY; sim_core::limits::MAX_MECHS],
+        locks_len: 0,
+        card_doors: [CardDoorSense::EMPTY; sim_core::monument::CARD_DOORS],
+        card_doors_len: 0,
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -1321,13 +1427,22 @@ impl Summary {
         )
     }
 
-    /// THE GATE and the works, as its client knows them. Sent to an
-    /// external source beside the observation (Jev's request stays small).
+    /// THE GATE and the works, the stones, their locks and the ziggurat's
+    /// card doors, as its client knows them. Sent to an external source
+    /// beside the observation (Jev's request stays small).
     /// Worker only (it allocates).
     pub fn places_json(&self) -> Value {
         json!({
             "the_gate": self.gate.map(|p| p.json()),
             "works": self.works[..usize::from(self.works_len)].iter().map(WorkSense::json).collect::<Vec<_>>(),
+            "stones": {
+                "read": self.stones_read,
+                "known": self.stones_known,
+                "nearest_unread": self.unread_stone.map(|p| p.json()),
+                "glyphs_i_read": format!("{} of {}", self.glyphs, self.alphabet),
+            },
+            "locks": self.locks[..usize::from(self.locks_len)].iter().map(LockSense::json).collect::<Vec<_>>(),
+            "ziggurat_doors": self.card_doors[..usize::from(self.card_doors_len)].iter().map(CardDoorSense::json).collect::<Vec<_>>(),
         })
     }
 
@@ -2109,6 +2224,18 @@ impl Scripted {
                     .filter(|g| s.offers(*g) && s.count_of(name) >= 2 * SCRIPTED_PLENTY)
                 {
                     return (goal, "scripted: selling the surplus at the gate");
+                }
+            }
+            // The ancients, the same way: a card it carries opens its door
+            // (the room's crates are a loot run's), a lock whose answer it
+            // read is turned to it, and a stone near it is read.
+            for (goal, why) in [
+                (Goal::SwipeCard, "scripted: a keycard for its door"),
+                (Goal::SolveLock, "scripted: a lock whose answer it read"),
+                (Goal::ReadStone, "scripted: a stone it has not read"),
+            ] {
+                if s.offers(goal) {
+                    return (goal, why);
                 }
             }
         }

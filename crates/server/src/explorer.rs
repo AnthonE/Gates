@@ -36,6 +36,7 @@ use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::loadout::{Loadout, Role, BELT};
 use crate::agent::lock::{LockCode, LockSecret};
 use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
+use crate::agent::lore::{self, ExitJob, ReadJob, SolveJob, SwipeJob, Visit as LoreVisit};
 use crate::agent::oven::{self, DeviceJob, Keep, OvenStats, Tend, Work};
 use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
@@ -61,7 +62,7 @@ use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::STATION_FURNACE;
-use sim_core::deploy::{box_key, ACCESS_OP_ENTER, BAG_CAP};
+use sim_core::deploy::{box_key, cell_center, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
@@ -108,6 +109,10 @@ pub const FOLLOW_DOOR_M: f32 = 6.0;
 /// Living in the team's base, the walk home is offered farther than this
 /// from it...
 pub const SHARED_HOME_NEAR_M: u8 = 8;
+/// A bag for the team's base that came to nothing (no way onto the
+/// cupboard's crew, no room on the floor) is not tried again for this
+/// long, unless a teammate gives a new code.
+pub const TEAM_BAG_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// ...and its defence ends once nobody has been about it this long.
 pub const SHARED_GUARD_SECS: u32 = 30;
 /// A trade at THE GATE or a feed at a work, the walk there included, that
@@ -286,6 +291,8 @@ pub enum Phase {
     Following,
     Delivering,
     Trading,
+    /// At a stone, a lock or a card door (`agent::lore`).
+    Ancients,
     LoggingOff,
 }
 
@@ -327,6 +334,7 @@ impl Phase {
             Phase::Following => "With its teammate",
             Phase::Delivering => "Seeing to the team's boxes",
             Phase::Trading => "At the gate or a work",
+            Phase::Ancients => "At a stone, a lock or a card door",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -526,10 +534,18 @@ pub struct Memory {
     pub home_alarm: bool,
     pub home_needs: bool,
     pub team_code: bool,
+    /// Living there, its bag goes in the team's base: none of its own is
+    /// down there yet, and no try came to nothing lately. It is on the
+    /// cupboard's crew; it has a bag down there.
+    pub team_bag: bool,
+    pub crewed: bool,
+    pub bag_home: bool,
     /// A trade at THE GATE, or a feed at a work, came to nothing a moment
     /// ago.
     pub trade_held: bool,
     pub work_held: bool,
+    /// A read, a solve, a swipe came to nothing a moment ago.
+    pub lore_held: [bool; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -692,6 +708,19 @@ struct Active {
     paused: Option<u32>,
 }
 
+/// A bag on its way to the team's base ([`Survivor::bag_in`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BagLeg {
+    /// Where it stands, on bare ground.
+    Here,
+    /// In through the team's doors to its cupboard.
+    In,
+    /// The cupboard's crew.
+    Crew,
+    /// The base's floor.
+    Floor,
+}
+
 pub struct Survivor {
     pub mind: Mind,
     pub stats: SurvivorStats,
@@ -734,6 +763,12 @@ pub struct Survivor {
     /// buildings it has seen.
     home: Home,
     bag_job: BagJob,
+    /// Where a bag for the team's base is on its way: in, onto the
+    /// cupboard's crew, the floor. The code went in at the cupboard on this
+    /// trip; a trip there came to nothing at this tick.
+    bag_leg: BagLeg,
+    bag_knocked: bool,
+    team_bag_failed: Option<u32>,
     recover_job: RecoverJob,
     seen: Seen,
     /// The base it is building, and the walk through its doors.
@@ -789,6 +824,14 @@ pub struct Survivor {
     work_job: WorkJob,
     trade_failed: Option<u32>,
     work_failed: Option<u32>,
+    /// A stone read, a lock solved, a card door opened, the way out of a
+    /// card room (`agent::lore`), and when a read, a solve or a swipe last
+    /// came to nothing (in that order).
+    read_job: ReadJob,
+    solve_job: SolveJob,
+    swipe_job: SwipeJob,
+    exit_job: ExitJob,
+    lore_failed: [Option<u32>; 3],
     /// When this body last shot: an impact right after is its own.
     shot_at: Option<u32>,
     /// Salvage a recycle leaves whole (`Builder::kept_whole`), once a
@@ -885,6 +928,9 @@ impl Survivor {
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
+            bag_leg: BagLeg::Here,
+            bag_knocked: false,
+            team_bag_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
             builder: Builder::new(),
@@ -924,6 +970,11 @@ impl Survivor {
             work_job: WorkJob::default(),
             trade_failed: None,
             work_failed: None,
+            read_job: ReadJob::default(),
+            solve_job: SolveJob::default(),
+            swipe_job: SwipeJob::default(),
+            exit_job: ExitJob::default(),
+            lore_failed: [None; 3],
             shot_at: None,
             keep: Keep::NONE,
             deadline_after: None,
@@ -988,6 +1039,11 @@ impl Survivor {
     /// The team's base as its eyes found it.
     pub fn shared(&self) -> &TeamHome {
         &self.shared
+    }
+
+    /// Ziggurat levers pulled to get out of a card room.
+    pub fn levers(&self) -> u64 {
+        self.exit_job.pulls
     }
 
     pub fn memory(&self) -> &Memory {
@@ -1357,6 +1413,10 @@ impl Survivor {
             self.take_say(choice.say);
             // A code a teammate gave is kept whatever becomes of the goal.
             if let Some(code) = choice.code {
+                // A new code is a new chance at the cupboard.
+                if self.team_code != Some(code) {
+                    self.team_bag_failed = None;
+                }
                 self.team_code = Some(code);
             }
             let busy = self.combat.engaged() || !self.at_checkpoint();
@@ -1711,6 +1771,8 @@ impl Survivor {
         self.seek = None;
         self.verdict = None;
         self.bag_job = BagJob::default();
+        self.bag_leg = BagLeg::Here;
+        self.bag_knocked = false;
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.loot_job = LootJob::default();
@@ -1718,9 +1780,27 @@ impl Survivor {
             Goal::GoHome | Goal::Defend => Trip::Stay,
             _ => Trip::Stock,
         });
+        // Living in the team's base, its bag goes down in there: in to the
+        // cupboard (or the first box, if it knows none), then the floor.
+        if goal == Goal::Bag && self.memory.team_bag {
+            if let Some(home) = self.shared.anchor() {
+                self.bag_leg = BagLeg::In;
+                self.bag_job = BagJob::on_floor(home);
+                self.home_job = HomeJob::new(match self.shared.hearth() {
+                    Some(h) => {
+                        let (x, z) = cell_center(h.cx, h.cz);
+                        Trip::Point([x, z])
+                    }
+                    None => Trip::Stay,
+                });
+            }
+        }
         self.leave.doors.clear();
         self.trade_job.reset();
         self.work_job = WorkJob::default();
+        self.read_job.reset();
+        self.solve_job.reset();
+        self.swipe_job.reset();
         self.oven_job = DeviceJob::new(if goal == Goal::Recycle {
             Work::Recycle
         } else {
@@ -1837,7 +1917,10 @@ impl Survivor {
             | Goal::SupplyHemp
             | Goal::Buy(_)
             | Goal::Sell(_)
-            | Goal::FeedWork => true,
+            | Goal::FeedWork
+            | Goal::ReadStone
+            | Goal::SolveLock
+            | Goal::SwipeCard => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1850,9 +1933,29 @@ impl Survivor {
         }
         // Out of a teammate's base too, by its nearest door. A delivery
         // works its own doors, and a follow goes where its teammate goes.
-        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver) || active.delivering;
+        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver)
+            || active.delivering
+            || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
             if let Some(intent) = self.leave_mates(core, body, tick) {
+                return intent;
+            }
+        }
+        // Out of a ziggurat card room first, by its lever if the door has
+        // shut, and down off the terraces. A loot run takes the room's
+        // crates where it stands; a swipe under way walks its own way, and
+        // one starting up on its own door's ledge starts from there.
+        let swipe = active.goal == Goal::SwipeCard;
+        if walks && active.goal != Goal::Loot && !(swipe && self.swipe_job.under_way()) {
+            let (x, y, z) = (
+                body.qx as f32 * POS_XZ_Q,
+                body.qy as f32 * POS_Y_Q,
+                body.qz as f32 * POS_XZ_Q,
+            );
+            let climbing = swipe
+                && lore::swipeable(core)
+                    .is_some_and(|(d, _)| lore::on_path(&core.haven().ziggurat, d, x, y, z));
+            if let Some(intent) = self.exit_room(core, body, !climbing, tick) {
                 return intent;
             }
         }
@@ -1982,6 +2085,15 @@ impl Survivor {
             Goal::Buy(name) => self.trade(core, body, name, false, tick),
             Goal::Sell(name) => self.trade(core, body, name, true, tick),
             Goal::FeedWork => self.feed_work(core, body, tick),
+            Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard
+                if elapsed >= VISIT_GOAL_SECS * TICK_HZ =>
+            {
+                self.lore_over(active.goal, Outcome::Failed(Why::Stuck), tick);
+                Intent::IDLE
+            }
+            Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard => {
+                self.lore_visit(core, body, active.goal, tick)
+            }
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -2424,6 +2536,106 @@ impl Survivor {
         self.end_goal(tick, outcome);
     }
 
+    /// A stone read, a lock solved or a card door opened (`agent::lore`):
+    /// the walk there, the press, its answer.
+    fn lore_visit(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        goal: Goal,
+        tick: u32,
+    ) -> Intent {
+        self.stats.phase = Phase::Ancients;
+        let step = match goal {
+            Goal::ReadStone => self.read_job.step(core, body, &mut self.route, tick),
+            Goal::SolveLock => self.solve_job.step(core, body, &mut self.route, tick),
+            _ => self.swipe_job.step(core, body, &mut self.route, tick),
+        };
+        match step {
+            LoreVisit::Go(intent) => intent,
+            LoreVisit::Arc { op, target, arg } => {
+                if self.queue(|buf| protocol::encode_action_arc(op, target, arg, buf)) {
+                    if goal == Goal::SolveLock {
+                        self.solve_job.sent(core, arg, tick);
+                    } else {
+                        self.read_job.sent(tick);
+                    }
+                }
+                Intent::IDLE
+            }
+            LoreVisit::Swipe(door) => {
+                if self.queue(|buf| protocol::encode_action_swipe(door, buf)) {
+                    self.swipe_job.sent(tick);
+                }
+                Intent::IDLE
+            }
+            LoreVisit::Done => {
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained = a.gained.saturating_add(1);
+                }
+                self.lore_over(goal, Outcome::Done, tick);
+                Intent::IDLE
+            }
+            LoreVisit::Fail(why) => {
+                self.lore_over(goal, Outcome::Failed(why), tick);
+                Intent::IDLE
+            }
+        }
+    }
+
+    /// A read, a solve or a swipe is over; one that failed is held a while.
+    fn lore_over(&mut self, goal: Goal, outcome: Outcome, tick: u32) {
+        if matches!(outcome, Outcome::Failed(_)) {
+            let i = match goal {
+                Goal::ReadStone => 0,
+                Goal::SolveLock => 1,
+                _ => 2,
+            };
+            self.lore_failed[i] = Some(tick);
+        }
+        self.end_goal(tick, outcome);
+    }
+
+    /// The way out of the ziggurat card room it stands in (`agent::lore::
+    /// ExitJob`); `None` once out, in none, or after a way out came to
+    /// nothing a moment ago.
+    fn exit_room(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        descend: bool,
+        tick: u32,
+    ) -> Option<Intent> {
+        let haven = self.haven?;
+        if self
+            .exit_job
+            .failed
+            .is_some_and(|at| tick.wrapping_sub(at) < doors::LEAVE_RETRY_TICKS)
+        {
+            return None;
+        }
+        match self
+            .exit_job
+            .step(core, &haven, body, &mut self.route, descend, tick)?
+        {
+            LoreVisit::Go(intent) => {
+                self.stats.phase = Phase::Leaving;
+                Some(intent)
+            }
+            LoreVisit::Swipe(door) => {
+                if self.queue(|buf| protocol::encode_action_swipe(door, buf)) {
+                    self.exit_job.sent(tick);
+                }
+                Some(Intent::IDLE)
+            }
+            LoreVisit::Fail(_) => {
+                self.exit_job.failed = Some(tick);
+                None
+            }
+            LoreVisit::Done | LoreVisit::Arc { .. } => None,
+        }
+    }
+
     /// A point within the team's base.
     fn near_shared(&self, (x, z): (f32, f32)) -> bool {
         self.shared
@@ -2458,13 +2670,21 @@ impl Survivor {
         intent
     }
 
-    /// The team's base is under attack: home, then whoever is about it
-    /// and not on the team is fought, until it has been quiet a while.
+    /// The team's base is under attack: home, and whoever is about it and
+    /// not on the team is fought, on the way in or once there, until it has
+    /// been quiet a while.
     fn defend_shared(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         self.stats.phase = Phase::Defending;
         let Some(active) = self.goal else {
             return Intent::IDLE;
         };
+        let Some(home) = self.shared.anchor() else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        // Whoever it sees at the base is taken on wherever it is: from
+        // inside, the walls hide the one hacking at them.
+        let about = self.guard_shared(core, home, tick);
         // `fled` marks the arrival, `leg` the last time anyone was about.
         if !active.fled {
             let (intent, over) = self.home_step(core, body, tick);
@@ -2483,10 +2703,17 @@ impl Survivor {
                 }
             }
         }
-        let Some(home) = self.shared.anchor() else {
-            self.end_goal(tick, Outcome::Failed(Why::NotFound));
-            return Intent::IDLE;
-        };
+        if !about && tick.wrapping_sub(active.leg) >= SHARED_GUARD_SECS * TICK_HZ {
+            self.home_alarm = None;
+            self.memory.home_alarm = false;
+            self.end_goal(tick, Outcome::Done);
+        }
+        Intent::IDLE
+    }
+
+    /// The nearest stranger in sight within the team's base or near it is
+    /// fought; true when there was one.
+    fn guard_shared(&mut self, core: &ClientCore, home: [f32; 2], tick: u32) -> bool {
         let mut stranger: Option<(f32, u32)> = None;
         for t in self.tracks.seen() {
             if !t.visible
@@ -2503,22 +2730,16 @@ impl Survivor {
                 stranger = Some((d, t.id));
             }
         }
-        match stranger {
-            Some((_, id)) => {
-                if !self.combat.shuns(id, tick) {
-                    self.combat.command(id, tick);
-                }
-                if let Some(a) = self.goal.as_mut() {
-                    a.leg = tick;
-                }
-            }
-            None if tick.wrapping_sub(active.leg) >= SHARED_GUARD_SECS * TICK_HZ => {
-                self.home_alarm = None;
-                self.end_goal(tick, Outcome::Done);
-            }
-            None => {}
+        let Some((_, id)) = stranger else {
+            return false;
+        };
+        if !self.combat.shuns(id, tick) {
+            self.combat.command(id, tick);
         }
-        Intent::IDLE
+        if let Some(a) = self.goal.as_mut() {
+            a.leg = tick;
+        }
+        true
     }
 
     /// Send what a walk through a door asked for: a use, or the team's
@@ -3361,6 +3582,14 @@ impl Survivor {
                     self.loot_job.lid = None;
                     return walk;
                 }
+                // A storey up or down (the ziggurat's rooms stand over one
+                // another, and the eyes' line can miss a floor): not this
+                // one's to open from here.
+                if (spot.slot.y - body.qy as f32 * POS_Y_Q).abs() > loot::SAME_FLOOR_M {
+                    self.loot.emptied(key, tick);
+                    self.loot_job.next();
+                    return Intent::IDLE;
+                }
                 let since = match self.loot_job.lid {
                     Some(Lid::Aiming(at)) => at,
                     _ => {
@@ -3887,6 +4116,9 @@ impl Survivor {
     /// belt, in hand, eyes on the spot, then the deploy verb.
     fn place_bag(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         self.stats.phase = Phase::Bagging;
+        if let Some(intent) = self.bag_in(core, body, tick) {
+            return intent;
+        }
         let Some(haven) = self.haven else {
             return Intent::IDLE;
         };
@@ -3908,12 +4140,14 @@ impl Survivor {
                 row,
                 cx,
                 cz,
+                loc,
+                pose,
                 intent,
             } => {
                 if self.queue(|buf| {
-                    protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, Pose::CENTRE, buf)
+                    protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, pose, buf)
                 }) {
-                    self.home.asked(cx, cz, 0, LOC_PLANE);
+                    self.home.asked(cx, cz, 0, loc);
                     self.bag_job.deploy_sent(tick);
                 }
                 intent
@@ -3926,10 +4160,57 @@ impl Survivor {
                 Intent::IDLE
             }
             Do::Fail(why) => {
+                if self.bag_leg != BagLeg::Here {
+                    self.team_bag_failed = Some(tick);
+                }
                 self.end_goal(tick, Outcome::Failed(why));
                 Intent::IDLE
             }
             Do::Loot(_) => Intent::IDLE,
+        }
+    }
+
+    /// The way in for a bag bound for the team's base: through its doors to
+    /// its cupboard, and onto the cupboard's crew with the team's code when
+    /// it has a lock and the crew does not have it yet (the right code is
+    /// the whole invitation, `deploy::hearth_admits`); a base it is not on
+    /// the crew of refuses a bag. `None` once the floor is the next thing.
+    fn bag_in(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Option<Intent> {
+        match self.bag_leg {
+            BagLeg::Here | BagLeg::Floor => None,
+            BagLeg::In => {
+                let (intent, over) = self.home_step(core, body, tick);
+                match over {
+                    None => Some(intent),
+                    Some(Outcome::Failed(why)) => {
+                        self.team_bag_failed = Some(tick);
+                        self.end_goal(tick, Outcome::Failed(why));
+                        Some(Intent::IDLE)
+                    }
+                    Some(_) => {
+                        self.bag_leg = BagLeg::Crew;
+                        Some(Intent::IDLE)
+                    }
+                }
+            }
+            BagLeg::Crew => {
+                let knock = !self.shared.crewed()
+                    && !self.bag_knocked
+                    && self.team_code.is_some()
+                    && self.shared.hearth_locked(core);
+                match self.shared.hearth().filter(|_| knock) {
+                    Some(hearth) => {
+                        // The code goes in at its keypad, the trip's own
+                        // door walk's way, then the trip is there again.
+                        self.home_job.doors.knock_at(hearth);
+                        self.bag_knocked = true;
+                        self.bag_leg = BagLeg::In;
+                    }
+                    // On the crew, or no way onto it: the floor says.
+                    None => self.bag_leg = BagLeg::Floor,
+                }
+                Some(Intent::IDLE)
+            }
         }
     }
 
@@ -4746,10 +5027,21 @@ impl Survivor {
                 .home_alarm
                 .is_some_and(|at| tick.wrapping_sub(at) < home::HOME_ALARM_TICKS);
             self.memory.team_code = self.team_code.is_some();
+            self.memory.crewed = self.shared.crewed();
+            self.memory.bag_home = self
+                .shared
+                .anchor()
+                .is_some_and(|at| self.home.bag_near(at, supply::HOME_M));
+            self.memory.team_bag = self.memory.shared
+                && !self.memory.bag_home
+                && self
+                    .team_bag_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= TEAM_BAG_RETRY_TICKS);
             let held =
                 |at: Option<u32>| at.is_some_and(|at| tick.wrapping_sub(at) < VISIT_RETRY_TICKS);
             self.memory.trade_held = held(self.trade_failed);
             self.memory.work_held = held(self.work_failed);
+            self.memory.lore_held = self.lore_failed.map(held);
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
             // Mid-cook the meat is on the grill rather than in the pack, and a
@@ -5186,7 +5478,8 @@ impl Survivor {
         }
         // A lock let it through (its own code, entered at its own door);
         // a blueprint learned or refused.
-        while let Some((cx, cz, level, loc, _grant)) = core.pop_auth() {
+        while let Some((cx, cz, level, loc, grant)) = core.pop_auth() {
+            self.shared.on_auth(cx, cz, level, loc, grant);
             self.builder.on_auth(cx, cz, level, loc);
             self.home_job.on_auth(cx, cz, level, loc);
             self.leave.doors.on_auth(cx, cz, level, loc);
@@ -5195,9 +5488,22 @@ impl Survivor {
         while let Some((refused, ..)) = core.pop_vend() {
             self.trade_job.on_vend(refused);
         }
-        while core.pop_arc_refused().is_some() {
+        while let Some((_, op, target)) = core.pop_arc_refused() {
             self.stats.refusals += 1;
             self.work_job.on_refused();
+            self.read_job.on_refused(op, target);
+            self.solve_job.on_refused(op, target);
+        }
+        // A stone's words, a lock solved anywhere, a card refused.
+        while let Some((kind, index, _)) = core.pop_arc_text() {
+            self.read_job.on_text(kind, index);
+        }
+        while let Some((mech, by)) = core.pop_mech_solved() {
+            self.solve_job.on_solved(mech, by, core.player_id);
+        }
+        while let Some((code, door)) = core.pop_swipe_refused() {
+            self.stats.refusals += 1;
+            self.swipe_job.on_refused(code, door);
         }
         while core.pop_work_event().is_some() {}
         while core.pop_research_toast().is_some() {}
@@ -5343,6 +5649,8 @@ impl BotDriver for Survivor {
         self.builder.reset();
         self.builder.set_code(self.lock.code(welcome.seed));
         self.bag_job = BagJob::default();
+        self.bag_leg = BagLeg::Here;
+        self.team_bag_failed = None;
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.ledger.clear();
@@ -5892,6 +6200,8 @@ pub fn observe(
     s.team.lives_there = memory.shared;
     s.team.home_has_needs = memory.home_needs;
     s.team.code = memory.team_code;
+    s.team.on_cupboard = memory.crewed;
+    s.team.bag_there = memory.bag_home;
     // THE GATE and the works, from the tables its client was sent.
     if let (Some(b), Some([gx, gz])) = (body, gate::gate(core)) {
         let (d, bearing) = relative(b, gx, gz);
@@ -5930,6 +6240,51 @@ pub fn observe(
         sense.needs_len = m as u8;
         s.works[n] = sense;
         s.works_len += 1;
+    }
+    // The stones, their locks and the ziggurat's card doors.
+    let place = |x: f32, z: f32| {
+        body.map(|b| {
+            let (d, bearing) = relative(b, x, z);
+            Place {
+                distance: Distance::of(d),
+                bearing,
+            }
+        })
+    };
+    (s.stones_read, s.stones_known) = lore::stones(core);
+    if let Some(b) = body {
+        let (x, z) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+        s.unread_stone =
+            lore::unread(core, x, z, f32::INFINITY).and_then(|(_, at)| place(at[0], at[2]));
+    }
+    s.glyphs = core.lore.glyphs.count_ones() as u8;
+    s.alphabet = core.lore.alphabet_len;
+    for (m, mech) in core.lore.known_mechs() {
+        let n = usize::from(s.locks_len);
+        if n >= s.locks.len() {
+            break;
+        }
+        let middle = usize::from(mech.n_dials.saturating_sub(1) / 2);
+        s.locks[n] = crate::mind::LockSense {
+            name: Name::new(mech.name().as_bytes()).unwrap_or(Name::EMPTY),
+            at: lore::dial_at(core, m, middle).and_then(|p| place(p[0], p[2])),
+            dials: mech.n_dials,
+            resting: mech.resting,
+            answer_known: lore::answer(&core.lore, m).is_some(),
+        };
+        s.locks_len += 1;
+    }
+    let zig = core.haven().ziggurat;
+    for (d, card) in lore::CARD_NAMES.iter().enumerate().filter(|_| zig.live) {
+        let reader = sim_core::monument::reader_world(&zig, d, false);
+        s.card_doors[d] = crate::mind::CardDoorSense {
+            card: Name::new(card.as_bytes()).unwrap_or(Name::EMPTY),
+            at: reader.and_then(|(x, _, z)| place(x, z)),
+            have_card: crate::agent::build::item_named(core, card)
+                .is_some_and(|item| count_item(core, item) > 0),
+            open: lore::door_open(core, d),
+        };
+        s.card_doors_len = d as u8 + 1;
     }
     for &(item, units) in &memory.home_holds[..usize::from(memory.home_holds_len)] {
         let n = usize::from(s.home_holds_len);
@@ -6018,6 +6373,7 @@ pub fn observe(
     // could start the fight again is in view.
     if usize::from(memory.bags) < BAG_CAP
         && !memory.bag_held
+        && !(memory.shared && memory.bag_home)
         && home::bag_row(core).is_some_and(|(_, item)| count_item(core, item) > 0)
     {
         s.offer(Goal::Bag);
@@ -6137,6 +6493,20 @@ pub fn observe(
             && gate::pick_work(core, core.haven(), x, z).is_some()
         {
             s.offer(Goal::FeedWork);
+        }
+        // The ancients: a stone near it has not read, a lock whose answer
+        // it read, a card door it holds the card for; nobody dangerous in
+        // view, and none of them came to nothing a moment ago.
+        if !senses.hostile {
+            if !memory.lore_held[0] && lore::unread(core, x, z, lore::READ_TRIP_M).is_some() {
+                s.offer(Goal::ReadStone);
+            }
+            if !memory.lore_held[1] && lore::solvable(core, x, z).is_some() {
+                s.offer(Goal::SolveLock);
+            }
+            if !memory.lore_held[2] && lore::swipeable(core).is_some() {
+                s.offer(Goal::SwipeCard);
+            }
         }
     }
     for i in 0..s.craftable_len as usize {

@@ -54,7 +54,7 @@ The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`,
 `join_team`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
 `supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
-`sell:<item name>`.
+`sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`.
 Only goals that can work now are offered — a gather goal needs a belt tool
 for the kind and room for what it pays, eat needs something worth eating, and
 drink needs known water-giving food or the sea plus the health to pay for it —
@@ -90,6 +90,8 @@ and a reply naming anything else is refused.
 - **buy:X / sell:X** — a trade at THE GATE (below).
 - **feed_work** — the nearest open work that takes something the pack
   holds, everything of it put in; or a lit one's tank topped up.
+- **read_stone / solve_lock / swipe_card** — the ancients' stones, their
+  locks and the ziggurat's card doors (below).
 
 ## Teams and the team's base
 
@@ -108,7 +110,10 @@ does every box coming down. What each box holds is what its panel showed
 when last open.
 
 With a team base and none of its own it lives there: it builds no base of
-its own (`build` is not offered), `go_home` walks into the team's base,
+its own (`build` is not offered), `bag` puts its bag on the team's floor
+(the team's code entered at the cupboard's lock first, which puts it on
+the crew; a base whose cupboard it is not on refuses a bag), `go_home`
+walks into the team's base,
 `defend` goes there when it is struck or a charge goes off in it and fights
 whoever is about until it has been quiet 30 s, and it crafts at the team's
 workbench and furnace when it has none. `deliver` and the supply runs are
@@ -167,7 +172,28 @@ terminal is, what its quota still needs, its fuel and what it unlocks.
 
 The scripted policy, once its own base is done or it lives in the team's,
 buys a metal hatchet or pickaxe when it can, feeds a work what it has 3000
-of and sells wood or stone past 6000.
+of and sells wood or stone past 6000, then swipes a card it holds, solves
+a lock whose answer it read, and reads a stone near it.
+
+## The ancients: stones, locks, card doors
+
+`agent::lore`. **Stones** (`ARC.md` F6): `read_stone` walks to the nearest
+stone it has not read within 500 m and reads it (`E`, the arc verb). It
+reads only the glyphs it knows; the rest stay shapes. **Locks** (F7): a
+stone whose readable words hold exactly as many single digits as a lock
+has dials is that lock's answer (a stone naming the lock wins a tie), so
+THE RING LOCK wants the count stone's digits before the ring word means
+anything. `solve_lock` walks to each dial and turns it a notch a press
+until it shows the answer; the last turn pays. **Card doors**: `swipe_card`
+takes the highest card it holds (green, blue, red: each room's crate holds
+the next) to its reader and walks into the room while the door stands
+open; the route's grid knows only the ground, so the blue and red doors
+are reached up the front flights and round the ledges by fixed waypoints.
+`loot` empties the room's crates; any other walk first leaves the room (by
+its lever if the door has shut) and comes back down. An external source's
+`places` carries the stones (read, known, the nearest unread, glyphs read),
+each lock (where, dials, resting, answer known) and each card door (its
+card, its reader, whether the pack holds that card, whether it is open).
 
 Reflexes under every goal: the respawn verb on the death screen (a beach,
 never a bag), crawling away from a fresh blow while wounded, and the existing
