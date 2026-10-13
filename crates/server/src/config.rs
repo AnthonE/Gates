@@ -981,7 +981,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 if !crate::standings::Prizes::valid_ticker(value) {
                     return Err(format!(
                         "shard.toml line {}: prize_ticker `{value}` — a bare ticker \
-                         in capitals, e.g. ORBS (BUSINESS.md: never a `$`)",
+                         in capitals, e.g. JUNK (BUSINESS.md: never a `$`)",
+                        n + 1
+                    ));
+                }
+                // New ORBS is minted only by the elo farm (stake JUNK/ELO);
+                // a game never pays it, and the cashier refuses it anyway.
+                if value == "ORBS" {
+                    return Err(format!(
+                        "shard.toml line {}: prize_ticker ORBS — new ORBS comes only \
+                         from the farm, so prizes pay JUNK or ELO",
                         n + 1
                     ));
                 }
@@ -1476,7 +1485,7 @@ mod tests {
         assert_eq!((cfg.exits.cap, cfg.exits.fee_pct), (1000, 5));
         assert!(parse_shard_toml(&format!("{base}extract_fee_pct = 101\n")).is_err());
         let cfg = parse_shard_toml(&format!(
-            "{base}prize_ticker = \"ORBS\"\nprize_island = \"500, 300,200\"\n\
+            "{base}prize_ticker = \"JUNK\"\nprize_island = \"500, 300,200\"\n\
              prize_fight = 50\nprize_min_minutes = 60\nprize_agents = true\n\
              discord_webhook = \"https://discord.com/api/webhooks/1/x\"\n"
         ))
@@ -1488,9 +1497,10 @@ mod tests {
         assert!(cfg.discord_webhook.is_some());
         for bad in [
             "prize_island = \"500\"\n",
-            "prize_ticker = \"$ORBS\"\nprize_island = \"500\"\n",
-            "prize_ticker = \"ORBS\"\nprize_island = \"6,5,4,3,2,1\"\n",
-            "prize_ticker = \"ORBS\"\nprize_works = \"lots\"\n",
+            "prize_ticker = \"$JUNK\"\nprize_island = \"500\"\n",
+            "prize_ticker = \"ORBS\"\nprize_island = \"500\"\n",
+            "prize_ticker = \"JUNK\"\nprize_island = \"6,5,4,3,2,1\"\n",
+            "prize_ticker = \"JUNK\"\nprize_works = \"lots\"\n",
             "discord_webhook = \"http://insecure\"\n",
         ] {
             assert!(parse_shard_toml(&format!("{base}{bad}")).is_err(), "{bad}");

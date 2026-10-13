@@ -198,6 +198,135 @@ count = 12
 station = "recycler"
 seconds = 5
 
+# --- Rust's components (2026-10-13) ---------------------------------------
+#
+# Their monument recycler's yields (60 %, 5 s an item), read off each item
+# page at wiki.facepunch.com/rust/Item/<name>. Two edits, both forced:
+# their high quality metal rows are dropped, because we have no high quality
+# metal; and a chance row ("+1 scrap at 60 %") is folded into the certain
+# count at its expectation, rounded (sheet metal 9.6 → 10, metal blade 2.4
+# → 2, propane tank 1.2 → 1, sewing kit's rope 1.8 → 2). With these a
+# barrel pays ~4.4 junk and a military crate ~34, as theirs do.
+
+[[cook]]
+input = "item.metal_spring"
+output = "item.junk"
+count = 12
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.tech_trash"
+output = "item.junk"
+count = 24
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.sheet_metal"
+output = "item.metal_frags"
+count = 120
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.sheet_metal"
+output = "item.junk"
+count = 10
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.metal_pipe"
+output = "item.junk"
+count = 6
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.road_signs"
+output = "item.junk"
+count = 6
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.rifle_body"
+output = "item.junk"
+count = 30
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.semi_body"
+output = "item.metal_frags"
+count = 90
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.semi_body"
+output = "item.junk"
+count = 18
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.smg_body"
+output = "item.junk"
+count = 18
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.metal_blade"
+output = "item.metal_frags"
+count = 18
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.metal_blade"
+output = "item.junk"
+count = 2
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.propane_tank"
+output = "item.metal_frags"
+count = 60
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.propane_tank"
+output = "item.junk"
+count = 1
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.sewing_kit"
+output = "item.cloth"
+count = 12
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.sewing_kit"
+output = "item.rope"
+count = 2
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.fuse"
+output = "item.junk"
+count = 24
+station = "recycler"
+seconds = 5
+
 # --- the planter ---------------------------------------------------------
 #
 # `station = "planter"` grows. A seed in a bed becomes its crop over

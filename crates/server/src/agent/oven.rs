@@ -11,7 +11,7 @@
 //!   (`content/cooking.toml`). Wood goes in the fuel slot and the meat on the
 //!   grill (Rust's camp fire, `sim_core::oven::FIRE_LAYOUT`); what comes off
 //!   is taken; the fire is put out when the last piece is done.
-//! - **Recycle**: gears, rope and tarp go into a recycler, and junk,
+//! - **Recycle**: salvaged parts go into a recycler, and junk,
 //!   fragments and cloth come out; it is switched off when the last is
 //!   taken apart.
 //! - **Research**: a looted sample and the junk it costs go into a research

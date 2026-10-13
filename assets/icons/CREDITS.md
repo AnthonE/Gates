@@ -12,6 +12,7 @@ Icons made by:
 - delapouite
 - lorc
 - sbed
+- skoll
 
 Available on https://game-icons.net
 
@@ -47,6 +48,8 @@ every item either way, because the painted ones are derived works of it.
 | `corn.png` | `delapouite/corn` |
 | `corn_seed.png` | `delapouite/plant-seed` |
 | `crossbow.png` | `carl-olsen/crossbow` |
+| `electric_fuse.png` | `delapouite/electrical-resistance` |
+| `empty_propane_tank.png` | `delapouite/fire-extinguisher` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
 | `fire_pit.png` | `lorc/campfire` |
 | `full_waterskin.png` | `delapouite/water-flask` |
@@ -72,12 +75,15 @@ every item either way, because the painted ones are derived works of it.
 | `medical_syringe.png` | `lorc/syringe` |
 | `medkit.png` | `delapouite/first-aid-kit` |
 | `metal_arrow.png` | `lorc/broadhead-arrow` |
+| `metal_blade.png` | `lorc/plain-dagger` |
 | `metal_door.png` | `delapouite/closed-doors` |
 | `metal_fragments.png` | `lorc/metal-bar` |
 | `metal_hatchet.png` | `delapouite/sharp-axe` |
 | `metal_ore.png` | `delapouite/gold-nuggets` |
 | `metal_pickaxe.png` | `delapouite/war-pick` |
+| `metal_pipe.png` | `delapouite/pipes` |
 | `metal_spear.png` | `lorc/barbed-spear` |
+| `metal_spring.png` | `delapouite/spring` |
 | `metal_window_bars.png` | `delapouite/window-bars` |
 | `mushrooms.png` | `delapouite/mushrooms` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
@@ -86,9 +92,13 @@ every item either way, because the painted ones are derived works of it.
 | `recycler.png` | `lorc/recycle` |
 | `research_table.png` | `lorc/scroll-unfurled` |
 | `revolver.png` | `delapouite/revolver` |
+| `rifle_body.png` | `skoll/ak47` |
+| `road_signs.png` | `delapouite/stop-sign` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
 | `rope.png` | `delapouite/rope-coil` |
 | `satchel_charge.png` | `delapouite/dynamite` |
+| `semi_automatic_body.png` | `skoll/mp5` |
+| `sewing_kit.png` | `delapouite/yarn` |
 | `shape_doorway.png` | `delapouite/door` |
 | `shape_floor.png` | `delapouite/floor-hatch` |
 | `shape_foundation.png` | `delapouite/flat-platform` |
@@ -100,8 +110,10 @@ every item either way, because the painted ones are derived works of it.
 | `shape_wall.png` | `delapouite/brick-wall` |
 | `shape_wall_frame.png` | `delapouite/gate` |
 | `shape_window.png` | `delapouite/window` |
+| `sheet_metal.png` | `delapouite/metal-plate` |
 | `sleeping_bag.png` | `delapouite/sleeping-bag` |
 | `small_box.png` | `delapouite/wooden-crate` |
+| `smg_body.png` | `skoll/thompson-m1928` |
 | `stone.png` | `delapouite/stone-pile` |
 | `stone_hatchet.png` | `delapouite/hatchet` |
 | `stone_pickaxe.png` | `delapouite/war-pick` |
@@ -109,6 +121,7 @@ every item either way, because the painted ones are derived works of it.
 | `sulfur.png` | `delapouite/powder-bag` |
 | `sulfur_ore.png` | `lorc/crystal-cluster` |
 | `tarp.png` | `delapouite/camping-tent` |
+| `tech_trash.png` | `lorc/circuitry` |
 | `torch.png` | `delapouite/torch` |
 | `ui_clock.png` | `lorc/stopwatch` |
 | `ui_lock.png` | `lorc/padlock` |

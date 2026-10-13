@@ -986,3 +986,130 @@ rarity = "common"
 slot = "none"
 class = "resources"
 description = "From butchered animals. Bone arrows and bone helmets."
+
+# --- Rust's components (2026-10-13, operator: *"the game should match how
+# Rust survival does scrap loot"*). Their barrels and crates drop these and
+# their recycler turns them into scrap, so most of a Rust container's scrap
+# arrives as parts rather than as scrap. Stacks, drop rates (`loot.toml`) and
+# recycler yields (`cooking.toml`) are the item pages' at
+# wiki.facepunch.com/rust/Item/<name>. Recycle-only for now: theirs also
+# craft guns and armour, and that is a recipe pass of its own.
+[[item]]
+id = "item.metal_blade"
+name = "Metal Blade"
+stack = 20
+tier = 1
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "A salvaged blade. Recycle it for fragments and a little junk."
+
+[[item]]
+id = "item.propane_tank"
+name = "Empty Propane Tank"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "An empty tank. Recycle it for metal fragments."
+
+[[item]]
+id = "item.sewing_kit"
+name = "Sewing Kit"
+stack = 20
+tier = 1
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "Needles and thread. Recycle it for cloth and rope."
+
+[[item]]
+id = "item.metal_spring"
+name = "Metal Spring"
+stack = 20
+tier = 1
+rarity = "uncommon"
+slot = "none"
+class = "resources"
+description = "A heavy spring. Recycle it for junk."
+
+[[item]]
+id = "item.sheet_metal"
+name = "Sheet Metal"
+stack = 20
+tier = 1
+rarity = "uncommon"
+slot = "none"
+class = "resources"
+description = "A sheet of salvaged metal. Recycle it for fragments and junk."
+
+[[item]]
+id = "item.metal_pipe"
+name = "Metal Pipe"
+stack = 20
+tier = 1
+rarity = "uncommon"
+slot = "none"
+class = "resources"
+description = "A length of pipe. Recycle it for junk."
+
+[[item]]
+id = "item.road_signs"
+name = "Road Signs"
+stack = 20
+tier = 1
+rarity = "uncommon"
+slot = "none"
+class = "resources"
+description = "Signs pulled off their posts. Recycle them for junk."
+
+[[item]]
+id = "item.semi_body"
+name = "Semi Automatic Body"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "resources"
+description = "A gun's receiver. Recycle it for junk and fragments."
+
+[[item]]
+id = "item.smg_body"
+name = "SMG Body"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "resources"
+description = "A submachine gun's receiver. Recycle it for junk."
+
+[[item]]
+id = "item.rifle_body"
+name = "Rifle Body"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "resources"
+description = "A rifle's receiver. Recycles for more junk than anything else."
+
+[[item]]
+id = "item.tech_trash"
+name = "Tech Trash"
+stack = 50
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "resources"
+description = "Dead electronics. Recycle it for junk."
+
+[[item]]
+id = "item.fuse"
+name = "Electric Fuse"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "resources"
+description = "A working fuse. Recycle it for junk."

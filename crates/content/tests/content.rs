@@ -296,8 +296,9 @@ fn test_content() {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
-        // 70 → 80 for crops v0's seeds and planter.
-        (40..=80).contains(&(c.items.len() - fittings.len())),
+        // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
+        // components (2026-10-13).
+        (40..=92).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -812,8 +813,8 @@ fn orphan_refs_refused() {
     );
     refuses(
         "loot.toml",
-        "{ item = \"item.cloth\", weight = 20",
-        "{ item = \"item.ghost\", weight = 20",
+        "{ item = \"item.cloth\", weight = 181",
+        "{ item = \"item.ghost\", weight = 181",
         "not an item",
     );
     refuses(
@@ -2360,7 +2361,7 @@ fn a_clock_with_no_answer_is_refused() {
     // become a false refusal the day the open verb landed.
     build(&srcs).expect("the barrel's corn answers hunger since world containers v0");
     let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
-    let corn_row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    let corn_row = "    { item = \"item.corn\", weight = 72, count_min = 2, count_max = 4 },\n";
     assert!(
         l.1.contains(corn_row),
         "test fixture rot: the barrel's corn row moved"
@@ -2481,10 +2482,12 @@ fn the_shipped_loot_tables_bake() {
     let t = lc
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
-    // 9 → 10 for crops v0's corn seed.
-    assert_eq!(t.len, 10, "the barrel table lost or gained a row");
+    // 9 → 10 for crops v0's corn seed; → 19 for Rust's barrel components
+    // (2026-10-13).
+    assert_eq!(t.len, 19, "the barrel table lost or gained a row");
     assert_eq!(t.rolls_min, 1);
-    assert_eq!(t.rolls_max, 2);
+    // 1–2 → 1–3 so Rust's components ride on top of our own rows (2026-10-13).
+    assert_eq!(t.rolls_max, 3);
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
 
     let summed: u32 = t.entries[..t.len as usize]
@@ -2505,7 +2508,12 @@ fn the_shipped_loot_tables_bake() {
         .iter()
         .find(|e| e.item == revolver)
         .expect("the revolver is still a barrel drop");
-    assert_eq!(row.weight, 1, "the revolver's rarity moved");
+    // Its chance per barrel, per mille: mean rolls × weight ÷ total. It was
+    // weight 1 of 96 (15.6 ‰) until the 2026-10-13 component take re-scaled
+    // the table to 1,000, and it is 16 ‰ now — the rarity did not move.
+    let per_mille =
+        u32::from(t.rolls_min + t.rolls_max) * u32::from(row.weight) * 1000 / (2 * t.total_weight);
+    assert_eq!(per_mille, 16, "the revolver's rarity moved");
     assert_eq!((row.count_min, row.count_max), (1, 1));
 
     // Every row names a real item and a sane band.
@@ -2523,7 +2531,9 @@ fn the_shipped_loot_tables_bake() {
     let k = lc
         .table(sim_core::loot::LOOT_CRATE)
         .expect("the crate table is armed");
-    assert_eq!(k.len, 10);
+    // 10 → 11: Rust's military crate components replaced gears, rope and
+    // tarp (2026-10-13).
+    assert_eq!(k.len, 11);
     assert_eq!(k.hits, 5);
 }
 
@@ -2556,7 +2566,7 @@ fn an_unknown_container_is_refused_at_bake() {
 fn a_roll_count_past_the_cap_is_refused_at_bake() {
     let mut srcs = sources();
     let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
-    l.1 = l.1.replacen("rolls_max = 2", "rolls_max = 65535", 1);
+    l.1 = l.1.replacen("rolls_max = 3", "rolls_max = 65535", 1);
     let err = build(&srcs)
         .unwrap()
         .bake_loot()
@@ -2586,8 +2596,8 @@ fn a_roll_count_past_the_cap_is_refused_at_bake() {
 fn a_container_that_cannot_be_opened_is_refused() {
     refuses(
         "loot.toml",
-        "rolls_max = 2\nhits = 3",
-        "rolls_max = 2\nhits = 0",
+        "rolls_max = 3\nhits = 3",
+        "rolls_max = 3\nhits = 0",
         "would never open",
     );
 }
@@ -2598,8 +2608,8 @@ fn a_container_that_cannot_be_opened_is_refused() {
 /// three of theirs a road walk passes — barrel 2, tools crate 5, military
 /// crate 8. Baked as a CERTAIN row, not a weight, and junk is never also a
 /// weighted row, which would make it neither price. The barrel's gear row
-/// fell with it (weight 1, their 1.4 % of barrels), or the recycler's
-/// 12-junk gear on top of the certain 2 would pay twice their faucet.
+/// sits at their 1.4 % of barrels, like every metal part they put there
+/// (2026-10-13).
 #[test]
 fn the_shipped_containers_pay_guaranteed_junk() {
     use sim_core::loot::{LOOT_BARREL, LOOT_CACHE, LOOT_CRATE};
@@ -2632,7 +2642,9 @@ fn the_shipped_containers_pay_guaranteed_junk() {
         .iter()
         .find(|e| e.item == gears)
         .expect("barrels still pay gears");
-    assert_eq!(row.weight, 1, "the barrel's gear rate is theirs");
+    let per_mille =
+        u32::from(t.rolls_min + t.rolls_max) * u32::from(row.weight) * 1000 / (2 * t.total_weight);
+    assert_eq!(per_mille, 14, "the barrel's gear rate is theirs: 1.4 %");
 }
 
 /// Wall 4 on the guaranteed walk: a table past `MAX_LOOT_GUARANTEED` rows
@@ -3914,7 +3926,7 @@ fn every_consumable_the_content_ships_is_reachable() {
 
     let mut srcs = sources();
     let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
-    let row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    let row = "    { item = \"item.corn\", weight = 72, count_min = 2, count_max = 4 },\n";
     assert!(
         l.1.contains(row),
         "fixture rot: the barrel's corn row moved"
@@ -3922,7 +3934,7 @@ fn every_consumable_the_content_ships_is_reachable() {
     l.1 = l.1.replace(row, "");
     // The planter grows corn from the barrel's seed (crops v0), so the seed
     // row goes too — or the corn is still reachable, as it should be.
-    let seed = "    { item = \"item.corn_seed\", weight = 6, count_min = 2, count_max = 4 },\n";
+    let seed = "    { item = \"item.corn_seed\", weight = 54, count_min = 2, count_max = 4 },\n";
     assert!(
         l.1.contains(seed),
         "fixture rot: the barrel's corn seed row moved"
@@ -3941,13 +3953,13 @@ fn every_consumable_the_content_ships_is_reachable() {
     // in one of their tables is reachable — the pre-widening walk (barrel
     // rows alone) called exactly this fixture stranded, which is the
     // regression this pins.
-    let corn_row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    let corn_row = "    { item = \"item.corn\", weight = 72, count_min = 2, count_max = 4 },\n";
     for anchor in [
         // The crate's metal_frags row — unique counts, so the corn lands
         // in the crate's table.
-        "    { item = \"item.metal_frags\", weight = 15, count_min = 25, count_max = 50 },\n",
+        "    { item = \"item.metal_frags\", weight = 255, count_min = 25, count_max = 50 },\n",
         // The cache's — same, for the third container kind.
-        "    { item = \"item.metal_frags\", weight = 15, count_min = 15, count_max = 30 },\n",
+        "    { item = \"item.metal_frags\", weight = 332, count_min = 15, count_max = 30 },\n",
     ] {
         let mut srcs = sources();
         let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
