@@ -165,8 +165,8 @@ depositor's. An external source is sent `places` beside the observation:
 THE GATE's distance and bearing, and each work's name, state, where its
 terminal is, what its quota still needs, its fuel and what it unlocks.
 
-The scripted policy buys a metal hatchet or pickaxe when it can, and with
-its own base done or living in the team's, feeds a work what it has 3000
+The scripted policy, once its own base is done or it lives in the team's,
+buys a metal hatchet or pickaxe when it can, feeds a work what it has 3000
 of and sells wood or stone past 6000.
 
 Reflexes under every goal: the respawn verb on the death screen (a beach,

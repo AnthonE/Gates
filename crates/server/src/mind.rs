@@ -2086,18 +2086,19 @@ impl Scripted {
                 return (goal, "scripted: a supply run for the team's chest");
             }
         }
-        // THE GATE and the works. A metal tool it can buy is bought; with
-        // its own base done, or living in the team's, surplus is sold and
-        // plenty goes to the works, which unlock things for everyone.
-        for tool in ["Metal Hatchet", "Metal Pickaxe"] {
-            if let Some(goal) = Name::new(tool.as_bytes())
-                .map(Goal::Buy)
-                .filter(|g| s.offers(*g) && s.count_of(tool) == 0)
-            {
-                return (goal, "scripted: a metal tool at the gate");
-            }
-        }
+        // THE GATE and the works, once its own base is done or it lives in
+        // the team's (before then the junk and the walk are the base's): a
+        // metal tool it can buy is bought, surplus is sold, and plenty goes
+        // to the works, which unlock things for everyone.
         if s.milestone == Milestone::Done || s.team.lives_there {
+            for tool in ["Metal Hatchet", "Metal Pickaxe"] {
+                if let Some(goal) = Name::new(tool.as_bytes())
+                    .map(Goal::Buy)
+                    .filter(|g| s.offers(*g) && s.count_of(tool) == 0)
+                {
+                    return (goal, "scripted: a metal tool at the gate");
+                }
+            }
             let plenty = |name: &str| s.count_of(name) >= SCRIPTED_PLENTY;
             if s.offers(Goal::FeedWork) && (plenty("Wood") || plenty("Stone")) {
                 return (Goal::FeedWork, "scripted: plenty to give a work");
