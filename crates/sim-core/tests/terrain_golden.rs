@@ -203,10 +203,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// got its power poles** (`landmark::stamp`, `poles.rs`): pads levelled, the
 /// quarry's floor cut and its walls banked into the hill, and nothing grows
 /// at a pole's foot.
-/// **Moved → `0xE18D_B184_A09D_2102` at the desert** (2026-10-13): the
-/// golden's cells are north of the desert's reach and no height moved, but
+/// **Moved → `0x519B_594E_B291_2C10` at the desert** (2026-10-13): the
+/// golden's cells are short of the desert's reach and no height moved, but
 /// the desert's row carries ore, so `Haven::ore_pm` rescales.
-const GOLDEN_TERRAIN_HASH: u64 = 0xE18D_B184_A09D_2102;
+const GOLDEN_TERRAIN_HASH: u64 = 0x519B_594E_B291_2C10;
 
 #[test]
 fn test_terrain_golden() {

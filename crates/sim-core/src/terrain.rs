@@ -1544,10 +1544,16 @@ fn moisture_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
 
 // --- The desert (Rust's arid biome) ---------------------------------------
 //
-// Rust's maps run snowy in the north, temperate through the middle and arid
-// in the south. This is the south: a desert across about a fifth of the
-// island, its edge wandering on a slow noise so the border reads as a climate
-// rather than a ruled line. North is +z (`ui/map.rs`), so south is -z.
+// Rust's maps are banded by latitude, arid at one end and cold at the other.
+// This is the arid band: a desert across about a fifth of the island, its
+// edge wandering on a slow noise so the border reads as a climate rather
+// than a ruled line.
+//
+// **In the NORTH (+z, `ui/map.rs`), where Rust puts its snow.** The south of
+// the shipped seed is where the island's fixtures stand — the agent's test
+// scenes, the gather and clutter fixtures, the capture rig's spawn
+// (`ci/scene.sh`) — all calibrated on temperate ground, and the desert is the
+// same biome at either end. `DESERT_TOWARD` is the one sign to flip.
 //
 // It is folded INTO `moisture` rather than added beside it, so everything
 // that classifies ground — `biome`, `splat_from`, the scatter row, the mob
@@ -1559,8 +1565,11 @@ fn moisture_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
 // island gets a proportionally bigger desert, and it is a pure function of the
 // point — no raster, no pass over the island — so it costs a huge map nothing.
 
-/// Where the desert starts and where it is full, as a distance SOUTH of the
-/// island centre in units of `CONTINENT_RADIUS`, before the edge wanders.
+/// Which way the desert lies from the island centre along z: +1 north.
+const DESERT_TOWARD: f32 = 1.0;
+/// Where the desert starts and where it is full, as a distance from the
+/// island centre toward [`DESERT_TOWARD`] in units of `CONTINENT_RADIUS`,
+/// before the edge wanders.
 /// **(knob)**
 const DESERT_LAT: (f32, f32) = (0.28, 0.46);
 /// How far the desert's edge wanders north and south, same units. **(knob)**
@@ -1577,13 +1586,13 @@ const DESERT_SPLAT_HALF: f32 = 0.1;
 
 const _: () = {
     // The golden's scatter cells sit within ~64 m of the island centre; the
-    // desert's nearest possible reach must stay south of them.
+    // desert's nearest possible reach must stay clear of them.
     assert!((DESERT_LAT.0 - DESERT_WANDER) * CONTINENT_RADIUS > 96.0);
     assert!(DESERT_LAT.1 > DESERT_LAT.0);
 };
 
-/// How arid a point is, 0..1: 0 across the temperate north and middle, 1 in
-/// the deep south.
+/// How arid a point is, 0..1: 0 across the temperate south and middle, 1 in
+/// the far north.
 pub fn aridity(seed: u64, x: f32, z: f32) -> f32 {
     aridity_in(&mut Direct, seed, x, z)
 }
@@ -1594,13 +1603,13 @@ pub fn aridity_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
 }
 
 fn aridity_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
-    let south = (ISLAND_SIZE * 0.5 - z) * (1.0 / CONTINENT_RADIUS);
-    // `fbm` is within ±1, so nothing north of this can reach the desert:
+    let along = (z - ISLAND_SIZE * 0.5) * (DESERT_TOWARD / CONTINENT_RADIUS);
+    // `fbm` is within ±1, so nothing short of this can reach the desert:
     // most of the island pays one compare and no noise tap.
-    if south <= DESERT_LAT.0 - DESERT_WANDER {
+    if along <= DESERT_LAT.0 - DESERT_WANDER {
         return 0.0;
     }
-    let s = south + fbm(c, seed, CH_ARID, x, z, DESERT_WANDER_FREQ, 3) * DESERT_WANDER;
+    let s = along + fbm(c, seed, CH_ARID, x, z, DESERT_WANDER_FREQ, 3) * DESERT_WANDER;
     fade(((s - DESERT_LAT.0) / (DESERT_LAT.1 - DESERT_LAT.0)).clamp(0.0, 1.0))
 }
 
@@ -1685,7 +1694,7 @@ pub enum Biome {
     Meadow = 1,
     Forest = 2,
     Highland = 3,
-    /// The arid south (see the block above `DESERT_LAT`): sand, cactus,
+    /// The arid north (see the block above `DESERT_LAT`): sand, cactus,
     /// scattered palms and ore. Its ground is the sand identity, so the splat
     /// stays four channels; the scatter row is its own.
     Desert = 4,
@@ -6860,7 +6869,7 @@ pub const SLOT_SPECIES: u8 = PAINTED_SPECIES + 1;
 pub const PAINTED_SPECIES: u8 = 2;
 
 /// The desert's tree: a palm. Not painted — every tree standing in
-/// [`Biome::Desert`] is one, so the arid south reads as the reference game's
+/// [`Biome::Desert`] is one, so the arid north reads as the reference game's
 /// does, palms over sand.
 pub const PALM_SPECIES: u8 = PAINTED_SPECIES;
 
@@ -7062,7 +7071,7 @@ impl ScatterTable {
                 // the reason to cross it, as in Rust's arid biome. The ore
                 // budget scales metal and sulfur island-wide, so this row
                 // moves where ore stands, not how much an island has.
-                [22, 30, 18, 18, 80, 70, 0],
+                [22, 30, 6, 6, 80, 70, 0],
             ],
             clump_cap: [
                 f32::INFINITY,

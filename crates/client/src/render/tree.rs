@@ -146,7 +146,7 @@ pub const SPECIES: [SpeciesDef; 3] = [
         bark_hi: BIRCH_BARK_HI,
     },
     // **The desert's palm** (`terrain::PALM_SPECIES`): a bare trunk and a
-    // drooping crown of fronds at the top, the arid south's tree in the
+    // drooping crown of fronds at the top, the arid north's tree in the
     // reference game. Generated as an `Evergreen` so it wears the pine's bark
     // and needle sprigs — at frond scale a needle card reads as leaflets — in
     // its own yellower greens. As tall as the broadleaf, so the sim's blocked
