@@ -343,16 +343,16 @@ fn conifer_settings() -> TreeMeshSettings {
             // trunk to `OCCUPANT_R_M[Tree]` within a millimetre.
             //
             // At 42 m (2026-10-13) the sweep reads crown 5.10 m on the
-            // shipped seeds and 5.63 over fifteen against the 6.2 ceiling;
-            // trunk_base_radius 0.48 puts the widest shipped trunk at
-            // 0.4687 m.
+            // shipped seeds and 5.75 over fifteen against the 6.2 ceiling;
+            // trunk_base_radius 0.2456 keeps the widest shipped trunk at
+            // 0.2393 m — the sim's cylinder, unchanged by the rescale.
             //
             // **Re-swept for the 42 m tree (2026-10-13).** The trunk is
             // generated at full length so the fit is near 1 and limbs, cards
             // and bark keep real-world sizes; the limbs lengthened to carry a
             // crown that reads as a tall pine rather than a pole.
             length: [42.0, 4.4, 0.0, 0.0],
-            trunk_base_radius: 0.48,
+            trunk_base_radius: 0.2456,
             radius_factor: [1.0, 0.13, 0.0, 0.0],
             sections: [10, 4, 0, 0],
             segments: [7, 4, 0, 0],
@@ -428,7 +428,7 @@ fn broadleaf_settings() -> TreeMeshSettings {
             // reads 0.233 m at the base, inside the sim's cylinder, which the
             // conifer sets (`OCCUPANT_R_M[Tree]`).
             length: [13.5, 2.1, 0.55, 0.0],
-            trunk_base_radius: 0.19,
+            trunk_base_radius: 0.098,
             radius_factor: [1.0, 0.42, 0.34, 0.0],
             sections: [10, 4, 2, 0],
             segments: [7, 4, 3, 0],
@@ -481,7 +481,7 @@ fn palm_settings() -> TreeMeshSettings {
             // 12 % that is 0–5.8 m, the long fronds lowest and the short new
             // ones upright at the crown. Swept: 6.66 m of reach.
             length: [33.0, 58.0, 0.0, 0.0],
-            trunk_base_radius: 0.45,
+            trunk_base_radius: 0.24,
             radius_factor: [1.0, 0.05, 0.0, 0.0],
             sections: [12, 6, 0, 0],
             segments: [7, 3, 0, 0],

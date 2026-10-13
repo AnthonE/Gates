@@ -9533,10 +9533,10 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     // geometry intentionally exceeds its collision; `tree.rs`'s two gates say
     // so in both directions.
     //
-    // **0.4687 since the trees tripled in height (2026-10-13)**: a 42 m pine
-    // on the old 0.24 m trunk was a pole. Re-measured off the pine, which is
-    // now the wider of the two at the base.
-    0.4687,
+    // **Unchanged when the trees tripled in height (2026-10-13)**: the 42 m
+    // pine is drawn on the same trunk, a tall slim pine's, so a body stops
+    // where it always did.
+    0.2398,
     // The three ore nodes share one mesh, so they share one measurement:
     // `blob_mesh(1.0, 0.46, …)` reaches 0.914739 m, NOT the nominal 1.0 —
     // the jitter displaces inward. Rounded outward at 4 dp, the convention
@@ -9674,7 +9674,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         // The trunk at its base, measured off the drawn bark by
         // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
         // not the 0.26 a deleted three.js cylinder used to justify.
-        Occupant::Tree => (0.4687, 33.0),
+        Occupant::Tree => (0.2398, 33.0),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),

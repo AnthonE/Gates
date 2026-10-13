@@ -1728,10 +1728,15 @@ mod tests {
             site: SITE_TOWN,
             ..Spot::default()
         };
-        let nowhere = Spot {
-            site: sim_core::spot::SITE_LANDMARK0, // a mast: this seed has none
-            ..Spot::default()
-        };
+        // A landmark kind this seed has none of, found rather than named:
+        // which kinds stand where follows the ground they stand on.
+        let nowhere = (sim_core::spot::SITE_LANDMARK0..=sim_core::spot::SITE_MAX)
+            .map(|site| Spot {
+                site,
+                ..Spot::default()
+            })
+            .find(|p| sim_core::spot::world(&haven, p).is_none())
+            .expect("this seed lacks at least one landmark kind");
         let mut arc = ArcMarks::default();
         arc.add_work(at_town, "THE CRUCIBLE");
         arc.add_work(nowhere, "THE LOST");

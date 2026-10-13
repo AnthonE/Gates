@@ -5539,6 +5539,10 @@ mod tests {
         // ahead-right or ahead-left, never beside or behind.
         for yaw in [1u16 << 14, 1 << 15, 3 << 14] {
             view.entities[0].1.yaw = yaw;
+            // What the sweep sees, not what the bot remembers: recall
+            // (`RECALL_SECS`) deliberately keeps the tree it just turned
+            // from, which on open ground is the only one there is.
+            bot.recall = Default::default();
             for _ in 0..SIGHT_WIDTH * SIGHT_WIDTH {
                 bot.frame_at(&view, 1, 1, now);
             }

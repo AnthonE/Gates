@@ -65,7 +65,7 @@ pub const PINE_TRUNK_H: f32 = 5.7;
 /// **42 m since 2026-10-13, from 14** (operator: *"our trees need to be like
 /// triple the height"*). Rust's pines tower over a player; ours read as
 /// shrubs from any height. The crown widened with it but not threefold — a
-/// real pine is a spire — and the trunk thickened to carry it.
+/// real pine is a spire — on the same slim trunk, the sim's cylinder.
 pub const PINE_H: f32 = 42.0;
 /// How far a whorl vertex may be pulled IN toward its axis, as a fraction of
 /// that whorl's radius. It only ever pulls in, never out, which is what keeps
