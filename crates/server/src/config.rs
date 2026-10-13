@@ -112,6 +112,12 @@ pub struct ShardConfig {
     /// standing in the open, which is every capture probe on a slow box.
     /// Default `true`, the content's own heli.
     pub dev_heli: bool,
+    /// Dev-only: `dev_works_lit = true` opens and lights every work on the
+    /// first sweep after boot, by setting each one's opening and fallback
+    /// hour to zero — the real path, events, unlocks and all. The island is
+    /// at the top of the arc at once: guns unlocked, and the animals at fel
+    /// tier C, which is otherwise days of play away. Default `false`.
+    pub dev_works_lit: bool,
     /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
     /// resolves against the CWD, which the repo commands make the repo
     /// root. The shard binary refuses to boot on invalid content.
@@ -399,6 +405,7 @@ impl ShardConfig {
             key_pem: None,
             require_auth: false,
             dev_heli: true,
+            dev_works_lit: false,
             content_dir: "content".into(),
             save_file: None,
             world_file: None,
@@ -575,6 +582,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut content_dir: Option<String> = None;
     let mut require_auth: Option<bool> = None;
     let mut dev_heli: Option<bool> = None;
+    let mut dev_works_lit: Option<bool> = None;
     let mut cert_pem: Option<String> = None;
     let mut key_pem: Option<String> = None;
     let mut save_file: Option<String> = None;
@@ -781,6 +789,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 other => {
                     return Err(format!(
                         "shard.toml line {}: dev_heli must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
+            "dev_works_lit" => match value {
+                "true" => dev_works_lit = Some(true),
+                "false" => dev_works_lit = Some(false),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: dev_works_lit must be true or false, got `{other}`",
                         n + 1
                     ))
                 }
@@ -1358,6 +1376,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         key_pem,
         require_auth: require_auth.unwrap_or(false),
         dev_heli: dev_heli.unwrap_or(true),
+        dev_works_lit: dev_works_lit.unwrap_or(false),
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
         save_file,
         world_file,

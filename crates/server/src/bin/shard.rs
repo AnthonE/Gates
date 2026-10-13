@@ -178,6 +178,16 @@ async fn main() {
         println!("⚠ dev_heli = false: no patrol heli — a DEV shard, never a public one");
         tables.heli = sim_core::heli::HeliDef::INERT;
     }
+    if cfg.dev_works_lit {
+        println!(
+            "⚠ dev_works_lit: every work opens and lights on the first sweep — the arc's \
+             top and fel tier C at boot, a DEV shard, never a public one"
+        );
+        for d in tables.works.defs.iter_mut() {
+            d.opens_at = 0;
+            d.fallback_at = 0;
+        }
+    }
     // What this shard IS, before what it loaded. Three numbers and they are
     // three different questions (`protocol::version`): the build is what to
     // quote in a bug report, `proto` is the exact wire gate, and the floor is
