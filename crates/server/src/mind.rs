@@ -359,13 +359,11 @@ impl Goal {
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
             Goal::Follow => "Stay with a teammate; fight their attackers.".into(),
-            Goal::Deliver => {
-                "Take the pack (not tools, weapons or armour) to the team's box and put it in.".into()
-            }
-            Goal::SupplyWood => "Chop wood a few minutes, then put it in the team's box.".into(),
-            Goal::SupplyStone => "Mine stone a few minutes, then put it in the team's box.".into(),
-            Goal::SupplyOre => "Mine metal and sulfur ore a few minutes, then put it in the team's box.".into(),
-            Goal::SupplyHemp => "Pick hemp a few minutes, then put the cloth in the team's box.".into(),
+            Goal::Deliver => "Put the pack in the team's box.".into(),
+            Goal::SupplyWood => "Chop wood, then put it in the team's box.".into(),
+            Goal::SupplyStone => "Mine stone, then put it in the team's box.".into(),
+            Goal::SupplyOre => "Mine ore, then put it in the team's box.".into(),
+            Goal::SupplyHemp => "Pick hemp, then put it in the team's box.".into(),
         }
     }
 }
