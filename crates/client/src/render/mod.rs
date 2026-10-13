@@ -76,6 +76,8 @@ pub mod foliage;
 // rule rather than a preference.
 pub mod feed;
 pub mod fx;
+/// THE GATE's ruin, alive: hanging fragments, arcs, motes, beacons.
+pub mod gate_fx;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -103,6 +105,8 @@ pub mod portrait;
 // The fires fire arrows leave.
 pub mod arrow_fire;
 pub mod town;
+/// THE GATE's yard, lived in: festoons, braziers, searchlights, banners.
+pub mod town_fx;
 pub mod tracer;
 // The monuments' stains and moss (`weathering.wgsl`).
 pub mod weathering;
@@ -157,6 +161,8 @@ pub mod moon;
 /// screen, and by targets that have no screens at all. See the module docs.
 pub mod screen;
 pub mod sentry;
+/// THE GATE's name on screen as you cross into its safe zone.
+pub mod title_card;
 pub mod town_signs;
 // The mip chains for `assets/textures/`. Bevy builds none for an ordinary
 // image format, and a one-level photograph minified across the island is the
@@ -1292,6 +1298,31 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
         )
+        // THE GATE's ruin (`gate_fx.rs`): built once after the town, then
+        // swayed, discharged and breathed every frame; drawn after the
+        // camera is final, like the particles.
+        .add_systems(
+            Update,
+            (
+                gate_fx::spawn.after(town::spawn),
+                gate_fx::animate.after(town::lamps).after(gate_fx::spawn),
+                town_fx::spawn.after(town::spawn),
+                town_fx::animate
+                    .after(town::lamps)
+                    .after(town_fx::spawn)
+                    .before(fx::world::fires),
+            )
+                .run_if(world_placed)
+                .run_if(world_running)
+                .run_if(move || !plate || filming),
+        )
+        .add_systems(
+            PostUpdate,
+            (gate_fx::aim, gate_fx::draw)
+                .after(bevy::transform::TransformSystems::Propagate)
+                .run_if(world_running)
+                .run_if(move || !plate || filming),
+        )
         // The particles draw after the camera's transform is final for the
         // frame: a billboard faces the camera this frame renders.
         .add_systems(
@@ -1805,6 +1836,15 @@ impl Plugin for GatesRenderPlugin {
                 props::grow.after(feed::drain).after(Stream),
             )
                 .run_if(world_running),
+        )
+        // THE GATE's title card, on the way in and out. HUD, so not on a
+        // plate run.
+        .add_systems(
+            Update,
+            title_card::card
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !plate),
         )
         // Audio runs AFTER the streamers and `pump` runs last of all: every
         // producer must have had its say before the mixer resolves the frame,

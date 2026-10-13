@@ -690,11 +690,19 @@ pub const FIRE_REACH_M: f32 = 14.0;
 /// Lit fires crackle: the nearest lit fire or furnace in reach, a short
 /// recorded crackle every half second to a second. The fire's light is lit
 /// exactly when the sim says the fire is (`structures::fire_lights`), so the
-/// light is the authority here too.
+/// light is the authority here too. THE GATE's braziers (`town_fx`) are
+/// always lit, and crackle the same way.
+#[allow(clippy::type_complexity)]
 pub fn fires(
     time: Res<Time>,
     eye: Res<Eye>,
-    lights: Query<(&PointLight, &GlobalTransform), With<super::structures::FireLight>>,
+    lights: Query<
+        (&PointLight, &GlobalTransform),
+        Or<(
+            With<super::structures::FireLight>,
+            With<super::town_fx::Brazier>,
+        )>,
+    >,
     mut sound: ResMut<Sound>,
     mut next: Local<(f32, u32)>,
 ) {
