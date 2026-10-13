@@ -20,12 +20,15 @@
 //! a character only when the whole of it fits, which is the only rule that
 //! keeps "what you can type" and "what will send" the same set.
 
-use protocol::chat::{ChatText, CHAT_MAX_BYTES};
+use protocol::chat::{Channel, ChatText, CHAT_MAX_BYTES};
 
 /// The `/g ` prefix that sends a line to everyone instead of to the 20 m
 /// radius. Consumed by the client — the server is told the channel in a
 /// bit, and never sees these two characters.
 pub const GLOBAL_PREFIX: &str = "/g ";
+/// The `/t ` prefix that sends a line to the team (wire v108), wherever
+/// they are. The client's, like `/g `.
+pub const TEAM_PREFIX: &str = "/t ";
 
 /// How many lines the scrollback holds. Bounded like every other client
 /// store (wall 4); the oldest is evicted.
@@ -77,15 +80,19 @@ impl Composer {
     /// only the prefix, or one `sanitize` refuses. The prefix is stripped
     /// **before** sanitizing so that `/g` costs the player none of their 48
     /// bytes.
-    pub fn outgoing(&self) -> Option<(bool, ChatText)> {
-        let (global, body) = match self.text.strip_prefix(GLOBAL_PREFIX) {
-            Some(rest) => (true, rest),
+    pub fn outgoing(&self) -> Option<(Channel, ChatText)> {
+        let (channel, body) = if let Some(rest) = self.text.strip_prefix(GLOBAL_PREFIX) {
+            (Channel::Global, rest)
+        } else if let Some(rest) = self.text.strip_prefix(TEAM_PREFIX) {
+            (Channel::Team, rest)
+        } else if matches!(self.text.trim_end(), "/g" | "/t") {
             // `/g` alone, with nothing after it, is a channel switch with no
             // message — not a line reading "/g".
-            None if self.text.trim_end() == "/g" => return None,
-            None => (false, self.text.as_str()),
+            return None;
+        } else {
+            (Channel::Local, self.text.as_str())
         };
-        ChatText::sanitize(body.as_bytes()).map(|t| (global, t))
+        ChatText::sanitize(body.as_bytes()).map(|t| (channel, t))
     }
 }
 
@@ -96,7 +103,7 @@ pub struct Line {
     /// What the speaker is called (`ui::names::label`), settled when the
     /// line arrived so the scrollback never renames a line under a reader.
     pub name: String,
-    pub global: bool,
+    pub channel: Channel,
     pub text: String,
     /// True for the client's own lines, so they can be drawn differently.
     pub own: bool,
@@ -127,7 +134,11 @@ impl Log {
         } else {
             line.name.clone()
         };
-        let tag = if line.global { "[G] " } else { "" };
+        let tag = match line.channel {
+            Channel::Global => "[G] ",
+            Channel::Team => "[T] ",
+            Channel::Local => "",
+        };
         format!("{tag}{who}: {}", line.text)
     }
 }
@@ -145,17 +156,26 @@ mod tests {
 
     #[test]
     fn a_plain_line_is_local() {
-        let (global, text) = composed("hello").outgoing().expect("sends");
-        assert!(!global);
+        let (channel, text) = composed("hello").outgoing().expect("sends");
+        assert_eq!(channel, Channel::Local);
         assert_eq!(text.as_bytes(), b"hello");
+    }
+
+    #[test]
+    fn the_team_prefix_is_stripped_like_the_global_one() {
+        let (channel, text) = composed("/t on my way").outgoing().expect("sends");
+        assert_eq!(channel, Channel::Team);
+        assert_eq!(text.as_bytes(), b"on my way");
+        assert!(composed("/t").outgoing().is_none());
+        assert!(composed("/t ").outgoing().is_none());
     }
 
     /// The prefix is the client's and never reaches the wire — the channel
     /// crosses as a bit.
     #[test]
     fn the_global_prefix_is_stripped_and_costs_no_bytes() {
-        let (global, text) = composed("/g hello").outgoing().expect("sends");
-        assert!(global);
+        let (channel, text) = composed("/g hello").outgoing().expect("sends");
+        assert_eq!(channel, Channel::Global);
         assert_eq!(text.as_bytes(), b"hello");
     }
 
@@ -230,7 +250,7 @@ mod tests {
             log.push(Line {
                 speaker: i as u32,
                 name: format!("#{i}"),
-                global: false,
+                channel: Channel::Local,
                 text: format!("line {i}"),
                 own: false,
             });
@@ -244,15 +264,20 @@ mod tests {
         let l = Line {
             speaker: 4,
             name: "Ash".into(),
-            global: true,
+            channel: Channel::Global,
             text: "hi".into(),
             own: false,
         };
         assert_eq!(Log::render(&l), "[G] Ash: hi");
         let l = Line {
+            channel: Channel::Team,
+            ..l
+        };
+        assert_eq!(Log::render(&l), "[T] Ash: hi");
+        let l = Line {
             speaker: 4,
             name: "Ash".into(),
-            global: false,
+            channel: Channel::Local,
             text: "hi".into(),
             own: true,
         };

@@ -197,11 +197,11 @@ fn close(chat: &mut Chat, cursor: &mut Query<&mut CursorOptions, With<PrimaryWin
 }
 
 fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
-    let Some((global, text)) = chat.composer.outgoing() else {
+    let Some((channel, text)) = chat.composer.outgoing() else {
         return; // nothing to say, or only a channel switch
     };
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::chat::encode_chat(text.as_bytes(), global, &mut buf) {
+    match protocol::chat::encode_chat(text.as_bytes(), channel, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             // **The line is not echoed locally.** The server fans it back to
             // this client like any other, and echoing would print it twice —
@@ -220,7 +220,7 @@ fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
 /// Drain the core's chat ring into the log.
 pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>) {
     let own = net.session.core.player_id;
-    while let Some((speaker, global, text)) = net.session.core.pop_chat() {
+    while let Some((speaker, channel, text)) = net.session.core.pop_chat() {
         // Valid UTF-8 by construction (`ChatText` is only built by
         // `sanitize`), but a decode that somehow was not is dropped rather
         // than drawn as replacement characters — this is the one payload on
@@ -232,7 +232,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>) {
         chat.log.push(Line {
             speaker,
             name,
-            global,
+            channel,
             text: s.to_string(),
             own: speaker == own,
         });
@@ -257,7 +257,7 @@ pub fn draw(
             // The remaining count is drawn because a cap the player cannot
             // see is a cap that feels like a broken keyboard.
             format!(
-                "say: {}_    ({} left, /g for global, Esc cancels)",
+                "say: {}_    ({} left, /g global, /t team, Esc cancels)",
                 chat.composer.text,
                 chat.composer.remaining()
             )
@@ -270,21 +270,22 @@ pub fn draw(
         return;
     };
     commands.entity(root).despawn_related::<Children>();
-    let lines: Vec<(String, bool)> = chat
+    let lines: Vec<(String, protocol::Channel)> = chat
         .log
         .lines
         .iter()
-        .map(|l| (Log::render(l), l.global))
+        .map(|l| (Log::render(l), l.channel))
         .collect();
     commands.entity(root).with_children(|c| {
-        for (text, global) in lines {
+        for (text, channel) in lines {
             c.spawn((
                 Text::new(text),
                 super::ui::font(14.0),
-                TextColor(if global {
-                    Color::srgba(0.86, 0.88, 0.96, 0.90)
-                } else {
-                    Color::srgba(0.92, 0.90, 0.84, 0.85)
+                TextColor(match channel {
+                    protocol::Channel::Global => Color::srgba(0.86, 0.88, 0.96, 0.90),
+                    // The team's green, as on their marks (`render::team`).
+                    protocol::Channel::Team => Color::srgba(0.55, 0.92, 0.55, 0.92),
+                    protocol::Channel::Local => Color::srgba(0.92, 0.90, 0.84, 0.85),
                 }),
                 // The chat log is the longest-lived floating string in the
                 // client and the only one a stranger writes the content of, so

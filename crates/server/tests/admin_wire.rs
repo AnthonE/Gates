@@ -98,7 +98,7 @@ fn say(core: &mut ShardCore, slot: usize, text: &str) {
     core.push_chat(
         slot,
         ChatMsg {
-            global: true,
+            channel: protocol::Channel::Global,
             text: line(text),
         },
     );

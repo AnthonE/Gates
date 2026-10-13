@@ -83,7 +83,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Swipe { .. } => Kind::Move,
         // A deposit moves a pack's worth of items, like a trade.
         ActionMsg::Arc { .. } => Kind::Move,
-        ActionMsg::Use { .. } => Kind::Use,
+        // A team verb tells every member: a door's pace.
+        ActionMsg::Use { .. } | ActionMsg::Team { .. } => Kind::Use,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,
         ActionMsg::Place { .. } | ActionMsg::Upgrade { .. } | ActionMsg::Rotate { .. } => {

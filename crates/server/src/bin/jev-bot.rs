@@ -318,6 +318,12 @@ fn print_report(label: &str, survivor: &Survivor) {
             })
             .collect();
         println!("{label}gathered: {}", gathered.join(", "));
+        if survivor.delivered > 0 || survivor.took > 0 {
+            println!(
+                "{label}team's boxes: {} units put in, {} taken out",
+                survivor.delivered, survivor.took
+            );
+        }
         let mut pack: Vec<(String, u32)> = Vec::new();
         for stack in core.inv.iter().filter(|s| s.count > 0) {
             let name = String::from_utf8_lossy(core.catalog.name(stack.item as usize)).into_owned();

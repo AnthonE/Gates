@@ -148,6 +148,10 @@ pub enum AdminCmd {
     /// `/top` (or `/standings`, `/lb`): the wipe's standings and where the
     /// asker stands, said to the asker only. Anyone may ask.
     Top,
+    /// `/team <verb> [id]` (wire v108): the team verbs the action lane
+    /// carries (`ActionMsg::Team`), typed. Anyone may. `target` is 0 where
+    /// none was given; a leading `#` on the id is the chat's own label.
+    Team { op: u8, target: u32 },
 }
 
 /// Is this line addressed to the server at all? Cheap enough to ask
@@ -210,6 +214,22 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
             // Zero is a no-op dressed as a verb; refuse it at the parse so
             // the dispatcher never has to have an opinion.
             (count > 0).then_some(AdminCmd::Give { item, count })
+        }
+        "team" => {
+            let op = match parts.next()? {
+                "invite" | "inv" => crate::TEAM_OP_INVITE,
+                "accept" | "join" | "yes" => crate::TEAM_OP_ACCEPT,
+                "decline" | "no" => crate::TEAM_OP_DECLINE,
+                "leave" | "quit" => crate::TEAM_OP_LEAVE,
+                "kick" => crate::TEAM_OP_KICK,
+                "promote" | "lead" => crate::TEAM_OP_PROMOTE,
+                _ => return None,
+            };
+            let target = match parts.next() {
+                None => 0,
+                Some(w) => w.strip_prefix('#').unwrap_or(w).parse().ok()?,
+            };
+            (parts.next().is_none()).then_some(AdminCmd::Team { op, target })
         }
         "save" => Some(AdminCmd::SaveNow),
         "brain" => Some(AdminCmd::Brain),
@@ -289,6 +309,35 @@ mod tests {
 
     fn text(s: &str) -> ChatText {
         ChatText::sanitize(s.as_bytes()).expect("a legal chat line")
+    }
+
+    #[test]
+    fn team_parses() {
+        use crate::{TEAM_OP_ACCEPT, TEAM_OP_KICK, TEAM_OP_LEAVE};
+        assert_eq!(
+            parse(&text("/team leave")),
+            Some(AdminCmd::Team {
+                op: TEAM_OP_LEAVE,
+                target: 0
+            })
+        );
+        assert_eq!(
+            parse(&text("/team kick #259")),
+            Some(AdminCmd::Team {
+                op: TEAM_OP_KICK,
+                target: 259
+            })
+        );
+        assert_eq!(
+            parse(&text("/team accept 7")),
+            Some(AdminCmd::Team {
+                op: TEAM_OP_ACCEPT,
+                target: 7
+            })
+        );
+        for bad in ["/team", "/team dance", "/team kick ash", "/team kick 1 2"] {
+            assert_eq!(parse(&text(bad)), None, "{bad}");
+        }
     }
 
     #[test]

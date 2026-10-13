@@ -17,9 +17,10 @@ pub const THINK_INTERVAL: Duration = Duration::from_secs(1);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 /// Test bound on the largest request a summary can produce; its size is
-/// what a decision costs. Not sent anywhere.
+/// what a decision costs. Not sent anywhere. Raised from 6 KiB when the team
+/// chest's goals joined the vocabulary.
 #[cfg(test)]
-const REQUEST_BYTES_MAX: usize = 6 * 1024;
+const REQUEST_BYTES_MAX: usize = 7 * 1024;
 
 const INSTRUCTIONS: &str = "Choose the next goal for a player in a survival game. \
 A local controller carries the goal out with ordinary player inputs and reports how it went. \
@@ -102,6 +103,7 @@ impl Jev {
             input_tokens,
             output_tokens,
             say: crate::mind::Say::Quiet,
+            code: None,
         })
     }
 }

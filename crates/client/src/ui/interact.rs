@@ -2087,6 +2087,39 @@ pub fn resolve_give(
     if stack.count == 0 {
         return None;
     }
+    resolve_player(aim, own, entities).map(|target| GivePick {
+        target,
+        slot,
+        item: stack.item,
+        count: stack.count,
+    })
+}
+
+/// The invite key's target (`N`, wire v108): the standing player the give
+/// key would name, if they are not already on your team and your team can
+/// take them — you lead it, or have none, and it is not full. Rust's
+/// look-and-press invite; the shard checks the reach again (`team.rs`).
+pub fn resolve_invite(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+    team: &protocol::TeamView,
+) -> Option<u32> {
+    let mine =
+        team.count == 0 || (team.leader == own && (team.count as usize) < protocol::TEAM_MAX);
+    if !mine {
+        return None;
+    }
+    resolve_player(aim, own, entities).filter(|&id| !team.has(id))
+}
+
+/// The nearest standing, awake player (not down, not dead, not a sleeper,
+/// not an animal, not you) whose body the aim enters inside hand reach.
+fn resolve_player(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+) -> Option<u32> {
     let body = Body {
         qx: quant_xz(aim.x),
         qy: quant_y(aim.y),
@@ -2121,12 +2154,7 @@ pub fn resolve_give(
             }
         }
     }
-    best.map(|(_, target)| GivePick {
-        target,
-        slot,
-        item: stack.item,
-        count: stack.count,
-    })
+    best.map(|(_, target)| target)
 }
 
 /// The give key's line: what, how many and to whom, and while the key is

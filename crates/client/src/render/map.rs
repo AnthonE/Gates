@@ -124,6 +124,14 @@ pub struct MapRoot;
 #[derive(Component)]
 pub struct Marker;
 
+/// A teammate's dot (wire v108): slot `i` of the team view, placed by
+/// [`mates`] every frame — Rust shows the team on the map wherever they are.
+#[derive(Component)]
+pub struct MateDot(pub usize);
+/// The name under a teammate's dot.
+#[derive(Component)]
+pub struct MateName(pub usize);
+
 /// The line above the island: which square you are in, and which way you are
 /// facing. Its own component because [`track`] rewrites it every frame — see
 /// there for why it cannot be written once at `setup`.
@@ -547,6 +555,41 @@ pub fn setup(
                         ..default()
                     },
                 ));
+                // Teammates (wire v108), under the arrow; [`mates`] places
+                // and shows them.
+                for i in 0..protocol::TEAM_MAX {
+                    frame
+                        .spawn((
+                            MateDot(i),
+                            Node {
+                                position_type: PositionType::Absolute,
+                                width: Val::Px(MATE_PX),
+                                height: Val::Px(MATE_PX),
+                                margin: UiRect::all(Val::Px(-MATE_PX * 0.5)),
+                                border: UiRect::all(Val::Px(1.5)),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(super::team::MATE_INK),
+                            BorderColor::all(Color::srgba(0.05, 0.12, 0.05, 0.9)),
+                            Visibility::Hidden,
+                        ))
+                        .with_children(|dot| {
+                            dot.spawn((
+                                MateName(i),
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    top: Val::Px(MATE_PX + 2.0),
+                                    left: Val::Px(-20.0),
+                                    ..default()
+                                },
+                                Text::new(""),
+                                ui::font(11.0),
+                                TextColor(super::team::MATE_INK),
+                                ui::TEXT_SHADOW,
+                            ));
+                        });
+                }
                 let arrow = icons.and_then(|i| i.glyph("map_player"));
                 // With no icon baked, or before the asset server settles: the
                 // small square this screen shipped for a year, so the panel
@@ -860,6 +903,46 @@ pub fn track(
         // is up.
         if text.0 != line {
             text.0 = line;
+        }
+    }
+}
+
+/// A teammate's dot, pixels.
+const MATE_PX: f32 = 9.0;
+
+/// The team's dots (wire v108): every teammate but you where the team view
+/// last put them, grey asleep, red down.
+pub fn mates(
+    net: NonSend<Net>,
+    mut dots: Query<(&MateDot, &mut Node, &mut Visibility, &mut BackgroundColor)>,
+    mut names: Query<(&MateName, &mut Text)>,
+) {
+    let core = &net.session.core;
+    let team = core.team();
+    let shown = |i: usize| {
+        team.members()
+            .get(i)
+            .filter(|m| m.id != core.player_id)
+            .copied()
+    };
+    for (dot, mut node, mut vis, mut ink) in &mut dots {
+        match shown(dot.0) {
+            Some(m) => {
+                let (px, py) = map::world_to_map(f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5, 1);
+                node.left = Val::Percent(px * 100.0);
+                node.top = Val::Percent(py * 100.0);
+                ink.0 = super::team::ink(m.state);
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
+        }
+    }
+    for (name, mut text) in &mut names {
+        let want = shown(name.0)
+            .map(|m| crate::ui::names::of(core, m.id))
+            .unwrap_or_default();
+        if text.0 != want {
+            text.0 = want;
         }
     }
 }

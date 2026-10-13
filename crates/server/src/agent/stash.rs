@@ -188,7 +188,7 @@ pub enum Transfer {
 }
 
 /// Units of an item in the pack and belt.
-fn carried(core: &ClientCore, item: u16) -> u32 {
+pub(crate) fn carried(core: &ClientCore, item: u16) -> u32 {
     core.inv[..INV_SLOTS]
         .iter()
         .filter(|s| s.count > 0 && s.item == item)
@@ -200,7 +200,7 @@ fn carried(core: &ClientCore, item: u16) -> u32 {
 /// stack of the same item with room, else an empty slot. The count may
 /// shrink to the room there; `plan_move` refuses a merge past the stack's
 /// ceiling rather than clamping it. `None` when nothing takes any.
-fn land(
+pub(crate) fn land(
     slots: &[ItemStack],
     order: impl Iterator<Item = usize> + Clone,
     stack: ItemStack,

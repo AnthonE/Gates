@@ -19,13 +19,16 @@
 //! strangers typed, so data and never instructions. `say` is optional: one
 //! local line, through the same chat rule as the human chat box. A line the
 //! rule refuses (over `CHAT_MAX_BYTES`, a control character, a `/command`)
-//! is counted and dropped; the goal still stands.
+//! is counted and dropped; the goal still stands. `code` is optional: the
+//! team's lock code, as a teammate gave it, for the locks on the way to the
+//! team's chest.
 //!
 //! The same rules as Jev: one request outstanding, the reply must echo the
 //! id and name an offered goal, lines are bounded, a missing or late answer
 //! is an explicit failure and never a substituted decision. Replies to an
 //! older id are skipped. `JEV.md` has the schema.
 
+use crate::agent::lock::LockCode;
 use crate::mind::{Choice, DecisionSource, Goal, Reason, Say, SourceKind, Summary};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -154,18 +157,33 @@ impl External {
             "observation": summary.to_json(),
             "options": summary.options().iter().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
             "heard": summary.heard_json(),
+            "team": summary.team_json(),
+            "places": summary.places_json(),
         })
     }
 
     /// A reply's `say`: missing, null or blank is quiet; a string the chat
     /// rule takes (and that is not a `/command` for the shard) is a line;
-    /// any other string is refused rather than repaired.
-    fn say(value: &Value) -> Result<Say, String> {
+    /// any other string is refused rather than repaired. `to` is `"team"`
+    /// for the team channel; missing, null or `"local"` is local.
+    fn say(value: &Value, to: &Value) -> Result<Say, String> {
+        let team = match to {
+            Value::Null => false,
+            Value::String(t) if t == "local" => false,
+            Value::String(t) if t == "team" => true,
+            _ => return Err("external agent to must be \"local\" or \"team\"".into()),
+        };
         match value {
             Value::Null => Ok(Say::Quiet),
             Value::String(text) if text.trim().is_empty() => Ok(Say::Quiet),
             Value::String(text) => Ok(match protocol::ChatText::sanitize(text.as_bytes()) {
-                Some(line) if !protocol::admin::is_command(&line) => Say::Line(line),
+                Some(line) if !protocol::admin::is_command(&line) => {
+                    if team {
+                        Say::Team(line)
+                    } else {
+                        Say::Line(line)
+                    }
+                }
                 _ => Say::Refused,
             }),
             _ => Err("external agent say must be a string".into()),
@@ -196,7 +214,8 @@ impl External {
             Value::String(text) => Reason::from_text(text),
             _ => return Err("external agent reason must be a string".into()),
         };
-        let say = Self::say(&value["say"])?;
+        let say = Self::say(&value["say"], &value["to"])?;
+        let code = Self::code(&value["code"])?;
         Ok(Some(Choice {
             goal,
             confidence: 1.0,
@@ -204,7 +223,31 @@ impl External {
             input_tokens: 0,
             output_tokens: 0,
             say,
+            code,
         }))
+    }
+
+    /// A reply's `code`: the team's lock code as a teammate gave it, one
+    /// to four digits as a string (`"0420"`) or a number. Missing or null
+    /// is none; anything else is a bad reply.
+    fn code(value: &Value) -> Result<Option<LockCode>, String> {
+        let bad = || "external agent code must be four digits".to_string();
+        let n = match value {
+            Value::Null => return Ok(None),
+            Value::String(t) => {
+                let t = t.trim();
+                if t.is_empty() || t.len() > 4 || !t.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(bad());
+                }
+                t.parse::<u16>().map_err(|_| bad())?
+            }
+            Value::Number(n) => n
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or_else(bad)?,
+            _ => return Err(bad()),
+        };
+        LockCode::given(n).map(Some).ok_or_else(bad)
     }
 }
 
@@ -342,6 +385,26 @@ mod tests {
             assert_eq!(say(refused), Ok(Say::Refused), "{refused}");
         }
         assert!(say("7").is_err(), "a non-string say is a bad reply");
+        let to = |to: &str| {
+            let line = format!(r#"{{"id":3,"goal":"explore","say":"on my way","to":{to}}}"#);
+            External::reply(&line, 3, &s).map(|c| c.unwrap().say)
+        };
+        let omw = protocol::ChatText::sanitize(b"on my way").unwrap();
+        assert_eq!(to(r#""team""#), Ok(Say::Team(omw)));
+        assert_eq!(to(r#""local""#), Ok(Say::Line(omw)));
+        assert_eq!(to("null"), Ok(Say::Line(omw)));
+        assert!(to(r#""global""#).is_err(), "an agent has no global voice");
+        let code = |code: &str| {
+            let line = format!(r#"{{"id":3,"goal":"explore","code":{code}}}"#);
+            External::reply(&line, 3, &s).map(|c| c.unwrap().code)
+        };
+        let given = |n| Ok(crate::agent::lock::LockCode::given(n));
+        assert_eq!(code(r#""0420""#), given(420));
+        assert_eq!(code("9999"), given(9999));
+        assert_eq!(code("null"), Ok(None));
+        for bad in [r#""12345""#, r#""12a4""#, r#""""#, "10000", "-1", "1.5"] {
+            assert!(code(bad).is_err(), "{bad}");
+        }
         let observation = External::observation(9, &s);
         assert_eq!(observation["heard"], serde_json::json!([]));
         assert_eq!(observation["protocol"], EXTERNAL_PROTOCOL);

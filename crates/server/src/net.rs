@@ -675,6 +675,7 @@ pub async fn spawn_shard(
         let dev_spawn = cfg.dev_spawn;
         let dev_env = cfg.dev_env;
         let admins = cfg.admins.clone();
+        let team_max = cfg.team_max;
         let standings_base = cfg
             .world_file
             .as_deref()
@@ -712,6 +713,7 @@ pub async fn spawn_shard(
                     answer_rx,
                     log,
                     admins,
+                    team_max,
                     trust,
                     slots,
                     stats,
@@ -3232,6 +3234,7 @@ fn sim_thread(
     mut answer_rx: rtrb::Consumer<crate::admin::AdminReply>,
     mut log: crate::anomaly::Sink,
     admins: crate::admin::Admins,
+    team_max: u8,
     trust: crate::trustlog::Tap,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
@@ -3304,6 +3307,7 @@ fn sim_thread(
     core.world.mech_def = mechs;
     core.arc_text = arc_text;
     core.install_admins(admins);
+    core.teams = crate::team::Teams::new(team_max);
     core.trust = trust;
     // The standings, beside the files the wipe archives with them.
     core.standings = crate::standings::Standings::open(
@@ -3937,7 +3941,8 @@ mod tests {
         let (mut tx, mut rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
         let t0 = Instant::now();
         let mut frame = [0u8; MAX_STREAM_MSG_BYTES];
-        let n = protocol::encode_chat(b"hearth is up", false, &mut frame).expect("encodes");
+        let n = protocol::encode_chat(b"hearth is up", protocol::Channel::Local, &mut frame)
+            .expect("encodes");
         // The demux itself: this frame is chat, and an action frame is not.
         assert_eq!(peek_kind(&frame[..n]), Ok(KIND_CHAT));
         let mut act = [0u8; MAX_STREAM_MSG_BYTES];

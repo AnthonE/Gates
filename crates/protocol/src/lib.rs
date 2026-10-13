@@ -48,7 +48,7 @@ pub use auth::{
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
-pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
+pub use chat::{decode_chat, encode_chat, Channel, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_agent, encode_event_assist, encode_event_auth,
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync, encode_event_bags,
@@ -93,6 +93,10 @@ pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
 pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
     STANDING_TICKER_BYTES, STANDING_TOP,
+};
+pub use event::{
+    encode_event_team, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD, TEAM_MAX,
+    TEAM_POS_MAX_M,
 };
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
@@ -1148,7 +1152,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v107 — who is a program: `SUB_AGENT` (96) carries a player id that
 /// declared `HELLO_AGENT`, guest or wallet, so chat, the kill feed, the death
 /// screen and the nametag can mark it (`PLAYERS.md`).
-pub const PROTO_VER: u16 = 107;
+/// v108 — teams (Rust's `RelationshipManager`): `ACT_TEAM` (35) carries a
+/// `TEAM_OP_*` and a player id (invite, accept, decline, leave, kick,
+/// promote), `SUB_TEAM` (97) carries the receiver's own team (leader,
+/// members with state and a 1 m position, a pending invite), and chat's
+/// one channel bit becomes two (`chat::Channel`: local, global, team).
+pub const PROTO_VER: u16 = 108;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1982,6 +1991,27 @@ const ACT_UNLOAD: u32 = 33;
 /// Pull a queued craft to the head (wire v103, `Command::CraftFastTrack`):
 /// the index and the recipe the click saw there, so a moved queue refuses.
 const ACT_FASTTRACK: u32 = 34;
+/// One team verb (wire v108, `server::team`): a `TEAM_OP_*` and the player
+/// it names (0 where the op names nobody). Never a `Command`: a team is
+/// who you talk to and see on the map, not sim state.
+const ACT_TEAM: u32 = 35;
+/// Width of `ActionMsg::Team`'s op.
+const TEAM_OP_BITS: u32 = 3;
+/// Ask `target` to join the asker's team, making one if the asker has none.
+pub const TEAM_OP_INVITE: u8 = 0;
+/// Join the team whose member `target` invited you.
+pub const TEAM_OP_ACCEPT: u8 = 1;
+/// Turn down the pending invite.
+pub const TEAM_OP_DECLINE: u8 = 2;
+/// Leave your team.
+pub const TEAM_OP_LEAVE: u8 = 3;
+/// Leader only: remove `target` from the team.
+pub const TEAM_OP_KICK: u8 = 4;
+/// Leader only: hand leadership to `target`.
+pub const TEAM_OP_PROMOTE: u8 = 5;
+/// The highest live team op.
+pub const TEAM_OP_MAX: u8 = TEAM_OP_PROMOTE;
+const _: () = assert!((TEAM_OP_MAX as u32) < (1 << TEAM_OP_BITS));
 /// Width of `ActionMsg::Arc`'s op: room for the verbs `ARC.md` still owes.
 const ARC_OP_BITS: u32 = 4;
 /// The highest live action code, named rather than counted — the event
@@ -1993,7 +2023,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_FASTTRACK;
+const ACT_MAX: u32 = ACT_TEAM;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2130,6 +2160,9 @@ const PLACE_FREEHAND_BITS: u32 = 1;
 pub enum ActionMsg {
     /// Select a wounded body. Input's BTN_ASSIST bit holds or releases it.
     Assist { target: u32 },
+    /// One team verb (v108): a `TEAM_OP_*` and the player it names.
+    /// Whether it may happen is the shard's verdict (`server::team`).
+    Team { op: u8, target: u32 },
     /// Enqueue `count` crafts of recipe row `recipe`, minted wearing skin
     /// `skin` (a catalog id; 0 for the item's own look).
     Craft { recipe: u16, count: u16, skin: u16 },
@@ -2651,6 +2684,19 @@ pub fn encode_action_give(
     w.write(ACT_GIVE, ACTION_SUB_BITS)?;
     w.write(slot as u32, ACTION_SLOT_BITS)?;
     w.write(count as u32, MOVE_COUNT_BITS)?;
+    w.write(target, 32)?;
+    Ok(w.finish())
+}
+
+/// One team verb — see [`ActionMsg::Team`].
+pub fn encode_action_team(op: u8, target: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if op > TEAM_OP_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_TEAM, ACTION_SUB_BITS)?;
+    w.write(op as u32, TEAM_OP_BITS)?;
     w.write(target, 32)?;
     Ok(w.finish())
 }
@@ -3467,6 +3513,16 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_ASSIST => ActionMsg::Assist {
             target: r.read(32)?,
         },
+        ACT_TEAM => {
+            let op = r.read(TEAM_OP_BITS)? as u8;
+            if op > TEAM_OP_MAX {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Team {
+                op,
+                target: r.read(32)?,
+            }
+        }
         ACT_RESPAWN => {
             let on_bag = r.read_bit()?;
             if r.read_bit()? {
@@ -5110,14 +5166,40 @@ mod tests {
         // ziggurat's doors (v87) 26, the bush pick (v91) 27 and THE GATE's
         // respawn point (v92) 28, the arc's one verb (v95) 29, drop
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
-        // (v102) 32 widened `ACTION_SUB_BITS` to six, and unload (v103) 33
-        // and fast-track 34.
-        assert_eq!(ACT_MAX, ACT_FASTTRACK);
+        // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
+        // and fast-track 34, and teams (v108) 35.
+        assert_eq!(ACT_MAX, ACT_TEAM);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            29,
+            28,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    #[test]
+    fn team_roundtrips_and_refuses_an_unknown_op() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        for op in 0..=TEAM_OP_MAX {
+            let n = encode_action_team(op, 0x0102_0304, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..n]),
+                Ok(ActionMsg::Team {
+                    op,
+                    target: 0x0102_0304
+                })
+            );
+        }
+        assert_eq!(
+            encode_action_team(TEAM_OP_MAX + 1, 1, &mut buf),
+            Err(WireError::Range)
+        );
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_TEAM, ACTION_SUB_BITS).unwrap();
+        w.write(TEAM_OP_MAX as u32 + 1, TEAM_OP_BITS).unwrap();
+        w.write(1, 32).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
     }
 
     #[test]

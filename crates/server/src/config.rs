@@ -325,6 +325,10 @@ pub struct ShardConfig {
     /// its agent can be watched from a browser (`jev-watch`'s temporary
     /// shard is the first).
     pub spectate: Spectate,
+    /// The most players a team may hold (`team_max`, wire v108): Rust's
+    /// `relationshipmanager.maxteamsize`, at most the wire's `TEAM_MAX` (8,
+    /// the default). 2 and 3 make a duo or trio shard; 0 or 1 turns teams off.
+    pub team_max: u8,
 }
 
 /// Default per-target seat cap once the spectator door is open — how many
@@ -430,6 +434,7 @@ impl ShardConfig {
             ban_file: None,
             population: 0,
             spectate: Spectate::OFF,
+            team_max: protocol::TEAM_MAX as u8,
         }
     }
 
@@ -600,6 +605,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut anomaly_file: Option<String> = None;
     let mut ban_file: Option<String> = None;
     let mut population: Option<usize> = None;
+    let mut team_max: Option<u8> = None;
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
     let mut entitle_sweep_secs: Option<u64> = None;
@@ -1119,6 +1125,21 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // shard that seated 99 of the 200 an operator asked for would be
             // running a population nobody chose, and the operator would read
             // the number they typed as the number that is playing.
+            "team_max" => {
+                let v: u8 = value
+                    .parse()
+                    .ok()
+                    .filter(|v| usize::from(*v) <= protocol::TEAM_MAX)
+                    .ok_or_else(|| {
+                        format!(
+                            "shard.toml line {}: team_max must be a whole number from 0 \
+                             (teams off) to {} (the wire's cap)",
+                            n + 1,
+                            protocol::TEAM_MAX
+                        )
+                    })?;
+                team_max = Some(v);
+            }
             "population" => {
                 let v: usize = value.parse().map_err(|_| {
                     format!(
@@ -1396,6 +1417,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         spectate,
+        team_max: team_max.unwrap_or(protocol::TEAM_MAX as u8),
     })
 }
 
@@ -1859,6 +1881,18 @@ mod auth_cfg_tests {
 
     /// The spectator door is shut unless the operator opens it, and opening
     /// it takes every default at once (`NETCODE.md` §2.3).
+    #[test]
+    fn team_max_defaults_to_rusts_eight_and_holds_to_the_wire() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert_eq!(parse_shard_toml(base).unwrap().team_max, 8);
+        let duo = parse_shard_toml(&format!("{base}team_max = 2\n")).unwrap();
+        assert_eq!(duo.team_max, 2);
+        for bad in ["team_max = 9\n", "team_max = -1\n", "team_max = two\n"] {
+            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
+            assert!(err.contains("team_max"), "{err}");
+        }
+    }
+
     #[test]
     fn the_spectator_door_is_shut_by_default_and_opens_whole() {
         let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";

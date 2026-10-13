@@ -77,7 +77,11 @@ fn chats_to(seen: &[(usize, EventMsg)], slot: usize) -> Vec<(u32, bool, ChatText
     seen.iter()
         .filter(|(s, _)| *s == slot)
         .filter_map(|(_, msg)| match msg {
-            EventMsg::Chat { from, global, text } => Some((*from, *global, *text)),
+            EventMsg::Chat {
+                from,
+                channel,
+                text,
+            } => Some((*from, channel.is_global(), *text)),
             _ => None,
         })
         .collect()
@@ -119,7 +123,7 @@ fn chat_rides_the_wire() {
     core.push_chat(
         0,
         ChatMsg {
-            global: false,
+            channel: protocol::Channel::Local,
             text: hello,
         },
     );
@@ -144,7 +148,7 @@ fn chat_rides_the_wire() {
     assert_eq!(flags[2] & APPLIED_CHAT, 0, "distant client heard it");
     assert_eq!(
         clients[1].1.pop_chat(),
-        Some((id_of(0), false, hello)),
+        Some((id_of(0), protocol::Channel::Local, hello)),
         "the client mirror must carry the same bytes the wire did"
     );
     assert_eq!(clients[2].1.pop_chat(), None);
@@ -155,7 +159,7 @@ fn chat_rides_the_wire() {
     core.push_chat(
         2,
         ChatMsg {
-            global: true,
+            channel: protocol::Channel::Global,
             text: shout,
         },
     );
@@ -201,7 +205,7 @@ fn the_local_radius_is_exact() {
     core.push_chat(
         0,
         ChatMsg {
-            global: false,
+            channel: protocol::Channel::Local,
             text: at,
         },
     );
@@ -219,7 +223,7 @@ fn the_local_radius_is_exact() {
     core.push_chat(
         0,
         ChatMsg {
-            global: false,
+            channel: protocol::Channel::Local,
             text: past,
         },
     );
@@ -278,7 +282,11 @@ fn chat_never_touches_the_state_hash_body() {
         core.push_chat(
             slot,
             ChatMsg {
-                global: slot % 2 == 0,
+                channel: if slot % 2 == 0 {
+                    protocol::Channel::Global
+                } else {
+                    protocol::Channel::Local
+                },
                 text: line("talking through the whole tick"),
             },
         );
@@ -321,7 +329,7 @@ fn a_line_from_a_speaker_the_world_has_lost_is_dropped() {
     core.push_chat(
         0,
         ChatMsg {
-            global: true,
+            channel: protocol::Channel::Global,
             text: line("still here?"),
         },
     );
@@ -344,7 +352,7 @@ fn a_line_from_a_speaker_the_world_has_lost_is_dropped() {
     core.push_chat(
         0,
         ChatMsg {
-            global: true,
+            channel: protocol::Channel::Global,
             text: there,
         },
     );

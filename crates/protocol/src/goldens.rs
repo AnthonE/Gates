@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 164] = [
+pub const FIXTURES: [&str; 166] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -296,6 +296,10 @@ pub const FIXTURES: [&str; 164] = [
     "event_node_stage.bin",
     // A declared agent's mark (v107).
     "event_agent.bin",
+    // A team verb: leadership handed on (v108).
+    "action_team.bin",
+    // The receiver's team, three members and an invite (v108).
+    "event_team.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1102,6 +1106,41 @@ pub fn event_agent() -> u32 {
     (0x0123 << 8) | 9
 }
 
+/// A team verb (wire v108): promote, the op with its outer bits set, naming
+/// a guest-shaped id.
+pub fn action_team() -> (u8, u32) {
+    (crate::TEAM_OP_PROMOTE, (0x0123 << 8) | 9)
+}
+
+/// The receiver's team (wire v108): three members, one in each state, the
+/// leader second so the order is the shard's and not sorted, a coordinate
+/// at the island's far edge, and an invite waiting.
+pub fn event_team() -> crate::TeamView {
+    let mut v = crate::TeamView::NONE;
+    v.leader = (0x0042 << 8) | 3;
+    v.invite = (0x0007 << 8) | 61;
+    v.count = 3;
+    v.members[0] = crate::TeamMember {
+        id: (0x0123 << 8) | 9,
+        state: crate::TEAM_DEAD,
+        x_m: crate::TEAM_POS_MAX_M,
+        z_m: 1,
+    };
+    v.members[1] = crate::TeamMember {
+        id: v.leader,
+        state: crate::TEAM_AWAKE,
+        x_m: 2048,
+        z_m: 1777,
+    };
+    v.members[2] = crate::TeamMember {
+        id: (0x0aaa << 8) | 99,
+        state: crate::TEAM_ASLEEP,
+        x_m: 300,
+        z_m: crate::TEAM_POS_MAX_M,
+    };
+    v
+}
+
 /// A full batch of regrowing trees, at the cap.
 pub fn event_slot_grow_sync() -> [(u16, u16, u32); crate::GROW_SYNC_BATCH] {
     let mut rng = Pcg32::new(0x0047_524f_5753, 19);
@@ -1833,13 +1872,14 @@ pub fn chat_line() -> ChatText {
 }
 
 /// The C→S frame: local channel (the default one a player speaks on).
-pub fn chat() -> (ChatText, bool) {
-    (chat_line(), false)
+pub fn chat() -> (ChatText, crate::Channel) {
+    (chat_line(), crate::Channel::Local)
 }
 
-/// The S→C relay of that line, on the global channel from player 7.
-pub fn event_chat() -> (u32, bool, ChatText) {
-    (7, true, chat_line())
+/// The S→C relay of that line, on the team channel (v108) from player 7:
+/// the channel code with its high bit set.
+pub fn event_chat() -> (u32, crate::Channel, ChatText) {
+    (7, crate::Channel::Team, chat_line())
 }
 
 /// A landed shot: 25 on another player, on the **head** (v58).

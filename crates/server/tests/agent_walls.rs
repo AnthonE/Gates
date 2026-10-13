@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 21] = [
+const EXPECTED_VERBS: [&str; 24] = [
     "craft",
     "consume",
     "drink",
@@ -94,6 +94,9 @@ const EXPECTED_VERBS: [&str; 21] = [
     "research",
     "repair",
     "throw",
+    "team",
+    "vend",
+    "arc",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -227,6 +230,7 @@ fn verbs_in(files: &[std::path::PathBuf]) -> BTreeSet<String> {
 fn verb_of(msg: &ActionMsg) -> &'static str {
     match msg {
         ActionMsg::Assist { .. } => "assist",
+        ActionMsg::Team { .. } => "team",
         ActionMsg::Craft { .. } => "craft",
         ActionMsg::Reskin { .. } => "reskin",
         ActionMsg::SkinsRefresh => "skins_refresh",
@@ -533,7 +537,7 @@ impl Harness {
     /// The puppet types a line into its chat box, in both shards.
     fn puppet_says(&mut self, text: &str) {
         let msg = protocol::ChatMsg {
-            global: false,
+            channel: protocol::Channel::Local,
             text: protocol::ChatText::sanitize(text.as_bytes()).unwrap(),
         };
         self.shard.push_chat(self.puppet_slot, msg);
@@ -880,7 +884,10 @@ impl Harness {
         if let Some(len) = say {
             let msg =
                 protocol::decode_chat(&said[..len]).expect("agent chat decodes as a player's");
-            assert!(!msg.global, "an agent speaks only to the bodies near it");
+            assert!(
+                !msg.channel.is_global(),
+                "an agent speaks only to the bodies near it or its team"
+            );
             self.shard.push_chat(0, msg);
             self.replay.push_chat(0, msg);
         }
@@ -891,10 +898,13 @@ impl Harness {
         let (puppet_slot, puppet_chat) = (self.puppet_slot, &mut self.puppet_chat);
         self.shard.tick_bare(&self.stats, |lane, slot, bytes| {
             if slot == puppet_slot && lane == Lane::Event {
-                if let Ok(protocol::EventMsg::Chat { from, global, text }) =
-                    protocol::decode_event(bytes)
+                if let Ok(protocol::EventMsg::Chat {
+                    from,
+                    channel,
+                    text,
+                }) = protocol::decode_event(bytes)
                 {
-                    puppet_chat.push((from, global, text));
+                    puppet_chat.push((from, channel.is_global(), text));
                 }
             }
             if slot != 0 {
@@ -1867,6 +1877,7 @@ impl server::mind::DecisionSource for LootWhenSeen {
             input_tokens: 0,
             output_tokens: 0,
             say: server::mind::Say::Quiet,
+            code: None,
         })
     }
 }
@@ -1895,7 +1906,11 @@ impl server::mind::DecisionSource for Talker {
         for l in s.heard.lines() {
             if l.me {
                 seen |= 4;
-            } else if l.from == PUPPET && !l.global && !l.agent && l.text.as_bytes() == b"hi bot" {
+            } else if l.from == PUPPET
+                && l.channel == protocol::Channel::Local
+                && !l.agent
+                && l.text.as_bytes() == b"hi bot"
+            {
                 seen |= 1;
             }
         }
@@ -1925,6 +1940,7 @@ impl server::mind::DecisionSource for Talker {
             input_tokens: 0,
             output_tokens: 0,
             say,
+            code: None,
         })
     }
 }
@@ -1978,6 +1994,661 @@ fn a_survivor_speaks_locally_and_hears_who_spoke() {
     let s = h.bot.stats;
     assert_eq!((s.said, s.say_refused, s.say_dropped), (2, 0, 0));
     assert!(s.heard >= 1 && s.echoed >= 1, "{s:?}");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// Teams (wire v108): the puppet invites the agent from beside it, the
+/// scripted mind says yes through the human client's own team verb, and
+/// once the puppet is forty metres off the agent goes to it — the
+/// teammate's place from the team view a human teammate is sent too. Both
+/// shards hash-identical, the frame path allocation-free.
+#[test]
+fn a_survivor_joins_a_team_and_keeps_up_with_its_teammate() {
+    let mut h = Harness::new(false);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    assert!(h.verbs.contains("team"), "it joined by its own verb");
+    // Forty metres east, out of the way of anything it was doing.
+    h.stage_puppet(|p| p.body.qx += 4_000 / 3);
+    let apart = |h: &Harness| {
+        let me = h.me().body;
+        let mate = h
+            .shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap()
+            .body;
+        ((me.qx - mate.qx) as f32 * 0.03).hypot((me.qz - mate.qz) as f32 * 0.03)
+    };
+    for _ in 0..120 * TICK_HZ {
+        if apart(&h) <= server::explorer::FOLLOW_NEAR_M + 2.0 {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        apart(&h) <= server::explorer::FOLLOW_NEAR_M + 2.0,
+        "the agent never caught up ({:.1} m): {}",
+        apart(&h),
+        h.explain()
+    );
+    assert_eq!(
+        h.bot.stats.phase,
+        server::explorer::Phase::Following,
+        "it came by following, not by chance"
+    );
+    assert!(h
+        .bot
+        .history
+        .iter()
+        .any(|r| r.goal == Goal::JoinTeam && r.outcome == server::mind::Outcome::Done));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The team-chest tests' decision source: yes to a team; a wood run for
+/// the team's chest if it is sent on one (`.1`), else the pack taken there
+/// once it carries wood; else stand and look round. Every answer carries
+/// the code the teammate gave, if one was.
+struct ChestWhenOffered(Option<server::agent::lock::LockCode>, bool);
+
+impl server::mind::DecisionSource for ChestWhenOffered {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let goal = if s.offers(Goal::JoinTeam) {
+            Goal::JoinTeam
+        } else if self.1 && s.offers(Goal::SupplyWood) {
+            Goal::SupplyWood
+        } else if !self.1 && s.offers(Goal::Deliver) && s.count_of("Wood") > 0 {
+            Goal::Deliver
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: self.0,
+        })
+    }
+}
+
+/// The puppet is a teammate with a base: a door, a cupboard, a box inside.
+/// It stands at its box while the agent is in there with it, which is how
+/// the agent learns the team's chest. Then the agent is outside, the door
+/// shut, 500 wood in its pack: it walks back, finds no way in but the door,
+/// opens it with `E`, walks through and shuts it, puts the wood in the box
+/// through its panel, and leaves the way it came, shutting the door behind
+/// it. With `locked`, the teammate has put a code lock on the door, and the
+/// agent enters the code it was given when the lock refuses it. With
+/// `supply`, it is left inside with a hatchet instead of the wood, and is
+/// sent on a wood run: walled in, it goes out by the door first, chops what
+/// it finds for the run's minutes, then fills the chest the same way.
+fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
+    use server::agent::lock::LockCode;
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
+    use sim_core::deploy::ACCESS_OP_SET_CODE;
+
+    let given = 2468;
+    let code = locked.then(|| LockCode::given(given).unwrap());
+    let at = common::clearing(3);
+    let mind = Mind::inline(ChestWhenOffered(code, supply), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    let (bx, bz) = stage_strangers_base(&mut h, at, false);
+    let run = if supply {
+        Goal::SupplyWood
+    } else {
+        Goal::Deliver
+    };
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+
+    // A team: the puppet invites the agent, face to face.
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+
+    // Both inside, the teammate at its box, the agent across the box from
+    // it, looking round as it waits.
+    let (mate, me) = (
+        place(bxf + BUILD_CELL_M + 2.4, bzf + 2.4),
+        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
+    );
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = me);
+    let learnt = h.until(30 * TICK_HZ, |b| b.senses().team_home.count > 0);
+    assert!(learnt, "the chest was never learnt: {}", h.explain());
+
+    // The teammate locks its door, if it is to be locked, and goes; the
+    // agent is outside, the door shut, wood in its pack.
+    if locked {
+        let lock = sim_core::gather::ItemStack {
+            count: 1,
+            ..common::stack(&content, "item.lock_code")
+        };
+        h.stage_puppet(move |p| p.inv[HOTBAR_SLOTS] = lock);
+        h.puppet_act(ActionMsg::Deploy {
+            row: rows.lock,
+            cx: bx,
+            cz: bz,
+            level: 0,
+            loc: LOC_EDGE_ZLO,
+            pose: sim_core::footprint::Pose::CENTRE,
+        });
+        h.puppet_act(ActionMsg::Access {
+            cx: bx,
+            cz: bz,
+            level: 0,
+            loc: LOC_EDGE_ZLO,
+            op: ACCESS_OP_SET_CODE,
+            code: given,
+        });
+        assert!(
+            !h.shard
+                .world
+                .deploys
+                .lock_passes(bx, bz, 0, LOC_EDGE_ZLO, ID),
+            "the lock does not know the agent yet"
+        );
+    }
+    let (away, out) = (
+        place(at.0 + 300.0, at.1 - 300.0),
+        place(bxf + 1.5, bzf - 6.0),
+    );
+    h.stage_puppet(move |p| p.body = away);
+    let wood = sim_core::gather::ItemStack {
+        count: if supply { 0 } else { 500 },
+        ..common::stack(&content, "item.wood")
+    };
+    let hatchet = sim_core::gather::ItemStack {
+        count: u16::from(supply),
+        ..common::stack(&content, "item.hatchet_stone")
+    };
+    let wood_item = wood.item;
+    let slot = h
+        .me()
+        .inv
+        .iter()
+        .enumerate()
+        .skip(HOTBAR_SLOTS)
+        .find(|(_, s)| s.count == 0)
+        .map(|(i, _)| i)
+        .unwrap();
+    h.stage(move |p| {
+        if !supply {
+            p.body = out;
+        }
+        p.inv[slot] = wood;
+        p.inv[1] = hatchet;
+    });
+    let shut = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open)
+    };
+    assert!(shut(&h), "the door stands shut");
+
+    let secs = if supply {
+        server::explorer::SUPPLY_GATHER_SECS + 150
+    } else {
+        150
+    };
+    let delivered = h.until(secs * TICK_HZ, |b| b.history.iter().any(|r| r.goal == run));
+    assert!(delivered, "no delivery ended: {}", h.explain());
+    let report = h.bot.history.iter().find(|r| r.goal == run).unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    let w = &h.shard.world;
+    let key = sim_core::deploy::box_key(bx + 1, bz, 0, 0);
+    let i = w.deploys.box_index(key).expect("the box");
+    let boxed: u32 = (0..sim_core::limits::BOX_SLOTS)
+        .map(|s| w.deploys.box_slot(i, s))
+        .filter(|s| s.count > 0 && s.item == wood_item)
+        .map(|s| u32::from(s.count))
+        .sum();
+    if supply {
+        // What it chopped went in, the wood and whatever else a tree pays.
+        assert!(boxed > 0, "nothing chopped went in: {}", h.explain());
+        assert!(report.gained >= boxed, "{report:?}");
+        assert!(h.bot.delivered >= u64::from(boxed));
+    } else {
+        assert_eq!(boxed, 500, "the wood is in the box");
+        assert_eq!(report.gained, 500);
+    }
+    // All of it out of the pack, unless the box filled first.
+    let full = (0..sim_core::limits::BOX_SLOTS).all(|s| w.deploys.box_slot(i, s).count > 0);
+    assert!(
+        units_of(h.me(), wood_item) == 0 || full,
+        "wood left in the pack and room in the box: boxed {boxed}, {report:?}, {}",
+        h.explain()
+    );
+    assert!(shut(&h), "the door was shut behind it");
+    assert!(
+        (h.me().body.qz as f32 * 0.03) < bzf,
+        "it left the way it came"
+    );
+    let mut verbs = vec!["use", "container", "move"];
+    if locked {
+        verbs.push("access");
+        assert!(h
+            .shard
+            .world
+            .deploys
+            .lock_passes(bx, bz, 0, LOC_EDGE_ZLO, ID));
+    }
+    for verb in verbs {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert!(h.use_checks >= 2 && h.pick_checks >= 1 && h.panel_checks >= 1);
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+#[test]
+fn a_teammate_fills_the_team_chest_through_its_door() {
+    a_teammate_fills_the_team_chest(false, false);
+}
+
+#[test]
+fn a_teammate_given_the_code_fills_the_chest_behind_a_lock() {
+    a_teammate_fills_the_team_chest(true, false);
+}
+
+#[test]
+fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
+    a_teammate_fills_the_team_chest(false, true);
+}
+
+/// The follow test's decision source: yes to a team, then with them.
+struct FollowWhenOffered;
+
+impl server::mind::DecisionSource for FollowWhenOffered {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let goal = [Goal::JoinTeam, Goal::Follow]
+            .into_iter()
+            .find(|g| s.offers(*g))
+            .unwrap_or(Goal::Wait);
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// Its teammate has gone home and shut the door behind them. Following,
+/// the agent finds no way to them but the door: it opens it with `E`, walks
+/// in, shuts it behind, and is with them.
+#[test]
+fn a_teammate_follows_through_a_shut_door() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(FollowWhenOffered, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    let (bx, bz) = stage_strangers_base(&mut h, at, false);
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    let (mate, out) = (
+        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
+        place(bxf + 1.5, bzf - 4.0),
+    );
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = out);
+    let shut = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open)
+    };
+    assert!(shut(&h));
+    let near = |h: &Harness| {
+        let me = h.me().body;
+        let (x, z) = (me.qx as f32 * 0.03, me.qz as f32 * 0.03);
+        z > bzf + 0.3
+            && (x - mate_x(bxf)).hypot(z - (bzf + 0.6)) <= server::explorer::FOLLOW_NEAR_M + 1.0
+    };
+    fn mate_x(bxf: f32) -> f32 {
+        bxf + BUILD_CELL_M + 0.6
+    }
+    for _ in 0..60 * TICK_HZ {
+        if near(&h) && shut(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(near(&h), "never got in to its teammate: {}", h.explain());
+    assert!(shut(&h), "the door was left open");
+    assert!(h.verbs.contains("use"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// Two of the team's boxes: the one inside holding fragments, one outside
+/// holding cloth and a stone hatchet. Shown both, the agent comes home with
+/// wood and cloth and no hatchet: the wood goes in with the fragments, the
+/// cloth with the cloth, and it takes the hatchet out.
+#[test]
+fn a_teammate_sorts_its_pack_into_the_team_s_boxes() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO, LOC_PLANE};
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(ChestWhenOffered(None, false), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    let (bx, bz) = stage_strangers_base(&mut h, at, false);
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    let (cloth, hatchet, wood) = (
+        stack("item.cloth", 10),
+        stack("item.hatchet_stone", 1),
+        stack("item.wood", 500),
+    );
+    // The second box, outside the east cell's south wall.
+    let (ox, oz) = (bx + 1, bz - 1);
+    let spare_box = stack("item.box_small", 1);
+    h.stage_puppet(move |p| {
+        p.body = place(bxf + 4.5, bzf - 3.5);
+        p.inv[HOTBAR_SLOTS] = spare_box;
+    });
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.container,
+        cx: ox,
+        cz: oz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    let outside = sim_core::deploy::box_key(ox, oz, 0, LOC_PLANE);
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &mut core.world;
+        let i = w.deploys.box_index(outside).expect("the outside box");
+        w.deploys.set_box_slot(i, 0, cloth);
+        w.deploys.set_box_slot(i, 1, hatchet);
+    }
+
+    // A team, and its base shown: the teammate at the box inside, then
+    // the agent outside with the other box in view.
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    let (mate, me) = (
+        place(bxf + BUILD_CELL_M + 2.4, bzf + 2.4),
+        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
+    );
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = me);
+    assert!(
+        h.until(30 * TICK_HZ, |b| b.shared().box_count() >= 1),
+        "the inside box was never learnt: {}",
+        h.explain()
+    );
+    let (away, west) = (
+        place(at.0 + 300.0, at.1 - 300.0),
+        place(bxf - 0.5, bzf - 1.5),
+    );
+    h.stage_puppet(move |p| p.body = away);
+    h.stage(move |p| p.body = west);
+    assert!(
+        h.until(30 * TICK_HZ, |b| b.shared().box_count() >= 2),
+        "the outside box was never learnt: {}",
+        h.explain()
+    );
+
+    // Home with wood and cloth.
+    let slots: Vec<usize> = h
+        .me()
+        .inv
+        .iter()
+        .enumerate()
+        .skip(HOTBAR_SLOTS)
+        .filter(|(_, s)| s.count == 0)
+        .map(|(i, _)| i)
+        .take(2)
+        .collect();
+    let (a, b) = (slots[0], slots[1]);
+    let more_cloth = stack("item.cloth", 50);
+    h.stage(move |p| {
+        p.inv[a] = wood;
+        p.inv[b] = more_cloth;
+    });
+    let done = h.until(150 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::Deliver)
+    });
+    assert!(done, "no trip home ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::Deliver)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    let w = &h.shard.world;
+    let held = |key: u32, item: u16| -> u32 {
+        let i = w.deploys.box_index(key).unwrap();
+        (0..sim_core::limits::BOX_SLOTS)
+            .map(|s| w.deploys.box_slot(i, s))
+            .filter(|s| s.count > 0 && s.item == item)
+            .map(|s| u32::from(s.count))
+            .sum()
+    };
+    let inside = sim_core::deploy::box_key(bx + 1, bz, 0, LOC_PLANE);
+    assert_eq!(held(inside, wood.item), 500, "the wood with the fragments");
+    assert_eq!(held(outside, wood.item), 0);
+    assert_eq!(held(outside, cloth.item), 60, "the cloth with the cloth");
+    assert_eq!(held(inside, cloth.item), 0);
+    assert_eq!(held(outside, hatchet.item), 0, "the hatchet taken out");
+    assert_eq!(units_of(h.me(), hatchet.item), 1);
+    assert!(
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open),
+        "the door was shut behind it"
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The public places' decision source: sell wood at THE GATE, or feed a
+/// work, whichever is on offer, else stand.
+struct VisitWhenOffered;
+
+impl server::mind::DecisionSource for VisitWhenOffered {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let wood = Goal::Sell(server::mind::Name::new(b"Wood").unwrap());
+        let goal = [wood, Goal::FeedWork]
+            .into_iter()
+            .find(|g| s.offers(*g))
+            .unwrap_or(Goal::Wait);
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// THE GATE's SALVAGE stall buys wood for junk: carrying 3000, the agent
+/// walks to its counter and sells all but two lots of a thousand.
+#[test]
+fn a_survivor_sells_its_surplus_wood_at_the_gate() {
+    let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+    let haven = sim_core::terrain::haven(SEED);
+    assert!(haven.town.live, "the fixture seed has a town");
+    let content = common::content();
+    let salvage = (0..sim_core::limits::MAX_VENDORS)
+        .find(|&k| {
+            let t = server::net::bake_all(&content).unwrap();
+            t.vendor_names.get(k).is_some_and(|n| n == "SALVAGE")
+        })
+        .unwrap();
+    let (kx, kz) = sim_core::town::kiosk_world(&haven.town, salvage).unwrap();
+    // Twenty metres off the counter, out in the street.
+    let at = (kx - 20.0, kz);
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    let wood = sim_core::gather::ItemStack {
+        count: 1000,
+        ..common::stack(&content, "item.wood")
+    };
+    h.stage(move |p| {
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        for i in 0..3 {
+            p.inv[HOTBAR_SLOTS + i] = wood;
+        }
+    });
+    let junk = content.item_index("item.junk").unwrap();
+    let sold = h.until(90 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| matches!(r.goal, Goal::Sell(_)) && r.outcome == Outcome::Done)
+    });
+    assert!(sold, "no sale: {}", h.explain());
+    assert_eq!(units_of(h.me(), wood.item), 2000, "two lots kept");
+    assert_eq!(units_of(h.me(), junk), 4, "a thousand wood is four junk");
+    assert!(h.verbs.contains("vend"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// An open work takes its quota at its terminal: carrying what its first
+/// line takes, the agent walks there and puts it in.
+#[test]
+fn a_survivor_feeds_an_open_work() {
+    let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+    let haven = sim_core::terrain::haven(SEED);
+    let content = common::content();
+    let works = server::net::bake_all(&content).unwrap().works;
+    // The first work whose terminal stands somewhere.
+    let (k, (sx, _, sz)) = (0..usize::from(works.count))
+        .find_map(|k| {
+            let def = works.get(k)?;
+            sim_core::spot::world(&haven, &def.spot).map(|p| (k, p))
+        })
+        .expect("a work with a terminal");
+    let def = *works.get(k).unwrap();
+    let input = def.inputs[0];
+    let at = (sx + 12.0, sz);
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &mut core.world;
+        w.works.w[k].state = sim_core::works::WORK_OPEN;
+        let def = w.works_def;
+        w.works.refresh(&def);
+    }
+    let catalog = server::net::bake_all(&content).unwrap().catalog;
+    let give = sim_core::gather::ItemStack {
+        item: input.item,
+        count: 50.min(input.need as u16).max(1),
+        cond: catalog.cond_max(input.item as usize),
+        skin: 0,
+    };
+    h.stage(move |p| {
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        p.inv[HOTBAR_SLOTS] = give;
+    });
+    let fed = h.until(90 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::FeedWork && r.outcome == Outcome::Done)
+    });
+    assert!(fed, "no feed: {}", h.explain());
+    assert_eq!(
+        h.shard.world.works.w[k].got[0],
+        u32::from(give.count),
+        "it went in"
+    );
+    assert_eq!(units_of(h.me(), input.item), 0);
+    assert!(h.verbs.contains("arc"), "{:?}", h.verbs);
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
@@ -3069,7 +3740,19 @@ fn encode_puppet(msg: &ActionMsg, buf: &mut [u8]) -> usize {
             loc,
             material,
         } => protocol::encode_action_upgrade(cx, cz, level, loc, material, buf),
-        _ => panic!("the puppet builds, and only builds: {msg:?}"),
+        ActionMsg::Team { op, target } => protocol::encode_action_team(op, target, buf),
+        ActionMsg::Use { cx, cz, level, loc } => {
+            protocol::encode_action_use(cx, cz, level, loc, buf)
+        }
+        ActionMsg::Access {
+            cx,
+            cz,
+            level,
+            loc,
+            op,
+            code,
+        } => protocol::encode_action_access(cx, cz, level, loc, op, code, buf),
+        _ => panic!("the puppet builds, teams up and works doors, and nothing else: {msg:?}"),
     }
     .unwrap()
 }
@@ -3099,6 +3782,7 @@ impl server::mind::DecisionSource for HomeGuard {
             input_tokens: 0,
             output_tokens: 0,
             say: server::mind::Say::Quiet,
+            code: None,
         })
     }
 }
@@ -3265,6 +3949,7 @@ impl server::mind::DecisionSource for RaidWhenOffered {
             input_tokens: 0,
             output_tokens: 0,
             say: server::mind::Say::Quiet,
+            code: None,
         })
     }
 }

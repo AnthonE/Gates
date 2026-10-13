@@ -84,6 +84,7 @@ pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
 pub mod faces;
+pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
 // takes, and this is the state for when the shard takes it.
@@ -1041,7 +1042,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 Update,
-                (map::track, map::keys)
+                (map::track, map::mates, map::keys)
                     .chain()
                     .run_if(in_state(Screen::Map)),
             )
@@ -1951,6 +1952,7 @@ impl Plugin for GatesRenderPlugin {
             panels::register(app);
             chat::register(app);
             faces::register(app);
+            team::register(app);
             // ---- the screenshot key ----------------------------------
             // **Not on a capture run either**, and for the same reason one
             // line up: the probe harness spawns its own `Screenshot`

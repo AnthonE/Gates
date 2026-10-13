@@ -102,8 +102,8 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Brain => VERB_BRAIN,
         AdminCmd::Who => VERB_WHO,
         // A `/bug` is never an admin act; it has its own `Kind`, and
-        // `/top` is anybody's question.
-        AdminCmd::Bug { .. } | AdminCmd::Top => VERB_UNKNOWN,
+        // `/top` and `/team` are anybody's.
+        AdminCmd::Bug { .. } | AdminCmd::Top | AdminCmd::Team { .. } => VERB_UNKNOWN,
     }
 }
 
