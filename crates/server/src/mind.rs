@@ -33,6 +33,8 @@ pub const SUMMARY_CRAFTS: usize = 8;
 pub const SUMMARY_NEEDS: usize = crate::agent::build::NEED_ROWS;
 /// What its box holds, as a summary carries it.
 pub const SUMMARY_STORED: usize = crate::agent::stash::STORED_ROWS;
+/// What the team's boxes hold together, as a summary carries it.
+pub const SUMMARY_HOME_HOLDS: usize = 12;
 /// The raw materials the next milestone comes down to, as a summary
 /// carries them.
 pub const SUMMARY_RAW: usize = crate::agent::plan::RAW_ROWS;
@@ -196,6 +198,13 @@ pub enum Goal {
     SupplyStone,
     SupplyOre,
     SupplyHemp,
+    /// Buy the named item with junk at THE GATE's stall that sells it.
+    Buy(Name),
+    /// Sell the named item for junk at THE GATE's SALVAGE stall.
+    Sell(Name),
+    /// Take what the nearest open work takes to it and put it in, or fuel
+    /// a lit one (`ARC.md`).
+    FeedWork,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -223,7 +232,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 30] = [
+    pub const FIXED: [Goal; 31] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -254,6 +263,7 @@ impl Goal {
         Goal::SupplyStone,
         Goal::SupplyOre,
         Goal::SupplyHemp,
+        Goal::FeedWork,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -290,6 +300,9 @@ impl Goal {
             Goal::SupplyStone => "supply_stone",
             Goal::SupplyOre => "supply_ore",
             Goal::SupplyHemp => "supply_hemp",
+            Goal::Buy(_) => "buy",
+            Goal::Sell(_) => "sell",
+            Goal::FeedWork => "feed_work",
         }
     }
 
@@ -302,7 +315,7 @@ impl Goal {
             len += n;
         };
         put(self.key().as_bytes());
-        if let Goal::Craft(name) = self {
+        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) = self {
             put(b":");
             put(name.as_bytes());
         }
@@ -364,6 +377,9 @@ impl Goal {
             Goal::SupplyStone => "Mine stone, then put it in the team's box.".into(),
             Goal::SupplyOre => "Mine ore, then put it in the team's box.".into(),
             Goal::SupplyHemp => "Pick hemp, then put it in the team's box.".into(),
+            Goal::Buy(name) => format!("Buy {} with junk at the gate.", name.as_str()),
+            Goal::Sell(name) => format!("Sell {} for junk at the gate.", name.as_str()),
+            Goal::FeedWork => "Give the nearest open work what it needs, or fuel a lit one.".into(),
         }
     }
 }
@@ -398,6 +414,8 @@ pub enum Why {
     /// A lock in the way, and no code for it.
     Locked,
     BoxFull,
+    /// Marked hostile: the gate's guns would shoot it.
+    Wanted,
 }
 
 impl Why {
@@ -428,6 +446,7 @@ impl Why {
             Why::LogOff => "the session is ending, so it went home",
             Why::Locked => "a lock it has no code for is in the way",
             Why::BoxFull => "the box is full",
+            Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
         }
     }
 }
@@ -523,9 +542,16 @@ pub struct TeamSense {
     pub invited: bool,
     /// A stranger is fighting near a teammate.
     pub mate_attacked: bool,
-    /// The team's chest, if its eyes have seen a teammate at a box: where
-    /// it is from here (`agent::supply`).
-    pub chest: Sighting,
+    /// The team's base, its shared home, if its eyes have seen a teammate
+    /// at a box: where it is from here, how many of its boxes it knows,
+    /// and whether it is under attack (`agent::supply`).
+    pub home: Sighting,
+    pub home_boxes: u8,
+    pub home_attacked: bool,
+    /// It lives there (no base of its own), and its boxes hold something
+    /// the pack lacks (food, meds, a better tool).
+    pub lives_there: bool,
+    pub home_has_needs: bool,
     /// A teammate gave the team's lock code.
     pub code: bool,
     /// Whose invite waits, and the teammates, as a chat log names them.
@@ -573,7 +599,11 @@ impl TeamSense {
             "lead": self.leader,
             "invited": self.invited,
             "mate_attacked": self.mate_attacked,
-            "chest": self.chest.json(),
+            "home": self.home.json(),
+            "home_boxes": self.home_boxes,
+            "home_attacked": self.home_attacked,
+            "i_live_there": self.lives_there,
+            "home_has_what_i_need": self.home_has_needs,
             "code_known": self.code,
         })
     }
@@ -590,6 +620,50 @@ pub const BEARINGS: [&str; 8] = [
     "left",
     "ahead-left",
 ];
+
+/// A work (`ARC.md`) as its client knows it: its name, whether it is
+/// sealed, open or lit, where its terminal is, what its quota still takes
+/// while open, its fuel and the room in its tank while lit, and what
+/// lighting it unlocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkSense {
+    pub name: Name,
+    pub state: u8,
+    pub at: Option<Place>,
+    pub needs: [(Name, u32); sim_core::limits::MAX_WORK_INPUTS],
+    pub needs_len: u8,
+    pub fuel: Name,
+    pub fuel_room: u32,
+    pub unlocks: Name,
+}
+
+impl WorkSense {
+    pub const EMPTY: Self = Self {
+        name: Name::EMPTY,
+        state: 0,
+        at: None,
+        needs: [(Name::EMPTY, 0); sim_core::limits::MAX_WORK_INPUTS],
+        needs_len: 0,
+        fuel: Name::EMPTY,
+        fuel_room: 0,
+        unlocks: Name::EMPTY,
+    };
+
+    fn json(&self) -> Value {
+        json!({
+            "name": self.name.as_str(),
+            "state": match self.state {
+                sim_core::works::WORK_OPEN => "open: takes deposits",
+                sim_core::works::WORK_LIT => "lit: burns fuel",
+                _ => "sealed",
+            },
+            "where": self.at.map(|p| p.json()),
+            "still_needs": self.needs[..usize::from(self.needs_len)].iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+            "fuel": (self.state == sim_core::works::WORK_LIT).then(|| json!({"name": self.fuel.as_str(), "room": self.fuel_room})),
+            "unlocks": self.unlocks.as_str(),
+        })
+    }
+}
 
 /// A coarse sighting: how many, and the nearest one's distance and
 /// relative bearing (an index into [`BEARINGS`]).
@@ -925,7 +999,7 @@ pub const SCRIPTED_DELIVER_FREE: u8 = 4;
 pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 
 /// The most goals one request can offer: the fixed set and every craft.
-pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS;
+pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no
@@ -1005,9 +1079,13 @@ pub struct Summary {
     pub feed: bool,
     /// Its team (wire v108).
     pub team: TeamSense,
-    /// What the team's chest held when its panel was last open.
-    pub chest_holds: [(Name, u32); SUMMARY_STORED],
-    pub chest_holds_len: u8,
+    /// What the team's boxes held when their panels were last open.
+    pub home_holds: [(Name, u32); SUMMARY_HOME_HOLDS],
+    pub home_holds_len: u8,
+    /// THE GATE, while the town stands, and the works its client knows.
+    pub gate: Option<Place>,
+    pub works: [WorkSense; sim_core::limits::MAX_WORKS],
+    pub works_len: u8,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -1131,11 +1209,15 @@ impl Summary {
             leader: false,
             invited: false,
             mate_attacked: false,
-            chest: Sighting {
+            home: Sighting {
                 count: 0,
                 nearest_m: 0,
                 bearing: 0,
             },
+            home_boxes: 0,
+            home_attacked: false,
+            lives_there: false,
+            home_has_needs: false,
             code: false,
             invite_from: Who {
                 id: 0,
@@ -1149,8 +1231,11 @@ impl Summary {
             }; protocol::TEAM_MAX],
             who_len: 0,
         },
-        chest_holds: [(Name::EMPTY, 0); SUMMARY_STORED],
-        chest_holds_len: 0,
+        home_holds: [(Name::EMPTY, 0); SUMMARY_HOME_HOLDS],
+        home_holds_len: 0,
+        gate: None,
+        works: [WorkSense::EMPTY; sim_core::limits::MAX_WORKS],
+        works_len: 0,
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -1176,8 +1261,8 @@ impl Summary {
         &self.stored[..self.stored_len as usize]
     }
 
-    pub fn chest_holds(&self) -> &[(Name, u32)] {
-        &self.chest_holds[..self.chest_holds_len as usize]
+    pub fn home_holds(&self) -> &[(Name, u32)] {
+        &self.home_holds[..self.home_holds_len as usize]
     }
 
     pub fn options(&self) -> &[Goal] {
@@ -1234,6 +1319,16 @@ impl Summary {
                 })
                 .collect(),
         )
+    }
+
+    /// THE GATE and the works, as its client knows them. Sent to an
+    /// external source beside the observation (Jev's request stays small).
+    /// Worker only (it allocates).
+    pub fn places_json(&self) -> Value {
+        json!({
+            "the_gate": self.gate.map(|p| p.json()),
+            "works": self.works[..usize::from(self.works_len)].iter().map(WorkSense::json).collect::<Vec<_>>(),
+        })
     }
 
     /// Who its team is and whose invite waits, by the labels a chat log
@@ -1317,7 +1412,7 @@ impl Summary {
             },
             "cupboard_needs_feeding": self.feed,
             "team": self.team.json(),
-            "team_chest_holds": self.chest_holds().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+            "team_home_holds": self.home_holds().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             "asked_because": self.trigger.word(),
         })
     }
@@ -1862,7 +1957,7 @@ impl Scripted {
         }
         // Home fought over: back inside, the fight met from there, then
         // the damage mended.
-        if s.home.attacked && s.offers(Goal::Defend) {
+        if (s.home.attacked || s.team.home_attacked) && s.offers(Goal::Defend) {
             return (Goal::Defend, "scripted: home is under attack");
         }
         // A raid done: home with what it took, before anyone comes after it.
@@ -1966,12 +2061,17 @@ impl Scripted {
         // On a team, with the chest it saw a teammate at: fill it. A pack
         // getting full goes in; else a supply run of what it holds least
         // of, wood or stone.
-        if s.team.chest.count > 0 {
-            if s.offers(Goal::Deliver) && s.free_slots <= SCRIPTED_DELIVER_FREE {
-                return (Goal::Deliver, "scripted: the pack is filling, to the chest");
+        if s.team.home.count > 0 {
+            if s.offers(Goal::Deliver)
+                && (s.free_slots <= SCRIPTED_DELIVER_FREE || s.team.home_has_needs)
+            {
+                return (
+                    Goal::Deliver,
+                    "scripted: home to put things away and stock up",
+                );
             }
             let held = |name: &str| -> u32 {
-                s.chest_holds()
+                s.home_holds()
                     .iter()
                     .filter(|(n, _)| n.as_str() == name)
                     .map(|(_, c)| *c)
@@ -1984,6 +2084,31 @@ impl Scripted {
             runs.sort_by_key(|r| r.1);
             if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
                 return (goal, "scripted: a supply run for the team's chest");
+            }
+        }
+        // THE GATE and the works. A metal tool it can buy is bought; with
+        // its own base done, or living in the team's, surplus is sold and
+        // plenty goes to the works, which unlock things for everyone.
+        for tool in ["Metal Hatchet", "Metal Pickaxe"] {
+            if let Some(goal) = Name::new(tool.as_bytes())
+                .map(Goal::Buy)
+                .filter(|g| s.offers(*g) && s.count_of(tool) == 0)
+            {
+                return (goal, "scripted: a metal tool at the gate");
+            }
+        }
+        if s.milestone == Milestone::Done || s.team.lives_there {
+            let plenty = |name: &str| s.count_of(name) >= SCRIPTED_PLENTY;
+            if s.offers(Goal::FeedWork) && (plenty("Wood") || plenty("Stone")) {
+                return (Goal::FeedWork, "scripted: plenty to give a work");
+            }
+            for name in ["Wood", "Stone"] {
+                if let Some(goal) = Name::new(name.as_bytes())
+                    .map(Goal::Sell)
+                    .filter(|g| s.offers(*g) && s.count_of(name) >= 2 * SCRIPTED_PLENTY)
+                {
+                    return (goal, "scripted: selling the surplus at the gate");
+                }
             }
         }
         // Home chores: the box holds what the base needs, the cupboard runs

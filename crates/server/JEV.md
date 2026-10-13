@@ -53,7 +53,8 @@ The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `eat`, `drink`, `flee`, `wait`, `fight`, `hunt`, `heal`, `bag`, `recover`,
 `build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`,
 `join_team`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
-`supply_ore`, `supply_hemp`.
+`supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
+`sell:<item name>`.
 Only goals that can work now are offered — a gather goal needs a belt tool
 for the kind and room for what it pays, eat needs something worth eating, and
 drink needs known water-giving food or the sea plus the health to pay for it —
@@ -79,48 +80,94 @@ and a reply naming anything else is refused.
   fight whoever swings or shoots near them. A wall or a shut door between
   them: through the nearest door after them, shutting it behind (not
   straight back through the one it just came by). 90 s, then it asks again.
-- **deliver** — take the pack to the team's chest (below) and put in
-  everything past the belt: tools, weapons, armour, the building kit and
-  two stacks of food and meds stay. Closed doors on the way are opened with
-  `E`, walked through and shut behind, on the way in and out.
+- **deliver** — a trip into the team's base (below): what the pack carries
+  past the belt goes in the box it belongs in, and what the pack lacks comes
+  out. Tools, weapons, armour, the building kit and two stacks of food and
+  meds stay on the body.
 - **supply_wood / stone / ore / hemp** — a supply run: gather that kind for
   3 minutes (node after node), then deliver. One decision is a whole run.
-  A full pack or nothing left in sight turns it for the chest early.
+  A full pack or nothing left in sight turns it for home early.
+- **buy:X / sell:X** — a trade at THE GATE (below).
+- **feed_work** — the nearest open work that takes something the pack
+  holds, everything of it put in; or a lit one's tank topped up.
 
-## Teams and the team chest
+## Teams and the team's base
 
 Teams work as in Rust (`server/team.rs`): a player looks at the agent and
 presses **N** to invite it; `join_team` says yes. Teammates are never its
-targets, and `follow` makes it a bodyguard. Being on a team gives it no
-access to a teammate's cupboard, doors or turrets.
+targets, and `follow` makes it a bodyguard; caught up, it keeps its eyes on
+them. Being on a team gives it no access to a teammate's cupboard, doors or
+turrets: locks still want their code.
 
-The **team chest** is a box its eyes saw a teammate standing at: in view,
-in range, a clear line to it, and an awake teammate within 3 m of it. So to
-show it the chest, stand at your box while it can see you (have it
-`follow` you home). Leaving the team forgets the chest; so does the box
-coming down. Once a chest is known, `deliver` and the `supply_*` runs are
-offered, unless someone dangerous is in view or a trip there failed in the
-last minute.
+**The team's base is its home** (`agent::supply`). It learns it by eye:
+first a box it sees a teammate standing at (in view, in range, a clear line
+to it, a teammate within 3 m), then every box, cupboard, workbench and
+furnace it sees within 15 m of that one. So to show it home, have it
+`follow` you there and stand at your box. Leaving the team forgets it; so
+does every box coming down. What each box holds is what its panel showed
+when last open.
+
+With a team base and none of its own it lives there: it builds no base of
+its own (`build` is not offered), `go_home` walks into the team's base,
+`defend` goes there when it is struck or a charge goes off in it and fights
+whoever is about until it has been quiet 30 s, and it crafts at the team's
+workbench and furnace when it has none. `deliver` and the supply runs are
+offered while someone dangerous is not in view and no trip there failed in
+the last minute.
+
+**Sorting.** A stack goes in the box that already holds that item; else one
+that holds its kind (food, meds, tools, arms, wearables, salvage, raw
+stuff); else an empty one; else whichever has room. A box it has never
+opened is looked in first, so it knows what every box holds before it puts
+anything away. A full box keeps the rest in the pack. **Stocking up:** a
+stack of food or meds when the pack has none, and a better hatchet or
+pickaxe than any carried, out of whichever box holds them.
 
 A door with a code lock refuses it until it has the code. A teammate tells
 it the code on team chat, and an external agent passes it back as `code`
 (below). It is kept like the agent's own code (never printed) and entered
 once at each lock that refuses it, the keypad's way, wherever it works a
-teammate's door. With no code, the trip
-fails with "a lock it has no code for".
+teammate's door (a lock on a box too). With no code, the trip fails with
+"a lock it has no code for", back out the way it came.
 
-Doors are worked as a player works them (`agent::supply::Doors`): walk up
-square to the doorway, `E`, straight through (the route's metre grid has no
-room by a door for the furniture round it, so the last steps are walked,
-side-stepping what is in the way), then `E` again from the far side. A
-walk into the island that starts walled in on a teammate's floor (a built
-floor underfoot and something within 6 m every way it looks) goes out by
-the nearest door first.
+Doors are worked as a player works them (`agent::doors`): walk up square to
+the doorway, `E`, straight through (the route's metre grid has no room by a
+door for the furniture round it, so the last steps are walked, side-stepping
+what is in the way), then `E` again from the far side. Moving between boxes
+in different rooms, it keeps the doors it is inside of as a stack and walks
+back down it on the way out. A walk into the island that starts walled in on
+a teammate's floor (a built floor underfoot and something within 6 m every
+way it looks) goes out by the nearest door first.
 
 On stream: invite it (**N**), take it home with `/t follow me`, stand at
-your box, then `/t go get wood` (or stone, ore, cloth). Each run chops for
-3 minutes and fills the chest while you build. `/t the code is 1234` if
-your door is locked.
+your box, and let it be. It keeps the boxes stocked and its tools up on its
+own; `/t go get wood` (or stone, ore, cloth) sends it on a run, `/t the code
+is 1234` if your doors are locked.
+
+## THE GATE and the works
+
+**Trading** (`agent::gate`). THE GATE's stalls (`content/sites.toml`) take
+junk for food, building kit, tools, parts and arms; the SALVAGE stall buys
+cloth, fragments, wood and stone for junk. `buy:X` is offered for what it
+can pay for now (dearest first, at most eight trades in all, nothing that
+does not stack if it already carries one) and buys up to five lots; `sell:X`
+for what it carries more than two lots of, and sells all but two. It walks
+to the stall's counter and sends the human client's vend verb once. Never
+while it is marked hostile (`ClientCore::hostile_left`): the gate's guns
+shoot anyone who attacked a player lately.
+
+**The works** (`ARC.md`). A work takes a quota of goods while open, lights
+when the quota is met (unlocking things for the whole island, such as
+gunpowder and medicine) and burns fuel while lit. `feed_work` walks to the
+nearest one that takes something the pack holds and deposits everything it
+takes at its terminal (the arc verb), or fuels a lit one; credit is the
+depositor's. An external source is sent `places` beside the observation:
+THE GATE's distance and bearing, and each work's name, state, where its
+terminal is, what its quota still needs, its fuel and what it unlocks.
+
+The scripted policy buys a metal hatchet or pickaxe when it can, and with
+its own base done or living in the team's, feeds a work what it has 3000
+of and sells wood or stone past 6000.
 
 Reflexes under every goal: the respawn verb on the death screen (a beach,
 never a bag), crawling away from a fresh blow while wounded, and the existing
@@ -168,7 +215,7 @@ port to guard, the agent dies with the bot, and the bot's stdout stays free.
 ```text
 -> {"protocol":1,"id":7,"observation":{...Summary...},"options":["explore","gather_wood","supply_wood"],
     "heard":[{"from":"Ash","me":false,"agent":false,"channel":"team","text":"get wood, code is 1234"}],
-    "team":{"invite_from":null,"teammates":["Ash"]}}
+    "team":{"invite_from":null,"teammates":["Ash"]},"places":{"the_gate":{...},"works":[...]}}
 <- {"id":7,"goal":"supply_wood","reason":"Ash wants wood","say":"on it","to":"team","code":"1234"}
 ```
 
@@ -192,7 +239,9 @@ four digits as a string or a number; anything else fails the reply. It is
 kept for the session and used only at locks on its team's doors: on the
 way to the team chest, after a teammate, or out of their base.
 `claude_agent.py` passes on only a number a teammate typed on team chat,
-once. Every jev
+once. Its prompt tells Claude to be its own teammate: when nobody has asked
+for anything, see what the team needs and do it; when a teammate asks,
+that comes first. Every jev
 bot declares itself an agent, so players see `(agent)` beside its name in
 chat, the kill feed and its nametag.
 
@@ -260,6 +309,7 @@ At exit `jev-bot` prints the mind's counters (requests, decisions, failures,
 late answers, tokens, pauses, hour/day windows), survival counters (deaths,
 respawns, goals done/failed/interrupted, crafts, meals, drinks), chat (said,
 heard back, heard from others, refused, replaced), items
-gathered, units put in the team chest, the pack, and recent goals. A run with no decision or snapshot
+gathered, units put in and taken out of the team's boxes, the pack, and
+recent goals. A run with no decision or snapshot
 fails. Defaults: `DECISIONS.md` §open, "Jev goals v0" and "Jev survivor v0".
 API contract checked against https://docs.typesafe.ai/api on 2026-09-22.

@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 22] = [
+const EXPECTED_VERBS: [&str; 24] = [
     "craft",
     "consume",
     "drink",
@@ -95,6 +95,8 @@ const EXPECTED_VERBS: [&str; 22] = [
     "repair",
     "throw",
     "team",
+    "vend",
+    "arc",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -2145,12 +2147,12 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
     // Both inside, the teammate at its box, the agent across the box from
     // it, looking round as it waits.
     let (mate, me) = (
-        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
         place(bxf + BUILD_CELL_M + 2.4, bzf + 2.4),
+        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
     );
     h.stage_puppet(move |p| p.body = mate);
     h.stage(move |p| p.body = me);
-    let learnt = h.until(30 * TICK_HZ, |b| b.senses().chest.count > 0);
+    let learnt = h.until(30 * TICK_HZ, |b| b.senses().team_home.count > 0);
     assert!(learnt, "the chest was never learnt: {}", h.explain());
 
     // The teammate locks its door, if it is to be locked, and goes; the
@@ -2250,7 +2252,13 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
         assert_eq!(boxed, 500, "the wood is in the box");
         assert_eq!(report.gained, 500);
     }
-    assert_eq!(units_of(h.me(), wood_item), 0, "and out of the pack");
+    // All of it out of the pack, unless the box filled first.
+    let full = (0..sim_core::limits::BOX_SLOTS).all(|s| w.deploys.box_slot(i, s).count > 0);
+    assert!(
+        units_of(h.me(), wood_item) == 0 || full,
+        "wood left in the pack and room in the box: boxed {boxed}, {report:?}, {}",
+        h.explain()
+    );
     assert!(shut(&h), "the door was shut behind it");
     assert!(
         (h.me().body.qz as f32 * 0.03) < bzf,
@@ -2375,6 +2383,272 @@ fn a_teammate_follows_through_a_shut_door() {
     assert!(near(&h), "never got in to its teammate: {}", h.explain());
     assert!(shut(&h), "the door was left open");
     assert!(h.verbs.contains("use"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// Two of the team's boxes: the one inside holding fragments, one outside
+/// holding cloth and a stone hatchet. Shown both, the agent comes home with
+/// wood and cloth and no hatchet: the wood goes in with the fragments, the
+/// cloth with the cloth, and it takes the hatchet out.
+#[test]
+fn a_teammate_sorts_its_pack_into_the_team_s_boxes() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO, LOC_PLANE};
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(ChestWhenOffered(None, false), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    let (bx, bz) = stage_strangers_base(&mut h, at, false);
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    let (cloth, hatchet, wood) = (
+        stack("item.cloth", 10),
+        stack("item.hatchet_stone", 1),
+        stack("item.wood", 500),
+    );
+    // The second box, outside the east cell's south wall.
+    let (ox, oz) = (bx + 1, bz - 1);
+    let spare_box = stack("item.box_small", 1);
+    h.stage_puppet(move |p| {
+        p.body = place(bxf + 4.5, bzf - 3.5);
+        p.inv[HOTBAR_SLOTS] = spare_box;
+    });
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.container,
+        cx: ox,
+        cz: oz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    let outside = sim_core::deploy::box_key(ox, oz, 0, LOC_PLANE);
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &mut core.world;
+        let i = w.deploys.box_index(outside).expect("the outside box");
+        w.deploys.set_box_slot(i, 0, cloth);
+        w.deploys.set_box_slot(i, 1, hatchet);
+    }
+
+    // A team, and its base shown: the teammate at the box inside, then
+    // the agent outside with the other box in view.
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    let (mate, me) = (
+        place(bxf + BUILD_CELL_M + 2.4, bzf + 2.4),
+        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
+    );
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = me);
+    assert!(
+        h.until(30 * TICK_HZ, |b| b.shared().box_count() >= 1),
+        "the inside box was never learnt: {}",
+        h.explain()
+    );
+    let (away, west) = (
+        place(at.0 + 300.0, at.1 - 300.0),
+        place(bxf - 0.5, bzf - 1.5),
+    );
+    h.stage_puppet(move |p| p.body = away);
+    h.stage(move |p| p.body = west);
+    assert!(
+        h.until(30 * TICK_HZ, |b| b.shared().box_count() >= 2),
+        "the outside box was never learnt: {}",
+        h.explain()
+    );
+
+    // Home with wood and cloth.
+    let slots: Vec<usize> = h
+        .me()
+        .inv
+        .iter()
+        .enumerate()
+        .skip(HOTBAR_SLOTS)
+        .filter(|(_, s)| s.count == 0)
+        .map(|(i, _)| i)
+        .take(2)
+        .collect();
+    let (a, b) = (slots[0], slots[1]);
+    let more_cloth = stack("item.cloth", 50);
+    h.stage(move |p| {
+        p.inv[a] = wood;
+        p.inv[b] = more_cloth;
+    });
+    let done = h.until(150 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::Deliver)
+    });
+    assert!(done, "no trip home ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::Deliver)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    let w = &h.shard.world;
+    let held = |key: u32, item: u16| -> u32 {
+        let i = w.deploys.box_index(key).unwrap();
+        (0..sim_core::limits::BOX_SLOTS)
+            .map(|s| w.deploys.box_slot(i, s))
+            .filter(|s| s.count > 0 && s.item == item)
+            .map(|s| u32::from(s.count))
+            .sum()
+    };
+    let inside = sim_core::deploy::box_key(bx + 1, bz, 0, LOC_PLANE);
+    assert_eq!(held(inside, wood.item), 500, "the wood with the fragments");
+    assert_eq!(held(outside, wood.item), 0);
+    assert_eq!(held(outside, cloth.item), 60, "the cloth with the cloth");
+    assert_eq!(held(inside, cloth.item), 0);
+    assert_eq!(held(outside, hatchet.item), 0, "the hatchet taken out");
+    assert_eq!(units_of(h.me(), hatchet.item), 1);
+    assert!(
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open),
+        "the door was shut behind it"
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The public places' decision source: sell wood at THE GATE, or feed a
+/// work, whichever is on offer, else stand.
+struct VisitWhenOffered;
+
+impl server::mind::DecisionSource for VisitWhenOffered {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let wood = Goal::Sell(server::mind::Name::new(b"Wood").unwrap());
+        let goal = [wood, Goal::FeedWork]
+            .into_iter()
+            .find(|g| s.offers(*g))
+            .unwrap_or(Goal::Wait);
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// THE GATE's SALVAGE stall buys wood for junk: carrying 3000, the agent
+/// walks to its counter and sells all but two lots of a thousand.
+#[test]
+fn a_survivor_sells_its_surplus_wood_at_the_gate() {
+    let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+    let haven = sim_core::terrain::haven(SEED);
+    assert!(haven.town.live, "the fixture seed has a town");
+    let content = common::content();
+    let salvage = (0..sim_core::limits::MAX_VENDORS)
+        .find(|&k| {
+            let t = server::net::bake_all(&content).unwrap();
+            t.vendor_names.get(k).is_some_and(|n| n == "SALVAGE")
+        })
+        .unwrap();
+    let (kx, kz) = sim_core::town::kiosk_world(&haven.town, salvage).unwrap();
+    // Twenty metres off the counter, out in the street.
+    let at = (kx - 20.0, kz);
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    let wood = sim_core::gather::ItemStack {
+        count: 1000,
+        ..common::stack(&content, "item.wood")
+    };
+    h.stage(move |p| {
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        for i in 0..3 {
+            p.inv[HOTBAR_SLOTS + i] = wood;
+        }
+    });
+    let junk = content.item_index("item.junk").unwrap();
+    let sold = h.until(90 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| matches!(r.goal, Goal::Sell(_)) && r.outcome == Outcome::Done)
+    });
+    assert!(sold, "no sale: {}", h.explain());
+    assert_eq!(units_of(h.me(), wood.item), 2000, "two lots kept");
+    assert_eq!(units_of(h.me(), junk), 4, "a thousand wood is four junk");
+    assert!(h.verbs.contains("vend"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// An open work takes its quota at its terminal: carrying what its first
+/// line takes, the agent walks there and puts it in.
+#[test]
+fn a_survivor_feeds_an_open_work() {
+    let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+    let haven = sim_core::terrain::haven(SEED);
+    let content = common::content();
+    let works = server::net::bake_all(&content).unwrap().works;
+    // The first work whose terminal stands somewhere.
+    let (k, (sx, _, sz)) = (0..usize::from(works.count))
+        .find_map(|k| {
+            let def = works.get(k)?;
+            sim_core::spot::world(&haven, &def.spot).map(|p| (k, p))
+        })
+        .expect("a work with a terminal");
+    let def = *works.get(k).unwrap();
+    let input = def.inputs[0];
+    let at = (sx + 12.0, sz);
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &mut core.world;
+        w.works.w[k].state = sim_core::works::WORK_OPEN;
+        let def = w.works_def;
+        w.works.refresh(&def);
+    }
+    let catalog = server::net::bake_all(&content).unwrap().catalog;
+    let give = sim_core::gather::ItemStack {
+        item: input.item,
+        count: 50.min(input.need as u16).max(1),
+        cond: catalog.cond_max(input.item as usize),
+        skin: 0,
+    };
+    h.stage(move |p| {
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        p.inv[HOTBAR_SLOTS] = give;
+    });
+    let fed = h.until(90 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::FeedWork && r.outcome == Outcome::Done)
+    });
+    assert!(fed, "no feed: {}", h.explain());
+    assert_eq!(
+        h.shard.world.works.w[k].got[0],
+        u32::from(give.count),
+        "it went in"
+    );
+    assert_eq!(units_of(h.me(), input.item), 0);
+    assert!(h.verbs.contains("arc"), "{:?}", h.verbs);
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 

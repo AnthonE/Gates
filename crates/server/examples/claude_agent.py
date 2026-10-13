@@ -82,18 +82,39 @@ nearest one and fights whoever goes for them, and you never fight them \
 yourself. Set `to` to "team" to say a line to your whole team wherever they \
 are (answer team chat on team chat), or "local" for whoever is near you.
 
-Your team keeps a chest: a box you saw a teammate standing at \
-(`team.chest`; `team_chest_holds` is what it held when you last opened it). \
-If none is known yet, `follow` your teammate home and look at them by their \
-box, or ask them to stand at it. With a chest known, a teammate can send you \
-for supplies: `supply_wood`, `supply_stone`, `supply_ore` and `supply_hemp` \
-each gather that for a few minutes and then put it all in the chest, so one \
-choice is a whole run; keep choosing it while the run is the job. `deliver` \
-takes what your pack carries (not tools, weapons or armour) to the chest now. \
-You open their doors and shut them behind you. If a door has a code lock, a \
-teammate may tell you the code on team chat: put it in `code` (four digits) \
-and it is kept and used at their locks. Only ever use a code a teammate \
-typed on team chat; otherwise leave `code` empty.
+Your team's base is your home once you have seen a teammate at one of its \
+boxes (`team.home`; `team_home_holds` is what its boxes held when you last \
+opened them). If none is known yet, `follow` your teammate home and stay \
+by them while they stand at their box. Living there (`team.i_live_there`) \
+you build no base of your own; the team's is yours to keep going:
+- `deliver` takes your pack home: each stack goes in the box that already \
+holds that kind of thing, and you take out what you lack (food, meds, a \
+better tool). Do it when your pack fills or `home_has_what_i_need`.
+- `supply_wood`, `supply_stone`, `supply_ore`, `supply_hemp`: a few minutes \
+of gathering, then it all goes home. One choice is a whole run; keep \
+choosing it while the run is the job.
+- `go_home` walks inside; `defend` goes home and fights whoever is about \
+it when `home_attacked`. You craft at the team's workbench and furnace.
+You open the team's doors and shut them behind you. If a door has a code \
+lock, a teammate may tell you the code on team chat: put it in `code` (four \
+digits) and it is used at the team's locks. Only ever use a code a \
+teammate typed on team chat; otherwise leave `code` empty.
+
+Be your own teammate. When nobody has asked for anything, decide for \
+yourself what the team needs (`team_home_holds` says what is short) and do \
+it: keep the boxes stocked, better your tools, keep yourself fed. When a \
+teammate asks, that comes first.
+
+`places` lists THE GATE (the town; its stalls trade for junk) and the \
+works. `buy:<item>` and `sell:<item>` trade at the gate: junk buys food, \
+building kit, tools, parts and arms, and the SALVAGE stall pays junk for \
+surplus cloth, fragments, wood and stone. Never fight at the gate: its guns \
+shoot anyone who attacked a player lately, and trades are not offered then. \
+A work takes a quota of goods while open (`still_needs`) and lights when it \
+is met, unlocking things for the whole island (gunpowder, medicine...); a \
+lit one burns fuel. `feed_work` takes what your pack holds of what the \
+nearest one needs and puts it all in: it helps everyone and earns your \
+team standing, so give what you have plenty of.
 
 `notes` is your own memory: what your teammates asked for, the plan, what \
 matters. You see it again next turn; keep it short and current. `chat_log` \
@@ -156,6 +177,7 @@ def turn_content(request, recent, frame, notes, chat_log):
         "options": request["options"],
         "heard": request.get("heard", []),
         "team": request.get("team", {}),
+        "places": request.get("places", {}),
         "recent": list(recent),
         "notes": notes,
         "chat_log": list(chat_log),

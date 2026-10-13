@@ -117,8 +117,8 @@ purpose — the interesting behaviour is social, not mechanical.
 
 Built so far: movement, look, swing, sprint, jump and hotbar frames, the
 actions `agent_walls.rs` lists in `EXPECTED_VERBS` (it fights, builds, opens,
-loots and takes), and `speak`: one local chat line per decision through the
-human chat box's encoder, from an external source only (`JEV.md`) — every one
+loots and takes, trades at THE GATE and feeds the works), and `speak`: one
+local or team chat line per decision through the human chat box's encoder, from an external source only (`JEV.md`) — every one
 a human verb. `give` and `authorize` are not built for the agent.
 
 An agent is marked: it declares `HELLO_AGENT`, the shard tells every client

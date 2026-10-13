@@ -158,6 +158,7 @@ impl External {
             "options": summary.options().iter().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
             "heard": summary.heard_json(),
             "team": summary.team_json(),
+            "places": summary.places_json(),
         })
     }
 

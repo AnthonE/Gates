@@ -318,8 +318,11 @@ fn print_report(label: &str, survivor: &Survivor) {
             })
             .collect();
         println!("{label}gathered: {}", gathered.join(", "));
-        if survivor.delivered > 0 {
-            println!("{label}put in the team chest: {} units", survivor.delivered);
+        if survivor.delivered > 0 || survivor.took > 0 {
+            println!(
+                "{label}team's boxes: {} units put in, {} taken out",
+                survivor.delivered, survivor.took
+            );
         }
         let mut pack: Vec<(String, u32)> = Vec::new();
         for stack in core.inv.iter().filter(|s| s.count > 0) {

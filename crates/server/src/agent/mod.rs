@@ -11,8 +11,9 @@
 //! crates ([`loot`]), what the next milestone comes down to ([`plan`]), and
 //! cooking its meat and recycling and researching at ovens ([`oven`]),
 //! defending home and mending it ([`defend`]), raiding other people's
-//! bases its eyes found ([`raid`]), and filling its team's chest
-//! ([`supply`]).
+//! bases its eyes found ([`raid`]), working a teammate's doors
+//! ([`doors`]), living in the team's base ([`supply`]), and trading at
+//! THE GATE and feeding the works ([`gate`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -26,6 +27,8 @@ pub mod build;
 pub mod combat;
 pub mod cover;
 pub mod defend;
+pub mod doors;
+pub mod gate;
 pub mod hands;
 pub mod home;
 pub mod intent;
