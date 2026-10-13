@@ -698,17 +698,31 @@ fn a_round_does_not_sound_like_a_blow() {
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M + 1.0), Cue::ShotGunFar);
     assert_eq!(far_layer(Cue::ShotBow, 80.0), Cue::ShotBow);
     assert_eq!(far_layer(Cue::ShotHeli, 150.0), Cue::ShotHeli);
+    use client::render::audio::{heli_shot_cue, HELI_SHOT_FAR_M};
+    assert_eq!(heli_shot_cue(HELI_SHOT_FAR_M - 1.0), Cue::ShotHeli);
+    assert_eq!(heli_shot_cue(HELI_SHOT_FAR_M + 1.0), Cue::ShotHeliFar);
+    // The two layers meet at the switch, by the table's own falloff and
+    // gains, within the loudness the far takes carry over the near ones.
+    let at = |c: Cue| c.def().gain * client::sound::falloff(HELI_SHOT_FAR_M, c.def().radius_m);
+    let (n, f) = (at(Cue::ShotHeli), at(Cue::ShotHeliFar));
+    assert!(
+        f < n && f > n * 0.5,
+        "near {n} and far {f} do not meet at the switch"
+    );
 }
 
-/// The rotor bed is heard from the hull: centred ahead and overhead at the
+/// The rotor is heard from the hull: centred ahead and overhead at the
 /// level every bed plays at, toward the side it is on, the same total all
-/// the way round, and darker far off.
+/// the way round, the near layer darker far off — and its two layers hand
+/// over with distance without the whole getting louder on the way out.
 #[test]
 fn the_rotor_is_heard_from_where_the_heli_is() {
-    use client::render::audio::{rotor_place, ROTOR_R_M};
+    use client::render::audio::{
+        rotor_levels, rotor_place, ROTOR_DARK_M, ROTOR_FAR_M, ROTOR_NEAR_M, ROTOR_R_M,
+    };
     use client::sound::engine::Cmd;
     let right = [1.0, 0.0];
-    let ears = |d: [f32; 3]| match rotor_place(d, right, 48_000) {
+    let ears = |d: [f32; 3]| match rotor_place(d, right, 0.0, 48_000)[0] {
         Cmd::Place {
             ear_l, ear_r, lp, ..
         } => (ear_l, ear_r, lp),
@@ -731,6 +745,60 @@ fn the_rotor_is_heard_from_where_the_heli_is() {
     assert!(near(l * l + r * r, 2.0), "equal power: {l} {r}");
     let (l, r, _) = ears([-30.0, 0.0, 0.0]);
     assert!(l > r, "and to the left, left: {l} {r}");
-    let (.., lp) = ears([0.0, 0.0, ROTOR_R_M * 0.9]);
-    assert!(lp > 0, "far off, the air takes the top end");
+    let (.., lp) = ears([0.0, 0.0, ROTOR_DARK_M * 0.9]);
+    assert!(lp > 0, "far off, the air takes the near layer's top end");
+
+    // Doppler: up coming in, down going away, a few percent, none at rest.
+    use client::render::audio::doppler;
+    assert_eq!(doppler(0.0), 1.0);
+    assert!(
+        doppler(-22.0) > 1.01 && doppler(-22.0) < 1.05,
+        "{}",
+        doppler(-22.0)
+    );
+    assert!(
+        doppler(22.0) < 0.99 && doppler(22.0) > 0.95,
+        "{}",
+        doppler(22.0)
+    );
+    assert_eq!(doppler(f32::NAN), 1.0);
+    match rotor_place([0.0, 0.0, 30.0], right, 22.0, 48_000) {
+        [Cmd::Place { rate: a, .. }, Cmd::Place { rate: b, .. }] => {
+            assert!(a == b && a < 1.0, "both layers fall together going away")
+        }
+        other => panic!("{other:?}"),
+    }
+    let total = |d: f32| {
+        let (n, f) = rotor_levels(d);
+        (n * n + f * f).sqrt()
+    };
+    let (n, f) = rotor_levels(10.0);
+    assert!(
+        n > 0.999 && f == 0.0,
+        "close by it is all near, full: {n} {f}"
+    );
+    let (n, f) = rotor_levels(ROTOR_FAR_M + 1.0);
+    assert!(n < 1e-6 && f > 0.0, "far off it is all far layer: {n} {f}");
+    assert!(
+        rotor_levels(ROTOR_NEAR_M).1 == 0.0,
+        "the far layer starts past the near band"
+    );
+    let mut last = f32::MAX;
+    for i in 0..=200 {
+        let d = i as f32 * ROTOR_R_M / 200.0;
+        let t = total(d);
+        assert!(
+            t <= last + 1e-6,
+            "the rotor gets louder going away at {d} m"
+        );
+        last = t;
+    }
+    assert!(
+        total(ROTOR_R_M) == 0.0,
+        "silent at the edge it is sent from"
+    );
+    assert!(
+        total(ROTOR_R_M * 0.7) > 0.02,
+        "still heard across most of its range"
+    );
 }

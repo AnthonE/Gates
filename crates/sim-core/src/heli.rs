@@ -45,6 +45,12 @@ use crate::yaw_lut::yaw_dir;
 /// wire, so a client knows what it is drawing from the id alone.
 pub const HELI_SLOT: usize = MAX_MOBS - 1;
 
+/// How many times further than an animal the heli is subscribed from: the
+/// AOI bands divided by this (704 m in, 832 m out at 4). A gunship is heard
+/// long before it is near, and a client can only hear what it is sent. It
+/// still ranks in the same capped set, as if it were this much closer.
+pub const HELI_AOI_SCALE: i64 = 4;
+
 /// No player.
 pub const NO_TARGET: u8 = u8::MAX;
 

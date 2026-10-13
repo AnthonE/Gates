@@ -95,6 +95,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::ShotGun, takes!("freesound", "shot_gun", 0 1 2 3)),
     (Cue::ShotGunFar, takes!("freesound", "shot_gun_far", 0 1 2)),
     (Cue::ShotHeli, takes!("pd", "shot_heli", 0 1 2 3)),
+    (Cue::ShotHeliFar, takes!("pd", "shot_heli_far", 0 1 2)),
     (Cue::ShotBow, takes!("freesound", "shot_bow", 0 1 2)),
     (Cue::ShotCrossbow, takes!("pd", "shot_crossbow", 0 1 2)),
     (Cue::BowDraw, takes!("freesound", "bow_draw", 0 1)),
@@ -115,7 +116,8 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::BedSurf, takes!("freesound", "bed_surf", 0)),
     (Cue::BedUnder, takes!("freesound", "bed_under", 0)),
     (Cue::BedRain, takes!("freesound", "bed_rain", 0)),
-    (Cue::BedRotor, takes!("freesound", "bed_rotor", 0)),
+    (Cue::BedRotor, takes!("pd", "bed_rotor", 0)),
+    (Cue::BedRotorFar, takes!("pd", "bed_rotor_far", 0)),
     (Cue::BedTown, takes!("freesound", "bed_town", 0)),
     (Cue::BedNight, takes!("freesound", "bed_night", 0)),
     (Cue::Equip, takes!("kenney", "equip", 0 1 2)),
@@ -203,6 +205,7 @@ pub fn synth_takes(cue: Cue) -> u8 {
         Cue::ShotGun
         | Cue::ShotGunFar
         | Cue::ShotHeli
+        | Cue::ShotHeliFar
         | Cue::ShotBow
         | Cue::ShotCrossbow
         | Cue::StepSand

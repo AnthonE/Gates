@@ -1061,6 +1061,7 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
             ear_l: 1.0,
             ear_r: 0.2,
             lp: 9,
+            rate: 1.0,
         },
     ];
     let golden: [[u8; CMD_BYTES]; 7] = [
@@ -1072,7 +1073,7 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
         [3, 0, 3, 0, 205, 204, 76, 62, 0, 0, 0, 0, 0, 0, 0, 0],
         [4, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [6, 0, 4, 9, 0, 0, 128, 63, 205, 204, 76, 62, 0, 0, 0, 0],
+        [6, 0, 4, 9, 0, 0, 128, 63, 205, 204, 76, 62, 0, 0, 128, 63],
     ];
     for (cmd, want) in script.iter().zip(golden.iter()) {
         let got = cmd.to_bytes();
@@ -1153,6 +1154,7 @@ fn a_placed_bed_pans_and_filters_and_an_unplaced_one_is_untouched() {
         ear_l: 1.2,
         ear_r: 0.3,
         lp: 0,
+        rate: 1.0,
     }));
     for (c, l) in centre.chunks_exact(2).zip(left.chunks_exact(2)) {
         assert_eq!(
@@ -1172,11 +1174,30 @@ fn a_placed_bed_pans_and_filters_and_an_unplaced_one_is_untouched() {
         ear_l: 1.0,
         ear_r: 1.0,
         lp: 20,
+        rate: 1.0,
     }));
     assert!(
         energy(&dark) < 0.5 * energy(&centre),
         "a 3 kHz square wave through a ~570 Hz one-pole loses most of its energy"
     );
+    // A Doppler rate is a few percent; one far outside the band is refused.
+    let mut r = Renderer::new(44_100);
+    r.install(Cue::BedRotor, bed.clone()).unwrap();
+    r.apply(Cmd::Loop {
+        slot: 4,
+        cue: Cue::BedRotor,
+        gain: 0.5,
+    });
+    for rate in [0.0, 3.0, f32::NAN] {
+        r.apply(Cmd::Place {
+            slot: 4,
+            ear_l: 1.0,
+            ear_r: 1.0,
+            lp: 0,
+            rate,
+        });
+    }
+    assert_eq!(r.bad_cmd, 3, "a rate outside the band is a bad command");
 }
 
 /// A cue's takes are equal slices of its bank: take 1 of 3 plays exactly the

@@ -6626,7 +6626,12 @@ impl ShardCore {
             }
             let dx = (m.body.qx - own.qx) as i64 * 3;
             let dz = (m.body.qz - own.qz) as i64 * 3;
-            let d2 = dx * dx + dz * dz;
+            let mut d2 = dx * dx + dz * dz;
+            // The heli is heard from far off, so it is subscribed from far
+            // off: in both bands as if it were `HELI_AOI_SCALE` times closer.
+            if s == sim_core::heli::HELI_SLOT {
+                d2 /= sim_core::heli::HELI_AOI_SCALE * sim_core::heli::HELI_AOI_SCALE;
+            }
             d2_of[MAX_PLAYERS + s] = d2;
             ranked[n_ranked] = (d2, (MAX_PLAYERS + s) as u16);
             n_ranked += 1;

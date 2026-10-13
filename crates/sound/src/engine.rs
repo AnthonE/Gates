@@ -132,8 +132,12 @@ pub const VOICE_SLOTS: usize = 40;
 const _: () = assert!(VOICE_SLOTS == VOICE_CAP + STARTS_PER_FRAME * VOICE_SLACK_FRAMES);
 
 /// Held slots for the beds: wind, surf, submerged, rain, rotor, town, night,
-/// one each.
-pub const HELD_BEDS: usize = 7;
+/// the rotor's far layer, one each.
+pub const HELD_BEDS: usize = 8;
+/// The band a held slot's [`Cmd::Place`] rate may lie in: a Doppler shift
+/// is a few percent, and a rate outside this is a command nobody meant.
+pub const PLACE_RATE_MIN: f32 = 0.5;
+pub const PLACE_RATE_MAX: f32 = 2.0;
 /// Held one-shot slots ([`Cmd::Play`]). The score used them while it was nine
 /// short pieces; it is whole tracks streamed beside the engine now
 /// (`sound::music`), so nothing in the client plays on them today.
@@ -141,7 +145,7 @@ pub const HELD_MUSIC: usize = 4;
 /// All held slots. A `slot` byte in a [`Cmd`] is an index below this; which
 /// slots are beds and which are one-shots is the game thread's convention
 /// ([`HELD_BEDS`] first), not a rule the renderer enforces.
-pub const HELD: usize = 11;
+pub const HELD: usize = 12;
 const _: () = assert!(HELD == HELD_BEDS + HELD_MUSIC);
 
 /// The renderer's own command queue, filled by [`Renderer::push`] between
@@ -190,15 +194,17 @@ pub enum Cmd {
     /// race, not a bug.
     Gain { slot: u8, gain: f32 },
     /// Where a held slot is heard from: a weight per ear, ramped across the
-    /// next block like [`Cmd::Gain`], and a low-pass byte as
-    /// [`Cmd::Start`] carries it (0 = none). A slot starts centred at
-    /// `(1, 1)`, unfiltered; only the heli's rotor moves off it. Ignored on
-    /// a free slot.
+    /// next block like [`Cmd::Gain`], a low-pass byte as [`Cmd::Start`]
+    /// carries it (0 = none), and a playback rate about its own (a Doppler
+    /// shift; inside [`PLACE_RATE_MIN`]`..=`[`PLACE_RATE_MAX`]). A slot
+    /// starts centred at `(1, 1)`, unfiltered, at rate 1; only the heli's
+    /// rotor moves off it. Ignored on a free slot.
     Place {
         slot: u8,
         ear_l: f32,
         ear_r: f32,
         lp: u8,
+        rate: f32,
     },
     /// Release a held slot.
     Stop { slot: u8 },
@@ -265,7 +271,8 @@ impl Cmd {
                 ear_l,
                 ear_r,
                 lp,
-            } => (Tag::Place, 0, slot, lp, [ear_l, ear_r, 0.0]),
+                rate,
+            } => (Tag::Place, 0, slot, lp, [ear_l, ear_r, rate]),
             Cmd::Stop { slot } => (Tag::Stop, 0, slot, 0, [0.0; 3]),
             Cmd::CutVoices => (Tag::CutVoices, 0, 0, 0, [0.0; 3]),
         };
@@ -331,6 +338,7 @@ impl Cmd {
                 ear_l: f(0),
                 ear_r: f(1),
                 lp: b[3],
+                rate: f(2),
             },
             Tag::Stop => Cmd::Stop { slot: slot()? },
             Tag::CutVoices => Cmd::CutVoices,
@@ -568,6 +576,8 @@ struct Held {
     /// The low-pass coefficient (0 = off) and its state.
     lp_a: f32,
     lp_y: f32,
+    /// The playback rate about the slot's own ([`Cmd::Place`]).
+    rate: f32,
 }
 
 const NO_HELD: Held = Held {
@@ -582,6 +592,7 @@ const NO_HELD: Held = Held {
     ear_target: [1.0; 2],
     lp_a: 0.0,
     lp_y: 0.0,
+    rate: 1.0,
 };
 
 /// The audio-side counters, as one `Copy` record the audio thread can post
@@ -809,8 +820,13 @@ impl Renderer {
                 ear_l,
                 ear_r,
                 lp,
+                rate,
             } => {
-                if !(ear_l.is_finite() && ear_r.is_finite()) || slot as usize >= HELD {
+                if !(ear_l.is_finite()
+                    && ear_r.is_finite()
+                    && (PLACE_RATE_MIN..=PLACE_RATE_MAX).contains(&rate))
+                    || slot as usize >= HELD
+                {
                     self.bad_cmd = self.bad_cmd.saturating_add(1);
                     return;
                 }
@@ -818,6 +834,7 @@ impl Renderer {
                 if h.state != HeldState::Free {
                     h.ear_target = [ear_l, ear_r];
                     h.lp_a = lp as f32 * (1.0 / 256.0);
+                    h.rate = rate;
                 }
             }
             Cmd::Stop { slot } => {
@@ -861,7 +878,7 @@ impl Renderer {
             }
             if h.state == HeldState::Playing {
                 match bank[h.cue.idx()].as_deref() {
-                    Some(b) if b.len() >= 2 => mix_held(h, b, held_rate, out),
+                    Some(b) if b.len() >= 2 => mix_held(h, b, held_rate * h.rate, out),
                     _ => h.state = HeldState::Free,
                 }
             }
