@@ -1091,7 +1091,13 @@ impl Plugin for GatesRenderPlugin {
                 Update,
                 (
                     settings::apply_view,
-                    settings::apply_window,
+                    // F11 and the browser's own exits both feed the setting
+                    // `apply_window` reads, so both run before it.
+                    settings::apply_window
+                        .after(settings::fullscreen_key)
+                        .after(settings::follow_browser_fullscreen),
+                    settings::fullscreen_key,
+                    settings::follow_browser_fullscreen,
                     settings::save_on_change,
                     // The graphics tier, and it belongs beside the other two
                     // appliers rather than in the world schedule: a player

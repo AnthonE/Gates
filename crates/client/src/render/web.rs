@@ -357,6 +357,22 @@ pub fn in_post() -> bool {
     }
 }
 
+/// Whether the page has an element in fullscreen right now
+/// (`document.fullscreenElement`). The browser's own F11 fullscreen is not
+/// one. `None` natively, where Bevy's `Window::mode` is the truth.
+pub fn browser_fullscreen() -> Option<bool> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .map(|d| d.fullscreen_element().is_some())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
 /// `OnEnter(Screen::Menu)` on wasm32: there is no menu to draw, so the page
 /// takes over, told why (`Menu::status` — "left <shard>", "left while the
 /// world was loading", the disconnect's reason).
