@@ -697,4 +697,40 @@ fn a_round_does_not_sound_like_a_blow() {
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M - 1.0), Cue::ShotGun);
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M + 1.0), Cue::ShotGunFar);
     assert_eq!(far_layer(Cue::ShotBow, 80.0), Cue::ShotBow);
+    assert_eq!(far_layer(Cue::ShotHeli, 150.0), Cue::ShotHeli);
+}
+
+/// The rotor bed is heard from the hull: centred ahead and overhead at the
+/// level every bed plays at, toward the side it is on, the same total all
+/// the way round, and darker far off.
+#[test]
+fn the_rotor_is_heard_from_where_the_heli_is() {
+    use client::render::audio::{rotor_place, ROTOR_R_M};
+    use client::sound::engine::Cmd;
+    let right = [1.0, 0.0];
+    let ears = |d: [f32; 3]| match rotor_place(d, right, 48_000) {
+        Cmd::Place {
+            ear_l, ear_r, lp, ..
+        } => (ear_l, ear_r, lp),
+        other => panic!("{other:?} is not a place"),
+    };
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+    let (l, r, lp) = ears([0.0, 0.0, 30.0]);
+    assert!(near(l, 1.0) && near(r, 1.0), "ahead is centred: {l} {r}");
+    assert_eq!(lp, 0, "30 m is close enough to hear whole");
+    let (l, r, _) = ears([0.5, 26.0, 0.0]);
+    assert!(
+        (l - r).abs() < 0.05,
+        "a hull overhead leaning half a metre is not hard to one side: {l} {r}"
+    );
+    let (l, r, _) = ears([30.0, 0.0, 0.0]);
+    assert!(
+        r > 1.3 && l > 0.2 && l < r,
+        "a hull to the right leans right: {l} {r}"
+    );
+    assert!(near(l * l + r * r, 2.0), "equal power: {l} {r}");
+    let (l, r, _) = ears([-30.0, 0.0, 0.0]);
+    assert!(l > r, "and to the left, left: {l} {r}");
+    let (.., lp) = ears([0.0, 0.0, ROTOR_R_M * 0.9]);
+    assert!(lp > 0, "far off, the air takes the top end");
 }

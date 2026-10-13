@@ -144,6 +144,7 @@ recordings the take is the two layered.
 | `torch_out_0`–`1` | `TorchOut` | take 0: stephan (pdsounds), *Zzrrrp sizzle* (<https://commons.wikimedia.org/wiki/File:Zzrrrp_sizzle.ogg>, public domain), 0.10–2.50 s; take 1: USC Red Library *R30-16 Gas Flame Hisses and Sputters* (<https://archive.org/details/Red_Library_Air_Industry>, CC0), the flame cutting out, 33.3–35.0 s; HP 300 Hz |
 | `bird_6`–`11` | `Bird` (with `freesound/bird_0`–`5`) | National Park Service (public domain, credit "National Park Service"): hermit thrush, Yosemite (<https://www.nps.gov/subjects/sound/sounds-hermit-thrush.htm>) 1.15 / 4.90 s; western meadowlark, Yellowstone, NPS & MSU Acoustic Atlas / Jennifer Jerrett (<https://www.nps.gov/yell/learn/photosmultimedia/sounds-westernmeadowlark.htm>) 2.38 / 11.91 s; warbling vireo, Yellowstone, NPS / Jennifer Jerrett (<https://www.nps.gov/yell/learn/photosmultimedia/sounds-warblingvireo.htm>) 1.76 / 9.25 s; HP 1.2 kHz |
 | `chop_0`–`4` | `ImpactWood` | USC Sunset Editorial, *Two people chopping a tree with axes* (<https://archive.org/details/SSE_Library_WOOD>, CC0): chops at 0.48, 1.77, 7.63, 10.48, 13.95 s, 0.32 s each, HP 80 Hz. A real axe in a trunk, energy to ~4 kHz, where Kenney's `impactWood_medium` had almost none above 500 Hz |
+| `shot_heli_0`–`3` | `ShotHeli` | a real AK-47 — *The Free Firearm Sound Library* (<https://opengameart.org/content/the-free-firearm-sound-library>, Jaszczak, Nelson, Heras, Nanney; CC0), `C_28P` (near, single shots): the four rounds at 0.611, 3.257, 6.020, 9.156 s, right channel only (the pair is 2 ms apart and combs when summed), 0.56 s each from 2 ms before the blast, pitched to 0.85× (pitch and length) for a heavier gun, HP 60 Hz, faded over the last 150 ms (cut 2026-10-13). The heli fires 10 a second, the AK's own rate, so a burst reads round by round where the revolver's ring smeared it |
 
 The USC library is the same Sunset/Red/Gold editorial collections, digitized
 by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).
@@ -169,5 +170,5 @@ between −18.8 and −31.6) with no limiting; peaks stay under −2 dBFS.
 | `ruin_respiration.ogg` | *Ruin Respiration* | 300.0 s | +11.6 dB | a world song, and the one a tense moment picks |
 | `empty_citadel.ogg` | *The Empty Citadel* | 240.0 s | +8.5 dB | a world song: a flat sub-bass drone |
 
-147 files from Freesound, 65 from Kenney and 24 in `pd/` in the bank, about 4.2 MB of Ogg,
+147 files from Freesound, 65 from Kenney and 28 in `pd/` in the bank, about 4.2 MB of Ogg,
 plus the four score tracks, 12.0 MB.

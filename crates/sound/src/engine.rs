@@ -189,6 +189,17 @@ pub enum Cmd {
     /// Ignored on a free slot: a fade sent to a piece that just ended is a
     /// race, not a bug.
     Gain { slot: u8, gain: f32 },
+    /// Where a held slot is heard from: a weight per ear, ramped across the
+    /// next block like [`Cmd::Gain`], and a low-pass byte as
+    /// [`Cmd::Start`] carries it (0 = none). A slot starts centred at
+    /// `(1, 1)`, unfiltered; only the heli's rotor moves off it. Ignored on
+    /// a free slot.
+    Place {
+        slot: u8,
+        ear_l: f32,
+        ear_r: f32,
+        lp: u8,
+    },
     /// Release a held slot.
     Stop { slot: u8 },
     /// End every one-shot — leaving a world.
@@ -206,6 +217,7 @@ enum Tag {
     Gain = 3,
     Stop = 4,
     CutVoices = 5,
+    Place = 6,
 }
 
 impl Tag {
@@ -217,6 +229,7 @@ impl Tag {
             3 => Tag::Gain,
             4 => Tag::Stop,
             5 => Tag::CutVoices,
+            6 => Tag::Place,
             _ => return None,
         })
     }
@@ -247,6 +260,12 @@ impl Cmd {
             Cmd::Loop { slot, cue, gain } => (Tag::Loop, cue as u8, slot, 0, [gain, 0.0, 0.0]),
             Cmd::Play { slot, cue, gain } => (Tag::Play, cue as u8, slot, 0, [gain, 0.0, 0.0]),
             Cmd::Gain { slot, gain } => (Tag::Gain, 0, slot, 0, [gain, 0.0, 0.0]),
+            Cmd::Place {
+                slot,
+                ear_l,
+                ear_r,
+                lp,
+            } => (Tag::Place, 0, slot, lp, [ear_l, ear_r, 0.0]),
             Cmd::Stop { slot } => (Tag::Stop, 0, slot, 0, [0.0; 3]),
             Cmd::CutVoices => (Tag::CutVoices, 0, 0, 0, [0.0; 3]),
         };
@@ -306,6 +325,12 @@ impl Cmd {
             Tag::Gain => Cmd::Gain {
                 slot: slot()?,
                 gain: f(0),
+            },
+            Tag::Place => Cmd::Place {
+                slot: slot()?,
+                ear_l: f(0),
+                ear_r: f(1),
+                lp: b[3],
             },
             Tag::Stop => Cmd::Stop { slot: slot()? },
             Tag::CutVoices => Cmd::CutVoices,
@@ -536,6 +561,13 @@ struct Held {
     gain: f32,
     /// The gain the next block ends on.
     target: f32,
+    /// The ear weights the last block ended on, and the next block's
+    /// ([`Cmd::Place`]). `(1, 1)` is a bed's centre.
+    ear: [f32; 2],
+    ear_target: [f32; 2],
+    /// The low-pass coefficient (0 = off) and its state.
+    lp_a: f32,
+    lp_y: f32,
 }
 
 const NO_HELD: Held = Held {
@@ -546,6 +578,10 @@ const NO_HELD: Held = Held {
     frac: 0.0,
     gain: 0.0,
     target: 0.0,
+    ear: [1.0; 2],
+    ear_target: [1.0; 2],
+    lp_a: 0.0,
+    lp_y: 0.0,
 };
 
 /// The audio-side counters, as one `Copy` record the audio thread can post
@@ -755,6 +791,7 @@ impl Renderer {
                     frac: 0.0,
                     gain,
                     target: gain,
+                    ..NO_HELD
                 };
             }
             Cmd::Gain { slot, gain } => {
@@ -765,6 +802,22 @@ impl Renderer {
                 let h = &mut self.held[slot as usize];
                 if h.state != HeldState::Free {
                     h.target = gain;
+                }
+            }
+            Cmd::Place {
+                slot,
+                ear_l,
+                ear_r,
+                lp,
+            } => {
+                if !(ear_l.is_finite() && ear_r.is_finite()) || slot as usize >= HELD {
+                    self.bad_cmd = self.bad_cmd.saturating_add(1);
+                    return;
+                }
+                let h = &mut self.held[slot as usize];
+                if h.state != HeldState::Free {
+                    h.ear_target = [ear_l, ear_r];
+                    h.lp_a = lp as f32 * (1.0 / 256.0);
                 }
             }
             Cmd::Stop { slot } => {
@@ -815,6 +868,7 @@ impl Renderer {
             // The ramp reaches its target on the block's last sample, whether
             // or not anything was audible on the way.
             h.gain = h.target;
+            h.ear = h.ear_target;
         }
         for v in self.voices.iter_mut().filter(|v| v.live) {
             match bank[v.cue.idx()].as_deref() {
@@ -879,11 +933,13 @@ fn advance(pos: &mut u32, frac: &mut f32, rate: f32) {
 
 /// Mix a held slot into `out`. Loops wrap at the bank's length with the
 /// neighbour of the last sample being sample 0; a piece ends at `len − 1`
-/// and frees the slot.
+/// and frees the slot. A slot never placed has both ears at exactly 1.0
+/// and no filter, so it mixes the same samples it always did.
 fn mix_held(h: &mut Held, b: &[i16], rate: f32, out: &mut [f32]) {
     let len = b.len() as u32;
     let frames = out.len() / 2;
     let (g0, g1) = (h.gain, h.target);
+    let (e0, e1) = (h.ear, h.ear_target);
     for (i, fr) in out.chunks_exact_mut(2).enumerate() {
         if h.looping {
             if h.pos >= len {
@@ -896,10 +952,18 @@ fn mix_held(h: &mut Held, b: &[i16], rate: f32, out: &mut [f32]) {
         let t = (i + 1) as f32 / frames as f32;
         let g = g0 + (g1 - g0) * t;
         let next = if h.pos + 1 >= len { 0 } else { h.pos + 1 };
-        let s = tap(b[h.pos as usize], b[next as usize], h.frac);
+        let mut s = tap(b[h.pos as usize], b[next as usize], h.frac);
+        // The state follows the dry signal while the filter is off, so
+        // switching it on starts from where the sound is, not from zero.
+        h.lp_y = if h.lp_a > 0.0 {
+            h.lp_y + h.lp_a * (s - h.lp_y)
+        } else {
+            s
+        };
+        s = h.lp_y;
         let x = s * g;
-        fr[0] += x;
-        fr[1] += x;
+        fr[0] += x * (e0[0] + (e1[0] - e0[0]) * t);
+        fr[1] += x * (e0[1] + (e1[1] - e0[1]) * t);
         advance(&mut h.pos, &mut h.frac, rate);
     }
 }

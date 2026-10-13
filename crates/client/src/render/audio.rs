@@ -88,6 +88,37 @@ const _: () = assert!(BEDS.len() == HELD_BEDS);
 /// so it is already audible on the frame it first arrives.
 pub const ROTOR_R_M: f32 = 260.0;
 
+/// How far to one side the rotor may pan, as a fraction of a one-shot's
+/// hard pan: a gunship 30 m off is still loud in the far ear.
+pub const ROTOR_PAN: f32 = 0.7;
+
+/// The rotor's held slot: its index in [`BEDS`].
+const ROTOR_SLOT: u8 = 4;
+const _: () = assert!(matches!(BEDS[ROTOR_SLOT as usize], Cue::BedRotor));
+
+/// Where the rotor bed is heard from, for a hull `d` metres off the ears
+/// (hull minus listener) whose right is `right`: [`engine::pan`]'s
+/// equal-power law scaled by √2, so dead ahead is the `(1, 1)` every bed
+/// plays at and the total is the same all the way round, with the side
+/// taken over the full 3-D distance (a hull overhead is centred, not
+/// hard to whichever side it leans), and the top end taken off with
+/// distance by the one-shots' own law ([`engine::lp_of`]).
+pub fn rotor_place(d: [f32; 3], right: [f32; 2], out_rate: u32) -> Cmd {
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let p = if n < 1e-3 {
+        0.0
+    } else {
+        ((d[0] * right[0] + d[2] * right[1]) / n).clamp(-1.0, 1.0) * ROTOR_PAN
+    };
+    let theta = (p + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
+    Cmd::Place {
+        slot: ROTOR_SLOT,
+        ear_l: std::f32::consts::SQRT_2 * theta.cos(),
+        ear_r: std::f32::consts::SQRT_2 * theta.sin(),
+        lp: engine::lp_of(n, ROTOR_R_M, out_rate),
+    }
+}
+
 /// What of the generated bank has reached the engine, and how long each cue
 /// is — the number the live ledger ([`Engine::live`]) predicts a voice's end
 /// from, because the renderer frees a voice by sample count and the game
@@ -318,6 +349,9 @@ pub struct Sound {
     /// the renderer holds a target until it is given another, so a gain
     /// equal to the last one is a command with no content.
     bed_sent: [f32; BEDS.len()],
+    /// The rotor's place, as last sent ([`rotor_place`]); `None` after a
+    /// fresh `Loop`, which recentres the slot.
+    rotor_sent: Option<Cmd>,
     /// The snapshot crossfade, and this frame's resolved mixer state.
     snapshots: Snapshots,
     snap: SnapshotDef,
@@ -507,6 +541,7 @@ pub fn setup(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>) {
         });
     }
     sound.bed_sent = [0.0; BEDS.len()];
+    sound.rotor_sent = None;
 }
 
 /// Reset what the world owned: stop the beds, cut every one-shot, and reset
@@ -1175,7 +1210,11 @@ pub fn shots(
             && core.interp.sample(shooter, core.render_tick(), &mut rs)
         {
             // The attack helicopter has no drawn `Body`: its gun is heard
-            // where the interpolator has it.
+            // where the interpolator has it, as its own gun at any range —
+            // the far layer's echo would smear a burst the same way.
+            if super::heli::is_heli(shooter) {
+                cue = Cue::ShotHeli;
+            }
             [rs.x, rs.y + 1.6, rs.z]
         } else {
             continue;
@@ -1882,9 +1921,9 @@ pub fn bed(
     // snapshot takes it away underwater.
     sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
     // The heli's rotor, by distance to the drawn hull — none drawn, none
-    // heard. Not panned: a bed has no position, and the whole of what this
-    // owes the player is *it is coming, and it is close*.
-    sound.bed_target[4] = helis.single().map_or(0.0, |gt| {
+    // heard. Its side and its distance's muffling are its place, sent
+    // below ([`rotor_place`]).
+    sound.bed_target[ROTOR_SLOT as usize] = helis.single().map_or(0.0, |gt| {
         let near = (1.0 - gt.translation().distance(eye.pos) / ROTOR_R_M).clamp(0.0, 1.0);
         near * near
     });
@@ -1946,6 +1985,18 @@ pub fn bed(
                 slot: i as u8,
                 gain: level,
             });
+        }
+    }
+
+    // The rotor from where the hull is. With no hull drawn its level is
+    // fading to nothing and its last place holds.
+    if let Ok(gt) = helis.single() {
+        let d = gt.translation() - eye.pos;
+        let (x, z) = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
+        let place = rotor_place([d.x, d.y, d.z], [x, z], engine.out_rate);
+        if sound.rotor_sent != Some(place) {
+            sound.rotor_sent = Some(place);
+            engine.push(place);
         }
     }
 }

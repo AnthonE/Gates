@@ -392,11 +392,16 @@ pub enum Cue {
     /// The bat landing a blow: Triple T's hollow-log "tung", on top of
     /// whatever the blow struck, at the point it struck.
     Tung,
+    /// One round of the attack helicopter's gun, at the heli. Its own cue
+    /// rather than [`Cue::ShotGun`]: a burst is eight rounds 100 ms apart,
+    /// and the revolver's ringing report smeared eight of them into one
+    /// roar. A rifle round with a short tail keeps every round heard.
+    ShotHeli,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 91;
+pub const CUE_COUNT: usize = 92;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -496,6 +501,7 @@ impl Cue {
         Cue::OreBreak,
         Cue::OreGlint,
         Cue::Tung,
+        Cue::ShotHeli,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -650,7 +656,9 @@ impl Cue {
             // mechanism with a fixed bore and a bow's is a fixed string —
             // both vary with the shooter and the round, not with the
             // weapon's pitch.
-            Cue::ShotBow | Cue::ShotCrossbow | Cue::ShotGun | Cue::ShotGunFar => 0.05,
+            Cue::ShotBow | Cue::ShotCrossbow | Cue::ShotGun | Cue::ShotGunFar | Cue::ShotHeli => {
+                0.05
+            }
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -997,6 +1005,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.55,  60, 5, true),   // ore glint
     // The bat's tung: an impact's reach, under the impact it rides on.
     row(GAME, 40.0, 0.60,  60, 4, true),   // tung
+    // The heli's gun: the far report's reach (a gunship is heard across the
+    // island), and a cooldown under its 100 ms between rounds.
+    row(GAME, 200.0, 0.80,  60, 6, true),  // heli gun
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

@@ -1056,8 +1056,14 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
         Cmd::Gain { slot: 3, gain: 0.2 },
         Cmd::Stop { slot: 6 },
         Cmd::CutVoices,
+        Cmd::Place {
+            slot: 4,
+            ear_l: 1.0,
+            ear_r: 0.2,
+            lp: 9,
+        },
     ];
-    let golden: [[u8; CMD_BYTES]; 6] = [
+    let golden: [[u8; CMD_BYTES]; 7] = [
         [
             0, 5, 0, 0, 154, 153, 153, 62, 102, 102, 102, 63, 41, 92, 175, 63,
         ],
@@ -1066,6 +1072,7 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
         [3, 0, 3, 0, 205, 204, 76, 62, 0, 0, 0, 0, 0, 0, 0, 0],
         [4, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [6, 0, 4, 9, 0, 0, 128, 63, 205, 204, 76, 62, 0, 0, 0, 0],
     ];
     for (cmd, want) in script.iter().zip(golden.iter()) {
         let got = cmd.to_bytes();
@@ -1104,11 +1111,71 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
         "a slot byte at HELD must decode to nothing"
     );
     let mut bad = script[5].to_bytes();
-    bad[0] = 6;
+    bad[0] = 7;
     assert_eq!(
         Cmd::from_bytes(&bad),
         None,
         "an unknown tag must decode to nothing"
+    );
+}
+
+/// A placed bed is heard from its side and through its filter; a bed never
+/// placed mixes exactly what it always did.
+#[test]
+fn a_placed_bed_pans_and_filters_and_an_unplaced_one_is_untouched() {
+    let bed: Box<[i16]> = (0..4_000)
+        .map(|i| if (i / 7) % 2 == 0 { 12_000 } else { -12_000 })
+        .collect();
+    let render = |place: Option<Cmd>| {
+        let mut r = Renderer::new(44_100);
+        r.install(Cue::BedRotor, bed.clone()).unwrap();
+        r.apply(Cmd::Loop {
+            slot: 4,
+            cue: Cue::BedRotor,
+            gain: 0.5,
+        });
+        if let Some(c) = place {
+            r.apply(c);
+        }
+        let mut out = vec![0.0f32; 2 * BLOCK];
+        // The first block ramps from the centre; the second is all placed.
+        r.render(&mut out);
+        r.render(&mut out);
+        out
+    };
+    let centre = render(None);
+    assert!(
+        centre.chunks_exact(2).all(|f| f[0] == f[1]),
+        "an unplaced bed is the same in both ears"
+    );
+    let left = render(Some(Cmd::Place {
+        slot: 4,
+        ear_l: 1.2,
+        ear_r: 0.3,
+        lp: 0,
+    }));
+    for (c, l) in centre.chunks_exact(2).zip(left.chunks_exact(2)) {
+        assert_eq!(
+            l[0],
+            c[0] * 1.2,
+            "the near ear is the centre times its weight"
+        );
+        assert_eq!(
+            l[1],
+            c[1] * 0.3,
+            "the far ear is the centre times its weight"
+        );
+    }
+    let energy = |o: &[f32]| o.iter().map(|v| v * v).sum::<f32>();
+    let dark = render(Some(Cmd::Place {
+        slot: 4,
+        ear_l: 1.0,
+        ear_r: 1.0,
+        lp: 20,
+    }));
+    assert!(
+        energy(&dark) < 0.5 * energy(&centre),
+        "a 3 kHz square wave through a ~570 Hz one-pole loses most of its energy"
     );
 }
 

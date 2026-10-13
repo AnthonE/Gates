@@ -94,6 +94,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::Unlock, takes!("freesound", "unlock", 0)),
     (Cue::ShotGun, takes!("freesound", "shot_gun", 0 1 2 3)),
     (Cue::ShotGunFar, takes!("freesound", "shot_gun_far", 0 1 2)),
+    (Cue::ShotHeli, takes!("pd", "shot_heli", 0 1 2 3)),
     (Cue::ShotBow, takes!("freesound", "shot_bow", 0 1 2)),
     (Cue::ShotCrossbow, takes!("pd", "shot_crossbow", 0 1 2)),
     (Cue::BowDraw, takes!("freesound", "bow_draw", 0 1)),
@@ -201,6 +202,7 @@ pub fn synth_takes(cue: Cue) -> u8 {
         Cue::Ricochet => 4,
         Cue::ShotGun
         | Cue::ShotGunFar
+        | Cue::ShotHeli
         | Cue::ShotBow
         | Cue::ShotCrossbow
         | Cue::StepSand
