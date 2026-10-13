@@ -316,8 +316,11 @@ respawn_seconds = 300
 
 # `wolf.population` defaults to 2 per km² in the reference, and its wolves
 # roam rocky ground and woods: forest and highland whole, open meadow thin.
-# The site guards are on top of these (`mob::SITE_GUARDS`).
-per_km2 = 2.0
+# 3, not 2: the reference counts its whole map square and we count only
+# habitat-weighted land, so 2 left ~8 wolves roaming by day against 8 at the
+# sites. Now ~12 roam (four packs) and only the pad keeps any
+# (`mob::SITE_GUARDS`, on top of these).
+per_km2 = 3.0
 habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.2 }
 # The night doubles them (`NOW.md` §0pr 3): the extra wolves hatch after dusk
 # and leave at daybreak once nobody is near — a night out costs more than

@@ -311,6 +311,7 @@ fn crag(soup: &mut RockSoup, lat: &mut terrain::Lattice, seed: u64, haven: &Have
             chisel: (CRAG_CHISEL_SHARE * c.hx.min(c.hz).min(y1 - y0)).min(CRAG_CHISEL_MAX_M),
             min_seg: 2,
             value: LEDGE_VALUE * (0.85 + 0.3 * h01(sp.key, 40)),
+            underside: false,
         },
     );
 }
@@ -354,6 +355,7 @@ fn scree(
                 chisel: 0.0,
                 min_seg: 1,
                 value: LEDGE_VALUE * 0.8,
+                underside: false,
             },
         );
     }

@@ -125,6 +125,9 @@ pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
         }
         let b = part.b;
         let (x, z) = landmark::to_world(m, (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
+        // A piece standing on another (a cap, an arch's slab) is drawn down
+        // into it, and closed underneath where it overhangs.
+        let stacked = b[1] > -landmark::FOOTING_M;
         boulders::rock_block(
             soup,
             &RockShape {
@@ -133,13 +136,7 @@ pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
                 hx: (b[3] - b[0]) * 0.5,
                 hz: (b[5] - b[2]) * 0.5,
                 dir,
-                // A piece standing on another is drawn down into it.
-                y0: m.y + b[1]
-                    - if b[1] > -landmark::FOOTING_M {
-                        boulders::STACK_SINK_M
-                    } else {
-                        0.0
-                    },
+                y0: m.y + b[1] - if stacked { boulders::STACK_SINK_M } else { 0.0 },
                 y1: m.y + b[4],
                 tx: 0.0,
                 tz: 0.0,
@@ -148,6 +145,7 @@ pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
                 chisel: 0.0,
                 min_seg: 2,
                 value: boulders::ROCK_VALUE,
+                underside: stacked,
             },
         );
     }

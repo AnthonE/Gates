@@ -136,7 +136,8 @@ fn the_roster_spends_a_stated_number_of_slots_on_guards() {
     // the const block already holds: what a player meets at the pad has to
     // outnumber what they meet at a waystation, or the richest tier is the
     // cheapest to rob and `reference/RIPLIST.md` §0's threat frame is
-    // imported half-priced.
+    // imported half-priced. A waystation may keep nobody (operator,
+    // 2026-10-13: not every monument needs wolves).
     let at = |site: usize| {
         claimed
             .iter()
@@ -150,11 +151,6 @@ fn the_roster_spends_a_stated_number_of_slots_on_guards() {
              prize chain rises and the risk chain does not",
             at(0),
             at(way)
-        );
-        assert!(
-            at(way) > 0,
-            "waystation {way} keeps no guards, so the middle tier of the \
-             prize chain is free"
         );
     }
 }
