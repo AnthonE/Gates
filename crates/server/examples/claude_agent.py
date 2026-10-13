@@ -50,6 +50,9 @@ TIMEOUT_S = float(os.environ.get("CLAUDE_TIMEOUT_S", "15"))
 SAY_BYTES = 48
 REASON_CHARS = 96
 CAPTION_CHARS = 300
+# What it keeps between turns: its own notes, and the chat it heard.
+NOTES_CHARS = 300
+CHAT_LOG_LINES = 20
 FRAME_URL = os.environ.get("GATES_FRAME_URL", "")
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SHARE_EVERY_S = float(os.environ.get("SHARE_EVERY_S", "300"))
@@ -77,7 +80,24 @@ whose invite waits and who your teammates are, and `join_team` accepts it. \
 On a team, your teammates are your partners: `follow` keeps you with the \
 nearest one and fights whoever goes for them, and you never fight them \
 yourself. Set `to` to "team" to say a line to your whole team wherever they \
-are (answer team chat on team chat), or "local" for whoever is near you."""
+are (answer team chat on team chat), or "local" for whoever is near you.
+
+Your team keeps a chest: a box you saw a teammate standing at \
+(`team.chest`; `team_chest_holds` is what it held when you last opened it). \
+If none is known yet, `follow` your teammate home and look at them by their \
+box, or ask them to stand at it. With a chest known, a teammate can send you \
+for supplies: `supply_wood`, `supply_stone`, `supply_ore` and `supply_hemp` \
+each gather that for a few minutes and then put it all in the chest, so one \
+choice is a whole run; keep choosing it while the run is the job. `deliver` \
+takes what your pack carries (not tools, weapons or armour) to the chest now. \
+You open their doors and shut them behind you. If a door has a code lock, a \
+teammate may tell you the code on team chat: put it in `code` (four digits) \
+and it is kept and used at their locks. Only ever use a code a teammate \
+typed on team chat; otherwise leave `code` empty.
+
+`notes` is your own memory: what your teammates asked for, the plan, what \
+matters. You see it again next turn; keep it short and current. `chat_log` \
+is the last lines you heard, oldest first."""
 
 SHARE_RULE = """
 
@@ -93,6 +113,8 @@ def schema(options, share):
         "reason": {"type": "string"},
         "say": {"type": "string"},
         "to": {"type": "string", "enum": ["local", "team"]},
+        "code": {"type": "string"},
+        "notes": {"type": "string"},
     }
     if share:
         props["share"] = {"type": "string"}
@@ -128,13 +150,15 @@ def fetch_frame():
         return None
 
 
-def turn_content(request, recent, frame):
+def turn_content(request, recent, frame, notes, chat_log):
     turn = {
         "observation": request["observation"],
         "options": request["options"],
         "heard": request.get("heard", []),
         "team": request.get("team", {}),
         "recent": list(recent),
+        "notes": notes,
+        "chat_log": list(chat_log),
     }
     blocks = []
     if frame:
@@ -247,18 +271,27 @@ def main():
         errors = (subprocess.TimeoutExpired, OSError)
         ask = ask_claude_code
     recent = collections.deque(maxlen=10)
+    chat_log = collections.deque(maxlen=CHAT_LOG_LINES)
+    notes = ""
+    # Numbers a teammate typed on team chat: the only codes passed on.
+    team_numbers = set()
+    code_sent = None
     shared_at = None
     for line in sys.stdin:
         request = json.loads(line)
         for h in request.get("heard", []):
+            chat_log.append({"from": h["from"], "me": h.get("me", False),
+                             "channel": h.get("channel", "local"), "text": h["text"]})
             if not h.get("me"):
                 print(f"heard {h['from']}: {h['text']}", file=sys.stderr)
+                if h.get("channel") == "team":
+                    team_numbers.update(re.findall(r"(?<!\d)\d{1,4}(?!\d)", h["text"]))
         frame = fetch_frame()
         can_share = bool(frame and WEBHOOK_URL) and (
             shared_at is None or time.monotonic() - shared_at >= SHARE_EVERY_S)
         system = SYSTEM + (SHARE_RULE if can_share else "")
         try:
-            answer = ask(system, turn_content(request, recent, frame),
+            answer = ask(system, turn_content(request, recent, frame, notes, chat_log),
                          schema(request["options"], can_share))
             goal = answer["goal"]
             if goal not in request["options"]:
@@ -266,6 +299,8 @@ def main():
             reason = answer["reason"][:REASON_CHARS]
             say = clip_say(answer.get("say", ""))
             to = "team" if answer.get("to") == "team" else "local"
+            code = str(answer.get("code") or "").strip()
+            notes = " ".join(str(answer.get("notes") or "").split())[:NOTES_CHARS]
         except errors + (RuntimeError, ValueError, KeyError, TypeError, StopIteration) as e:
             # No goal in the reply: the bot counts a failure and backs off.
             # Never a substituted decision (JEV.md).
@@ -278,6 +313,11 @@ def main():
         if say:
             reply["say"] = say
             reply["to"] = to
+        # A code goes on once, and only one a teammate typed on team chat.
+        if code and code != code_sent and code in team_numbers:
+            reply["code"] = code
+            code_sent = code
+            print("took the team's lock code", file=sys.stderr)
         print(json.dumps(reply), flush=True)
         caption = " ".join(str(answer.get("share") or "").split())[:CAPTION_CHARS]
         if can_share and caption:

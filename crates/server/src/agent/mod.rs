@@ -10,8 +10,9 @@
 //! ([`stash`]), the code on its locks ([`lock`]), loot runs to barrels and
 //! crates ([`loot`]), what the next milestone comes down to ([`plan`]), and
 //! cooking its meat and recycling and researching at ovens ([`oven`]),
-//! defending home and mending it ([`defend`]), and raiding other people's
-//! bases its eyes found ([`raid`]).
+//! defending home and mending it ([`defend`]), raiding other people's
+//! bases its eyes found ([`raid`]), and filling its team's chest
+//! ([`supply`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -37,5 +38,6 @@ pub mod raid;
 pub mod route;
 pub mod site;
 pub mod stash;
+pub mod supply;
 pub mod tracks;
 pub mod wiki;

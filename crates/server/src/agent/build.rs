@@ -1591,7 +1591,7 @@ fn door_addr(plan: &BasePlan, (dx, dz, level, loc): (i8, i8, u8, u8)) -> OpAddr 
 
 /// Is the door at this address open, per the mirror; `None` when no door
 /// hangs there.
-fn door_open(core: &ClientCore, at: OpAddr) -> Option<bool> {
+pub(crate) fn door_open(core: &ClientCore, at: OpAddr) -> Option<bool> {
     let defs = &core.deploy_defs;
     core.deploys
         .entries()

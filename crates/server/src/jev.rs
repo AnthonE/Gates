@@ -102,6 +102,7 @@ impl Jev {
             input_tokens,
             output_tokens,
             say: crate::mind::Say::Quiet,
+            code: None,
         })
     }
 }

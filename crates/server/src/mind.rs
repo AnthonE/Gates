@@ -188,6 +188,14 @@ pub enum Goal {
     JoinTeam,
     /// Stay with its nearest teammate, and fight whoever goes for them.
     Follow,
+    /// Take what the pack carries past the belt to the team's chest, and
+    /// put it in.
+    Deliver,
+    /// A supply run: gather the kind a few minutes, then deliver it.
+    SupplyWood,
+    SupplyStone,
+    SupplyOre,
+    SupplyHemp,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -215,7 +223,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 25] = [
+    pub const FIXED: [Goal; 30] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -241,6 +249,11 @@ impl Goal {
         Goal::Raid,
         Goal::JoinTeam,
         Goal::Follow,
+        Goal::Deliver,
+        Goal::SupplyWood,
+        Goal::SupplyStone,
+        Goal::SupplyOre,
+        Goal::SupplyHemp,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -272,6 +285,11 @@ impl Goal {
             Goal::Raid => "raid",
             Goal::JoinTeam => "join_team",
             Goal::Follow => "follow",
+            Goal::Deliver => "deliver",
+            Goal::SupplyWood => "supply_wood",
+            Goal::SupplyStone => "supply_stone",
+            Goal::SupplyOre => "supply_ore",
+            Goal::SupplyHemp => "supply_hemp",
         }
     }
 
@@ -292,6 +310,14 @@ impl Goal {
             bytes,
             len: len as u8,
         }
+    }
+
+    /// A supply run: gather, then fill the team's chest.
+    pub fn supplies(self) -> bool {
+        matches!(
+            self,
+            Goal::SupplyWood | Goal::SupplyStone | Goal::SupplyOre | Goal::SupplyHemp
+        )
     }
 
     /// Strict: a label must name one of the goals actually offered.
@@ -333,6 +359,13 @@ impl Goal {
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
             Goal::Follow => "Stay with a teammate; fight their attackers.".into(),
+            Goal::Deliver => {
+                "Take the pack (not tools, weapons or armour) to the team's box and put it in.".into()
+            }
+            Goal::SupplyWood => "Chop wood a few minutes, then put it in the team's box.".into(),
+            Goal::SupplyStone => "Mine stone a few minutes, then put it in the team's box.".into(),
+            Goal::SupplyOre => "Mine metal and sulfur ore a few minutes, then put it in the team's box.".into(),
+            Goal::SupplyHemp => "Pick hemp a few minutes, then put the cloth in the team's box.".into(),
         }
     }
 }
@@ -364,6 +397,9 @@ pub enum Why {
     NoSpot,
     /// The session is ending: home, to sleep behind shut doors.
     LogOff,
+    /// A lock in the way, and no code for it.
+    Locked,
+    BoxFull,
 }
 
 impl Why {
@@ -392,6 +428,8 @@ impl Why {
             Why::Hostile => "someone dangerous is in view",
             Why::NoSpot => "no spot here takes it",
             Why::LogOff => "the session is ending, so it went home",
+            Why::Locked => "a lock it has no code for is in the way",
+            Why::BoxFull => "the box is full",
         }
     }
 }
@@ -487,6 +525,11 @@ pub struct TeamSense {
     pub invited: bool,
     /// A stranger is fighting near a teammate.
     pub mate_attacked: bool,
+    /// The team's chest, if its eyes have seen a teammate at a box: where
+    /// it is from here (`agent::supply`).
+    pub chest: Sighting,
+    /// A teammate gave the team's lock code.
+    pub code: bool,
     /// Whose invite waits, and the teammates, as a chat log names them.
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
@@ -532,6 +575,8 @@ impl TeamSense {
             "lead": self.leader,
             "invited": self.invited,
             "mate_attacked": self.mate_attacked,
+            "chest": self.chest.json(),
+            "code_known": self.code,
         })
     }
 }
@@ -875,6 +920,9 @@ impl Place {
     }
 }
 
+/// The scripted policy takes the pack to the team's chest with this few
+/// slots free.
+pub const SCRIPTED_DELIVER_FREE: u8 = 4;
 /// The scripted policy catches up with a teammate farther than this.
 pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 
@@ -959,6 +1007,9 @@ pub struct Summary {
     pub feed: bool,
     /// Its team (wire v108).
     pub team: TeamSense,
+    /// What the team's chest held when its panel was last open.
+    pub chest_holds: [(Name, u32); SUMMARY_STORED],
+    pub chest_holds_len: u8,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -1082,6 +1133,12 @@ impl Summary {
             leader: false,
             invited: false,
             mate_attacked: false,
+            chest: Sighting {
+                count: 0,
+                nearest_m: 0,
+                bearing: 0,
+            },
+            code: false,
             invite_from: Who {
                 id: 0,
                 name: protocol::Name::EMPTY,
@@ -1094,6 +1151,8 @@ impl Summary {
             }; protocol::TEAM_MAX],
             who_len: 0,
         },
+        chest_holds: [(Name::EMPTY, 0); SUMMARY_STORED],
+        chest_holds_len: 0,
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -1117,6 +1176,10 @@ impl Summary {
 
     pub fn stored(&self) -> &[(Name, u32)] {
         &self.stored[..self.stored_len as usize]
+    }
+
+    pub fn chest_holds(&self) -> &[(Name, u32)] {
+        &self.chest_holds[..self.chest_holds_len as usize]
     }
 
     pub fn options(&self) -> &[Goal] {
@@ -1256,6 +1319,7 @@ impl Summary {
             },
             "cupboard_needs_feeding": self.feed,
             "team": self.team.json(),
+            "team_chest_holds": self.chest_holds().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             "asked_because": self.trigger.word(),
         })
     }
@@ -1321,6 +1385,9 @@ pub struct Choice {
     /// A line to say out loud; [`Say::Quiet`] from every source but
     /// [`SourceKind::External`], and the body ignores it from any other.
     pub say: Say,
+    /// The team's lock code, as a teammate gave it (an external agent's
+    /// `"code"`): kept for the locks on the way to the team's chest.
+    pub code: Option<crate::agent::lock::LockCode>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1778,6 +1845,7 @@ impl DecisionSource for Scripted {
             input_tokens: 0,
             output_tokens: 0,
             say: Say::Quiet,
+            code: None,
         })
     }
 }
@@ -1895,6 +1963,29 @@ impl Scripted {
                 if s.offers(Goal::GatherHemp) && s.hemp.count > 0 && s.free_slots > 1 {
                     return (Goal::GatherHemp, "scripted: cloth for a sleeping bag");
                 }
+            }
+        }
+        // On a team, with the chest it saw a teammate at: fill it. A pack
+        // getting full goes in; else a supply run of what it holds least
+        // of, wood or stone.
+        if s.team.chest.count > 0 {
+            if s.offers(Goal::Deliver) && s.free_slots <= SCRIPTED_DELIVER_FREE {
+                return (Goal::Deliver, "scripted: the pack is filling, to the chest");
+            }
+            let held = |name: &str| -> u32 {
+                s.chest_holds()
+                    .iter()
+                    .filter(|(n, _)| n.as_str() == name)
+                    .map(|(_, c)| *c)
+                    .sum()
+            };
+            let mut runs = [
+                (Goal::SupplyWood, held("Wood")),
+                (Goal::SupplyStone, held("Stone")),
+            ];
+            runs.sort_by_key(|r| r.1);
+            if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
+                return (goal, "scripted: a supply run for the team's chest");
             }
         }
         // Home chores: the box holds what the base needs, the cupboard runs
@@ -2213,6 +2304,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 1,
                 say: Say::Quiet,
+                code: None,
             })
         }
     }

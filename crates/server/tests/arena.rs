@@ -364,6 +364,7 @@ impl server::mind::DecisionSource for Healer {
             input_tokens: 0,
             output_tokens: 0,
             say: server::mind::Say::Quiet,
+            code: None,
         })
     }
 }
@@ -440,6 +441,7 @@ impl server::mind::DecisionSource for Hunter {
             input_tokens: 0,
             output_tokens: 0,
             say: server::mind::Say::Quiet,
+            code: None,
         })
     }
 }

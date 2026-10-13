@@ -987,6 +987,7 @@ impl server::mind::DecisionSource for Sentry {
             input_tokens: 0,
             output_tokens: 0,
             say: server::mind::Say::Quiet,
+            code: None,
         })
     }
 }

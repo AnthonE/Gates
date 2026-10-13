@@ -54,6 +54,7 @@ impl DecisionSource for Alternating {
                 input_tokens: 7,
                 output_tokens: 1,
                 say: server::mind::Say::Quiet,
+                code: None,
             })
         } else {
             Err("an allocated error must be dropped on the worker".to_owned())
@@ -197,6 +198,7 @@ impl DecisionSource for Crafty {
             } else {
                 server::mind::Say::Line(protocol::ChatText::sanitize(b"hello island").unwrap())
             },
+            code: None,
         })
     }
 }

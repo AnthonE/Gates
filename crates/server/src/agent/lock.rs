@@ -73,6 +73,13 @@ impl LockCode {
         Self::derive(&secret, "")
     }
 
+    /// A code a teammate gave (an external agent's `"code"`): four digits
+    /// at most, `None` past the keypad's range. Kept the same way as its
+    /// own.
+    pub fn given(code: u16) -> Option<Self> {
+        (code <= CODE_MAX).then_some(Self(code))
+    }
+
     /// The code as the access verb carries it (`0..=CODE_MAX`).
     pub fn wire(self) -> u16 {
         self.0

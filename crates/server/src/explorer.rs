@@ -15,7 +15,9 @@
 //! at its own workbench or furnace, walking home to it first. The base gets
 //! code locks armed with its own code, metal doors and a second bench, and
 //! the gear after it is learned and made there (`agent::build`); better
-//! armour is worn and better arms belted between goals.
+//! armour is worn and better arms belted between goals. On a team it
+//! learns the team's chest by seeing a teammate at it, and fills it
+//! (`agent::supply`): what the pack carries, or a supply run's gathering.
 //! The only verbs sent are the ones a human client sends: input frames,
 //! and `Respawn`, `Craft`, `Consume`, `Drink`, `Move`, `Reload`, `Loot`,
 //! `Pickup`, `Deploy`, `Place`, `Upgrade`, `Use`, `Container`, `Feed`,
@@ -38,6 +40,7 @@ use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
+use crate::agent::supply::{self, Deliver, DeliverJob, Leave, TeamChest, Through};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
@@ -56,7 +59,7 @@ use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::STATION_FURNACE;
-use sim_core::deploy::{box_key, BAG_CAP};
+use sim_core::deploy::{box_key, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
@@ -98,8 +101,15 @@ pub const FOLLOW_RUN_M: f32 = 12.0;
 /// going for them.
 pub const GUARD_RECALL_SECS: u32 = 3;
 pub const GUARD_M: f32 = 15.0;
+/// A follow with no way to its teammate goes through a door this near.
+pub const FOLLOW_DOOR_M: f32 = 6.0;
 /// A team invite's accept that has not gone out in this long is stuck.
 pub const JOIN_GOAL_SECS: u32 = 5;
+/// A supply run gathers this long, then takes what it has to the chest.
+pub const SUPPLY_GATHER_SECS: u32 = 180;
+/// A walk to the team's chest, through its doors, and out again that has
+/// not finished in this long is stuck.
+pub const DELIVER_GOAL_SECS: u32 = 180;
 /// A build goal that has not finished its milestone in this long is stuck
 /// somewhere the builder's own checks missed; it ends, and the mind chooses
 /// again. A milestone's crafts and ops take a few minutes.
@@ -262,6 +272,7 @@ pub enum Phase {
     Repairing,
     Raiding,
     Following,
+    Delivering,
     LoggingOff,
 }
 
@@ -301,6 +312,7 @@ impl Phase {
             Phase::Repairing => "Mending the base with the hammer",
             Phase::Raiding => "Raiding a base",
             Phase::Following => "With its teammate",
+            Phase::Delivering => "Filling the team's chest",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -336,11 +348,11 @@ impl Kind {
 
     fn of_goal(goal: Goal) -> Option<Kind> {
         match goal {
-            Goal::GatherWood => Some(Kind::Wood),
-            Goal::GatherStone => Some(Kind::Stone),
-            Goal::GatherOre => Some(Kind::Ore),
+            Goal::GatherWood | Goal::SupplyWood => Some(Kind::Wood),
+            Goal::GatherStone | Goal::SupplyStone => Some(Kind::Stone),
+            Goal::GatherOre | Goal::SupplyOre => Some(Kind::Ore),
             Goal::Forage => Some(Kind::Forage),
-            Goal::GatherHemp => Some(Kind::Hemp),
+            Goal::GatherHemp | Goal::SupplyHemp => Some(Kind::Hemp),
             _ => None,
         }
     }
@@ -410,6 +422,8 @@ pub struct Senses {
     pub raid: Sighting,
     /// A stranger is swinging or shooting near a teammate (wire v108).
     pub mate_attacked: bool,
+    /// The team's chest, where its eyes saw a teammate at a box.
+    pub chest: Sighting,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -484,6 +498,14 @@ pub struct Memory {
     /// Its team changed since it last asked: an invite came, or someone
     /// joined or left. Any source is asked early (`Trigger::Team`).
     pub team_wake: bool,
+    /// The pack carries something for the team's chest; a delivery failed
+    /// a moment ago; what the chest held when its panel was last open; a
+    /// teammate gave the team's code.
+    pub deliver: bool,
+    pub deliver_held: bool,
+    pub chest_holds: [(u16, u32); stash::STORED_ROWS],
+    pub chest_holds_len: u8,
+    pub team_code: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -632,6 +654,11 @@ enum CraftStep {
 struct Active {
     goal: Goal,
     started: u32,
+    /// A gather leg began here: the goal's start, or, on a supply run, the
+    /// last node's fall.
+    leg: u32,
+    /// A supply run has turned for the team's chest.
+    delivering: bool,
     asked: u32,
     gained: u32,
     abandons: u32,
@@ -718,6 +745,15 @@ pub struct Survivor {
     bases: Bases,
     raid_job: RaidJob,
     raid_failed: Option<u32>,
+    /// The team's chest as its eyes found it, the trip to fill it, when a
+    /// trip last came to nothing, and the code a teammate gave.
+    chest: TeamChest,
+    deliver_job: DeliverJob,
+    /// Out of a teammate's base, and through the doors a teammate went by.
+    leave: Leave,
+    pub delivered: u64,
+    deliver_failed: Option<u32>,
+    team_code: Option<LockCode>,
     /// When this body last shot: an impact right after is its own.
     shot_at: Option<u32>,
     /// Salvage a recycle leaves whole (`Builder::kept_whole`), once a
@@ -839,6 +875,12 @@ impl Survivor {
             bases: Bases::new(),
             raid_job: RaidJob::default(),
             raid_failed: None,
+            chest: TeamChest::default(),
+            deliver_job: DeliverJob::default(),
+            leave: Leave::default(),
+            delivered: 0,
+            deliver_failed: None,
+            team_code: None,
             shot_at: None,
             keep: Keep::NONE,
             deadline_after: None,
@@ -1205,6 +1247,11 @@ impl Survivor {
                     home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc)
                 });
             self.bases.bodies(&self.tracks, tick);
+            // The team's chest: a box a teammate was seen standing at.
+            self.chest
+                .look(core, &haven, &body, &self.tracks, tick, |cx, cz, l, loc| {
+                    home.owns(cx, cz, l, loc) || builder.owns(cx, cz, l, loc)
+                });
         }
         self.mind.expire(now);
         if body.dead || core.dead {
@@ -1259,6 +1306,10 @@ impl Survivor {
             // Speech is not a goal: a fight that holds the goal does not
             // hold the line.
             self.take_say(choice.say);
+            // A code a teammate gave is kept whatever becomes of the goal.
+            if let Some(code) = choice.code {
+                self.team_code = Some(code);
+            }
             let busy = self.combat.engaged() || !self.at_checkpoint();
             if logging_off {
                 self.stats.deferred_dropped += 1;
@@ -1597,6 +1648,8 @@ impl Survivor {
         self.goal = Some(Active {
             goal,
             started: tick,
+            leg: tick,
+            delivering: false,
             asked: tick,
             gained: 0,
             abandons: 0,
@@ -1612,6 +1665,8 @@ impl Survivor {
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.loot_job = LootJob::default();
+        self.deliver_job = DeliverJob::default();
+        self.leave.doors.clear();
         self.oven_job = DeviceJob::new(if goal == Goal::Recycle {
             Work::Recycle
         } else {
@@ -1720,7 +1775,12 @@ impl Survivor {
             | Goal::Cook
             | Goal::Recycle
             | Goal::Raid
-            | Goal::Follow => true,
+            | Goal::Follow
+            | Goal::Deliver
+            | Goal::SupplyWood
+            | Goal::SupplyStone
+            | Goal::SupplyOre
+            | Goal::SupplyHemp => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1728,6 +1788,14 @@ impl Survivor {
         };
         if walks && (self.builder.passing() || self.builder.must_exit(core, body)) {
             if let Some(intent) = self.leave(core, body, tick) {
+                return intent;
+            }
+        }
+        // Out of a teammate's base too, by its nearest door. A delivery
+        // works its own doors, and a follow goes where its teammate goes.
+        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver) || active.delivering;
+        if walks && !own_doors && self.builder.region(body) == Region::Outside {
+            if let Some(intent) = self.leave_mates(core, body, tick) {
                 return intent;
             }
         }
@@ -1838,6 +1906,14 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Follow => self.follow(core, body, tick),
+            Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
+                self.deliver_over(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Deliver => self.deliver(core, body, tick),
+            Goal::SupplyWood | Goal::SupplyStone | Goal::SupplyOre | Goal::SupplyHemp => {
+                self.supply(core, body, tick)
+            }
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -1884,7 +1960,28 @@ impl Survivor {
             }
         }
         self.stats.phase = Phase::Following;
-        if d <= FOLLOW_NEAR_M {
+        // A door they went through: through it after them first.
+        if let Some(haven) = self.haven {
+            let (seed, _) = core.island();
+            if let Some(step) = self.leave.going(
+                core,
+                seed,
+                &haven,
+                body,
+                &self.hands,
+                &mut self.route,
+                self.team_code,
+                tick,
+            ) {
+                return self.leave_step(step, tick);
+            }
+        }
+        // Near them, but a wall or a shut door between: through the door.
+        let walled = d <= FOLLOW_RUN_M && supply::walled_between(core, [x, z], at);
+        if walled && self.leave.after(core, body, FOLLOW_DOOR_M, tick) {
+            return Intent::IDLE;
+        }
+        if d <= FOLLOW_NEAR_M && !walled {
             return Intent::IDLE;
         }
         let hurry = d > FOLLOW_RUN_M;
@@ -1897,6 +1994,8 @@ impl Survivor {
                 step.walk().unwrap_or(Intent::walk(yaw))
             }
             Step::Arrived => Intent::IDLE,
+            // No way to them: a door between, as like as not.
+            Step::Blocked if self.leave.after(core, body, FOLLOW_DOOR_M, tick) => Intent::IDLE,
             Step::Blocked | Step::Wait => {
                 let yaw = yaw_toward(at[0] - x, at[1] - z);
                 self.walk_on(core, body, yaw)
@@ -2025,6 +2124,199 @@ impl Survivor {
         Intent::walk(heading)
     }
 
+    /// A gather leg is over. A supply run goes on to the next node while
+    /// its time lasts, and turns for the team's chest with what it has
+    /// when the pack is full or there is no more to be had; any other
+    /// gather goal ends.
+    fn gather_over(&mut self, tick: u32, outcome: Outcome) {
+        if let Some(a) = self.goal.as_mut().filter(|a| a.goal.supplies()) {
+            match outcome {
+                Outcome::Done => {
+                    a.leg = tick;
+                    a.abandons = 0;
+                    return;
+                }
+                Outcome::Failed(_) if a.gained > 0 => {
+                    a.delivering = true;
+                    self.deliver_job = DeliverJob::default();
+                    self.target = None;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        self.end_goal(tick, outcome);
+    }
+
+    /// A supply run: gather the kind for [`SUPPLY_GATHER_SECS`], then take
+    /// it to the team's chest; done once it is in.
+    fn supply(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let Some(active) = self.goal else {
+            return Intent::IDLE;
+        };
+        let Some(kind) = Kind::of_goal(active.goal) else {
+            return Intent::IDLE;
+        };
+        let elapsed = tick.wrapping_sub(active.started);
+        if !active.delivering {
+            if elapsed < SUPPLY_GATHER_SECS * TICK_HZ {
+                return self.gather(core, body, tick, kind);
+            }
+            if active.gained == 0 {
+                self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                return Intent::IDLE;
+            }
+            self.gather_over(tick, Outcome::Failed(Why::Stuck));
+        }
+        if elapsed >= (SUPPLY_GATHER_SECS + DELIVER_GOAL_SECS) * TICK_HZ {
+            self.deliver_over(tick, Outcome::Failed(Why::Stuck));
+            return Intent::IDLE;
+        }
+        self.deliver(core, body, tick)
+    }
+
+    /// To the team's chest with the pack (`agent::supply`): through the
+    /// doors in the way, everything past the belt put in, and out again.
+    fn deliver(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Delivering;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let Some(chest) = self.chest.at() else {
+            self.deliver_over(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let step = self.deliver_job.step(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            chest,
+            self.team_code,
+            &self.book,
+            tick,
+        );
+        let (sent, intent) = match step {
+            Deliver::Door(ref door) => self.door_verb(door),
+            Deliver::Open { key, intent } => (
+                self.queue(|buf| protocol::encode_action_container(CONT_BOX, key, buf)),
+                intent,
+            ),
+            Deliver::Put {
+                key,
+                from,
+                to,
+                count,
+                intent,
+            } => (
+                self.queue(|buf| {
+                    protocol::encode_action_move(key, CONT_SELF, from, CONT_BOX, to, count, buf)
+                }),
+                intent,
+            ),
+            Deliver::Close(intent) => (
+                self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
+                intent,
+            ),
+            Deliver::Done => {
+                // The shut panel may still wait on its pace.
+                if self.outbox.is_none() {
+                    self.deliver_over(tick, Outcome::Done);
+                }
+                return Intent::IDLE;
+            }
+            Deliver::Fail(why) => {
+                self.deliver_over(tick, Outcome::Failed(why));
+                return Intent::IDLE;
+            }
+        };
+        if sent {
+            self.deliver_job.sent(&step, tick);
+        }
+        intent
+    }
+
+    /// Send what a walk through a door asked for: a use, or the team's
+    /// code at a lock. True when it went out.
+    fn door_verb(&mut self, step: &Through) -> (bool, Intent) {
+        match *step {
+            Through::Go(intent) => (false, intent),
+            Through::Use(at, intent) => (
+                self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf)),
+                intent,
+            ),
+            // The team's code goes from its keeping onto the wire, the
+            // keypad's way, and nowhere else.
+            Through::Enter(at, code, intent) => (
+                self.queue(|buf| {
+                    protocol::encode_action_access(
+                        at.cx,
+                        at.cz,
+                        at.level,
+                        at.loc,
+                        ACCESS_OP_ENTER,
+                        code.wire(),
+                        buf,
+                    )
+                }),
+                intent,
+            ),
+            _ => (false, Intent::IDLE),
+        }
+    }
+
+    /// A step of [`Leave`]'s door, sent.
+    fn leave_step(&mut self, step: Through, tick: u32) -> Intent {
+        let (sent, intent) = self.door_verb(&step);
+        if sent {
+            self.leave.doors.sent(&step, tick);
+        }
+        intent
+    }
+
+    /// Walled in on a teammate's floor before a walk: out by the nearest
+    /// door, shutting it behind. `None` once out, or with no door to go by.
+    fn leave_mates(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        tick: u32,
+    ) -> Option<Intent> {
+        let haven = self.haven?;
+        let (seed, _) = core.island();
+        let step = self.leave.out(
+            core,
+            seed,
+            &haven,
+            body,
+            &self.hands,
+            &mut self.route,
+            self.team_code,
+            tick,
+        )?;
+        self.stats.phase = Phase::Leaving;
+        Some(self.leave_step(step, tick))
+    }
+
+    /// The trip to the chest is over: what went in is counted, a delivery
+    /// on its own is gained by it, and one that failed is not offered again
+    /// for a while.
+    fn deliver_over(&mut self, tick: u32, outcome: Outcome) {
+        let put = self.deliver_job.put;
+        self.delivered += u64::from(put);
+        if let Some(a) = self.goal.as_mut().filter(|a| a.goal == Goal::Deliver) {
+            a.gained = put;
+        }
+        if matches!(outcome, Outcome::Failed(_)) {
+            self.deliver_failed = Some(tick);
+        }
+        self.deliver_job = DeliverJob::default();
+        self.end_goal(tick, outcome);
+    }
+
     fn gather(
         &mut self,
         core: &mut ClientCore,
@@ -2036,7 +2328,7 @@ impl Survivor {
             return Intent::IDLE;
         };
         let Some(sel) = best_tool(core, kind) else {
-            self.end_goal(tick, Outcome::Failed(Why::NoTool));
+            self.gather_over(tick, Outcome::Failed(Why::NoTool));
             return Intent::IDLE;
         };
         let hold = Intent {
@@ -2044,7 +2336,7 @@ impl Survivor {
             ..Intent::IDLE
         };
         if !room_for(core, self.memory.yields[kind as usize]) {
-            self.end_goal(tick, Outcome::Failed(Why::PackFull));
+            self.gather_over(tick, Outcome::Failed(Why::PackFull));
             return hold;
         }
         if let Some((start, yaw)) = self.recovery {
@@ -2062,14 +2354,14 @@ impl Survivor {
                 self.target = None;
                 if self.target_gain > 0 {
                     self.stats.targets_completed += 1;
-                    self.end_goal(tick, Outcome::Done);
+                    self.gather_over(tick, Outcome::Done);
                     return hold;
                 }
             }
         }
         let Some(target) = self.target else {
-            if tick.wrapping_sub(active.started) >= SEARCH_GOAL_SECS * TICK_HZ {
-                self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            if tick.wrapping_sub(active.leg) >= SEARCH_GOAL_SECS * TICK_HZ {
+                self.gather_over(tick, Outcome::Failed(Why::NotFound));
                 return hold;
             }
             // Head back toward the nearest one remembered: facing it puts
@@ -2132,7 +2424,7 @@ impl Survivor {
                 a.abandons
             });
             if abandons >= MAX_ABANDONS {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.gather_over(tick, Outcome::Failed(Why::Stuck));
             }
             return intent;
         }
@@ -4115,6 +4407,25 @@ impl Survivor {
                 raid.count = n;
             }
             self.senses.raid = raid;
+            // The team's chest: where it is, what it held, and whether the
+            // pack has anything for it.
+            let mut chest = Sighting::default();
+            if let Some(at) = self.chest.at() {
+                let (cx, cz) = sim_core::deploy::cell_center(at.cx, at.cz);
+                let (d, b) = relative(body, cx, cz);
+                chest.add(d, b);
+            }
+            self.senses.chest = chest;
+            let mut rows = [(0u16, 0u32); stash::STORED_ROWS];
+            self.memory.chest_holds_len = self.chest.ledger.totals(&mut rows) as u8;
+            self.memory.chest_holds = rows;
+            self.memory.deliver = self.chest.at().is_some()
+                && self.book.ready()
+                && supply::has_delivery(core, &self.book);
+            self.memory.deliver_held = self
+                .deliver_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < supply::DELIVER_RETRY_TICKS);
+            self.memory.team_code = self.team_code.is_some();
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
             // Mid-cook the meat is on the grill rather than in the pack, and a
@@ -4485,6 +4796,8 @@ impl Survivor {
             self.builder.on_refused(true, reason);
             self.stash_job.on_refused();
             self.oven_job.on_refused(reason);
+            self.deliver_job.on_refused(reason);
+            self.leave.doors.on_refused(reason);
         }
         // Its own cupboard's stock readout: a feed's reply, or the crew
         // vital's push while it stands in the claim. Either is a reading;
@@ -4516,11 +4829,14 @@ impl Survivor {
             self.stash_job.on_moved(core.last_move_refused != 0, tick);
             self.loot_job.on_moved(core.last_move_refused != 0);
             self.oven_job.on_moved(core.last_move_refused != 0, tick);
+            self.deliver_job.on_moved(core.last_move_refused != 0);
         }
         // A fire's or a recycler's panel: the session's open was answered.
         if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_BOX {
             self.oven_job.on_panel(core.cont_handle);
             self.raid_job.on_panel(core.cont_handle);
+            self.deliver_job.on_panel(core.cont_handle);
+            self.chest.on_panel(core);
         }
         // A charge on a wall somewhere: the raid's plant, if it is at the
         // face the raid is working.
@@ -4543,6 +4859,8 @@ impl Survivor {
         // a blueprint learned or refused.
         while let Some((cx, cz, level, loc, _grant)) = core.pop_auth() {
             self.builder.on_auth(cx, cz, level, loc);
+            self.deliver_job.on_auth(cx, cz, level, loc);
+            self.leave.doors.on_auth(cx, cz, level, loc);
         }
         while core.pop_research_toast().is_some() {}
         while let Some(reason) = core.pop_research_refusal() {
@@ -4696,6 +5014,11 @@ impl BotDriver for Survivor {
         self.defend_job = DefendJob::default();
         self.defend_let_be = LetBe::default();
         self.raid_job = RaidJob::default();
+        self.chest = TeamChest::default();
+        self.deliver_job = DeliverJob::default();
+        self.leave = Leave::default();
+        self.deliver_failed = None;
+        self.team_code = None;
         self.shot_at = None;
         self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
@@ -5224,6 +5547,18 @@ pub fn observe(
         }
     }
     s.team.mate_attacked = senses.mate_attacked;
+    s.team.chest = senses.chest;
+    s.team.code = memory.team_code;
+    for &(item, units) in &memory.chest_holds[..usize::from(memory.chest_holds_len)] {
+        let n = usize::from(s.chest_holds_len);
+        if let (Some(name), true) = (
+            Name::new(core.catalog.name(usize::from(item))),
+            n < s.chest_holds.len(),
+        ) {
+            s.chest_holds[n] = (name, units);
+            s.chest_holds_len += 1;
+        }
+    }
     if s.body != BodyState::Alive {
         return s;
     }
@@ -5368,6 +5703,25 @@ pub fn observe(
     }
     if s.team.awake.count > 0 {
         s.offer(Goal::Follow);
+    }
+    // The team's chest, seen with a teammate at it: the pack taken to it,
+    // or a supply run for it of a kind a gather goal could go for now;
+    // nobody dangerous in view, and no trip there came to nothing a
+    // moment ago.
+    if s.team.chest.count > 0 && !senses.hostile && !memory.deliver_held {
+        if memory.deliver {
+            s.offer(Goal::Deliver);
+        }
+        for (gather, run) in [
+            (Goal::GatherWood, Goal::SupplyWood),
+            (Goal::GatherStone, Goal::SupplyStone),
+            (Goal::GatherOre, Goal::SupplyOre),
+            (Goal::GatherHemp, Goal::SupplyHemp),
+        ] {
+            if s.offers(gather) {
+                s.offer(run);
+            }
+        }
     }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));
@@ -5677,6 +6031,7 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: 0,
                 say: crate::mind::Say::Quiet,
+                code: None,
             },
             tick,
         );
@@ -6446,6 +6801,7 @@ mod tests {
                 input_tokens: 0,
                 output_tokens: 0,
                 say: crate::mind::Say::Quiet,
+                code: None,
             },
             now,
         ));
@@ -6483,6 +6839,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             say: crate::mind::Say::Quiet,
+            code: None,
         };
         goal(&mut bot, Goal::GatherWood, 1);
         hurt(&mut bot);
