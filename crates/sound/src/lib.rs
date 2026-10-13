@@ -392,11 +392,24 @@ pub enum Cue {
     /// The bat landing a blow: Triple T's hollow-log "tung", on top of
     /// whatever the blow struck, at the point it struck.
     Tung,
+    /// One round of the attack helicopter's gun, at the heli. Its own cue
+    /// rather than [`Cue::ShotGun`]: a burst is eight rounds 100 ms apart,
+    /// and the revolver's ringing report smeared eight of them into one
+    /// roar. A rifle round with a short tail keeps every round heard.
+    ShotHeli,
+    /// The heli's rotor from far off: a distant recording, the thump with
+    /// the top end gone, crossfaded in as [`Cue::BedRotor`] (the near
+    /// layer) fades with distance. A bed ([`Cue::is_bed`]).
+    BedRotorFar,
+    /// One round of the heli's gun from far off: a distant blast and its
+    /// echo, kept short so a burst still reads round by round
+    /// (`render/audio.rs` picks it past `HELI_SHOT_FAR_M`).
+    ShotHeliFar,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 91;
+pub const CUE_COUNT: usize = 94;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -496,6 +509,9 @@ impl Cue {
         Cue::OreBreak,
         Cue::OreGlint,
         Cue::Tung,
+        Cue::ShotHeli,
+        Cue::BedRotorFar,
+        Cue::ShotHeliFar,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -523,6 +539,7 @@ impl Cue {
                 | Cue::BedRotor
                 | Cue::BedTown
                 | Cue::BedNight
+                | Cue::BedRotorFar
         )
     }
 
@@ -650,7 +667,12 @@ impl Cue {
             // mechanism with a fixed bore and a bow's is a fixed string —
             // both vary with the shooter and the round, not with the
             // weapon's pitch.
-            Cue::ShotBow | Cue::ShotCrossbow | Cue::ShotGun | Cue::ShotGunFar => 0.05,
+            Cue::ShotBow
+            | Cue::ShotCrossbow
+            | Cue::ShotGun
+            | Cue::ShotGunFar
+            | Cue::ShotHeli
+            | Cue::ShotHeliFar => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -686,7 +708,8 @@ impl Cue {
             | Cue::BedRain
             | Cue::BedRotor
             | Cue::BedTown
-            | Cue::BedNight => 0.0,
+            | Cue::BedNight
+            | Cue::BedRotorFar => 0.0,
         }
     }
 }
@@ -921,7 +944,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The heli's rotor: a bed, so radius 0 and no cooldown — its level is
     // `render/audio.rs`'s distance law. GAME, not AMBIENCE: it is a threat,
     // and turning the scenery down must not turn it down.
-    row(GAME,  0.0, 0.52,   0, 0, false),  // rotor
+    row(GAME,  0.0, 0.85,   0, 0, false),  // rotor
     // A bush picked, at the bush: a footstep's reach and a little over an
     // impact's gain, so your own pick reads over your boots and a pick
     // across a clearing is still heard.
@@ -997,6 +1020,17 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.55,  60, 5, true),   // ore glint
     // The bat's tung: an impact's reach, under the impact it rides on.
     row(GAME, 40.0, 0.60,  60, 4, true),   // tung
+    // The heli's gun: the far report's reach (a gunship is heard across the
+    // island), and a cooldown under its 100 ms between rounds.
+    row(GAME, 200.0, 0.80,  60, 6, true),  // heli gun
+    // The rotor's far layer: the near rotor's bus and reason. Its level is
+    // `render/audio.rs`'s rotor law; the gain matches its loudness to the
+    // near layer's (a far loop is denser: 12.6 dB of crest against 15.8).
+    row(GAME,  0.0, 0.60,   0, 0, false),  // rotor, far
+    // The heli's gun from far off: a machine gun's reach in the reference
+    // (600 m, its far tier), which the heli is subscribed past. The gain
+    // meets the near round's at the switch (`render/audio.rs`).
+    row(GAME, 600.0, 0.32,  60, 6, true),  // heli gun, far
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1077,13 +1111,15 @@ const RSTEP: CueDef = CueDef {
 /// (It also used to derive `render/audio.rs`'s spatial scale for rodio's
 /// clamp; the engine pans now and that half is gone.)
 ///
-/// **Set by [`Cue::ShotGunFar`] and [`Cue::Blast`] since effects v2**, at
-/// 200 m, inside the shard's 208 m interest radius (an event from further
-/// never arrives); the near gunshot's 100 m held it before that. It is a
-/// derived number and not a taste one — it is the maximum of the table, and
-/// the test that asserts so is what makes raising a radius force this line
-/// rather than silently invert a cue's falloff.
-pub const MAX_AUDIBLE_M: f32 = 200.0;
+/// **Set by [`Cue::ShotHeliFar`]**, at 600 m: the heli is subscribed far
+/// past the shard's 208 m interest radius (`heli::HELI_AOI_SCALE`), so its
+/// gun's events arrive from that far. Every other cue is still inside
+/// 208 m, where [`Cue::ShotGunFar`] and [`Cue::Blast`] held the ceiling at
+/// 200 m (an event from further never arrives). It is a derived number and
+/// not a taste one — it is the maximum of the table, and the test that
+/// asserts so is what makes raising a radius force this line rather than
+/// silently invert a cue's falloff.
+pub const MAX_AUDIBLE_M: f32 = 600.0;
 
 /// How many voices may sound at once.
 ///
@@ -1339,7 +1375,7 @@ impl SnapshotDef {
             Cue::BedSurf => self.surf,
             Cue::BedUnder => self.under,
             Cue::BedRain => self.rain,
-            Cue::BedRotor => self.rotor,
+            Cue::BedRotor | Cue::BedRotorFar => self.rotor,
             Cue::BedTown => self.town,
             Cue::BedNight => self.night,
             _ => 0.0,

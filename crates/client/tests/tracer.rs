@@ -113,7 +113,7 @@ fn a_bow_discloses_you_over_a_smaller_circle_than_a_gun() {
     );
 }
 
-/// The gunshot's far layer is what sets `MAX_AUDIBLE_M` now, and the two
+/// The heli gun's far layer is what sets `MAX_AUDIBLE_M` now, and the two
 /// must not drift.
 ///
 /// `tests/sound.rs` already refuses a cue that carries *past* the ceiling.
@@ -131,9 +131,14 @@ fn the_ceiling_is_the_loudest_cue_and_that_cue_is_the_gun() {
         "MAX_AUDIBLE_M is the maximum of the table, not a number beside it"
     );
     assert_eq!(
-        CUES[Cue::ShotGunFar as usize].radius_m,
+        CUES[Cue::ShotHeliFar as usize].radius_m,
         MAX_AUDIBLE_M,
-        "the far gunshot is the cue that sets the ceiling"
+        "the heli's far gun is the cue that sets the ceiling"
+    );
+    assert_eq!(
+        CUES[Cue::ShotGunFar as usize].radius_m,
+        200.0,
+        "a player's far gunshot carries no further than the interest radius it arrives from"
     );
 }
 

@@ -66,7 +66,7 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 7] = [
+pub const BEDS: [Cue; 8] = [
     Cue::BedWind,
     Cue::BedSurf,
     Cue::BedUnder,
@@ -74,6 +74,7 @@ pub const BEDS: [Cue; 7] = [
     Cue::BedRotor,
     Cue::BedTown,
     Cue::BedNight,
+    Cue::BedRotorFar,
 ];
 
 /// How far past THE GATE's safe zone its yard is still heard, metres: full
@@ -83,10 +84,114 @@ pub const TOWN_BED_R_M: f32 = 90.0;
 // One held engine slot per bed (`engine::HELD_BEDS`); music follows them.
 const _: () = assert!(BEDS.len() == HELD_BEDS);
 
-/// How far the heli's rotor carries, metres: `(1 - d/R)²` to zero at it,
-/// the positional cues' own law. Past the snapshot's interest band (176 m),
-/// so it is already audible on the frame it first arrives.
-pub const ROTOR_R_M: f32 = 260.0;
+/// How far the heli's rotor carries, metres: to the radius the server
+/// starts sending the heli from (`heli::HELI_AOI_SCALE` × the AOI's), so
+/// it is silent on the frame it first arrives and fades up from there.
+pub const ROTOR_R_M: f32 =
+    (sim_core::heli::HELI_AOI_SCALE * sim_core::limits::AOI_ENTER_CM) as f32 / 100.0;
+
+/// Inside this the rotor is all near layer, metres; past [`ROTOR_FAR_M`] it
+/// is all far layer, crossfaded between. Near is the close recording's
+/// slap, swish and whine; far is a distant one's thump with the top gone.
+pub const ROTOR_NEAR_M: f32 = 60.0;
+pub const ROTOR_FAR_M: f32 = 250.0;
+
+/// Inside this the rotor is at full level, metres; past it the level
+/// falls off like a source does in open air, softened
+/// ([`ROTOR_ROLLOFF`]).
+pub const ROTOR_FULL_M: f32 = 20.0;
+/// The rolloff's exponent: 1.0 is inverse distance (−6 dB a doubling);
+/// 0.6 is −3.6 dB a doubling, so a gunship stays a presence across the
+/// island rather than vanishing behind the next ridge.
+pub const ROTOR_ROLLOFF: f32 = 0.6;
+
+/// The near layer's top end is taken off with distance by the one-shots'
+/// own law ([`engine::lp_of`]) over this radius, so it has darkened by the
+/// time it hands over to the far layer.
+pub const ROTOR_DARK_M: f32 = 300.0;
+
+/// How far to one side the rotor may pan, as a fraction of a one-shot's
+/// hard pan: a gunship 30 m off is still loud in the far ear.
+pub const ROTOR_PAN: f32 = 0.7;
+
+/// How much of a real Doppler shift the rotor gets: 1.0 is the physics
+/// (±6 % at the heli's 22 m/s cruise), 0 none. The reference wrote a
+/// Doppler system for its helicopters; a fraction keeps a flyby a fall in
+/// pitch rather than a siren. **(knob)**
+pub const ROTOR_DOPPLER: f32 = 0.3;
+/// The speed of sound, m/s.
+const SOUND_MPS: f32 = 343.0;
+/// How long the hull's closing speed is smoothed over, seconds, so a frame
+/// that lands late is not a wobble in pitch.
+pub const ROTOR_DOPPLER_SMOOTH_S: f32 = 0.3;
+
+/// The rotor's playback rate for a hull moving away at `receding_mps`
+/// (negative closing in): [`ROTOR_DOPPLER`] of the physical shift.
+pub fn doppler(receding_mps: f32) -> f32 {
+    if !receding_mps.is_finite() {
+        return 1.0;
+    }
+    (SOUND_MPS / (SOUND_MPS + ROTOR_DOPPLER * receding_mps)).clamp(0.9, 1.1)
+}
+
+/// The rotor's held slots: their indices in [`BEDS`].
+const ROTOR_SLOT: u8 = 4;
+const ROTOR_FAR_SLOT: u8 = 7;
+const _: () = assert!(matches!(BEDS[ROTOR_SLOT as usize], Cue::BedRotor));
+const _: () = assert!(matches!(BEDS[ROTOR_FAR_SLOT as usize], Cue::BedRotorFar));
+
+/// The rotor's two layers' levels for a hull `dist` metres off, 0..1 each:
+/// one loudness law — full inside [`ROTOR_FULL_M`], a softened inverse
+/// distance past it, eased to zero at [`ROTOR_R_M`] — split between the
+/// near and far recordings by an equal-power crossfade, so the total holds
+/// through the handover and the sound changes colour, not level.
+pub fn rotor_levels(dist: f32) -> (f32, f32) {
+    let d = dist.max(0.0);
+    let edge = (d / ROTOR_R_M).min(1.0);
+    let loud = (ROTOR_FULL_M / d.max(ROTOR_FULL_M)).powf(ROTOR_ROLLOFF) * (1.0 - edge * edge);
+    let t = ((d - ROTOR_NEAR_M) / (ROTOR_FAR_M - ROTOR_NEAR_M)).clamp(0.0, 1.0);
+    let far = t * t * (3.0 - 2.0 * t);
+    (loud * (1.0 - far).sqrt(), loud * far.sqrt())
+}
+
+/// Where the rotor's two layers are heard from, for a hull `d` metres off
+/// the ears (hull minus listener) whose right is `right`: [`engine::pan`]'s
+/// equal-power law scaled by √2, so dead ahead is the `(1, 1)` every bed
+/// plays at and the total is the same all the way round, with the side
+/// taken over the full 3-D distance (a hull overhead is centred, not hard
+/// to whichever side it leans). The near layer darkens over
+/// [`ROTOR_DARK_M`]; the far one was recorded dark. Both shift in pitch as
+/// the hull closes or recedes ([`doppler`]).
+pub fn rotor_place(d: [f32; 3], right: [f32; 2], receding_mps: f32, out_rate: u32) -> [Cmd; 2] {
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let p = if n < 1e-3 {
+        0.0
+    } else {
+        ((d[0] * right[0] + d[2] * right[1]) / n).clamp(-1.0, 1.0) * ROTOR_PAN
+    };
+    let theta = (p + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
+    let (ear_l, ear_r) = (
+        std::f32::consts::SQRT_2 * theta.cos(),
+        std::f32::consts::SQRT_2 * theta.sin(),
+    );
+    let rate = doppler(receding_mps);
+    [
+        Cmd::Place {
+            slot: ROTOR_SLOT,
+            ear_l,
+            ear_r,
+            lp: engine::lp_of(n, ROTOR_DARK_M, out_rate),
+            rate,
+        },
+        Cmd::Place {
+            slot: ROTOR_FAR_SLOT,
+            ear_l,
+            ear_r,
+            lp: 0,
+            rate,
+        },
+    ]
+}
 
 /// What of the generated bank has reached the engine, and how long each cue
 /// is — the number the live ledger ([`Engine::live`]) predicts a voice's end
@@ -318,6 +423,13 @@ pub struct Sound {
     /// the renderer holds a target until it is given another, so a gain
     /// equal to the last one is a command with no content.
     bed_sent: [f32; BEDS.len()],
+    /// The rotor layers' places, as last sent ([`rotor_place`]); `None`
+    /// after a fresh `Loop`, which recentres the slot.
+    rotor_sent: [Option<Cmd>; 2],
+    /// The hull's distance last frame and its smoothed receding speed, for
+    /// the rotor's Doppler; `None` with no hull drawn.
+    rotor_dist: Option<f32>,
+    rotor_receding: f32,
     /// The snapshot crossfade, and this frame's resolved mixer state.
     snapshots: Snapshots,
     snap: SnapshotDef,
@@ -507,6 +619,7 @@ pub fn setup(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>) {
         });
     }
     sound.bed_sent = [0.0; BEDS.len()];
+    sound.rotor_sent = [None; 2];
 }
 
 /// Reset what the world owned: stop the beds, cut every one-shot, and reset
@@ -1175,7 +1288,11 @@ pub fn shots(
             && core.interp.sample(shooter, core.render_tick(), &mut rs)
         {
             // The attack helicopter has no drawn `Body`: its gun is heard
-            // where the interpolator has it.
+            // where the interpolator has it, as its own gun at any range —
+            // the far layer's echo would smear a burst the same way.
+            if super::heli::is_heli(shooter) {
+                cue = heli_shot_cue(eye.pos.distance(Vec3::new(rs.x, rs.y + 1.6, rs.z)));
+            }
             [rs.x, rs.y + 1.6, rs.z]
         } else {
             continue;
@@ -1193,6 +1310,22 @@ pub fn projectile_cue(catalog: &protocol::ItemCatalog, cue: Cue, held: Option<u1
             Cue::ShotCrossbow
         }
         _ => cue,
+    }
+}
+
+/// Past this far the heli's gun is its far layer, metres: where the near
+/// round's falloff and the far one's meet at the same loudness (the two
+/// rows' gains), so the switch is a change of colour and not a step — the
+/// reference's gunshots "fade to the distant sound at the same distance".
+pub const HELI_SHOT_FAR_M: f32 = 60.0;
+
+/// The heli's round heard from `d` metres: near, or past
+/// [`HELI_SHOT_FAR_M`] the distant blast and echo.
+pub fn heli_shot_cue(d: f32) -> Cue {
+    if d > HELI_SHOT_FAR_M {
+        Cue::ShotHeliFar
+    } else {
+        Cue::ShotHeli
     }
 }
 
@@ -1882,12 +2015,13 @@ pub fn bed(
     // snapshot takes it away underwater.
     sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
     // The heli's rotor, by distance to the drawn hull — none drawn, none
-    // heard. Not panned: a bed has no position, and the whole of what this
-    // owes the player is *it is coming, and it is close*.
-    sound.bed_target[4] = helis.single().map_or(0.0, |gt| {
-        let near = (1.0 - gt.translation().distance(eye.pos) / ROTOR_R_M).clamp(0.0, 1.0);
-        near * near
+    // heard. Its side and its distance's muffling are its place, sent
+    // below ([`rotor_place`]).
+    let (near, far) = helis.single().map_or((0.0, 0.0), |gt| {
+        rotor_levels(gt.translation().distance(eye.pos))
     });
+    sound.bed_target[ROTOR_SLOT as usize] = near;
+    sound.bed_target[ROTOR_FAR_SLOT as usize] = far;
     // THE GATE's yard, by how far outside the safe square you stand: the
     // square's own edge is full, and it fades over `TOWN_BED_R_M`.
     sound.bed_target[5] = {
@@ -1947,6 +2081,35 @@ pub fn bed(
                 gain: level,
             });
         }
+    }
+
+    // The rotor from where the hull is. With no hull drawn its level is
+    // fading to nothing and its last place holds.
+    if let Ok(gt) = helis.single() {
+        let d = gt.translation() - eye.pos;
+        let dist = d.length();
+        let dt = time.delta_secs();
+        if let (Some(last), true) = (sound.rotor_dist, dt > 0.0) {
+            let k = (dt / ROTOR_DOPPLER_SMOOTH_S).min(1.0);
+            sound.rotor_receding += ((dist - last) / dt - sound.rotor_receding) * k;
+        }
+        sound.rotor_dist = Some(dist);
+        let (x, z) = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
+        let places = rotor_place(
+            [d.x, d.y, d.z],
+            [x, z],
+            sound.rotor_receding,
+            engine.out_rate,
+        );
+        for (sent, place) in sound.rotor_sent.iter_mut().zip(places) {
+            if *sent != Some(place) {
+                *sent = Some(place);
+                engine.push(place);
+            }
+        }
+    } else {
+        sound.rotor_dist = None;
+        sound.rotor_receding = 0.0;
     }
 }
 

@@ -586,6 +586,12 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::OreGlint => render_take(Cue::BulletMetal, take),
         // The bat's tung: the door knock's hollow body, by delegation.
         Cue::Tung => render_take(Cue::Knock, take),
+        // The heli's gun: the near report, by delegation.
+        Cue::ShotHeli => render_take(Cue::ShotGun, take),
+        // The rotor's far layer: the near rotor's loop, by delegation.
+        Cue::BedRotorFar => render_take(Cue::BedRotor, take),
+        // The heli's gun far off: the far report, by delegation.
+        Cue::ShotHeliFar => render_take(Cue::ShotGunFar, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

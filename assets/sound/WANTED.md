@@ -31,7 +31,7 @@ the source, author, licence, and what was cut from where.
 
 | Cue | Today | Wanted |
 |---|---|---|
-| `BedRotor` | a 7 s loop | a ≥ 30 s full-band hover loop. USC Gold Tape 36 (archive.org, CC0) has 44–62 s steady windows, but at ~8 kHz bandwidth |
+| `BedRotor` | a 22 s two-blade loop from a high-passed tape, its thump rebuilt | a full-band close two-blade hover with its own low end |
 | `BedUnder` | a 12 s loop | a ≥ 30 s underwater loop. Leads: Nox_Sound 482116 (Freesound, CC0); gmason's OpenGameArt rumble (CC0, darker than today's) |
 | `Bellow` | a real red deer at medium distance | a close roar. Leads: jorickhoofd 169540 / 169539 (Freesound, CC-BY) |
 | `Bird` | twelve phrases, European and North American | more European single phrases |

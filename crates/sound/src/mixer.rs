@@ -316,7 +316,7 @@ impl Mixer {
                 }
             }
             let kick = match req.cue {
-                Cue::ShotGun => DUCK_SHOT,
+                Cue::ShotGun | Cue::ShotHeli => DUCK_SHOT,
                 Cue::Blast => DUCK_BLAST,
                 _ => 0.0,
             };
