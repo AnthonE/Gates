@@ -195,10 +195,10 @@ pub const RULE: Color = Color::srgba(0.75, 0.72, 0.62, 0.28);
 /// no-asset case looks exactly as it did before footage existed.
 pub const PANEL_BG: Color = Color::srgba(0.145, 0.133, 0.118, 0.90);
 pub const PANE_BG: Color = Color::srgba(0.086, 0.078, 0.070, 0.86);
-/// The wordmark's block. The one saturated thing on the front screen, and the
-/// reference makes the same call — its logo mark is the only colour on an
-/// otherwise grey menu.
-pub const MARK: Color = Color::srgb(0.804, 0.243, 0.176);
+/// The front screen's one saturated colour, `#86b834`: the Gates sigil's
+/// green, the browser page's PLAY button (`--go`), and the health bar's
+/// family. It was Rust's red.
+pub const MARK: Color = Color::srgb(0.525, 0.722, 0.204);
 /// A nav entry at rest. Dimmer than `DIM`, because the whole effect depends
 /// on the picked entry being obviously brighter than the rest.
 pub const NAV_IDLE: Color = Color::srgba(0.62, 0.60, 0.57, 0.65);
@@ -432,13 +432,60 @@ pub fn scrim() -> impl Bundle {
     )
 }
 
-/// The wordmark, top-left, at the size the reference draws its own.
-///
-/// A text mark rather than an image: this repo has no logo asset and an
-/// invented one is a brand decision, not a render one. The block that
-/// precedes it is the reference's own arrangement — a mark, then the word —
-/// and it is the one piece of visual identity the shell needs to stop looking
-/// like a debug overlay.
+/// The Gates sigil, the wordmark's mark: the plate the window, the .exe and
+/// the browser tab already wear (`crates/client/icon/`).
+pub const SIGIL: Handle<Image> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a13");
+
+/// Put [`SIGIL`] in `Assets<Image>` at plugin-build time, with a mip chain:
+/// it is drawn at ~40 px from 256, and a single level minified that far
+/// crawls. Desktop only, because only the desktop front end draws it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn build_sigil(app: &mut App) {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::image::ImageSampler;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+    let bytes: &[u8] = include_bytes!("../../icon/gates-256.png");
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().expect("the sigil is a PNG");
+    let mut buf = vec![0; reader.output_buffer_size().expect("the sigil's size")];
+    let frame = reader.next_frame(&mut buf).expect("the sigil decodes");
+    buf.truncate(frame.buffer_size());
+    let (w, h) = (frame.width, frame.height);
+    let level0: Vec<u8> = match frame.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        other => panic!("the sigil is {other:?}, not RGB or RGBA"),
+    };
+    // Level 0 first, then the chain: `Image::new` checks its data against
+    // one level (`sheet::image` has the story).
+    let chain = super::mipmap::chain(&level0, w, h, super::mipmap::Filter::Srgb);
+    let mut img = Image::new(
+        Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        level0,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    img.data = Some(chain);
+    img.texture_descriptor.mip_level_count = super::mipmap::levels(w, h);
+    img.sampler = ImageSampler::linear();
+    app.world_mut()
+        .resource_mut::<Assets<Image>>()
+        .insert(SIGIL.id(), img)
+        .expect("the sigil could not be registered");
+}
+
+/// The wordmark, top-left, at the size the reference draws its own: the
+/// sigil, then the word.
 pub fn wordmark() -> impl Bundle {
     (
         Node {
@@ -449,12 +496,12 @@ pub fn wordmark() -> impl Bundle {
         },
         children![
             (
+                ImageNode::new(SIGIL),
                 Node {
-                    width: Val::Px(38.0),
-                    height: Val::Px(38.0),
+                    width: Val::Px(44.0),
+                    height: Val::Px(44.0),
                     ..default()
                 },
-                BackgroundColor(MARK),
             ),
             strong("GATES", 40.0, TITLE),
         ],

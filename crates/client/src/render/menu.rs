@@ -1158,7 +1158,7 @@ fn row(
                     // decides the words: a newer shard wants a newer game, an
                     // older one is mid-release and will catch up.
                     if listing.needs_update() {
-                        n.spawn(ui::strong("UPDATE NEEDED", 11.0, ui::MARK));
+                        n.spawn(ui::strong("UPDATE NEEDED", 11.0, super::panels::TEXT_SHORT));
                     } else if listing.server_updating() {
                         n.spawn(ui::strong("SERVER UPDATING", 11.0, ui::DIM));
                     }
