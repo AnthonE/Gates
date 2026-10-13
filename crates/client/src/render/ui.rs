@@ -436,38 +436,46 @@ pub fn scrim() -> impl Bundle {
 /// the browser tab already wear (`crates/client/icon/`).
 pub const SIGIL: Handle<Image> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a13");
 
-/// Put [`SIGIL`] in `Assets<Image>` at plugin-build time, with a mip chain:
-/// it is drawn at ~40 px from 256, and a single level minified that far
-/// crawls. Desktop only, because only the desktop front end draws it.
+/// The server list's favourite star, filled and hollow. Baked rather than
+/// typed: the face has no ★ or ☆ and Bevy has no fallback font, so the
+/// glyphs drew as an empty box. Two shapes rather than one tinted two ways,
+/// so a starred row still reads as starred in a screenshot.
+pub const STAR_ON: Handle<Image> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a14");
+pub const STAR_OFF: Handle<Image> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a15");
+
+/// Put [`SIGIL`], [`STAR_ON`] and [`STAR_OFF`] in `Assets<Image>` at
+/// plugin-build time. Desktop only, because only the desktop front end draws
+/// them.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn build_sigil(app: &mut App) {
+pub fn build_marks(app: &mut App) {
+    let (side, sigil) = sigil_pixels();
+    let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+    for (handle, side, px, what) in [
+        (SIGIL, side, sigil, "the sigil"),
+        (STAR_ON, STAR_TEX, star_pixels(true), "the filled star"),
+        (STAR_OFF, STAR_TEX, star_pixels(false), "the hollow star"),
+    ] {
+        images
+            .insert(handle.id(), mipped(side, px))
+            .unwrap_or_else(|e| panic!("{what} could not be registered: {e}"));
+    }
+}
+
+/// A square RGBA8 image with its mip chain: every mark here is drawn well
+/// below its size, and a single level minified that far crawls.
+#[cfg(not(target_arch = "wasm32"))]
+fn mipped(side: u32, level0: Vec<u8>) -> Image {
     use bevy::asset::RenderAssetUsages;
     use bevy::image::ImageSampler;
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-    let bytes: &[u8] = include_bytes!("../../icon/gates-256.png");
-    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
-    dec.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = dec.read_info().expect("the sigil is a PNG");
-    let mut buf = vec![0; reader.output_buffer_size().expect("the sigil's size")];
-    let frame = reader.next_frame(&mut buf).expect("the sigil decodes");
-    buf.truncate(frame.buffer_size());
-    let (w, h) = (frame.width, frame.height);
-    let level0: Vec<u8> = match frame.color_type {
-        png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf
-            .chunks_exact(3)
-            .flat_map(|p| [p[0], p[1], p[2], 255])
-            .collect(),
-        other => panic!("the sigil is {other:?}, not RGB or RGBA"),
-    };
     // Level 0 first, then the chain: `Image::new` checks its data against
     // one level (`sheet::image` has the story).
-    let chain = super::mipmap::chain(&level0, w, h, super::mipmap::Filter::Srgb);
+    let chain = super::mipmap::chain(&level0, side, side, super::mipmap::Filter::Srgb);
     let mut img = Image::new(
         Extent3d {
-            width: w,
-            height: h,
+            width: side,
+            height: side,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -476,12 +484,95 @@ pub fn build_sigil(app: &mut App) {
         RenderAssetUsages::RENDER_WORLD,
     );
     img.data = Some(chain);
-    img.texture_descriptor.mip_level_count = super::mipmap::levels(w, h);
+    img.texture_descriptor.mip_level_count = super::mipmap::levels(side, side);
     img.sampler = ImageSampler::linear();
-    app.world_mut()
-        .resource_mut::<Assets<Image>>()
-        .insert(SIGIL.id(), img)
-        .expect("the sigil could not be registered");
+    img
+}
+
+/// The sigil's side and RGBA8 pixels.
+#[cfg(not(target_arch = "wasm32"))]
+fn sigil_pixels() -> (u32, Vec<u8>) {
+    let bytes: &[u8] = include_bytes!("../../icon/gates-256.png");
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().expect("the sigil is a PNG");
+    let mut buf = vec![0; reader.output_buffer_size().expect("the sigil's size")];
+    let frame = reader.next_frame(&mut buf).expect("the sigil decodes");
+    buf.truncate(frame.buffer_size());
+    assert_eq!(frame.width, frame.height, "the sigil is square");
+    let px = match frame.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        other => panic!("the sigil is {other:?}, not RGB or RGBA"),
+    };
+    (frame.width, px)
+}
+
+/// The star textures' side, px. Drawn at 16.
+#[cfg(not(target_arch = "wasm32"))]
+const STAR_TEX: u32 = 64;
+
+/// A five-point star, white on clear (tinted where it is drawn), filled or
+/// as an outline, 4x4 supersampled.
+#[cfg(not(target_arch = "wasm32"))]
+fn star_pixels(filled: bool) -> Vec<u8> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    const SS: u32 = 4;
+    let n = STAR_TEX as f32;
+    let outer = 0.47 * n;
+    let inner = 0.42 * outer;
+    let stroke = 0.10 * n;
+    // The bottom points sit at cos 36° of the radius, so the centre drops
+    // to centre the star's box rather than its circle.
+    let centre = Vec2::new(0.5 * n, 0.5 * n + 0.5 * (1.0 - 0.809) * outer);
+    let pts: Vec<Vec2> = (0..10)
+        .map(|i| {
+            let a = -FRAC_PI_2 + i as f32 * PI / 5.0;
+            let r = if i % 2 == 0 { outer } else { inner };
+            centre + Vec2::new(a.cos(), a.sin()) * r
+        })
+        .collect();
+    let edges = || pts.iter().zip(pts.iter().cycle().skip(1));
+    let inside = |p: Vec2| {
+        edges()
+            .filter(|(a, b)| {
+                (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x
+            })
+            .count()
+            % 2
+            == 1
+    };
+    let to_edge = |p: Vec2| {
+        edges()
+            .map(|(&a, &b)| {
+                let ab = b - a;
+                let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+                (a + ab * t).distance(p)
+            })
+            .fold(f32::MAX, f32::min)
+    };
+    let mut px = Vec::with_capacity((STAR_TEX * STAR_TEX * 4) as usize);
+    for y in 0..STAR_TEX {
+        for x in 0..STAR_TEX {
+            let mut hit = 0u32;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let p = Vec2::new(
+                        x as f32 + (sx as f32 + 0.5) / SS as f32,
+                        y as f32 + (sy as f32 + 0.5) / SS as f32,
+                    );
+                    if inside(p) && (filled || to_edge(p) < stroke) {
+                        hit += 1;
+                    }
+                }
+            }
+            px.extend_from_slice(&[255, 255, 255, (hit * 255 / (SS * SS)) as u8]);
+        }
+    }
+    px
 }
 
 /// The wordmark, top-left, at the size the reference draws its own: the
