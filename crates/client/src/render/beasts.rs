@@ -1,25 +1,26 @@
-//! The fel beasts: the pig and the wolf as skinned, animated models, in three
-//! corruption tiers that climb with the wipe (`ARC.md` §2).
+//! The fel beasts: the pig, the wolf and the stag as skinned, animated
+//! models, in three corruption tiers that climb with the wipe (`ARC.md` §2).
 //!
 //! `mobs.rs` still owns the animal — its id, its interpolated position, its
 //! [`Gait`] (speed, bite, howl, lying) — and still draws it as the rigid
 //! body-and-four-legs kit whenever this file has nothing to give it: on a
-//! headless build, for the stag, and for the frames before a tier's model has
-//! loaded. What this file swaps is what the animal WEARS: a skinned model
-//! from `ci/rig_beast.py` and the seven clips that script authors.
+//! headless build, and for the frames before a tier's model has loaded. What
+//! this file swaps is what the animal WEARS: a skinned model from
+//! `ci/rig_beast.py` and the seven clips that script authors, and the fel
+//! fire its tier burns with ([`fel_fire`]).
 //!
 //! **Bevy plays; it does not decide** (`RENDER.md` §1, `anim.rs`'s rule one
 //! surface over). The clip is a pure function of state the sim already sent:
 //! the derived speed, the bite and howl events, the sleeping bit. Deleting
 //! every clip here changes how an animal looks and nothing else.
 //!
-//! **The tier is read off the arc the wire already carries**
-//! ([`ArcView`], v95), so the corruption needs no field of its own: A on wipe
-//! day, B once the first act-II work opens, C once every act-II work has
-//! burned (or the shard reaches act III). Every work has a fallback hour, so
-//! a shard nobody feeds still reaches C — by hour 192 with today's rows.
-//! An animal keeps the look it was spawned with; the next one out of the
-//! fog wears the island's current tier.
+//! **The tier is the sim's own** (`sim_core::works::fel_tier_of`), read off
+//! the arc the wire already carries ([`ArcView`], v95), so the corruption
+//! needs no field of its own and the animal that bites is the animal on
+//! screen: the sim scales every species by the same tier (`mob::FelTier`,
+//! `content/mobs.toml` `[[fel_tier]]`). A on wipe day, B once the first
+//! act-II work opens, C once every act-II work has burned. When it climbs,
+//! every animal in view changes with it.
 
 use std::time::Duration;
 
@@ -27,20 +28,23 @@ use bevy::gltf::Gltf;
 use bevy::prelude::*;
 use client_core::arc::ArcView;
 use sim_core::mob;
-use sim_core::works::WORK_LIT;
 
+use super::fx::pool::Particle;
+use super::fx::{atlas, Fx};
 use super::mobs::{Animal, Gait};
-use super::Net;
+use super::{Eye, Net};
 
 /// Corruption tiers: light, medium, heavy.
 pub const TIERS: usize = 3;
 
-/// The two species that wear fel models, in this file's own order.
+/// The species that wear fel models, in this file's own order.
 pub const FEL_PIG: usize = 0;
 pub const FEL_WOLF: usize = 1;
+pub const FEL_STAG: usize = 2;
+pub const FEL_SPECIES: usize = 3;
 
 /// `[species][tier]`, what `ci/rig_beast.py` then `ci/ktx_pack.py` wrote.
-pub const BEAST_GLB: [[&str; TIERS]; 2] = [
+pub const BEAST_GLB: [[&str; TIERS]; FEL_SPECIES] = [
     [
         "models/mob/fel/pig_a.glb",
         "models/mob/fel/pig_b.glb",
@@ -51,12 +55,17 @@ pub const BEAST_GLB: [[&str; TIERS]; 2] = [
         "models/mob/fel/wolf_b.glb",
         "models/mob/fel/wolf_c.glb",
     ],
+    [
+        "models/mob/fel/stag_a.glb",
+        "models/mob/fel/stag_b.glb",
+        "models/mob/fel/stag_c.glb",
+    ],
 ];
 
 /// The same animals killed: static, lying on the right side in
 /// `mobs::CARCASS_GLB`'s frame, drawn by `structures.rs` for a dead animal's
 /// bag.
-pub const BEAST_CARCASS_GLB: [[&str; TIERS]; 2] = [
+pub const BEAST_CARCASS_GLB: [[&str; TIERS]; FEL_SPECIES] = [
     [
         "models/mob/fel/pig_a_carcass.glb",
         "models/mob/fel/pig_b_carcass.glb",
@@ -66,6 +75,11 @@ pub const BEAST_CARCASS_GLB: [[&str; TIERS]; 2] = [
         "models/mob/fel/wolf_a_carcass.glb",
         "models/mob/fel/wolf_b_carcass.glb",
         "models/mob/fel/wolf_c_carcass.glb",
+    ],
+    [
+        "models/mob/fel/stag_a_carcass.glb",
+        "models/mob/fel/stag_b_carcass.glb",
+        "models/mob/fel/stag_c_carcass.glb",
     ],
 ];
 
@@ -80,32 +94,15 @@ pub fn fel_species_of_kind(kind: u8) -> Option<usize> {
     match kind {
         mob::MOB_PIG => Some(FEL_PIG),
         mob::MOB_WOLF => Some(FEL_WOLF),
+        mob::MOB_STAG => Some(FEL_STAG),
         _ => None,
     }
 }
 
-/// The island's corruption tier, off the arc as the client knows it.
+/// The island's corruption tier, off the arc as the client knows it — the
+/// sim's own function over the same `(act, state)` pairs.
 pub fn tier_of(arc: &ArcView) -> usize {
-    let act = arc.act();
-    if act >= 3 {
-        return 2;
-    }
-    if act <= 1 {
-        return 0;
-    }
-    let mut any = false;
-    let mut all = true;
-    for (_, w) in arc.known() {
-        if w.def.act == 2 {
-            any = true;
-            all &= w.state == WORK_LIT;
-        }
-    }
-    if any && all {
-        2
-    } else {
-        1
-    }
+    sim_core::works::fel_tier_of(arc.known().map(|(_, w)| (w.def.act, w.state))) as usize
 }
 
 /// The clips `ci/rig_beast.py` authors, resolved by NAME (`anim.rs` says why
@@ -172,7 +169,7 @@ impl BeastClip {
 /// stance does not slide, `[Walk, Trot, Run]`. **These are
 /// `ci/rig_beast.py`'s `SPECIES[..]["gaits"]` numbers and must move with
 /// them**; `tests/beasts.rs` reads the script and holds the two together.
-pub const CLIP_MPS: [[f32; 3]; 2] = [[1.1, 2.3, 4.0], [1.3, 2.7, 5.0]];
+pub const CLIP_MPS: [[f32; 3]; FEL_SPECIES] = [[1.1, 2.3, 4.0], [1.3, 2.7, 5.0], [1.3, 2.8, 5.5]];
 
 /// Below this the animal stands, m/s.
 pub const BEAST_IDLE_MPS: f32 = 0.25;
@@ -270,9 +267,9 @@ impl BeastRig {
 /// Every fel model this client has asked for.
 #[derive(Resource, Default)]
 pub struct Beasts {
-    rigs: [[BeastRig; TIERS]; 2],
+    rigs: [[BeastRig; TIERS]; FEL_SPECIES],
     /// Names the files did not have, reported once per model.
-    reported: [[bool; TIERS]; 2],
+    reported: [[bool; TIERS]; FEL_SPECIES],
 }
 
 impl Beasts {
@@ -305,14 +302,14 @@ pub fn build(
 ) {
     let tier = tier_of(&net.session.core.arc);
     let Beasts { rigs, reported } = &mut *beasts;
-    for sp in [FEL_PIG, FEL_WOLF] {
-        let rig = &mut rigs[sp][tier];
+    for (sp, row) in rigs.iter_mut().enumerate() {
+        let rig = &mut row[tier];
         if rig.gltf.is_none() {
             rig.gltf = Some(assets.load(BEAST_GLB[sp][tier]));
         }
     }
-    for sp in [FEL_PIG, FEL_WOLF] {
-        for (t, rig) in rigs[sp].iter_mut().enumerate() {
+    for (sp, row) in rigs.iter_mut().enumerate() {
+        for (t, rig) in row.iter_mut().enumerate() {
             if rig.ready() {
                 continue;
             }
@@ -380,13 +377,24 @@ pub struct BeastPlayer {
     last_howl: f32,
 }
 
-/// Attach the right graph to every `AnimationPlayer` a beast's scene spawns.
+/// The bones the fel fire leaves from, found once per animal by name
+/// (`ci/rig_beast.py`'s): the back, root to withers, and the skull.
+#[derive(Component, Clone, Copy)]
+pub struct FelBones {
+    pub back: [Entity; 3],
+    pub head: Entity,
+}
+
+/// Attach the right graph to every `AnimationPlayer` a beast's scene spawns,
+/// and note where its back and head are for [`fel_fire`].
 pub fn bind(
     mut commands: Commands,
     beasts: Res<Beasts>,
     parents: Query<&ChildOf>,
     skinned: Query<&Skinned>,
     added: Query<Entity, Added<AnimationPlayer>>,
+    children: Query<&Children>,
+    names: Query<&Name>,
 ) {
     for player in &added {
         // Up to the animal root, bounded (`anim::bind`'s walk).
@@ -406,6 +414,23 @@ pub fn bind(
         let Some(graph) = beasts.rigs[s.species][s.tier].graph.clone() else {
             continue;
         };
+        let mut back = [None; 3];
+        let mut head = None;
+        for e in children.iter_descendants(player) {
+            match names.get(e).map(|n| n.as_str()) {
+                Ok("Hips") => back[0] = Some(e),
+                Ok("Spine") => back[1] = Some(e),
+                Ok("Chest") => back[2] = Some(e),
+                Ok("Head") => head = Some(e),
+                _ => {}
+            }
+        }
+        if let ([Some(a), Some(b), Some(c)], Some(h)) = (back, head) {
+            commands.entity(root).insert(FelBones {
+                back: [a, b, c],
+                head: h,
+            });
+        }
         commands.entity(player).insert((
             AnimationGraphHandle(graph),
             AnimationTransitions::new(),
@@ -475,6 +500,157 @@ pub fn drive(
         let rate = rate_of(want, gait.speed, mps);
         if let Some(a) = player.animation_mut(rig.nodes[want.slot()]) {
             a.set_speed(rate);
+        }
+    }
+}
+
+/// Fel fire is drawn on the animals within this range, metres…
+pub const FEL_FX_M: f32 = 35.0;
+/// …the nearest this many, so a herd does not spend the pool.
+pub const FEL_FX_MAX: usize = 8;
+/// How far above a back bone its flames leave from, metres: the bone runs
+/// through the middle of the trunk and the fire burns on the skin.
+pub const FEL_BACK_LIFT_M: f32 = 0.12;
+/// Particles a second, per animal: wisps off the eyes in tiers B and C,
+/// embers off the back in B, tongues of fire along the back in C.
+pub const FEL_EYE_RATE: f32 = 14.0;
+pub const FEL_EMBER_RATE: f32 = 7.0;
+pub const FEL_TONGUE_RATE: f32 = 22.0;
+
+/// The green the fire burns, linear HDR: hot at the root, gone to nothing.
+const FEL_HOT: [f32; 4] = [0.45, 2.6, 0.32, 1.0];
+const FEL_COOL: [f32; 4] = [0.04, 0.7, 0.08, 0.0];
+const FEL_SPARK: [f32; 4] = [1.2, 6.0, 0.9, 1.0];
+
+/// How many of a `rate`-per-second stream fall in `dt` (`fx::world`'s).
+fn count(pool: &mut super::fx::pool::Pool, rate: f32, dt: f32) -> usize {
+    let x = rate * dt;
+    let whole = x.floor();
+    whole as usize + usize::from(pool.roll() < x - whole)
+}
+
+/// Burn each near animal's tier: tier A carries only its glowing cracks;
+/// B smoulders, green wisps leaving the eyes and embers off the back; C is
+/// alight, fel fire licking up the length of its spine. Particles only, off
+/// bones the clips are already moving, so the fire runs and lunges with the
+/// animal and nothing here touches the sim.
+pub fn fel_fire(
+    time: Res<Time>,
+    eye: Res<Eye>,
+    mut fx: ResMut<Fx>,
+    animals: Query<(&Skinned, &FelBones, &GlobalTransform)>,
+    bones: Query<&GlobalTransform>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    if dt <= 0.0 {
+        return;
+    }
+    let mut near = [(f32::MAX, None::<(Skinned, FelBones)>); FEL_FX_MAX];
+    for (s, b, gt) in &animals {
+        if s.tier == 0 {
+            continue;
+        }
+        let d = gt.translation().distance(eye.pos);
+        if d > FEL_FX_M {
+            continue;
+        }
+        if let Some(i) = near.iter().position(|n| d < n.0) {
+            near.copy_within(i..FEL_FX_MAX - 1, i + 1);
+            near[i] = (d, Some((*s, *b)));
+        }
+    }
+    let glow = &mut fx.glow;
+    for (_, a) in near {
+        let Some((s, b)) = a else { break };
+        let Ok(head) = bones.get(b.head) else {
+            continue;
+        };
+        let head = head.translation();
+        // Off the eyes: small tongues trailing up and back off the skull.
+        for _ in 0..count(glow, FEL_EYE_RATE, dt) {
+            let off = Vec3::new(glow.signed(), glow.signed() * 0.5, glow.signed()) * 0.05;
+            let life = 0.25 + 0.2 * glow.roll();
+            let rise = 0.25 + 0.2 * glow.roll();
+            let size = 0.03 + 0.015 * glow.roll();
+            let (roll, spin) = (glow.signed() * 0.2, glow.signed() * 0.6);
+            glow.spawn(Particle {
+                left: life,
+                life,
+                pos: head + off + Vec3::Y * 0.03,
+                vel: Vec3::Y * rise,
+                size0: size,
+                size1: 0.008,
+                c0: FEL_HOT,
+                c1: FEL_COOL,
+                drag: -1.0,
+                roll,
+                spin,
+                cell: atlas::FLAME,
+                ..Particle::default()
+            });
+        }
+        let back: [Vec3; 3] = std::array::from_fn(|i| {
+            bones
+                .get(b.back[i])
+                .map(|g| g.translation() + Vec3::Y * FEL_BACK_LIFT_M)
+                .unwrap_or(head)
+        });
+        // A point along the back, root to withers.
+        let along = |t: f32| {
+            let i = (t as usize).min(1);
+            back[i].lerp(back[i + 1], t - i as f32)
+        };
+        // Embers off the back, both burning tiers.
+        for _ in 0..count(glow, FEL_EMBER_RATE, dt) {
+            let at = along(glow.roll() * 2.0);
+            let life = 0.9 + 0.8 * glow.roll();
+            let jitter = Vec3::new(glow.signed() * 0.08, 0.0, glow.signed() * 0.08);
+            let vel = Vec3::new(
+                glow.signed() * 0.25,
+                0.7 + 0.8 * glow.roll(),
+                glow.signed() * 0.25,
+            );
+            glow.spawn(Particle {
+                left: life,
+                life,
+                pos: at + jitter,
+                vel,
+                size0: 0.012,
+                size1: 0.005,
+                c0: FEL_SPARK,
+                c1: FEL_COOL,
+                gravity: -0.3,
+                drag: 0.9,
+                cell: atlas::GLOW,
+                ..Particle::default()
+            });
+        }
+        if s.tier < 2 {
+            continue;
+        }
+        // Tier C: tongues of fel fire up the length of the spine.
+        for _ in 0..count(glow, FEL_TONGUE_RATE, dt) {
+            let at = along(glow.roll() * 2.0);
+            let off = Vec3::new(glow.signed() * 0.06, 0.0, glow.signed() * 0.06);
+            let life = 0.3 + 0.25 * glow.roll();
+            let size = 0.06 + 0.04 * glow.roll();
+            let rise = 0.35 + 0.35 * glow.roll();
+            let (roll, spin) = (glow.signed() * 0.25, glow.signed() * 0.8);
+            glow.spawn(Particle {
+                left: life,
+                life,
+                pos: at + off,
+                vel: Vec3::Y * rise - off * 1.2,
+                size0: size,
+                size1: size * 0.3,
+                c0: FEL_HOT,
+                c1: FEL_COOL,
+                drag: -1.0,
+                roll,
+                spin,
+                cell: atlas::FLAME,
+                ..Particle::default()
+            });
         }
     }
 }

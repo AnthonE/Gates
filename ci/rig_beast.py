@@ -43,6 +43,7 @@ import math
 import os
 import sys
 
+import bmesh
 import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion, Vector
@@ -64,6 +65,22 @@ SPECIES = {
             "Walk": (1.3, 1.00, 0.62, 0.10, (0.0, 0.25, 0.5, 0.75)),
             "Trot": (2.7, 0.60, 0.42, 0.15, (0.0, 0.5, 0.5, 0.0)),
             "Run": (5.0, 0.44, 0.32, 0.22, (0.0, 0.62, 0.12, 0.52)),
+        },
+    },
+    "stag": {
+        # Withers, not the head: `render/mobs.rs`'s 1.3 m is to the top of
+        # the skull, and the antlers stand above that, as a rack does.
+        "h_m": 1.05,
+        # The neck rises straight off the shoulders and the rack above it, so
+        # the withers are read a third of the way back toward the hips.
+        "withers_at": 0.33,
+        "head_frac": 0.16,
+        "hind": {"hip": 0.82, "stifle": 0.58, "hock": 0.36, "paw": 0.04},
+        "front": {"withers": 0.97, "shoulder": 0.76, "elbow": 0.58, "wrist": 0.28, "paw": 0.035},
+        "gaits": {
+            "Walk": (1.3, 1.10, 0.62, 0.12, (0.0, 0.25, 0.5, 0.75)),
+            "Trot": (2.8, 0.62, 0.42, 0.18, (0.0, 0.5, 0.5, 0.0)),
+            "Run": (5.5, 0.46, 0.30, 0.28, (0.0, 0.08, 0.55, 0.62)),
         },
     },
     "pig": {
@@ -187,6 +204,8 @@ def normalise(obj, sp, facing):
     # the foreleg columns, BEHIND the head (spikes and horns are what a max
     # would find).
     fy = np.mean([cols["LF"][1], cols["RF"][1]]) - cy
+    hy = np.mean([cols["LH"][1], cols["RH"][1]]) - cy
+    fy = fy + sp.get("withers_at", 0.0) * (hy - fy)
     band = V[np.abs(V[:, 1] - fy) < 0.06 * ext.max()]
     withers = float(np.percentile(band[:, 2], 92))
     k = sp["h_m"] / withers
@@ -269,8 +288,8 @@ def profile(V, ys, h, xmax):
     return np.array(back), np.array(belly)
 
 
-def slice_centre(V, y, zmin=0.0, w=0.02):
-    s = V[(np.abs(V[:, 1] - y) < w) & (V[:, 2] > zmin)]
+def slice_centre(V, y, zmin=0.0, w=0.02, zmax=1e9):
+    s = V[(np.abs(V[:, 1] - y) < w) & (V[:, 2] > zmin) & (V[:, 2] < zmax)]
     if len(s) < 6:
         return None
     return float(np.median(s[:, 0])), float(np.mean(s[:, 2])), float(s[:, 2].min()), float(s[:, 2].max())
@@ -289,8 +308,11 @@ def landmarks(obj, sp, norm):
     half_w = 0.5 * abs(cols["LF"][0] - cols["RF"][0]) + 0.08
     ys = np.linspace(yF, yH, 9)
     back, belly = profile(V, ys, h, half_w)
-    nose_i = np.argsort(V[:, 1])[:20]
-    nose = V[nose_i].mean(0)
+    # The nose is the front-most point BELOW the rack: a stag's brow tines
+    # can reach further forward than its muzzle.
+    low = V[V[:, 2] < 1.25 * h]
+    nose_i = np.argsort(low[:, 1])[:20]
+    nose = low[nose_i].mean(0)
     tail_i = np.argsort(-V[:, 1])[:20]
     tail = V[tail_i].mean(0)
     return {
@@ -389,12 +411,12 @@ def build_armature(sp, lm):
     nose = Vector(lm["nose"])
     head_len = sp["head_frac"] * (lm["V"][:, 1].max() - lm["V"][:, 1].min())
     occ_y = nose.y + head_len
-    occ = slice_centre(V, occ_y, zmin=0.35 * h)
+    occ = slice_centre(V, occ_y, zmin=0.35 * h, zmax=1.3 * h)
     occiput = Vector((0, occ_y, occ[1] + 0.15 * (occ[3] - occ[1])))
     mid_y = 0.5 * (chest.y + occ_y)
-    mid = slice_centre(V, mid_y, zmin=0.35 * h) or (0, 0.5 * (chest.z + occiput.z), 0, 0)
+    mid = slice_centre(V, mid_y, zmin=0.35 * h, zmax=1.3 * h) or (0, 0.5 * (chest.z + occiput.z), 0, 0)
     neck_mid = Vector((0, mid_y, mid[1]))
-    snout = slice_centre(V, nose.y + 0.3 * head_len, zmin=0.2 * h)
+    snout = slice_centre(V, nose.y + 0.3 * head_len, zmin=0.2 * h, zmax=1.3 * h)
     # Jaw: hinged under the ear, ending at the chin under the nose.
     jaw_h = Vector((0, nose.y + 0.78 * head_len, occiput.z - 0.35 * (occ[3] - occ[2])))
     chin = Vector((0, nose.y + 0.12 * head_len, snout[2] + 0.30 * (snout[3] - snout[2])))
@@ -453,8 +475,11 @@ def build_armature(sp, lm):
             bone(f"Toe.{side}F", j["paw"], j["toe"], f"Foot.{side}F", True)
     bpy.ops.object.mode_set(mode="OBJECT")
     belly_mid = float(np.nanmin(belly[ok][2:-2])) if ok.sum() > 4 else 0.45 * h
+    # Where the skull ends and anything standing on it (a rack) begins.
+    skull_top = max(occ[3], snout[3]) + 0.03
     return arm, {"mouth_z": mouth_z, "head_len": head_len, "croup": croup, "withers": withers,
-                 "nose_y": nose.y, "occ_y": occ_y, "belly_m": belly_mid}
+                 "nose_y": nose.y, "occ_y": occ_y, "belly_m": belly_mid,
+                 "skull_top": max(skull_top, 1.3 * h)}
 
 
 # ── 4 · weights ─────────────────────────────────────────────────────────
@@ -467,8 +492,14 @@ def bare_of(obj):
     return np.where(total < 0.05)[0]
 
 
-def heat(obj, arm, voxel):
-    """Bone heat on a watertight voxel proxy, transferred to the real mesh."""
+def heat(obj, arm, voxel, zcut):
+    """Bone heat on a watertight voxel proxy, transferred to the real mesh.
+
+    The proxy stops at `zcut`: a stag's rack failed the heat solve outright
+    on two of three stags (21,126 and 23,559 vertices left bare even at a
+    6 mm proxy), and a rack does not bend anyway. Cut off, its vertices take
+    the nearest proxy face's weights, which is the crown of the skull, so
+    the antlers ride the head."""
     for g in list(obj.vertex_groups):
         obj.vertex_groups.remove(g)
     proxy = obj.copy()
@@ -485,6 +516,13 @@ def heat(obj, arm, voxel):
     d = proxy.modifiers.new("dec", "DECIMATE")
     d.ratio = min(1.0, 60000 / max(1, len(proxy.data.polygons)))
     bpy.ops.object.modifier_apply(modifier="dec")
+    bm = bmesh.new()
+    bm.from_mesh(proxy.data)
+    above = [v for v in bm.verts if v.co.z > zcut]
+    if above:
+        bmesh.ops.delete(bm, geom=above, context="VERTS")
+        bm.to_mesh(proxy.data)
+    bm.free()
     bpy.ops.object.select_all(action="DESELECT")
     proxy.select_set(True)
     arm.select_set(True)
@@ -518,7 +556,7 @@ VOXELS = (0.012, 0.009, 0.006)
 def weight(obj, arm, info):
     bare = None
     for voxel in VOXELS:
-        bare = heat(obj, arm, voxel)
+        bare = heat(obj, arm, voxel, info["skull_top"])
         info["voxel_m"] = voxel
         if len(bare) <= 0.002 * len(obj.data.vertices):
             break
@@ -815,6 +853,11 @@ def bite_fn(species, legh):
         wind = smooth(t / 0.25) * (1 - smooth((t - 0.25) / 0.15))
         lunge = smooth((t - 0.25) / 0.2) * (1 - smooth((t - 0.6) / 0.4))
         jaw = smooth((t - 0.15) / 0.2) * (1 - smooth((t - 0.45) / 0.08))
+        if species == "stag":
+            # A butt: the rack lowered and driven forward, no bite in it.
+            return {"lunge": 0.25 * legh * lunge - 0.05 * legh * wind, "pitch": -0.08 * lunge,
+                    "neck": -0.50 * lunge, "head": -0.35 * lunge, "jaw": 0.05 * jaw,
+                    "bob": -0.03 * wind, "tail": (0.0, 0.3 * lunge)}
         if species == "pig":
             # A gore: head down, then tossed up through the strike.
             toss = smooth((t - 0.40) / 0.15) * (1 - smooth((t - 0.6) / 0.35))
@@ -831,6 +874,10 @@ def howl_fn(species):
     def fn(t):
         up = smooth(t / 0.16) * (1 - smooth((t - 0.80) / 0.20))
         jaw = smooth((t - 0.10) / 0.12) * (1 - smooth((t - 0.78) / 0.12))
+        if species == "stag":
+            # A bellow: the neck stretched forward and up, the mouth wide.
+            return {"neck": 0.40 * up, "head": -0.20 * up, "jaw": 0.40 * jaw, "pitch": 0.04 * up,
+                    "tail": (0.0, 0.2 * up)}
         if species == "pig":
             # A squeal: the head jerks up and shakes.
             return {"neck": 0.45 * up, "head": 0.25 * up + 0.08 * up * math.sin(40 * t),
@@ -901,7 +948,7 @@ def fel_glow(obj):
 # ── preview ─────────────────────────────────────────────────────────────
 
 
-def preview(arm, out_dir, slug, shots):
+def preview(arm, out_dir, slug, shots, scale=1.0):
     scn = bpy.context.scene
     scn.render.engine = "CYCLES"
     scn.cycles.samples = 12
@@ -920,9 +967,9 @@ def preview(arm, out_dir, slug, shots):
     cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam"))
     scn.collection.objects.link(cam)
     scn.camera = cam
-    cam.location = (3.2, -1.6, 1.1)
+    cam.location = Vector((3.2, -1.6, 1.1)) * scale
     cam.data.lens = 50
-    d = Vector((0, 0, 0.45)) - cam.location
+    d = Vector((0, 0, 0.45 * scale)) - cam.location
     cam.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
     for act_name, frac in shots:
         act = bpy.data.actions[act_name]
@@ -1034,8 +1081,10 @@ def main():
     if a["preview"]:
         os.makedirs(a["preview"], exist_ok=True)
         slug = os.path.splitext(os.path.basename(a["out"]))[0]
+        # Framed for a wolf; anything taller (a stag and its rack) backs off.
         preview(arm, a["preview"], slug, [("Idle", 0.0), ("Walk", 0.25), ("Run", 0.3),
-                                          ("Bite", 0.5), ("Howl", 0.5), ("Lie", 1.0)])
+                                          ("Bite", 0.5), ("Howl", 0.5), ("Lie", 1.0)],
+                scale=max(1.0, norm["top_m"] / 0.97))
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.export_scene.gltf(
         filepath=a["out"],

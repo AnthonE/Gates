@@ -515,7 +515,7 @@ pub struct Herd {
 pub fn stream(
     mut commands: Commands,
     mut herd: ResMut<Herd>,
-    mut q: Query<(&mut Transform, &mut Gait, Has<super::beasts::Skinned>), With<Animal>>,
+    mut q: Query<(&mut Transform, &mut Gait, Option<&super::beasts::Skinned>), With<Animal>>,
     time: Res<Time>,
     assets: Option<Res<HerdAssets>>,
     beasts: Res<super::beasts::Beasts>,
@@ -564,9 +564,19 @@ pub fn stream(
         let facing = Quat::from_rotation_y(wire_yaw_to_radians(rs.yaw));
         let fel = beasts.scene_for(slot, tier);
         // Drawn in the rigid kit because its fel model had not loaded when it
-        // came into view: drop it, and the next frame spawns it skinned.
+        // came into view, or in a tier the island has since climbed past:
+        // drop it, and it spawns again below wearing the island's tier. The
+        // sim moved its numbers at the same moment (`mob::FelTier`).
+        let stale = |q: &Query<_, _>, e| match q.get(e) {
+            Ok((_, _, Some(s))) => {
+                let s: &super::beasts::Skinned = s;
+                s.tier != tier
+            }
+            Ok((_, _, None)) => true,
+            Err(_) => false,
+        };
         let known = match known {
-            Some(entity) if fel.is_some() && matches!(q.get(entity), Ok((_, _, false))) => {
+            Some(entity) if fel.is_some() && stale(&q, entity) => {
                 commands.entity(entity).despawn();
                 herd.live.remove(&id);
                 None
@@ -576,6 +586,7 @@ pub fn stream(
         match known {
             Some(entity) => {
                 if let Ok((mut t, mut gait, skinned)) = q.get_mut(entity) {
+                    let skinned = skinned.is_some();
                     let dt = time.delta_secs();
                     gait.observe(pos, dt);
                     gait.settle(rs.sleeping, dt);

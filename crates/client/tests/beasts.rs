@@ -11,9 +11,13 @@ use std::path::{Path, PathBuf};
 
 use client::render::beasts::{
     gait_for, rate_of, tier_of, wants, BeastClip, BEAST_CARCASS_GLB, BEAST_GLB, BEAST_RATE_MAX,
-    CLIP_MPS, FEL_PIG, FEL_WOLF,
+    CLIP_MPS, FEL_PIG, FEL_STAG, FEL_WOLF,
 };
 use client::render::mobs::{Gait, PIG_H_M, WOLF_H_M};
+
+/// The stag is scaled at its withers; `mobs::STAG_H_M` is to the top of the
+/// skull, and the rack stands above that.
+const STAG_WITHERS_M: f64 = 1.05;
 use client_core::arc::ArcView;
 use sim_core::works::{WORK_LIT, WORK_OPEN, WORK_SEALED};
 
@@ -120,7 +124,7 @@ fn the_gait_picks_the_clip_with_hysteresis() {
 #[test]
 fn clip_speeds_match_the_rig_script() {
     let py = std::fs::read_to_string("../../ci/rig_beast.py").expect("ci/rig_beast.py");
-    for (sp, name) in [(FEL_PIG, "pig"), (FEL_WOLF, "wolf")] {
+    for (sp, name) in [(FEL_PIG, "pig"), (FEL_WOLF, "wolf"), (FEL_STAG, "stag")] {
         let at = py.find(&format!("\"{name}\": {{")).expect("species block");
         let block = &py[at..];
         for (i, clip) in ["Walk", "Trot", "Run"].iter().enumerate() {
@@ -141,7 +145,12 @@ fn clip_speeds_match_the_rig_script() {
 
 #[test]
 fn every_fel_model_stands_faces_and_plays() {
-    for (sp, h_m) in [(FEL_PIG, PIG_H_M as f64), (FEL_WOLF, WOLF_H_M as f64)] {
+    // (species, withers height, how far above it ears, spines or a rack may stand)
+    for (sp, h_m, over) in [
+        (FEL_PIG, PIG_H_M as f64, 1.25),
+        (FEL_WOLF, WOLF_H_M as f64, 1.25),
+        (FEL_STAG, STAG_WITHERS_M, 2.0),
+    ] {
         for rel in BEAST_GLB[sp] {
             let j = glb_json(rel);
             assert_eq!(
@@ -168,10 +177,10 @@ fn every_fel_model_stands_faces_and_plays() {
             let (lo, hi) = bounds(&j);
             assert!(lo[1].abs() < 0.01, "{rel}: feet at y = {:.3}, not 0", lo[1]);
             assert!(hi[2] > -lo[2], "{rel}: the long end is behind — facing -Z?");
-            // The withers are scaled to the species' height; ears, horns and
-            // spines stand above it, never more than a quarter.
+            // The withers are scaled to the species' height; ears, horns,
+            // spines and antlers stand above it, by no more than `over`.
             assert!(
-                hi[1] > 0.95 * h_m && hi[1] < 1.25 * h_m,
+                hi[1] > 0.95 * h_m && hi[1] < over * h_m,
                 "{rel}: top {:.2} m against {h_m} at the withers",
                 hi[1]
             );

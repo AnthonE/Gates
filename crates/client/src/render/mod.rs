@@ -1376,6 +1376,10 @@ impl Plugin for GatesRenderPlugin {
                 beasts::build,
                 beasts::bind.after(Stream),
                 beasts::drive.after(beasts::bind),
+                // Emitted beside the fires, before the pool is drawn.
+                beasts::fel_fire
+                    .after(beasts::bind)
+                    .before(fx::world::fires),
             )
                 .run_if(world_running),
         )
