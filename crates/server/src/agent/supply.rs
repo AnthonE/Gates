@@ -129,6 +129,9 @@ pub struct TeamHome {
     furnace: Option<OpAddr>,
     looked: Option<u32>,
     cursor: usize,
+    /// Its cupboard said it is on the crew (the team's code entered at the
+    /// cupboard's lock): it may build, and put its bag down, in the base.
+    crewed: bool,
     /// Boxes, cupboards and stations learnt.
     pub learnt: u64,
 }
@@ -154,6 +157,29 @@ impl TeamHome {
 
     pub fn hearth(&self) -> Option<OpAddr> {
         self.hearth
+    }
+
+    /// The cupboard has it on its crew, as far as it was last told.
+    pub fn crewed(&self) -> bool {
+        self.crewed
+    }
+
+    /// The cupboard carries a code lock, per the mirror: the team's code
+    /// entered there is what puts a hand on its crew.
+    pub fn hearth_locked(&self, core: &ClientCore) -> bool {
+        self.hearth.is_some_and(|at| {
+            core.deploys.entries().iter().any(|d| {
+                (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc) && d.has_lock
+            })
+        })
+    }
+
+    /// A lock's or a cupboard's answer: at the team's cupboard, whether it
+    /// is on the crew now.
+    pub fn on_auth(&mut self, cx: u16, cz: u16, level: u8, loc: u8, grant: u8) {
+        if self.hearth == Some(OpAddr { cx, cz, level, loc }) {
+            self.crewed = grant == sim_core::lock::GRANT_FULL;
+        }
     }
 
     pub fn forget(&mut self) {
@@ -252,6 +278,7 @@ impl TeamHome {
             .is_some_and(|at| arch_at(core, at) != Some(ARCH_HEARTH))
         {
             self.hearth = None;
+            self.crewed = false;
         }
         if self
             .furnace

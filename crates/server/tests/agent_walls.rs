@@ -2530,6 +2530,418 @@ fn a_teammate_sorts_its_pack_into_the_team_s_boxes() {
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
+/// A decision source for the team's-base tests: the first goal of `.0` on
+/// offer, else stand and look round; every answer carries the code the
+/// teammate gave (`.1`), if one was.
+struct Prefer(&'static [Goal], Option<server::agent::lock::LockCode>);
+
+impl server::mind::DecisionSource for Prefer {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let goal = self
+            .0
+            .iter()
+            .copied()
+            .find(|g| s.offers(*g))
+            .unwrap_or(Goal::Wait);
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: self.1,
+        })
+    }
+}
+
+/// A third body, never on the team: the stranger at the team's base.
+const STRANGER: u32 = 258;
+const STRANGER_SLOT: usize = 2;
+
+impl Harness {
+    /// The stranger joins, in both shards.
+    fn with_stranger(&mut self) {
+        for core in [&mut self.shard, &mut self.replay] {
+            assert!(core.connect(STRANGER_SLOT, STRANGER));
+        }
+        self.until(2, |_| false);
+    }
+
+    /// `f` with the puppet's helpers driving the stranger.
+    fn as_stranger(&mut self, f: impl FnOnce(&mut Self)) {
+        let was = (self.puppet_id, self.puppet_slot);
+        (self.puppet_id, self.puppet_slot) = (STRANGER, STRANGER_SLOT);
+        f(self);
+        (self.puppet_id, self.puppet_slot) = was;
+    }
+}
+
+/// The agent moves in with its teammate: the teammate's base (a door, a
+/// cupboard, a box) staged north of `at`, the invite taken face to face,
+/// and the teammate at their box with the agent inside to see it, which
+/// makes the base its home. The teammate then goes far off. Returns the
+/// door's cell.
+fn move_in(h: &mut Harness, at: (f32, f32)) -> (u16, u16) {
+    use sim_core::build::BUILD_CELL_M;
+
+    h.until(5, |_| false);
+    let (bx, bz) = stage_strangers_base(h, at, false);
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(h), "the agent never joined: {}", h.explain());
+    let (mate, me) = (
+        place(bxf + BUILD_CELL_M + 2.4, bzf + 2.4),
+        place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6),
+    );
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = me);
+    assert!(
+        h.until(30 * TICK_HZ, |b| b.shared().box_count() >= 1),
+        "the team's box was never learnt: {}",
+        h.explain()
+    );
+    // Long enough to have looked round the rest of it.
+    h.until(5 * TICK_HZ, |_| false);
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+    (bx, bz)
+}
+
+/// Where the agent's feet are, metres.
+fn feet(h: &Harness) -> [f32; 2] {
+    let me = h.me().body;
+    [
+        me.qx as f32 * sim_core::movement::POS_XZ_Q,
+        me.qz as f32 * sim_core::movement::POS_XZ_Q,
+    ]
+}
+
+/// Inside the staged base's two cells.
+fn inside_base(p: [f32; 2], (bx, bz): (u16, u16)) -> bool {
+    use sim_core::build::BUILD_CELL_M;
+    let (x0, z0) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    p[0] > x0 + 0.2
+        && p[0] < x0 + 2.0 * BUILD_CELL_M - 0.2
+        && p[1] > z0 + 0.2
+        && p[1] < z0 + BUILD_CELL_M - 0.2
+}
+
+/// Living in its teammate's base (none of its own), the agent sent home
+/// from twenty metres out walks back, finds no way in but the door, opens
+/// it with `E`, walks in, shuts it behind, and stays by the box.
+#[test]
+fn a_teammate_living_in_the_team_s_base_goes_home_to_it() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(
+        Prefer(&[Goal::JoinTeam, Goal::GoHome], None),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let (bx, bz) = move_in(&mut h, at);
+    assert!(h.bot.memory().shared, "it lives in the team's base");
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let out = sim_core::movement::Body::at(SEED, &haven, bxf + 1.5, bzf - 20.0);
+    h.stage(move |p| p.body = out);
+    let shut = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open)
+    };
+    assert!(shut(&h));
+    let home = h.until(120 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::GoHome)
+    });
+    assert!(home, "no walk home ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::GoHome)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert!(
+        inside_base(feet(&h), (bx, bz)),
+        "home, inside: {:?} {}",
+        feet(&h),
+        h.explain()
+    );
+    let first = h.bot.shared().first().unwrap();
+    let (cx, cz) = sim_core::deploy::cell_center(first.cx, first.cz);
+    let p = feet(&h);
+    assert!((p[0] - cx).hypot(p[1] - cz) <= server::agent::supply::STAY_NEAR_M + 0.5);
+    assert!(shut(&h), "the door was shut behind it");
+    assert!(h.verbs.contains("use"), "{:?}", h.verbs);
+    // Home, it is not sent home again.
+    h.until(10 * TICK_HZ, |_| false);
+    let walks = h
+        .bot
+        .history
+        .iter()
+        .filter(|r| r.goal == Goal::GoHome)
+        .count();
+    assert_eq!(walks, 1, "{}", h.explain());
+    assert_ne!(h.bot.goal(), Some(Goal::GoHome));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// Living in its teammate's base, the agent stands on the far side of it
+/// from where a stranger hacks at the base's south wall, the base between
+/// them. The blows, not its eyes, call it home: it comes round to the door,
+/// takes the stranger on, and once it has been quiet a while, the defence
+/// is over.
+#[test]
+fn a_teammate_defends_the_team_s_base_when_a_stranger_strikes_it() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(
+        Prefer(&[Goal::JoinTeam, Goal::Defend], None),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let (bx, bz) = move_in(&mut h, at);
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    // North of the base, a spear on the belt.
+    let spear = h.spear;
+    let out = sim_core::movement::Body::at(SEED, &haven, bxf + 4.5, bzf + 18.0);
+    h.stage(move |p| {
+        p.body = out;
+        p.inv[0] = spear;
+    });
+    h.until(3 * TICK_HZ, |_| false);
+
+    // The stranger hacks at the east cell's south wall from outside.
+    h.with_stranger();
+    let hatchet = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.hatchet_stone")
+    };
+    let wall = (bx + 1, bz, 0u8, LOC_EDGE_ZLO);
+    let hp = |h: &Harness| {
+        h.shard
+            .world
+            .pieces
+            .find(wall.0, wall.1, wall.2, wall.3)
+            .map(|r| r.hp)
+    };
+    let full = hp(&h).expect("the wall stands");
+    let (wx, wz) = (bxf + BUILD_CELL_M + 1.5, bzf - 0.8);
+    let seen = |h: &Harness| h.bot.tracks().get(STRANGER).is_some_and(|t| t.visible);
+    let mut called_blind = false;
+    for _ in 0..20 * TICK_HZ {
+        h.as_stranger(|h| h.puppet_at(wx, wz, 0, hatchet, true));
+        h.step();
+        if h.bot.goal() == Some(Goal::Defend) {
+            called_blind = !seen(&h);
+            break;
+        }
+    }
+    assert!(
+        hp(&h).expect("the wall stands") < full,
+        "the blows never landed"
+    );
+    assert!(
+        h.bot.goal() == Some(Goal::Defend),
+        "the blows never called it home: {}",
+        h.explain()
+    );
+    assert!(called_blind, "it was called by its eyes, not the blows");
+    // The stranger hacks on; the agent comes round and takes them on.
+    let engages = h.bot.combat().stats.engages;
+    let fought = (0..60 * TICK_HZ).any(|_| {
+        h.as_stranger(|h| h.puppet_at(wx, wz, 0, hatchet, true));
+        h.step();
+        h.bot.combat().stats.engages > engages
+    });
+    assert!(fought, "it never took the stranger on: {}", h.explain());
+    assert_eq!(h.bot.combat().foe().map(|f| f.id), Some(STRANGER));
+    let me = feet(&h);
+    assert!(
+        (me[0] - wx).hypot(me[1] - wz) <= server::agent::supply::HOME_M,
+        "it came home to fight: {me:?}"
+    );
+    // The fight is the reflex's from here; once it is over and the base
+    // has been quiet a while, the defence ends.
+    let over = h.until((server::explorer::SHARED_GUARD_SECS + 120) * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::Defend)
+    });
+    assert!(over, "the defence never ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::Defend)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// Living in its teammate's base, the agent carries a sleeping bag and
+/// has the code the teammate gave on team chat. The teammate's cupboard
+/// has a code lock on it with that code, so the base is theirs alone: a
+/// bag would be refused in it. The agent walks in through the door, enters
+/// the code at the cupboard's keypad (which puts it on the crew, the
+/// keypad's way), and puts its bag down on the floor inside, clear of the
+/// doorway.
+#[test]
+fn a_teammate_given_the_code_puts_its_bag_down_in_the_team_s_base() {
+    use server::agent::lock::LockCode;
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO, LOC_PLANE};
+    use sim_core::deploy::{ACCESS_OP_SET_CODE, ARCH_BAG};
+
+    let given = 1357;
+    let at = common::clearing(3);
+    let mind = Mind::inline(
+        Prefer(
+            &[Goal::JoinTeam, Goal::Bag],
+            Some(LockCode::given(given).unwrap()),
+        ),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let rows = server::population::base_rows(&content).unwrap();
+    // No bag yet: the move-in comes first.
+    let (bx, bz) = move_in(&mut h, at);
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    assert!(
+        h.bot.shared().hearth().is_some(),
+        "the cupboard was never seen: {}",
+        h.explain()
+    );
+    // The teammate comes back, bolts a lock onto the cupboard, sets the
+    // code, and goes.
+    let lock = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.lock_code")
+    };
+    let mate = place(bxf + 1.5, bzf + 2.2);
+    h.stage_puppet(move |p| {
+        p.body = mate;
+        p.inv[HOTBAR_SLOTS] = lock;
+    });
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.lock,
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    h.puppet_act(ActionMsg::Access {
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        op: ACCESS_OP_SET_CODE,
+        code: given,
+    });
+    let crew = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .hearths()
+            .iter()
+            .any(|r| (r.cx, r.cz) == (bx, bz) && r.crew.contains(ID))
+    };
+    assert!(
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_PLANE)
+            .is_some_and(|d| d.has_lock),
+        "the cupboard's lock"
+    );
+    assert!(!crew(&h), "the agent is not on the crew yet");
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+    // Outside, a bag in the pack.
+    let bag = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.sleeping_bag")
+    };
+    let out = place(bxf + 1.5, bzf - 8.0);
+    h.stage(move |p| {
+        p.body = out;
+        p.inv[HOTBAR_SLOTS + 2] = bag;
+    });
+    let ended = h.until(150 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::Bag)
+    });
+    assert!(ended, "no bag goal ended: {}", h.explain());
+    let report = h.bot.history.iter().find(|r| r.goal == Goal::Bag).unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert!(crew(&h), "the code put it on the crew");
+    assert!(h.bot.shared().crewed());
+    let w = &h.shard.world;
+    let bags: Vec<_> = w
+        .deploys
+        .entries()
+        .iter()
+        .filter(|d| d.owner == ID && w.deploy.defs[usize::from(d.row)].arch == ARCH_BAG)
+        .copied()
+        .collect();
+    assert_eq!(bags.len(), 1, "{}", h.explain());
+    let (x, z) = bags[0].xz();
+    assert!(
+        inside_base([x, z], (bx, bz)),
+        "the bag lies inside the base: {x},{z}"
+    );
+    let door = sim_core::build::anchor(bx, bz, LOC_EDGE_ZLO);
+    assert!(
+        (x - door.0).hypot(z - door.1) >= server::agent::home::FLOOR_DOOR_CLEAR_M - 0.01,
+        "clear of the doorway"
+    );
+    for verb in ["use", "access", "deploy"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert!(
+        h.shard
+            .world
+            .deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open),
+        "the door was shut behind it"
+    );
+    // One is enough: it is not offered another there.
+    h.until(2 * TICK_HZ, |_| false);
+    assert!(h.bot.memory().bag_home);
+    let view = &h.view;
+    assert!(!h.bot.summary(view, ID).unwrap().offers(Goal::Bag));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
 /// The public places' decision source: sell wood at THE GATE, or feed a
 /// work, whichever is on offer, else stand.
 struct VisitWhenOffered;

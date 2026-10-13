@@ -22,11 +22,12 @@ use crate::mind::Why;
 use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::backpack::LOOT_REACH_M;
-use sim_core::build::{build_cell_of, BUILD_REACH_M, LOC_PLANE};
+use sim_core::build::{anchor, build_cell_of, BUILD_REACH_M, LOC_PLANE};
 use sim_core::deploy::{
-    cell_center, BagAnchor, ARCH_BAG, BAG_CAP, FEED_CHUNK, REFUSE_D_BAG_CAP, REFUSE_D_COST,
-    UPKEEP_PERIOD_TICKS,
+    cell_center, is_edge_loc, BagAnchor, ARCH_BAG, BAG_CAP, BODY_LOCS, FEED_CHUNK,
+    REFUSE_D_BAG_CAP, REFUSE_D_CLAIM, REFUSE_D_COST, UPKEEP_PERIOD_TICKS,
 };
+use sim_core::footprint::Pose;
 use sim_core::limits::{HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BUILD_COORD, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::{self, Haven};
@@ -213,6 +214,14 @@ impl Home {
     /// Sleeping bags it knows it has down.
     pub fn bags(&self) -> u8 {
         self.bags.iter().flatten().count() as u8
+    }
+
+    /// Has it a bag of its own down within `r` of `at`?
+    pub fn bag_near(&self, at: [f32; 2], r: f32) -> bool {
+        self.bags.iter().flatten().any(|&(cx, cz, _)| {
+            let (x, z) = cell_center(cx, cz);
+            (x - at[0]).hypot(z - at[1]) <= r
+        })
     }
 
     /// Sleeping bags it counts as down when choosing: all it may have
@@ -635,6 +644,119 @@ pub fn bag_cell(
     best.map(|(_, cx, cz)| (cx, cz))
 }
 
+/// Offsets a bag is tried at on a floor, in pose steps from a cell's
+/// middle (0.9 m and 0.47 m): the middle, then along each side, then the
+/// corners; each lying both ways.
+const FLOOR_OFFSETS: [(i8, i8); 9] = [
+    (0, 0),
+    (0, 77),
+    (0, -77),
+    (77, 0),
+    (-77, 0),
+    (40, 77),
+    (-40, 77),
+    (40, -77),
+    (-40, -77),
+];
+/// A bag on a floor lies this clear of a doorway's middle, never across
+/// the way in...
+pub const FLOOR_DOOR_CLEAR_M: f32 = 1.6;
+/// ...and this far from the feet at least.
+pub const FLOOR_NEAR_M: f32 = 0.6;
+
+/// A spot to put a bag down on a built floor within `within` of `home`:
+/// a cell with a floor, in reach of the feet, at an offset and a facing
+/// the sim's own placement rule (`deploy::body_site`) takes over the
+/// mirror, clear of every doorway and not a cell already refused. The
+/// nearest to the feet wins: `(cx, cz, pose, the floor's height)`.
+pub fn floor_spot(
+    core: &ClientCore,
+    seed: u64,
+    haven: &Haven,
+    body: &EntityState,
+    home: [f32; 2],
+    within: f32,
+    refused: &[(u16, u16)],
+) -> Option<(u16, u16, Pose, f32)> {
+    let (row, _) = bag_row(core)?;
+    let def = core.deploy_defs.defs[usize::from(row)];
+    let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    let (bx, bz) = (build_cell_of(x), build_cell_of(z));
+    let have = core.deploy_defs_have.min(core.deploy_defs.def_count);
+    let door_near = |px: f32, pz: f32| {
+        core.deploys.entries().iter().any(|d| {
+            u16::from(d.row) < have && is_edge_loc(d.loc) && {
+                let (ax, az) = anchor(d.cx, d.cz, d.loc);
+                (ax - px).hypot(az - pz) < FLOOR_DOOR_CLEAR_M
+            }
+        })
+    };
+    let mut best: Option<(f32, u16, u16, Pose, f32)> = None;
+    for dz in -2..=2 {
+        for dx in -2..=2 {
+            let (cx, cz) = (bx + dx, bz + dz);
+            if !(0..MAX_BUILD_COORD as i32).contains(&cx)
+                || !(0..MAX_BUILD_COORD as i32).contains(&cz)
+            {
+                continue;
+            }
+            let (cx, cz) = (cx as u16, cz as u16);
+            if refused.contains(&(cx, cz)) || core.pieces.cols().get(cx, cz).planes & 1 == 0 {
+                continue;
+            }
+            for &(ox, oz) in &FLOOR_OFFSETS {
+                for yaw in [0u8, 64] {
+                    let pose = Pose { ox, oz, yaw };
+                    let (px, pz) = sim_core::footprint::centre(cx, cz, pose);
+                    let d = (px - x).hypot(pz - z);
+                    if !(FLOOR_NEAR_M..=BAG_FAR_M).contains(&d)
+                        || (px - home[0]).hypot(pz - home[1]) > within
+                        || best.is_some_and(|(b, ..)| d >= b)
+                        || door_near(px, pz)
+                    {
+                        continue;
+                    }
+                    let Ok(site) = sim_core::deploy::body_site(
+                        seed,
+                        haven,
+                        core.pieces.cols(),
+                        core.deploys.entries(),
+                        &core.deploy_defs,
+                        def.placement,
+                        ARCH_BAG,
+                        cx,
+                        cz,
+                        0,
+                        pose,
+                    ) else {
+                        continue;
+                    };
+                    if !site.ground {
+                        best = Some((d, cx, cz, pose, site.base_y));
+                    }
+                }
+            }
+        }
+    }
+    best.map(|(_, cx, cz, pose, y)| (cx, cz, pose, y))
+}
+
+/// The slot a body deployable put down in this cell takes: the first the
+/// mirror shows free, the sim's own order (`deploy::BODY_LOCS`).
+pub fn body_loc(core: &ClientCore, cx: u16, cz: u16) -> u8 {
+    BODY_LOCS
+        .iter()
+        .copied()
+        .find(|&loc| {
+            !core
+                .deploys
+                .entries()
+                .iter()
+                .any(|d| (d.cx, d.cz, d.level, d.loc) == (cx, cz, 0, loc))
+        })
+        .unwrap_or(LOC_PLANE)
+}
+
 /// Empty pack and belt slots.
 fn free_slots(core: &ClientCore) -> u8 {
     core.inv[..INV_SLOTS]
@@ -666,11 +788,14 @@ pub enum Do {
         count: u16,
     },
     /// Put the held deployable down here (`encode_action_deploy`), holding
-    /// this intent while it goes.
+    /// this intent while it goes: the cell, the slot it will take there,
+    /// and where in the cell it lies.
     Deploy {
         row: u16,
         cx: u16,
         cz: u16,
+        loc: u8,
+        pose: Pose,
         intent: Intent,
     },
     /// Open the backpack in reach (`encode_action_loot`).
@@ -681,10 +806,15 @@ pub enum Do {
 
 /// Putting one sleeping bag down: to the belt, in hand, eyes on the spot,
 /// then the deploy and its verdict. A refused spot is crossed off and the
-/// next one tried.
+/// next one tried. On bare ground where it stands; or, with a `floor`, on
+/// the built floor round that point (the team's base).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BagJob {
     cell: Option<(u16, u16)>,
+    /// Where in the cell, and the height it lies at.
+    pose: Pose,
+    lie_y: f32,
+    floor: Option<[f32; 2]>,
     /// Since when the bag has been asked to be in hand at this spot.
     held: Option<u32>,
     belt: Option<u32>,
@@ -694,6 +824,15 @@ pub struct BagJob {
 }
 
 impl BagJob {
+    /// A bag for the built floor within [`crate::agent::supply::HOME_M`]
+    /// of `home`.
+    pub fn on_floor(home: [f32; 2]) -> Self {
+        Self {
+            floor: Some(home),
+            ..Self::default()
+        }
+    }
+
     pub fn belt_sent(&mut self, tick: u32) {
         self.belt = Some(tick);
     }
@@ -746,6 +885,9 @@ impl BagJob {
                     match u32::from(r) {
                         REFUSE_D_COST => return Do::Fail(Why::MissingInputs),
                         REFUSE_D_BAG_CAP => return Do::Fail(Why::Refused),
+                        // A base whose cupboard does not have it on its
+                        // crew refuses it everywhere on its floor.
+                        REFUSE_D_CLAIM if self.floor.is_some() => return Do::Fail(Why::Refused),
                         // A spot the ground, the reach, a claim or a
                         // neighbour spoiled: another one.
                         _ => {
@@ -783,19 +925,37 @@ impl BagJob {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         // A spot the body has since been pushed away from is picked again.
         let cell = self.cell.filter(|&(cx, cz)| {
-            let (mx, mz) = cell_center(cx, cz);
+            let (mx, mz) = sim_core::footprint::centre(cx, cz, self.pose);
             (mx - x).hypot(mz - z) <= BAG_FAR_M
         });
-        let Some((cx, cz)) = cell.or_else(|| bag_cell(core, seed, haven, body, refused)) else {
+        let spot = match (cell, self.floor) {
+            (Some((cx, cz)), _) => Some((cx, cz, self.pose, self.lie_y)),
+            (None, Some(home)) => floor_spot(
+                core,
+                seed,
+                haven,
+                body,
+                home,
+                crate::agent::supply::HOME_M,
+                refused,
+            ),
+            (None, None) => bag_cell(core, seed, haven, body, refused).map(|(cx, cz)| {
+                let (mx, mz) = cell_center(cx, cz);
+                (cx, cz, Pose::CENTRE, terrain::ground(seed, haven, mx, mz))
+            }),
+        };
+        let Some((cx, cz, pose, y)) = spot else {
             return Do::Fail(Why::NoSpot);
         };
         if self.cell != Some((cx, cz)) {
             self.cell = Some((cx, cz));
+            self.pose = pose;
+            self.lie_y = y;
             self.held = None;
         }
-        let (mx, mz) = cell_center(cx, cz);
+        let (mx, mz) = sim_core::footprint::centre(cx, cz, pose);
         let intent = Intent {
-            look: Look::Point([mx, terrain::ground(seed, haven, mx, mz), mz]),
+            look: Look::Point([mx, y, mz]),
             sel: Some(slot as u8),
             ..Intent::IDLE
         };
@@ -805,6 +965,8 @@ impl BagJob {
                 row,
                 cx,
                 cz,
+                loc: body_loc(core, cx, cz),
+                pose,
                 intent,
             };
         }

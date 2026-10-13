@@ -61,7 +61,7 @@ use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::STATION_FURNACE;
-use sim_core::deploy::{box_key, ACCESS_OP_ENTER, BAG_CAP};
+use sim_core::deploy::{box_key, cell_center, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
@@ -108,6 +108,10 @@ pub const FOLLOW_DOOR_M: f32 = 6.0;
 /// Living in the team's base, the walk home is offered farther than this
 /// from it...
 pub const SHARED_HOME_NEAR_M: u8 = 8;
+/// A bag for the team's base that came to nothing (no way onto the
+/// cupboard's crew, no room on the floor) is not tried again for this
+/// long, unless a teammate gives a new code.
+pub const TEAM_BAG_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// ...and its defence ends once nobody has been about it this long.
 pub const SHARED_GUARD_SECS: u32 = 30;
 /// A trade at THE GATE or a feed at a work, the walk there included, that
@@ -526,6 +530,12 @@ pub struct Memory {
     pub home_alarm: bool,
     pub home_needs: bool,
     pub team_code: bool,
+    /// Living there, its bag goes in the team's base: none of its own is
+    /// down there yet, and no try came to nothing lately. It is on the
+    /// cupboard's crew; it has a bag down there.
+    pub team_bag: bool,
+    pub crewed: bool,
+    pub bag_home: bool,
     /// A trade at THE GATE, or a feed at a work, came to nothing a moment
     /// ago.
     pub trade_held: bool,
@@ -692,6 +702,19 @@ struct Active {
     paused: Option<u32>,
 }
 
+/// A bag on its way to the team's base ([`Survivor::bag_in`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BagLeg {
+    /// Where it stands, on bare ground.
+    Here,
+    /// In through the team's doors to its cupboard.
+    In,
+    /// The cupboard's crew.
+    Crew,
+    /// The base's floor.
+    Floor,
+}
+
 pub struct Survivor {
     pub mind: Mind,
     pub stats: SurvivorStats,
@@ -734,6 +757,12 @@ pub struct Survivor {
     /// buildings it has seen.
     home: Home,
     bag_job: BagJob,
+    /// Where a bag for the team's base is on its way: in, onto the
+    /// cupboard's crew, the floor. The code went in at the cupboard on this
+    /// trip; a trip there came to nothing at this tick.
+    bag_leg: BagLeg,
+    bag_knocked: bool,
+    team_bag_failed: Option<u32>,
     recover_job: RecoverJob,
     seen: Seen,
     /// The base it is building, and the walk through its doors.
@@ -885,6 +914,9 @@ impl Survivor {
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
+            bag_leg: BagLeg::Here,
+            bag_knocked: false,
+            team_bag_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
             builder: Builder::new(),
@@ -1357,6 +1389,10 @@ impl Survivor {
             self.take_say(choice.say);
             // A code a teammate gave is kept whatever becomes of the goal.
             if let Some(code) = choice.code {
+                // A new code is a new chance at the cupboard.
+                if self.team_code != Some(code) {
+                    self.team_bag_failed = None;
+                }
                 self.team_code = Some(code);
             }
             let busy = self.combat.engaged() || !self.at_checkpoint();
@@ -1711,6 +1747,8 @@ impl Survivor {
         self.seek = None;
         self.verdict = None;
         self.bag_job = BagJob::default();
+        self.bag_leg = BagLeg::Here;
+        self.bag_knocked = false;
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.loot_job = LootJob::default();
@@ -1718,6 +1756,21 @@ impl Survivor {
             Goal::GoHome | Goal::Defend => Trip::Stay,
             _ => Trip::Stock,
         });
+        // Living in the team's base, its bag goes down in there: in to the
+        // cupboard (or the first box, if it knows none), then the floor.
+        if goal == Goal::Bag && self.memory.team_bag {
+            if let Some(home) = self.shared.anchor() {
+                self.bag_leg = BagLeg::In;
+                self.bag_job = BagJob::on_floor(home);
+                self.home_job = HomeJob::new(match self.shared.hearth() {
+                    Some(h) => {
+                        let (x, z) = cell_center(h.cx, h.cz);
+                        Trip::Point([x, z])
+                    }
+                    None => Trip::Stay,
+                });
+            }
+        }
         self.leave.doors.clear();
         self.trade_job.reset();
         self.work_job = WorkJob::default();
@@ -1850,7 +1903,9 @@ impl Survivor {
         }
         // Out of a teammate's base too, by its nearest door. A delivery
         // works its own doors, and a follow goes where its teammate goes.
-        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver) || active.delivering;
+        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver)
+            || active.delivering
+            || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
             if let Some(intent) = self.leave_mates(core, body, tick) {
                 return intent;
@@ -2458,13 +2513,21 @@ impl Survivor {
         intent
     }
 
-    /// The team's base is under attack: home, then whoever is about it
-    /// and not on the team is fought, until it has been quiet a while.
+    /// The team's base is under attack: home, and whoever is about it and
+    /// not on the team is fought, on the way in or once there, until it has
+    /// been quiet a while.
     fn defend_shared(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         self.stats.phase = Phase::Defending;
         let Some(active) = self.goal else {
             return Intent::IDLE;
         };
+        let Some(home) = self.shared.anchor() else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        // Whoever it sees at the base is taken on wherever it is: from
+        // inside, the walls hide the one hacking at them.
+        let about = self.guard_shared(core, home, tick);
         // `fled` marks the arrival, `leg` the last time anyone was about.
         if !active.fled {
             let (intent, over) = self.home_step(core, body, tick);
@@ -2483,10 +2546,17 @@ impl Survivor {
                 }
             }
         }
-        let Some(home) = self.shared.anchor() else {
-            self.end_goal(tick, Outcome::Failed(Why::NotFound));
-            return Intent::IDLE;
-        };
+        if !about && tick.wrapping_sub(active.leg) >= SHARED_GUARD_SECS * TICK_HZ {
+            self.home_alarm = None;
+            self.memory.home_alarm = false;
+            self.end_goal(tick, Outcome::Done);
+        }
+        Intent::IDLE
+    }
+
+    /// The nearest stranger in sight within the team's base or near it is
+    /// fought; true when there was one.
+    fn guard_shared(&mut self, core: &ClientCore, home: [f32; 2], tick: u32) -> bool {
         let mut stranger: Option<(f32, u32)> = None;
         for t in self.tracks.seen() {
             if !t.visible
@@ -2503,22 +2573,16 @@ impl Survivor {
                 stranger = Some((d, t.id));
             }
         }
-        match stranger {
-            Some((_, id)) => {
-                if !self.combat.shuns(id, tick) {
-                    self.combat.command(id, tick);
-                }
-                if let Some(a) = self.goal.as_mut() {
-                    a.leg = tick;
-                }
-            }
-            None if tick.wrapping_sub(active.leg) >= SHARED_GUARD_SECS * TICK_HZ => {
-                self.home_alarm = None;
-                self.end_goal(tick, Outcome::Done);
-            }
-            None => {}
+        let Some((_, id)) = stranger else {
+            return false;
+        };
+        if !self.combat.shuns(id, tick) {
+            self.combat.command(id, tick);
         }
-        Intent::IDLE
+        if let Some(a) = self.goal.as_mut() {
+            a.leg = tick;
+        }
+        true
     }
 
     /// Send what a walk through a door asked for: a use, or the team's
@@ -3887,6 +3951,9 @@ impl Survivor {
     /// belt, in hand, eyes on the spot, then the deploy verb.
     fn place_bag(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         self.stats.phase = Phase::Bagging;
+        if let Some(intent) = self.bag_in(core, body, tick) {
+            return intent;
+        }
         let Some(haven) = self.haven else {
             return Intent::IDLE;
         };
@@ -3908,12 +3975,14 @@ impl Survivor {
                 row,
                 cx,
                 cz,
+                loc,
+                pose,
                 intent,
             } => {
                 if self.queue(|buf| {
-                    protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, Pose::CENTRE, buf)
+                    protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, pose, buf)
                 }) {
-                    self.home.asked(cx, cz, 0, LOC_PLANE);
+                    self.home.asked(cx, cz, 0, loc);
                     self.bag_job.deploy_sent(tick);
                 }
                 intent
@@ -3926,10 +3995,57 @@ impl Survivor {
                 Intent::IDLE
             }
             Do::Fail(why) => {
+                if self.bag_leg != BagLeg::Here {
+                    self.team_bag_failed = Some(tick);
+                }
                 self.end_goal(tick, Outcome::Failed(why));
                 Intent::IDLE
             }
             Do::Loot(_) => Intent::IDLE,
+        }
+    }
+
+    /// The way in for a bag bound for the team's base: through its doors to
+    /// its cupboard, and onto the cupboard's crew with the team's code when
+    /// it has a lock and the crew does not have it yet (the right code is
+    /// the whole invitation, `deploy::hearth_admits`); a base it is not on
+    /// the crew of refuses a bag. `None` once the floor is the next thing.
+    fn bag_in(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Option<Intent> {
+        match self.bag_leg {
+            BagLeg::Here | BagLeg::Floor => None,
+            BagLeg::In => {
+                let (intent, over) = self.home_step(core, body, tick);
+                match over {
+                    None => Some(intent),
+                    Some(Outcome::Failed(why)) => {
+                        self.team_bag_failed = Some(tick);
+                        self.end_goal(tick, Outcome::Failed(why));
+                        Some(Intent::IDLE)
+                    }
+                    Some(_) => {
+                        self.bag_leg = BagLeg::Crew;
+                        Some(Intent::IDLE)
+                    }
+                }
+            }
+            BagLeg::Crew => {
+                let knock = !self.shared.crewed()
+                    && !self.bag_knocked
+                    && self.team_code.is_some()
+                    && self.shared.hearth_locked(core);
+                match self.shared.hearth().filter(|_| knock) {
+                    Some(hearth) => {
+                        // The code goes in at its keypad, the trip's own
+                        // door walk's way, then the trip is there again.
+                        self.home_job.doors.knock_at(hearth);
+                        self.bag_knocked = true;
+                        self.bag_leg = BagLeg::In;
+                    }
+                    // On the crew, or no way onto it: the floor says.
+                    None => self.bag_leg = BagLeg::Floor,
+                }
+                Some(Intent::IDLE)
+            }
         }
     }
 
@@ -4746,6 +4862,16 @@ impl Survivor {
                 .home_alarm
                 .is_some_and(|at| tick.wrapping_sub(at) < home::HOME_ALARM_TICKS);
             self.memory.team_code = self.team_code.is_some();
+            self.memory.crewed = self.shared.crewed();
+            self.memory.bag_home = self
+                .shared
+                .anchor()
+                .is_some_and(|at| self.home.bag_near(at, supply::HOME_M));
+            self.memory.team_bag = self.memory.shared
+                && !self.memory.bag_home
+                && self
+                    .team_bag_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= TEAM_BAG_RETRY_TICKS);
             let held =
                 |at: Option<u32>| at.is_some_and(|at| tick.wrapping_sub(at) < VISIT_RETRY_TICKS);
             self.memory.trade_held = held(self.trade_failed);
@@ -5186,7 +5312,8 @@ impl Survivor {
         }
         // A lock let it through (its own code, entered at its own door);
         // a blueprint learned or refused.
-        while let Some((cx, cz, level, loc, _grant)) = core.pop_auth() {
+        while let Some((cx, cz, level, loc, grant)) = core.pop_auth() {
+            self.shared.on_auth(cx, cz, level, loc, grant);
             self.builder.on_auth(cx, cz, level, loc);
             self.home_job.on_auth(cx, cz, level, loc);
             self.leave.doors.on_auth(cx, cz, level, loc);
@@ -5343,6 +5470,8 @@ impl BotDriver for Survivor {
         self.builder.reset();
         self.builder.set_code(self.lock.code(welcome.seed));
         self.bag_job = BagJob::default();
+        self.bag_leg = BagLeg::Here;
+        self.team_bag_failed = None;
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.ledger.clear();
@@ -5892,6 +6021,8 @@ pub fn observe(
     s.team.lives_there = memory.shared;
     s.team.home_has_needs = memory.home_needs;
     s.team.code = memory.team_code;
+    s.team.on_cupboard = memory.crewed;
+    s.team.bag_there = memory.bag_home;
     // THE GATE and the works, from the tables its client was sent.
     if let (Some(b), Some([gx, gz])) = (body, gate::gate(core)) {
         let (d, bearing) = relative(b, gx, gz);
@@ -6018,6 +6149,7 @@ pub fn observe(
     // could start the fight again is in view.
     if usize::from(memory.bags) < BAG_CAP
         && !memory.bag_held
+        && !(memory.shared && memory.bag_home)
         && home::bag_row(core).is_some_and(|(_, item)| count_item(core, item) > 0)
     {
         s.offer(Goal::Bag);

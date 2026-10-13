@@ -358,7 +358,7 @@ impl Goal {
             Goal::Fight => "Fight the nearest player in view; backs off if losing.".into(),
             Goal::Hunt => "Kill the nearest animal in view for meat and hide.".into(),
             Goal::Heal => "Use bandages or a medkit.".into(),
-            Goal::Bag => "Put a sleeping bag down here, to wake beside after a death.".into(),
+            Goal::Bag => "Put a sleeping bag down, to wake beside after a death: here, or on the team's floor if you live there (the team's code goes in at its cupboard first).".into(),
             Goal::Recover => "Walk back to the death backpack and take what it holds.".into(),
             Goal::Build => "Build the next part of the base from the pack; choose a plot if none.".into(),
             Goal::GoHome => "Walk home and in, shutting the doors.".into(),
@@ -552,8 +552,11 @@ pub struct TeamSense {
     /// the pack lacks (food, meds, a better tool).
     pub lives_there: bool,
     pub home_has_needs: bool,
-    /// A teammate gave the team's lock code.
+    /// A teammate gave the team's lock code; the team's cupboard has it on
+    /// its crew (the code entered there); its own bag is down in the base.
     pub code: bool,
+    pub on_cupboard: bool,
+    pub bag_there: bool,
     /// Whose invite waits, and the teammates, as a chat log names them.
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
@@ -605,6 +608,8 @@ impl TeamSense {
             "i_live_there": self.lives_there,
             "home_has_what_i_need": self.home_has_needs,
             "code_known": self.code,
+            "on_cupboard": self.on_cupboard,
+            "my_bag_there": self.bag_there,
         })
     }
 }
@@ -1219,6 +1224,8 @@ impl Summary {
             lives_there: false,
             home_has_needs: false,
             code: false,
+            on_cupboard: false,
+            bag_there: false,
             invite_from: Who {
                 id: 0,
                 name: protocol::Name::EMPTY,
