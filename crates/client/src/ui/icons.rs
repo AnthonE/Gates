@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 118] = [
+pub const STEMS: [&str; 130] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -113,6 +113,19 @@ pub const STEMS: [&str; 118] = [
     "rope",
     "tarp",
     "junk",
+    // Rust's components (2026-10-13), recycled for junk.
+    "metal_blade",
+    "empty_propane_tank",
+    "sewing_kit",
+    "metal_spring",
+    "sheet_metal",
+    "metal_pipe",
+    "road_signs",
+    "semi_automatic_body",
+    "smg_body",
+    "rifle_body",
+    "tech_trash",
+    "electric_fuse",
     "blueprint",
     "bat",
     "torch",

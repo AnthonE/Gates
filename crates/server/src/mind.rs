@@ -175,7 +175,7 @@ pub enum Goal {
     /// Cook the raw meat in the pack at a fire, putting one down if there
     /// is none near.
     Cook,
-    /// Take gears, rope and tarp apart at its recycler, putting it down if
+    /// Take salvaged parts apart at its recycler, putting it down if
     /// none stands near: junk, fragments and cloth.
     Recycle,
     /// Home is under attack or damaged: in through the doors, the fight
@@ -320,7 +320,7 @@ impl Goal {
             }
             Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
             Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
-            Goal::Recycle => "Recycle gears, rope and tarp for junk.".into(),
+            Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
         }

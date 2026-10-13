@@ -250,7 +250,9 @@ inputs = [
 # ratios "scaled onto our faucet (~0.85 junk/barrel against their ~10
 # scrap)" — is struck, because **the ~10 was never measured**; their
 # barrel pays ~2.42 and ours now pays 2.727, so no scaling is applied to
-# anything here. Their 20/100 HQM line has no equivalent
+# anything here. (Counting their barrel's other components it pays ~4.4,
+# and since 2026-10-13 ours does too, `loot.toml`: still one junk to one
+# scrap.) Their 20/100 HQM line has no equivalent
 # here (no HQM tier — `reference/RIPLIST.md` §3) and is refused, not
 # substituted; the frags line carries their frags line as written.
 # DECISIONS.md §open "bench ladder v0" is the knob row.

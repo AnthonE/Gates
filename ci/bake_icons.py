@@ -246,6 +246,22 @@ ITEMS = {
     "arrow_bone": "lorc/arrowhead",
     "arrow_fire": "lorc/flaming-arrow",
     "bone_frags": "lorc/crossed-bones",
+    # Rust's components (2026-10-13). Each is the plainest silhouette of the
+    # part: a gun for each body (the Thompson is Rust's own SMG), a stop sign
+    # for road signs, a cylinder for the propane tank, a circuit for tech
+    # trash.
+    "metal_blade": "lorc/plain-dagger",
+    "propane_tank": "delapouite/fire-extinguisher",
+    "sewing_kit": "delapouite/yarn",
+    "metal_spring": "delapouite/spring",
+    "sheet_metal": "delapouite/metal-plate",
+    "metal_pipe": "delapouite/pipes",
+    "road_signs": "delapouite/stop-sign",
+    "semi_body": "skoll/mp5",
+    "smg_body": "skoll/thompson-m1928",
+    "rifle_body": "skoll/ak47",
+    "tech_trash": "lorc/circuitry",
+    "fuse": "delapouite/electrical-resistance",
 }
 
 # The three vitals, bottom right, in every frame of play.
