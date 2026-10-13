@@ -31,13 +31,17 @@ pub const SPOT_M: f32 = 4.0;
 pub const SPOTS_PER_SIDE: i32 = (terrain::ISLAND_SIZE / SPOT_M) as i32;
 
 /// The share of steep spots that grow a ledge where the crag field is full;
-/// it falls to nothing where the field is empty, so a face carries crags and
-/// smooth slabs between them rather than an even brick pattern.
+/// it falls to [`CRAG_FIELD_FLOOR`] of that where the field is empty, so a
+/// face carries thick and thin crags rather than an even brick pattern.
 const LEDGE_SHARE: f32 = 0.9;
+/// The crag field's least, so no face is left a bare sheet of skin (operator,
+/// 2026-10-13, of a face with none: "maybe we can place some rock formation
+/// when this math hits?").
+const CRAG_FIELD_FLOOR: f32 = 0.45;
 /// The crag field's wavelength, metres.
 const CRAG_M: f32 = 22.0;
 /// Tallest visible downhill face, metres.
-pub const LEDGE_FACE_MAX_M: f32 = 3.2;
+pub const LEDGE_FACE_MAX_M: f32 = 4.5;
 /// Shortest visible downhill face, metres.
 pub const LEDGE_FACE_MIN_M: f32 = 0.8;
 /// How far a crag's foot is buried below the face, metres.
@@ -46,7 +50,7 @@ pub const LEDGE_BURY_M: f32 = 0.7;
 const TOOTH_REACH_M: f32 = 3.5;
 /// The share of spots under a lip that grow a tooth where the crag field is
 /// full.
-const TOOTH_SHARE: f32 = 0.6;
+const TOOTH_SHARE: f32 = 0.9;
 /// The gap kept between a tooth's uphill face and the lip, metres.
 const TOOTH_CLEAR_M: f32 = 0.25;
 /// Lowest and highest a tooth's head stands above the lip, metres.
@@ -200,8 +204,8 @@ fn turned((dx, dz): (f32, f32), (sa, ca): (f32, f32)) -> (f32, f32) {
     (dx * ca - dz * sa, dx * sa + dz * ca)
 }
 
-/// Where the crags gather, 0..1: smooth value noise at [`CRAG_M`], pushed
-/// toward its ends.
+/// Where the crags gather, [`CRAG_FIELD_FLOOR`]..1: smooth value noise at
+/// [`CRAG_M`], pushed toward its ends.
 fn crag_field(x: f32, z: f32, seed: u32) -> f32 {
     let (fx, fz) = (x / CRAG_M, z / CRAG_M);
     let (ix, iz) = (floor_i32(fx), floor_i32(fz));
@@ -217,7 +221,7 @@ fn crag_field(x: f32, z: f32, seed: u32) -> f32 {
     let a = c(0, 0) + (c(1, 0) - c(0, 0)) * ux;
     let b = c(0, 1) + (c(1, 1) - c(0, 1)) * ux;
     let v = a + (b - a) * uz;
-    ((v - 0.25) / 0.5).clamp(0.0, 1.0)
+    CRAG_FIELD_FLOOR + (1.0 - CRAG_FIELD_FLOOR) * ((v - 0.25) / 0.5).clamp(0.0, 1.0)
 }
 
 /// Whether nothing authored owns this ground: sites, the haven and the build
@@ -378,7 +382,7 @@ fn ledge(
 ) -> Crag {
     let h = |c: u32| h01(k, c + 16);
     // Most ledges are modest and a few are big, the way a crag breaks.
-    let face = LEDGE_FACE_MIN_M + (LEDGE_FACE_MAX_M - LEDGE_FACE_MIN_M) * h(3) * h(3);
+    let face = LEDGE_FACE_MIN_M + (LEDGE_FACE_MAX_M - LEDGE_FACE_MIN_M) * h(3).sqrt() * h(3);
     let hx = (1.4 + 3.6 * h(1) * h(1) + face * 0.5).min(LEDGE_HX_MAX);
     // Tops lean along the contour as bedding planes do, which raises one end
     // of the face by up to `|tx| hx`.

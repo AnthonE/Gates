@@ -243,12 +243,33 @@ pub fn cliff_relief(
 /// clutter on a ledge nobody can reach drew as flat dark paint in the rock,
 /// toothed along the triangles; the grass on a cliff is the skin's shelves
 /// (`cliff_skin.rs`).
-pub fn relief_splat(w: [u8; 4], relief: f32) -> [u8; 4] {
-    if relief != 0.0 {
-        [0, 0, 0, 255]
-    } else {
-        w
+///
+/// **Graded by the sim's slope at the vertex (`slope`, rise/run at the mesh's
+/// pitch), never switched.** Rock only where the relief moved a vertex was a
+/// binary weight, so the turf came back on the next vertex out and the edge
+/// of every relief zone drew that same toothed paint — dark green zigzags
+/// across the face, in its shadow (operator, 2026-10-13: "its all jagged").
+/// From the sim's climbing limit to where the relief starts, the turf gives
+/// way to rock; the relief needs every vertex round it past
+/// [`RELIEF_SLOPE_LO`], so wherever it moves one this is already bare rock.
+/// Walkable ground keeps its weights and the per-pixel veto decides it.
+pub fn relief_splat(w: [u8; 4], slope: f32) -> [u8; 4] {
+    let t = (slope - terrain::CLIFF_SLOPE_RATIO) / (RELIEF_SLOPE_LO - terrain::CLIFF_SLOPE_RATIO);
+    if t <= 0.0 {
+        return w;
     }
+    if t >= 1.0 {
+        return [0, 0, 0, 255];
+    }
+    let keep = 1.0 - t * t * (3.0 - 2.0 * t);
+    let k = |v: u8| (v as f32 * keep).round() as u8;
+    let (a, b, c) = (k(w[0]), k(w[1]), k(w[2]));
+    [
+        a,
+        b,
+        c,
+        255 - (a as u16 + b as u16 + c as u16).min(255) as u8,
+    ]
 }
 
 /// The relief at a vertex, from the sim's heights `h[j][i]` on the 5×5 stencil
@@ -1332,7 +1353,13 @@ pub fn heightfield(
             // grass/rock edge of teeth one vertex step wide.
             let mut w = relief_splat(
                 terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), 0.0),
-                r,
+                relief_slope(
+                    at(iz + B, ix + B + 1),
+                    at(iz + B, ix + B - 1),
+                    at(iz + B + 1, ix + B),
+                    at(iz + B - 1, ix + B),
+                    step,
+                ),
             );
             // …then the coast road worn into it, but only on a mesh fine
             // enough to draw one.

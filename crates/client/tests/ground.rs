@@ -154,7 +154,13 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             // weights and the shader decides the cliff per pixel.
             let mut w = terrain_mesh::relief_splat(
                 terrain::splat_from(y, terrain::moisture(seed, x, z), 0.0),
-                r,
+                terrain_mesh::relief_slope(
+                    g(i + 1, j),
+                    g(i - 1, j),
+                    g(i, j + 1),
+                    g(i, j - 1),
+                    step,
+                ),
             );
             // …and the road, on the same guard the shipped path applies it
             // under. `road_band` is the published law rather than a rebuild of
