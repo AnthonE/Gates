@@ -289,6 +289,10 @@ pub struct RockShape {
     /// The ground material's value multiplier at the rock's top
     /// ([`ROCK_VALUE`] for a weathered boulder).
     pub value: f32,
+    /// Close the bottom too. A seated rock's is buried and skipped, but a
+    /// cap or slab standing on another overhangs it, and from under it a
+    /// missing bottom is sky through the rock.
+    pub underside: bool,
 }
 
 impl RockShape {
@@ -309,6 +313,7 @@ impl RockShape {
             chisel: 0.0,
             min_seg: 2,
             value: ROCK_VALUE,
+            underside: b.on != ON_GROUND,
         }
     }
 
@@ -409,10 +414,20 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
     // The six faces as (normal axis, sign), each gridded along the other two
     // axes with the same counts as its neighbours, so the edges they share
     // are the same points and the rock is closed. The bottom is buried and
-    // skipped.
+    // skipped unless the rock stands on another (`underside`).
     let counts = [nx, ny, nz];
-    let faces: [(usize, f32); 5] = [(1, 1.0), (0, 1.0), (0, -1.0), (2, 1.0), (2, -1.0)];
+    let faces: [(usize, f32); 6] = [
+        (1, 1.0),
+        (0, 1.0),
+        (0, -1.0),
+        (2, 1.0),
+        (2, -1.0),
+        (1, -1.0),
+    ];
     for (axis, sg) in faces {
+        if axis == 1 && sg < 0.0 && !r.underside {
+            continue;
+        }
         let (a, b) = match axis {
             0 => (1, 2),
             1 => (0, 2),
@@ -553,6 +568,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
                 chisel: 0.0,
                 min_seg: 1,
                 value: ROCK_VALUE,
+                underside: false,
             },
         );
     }

@@ -162,8 +162,15 @@ pub const fn kind_of(slot: usize) -> u8 {
 /// and that is what the const block below and `tests/guard.rs` §A hold: the
 /// richest site keeps strictly the most, and the tier below it keeps some.
 /// The road shoulder keeps none and is the chain's zero.
+///
+/// **Only the pad keeps a pack** (operator, 2026-10-13: "every monument
+/// doesn't need wolves… we should have more roaming"). Rust's animals never
+/// spawn on a monument at all (`reference/SPAWN.md` §4, the `Monument`
+/// topology veto); only its big monuments are kept, by scientists. The pad
+/// is ours, the waystations are its gas stations, and their four wolves went
+/// back to the open ground.
 pub const HAVEN_GUARDS: usize = 4;
-pub const WAYSTATION_GUARDS: usize = 2;
+pub const WAYSTATION_GUARDS: usize = 0;
 
 /// Guards an inland site keeps. **Zero, and it follows from the prize.**
 ///
@@ -177,10 +184,8 @@ pub const INLAND_GUARDS: usize = 0;
 
 /// Roster slots spent guarding, across every site. A stated number and not
 /// a hashed draw, for `WOLF_SLOT_EVERY`'s reason: a gate counts it instead
-/// of sampling it. The pad's four plus [`terrain::WAYSTATIONS`] at
-/// [`WAYSTATION_GUARDS`] each is **8 of the 16 wolves**, leaving 8 hunting
-/// the island — two fewer than guards v0 left, which is the price of the
-/// gradient and is paid out of the free roster rather than out of the cap.
+/// of sampling it. The pad's four, and nothing at the waystations
+/// ([`WAYSTATION_GUARDS`]): every other wolf roams.
 ///
 /// **Summed per tier, not per site**, which is the difference
 /// `terrain::INLAND_SITES` turns on: the inland tier is in this sum at
@@ -202,11 +207,6 @@ const _: () = assert!(
     HAVEN_GUARDS > WAYSTATION_GUARDS,
     "the pad keeps no more guards than a waystation — the risk chain does \
      not rise where ci/haven_prize.mjs proves the prize chain does"
-);
-const _: () = assert!(
-    WAYSTATION_GUARDS > 0,
-    "a waystation keeps no guards, so the middle tier of the prize chain is \
-     free to rob and only the pad costs anything"
 );
 // The same sentence for the tier that pays nothing, in both directions: a
 // site with nothing to steal keeps nobody, and a site that starts paying
@@ -261,7 +261,12 @@ pub const fn guard_site_of(slot: usize) -> Option<usize> {
     if g < HAVEN_GUARDS {
         return Some(0);
     }
-    Some(1 + (g - HAVEN_GUARDS) / WAYSTATION_GUARDS)
+    // Unreached while the waystations keep nobody (`SITE_GUARDS` is the
+    // pad's alone), and kept for the day they do.
+    match (g - HAVEN_GUARDS).checked_div(WAYSTATION_GUARDS) {
+        Some(w) => Some(1 + w),
+        None => None,
+    }
 }
 
 /// The footprint a site presents — the same [`terrain::SiteFootprint`] the
@@ -1442,8 +1447,8 @@ pub fn hurt_slot(
 
 /// Free wolves den together, this many to a pack: the reference's wolves
 /// come in packs, and a pack is only a pack if its members live within
-/// call of each other (`MobDef::pack_cm`). 8 free wolves are packs of
-/// 3, 3 and 2.
+/// call of each other (`MobDef::pack_cm`). 12 free wolves are four packs
+/// of 3 (the reference spawns none bigger than 4).
 pub const PACK_SIZE: usize = 3;
 
 /// A pack-mate's den is drawn this far around its leader's home.
@@ -1504,6 +1509,7 @@ fn den_of(
             || terrain::in_waystation(haven, x, z)
             || crate::town::covers(&haven.town, x, z, 20.0)
             || crate::monument::covers(&haven.ziggurat, x, z, 20.0)
+            || crate::landmark::covers(&haven.marks, x, z, 20.0)
         {
             continue;
         }
@@ -1555,11 +1561,14 @@ fn home_of(seed: u64, haven: &Haven, slot: usize, tick: u64, def: &MobDef) -> Op
         // The two authored sites are the map's meeting places (TERRAIN.md
         // §8). A pig standing in the haven's loot pad on every wipe is a
         // free kill on a schedule, which is the opposite of what a
-        // destination is for.
+        // destination is for. The landmarks too: Rust's animal populations
+        // all exclude its `Monument` topology, so nothing dens in one and
+        // a wolf met there is passing through.
         if terrain::in_haven(haven, x, z)
             || terrain::in_waystation(haven, x, z)
             || crate::town::covers(&haven.town, x, z, 20.0)
             || crate::monument::covers(&haven.ziggurat, x, z, 20.0)
+            || crate::landmark::covers(&haven.marks, x, z, 20.0)
         {
             continue;
         }
