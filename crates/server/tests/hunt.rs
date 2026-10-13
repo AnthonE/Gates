@@ -241,7 +241,9 @@ fn a_wolf_kills_a_player_who_never_reacts() {
     let c = content::Content::load_dir(&dir).expect("shipped content loads");
     let stats = ShardStats::default();
     let mut core = ShardCore::new(20260731);
-    core.world.mob = c.bake_mobs().expect("animals bake");
+    // The wolf as `mobs.toml` writes it: act II's, fel tier B. The act-I wolf
+    // is softer on purpose (`an_act_one_wolf_lets_a_still_player_be`).
+    core.world.mob = held_in_tier(&c, 1);
     core.world.combat = c.bake_combat().expect("weapons bake");
     core.world.spawn_kit = c.bake_spawn_kit().expect("the kit bakes");
     core.world.backpack = c.bake_backpack().expect("the bag ladder bakes");
@@ -374,8 +376,9 @@ fn the_hour_decides_whether_the_wolf_finds_you_at_all() {
         })
         .expect("night must be longer than the window");
 
-    let by_day = stand_off_at(day, WINDOW_TICKS);
-    let by_night = stand_off_at(night, WINDOW_TICKS);
+    // Fel tier B: the radii `mobs.toml` writes, 30 m by day and 15 by night.
+    let by_day = stand_off_at(day, WINDOW_TICKS, 1);
+    let by_night = stand_off_at(night, WINDOW_TICKS, 1);
 
     assert!(
         by_day.noticed,
@@ -409,6 +412,41 @@ fn the_hour_decides_whether_the_wolf_finds_you_at_all() {
     );
 }
 
+/// **On wipe day the same wolf leaves the same player alone.** Operator,
+/// 2026-10-13: *"make animals weak early on. and maybe less agressive"* —
+/// fel tier A halves every notice radius (`content/mobs.toml`
+/// `[[fel_tier]]`), so the noon wolf that hunts from 30 m in act II notices
+/// from 15 m in act I, and 25 m is outside it. The window and its margin are
+/// the night test's, for the night test's reason.
+#[test]
+fn an_act_one_wolf_lets_a_still_player_be() {
+    const WINDOW_TICKS: u32 = 5 * TICK_HZ;
+    let day = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| !sim_core::world::is_night(t))
+        .expect("the cycle has a day");
+    let act_one = stand_off_at(day, WINDOW_TICKS, 0);
+    assert!(
+        !act_one.noticed,
+        "an act-I wolf notices from 15 m by day and must not have roused at 25 m: \
+         closest approach {:.1} m",
+        act_one.closest_m
+    );
+    assert!(
+        act_one.closest_m > 15.0,
+        "the act-I wolf ambled within {:.1} m, inside its radius, so this window no \
+         longer isolates the tier",
+        act_one.closest_m
+    );
+}
+
+/// Shipped animals with the island held in fel tier `tier` whatever its
+/// works say: these worlds bake no works, so left alone they read as act I.
+fn held_in_tier(c: &content::Content, tier: usize) -> sim_core::mob::MobContent {
+    let mut mc = c.bake_mobs().expect("animals bake");
+    mc.tiers = [mc.tiers[tier]; sim_core::mob::FEL_TIERS];
+    mc
+}
+
 struct StandOff {
     /// Did the wolf ever rouse inside the window?
     noticed: bool,
@@ -418,12 +456,12 @@ struct StandOff {
 
 /// One stand-still at 25 m from the island's only wolf, starting at `hour`
 /// and lasting `ticks`. The player sends idle frames and never moves.
-fn stand_off_at(hour: u64, ticks: u32) -> StandOff {
+fn stand_off_at(hour: u64, ticks: u32, tier: usize) -> StandOff {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let c = content::Content::load_dir(&dir).expect("shipped content loads");
     let stats = ShardStats::default();
     let mut core = ShardCore::new(20260731);
-    core.world.mob = c.bake_mobs().expect("animals bake");
+    core.world.mob = held_in_tier(&c, tier);
     core.world.combat = c.bake_combat().expect("weapons bake");
     core.world.spawn_kit = c.bake_spawn_kit().expect("the kit bakes");
     core.world.backpack = c.bake_backpack().expect("the bag ladder bakes");

@@ -3981,9 +3981,38 @@ fn every_consumable_the_content_ships_is_reachable() {
 
 /// The mob validator refuses what it claims to. Each of these is a content
 /// bug that would read as a bug in the sim if it booted.
+/// The fel tiers bake light to heavy, and the light one is the soft one the
+/// operator asked for (2026-10-13): weaker, gentler, slower to notice.
+#[test]
+fn fel_tiers_bake_light_to_heavy() {
+    let c = build(&sources()).expect("shipped content loads");
+    let mc = c.bake_mobs().expect("shipped animals must bake");
+    let [a, b, h] = mc.tiers;
+    assert!(a.hp_pct < b.hp_pct && b.hp_pct < h.hp_pct);
+    assert!(a.attack_pct < b.attack_pct && b.attack_pct < h.attack_pct);
+    assert!(a.notice_pct < b.notice_pct && b.notice_pct <= h.notice_pct);
+    assert_eq!(
+        b,
+        sim_core::mob::FelTier::SAME,
+        "act II is the rows as written"
+    );
+    let wolf = mc.at_tier(0).def(sim_core::mob::MOB_WOLF);
+    assert!(
+        wolf.brave_pct > 0,
+        "an act-I wolf breaks off when it is hurt"
+    );
+    assert!(wolf.spook_cm < mc.def(sim_core::mob::MOB_WOLF).spook_cm);
+}
+
 #[test]
 fn mob_refusals() {
     refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
+    refuses(
+        "mobs.toml",
+        "notice_pct = 50",
+        "notice_pct = 5",
+        "outside 10..=400",
+    );
     refuses(
         "mobs.toml",
         "walk_pct = 50",

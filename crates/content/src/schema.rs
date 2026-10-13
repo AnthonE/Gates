@@ -933,6 +933,21 @@ pub struct TurretGun {
     pub ammo: String,
 }
 
+/// One fel tier (`mobs.toml` `[[fel_tier]]`, `ARC.md` §2): how far every
+/// species moves while the island is in it, in per cent of the species' own
+/// row. Exactly three rows when any are given, light to heavy.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FelTier {
+    pub hp_pct: u32,
+    pub attack_pct: u32,
+    /// Every notice radius: day and night sight, and each kind of hearing.
+    pub notice_pct: u32,
+    /// A fighter's courage floor, per cent of max hp (`brave_pct`, raised
+    /// to this, never lowered).
+    pub brave_min_pct: u32,
+}
+
 /// A site guard's own loot (`mobs.toml` `[guard]`): stacks its carcass
 /// holds on top of its species' `drops`. A guard is a wolf slot holding a
 /// site (`mob::guard_site_of`), so this is a tier, not a species.

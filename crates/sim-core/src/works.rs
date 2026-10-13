@@ -411,6 +411,45 @@ impl Works {
         }
         act
     }
+
+    /// The island's fel tier ([`fel_tier_of`]).
+    pub fn fel_tier(&self, wc: &WorksContent) -> u8 {
+        fel_tier_of(
+            wc.defs
+                .iter()
+                .zip(self.w.iter())
+                .take(wc.count as usize)
+                .map(|(d, w)| (d.act, w.state)),
+        )
+    }
+}
+
+/// The fel tier the island's animals are in (`mob::FelTier`), off each
+/// work's `(act, state)`: 0 in act I, 1 once an act-II work opens, 2 once
+/// every act-II work has been lit or the island reaches act III. Every work
+/// lights itself at its fallback hour, so a shard nobody feeds still climbs.
+///
+/// **One function for both sides.** The sim scales the roster by it and
+/// the client draws the same tier off the arc it was sent
+/// (`render/beasts.rs`), so the animal that bites is the animal on screen.
+pub fn fel_tier_of(works: impl Iterator<Item = (u8, u8)>) -> u8 {
+    let mut act = 1;
+    let mut act2 = false;
+    let mut all_lit = true;
+    for (a, state) in works {
+        if state != WORK_SEALED {
+            act = act.max(a);
+        }
+        if a == 2 {
+            act2 = true;
+            all_lit &= state == WORK_LIT;
+        }
+    }
+    match act {
+        0 | 1 => 0,
+        2 if !(act2 && all_lit) => 1,
+        _ => 2,
+    }
 }
 
 /// Whether unlock code `u` is held. `NO_UNLOCK` always is.

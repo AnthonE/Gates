@@ -295,6 +295,16 @@ pub fn hash(c: &Content) -> u64 {
         h.stacks(&m.drops);
     }
 
+    // The fel tiers move every row above while they hold, so they are hashed
+    // with them: a balance edit, which a save survives (`store::match_content`).
+    h.s("fel_tier");
+    for t in &c.fel_tiers {
+        h.u(t.hp_pct);
+        h.u(t.attack_pct);
+        h.u(t.notice_pct);
+        h.u(t.brave_min_pct);
+    }
+
     // **The heli is not hashed either**, for the skins' reason below: no
     // saved stack or record indexes through it, so tuning it must not
     // refuse a save the way a moved item row has to.

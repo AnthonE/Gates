@@ -1694,6 +1694,51 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The fel tiers: three or none, each a sane fraction, and no tier may
+    // shrink a fighter's notice radius under its own bite (nothing bites
+    // what it has not noticed — the band below, held in every tier).
+    if !c.fel_tiers.is_empty() {
+        if c.fel_tiers.len() != sim_core::mob::FEL_TIERS {
+            return Err(format!(
+                "[[fel_tier]]: {} rows, and a tier table is exactly {} (light, medium, heavy)",
+                c.fel_tiers.len(),
+                sim_core::mob::FEL_TIERS
+            ));
+        }
+        for (i, t) in c.fel_tiers.iter().enumerate() {
+            for (v, what) in [
+                (t.hp_pct, "hp_pct"),
+                (t.attack_pct, "attack_pct"),
+                (t.notice_pct, "notice_pct"),
+            ] {
+                if !(10..=400).contains(&v) {
+                    return Err(format!("[[fel_tier]] {i}: {what} {v} is outside 10..=400"));
+                }
+            }
+            if t.brave_min_pct > 100 {
+                return Err(format!(
+                    "[[fel_tier]] {i}: a courage floor of {}% is an animal that never fights",
+                    t.brave_min_pct
+                ));
+            }
+            // A row with a zero radius is the species check's to refuse, in
+            // its own words ("scenery"); this band is about the tier.
+            for m in c
+                .mobs
+                .iter()
+                .filter(|m| m.attack > 0 && m.spook_m.min(m.night_spook_m) > 0)
+            {
+                let narrowest = m.spook_m.min(m.night_spook_m) * t.notice_pct;
+                if narrowest < m.attack_range_m * 100 {
+                    return Err(format!(
+                        "[[fel_tier]] {i}: mob `{}` would notice at {narrowest}cm and bite at {}m",
+                        m.id, m.attack_range_m
+                    ));
+                }
+            }
+        }
+    }
+
     // Skins: appearance rows only (the schema already can't carry stats);
     // covered items must exist, prices are nonzero bare-ticker amounts.
     if c.skins.len() > sim_core::limits::MAX_SKINS {
