@@ -47,7 +47,7 @@
     --row-hi: #47433c;
     --accent: #3982ba;
     --accent-hi: #4a94cc;
-    --mark: #cd3e2d;
+    --mark: #86b834;
     --rule: rgba(191, 184, 158, .20);
     --rule-hi: rgba(191, 184, 158, .34);
     --title: #edebe6;
@@ -111,8 +111,10 @@
   .top { display: flex; align-items: center; justify-content: space-between; gap: 16px;
          padding: clamp(18px, 3.2vh, 30px) var(--gut) clamp(12px, 2.4vh, 22px); }
   .wordmark { display: inline-flex; align-items: center; gap: 13px; text-decoration: none; }
-  .wordmark .mark { width: 38px; height: 38px; background: var(--mark); flex: none;
-                    box-shadow: inset 0 0 0 2px rgba(0,0,0,.18), 0 2px 14px rgba(205,62,45,.28); }
+  /* The sigil, the tab's own icon: favicon.png is already in the cache. */
+  .wordmark .mark { width: 44px; height: 44px; flex: none; background: url("favicon.png") center / cover;
+                    background-image: image-set("favicon.png" 1x, "apple-touch-icon.png" 2x);
+                    box-shadow: 0 2px 14px rgba(134,184,52,.28); }
   .wordmark .word { font: 700 44px/1 var(--sans); color: var(--title); letter-spacing: .05em;
                     text-shadow: 0 2px 18px rgba(0,0,0,.6); }
   .wordmark .on { display: block; font: 700 11px/1 var(--sans); letter-spacing: .16em;
@@ -229,6 +231,9 @@
   .srv[aria-checked="true"] .dot { background: var(--accent-hi); border-color: var(--accent-hi); box-shadow: 0 0 8px rgba(74,148,204,.8); }
   .srv .nm, .srv .sub { display: block; }
   .srv .nm { font: 700 16px/1.2 var(--sans); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srv .official { display: inline-flex; align-items: center; gap: 5px; margin-left: 9px; vertical-align: 2px;
+                   font: 700 11px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--mark); }
+  .srv .official::before { content: ""; width: 14px; height: 14px; background: url("favicon.png") center / cover; }
   .srv .sub { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* who is on it, and when it wipes: "2 players · 1 agent · wipes in 3d" */
   .srv .pop { display: block; margin-top: 4px; font: 700 13px/1.2 var(--sans); color: var(--text);
@@ -345,7 +350,7 @@
     .stage { padding: 22px 4px 8px; }
     .hero-title { font-size: 26px; }
     .wordmark .word { font-size: 34px; }
-    .wordmark .mark { width: 30px; height: 30px; }
+    .wordmark .mark { width: 34px; height: 34px; }
     .acct .lines { display: none; }
     .foot { flex-wrap: wrap; }
   }
@@ -364,7 +369,7 @@
   body.embed #menu { height: 100vh; height: 100dvh; justify-content: center; }
   body.embed .top { justify-content: center; padding: 0 16px 14px; }
   body.embed .wordmark .word { font-size: 34px; }
-  body.embed .wordmark .mark { width: 28px; height: 28px; }
+  body.embed .wordmark .mark { width: 32px; height: 32px; }
   body.embed .body { flex: none; justify-content: center; align-items: center; padding: 0 16px; }
   body.embed .pane-set { flex: none; justify-content: center; align-items: center; }
   body.embed .panel { width: min(360px, 100%); flex: none; overflow: visible; gap: 12px; padding: 18px;

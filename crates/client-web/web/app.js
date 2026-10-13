@@ -288,6 +288,16 @@ function freshReload(r) {
   location.replace(u.toString());
 }
 
+/* Ours: the host is under elopros.com. Keyed on the address, never on
+   anything a list says about a row, so a community shard cannot wear it
+   (`client::ui::servers::is_official_addr` is the same rule). */
+function official(r) {
+  const at = String(r.addr || "").lastIndexOf(":");
+  if (at < 1 || r.addr.startsWith("[")) return false;
+  const host = r.addr.slice(0, at).toLowerCase().replace(/\.+$/, "");
+  return host === "elopros.com" || (host.endsWith(".elopros.com") && host.length > ".elopros.com".length);
+}
+
 const current = () => rows.find((r) => r.id === picked) || rows[0];
 
 function pick(id) {
@@ -307,6 +317,12 @@ function rowEl(r, onGo, kind) {
   const nm = document.createElement("span");
   nm.className = "nm";
   nm.textContent = r.name;
+  if (official(r)) {
+    const o = document.createElement("span");
+    o.className = "official";
+    o.textContent = "Official";
+    nm.append(o);
+  }
   const sub = document.createElement("span");
   sub.className = "sub";
   sub.textContent = [r.addr, r.map].filter(Boolean).join("  ·  ");

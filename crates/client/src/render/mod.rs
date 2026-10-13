@@ -883,6 +883,10 @@ impl Plugin for GatesRenderPlugin {
         // not there yet draws NOTHING — not a fallback glyph. `ui::build_fonts`
         // has the whole argument for compiling them in.
         ui::build_fonts(app);
+        // The wordmark's sigil and the server list's stars, beside the
+        // faces: the menu is the first screen after the splash.
+        #[cfg(not(target_arch = "wasm32"))]
+        ui::build_marks(app);
 
         // ---- the desktop front end -----------------------------------
         // The splash, the menu and the connect screen, in one guarded call

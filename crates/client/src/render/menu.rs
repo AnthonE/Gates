@@ -1078,6 +1078,29 @@ fn details(pane: &mut ChildSpawnerCommands, listing: &Listing, index: usize, now
     });
 }
 
+/// OFFICIAL beside a shard we run ([`Listing::official`]): the sigil, then
+/// the word in the mark's green.
+fn official_tag(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(5.0),
+            ..default()
+        })
+        .with_children(|t| {
+            t.spawn((
+                ImageNode::new(ui::SIGIL),
+                Node {
+                    width: Val::Px(14.0),
+                    height: Val::Px(14.0),
+                    ..default()
+                },
+            ));
+            t.spawn(ui::strong("OFFICIAL", 11.0, ui::MARK));
+        });
+}
+
 /// The star's hit box. Wide enough to click without aiming, and the header
 /// reserves the same width so the two agree.
 const STAR_W: f32 = 26.0;
@@ -1130,10 +1153,14 @@ fn row(
                     // A filled star and a hollow one, not a colour change on
                     // one glyph: the two must be distinguishable in a
                     // screenshot and at a glance, and colour alone is neither.
-                    s.spawn(ui::strong(
-                        if starred { "\u{2605}" } else { "\u{2606}" },
-                        16.0,
-                        if starred { ui::ACCENT } else { ui::FAINT },
+                    s.spawn((
+                        ImageNode::new(if starred { ui::STAR_ON } else { ui::STAR_OFF })
+                            .with_color(if starred { ui::ACCENT } else { ui::FAINT }),
+                        Node {
+                            width: Val::Px(16.0),
+                            height: Val::Px(16.0),
+                            ..default()
+                        },
                     ));
                 });
             }
@@ -1153,12 +1180,15 @@ fn row(
                 })
                 .with_children(|n| {
                     n.spawn(ui::strong(listing.name.clone(), 18.0, ui::TEXT));
+                    if listing.official() {
+                        official_tag(n);
+                    }
                     // Said before the click: this build would be refused at
                     // the handshake (`REFUSE_VERSION`). Which side moves
                     // decides the words: a newer shard wants a newer game, an
                     // older one is mid-release and will catch up.
                     if listing.needs_update() {
-                        n.spawn(ui::strong("UPDATE NEEDED", 11.0, ui::MARK));
+                        n.spawn(ui::strong("UPDATE NEEDED", 11.0, super::panels::TEXT_SHORT));
                     } else if listing.server_updating() {
                         n.spawn(ui::strong("SERVER UPDATING", 11.0, ui::DIM));
                     }

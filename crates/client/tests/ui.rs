@@ -3377,6 +3377,30 @@ use client::ui::boot::{Boot, Next};
 use client::ui::servers::{self, Cat as SCat, Favourites, Filter, Listing, MAX_FAVOURITES};
 use client::ui::MAX_QUERY_CHARS;
 
+#[test]
+fn only_hosts_under_the_official_domain_are_official() {
+    for addr in [
+        "game.elopros.com:61234",
+        "GAME.Elopros.com:61234",
+        "game.elopros.com.:61234",
+        "elopros.com:4433",
+        "eu.game.elopros.com:4433",
+    ] {
+        assert!(servers::is_official_addr(addr), "{addr}");
+    }
+    for addr in [
+        "evilelopros.com:61234",
+        "elopros.com.evil.net:61234",
+        ".elopros.com:61234",
+        "game.elopros.com",
+        "127.0.0.1:4433",
+        "[::1]:4433",
+        "",
+    ] {
+        assert!(!servers::is_official_addr(addr), "{addr}");
+    }
+}
+
 fn shard(name: &str, players: Option<u32>) -> Listing {
     Listing {
         id: format!("id-{name}"),

@@ -117,6 +117,25 @@ pub struct Listing {
     pub direct: bool,
 }
 
+/// The domain official shards are dialled under.
+pub const OFFICIAL_DOMAIN: &str = "elopros.com";
+
+/// Is a `host:port` one of ours? Keyed on the host, never on anything a list
+/// says about itself: a row can name any shard it likes, but a host under
+/// [`OFFICIAL_DOMAIN`] is our DNS, so a community shard cannot wear the flag.
+pub fn is_official_addr(addr: &str) -> bool {
+    let host = match addr.rsplit_once(':') {
+        // `[::1]:4433` and other bracketed literals are never ours.
+        Some((h, _)) if !h.starts_with('[') => h,
+        _ => return false,
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == OFFICIAL_DOMAIN
+        || host
+            .strip_suffix(OFFICIAL_DOMAIN)
+            .is_some_and(|sub| sub.ends_with('.') && sub.len() > 1)
+}
+
 impl Listing {
     /// The row that is always there: the address this binary was started
     /// with. See [`Listing::direct`] for why nothing may filter it away.
@@ -253,6 +272,11 @@ impl Listing {
             },
         ));
         out
+    }
+
+    /// Run by us: see [`is_official_addr`].
+    pub fn official(&self) -> bool {
+        is_official_addr(&self.addr)
     }
 
     /// The shard speaks a NEWER wire than this build, so a join would be
