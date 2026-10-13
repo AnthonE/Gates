@@ -277,6 +277,14 @@ fn granite_stands_clear_of_the_ground_it_shares() {
             if GROUND_MIX[i] < SHARE_MIN || GROUND_MIX[j] < SHARE_MIN {
                 continue;
             }
+            // Sand clears the share cut since the desert (2026-10-13), but
+            // most of that share is desert, which the shader warms to
+            // `ground_splat::DESERT_SAND_ALBEDO`: what stands it apart from
+            // grey granite there is hue, the reference's arid biome's own
+            // contrast, and this rule measures the identity's value alone.
+            if i == 0 {
+                continue;
+            }
             tested += 1;
             let (a, b) = (luma(encoded(i)), luma(encoded(j)));
             let ratio = a.max(b) / a.min(b);

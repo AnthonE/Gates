@@ -61,7 +61,12 @@ pub const PINE_TRUNK_H: f32 = 5.7;
 /// alone; the sim blocks a tree to the broadleaf's 11 m apex
 /// (`OCCUPANT_TOP_M[Tree]`, held to the shortest drawn tree by
 /// `tests/tree.rs`), so the pine's top 3 m are drawn and not blocked.
-pub const PINE_H: f32 = 14.0;
+///
+/// **42 m since 2026-10-13, from 14** (operator: *"our trees need to be like
+/// triple the height"*). Rust's pines tower over a player; ours read as
+/// shrubs from any height. The crown widened with it but not threefold — a
+/// real pine is a spire — on the same slim trunk, the sim's cylinder.
+pub const PINE_H: f32 = 42.0;
 /// How far a whorl vertex may be pulled IN toward its axis, as a fraction of
 /// that whorl's radius. It only ever pulls in, never out, which is what keeps
 /// the canopy inside `PINE_MAX_R`.
@@ -77,7 +82,11 @@ pub const PINE_DROOP: f32 = 0.18;
 /// broadleaf's since forest scale v0**: a 14 m pine at the old 1.7 m would be
 /// a pole, and lifting this to the island-wide ceiling moves nothing in the
 /// sim because the broadleaf already held `TREE_MAX_R` at 2.9.
-pub const PINE_MAX_R: f32 = 2.9;
+///
+/// **5.0 since the 42 m tree** (2026-10-13). What a fresh spawn can touch is
+/// the trunk — the lowest limbs are 8 m up — so the sim's spawn clearance is
+/// held against the reach below head height now (`tests/tree.rs`).
+pub const PINE_MAX_R: f32 = 6.2;
 /// Odd on purpose: an even count puts a vertex diametrically opposite every
 /// other one, so the ragged pull reads as a squashed circle, not a whorl.
 const PINE_SEGMENTS: usize = 9;
@@ -221,6 +230,8 @@ pub struct PropAssets {
     juniper_leaves: Vec<Handle<Mesh>>,
     juniper_wood: Vec<Handle<Mesh>>,
     dead_wood: Vec<Handle<Mesh>>,
+    /// The desert's saguaros (`plants::cactus`), a pool like the scrub's.
+    cactus: Vec<Handle<Mesh>>,
     flower_heads: Vec<Handle<Mesh>>,
     flower_base: Vec<Handle<Mesh>>,
     /// The shrub's and the berry bush's leaf material: alpha-MASKED, wearing
@@ -2070,6 +2081,9 @@ pub fn assets(
         dead_wood: (0..PLANT_POOL as u32)
             .map(|v| meshes.add(plants::dead_scrub(v)))
             .collect(),
+        cactus: (0..PLANT_POOL as u32)
+            .map(|v| meshes.add(plants::cactus(v)))
+            .collect(),
         flower_heads: (0..plants::FLOWER_PALETTES as u32)
             .flat_map(|p| (0..PLANT_POOL as u32).map(move |v| (v, p)))
             .map(|(v, p)| meshes.add(plants::wildflowers(v, p).0))
@@ -2518,10 +2532,19 @@ pub fn stream(
 /// the asset directory happened to hold and a missing `.glb` must not be a
 /// crash.
 pub(super) fn species_variant(slot: &terrain::Slot, pool: usize) -> usize {
+    species_variant_in(slot, pool, terrain::SLOT_SPECIES)
+}
+
+/// [`species_variant`] over `groups` species. A tree pool groups by every
+/// species the sim can hand a tree (`SLOT_SPECIES`, the palm included); every
+/// other pool by the painted two (`PAINTED_SPECIES`), since only a tree is
+/// ever a palm — grouping a rock pool in three would split its silhouettes
+/// for a species no rock is.
+pub(super) fn species_variant_in(slot: &terrain::Slot, pool: usize, groups: u8) -> usize {
     if pool == 0 {
         return 0;
     }
-    let groups = (terrain::SLOT_SPECIES as usize).min(pool);
+    let groups = (groups as usize).min(pool);
     let sp = (slot.species as usize).min(groups - 1);
     let per = pool / groups;
     let lo = sp * per;
@@ -2694,7 +2717,7 @@ pub fn spawn_slot(
             if a.rocks.is_empty() {
                 (a.boulder.clone(), a.rock[tint].clone())
             } else {
-                variant = species_variant(slot, a.rocks.len());
+                variant = species_variant_in(slot, a.rocks.len(), terrain::PAINTED_SPECIES);
                 a.rocks[variant].clone()
             }
         }
@@ -3415,6 +3438,7 @@ impl PropAssets {
             (Occupant::Shrub, Scenery::DeadScrub) => {
                 plant(&self.dead_wood[v], &self.plant_wood, None)
             }
+            (Occupant::Shrub, Scenery::Cactus) => plant(&self.cactus[v], &self.plant_wood, None),
             (Occupant::Shrub, Scenery::Flowers) => {
                 let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
                     % plants::FLOWER_PALETTES;

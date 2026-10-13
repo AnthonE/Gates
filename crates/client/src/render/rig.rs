@@ -118,9 +118,9 @@ pub const RIG_SUN_ELEVATION: f32 = 0.61;
 /// 75 horizontal to ~46.7 vertical at 16:9 — would have silently narrowed the
 /// frame and broken agreement with a registered knob.
 pub const FOV_DEG: f32 = 75.0;
-/// Far plane, metres. The island is 4,096 m across and the far mesh draws all
-/// of it; a ridge top sees most of the way across.
-pub const FAR_M: f32 = 4000.0;
+/// Far plane, metres: the island's edge length, so a ridge top sees across
+/// all of it and a bigger island moves the plane with it.
+pub const FAR_M: f32 = sim_core::terrain::ISLAND_SIZE;
 
 /// How much thicker than earthlike this island's air is. PROPOSED — it is a
 /// number this path invented, so it registers in `DECISIONS.md` §open the day
@@ -137,7 +137,12 @@ pub const FAR_M: f32 = 4000.0;
 /// saturation climbing 31% → 40%: midday turned into a hazy sunset. Air
 /// density is not a sky knob. It is a member of the coupled set, and 1.6 is
 /// what the whole set tolerates.
-pub const AIR_DENSITY: f32 = 1.6;
+///
+/// **1.2 since 2026-10-13** (operator: *"make our game look more like Rust"*).
+/// At 1.6 a frame from any height read as a pale, milky sky over a grey sea;
+/// the reference game's air is clear, its sky a deep blue and its sea the
+/// blue the sky gives it. Thinner air is also more sun on the ground.
+pub const AIR_DENSITY: f32 = 1.2;
 
 /// The island's air: earthlike, thickened by [`AIR_DENSITY`]. One function
 /// because two consumers read it — the desktop's atmosphere (`setup`) and the

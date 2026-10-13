@@ -29,15 +29,30 @@ use sim_core::terrain::{self, Haven, ISLAND_SIZE, MINOR_SITES, SEA_LEVEL};
 pub const GRID_M: f32 = 256.0;
 /// Grid squares per side.
 pub const GRID_COLS: usize = (ISLAND_SIZE / GRID_M) as usize;
-/// Column letters, west to east — one per column, asserted rather than
-/// trusted.
-pub const GRID_LETTERS: &str = "ABCDEFGHIJKLMNOP";
+
+/// A column's letters, west to east: `A`…`Z`, then `AA`, `AB`… as the
+/// reference game labels its bigger maps. Computed rather than a fixed string
+/// so a bigger island gets more columns instead of an index past the end.
+pub fn grid_letters(col: usize) -> String {
+    let mut n = col + 1;
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
 
 /// How deep the water ramp runs before it is all floor colour, metres.
 pub const DEEP_M: f32 = 12.0;
 
 /// Beach and dune.
 pub const SAND: [f32; 3] = [203.0, 185.0, 148.0];
+/// The desert's sand, warmer: what [`SAND`] goes to as the ground dries
+/// (`terrain::aridity`), as the world's own sand does (`ground_splat`).
+pub const DESERT: [f32; 3] = [214.0, 170.0, 104.0];
 /// Open meadow.
 pub const GRASS: [f32; 3] = [109.0, 140.0, 74.0];
 /// Forest litter: the same green, darker — how the reference separates wooded
@@ -191,8 +206,8 @@ pub fn grid_label(x: f32, z: f32) -> String {
 /// horizontal axis, and numbered along the vertical axis"*) and therefore
 /// the one a player arriving from it can already read.
 pub fn grid_cell_label(col: usize, row: usize) -> String {
-    let letter = GRID_LETTERS.as_bytes()[col.min(GRID_COLS - 1)] as char;
-    format!("{letter}{}", row.min(GRID_COLS - 1) + 1)
+    let letters = grid_letters(col.min(GRID_COLS - 1));
+    format!("{letters}{}", row.min(GRID_COLS - 1) + 1)
 }
 
 /// Where a world position lands on a `size`-pixel map, in pixels.
@@ -580,8 +595,10 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                 // own word for it — dividing by the actual sum keeps the blend
                 // a true average whatever the rounding did.
                 let sum = (w[0] as f32 + w[1] as f32 + w[2] as f32 + w[3] as f32).max(1.0);
+                let arid = terrain::aridity(seed, x, z);
+                let sand = |c: usize| SAND[c] + (DESERT[c] - SAND[c]) * arid;
                 let mix = |c: usize| {
-                    (SAND[c] * w[0] as f32
+                    (sand(c) * w[0] as f32
                         + GRASS[c] * w[1] as f32
                         + LITTER[c] * w[2] as f32
                         + ROCK[c] * w[3] as f32)
@@ -1454,9 +1471,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_is_one_letter_per_column() {
-        assert_eq!(GRID_LETTERS.len(), GRID_COLS);
+    fn there_is_one_label_per_column() {
         assert_eq!(GRID_COLS, 16);
+        assert_eq!(grid_letters(0), "A");
+        assert_eq!(grid_letters(15), "P");
+        // A bigger island keeps labelling rather than running off the end.
+        assert_eq!(grid_letters(25), "Z");
+        assert_eq!(grid_letters(26), "AA");
+        assert_eq!(grid_letters(27), "AB");
+        assert_eq!(grid_letters(52), "BA");
     }
 
     /// The identity `SHADE_FLOOR` is derived from, asserted rather than
@@ -1705,10 +1728,15 @@ mod tests {
             site: SITE_TOWN,
             ..Spot::default()
         };
-        let nowhere = Spot {
-            site: sim_core::spot::SITE_LANDMARK0, // a mast: this seed has none
-            ..Spot::default()
-        };
+        // A landmark kind this seed has none of, found rather than named:
+        // which kinds stand where follows the ground they stand on.
+        let nowhere = (sim_core::spot::SITE_LANDMARK0..=sim_core::spot::SITE_MAX)
+            .map(|site| Spot {
+                site,
+                ..Spot::default()
+            })
+            .find(|p| sim_core::spot::world(&haven, p).is_none())
+            .expect("this seed lacks at least one landmark kind");
         let mut arc = ArcMarks::default();
         arc.add_work(at_town, "THE CRUCIBLE");
         arc.add_work(nowhere, "THE LOST");

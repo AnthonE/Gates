@@ -256,6 +256,7 @@ fn main() {
         // Controls: what ships today.
         edit("pine-shipped", 0, |_| {}),
         edit("leaf-shipped", 1, |_| {}),
+        edit("palm-shipped", 2, |_| {}),
         // The broadleaf as the crate's `Deciduous` type, the block that
         // shipped until 2026-10-05: straight off the generator its upper
         // crown held a fifth of the lower's cards (the stacked pom-poms), and

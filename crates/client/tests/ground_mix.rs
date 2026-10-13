@@ -142,7 +142,7 @@ fn the_ground_mix_is_the_whole_island() {
 /// **"Granite never reaches the ground at this seed at all" is false**, and
 /// two files said it in the present tense.
 ///
-/// It is the third identity by area — eight times sand's share — which is why
+/// It is a real share of the island — more than sand's until the desert — which is why
 /// its albedo is no longer the free parameter `GROUND_ALBEDO`'s doc treated it
 /// as. The floor is 0.05 rather than the measured 0.09 so that this asserts the
 /// *mechanism* (granite is a real share of the island) and does not re-pin a
@@ -157,8 +157,9 @@ fn the_ground_mix_is_the_whole_island() {
 fn granite_is_a_real_share_of_the_island() {
     // "GROUND_MIX still says granite is absent."
     const { assert!(GROUND_MIX[ROCK] > 0.05) };
-    // "granite is not above sand — the ranking the old mix inverted."
-    const { assert!(GROUND_MIX[ROCK] > GROUND_MIX[SAND]) };
+    // "granite is not above sand" held until the desert (2026-10-13): a fifth
+    // of the land is sand now, so sand outranks granite on its own merits and
+    // the ranking stopped being evidence about the quadrant mix.
 
     // Printed rather than asserted: the magnitude is `relief.rs`'s to own, and
     // a reader of this suite's output should see what the two consts guard.
@@ -234,6 +235,13 @@ fn granite_is_a_real_share_of_the_island() {
 /// The second assert is the retraction's own point, kept: the two windows
 /// disagree, and by more than they used to (1.145× → 1.268×), because granite
 /// carries more value now and the quadrant still weights it at zero.
+///
+/// ⚠ **Re-pinned 0.08910 → 0.11088 on 2026-10-13 (+24 %), not an albedo
+/// edit:** the desert put a fifth of the land on the sand identity, and sand
+/// is the brightest of the four. It understates the frame, too: the shader
+/// warms the desert's sand to `ground_splat::DESERT_SAND_ALBEDO`, brighter
+/// still, and this sums the identities' own albedos. Stated so the brightness
+/// owner meets it as a number.
 #[test]
 fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     // Rec.601, the estimator `ground_identity.rs` uses and the one the 0.09390
@@ -261,8 +269,8 @@ fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     );
 
     assert!(
-        (now - 0.089_10).abs() < 1e-4,
-        "the island-weighted mean linear luma is no longer the 0.08910 the \
+        (now - 0.110_88).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.11088 the \
          identity re-place was held to: {now:.5}. An albedo edit moved the \
          island's overall brightness — that is the coupled lighting owner's \
          call (`CLAUDE.md` traps), not an identity pass's."

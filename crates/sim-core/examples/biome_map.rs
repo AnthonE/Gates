@@ -73,6 +73,7 @@ fn main() {
                 Biome::Meadow => [124, 168, 82],
                 Biome::Forest => [34, 84, 44],
                 Biome::Highland => [150, 146, 140],
+                Biome::Desert => [214, 170, 104],
             };
             biome_img[i..i + 3].copy_from_slice(&c);
 
@@ -184,7 +185,7 @@ fn main() {
     let n = (CELLS_PER_SIDE * CELLS_PER_SIDE) as usize;
     let mut is_forest = vec![false; n];
     let mut land = 0u32;
-    let mut per_biome = [0u32; 4];
+    let mut per_biome = [0u32; terrain::BIOMES];
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
             let x = (cx as f32 + 0.5) * CELL_SIZE;
@@ -235,7 +236,7 @@ fn main() {
         land as f32 * ha
     );
     println!(
-        "  beach {} ({:.1}%)  meadow {} ({:.1}%)  forest {} ({:.1}%)  highland {} ({:.1}%)",
+        "  beach {} ({:.1}%)  meadow {} ({:.1}%)  forest {} ({:.1}%)  highland {} ({:.1}%)  desert {} ({:.1}%)",
         per_biome[0],
         per_biome[0] as f32 * 100.0 / land as f32,
         per_biome[1],
@@ -244,6 +245,8 @@ fn main() {
         per_biome[2] as f32 * 100.0 / land as f32,
         per_biome[3],
         per_biome[3] as f32 * 100.0 / land as f32,
+        per_biome[4],
+        per_biome[4] as f32 * 100.0 / land as f32,
     );
     println!(
         "  forest patches {} — largest {} cells ({:.0} ha, {:.0}% of all forest), top 8 {:?}",

@@ -116,27 +116,37 @@ fn the_blocked_ceiling_is_the_shortest_tree_drawn() {
 /// `SPAWN_CLEAR_M`'s comment derived itself from the tree's canopy radius, the
 /// slot scale range and the player capsule — and credited `ci/pine_shape.mjs`
 /// with checking it. That gate went with the browser client and **does not
-/// exist**, so from then until now the derivation was a dead citation: a
-/// sentence asserting that something was enforced while nothing was. This is
-/// exactly the class `CLAUDE.md` warns is still un-swept in `crates/`.
+/// exist**, so the derivation was a dead citation. It is written here, in the
+/// crate that can see both sides.
 ///
-/// Adding a second, wider species is what made it urgent — the ceiling moved
-/// 1.7 → 2.9 m, which is precisely the change the missing gate existed to
-/// catch. So it is written in Rust, in the crate that can see both sides.
+/// **Measured below head height since the trees tripled (2026-10-13).** A
+/// standing body touches what is at its own height, and with the 42 m pine the
+/// lowest limbs start 8 m up: the crown overhead is shade, not an obstacle.
+/// So the reach that counts is every vertex under [`SPAWN_REACH_H_M`] — the
+/// trunk and nothing else — and the canopy ceiling (`TREE_MAX_R`) is held by
+/// `every_variant_fits_the_volume_the_sim_blocks` for its own reasons.
 #[test]
 fn a_fresh_spawn_stands_clear_of_the_widest_tree() {
-    // The widest canopy edge a slot can actually present: the ceiling at the
-    // largest scale `scatter` may roll.
-    let canopy = TREE_MAX_R * sim_core::terrain::SLOT_SCALE_MAX;
-    // Touching distance — canopy edge plus the player's own radius.
-    let touching = canopy + sim_core::collide::CAPSULE_RADIUS_M;
-    assert!(
-        touching < sim_core::world::SPAWN_CLEAR_M,
-        "a fresh spawn would touch the widest tree: canopy {canopy:.3} m + \
-         capsule {:.3} m = {touching:.3} m against SPAWN_CLEAR_M {:.3} m",
-        sim_core::collide::CAPSULE_RADIUS_M,
-        sim_core::world::SPAWN_CLEAR_M
-    );
+    /// Head height plus a hand, metres: what a fresh body could touch.
+    const SPAWN_REACH_H_M: f32 = 2.4;
+    let mut reach = 0.0f32;
+    for v in 0..CONIFER_POOL {
+        let (bark, needles) = conifer(v);
+        for m in [&bark, &needles] {
+            let Some(VertexAttributeValues::Float32x3(p)) = m.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                continue;
+            };
+            for q in p.iter().filter(|q| q[1] <= SPAWN_REACH_H_M) {
+                reach = reach.max((q[0] * q[0] + q[2] * q[2]).sqrt());
+            }
+        }
+    }
+    // The widest thing a slot presents at body height, at the largest scale
+    // `scatter` may roll.
+    let low = reach * sim_core::terrain::SLOT_SCALE_MAX;
+    // Touching distance — that plus the player's own radius.
+    let touching = low + sim_core::collide::CAPSULE_RADIUS_M;
     // **Not merely outside it — standing clear of it**, which is the phrase
     // `world.rs` uses and the reason the constant is not simply `touching`.
     // Room to stand and turn, so a spawn does not open with a trunk filling
@@ -144,10 +154,10 @@ fn a_fresh_spawn_stands_clear_of_the_widest_tree() {
     const STANDING_ROOM_M: f32 = 0.85;
     assert!(
         touching + STANDING_ROOM_M <= sim_core::world::SPAWN_CLEAR_M,
-        "clearance {:.3} m leaves only {:.3} m past touching the widest \
-         canopy; the rule is standing room, not tangency",
-        sim_core::world::SPAWN_CLEAR_M,
-        sim_core::world::SPAWN_CLEAR_M - touching
+        "a fresh spawn would stand against the widest tree: reach {low:.3} m + \
+         capsule {:.3} m + room {STANDING_ROOM_M} m against SPAWN_CLEAR_M {:.3} m",
+        sim_core::collide::CAPSULE_RADIUS_M,
+        sim_core::world::SPAWN_CLEAR_M
     );
 }
 

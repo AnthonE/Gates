@@ -115,7 +115,7 @@ pub struct SpeciesDef {
 /// comment said the pool was "one species at three seeds rather than three
 /// species". A temperate island with exactly one tree on it is the single
 /// cheapest thing to fix about this forest.
-pub const SPECIES: [SpeciesDef; 2] = [
+pub const SPECIES: [SpeciesDef; 3] = [
     SpeciesDef {
         tree_type: TreeType::Evergreen,
         height_m: PINE_H,
@@ -135,7 +135,8 @@ pub const SPECIES: [SpeciesDef; 2] = [
     // `Alt` mask paints (`FORESTS.md` §3).
     SpeciesDef {
         tree_type: TreeType::Deciduous,
-        height_m: 11.0,
+        // 33 m since the 2026-10-13 rescale (×3 with the pine), from 11.
+        height_m: 33.0,
         max_r_m: BROADLEAF_MAX_R,
         leaf_lo: BROADLEAF_LO,
         leaf_hi: BROADLEAF_HI,
@@ -144,14 +145,44 @@ pub const SPECIES: [SpeciesDef; 2] = [
         bark_lo: BIRCH_BARK_LO,
         bark_hi: BIRCH_BARK_HI,
     },
+    // **The desert's palm** (`terrain::PALM_SPECIES`): a bare trunk and a
+    // drooping crown of fronds at the top, the arid north's tree in the
+    // reference game. Generated as an `Evergreen` so it wears the pine's bark
+    // and needle sprigs — at frond scale a needle card reads as leaflets — in
+    // its own yellower greens. As tall as the broadleaf, so the sim's blocked
+    // ceiling (`OCCUPANT_TOP_M[Tree]`) is still every tree's drawn height.
+    SpeciesDef {
+        tree_type: TreeType::Evergreen,
+        height_m: 33.0,
+        max_r_m: PALM_MAX_R,
+        leaf_lo: PALM_LO,
+        leaf_hi: PALM_HI,
+        bark_lo: PALM_BARK_LO,
+        bark_hi: PALM_BARK_HI,
+    },
 ];
+
+/// The palm's index in [`SPECIES`] — the sim's `terrain::PALM_SPECIES`.
+pub const PALM: usize = 2;
+const _: () = assert!(PALM == sim_core::terrain::PALM_SPECIES as usize);
+
+/// The palm's radius ceiling, metres: its fronds' reach.
+pub const PALM_MAX_R: f32 = 8.4;
+
+/// The palm's fronds, a sunlit yellow-green, and its grey-brown trunk.
+const PALM_LO: u32 = 0x3d5a1c;
+const PALM_HI: u32 = 0x8fa23e;
+const PALM_BARK_LO: u32 = 0x5e5040;
+const PALM_BARK_HI: u32 = 0x857560;
 
 /// The broadleaf's radius ceiling, metres. Wider than the conifer's by design;
 /// see [`TREE_MAX_R`] for what it costs the sim.
-pub const BROADLEAF_MAX_R: f32 = 2.9;
+pub const BROADLEAF_MAX_R: f32 = 5.6;
 
-/// The widest any species may be, metres — the number the sim's spawn
-/// clearance has to cover.
+/// The widest any species may be, metres. Since the trees tripled in height
+/// (2026-10-13) the sim's spawn clearance is held against what a tree
+/// presents at body height — its trunk — not this crown ceiling overhead
+/// (`tests/tree.rs::a_fresh_spawn_stands_clear_of_the_widest_tree`).
 ///
 /// **This is the constant `world.rs` was always talking about and never had.**
 /// `SPAWN_CLEAR_M`'s comment derived itself from `PINE_MAX_R` and credited
@@ -159,10 +190,17 @@ pub const BROADLEAF_MAX_R: f32 = 2.9;
 /// (it went with the browser), so the derivation was a dead citation — a claim
 /// that something was enforced when nothing was. `tests/tree.rs` closes it in
 /// Rust now, against this.
-pub const TREE_MAX_R: f32 = if PINE_MAX_R > BROADLEAF_MAX_R {
-    PINE_MAX_R
-} else {
-    BROADLEAF_MAX_R
+pub const TREE_MAX_R: f32 = {
+    let r = if PINE_MAX_R > BROADLEAF_MAX_R {
+        PINE_MAX_R
+    } else {
+        BROADLEAF_MAX_R
+    };
+    if PALM_MAX_R > r {
+        PALM_MAX_R
+    } else {
+        r
+    }
 };
 
 /// Which species a pool index is, and which seed within it. Seeds are grouped
@@ -302,12 +340,19 @@ fn conifer_settings() -> TreeMeshSettings {
             // 2.9 ceiling, 1.9 read 2.73, and **1.8 reads 2.61 / 2.58 / 2.66**
             // (2.70 over all eighteen) — an 8 % margin. The trunk radius is
             // the sim's number: `tests/tree.rs` holds the widest shipped
-            // trunk to `OCCUPANT_R_M[Tree]` within a millimetre, and 0.2540
-            // puts variant 0 at 0.2390 m. (Scaled from 0.20 → 0.1887 at this
-            // height; the fit is linear in it. One of the twelve extra seeds
-            // reads 0.2406, so a fourth seed would need re-sweeping.)
-            length: [14.0, 1.8, 0.0, 0.0],
-            trunk_base_radius: 0.2540,
+            // trunk to `OCCUPANT_R_M[Tree]` within a millimetre.
+            //
+            // At 42 m (2026-10-13) the sweep reads crown 5.10 m on the
+            // shipped seeds and 5.75 over fifteen against the 6.2 ceiling;
+            // trunk_base_radius 0.2456 keeps the widest shipped trunk at
+            // 0.2393 m — the sim's cylinder, unchanged by the rescale.
+            //
+            // **Re-swept for the 42 m tree (2026-10-13).** The trunk is
+            // generated at full length so the fit is near 1 and limbs, cards
+            // and bark keep real-world sizes; the limbs lengthened to carry a
+            // crown that reads as a tall pine rather than a pole.
+            length: [42.0, 4.4, 0.0, 0.0],
+            trunk_base_radius: 0.2456,
             radius_factor: [1.0, 0.13, 0.0, 0.0],
             sections: [10, 4, 0, 0],
             segments: [7, 4, 0, 0],
@@ -334,7 +379,7 @@ fn conifer_settings() -> TreeMeshSettings {
             // is the 16 × 60 it replaced, in triangles.
             count: 12,
             start: 0.0,
-            size: 1.15,
+            size: 2.1,
             size_variance: 0.4,
         },
     }
@@ -382,8 +427,8 @@ fn broadleaf_settings() -> TreeMeshSettings {
             // seeds and 2.46 over fifteen against the 2.9 ceiling. The trunk
             // reads 0.233 m at the base, inside the sim's cylinder, which the
             // conifer sets (`OCCUPANT_R_M[Tree]`).
-            length: [4.5, 0.9, 0.25, 0.0],
-            trunk_base_radius: 0.11,
+            length: [13.5, 2.1, 0.55, 0.0],
+            trunk_base_radius: 0.098,
             radius_factor: [1.0, 0.42, 0.34, 0.0],
             sections: [10, 4, 2, 0],
             segments: [7, 4, 3, 0],
@@ -400,10 +445,57 @@ fn broadleaf_settings() -> TreeMeshSettings {
             angle: 48.0,
             count: 10,
             start: 0.0,
-            // A card's size adds to the crown radius directly, and the
-            // ceiling did not grow with the height.
-            size: 0.60,
+            // A card's size adds to the crown radius directly.
+            size: 1.0,
             size_variance: 0.35,
+        },
+    }
+}
+
+/// The palm's parameters: one trunk, generated at full length so limbs and
+/// cards keep real sizes, and a single level of fronds from its top tenth.
+///
+/// - `start` 0.88: the fronds leave the last eighth of the trunk, so the
+///   trunk below is bare — a palm's whole silhouette.
+/// - `angle` 108°: past horizontal, so the fronds arch out and droop. Droop
+///   is the ANGLE's job, never the force's (see [`conifer_settings`]).
+/// - Long thin limbs (`radius_factor` 0.05) carry the leaflet cards; the
+///   cards stand on most of each frond and leave its base bare.
+/// - `taper` 0.6 and a wide base: a palm trunk flares at the foot and is
+///   slim under the crown.
+fn palm_settings() -> TreeMeshSettings {
+    TreeMeshSettings {
+        tree_type: TreeType::Evergreen,
+        branch: BranchParams {
+            levels: BranchRecursionLevel::One,
+            angle: [0.0, 108.0, 0.0, 0.0],
+            children: [20, 0, 0],
+            force: BranchForce {
+                direction: Vec3::Y,
+                strength: 0.02,
+                radius_cutoff: 0.1,
+            },
+            gnarliness: [0.025, 0.12, 0.0, 0.0],
+            // [1] is long because an `Evergreen` limb is cut to `1 - t` of
+            // it where `t` is how far up the trunk it leaves: from the top
+            // 12 % that is 0–5.8 m, the long fronds lowest and the short new
+            // ones upright at the crown. Swept: 6.66 m of reach.
+            length: [33.0, 58.0, 0.0, 0.0],
+            trunk_base_radius: 0.24,
+            radius_factor: [1.0, 0.05, 0.0, 0.0],
+            sections: [12, 6, 0, 0],
+            segments: [7, 3, 0, 0],
+            start: [0.0, 0.88, 0.0, 0.0],
+            taper: [0.6, 0.85, 0.0, 0.0],
+            twist: [0.0, 0.0, 0.0, 0.0],
+        },
+        leaves: LeafParams {
+            leaf_billboard: LeafBillboard::Double,
+            angle: 70.0,
+            count: 22,
+            start: 0.15,
+            size: 1.25,
+            size_variance: 0.3,
         },
     }
 }
@@ -411,6 +503,9 @@ fn broadleaf_settings() -> TreeMeshSettings {
 /// The parameter block for a species index. Public so `examples/tree_sweep.rs`
 /// sweeps candidates as edits of what ships rather than a restated copy.
 pub fn settings(species: usize) -> TreeMeshSettings {
+    if species == PALM {
+        return palm_settings();
+    }
     match SPECIES[species].tree_type {
         TreeType::Evergreen => conifer_settings(),
         TreeType::Deciduous => broadleaf_settings(),
@@ -1094,6 +1189,8 @@ pub fn grow(species: usize, variant: usize, s: &TreeMeshSettings) -> (Mesh, Mesh
 
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
     let lobe_of = match sp.tree_type {
+        // A palm's crown is its fronds as they grew: no cone to fit.
+        TreeType::Evergreen if species == PALM => None,
         TreeType::Evergreen => {
             shape_crown(&mut needles, variant);
             None

@@ -478,10 +478,16 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
     let mut dims = Vec::with_capacity(pool);
     for v in 0..pool {
         let (bark, needles) = tree::conifer(v);
-        let (card, gain, trunk) = if tree::species_of(v) == 0 {
-            (&needle, tree::NEEDLE_MAP_GAIN, BARK_MEAN)
-        } else {
-            (&leaf, tree::LEAF_MAP_GAIN, BIRCH_MEAN)
+        // The card the near canopy wears (`PropAssets::canopy_material`):
+        // needles on an evergreen — the pine and the palm — leaves on a
+        // broadleaf.
+        let (card, gain, trunk) = match tree::SPECIES[tree::species_of(v)].tree_type {
+            bevy_procedural_tree::enums::TreeType::Evergreen => {
+                (&needle, tree::NEEDLE_MAP_GAIN, BARK_MEAN)
+            }
+            bevy_procedural_tree::enums::TreeType::Deciduous => {
+                (&leaf, tree::LEAF_MAP_GAIN, BIRCH_MEAN)
+            }
         };
         let (cell, d) = bake_card(&bark, &needles, card, gain, trunk);
         dims.push(d);

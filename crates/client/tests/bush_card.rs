@@ -408,4 +408,11 @@ fn the_scenery_is_the_biomes() {
     for b in [Biome::Beach, Biome::Meadow, Biome::Forest, Biome::Highland] {
         assert!(count(b, Scenery::Shrub) > 400, "{b:?} grows no leafy shrub");
     }
+    // The desert is cactus and dry scrub, and nothing leafy.
+    assert!(count(Biome::Desert, Scenery::Cactus) > 1000);
+    assert!(count(Biome::Desert, Scenery::DeadScrub) > 1500);
+    assert_eq!(count(Biome::Desert, Scenery::Shrub), 0);
+    for b in [Biome::Beach, Biome::Meadow, Biome::Forest, Biome::Highland] {
+        assert_eq!(count(b, Scenery::Cactus), 0, "{b:?} grows a cactus");
+    }
 }
