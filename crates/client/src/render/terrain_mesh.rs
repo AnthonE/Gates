@@ -34,7 +34,7 @@ use sim_core::terrain::{self, SEA_LEVEL};
 use std::sync::Arc;
 
 use super::ground_splat::{
-    road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD,
+    road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_ARID, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD,
 };
 use super::road_markings::RoadChart;
 #[cfg(target_arch = "wasm32")]
@@ -1186,6 +1186,7 @@ pub fn heightfield(
     let mut uvs = Vec::with_capacity(count);
     let mut mods = Vec::with_capacity(count);
     let mut roads = Vec::with_capacity(count);
+    let mut arid: Vec<f32> = Vec::with_capacity(count);
     let mut tangents = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
@@ -1382,6 +1383,7 @@ pub fn heightfield(
             // `vertex_color` stays as the reference arithmetic the gate holds
             // the shader against.
             colors.push(vertex_splat(w));
+            arid.push(terrain::aridity_memo(&mut lat, seed, x, z));
             mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * UV_PER_M, z * UV_PER_M]);
         }
@@ -1408,6 +1410,7 @@ pub fn heightfield(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_attribute(ATTRIBUTE_ROAD, roads);
     mesh.insert_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; count]);
+    mesh.insert_attribute(ATTRIBUTE_ARID, arid);
     // The two scalar modifiers. `UV_1` because it is the one remaining
     // interpolated slot Bevy's standard vertex stage already forwards to the
     // fragment (`forward_io::VertexOutput::uv_b`). Road coverage has its own

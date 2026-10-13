@@ -185,7 +185,12 @@ pub const SKY_FILL_SCALE: f32 = 2.5;
 /// Re-measured 2026-09-28 for the 4096 m island (from `[0.037_410,
 /// 0.502_090, 0.344_911, 0.115_589]`): more lowland per massif, so granite
 /// falls and sand rises.
-pub const GROUND_MIX: [f32; 4] = [0.045_678, 0.524_164, 0.350_093, 0.080_065];
+/// ⚠ **Re-measured 2026-10-13 for the desert** (from `[0.045_678, 0.524_164,
+/// 0.350_093, 0.080_065]`): a fifth of the land is desert, and its ground is
+/// the sand identity, so **sand 0.046 → 0.249** out of grass and litter.
+/// Granite is unmoved — the desert's high ground is still rock. The grass
+/// weight carries the 1e-6 that keeps the four a partition.
+pub const GROUND_MIX: [f32; 4] = [0.248_643, 0.412_384, 0.258_859, 0.080_114];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {

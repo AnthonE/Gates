@@ -26,7 +26,7 @@ use bevy::prelude::*;
 use sim_core::boulder::{self, BOULDER_CELL_M, ON_GROUND};
 use sim_core::terrain;
 
-use super::ground_splat::{ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD};
+use super::ground_splat::{ATTRIBUTE_ARID, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD};
 use super::terrain_mesh::{Ring, UV_PER_M};
 use super::{Eye, WorldEntity, WorldId};
 
@@ -258,6 +258,7 @@ impl RockSoup {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
         .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])
         .with_inserted_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; n])
+        .with_inserted_attribute(ATTRIBUTE_ARID, vec![0.0f32; n])
         .with_inserted_indices(Indices::U32(self.idx))
     }
 }

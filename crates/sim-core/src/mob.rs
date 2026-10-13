@@ -417,7 +417,7 @@ pub struct MobDef {
     /// `terrain::Biome`: the reference's spawn filter (`reference/SPAWN.md`
     /// §4), as a weight a home draw is accepted at. Beach is always zero —
     /// a home is inland, so the leash never centres on the waterline.
-    pub habitat_pm: [u16; 4],
+    pub habitat_pm: [u16; terrain::BIOMES],
     /// The animal's hit volume, a cylinder standing on its feet: radius and
     /// height in **centimetres** (`mobs.toml` `body_r_cm` / `body_h_cm`).
     /// What `melee::mob_cast` tests the swing's ray against — so a pig is
@@ -484,7 +484,7 @@ impl MobDef {
         respawn_ticks: 0,
         per_km2_milli: 0,
         night_extra_pct: 0,
-        habitat_pm: [0; 4],
+        habitat_pm: [0; terrain::BIOMES],
         body_r_cm: 0,
         body_h_cm: 0,
         sight_dot_pm: 0,
@@ -631,7 +631,7 @@ impl MobContent {
             // The shipped rows' density and habitat (`content/mobs.toml`).
             per_km2_milli: 5_000,
             night_extra_pct: 0,
-            habitat_pm: [0, 1_000, 1_000, 300],
+            habitat_pm: [0, 1_000, 1_000, 300, 150],
             // The client draws a pig 0.78 m high and 1.5 m long
             // (`render/mobs.rs` PIG_H_M / PIG_LEN_M); a cylinder of this
             // radius covers the body's width and most of its length, and
@@ -677,7 +677,7 @@ impl MobContent {
             respawn_ticks: 9_000,
             per_km2_milli: 2_000,
             night_extra_pct: 0,
-            habitat_pm: [0, 400, 1_000, 1_000],
+            habitat_pm: [0, 400, 1_000, 1_000, 200],
             body_r_cm: 60,
             body_h_cm: 85,
             sight_dot_pm: -500,
@@ -859,7 +859,7 @@ impl Mobs {
 /// Land per biome, square metres, indexed by `terrain::Biome`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Survey {
-    pub land_m2: [u32; 4],
+    pub land_m2: [u32; terrain::BIOMES],
     pub done: bool,
 }
 
@@ -872,7 +872,7 @@ const SURVEY_M: f32 = 128.0;
 pub fn survey(seed: u64) -> Survey {
     let n = (terrain::ISLAND_SIZE / SURVEY_M) as i32;
     let cell = (SURVEY_M * SURVEY_M) as u32;
-    let mut land_m2 = [0u32; 4];
+    let mut land_m2 = [0u32; terrain::BIOMES];
     for i in 0..n {
         for j in 0..n {
             let x = (i as f32 + 0.5) * SURVEY_M;

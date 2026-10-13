@@ -30,7 +30,7 @@ fn edge_vertex(edge: usize, i: usize) -> usize {
 /// The original surface vertices and indices remain byte-for-byte intact.
 pub fn append(mesh: &mut Mesh, seed: u64, haven: &terrain::Haven) {
     for (_, values) in mesh.attributes_mut() {
-        fn extend<const N: usize>(values: &mut Vec<[f32; N]>) {
+        fn extend<T: Copy>(values: &mut Vec<T>) {
             values.reserve_exact(4 * NEAR_N * 2);
             for edge in 0..4 {
                 for i in 0..NEAR_N {
@@ -40,6 +40,7 @@ pub fn append(mesh: &mut Mesh, seed: u64, haven: &terrain::Haven) {
             }
         }
         match values {
+            VertexAttributeValues::Float32(v) => extend(v),
             VertexAttributeValues::Float32x2(v) => extend(v),
             VertexAttributeValues::Float32x3(v) => extend(v),
             VertexAttributeValues::Float32x4(v) => extend(v),

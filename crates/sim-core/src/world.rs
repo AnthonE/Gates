@@ -58,10 +58,11 @@ const SPAWN_MAX_SLOPE: f32 = 1.0;
 /// **Raised 4.0 → 4.5 when the tree pool gained a second, wider species**
 /// (operator, 2026-08-10: *"im fine with raising the sim or whatever we got
 /// the juice i think"*). The derivation, which is now checked rather than
-/// merely stated: the widest canopy ceiling (`tree::TREE_MAX_R`, 2.9 m) at the
-/// largest scale `scatter` rolls (`SLOT_SCALE_MAX`, 1.1) is a 3.19 m canopy
-/// edge; plus `CAPSULE_RADIUS_M` (0.4) is 3.59 m of touching distance; plus
-/// standing room so a spawn does not open with a trunk filling the frame.
+/// merely stated: the widest thing a tree presents at body height (its
+/// trunk — since the trees tripled in height on 2026-10-13 the lowest limbs
+/// are 8 m up) at the largest scale `scatter` rolls (`SLOT_SCALE_MAX`, 1.1),
+/// plus `CAPSULE_RADIUS_M` (0.4) of touching distance, plus standing room so
+/// a spawn does not open with a trunk filling the frame.
 ///
 /// **This used to credit `ci/pine_shape.mjs` with closing that arithmetic, and
 /// that gate does not exist** — it went with the browser client, so the

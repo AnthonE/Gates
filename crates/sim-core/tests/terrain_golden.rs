@@ -203,7 +203,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// got its power poles** (`landmark::stamp`, `poles.rs`): pads levelled, the
 /// quarry's floor cut and its walls banked into the hill, and nothing grows
 /// at a pole's foot.
-const GOLDEN_TERRAIN_HASH: u64 = 0x1141_F3F2_1934_8522;
+/// **Moved → `0x519B_594E_B291_2C10` at the desert** (2026-10-13): the
+/// golden's cells are short of the desert's reach and no height moved, but
+/// the desert's row carries ore, so `Haven::ore_pm` rescales.
+const GOLDEN_TERRAIN_HASH: u64 = 0x519B_594E_B291_2C10;
 
 #[test]
 fn test_terrain_golden() {
@@ -437,7 +440,9 @@ fn test_terrain_shape_sanity() {
 
     // TERRAIN.md §6: ~14–17k live slots per seed since forest density v1
     // (~8–12k before it). The band is the doc's and `tests/scatter.rs`'s; a
-    // seed outside it means the scatter weights drifted, not the seed.
+    // seed outside it means the scatter weights drifted, not the seed. The
+    // floor came down 39k → 36k with the desert (2026-10-13): a fifth of the
+    // island is open sand now, sparse on purpose.
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(GOLDEN_SEED);
     let mut live = 0u32;
@@ -466,8 +471,8 @@ fn test_terrain_shape_sanity() {
         }
     }
     assert!(
-        (39_000..=62_000).contains(&live),
-        "live slots {live} outside the 4,096 m island's 39–62k band (trees {trees}, ore {ore}, barrels {barrels})"
+        (36_000..=62_000).contains(&live),
+        "live slots {live} outside the 4,096 m island's 36–62k band (trees {trees}, ore {ore}, barrels {barrels})"
     );
     assert!(trees > 1_000, "island needs wood: {trees} trees");
     assert!(ore > 300, "island needs ore: {ore} nodes");

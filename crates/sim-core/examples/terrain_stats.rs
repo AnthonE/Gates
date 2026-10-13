@@ -15,7 +15,7 @@ fn main() {
         .unwrap_or(0x0047_4154_4553);
 
     let mut hist = [0u32; 12]; // <0, 0-10, 10-20, ... 90-100, >100
-    let mut biomes = [0u32; 4];
+    let mut biomes = [0u32; terrain::BIOMES];
     for gz in 0..256i32 {
         for gx in 0..256i32 {
             let x = gx as f32 * 8.0 + 4.0;

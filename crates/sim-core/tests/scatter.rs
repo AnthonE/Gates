@@ -521,7 +521,7 @@ fn test_no_biome_row_saturates() {
 fn test_clump_cap_normalizer_holds() {
     let table = ScatterTable::alpha_default();
     let n = f64::from(CELLS_PER_SIDE) * f64::from(CELLS_PER_SIDE);
-    for b in 0..4 {
+    for b in 0..terrain::BIOMES {
         let cap = table.clump_cap[b];
         let norm = table.clump_cap_norm[b];
         if !cap.is_finite() {

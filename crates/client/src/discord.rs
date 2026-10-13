@@ -308,10 +308,17 @@ pub enum Place {
     Meadow,
     Forest,
     Highland,
+    Desert,
 }
 
 impl Place {
-    pub const ALL: [Place; 4] = [Place::Shore, Place::Meadow, Place::Forest, Place::Highland];
+    pub const ALL: [Place; 5] = [
+        Place::Shore,
+        Place::Meadow,
+        Place::Forest,
+        Place::Highland,
+        Place::Desert,
+    ];
 
     pub fn of(biome: Biome) -> Place {
         match biome {
@@ -319,6 +326,7 @@ impl Place {
             Biome::Meadow => Place::Meadow,
             Biome::Forest => Place::Forest,
             Biome::Highland => Place::Highland,
+            Biome::Desert => Place::Desert,
         }
     }
 
@@ -329,6 +337,7 @@ impl Place {
             Place::Meadow => "in the meadows",
             Place::Forest => "in the forest",
             Place::Highland => "in the highlands",
+            Place::Desert => "in the desert",
         }
     }
 }
@@ -969,6 +978,7 @@ mod tests {
                 Place::Meadow => 1,
                 Place::Forest => 2,
                 Place::Highland => 3,
+                Place::Desert => 4,
             }
         }
         for (i, p) in Place::ALL.iter().enumerate() {
@@ -991,7 +1001,13 @@ mod tests {
     /// biome fails the CODE tier here rather than the Bevy gate.
     #[test]
     fn every_biome_has_a_place() {
-        for b in [Biome::Beach, Biome::Meadow, Biome::Forest, Biome::Highland] {
+        for b in [
+            Biome::Beach,
+            Biome::Meadow,
+            Biome::Forest,
+            Biome::Highland,
+            Biome::Desert,
+        ] {
             let p = Place::of(b);
             assert!(Place::ALL.contains(&p), "{b:?} mapped outside ALL");
         }
