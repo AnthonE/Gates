@@ -495,7 +495,7 @@ pub const SLOT_CACHE_SLOTS: usize = 1_024;
 
 /// Lines in the direct-mapped memo of `cliff::crag` that the occupant query
 /// reads cliff crags through (occupy.rs), on the shard's `World`. A body's
-/// query scans at most 49 spots, so a full shard has `MAX_PLAYERS * 49` live
+/// query scans at most 64 spots, so a full shard has `MAX_PLAYERS * 64` live
 /// at once; at 44 B a line this is 1.4 MB. `SLOT_CACHE_SLOTS`'s posture: a
 /// memo of a pure function, so a collision re-resolves (five ground taps off
 /// a cliff) and nothing can be lost. Must stay a power of two.
