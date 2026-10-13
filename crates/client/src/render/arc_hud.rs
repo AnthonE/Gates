@@ -1,5 +1,6 @@
 //! The arc's banner (`ARC.md` F4): top centre, under the compass — the act,
-//! the work that matters most right now and its bar. It is how a player
+//! the work that matters most right now and its bar, and the key to the
+//! ISLAND page that holds the rest. It is how a player
 //! learns, from the first minute, that this island is broken and that the
 //! whole server is switching it back on.
 //!
@@ -82,6 +83,15 @@ pub fn setup(mut commands: Commands) {
                     Pickable::IGNORE,
                 ));
             });
+            // Where the rest of it is: the banner is one work, the ISLAND
+            // page every work, the standings and the journal.
+            b.spawn((
+                Text::new("[O] ISLAND"),
+                super::ui::font_bold(10.0),
+                TextColor(Color::srgba(0.90, 0.88, 0.82, 0.45)),
+                super::ui::TEXT_SHADOW,
+                Pickable::IGNORE,
+            ));
         });
 }
 

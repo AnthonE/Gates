@@ -305,6 +305,10 @@ pub struct ShardCore {
     /// a few seconds after so the client is up; or a bare `/wipe`). 0 = not
     /// owed.
     wipe_tell: [u64; MAX_PLAYERS],
+    /// The shard's `motd` lines, ready to send, and per slot the tick from
+    /// which they are owed (a join). 0 = not owed.
+    pub motd: Vec<protocol::ChatText>,
+    motd_tell: [u64; MAX_PLAYERS],
     /// The clock reached zero: `Some(blueprints)` until the boundary loop
     /// takes it ([`Self::take_wipe`]) and stops the shard.
     wipe_fired: Option<bool>,
@@ -614,6 +618,8 @@ impl ShardCore {
             wipe_now: 0,
             wipe_say: None,
             wipe_tell: [0; MAX_PLAYERS],
+            motd: Vec::new(),
+            motd_tell: [0; MAX_PLAYERS],
             wipe_fired: None,
             standings: crate::standings::Standings::off(),
             standings_tell: [0; MAX_PLAYERS],
@@ -752,6 +758,18 @@ impl ShardCore {
             self.say_server(None, &line, stats, send);
         }
         for slot in 0..MAX_PLAYERS {
+            let at = self.motd_tell[slot];
+            if at == 0 || self.world.tick < at {
+                continue;
+            }
+            self.motd_tell[slot] = 0;
+            let motd = std::mem::take(&mut self.motd);
+            for line in &motd {
+                self.say_server(Some(slot), line, stats, send);
+            }
+            self.motd = motd;
+        }
+        for slot in 0..MAX_PLAYERS {
             let at = self.wipe_tell[slot];
             if at == 0 || self.world.tick < at {
                 continue;
@@ -780,8 +798,11 @@ impl ShardCore {
         if slot >= MAX_PLAYERS {
             return;
         }
-        // The next wipe, said a few seconds after the door so the client is
-        // up to read it (`pump_wipe`).
+        // The shard's own lines, then the next wipe, said a few seconds after
+        // the door so the client is up to read them (`pump_wipe`).
+        if !self.motd.is_empty() {
+            self.motd_tell[slot] = self.world.tick + 4 * sim_core::limits::TICK_HZ as u64;
+        }
         if self.wipe.next().is_some() {
             self.wipe_tell[slot] = self.world.tick + 5 * sim_core::limits::TICK_HZ as u64;
         }

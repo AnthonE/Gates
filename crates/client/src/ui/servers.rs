@@ -44,6 +44,32 @@ use crate::ui::MAX_QUERY_CHARS;
 /// the cap would be a rule about the list rather than about the file.
 pub const MAX_FAVOURITES: usize = 128;
 
+/// What a shard's status poll says beyond the row's own columns — the
+/// details pane's half. Every field is "not said" until a poll says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Live {
+    /// World ticks since the island began: time played on it.
+    pub tick: Option<u64>,
+    pub spectators: Option<u32>,
+    pub wipe: Option<u32>,
+    pub act: Option<u8>,
+    pub works_lit: Option<u32>,
+    pub works_total: Option<u32>,
+}
+
+impl Live {
+    /// The fields a player sees, coarsely: the tick moves every poll, so it
+    /// counts by the hour or every poll would redraw the screen.
+    fn shown(&self) -> Self {
+        Self {
+            tick: self
+                .tick
+                .map(|t| t / (sim_core::limits::TICK_HZ as u64 * 3_600)),
+            ..*self
+        }
+    }
+}
+
 /// One row of the browser.
 ///
 /// **Structured, not a pre-baked line.** The row used to carry a `detail`
@@ -71,6 +97,8 @@ pub struct Listing {
     pub next_wipe: Option<u64>,
     /// How many of `players` are declared agents, off its status poll.
     pub agents: Option<u32>,
+    /// Everything else its status poll said, for the details pane.
+    pub live: Live,
     /// The address this binary was started with, rather than a shard anybody
     /// published.
     ///
@@ -105,6 +133,7 @@ impl Listing {
             proto: None,
             next_wipe: None,
             agents: None,
+            live: Live::default(),
             direct: true,
         }
     }
@@ -131,6 +160,7 @@ impl Listing {
             proto: None,
             next_wipe: None,
             agents: None,
+            live: Live::default(),
             direct: false,
         }
     }
@@ -146,7 +176,12 @@ impl Listing {
         if self.direct {
             return false;
         }
-        let seen = |r: &Self| (r.players, r.max_players, r.proto, r.next_wipe, r.agents);
+        let seen = |r: &Self| {
+            (
+                (r.players, r.max_players, r.proto, r.next_wipe, r.agents),
+                r.live.shown(),
+            )
+        };
         let before = seen(self);
         self.players = Some(s.players);
         self.max_players = Some(s.max_players);
@@ -155,7 +190,69 @@ impl Listing {
         self.proto = s.proto.or(self.proto);
         self.next_wipe = s.next_wipe.or(self.next_wipe);
         self.agents = s.agents.or(self.agents);
+        let l = &mut self.live;
+        l.tick = Some(s.tick).filter(|&t| t > 0).or(l.tick);
+        l.spectators = s.spectators.or(l.spectators);
+        l.wipe = s.wipe.filter(|&w| w > 0).or(l.wipe);
+        l.act = s.act.filter(|&a| a > 0).or(l.act);
+        l.works_lit = s.works_lit.or(l.works_lit);
+        l.works_total = s.works_total.or(l.works_total);
         before != seen(self)
+    }
+
+    /// The details pane: what the row's second line has no room for, as
+    /// label and value. A field the shard never said is left out, never
+    /// drawn as a zero.
+    pub fn details(&self, now_unix: u64) -> Vec<(&'static str, String)> {
+        let mut out = vec![("ADDRESS", self.addr.clone())];
+        if let Some(m) = &self.map {
+            out.push(("MAP", m.clone()));
+        }
+        out.push(("PLAYERS", self.crowd().unwrap_or_else(|| self.population())));
+        if let Some(n) = self.live.spectators {
+            out.push(("WATCHING", n.to_string()));
+        }
+        let wipe = match (self.live.wipe, self.wipe_in(now_unix)) {
+            (Some(n), Some(next)) => Some(format!("wipe {n} · {next}")),
+            (Some(n), None) => Some(format!("wipe {n} · no wipe scheduled")),
+            (None, next) => next,
+        };
+        if let Some(w) = wipe {
+            out.push(("WIPE", w));
+        }
+        if let Some(act) = self.live.act {
+            let mut line = crate::ui::arc::act_title(act).to_string();
+            if let (Some(lit), Some(total)) = (self.live.works_lit, self.live.works_total) {
+                if total > 0 {
+                    line.push_str(&format!(" · {lit} of {total} works lit"));
+                }
+            }
+            out.push(("ISLAND", line));
+        }
+        if let Some(t) = self.live.tick {
+            let hours = t / (sim_core::limits::TICK_HZ as u64 * 3_600);
+            out.push((
+                "WORLD AGE",
+                if hours < 48 {
+                    format!("{hours} h played")
+                } else {
+                    format!("{} d {} h played", hours / 24, hours % 24)
+                },
+            ));
+        }
+        out.push((
+            "VERSION",
+            if self.needs_update() {
+                "the server is newer — update the game to join".into()
+            } else if self.server_updating() {
+                "the server is mid-update — try again shortly".into()
+            } else if self.proto.is_some() {
+                "matches this build".into()
+            } else {
+                "unknown".into()
+            },
+        ));
+        out
     }
 
     /// The shard speaks a NEWER wire than this build, so a join would be

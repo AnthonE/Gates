@@ -638,6 +638,13 @@ pub struct ShardStats {
     /// When the next wipe is, unix seconds, 0 for none. A gauge the sim
     /// thread mirrors off its clock, for `status.json`.
     pub next_wipe: AtomicU64,
+    /// The wipe now running (1 for a shard's first world), the act, and how
+    /// many of the island's works are lit out of how many exist — the
+    /// server's progression, mirrored like `next_wipe` for `status.json`.
+    pub wipe: AtomicU64,
+    pub act: AtomicU64,
+    pub works_lit: AtomicU64,
+    pub works_total: AtomicU64,
     /// A world blob the sim thread refused, which `bin/shard.rs` had
     /// already accepted into a trial world. Unreachable by construction and
     /// counted anyway, because the alternative to counting it is a shard

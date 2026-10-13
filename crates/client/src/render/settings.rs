@@ -975,7 +975,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is a stance** (v83): slower, lower, quieter, smaller to hit, and
 /// the sneak the animal brain listens for (`sim-core/src/brain.rs`). `Z` is
 /// named beside Ctrl because the browser closes a tab on Ctrl+W.
-pub const BINDS: [(&str, &str); 25] = [
+pub const BINDS: [(&str, &str); 31] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -1020,7 +1020,24 @@ pub const BINDS: [(&str, &str); 25] = [
         "LIGHT / SNUFF A TORCH",
         "F or Right Mouse with a torch in hand (it burns while it is lit)",
     ),
+    ("PICK UP", "V: the nearest loose stack in reach, landed arrows too"),
     ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
+    (
+        "RELOAD",
+        "R with a gun in hand (a bow: R switches the arrow) · R on the inventory page unloads it",
+    ),
+    (
+        "THROW A CHARGE",
+        "X with a charge in hand: plants it on the nearest structure",
+    ),
+    (
+        "DEMOLISH",
+        "Backspace: takes your nearest structure back down (only soon after it was placed)",
+    ),
+    (
+        "CREW",
+        "At a hearth: L joins its crew · K leaves · Shift+K twice clears it to just you",
+    ),
     (
         "TURN WHILE PLACING",
         "R with a box, a fire or a bench in hand (a quarter turn each press)",
@@ -1035,6 +1052,10 @@ pub const BINDS: [(&str, &str); 25] = [
     ),
     ("SCREENSHOT", "F12"),
     (
+        "DIAGNOSTICS",
+        "F4: build stamp and network · F3: collision view",
+    ),
+    (
         "REPORT A BUG",
         "F7 (writes a file next to your screenshots)",
     ),
@@ -1044,6 +1065,33 @@ pub const BINDS: [(&str, &str); 25] = [
 /// Marks everything this screen owns.
 #[derive(Component)]
 pub struct SettingsRoot;
+
+/// The pane that scrolls.
+#[derive(Component)]
+pub struct PaneScroll;
+
+/// The wheel scrolls the pane, clamped to what the layout measured
+/// (`panels::craft::scroll`'s rule).
+pub fn scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut panes: Query<(&mut ScrollPosition, &ComputedNode), With<PaneScroll>>,
+) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let mut dy = 0.0;
+    for ev in wheel.read() {
+        dy += match ev.unit {
+            MouseScrollUnit::Line => ev.y * 40.0,
+            MouseScrollUnit::Pixel => ev.y,
+        };
+    }
+    if dy == 0.0 {
+        return;
+    }
+    for (mut pos, computed) in panes.iter_mut() {
+        let over = (computed.content_size.y - computed.size.y).max(0.0);
+        pos.0.y = (pos.0.y - dy).clamp(0.0, over);
+    }
+}
 
 /// Marks the camera this screen had to spawn for itself, so a rebuild leaves
 /// it alone. Respawning a camera on every click drops the frame it was
@@ -1187,16 +1235,19 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                     });
 
                     // ---- the pane --------------------------------------------
+                    // Scrolls (the wheel, `scroll`): KEYBINDS is taller than a
+                    // small window.
                     body.spawn((
                         Node {
                             flex_grow: 1.0,
                             flex_direction: FlexDirection::Column,
                             row_gap: Val::Px(3.0),
                             padding: UiRect::all(Val::Px(14.0)),
-                            overflow: Overflow::clip(),
+                            overflow: Overflow::scroll_y(),
                             ..default()
                         },
                         BackgroundColor(ui::PANEL),
+                        PaneScroll,
                     ))
                     .with_children(|pane| {
                         for row in rows(settings.cat) {

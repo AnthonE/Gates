@@ -177,6 +177,10 @@ pub struct RowButton(pub usize);
 #[derive(Component)]
 pub struct StarButton(pub usize);
 
+/// The JOIN button in an open row's details, by the same index.
+#[derive(Component)]
+pub struct JoinButton(pub usize);
+
 /// A nav entry.
 #[derive(Component)]
 pub struct NavButton(pub Nav);
@@ -972,13 +976,11 @@ fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
         // One clock read per build, so every row's "wipes in" agrees.
         let now = unix_now();
         for i in &shown {
-            row(
-                pane,
-                &menu.rows[*i],
-                *i,
-                browse.favourites.has(&menu.rows[*i].id),
-                now,
-            );
+            let listing = &menu.rows[*i];
+            row(pane, listing, *i, browse.favourites.has(&listing.id), now);
+            if browse.selected.as_deref() == Some(listing.id.as_str()) {
+                details(pane, listing, *i, now);
+            }
         }
 
         // Asked unconditionally: the function checks whether the list it is
@@ -1008,8 +1010,8 @@ fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
 
         pane.spawn((
             ui::label(
-                "click a shard to join    -    type to search    -    Esc clears the search, \
-                 then quits",
+                "click a shard for its details, again to join    -    type to search    -    \
+                 Esc clears the search, then quits",
                 11.0,
                 ui::FAINT,
             ),
@@ -1018,6 +1020,61 @@ fn table(body: &mut ChildSpawnerCommands, menu: &Menu, browse: &Browse) {
                 ..default()
             },
         ));
+    });
+}
+
+/// A row's details, open under it: everything its status poll said, and
+/// the JOIN button.
+fn details(pane: &mut ChildSpawnerCommands, listing: &Listing, index: usize, now_unix: u64) {
+    pane.spawn((
+        Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexEnd,
+            column_gap: Val::Px(16.0),
+            padding: UiRect::new(
+                Val::Px(12.0 + STAR_W + 10.0),
+                Val::Px(12.0),
+                Val::Px(8.0),
+                Val::Px(12.0),
+            ),
+            border: UiRect::bottom(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(ui::ROW_HOVER),
+        BorderColor::all(ui::RULE),
+    ))
+    .with_children(|d| {
+        d.spawn(Node {
+            flex_grow: 1.0,
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(4.0),
+            ..default()
+        })
+        .with_children(|c| {
+            for (label, value) in listing.details(now_unix) {
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(10.0),
+                    ..default()
+                })
+                .with_children(|l| {
+                    l.spawn((
+                        ui::strong(label, 11.0, ui::FAINT),
+                        Node {
+                            width: Val::Px(96.0),
+                            flex_shrink: 0.0,
+                            ..default()
+                        },
+                    ));
+                    l.spawn(ui::label(value, 13.0, ui::TEXT));
+                });
+            }
+        });
+        d.spawn((ui::button(140.0, true), JoinButton(index)))
+            .with_children(|b| {
+                b.spawn(ui::strong("JOIN", 13.0, ui::TITLE));
+            });
     });
 }
 
@@ -1129,6 +1186,7 @@ fn row(
 pub fn click(
     rows: Query<(&Interaction, &RowButton), Changed<Interaction>>,
     stars: Query<(&Interaction, &StarButton), Changed<Interaction>>,
+    joins: Query<(&Interaction, &JoinButton), Changed<Interaction>>,
     navs: Query<(&Interaction, &NavButton), Changed<Interaction>>,
     cats: Query<(&Interaction, &CatButton), Changed<Interaction>>,
     slots: Query<(&Interaction, &SlotFilter), Changed<Interaction>>,
@@ -1145,6 +1203,11 @@ pub fn click(
     for (i, r) in rows.iter() {
         if pressed(i) {
             picked.0 = Some(Pick::Row(r.0));
+        }
+    }
+    for (i, j) in joins.iter() {
+        if pressed(i) {
+            picked.0 = Some(Pick::Join(j.0));
         }
     }
     for (i, n) in navs.iter() {
@@ -1235,7 +1298,9 @@ pub fn keys(
 /// state change or a mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
+    /// Open a row's details, or join it if they are already open.
     Row(usize),
+    Join(usize),
     Star(usize),
     Nav(Nav),
     /// Hand a launcher-backed section to the launcher.
@@ -1332,6 +1397,19 @@ pub fn take_pick(
             }
         }
         Pick::Row(i) => {
+            let Some(row) = menu.rows.get(i) else {
+                return;
+            };
+            if browse.selected.as_deref() != Some(row.id.as_str()) {
+                browse.selected = Some(row.id.clone());
+                menu.dirty = true;
+                return;
+            }
+            connecting.addr = row.addr.clone();
+            connecting.rx = None;
+            next.set(Screen::Connecting);
+        }
+        Pick::Join(i) => {
             let Some(row) = menu.rows.get(i) else {
                 return;
             };

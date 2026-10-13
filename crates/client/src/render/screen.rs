@@ -114,6 +114,9 @@ pub struct Browse {
     pub nav: Nav,
     pub filter: Filter,
     pub favourites: Favourites,
+    /// The row whose details are open, by id. A click opens them; a second
+    /// click, or JOIN, joins.
+    pub selected: Option<String>,
 }
 
 /// The nav column, in the reference's own order.

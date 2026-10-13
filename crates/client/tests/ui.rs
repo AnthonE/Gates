@@ -3390,8 +3390,44 @@ fn shard(name: &str, players: Option<u32>) -> Listing {
         proto: None,
         next_wipe: None,
         agents: None,
+        live: Default::default(),
         direct: false,
     }
+}
+
+/// The details pane says what the shard's status said, and nothing it did
+/// not: no progression line before a status names an act.
+#[test]
+fn server_details_show_what_the_status_said() {
+    let mut row = shard("eu", None);
+    let labels = |r: &Listing| -> Vec<&'static str> {
+        r.details(1_000_000).into_iter().map(|(k, _)| k).collect()
+    };
+    assert_eq!(labels(&row), ["ADDRESS", "PLAYERS", "VERSION"]);
+    let st = client::shardlist::parse_status(
+        br#"{"players":5,"agents":2,"spectators":1,"max_players":100,"tick":324000,
+             "next_wipe":1172800,"wipe":3,"act":2,"works_lit":9,"works_total":4}"#,
+    )
+    .unwrap();
+    assert!(row.apply_status(&st));
+    let d = row.details(1_000_000);
+    let get = |k: &str| d.iter().find(|(l, _)| *l == k).map(|(_, v)| v.as_str());
+    assert_eq!(get("PLAYERS"), Some("3 people, 2 agents"));
+    assert_eq!(get("WATCHING"), Some("1"));
+    assert_eq!(get("WIPE"), Some("wipe 3 · wipes in 2d"));
+    assert_eq!(
+        get("ISLAND"),
+        Some("ACT II · POWER · 4 of 4 works lit"),
+        "lit is clamped to the works there are"
+    );
+    assert_eq!(get("WORLD AGE"), Some("3 h played"));
+    // The tick moves every poll; the pane only redraws when the hour does.
+    let later = client::shardlist::parse_status(
+        br#"{"players":5,"agents":2,"spectators":1,"max_players":100,"tick":324030,
+             "next_wipe":1172800,"wipe":3,"act":2,"works_lit":9,"works_total":4}"#,
+    )
+    .unwrap();
+    assert!(!row.apply_status(&later));
 }
 
 /// The Direct row plus three shards at three populations.
@@ -4850,7 +4886,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 ///
 /// An empty list means the row is not a discrete button — `LOOK` is mouse
 /// motion — and is exempt by name rather than by falling through.
-const BIND_IDENTS: [(&str, &[&str]); 25] = [
+const BIND_IDENTS: [(&str, &[&str]); 31] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
     ("CROUCH", &["ControlLeft", "KeyZ"]),
@@ -4874,11 +4910,17 @@ const BIND_IDENTS: [(&str, &[&str]); 25] = [
     ),
     ("BUILD", &["MouseButton::Right"]),
     ("LIGHT / SNUFF A TORCH", &["KeyF", "MouseButton::Right"]),
+    ("PICK UP", &["KeyV"]),
     ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
+    ("RELOAD", &["KeyR"]),
+    ("THROW A CHARGE", &["KeyX"]),
+    ("DEMOLISH", &["Backspace"]),
+    ("CREW", &["KeyL", "KeyK"]),
     ("TURN WHILE PLACING", &["KeyR"]),
     ("LIGHT / SWITCH ON", &["KeyC"]),
     ("CHANGE SKIN", &["KeyP"]),
     ("SCREENSHOT", &["F12"]),
+    ("DIAGNOSTICS", &["F4", "F3"]),
     ("REPORT A BUG", &["F7"]),
     ("MENU", &["Escape"]),
     ("QUIT", &["Escape"]),
