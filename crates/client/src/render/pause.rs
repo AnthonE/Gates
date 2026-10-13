@@ -43,6 +43,7 @@ pub struct PauseRoot;
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Verb {
     Resume,
+    Island,
     Settings,
     Disconnect,
     Quit,
@@ -52,8 +53,13 @@ pub enum Verb {
 /// decoration: `Disconnect` and `Quit` are one row apart and do very
 /// different things, and the intro screen's own rows established that a row
 /// says what it is.
-pub const VERBS: [(Verb, &str, &str); 4] = [
+pub const VERBS: [(Verb, &str, &str); 5] = [
     (Verb::Resume, "Resume", "back to the world"),
+    (
+        Verb::Island,
+        "Island",
+        "the server's progress: works, standings, journal - [O] in the world",
+    ),
     (
         Verb::Settings,
         "Settings",
@@ -229,11 +235,12 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut chosen: ResMut<Chosen>) {
         chosen.0 = Some(Verb::Resume);
         return;
     }
-    const DIGITS: [KeyCode; 4] = [
+    const DIGITS: [KeyCode; VERBS.len()] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
         KeyCode::Digit3,
         KeyCode::Digit4,
+        KeyCode::Digit5,
     ];
     for (i, k) in DIGITS.iter().enumerate() {
         if keyboard.just_pressed(*k) {
@@ -243,11 +250,13 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut chosen: ResMut<Chosen>) {
 }
 
 /// Act on the verb.
+#[allow(clippy::too_many_arguments)]
 pub fn act(
     mut chosen: ResMut<Chosen>,
     mut next: ResMut<NextState<Screen>>,
     mut settings: ResMut<Settings>,
     mut menu: ResMut<Menu>,
+    mut panels: ResMut<super::panels::Ui>,
     connecting: NonSend<Connecting>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
@@ -263,6 +272,15 @@ pub fn act(
                 c.grab_mode = CursorGrabMode::Locked;
                 c.visible = super::web::in_post();
             }
+            next.set(Screen::InWorld);
+        }
+        Verb::Island => {
+            // Back into the world with the island page up, the way `O` opens
+            // it; the pointer stays free because a panel owns it.
+            panels.panel = super::panels::Panel::Island;
+            panels.drag = None;
+            panels.search_focus = false;
+            panels.dirty = true;
             next.set(Screen::InWorld);
         }
         Verb::Settings => {
@@ -332,9 +350,10 @@ mod tests {
     fn every_drawn_row_has_a_key_that_reaches_it() {
         // The intro screen's rule, applied here: a bind the player is told
         // about must work, and a row the keyboard cannot reach is a row half
-        // the players will not use. `keys` walks four digits; if a fifth verb
-        // is ever drawn, this fails rather than shipping a dead row.
-        assert_eq!(VERBS.len(), 4);
+        // the players will not use. `keys` walks one digit a verb (its array
+        // is sized by `VERBS.len()`, so a sixth verb without a digit is a
+        // compile error), and digits stop at 9.
+        assert!(VERBS.len() <= 9);
         // ...and no verb is drawn twice, which would make a digit ambiguous.
         for (i, a) in VERBS.iter().enumerate() {
             for b in VERBS.iter().skip(i + 1) {

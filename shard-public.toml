@@ -193,6 +193,25 @@ status_addr = "127.0.0.1:8431"
 #
 # entitle_origin = "https://elopros.com"   # scry.moreright.xyz retired 2026-08-20 (410)
 
+# ── the wipe and the way out (the alpha) ────────────────────────────────────
+#
+# Weekly wipes, Thursday 19:00 UTC (the default anchor), so a wipe closes and
+# writes its payout file (`shard.toml.example` has both blocks in full). Start
+# the alpha with `ci/release.sh --go --wipe` soon after a Thursday 19:00, or
+# move `wipe_anchor` to the hour you start: the first wipe is the next anchor
+# hour, however close.
+#
+# extract_cap: 1,000 JUNK a wallet a wipe through THE EXCHANGE (1,500 while it
+# burns). The shard only writes down what each wallet took; whether it is paid
+# is the meter's switch, not this file's. WEEK ONE IS DRY (elo's
+# `docs/launch/GATES-LAUNCH.md` §A): the meter records the wipe as owed and
+# pays it when JUNK goes live. Change the motd when it does.
+wipe_days = 7
+extract_cap = 1000
+motd = "ALPHA: this week is a dry run"
+motd = "JUNK you take out is recorded"
+motd = "and paid when JUNK goes live"
+
 # ── skins ────────────────────────────────────────────────────────────────────
 #
 # Who owns which skin, and what each costs, from the platform

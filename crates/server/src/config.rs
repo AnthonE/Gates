@@ -255,6 +255,9 @@ pub struct ShardConfig {
     /// `extract_cap` JUNK a wallet a wipe, less `extract_fee_pct`. Zero by
     /// default — nothing leaves until the operator arms it (`ALPHA.md` §2).
     pub exits: crate::standings::Exits,
+    /// Lines told to each player a few seconds after they join, in order
+    /// (`motd = "…"`, once per line). Empty by default.
+    pub motd: Vec<String>,
     /// The oldest client **release** this shard will admit, packed by
     /// [`protocol::version::pack`]. A joiner below it meets `REFUSE_BUILD`.
     ///
@@ -428,6 +431,7 @@ impl ShardConfig {
                 cap: 0,
                 fee_pct: DEFAULT_EXTRACT_FEE_PCT,
             },
+            motd: Vec::new(),
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
@@ -576,6 +580,11 @@ pub const DEFAULT_PRIZE_MIN_MINUTES: u32 = 720;
 /// Per cent of extracted JUNK burnt at the exchange (`DESIGN.md` §3.1: 2%).
 pub const DEFAULT_EXTRACT_FEE_PCT: u64 = 2;
 
+/// `motd`: how many lines, and how long each may be — a chat line less the
+/// `[server] ` prefix `admin::server_line` puts on it.
+pub const MOTD_MAX_LINES: usize = 4;
+pub const MOTD_MAX_BYTES: usize = protocol::ChatText::CAP - "[server] ".len();
+
 pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
@@ -626,6 +635,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     };
     let mut skins_all: Option<bool> = None;
     let mut skins_timeout_secs: Option<u64> = None;
+    let mut motd: Vec<String> = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -1058,6 +1068,23 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     format!("shard.toml line {}: extract_fee_pct is 0..=100", n + 1)
                 })?;
             }
+            "motd" => {
+                if motd.len() >= MOTD_MAX_LINES {
+                    return Err(format!(
+                        "shard.toml line {}: at most {MOTD_MAX_LINES} motd lines",
+                        n + 1
+                    ));
+                }
+                if value.len() > MOTD_MAX_BYTES
+                    || protocol::ChatText::sanitize(value.as_bytes()).is_none()
+                {
+                    return Err(format!(
+                        "shard.toml line {}: a motd line is 1..={MOTD_MAX_BYTES} bytes of text",
+                        n + 1
+                    ));
+                }
+                motd.push(value.to_string());
+            }
             "discord_webhook" => {
                 if !value.starts_with("https://") {
                     return Err(format!(
@@ -1382,6 +1409,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         prizes,
         discord_webhook,
         exits,
+        motd,
         wipe: wipe_days.map(|d| {
             crate::wipe::Schedule::days(d, wipe_anchor.unwrap_or(crate::wipe::DEFAULT_ANCHOR))
         }),
@@ -1512,6 +1540,30 @@ mod tests {
     /// boot failure rather than a silent fallback** — the failure mode this
     /// refuses is a `shard.toml` reading `cc = "bbr2"` while the shard runs
     /// CUBIC and the operator reads the measurement as BBR's.
+    /// `motd` lines stack in order; a line the chat lane would cut, or a
+    /// fifth line, is refused at boot rather than said short.
+    #[test]
+    fn motd_lines_stack_or_refuse() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+        assert!(parse_shard_toml(base).unwrap().motd.is_empty());
+        let cfg = parse_shard_toml(&format!(
+            "{base}motd = \"ALPHA WEEK 1: a dry run\"\nmotd = \"paid x2 when JUNK goes live\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.motd,
+            ["ALPHA WEEK 1: a dry run", "paid x2 when JUNK goes live"]
+        );
+        let long = "x".repeat(MOTD_MAX_BYTES + 1);
+        assert!(parse_shard_toml(&format!("{base}motd = \"{long}\"\n")).is_err());
+        let five = "motd = \"a\"\n".repeat(MOTD_MAX_LINES + 1);
+        assert!(parse_shard_toml(&format!("{base}{five}")).is_err());
+        // What fits here fits on the wire with its prefix.
+        let fits = "x".repeat(MOTD_MAX_BYTES);
+        let said = crate::wipe::chat(&fits).unwrap();
+        assert!(said.as_bytes().ends_with(fits.as_bytes()));
+    }
+
     /// The purse: a bare ticker and up to a board's worth of places; places
     /// with no coin, a `$`, or more places than a board shows are refused.
     #[test]

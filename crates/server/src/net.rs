@@ -683,6 +683,7 @@ pub async fn spawn_shard(
             .map(std::path::PathBuf::from);
         let prizes = cfg.prizes.clone();
         let exits = cfg.exits;
+        let motd = cfg.motd.clone();
         // The trust log's tap rides the save boot artifact (`store::Saves`).
         let trust = saves.trust;
         std::thread::Builder::new()
@@ -701,6 +702,7 @@ pub async fn spawn_shard(
                     standings_base,
                     prizes,
                     exits,
+                    motd,
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
@@ -3222,6 +3224,7 @@ fn sim_thread(
     standings_base: Option<std::path::PathBuf>,
     prizes: crate::standings::Prizes,
     exits: crate::standings::Exits,
+    motd: Vec<String>,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
@@ -3317,6 +3320,7 @@ fn sim_thread(
         wipe.number(),
     );
     core.standings.exits = exits;
+    core.motd = motd.iter().filter_map(|l| crate::wipe::chat(l)).collect();
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
     let mut watch = crate::anomaly::Watch::new();
@@ -3569,6 +3573,19 @@ fn sim_thread(
                 .map_or(0, |d| d.as_secs());
             core.wipe_poll(now);
             ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
+            let def = &core.world.works_def;
+            let lit = core
+                .world
+                .works
+                .w
+                .iter()
+                .take(def.count as usize)
+                .filter(|w| w.state == sim_core::works::WORK_LIT)
+                .count();
+            ShardStats::set(&stats.wipe, core.wipe.number() as u64);
+            ShardStats::set(&stats.act, core.world.works.act(def) as u64);
+            ShardStats::set(&stats.works_lit, lit as u64);
+            ShardStats::set(&stats.works_total, def.count as u64);
         }
         // The standings, once a minute: minutes played, every base
         // recounted, the boards rebuilt (`standings.rs`). The file itself

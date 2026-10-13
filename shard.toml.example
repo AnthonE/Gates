@@ -193,6 +193,13 @@ seed = 20260731
 # Post each wipe's podiums and prizes (names, never addresses) to Discord.
 # discord_webhook = "https://discord.com/api/webhooks/…"
 
+# Lines told to each player a few seconds after they join, before the wipe
+# line. One key per line, up to 4, each at most 39 bytes (a chat line less
+# the `[server] ` prefix); a longer one refuses the boot rather than being
+# said short. No `#` (it starts a comment).
+# motd = "ALPHA: this week is a dry run"
+# motd = "JUNK you take out is recorded"
+
 # How often the world is written, in ticks (30 ticks = 1 second). Default
 # 1800 = every 60 seconds; a clean shutdown always writes one regardless, so
 # this only bounds what a CRASH costs.

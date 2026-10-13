@@ -19,7 +19,8 @@
 //!  "aim_stale_unacked":0,"aim_stale_refused":0,
 //!  "aim_stale_hist":[0,0,0,0,0,0,0,0],
 //!  "favour_granted":0,"favour_sum":0,
-//!  "favour_clamped":0,"favour_disagree":0,"next_wipe":0}
+//!  "favour_clamped":0,"favour_disagree":0,"next_wipe":0,
+//!  "wipe":1,"act":1,"works_lit":0,"works_total":6}
 //! ```
 //!
 //! (one line on the wire; wrapped here to fit)
@@ -82,6 +83,10 @@
 //!
 //! - `next_wipe` — unix seconds of the next wipe, 0 for none (`wipe.rs`):
 //!   what a server list prints as "wipes Thu 19:00".
+//!
+//! - `wipe`, `act`, `works_lit`, `works_total` — the server's progression
+//!   (`ARC.md`): which wipe is running, the act, and how many works are lit
+//!   of how many exist. What the island banner tells a player, for a list.
 //!
 //! ## What this thread is allowed to touch
 //!
@@ -314,7 +319,8 @@ fn answer(mut stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std
          \"aim_stale_unacked\":{},\"aim_stale_refused\":{},\
          \"aim_stale_hist\":{},\
          \"favour_granted\":{},\"favour_sum\":{},\
-         \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{}}}",
+         \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{},\
+         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{}}}",
         ShardStats::get(&stats.players),
         ShardStats::get(&stats.agents),
         ShardStats::get(&stats.spectators),
@@ -340,6 +346,10 @@ fn answer(mut stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std
         ShardStats::get(&stats.favour_clamped),
         ShardStats::get(&stats.favour_disagree),
         ShardStats::get(&stats.next_wipe),
+        ShardStats::get(&stats.wipe),
+        ShardStats::get(&stats.act),
+        ShardStats::get(&stats.works_lit),
+        ShardStats::get(&stats.works_total),
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

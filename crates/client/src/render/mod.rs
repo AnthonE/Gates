@@ -1078,7 +1078,12 @@ impl Plugin for GatesRenderPlugin {
             .add_systems(OnExit(Screen::Settings), settings::teardown)
             .add_systems(
                 Update,
-                (settings::click, settings::rebuild, settings::keys)
+                (
+                    settings::click,
+                    settings::rebuild,
+                    settings::keys,
+                    settings::scroll,
+                )
                     .chain()
                     .run_if(in_state(Screen::Settings)),
             )

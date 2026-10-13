@@ -183,6 +183,19 @@ pub struct Status {
     /// `players`, never a second population.
     #[serde(default)]
     pub agents: Option<u32>,
+    /// Watchers in spectator seats — never counted in `players`.
+    #[serde(default)]
+    pub spectators: Option<u32>,
+    /// The server's progression (`ARC.md`): the wipe running, the act, and
+    /// works lit of works on the island.
+    #[serde(default)]
+    pub wipe: Option<u32>,
+    #[serde(default)]
+    pub act: Option<u8>,
+    #[serde(default)]
+    pub works_lit: Option<u32>,
+    #[serde(default)]
+    pub works_total: Option<u32>,
 }
 
 /// Parse a shard's `/status.json`.
@@ -221,6 +234,9 @@ pub fn parse_status(bytes: &[u8]) -> Result<Status, String> {
     // can briefly say more agents than players: clamp, as the browser page
     // does, rather than drop a count that is otherwise good.
     s.agents = s.agents.map(|a| a.min(s.players));
+    if let (Some(lit), Some(total)) = (s.works_lit, s.works_total) {
+        s.works_lit = Some(lit.min(total));
+    }
     Ok(s)
 }
 

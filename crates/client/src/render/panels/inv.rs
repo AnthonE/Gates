@@ -166,7 +166,8 @@ pub fn build_screen(
                  -   hold Shift and sweep to take   -   Tab or Esc closes"
             } else {
                 "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
-                 -   right-click uses or wears   -   P re-skins   -   Q crafting   -   Tab or Esc closes"
+                 -   right-click uses or wears   -   P re-skins   -   R unloads a gun   -   Q crafting   \
+                 -   O island   -   Tab or Esc closes"
             }),
             font(12.0),
             TextColor(TEXT_DIM),
