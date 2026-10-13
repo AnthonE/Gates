@@ -145,9 +145,11 @@ pub fn shard_with(
     core.world.lore_def = t.lore;
     core.world.mech_def = t.mechs;
     core.arc_text = t.arc_text;
-    // THE GATE's stalls, as the shard's boot installs them.
+    // THE GATE's stalls and the ziggurat's card doors, as the shard's boot
+    // installs them.
     core.world.vend = t.vend;
     core.vendor_names = t.vendor_names.clone();
+    core.world.cards = t.cards;
     if wildlife {
         core.world.mob = t.mobs;
     }

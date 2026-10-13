@@ -12,8 +12,9 @@
 //! cooking its meat and recycling and researching at ovens ([`oven`]),
 //! defending home and mending it ([`defend`]), raiding other people's
 //! bases its eyes found ([`raid`]), working a teammate's doors
-//! ([`doors`]), living in the team's base ([`supply`]), and trading at
-//! THE GATE and feeding the works ([`gate`]).
+//! ([`doors`]), living in the team's base ([`supply`]), trading at THE
+//! GATE and feeding the works ([`gate`]), and the ancients' stones and
+//! locks and the ziggurat's card doors ([`lore`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -35,6 +36,7 @@ pub mod intent;
 pub mod loadout;
 pub mod lock;
 pub mod loot;
+pub mod lore;
 pub mod oven;
 pub mod plan;
 pub mod raid;

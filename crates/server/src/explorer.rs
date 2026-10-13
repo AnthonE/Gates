@@ -36,6 +36,7 @@ use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::loadout::{Loadout, Role, BELT};
 use crate::agent::lock::{LockCode, LockSecret};
 use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
+use crate::agent::lore::{self, ExitJob, ReadJob, SolveJob, SwipeJob, Visit as LoreVisit};
 use crate::agent::oven::{self, DeviceJob, Keep, OvenStats, Tend, Work};
 use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
@@ -290,6 +291,8 @@ pub enum Phase {
     Following,
     Delivering,
     Trading,
+    /// At a stone, a lock or a card door (`agent::lore`).
+    Ancients,
     LoggingOff,
 }
 
@@ -331,6 +334,7 @@ impl Phase {
             Phase::Following => "With its teammate",
             Phase::Delivering => "Seeing to the team's boxes",
             Phase::Trading => "At the gate or a work",
+            Phase::Ancients => "At a stone, a lock or a card door",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -540,6 +544,8 @@ pub struct Memory {
     /// ago.
     pub trade_held: bool,
     pub work_held: bool,
+    /// A read, a solve, a swipe came to nothing a moment ago.
+    pub lore_held: [bool; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -818,6 +824,14 @@ pub struct Survivor {
     work_job: WorkJob,
     trade_failed: Option<u32>,
     work_failed: Option<u32>,
+    /// A stone read, a lock solved, a card door opened, the way out of a
+    /// card room (`agent::lore`), and when a read, a solve or a swipe last
+    /// came to nothing (in that order).
+    read_job: ReadJob,
+    solve_job: SolveJob,
+    swipe_job: SwipeJob,
+    exit_job: ExitJob,
+    lore_failed: [Option<u32>; 3],
     /// When this body last shot: an impact right after is its own.
     shot_at: Option<u32>,
     /// Salvage a recycle leaves whole (`Builder::kept_whole`), once a
@@ -956,6 +970,11 @@ impl Survivor {
             work_job: WorkJob::default(),
             trade_failed: None,
             work_failed: None,
+            read_job: ReadJob::default(),
+            solve_job: SolveJob::default(),
+            swipe_job: SwipeJob::default(),
+            exit_job: ExitJob::default(),
+            lore_failed: [None; 3],
             shot_at: None,
             keep: Keep::NONE,
             deadline_after: None,
@@ -1020,6 +1039,11 @@ impl Survivor {
     /// The team's base as its eyes found it.
     pub fn shared(&self) -> &TeamHome {
         &self.shared
+    }
+
+    /// Ziggurat levers pulled to get out of a card room.
+    pub fn levers(&self) -> u64 {
+        self.exit_job.pulls
     }
 
     pub fn memory(&self) -> &Memory {
@@ -1774,6 +1798,9 @@ impl Survivor {
         self.leave.doors.clear();
         self.trade_job.reset();
         self.work_job = WorkJob::default();
+        self.read_job.reset();
+        self.solve_job.reset();
+        self.swipe_job.reset();
         self.oven_job = DeviceJob::new(if goal == Goal::Recycle {
             Work::Recycle
         } else {
@@ -1890,7 +1917,10 @@ impl Survivor {
             | Goal::SupplyHemp
             | Goal::Buy(_)
             | Goal::Sell(_)
-            | Goal::FeedWork => true,
+            | Goal::FeedWork
+            | Goal::ReadStone
+            | Goal::SolveLock
+            | Goal::SwipeCard => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1908,6 +1938,24 @@ impl Survivor {
             || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
             if let Some(intent) = self.leave_mates(core, body, tick) {
+                return intent;
+            }
+        }
+        // Out of a ziggurat card room first, by its lever if the door has
+        // shut, and down off the terraces. A loot run takes the room's
+        // crates where it stands; a swipe under way walks its own way, and
+        // one starting up on its own door's ledge starts from there.
+        let swipe = active.goal == Goal::SwipeCard;
+        if walks && active.goal != Goal::Loot && !(swipe && self.swipe_job.under_way()) {
+            let (x, y, z) = (
+                body.qx as f32 * POS_XZ_Q,
+                body.qy as f32 * POS_Y_Q,
+                body.qz as f32 * POS_XZ_Q,
+            );
+            let climbing = swipe
+                && lore::swipeable(core)
+                    .is_some_and(|(d, _)| lore::on_path(&core.haven().ziggurat, d, x, y, z));
+            if let Some(intent) = self.exit_room(core, body, !climbing, tick) {
                 return intent;
             }
         }
@@ -2037,6 +2085,15 @@ impl Survivor {
             Goal::Buy(name) => self.trade(core, body, name, false, tick),
             Goal::Sell(name) => self.trade(core, body, name, true, tick),
             Goal::FeedWork => self.feed_work(core, body, tick),
+            Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard
+                if elapsed >= VISIT_GOAL_SECS * TICK_HZ =>
+            {
+                self.lore_over(active.goal, Outcome::Failed(Why::Stuck), tick);
+                Intent::IDLE
+            }
+            Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard => {
+                self.lore_visit(core, body, active.goal, tick)
+            }
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -2477,6 +2534,106 @@ impl Survivor {
             }
         }
         self.end_goal(tick, outcome);
+    }
+
+    /// A stone read, a lock solved or a card door opened (`agent::lore`):
+    /// the walk there, the press, its answer.
+    fn lore_visit(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        goal: Goal,
+        tick: u32,
+    ) -> Intent {
+        self.stats.phase = Phase::Ancients;
+        let step = match goal {
+            Goal::ReadStone => self.read_job.step(core, body, &mut self.route, tick),
+            Goal::SolveLock => self.solve_job.step(core, body, &mut self.route, tick),
+            _ => self.swipe_job.step(core, body, &mut self.route, tick),
+        };
+        match step {
+            LoreVisit::Go(intent) => intent,
+            LoreVisit::Arc { op, target, arg } => {
+                if self.queue(|buf| protocol::encode_action_arc(op, target, arg, buf)) {
+                    if goal == Goal::SolveLock {
+                        self.solve_job.sent(core, arg, tick);
+                    } else {
+                        self.read_job.sent(tick);
+                    }
+                }
+                Intent::IDLE
+            }
+            LoreVisit::Swipe(door) => {
+                if self.queue(|buf| protocol::encode_action_swipe(door, buf)) {
+                    self.swipe_job.sent(tick);
+                }
+                Intent::IDLE
+            }
+            LoreVisit::Done => {
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained = a.gained.saturating_add(1);
+                }
+                self.lore_over(goal, Outcome::Done, tick);
+                Intent::IDLE
+            }
+            LoreVisit::Fail(why) => {
+                self.lore_over(goal, Outcome::Failed(why), tick);
+                Intent::IDLE
+            }
+        }
+    }
+
+    /// A read, a solve or a swipe is over; one that failed is held a while.
+    fn lore_over(&mut self, goal: Goal, outcome: Outcome, tick: u32) {
+        if matches!(outcome, Outcome::Failed(_)) {
+            let i = match goal {
+                Goal::ReadStone => 0,
+                Goal::SolveLock => 1,
+                _ => 2,
+            };
+            self.lore_failed[i] = Some(tick);
+        }
+        self.end_goal(tick, outcome);
+    }
+
+    /// The way out of the ziggurat card room it stands in (`agent::lore::
+    /// ExitJob`); `None` once out, in none, or after a way out came to
+    /// nothing a moment ago.
+    fn exit_room(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        descend: bool,
+        tick: u32,
+    ) -> Option<Intent> {
+        let haven = self.haven?;
+        if self
+            .exit_job
+            .failed
+            .is_some_and(|at| tick.wrapping_sub(at) < doors::LEAVE_RETRY_TICKS)
+        {
+            return None;
+        }
+        match self
+            .exit_job
+            .step(core, &haven, body, &mut self.route, descend, tick)?
+        {
+            LoreVisit::Go(intent) => {
+                self.stats.phase = Phase::Leaving;
+                Some(intent)
+            }
+            LoreVisit::Swipe(door) => {
+                if self.queue(|buf| protocol::encode_action_swipe(door, buf)) {
+                    self.exit_job.sent(tick);
+                }
+                Some(Intent::IDLE)
+            }
+            LoreVisit::Fail(_) => {
+                self.exit_job.failed = Some(tick);
+                None
+            }
+            LoreVisit::Done | LoreVisit::Arc { .. } => None,
+        }
     }
 
     /// A point within the team's base.
@@ -3424,6 +3581,14 @@ impl Survivor {
                 if let Some(walk) = self.loot_approach(core, body, spot, OPEN_STAND_M, look, tick) {
                     self.loot_job.lid = None;
                     return walk;
+                }
+                // A storey up or down (the ziggurat's rooms stand over one
+                // another, and the eyes' line can miss a floor): not this
+                // one's to open from here.
+                if (spot.slot.y - body.qy as f32 * POS_Y_Q).abs() > loot::SAME_FLOOR_M {
+                    self.loot.emptied(key, tick);
+                    self.loot_job.next();
+                    return Intent::IDLE;
                 }
                 let since = match self.loot_job.lid {
                     Some(Lid::Aiming(at)) => at,
@@ -4876,6 +5041,7 @@ impl Survivor {
                 |at: Option<u32>| at.is_some_and(|at| tick.wrapping_sub(at) < VISIT_RETRY_TICKS);
             self.memory.trade_held = held(self.trade_failed);
             self.memory.work_held = held(self.work_failed);
+            self.memory.lore_held = self.lore_failed.map(held);
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
             // Mid-cook the meat is on the grill rather than in the pack, and a
@@ -5322,9 +5488,22 @@ impl Survivor {
         while let Some((refused, ..)) = core.pop_vend() {
             self.trade_job.on_vend(refused);
         }
-        while core.pop_arc_refused().is_some() {
+        while let Some((_, op, target)) = core.pop_arc_refused() {
             self.stats.refusals += 1;
             self.work_job.on_refused();
+            self.read_job.on_refused(op, target);
+            self.solve_job.on_refused(op, target);
+        }
+        // A stone's words, a lock solved anywhere, a card refused.
+        while let Some((kind, index, _)) = core.pop_arc_text() {
+            self.read_job.on_text(kind, index);
+        }
+        while let Some((mech, by)) = core.pop_mech_solved() {
+            self.solve_job.on_solved(mech, by, core.player_id);
+        }
+        while let Some((code, door)) = core.pop_swipe_refused() {
+            self.stats.refusals += 1;
+            self.swipe_job.on_refused(code, door);
         }
         while core.pop_work_event().is_some() {}
         while core.pop_research_toast().is_some() {}
@@ -6062,6 +6241,51 @@ pub fn observe(
         s.works[n] = sense;
         s.works_len += 1;
     }
+    // The stones, their locks and the ziggurat's card doors.
+    let place = |x: f32, z: f32| {
+        body.map(|b| {
+            let (d, bearing) = relative(b, x, z);
+            Place {
+                distance: Distance::of(d),
+                bearing,
+            }
+        })
+    };
+    (s.stones_read, s.stones_known) = lore::stones(core);
+    if let Some(b) = body {
+        let (x, z) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+        s.unread_stone =
+            lore::unread(core, x, z, f32::INFINITY).and_then(|(_, at)| place(at[0], at[2]));
+    }
+    s.glyphs = core.lore.glyphs.count_ones() as u8;
+    s.alphabet = core.lore.alphabet_len;
+    for (m, mech) in core.lore.known_mechs() {
+        let n = usize::from(s.locks_len);
+        if n >= s.locks.len() {
+            break;
+        }
+        let middle = usize::from(mech.n_dials.saturating_sub(1) / 2);
+        s.locks[n] = crate::mind::LockSense {
+            name: Name::new(mech.name().as_bytes()).unwrap_or(Name::EMPTY),
+            at: lore::dial_at(core, m, middle).and_then(|p| place(p[0], p[2])),
+            dials: mech.n_dials,
+            resting: mech.resting,
+            answer_known: lore::answer(&core.lore, m).is_some(),
+        };
+        s.locks_len += 1;
+    }
+    let zig = core.haven().ziggurat;
+    for (d, card) in lore::CARD_NAMES.iter().enumerate().filter(|_| zig.live) {
+        let reader = sim_core::monument::reader_world(&zig, d, false);
+        s.card_doors[d] = crate::mind::CardDoorSense {
+            card: Name::new(card.as_bytes()).unwrap_or(Name::EMPTY),
+            at: reader.and_then(|(x, _, z)| place(x, z)),
+            have_card: crate::agent::build::item_named(core, card)
+                .is_some_and(|item| count_item(core, item) > 0),
+            open: lore::door_open(core, d),
+        };
+        s.card_doors_len = d as u8 + 1;
+    }
     for &(item, units) in &memory.home_holds[..usize::from(memory.home_holds_len)] {
         let n = usize::from(s.home_holds_len);
         if let (Some(name), true) = (
@@ -6269,6 +6493,20 @@ pub fn observe(
             && gate::pick_work(core, core.haven(), x, z).is_some()
         {
             s.offer(Goal::FeedWork);
+        }
+        // The ancients: a stone near it has not read, a lock whose answer
+        // it read, a card door it holds the card for; nobody dangerous in
+        // view, and none of them came to nothing a moment ago.
+        if !senses.hostile {
+            if !memory.lore_held[0] && lore::unread(core, x, z, lore::READ_TRIP_M).is_some() {
+                s.offer(Goal::ReadStone);
+            }
+            if !memory.lore_held[1] && lore::solvable(core, x, z).is_some() {
+                s.offer(Goal::SolveLock);
+            }
+            if !memory.lore_held[2] && lore::swipeable(core).is_some() {
+                s.offer(Goal::SwipeCard);
+            }
         }
     }
     for i in 0..s.craftable_len as usize {

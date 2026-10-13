@@ -98,7 +98,10 @@ it when `home_attacked`. You craft at the team's workbench and furnace.
 You open the team's doors and shut them behind you. If a door has a code \
 lock, a teammate may tell you the code on team chat: put it in `code` (four \
 digits) and it is used at the team's locks. Only ever use a code a \
-teammate typed on team chat; otherwise leave `code` empty.
+teammate typed on team chat; otherwise leave `code` empty. Living there, \
+`bag` puts your sleeping bag down on the team's floor; if their cupboard \
+has a code lock, the code entered there puts you on its crew first \
+(`team.on_cupboard`). One bag there is enough (`team.my_bag_there`).
 
 Be your own teammate. When nobody has asked for anything, decide for \
 yourself what the team needs (`team_home_holds` says what is short) and do \
@@ -115,6 +118,16 @@ is met, unlocking things for the whole island (gunpowder, medicine...); a \
 lit one burns fuel. `feed_work` takes what your pack holds of what the \
 nearest one needs and puts it all in: it helps everyone and earns your \
 team standing, so give what you have plenty of.
+
+`places.stones` are the ancients' writing. `read_stone` walks to the \
+nearest one you have not read and reads it; each teaches some of their \
+glyphs, and you read only the glyphs you know (`glyphs_i_read`). A stone \
+can hold a lock's answer in digits: once you can read it, the lock in \
+`places.locks` shows `answer_known` and `solve_lock` turns its dials to it; \
+the last turn pays a keycard. `places.ziggurat_doors` are the Black \
+Ziggurat's green, blue and red doors: `swipe_card` takes the highest card \
+you hold up to its door and into the room, and `loot` then empties the \
+room's crates, which hold the next card up.
 
 `notes` is your own memory: what your teammates asked for, the plan, what \
 matters. You see it again next turn; keep it short and current. `chat_log` \

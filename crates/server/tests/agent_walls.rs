@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 24] = [
+const EXPECTED_VERBS: [&str; 25] = [
     "craft",
     "consume",
     "drink",
@@ -97,6 +97,7 @@ const EXPECTED_VERBS: [&str; 24] = [
     "team",
     "vend",
     "arc",
+    "swipe",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -815,6 +816,51 @@ impl Harness {
                         pick.verb == Verb::TechTree
                             && sim_core::deploy::bench_tier(pick.arch) >= tier,
                         "the agent bought recipe {recipe} (tier {tier}) with no bench of that                          rung under `E` ({pick:?}), at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
+                // A stone read and a dial turned are what `E` would take
+                // from where the body stands (the nearest in reach, a dial
+                // first); so is a card reader's or a lever's swipe.
+                ActionMsg::Arc { op, target, arg }
+                    if op == sim_core::lore::OP_READ || op == sim_core::mech::OP_TURN =>
+                {
+                    let core = self.bot.core().unwrap();
+                    let me = self.view.get(ID).copied().unwrap();
+                    let pick = client::ui::interact::resolve_lore(
+                        me.qx as f32 * sim_core::movement::POS_XZ_Q,
+                        me.qy as f32 * sim_core::movement::POS_Y_Q,
+                        me.qz as f32 * sim_core::movement::POS_XZ_Q,
+                        core.haven(),
+                        &core.lore,
+                    );
+                    let want = if op == sim_core::lore::OP_READ {
+                        (Verb::Read, u32::from(target))
+                    } else {
+                        (Verb::Turn, (u32::from(target) << 8) | u32::from(arg))
+                    };
+                    assert_eq!(
+                        (pick.verb, pick.handle),
+                        want,
+                        "the agent pressed {msg:?}, which `E` would not take ({pick:?}), at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
+                ActionMsg::Swipe { door } => {
+                    let core = self.bot.core().unwrap();
+                    let me = self.view.get(ID).copied().unwrap();
+                    let pick = client::ui::interact::resolve_swipe(
+                        me.qx as f32 * sim_core::movement::POS_XZ_Q,
+                        me.qy as f32 * sim_core::movement::POS_Y_Q,
+                        me.qz as f32 * sim_core::movement::POS_XZ_Q,
+                        &core.haven().ziggurat,
+                    );
+                    assert!(
+                        pick.verb == Verb::Swipe && pick.handle == u32::from(door),
+                        "the agent swiped at door {door}, which `E` would not take ({pick:?}), at \
+                         tick {}",
                         self.tick
                     );
                     self.pick_checks += 1;
@@ -4596,4 +4642,370 @@ fn a_raider_hacks_through_a_twig_wall_when_the_numbers_say_so() {
         "the agent's frame loop touched the allocator"
     );
     println!("{stats:?} {}", h.explain());
+}
+
+/// The ancients' decision source: a lock it can solve; a stone close by
+/// it has not read; a card door it holds the card for; then the room's
+/// crates; else, while `.0` says so, a walk (out of a room, if it stands
+/// in one), or a stand and a look round. The test flips `.0`.
+struct Ancients(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Ancients {
+    fn new(explore: bool) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(explore));
+        (Self(flag.clone()), flag)
+    }
+}
+
+impl server::mind::DecisionSource for Ancients {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use server::mind::Distance;
+        let near = s
+            .unread_stone
+            .is_some_and(|p| matches!(p.distance, Distance::Here | Distance::Near));
+        let goal = if s.offers(Goal::SolveLock) {
+            Goal::SolveLock
+        } else if near && s.offers(Goal::ReadStone) {
+            Goal::ReadStone
+        } else if s.offers(Goal::SwipeCard) {
+            Goal::SwipeCard
+        } else if s.offers(Goal::Loot) {
+            Goal::Loot
+        } else if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            Goal::Explore
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// Where stone or lock `spot` stands, and a standing point `back` metres
+/// off it toward the island's middle, on the ground.
+fn off_spot(spot: &sim_core::spot::Spot, back: f32) -> ([f32; 3], (f32, f32)) {
+    let haven = sim_core::terrain::haven(SEED);
+    let (x, y, z) = sim_core::spot::world(&haven, spot).unwrap();
+    let c = sim_core::terrain::ISLAND_SIZE * 0.5;
+    let (dx, dz) = (c - x, c - z);
+    let d = dx.hypot(dz).max(1.0);
+    ([x, y, z], (x + dx / d * back, z + dz / d * back))
+}
+
+/// THE RING LOCK's answer is written on the ring word in digits, and the
+/// digits are learnt at the count stone. The agent knows no glyph. Set
+/// down near the ring word first, it reads it and has no answer: the
+/// digits are shapes to it. Near the count stone, it reads that and learns
+/// them; what it read at the ring word now gives the answer. At the lock,
+/// it walks to each dial and turns it a notch a press until it shows the
+/// answer's digit, and the last turn pays it the green keycard.
+#[test]
+fn a_survivor_reads_the_stones_and_turns_the_ring_lock_to_their_answer() {
+    let content = common::content();
+    let t = server::net::bake_all(&content).unwrap();
+    let find = |text: &str| {
+        t.arc_text
+            .inscriptions
+            .iter()
+            .position(|s| s.starts_with(text))
+            .unwrap()
+    };
+    let (word, count) = (find("AT THE RING"), find("COUNT THE RINGS"));
+    let (_, word_at) = off_spot(&t.lore.inscriptions[word].spot, 12.0);
+    let (_, count_at) = off_spot(&t.lore.inscriptions[count].spot, 12.0);
+    let lock = t.mechs.defs[0];
+    let (_, lock_at) = off_spot(&lock.spot, 12.0);
+    let mind = Mind::inline(Ancients::new(false).0, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, word_at, mind);
+    let haven = h.shard.world.haven;
+    let place = move |(x, z): (f32, f32)| sim_core::movement::Body::at(SEED, &haven, x, z);
+    h.until(5, |_| false);
+    assert_eq!(h.me().glyphs, 0, "it reads nothing yet");
+    let reads = |h: &Harness| {
+        h.bot
+            .history
+            .iter()
+            .filter(|r| r.goal == Goal::ReadStone && r.outcome == Outcome::Done)
+            .count()
+    };
+    // 1. The ring word, unread digits and all.
+    h.until(90 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::ReadStone && r.outcome == Outcome::Done)
+    });
+    assert!(
+        reads(&h) >= 1,
+        "the ring word was never read: {}",
+        h.explain()
+    );
+    let core = h.bot.core().unwrap();
+    assert!(core.lore.inscriptions[word].len > 0, "its words came");
+    assert_eq!(
+        server::agent::lore::answer(&core.lore, 0),
+        None,
+        "but no digits"
+    );
+    // 2. The count stone: the digits.
+    let at = place(count_at);
+    h.stage(move |p| p.body = at);
+    let learnt = h.until(90 * TICK_HZ, |b| {
+        b.core()
+            .is_some_and(|c| server::agent::lore::answer(&c.lore, 0).is_some())
+    });
+    assert!(learnt, "the digits were never learnt: {}", h.explain());
+    let core = h.bot.core().unwrap();
+    let want = server::agent::lore::answer(&core.lore, 0).unwrap();
+    let truth = sim_core::mech::answers(h.shard.world.arc.salt, SEED, 0, &lock);
+    assert_eq!(want, truth, "the answer it read is the lock's");
+    // 3. The lock.
+    let at = place(lock_at);
+    h.stage(move |p| p.body = at);
+    let card = content.item_index("item.keycard_green").unwrap();
+    let solved = h.until(180 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::SolveLock && r.outcome == Outcome::Done)
+    });
+    assert!(solved, "the lock was never solved: {}", h.explain());
+    assert_eq!(units_of(h.me(), card), 1, "the green keycard is its pay");
+    assert_eq!(h.shard.world.arc.mechs[0].solves, 1);
+    assert!(
+        h.verbs.contains("arc") && h.pick_checks >= 3,
+        "{:?}",
+        h.verbs
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// A green keycard in the pack, outside the Black Ziggurat's rear portal:
+/// the agent walks into the entry hall to the green door's reader, swipes,
+/// and walks into the green room while the door stands open. There it
+/// empties the room's crates, the blue card among what they hold, and
+/// walks out again.
+#[test]
+fn a_survivor_swipes_into_the_green_room_and_loots_the_blue_card() {
+    let haven = sim_core::terrain::haven(SEED);
+    let zig = haven.ziggurat;
+    assert!(zig.live, "the fixture seed has a ziggurat");
+    let (x, z) = sim_core::kit::to_world(&zig.placed(), 0.0, 40.0);
+    let content = common::content();
+    let (ancients, explore) = Ancients::new(false);
+    let mind = Mind::inline(ancients, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, (x, z), mind);
+    h.until(5, |_| false);
+    let green = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.keycard_green")
+    };
+    let at = sim_core::movement::Body::at(SEED, &haven, x, z);
+    h.stage(move |p| {
+        p.body = at;
+        p.inv[HOTBAR_SLOTS] = green;
+    });
+    let room = |h: &Harness| {
+        let me = h.me().body;
+        server::agent::lore::room_of(
+            &zig,
+            me.qx as f32 * sim_core::movement::POS_XZ_Q,
+            me.qy as f32 * sim_core::movement::POS_Y_Q,
+            me.qz as f32 * sim_core::movement::POS_XZ_Q,
+        )
+    };
+    let swiped = h.until(120 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::SwipeCard)
+    });
+    assert!(swiped, "no swipe ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::SwipeCard)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(room(&h), Some(0), "in the green room");
+    assert!(h.verbs.contains("swipe"));
+    // The room's crates.
+    let blue = content.item_index("item.keycard_blue").unwrap();
+    for _ in 0..120 * TICK_HZ {
+        if units_of(h.me(), blue) > 0 {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        units_of(h.me(), blue) > 0,
+        "the blue card never came out of the green crate: {}",
+        h.explain()
+    );
+    assert!(h.verbs.contains("container") && h.verbs.contains("move"));
+    // The blue card goes up the chain another time. This run walks out of
+    // the green room, by the door while it stands open (the hall's crates
+    // are the loot run's next), else by the lever.
+    drop_item(&mut h, blue);
+    explore.store(true, std::sync::atomic::Ordering::Relaxed);
+    for _ in 0..180 * TICK_HZ {
+        if room(&h).is_none() {
+            break;
+        }
+        h.step();
+    }
+    assert_eq!(
+        room(&h),
+        None,
+        "never out of the green room: {}",
+        h.explain()
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The ziggurat test's staging: the agent in front of the front stairs
+/// with `card` in its pack, and where it is in the ziggurat's own metres.
+fn at_the_ziggurat(
+    card: &str,
+) -> (
+    Harness,
+    sim_core::monument::Ziggurat,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let haven = sim_core::terrain::haven(SEED);
+    let zig = haven.ziggurat;
+    assert!(zig.live, "the fixture seed has a ziggurat");
+    let (x, z) = sim_core::kit::to_world(&zig.placed(), 0.0, -42.0);
+    let content = common::content();
+    let (ancients, explore) = Ancients::new(false);
+    let mind = Mind::inline(ancients, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, (x, z), mind);
+    h.until(5, |_| false);
+    let card = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, card)
+    };
+    let at = sim_core::movement::Body::at(SEED, &haven, x, z);
+    h.stage(move |p| {
+        p.body = at;
+        p.inv[HOTBAR_SLOTS] = card;
+    });
+    (h, zig, explore)
+}
+
+/// Scene staging: every stack of `item` out of the agent's pack.
+fn drop_item(h: &mut Harness, item: u16) {
+    h.stage(move |p| {
+        for s in p.inv.iter_mut().filter(|s| s.count > 0 && s.item == item) {
+            *s = sim_core::gather::ItemStack::default();
+        }
+    });
+}
+
+/// The agent's card room, and whether it is up on the terraces.
+fn where_in(h: &Harness, zig: &sim_core::monument::Ziggurat) -> (Option<u8>, bool) {
+    let me = h.me().body;
+    let (x, y, z) = (
+        me.qx as f32 * sim_core::movement::POS_XZ_Q,
+        me.qy as f32 * sim_core::movement::POS_Y_Q,
+        me.qz as f32 * sim_core::movement::POS_XZ_Q,
+    );
+    (
+        server::agent::lore::room_of(zig, x, y, z),
+        server::agent::lore::aloft(zig, x, y, z),
+    )
+}
+
+/// A blue keycard in the pack, in front of the Black Ziggurat: the route's
+/// grid knows only the ground, so the agent walks the front flight up to
+/// the first ledge and round to the blue door's reader on the east face,
+/// swipes, and walks into the blue room. There it empties the room's crate
+/// of the red card it guarantees. Sent walking once the door has shut, it
+/// pulls the lever, walks out, and back round and down the flight.
+#[test]
+fn a_survivor_climbs_to_the_blue_door_loots_the_room_and_comes_back_down() {
+    let (mut h, zig, explore) = at_the_ziggurat("item.keycard_blue");
+    let content = common::content();
+    let swiped = h.until(150 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::SwipeCard)
+    });
+    assert!(swiped, "no swipe ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::SwipeCard)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(where_in(&h, &zig), (Some(1), true), "in the blue room");
+    let red = content.item_index("item.keycard_red").unwrap();
+    for _ in 0..120 * TICK_HZ {
+        if units_of(h.me(), red) > 0 {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        units_of(h.me(), red) > 0,
+        "no red card from the blue crate: {}",
+        h.explain()
+    );
+    // The red card goes up the chain another time; this run waits out the
+    // door, then walks: out, by the lever, and down.
+    drop_item(&mut h, red);
+    for _ in 0..90 * TICK_HZ {
+        if h.shard.world.card_door_bits & 2 == 0 {
+            break;
+        }
+        h.step();
+    }
+    assert_eq!(
+        where_in(&h, &zig),
+        (Some(1), true),
+        "still in the blue room"
+    );
+    explore.store(true, std::sync::atomic::Ordering::Relaxed);
+    let levers = h.bot.levers();
+    for _ in 0..240 * TICK_HZ {
+        if where_in(&h, &zig) == (None, false) {
+            break;
+        }
+        h.step();
+    }
+    assert_eq!(
+        where_in(&h, &zig),
+        (None, false),
+        "never back down: {}",
+        h.explain()
+    );
+    assert!(h.bot.levers() > levers, "out by the lever");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// A red keycard: up all three front flights to the third ledge, round
+/// its west side to the rear, and in at the red door to the sanctum.
+#[test]
+fn a_survivor_climbs_to_the_red_door_and_walks_into_the_sanctum() {
+    let (mut h, zig, _) = at_the_ziggurat("item.keycard_red");
+    let swiped = h.until(180 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::SwipeCard)
+    });
+    assert!(swiped, "no swipe ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::SwipeCard)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(where_in(&h, &zig), (Some(2), true), "in the sanctum");
+    assert!(h.verbs.contains("swipe"));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }

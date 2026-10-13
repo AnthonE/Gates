@@ -47,6 +47,9 @@ pub const RETRY_TICKS: u32 = 60 * TICK_HZ;
 pub const MAX_STOPS: u8 = 6;
 /// Ground items passed over in one run (presses that took nothing).
 pub const SKIP_ROWS: usize = 6;
+/// A crate further above or below the feet than this, in reach, is on
+/// another storey.
+pub const SAME_FLOOR_M: f32 = 2.5;
 
 /// What a container is to a player: smashed or opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,7 +63,11 @@ impl Prize {
     pub fn of(occupant: Occupant) -> Option<Prize> {
         match occupant {
             Occupant::BarrelSlot => Some(Prize::Barrel),
-            Occupant::CrateSlot | Occupant::CacheSlot => Some(Prize::Crate),
+            Occupant::CrateSlot
+            | Occupant::CacheSlot
+            | Occupant::GreenCrate
+            | Occupant::BlueCrate
+            | Occupant::EliteCrate => Some(Prize::Crate),
             _ => None,
         }
     }
