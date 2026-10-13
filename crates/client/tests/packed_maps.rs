@@ -113,6 +113,14 @@ fn packed_models() -> Vec<&'static str> {
     for p in client::render::mobs::MOB_GLBS {
         set.insert(p);
     }
+    for row in client::render::beasts::BEAST_GLB
+        .iter()
+        .chain(client::render::beasts::BEAST_CARCASS_GLB.iter())
+    {
+        for p in row {
+            set.insert(*p);
+        }
+    }
     for p in client::render::props::TIER_CRATE_GLB {
         set.insert(p);
     }

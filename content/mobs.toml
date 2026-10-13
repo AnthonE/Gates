@@ -494,3 +494,37 @@ drops = [
   { item = "item.junk", count = 5 },
   { item = "item.metal_frags", count = 20 },
 ]
+
+# ── Fel tiers (`ARC.md` §2, `sim-core/src/mob.rs` `FelTier`) ──────────────
+# The island's animals are fel-touched, and the touch deepens with the wipe:
+# tier A in act I, B once an act-II work opens, C once every act-II work has
+# burned (`works::fel_tier_of`; the client draws the same tier,
+# `render/beasts.rs`). Each row moves EVERY species, in per cent of its own
+# numbers above, while the island is in that tier.
+#
+# Operator, 2026-10-13: "make animals weak early on. and maybe less
+# agressive". So A is soft and wary: 60% of the hp, half the bite, half the
+# notice radius (a wolf hunts from 15 m by day instead of 30, hears a shot at
+# 50 m instead of 100), and a fighter breaks off below 35% hp — which is a
+# wolf learning to run, since the boar's own floor is already 50. B is the
+# rows as written. C is the island at its worst.
+#
+# An animal alive across a tier change keeps its hp and heals toward the new
+# ceiling out of combat (`brain::heal`), so nothing jumps to full at dawn.
+[[fel_tier]]
+hp_pct = 60
+attack_pct = 50
+notice_pct = 50
+brave_min_pct = 35
+
+[[fel_tier]]
+hp_pct = 100
+attack_pct = 100
+notice_pct = 100
+brave_min_pct = 0
+
+[[fel_tier]]
+hp_pct = 150
+attack_pct = 140
+notice_pct = 125
+brave_min_pct = 0

@@ -139,6 +139,8 @@ struct MobsFile {
     butcher: Option<schema::Butcher>,
     #[serde(default)]
     guard: Option<schema::Guard>,
+    #[serde(default)]
+    fel_tier: Vec<schema::FelTier>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -212,6 +214,9 @@ pub struct Content {
     /// What a site guard's carcass adds to its species' drops (`mobs.toml`
     /// `[guard]`), or none: a guard pays what its species pays.
     pub guard: Option<schema::Guard>,
+    /// The fel tiers (`mobs.toml` `[[fel_tier]]`), light to heavy, or none:
+    /// every species stays as its row reads all wipe.
+    pub fel_tiers: Vec<schema::FelTier>,
     pub skins: Vec<Skin>,
     /// The town's vendors, kiosk order (`sites.toml`).
     pub vendors: Vec<Vendor>,
@@ -325,6 +330,7 @@ impl Content {
             heli: mobs.heli,
             butcher: mobs.butcher,
             guard: mobs.guard,
+            fel_tiers: mobs.fel_tier,
             skins: skins.skin,
             vendors: sites.vendor,
             sentry: sites.sentry,

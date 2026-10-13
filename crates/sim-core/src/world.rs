@@ -3195,7 +3195,7 @@ impl World {
                 let by = self.live_slot_of(f.owner);
                 mob::hurt_slot(
                     &self.backpack,
-                    &self.mob,
+                    &self.mob_now(),
                     self.tick,
                     by,
                     &self.players,
@@ -3307,6 +3307,14 @@ impl World {
         }
     }
 
+    /// The species table in the island's current fel tier (`mob::FelTier`,
+    /// `works::fel_tier_of`): what every bite, blow and think reads, so an
+    /// animal hatched on wipe day is weak and wary and the same species is
+    /// hardened once the works burn. The hit volumes stay content's.
+    pub fn mob_now(&self) -> mob::MobContent {
+        self.mob.at_tier(self.works.fel_tier(&self.works_def))
+    }
+
     /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
     /// the same `mob::hurt_slot` a swing lands through, so a shot animal
     /// flees, turns on its shooter and drops its corpse exactly as a
@@ -3318,7 +3326,7 @@ impl World {
             let by = self.live_slot_of(h.by);
             mob::hurt_slot(
                 &self.backpack,
-                &self.mob,
+                &self.mob_now(),
                 self.tick,
                 by,
                 &self.players,
@@ -6299,7 +6307,7 @@ impl World {
                         if mob::strike_slot(
                             &self.combat,
                             &self.backpack,
-                            &self.mob,
+                            &self.mob_now(),
                             tick,
                             i,
                             lit,
@@ -6510,7 +6518,7 @@ impl World {
             let by = self.live_slot_of(blast_mobs.by[slot]);
             mob::hurt_slot(
                 &self.backpack,
-                &self.mob,
+                &self.mob_now(),
                 tick,
                 by,
                 &self.players,
@@ -6543,7 +6551,7 @@ impl World {
             tick,
             day_tick,
             crate::weather::sense_pm(&wx),
-            &self.mob,
+            &self.mob_now(),
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,

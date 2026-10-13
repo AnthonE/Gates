@@ -47,8 +47,8 @@ use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
 use sim_core::mob::{
-    ButcherRow, MobContent, MobDef, GUARD_LOOT_ROWS, MAX_BUTCHER_TOOLS, MOB_LOOT_ROWS, MOB_PIG,
-    MOB_WOLF,
+    ButcherRow, FelTier, MobContent, MobDef, FEL_TIERS, GUARD_LOOT_ROWS, MAX_BUTCHER_TOOLS,
+    MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF,
 };
 use sim_core::oven::{CookContent, CookRow};
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
@@ -2517,6 +2517,26 @@ impl Content {
                 };
             }
             mc.defs[which] = def;
+        }
+        if !self.fel_tiers.is_empty() {
+            if self.fel_tiers.len() != FEL_TIERS {
+                return Err(format!(
+                    "bake: mobs.toml names {} [[fel_tier]] rows; the sim has {FEL_TIERS} tiers",
+                    self.fel_tiers.len()
+                ));
+            }
+            for (i, t) in self.fel_tiers.iter().enumerate() {
+                let pct = |v: u32, what: &str| {
+                    u16::try_from(v).map_err(|_| format!("bake: fel_tier {i} {what} overflows"))
+                };
+                mc.tiers[i] = FelTier {
+                    hp_pct: pct(t.hp_pct, "hp_pct")?,
+                    attack_pct: pct(t.attack_pct, "attack_pct")?,
+                    notice_pct: pct(t.notice_pct, "notice_pct")?,
+                    brave_min: u8::try_from(t.brave_min_pct)
+                        .map_err(|_| format!("bake: fel_tier {i} brave_min_pct overflows"))?,
+                };
+            }
         }
         if let Some(g) = &self.guard {
             if g.drops.len() > GUARD_LOOT_ROWS {

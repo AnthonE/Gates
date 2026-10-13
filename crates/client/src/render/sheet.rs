@@ -211,6 +211,11 @@ pub fn pixels() -> Vec<u8> {
 /// shimmers without one.
 pub fn image() -> Image {
     let level0 = pixels();
+    // Built from level 0 and THEN given the chain, `far_trees.rs`'s order:
+    // `Image::new` checks the data against one level, in debug builds only,
+    // so handing it the chain passed every release run and panicked the
+    // first debug client to draw a deployable.
+    let chain = super::mipmap::chain(&level0, TEX, TEX, super::mipmap::Filter::Srgb);
     let mut img = Image::new(
         Extent3d {
             width: TEX,
@@ -218,10 +223,11 @@ pub fn image() -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        super::mipmap::chain(&level0, TEX, TEX, super::mipmap::Filter::Srgb),
+        level0,
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
+    img.data = Some(chain);
     img.texture_descriptor.mip_level_count = super::mipmap::levels(TEX, TEX);
     img.sampler = ImageSampler::linear();
     img

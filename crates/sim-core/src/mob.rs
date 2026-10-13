@@ -555,10 +555,86 @@ impl ButcherRow {
     };
 }
 
+/// Fel tiers: light, medium, heavy (`ARC.md` §2, `content/mobs.toml`
+/// `[[fel_tier]]`). The island's animals start weak and wary on wipe day and
+/// harden as the works come back; `works::fel_tier_of` says which tier the
+/// island is in, the same function the client draws the tier with.
+pub const FEL_TIERS: usize = 3;
+
+/// One fel tier: how far every species' row moves while the island is in it.
+/// Percentages of the species' own numbers, so a tier is one row for the
+/// whole roster and a species stays the shape content gave it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FelTier {
+    /// Hit points, per cent — at hatch, and the ceiling healing climbs to.
+    pub hp_pct: u16,
+    /// Damage per bite, per cent.
+    pub attack_pct: u16,
+    /// Every notice radius, per cent: the day and night `spook_cm` (prey's
+    /// fright and a hunter's hunting range, one comparison) and each kind
+    /// of noise it hears. Never under the species' bite reach: nothing bites
+    /// what it has not noticed.
+    pub notice_pct: u16,
+    /// A fighter's courage floor, per cent of max hp: below it a roused
+    /// animal flees rather than charges. Raises `brave_pct`, never lowers
+    /// it, so a wolf (0, never breaks off) can be made to break off hurt
+    /// while a boar keeps its own 50.
+    pub brave_min: u8,
+}
+
+impl FelTier {
+    /// The species as content wrote it.
+    pub const SAME: Self = Self {
+        hp_pct: 100,
+        attack_pct: 100,
+        notice_pct: 100,
+        brave_min: 0,
+    };
+
+    /// `d` in this tier. Integer arithmetic only (wall 1).
+    pub fn apply(&self, d: MobDef) -> MobDef {
+        let pct = |v: u16, p: u16| -> u16 {
+            if v == 0 {
+                0
+            } else {
+                (v as u32 * p as u32 / 100).clamp(1, u16::MAX as u32) as u16
+            }
+        };
+        let reach = if d.attack > 0 { d.attack_range_cm } else { 0 };
+        let cm = |v: i64| -> i64 {
+            if v == 0 {
+                0
+            } else {
+                (v * self.notice_pct as i64 / 100).max(reach)
+            }
+        };
+        MobDef {
+            hp: pct(d.hp, self.hp_pct),
+            attack: pct(d.attack, self.attack_pct),
+            brave_pct: if d.attack > 0 {
+                d.brave_pct.max(self.brave_min)
+            } else {
+                d.brave_pct
+            },
+            spook_cm: cm(d.spook_cm),
+            night_spook_cm: cm(d.night_spook_cm),
+            hear: Hearing {
+                gun_cm: cm(d.hear.gun_cm),
+                bow_cm: cm(d.hear.bow_cm),
+                strike_cm: cm(d.hear.strike_cm),
+                blast_cm: cm(d.hear.blast_cm),
+            },
+            ..d
+        }
+    }
+}
+
 /// The baked species table (`content::Content::bake_mobs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MobContent {
     pub defs: [MobDef; MOB_KINDS],
+    /// What each fel tier does to every row ([`MobContent::at_tier`]).
+    pub tiers: [FelTier; FEL_TIERS],
     /// The tools that butcher, and what each pays. Unused rows are
     /// [`ButcherRow::NONE`].
     pub butcher: [ButcherRow; MAX_BUTCHER_TOOLS],
@@ -572,6 +648,7 @@ impl MobContent {
     /// Inert: no species has hit points, so the roster never hatches.
     pub const EMPTY: Self = Self {
         defs: [MobDef::INERT; MOB_KINDS],
+        tiers: [FelTier::SAME; FEL_TIERS],
         butcher: [ButcherRow::NONE; MAX_BUTCHER_TOOLS],
         guard_loot: [ItemStack {
             item: NO_ITEM,
@@ -711,6 +788,20 @@ impl MobContent {
             .get(kind as usize)
             .copied()
             .unwrap_or(MobDef::INERT)
+    }
+
+    /// The table as it stands in fel tier `tier`: every row moved by that
+    /// tier's [`FelTier`]. A copy on the stack, so the tick that asks for it
+    /// allocates nothing (wall 2).
+    pub fn at_tier(&self, tier: u8) -> Self {
+        let t = self.tiers[(tier as usize).min(FEL_TIERS - 1)];
+        let mut c = *self;
+        if t != FelTier::SAME {
+            for d in c.defs.iter_mut() {
+                *d = t.apply(*d);
+            }
+        }
+        c
     }
 }
 

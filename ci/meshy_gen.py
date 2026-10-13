@@ -31,7 +31,7 @@ every fracture into a vertical streak. A building survives one view because
 a three-quarter of a box describes the box; an irregular natural object does
 not. With the flag the image stage asks `nano-banana-pro` for several
 viewpoints of the same object and the mesh stage reconstructs from all of
-them -- which **forces the meshy-7 path**, because `multi-image-to-3d`
+them -- which **forces the meshy-7.1 path**, because `multi-image-to-3d`
 refuses smart-topology outright.
 
 The key is read from `$MESHY_API_KEY` and is never written to disk -- not
@@ -183,9 +183,12 @@ def main():
             # path costs a meshy-7 mesh instead of a meshy-t2 one, and it buys
             # depth with it. That is the right trade for a rock and the wrong
             # one for anything whose silhouette one view already describes.
+            # `meshy-7.1`, not `meshy-7`: same parameters and credits, more
+            # geometry detail, and 7 is deprecated (Meshy changelog
+            # 2026-09-18).
             mesh_id = call("POST", "/openapi/v1/multi-image-to-3d", {
                 "image_urls": urls[:4],
-                "ai_model": "meshy-7",
+                "ai_model": "meshy-7.1",
                 **common,
             })["result"]
             mesh_ep = "/openapi/v1/multi-image-to-3d"

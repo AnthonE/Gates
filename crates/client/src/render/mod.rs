@@ -150,6 +150,8 @@ pub mod map;
 // which a page has. In a browser the PAGE is the menu: it owns the shard
 // address, the wallet and the join, and hands the Bevy app a live
 // `Session`. See `render/screen.rs` for the half both targets keep.
+/// The pig and the wolf as skinned fel models, tiered by the wipe.
+pub mod beasts;
 /// The attack helicopter's drawing (`sim-core/src/heli.rs`): the roster's
 /// last slot, taken from `mobs` and drawn as a gunship.
 pub mod heli;
@@ -627,6 +629,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
             .init_resource::<mobs::Herd>()
+            .init_resource::<beasts::Beasts>()
             .init_resource::<screen::Browse>()
             .init_resource::<screen::Who>()
             .init_resource::<pause::Chosen>()
@@ -1362,6 +1365,23 @@ impl Plugin for GatesRenderPlugin {
             )
                 // The menu's Triple T is a body too (`portrait.rs`).
                 .run_if(world_running.or(portrait::on_menu)),
+        )
+        // The fel beasts (`beasts.rs`): their models load by the island's
+        // tier, `bind` catches each scene's `AnimationPlayer` the way
+        // `anim::bind` does a body's, and `drive` reads the gait
+        // `mobs::stream` advanced inside `Stream`.
+        .add_systems(
+            Update,
+            (
+                beasts::build,
+                beasts::bind.after(Stream),
+                beasts::drive.after(beasts::bind),
+                // Emitted beside the fires, before the pool is drawn.
+                beasts::fel_fire
+                    .after(beasts::bind)
+                    .before(fx::world::fires),
+            )
+                .run_if(world_running),
         )
         // What other players wear (wire v98), hung on their bones.
         .add_systems(

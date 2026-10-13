@@ -907,3 +907,33 @@ with `ci/prop_kit.py sheet <names…>`.
 | `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
 | `prop/oil_barrel`, `road_sign`, `food_crate`, `tire_stack`, `car_wreck` | the roadside junk (`props::ROADSIDE_GLB`); the sign and the wreck are authored as-is over the sim's box tables |
 | `mob/pig_body`, `pig_leg`, `wolf_body`, `wolf_leg`, `stag_body`, `stag_leg`, `pig_carcass`, `wolf_carcass`, `stag_carcass` | the animals, authored in `render/mobs.rs`'s frame (+Z forward, a leg's hip at its origin) and exported as-is; the box tables there stay the measured truth |
+
+## `mob/fel/` — the fel pig, wolf and stag, generated, rigged here (2026-10-13)
+
+Meshy, paid plan, so private ownership with no attribution owed and no
+`NOTICE` entry due (the `deploy/` rail's terms). Made by the stages now in
+`ci/meshy_beast.py`
+(nano-banana-pro design → nano-banana-pro multi-view → meshy-7.1
+multi-image-to-3d, 15k triangles, 48 credits each); `ci/rig_beast.py` built
+the skeleton, weights, the seven clips, the glow map and the carcass;
+`ci/ktx_pack.py` packed the animal at 1024 and the carcass at 512.
+`render/beasts.rs` picks the tier off the arc: A in act I, B in act II, C
+once every act-II work has burned; the sim scales the animals by the same
+tier (`content/mobs.toml` `[[fel_tier]]`). Sources, prompts and full task ids are in
+`To Examine/fel/<slug>.json` (gitignored; Meshy deletes its own copy after
+three days, which is how the first boar and wolf were lost).
+
+| file | tier | design | views | mesh |
+|---|---|---|---|---|
+| `pig_a`, `pig_a_carcass` | A · light | `01a135c5-3217` | `01a135d0-b12f` | `01a135d3-0553` |
+| `pig_b`, `pig_b_carcass` | B · medium | `01a135c5-321b` | `01a135d0-b130` | `01a135d3-04e1` |
+| `pig_c`, `pig_c_carcass` | C · heavy | `01a135c5-3221` | `01a135d0-b12e` | `01a135d3-05ce` |
+| `wolf_a`, `wolf_a_carcass` | A · light | `01a135c5-322a` | `01a135d0-b12e` | `01a135d3-0555` |
+| `wolf_b`, `wolf_b_carcass` | B · medium | `01a135c5-3224` | `01a135d0-b137` | `01a135d3-0579` |
+| `wolf_c`, `wolf_c_carcass` | C · heavy | `01a135c5-3233` | `01a135d0-b130` | `01a135d3-04ff` |
+| `stag_a`, `stag_a_carcass` | A · light | `01a13618-7473` | `01a13618-f740` | `01a13619-9dfd` |
+| `stag_b`, `stag_b_carcass` | B · medium | `01a13618-747e` | `01a13618-f708` | `01a13619-9da9` |
+| `stag_c`, `stag_c_carcass` | C · heavy | `01a13618-7493` | `01a13619-16fe` | `01a13619-bd4b` |
+
+The stag's rack is cut out of the weight proxy (`rig_beast.py` `heat`):
+whole, it failed bone heat on two of three stags, and a rack does not bend.

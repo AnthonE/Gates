@@ -120,6 +120,33 @@ def srgb_images(gltf):
     return out
 
 
+def normal_images(gltf):
+    """Which image indices are tangent-space normal maps, off the slot."""
+    out = set()
+    for m in gltf.get("materials", []):
+        t = m.get("normalTexture")
+        if t is not None:
+            src = gltf["textures"][t["index"]].get("source")
+            if src is not None:
+                out.add(src)
+    return out
+
+
+def renormalise(im):
+    """Put every texel of a normal map back on the unit sphere. A Lanczos
+    downscale averages neighbouring vectors, and an average of vectors that
+    disagree is shorter than either: measured on the fel boar's carcass at
+    512 px, 80 % of texels decoded to unit length against the 90 %
+    `tests/packed_maps.rs` holds, which reads as flattened relief and
+    darkened grazing light."""
+    a = np.asarray(im, dtype=np.float64)
+    v = a[..., :3] / 127.5 - 1.0
+    n = np.linalg.norm(v, axis=-1, keepdims=True)
+    v = np.where(n > 1e-6, v / np.maximum(n, 1e-6), np.array([0.0, 0.0, 1.0]))
+    a[..., :3] = np.clip((v + 1.0) * 127.5, 0, 255)
+    return Image.fromarray(a.round().astype(np.uint8), "RGBA")
+
+
 # How far a packed map's decoded channel means may sit from the source's.
 # UASTC at 1024 is ~47 dB, a mean error in the fourth decimal; the defect
 # this exists to catch moved a mean from 0.50 to 0.21.
@@ -130,13 +157,15 @@ def ktx(args, env):
     return subprocess.run([KTX] + args, check=True, capture_output=True, env=env)
 
 
-def encode(png_bytes, size, is_srgb, tmp, label=""):
+def encode(png_bytes, size, is_srgb, tmp, label="", is_normal=False):
     src = os.path.join(tmp, "in.png")
     dst = os.path.join(tmp, "out.ktx2")
     back = os.path.join(tmp, "back.png")
     im = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     if im.size != (size, size):
         im = im.resize((size, size), Image.LANCZOS)
+    if is_normal:
+        im = renormalise(im)
     im.save(src)
     fmt = "R8G8B8A8_SRGB" if is_srgb else "R8G8B8A8_UNORM"
     tf = "srgb" if is_srgb else "linear"
@@ -193,6 +222,7 @@ def main():
     if not gltf.get("images"):
         raise SystemExit(f"{src_path}: no images to pack")
     colour = srgb_images(gltf)
+    normals = normal_images(gltf)
 
     # Encode every image, keyed by the bufferView it currently occupies.
     replacement = {}
@@ -204,7 +234,8 @@ def main():
             bv = gltf["bufferViews"][bv_i]
             st = bv.get("byteOffset", 0)
             replacement[bv_i] = encode(blob[st:st + bv["byteLength"]], size, i in colour, tmp,
-                                       label=f"{os.path.basename(src_path)} image {i}")
+                                       label=f"{os.path.basename(src_path)} image {i}",
+                                       is_normal=i in normals)
             img["mimeType"] = "image/ktx2"
 
     # Rebuild the buffer. Indices are preserved so every accessor stays valid
