@@ -99,6 +99,8 @@ impl Bite {
 pub struct Give {
     pub pick: Option<interact::GivePick>,
     pub hold: interact::GiveHold,
+    /// Who `N` would invite to the team (wire v108), on the same aim.
+    pub invite: Option<u32>,
 }
 
 /// Drop the give hold on the way out of `Screen::InWorld`. [`keys`] runs
@@ -349,6 +351,25 @@ pub fn resolve(
             (sel, held),
         )
     };
+    // The invite key's target (`N`), on the same aim: a standing player
+    // not on your team, while your team can take them.
+    give.invite = if core.wounded || core.dead {
+        None
+    } else {
+        interact::resolve_invite(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                crouched,
+            },
+            core.player_id,
+            &core.view.entities,
+            core.team(),
+        )
+    };
     // A loose stack (ground items v0), last of the three `E` picks.
     //
     // **Outside the island block on purpose**: `core.island()` holds the
@@ -567,6 +588,28 @@ pub fn keys(
                 "nothing in your hand to give"
             } else {
                 "look at a player within reach to give them what you hold"
+            });
+        }
+    }
+    // **Teams (wire v108).** `N` asks the player you are looking at to join
+    // your team, making one if you have none; `Y` says yes to the invite
+    // waiting on you. Leave, kick and promote are `/team` lines in chat.
+    // Whether any of it happens is the shard's verdict, said in chat.
+    if keys.just_pressed(KeyCode::KeyN) && !pad.0.is_open() {
+        match give.invite {
+            Some(target) => {
+                send(&net, &mut toast, "team", |buf| {
+                    protocol::encode_action_team(protocol::TEAM_OP_INVITE, target, buf)
+                });
+            }
+            None => toast.warn("look at a player within reach to invite them to your team"),
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyY) && !pad.0.is_open() {
+        let team = *net.session.core.team();
+        if team.invite != 0 && team.count == 0 {
+            send(&net, &mut toast, "team", |buf| {
+                protocol::encode_action_team(protocol::TEAM_OP_ACCEPT, team.invite, buf)
             });
         }
     }

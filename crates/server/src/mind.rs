@@ -184,6 +184,10 @@ pub enum Goal {
     /// Break into the weakest base it has seen that is worth it, with
     /// satchels or blows, and take what its boxes hold.
     Raid,
+    /// Say yes to the team invite waiting on it (wire v108).
+    JoinTeam,
+    /// Stay with its nearest teammate, and fight whoever goes for them.
+    Follow,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -211,7 +215,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 23] = [
+    pub const FIXED: [Goal; 25] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -235,6 +239,8 @@ impl Goal {
         Goal::Recycle,
         Goal::Defend,
         Goal::Raid,
+        Goal::JoinTeam,
+        Goal::Follow,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -264,6 +270,8 @@ impl Goal {
             Goal::Recycle => "recycle",
             Goal::Defend => "defend",
             Goal::Raid => "raid",
+            Goal::JoinTeam => "join_team",
+            Goal::Follow => "follow",
         }
     }
 
@@ -323,6 +331,8 @@ impl Goal {
             Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
+            Goal::JoinTeam => "Accept the team invite.".into(),
+            Goal::Follow => "Stay with a teammate; fight their attackers.".into(),
         }
     }
 }
@@ -435,6 +445,8 @@ pub enum Trigger {
     Fought,
     /// Someone near it spoke (an external source only).
     Heard,
+    /// Its team changed: an invite arrived, or someone joined or left.
+    Team,
 }
 
 impl Trigger {
@@ -448,6 +460,7 @@ impl Trigger {
             Trigger::Heartbeat => "heartbeat",
             Trigger::Fought => "fought",
             Trigger::Heard => "heard",
+            Trigger::Team => "team",
         }
     }
 }
@@ -458,6 +471,69 @@ pub enum BodyState {
     Alive,
     Wounded,
     Dead,
+}
+
+/// Its team (wire v108), as its client was told: how many others are on
+/// it, where the nearest awake one is, how many are down, whether it leads,
+/// and whether an invite waits on it. Labels for the people go to an
+/// external source only ([`Summary::team_json`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct TeamSense {
+    pub mates: u8,
+    /// Awake teammates: how many, and the nearest's distance and bearing.
+    pub awake: Sighting,
+    pub down: u8,
+    pub leader: bool,
+    pub invited: bool,
+    /// A stranger is fighting near a teammate.
+    pub mate_attacked: bool,
+    /// Whose invite waits, and the teammates, as a chat log names them.
+    pub invite_from: Who,
+    pub who: [Who; protocol::TEAM_MAX],
+    pub who_len: u8,
+}
+
+/// A player as a chat log names them: name, else short address, else id.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Who {
+    pub id: u32,
+    pub name: protocol::Name,
+    pub address: protocol::Address,
+}
+
+impl Default for Who {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: protocol::Name::EMPTY,
+            address: protocol::Address::GUEST,
+        }
+    }
+}
+
+impl Who {
+    pub fn label(&self) -> String {
+        HeardLine {
+            from: self.id,
+            name: self.name,
+            address: self.address,
+            ..HeardLine::EMPTY
+        }
+        .label()
+    }
+}
+
+impl TeamSense {
+    fn json(&self) -> Value {
+        json!({
+            "mates": self.mates,
+            "nearest": self.awake.json(),
+            "down": self.down,
+            "lead": self.leader,
+            "invited": self.invited,
+            "mate_attacked": self.mate_attacked,
+        })
+    }
 }
 
 /// Relative directions, clockwise from straight ahead.
@@ -521,7 +597,7 @@ pub struct HeardLine {
     pub address: protocol::Address,
     /// The speaker declared itself an agent (`EventMsg::Agent`).
     pub agent: bool,
-    pub global: bool,
+    pub channel: protocol::Channel,
     /// This body's own line, come back from the shard.
     pub me: bool,
     pub text: protocol::ChatText,
@@ -533,7 +609,7 @@ impl HeardLine {
         name: protocol::Name::EMPTY,
         address: protocol::Address::GUEST,
         agent: false,
-        global: false,
+        channel: protocol::Channel::Local,
         me: false,
         text: protocol::ChatText::EMPTY,
     };
@@ -604,6 +680,9 @@ pub enum Say {
     #[default]
     Quiet,
     Line(protocol::ChatText),
+    /// A line for this body's team (wire v108), wherever they are. Said
+    /// locally when it has no team.
+    Team(protocol::ChatText),
     /// Asked for a line the chat rule refuses (too long, a control
     /// character, a `/command`): counted, never repaired.
     Refused,
@@ -796,6 +875,9 @@ impl Place {
     }
 }
 
+/// The scripted policy catches up with a teammate farther than this.
+pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
+
 /// The most goals one request can offer: the fixed set and every craft.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS;
 
@@ -875,6 +957,8 @@ pub struct Summary {
     pub take_out: bool,
     /// The cupboard's stock is running low, and the pack can feed it.
     pub feed: bool,
+    /// Its team (wire v108).
+    pub team: TeamSense,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -987,6 +1071,29 @@ impl Summary {
         stored_len: 0,
         take_out: false,
         feed: false,
+        team: TeamSense {
+            mates: 0,
+            awake: Sighting {
+                count: 0,
+                nearest_m: 0,
+                bearing: 0,
+            },
+            down: 0,
+            leader: false,
+            invited: false,
+            mate_attacked: false,
+            invite_from: Who {
+                id: 0,
+                name: protocol::Name::EMPTY,
+                address: protocol::Address::GUEST,
+            },
+            who: [Who {
+                id: 0,
+                name: protocol::Name::EMPTY,
+                address: protocol::Address::GUEST,
+            }; protocol::TEAM_MAX],
+            who_len: 0,
+        },
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -1056,12 +1163,27 @@ impl Summary {
                         "from": l.label(),
                         "me": l.me,
                         "agent": l.agent,
-                        "channel": if l.global { "global" } else { "local" },
+                        "channel": match l.channel {
+                            protocol::Channel::Local => "local",
+                            protocol::Channel::Global => "global",
+                            protocol::Channel::Team => "team",
+                        },
                         "text": core::str::from_utf8(l.text.as_bytes()).unwrap_or(""),
                     })
                 })
                 .collect(),
         )
+    }
+
+    /// Who its team is and whose invite waits, by the labels a chat log
+    /// shows. Sent to an external source beside the observation, as
+    /// `heard` is, never inside it. Worker only (it allocates).
+    pub fn team_json(&self) -> Value {
+        let t = &self.team;
+        json!({
+            "invite_from": t.invited.then(|| t.invite_from.label()),
+            "teammates": t.who[..t.who_len as usize].iter().map(Who::label).collect::<Vec<_>>(),
+        })
     }
 
     /// The model-visible state. Worker only (it allocates).
@@ -1133,6 +1255,7 @@ impl Summary {
                 "has_what_the_base_needs": self.take_out,
             },
             "cupboard_needs_feeding": self.feed,
+            "team": self.team.json(),
             "asked_because": self.trigger.word(),
         })
     }
@@ -1683,6 +1806,13 @@ impl Scripted {
         if raided && s.offers(Goal::GoHome) {
             return (Goal::GoHome, "scripted: home with the raid's take");
         }
+        // A team (wire v108): say yes, and go to them when they are set on.
+        if s.offers(Goal::JoinTeam) {
+            return (Goal::JoinTeam, "scripted: a team invite is waiting");
+        }
+        if s.team.mate_attacked && s.offers(Goal::Follow) {
+            return (Goal::Follow, "scripted: my teammate is under attack");
+        }
         let low = SCRIPTED_LOW_METER_PCT;
         let bush = s.offers(Goal::Forage) && s.bushes.count > 0;
         if pct(s.water, s.water_max) < low {
@@ -1723,6 +1853,11 @@ impl Scripted {
         // Home quiet but damaged: mended once the body is seen to.
         if s.offers(Goal::Defend) {
             return (Goal::Defend, "scripted: home is damaged");
+        }
+        // A teammate wandering off is caught up with; near them, the work
+        // goes on.
+        if s.offers(Goal::Follow) && f32::from(s.team.awake.nearest_m) > SCRIPTED_FOLLOW_M {
+            return (Goal::Follow, "scripted: catching up with my teammate");
         }
         // A heartbeat with no urgent need lets a working goal finish: the
         // rotation below is for choosing a new one, not for abandoning a
@@ -2026,7 +2161,7 @@ mod tests {
         });
         s.heard.push(HeardLine {
             agent: true,
-            global: true,
+            channel: protocol::Channel::Global,
             ..line(258, "raid north")
         });
         let v = s.heard_json();

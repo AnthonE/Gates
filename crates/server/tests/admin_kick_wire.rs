@@ -99,7 +99,7 @@ async fn join(ep: &Ep, h: &ShardHandle, k: &AgentKey, name: &str) -> Session {
 /// Type `line` into chat, which is all an admin verb is on the wire.
 fn type_line(s: &Session, line: &str) {
     let mut b = [0u8; 64];
-    let n = protocol::encode_chat(line.as_bytes(), true, &mut b).unwrap();
+    let n = protocol::encode_chat(line.as_bytes(), protocol::Channel::Global, &mut b).unwrap();
     s.send_action(&b[..n]).expect("the line is queued");
 }
 

@@ -1180,6 +1180,18 @@ impl ClientCore {
         id != 0 && self.agents.get((id & 0xFF) as usize) == Some(&id)
     }
 
+    /// This player's team as the shard last said (`EventMsg::Team`, v108):
+    /// leader, members with state and a 1 m position, and a waiting invite.
+    /// [`protocol::TeamView::NONE`] until it has.
+    pub fn team(&self) -> &protocol::TeamView {
+        &self.team
+    }
+
+    /// Is `id` on this player's team? Never yourself, for this question.
+    pub fn is_teammate(&self, id: u32) -> bool {
+        id != self.player_id && self.team.has(id)
+    }
+
     /// What player `id` is wearing, as the shard last said (`EventMsg::Worn`):
     /// the item in each wear slot and its skin, [`WornLook::NONE`] for a body
     /// the shard has not described yet.
@@ -1618,6 +1630,10 @@ pub struct ClientCore {
     /// the full id by slot, 0 for none, so a reused slot never marks its new
     /// tenant. Read with [`Self::is_agent`].
     agents: Box<[u32]>,
+    /// This player's team (`EventMsg::Team`, v108). Read with [`Self::team`].
+    team: protocol::TeamView,
+    /// Bumped on every `Team`, so a renderer redraws only when it moved.
+    pub team_gen: u32,
     /// What each body wears (`EventMsg::Worn`, v98), by player id.
     bodies_worn: Box<[(u32, WornLook)]>,
     worn_next: usize,
@@ -1774,8 +1790,8 @@ pub struct ClientCore {
     /// ones go when the next is heard.
     fires: [Fire; FIRES],
     fire_len: usize,
-    /// Chat lines as received: (speaker id, global, text).
-    chats: [(u32, bool, ChatText); CHAT_RING],
+    /// Chat lines as received: (speaker id, channel, text).
+    chats: [(u32, protocol::Channel, ChatText); CHAT_RING],
     chat_head: usize,
     chat_len: usize,
     /// Own health, absolute as the server last stated it. `hp_max` 0 means
@@ -2205,6 +2221,8 @@ impl ClientCore {
             skins_gen: 0,
             tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
             agents: vec![0; sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
+            team: protocol::TeamView::NONE,
+            team_gen: 0,
             bodies_worn: vec![(0, WornLook::NONE); 2 * sim_core::limits::MAX_PLAYERS]
                 .into_boxed_slice(),
             worn_next: 0,
@@ -2232,7 +2250,7 @@ impl ClientCore {
             craft_toast_head: 0,
             craft_toast_len: 0,
             refusals: [0; REFUSAL_RING],
-            chats: [(0, false, ChatText::EMPTY); CHAT_RING],
+            chats: [(0, protocol::Channel::Local, ChatText::EMPTY); CHAT_RING],
             chat_head: 0,
             chat_len: 0,
             hp: 0,
@@ -2868,6 +2886,10 @@ impl ClientCore {
                     *row = id;
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }
+            }
+            EventMsg::Team(view) => {
+                self.team = view;
+                self.team_gen = self.team_gen.wrapping_add(1);
             }
             EventMsg::Worn { id, items, skins } => self.file_worn(id, WornLook { items, skins }),
             EventMsg::CraftQ {
@@ -3832,14 +3854,18 @@ impl ClientCore {
                     (cx, cz, level, loc, grant);
                 self.auth_len += 1;
             }
-            EventMsg::Chat { from, global, text } => {
+            EventMsg::Chat {
+                from,
+                channel,
+                text,
+            } => {
                 // Drop-oldest: a chat log that stalls on the oldest line
                 // is worse than one that loses it.
                 if self.chat_len == CHAT_RING {
                     self.chat_head = (self.chat_head + 1) % CHAT_RING;
                     self.chat_len -= 1;
                 }
-                self.chats[(self.chat_head + self.chat_len) % CHAT_RING] = (from, global, text);
+                self.chats[(self.chat_head + self.chat_len) % CHAT_RING] = (from, channel, text);
                 self.chat_len += 1;
                 flags |= APPLIED_CHAT;
             }
@@ -4361,8 +4387,8 @@ impl ClientCore {
         Some(t)
     }
 
-    /// Oldest buffered chat line: (speaker id, global, text).
-    pub fn pop_chat(&mut self) -> Option<(u32, bool, ChatText)> {
+    /// Oldest buffered chat line: (speaker id, channel, text).
+    pub fn pop_chat(&mut self) -> Option<(u32, protocol::Channel, ChatText)> {
         if self.chat_len == 0 {
             return None;
         }

@@ -12,7 +12,7 @@
 //! the client decodes server bytes, the server encodes on the sim thread.
 
 use crate::bits::{BitReader, BitWriter, WireError};
-use crate::chat::{read_text, write_text, ChatText};
+use crate::chat::{read_text, write_text, Channel, ChatText};
 use crate::loc_max;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
@@ -552,7 +552,12 @@ const SUB_NODE_STAGE: u32 = 95;
 /// Player `id` declared itself an agent at its hello (wire v107,
 /// `HELLO_AGENT`): guests and wallets alike, so every client can mark it.
 const SUB_AGENT: u32 = 96;
-const SUB_MAX: u32 = SUB_AGENT;
+/// The receiver's own team (wire v108, `server::team`): its leader, its
+/// members with each one's state and a 1 m position, and an invite waiting
+/// on the receiver. Own-fact: sent when it changes and, while anyone is on
+/// it, as its members move.
+const SUB_TEAM: u32 = 97;
+const SUB_MAX: u32 = SUB_TEAM;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -2026,12 +2031,12 @@ pub enum EventMsg {
     /// One chat line, relayed (`chat.rs`). `from` is the speaker's player
     /// id — there are no names yet, and the sender's own line comes back
     /// through this same path, so the echo is the delivery receipt.
-    /// `global` is which channel it arrived on; the server has already
-    /// decided this recipient is entitled to hear it, so the bit is a
-    /// label for the client to render, never a filter for it to apply.
+    /// `channel` is which one it arrived on; the server has already
+    /// decided this recipient is entitled to hear it, so it is a label
+    /// for the client to render, never a filter for it to apply.
     Chat {
         from: u32,
-        global: bool,
+        channel: Channel,
         text: ChatText,
     },
     /// Who player `id` is (v85): the shard's **proven** address and the name
@@ -2059,6 +2064,8 @@ pub enum EventMsg {
     /// id names one tenancy of a slot, so a new tenant is never marked by
     /// an old one's event.
     Agent { id: u32 },
+    /// The receiver's team (v108) — see [`TeamView`].
+    Team(TeamView),
     /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
     /// for an empty one, and each piece's skin (v102), zero for none and
     /// always zero on an empty slot. Appearance only, for drawing the body.
@@ -4940,13 +4947,13 @@ pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result
 /// the wire the C→S decoder would have refused.
 pub fn encode_event_chat(
     from: u32,
-    global: bool,
+    channel: Channel,
     text: &ChatText,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_CHAT)?;
     w.write(from, 32)?;
-    w.write_bit(global)?;
+    channel.write(&mut w)?;
     write_text(&mut w, text)?;
     Ok(w.finish())
 }
@@ -4977,6 +4984,143 @@ pub fn encode_event_agent(id: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     }
     let mut w = begin(buf, SUB_AGENT)?;
     w.write(id, 32)?;
+    Ok(w.finish())
+}
+
+/// The most players a team holds on the wire. Rust's default
+/// (`relationshipmanager.maxteamsize` = 8); a shard may set a smaller cap
+/// (`shard.toml` `team_max`), never a larger one.
+pub const TEAM_MAX: usize = 8;
+/// Bits for a member's count, 0..=`TEAM_MAX`.
+const TEAM_COUNT_BITS: u32 = 4;
+const _: () = assert!(TEAM_MAX < (1 << TEAM_COUNT_BITS));
+/// A member's position, whole metres on each axis: the island is 4096 m
+/// across, so 12 bits hold all of it. A map dot and a far marker need no
+/// finer; a teammate close enough to need more is in the snapshot.
+const TEAM_POS_BITS: u32 = 12;
+/// The largest coordinate that fits.
+pub const TEAM_POS_MAX_M: u16 = (1 << TEAM_POS_BITS) - 1;
+/// A member is up and playing.
+pub const TEAM_AWAKE: u8 = 0;
+/// A member's body is asleep: they left, it stays.
+pub const TEAM_ASLEEP: u8 = 1;
+/// A member is dead, or downed and waiting on the death screen.
+pub const TEAM_DEAD: u8 = 2;
+const TEAM_STATE_BITS: u32 = 2;
+const TEAM_STATE_MAX: u8 = TEAM_DEAD;
+
+/// One teammate as the receiver is shown them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TeamMember {
+    pub id: u32,
+    /// `TEAM_AWAKE`, `TEAM_ASLEEP` or `TEAM_DEAD`.
+    pub state: u8,
+    pub x_m: u16,
+    pub z_m: u16,
+}
+
+/// The receiver's own team (v108). `leader == 0` is no team, and then
+/// `count` is 0. The receiver is one of the members. `invite` is the
+/// player whose invite waits on the receiver, 0 for none — it can be set
+/// with or without a team of one's own.
+///
+/// Rust shows a teammate on the map wherever they are, so this crosses
+/// interest management on purpose: a member's position is owed to the team
+/// whatever the snapshot carries. Nothing else of theirs is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TeamView {
+    pub leader: u32,
+    pub invite: u32,
+    pub count: u8,
+    pub members: [TeamMember; TEAM_MAX],
+}
+
+impl TeamView {
+    pub const NONE: Self = Self {
+        leader: 0,
+        invite: 0,
+        count: 0,
+        members: [TeamMember {
+            id: 0,
+            state: 0,
+            x_m: 0,
+            z_m: 0,
+        }; TEAM_MAX],
+    };
+
+    /// The live members.
+    pub fn members(&self) -> &[TeamMember] {
+        &self.members[..(self.count as usize).min(TEAM_MAX)]
+    }
+
+    /// Is `id` on this team?
+    pub fn has(&self, id: u32) -> bool {
+        id != 0 && self.members().iter().any(|m| m.id == id)
+    }
+
+    /// The shape both ends hold a view to: a leader who is a member, no
+    /// team without a leader, no empty or repeated member, every state and
+    /// coordinate in range, and a zeroed tail.
+    fn valid(&self) -> bool {
+        let n = self.count as usize;
+        if n > TEAM_MAX || (self.leader == 0) != (n == 0) || (n > 0 && !self.has(self.leader)) {
+            return false;
+        }
+        for (i, m) in self.members.iter().enumerate() {
+            if i >= n {
+                if *m != TeamMember::default() {
+                    return false;
+                }
+                continue;
+            }
+            if m.id == 0
+                || m.state > TEAM_STATE_MAX
+                || m.x_m > TEAM_POS_MAX_M
+                || m.z_m > TEAM_POS_MAX_M
+                || self.members[..i].iter().any(|o| o.id == m.id)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn read(r: &mut BitReader) -> Result<Self, WireError> {
+        let mut v = Self::NONE;
+        v.leader = r.read(32)?;
+        v.invite = r.read(32)?;
+        v.count = r.read(TEAM_COUNT_BITS)? as u8;
+        if v.count as usize > TEAM_MAX {
+            return Err(WireError::Malformed);
+        }
+        for m in v.members.iter_mut().take(v.count as usize) {
+            m.id = r.read(32)?;
+            m.state = r.read(TEAM_STATE_BITS)? as u8;
+            m.x_m = r.read(TEAM_POS_BITS)? as u16;
+            m.z_m = r.read(TEAM_POS_BITS)? as u16;
+        }
+        if !v.valid() {
+            return Err(WireError::Malformed);
+        }
+        Ok(v)
+    }
+}
+
+/// The receiver's team — see [`TeamView`].
+pub fn encode_event_team(view: &TeamView, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !view.valid() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TEAM)?;
+    w.write(view.leader, 32)?;
+    w.write(view.invite, 32)?;
+    w.write(view.count as u32, TEAM_COUNT_BITS)?;
+    for m in view.members() {
+        w.write(m.id, 32)?;
+        w.write(m.state as u32, TEAM_STATE_BITS)?;
+        w.write(m.x_m as u32, TEAM_POS_BITS)?;
+        w.write(m.z_m as u32, TEAM_POS_BITS)?;
+    }
     Ok(w.finish())
 }
 
@@ -6339,12 +6483,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Agent { id }
         }
+        SUB_TEAM => EventMsg::Team(TeamView::read(&mut r)?),
         SUB_CHAT => {
             let from = r.read(32)?;
-            let global = r.read_bit()?;
+            let channel = Channel::read(&mut r)?;
             EventMsg::Chat {
                 from,
-                global,
+                channel,
                 text: read_text(&mut r)?,
             }
         }
@@ -7676,6 +7821,49 @@ mod tests {
         w.write(0, 16).unwrap();
         let len = w.finish();
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// A team (v108) crosses whole, and neither end takes a shape the
+    /// shard cannot mean: a leader who is not a member, a member twice, a
+    /// position off the island's 12 bits, or members with no leader.
+    #[test]
+    fn team_roundtrips_and_refuses_a_bad_shape() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let full = {
+            let mut v = TeamView::NONE;
+            v.leader = 0x0100_0001;
+            v.count = TEAM_MAX as u8;
+            for (i, m) in v.members.iter_mut().enumerate() {
+                *m = TeamMember {
+                    id: 0x0100_0001 + i as u32,
+                    state: (i % 3) as u8,
+                    x_m: TEAM_POS_MAX_M,
+                    z_m: i as u16,
+                };
+            }
+            v
+        };
+        for view in [TeamView::NONE, full, {
+            let mut v = TeamView::NONE;
+            v.invite = 77;
+            v
+        }] {
+            let len = encode_event_team(&view, &mut buf).unwrap();
+            assert_eq!(decode_event(&buf[..len]), Ok(EventMsg::Team(view)));
+        }
+        let mut no_leader = full;
+        no_leader.leader = 9;
+        let mut twice = full;
+        twice.members[1].id = twice.members[0].id;
+        let mut far = full;
+        far.members[2].x_m = TEAM_POS_MAX_M + 1;
+        let mut headless = full;
+        headless.leader = 0;
+        let mut ghost = TeamView::NONE;
+        ghost.members[0].id = 5;
+        for bad in [no_leader, twice, far, headless, ghost] {
+            assert_eq!(encode_event_team(&bad, &mut buf), Err(WireError::Range));
+        }
     }
 
     /// An agent's mark (v107) crosses for a guest-shaped id, and neither
@@ -9523,6 +9711,14 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A team (v108): its member count, bounded by the wire's own
+            // `TEAM_MAX` (const-asserted beside the width); a member's
+            // state, the wire's own three, refused past `TEAM_STATE_MAX`;
+            // and a whole-metre coordinate, bounded by `TEAM_POS_MAX_M`
+            // on both ends. None is a sim-core enumeration.
+            "TEAM_COUNT_BITS",
+            "TEAM_STATE_BITS",
+            "TEAM_POS_BITS",
             // An item description's length (v103): bounded by
             // `MAX_ITEM_DESC_BYTES`, const-asserted beside the width.
             "DESC_LEN_BITS",

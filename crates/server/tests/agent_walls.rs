@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 21] = [
+const EXPECTED_VERBS: [&str; 22] = [
     "craft",
     "consume",
     "drink",
@@ -94,6 +94,7 @@ const EXPECTED_VERBS: [&str; 21] = [
     "research",
     "repair",
     "throw",
+    "team",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -227,6 +228,7 @@ fn verbs_in(files: &[std::path::PathBuf]) -> BTreeSet<String> {
 fn verb_of(msg: &ActionMsg) -> &'static str {
     match msg {
         ActionMsg::Assist { .. } => "assist",
+        ActionMsg::Team { .. } => "team",
         ActionMsg::Craft { .. } => "craft",
         ActionMsg::Reskin { .. } => "reskin",
         ActionMsg::SkinsRefresh => "skins_refresh",
@@ -533,7 +535,7 @@ impl Harness {
     /// The puppet types a line into its chat box, in both shards.
     fn puppet_says(&mut self, text: &str) {
         let msg = protocol::ChatMsg {
-            global: false,
+            channel: protocol::Channel::Local,
             text: protocol::ChatText::sanitize(text.as_bytes()).unwrap(),
         };
         self.shard.push_chat(self.puppet_slot, msg);
@@ -880,7 +882,10 @@ impl Harness {
         if let Some(len) = say {
             let msg =
                 protocol::decode_chat(&said[..len]).expect("agent chat decodes as a player's");
-            assert!(!msg.global, "an agent speaks only to the bodies near it");
+            assert!(
+                !msg.channel.is_global(),
+                "an agent speaks only to the bodies near it or its team"
+            );
             self.shard.push_chat(0, msg);
             self.replay.push_chat(0, msg);
         }
@@ -891,10 +896,13 @@ impl Harness {
         let (puppet_slot, puppet_chat) = (self.puppet_slot, &mut self.puppet_chat);
         self.shard.tick_bare(&self.stats, |lane, slot, bytes| {
             if slot == puppet_slot && lane == Lane::Event {
-                if let Ok(protocol::EventMsg::Chat { from, global, text }) =
-                    protocol::decode_event(bytes)
+                if let Ok(protocol::EventMsg::Chat {
+                    from,
+                    channel,
+                    text,
+                }) = protocol::decode_event(bytes)
                 {
-                    puppet_chat.push((from, global, text));
+                    puppet_chat.push((from, channel.is_global(), text));
                 }
             }
             if slot != 0 {
@@ -1895,7 +1903,11 @@ impl server::mind::DecisionSource for Talker {
         for l in s.heard.lines() {
             if l.me {
                 seen |= 4;
-            } else if l.from == PUPPET && !l.global && !l.agent && l.text.as_bytes() == b"hi bot" {
+            } else if l.from == PUPPET
+                && l.channel == protocol::Channel::Local
+                && !l.agent
+                && l.text.as_bytes() == b"hi bot"
+            {
                 seen |= 1;
             }
         }
@@ -1978,6 +1990,70 @@ fn a_survivor_speaks_locally_and_hears_who_spoke() {
     let s = h.bot.stats;
     assert_eq!((s.said, s.say_refused, s.say_dropped), (2, 0, 0));
     assert!(s.heard >= 1 && s.echoed >= 1, "{s:?}");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// Teams (wire v108): the puppet invites the agent from beside it, the
+/// scripted mind says yes through the human client's own team verb, and
+/// once the puppet is forty metres off the agent goes to it — the
+/// teammate's place from the team view a human teammate is sent too. Both
+/// shards hash-identical, the frame path allocation-free.
+#[test]
+fn a_survivor_joins_a_team_and_keeps_up_with_its_teammate() {
+    let mut h = Harness::new(false);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    assert!(h.verbs.contains("team"), "it joined by its own verb");
+    // Forty metres east, out of the way of anything it was doing.
+    h.stage_puppet(|p| p.body.qx += 4_000 / 3);
+    let apart = |h: &Harness| {
+        let me = h.me().body;
+        let mate = h
+            .shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap()
+            .body;
+        ((me.qx - mate.qx) as f32 * 0.03).hypot((me.qz - mate.qz) as f32 * 0.03)
+    };
+    for _ in 0..120 * TICK_HZ {
+        if apart(&h) <= server::explorer::FOLLOW_NEAR_M + 2.0 {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        apart(&h) <= server::explorer::FOLLOW_NEAR_M + 2.0,
+        "the agent never caught up ({:.1} m): {}",
+        apart(&h),
+        h.explain()
+    );
+    assert_eq!(
+        h.bot.stats.phase,
+        server::explorer::Phase::Following,
+        "it came by following, not by chance"
+    );
+    assert!(h
+        .bot
+        .history
+        .iter()
+        .any(|r| r.goal == Goal::JoinTeam && r.outcome == server::mind::Outcome::Done));
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
@@ -3069,7 +3145,8 @@ fn encode_puppet(msg: &ActionMsg, buf: &mut [u8]) -> usize {
             loc,
             material,
         } => protocol::encode_action_upgrade(cx, cz, level, loc, material, buf),
-        _ => panic!("the puppet builds, and only builds: {msg:?}"),
+        ActionMsg::Team { op, target } => protocol::encode_action_team(op, target, buf),
+        _ => panic!("the puppet builds and teams up, and nothing else: {msg:?}"),
     }
     .unwrap()
 }

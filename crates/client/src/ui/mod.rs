@@ -110,5 +110,6 @@ pub mod slots;
 pub mod spectate;
 pub mod structure;
 pub mod swing;
+pub mod team;
 pub mod techtree;
 pub mod wounded;

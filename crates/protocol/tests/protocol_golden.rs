@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 164] = [
+const GOLDEN: [&[u8]; 166] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -227,6 +227,8 @@ const GOLDEN: [&[u8]; 164] = [
     include_bytes!("golden/event_bank.bin"),
     include_bytes!("golden/event_node_stage.bin"),
     include_bytes!("golden/event_agent.bin"),
+    include_bytes!("golden/action_team.bin"),
+    include_bytes!("golden/event_team.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -503,8 +505,11 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 162);
     // A declared agent's mark (v107).
     g!(seen, golden_event, 163);
+    // A team verb and the receiver's team (v108).
+    g!(seen, golden_action, 164);
+    g!(seen, golden_event, 165);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 164, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 166, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -545,13 +550,13 @@ fn golden_auth(fixture: &[u8], name: &str) {
 fn golden_chat(fixture: &[u8], name: &str) {
     let mut buf = [0u8; 64];
     assert_eq!(peek_kind(fixture).unwrap(), KIND_CHAT, "{name}");
-    let (text, global) = chat();
+    let (text, channel) = chat();
     assert_eq!(
         decode_chat(fixture).unwrap(),
-        ChatMsg { global, text },
+        ChatMsg { channel, text },
         "{name}: decode mismatch"
     );
-    let len = encode_chat(text.as_bytes(), global, &mut buf).unwrap();
+    let len = encode_chat(text.as_bytes(), channel, &mut buf).unwrap();
     assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
 }
 
@@ -616,6 +621,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_treat(slot, target, &mut buf).unwrap()
+        }
+        "action_team.bin" => {
+            let (op, target) = protocol::goldens::action_team();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Team { op, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_team(op, target, &mut buf).unwrap()
         }
         "action_give.bin" => {
             let (slot, count, target) = protocol::goldens::action_give();
@@ -1229,6 +1243,15 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_slot_sync(reset, &cells, grubbed, &mut buf).unwrap()
         }
+        "event_team.bin" => {
+            let view = protocol::goldens::event_team();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Team(view),
+                "{name}"
+            );
+            protocol::encode_event_team(&view, &mut buf).unwrap()
+        }
         "event_agent.bin" => {
             let id = protocol::goldens::event_agent();
             assert_eq!(
@@ -1626,13 +1649,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_auth(cx, cz, level, loc, grant, &mut buf).unwrap()
         }
         "event_chat.bin" => {
-            let (from, global, text) = event_chat();
+            let (from, channel, text) = event_chat();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Chat { from, global, text },
+                EventMsg::Chat {
+                    from,
+                    channel,
+                    text
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_chat(from, global, &text, &mut buf).unwrap()
+            encode_event_chat(from, channel, &text, &mut buf).unwrap()
         }
         "event_wounded.bin" => {
             let (ticks, chance_pm) = event_wounded();
@@ -2517,18 +2544,23 @@ fn test_chat_text_domain_is_enforced() {
         &[b'a'; protocol::CHAT_MAX_BYTES + 1][..],
     ] {
         assert_eq!(
-            encode_chat(bad, false, &mut buf),
+            encode_chat(bad, protocol::Channel::Local, &mut buf),
             Err(WireError::Range),
             "encoder accepted {bad:?}"
         );
     }
-    assert!(encode_chat(&[b'a'; protocol::CHAT_MAX_BYTES], true, &mut buf).is_ok());
+    assert!(encode_chat(
+        &[b'a'; protocol::CHAT_MAX_BYTES],
+        protocol::Channel::Global,
+        &mut buf
+    )
+    .is_ok());
 
     // Decoder side: hand-built frames the encoder cannot produce.
-    let forge = |global: bool, raw: &[u8], claim_len: u32, out: &mut [u8]| -> usize {
+    let forge = |channel: u32, raw: &[u8], claim_len: u32, out: &mut [u8]| -> usize {
         let mut w = protocol::bits::BitWriter::new(out);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
-        w.write_bit(global).unwrap();
+        w.write(channel, 2).unwrap();
         w.write(claim_len, 6).unwrap();
         for &b in raw {
             w.write(b as u32, 8).unwrap();
@@ -2543,7 +2575,7 @@ fn test_chat_text_domain_is_enforced() {
         (&[b'a'; 63][..], 63),       // length past CHAT_MAX_BYTES
         (&b""[..], 0),               // empty
     ] {
-        let n = forge(false, raw, claim, &mut wide);
+        let n = forge(0, raw, claim, &mut wide);
         assert_eq!(
             decode_chat(&wide[..n]),
             Err(WireError::Malformed),
@@ -2553,14 +2585,14 @@ fn test_chat_text_domain_is_enforced() {
     // And the same rule on the relay: a forged S→C line is refused too —
     // the same message the encoder produces, rebuilt with a bell where
     // its first letter was.
-    let (from, global, text) = event_chat();
-    let n = encode_event_chat(from, global, &text, &mut wide).unwrap();
+    let (from, channel, text) = event_chat();
+    let n = encode_event_chat(from, channel, &text, &mut wide).unwrap();
     let mut broken = wide;
     let mut w = protocol::bits::BitWriter::new(&mut broken[..n]);
     w.write(protocol::KIND_EVENT, KIND_BITS).unwrap();
     w.write(23, 5).unwrap();
     w.write(from, 32).unwrap();
-    w.write_bit(global).unwrap();
+    w.write(2, 2).unwrap(); // the fixture's team channel
     w.write(text.len() as u32, 6).unwrap();
     w.write(0x07, 8).unwrap(); // a bell where the first letter was
     for &b in &text.as_bytes()[1..] {

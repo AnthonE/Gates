@@ -3236,6 +3236,22 @@ pub fn prompt(
             }
             None => want,
         };
+        // The invite key names its own line (`N`, wire v108), after the rest.
+        let want = match give
+            .invite
+            .filter(|_| !pad.0.is_open() && give.hold.left(0.0).is_none())
+        {
+            Some(target) => {
+                let who = crate::ui::names::of(&net.session.core, target);
+                let line = crate::ui::team::invite_prompt(&who);
+                if want.is_empty() {
+                    line
+                } else {
+                    format!("{want}  ·  {line}")
+                }
+            }
+            None => want,
+        };
         if text.0 != want {
             text.0 = want;
         }

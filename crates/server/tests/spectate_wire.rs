@@ -221,7 +221,7 @@ async fn a_watcher_sees_what_the_agent_sees() {
     // watcher hears exactly that line, because every message the sim's
     // arms and the chat fan-out address to the agent is copied to its seat.
     let mut b = [0u8; 64];
-    let n = protocol::encode_chat(b"hello, watchers", true, &mut b).unwrap();
+    let n = protocol::encode_chat(b"hello, watchers", protocol::Channel::Global, &mut b).unwrap();
     agent.send_action(&b[..n]).expect("the agent speaks");
     let (mut heard, mut echoed) = (None, None);
     tokio::time::timeout(Duration::from_secs(10), async {

@@ -88,6 +88,18 @@ pub const SEARCH_GOAL_SECS: u32 = 20;
 pub const EXPLORE_GOAL_SECS: u32 = 20;
 /// A wait goal stands still this long.
 pub const WAIT_GOAL_SECS: u32 = 5;
+/// A follow goal stays with its teammate this long, then asks again.
+pub const FOLLOW_GOAL_SECS: u32 = 90;
+/// How close a follower keeps to its teammate, and the distance past which
+/// it runs to catch up.
+pub const FOLLOW_NEAR_M: f32 = 4.0;
+pub const FOLLOW_RUN_M: f32 = 12.0;
+/// A stranger who swung or shot this recently, this near a teammate, is
+/// going for them.
+pub const GUARD_RECALL_SECS: u32 = 3;
+pub const GUARD_M: f32 = 15.0;
+/// A team invite's accept that has not gone out in this long is stuck.
+pub const JOIN_GOAL_SECS: u32 = 5;
 /// A build goal that has not finished its milestone in this long is stuck
 /// somewhere the builder's own checks missed; it ends, and the mind chooses
 /// again. A milestone's crafts and ops take a few minutes.
@@ -249,6 +261,7 @@ pub enum Phase {
     Defending,
     Repairing,
     Raiding,
+    Following,
     LoggingOff,
 }
 
@@ -287,6 +300,7 @@ impl Phase {
             Phase::Defending => "Home under attack: inside, defending it",
             Phase::Repairing => "Mending the base with the hammer",
             Phase::Raiding => "Raiding a base",
+            Phase::Following => "With its teammate",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -394,6 +408,8 @@ pub struct Senses {
     /// Other people's bases it has seen that are worth raiding now, by its
     /// temperament and with what it carries (`Bases::targets`).
     pub raid: Sighting,
+    /// A stranger is swinging or shooting near a teammate (wire v108).
+    pub mate_attacked: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -465,6 +481,9 @@ pub struct Memory {
     /// Someone else spoke locally since it last asked: an external source
     /// is asked early (`Trigger::Heard`).
     pub chat_wake: bool,
+    /// Its team changed since it last asked: an invite came, or someone
+    /// joined or left. Any source is asked early (`Trigger::Team`).
+    pub team_wake: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -742,6 +761,14 @@ pub struct Survivor {
     /// shard's chat refill, kept on this side so a line is never sent into
     /// the limiter to be dropped there.
     say_line: Option<protocol::ChatText>,
+    /// The line above is for the team channel (`Say::Team`).
+    say_team: bool,
+    /// Its team has someone besides itself to hear the team channel.
+    has_mates: bool,
+    /// The stranger going for a teammate, nearest them (`perceive`).
+    guard: Option<u32>,
+    /// The team's invite and size when last looked at, to wake on a change.
+    team_seen: (u32, u8),
     say_at: u32,
     /// The server's per-kind pace, kept on this side the way an honest
     /// client keeps it: an early action waits in the outbox rather than in
@@ -840,6 +867,10 @@ impl Survivor {
             heading: None,
             outbox: None,
             say_line: None,
+            say_team: false,
+            has_mates: false,
+            guard: None,
+            team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
             rules: None,
@@ -1363,6 +1394,15 @@ impl Survivor {
                             a.asked = tick;
                         }
                     }
+                } else if self.memory.team_wake && !self.mind.pending() {
+                    // An invite, or a teammate come or gone: worth a
+                    // fresh look now rather than at the heartbeat.
+                    self.memory.trigger = Trigger::Team;
+                    if self.request(core, view, player, tick, now) {
+                        if let Some(a) = self.goal.as_mut() {
+                            a.asked = tick;
+                        }
+                    }
                 }
                 self.run_goal(core, &body, tick)
             }
@@ -1509,6 +1549,7 @@ impl Survivor {
         self.memory.hits = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
+        self.memory.team_wake = false;
         if let Some(a) = self.goal.as_mut() {
             a.asked = tick;
         }
@@ -1524,7 +1565,8 @@ impl Survivor {
         match say {
             Say::Quiet => {}
             Say::Refused => self.stats.say_refused += 1,
-            Say::Line(line) => {
+            Say::Line(line) | Say::Team(line) => {
+                self.say_team = matches!(say, Say::Team(_));
                 if self.say_line.replace(line).is_some() {
                     self.stats.say_dropped += 1;
                 }
@@ -1677,7 +1719,8 @@ impl Survivor {
             | Goal::Loot
             | Goal::Cook
             | Goal::Recycle
-            | Goal::Raid => true,
+            | Goal::Raid
+            | Goal::Follow => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1770,10 +1813,94 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Raid => self.raid(core, body, tick),
+            Goal::JoinTeam => {
+                let team = *core.team();
+                if team.count > 0 {
+                    self.end_goal(tick, Outcome::Done);
+                } else if team.invite == 0 || elapsed >= JOIN_GOAL_SECS * TICK_HZ {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                } else if !active.fled
+                    && self.queue(|b| {
+                        protocol::encode_action_team(protocol::TEAM_OP_ACCEPT, team.invite, b)
+                    })
+                {
+                    // `fled` is the one-shot half done: the yes is sent,
+                    // and the goal waits for the team view to say so.
+                    if let Some(a) = self.goal.as_mut() {
+                        a.fled = true;
+                    }
+                }
+                self.stats.phase = Phase::Waiting;
+                Intent::IDLE
+            }
+            Goal::Follow if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Goal::Follow => self.follow(core, body, tick),
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
             },
+        }
+    }
+
+    /// Follow: stay within reach of the nearest awake teammate (the leader
+    /// first), running to catch up, and fight whoever is going for them.
+    /// Where they are comes from what its client was sent: its own eyes
+    /// when they are in sight, else the team view, which a human teammate
+    /// is sent too (wire v108).
+    fn follow(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let team = *core.team();
+        let mut mate: Option<(bool, f32, [f32; 2])> = None;
+        for m in team.members() {
+            if m.id == core.player_id || m.state != protocol::TEAM_AWAKE {
+                continue;
+            }
+            let at = self
+                .tracks
+                .get(m.id)
+                .filter(|t| t.visible)
+                .map_or([f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5], |t| {
+                    [t.pos[0], t.pos[2]]
+                });
+            let d = (at[0] - x).hypot(at[1] - z);
+            let lead = m.id == team.leader;
+            if mate.is_none_or(|(l, md, _)| (lead && !l) || (lead == l && d < md)) {
+                mate = Some((lead, d, at));
+            }
+        }
+        let Some((_, d, at)) = mate else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        // Someone is going for them: the fight reflex takes it from here,
+        // and the goal resumes when it is over.
+        // One it just let go is left alone, as the fight goal leaves it.
+        if let Some(id) = self.guard.filter(|&id| !self.combat.shuns(id, tick)) {
+            if self.loadout.on_belt(core, Role::Melee).is_some() || self.shooter(core).0.is_some() {
+                self.combat.command(id, tick);
+            }
+        }
+        self.stats.phase = Phase::Following;
+        if d <= FOLLOW_NEAR_M {
+            return Intent::IDLE;
+        }
+        let hurry = d > FOLLOW_RUN_M;
+        match self
+            .route
+            .to(core, body, at, FOLLOW_NEAR_M - 1.0, hurry, tick)
+        {
+            step @ Step::Walk { yaw, .. } => {
+                self.heading = Some(yaw);
+                step.walk().unwrap_or(Intent::walk(yaw))
+            }
+            Step::Arrived => Intent::IDLE,
+            Step::Blocked | Step::Wait => {
+                let yaw = yaw_toward(at[0] - x, at[1] - z);
+                self.walk_on(core, body, yaw)
+            }
         }
     }
 
@@ -2113,7 +2240,7 @@ impl Survivor {
                 && across <= radius + BYSTANDER_MISS_M
         };
         let mut lowest: Option<u32> = None;
-        for t in self.tracks.seen() {
+        for t in self.tracks.all() {
             if !t.visible || t.dead || t.id == body.id {
                 continue;
             }
@@ -3855,6 +3982,46 @@ impl Survivor {
             .tracks
             .recent(tick, THREAT_RECALL_SECS * TICK_HZ)
             .any(|t| t.species != Species::Pig);
+        // Its team (wire v108): nobody's quarry, and a stranger swinging or
+        // shooting near one of them is who `follow` goes for.
+        let team = *core.team();
+        self.tracks.befriend(&team);
+        let mut guard: Option<(f32, u32)> = None;
+        let recall = GUARD_RECALL_SECS * TICK_HZ;
+        for m in team.members() {
+            if m.id == core.player_id || m.state != protocol::TEAM_AWAKE {
+                continue;
+            }
+            let at = self
+                .tracks
+                .get(m.id)
+                .filter(|t| t.visible)
+                .map_or([f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5], |t| {
+                    [t.pos[0], t.pos[2]]
+                });
+            for t in self.tracks.recent(tick, recall) {
+                let fought = [t.last_swing, t.last_shot]
+                    .into_iter()
+                    .flatten()
+                    .any(|when| tick.wrapping_sub(when) < recall);
+                let d = (t.pos[0] - at[0]).hypot(t.pos[2] - at[1]);
+                if t.species != Species::Pig
+                    && t.visible
+                    && fought
+                    && d <= GUARD_M
+                    && guard.is_none_or(|g| d < g.0)
+                {
+                    guard = Some((d, t.id));
+                }
+            }
+        }
+        self.guard = guard.map(|(_, id)| id);
+        self.senses.mate_attacked = self.guard.is_some();
+        let seen = (team.invite, team.count);
+        if seen != self.team_seen {
+            self.team_seen = seen;
+            self.memory.team_wake = true;
+        }
         let mut backpack = Sighting::default();
         if let Some([x, _, z]) = home::death_bag(core) {
             let (d, b) = relative(body, x, z);
@@ -4203,13 +4370,14 @@ impl Survivor {
         }
         // What is said around it: filed for the next request, its own
         // line coming back included; another body's local line asks early.
-        while let Some((from, global, text)) = core.pop_chat() {
+        self.has_mates = core.team().count > 1;
+        while let Some((from, channel, text)) = core.pop_chat() {
             let me = from == core.player_id;
             if me {
                 self.stats.echoed += 1;
             } else {
                 self.stats.heard += 1;
-                self.memory.chat_wake |= !global;
+                self.memory.chat_wake |= !channel.is_global();
             }
             let tag = core.tag(from);
             self.memory.chat.push(HeardLine {
@@ -4217,7 +4385,7 @@ impl Survivor {
                 name: tag.map_or(protocol::Name::EMPTY, |t| t.name),
                 address: tag.map_or(protocol::Address::GUEST, |t| t.address),
                 agent: core.is_agent(from),
-                global,
+                channel,
                 me,
                 text,
             });
@@ -4550,6 +4718,9 @@ impl BotDriver for Survivor {
         self.say_at = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
+        self.memory.team_wake = false;
+        self.team_seen = (0, 0);
+        self.guard = None;
         self.seen_tick = Some(welcome.tick);
         self.seen_at = Instant::now();
     }
@@ -4595,8 +4766,14 @@ impl BotDriver for Survivor {
             return None;
         }
         let line = self.say_line.take()?;
-        // Local only: a body speaks to the bodies near it.
-        match protocol::encode_chat(line.as_bytes(), false, out) {
+        // A body speaks to the bodies near it, or to its team when it asked
+        // to and has one; never to everyone.
+        let channel = if self.say_team && self.has_mates {
+            protocol::Channel::Team
+        } else {
+            protocol::Channel::Local
+        };
+        match protocol::encode_chat(line.as_bytes(), channel, out) {
             Ok(len) => {
                 let refill = protocol::chat::CHAT_REFILL_MS * u64::from(sim_core::limits::TICK_HZ);
                 self.say_at = tick.saturating_add((refill / 1000) as u32);
@@ -5012,6 +5189,41 @@ pub fn observe(
     }
     (s.take_out, s.feed) = (memory.take_out, memory.feed);
     s.trigger = memory.trigger;
+    // Its team (wire v108), from the team view its client was sent.
+    let who = |id: u32| {
+        let tag = core.tag(id);
+        crate::mind::Who {
+            id,
+            name: tag.map_or(protocol::Name::EMPTY, |t| t.name),
+            address: tag.map_or(protocol::Address::GUEST, |t| t.address),
+        }
+    };
+    let team = core.team();
+    s.team.leader = team.count > 0 && team.leader == player;
+    s.team.invited = team.invite != 0 && team.count == 0;
+    if s.team.invited {
+        s.team.invite_from = who(team.invite);
+    }
+    for m in team.members() {
+        if m.id == player {
+            continue;
+        }
+        s.team.mates += 1;
+        s.team.who[usize::from(s.team.who_len)] = who(m.id);
+        s.team.who_len += 1;
+        match m.state {
+            protocol::TEAM_AWAKE => match body {
+                Some(b) => {
+                    let (d, bearing) = relative(b, f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5);
+                    s.team.awake.add(d, bearing);
+                }
+                None => s.team.awake.count += 1,
+            },
+            protocol::TEAM_DEAD => s.team.down += 1,
+            _ => {}
+        }
+    }
+    s.team.mate_attacked = senses.mate_attacked;
     if s.body != BodyState::Alive {
         return s;
     }
@@ -5150,6 +5362,12 @@ pub fn observe(
         && s.free_slots >= loot::MIN_FREE_SLOTS
     {
         s.offer(Goal::Raid);
+    }
+    if s.team.invited {
+        s.offer(Goal::JoinTeam);
+    }
+    if s.team.awake.count > 0 {
+        s.offer(Goal::Follow);
     }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));

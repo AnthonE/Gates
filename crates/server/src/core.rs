@@ -311,6 +311,8 @@ pub struct ShardCore {
     /// The wipe's standings (`standings.rs`), tallied here off the sim's
     /// events per wallet, recounted by the boundary loop once a minute.
     pub standings: crate::standings::Standings,
+    /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
+    pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
     standings_tell: [u64; MAX_PLAYERS],
     /// Lines owed to everyone by the next chat pump.
@@ -616,6 +618,7 @@ impl ShardCore {
             wipe_tell: [0; MAX_PLAYERS],
             wipe_fired: None,
             standings: crate::standings::Standings::off(),
+            teams: crate::team::Teams::default(),
             standings_tell: [0; MAX_PLAYERS],
             standings_say: Vec::new(),
             standings_act: 0,
@@ -724,13 +727,15 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
-        let len = match protocol::encode_event_chat(0, true, line, &mut self.ev_buf) {
-            Ok(len) => len,
-            Err(_) => {
-                ShardStats::bump(&stats.encode_range_errors);
-                return;
-            }
-        };
+        let len =
+            match protocol::encode_event_chat(0, protocol::Channel::Global, line, &mut self.ev_buf)
+            {
+                Ok(len) => len,
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    return;
+                }
+            };
         for to_slot in 0..MAX_PLAYERS {
             if !self.clients[to_slot].connected || to.is_some_and(|t| t != to_slot) {
                 continue;
@@ -1494,6 +1499,11 @@ impl ShardCore {
         if !self.queue(cmd) {
             return None;
         }
+        // A woken body takes this connection's id (`World::take_over`); its
+        // team seat goes with it.
+        if let Some(sleeper) = sleeper {
+            self.teams.rekey(sleeper, id);
+        }
         if let Some(k) = key.as_ref() {
             // The arrow is spent. Leaving it would point at a body that is
             // now awake and owned by this connection, and the next join by
@@ -2055,6 +2065,13 @@ impl ShardCore {
                     // ring (`net.rs` `action_reader_task`); one that got
                     // here anyway asks the sim for nothing.
                     ActionMsg::SkinsRefresh => continue,
+                    // Team verbs leave the hand like any action and are run
+                    // after the tick, on the shard (`team.rs`): they never
+                    // reach the sim.
+                    ActionMsg::Team { op, target } => {
+                        c.pending_team = Some((op, target));
+                        continue;
+                    }
                     ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
                     ActionMsg::CraftFastTrack { index, recipe } => Command::CraftFastTrack {
                         id: c.id,
@@ -2275,6 +2292,7 @@ impl ShardCore {
         // This tick's trust rows leave for the log before the next
         // `World::tick` clears them (`trustlog.rs`).
         crate::trustlog::Tap::drain(self, stats);
+        self.pump_teams(stats, &mut send);
 
         for slot in 0..MAX_PLAYERS {
             if self.clients[slot].connected {
@@ -2602,6 +2620,12 @@ impl ShardCore {
             return;
         }
 
+        // `/team` is everybody's: the action lane's team verbs, typed.
+        if let AdminCmd::Team { op, target } = cmd {
+            self.team_op(from_slot, op, target, stats, send);
+            return;
+        }
+
         // `/top` is everybody's: the standings, to the asker.
         if let AdminCmd::Top = cmd {
             let key = self.key_str(from_slot);
@@ -2794,7 +2818,9 @@ impl ShardCore {
                 self.answer(from_slot, format!("{n} on:{line}"), stats, send);
             }
             // Handled above, before the allowlist.
-            AdminCmd::Bug { .. } | AdminCmd::WipeWhen | AdminCmd::Top => return,
+            AdminCmd::Bug { .. } | AdminCmd::WipeWhen | AdminCmd::Top | AdminCmd::Team { .. } => {
+                return
+            }
         }
         ops.log.push(logged);
     }
@@ -2861,7 +2887,23 @@ impl ShardCore {
                 continue;
             };
             let own = self.world.players[from_w].body;
-            let len = match encode_event_chat(from_id, msg.global, &msg.text, &mut self.ev_buf) {
+            // The team channel (v108) reaches the speaker's team wherever
+            // they are, and nobody else. A player with no team is told so
+            // rather than heard by no one.
+            let mut team = [0u32; protocol::TEAM_MAX];
+            let mates = self.teams.team_of(from_id);
+            team[..mates.len()].copy_from_slice(mates);
+            let team = &team[..mates.len()];
+            if msg.channel == protocol::Channel::Team && team.is_empty() {
+                self.answer(
+                    from_slot,
+                    crate::team::Refused::NoTeam.line().to_string(),
+                    stats,
+                    send,
+                );
+                continue;
+            }
+            let len = match encode_event_chat(from_id, msg.channel, &msg.text, &mut self.ev_buf) {
                 Ok(len) => len,
                 Err(_) => {
                     ShardStats::bump(&stats.encode_range_errors);
@@ -2872,7 +2914,11 @@ impl ShardCore {
                 if !self.clients[to_slot].connected {
                     continue;
                 }
-                if !msg.global {
+                if msg.channel == protocol::Channel::Team {
+                    if !team.contains(&self.clients[to_slot].id) {
+                        continue;
+                    }
+                } else if !msg.channel.is_global() {
                     let Some(to_w) = self.live_wslot(to_slot) else {
                         continue;
                     };
@@ -4825,6 +4871,131 @@ impl ShardCore {
         true
     }
 
+    /// The tick's team verbs (`team.rs`), then, once a second, the bodies
+    /// that left the world leave their teams.
+    fn pump_teams(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        for slot in 0..MAX_PLAYERS {
+            if let Some((op, target)) = self.clients[slot].pending_team.take() {
+                self.team_op(slot, op, target, stats, send);
+            }
+        }
+        let tick = self.world.tick;
+        if tick.is_multiple_of(sim_core::limits::TICK_HZ as u64) {
+            let world = &self.world;
+            let clients = &self.clients[..MAX_PLAYERS];
+            self.teams.prune(tick, |id| {
+                world.presence_of(id) != sim_core::world::PRESENCE_GONE
+                    // A woken body's new id, the tick before its body lands.
+                    || clients.iter().any(|c| c.connected && c.id == id)
+            });
+        }
+    }
+
+    /// One team verb from connection `slot`, from the action lane or a
+    /// `/team` line. A refusal is said to the asker; a success needs no
+    /// word, because the team view that follows is the answer.
+    fn team_op(
+        &mut self,
+        slot: usize,
+        op: u8,
+        target: u32,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        use crate::team::Refused;
+        let actor = self.clients[slot].id;
+        let me = self
+            .live_wslot(slot)
+            .map(|w| &self.world.players[w])
+            .filter(|p| !p.dead && !p.sleeping)
+            .map(|p| p.body);
+        let tick = self.world.tick;
+        let world = &self.world;
+        let teams = &mut self.teams;
+        let done = teams.op(actor, op, target, tick, |t| {
+            let me = me.ok_or(Refused::NoOne)?;
+            if t & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(Refused::NoOne);
+            }
+            let w = Self::world_slot_of(world, t).ok_or(Refused::NoOne)?;
+            let p = &world.players[w];
+            if p.dead || p.sleeping {
+                return Err(Refused::NoOne);
+            }
+            let dx = (p.body.qx - me.qx) as i64 * 3;
+            let dz = (p.body.qz - me.qz) as i64 * 3;
+            if dx * dx + dz * dz > crate::team::INVITE_REACH_CM * crate::team::INVITE_REACH_CM {
+                return Err(Refused::TooFar);
+            }
+            Ok(())
+        });
+        if let Err(why) = done {
+            self.answer(slot, why.line().to_string(), stats, send);
+        }
+    }
+
+    /// What a teammate looks like on the wire: their state and where they
+    /// stand, in whole metres.
+    fn team_member(world: &World, id: u32) -> (u8, u16, u16) {
+        let Some(w) = Self::world_slot_of(world, id) else {
+            return (protocol::TEAM_ASLEEP, 0, 0);
+        };
+        let p = &world.players[w];
+        let state = if p.sleeping {
+            protocol::TEAM_ASLEEP
+        } else if p.dead || p.wounded {
+            protocol::TEAM_DEAD
+        } else {
+            protocol::TEAM_AWAKE
+        };
+        let m = |q: i32| ((q as i64 * 3) / 100).clamp(0, protocol::TEAM_POS_MAX_M as i64) as u16;
+        (state, m(p.body.qx), m(p.body.qz))
+    }
+
+    /// Connection `slot`'s team (wire v108): sent when who, leader, state or
+    /// invite moves, and when only positions do, no oftener than
+    /// `team::MOVE_TICKS`. `false` stops the drip for the tick.
+    fn drip_team(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        let tick = self.world.tick;
+        let world = &self.world;
+        let view = self
+            .teams
+            .view(self.clients[slot].id, tick, |m| Self::team_member(world, m));
+        let c = &self.clients[slot];
+        let due = match &c.last_team {
+            None => true,
+            Some(last) if *last == view => false,
+            Some(last) => {
+                !crate::team::moved_only(last, &view)
+                    || tick >= c.team_sent_at + crate::team::MOVE_TICKS
+            }
+        };
+        if !due {
+            return true;
+        }
+        match protocol::encode_event_team(&view, &mut self.ev_buf) {
+            Ok(len) => {
+                if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    return false;
+                }
+                self.clients[slot].last_team = Some(view);
+                self.clients[slot].team_sent_at = tick;
+                ShardStats::bump(&stats.ev_sent);
+            }
+            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+        }
+        true
+    }
+
     /// One client's drip work: catalog batch, harvested-set sync batch,
     /// inventory diff — each at most one message per tick, so per-client
     /// event work is bounded regardless of world size. A refused push
@@ -4837,6 +5008,9 @@ impl ShardCore {
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
         if !self.drip_standing(slot, stats, send) || !self.drip_bank(slot, stats, send) {
+            return;
+        }
+        if slot < MAX_PLAYERS && !self.drip_team(slot, stats, send) {
             return;
         }
         let assist = self.live_wslot(slot).map_or((0, 0, 0), |wslot| {

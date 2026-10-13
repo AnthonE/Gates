@@ -220,6 +220,13 @@ fn main() {
     // A declared agent's mark (v107).
     let len = protocol::encode_event_agent(goldens::event_agent(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[163], &buf[..len]);
+    // A team verb (v108).
+    let (op, target) = goldens::action_team();
+    let len = protocol::encode_action_team(op, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[164], &buf[..len]);
+    // The receiver's team (v108).
+    let len = protocol::encode_event_team(&goldens::event_team(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[165], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -368,12 +375,12 @@ fn main() {
     let len = encode_action_upgrade(cx, cz, level, loc, material, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[38], &buf[..len]);
 
-    let (text, global) = goldens::chat();
-    let len = encode_chat(text.as_bytes(), global, &mut buf).unwrap();
+    let (text, channel) = goldens::chat();
+    let len = encode_chat(text.as_bytes(), channel, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[39], &buf[..len]);
 
-    let (from, global, text) = goldens::event_chat();
-    let len = encode_event_chat(from, global, &text, &mut buf).unwrap();
+    let (from, channel, text) = goldens::event_chat();
+    let len = encode_event_chat(from, channel, &text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[40], &buf[..len]);
 
     let (victim, part, damage) = goldens::event_hit();

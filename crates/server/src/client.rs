@@ -425,6 +425,14 @@ pub struct ClientNetState {
     /// THE GATE's respawn point as last sent (`EventMsg::GateSpawn`).
     /// `None` owes the client the reading.
     pub last_gate_spawn: Option<u32>,
+    /// The team as last sent (`EventMsg::Team`, v108), and the tick it was
+    /// sent at: a change of who or how is sent at once, a member's move no
+    /// oftener than `team::MOVE_TICKS`. `None` owes the client the view.
+    pub last_team: Option<protocol::TeamView>,
+    pub team_sent_at: u64,
+    /// A team verb that left the action hand this tick, run after the sim
+    /// step (`ShardCore::pump_teams`); never a `Command`.
+    pub pending_team: Option<(u8, u32)>,
     /// One decoded C→S chat line awaiting its fan-out. Unlike the action
     /// hand this is never deferred: chat is not a transaction, so a line
     /// that can't be said this tick is dropped rather than held (the
@@ -523,6 +531,9 @@ impl ClientNetState {
             last_expo: None,
             last_hostile: None,
             last_gate_spawn: None,
+            last_team: None,
+            team_sent_at: 0,
+            pending_team: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,
@@ -595,6 +606,7 @@ impl ClientNetState {
         self.last_expo = None;
         self.last_hostile = None;
         self.last_gate_spawn = None;
+        self.last_team = None;
     }
 
     /// Open `handle` of `kind` as this client's container view, or close

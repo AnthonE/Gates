@@ -406,6 +406,12 @@ seed = 20260731
 # shifts placed. `live` below the configured count is the health signal.
 # population = 8
 
+# Teams (Rust's relationshipmanager.maxteamsize): the most players one team
+# holds, 0..=8. 8 is the default; 2 or 3 makes a duo or trio shard; 0 or 1
+# turns teams off. In game: look at a player and press N to invite, Y to
+# join, `/t` to talk to the team, `/team leave|kick|promote <id>`.
+# team_max = 8
+
 # Dev-only fake network on both datagram lanes: "lat_ms,jitter_ms,loss_pct".
 # Boot with this to FEEL the netcode at the RTT it is tuned for (netcode
 # v2's bar is 60 ms — that is `netsim = "30,10,1"`, latency each way) on

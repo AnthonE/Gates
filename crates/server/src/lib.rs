@@ -60,6 +60,7 @@ pub mod standings;
 pub mod stats;
 pub mod status;
 pub mod store;
+pub mod team;
 /// The trust ledger's sink: every trust row, appended off the sim thread.
 pub mod trustlog;
 #[cfg(feature = "watch")]

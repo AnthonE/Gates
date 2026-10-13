@@ -28,7 +28,7 @@ use crate::{expect_zero_padding, KIND_BITS, KIND_CHAT};
 
 /// Longest chat line on the wire, in UTF-8 bytes. Bounded by the server's
 /// own C→S frame acceptance (`MAX_STREAM_MSG_BYTES` = 64): 48 text bytes
-/// plus the 7-bit header encode to 50 B, which leaves the length prefix
+/// plus the 8-bit header encode to 50 B, which leaves the length prefix
 /// and a margin. Proposed default, DECISIONS.md §open ("chat v0").
 pub const CHAT_MAX_BYTES: usize = 48;
 
@@ -114,22 +114,61 @@ impl ChatText {
     }
 }
 
-/// One decoded C→S chat frame. `global` is the sender's channel choice;
-/// the server enforces what that means (everyone, or the local radius).
+/// Who a line is for (wire v108; one bit, global or not, before). The
+/// server enforces what each means: the local radius, everyone, or the
+/// speaker's team (`server::team`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Channel {
+    #[default]
+    Local,
+    Global,
+    Team,
+}
+
+/// Width of a channel on the wire: room for one more.
+const CHANNEL_BITS: u32 = 2;
+
+impl Channel {
+    pub(crate) fn write(self, w: &mut BitWriter) -> Result<(), WireError> {
+        let code = match self {
+            Channel::Local => 0,
+            Channel::Global => 1,
+            Channel::Team => 2,
+        };
+        w.write(code, CHANNEL_BITS)
+    }
+
+    pub(crate) fn read(r: &mut BitReader) -> Result<Self, WireError> {
+        match r.read(CHANNEL_BITS)? {
+            0 => Ok(Channel::Local),
+            1 => Ok(Channel::Global),
+            2 => Ok(Channel::Team),
+            _ => Err(WireError::Malformed),
+        }
+    }
+
+    /// Everyone on the shard.
+    pub fn is_global(self) -> bool {
+        self == Channel::Global
+    }
+}
+
+/// One decoded C→S chat frame. `channel` is the sender's choice; the
+/// server enforces what it means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChatMsg {
-    pub global: bool,
+    pub channel: Channel,
     pub text: ChatText,
 }
 
 /// Encode a C→S chat line. Refuses (`Range`) anything `sanitize` rejects,
 /// so a client can never put a line on the wire the server would only
 /// throw away.
-pub fn encode_chat(raw: &[u8], global: bool, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_chat(raw: &[u8], channel: Channel, buf: &mut [u8]) -> Result<usize, WireError> {
     let text = ChatText::sanitize(raw).ok_or(WireError::Range)?;
     let mut w = BitWriter::new(buf);
     w.write(KIND_CHAT, KIND_BITS)?;
-    w.write_bit(global)?;
+    channel.write(&mut w)?;
     w.write(text.len() as u32, CHAT_LEN_BITS)?;
     for &b in text.as_bytes() {
         w.write(b as u32, 8)?;
@@ -148,10 +187,10 @@ pub fn decode_chat(buf: &[u8]) -> Result<ChatMsg, WireError> {
     if r.read(KIND_BITS)? != KIND_CHAT {
         return Err(WireError::Malformed);
     }
-    let global = r.read_bit()?;
+    let channel = Channel::read(&mut r)?;
     let text = read_text(&mut r)?;
     expect_zero_padding(&mut r)?;
-    Ok(ChatMsg { global, text })
+    Ok(ChatMsg { channel, text })
 }
 
 /// The shared line body: length, bytes, sanitize-or-refuse. Used by both
@@ -215,10 +254,10 @@ mod tests {
     #[test]
     fn round_trip() {
         let mut buf = [0u8; 64];
-        for global in [false, true] {
-            let n = encode_chat(b"raid at the north wall", global, &mut buf).expect("encode");
+        for channel in [Channel::Local, Channel::Global, Channel::Team] {
+            let n = encode_chat(b"raid at the north wall", channel, &mut buf).expect("encode");
             let msg = decode_chat(&buf[..n]).expect("decode");
-            assert_eq!(msg.global, global);
+            assert_eq!(msg.channel, channel);
             assert_eq!(msg.text.as_bytes(), b"raid at the north wall");
         }
     }
@@ -226,10 +265,16 @@ mod tests {
     #[test]
     fn encode_refuses_what_sanitize_refuses() {
         let mut buf = [0u8; 64];
-        assert_eq!(encode_chat(b"  ", false, &mut buf), Err(WireError::Range));
-        assert_eq!(encode_chat(b"a\nb", false, &mut buf), Err(WireError::Range));
         assert_eq!(
-            encode_chat(&[b'x'; CHAT_MAX_BYTES + 1], false, &mut buf),
+            encode_chat(b"  ", Channel::Local, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_chat(b"a\nb", Channel::Local, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_chat(&[b'x'; CHAT_MAX_BYTES + 1], Channel::Local, &mut buf),
             Err(WireError::Range)
         );
     }
@@ -241,7 +286,7 @@ mod tests {
         let mut buf = [0u8; 64];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
-        w.write_bit(false).unwrap();
+        w.write(0, CHANNEL_BITS).unwrap();
         let raw = b" hi ";
         w.write(raw.len() as u32, CHAT_LEN_BITS).unwrap();
         for &b in raw {
@@ -256,7 +301,7 @@ mod tests {
         let mut buf = [0u8; 64];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
-        w.write_bit(true).unwrap();
+        w.write(1, CHANNEL_BITS).unwrap();
         let raw = b"a\x1b[2Jb";
         w.write(raw.len() as u32, CHAT_LEN_BITS).unwrap();
         for &b in raw {
@@ -271,7 +316,7 @@ mod tests {
         let mut buf = [0u8; 96];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
-        w.write_bit(false).unwrap();
+        w.write(0, CHANNEL_BITS).unwrap();
         w.write(63, CHAT_LEN_BITS).unwrap(); // past CHAT_MAX_BYTES
         for _ in 0..63 {
             w.write(b'a' as u32, 8).unwrap();
@@ -283,7 +328,21 @@ mod tests {
     #[test]
     fn a_full_line_fits_the_stream_frame() {
         let mut buf = [0u8; crate::MAX_STREAM_MSG_BYTES];
-        let n = encode_chat(&[b'z'; CHAT_MAX_BYTES], true, &mut buf).expect("cap line encodes");
+        let n = encode_chat(&[b'z'; CHAT_MAX_BYTES], Channel::Global, &mut buf)
+            .expect("cap line encodes");
         assert!(n <= crate::MAX_STREAM_MSG_BYTES);
+    }
+
+    #[test]
+    fn decode_refuses_the_unused_channel() {
+        let mut buf = [0u8; 64];
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_CHAT, KIND_BITS).unwrap();
+        w.write(3, CHANNEL_BITS).unwrap();
+        w.write(2, CHAT_LEN_BITS).unwrap();
+        w.write(b'h' as u32, 8).unwrap();
+        w.write(b'i' as u32, 8).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_chat(&buf[..n]), Err(WireError::Malformed));
     }
 }

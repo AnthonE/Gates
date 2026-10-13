@@ -282,6 +282,9 @@ pub struct Tracks {
     stepped: Option<u32>,
     playout: u8,
     rng: Pcg32,
+    /// Its teammates (wire v108), as its client was last told: never a
+    /// threat, a quarry or a rival, but still a body to keep a swing off.
+    friends: [u32; protocol::TEAM_MAX],
     pub stats: TrackStats,
 }
 
@@ -305,6 +308,7 @@ impl Tracks {
             stepped: None,
             playout: INTERP_DELAY_TICKS,
             rng: Pcg32::new(0, 0),
+            friends: [0; protocol::TEAM_MAX],
             stats: TrackStats::default(),
         }
     }
@@ -316,6 +320,7 @@ impl Tracks {
         self.fed = None;
         self.me = player;
         self.rng = Pcg32::new(seed, u64::from(player));
+        self.friends = [0; protocol::TEAM_MAX];
         self.forget();
     }
 
@@ -686,8 +691,29 @@ impl Tracks {
         worst.map(|(i, _)| i)
     }
 
-    /// Every body seen, in sight or remembered.
+    /// Who its team is, from what its client was told (`EventMsg::Team`).
+    pub fn befriend(&mut self, team: &protocol::TeamView) {
+        self.friends = [0; protocol::TEAM_MAX];
+        for (out, m) in self.friends.iter_mut().zip(team.members()) {
+            if m.id != self.me {
+                *out = m.id;
+            }
+        }
+    }
+
+    /// Is `id` on its team?
+    pub fn friend(&self, id: u32) -> bool {
+        id != 0 && self.friends.contains(&id)
+    }
+
+    /// Every body seen, in sight or remembered, that is not a teammate:
+    /// what a threat, a quarry or a rival is chosen from.
     pub fn seen(&self) -> impl Iterator<Item = &Track> + '_ {
+        self.all().filter(|t| !self.friend(t.id))
+    }
+
+    /// Every body seen, teammates too: what a swing must not cross.
+    pub fn all(&self) -> impl Iterator<Item = &Track> + '_ {
         self.rows
             .iter()
             .flatten()
@@ -733,7 +759,7 @@ impl Tracks {
     }
 
     pub fn get(&self, id: u32) -> Option<&Track> {
-        self.seen().find(|t| t.id == id)
+        self.all().find(|t| t.id == id)
     }
 
     /// Where a body in sight stands on my screen: its interpolated pose at
