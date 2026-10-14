@@ -69,11 +69,12 @@ pub fn shore() -> (f32, f32) {
     panic!("fixture seed has no shore");
 }
 
-/// A level, dry clearing: no tree, rock or node within `radius_cells`
-/// scatter cells of it, and the ground within a few metres of level over
-/// it. Where two bodies meet in the arena with nothing between them.
+/// A level, dry clearing: nothing solid (a tree, a node, a container)
+/// within `radius_cells` scatter cells of it — scrub and pickups are
+/// passable — and the ground within a few metres of level over it. Where two
+/// bodies meet in the arena with nothing between them.
 pub fn clearing(radius_cells: i32) -> (f32, f32) {
-    use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
+    use sim_core::terrain::{self, ScatterTable, CELL_SIZE};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
     let r = radius_cells;
@@ -93,7 +94,7 @@ pub fn clearing(radius_cells: i32) -> (f32, f32) {
                         x + dx as f32 * CELL_SIZE,
                         z + dz as f32 * CELL_SIZE,
                     );
-                    s.occupant == Occupant::None && h > 1.0 && (h - h0).abs() < 3.0
+                    terrain::occupant_volume(s.occupant).0 == 0.0 && h > 1.0 && (h - h0).abs() < 3.0
                 })
             });
             if clear {
@@ -175,7 +176,8 @@ pub fn stack(content: &content::Content, id: &str) -> sim_core::gather::ItemStac
 
 /// A loot container of this kind (`Occupant::BarrelSlot`, `CrateSlot` or
 /// `CacheSlot`) and a dry, level standing point a few metres from it with
-/// nothing scattered between: `(cell, stand)`.
+/// nothing scattered between: `(cell, stand)`. A barrel has no other within
+/// 40 m.
 pub fn container(kind: sim_core::terrain::Occupant) -> ((u16, u16), (f32, f32)) {
     use sim_core::terrain::{self, Occupant, ScatterTable};
     let haven = terrain::haven(SEED);
@@ -184,6 +186,20 @@ pub fn container(kind: sim_core::terrain::Occupant) -> ((u16, u16), (f32, f32)) 
         for cx in 16..terrain::CELLS_PER_SIDE - 16 {
             let slot = terrain::scatter(SEED, &table, &haven, cx, cz);
             if slot.occupant != kind {
+                continue;
+            }
+            // A drawn barrel stands alone, or a looter chains the next one
+            // and never finishes this one. (The pad's crates are a ring.)
+            let crowded = kind == Occupant::BarrelSlot
+                && (-5..=5).any(|oz| {
+                    (-5..=5).any(|ox| {
+                        let n = terrain::scatter(SEED, &table, &haven, cx + ox, cz + oz);
+                        (ox, oz) != (0, 0)
+                            && n.occupant == kind
+                            && (n.x - slot.x).hypot(n.z - slot.z) < 40.0
+                    })
+                });
+            if crowded {
                 continue;
             }
             for (dx, dz) in [(0.0f32, -4.0f32), (0.0, 4.0), (-4.0, 0.0), (4.0, 0.0)] {
