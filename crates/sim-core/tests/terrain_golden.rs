@@ -206,7 +206,9 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0x519B_594E_B291_2C10` at the desert** (2026-10-13): the
 /// golden's cells are short of the desert's reach and no height moved, but
 /// the desert's row carries ore, so `Haven::ore_pm` rescales.
-const GOLDEN_TERRAIN_HASH: u64 = 0x519B_594E_B291_2C10;
+/// **Moved → `0x6309_1E78_5E03_C721` at the denser dressing** (2026-10-14):
+/// the scatter rock gone for lone boulders, more scrub, a denser forest.
+const GOLDEN_TERRAIN_HASH: u64 = 0x6309_1E78_5E03_C721;
 
 #[test]
 fn test_terrain_golden() {

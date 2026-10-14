@@ -62,7 +62,7 @@ const SEEDS: [u64; 4] = [0, 1, 7, 12345];
 const TICKS: usize = 200;
 
 /// How far from a slot a walk starts. Comfortably outside every occupant's
-/// reach (the widest scattered one is `Rock` at 1.5 m) and inside the same
+/// reach (the widest scattered one is a node at ~1 m) and inside the same
 /// cell neighbourhood, so the walk is a walk and not a commute.
 const STANDOFF_M: f32 = 4.0;
 
@@ -166,52 +166,6 @@ fn a_body_stops_at_a_trunk_from_every_bearing() {
                 d < STANDOFF_M - 0.5,
                 "seed {seed} bearing {k}: body ended {d:.3} m out, having \
                  started at {STANDOFF_M} — the walk never engaged the trunk"
-            );
-        }
-    }
-}
-
-/// The widest scattered thing on the island stops a body too, and by more.
-/// A boulder's collision radius is several times a trunk's, so a check that
-/// passed on a tree by accident of the quantum cannot pass here the same way.
-///
-/// **The fixture check below is DERIVED from the table, and it used to be the
-/// literal 1.5.** That literal was the boulder's *nominal* radius —
-/// "DodecahedronGeometry(1.5)" — and on 2026-08-10 the row became the mesh's
-/// measured bound (1.1145; `blob_mesh` displaces vertices inward, so the
-/// nominal was blocking 0.39 m of ground nobody could see). The literal went
-/// red, correctly: it was asserting a number that had stopped being true.
-/// Reading `occupant_volume` here says what the test actually means — this
-/// occupant is much wider than a trunk — and cannot go stale that way again.
-#[test]
-fn a_boulder_stops_a_body_at_its_own_radius() {
-    for seed in SEEDS {
-        let mut sc = Scratch::live(seed);
-        let (_, _, rock) = find(seed, &sc.table, &sc.haven, Occupant::Rock);
-        let stop = reach(&rock);
-        let (trunk_r, _) = terrain::occupant_volume(Occupant::Tree);
-        assert!(
-            stop > trunk_r * 3.0 + CAPSULE_RADIUS_M,
-            "fixture check: a boulder reaches {stop:.3} m, not comfortably \
-             past three trunk radii — this test would prove nothing a tree \
-             had not already proved"
-        );
-        for k in 0..4u16 {
-            let b = charge_at(seed, &mut sc.occupants(), &rock, k);
-            let d = dist(&b, &rock);
-            assert!(
-                d >= stop - POS_XZ_Q,
-                "seed {seed} bearing {k}: body is {d:.3} m from the boulder, \
-                 inside its {stop:.3} m reach"
-            );
-            // Paired with the check above, and the pairing is the gate: a
-            // body that walked straight THROUGH the boulder also ends up
-            // further than `stop` from it, on the far side. Only "outside,
-            // and stopped nearby" is evidence of a collision.
-            assert!(
-                d < STANDOFF_M - 0.5,
-                "seed {seed} bearing {k}: body ended {d:.3} m out, having \
-                 started at {STANDOFF_M} — it passed clean through"
             );
         }
     }
@@ -417,7 +371,7 @@ fn the_scatter_memo_is_exact_under_eviction() {
 fn a_body_caught_inside_an_occupant_can_walk_out() {
     for seed in SEEDS {
         let mut sc = Scratch::live(seed);
-        let (_, _, rock) = find(seed, &sc.table, &sc.haven, Occupant::Rock);
+        let (_, _, rock) = find(seed, &sc.table, &sc.haven, Occupant::StoneNode);
         let cols = ColIndex::new();
 
         // Dead centre of the boulder — the deepest a respawn could catch you.

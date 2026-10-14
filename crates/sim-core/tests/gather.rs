@@ -87,8 +87,8 @@ fn pitch_toward(rise: f32, run: f32) -> u8 {
     best
 }
 
-/// A gatherable slot, the walkable point 1.2 m west of it, and the aim
-/// (of 256 headings) that best faces it. Panics if the seed offers no
+/// A gatherable slot, the walkable point 1.2 m (or just clear of it) west of
+/// it, and the aim (of 256 headings) that best faces it. Panics if the seed offers no
 /// sufficiently isolated node — that is a test-setup failure, not a skip.
 fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
     let table = ScatterTable::alpha_default();
@@ -99,9 +99,21 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
             if s.occupant != want {
                 continue;
             }
-            let (px, pz) = (s.x - 1.2, s.z);
+            // Outside the slot's own reach, or a wide node seats the body on
+            // its top (nodes are steppable) and the swing passes over it.
+            let back = (terrain::occupant_volume(want).0 * s.scale
+                + sim_core::collide::CAPSULE_RADIUS_M
+                + 0.05)
+                .max(1.2);
+            let (px, pz) = (s.x - back, s.z);
             let py = terrain::height(seed, px, pz);
-            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+            // An ore node on a slope sits sunk into it, and is aimed at low
+            // (`ORE_AIM_UP_M`), so it is taken on the flat only.
+            let ledge = match sim_core::gather::node_index(want) {
+                Some(ni) if sim_core::gather::is_ore(ni) => 0.15,
+                _ => 1.0,
+            };
+            if (s.y - py).max(py - s.y) > ledge || py < 1.0 {
                 continue; // node on a ledge or in the sea — keep looking
             }
             // The node must be the only gatherable within reach+slack of
@@ -143,7 +155,7 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
                 Some(ni) if sim_core::gather::is_ore(ni) => ORE_AIM_UP_M,
                 _ => AIM_UP_M,
             };
-            let pitch = pitch_toward(s.y + up - (py + EYE_M), 1.2);
+            let pitch = pitch_toward(s.y + up - (py + EYE_M), back);
             return (
                 (px, pz),
                 Aim {

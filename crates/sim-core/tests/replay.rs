@@ -537,7 +537,9 @@ const TICKS: u64 = 900;
 /// **Moved `0xB77C_36B0_AD7E_998A` → `0x2C94_B4C3_D2AA_7875` at the desert and
 /// the 3× trees** (2026-10-13): a tree is solid to 33 m,
 /// the north is desert, and the mob roster is counted over five biomes.
-const GOLDEN_FINAL_HASH: u64 = 0x2C94_B4C3_D2AA_7875;
+/// **Moved → `0xB9BD_4832_90A7_E332` at the denser dressing** (2026-10-14):
+/// lone boulders for the scatter rock, more scrub, a denser forest.
+const GOLDEN_FINAL_HASH: u64 = 0xB9BD_4832_90A7_E332;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -643,7 +645,8 @@ const GOLDEN_FINAL_HASH: u64 = 0x2C94_B4C3_D2AA_7875;
 /// the inside discount from the t=191 leap on.
 /// **Moved → `0xA5CF_E703_D724_FDFB` at the desert and the 3× trees**, with
 /// the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0xA5CF_E703_D724_FDFB;
+/// **Moved → `0xBCD4_EA5B_E156_7E60` at the denser dressing**, with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0xBCD4_EA5B_E156_7E60;
 
 /// Fold a stamped trace into one number.
 ///

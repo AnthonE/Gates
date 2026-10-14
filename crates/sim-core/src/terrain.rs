@@ -6907,10 +6907,10 @@ pub const ROW_BUSH: usize = 4;
 /// meadow's plant and the berry bush the forest edge's, which is where the
 /// treeline transfer puts most of the column.
 pub const PLANT_SHARES: [[u16; 2]; BIOMES] = [
-    [100, 150], // Beach
-    [200, 330], // Meadow
-    [280, 140], // Forest
-    [150, 80],  // Highland
+    [80, 110],  // Beach
+    [150, 250], // Meadow
+    [160, 80],  // Forest
+    [80, 40],   // Highland
     [0, 40],    // Desert — no berries; the rest is cactus and dry scrub
 ];
 
@@ -6961,7 +6961,10 @@ pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
 
 /// How much of the bush column is a ground pickup, per biome, per mille of
 /// the column's draws (taken out of what was scenery). **(knob)**
-pub const PICKUP_SHARES: [u16; BIOMES] = [120, 120, 150, 200, 180];
+///
+/// Lowered with the bush column's rise (2026-10-14) so the pickables grow by
+/// a fifth to a half and the rest of the rise is scenery scrub.
+pub const PICKUP_SHARES: [u16; BIOMES] = [90, 90, 90, 100, 150];
 
 /// Which pickup, per biome, percent: `[stone, wood, metal, sulfur,
 /// mushrooms]`. Driftwood and stone on the beach, mushrooms under the trees,
@@ -7042,11 +7045,17 @@ impl ScatterTable {
                 // 145‰ against 300, so most of it is the ground itself with
                 // the clutter population's grit on it (ART.md rule 4), not a
                 // yard sale at the waterline.
-                [0, 0, 0, 0, 35, 40, 70],
-                // Meadow: buildable, sparse trees.
-                [70, 15, 0, 0, 70, 25, 0],
+                //
+                // **No `Rock` column anywhere since 2026-10-14**: the 2.2 m
+                // scatter stone read as an ore node (operator: "the random
+                // rocks we cant mine need to be WAY WAY bigger. so no
+                // confusion"), and the lone boulders in `boulder.rs` (4–8 m,
+                // box collision) took its place.
+                [0, 0, 0, 0, 55, 0, 70],
+                // Meadow: buildable, sparse trees, scrub between them.
+                [85, 18, 0, 0, 115, 0, 0],
                 // Forest: wood, cover — and since 2026-09-14 a forest rather
-                // than a parkland. **The row totals 700‰ against a field the
+                // than a parkland. **The row totals 784‰ against a field the
                 // cap below holds to `FOREST_CLUMP_CAP × FOREST_CLUMP_NORM`,
                 // and the product stays under 1000** — the const block after
                 // this table holds the arithmetic, so a row that would
@@ -7063,15 +7072,15 @@ impl ScatterTable {
                 // `reference/FORESTS.md` §9.1). The bush is a harvestable
                 // slot (berries, cloth) and keeps a presence here so a forest
                 // still pays cloth; the meadow is where it is thick.
-                [640, 12, 0, 0, 20, 28, 0],
+                [720, 14, 0, 0, 50, 0, 0],
                 // Highland: the ore, the exposure.
-                [20, 70, 60, 45, 10, 80, 0],
+                [24, 75, 60, 45, 30, 0, 0],
                 // Desert: open sand. A palm now and then, cactus and dry
                 // scrub in the bush column, sandstone boulders, and ore —
                 // the reason to cross it, as in Rust's arid biome. The ore
                 // budget scales metal and sulfur island-wide, so this row
                 // moves where ore stands, not how much an island has.
-                [22, 30, 6, 6, 80, 70, 0],
+                [26, 33, 6, 6, 100, 0, 0],
             ],
             clump_cap: [
                 f32::INFINITY,
@@ -7093,14 +7102,12 @@ impl ScatterTable {
 /// Under the cap, a cell whose field reads at or above it draws the row at
 /// its scaled ceiling — the densest stand the 8 m grid can hold — and every
 /// cell below keeps the field's own gradient down to the clearing floor.
-/// Measured on the four gate seeds (`examples/clump_cap.rs`): at 1.0 the
-/// field is at or above the cap on **43.3%** of cells, its mean under the
-/// cap is 0.7476, and the rail admits a 748‰ row. The shipped Forest row
-/// totals 700, so its scaled ceiling is 700 × 1.0 × 1.3376 = 936‰; the tree
-/// alone stands at 640 × 1.3376 = 856‰ of a cell in a stand, which is
-/// ~134 stems/ha against the grid's 156 ceiling, and at ~8 stems/ha on the
-/// clearing floor (`CLUMP_FLOOR`² × `CLUMP_NORM` = 0.061 of the mean).
-pub const FOREST_CLUMP_CAP: f32 = 1.0;
+/// Measured on the four gate seeds (`examples/clump_cap.rs`): at 0.8 the
+/// field is at or above the cap on **56%** of cells, its mean under the cap
+/// is 0.6455, and the rail admits an 807‰ row. Lowered from 1.0 on
+/// 2026-10-14 ("would be nice if forest where a bit denser"): more of the
+/// forest stands at the ceiling and the clearings keep their floor.
+pub const FOREST_CLUMP_CAP: f32 = 0.8;
 
 /// Reciprocal of the island mean of `min(clump, FOREST_CLUMP_CAP)`, measured
 /// on the 65,536-cell 8 m grid over the four gate seeds — the same
@@ -7110,10 +7117,10 @@ pub const FOREST_CLUMP_CAP: f32 = 1.0;
 /// `tests/scatter.rs::test_clump_cap_normalizer_holds` fails if the two
 /// disagree by more than the field's own seed-to-seed wobble.
 ///
-/// Measured: `min(clump, 1.0)` means 0.7476 over the four seeds together
-/// (per seed 0.7469 / 0.7466 / 0.7452 / 0.7517 — `test_clump_cap_normalizer_holds`
-/// prints them), and 1.3376 is its reciprocal.
-pub const FOREST_CLUMP_NORM: f32 = 1.3376;
+/// Measured: `min(clump, 0.8)` means 0.6455 over the four seeds together
+/// (`test_clump_cap_normalizer_holds` prints them per seed), and 1.5493 is
+/// its reciprocal.
+pub const FOREST_CLUMP_NORM: f32 = 1.5493;
 
 const _: () = {
     // The saturation rail as arithmetic on the shipped table, so a Forest
@@ -8273,7 +8280,7 @@ pub fn clutter_channel(kind: Clutter) -> usize {
 /// comment names bits 0..7 as "this draw's one unspent slice"), and a second
 /// hash for a sub-kind would be a per-element cost on the densest population
 /// in the game.
-pub const BRUSH_SHARE_PERMILLE: u32 = 120;
+pub const BRUSH_SHARE_PERMILLE: u32 = 200;
 
 /// Share of the grass channel that lies as a [`Clutter::Stone`], per mille —
 /// spent the way [`BRUSH_SHARE_PERMILLE`] is. **(knob)**

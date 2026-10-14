@@ -32,8 +32,8 @@ use super::{Eye, WorldEntity, WorldId};
 
 /// Formation cells drawn either side of the eye's: ~900 m.
 pub const ROCK_RING: i32 = 14;
-/// Formations built per frame. An empty cell is a hash and costs nothing
-/// against this; a present one is a few height taps and a mesh.
+/// Formations built per frame. An empty cell is a few taps and costs nothing
+/// against this; a present one is a few more and a mesh.
 pub const BUILDS_PER_FRAME: usize = 2;
 /// The ground material's value multiplier (`UV_1.x`) on a boulder, at its
 /// top. Granite at full value is the ground's brightest identity, and a
