@@ -38,14 +38,8 @@ use super::Net;
 
 /// What the crosshair is on this frame. Written by [`resolve`], read by the
 /// prompt and by [`keys`] — one value, so the two cannot disagree.
-///
-/// `.1`: a LEFT click picks it too, with no swing — a bush, hemp or a pile
-/// with no node, carcass or body in the swing's way. A swing passes through
-/// a plant and pays nothing, so clicking one is a pick the player meant
-/// (operator, 2026-10-14: *"we dont need to swing at them"*). `input::gather`
-/// holds the swing back and [`keys`] sends the pick.
 #[derive(Resource, Default)]
-pub struct Aimed(pub Pick, pub bool);
+pub struct Aimed(pub Pick);
 
 /// What a SWING would hit this frame — the scatter's answer, where [`Aimed`]
 /// is the deployables'. Its own resource for the same reason [`Near`] is:
@@ -225,13 +219,6 @@ pub fn resolve(
     // would do instead (§0ray 2).
     // The built thing the crosshair is on, for the hammer and the charge.
     let mut built = None;
-    // Nothing a swing would meet — the left click is free to pick a plant.
-    // Never with a bow or a gun in hand: their left click is a shot.
-    let mut swing_clear = false;
-    let fires = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some()
-        || crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, sel).is_some_and(|i| {
-            crate::ui::hold::HELD_MODELS[i].stroke == crate::ui::hold::Stroke::Shot
-        });
     (swung.0, in_weak.0) = match world.as_deref() {
         Some(_) => {
             let (mut island, shadows) = interact::swing_island(core, sel);
@@ -321,20 +308,6 @@ pub fn resolve(
                         aimed: true,
                         ..Default::default()
                     };
-                    swing_clear = !fires
-                        && pick.occupant == 0
-                        && pick.carcass.is_none()
-                        && !interact::swing_meets_body(
-                            SwingAim {
-                                x,
-                                y,
-                                z,
-                                yaw,
-                                pitch,
-                                crouched,
-                            },
-                            &shadows,
-                        );
                 }
             }
             // The weak sector, but only for the node actually aimed at: the
@@ -373,7 +346,6 @@ pub fn resolve(
             aimed.0 = help;
         }
     }
-    aimed.1 = swing_clear && aimed.0.verb == Verb::Pick;
     // The give key's target, on the same aim (`B`, never `E`). A downed or
     // dead hand gives nothing: the sim reads neither (`live_slot_of`).
     give.pick = if core.wounded || core.dead {
@@ -843,9 +815,6 @@ pub fn keys(
             crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
         ) {
             use_slot(&net, &mut toast, &mut bite, now, net.sel);
-        } else if click.swings() && aimed.1 {
-            // A plant under the crosshair: picked, not swung at ([`Aimed`]).
-            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
         }
     }
     if keys.just_pressed(KeyCode::KeyX) {

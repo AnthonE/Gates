@@ -1883,15 +1883,6 @@ fn nearest_carcass(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::CarcassHit
     best
 }
 
-/// Whether a swing from `at` would meet a living player or animal inside the
-/// hand's reach. A left click at a plant picks it instead of swinging
-/// (`render::verbs::Aimed`) only when this is false, so a fight in a berry
-/// bush is still a fight.
-pub fn swing_meets_body(at: SwingAim, shadows: &Shadows<'_>) -> bool {
-    let ray = at.ray(SWING_REACH_M);
-    nearest_body(&ray, shadows).is_some() || nearest_animal(&ray, shadows).is_some()
-}
-
 /// The nearest other living player the ray crosses, by
 /// `ranged::nearest_body`'s rule (closest approach first), over the
 /// snapshot. `slot` is the entity's index in `entities`; nothing reads it.

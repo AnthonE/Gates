@@ -481,10 +481,7 @@ pub fn gather(
     // nothing fire there (`combat::holstered`), so the arm does not swing
     // and the bow does not draw — `hud::holster_hint` says why.
     let holstered = core.holstered();
-    // A plant under the crosshair is picked by the click, not swung at
-    // (`verbs::Aimed`): the arm stays still.
-    let picks = aimed.as_ref().is_some_and(|a| a.1);
-    if swings && !picks && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
+    if swings && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
     // **A bow is drawn with the right hand** (the reference's binding): held,
