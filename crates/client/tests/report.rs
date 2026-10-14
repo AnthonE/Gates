@@ -17,8 +17,9 @@
 use std::path::{Path, PathBuf};
 
 use client::report::{
-    fence_for, many_lines, one_line, sane, Build, Crash, Kind, Netstat, Place, Report, Vitals,
-    BODY_LINES_MAX, BODY_MAX, FORMAT, PREFIX, TITLE_MAX,
+    base64, fence_for, intake_url, many_lines, one_line, read_receipt, sane, Build, Crash, Kind,
+    Machine, Netstat, Place, Receipt, Report, Vitals, BODY_LINES_MAX, BODY_MAX, FORMAT, PREFIX,
+    SHOT_SEND_MAX, TITLE_MAX,
 };
 
 /// A fixed build, so nothing in this suite depends on what commit it runs on.
@@ -28,6 +29,18 @@ fn build() -> Build {
         commit: "abc123def".into(),
         wire: 48,
         platform: "linux",
+        runtime: "desktop",
+        gpu_api: "native",
+    }
+}
+
+/// The same build as the browser's WebGL2 module would report it.
+fn web_build() -> Build {
+    Build {
+        platform: "web",
+        runtime: "browser",
+        gpu_api: "webgl2",
+        ..build()
     }
 }
 
@@ -708,4 +721,185 @@ fn the_signed_day_is_the_day_it_was_reported() {
     assert_eq!(plain(Kind::Look, "t", "b").day(), "2026-08-20");
     let later = Report::new(Kind::Look, "t", "b", AT + 86_400, build());
     assert_eq!(later.day(), "2026-08-21");
+}
+
+// ------------------------------------------------- desktop or browser
+
+#[test]
+fn this_test_binary_reports_itself_as_the_desktop() {
+    // The tests run natively, so `here()` must not claim a browser — and the
+    // browser arm is the one `HOST_OS` gets wrong (it is `Unix` on wasm32).
+    let b = Build::here();
+    assert_eq!(b.runtime, "desktop");
+    assert_eq!(b.gpu_api, "native");
+    assert_ne!(b.platform, "web");
+    assert!(!b.in_browser());
+}
+
+#[test]
+fn the_document_says_where_it_ran() {
+    let desk = plain(Kind::Look, "t", "b").markdown();
+    assert!(desk.contains("## Where it ran"));
+    assert!(desk.contains("| runtime | desktop (linux) |"), "{desk}");
+    assert!(desk.contains("cargo run -p client --features render --bin gates"));
+    assert!(!desk.contains("ci/build_web.sh"));
+
+    let mut r = Report::new(Kind::Look, "t", "b", AT, web_build());
+    r.machine = Some(Machine::new(
+        "ANGLE (Intel, Mesa Intel(R) UHD 620)",
+        "Gl",
+        "",
+        [1600, 900],
+        Some("Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"),
+    ));
+    let web = r.markdown();
+    assert!(
+        web.contains("| runtime | browser · the WebGL2 module |"),
+        "{web}"
+    );
+    assert!(web.contains("| browser | `Mozilla/5.0 (X11; Linux x86_64; rv:140.0)"));
+    assert!(web.contains("| gpu | `ANGLE (Intel, Mesa Intel(R) UHD 620)` |"));
+    assert!(web.contains("| window | 1600 × 900 |"));
+    assert!(
+        !web.contains("| driver |"),
+        "an empty field is left out, not printed blank"
+    );
+    assert!(web.contains("ci/build_web.sh"));
+    assert!(web.contains("cfg(webgl2)"));
+    assert!(!web.contains("cargo run -p client --features render --bin gates"));
+
+    let gpu = Report::new(
+        Kind::Look,
+        "t",
+        "b",
+        AT,
+        Build {
+            gpu_api: "webgpu",
+            ..web_build()
+        },
+    )
+    .markdown();
+    assert!(gpu.contains("the WebGPU module"));
+    assert!(gpu.contains("--features webgpu"));
+}
+
+#[test]
+fn the_fingerprint_splits_browser_from_desktop_and_webgl2_from_webgpu() {
+    let desk = Report::new(Kind::Look, "t", "", AT, build());
+    let gl = Report::new(Kind::Look, "t", "", AT, web_build());
+    let gpu = Report::new(
+        Kind::Look,
+        "t",
+        "",
+        AT,
+        Build {
+            gpu_api: "webgpu",
+            ..web_build()
+        },
+    );
+    assert_ne!(desk.fingerprint(), gl.fingerprint());
+    assert_ne!(gl.fingerprint(), gpu.fingerprint());
+}
+
+#[test]
+fn a_user_agent_is_one_bounded_line() {
+    let ua = format!(
+        "Mozilla/5.0\n| injected | row |\u{202E}{}",
+        "x".repeat(1_000)
+    );
+    let m = Machine::new("gpu\r\nname", "Vulkan", "", [1, 1], Some(&ua));
+    let b = m.browser.unwrap();
+    assert!(!b.contains('\n') && !b.contains('\u{202E}'));
+    assert!(b.chars().count() <= client::report::MACHINE_MAX);
+    assert_eq!(m.gpu, "gpu name");
+    assert_eq!(
+        Machine::new("", "", "", [0, 0], Some("  ")).browser,
+        None,
+        "a blank user agent is no user agent"
+    );
+}
+
+// ------------------------------------------------------------- the send
+
+#[test]
+fn base64_matches_the_rfc_vectors() {
+    for (raw, want) in [
+        ("", ""),
+        ("f", "Zg=="),
+        ("fo", "Zm8="),
+        ("foo", "Zm9v"),
+        ("foob", "Zm9vYg=="),
+        ("fooba", "Zm9vYmE="),
+        ("foobar", "Zm9vYmFy"),
+    ] {
+        assert_eq!(base64(raw.as_bytes()), want, "{raw:?}");
+    }
+    assert_eq!(base64(&[0xff, 0xfe, 0xfd]), "//79");
+}
+
+#[test]
+fn the_submission_is_the_report_plus_the_picture() {
+    let r = Report::new(Kind::Look, "tree floats", "", AT, web_build());
+    let png = b"\x89PNG\r\n\x1a\nrest";
+    let v: serde_json::Value = serde_json::from_str(&r.submission(Some(png))).unwrap();
+    assert_eq!(v["game"], "gates");
+    assert_eq!(v["report"]["fingerprint"], r.fingerprint_hex());
+    assert_eq!(v["report"]["build"]["runtime"], "browser");
+    assert_eq!(v["report"]["build"]["platform"], "web");
+    assert_eq!(v["report"]["build"]["gpu_api"], "webgl2");
+    assert_eq!(v["shot_png_b64"], base64(png));
+
+    let none: serde_json::Value = serde_json::from_str(&r.submission(None)).unwrap();
+    assert!(none.get("shot_png_b64").is_none());
+    let big = vec![0u8; SHOT_SEND_MAX + 1];
+    let over: serde_json::Value = serde_json::from_str(&r.submission(Some(&big))).unwrap();
+    assert!(
+        over.get("shot_png_b64").is_none(),
+        "an oversize picture is left off, and the words still go"
+    );
+}
+
+#[test]
+fn the_intake_answer_is_read_or_its_refusal_is_quoted() {
+    assert_eq!(
+        intake_url("https://elopros.com/"),
+        "https://elopros.com/api/bugs"
+    );
+    assert_eq!(
+        read_receipt(
+            201,
+            br#"{"ok":true,"id":"20261014-120000-a1b2c3d4","seen":3,"shot":true}"#
+        ),
+        Ok(Receipt {
+            id: "20261014-120000-a1b2c3d4".into(),
+            seen: 3,
+            shot: true
+        })
+    );
+    assert_eq!(
+        read_receipt(
+            429,
+            br#"{"ok":false,"error":"more than 40 reports from one address today"}"#
+        ),
+        Err("more than 40 reports from one address today".into())
+    );
+    assert_eq!(
+        read_receipt(502, b"<html>bad gateway</html>"),
+        Err("the intake answered 502".into())
+    );
+    assert!(
+        read_receipt(200, b"{}").is_err(),
+        "a 2xx with no id is not a receipt"
+    );
+}
+
+#[test]
+fn a_crash_report_is_bounded_like_any_other() {
+    let payload = "panicked at x\n".repeat(BODY_LINES_MAX + 5);
+    let r = Report::crash("a.rs:1:1".into(), &payload, AT);
+    assert_eq!(r.kind, Kind::Crash);
+    assert!(r.truncated);
+    let c = r.crash.as_ref().unwrap();
+    assert_eq!(c.location, "a.rs:1:1");
+    assert!(c.message.lines().count() <= BODY_LINES_MAX);
 }
