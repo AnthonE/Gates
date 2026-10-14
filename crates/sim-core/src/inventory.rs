@@ -132,13 +132,19 @@ pub const CONT_WORLD: u8 = 3;
 /// wearable" (`combat::wearable_in`), and `world.rs`'s move verb asks it
 /// as `REFUSE_M_WEAR`. There is no second list of what is armor.
 pub const CONT_WEAR: u8 = 4;
+/// A **sleeper's pack**: `Player::inv` of a body nobody is driving
+/// (`Player::sleeping`), named by that player's id. Rust lets you loot a
+/// sleeper where it lies without killing it, and so does this: the move
+/// verb resolves the id to a sleeping, living body in reach of the looter
+/// (`World::body_loot_index`) every time, so a sleeper that woke, died or
+/// was evicted is no longer a container. Worn slots stay on the body.
+pub const CONT_BODY: u8 = 5;
 /// The highest kind the sim understands. **Three wire bits since armor
 /// v1** (`PROTO_VER` 51): world containers filled the two-bit field, so
 /// `CONT_WEAR` is the widening that paragraph in `protocol/src/lib.rs`
-/// said would be the next kind's first move. Values 5..7 are forgeable
-/// again and refuse at both ends, which is the posture the container
-/// field held before v37 and lost.
-pub const CONT_MAX: u8 = CONT_WEAR;
+/// said would be the next kind's first move. Values 6..7 are forgeable
+/// and refuse at both ends.
+pub const CONT_MAX: u8 = CONT_BODY;
 
 /// Is this kind carried **on the player** rather than standing in the
 /// world? `CONT_SELF` and `CONT_WEAR`, and the difference is not

@@ -1159,7 +1159,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// one channel bit becomes two (`chat::Channel`: local, global, team).
 /// v109 — `ACT_PICKUP` carries a 32-bit stack id, the one the crosshair is
 /// on (0 for none): the sim takes it while it is in reach, else the nearest.
-pub const PROTO_VER: u16 = 109;
+/// v110 — container kind 5, `CONT_BODY`: a sleeper's pack, named by its
+/// player id, opened and moved like a bag.
+pub const PROTO_VER: u16 = 110;
 
 /// This game's slug in the elo catalog.
 ///

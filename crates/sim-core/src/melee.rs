@@ -272,6 +272,18 @@ impl Reaches {
         r
     }
 
+    /// The reach to the body `hit`: [`Self::body`], or for a body lying on
+    /// the ground (a sleeper, `BodyHit::part` decided) at least
+    /// [`Self::node`], the reach everything else on the ground is swung at.
+    /// A 1 m bat from a 1.6 m eye never meets the ground.
+    pub fn to_body(&self, hit: &crate::ranged::BodyHit) -> f32 {
+        if hit.part.is_some() && self.body > 0.0 {
+            self.body.max(self.node)
+        } else {
+            self.body
+        }
+    }
+
     /// How long the ray has to be to find everything any kind can reach.
     pub fn longest(&self) -> f32 {
         self.node
@@ -868,7 +880,7 @@ pub fn nearest(entered: &Entered, ray: &Ray, reaches: &Reaches) -> Reached {
     let within = |t: f32, reach_mm: f32| t * ray.len_mm <= reach_mm;
     match best {
         Reached::Node(nh) if !within(nh.t, reaches.node) => Reached::Nothing,
-        Reached::Body { hit, .. } if !within(hit.enter, reaches.body) => Reached::Nothing,
+        Reached::Body { hit, .. } if !within(hit.enter, reaches.to_body(&hit)) => Reached::Nothing,
         Reached::Mob(m) if !within(m.t, reaches.body) => Reached::Nothing,
         Reached::Carcass(c) if !within(c.t, reaches.carcass) => Reached::Nothing,
         // A wall the hand cannot damage is still a wall the swing stopped

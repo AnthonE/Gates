@@ -141,6 +141,10 @@ pub enum Verb {
     /// A mechanism's dial (`sim_core::mech`): `handle` is mechanism << 8 |
     /// dial, `item` the notch it shows. By nearness, at the sim's dial reach.
     Turn,
+    /// A sleeping player (`Player::sleeping`): `E` opens their pack
+    /// (`inventory::CONT_BODY`), as Rust lets you loot a sleeper where it
+    /// lies. `handle` is their id. Aimed, by [`resolve_sleeper`].
+    Sleeper,
 }
 
 impl Verb {
@@ -192,6 +196,7 @@ impl Verb {
             Verb::Read => 17,
             Verb::Turn => 18,
             Verb::Planter => 19,
+            Verb::Sleeper => 20,
         }
     }
 
@@ -223,6 +228,7 @@ impl Verb {
             Verb::Read => "INSCRIPTION",
             Verb::Turn => "DIAL",
             Verb::Planter => "PLANTER",
+            Verb::Sleeper => "SLEEPING PLAYER",
         }
     }
 }
@@ -443,6 +449,7 @@ impl Pick {
             }
             .to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
+            Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => "[E] TALK".to_string(),
             Verb::Read => "[E] READ THE STONE".to_string(),
@@ -1898,6 +1905,8 @@ fn nearest_body(ray: &Ray, shadows: &Shadows<'_>) -> Option<sim_core::ranged::Bo
             qy: e.qy,
             qz: e.qz,
             crouched: e.crouched,
+            lying: e.sleeping && !e.wounded,
+            yaw: e.yaw,
         };
         let Some(hit) = sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, i, pose) else {
             continue;
@@ -2094,6 +2103,64 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
                     ..Default::default()
                 };
             }
+        }
+    }
+    best
+}
+
+/// A sleeper is an aimed `E` target: the body the crosshair is on, lying
+/// where the sim's lying capsule is (`ranged::body_crossing`), inside the
+/// help-up ray's reach. The server proves the reach again every tick
+/// (`World::body_loot_index`).
+pub fn resolve_sleeper(aim: SwingAim, own: u32, entities: &[(u32, protocol::EntityState)]) -> Pick {
+    let body = Body {
+        qx: quant_xz(aim.x),
+        qy: quant_y(aim.y),
+        qz: quant_xz(aim.z),
+        ..Default::default()
+    };
+    let ray = sim_core::assist::ray(
+        &body,
+        &sim_core::input::InputFrame {
+            yaw: aim.yaw,
+            pitch: aim.pitch,
+            ..Default::default()
+        },
+        aim.crouched,
+    );
+    let mut best = Pick::default();
+    let mut distance = f32::MAX;
+    for (i, &(id, e)) in entities.iter().enumerate() {
+        if id == own
+            || !e.sleeping
+            || e.wounded
+            || e.dead
+            || sim_core::mob::slot_of_id(id).is_some()
+        {
+            continue;
+        }
+        let pose = sim_core::rewind::RewindPose {
+            id,
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            crouched: false,
+            lying: true,
+            yaw: e.yaw,
+        };
+        let Some(hit) = sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, i, pose) else {
+            continue;
+        };
+        let t = hit.enter;
+        if t < distance || (t == distance && id < best.handle) {
+            distance = t;
+            best = Pick {
+                verb: Verb::Sleeper,
+                handle: id,
+                aimed: true,
+                d2: (t * sim_core::assist::ASSIST_REACH_M).powi(2),
+                ..Default::default()
+            };
         }
     }
     best

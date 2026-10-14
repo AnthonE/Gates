@@ -123,20 +123,27 @@ const CHEST_M: f32 = 1.0;
 /// scan of the sim's own LUT, because the crate's clippy walls bind this
 /// suite and there is no `atan2` to be had. A swing is a ray now, and a
 /// victim `Body::at` seated on lower ground is under a level one.
+///
+/// A sleeper lies on its back along the ground, so it is aimed at where it
+/// lies: the axis of its capsule, `collide::LIE_R_M` off the ground.
 fn aim_at(w: &World, attacker: usize, victim: usize) -> u8 {
-    aim_at_body(w, attacker, &w.players[victim].body)
+    let height = if w.players[victim].sleeping {
+        sim_core::collide::LIE_R_M
+    } else {
+        CHEST_M
+    };
+    aim_at_height(w, attacker, &w.players[victim].body, height)
 }
 
-/// [`aim_at`] toward an arbitrary body — the lag tests aim at where the
-/// victim WAS, which is a body the world no longer holds.
-fn aim_at_body(w: &World, attacker: usize, target: &Body) -> u8 {
+/// [`aim_at`] at `height` metres above `target`'s feet.
+fn aim_at_height(w: &World, attacker: usize, target: &Body, height: f32) -> u8 {
     let a = w.players[attacker].body;
     let (dx, dz) = (
         (target.qx - a.qx) as f32 * POS_XZ_Q,
         (target.qz - a.qz) as f32 * POS_XZ_Q,
     );
     let run = (dx * dx + dz * dz).sqrt();
-    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + CHEST_M - EYE_M;
+    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + height - EYE_M;
     let len = (rise * rise + run * run).sqrt();
     let mut best = 128u8;
     let mut best_dot = f32::MIN;
@@ -221,6 +228,51 @@ fn a_sleeper_does_not_act_on_input() {
     let p = &w.players[slot];
     assert_eq!(p.body.qx, before.qx, "a sleeper walked on someone's input");
     assert_eq!(p.body.qz, before.qz, "a sleeper walked on someone's input");
+}
+
+/// A sleeper is hit where the client draws it: lying along the ground, not
+/// standing over its feet. A swing at the air a metre above it meets
+/// nothing, and a 1 m blade (the bat's) reaches it down there, because a
+/// body on the ground is swung at with the node reach, as a carcass is.
+#[test]
+fn a_sleeper_is_hit_where_it_lies() {
+    let mut w = duel_world();
+    let sleeper = slot_of(&w, 2);
+    let raider = slot_of(&w, 1);
+    let yaw = 0u16;
+    w.combat.melee[SPEAR as usize].reach_cm = 100;
+    place_in_front(&mut w, raider, sleeper, yaw, 1.2);
+    w.tick(&[Command::Leave { id: 2 }]);
+    let full = w.players[sleeper].hp;
+
+    let over = aim_at_height(&w, raider, &w.players[sleeper].body, CHEST_M);
+    for seq in 0..60u16 {
+        let frame = InputFrame {
+            pitch: over,
+            ..swing_frame(&w, raider, sleeper, seq, yaw)
+        };
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
+    }
+    assert_eq!(
+        w.players[sleeper].hp, full,
+        "the air a metre over a sleeper took the blow"
+    );
+
+    for seq in 60..120u16 {
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: swing_frame(&w, raider, sleeper, seq, yaw),
+            favour: 0,
+        }]);
+    }
+    assert!(
+        w.players[sleeper].hp < full,
+        "a sleeper lying on the ground could not be hit"
+    );
 }
 
 /// **Offline raiding, as one test.** A sleeper is hit, killed, and drops

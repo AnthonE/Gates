@@ -2680,6 +2680,8 @@ impl World {
             // makes it worse than the `CONT_WORLD` case above it.
             // `container_wire`'s wear test is the mutant proof.
             inventory::CONT_WEAR => self.players[slot].worn[s as usize],
+            // A sleeper's pack: `ci` is the sleeper's slot, not the looter's.
+            inventory::CONT_BODY => self.players[ci].inv[s as usize],
             _ => self.players[slot].inv[s as usize],
         }
     }
@@ -2701,8 +2703,26 @@ impl World {
                     .set_slot(ci, s as usize, v, self.tick, refill);
             }
             inventory::CONT_WEAR => self.players[slot].worn[s as usize] = v,
+            inventory::CONT_BODY => self.players[ci].inv[s as usize] = v,
             _ => self.players[slot].inv[s as usize] = v,
         }
+    }
+
+    /// The slot of the sleeper `id` that `looter` may take from right now
+    /// ([`inventory::CONT_BODY`]): asleep and alive, somebody else, and in
+    /// the bag's reach (`backpack::LOOT_REACH_M`, planar). `None` otherwise,
+    /// which is `REFUSE_M_NO_CONTAINER` to the move verb and a closed panel
+    /// to the server's drip.
+    pub fn body_loot_index(&self, id: u32, looter: usize) -> Option<usize> {
+        let i = self.sleeper_slot(id)?;
+        let (v, p) = (&self.players[i], self.players.get(looter)?);
+        if i == looter || v.dead || v.hp == 0 {
+            return None;
+        }
+        let dx = (v.body.qx - p.body.qx) as f32 * POS_XZ_Q;
+        let dz = (v.body.qz - p.body.qz) as f32 * POS_XZ_Q;
+        let r = crate::backpack::LOOT_REACH_M;
+        (dx * dx + dz * dz <= r * r).then_some(i)
     }
 
     /// The move verb's one mutating body. Everything it decides is decided
@@ -2851,6 +2871,26 @@ impl World {
                 if !self.world_conts.in_reach(i, &self.players[slot]) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
+                    return;
+                }
+                Some(i)
+            }
+            // A sleeper's pack, by its player id. No looting in THE GATE's
+            // safe zone, as for a bag lying there.
+            inventory::CONT_BODY => {
+                let Some(i) = self.body_loot_index(cont, slot) else {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                    return;
+                };
+                let b = self.players[i].body;
+                if crate::town::safe(
+                    &self.haven.town,
+                    b.qx as f32 * POS_XZ_Q,
+                    b.qz as f32 * POS_XZ_Q,
+                ) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_SAFE, addr);
                     return;
                 }
                 Some(i)
@@ -3009,6 +3049,7 @@ impl World {
         let owner = match ground {
             inventory::CONT_BOX => Some(self.deploys.boxes()[ci].owner),
             inventory::CONT_BAG => Some(self.backpacks.entries()[ci].owner),
+            inventory::CONT_BODY => Some(self.players[ci].id),
             _ => None,
         };
         if let Some(owner) = owner {

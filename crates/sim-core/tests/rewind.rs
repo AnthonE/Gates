@@ -172,6 +172,8 @@ fn a_cold_ring_answers_present_at_every_depth() {
         qy: 22,
         qz: 33,
         crouched: false,
+        lying: false,
+        yaw: 0,
     };
     for back in 0..=REWIND_TICKS as u8 {
         assert_eq!(
@@ -291,6 +293,8 @@ fn an_empty_slot_falls_back_to_present() {
             qy: -6,
             qz: -7,
             crouched: false,
+            lying: false,
+            yaw: 0,
         };
         for back in 1..=REWIND_TICKS as u8 {
             assert_eq!(
@@ -356,6 +360,8 @@ fn an_out_of_range_slot_falls_back_to_present() {
         qy: 2,
         qz: 3,
         crouched: false,
+        lying: false,
+        yaw: 0,
     };
     assert_eq!(w.rewind.pose_at(w.tick, MAX_PLAYERS, 1, live), live);
     assert_eq!(w.rewind.pose_at(w.tick, usize::MAX, 1, live), live);

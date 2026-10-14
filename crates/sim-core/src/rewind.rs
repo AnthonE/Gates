@@ -76,7 +76,8 @@ pub const NO_TENANT: u32 = 0;
 const COLD: u64 = u64::MAX;
 
 /// One body's position and stance at the end of one tick — 20 B: four
-/// `i32`s and the crouch (v83), padded to the `i32` alignment.
+/// `i32`s, the crouch (v83), the lie and its facing, which fill the padding
+/// to the `i32` alignment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RewindPose {
     /// The id of the player this position belonged to, or [`NO_TENANT`].
@@ -87,6 +88,13 @@ pub struct RewindPose {
     /// Crouched at the end of this tick (`Player::crouched`): a rewound hit
     /// is scored against the stance the shooter saw.
     pub crouched: bool,
+    /// The body lies on its back facing `yaw` — a sleeper
+    /// (`Player::sleeping`, not downed), which is shot and swung at as a
+    /// capsule along the ground (`ranged::body_crossing`) because that is
+    /// what the client draws (`anim::root_pose`).
+    pub lying: bool,
+    /// The facing, read only when `lying`.
+    pub yaw: u16,
 }
 
 impl RewindPose {
@@ -97,6 +105,8 @@ impl RewindPose {
         qy: 0,
         qz: 0,
         crouched: false,
+        lying: false,
+        yaw: 0,
     };
 
     /// The present-tick pose of a live body — what a caller hands `pose_at`
@@ -111,6 +121,8 @@ impl RewindPose {
             qy: p.body.qy,
             qz: p.body.qz,
             crouched: p.crouched(),
+            lying: p.sleeping && !p.wounded,
+            yaw: p.frame.yaw,
         }
     }
 }

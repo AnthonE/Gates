@@ -9204,10 +9204,9 @@ mod wire_domains {
             // re-keyed. So this pin has now fired for real, in both of
             // its jobs — the fit assert refused the fifth kind under two
             // bits, and this `live_max` refused it under three until the
-            // widening was deliberate. Values 5..7 are forgeable and
-            // refuse at both ends, which is the posture the field lost at
-            // v37 and has back.
-            live_max: 4,
+            // widening was deliberate. v110 took 5 for `CONT_BODY` (a
+            // sleeper's pack); 6..7 are forgeable and refuse at both ends.
+            live_max: 5,
         },
         Domain {
             what: "piece shape",
