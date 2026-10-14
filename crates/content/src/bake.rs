@@ -1538,6 +1538,32 @@ impl Content {
         let mults = bp.mults();
         let mut bc = BackpackContent::EMPTY;
         bc.base_ticks = base_ticks;
+        if bp.body_drops.len() > sim_core::backpack::MAX_BODY_DROPS {
+            return Err(format!(
+                "bake: [backpack] body_drops has {} rows, past the sim's {}",
+                bp.body_drops.len(),
+                sim_core::backpack::MAX_BODY_DROPS
+            ));
+        }
+        for (i, d) in bp.body_drops.iter().enumerate() {
+            let item = self
+                .item(&d.item)
+                .ok_or_else(|| format!("bake: [backpack] body_drops unknown `{}`", d.item))?;
+            if d.count == 0 || d.count > item.stack {
+                return Err(format!(
+                    "bake: [backpack] body_drops `{}` count {} must be 1..={} (one stack)",
+                    d.item, d.count, item.stack
+                ));
+            }
+            bc.body[i] = ItemStack {
+                item: self.item_index(&d.item).expect("own id"),
+                count: u16::try_from(d.count)
+                    .map_err(|_| format!("bake: [backpack] `{}` count overflows", d.item))?,
+                cond: u16::try_from(item.condition_max)
+                    .map_err(|_| format!("bake: [backpack] `{}` condition overflows", d.item))?,
+                skin: 0,
+            };
+        }
         for item in &self.items {
             let idx = self.item_index(&item.id).expect("own id") as usize;
             let mult = mults[item.rarity.canon() as usize];

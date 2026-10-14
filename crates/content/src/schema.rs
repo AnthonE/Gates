@@ -1135,7 +1135,7 @@ pub struct Bands {
 /// `[backpack]`; NETCODE.md §6.4 — one base constant × a rarity
 /// multiplier). Lifetime = base × the multiplier of the rarest item the
 /// bag holds; an empty bag rides the base.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Backpack {
     pub despawn_base_min: u32,
@@ -1143,6 +1143,9 @@ pub struct Backpack {
     pub mult_uncommon: u32,
     pub mult_rare: u32,
     pub mult_very_rare: u32,
+    /// What every player body adds to its death bag, carrying or not.
+    #[serde(default)]
+    pub body_drops: Vec<Stack>,
 }
 
 impl Backpack {

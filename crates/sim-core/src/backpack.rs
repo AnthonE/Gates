@@ -86,12 +86,26 @@ pub struct BackpackContent {
     /// **Zero disarms the whole module**: no bag is ever created, and
     /// death destroys the inventory as it did before this slice.
     pub base_ticks: u32,
+    /// What every player body adds to its death bag, carrying or not
+    /// (`balance.toml` `[backpack] body_drops`): Rust lets you farm any
+    /// corpse, so a naked body or a bot's leftover sleeper still pays.
+    /// Count 0 is an unused row.
+    pub body: [ItemStack; MAX_BODY_DROPS],
 }
+
+/// Rows in [`BackpackContent::body`].
+pub const MAX_BODY_DROPS: usize = 4;
 
 impl BackpackContent {
     pub const EMPTY: Self = Self {
         despawn_ticks: [0; MAX_ITEM_DEFS],
         base_ticks: 0,
+        body: [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+            skin: 0,
+        }; MAX_BODY_DROPS],
     };
 
     /// Synthetic ladder for the parity/replay/alloc gates, on the same
@@ -295,13 +309,21 @@ impl Backpacks {
         if bc.base_ticks == 0 {
             return None; // inert content: the module is disarmed
         }
+        // The body's own share, each row into an empty slot; a full pack
+        // keeps what it carried and loses the share.
+        let mut items = body.inv;
+        for d in bc.body.iter().filter(|d| d.count > 0) {
+            if let Some(s) = items.iter_mut().find(|s| s.count == 0) {
+                *s = *d;
+            }
+        }
         self.stand_up(
             bc,
             body.body.qx,
             body.body.qy + BAG_Y_OFFSET_Q,
             body.body.qz,
             body.id,
-            &body.inv,
+            &items,
             tick,
             events,
         )
@@ -804,6 +826,28 @@ mod tests {
         );
         assert!(bags.is_empty());
         assert!(ev.is_empty());
+    }
+
+    /// A body always pays its share (`BackpackContent::body`): a naked one
+    /// drops a bag of just that, and a full pack keeps what it carried.
+    #[test]
+    fn a_body_always_drops_its_share() {
+        let mut bc = BackpackContent::probe_fixture();
+        bc.body[0] = ItemStack {
+            item: 9,
+            count: 3,
+            cond: 0,
+            skin: 0,
+        };
+        let mut bags = Backpacks::new();
+        let mut ev = EventQueue::default();
+        assert!(bags.drop_for(&bc, &body(7, &[]), 0, &mut ev).is_some());
+        assert_eq!((bags.slot(0, 0).item, bags.slot(0, 0).count), (9, 3));
+
+        let full: Vec<(u16, u16)> = (0..INV_SLOTS).map(|_| (1, 1)).collect();
+        assert!(bags.drop_for(&bc, &body(8, &full), 0, &mut ev).is_some());
+        let i = bags.len() - 1;
+        assert!((0..INV_SLOTS).all(|s| bags.slot(i, s).item == 1));
     }
 
     #[test]

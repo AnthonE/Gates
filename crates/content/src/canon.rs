@@ -397,6 +397,7 @@ pub fn hash(c: &Content) -> u64 {
     for m in bp.mults() {
         h.u(m);
     }
+    h.stacks(&bp.body_drops);
 
     // The oven table, whole. Every field here reaches the sim
     // (`bake_cooking`), so every field is here — the `[backpack]` defect
