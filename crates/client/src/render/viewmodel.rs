@@ -1731,9 +1731,10 @@ pub fn spawn_arms(
                 dressed: false,
             },
             SceneRoot(scene),
+            // The rig's own size, not the world bodies' `rig.scale`:
+            // `VIEWMODEL_ARMS` was measured off the file at scale 1.
             Transform::from_translation(VIEWMODEL_ARMS)
-                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
-                .with_scale(Vec3::splat(rig.scale)),
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
             Visibility::Inherited,
         ));
     });

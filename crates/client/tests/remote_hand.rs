@@ -138,10 +138,8 @@ fn the_hand_reads_the_two_fields_and_the_corpse_bit() {
 ///
 /// `hand_pose` answers in the body root's LOCAL space, and that root
 /// carries the rig's uniform scale — so everything it returns is divided
-/// by it. The ratio is `ANIM_BODY_H_M / ANIM_RIG_H_M` = 1.0 today, which
-/// is why this is asserted at a scale that is *not* 1.0: a missing
-/// division is bit-identical on the shipped rig and wrong the day the rig
-/// is re-measured.
+/// by it. The ratio is `ANIM_BODY_H_M / ANIM_RIG_H_M` (1.7 / 1.8), and
+/// it is asserted at other scales too so a missing division cannot hide.
 #[test]
 fn the_remote_hand_uses_the_first_persons_grip_and_no_second_copy() {
     // **The gate the retired constant did not have.** `BODY_PALM` was an
