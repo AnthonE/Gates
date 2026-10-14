@@ -45,6 +45,7 @@ pub enum Verb {
     Resume,
     Island,
     Settings,
+    Report,
     Disconnect,
     Quit,
 }
@@ -53,7 +54,7 @@ pub enum Verb {
 /// decoration: `Disconnect` and `Quit` are one row apart and do very
 /// different things, and the intro screen's own rows established that a row
 /// says what it is.
-pub const VERBS: [(Verb, &str, &str); 5] = [
+pub const VERBS: [(Verb, &str, &str); 6] = [
     (Verb::Resume, "Resume", "back to the world"),
     (
         Verb::Island,
@@ -64,6 +65,11 @@ pub const VERBS: [(Verb, &str, &str); 5] = [
         Verb::Settings,
         "Settings",
         "view, controls, screen - and the keybind list",
+    ),
+    (
+        Verb::Report,
+        "Report a bug",
+        "say what broke - it is sent with a screenshot of the world (F7 anywhere)",
     ),
     (
         Verb::Disconnect,
@@ -230,7 +236,16 @@ pub fn click(rows: Query<(&Interaction, &Verb), Changed<Interaction>>, mut chose
     }
 }
 
-pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut chosen: ResMut<Chosen>) {
+pub fn keys(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut chosen: ResMut<Chosen>,
+    reports: Option<Res<super::report::Reports>>,
+) {
+    // The report composer is typing (F7 works on this screen too): a digit in
+    // a sentence about a bug is not a menu choice.
+    if reports.is_some_and(|r| r.open) {
+        return;
+    }
     if keyboard.just_pressed(KeyCode::Escape) {
         chosen.0 = Some(Verb::Resume);
         return;
@@ -241,6 +256,7 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut chosen: ResMut<Chosen>) {
         KeyCode::Digit3,
         KeyCode::Digit4,
         KeyCode::Digit5,
+        KeyCode::Digit6,
     ];
     for (i, k) in DIGITS.iter().enumerate() {
         if keyboard.just_pressed(*k) {
@@ -260,6 +276,7 @@ pub fn act(
     connecting: NonSend<Connecting>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
+    reports: Option<ResMut<super::report::Reports>>,
 ) {
     let Some(verb) = chosen.0.take() else {
         return;
@@ -287,6 +304,16 @@ pub fn act(
             settings.back = Screen::Paused;
             settings.dirty = false;
             next.set(Screen::Settings);
+        }
+        Verb::Report => {
+            // Back into the world with the composer up, the way `Island`
+            // opens its panel: the screenshot taken on Enter is then the
+            // world the player is describing, not this menu over it.
+            if let Some(mut reports) = reports {
+                reports.open_composer();
+                super::report::free_cursor(&mut cursor);
+            }
+            next.set(Screen::InWorld);
         }
         Verb::Disconnect => {
             // The status line is the intro screen's one job: say why the

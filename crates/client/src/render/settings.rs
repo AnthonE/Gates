@@ -1061,7 +1061,7 @@ pub const BINDS: [(&str, &str); 33] = [
     ),
     (
         "REPORT A BUG",
-        "F7 (writes a file next to your screenshots)",
+        "F7, or Report a bug in the Esc menu (sent with a screenshot)",
     ),
     ("FULLSCREEN", "F11"),
     ("MENU", "Esc"),
