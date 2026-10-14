@@ -224,7 +224,8 @@ fn both_twins_open_their_lanes_at_the_same_depth() {
 ///
 /// The handshake lane is `MAX_STREAM_MSG_BYTES` and the event lane is
 /// `MAX_EVENT_MSG_BYTES`; the ceiling belongs to the lane, not to the
-/// transport. Widening one on one platform changes what that client will
+/// transport. Since v109 the auth frame carries its own, `MAX_AUTH_MSG_BYTES`
+/// (a smart wallet's signature), and both twins name it first. Widening one on one platform changes what that client will
 /// ACCEPT off the wire — a difference in the parsing surface, not in a
 /// buffer size.
 #[test]
@@ -234,9 +235,9 @@ fn both_twins_read_each_lane_at_the_same_ceiling() {
     let b = squash(names_after(&web, "MAX_"));
     assert_eq!(
         a,
-        vec!["STREAM_MSG_BYTES", "EVENT_MSG_BYTES"],
-        "the desktop connect no longer reads the handshake at the stream ceiling and the \
-         event lane at the event ceiling"
+        vec!["AUTH_MSG_BYTES", "STREAM_MSG_BYTES", "EVENT_MSG_BYTES"],
+        "the desktop connect no longer writes the auth frame at its own ceiling, then reads \
+         the handshake at the stream ceiling and the event lane at the event ceiling"
     );
     assert_eq!(
         a, b,

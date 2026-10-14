@@ -221,7 +221,8 @@ async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String
     // coalescing was always the transport's business, and the browser's
     // `WritableStream` counts each write as a queued chunk. Same bytes on the
     // wire either way; one fewer syscall per action.
-    let mut out = [0u8; MAX_STREAM_MSG_BYTES + net::frame::LEN_PREFIX_BYTES];
+    // Sized for the auth frame (v109), the largest the stream lane carries.
+    let mut out = [0u8; protocol::MAX_AUTH_MSG_BYTES + net::frame::LEN_PREFIX_BYTES];
     let n = net::frame::encode_into(&mut out, payload).ok_or_else(|| {
         format!(
             "frame: {} bytes does not fit the stream lane",
@@ -603,6 +604,11 @@ impl Session {
         // without inheriting wtransport with it. Six lines below touch the
         // transport; everything they carry is pure and testable with no
         // socket (`net::handshake`'s header has the measurement).
+        //
+        // The auth frame has its own ceiling (v109), the largest thing a
+        // handshake writes: a smart wallet's signature runs past the 128 every
+        // other handshake message keeps. Both twins name it first.
+        let mut auth = [0u8; protocol::MAX_AUTH_MSG_BYTES];
         let mut msg = [0u8; MAX_STREAM_MSG_BYTES];
         let len = net::handshake::hello_as(&mut msg, join)?;
         write_frame(&mut send, &msg[..len]).await?;
@@ -611,8 +617,8 @@ impl Session {
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
             .await
             .ok_or_else(|| "no challenge".to_string())?;
-        let len = net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut msg)?;
-        write_frame(&mut send, &msg[..len]).await?;
+        let len = net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut auth)?;
+        write_frame(&mut send, &auth[..len]).await?;
 
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
             .await
@@ -804,6 +810,9 @@ impl Session {
             .map_err(|e| net::web::js_err("open_bi", &e))?;
         let writer = WritableStreamDefaultWriter::new(&bidi.writable())
             .map_err(|e| net::web::js_err("stream writer", &e))?;
+        // The auth frame's own ceiling first (v109), as the desktop twin names
+        // it: a smart wallet's signature runs past the handshake's 128.
+        let mut auth = [0u8; protocol::MAX_AUTH_MSG_BYTES];
         // `MAX_STREAM_MSG_BYTES` for the handshake, exactly as the desktop
         // path reads `read_frame::<MAX_STREAM_MSG_BYTES>` — the ceiling is a
         // property of the lane, not of the transport.
@@ -852,9 +861,6 @@ impl Session {
                 e
             }
         };
-        // The auth frame has its own ceiling (v109): a smart wallet's
-        // signature is up to `SIGNATURE_MAX` bytes, past the handshake's 128.
-        let mut auth = [0u8; protocol::MAX_AUTH_MSG_BYTES];
         let len = net::handshake::auth_frame(address, signature, &mut auth)?;
         net::web::write_frame(&writer, &auth[..len])
             .await
