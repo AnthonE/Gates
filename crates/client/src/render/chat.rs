@@ -20,11 +20,51 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
+use protocol::chat::Channel;
+use protocol::Address;
+
 use crate::ui::chat::{Composer, Line, Log};
 
+use super::faces::Pics;
 use super::hud::Toast;
 use super::panels::Panel;
 use super::Net;
+
+/// Rust's chat shape: a narrow column bottom left, a square avatar per line,
+/// bold type, and the input on a bar tinted by its channel. 440 px keeps a
+/// centred toast clear of it at the 1280 px the client opens at.
+const CHAT_W: f32 = 440.0;
+const CHAT_LEFT: f32 = 22.0;
+const BAR_BOTTOM: f32 = 70.0;
+const BAR_H: f32 = 26.0;
+const LOG_BOTTOM: f32 = BAR_BOTTOM + BAR_H + 6.0;
+const AVATAR_PX: f32 = 22.0;
+const LINE_PX: f32 = 15.0;
+/// How many lines are drawn. The log keeps more (`LOG_CAP`); a column
+/// taller than this would climb into the team panel.
+const SHOWN: usize = 10;
+const MESSAGE_INK: Color = Color::srgba(0.97, 0.97, 0.95, 1.0);
+const AVATAR_BLANK: Color = Color::srgba(0.12, 0.12, 0.13, 0.75);
+const SHADOW_A: f32 = 0.85;
+
+/// A channel's colour: the tag and name on a line, and the input bar.
+fn ink(channel: Channel) -> Color {
+    match channel {
+        // Rust's team chat green.
+        Channel::Team => Color::srgba(0.62, 0.85, 0.36, 1.0),
+        Channel::Global => Color::srgba(0.98, 0.80, 0.38, 1.0),
+        // Rust's default name blue, for the everyday channel.
+        Channel::Local => Color::srgba(0.55, 0.76, 1.0, 1.0),
+    }
+}
+
+fn channel_name(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Team => "[Team]",
+        Channel::Global => "[Global]",
+        Channel::Local => "[Local]",
+    }
+}
 
 /// The scrollback and the line being typed.
 #[derive(Resource, Default)]
@@ -48,9 +88,29 @@ impl Chat {
 #[derive(Component)]
 pub struct LogRoot;
 
-/// The composer's line.
+/// The input bar, and its three texts.
+#[derive(Component)]
+pub struct ComposerBar;
+#[derive(Component)]
+pub struct ComposerChannel;
 #[derive(Component)]
 pub struct ComposerLine;
+#[derive(Component)]
+pub struct ComposerHint;
+
+/// Something in a line that fades with it: arrival time and full alpha.
+#[derive(Component)]
+pub struct ChatFade {
+    at: f64,
+    base: f32,
+}
+
+/// An avatar still waiting on its picture.
+#[derive(Component)]
+pub struct ChatPic {
+    address: Address,
+    pic: u32,
+}
 
 pub fn setup(mut commands: Commands) {
     // Bottom left, above the build plan. Not centred and not large: chat is
@@ -60,29 +120,63 @@ pub fn setup(mut commands: Commands) {
         LogRoot,
         Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(96.0),
-            left: Val::Px(22.0),
-            width: Val::Px(520.0),
+            bottom: Val::Px(LOG_BOTTOM),
+            left: Val::Px(CHAT_LEFT),
+            width: Val::Px(CHAT_W),
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(2.0),
+            row_gap: Val::Px(5.0),
             ..default()
         },
         Pickable::IGNORE,
     ));
-    commands.spawn((
-        super::WorldEntity,
-        ComposerLine,
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(74.0),
-            left: Val::Px(22.0),
-            ..default()
-        },
-        Text::new(""),
-        super::ui::font(15.0),
-        TextColor(Color::srgba(0.98, 0.94, 0.80, 0.95)),
-        Pickable::IGNORE,
-    ));
+    commands
+        .spawn((
+            super::WorldEntity,
+            ComposerBar,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(BAR_BOTTOM),
+                left: Val::Px(CHAT_LEFT),
+                width: Val::Px(CHAT_W),
+                height: Val::Px(BAR_H),
+                padding: UiRect::horizontal(Val::Px(8.0)),
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(Color::NONE),
+            Visibility::Hidden,
+            Pickable::IGNORE,
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                ComposerChannel,
+                Text::new(""),
+                super::ui::font_bold(LINE_PX),
+                TextColor(Color::WHITE),
+                super::ui::TEXT_SHADOW,
+                Pickable::IGNORE,
+            ));
+            bar.spawn((
+                ComposerLine,
+                Text::new(""),
+                super::ui::font_bold(LINE_PX),
+                TextColor(MESSAGE_INK),
+                super::ui::TEXT_SHADOW,
+                Node {
+                    flex_grow: 1.0,
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ));
+            bar.spawn((
+                ComposerHint,
+                Text::new(""),
+                super::ui::font(12.0),
+                TextColor(Color::srgba(0.92, 0.92, 0.88, 0.60)),
+                Pickable::IGNORE,
+            ));
+        });
 }
 
 /// `T` and `Enter` open the composer; `Enter` sends; `Esc` abandons.
@@ -159,6 +253,11 @@ pub fn keys(
             continue;
         }
         match &ev.logical_key {
+            // Rust's channel switch.
+            Key::Tab => {
+                chat.composer.cycle();
+                chat.dirty = true;
+            }
             Key::Backspace => {
                 if chat.composer.backspace() {
                     chat.dirty = true;
@@ -218,8 +317,8 @@ fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
 }
 
 /// Drain the core's chat ring into the log.
-pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>) {
-    let own = net.session.core.player_id;
+pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>, time: Res<Time<Real>>) {
+    let now = time.elapsed_secs_f64();
     while let Some((speaker, channel, text)) = net.session.core.pop_chat() {
         // Valid UTF-8 by construction (`ChatText` is only built by
         // `sanitize`), but a decode that somehow was not is dropped rather
@@ -228,75 +327,217 @@ pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>) {
         let Ok(s) = std::str::from_utf8(text.as_bytes()) else {
             continue;
         };
-        let name = crate::ui::names::of(&net.session.core, speaker);
+        let core = &net.session.core;
+        let name = crate::ui::names::of(core, speaker);
+        let face = core.tag(speaker).map(|t| (t.address, t.pic));
         chat.log.push(Line {
             speaker,
             name,
             channel,
             text: s.to_string(),
-            own: speaker == own,
+            face,
+            at: now,
         });
         chat.dirty = true;
     }
 }
 
 /// Redraw the log and the composer when either changed.
+#[allow(clippy::type_complexity)]
 pub fn draw(
     mut commands: Commands,
     mut chat: ResMut<Chat>,
     root: Query<Entity, With<LogRoot>>,
-    mut line: Query<&mut Text, With<ComposerLine>>,
+    mut bar: Query<(&mut Visibility, &mut BackgroundColor), With<ComposerBar>>,
+    mut label: Query<(&mut Text, &mut TextColor), With<ComposerChannel>>,
+    mut line: Query<&mut Text, (With<ComposerLine>, Without<ComposerChannel>)>,
+    mut hint: Query<
+        &mut Text,
+        (
+            With<ComposerHint>,
+            Without<ComposerLine>,
+            Without<ComposerChannel>,
+        ),
+    >,
 ) {
     if !chat.dirty {
         return;
     }
     chat.dirty = false;
 
-    if let Ok(mut text) = line.single_mut() {
-        text.0 = if chat.composer.open {
-            // The remaining count is drawn because a cap the player cannot
-            // see is a cap that feels like a broken keyboard.
-            format!(
-                "say: {}_    ({} left, /g global, /t team, Esc cancels)",
-                chat.composer.text,
-                chat.composer.remaining()
-            )
+    let open = chat.composer.open;
+    let target = chat.composer.target();
+    if let Ok((mut v, mut bg)) = bar.single_mut() {
+        *v = if open {
+            Visibility::Inherited
         } else {
-            String::new()
+            Visibility::Hidden
         };
+        bg.0 = ink(target).darker(0.25).with_alpha(0.45);
+    }
+    if let Ok((mut text, mut color)) = label.single_mut() {
+        text.0 = channel_name(target).to_string();
+        color.0 = ink(target);
+    }
+    if let Ok(mut text) = line.single_mut() {
+        text.0 = format!("{}|", chat.composer.body());
+    }
+    if let Ok(mut text) = hint.single_mut() {
+        // The cap is drawn because a cap the player cannot see is a cap
+        // that feels like a broken keyboard.
+        text.0 = format!("TAB channel · {}", chat.composer.remaining());
     }
 
     let Ok(root) = root.single() else {
         return;
     };
     commands.entity(root).despawn_related::<Children>();
-    let lines: Vec<(String, protocol::Channel)> = chat
-        .log
-        .lines
-        .iter()
-        .map(|l| (Log::render(l), l.channel))
-        .collect();
+    let skip = chat.log.lines.len().saturating_sub(SHOWN);
+    let lines: Vec<Line> = chat.log.lines[skip..].to_vec();
     commands.entity(root).with_children(|c| {
-        for (text, channel) in lines {
+        for l in lines {
+            let fades = |base: f32| ChatFade { at: l.at, base };
             c.spawn((
-                Text::new(text),
-                super::ui::font(14.0),
-                TextColor(match channel {
-                    protocol::Channel::Global => Color::srgba(0.86, 0.88, 0.96, 0.90),
-                    // The team's green, as on their marks (`render::team`).
-                    protocol::Channel::Team => Color::srgba(0.55, 0.92, 0.55, 0.92),
-                    protocol::Channel::Local => Color::srgba(0.92, 0.90, 0.84, 0.85),
-                }),
-                // The chat log is the longest-lived floating string in the
-                // client and the only one a stranger writes the content of, so
-                // it is the one that most has to stay readable over whatever
-                // the player happens to be facing. `ui::TEXT_SHADOW` has the
-                // reasoning.
-                super::ui::TEXT_SHADOW,
+                Node {
+                    align_items: AlignItems::FlexStart,
+                    column_gap: Val::Px(6.0),
+                    ..default()
+                },
                 Pickable::IGNORE,
-            ));
+            ))
+            .with_children(|row| {
+                // The avatar: the speaker's picture once it lands, their
+                // initial on a dark tile until then (or for good, for a
+                // player with no picture).
+                let mut avatar = row.spawn((
+                    Node {
+                        width: Val::Px(AVATAR_PX),
+                        height: Val::Px(AVATAR_PX),
+                        flex_shrink: 0.0,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(AVATAR_BLANK),
+                    fades(AVATAR_BLANK.alpha()),
+                    Pickable::IGNORE,
+                ));
+                if let Some((address, pic)) = l.face.filter(|&(_, pic)| pic != 0) {
+                    avatar.insert(ChatPic { address, pic });
+                }
+                let initial: String = l
+                    .name
+                    .chars()
+                    .find(|c| c.is_alphanumeric())
+                    .map(|c| c.to_uppercase().collect())
+                    .unwrap_or_else(|| "?".into());
+                avatar.with_children(|a| {
+                    a.spawn((
+                        Text::new(initial),
+                        super::ui::font_bold(12.0),
+                        TextColor(ink(l.channel)),
+                        fades(1.0),
+                        Pickable::IGNORE,
+                    ));
+                });
+
+                row.spawn((
+                    Text::new(Log::head(&l)),
+                    super::ui::font_bold(LINE_PX),
+                    TextColor(ink(l.channel)),
+                    // The chat log is the one floating string a stranger
+                    // writes the content of, so it most has to stay readable
+                    // over whatever the player is facing (`ui::TEXT_SHADOW`).
+                    super::ui::TEXT_SHADOW,
+                    fades(1.0),
+                    Node {
+                        flex_shrink: 1.0,
+                        // Line the first baseline up with the avatar.
+                        margin: UiRect::top(Val::Px(2.0)),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ))
+                .with_children(|t| {
+                    t.spawn((
+                        TextSpan::new(l.text.clone()),
+                        super::ui::font_bold(LINE_PX),
+                        TextColor(MESSAGE_INK),
+                        fades(1.0),
+                    ));
+                });
+            });
         }
     });
+}
+
+/// Fade each line out once it is old news, Rust's way; an open composer
+/// brings them all back.
+#[allow(clippy::type_complexity)]
+pub fn fade(
+    chat: Res<Chat>,
+    time: Res<Time<Real>>,
+    mut parts: Query<(
+        &ChatFade,
+        Option<&mut TextColor>,
+        Option<&mut TextShadow>,
+        Option<&mut BackgroundColor>,
+        Option<&mut ImageNode>,
+    )>,
+) {
+    let now = time.elapsed_secs_f64();
+    let open = chat.composer.open;
+    for (f, text, shadow, bg, img) in &mut parts {
+        let a = Log::alpha((now - f.at) as f32, open);
+        let want = f.base * a;
+        if let Some(mut c) = text {
+            if c.0.alpha() != want {
+                c.0.set_alpha(want);
+            }
+        }
+        if let Some(mut s) = shadow {
+            let sa = SHADOW_A * a;
+            if s.color.alpha() != sa {
+                s.color.set_alpha(sa);
+            }
+        }
+        if let Some(mut c) = bg {
+            if c.0.alpha() != want {
+                c.0.set_alpha(want);
+            }
+        }
+        if let Some(mut i) = img {
+            if i.color.alpha() != want {
+                i.color.set_alpha(want);
+            }
+        }
+    }
+}
+
+/// Swap an avatar's initial for the speaker's picture once it lands.
+pub fn fill_pics(
+    mut commands: Commands,
+    pics: Option<ResMut<Pics>>,
+    waiting: Query<(Entity, &ChatPic, &ChatFade)>,
+) {
+    let Some(mut pics) = pics else {
+        return;
+    };
+    for (e, p, f) in &waiting {
+        if let Some(h) = pics.want(p.address, p.pic) {
+            commands
+                .entity(e)
+                .despawn_related::<Children>()
+                .remove::<(ChatPic, BackgroundColor)>()
+                .insert((
+                    ImageNode::new(h),
+                    ChatFade {
+                        at: f.at,
+                        base: 1.0,
+                    },
+                ));
+        }
+    }
 }
 
 /// Forget the last shard's conversation.
@@ -325,6 +566,11 @@ pub fn register(app: &mut App) {
         // `drain` and `draw` run wherever the world does: a line that arrived
         // while the Esc menu was up is still owed to the player, and the ring
         // it sits in is bounded and drops the newest when it overflows.
-        .add_systems(Update, (drain, draw).chain().run_if(super::world_running))
+        .add_systems(
+            Update,
+            (drain, draw, fill_pics, fade)
+                .chain()
+                .run_if(super::world_running),
+        )
         .add_systems(OnEnter(super::Screen::Menu), forget);
 }
