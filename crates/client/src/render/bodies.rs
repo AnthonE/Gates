@@ -682,19 +682,30 @@ fn update_hand(
         let mut e = commands.entity(live.hand);
         match want {
             Some(row) => {
-                let (mesh, mat) = models.row(row);
-                let tint = crate::ui::skins::tint_of(&core.skins, skin);
-                let skinned = tint.and_then(|t| skin_mats.for_skin(row, skin, t, &mat, materials));
-                // Not recorded while the base material loads, so the next
-                // frame tries again (`viewmodel::swap`'s rule).
-                live.held_skin = if skinned.is_some() || tint.is_none() {
-                    skin
-                } else {
-                    u16::MAX
+                let (mesh, mat) = match models.skinned(row, skin) {
+                    // A skin with a model of its own draws that, untinted.
+                    Some(own) => {
+                        live.held_skin = skin;
+                        own
+                    }
+                    None => {
+                        let (mesh, mat) = models.row(row);
+                        let tint = crate::ui::skins::tint_of(&core.skins, skin);
+                        let skinned =
+                            tint.and_then(|t| skin_mats.for_skin(row, skin, t, &mat, materials));
+                        // Not recorded while the base material loads, so the
+                        // next frame tries again (`viewmodel::swap`'s rule).
+                        live.held_skin = if skinned.is_some() || tint.is_none() {
+                            skin
+                        } else {
+                            u16::MAX
+                        };
+                        (mesh, skinned.unwrap_or(mat))
+                    }
                 };
                 e.insert((
                     Mesh3d(mesh),
-                    MeshMaterial3d(skinned.unwrap_or(mat)),
+                    MeshMaterial3d(mat),
                     hand_pose(row, scale),
                     Visibility::Inherited,
                 ));

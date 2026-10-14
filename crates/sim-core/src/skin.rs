@@ -121,6 +121,20 @@ impl SkinSet {
         self.0.iter().map(|w| w.count_ones()).sum()
     }
 
+    /// Every row in either set: the platform's and the shard's gifts.
+    pub fn union(self, other: Self) -> Self {
+        let mut s = self;
+        for (w, o) in s.0.iter_mut().zip(other.0) {
+            *w |= o;
+        }
+        s
+    }
+
+    /// Whether every row of `other` is in this set.
+    pub fn has_all(&self, other: &Self) -> bool {
+        self.0.iter().zip(other.0).all(|(w, o)| w & o == o)
+    }
+
     /// Little-endian words, for `state_hash` and the world save.
     pub fn to_le_bytes(&self) -> [u8; SKIN_WORDS * 8] {
         let mut out = [0u8; SKIN_WORDS * 8];

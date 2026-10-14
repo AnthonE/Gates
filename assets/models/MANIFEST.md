@@ -745,6 +745,28 @@ spear's map peaked at **0.53** before the import stripped it, i.e. a stick
 that glows in the dark. A torch would be the first exception and would grow
 that list rather than retire the rule.
 
+## `held/skins/` — skins with a model of their own
+
+A skin row in `ui::hold::SKIN_MODELS` draws this file instead of its row's
+model, untinted, in the row's own pose. Made 2026-10-14 by `ci/meshy_gen.py`
+(nano-banana-pro image, then meshy-t2 smart-topology, 24 credits each), then
+`import_meshy.py` to the row's height, `stand_grip.py` with the row's
+`grip_frac`, both twice, and `ktx_pack.py --size 1024`. Raw outputs and
+sidecars, prompts included, are in `To Examine/skins/`.
+
+| file | skin (catalog) | covers | image task | mesh task |
+|---|---|---|---|---|
+| `founder_bat.glb` | Founder's Bat (7) | bat | `01a13bcd-5092` | `01a13bcf-80c3` |
+| `founder_hatchet.glb` | Founder's Hatchet (8) | stone_hatchet | `01a13bcd-50d8` | `01a13bcd-cac0` |
+| `obsidian_bat.glb` | Obsidian Bat (1) | bat | `01a13bcd-5090` | `01a13bcd-ca7d` |
+| `ember_hatchet.glb` | Ember Hatchet (2) | stone_hatchet | `01a13bcd-5088` | `01a13bce-e160` |
+| `frost_pickaxe.glb` | Frost Pickaxe (3) | stone_pickaxe | `01a13bcd-5081` | `01a13bcd-a272` |
+| `bone_bow.glb` | Bone Bow (4) | hunting_bow | `01a13bcd-507e` | `01a13bcd-f206` |
+
+The Gilded Revolver (5) and Moss Tunic (6) stay tints: the revolver's hold
+is built for the generated straight-gripped gun, and worn pieces are lathe
+meshes on the body.
+
 ## Textures are KTX2/UASTC at 1024, and the reason is VRAM
 
 **Every `.glb` here carries GPU-compressed textures since 2026-08-11**
