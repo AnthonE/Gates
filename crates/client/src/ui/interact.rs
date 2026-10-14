@@ -104,13 +104,9 @@ pub enum Verb {
     /// terrain occupant, it is a set the server states outright
     /// (`ClientCore::ground_items`).
     ///
-    /// ⚠ **And it is the one verb whose pick is NOT aim-weighted.** Every
-    /// other prompt here takes the thing you are looking at; this one
-    /// takes the nearest in reach, because that is what the sim's own
-    /// `take_nearest` does — and two stacks out of one barrel land a
-    /// metre apart, so an aimed prompt would routinely name the far sack
-    /// and hand you the near one. A prompt that can promise what the key
-    /// will do is worth more than one that follows the crosshair.
+    /// Aimed like the rest ([`resolve_take_aimed`]): the stack the
+    /// crosshair is on, else the nearest in reach. The take sends the
+    /// pick's id (wire v109), so the key takes the stack the prompt names.
     Take,
     /// A workbench, any rung (tech tree v0). One verb for three
     /// archetypes, `Fire`'s argument again: the prompt names a KIND, and
@@ -707,60 +703,99 @@ pub fn resolve_swipe(x: f32, y: f32, z: f32, zig: &sim_core::monument::Ziggurat)
     }
 }
 
+/// The loose stack nearest the feet within the sim's `LOOT_REACH_M`, or a
+/// `None` pick — [`resolve_take_aimed`] with no look. Ties go to the lower
+/// index, `grounditem::nearest`'s rule.
+pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pick {
+    resolve_take_aimed(x, z, None, items)
+}
+
+/// How far off the look ray a loose stack may sit and still be the one the
+/// crosshair is on, metres. Half the gap two stacks out of one barrel
+/// usually land apart (`grounditem::SCATTER_R_M`), so neighbours split.
+pub const TAKE_AIM_RADIUS_M: f32 = 0.45;
+
+/// Where on a loose stack the crosshair aims: this far over its rest point,
+/// roughly the middle of the drawn sack.
+const TAKE_AIM_LIFT_M: f32 = 0.15;
+
 /// The loose stack `E` would take, or a `None` pick.
 ///
-/// **Nearest-in-reach, and deliberately blind to the crosshair** — the one
-/// resolver here that does not weight by aim, because
-/// `grounditem::take_nearest` does not either. The rule it has to satisfy
-/// is *the prompt names what the key will take*, and two stacks out of one
-/// barrel land inside a metre of each other: an aimed pick would put
-/// `TAKE WOOD ×20` on screen and hand over the stone at your feet.
+/// `sight` is the eye and its unit look direction. Among the stacks in
+/// reach, one whose middle lies within [`TAKE_AIM_RADIUS_M`] of the look
+/// ray, in front of the eye, is aimed, and the one closest to the ray
+/// wins. With none aimed, the nearest to the feet. The take sends the
+/// pick's id (`encode_action_pickup`), so the sim lifts this stack.
 ///
-/// Reach is the sim's own `LOOT_REACH_M` — the arm a bag, a box, a door
-/// and a hearth feed already share — read from `sim_core` rather than
-/// restated, so the prompt cannot promise a take the sim will refuse for
-/// distance. Ties go to the lower index, which is `nearest`'s rule too.
-pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pick {
-    let mut best: Option<(usize, f32)> = None;
+/// Reach is the sim's own `LOOT_REACH_M`, planar from the feet, so the
+/// prompt cannot promise a take the sim will refuse for distance.
+pub fn resolve_take_aimed(
+    x: f32,
+    z: f32,
+    sight: Option<([f32; 3], [f32; 3])>,
+    items: &[protocol::event::WireGItem],
+) -> Pick {
+    // (index, rank, d2): rank is the ray offset² for an aimed stack and
+    // infinity for one merely in reach.
+    let mut best: Option<(usize, f32, f32)> = None;
     for (i, g) in items.iter().enumerate() {
-        let dx = g.qx as f32 * POS_XZ_Q - x;
-        let dz = g.qz as f32 * POS_XZ_Q - z;
+        let (gx, gz) = (g.qx as f32 * POS_XZ_Q, g.qz as f32 * POS_XZ_Q);
+        let (dx, dz) = (gx - x, gz - z);
         let d2 = dx * dx + dz * dz;
         if d2 > LOOT_REACH_M * LOOT_REACH_M {
             continue;
         }
-        match best {
-            Some((_, bd2)) if bd2 <= d2 => {}
-            _ => best = Some((i, d2)),
+        let rank = sight
+            .and_then(|(eye, dir)| {
+                let gy = g.qy as f32 * sim_core::movement::POS_Y_Q + TAKE_AIM_LIFT_M;
+                let v = [gx - eye[0], gy - eye[1], gz - eye[2]];
+                let t = v[0] * dir[0] + v[1] * dir[1] + v[2] * dir[2];
+                let perp2 = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) - t * t;
+                (t > 0.0 && perp2 <= TAKE_AIM_RADIUS_M * TAKE_AIM_RADIUS_M).then_some(perp2)
+            })
+            .unwrap_or(f32::INFINITY);
+        let better = match best {
+            None => true,
+            Some((_, br, bd2)) => rank < br || (rank == br && d2 < bd2),
+        };
+        if better {
+            best = Some((i, rank, d2));
         }
     }
     match best {
-        Some((i, d2)) => Pick {
+        Some((i, rank, d2)) => Pick {
             verb: Verb::Take,
             handle: items[i].id,
             item: items[i].item,
             count: items[i].count,
             cond: items[i].cond,
             d2,
+            aimed: rank.is_finite(),
             ..Pick::default()
         },
         None => Pick::default(),
     }
 }
 
-/// What `E` takes once an arrow standing in a body may be in reach too: the
-/// nearer of [`resolve_take`]'s loose stack and that arrow, ties to the
-/// loose stack — the sim's own rule (`World::pull_arrow`). `body_at` puts a
-/// body's feet in world XZ, or `None` for one this client is not drawing;
-/// the player's own body stands where they do.
+/// What `E` takes once an arrow standing in a body may be in reach too: an
+/// aimed loose stack ([`resolve_take_aimed`]) outright, else the nearer of
+/// the nearest stack and that arrow, ties to the stack — the sim's own rule
+/// (`World::pull_arrow`). `body_at` puts a body's feet in world XZ, or
+/// `None` for one this client is not drawing; the player's own body stands
+/// where they do. A pulled arrow's pick carries handle 0, so the take sends
+/// no stack id and the sim pulls it.
 pub fn resolve_take_or_pull(
     x: f32,
     z: f32,
+    sight: Option<([f32; 3], [f32; 3])>,
     items: &[protocol::event::WireGItem],
     lodged: &[protocol::WireLodged],
     mut body_at: impl FnMut(u32) -> Option<(f32, f32)>,
 ) -> Pick {
-    let take = resolve_take(x, z, items);
+    let take = resolve_take_aimed(x, z, sight, items);
+    if take.aimed {
+        return take;
+    }
     let take_d2 = if take.verb == Verb::Take {
         take.d2
     } else {
@@ -1627,6 +1662,21 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
         Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
         None => SwingPick::default(),
     }
+}
+
+/// The built thing the crosshair is on: the first piece or solid deployable
+/// the look ray meets within `reach_m`, by the sim's own world cast
+/// (`melee::world_cast`, the walk a swing charges by) over this client's
+/// collision index. `None` when air, ground or scenery comes first.
+pub fn resolve_built(
+    at: SwingAim,
+    island: &mut Island<'_>,
+    cols: &ColIndex,
+    reach_m: f32,
+) -> Option<sim_core::ranged::Struck> {
+    let ray = at.ray(reach_m);
+    let (seed, haven) = (island.seed, island.haven);
+    melee::world_cast(seed, haven, cols, &mut island.occupants(), &ray).2
 }
 
 /// What else a swing can meet before the scatter, off this client's own

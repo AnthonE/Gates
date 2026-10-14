@@ -231,12 +231,12 @@ fn a_scattered_stack_reaches_every_client_and_the_take_removes_it() {
         "the bytes the server sent carry the stack, its id and its count"
     );
 
-    // The take: payload-free, nearest-in-reach, and it is the arrow
+    // The take, aimed at the stack by id (v109), and it is the arrow
     // recovery opcode (`Command::Pickup`) rather than a new one.
     let mut buf = [0u8; 64];
-    let n = protocol::encode_action_pickup(&mut buf).expect("the pickup encodes");
+    let n = protocol::encode_action_pickup(id, &mut buf).expect("the pickup encodes");
     let act = protocol::decode_action(&buf[..n]).expect("and decodes");
-    assert!(matches!(act, ActionMsg::Pickup));
+    assert!(matches!(act, ActionMsg::Pickup { target } if target == id));
     core.push_action(0, act);
 
     let mut after = Vec::new();

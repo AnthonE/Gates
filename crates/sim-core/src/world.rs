@@ -1884,14 +1884,15 @@ pub enum Command {
     Loot {
         id: u32,
     },
-    /// Take the nearest loose stack in reach (`grounditem.rs`) — a
-    /// barrel's scatter, or an arrow that came to rest (`spent.rs`).
+    /// Take a loose stack in reach (`grounditem.rs`) — a barrel's
+    /// scatter, or an arrow that came to rest (`spent.rs`).
     ///
-    /// `Loot`'s shape and for `Loot`'s reason: no target crosses, so there
-    /// is no id to forge and nothing can be picked up that the sender is
-    /// not standing on.
+    /// `target` is the stack id the crosshair is on (0 for none): taken if
+    /// it is still in reach, else the nearest, as before. Reach is the
+    /// sim's, so a forged id can name nothing the sender is not standing at.
     Pickup {
         id: u32,
+        target: u32,
     },
     /// Open the authored world container at cell key `cont`
     /// (`worldcont.rs`) — the haven pad's crate, a waystation's cache.
@@ -5502,7 +5503,7 @@ impl World {
                     }
                 }
             }
-            Command::Pickup { id } => {
+            Command::Pickup { id, target } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     // The nearest loose stack in reach — a barrel's scatter
                     // or a landed arrow, which is a loose stack the tick it
@@ -5511,8 +5512,22 @@ impl World {
                     // Rust's can be pulled out by anyone, and a player clears
                     // their own with `E`. The prompt `E` draws names exactly
                     // what this takes.
+                    // An aimed stack still in reach wins outright: the
+                    // prompt named it.
                     let mut spill = [ItemStack::default(); INV_SLOTS];
-                    if !self.pull_arrow(slot, &mut spill) {
+                    let aimed = self
+                        .ground_items
+                        .index_of_id(target)
+                        .filter(|&i| self.ground_items.in_reach(i, &self.players[slot]));
+                    if let Some(i) = aimed {
+                        self.ground_items.take_at(
+                            i,
+                            &self.gather,
+                            &mut self.players[slot],
+                            &mut spill,
+                            &mut self.events,
+                        );
+                    } else if !self.pull_arrow(slot, &mut spill) {
                         self.ground_items.take_nearest(
                             &self.gather,
                             &mut self.players[slot],

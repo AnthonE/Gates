@@ -217,9 +217,24 @@ pub fn resolve(
     // whole cast: a node with a pig, a man or a wall in front of it is not
     // named, and a carcass there is named as the butchering a blade in hand
     // would do instead (§0ray 2).
+    // The built thing the crosshair is on, for the hammer and the charge.
+    let mut built = None;
     (swung.0, in_weak.0) = match world.as_deref() {
         Some(_) => {
             let (mut island, shadows) = interact::swing_island(core, sel);
+            built = interact::resolve_built(
+                SwingAim {
+                    x,
+                    y,
+                    z,
+                    yaw,
+                    pitch,
+                    crouched,
+                },
+                &mut island,
+                shadows.cols,
+                structure::AIM_REACH_M,
+            );
             let pick = interact::resolve_swing_shadowed(
                 SwingAim {
                     x,
@@ -375,20 +390,14 @@ pub fn resolve(
     // **Outside the island block on purpose**: `core.island()` holds the
     // core mutably (it owns the scatter cache), and this pick needs no
     // island at all — a loose stack is a set the server states, not
-    // something derived from the seed. So it resolves here, after that
-    // borrow ends, which is also the right place in the chain.
+    // something derived from the seed.
     //
-    // **Not aim-weighted**, so it can only ever be a fallback: a player
-    // looking at a box with a sack at their feet means the box, and
-    // `resolve_take` has no aim to lose that tie with. Third, so a
-    // deployable wins and an authored container wins — both are things
-    // you walked to on purpose, and a sack is the thing you are standing
-    // in.
-    if aimed.0.is_none() {
-        let take = take_or_pull(core, x, z);
-        if take.verb != interact::Verb::None {
-            aimed.0 = take;
-        }
+    // A stack the crosshair is on beats anything merely nearby; a stack
+    // merely nearby is only a fallback, so a box you look at with a sack at
+    // your feet is still the box.
+    let take = take_or_pull(core, x, z, Some((eye, dir)));
+    if take.verb != interact::Verb::None && (aimed.0.is_none() || (take.aimed && !aimed.0.aimed)) {
+        aimed.0 = take;
     }
     // A town kiosk (THE GATE): last, by nearness — the counter is a place
     // you walk up to, not a thing you aim at.
@@ -425,7 +434,9 @@ pub fn resolve(
         aimed.0 = interact::Pick::default();
     }
     // The hammer's and the charge's target: the free-placed deployable the
-    // crosshair is on, by `E`'s own ray, else the structure nearest the feet.
+    // crosshair is on, by `E`'s own ray, else the piece or solid deployable
+    // the look ray meets (in reach, or nothing), else — only when the
+    // crosshair is on no built thing at all — the structure nearest the feet.
     let span =
         |rec: &sim_core::deploy::DeployRec, arch: u8| body_span(world.as_deref(), core, rec, arch);
     let seen = world.as_deref().and_then(|w| {
@@ -444,8 +455,9 @@ pub fn resolve(
             core.deploy_defs_have,
         )
     });
-    near.0 = seen.or_else(|| {
-        structure::nearest(
+    near.0 = seen.or_else(|| match built {
+        Some(hit) => structure::struck(
+            hit,
             (x, z),
             core.pieces.entries(),
             &core.piece_defs,
@@ -453,7 +465,16 @@ pub fn resolve(
             core.deploys.entries(),
             &core.deploy_defs,
             core.deploy_defs_have,
-        )
+        ),
+        None => structure::nearest(
+            (x, z),
+            core.pieces.entries(),
+            &core.piece_defs,
+            core.piece_defs_have,
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
+        ),
     });
 }
 
@@ -827,20 +848,27 @@ pub fn keys(
         use_slot(&net, &mut toast, &mut bite, now, net.sel);
     }
     if keys.just_pressed(KeyCode::KeyV) {
-        // Take the nearest loose stack in reach — the take `E`'s prompt
-        // names, landed arrows included (`sim-core/spent.rs`), on a key the
-        // hand reaches without leaving `WASD` while it walks the field it
-        // just shot across. Payload-free: the sim picks, from the body it
-        // already has. `just_pressed` because the action lane takes one
-        // pending action per client per tick. Nothing in the sim's own
-        // reach (`resolve_take`) is said here: the sim answers that press
-        // with no event at all.
+        // Take a loose stack in reach — the one `E`'s prompt names when it
+        // names one, else the nearest — landed arrows included
+        // (`sim-core/spent.rs`), on a key the hand reaches without leaving
+        // `WASD` while it walks the field it just shot across. The stack's
+        // id rides (v109); an arrow's pick has none and the sim pulls it.
+        // `just_pressed` because the action lane takes one pending action
+        // per client per tick.
         let core = &net.session.core;
         let [x, _, z] = core.predict.render_position();
-        if take_or_pull(core, x, z).verb == Verb::None {
+        let pick = if aimed.0.verb == Verb::Take {
+            aimed.0
+        } else {
+            take_or_pull(core, x, z, None)
+        };
+        if pick.verb == Verb::None {
             toast.warn("nothing to pick up here");
         } else {
-            send(&net, &mut toast, "pick up", protocol::encode_action_pickup);
+            let target = pick.handle;
+            send(&net, &mut toast, "pick up", |buf| {
+                protocol::encode_action_pickup(target, buf)
+            });
         }
     }
     if keys.just_pressed(KeyCode::KeyH) {
@@ -1019,19 +1047,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
-        // A loose stack (ground items v0). **The same payload-free
-        // `encode_action_pickup` the `V` key sends** — one opcode for
-        // "pick up the thing at my feet", which is what keeps the CHOICE
-        // in the sim: the prompt named the nearest stack because
-        // `resolve_take` uses the sim's own rule, so the key and the line
-        // above it cannot disagree.
+        // A loose stack (ground items v0): the `encode_action_pickup` the
+        // `V` key sends, naming the stack the prompt named (v109), so the
+        // key and the line above it cannot disagree.
         //
         // No panel: there is nothing to open. What the player gets is the
         // `EV_GATHER` toast every other payout arrives as, and the sack
         // stops being drawn on the next sync — which is server truth
         // rather than this side guessing that the take worked.
         Verb::Take => {
-            send(net, toast, "take", protocol::encode_action_pickup);
+            let target = pick.handle;
+            send(net, toast, "take", |buf| {
+                protocol::encode_action_pickup(target, buf)
+            });
         }
         // A bush: the cell key is the claim, and the sim re-derives the bush
         // and the reach (`gather::pick`). Nothing is predicted — the bush
@@ -1614,16 +1642,22 @@ pub fn hearth_close(
 /// A blueprint sheet's target is stamped here (v102), `lit`'s way: the
 /// resolver is handed the stacks, and the research table that reads a
 /// sheet's `cond` lives on the core.
-fn take_or_pull(core: &client_core::core::ClientCore, x: f32, z: f32) -> interact::Pick {
+fn take_or_pull(
+    core: &client_core::core::ClientCore,
+    x: f32,
+    z: f32,
+    sight: Option<([f32; 3], [f32; 3])>,
+) -> interact::Pick {
     let at = core.render_tick();
     let mut rs = client_core::interp::RemoteState::default();
-    let mut pick = interact::resolve_take_or_pull(x, z, core.ground_items(), core.lodged(), |id| {
-        if id == core.player_id {
-            Some((x, z))
-        } else {
-            core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
-        }
-    });
+    let mut pick =
+        interact::resolve_take_or_pull(x, z, sight, core.ground_items(), core.lodged(), |id| {
+            if id == core.player_id {
+                Some((x, z))
+            } else {
+                core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
+            }
+        });
     pick.stamp_teaches(&core.research);
     pick
 }

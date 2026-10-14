@@ -1496,7 +1496,7 @@ impl Survivor {
             // (`Kit::lane_free`), so it counts as a try.
             let _ = match verb {
                 Verb::Loot => self.queue(protocol::encode_action_loot),
-                Verb::Pickup => self.queue(protocol::encode_action_pickup),
+                Verb::Pickup => self.queue(|b| protocol::encode_action_pickup(0, b)),
             };
         }
         let me = [
@@ -3701,7 +3701,7 @@ impl Survivor {
             Some((was, at, n)) if was == id => (tick.wrapping_sub(at) >= PICK_RETRY_TICKS, n + 1),
             _ => (true, 1),
         };
-        if due && self.queue(protocol::encode_action_pickup) {
+        if due && self.queue(|b| protocol::encode_action_pickup(id, b)) {
             self.loot_job.pick = Some((id, tick, n));
         }
         look

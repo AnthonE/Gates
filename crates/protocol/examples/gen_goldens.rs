@@ -684,11 +684,9 @@ fn main() {
         write_fixture(goldens::FIXTURES[99], &buf[..len]);
     }
 
-    // Arrow recovery v1 (v53): the pickup verb. Payload-free, so the
-    // fixture is the shortest C→S frame this crate writes — a kind and a
-    // subtype, and the subtype is the only thing in it that is new.
+    // Arrow recovery v1 (v53): the pickup verb, aimed at a stack id (v109).
     {
-        let len = protocol::encode_action_pickup(&mut buf).unwrap();
+        let len = protocol::encode_action_pickup(goldens::action_pickup(), &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[100], &buf[..len]);
     }
 

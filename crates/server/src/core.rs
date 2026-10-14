@@ -2270,7 +2270,7 @@ impl ShardCore {
                         loc,
                     },
                     ActionMsg::Loot => Command::Loot { id: c.id },
-                    ActionMsg::Pickup => Command::Pickup { id: c.id },
+                    ActionMsg::Pickup { target } => Command::Pickup { id: c.id, target },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                     ActionMsg::RespawnAt { cx, cz, level } => Command::RespawnAt {
                         id: c.id,

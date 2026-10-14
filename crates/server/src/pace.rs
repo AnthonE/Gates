@@ -100,7 +100,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Give { .. } => Kind::Move,
         ActionMsg::Container { .. }
         | ActionMsg::Loot
-        | ActionMsg::Pickup
+        | ActionMsg::Pickup { .. }
         | ActionMsg::Pick { .. } => Kind::Take,
         ActionMsg::Craft { .. }
         | ActionMsg::CraftCancel { .. }

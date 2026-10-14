@@ -489,7 +489,7 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             ..
         } => encode_action_move(cont, from_kind, from_slot, to_kind, to_slot, count, buf),
         Command::Loot { .. } => encode_action_loot(buf),
-        Command::Pickup { .. } => encode_action_pickup(buf),
+        Command::Pickup { target, .. } => encode_action_pickup(target, buf),
         Command::Drop { slot, count, .. } => protocol::encode_action_drop(slot, count, buf),
         Command::Treat { slot, target, .. } => protocol::encode_action_treat(slot, target, buf),
         Command::Give {

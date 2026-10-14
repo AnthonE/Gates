@@ -6823,17 +6823,13 @@ fn the_craft_browser_is_behind_the_looting_check() {
 
 // §U · the loose stack's prompt (ground items v0)
 //
-// Two rules, and the first is the one that makes the prompt trustworthy.
-//
-// `ui::interact::resolve_take` is the only resolver here that ignores the
-// crosshair, because `grounditem::take_nearest` does — and two stacks out
-// of one barrel land inside a metre of each other, so an aimed prompt
-// would routinely name the far sack and hand over the near one. The
-// second rule is that the line names the ITEM: the sack on the ground is
-// one generic mesh whatever is inside it, so the words are the only thing
-// that says whether to stop.
+// Two rules. The stack the crosshair is on wins, else the nearest — and the
+// take sends the pick's id (v109), so the key lifts the stack the prompt
+// names. And the line names the ITEM: the sack on the ground is one generic
+// mesh whatever is inside it, so the words are the only thing that says
+// whether to stop.
 mod take {
-    use client::ui::interact::{resolve_take, Verb};
+    use client::ui::interact::{resolve_take, resolve_take_aimed, Verb};
     use protocol::event::WireGItem;
     use sim_core::backpack::LOOT_REACH_M;
     use sim_core::movement::{quant_xz, POS_XZ_Q};
@@ -6864,11 +6860,9 @@ mod take {
         );
     }
 
-    /// **Nearest wins, and the crosshair is not consulted.** The far stack
-    /// is the one a look-weighted pick would take, so this fixture puts
-    /// them on opposite sides of the player.
+    /// **With no look, nearest wins.**
     #[test]
-    fn the_nearest_stack_wins_whatever_the_player_faces() {
+    fn the_nearest_stack_wins_without_a_look() {
         let items = [at(103.0, 100.0, 11, 3, 20), at(100.5, 100.0, 22, 5, 7)];
         let p = resolve_take(100.0, 100.0, &items);
         assert_eq!(p.verb, Verb::Take);
@@ -6878,6 +6872,36 @@ mod take {
              stack and the sim's `take_nearest` would hand over another"
         );
         assert_eq!((p.item, p.count), (5, 7), "and it carries that stack");
+    }
+
+    /// **The crosshair picks between two stacks out of one barrel**: the
+    /// far one when the look is on it, the near one when the look is on
+    /// that, and the nearest when the look is on neither.
+    #[test]
+    fn the_stack_under_the_crosshair_wins() {
+        let items = [at(101.0, 100.0, 1, 3, 1), at(102.0, 100.6, 2, 5, 1)];
+        let eye = [100.0, 1.6, 100.0];
+        let look_at = |x: f32, y: f32, z: f32| {
+            let v = [x - eye[0], y - eye[1], z - eye[2]];
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            Some((eye, [v[0] / l, v[1] / l, v[2] / l]))
+        };
+        let far = resolve_take_aimed(100.0, 100.0, look_at(102.0, 0.15, 100.6), &items);
+        assert_eq!(
+            (far.handle, far.aimed),
+            (2, true),
+            "the far sack is aimed at"
+        );
+        let near = resolve_take_aimed(100.0, 100.0, look_at(101.0, 0.15, 100.0), &items);
+        assert_eq!(
+            (near.handle, near.aimed),
+            (1, true),
+            "the near sack is aimed at"
+        );
+        let sky = resolve_take_aimed(100.0, 100.0, Some((eye, [0.0, 1.0, 0.0])), &items);
+        assert_eq!((sky.handle, sky.aimed), (1, false), "no look: the nearest");
+        let behind = resolve_take_aimed(100.0, 100.0, Some((eye, [-1.0, 0.0, 0.0])), &items);
+        assert_eq!(behind.handle, 1, "a stack behind the eye is never aimed at");
     }
 
     /// The reach is the sim's, so the prompt cannot promise a take the sim

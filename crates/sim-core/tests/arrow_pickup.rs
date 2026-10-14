@@ -91,7 +91,7 @@ fn a_stopped_arrow_lies_on_the_ground_and_comes_back() {
         feet.qy
     );
 
-    w.tick(&[Command::Pickup { id: 1 }]);
+    w.tick(&[Command::Pickup { id: 1, target: 0 }]);
     assert_eq!(carried(&w, ARROW), 1, "the round entered the quiver");
     assert!(w.ground_items.is_empty(), "and left the ground");
     assert_eq!(gathers(&w), vec![(ARROW, 1)], "announced as a gather");
@@ -189,7 +189,7 @@ fn the_nearest_arrow_is_the_one_that_comes_back() {
     stop(&mut w, 300);
     w.tick(&[]);
     assert_eq!(w.ground_items.len(), 2);
-    w.tick(&[Command::Pickup { id: 1 }]);
+    w.tick(&[Command::Pickup { id: 1, target: 0 }]);
     assert_eq!(w.ground_items.len(), 1, "one taken");
     let far = (feet_mm(&w.players[P].body).0 + 3_000) as f32 / 1000.0;
     let left = w.ground_items.entries()[0].qx as f32 * POS_XZ_Q;
@@ -212,7 +212,7 @@ fn a_full_quiver_spills_the_arrow_at_your_feet() {
     }
     stop(&mut w, 0);
     w.tick(&[]);
-    w.tick(&[Command::Pickup { id: 1 }]);
+    w.tick(&[Command::Pickup { id: 1, target: 0 }]);
     assert!(w.ground_items.is_empty(), "the stack left the ground");
     assert_eq!(
         w.backpacks.len(),
@@ -227,7 +227,7 @@ fn the_dead_do_not_pick_up() {
     stop(&mut w, 0);
     w.tick(&[]);
     w.players[P].dead = true;
-    w.tick(&[Command::Pickup { id: 1 }]);
+    w.tick(&[Command::Pickup { id: 1, target: 0 }]);
     assert_eq!(w.ground_items.len(), 1, "the arrow is untouched");
     assert!(gathers(&w).is_empty());
 }
@@ -488,14 +488,14 @@ fn an_arrow_in_you_comes_out_with_e() {
     assert_eq!(w.spent.len(), 1, "it stands in the body");
     assert_eq!(w.ground_items.len(), 1, "with a loose stack at its feet");
 
-    w.tick(&[Command::Pickup { id: 1 }]);
+    w.tick(&[Command::Pickup { id: 1, target: 0 }]);
     assert!(
         w.ground_items.is_empty(),
         "the loose stack, as near, goes first"
     );
     assert_eq!(w.spent.len(), 1, "and the arrow stays in");
 
-    w.tick(&[Command::Pickup { id: 1 }]);
+    w.tick(&[Command::Pickup { id: 1, target: 0 }]);
     assert!(w.spent.is_empty(), "then it comes out");
     assert_eq!(carried(&w, ARROW), 2, "both in the pack");
     assert_eq!(gathers(&w), vec![(ARROW, 1)], "announced as a gather");

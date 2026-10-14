@@ -347,6 +347,16 @@ impl GroundItems {
         best.map(|(i, _)| i)
     }
 
+    /// The stack a take from `p` lifts: `target` (a stack id) when it is
+    /// still lying in reach, else [`Self::nearest`]. `target` is what the
+    /// player's crosshair named, so the prompt and the take agree; it is
+    /// only a preference, never a reach past the arm.
+    pub fn pick(&self, p: &Player, target: u32) -> Option<usize> {
+        self.index_of_id(target)
+            .filter(|&i| self.in_reach(i, p))
+            .or_else(|| self.nearest(p))
+    }
+
     /// Take the nearest loose stack in reach into `p`'s inventory.
     ///
     /// All-or-part: what fits goes in the pack, what does not goes into
@@ -367,6 +377,22 @@ impl GroundItems {
         events: &mut EventQueue,
     ) -> Option<u32> {
         let i = self.nearest(p)?;
+        self.take_at(i, gc, p, spill, events)
+    }
+
+    /// [`Self::take_nearest`] for the stack at index `i`, which the caller
+    /// has already found in reach ([`Self::pick`]).
+    pub fn take_at(
+        &mut self,
+        i: usize,
+        gc: &GatherContent,
+        p: &mut Player,
+        spill: &mut [ItemStack; INV_SLOTS],
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        if i >= self.len {
+            return None;
+        }
         let rec = self.entries[i];
         let cap = gc.stack_max_of(rec.stack.item);
         // An existing stack: its condition and its skin travel with it.

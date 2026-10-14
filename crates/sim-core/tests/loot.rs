@@ -309,7 +309,10 @@ fn the_pickup_verb_takes_a_scattered_stack() {
     assert!(on_ground > 0 && stacks > 0);
 
     for _ in 0..stacks {
-        w.tick(&[Command::Pickup { id: PLAYER }]);
+        w.tick(&[Command::Pickup {
+            id: PLAYER,
+            target: 0,
+        }]);
     }
     let got: u32 = w.players[0].inv.iter().map(|s| s.count as u32).sum();
     assert_eq!(got, on_ground, "the pickup verb did not take every stack");
