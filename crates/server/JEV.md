@@ -322,6 +322,22 @@ Every decision is one API call: `--max-requests-hour` is the spend bound.
 `CLAUDE_MODEL` picks the model. Join the printed island from the game to
 talk to it.
 
+**On the public island.** A wallet key once, then the same agent on
+`game.elopros.com` (Gates is free: any wallet gets in). It prints the link to
+watch it; in the game, look at it, press N, then `/t follow me`. With Claude
+Code open in this repo, `/play-gates` does all of it
+(`.claude/skills/play-gates`).
+
+```sh
+mkdir -p -m 700 ~/.gates
+cargo run -p server --release --bin jev-bot -- --new-key ~/.gates/agent.key
+cargo run -p server --release --bin jev-bot -- \
+    --server game.elopros.com:61234 --agent-key ~/.gates/agent.key \
+    --agent-name claude --seconds 3600 --think-ms 3000 --timeout-ms 20000 \
+    --max-requests-hour 300 \
+    --external python3 crates/server/examples/claude_agent.py
+```
+
 **On your Claude plan.** Three ways to pay for the decisions:
 
 - An API key, as above.
@@ -357,9 +373,11 @@ good crafts are known by name, not discovered. Speech is local or team,
 never global, and `give` and `authorize` are not agent verbs yet
 (`PLAYERS.md`): it fills a chest rather than handing things over. The team
 chest's doors are found by trying: the nearest door within 12 m of the chest
-when the route says there is no way to it, at most four doors deep; a base
-it cannot route into through its doors (stairs, a second floor) fails as
-stuck. Teams do not survive a shard restart. A guest is
+when the route says there is no way to it, at most four doors deep. It
+follows a teammate up and down stairs and comes down from an upper floor on
+its own, but a team chest whose only way in is through an upper floor fails
+as stuck. Teams survive a shard restart for keyed players; a guest's team
+does not. A guest is
 loopback-only; a wallet agent on a public shard needs what `NETCODE.md` §2.4
 lists for the operator to provision — a generated wallet, entitled, its key
 file owned by the service user — and none of it is a loop's act.
