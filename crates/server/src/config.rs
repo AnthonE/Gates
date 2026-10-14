@@ -226,6 +226,10 @@ pub struct ShardConfig {
     /// one whose pages may collect a signature this shard accepts**, so list
     /// only names you serve.
     pub siwe_domains: Option<Vec<String>>,
+    /// Where a smart-contract wallet's signature is checked (`chainsig.rs`):
+    /// `sig_rpc`, a comma list of JSON-RPC urls asked in order. Off by default,
+    /// which refuses such a signature and keeps the handshake network-free.
+    pub chain_sig: crate::chainsig::Config,
     /// The ticket door (`entitle.rs`): does a joiner own a copy of this game?
     ///
     /// [`entitle::Config::off`] is the shipping default and checks **nothing**
@@ -422,6 +426,7 @@ impl ShardConfig {
             status_addr: None,
             domain: "127.0.0.1".into(),
             siwe_domains: None,
+            chain_sig: crate::chainsig::Config::off(),
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
             faces: crate::faces::Config::off(),
@@ -451,6 +456,32 @@ impl ShardConfig {
             None => std::slice::from_ref(&self.domain),
         }
     }
+}
+
+/// `sig_rpc`'s value: up to `chainsig::MAX_RPCS` http(s) urls, comma separated.
+fn parse_sig_rpc(value: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        if !(entry.starts_with("https://") || entry.starts_with("http://")) || entry.contains(' ') {
+            return Err(format!(
+                "sig_rpc names `{entry}`, which is not an http(s) url"
+            ));
+        }
+        if out.iter().any(|u| u == entry) {
+            return Err(format!("sig_rpc names `{entry}` twice"));
+        }
+        out.push(entry.to_string());
+    }
+    if out.is_empty() {
+        return Err("sig_rpc names no url — omit the key to check no smart wallets".into());
+    }
+    if out.len() > crate::chainsig::MAX_RPCS {
+        return Err(format!(
+            "sig_rpc names more than {} urls",
+            crate::chainsig::MAX_RPCS
+        ));
+    }
+    Ok(out)
 }
 
 /// Most names `siwe_domains` may list. Each one is an `ecrecover` a refused
@@ -608,6 +639,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut status_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     let mut siwe_domains: Option<Vec<String>> = None;
+    let mut sig_rpc: Option<Vec<String>> = None;
     let mut entitle_origin: Option<String> = None;
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
@@ -945,6 +977,13 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 siwe_domains = Some(
                     parse_siwe_domains(value)
                         .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
+                );
+            }
+            // Smart-contract wallets (`chainsig.rs`). Absent ⇒ their
+            // signatures are refused and the handshake asks no chain.
+            "sig_rpc" => {
+                sig_rpc = Some(
+                    parse_sig_rpc(value).map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
                 );
             }
             // The ticket door (`entitle.rs`). Absent ⇒ this shard checks no
@@ -1436,6 +1475,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         min_client: min_client.unwrap_or(0),
         domain: domain.expect("`bind` is read above, and its host is the default"),
         siwe_domains,
+        chain_sig: sig_rpc.map_or_else(crate::chainsig::Config::off, crate::chainsig::Config::new),
         entitle,
         skins,
         faces,
@@ -1597,6 +1637,37 @@ mod tests {
             "discord_webhook = \"http://insecure\"\n",
         ] {
             assert!(parse_shard_toml(&format!("{base}{bad}")).is_err(), "{bad}");
+        }
+    }
+
+    /// `sig_rpc`: absent asks no chain; set is the urls in order; anything
+    /// that is not a short list of http(s) urls is a boot failure.
+    #[test]
+    fn sig_rpc_parses_or_refuses() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+        assert!(
+            !parse_shard_toml(base).unwrap().chain_sig.armed(),
+            "absent: no chain"
+        );
+        let cfg = parse_shard_toml(&format!(
+            "{base}sig_rpc = \"https://rpc.example, http://127.0.0.1:8545\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.chain_sig.rpcs(),
+            ["https://rpc.example", "http://127.0.0.1:8545"]
+        );
+        for bad in [
+            "sig_rpc = \"\"\n",
+            "sig_rpc = \"rpc.example\"\n",
+            "sig_rpc = \"https://a.example, https://a.example\"\n",
+            "sig_rpc = \"https://a, https://b, https://c, https://d, https://e\"\n",
+            "sig_rpc = \"https://a.example/ x\"\n",
+        ] {
+            assert!(
+                parse_shard_toml(&format!("{base}{bad}")).is_err(),
+                "accepted {bad:?}"
+            );
         }
     }
 

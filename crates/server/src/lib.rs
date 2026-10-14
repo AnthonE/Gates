@@ -36,6 +36,7 @@ pub mod anomaly;
 pub mod auth;
 pub mod boot;
 pub mod botclient;
+pub mod chainsig;
 pub mod client;
 pub mod cond;
 pub mod config;

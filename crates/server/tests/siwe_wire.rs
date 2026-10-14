@@ -77,7 +77,7 @@ fn wallet_sign(sk: &SigningKey, text: &str) -> protocol::Signature {
     let mut raw = [0u8; 65];
     raw[..64].copy_from_slice(&sig.to_bytes());
     raw[64] = 27 + rec.to_byte();
-    protocol::Signature(raw)
+    protocol::Signature::from_ecdsa(raw)
 }
 
 fn key(byte: u8) -> SigningKey {
@@ -622,4 +622,168 @@ fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
         Err(server::auth::AuthError::WrongSigner)
     );
+}
+
+// ── smart-contract wallets (v109, `chainsig.rs`) ─────────────────────────────
+
+/// A JSON-RPC stand-in on loopback: answers every POST with `result` and
+/// keeps each body it was sent. The chain, without the network.
+fn fake_rpc(result: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; len];
+            let _ = reader.read_exact(&mut body);
+            log.lock()
+                .expect("lock")
+                .push(String::from_utf8_lossy(&body).into_owned());
+            let reply = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{result}"}}"#);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                reply.len(),
+                reply
+            );
+        }
+    });
+    (url, seen)
+}
+
+async fn shard_with_chain(chain: Option<String>) -> server::net::ShardHandle {
+    let tables = baked_content();
+    let mut cfg = ShardConfig::ephemeral(20_261_014);
+    cfg.require_auth = true;
+    cfg.domain = DOMAIN.into();
+    if let Some(url) = chain {
+        cfg.chain_sig = server::chainsig::Config::new(vec![url]);
+    }
+    spawn_shard(
+        cfg,
+        tables,
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("boots")
+}
+
+/// Join as `address`, signing with `sign`; the welcome or the refusal.
+async fn join_as(
+    handle: &server::net::ShardHandle,
+    address: protocol::Address,
+    sign: impl FnOnce(&[u8]) -> Option<protocol::Signature>,
+) -> Result<protocol::Welcome, String> {
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        client_handshake(&mut send, &mut recv, DOMAIN, address, sign),
+    )
+    .await
+    .expect("inside 15 s")
+}
+
+/// What an undeployed Coinbase Smart Wallet sends: ~640 bytes no key made.
+fn smart_signature() -> protocol::Signature {
+    let bytes: Vec<u8> = (0..640u32).map(|i| (i * 31 + 7) as u8).collect();
+    protocol::Signature::from_slice(&bytes).expect("fits the wire")
+}
+
+const SMART: protocol::Address = protocol::Address([0x5a; 20]);
+
+/// **A smart wallet signs in when its chain vouches for it**, on a shard
+/// that refuses guests — so the welcome is the proof. And the chain was
+/// asked about this wallet, through the validator.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_smart_wallet_is_admitted_when_its_chain_says_yes() {
+    let (url, seen) = fake_rpc("0x01");
+    let handle = shard_with_chain(Some(url)).await;
+    let welcome = join_as(&handle, SMART, |_| Some(smart_signature()))
+        .await
+        .expect("the chain said yes");
+    assert_ne!(welcome.player_id, 0);
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 0);
+    let bodies = seen.lock().expect("lock").clone();
+    assert_eq!(bodies.len(), 1, "one question, one name: one call");
+    assert!(bodies[0].contains("\"eth_call\""), "{}", bodies[0]);
+    assert!(
+        bodies[0].contains(&"5a".repeat(20)),
+        "the chain was asked about this wallet"
+    );
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_smart_wallet_is_refused_when_its_chain_says_no() {
+    let (url, _) = fake_rpc("0x00");
+    let handle = shard_with_chain(Some(url)).await;
+    let err = join_as(&handle, SMART, |_| Some(smart_signature()))
+        .await
+        .expect_err("the chain said no");
+    assert!(err.contains("refused"), "{err}");
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 1);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A shard that names no chain refuses one, as every shard did before v109.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_chain_a_smart_wallet_is_refused() {
+    let handle = shard_with_chain(None).await;
+    let err = join_as(&handle, SMART, |_| Some(smart_signature()))
+        .await
+        .expect_err("nothing can check it");
+    assert!(err.contains("refused"), "{err}");
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **A plain key never waits on the network**, even on a shard that names a
+/// chain: the arithmetic answers first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plain_key_never_asks_the_chain() {
+    let (url, seen) = fake_rpc("0x00");
+    let handle = shard_with_chain(Some(url)).await;
+    let sk = key(11);
+    join_as(&handle, address_of(&sk), |text| {
+        Some(wallet_sign(&sk, std::str::from_utf8(text).expect("utf-8")))
+    })
+    .await
+    .expect("a real key is admitted");
+    assert!(
+        seen.lock().expect("lock").is_empty(),
+        "the chain was asked about a plain key"
+    );
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }

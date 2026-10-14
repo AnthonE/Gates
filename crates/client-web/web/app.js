@@ -1374,10 +1374,12 @@ async function join(kind, audio, identity) {
          before the browser build was published. Another reload is the loop. */
       say("Gates just updated. The browser version follows soon. Try again in a few minutes.", "bad", line);
     } else if (code === REFUSE_AUTH && walletAsked) {
-      /* The wallet signed and the shard recovered somebody else. The shared
-         sentence says "connect a wallet", which this player just did. */
-      say("Your wallet signed, but the server couldn't match it to your address. Smart-contract and "
-        + "multisig accounts can't sign in yet — switch to a regular account and press Play again.", "bad", line);
+      /* The wallet signed and the shard could not confirm it: not this key,
+         and for a smart wallet its chain said no or could not be reached
+         (`server::chainsig`). The shared sentence says "connect a wallet",
+         which this player just did. */
+      say("Your wallet signed, but the server couldn't confirm it was your address. "
+        + "Press Play to try again, or sign in with another account.", "bad", line);
       line.title = raw;
     } else if (code !== null || walletAsked || !(e instanceof Error) || !(row && row.statusUrl)) {
       say(raw, "bad", line);

@@ -68,8 +68,20 @@ use crate::bits::{BitReader, BitWriter, WireError};
 pub struct Address(pub [u8; ADDRESS_BYTES]);
 
 pub const ADDRESS_BYTES: usize = 20;
-/// r ‖ s ‖ v — 32 + 32 + 1, the shape `personal_sign` returns everywhere.
+/// r ‖ s ‖ v — 32 + 32 + 1, the shape `personal_sign` returns from a plain
+/// key, and the only one the shard can check by arithmetic alone.
 pub const SIGNATURE_BYTES: usize = 65;
+/// Longest signature the wire carries (v109). A **smart-contract wallet**
+/// signs in a shape its own contract checks (ERC-1271), wrapped with its
+/// deployment while it is not deployed yet (ERC-6492): a Coinbase Smart Wallet
+/// with a key owner is ~640 bytes, a passkey owner ~1.2 KB, a multisig 65 per
+/// signer. 4 KB holds all of them with room, and is still a size a stranger
+/// cannot make the shard care about.
+pub const SIGNATURE_MAX: usize = 4096;
+/// Longest auth message: its kind, the address, the length, the signature.
+/// Only the auth frame is allowed this size (`server::net::read_auth_frame`);
+/// every other handshake message keeps [`crate::MAX_STREAM_MSG_BYTES`].
+pub const MAX_AUTH_MSG_BYTES: usize = 32 + ADDRESS_BYTES + SIGNATURE_MAX;
 /// The server's per-connection nonce. 32 bytes because that is what SIWE
 /// implementations use and there is no reason to be interesting about it.
 pub const NONCE_BYTES: usize = 32;
@@ -194,9 +206,15 @@ impl core::fmt::Debug for Address {
     }
 }
 
-/// A `personal_sign` signature, r ‖ s ‖ v.
+/// A `personal_sign` signature: r ‖ s ‖ v from a plain key, or up to
+/// [`SIGNATURE_MAX`] bytes from a smart-contract wallet. Fixed storage and a
+/// length, so the crate still allocates nothing; the bytes past `len` are
+/// always zero, which keeps the derived equality honest.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Signature(pub [u8; SIGNATURE_BYTES]);
+pub struct Signature {
+    len: u16,
+    bytes: [u8; SIGNATURE_MAX],
+}
 
 impl Default for Signature {
     fn default() -> Self {
@@ -205,9 +223,47 @@ impl Default for Signature {
 }
 
 impl Signature {
-    pub const NONE: Self = Self([0; SIGNATURE_BYTES]);
+    /// No signature: what a guest sends.
+    pub const NONE: Self = Self {
+        len: 0,
+        bytes: [0; SIGNATURE_MAX],
+    };
+
     pub fn is_none(&self) -> bool {
-        self.0 == [0; SIGNATURE_BYTES]
+        self.len == 0
+    }
+
+    /// A plain key's signature.
+    pub fn from_ecdsa(raw: [u8; SIGNATURE_BYTES]) -> Self {
+        let mut s = Self::NONE;
+        s.bytes[..SIGNATURE_BYTES].copy_from_slice(&raw);
+        s.len = SIGNATURE_BYTES as u16;
+        s
+    }
+
+    /// Any signature from 1 to [`SIGNATURE_MAX`] bytes; `None` otherwise.
+    pub fn from_slice(b: &[u8]) -> Option<Self> {
+        if b.is_empty() || b.len() > SIGNATURE_MAX {
+            return None;
+        }
+        let mut s = Self::NONE;
+        s.bytes[..b.len()].copy_from_slice(b);
+        s.len = b.len() as u16;
+        Some(s)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+
+    /// r ‖ s ‖ v when this is a plain key's signature — the one shape a
+    /// shard checks with `ecrecover` alone.
+    pub fn ecdsa(&self) -> Option<[u8; SIGNATURE_BYTES]> {
+        (self.len as usize == SIGNATURE_BYTES).then(|| {
+            let mut raw = [0u8; SIGNATURE_BYTES];
+            raw.copy_from_slice(&self.bytes[..SIGNATURE_BYTES]);
+            raw
+        })
     }
 }
 
@@ -216,7 +272,7 @@ impl Signature {
 /// noise that looks like a secret, and the habit is worth keeping.
 impl core::fmt::Debug for Signature {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Signature({} bytes)", SIGNATURE_BYTES)
+        write!(f, "Signature({} bytes)", self.len)
     }
 }
 
@@ -444,11 +500,17 @@ pub(crate) fn read_challenge(r: &mut BitReader) -> Result<Challenge, WireError> 
     })
 }
 
+/// Bits for the signature's length: 0 (a guest) through [`SIGNATURE_MAX`].
+const SIG_LEN_BITS: u32 = 16;
+const _: () = assert!(SIGNATURE_MAX < (1 << SIG_LEN_BITS));
+
 pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
     for b in a.address.0.iter() {
         w.write(*b as u32, 8)?;
     }
-    for b in a.signature.0.iter() {
+    let sig = a.signature.as_bytes();
+    w.write(sig.len() as u32, SIG_LEN_BITS)?;
+    for b in sig {
         w.write(*b as u32, 8)?;
     }
     Ok(())
@@ -459,13 +521,18 @@ pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
     for b in address.iter_mut() {
         *b = r.read(8)? as u8;
     }
-    let mut signature = [0u8; SIGNATURE_BYTES];
-    for b in signature.iter_mut() {
+    let len = r.read(SIG_LEN_BITS)? as usize;
+    if len > SIGNATURE_MAX {
+        return Err(WireError::Cap);
+    }
+    let mut signature = Signature::NONE;
+    for b in signature.bytes[..len].iter_mut() {
         *b = r.read(8)? as u8;
     }
+    signature.len = len as u16;
     Ok(Auth {
         address: Address(address),
-        signature: Signature(signature),
+        signature,
     })
 }
 

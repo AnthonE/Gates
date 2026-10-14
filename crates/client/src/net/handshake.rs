@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn the_two_step_path_and_the_composition_agree() {
         let frame = challenge_frame([7; protocol::NONCE_BYTES], 1_700_000_000);
-        let sig = protocol::Signature([9; protocol::SIGNATURE_BYTES]);
+        let sig = protocol::Signature::from_ecdsa([9; protocol::SIGNATURE_BYTES]);
 
         let mut composed = [0u8; MAX_STREAM_MSG_BYTES];
         let a = auth_for(
@@ -835,8 +835,33 @@ mod tests {
         // client.
         let got = protocol::decode_auth(&composed[..a]).expect("the frame decodes");
         assert_eq!(got.address, someone(), "the claimed address must survive");
-        assert_eq!(got.signature.0, sig.0, "the signature must reach the wire");
+        assert_eq!(got.signature, sig, "the signature must reach the wire");
         assert!(!got.address.is_guest(), "a signed join is not a guest join");
+    }
+
+    /// **A smart wallet's signature reaches the wire whole** (v109): a
+    /// Coinbase Smart Wallet not yet deployed signs ~640 bytes, which needs the
+    /// auth frame's own ceiling rather than the handshake's 128.
+    #[test]
+    fn a_smart_wallets_signature_reaches_the_wire_whole() {
+        let long: Vec<u8> = (0..1200u32).map(|i| (i * 7 + 3) as u8).collect();
+        let sig = protocol::Signature::from_slice(&long).expect("1200 bytes fit");
+        let mut buf = [0u8; protocol::MAX_AUTH_MSG_BYTES];
+        let n = auth_frame(someone(), Some(sig), &mut buf).expect("encodes");
+        assert!(
+            n > MAX_STREAM_MSG_BYTES,
+            "this frame is the one that needs the bigger ceiling"
+        );
+        let got = protocol::decode_auth(&buf[..n]).expect("decodes");
+        assert_eq!(got.signature.as_bytes(), &long[..], "every byte, in order");
+        assert_eq!(got.address, someone());
+        // and the biggest one the wire takes still fits the ceiling
+        let max = protocol::Signature::from_slice(&[0xee; protocol::SIGNATURE_MAX]).expect("fits");
+        assert!(
+            auth_frame(someone(), Some(max), &mut buf).is_ok(),
+            "SIGNATURE_MAX fits MAX_AUTH_MSG_BYTES"
+        );
+        assert!(protocol::Signature::from_slice(&[0; protocol::SIGNATURE_MAX + 1]).is_none());
     }
 
     /// The other half of the same claim: **no signature means a guest frame**,

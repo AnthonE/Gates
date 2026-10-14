@@ -33,7 +33,7 @@ pub fn lock_secret(
     use crate::agent::lock::{guest_secret, LockCode, LockSecret};
     if let Some(key) = key {
         let sig = key.sign_siwe(LOCK_SIGN_DOMAIN, &[0; protocol::NONCE_BYTES], 0);
-        return Some(LockSecret::Code(LockCode::derive(&sig.0, name)));
+        return Some(LockSecret::Code(LockCode::derive(sig.as_bytes(), name)));
     }
     if let Some(dir) = guest_path.parent() {
         std::fs::create_dir_all(dir).ok()?;

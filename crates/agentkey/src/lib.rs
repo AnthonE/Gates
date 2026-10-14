@@ -246,7 +246,7 @@ impl AgentKey {
         let mut raw = [0u8; protocol::SIGNATURE_BYTES];
         raw[..64].copy_from_slice(&sig.to_bytes());
         raw[64] = 27 + rec.to_byte();
-        Signature(raw)
+        Signature::from_ecdsa(raw)
     }
 }
 
@@ -317,8 +317,9 @@ mod tests {
         k.update(message);
         let mut digest = [0u8; 32];
         k.finalize(&mut digest);
-        let s = EcdsaSig::from_slice(&sig.0[..64]).unwrap();
-        let rec = RecoveryId::from_byte(sig.0[64] - 27).unwrap();
+        let raw = sig.ecdsa().expect("a key signs 65 bytes");
+        let s = EcdsaSig::from_slice(&raw[..64]).unwrap();
+        let rec = RecoveryId::from_byte(raw[64] - 27).unwrap();
         let vk = VerifyingKey::recover_from_prehash(&digest, &s, rec).unwrap();
         let point = vk.to_encoded_point(false);
         let mut k = Keccak::v256();

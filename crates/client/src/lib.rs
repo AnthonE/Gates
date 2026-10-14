@@ -852,8 +852,11 @@ impl Session {
                 e
             }
         };
-        let len = net::handshake::auth_frame(address, signature, &mut msg)?;
-        net::web::write_frame(&writer, &msg[..len])
+        // The auth frame has its own ceiling (v109): a smart wallet's
+        // signature is up to `SIGNATURE_MAX` bytes, past the handshake's 128.
+        let mut auth = [0u8; protocol::MAX_AUTH_MSG_BYTES];
+        let len = net::handshake::auth_frame(address, signature, &mut auth)?;
+        net::web::write_frame(&writer, &auth[..len])
             .await
             .map_err(waited)?;
 

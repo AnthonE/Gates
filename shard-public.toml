@@ -130,6 +130,14 @@ domain = "game.elopros.com"
 # TOML array: this file is read one `key = value` per line.
 siwe_domains = "game.elopros.com, elopros.com"
 
+# Smart-contract wallets (crates/server/src/chainsig.rs): Safe, Coinbase Smart
+# Wallet, Ambire and Robinhood's EIP-7702 wallets sign in a shape only their
+# own contract can check. When the key check says no, the shard asks these in
+# order with one eth_call each, and admits on the first yes. Robinhood Chain
+# first; Base and Ethereum because a smart wallet connected there signs for
+# there. Remove the key to refuse smart wallets and ask no chain at all.
+sig_rpc = "https://rpc.mainnet.chain.robinhood.com, https://mainnet.base.org, https://ethereum-rpc.publicnode.com"
+
 # The status endpoint (crates/server/src/status.rs): GET /status.json,
 # integers only, read off the shard's counters and never touching the sim.
 # It is what lights the `players` column in the shard list.

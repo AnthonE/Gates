@@ -615,25 +615,18 @@ pub async fn sign_siwe_web(
         .as_string()
         .ok_or_else(|| "the wallet answered with something that is not a string".to_string())?;
     parse_signature(&hex).ok_or_else(|| {
-        // Longer than 65 bytes is a smart-contract account (Safe, Ambire, a
-        // passkey wallet) answering with an EIP-1271/6492 signature, which only
-        // a chain read can check. A shard verifies with `ecrecover` and no
-        // network call, so it cannot take one; say so in words.
-        if hex.len() > 2 + protocol::SIGNATURE_BYTES * 2 {
-            "this wallet is a smart-contract account, and Gates signs in regular accounts only \
-             for now - switch to a regular account in your wallet, or play as a guest"
-                .to_string()
-        } else {
-            format!(
-                "the wallet answered {} characters, and a signature is 0x followed by {} hex digits",
-                hex.len(),
-                protocol::SIGNATURE_BYTES * 2
-            )
-        }
+        format!(
+            "your wallet sent back a signature Gates can't read ({} characters) - try again, \
+             or sign in with another wallet",
+            hex.len()
+        )
     })
 }
 
-/// `0x…` hex → 65 bytes. Refuses anything else.
+/// `0x…` hex → a signature: 65 bytes from a plain key, or up to
+/// `SIGNATURE_MAX` from a smart-contract wallet (v109; the shard asks its
+/// contract). Refuses anything shorter than a key's, longer than the wire
+/// takes, or not hex.
 //
 // Un-gated 2026-09-10, as its own note said it would be: it was `#[cfg(not(
 // wasm32))]` because it was `sign_siwe`'s second half and the browser had no
@@ -644,7 +637,10 @@ pub async fn sign_siwe_web(
 // somebody else".
 pub(crate) fn parse_signature(hex: &str) -> Option<protocol::Signature> {
     let body = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X"))?;
-    if body.len() != protocol::SIGNATURE_BYTES * 2 {
+    if body.len() % 2 != 0
+        || body.len() < protocol::SIGNATURE_BYTES * 2
+        || body.len() > protocol::SIGNATURE_MAX * 2
+    {
         return None;
     }
     let nib = |c: u8| -> Option<u8> {
@@ -656,11 +652,12 @@ pub(crate) fn parse_signature(hex: &str) -> Option<protocol::Signature> {
         }
     };
     let b = body.as_bytes();
-    let mut out = [0u8; protocol::SIGNATURE_BYTES];
-    for (i, slot) in out.iter_mut().enumerate() {
+    let mut out = [0u8; protocol::SIGNATURE_MAX];
+    let n = b.len() / 2;
+    for (i, slot) in out[..n].iter_mut().enumerate() {
         *slot = (nib(b[i * 2])? << 4) | nib(b[i * 2 + 1])?;
     }
-    Some(protocol::Signature(out))
+    protocol::Signature::from_slice(&out[..n])
 }
 
 #[cfg(test)]
@@ -671,7 +668,13 @@ mod siwe_tests {
     fn a_well_formed_signature_parses() {
         let hex = format!("0x{}", "ab".repeat(protocol::SIGNATURE_BYTES));
         let sig = parse_signature(&hex).expect("65 bytes of hex parses");
-        assert_eq!(sig.0, [0xabu8; protocol::SIGNATURE_BYTES]);
+        assert_eq!(sig.as_bytes(), &[0xabu8; protocol::SIGNATURE_BYTES][..]);
+        // a smart wallet's, ERC-6492-sized
+        let long = format!("0x{}", "cd".repeat(640));
+        assert_eq!(
+            parse_signature(&long).expect("parses").as_bytes(),
+            &[0xcdu8; 640][..]
+        );
     }
 
     /// Every malformed shape is refused rather than padded. A padded
@@ -692,6 +695,14 @@ mod siwe_tests {
         assert!(
             parse_signature(&format!("0x{}", "zz".repeat(protocol::SIGNATURE_BYTES))).is_none(),
             "not hex"
+        );
+        assert!(
+            parse_signature(&format!("0x{}", "ab".repeat(protocol::SIGNATURE_MAX + 1))).is_none(),
+            "longer than the wire takes"
+        );
+        assert!(
+            parse_signature(&format!("0x{}a", "ab".repeat(protocol::SIGNATURE_BYTES))).is_none(),
+            "half a byte"
         );
     }
 }

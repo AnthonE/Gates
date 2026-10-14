@@ -43,8 +43,9 @@ pub mod goldens;
 pub mod version;
 
 pub use auth::{
-    siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
-    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
+    MAX_AUTH_MSG_BYTES, NONCE_BYTES, SIGNATURE_BYTES, SIGNATURE_MAX, SIGN_WAIT_SECS,
+    SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1157,7 +1158,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// promote), `SUB_TEAM` (97) carries the receiver's own team (leader,
 /// members with state and a 1 m position, a pending invite), and chat's
 /// one channel bit becomes two (`chat::Channel`: local, global, team).
-pub const PROTO_VER: u16 = 108;
+/// v109 — smart-contract wallets: `Auth`'s signature is a 16-bit length and
+/// up to `SIGNATURE_MAX` bytes (a guest's is length 0) instead of a fixed 65,
+/// so an ERC-1271/6492 signature reaches the shard to be checked on chain.
+pub const PROTO_VER: u16 = 109;
 
 /// This game's slug in the elo catalog.
 ///

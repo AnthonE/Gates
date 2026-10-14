@@ -756,6 +756,7 @@ pub async fn spawn_shard(
             dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some(),
             require_auth: cfg.require_auth,
             siwe_domains: cfg.siwe_accepts().into(),
+            chain_sig: cfg.chain_sig.clone(),
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
             faces: cfg.faces.clone(),
@@ -807,6 +808,9 @@ struct ShardFacts {
     /// (`ShardConfig::siwe_accepts`). Shared, because every handshake task
     /// gets a handle and none of them needs its own copy.
     siwe_domains: Arc<[String]>,
+    /// Where a smart wallet's signature is checked (`chainsig.rs`). Off
+    /// unless `sig_rpc` names a chain.
+    chain_sig: crate::chainsig::Config,
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
@@ -1110,6 +1114,7 @@ async fn accept_loop(
                     stats,
                     facts.require_auth,
                     facts.siwe_domains.clone(),
+                    facts.chain_sig.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
@@ -1646,6 +1651,7 @@ async fn handshake_task(
     stats: Arc<ShardStats>,
     require_auth: bool,
     siwe_domains: Arc<[String]>,
+    chain_sig: crate::chainsig::Config,
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
@@ -1762,8 +1768,8 @@ async fn handshake_task(
         return;
     };
     let exchange = tokio::time::timeout(SIGN_WAIT, async {
-        let (buf, len) = read_frame(&mut recv).await.ok_or(())?;
-        protocol::decode_auth(&buf[..len]).map_err(|_| ())
+        let buf = read_auth_frame(&mut recv).await.ok_or(())?;
+        protocol::decode_auth(&buf).map_err(|_| ())
     })
     .await;
     let Ok(Ok(auth)) = exchange else {
@@ -1801,6 +1807,23 @@ async fn handshake_task(
     } else {
         match crate::auth::verify_any(&siwe_domains, &nonce, issued_at, &auth) {
             Ok(key) => Some(key),
+            // Not this key, or not a key at all: a smart-contract wallet's own
+            // contract may vouch for it (`chainsig.rs`), on a shard that names
+            // a chain. Asked only after the arithmetic said no, so a plain
+            // key's login never waits on the network.
+            Err(_)
+                if chain_sig.armed()
+                    && crate::chainsig::check(
+                        &chain_sig,
+                        auth.address,
+                        crate::auth::digests(&siwe_domains, &auth.address, &nonce, issued_at),
+                        auth.signature.as_bytes().to_vec(),
+                    )
+                    .await
+                        == crate::chainsig::Verdict::Valid =>
+            {
+                crate::auth::key_of(&auth.address)
+            }
             Err(_) => {
                 // Counted, never explained to the caller: which of the four
                 // ways a signature can be wrong is not a stranger's business.
@@ -2925,6 +2948,22 @@ pub async fn read_frame(recv: &mut RecvStream) -> Option<([u8; MAX_STREAM_MSG_BY
     Some((buf, len))
 }
 
+/// The auth frame, and only it, on its own ceiling (v109): a smart wallet's
+/// signature runs to `SIGNATURE_MAX` bytes, past every other handshake
+/// message's 128. Allocated only after the length passed that ceiling, so a
+/// stranger cannot make the shard reserve more than `MAX_AUTH_MSG_BYTES`.
+pub async fn read_auth_frame(recv: &mut RecvStream) -> Option<Vec<u8>> {
+    let mut len_buf = [0u8; 2];
+    recv.read_exact(&mut len_buf).await.ok()?;
+    let len = u16::from_le_bytes(len_buf) as usize;
+    if len == 0 || len > protocol::MAX_AUTH_MSG_BYTES {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    recv.read_exact(&mut buf).await.ok()?;
+    Some(buf)
+}
+
 /// The client-side read: one S→C event-lane frame, sized for
 /// `MAX_EVENT_MSG_BYTES` (the bot client here; the native client's framer
 /// lives in `crates/client/src/lib.rs` with the same cap).
@@ -3163,8 +3202,10 @@ pub async fn client_handshake_as(
             None => protocol::Auth::default(),
         }
     };
-    let len = protocol::encode_auth(&auth, &mut buf).map_err(|e| format!("encode auth: {e:?}"))?;
-    write_frame(send, &buf[..len])
+    // The auth frame's own ceiling (v109): a smart wallet signs past 128.
+    let mut abuf = vec![0u8; protocol::MAX_AUTH_MSG_BYTES];
+    let len = protocol::encode_auth(&auth, &mut abuf).map_err(|e| format!("encode auth: {e:?}"))?;
+    write_frame(send, &abuf[..len])
         .await
         .map_err(|_| "write auth".to_string())?;
 

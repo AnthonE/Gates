@@ -974,7 +974,7 @@ pub fn auth() -> crate::Auth {
     crate::Auth {
         address: crate::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf")
             .expect("a known-good address"),
-        signature: crate::Signature(sig),
+        signature: crate::Signature::from_ecdsa(sig),
     }
 }
 

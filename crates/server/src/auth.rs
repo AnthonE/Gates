@@ -35,7 +35,7 @@
 //! derivation against a published vector (private key 1), and this module
 //! has a golden on the full recover-and-compare path.
 
-use protocol::{siwe_message, Address, Auth, Signature, NONCE_BYTES, SIWE_MESSAGE_MAX};
+use protocol::{siwe_message, Address, Auth, NONCE_BYTES, SIWE_MESSAGE_MAX};
 
 use crate::store::PlayerKey;
 use k256::ecdsa::{RecoveryId, Signature as EcdsaSig, VerifyingKey};
@@ -56,6 +56,10 @@ pub enum AuthError {
     /// claimed. The interesting failure: somebody signed something, just not
     /// as who they said they were.
     WrongSigner,
+    /// Not a plain key's 65 bytes: a smart-contract wallet's signature, which
+    /// only its own contract can check (`chainsig.rs`). A refusal here only
+    /// where no chain is configured.
+    NotKey,
 }
 
 impl AuthError {
@@ -65,6 +69,7 @@ impl AuthError {
             Self::BadRecoveryId => "the signature's recovery id is not a personal_sign one",
             Self::Malformed => "the signature is not a valid secp256k1 signature",
             Self::WrongSigner => "the signature is valid but belongs to a different address",
+            Self::NotKey => "the signature is a smart wallet's, and no chain is set to check it",
         }
     }
 }
@@ -173,7 +178,9 @@ pub fn verify_any<S: AsRef<str>>(
     let checksummed = auth.address.to_checksum_hex();
     let addr = core::str::from_utf8(&checksummed).map_err(|_| AuthError::Malformed)?;
 
-    let Signature(raw) = auth.signature;
+    let Some(raw) = auth.signature.ecdsa() else {
+        return Err(AuthError::NotKey);
+    };
     // `v` is 27/28 from every wallet and 0/1 from some libraries. Both are
     // accepted because both are in the wild and the difference is a
     // historical accident, not a security property.
@@ -223,6 +230,38 @@ pub fn verify_any<S: AsRef<str>>(
     Err(refused.unwrap_or(AuthError::WrongSigner))
 }
 
+/// The `personal_sign` digest of the message for each name the shard answers
+/// to — what a smart wallet's contract is asked about (`chainsig.rs`). The
+/// same text [`verify_any`] rebuilds, through the same builder, so the chain
+/// and the key check can never be asked about two different sentences.
+pub fn digests<S: AsRef<str>>(
+    domains: &[S],
+    address: &Address,
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+) -> Vec<[u8; 32]> {
+    let checksummed = address.to_checksum_hex();
+    let Ok(addr) = core::str::from_utf8(&checksummed) else {
+        return Vec::new();
+    };
+    domains
+        .iter()
+        .map(|domain| {
+            let mut text = [0u8; SIWE_MESSAGE_MAX];
+            let len = siwe_message(
+                domain.as_ref(),
+                addr,
+                protocol::SLUG,
+                nonce,
+                issued_at,
+                &mut text,
+            )
+            .min(SIWE_MESSAGE_MAX);
+            personal_sign_digest(&text[..len])
+        })
+        .collect()
+}
+
 /// The key for an address that has already been proved — the one place that
 /// decides the on-disk spelling, so nothing else has to agree with it.
 pub fn key_of(address: &Address) -> Option<PlayerKey> {
@@ -236,6 +275,7 @@ pub fn key_of(address: &Address) -> Option<PlayerKey> {
 mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
+    use protocol::Signature;
 
     const DOMAIN: &str = "gates.test";
 
@@ -278,7 +318,7 @@ mod tests {
         };
         Auth {
             address,
-            signature: Signature(raw),
+            signature: Signature::from_ecdsa(raw),
         }
     }
 
@@ -376,7 +416,7 @@ mod tests {
             }
             let auth = Auth {
                 address: Address(addr),
-                signature: Signature(raw),
+                signature: Signature::from_ecdsa(raw),
             };
             let _ = verify(DOMAIN, &[0; NONCE_BYTES], 0, &auth);
         }
@@ -391,6 +431,44 @@ mod tests {
             Err(AuthError::Guest)
         );
         assert_eq!(key_of(&Address::GUEST), None);
+    }
+
+    /// A smart wallet's signature is not garbage and not a wrong signer: it
+    /// is handed on, for its own contract to check (`chainsig.rs`).
+    #[test]
+    fn a_smart_wallets_signature_is_handed_to_the_chain() {
+        let sk = signer_for(21);
+        let mut auth = sign_as(&sk, &[1u8; NONCE_BYTES], 9, 27);
+        auth.signature = Signature::from_slice(&[0xab; 640]).expect("640 bytes fit");
+        assert_eq!(
+            verify(DOMAIN, &[1u8; NONCE_BYTES], 9, &auth),
+            Err(AuthError::NotKey)
+        );
+    }
+
+    /// **The chain is asked about the sentence the key check verifies**, per
+    /// name, in the same order: a key that signed `digests()[i]` recovers to
+    /// itself, so the two paths cannot drift onto different text.
+    #[test]
+    fn the_chains_digests_are_the_signed_text() {
+        let listed = ["game.test", "test"];
+        let sk = signer_for(22);
+        let nonce = [3u8; NONCE_BYTES];
+        let me = address_of(sk.verifying_key());
+        let ds = digests(&listed, &me, &nonce, 77);
+        assert_eq!(ds.len(), listed.len());
+        for (i, domain) in listed.iter().enumerate() {
+            let auth = sign_for(&sk, domain, &nonce, 77, 27);
+            let raw = auth.signature.ecdsa().expect("a key's signature");
+            let sig = EcdsaSig::from_slice(&raw[..64]).expect("valid");
+            let rec = RecoveryId::from_byte(raw[64] - 27).expect("27/28");
+            let vk = VerifyingKey::recover_from_prehash(&ds[i], &sig, rec).expect("recovers");
+            assert_eq!(
+                address_of(&vk),
+                me,
+                "digest {i} is not the text `{domain}` signs"
+            );
+        }
     }
 
     /// The two paths that produce a key must produce the same one, or a
@@ -439,10 +517,15 @@ mod tests {
         let sk = signer_for(13);
         let nonce = [4u8; NONCE_BYTES];
         let good = sign_for(&sk, DOMAIN, &nonce, 5, 27);
+        let raw = good.signature.ecdsa().expect("a key's signature");
         let mut bad_v = good;
-        bad_v.signature.0[64] = 30;
+        let mut v30 = raw;
+        v30[64] = 30;
+        bad_v.signature = Signature::from_ecdsa(v30);
         let mut zero_sig = good;
-        zero_sig.signature.0[..64].fill(0);
+        let mut zeros = raw;
+        zeros[..64].fill(0);
+        zero_sig.signature = Signature::from_ecdsa(zeros);
         let mut wrong = good;
         wrong.address = address_of(signer_for(14).verifying_key());
         for auth in [good, bad_v, zero_sig, wrong, Auth::default()] {
