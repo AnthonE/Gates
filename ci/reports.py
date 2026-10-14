@@ -2,6 +2,7 @@
 """What a pile of bug reports says — grouped by fingerprint, worst first.
 
     ./ci/reports.py ~/Pictures/gates        read a directory, print the board
+    ./ci/reports.py "$SCRY_VOWS_DIR/bugs/gates"   the platform's intake (meter/bugs.py)
     ./ci/reports.py <dir> --json out.json   write it for something to render
     ./ci/reports.py --self-test             the gate: no network, no client
 
@@ -104,9 +105,12 @@ def group(reports: list[dict]) -> list[dict]:
                 "last_reported": r["reported"],
                 "title": r["issue_title"],
                 "builds": sorted({build_of(r)}),
+                "runtimes": {runtime_of(r): 1},
             }
             continue
         row["count"] += 1
+        rt = runtime_of(r)
+        row["runtimes"][rt] = row["runtimes"].get(rt, 0) + 1
         row["first_reported"] = min(row["first_reported"], r["reported"])
         if r["reported"] >= row["last_reported"]:
             row["last_reported"] = r["reported"]
@@ -133,6 +137,24 @@ def build_of(r: dict) -> str:
     return f"{b.get('version', '?')} ({b.get('commit', '?')})"
 
 
+def runtime_of(r: dict) -> str:
+    """`browser` or `desktop`. A report from before the field existed came
+    from the desktop: the browser build could not file one."""
+    b = r.get("build")
+    if isinstance(b, dict):
+        if b.get("runtime") in ("browser", "desktop"):
+            return b["runtime"]
+        if b.get("platform") == "web":
+            return "browser"
+    return "desktop"
+
+
+def where(g: dict) -> str:
+    """`browser 3 · desktop 1`, the bigger side first."""
+    rts = sorted(g.get("runtimes", {}).items(), key=lambda kv: (-kv[1], kv[0]))
+    return " · ".join(f"{k} {n}" for k, n in rts)
+
+
 def read_dir(d: pathlib.Path) -> tuple[list[dict], list[tuple[str, str]]]:
     """Every `gates-report-*.json` under `d`, and everything that was not one."""
     good: list[dict] = []
@@ -156,11 +178,11 @@ def board(groups: list[dict], bad: list[tuple[str, str]], total: int) -> str:
     if not groups:
         out.append("Nothing readable in that directory.\n")
     else:
-        out.append("| reports | what | since | read first | close with | title |")
-        out.append("|---:|---|---|---|---|---|")
+        out.append("| reports | what | where | since | read first | close with | title |")
+        out.append("|---:|---|---|---|---|---|---|")
         for g in groups:
             out.append(
-                f"| {g['count']} | `{g['kind']}` | {g['first_reported'][:10]} "
+                f"| {g['count']} | `{g['kind']}` | {where(g)} | {g['first_reported'][:10]} "
                 f"| `{g['read_first']}` | `{g['fingerprint']}` | {g['title']} |"
             )
         out.append("")
@@ -216,7 +238,8 @@ def self_test() -> int:
         files = [
             rep("aaa", "world", "2026-08-20T10:00:00Z", "[world] rock in the wall"),
             rep("aaa", "world", "2026-08-20T11:00:00Z", "[world] boulder inside the haven"),
-            rep("aaa", "world", "2026-08-20T09:00:00Z", "[world] stuck in a rock"),
+            {**rep("aaa", "world", "2026-08-20T09:00:00Z", "[world] stuck in a rock"),
+             "build": {"version": "0.5.0", "commit": "bed9e02d6", "runtime": "browser"}},
             rep("bbb", "net", "2026-08-20T12:00:00Z", "[net] rubber banding", "NETCODE.md"),
             rep("ccc", "look", "2026-08-19T12:00:00Z", "[look] sky is inside out", "ART.md"),
         ]
@@ -267,6 +290,10 @@ def self_test() -> int:
         )
         check(g[0]["read_first"] == "TERRAIN.md", "the doc travels with the group")
         check(g[0]["builds"] == ["0.5.0 (bed9e02d6)"], f"builds: {g[0]['builds']}")
+        check(
+            where(g[0]) == "desktop 2 · browser 1",
+            f"a group says where it was hit, and an old report is the desktop's: {where(g[0])}",
+        )
 
         text = board(g, bad, len(good))
         check("| 3 |" in text, "the count is the ranking and must be drawn")
