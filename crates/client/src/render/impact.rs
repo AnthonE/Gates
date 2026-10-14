@@ -551,7 +551,7 @@ pub fn same_blow(pick: &SwingPick, at: Vec3) -> bool {
 }
 
 /// Where a blow lands up a standing player, as a fraction of their height.
-/// A chest on a 1.8 m figure is 1.12 m, which is the rung `combat`'s own
+/// A chest on a 1.7 m figure is 1.05 m, which is the rung `combat`'s own
 /// bands put between the head and the limbs.
 pub const PLAYER_CHEST_FRAC: f32 = 0.62;
 

@@ -456,9 +456,8 @@ pub const ANIM_BLEND_S: f32 = 0.18;
 /// spawned scene by `cargo run -p client --features render --bin modelview`
 /// (which computes it the way the GPU does — `JointWorld_0 · IBM_0` over the
 /// mesh's bind box — because a skinned mesh is not drawn where its node says
-/// it is). The sim's player is `Capsule3d::new(0.4, 1.0)` — 1.0 of cylinder
-/// plus two 0.4 caps, so **1.8 m** — so the two agree exactly and the correct
-/// scale is 1. The retired mannequin was 1.829 and wanted 0.9843.
+/// it is). The body is drawn at [`ANIM_BODY_H_M`], so the scale is
+/// 1.7 / 1.8. The retired mannequin was 1.829.
 ///
 /// **The first cut measured this at runtime and was wrong in a way worth
 /// recording.** It walked every `Mesh` in `Assets<Mesh>` looking for the
@@ -470,10 +469,12 @@ pub const ANIM_BLEND_S: f32 = 0.18;
 /// two-line Python in `assets/models/MANIFEST.md`'s history, not a system to
 /// reintroduce.
 pub const ANIM_RIG_H_M: f32 = 1.800;
-/// What the sim collides and shoots with — `bodies.rs`'s retired capsule, and
-/// the height the drawn body must agree with. A renderer that disagrees with
-/// the sim about how tall a player is draws a head that cannot be shot.
-pub const ANIM_BODY_H_M: f32 = 1.8;
+/// What the sim collides and shoots with, and the height the drawn body must
+/// agree with. A renderer that disagrees with the sim about how tall a player
+/// is draws a head that cannot be shot. Until 2026-10-14 bodies were drawn at
+/// 1.8 m over the 1.7 m capsule: the top 10 cm of every head was unhittable
+/// and every other player's eyes sat ~8 cm above yours.
+pub const ANIM_BODY_H_M: f32 = sim_core::collide::CAPSULE_HEIGHT_M;
 
 /// How far a sleeper's root is raised when it is laid on its back: the
 /// mesh's half-depth (`stumpy.glb` spans ±0.228 m front to back), so the

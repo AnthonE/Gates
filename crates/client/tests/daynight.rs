@@ -541,3 +541,31 @@ fn the_eye_opens_at_dusk_and_only_at_dusk() {
         assert!((DAY_EV100 - TWILIGHT_OPEN_STOPS - 1e-4..=DAY_EV100).contains(&ev));
     }
 }
+
+/// The disk never draws past `SUN_DISK_PEAK`, and that is under the ~4096
+/// where TAA's half-float history rounds `c / (1 + c)` to exactly 1.0 (the
+/// sun flickered under bloom). A sun dim enough keeps the full intensity.
+#[test]
+fn the_sun_disk_stays_under_what_taa_can_hold() {
+    use bevy::camera::Exposure;
+    use bevy::light::SunDisk;
+    use rig::{exposure_ev100, sun_disk_intensity, sun_lux, SUN_DISK_INTENSITY, SUN_DISK_PEAK};
+    let half = SunDisk::EARTH.angular_size * 0.5;
+    let solid_angle = std::f32::consts::PI * half * half;
+    let mut capped = false;
+    for i in 0..=1000 {
+        let frac = i as f32 / 1000.0;
+        let ev = exposure_ev100(frac);
+        let lit = lux::DIRECT_SUNLIGHT * sun_lux(frac);
+        let k = sun_disk_intensity(lit, ev);
+        let drawn = lit / solid_angle * k * Exposure { ev100: ev }.exposure();
+        assert!(
+            drawn <= SUN_DISK_PEAK * 1.0001,
+            "at {frac} the disk is {drawn}"
+        );
+        assert!(k <= SUN_DISK_INTENSITY);
+        capped |= k < SUN_DISK_INTENSITY;
+    }
+    assert!(capped, "noon should be over the peak uncapped");
+    assert_eq!(sun_disk_intensity(1.0, rig::DAY_EV100), SUN_DISK_INTENSITY);
+}
