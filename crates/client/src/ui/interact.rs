@@ -2354,6 +2354,8 @@ pub type NametagHit = (u32, (f32, f32, f32), (f32, f32, f32));
 /// ray enters within `ui::names::NAMETAG_REACH_M` (aim-only, `DECISIONS.md`),
 /// skipping yourself, the dead, animals and anyone the shard has neither
 /// tagged nor marked as an agent (a guest agent is named; a guest is not).
+/// A sleeper is aimed at where it lies, its capsule along the ground
+/// (`ranged::body_crossing`), as a swing and the loot prompt aim at it.
 /// Returns the id, the eye the ray leaves from and the head it reaches —
 /// the two ends a caller checks for a clear line before drawing a name.
 pub fn resolve_nametag(
@@ -2369,19 +2371,41 @@ pub fn resolve_nametag(
         if id == own || e.dead || id & sim_core::limits::MOB_ID_TAG != 0 || !tagged(id) {
             continue;
         }
-        let target = Body {
-            qx: e.qx,
-            qy: e.qy,
-            qz: e.qz,
-            ..Default::default()
+        let lying = e.sleeping && !e.wounded;
+        let t = if lying {
+            let pose = sim_core::rewind::RewindPose {
+                id,
+                qx: e.qx,
+                qy: e.qy,
+                qz: e.qz,
+                crouched: false,
+                lying: true,
+                yaw: e.yaw,
+            };
+            sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, 0, pose).map(|h| h.enter)
+        } else {
+            let target = Body {
+                qx: e.qx,
+                qy: e.qy,
+                qz: e.qz,
+                ..Default::default()
+            };
+            sim_core::assist::aimed(&ray, &target)
         };
-        let Some(t) = sim_core::assist::aimed(&ray, &target) else {
+        let Some(t) = t else {
             continue;
         };
         if best.is_none_or(|(bt, bid, _)| t < bt || (t == bt && id < bid)) {
+            // The clear line runs to the head, or to the top of a body
+            // lying on the ground.
+            let up = if lying {
+                sim_core::collide::LIE_R_M * 2.0
+            } else {
+                sim_core::collide::CAPSULE_HEIGHT_M * 0.9
+            };
             let head = (
                 e.qx as f32 * POS_XZ_Q,
-                e.qy as f32 * POS_Y_Q + sim_core::collide::CAPSULE_HEIGHT_M * 0.9,
+                e.qy as f32 * POS_Y_Q + up,
                 e.qz as f32 * POS_XZ_Q,
             );
             best = Some((t, id, head));
@@ -2394,6 +2418,55 @@ pub fn resolve_nametag(
 mod assist_tests {
     use super::*;
     use sim_core::movement::{quant_xz, quant_y};
+
+    /// The pitch byte nearest the look from `(0, 1.6)` at `(run, rise)`.
+    fn pitch_toward(run: f32, rise: f32) -> u8 {
+        let len = (run * run + rise * rise).sqrt();
+        (0..=255u8)
+            .max_by(|&a, &b| {
+                let dot = |p: u8| {
+                    let (c, s) = sim_core::pitch_dir(p);
+                    (c * run + s * rise) / len
+                };
+                dot(a).total_cmp(&dot(b))
+            })
+            .unwrap()
+    }
+
+    /// A sleeper lying crosswise, aimed at its head end on the ground: the
+    /// standing cylinder over its feet is 0.7 m to the side, so the name
+    /// only shows if the tag aims at the body where it lies.
+    #[test]
+    fn a_sleeper_is_named_where_it_lies() {
+        let run = 2.5;
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: pitch_toward(run, sim_core::collide::LIE_R_M - 1.6),
+            crouched: false,
+        };
+        // Facing +X, so the head lies toward -X, under the aim at x = 10.
+        let sleeper = protocol::EntityState {
+            qx: quant_xz(10.7),
+            qy: quant_y(0.0),
+            qz: quant_xz(10.0 + run),
+            yaw: 16384,
+            sleeping: true,
+            ..Default::default()
+        };
+        let named = resolve_nametag(aim, 1, &[(2, sleeper)], |_| true);
+        assert_eq!(named.map(|(id, _, _)| id), Some(2));
+        let awake = protocol::EntityState {
+            sleeping: false,
+            ..sleeper
+        };
+        assert!(
+            resolve_nametag(aim, 1, &[(2, awake)], |_| true).is_none(),
+            "a standing body 0.7 m off the aim is not aimed at"
+        );
+    }
 
     #[test]
     fn hand_help_requires_aim_and_live_wounded_presence() {
