@@ -292,9 +292,18 @@ pub fn apply(
     };
 
     if let Some(world) = world_file {
-        // The world, its backups, a half-written temp and the trust log
-        // that was stamped with its ticks.
-        for suffix in ["", ".1", ".2", ".3", ".tmp", ".trust"] {
+        // The world, its backups, a half-written temp, the trust log
+        // that was stamped with its ticks, and the teams on it.
+        for suffix in [
+            "",
+            ".1",
+            ".2",
+            ".3",
+            ".tmp",
+            ".trust",
+            ".teams",
+            ".teams.tmp",
+        ] {
             let p = PathBuf::from(format!("{}{suffix}", world.display()));
             if p.exists() {
                 std::fs::rename(&p, into_archive(&p))

@@ -1543,6 +1543,11 @@ fn take_world_save(
     ids.resize(MAX_PLAYERS, (PlayerKey::PLACEHOLDER, 0));
     let n = core.identities(&mut ids);
     ids.truncate(n);
+    // The teams by the same keys, so a restart finds them again. Small
+    // text, off the tick, on the save's cadence.
+    if let Err(e) = core.teams.save(&ids) {
+        eprintln!("shard: teams not saved: {e}");
+    }
     let tick = core.world.tick;
     if let Err(rtrb::PushError::Full(msg)) = world_tx.push(WorldMsg {
         tick,
@@ -1967,6 +1972,11 @@ async fn install(
             key,
             watch: None,
             agent: hello.is_agent(),
+            name: if hello.is_agent() {
+                hello.name
+            } else {
+                protocol::Name::EMPTY
+            },
             link,
         })
         .is_err()
@@ -2187,6 +2197,7 @@ async fn install_spectator(
             key: None,
             watch: Some(target),
             agent: false,
+            name: protocol::Name::EMPTY,
             link,
         })
         .is_err()
@@ -3310,7 +3321,11 @@ fn sim_thread(
     core.world.mech_def = mechs;
     core.arc_text = arc_text;
     core.install_admins(admins);
-    core.teams = crate::team::Teams::new(team_max);
+    // The teams, kept beside the world save across a restart.
+    core.teams = crate::team::Teams::open(
+        team_max,
+        standings_base.as_deref().map(crate::team::teams_path),
+    );
     core.trust = trust;
     // The standings, beside the files the wipe archives with them.
     core.standings = crate::standings::Standings::open(
@@ -3345,6 +3360,10 @@ fn sim_thread(
                     core.world.clamp_conditions();
                 }
                 core.adopt_identities(&world_idents);
+                // The teams its sleepers were on, by their keys.
+                if let Err(e) = core.load_teams() {
+                    eprintln!("shard: teams not restored: {e}");
+                }
                 ShardStats::set(&stats.current_tick, core.world.tick);
             }
             Err(_) => ShardStats::bump(&stats.world_load_errors),
@@ -3418,6 +3437,7 @@ fn sim_thread(
                 // Who this is, for everyone's chat and nametags: the proven
                 // address now, the platform name when its read lands.
                 core.tag_join(c.slot, c.id, key.as_ref());
+                core.name_agent(c.slot, c.name);
                 core.note_agent(c.slot, c.agent);
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body

@@ -60,6 +60,30 @@ pub fn local(loc: u8, x: f32, z: f32) -> (f32, f32) {
         _ => (x, z),
     }
 }
+/// The inverse of [`local`]: a point in the flight's own frame back into
+/// the cell's.
+pub fn to_world(loc: u8, x: f32, z: f32) -> (f32, f32) {
+    match loc {
+        LOC_RISER_XHI => (z, BUILD_CELL_M - x),
+        LOC_RISER_ZLO => (BUILD_CELL_M - x, BUILD_CELL_M - z),
+        LOC_RISER_XLO => (BUILD_CELL_M - z, x),
+        _ => (x, z),
+    }
+}
+/// The line a body walks up a flight, in the flight's own frame (it climbs
+/// toward local +z): foot to head, every point on the walk surface and
+/// clear of an open side. Down is the same line reversed; [`to_world`]
+/// turns a point into the cell's frame. `tests/circulation.rs` walks every
+/// one with real movement, both ways, in every socket.
+pub fn walk_line(shape: u8) -> &'static [(f32, f32)] {
+    match shape {
+        SHAPE_STAIRS_L => &[(0.5, 0.1), (0.5, 2.5), (2.9, 2.5)],
+        SHAPE_STAIRS_U => &[(0.5, 0.1), (0.5, 2.5), (2.5, 2.5), (2.5, 0.1)],
+        SHAPE_STAIRS_SPIRAL => &[(0.5, 1.5), (0.5, 2.5), (2.5, 2.5), (2.5, 1.5)],
+        SHAPE_STAIRS_TRI_SPIRAL => &[(0.5, 2.45), (0.5, 0.5), (2.45, 0.5)],
+        _ => &[(1.5, 0.1), (1.5, 2.9)],
+    }
+}
 /// Rectangle dimensions derive from thirds of the existing cell pitch.
 pub fn patches(shape: u8) -> ([Patch; MAX_PATCHES], usize) {
     let w = BUILD_CELL_M / 3.0;

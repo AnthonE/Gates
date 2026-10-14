@@ -361,10 +361,18 @@ impl MindArgs {
 }
 
 pub async fn spawn_local() -> Result<crate::net::ShardHandle, String> {
-    spawn_local_with_content(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content"),
-    )
-    .await
+    spawn_local_with_content(&local_content()).await
+}
+
+/// The content a local island boots with: `content/` beside this program,
+/// where a release archive puts it, else the source tree it was built
+/// from. A downloaded `jev-bot --local` has no source tree to point at.
+pub fn local_content() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("content")))
+        .filter(|dir| dir.is_dir())
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content"))
 }
 
 pub async fn spawn_local_with_content(

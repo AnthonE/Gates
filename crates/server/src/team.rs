@@ -13,15 +13,21 @@
 //! chat is who hears you, so it lives beside chat on the shard: never a
 //! `Command`, never in `World`, the WAL or the hash. Members are player ids;
 //! a returning player's woken body takes a new id, which
-//! [`Teams::rekey`] carries over. A shard restart forgets every team.
+//! [`Teams::rekey`] carries over. A restart keeps them: each world save
+//! writes the teams by player key beside the world file
+//! (`<world_file>.teams`, [`Teams::save`]), and the boot reads them back
+//! for the sleepers that world restored ([`Teams::load`]). A guest, who has
+//! no key, is not kept; a wipe archives the file with the world.
 //!
 //! Fixed arrays throughout: this runs on the sim thread.
 
+use crate::store::PlayerKey;
 use protocol::{
     TeamMember, TeamView, TEAM_MAX, TEAM_OP_ACCEPT, TEAM_OP_DECLINE, TEAM_OP_INVITE, TEAM_OP_KICK,
     TEAM_OP_LEAVE, TEAM_OP_PROMOTE,
 };
 use sim_core::limits::MAX_PLAYERS;
+use std::path::{Path, PathBuf};
 
 /// How far the leader may be from the player they invite: Rust's 7 m
 /// look-and-press reach, in centimetres.
@@ -139,6 +145,29 @@ pub struct Teams {
     /// The most members a team may have: `shard.toml` `team_max`, at most
     /// the wire's `TEAM_MAX`. Below 2 there are no teams.
     cap: u8,
+    /// Where the teams are kept across a restart, if the world is, and
+    /// what was last written there.
+    file: Option<PathBuf>,
+    written: Option<String>,
+}
+
+/// The teams' file beside the world save.
+pub fn teams_path(base: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.teams", base.display()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 impl Default for Teams {
@@ -153,6 +182,111 @@ impl Teams {
             teams: Box::new([Team::default(); MAX_PLAYERS]),
             invites: [Invite::default(); MAX_PLAYERS],
             cap: cap.min(TEAM_MAX as u8),
+            file: None,
+            written: None,
+        }
+    }
+
+    /// The same, kept in `file` across a restart.
+    pub fn open(cap: u8, file: Option<PathBuf>) -> Self {
+        Self {
+            file,
+            ..Self::new(cap)
+        }
+    }
+
+    /// The teams by player key: one team per line, the leader first, each
+    /// key in hex. A member `keys` has no key for is left out, and a team
+    /// left with fewer than two is not written.
+    pub fn to_text(&self, keys: &[(PlayerKey, u32)]) -> String {
+        let key_of = |id: u32| keys.iter().find(|(_, have)| *have == id).map(|(k, _)| k);
+        let mut out = String::new();
+        for t in self.teams.iter().filter(|t| t.len > 1) {
+            let leader = std::iter::once(t.leader);
+            let rest = t.members().iter().copied().filter(|&m| m != t.leader);
+            let line: Vec<String> = leader
+                .chain(rest)
+                .filter_map(key_of)
+                .map(|k| hex(k.as_bytes()))
+                .collect();
+            if line.len() > 1 {
+                out.push_str(&line.join(" "));
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// Rebuild the teams [`Teams::to_text`] wrote, for the players `keys`
+    /// names now (the world's restored sleepers). A key nobody holds, a
+    /// player already placed and any member past the cap are left out; a
+    /// team left with fewer than two is not made. The first member left is
+    /// the leader. Returns how many teams were made.
+    pub fn restore(&mut self, text: &str, keys: &[(PlayerKey, u32)]) -> usize {
+        if self.cap < 2 {
+            return 0;
+        }
+        let mut made = 0;
+        for line in text.lines() {
+            let mut t = Team::default();
+            for word in line.split_whitespace() {
+                let Some(id) = unhex(word)
+                    .and_then(|raw| PlayerKey::new(&raw))
+                    .and_then(|k| keys.iter().find(|(have, _)| *have == k))
+                    .map(|(_, id)| *id)
+                else {
+                    continue;
+                };
+                if t.len < self.cap && !t.has(id) && self.index_of(id).is_none() {
+                    t.add(id);
+                }
+            }
+            if t.len < 2 {
+                continue;
+            }
+            t.leader = t.members[0];
+            let Some(free) = self.teams.iter().position(|f| f.len == 0) else {
+                break;
+            };
+            self.teams[free] = t;
+            made += 1;
+        }
+        made
+    }
+
+    /// Write the teams to their file, through a temp file and a rename so
+    /// a crash mid-write keeps the old one. Only when they changed since the
+    /// last write: a few lines, a few times an hour, so the sim thread that
+    /// calls this is not kept waiting. A no-op with no file.
+    pub fn save(&mut self, keys: &[(PlayerKey, u32)]) -> std::io::Result<()> {
+        let Some(path) = &self.file else {
+            return Ok(());
+        };
+        let text = self.to_text(keys);
+        if self.written.as_ref() == Some(&text) {
+            return Ok(());
+        }
+        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
+        std::fs::write(&tmp, &text)?;
+        std::fs::rename(&tmp, path)?;
+        self.written = Some(text);
+        Ok(())
+    }
+
+    /// Read the teams back from their file at boot, for `keys`. No file
+    /// is no teams.
+    pub fn load(&mut self, keys: &[(PlayerKey, u32)]) -> std::io::Result<usize> {
+        let Some(path) = &self.file else {
+            return Ok(0);
+        };
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let made = self.restore(&text, keys);
+                self.written = Some(text);
+                Ok(made)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e),
         }
     }
 
@@ -433,6 +567,57 @@ pub fn moved_only(a: &TeamView, b: &TeamView) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Teams written by key come back for the same players under the ids
+    /// a restored world gave them; a guest, and a player the world did not
+    /// restore, are left out, and a team of one is not made.
+    #[test]
+    fn teams_come_back_by_key_after_a_restart() {
+        let key = |s: &str| PlayerKey::new(s.as_bytes()).unwrap();
+        let mut teams = Teams::new(4);
+        let ok = |_| Ok(());
+        // 1 leads 2 and 3; 4 leads 5 (a guest, no key).
+        for (leader, member) in [(1, 2), (1, 3), (4, 5)] {
+            teams.op(leader, TEAM_OP_INVITE, member, 0, ok).unwrap();
+            teams.op(member, TEAM_OP_ACCEPT, leader, 0, ok).unwrap();
+        }
+        let before = [
+            (key("0xaa"), 1),
+            (key("0xbb"), 2),
+            (key("0xcc"), 3),
+            (key("0xdd"), 4),
+        ];
+        let text = teams.to_text(&before);
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "the guest's team is one keyed player: {text}"
+        );
+        // A restart: new ids, and 0xcc's body is gone.
+        let after = [(key("0xbb"), 20), (key("0xaa"), 10), (key("0xdd"), 40)];
+        let mut back = Teams::new(4);
+        assert_eq!(back.restore(&text, &after), 1);
+        assert_eq!(back.team_of(10), &[10, 20]);
+        assert!(back.team_of(40).is_empty());
+        // Nothing to restore for an empty file or junk.
+        assert_eq!(Teams::new(4).restore("", &after), 0);
+        assert_eq!(Teams::new(4).restore("zz 0q\n", &after), 0);
+        // Teams off: nothing is made.
+        assert_eq!(Teams::new(1).restore(&text, &after), 0);
+        // Through the file: saved, read back at boot.
+        let dir = std::env::temp_dir().join(format!("gates-teams-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = teams_path(&dir.join("island.world"));
+        let _ = std::fs::remove_file(&path);
+        let mut kept = Teams::open(4, Some(path.clone()));
+        assert_eq!(kept.load(&after).unwrap(), 0, "no file is no teams");
+        teams.file = Some(path.clone());
+        teams.save(&before).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(kept.load(&after).unwrap(), 1);
+        assert_eq!(kept.team_of(20), &[10, 20]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     const A: u32 = 0x0100;
     const B: u32 = 0x0201;

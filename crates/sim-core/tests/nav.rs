@@ -262,3 +262,100 @@ fn searches_past_the_tick_budget_are_deferred() {
         "begin_tick did not refill the budget"
     );
 }
+
+/// A row of three built cells: foundations, and a floor a storey up over
+/// each unless `hole` names one left open. `edge` stands between the first
+/// two at that storey, if given. Returns the floor's walk height and the
+/// row's first build column.
+fn upper_row(
+    sc: &Scratch<sim_core::occupy::Barren>,
+    cols: &mut ColIndex,
+    hole: Option<u16>,
+    edge: Option<u8>,
+) -> (f32, u16, u16) {
+    let (cx, cz) = flat_patch(sc);
+    // Level, as a base on a slope is: each column plated up to the highest.
+    let band = |k: u16| build::terrain_band(SEED, &sc.haven, cx + k, cz);
+    let top = (0..3).map(band).max().unwrap();
+    let plate = |k: u16| (top - band(k)) as i8;
+    for k in 0..3 {
+        cols.add(
+            cx + k,
+            cz,
+            0,
+            build::LOC_PLANE,
+            build::SHAPE_FOUNDATION,
+            plate(k),
+        );
+        if hole != Some(k) {
+            cols.add(
+                cx + k,
+                cz,
+                1,
+                build::LOC_PLANE,
+                build::SHAPE_FLOOR,
+                plate(k),
+            );
+        }
+    }
+    if let Some(shape) = edge {
+        cols.add(cx + 1, cz, 1, LOC_EDGE_XLO, shape, plate(1));
+    }
+    let base = build::column_floor_y(SEED, &sc.haven, cx, cz, plate(0));
+    (base + build::level_y(1), cx, cz)
+}
+
+/// **A deck plan walks a base's upper floor, and a plain plan cannot.**
+/// Along a storey-up floor through a doorway: found, and walked without
+/// leaving the floor. A wall, a hole or the plain ground plan: no way.
+#[test]
+fn a_deck_plan_stays_on_its_floor_and_takes_the_doorway() {
+    let plan_on = |hole: Option<u16>, edge: Option<u8>, deck: bool| {
+        let mut sc = Scratch::barren();
+        let mut cols = Box::new(ColIndex::new());
+        let (deck_y, cx, cz) = upper_row(&sc, &mut cols, hole, edge);
+        let z = (cz as f32 + 0.5) * BUILD_CELL_M;
+        let (sx, gx) = (
+            (cx as f32 + 0.5) * BUILD_CELL_M,
+            (cx as f32 + 2.5) * BUILD_CELL_M,
+        );
+        let haven = sc.haven;
+        let mut body = Body::at(SEED, &haven, sx, z);
+        body.qy = movement::quant_y(deck_y);
+        let mut nav = Box::new(Nav::new());
+        let mut path = NavPath::default();
+        let plan = {
+            let mut occ = sc.occupants();
+            let mut gr = Ground {
+                seed: SEED,
+                haven: &haven,
+                cols: &cols,
+                occ: &mut occ,
+            };
+            if deck {
+                nav.plan_on(&mut gr, sx, deck_y, z, gx, z, 80, deck_y, &mut path)
+            } else {
+                nav.plan(&mut gr, sx, deck_y, z, gx, z, 80, &mut path)
+            }
+        };
+        let walked = matches!(plan, Plan::Found | Plan::Direct)
+            && walk(&mut sc, &cols, &mut body, &mut path, 600);
+        (plan, walked, body.qy as f32 * POS_Y_Q - deck_y)
+    };
+    let (plan, walked, dy) = plan_on(None, Some(build::SHAPE_DOORWAY), true);
+    assert!(matches!(plan, Plan::Found | Plan::Direct), "{plan:?}");
+    assert!(walked, "the body never walked the floor");
+    assert!(fabs(dy) < 0.2, "it left the floor by {dy} m");
+    let (plan, ..) = plan_on(None, Some(SHAPE_WALL), true);
+    assert!(
+        !matches!(plan, Plan::Found | Plan::Direct),
+        "through a wall: {plan:?}"
+    );
+    let (plan, ..) = plan_on(Some(1), None, true);
+    assert!(
+        !matches!(plan, Plan::Found | Plan::Direct),
+        "over a hole: {plan:?}"
+    );
+    let (plan, ..) = plan_on(None, None, false);
+    assert_eq!(plan, Plan::NoWay, "the ground plan is unchanged upstairs");
+}

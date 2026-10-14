@@ -45,6 +45,7 @@ use crate::agent::site::Seen;
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
 use crate::agent::supply::{self, Deliver, HomeJob, TeamHome, Trip, WANT_ROWS};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
+use crate::agent::wedge::{self, Wedge};
 use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
@@ -96,6 +97,11 @@ pub const EXPLORE_GOAL_SECS: u32 = 20;
 pub const WAIT_GOAL_SECS: u32 = 5;
 /// A follow goal stays with its teammate this long, then asks again.
 pub const FOLLOW_GOAL_SECS: u32 = 90;
+/// A teammate seen this recently is where its track says, height included.
+pub const FOLLOW_SEEN_TICKS: u32 = 10 * TICK_HZ;
+/// A teammate this much higher or lower stands on another floor (a half
+/// storey is 1.5 m).
+pub const FOLLOW_APART_M: f32 = 1.0;
 /// How close a follower keeps to its teammate, and the distance past which
 /// it runs to catch up.
 pub const FOLLOW_NEAR_M: f32 = 4.0;
@@ -122,6 +128,13 @@ pub const VISIT_GOAL_SECS: u32 = 360;
 pub const VISIT_RETRY_TICKS: u32 = 120 * TICK_HZ;
 /// A team invite's accept that has not gone out in this long is stuck.
 pub const JOIN_GOAL_SECS: u32 = 5;
+/// How near a person must stand for `invite`: the human client's reach
+/// for N (`ASSIST_REACH_M`), inside the shard's own 7 m.
+pub const INVITE_REACH_M: f32 = 3.0;
+/// An invite makes its sender the leader of a team of one (as in Rust).
+/// Alone on its team this long, past the invite's own minute, it leaves,
+/// so the next person's N finds it free.
+pub const ALONE_TEAM_SECS: u32 = 65;
 /// A supply run gathers this long, then takes what it has to the chest.
 pub const SUPPLY_GATHER_SECS: u32 = 180;
 /// A walk to the team's chest, through its doors, and out again that has
@@ -446,6 +459,8 @@ pub struct Senses {
     pub mate_attacked: bool,
     /// The team's base, where its eyes saw a teammate at a box.
     pub team_home: Sighting,
+    /// A person it could invite to its team stands within reach.
+    pub invitee: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -556,6 +571,9 @@ struct Sweep {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SurvivorStats {
     pub phase: Phase,
+    /// Goals the watchdog ended because the body would not move
+    /// (`agent::wedge`).
+    pub wedges: u64,
     pub deaths: u64,
     pub respawns: u64,
     pub respawn_asks: u64,
@@ -881,6 +899,15 @@ pub struct Survivor {
     has_mates: bool,
     /// The stranger going for a teammate, nearest them (`perceive`).
     guard: Option<u32>,
+    /// The watchdog over a running goal, and the back-off after it trips:
+    /// since when, and which way (`agent::wedge`).
+    wedge: Wedge,
+    backoff: Option<(u32, u16)>,
+    /// Who `invite` would invite: a person up and within
+    /// [`INVITE_REACH_M`], not an agent, not on its team.
+    invitee: Option<u32>,
+    /// Since when it has led a team of one, if it does.
+    alone_since: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1006,6 +1033,10 @@ impl Survivor {
             say_team: false,
             has_mates: false,
             guard: None,
+            wedge: Wedge::default(),
+            backoff: None,
+            invitee: None,
+            alone_since: None,
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -1541,13 +1572,17 @@ impl Survivor {
                         }
                     }
                 } else if self.memory.chat_wake
-                    && self.mind.kind() == SourceKind::External
+                    && matches!(
+                        self.mind.kind(),
+                        SourceKind::External | SourceKind::Scripted
+                    )
                     && !self.mind.pending()
                 {
                     // Somebody near spoke: an external source may answer
-                    // now rather than at the heartbeat. The mind's floor,
-                    // backoff and spend guard still decide whether it is
-                    // asked.
+                    // now rather than at the heartbeat, and the scripted
+                    // policy hears its team's orders (`agent::orders`). The
+                    // mind's floor, backoff and spend guard still decide
+                    // whether it is asked.
                     self.memory.trigger = Trigger::Heard;
                     if self.request(core, view, player, tick, now) {
                         if let Some(a) = self.goal.as_mut() {
@@ -1567,6 +1602,7 @@ impl Survivor {
                 self.run_goal(core, &body, tick)
             }
         };
+        let intent = self.unwedge(intent, &body, tick);
         // A stranger near is kept in view while the goal runs, and no
         // swing goes where the eyes are not.
         let intent = match self.combat.watch(&self.tracks, &self.book, me, tick) {
@@ -1578,6 +1614,46 @@ impl Survivor {
             None => intent,
         };
         self.overlay(intent, tick)
+    }
+
+    /// The watchdog (`agent::wedge`): a goal that has been trying to move
+    /// the body for half a minute without it leaving a metre's box is stuck,
+    /// whatever its skill thinks. It ends, the body backs off with a jump,
+    /// and the next choice starts from somewhere new. Alternate trips back
+    /// off to alternate sides.
+    fn unwedge(&mut self, intent: Intent, body: &EntityState, tick: u32) -> Intent {
+        if let Some((at, away)) = self.backoff {
+            if tick.wrapping_sub(at) < wedge::BACK_OFF_TICKS {
+                return Intent {
+                    travel: Some(away),
+                    ..Intent::IDLE
+                };
+            }
+            self.backoff = None;
+        }
+        if !self.goal.is_some_and(|a| a.paused.is_none()) {
+            return intent;
+        }
+        let trying = intent.travel.is_some() || intent.move_x != 0 || intent.move_z != 0;
+        let at = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+        if !self.wedge.observe(tick, at, trying) {
+            return intent;
+        }
+        self.stats.wedges += 1;
+        self.end_goal(tick, Outcome::Failed(Why::Stuck));
+        self.route.reset();
+        let side = if self.stats.wedges.is_multiple_of(2) {
+            0x6000
+        } else {
+            0xA000
+        };
+        let away = self.hands.view().0.wrapping_add(side);
+        self.backoff = Some((tick, away));
+        Intent {
+            travel: Some(away),
+            buttons: sim_core::input::BTN_JUMP,
+            ..Intent::IDLE
+        }
     }
 
     /// Down or dead: the goal ends there, and a fight in hand was lost.
@@ -1596,6 +1672,7 @@ impl Survivor {
 
     /// A fight took this frame: the goal waits, where it was.
     fn pause_goal(&mut self, tick: u32) {
+        self.wedge.reset();
         if let Some(a) = self.goal.as_mut() {
             if a.paused.is_none() {
                 a.paused = Some(tick);
@@ -1716,10 +1793,14 @@ impl Survivor {
         true
     }
 
-    /// An answer's line, kept for [`BotDriver::say`]. Only an external
-    /// source speaks; a newer line replaces one not yet sent.
+    /// An answer's line, kept for [`BotDriver::say`]. An external source
+    /// speaks, and the scripted policy answers its team's orders; Jev
+    /// never does. A newer line replaces one not yet sent.
     fn take_say(&mut self, say: Say) {
-        if self.mind.kind() != SourceKind::External {
+        if !matches!(
+            self.mind.kind(),
+            SourceKind::External | SourceKind::Scripted
+        ) {
             return;
         }
         match say {
@@ -1746,6 +1827,7 @@ impl Survivor {
 
     /// Start a goal from scratch.
     fn begin(&mut self, goal: Goal, tick: u32) {
+        self.wedge.reset();
         if self.medic {
             // The reflex's bandage still in flight answers to no goal: its
             // toast is not the new goal's to count.
@@ -1825,6 +1907,7 @@ impl Survivor {
     }
 
     fn end_goal(&mut self, tick: u32, outcome: Outcome) {
+        self.wedge.reset();
         let Some(active) = self.goal.take() else {
             return;
         };
@@ -1926,6 +2009,23 @@ impl Survivor {
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
             _ => false,
         };
+        // Up on a base's floor: down the stairs first (`agent::floors`), so
+        // the doors and the walk out start from the ground they were made
+        // for. A follow and a delivery go where their own legs take them.
+        if walks
+            && !matches!(active.goal, Goal::Follow | Goal::Deliver)
+            && !active.delivering
+            && (self.route.descending() || self.route.upstairs(core, body))
+        {
+            match self.route.down(core, body, tick) {
+                step @ Step::Walk { .. } => {
+                    self.stats.phase = Phase::Leaving;
+                    return step.walk().unwrap_or(Intent::IDLE);
+                }
+                Step::Wait => return Intent::IDLE,
+                Step::Arrived | Step::Blocked => {}
+            }
+        }
         if walks && (self.builder.passing() || self.builder.must_exit(core, body)) {
             if let Some(intent) = self.leave(core, body, tick) {
                 return intent;
@@ -2063,6 +2163,32 @@ impl Survivor {
                 self.stats.phase = Phase::Waiting;
                 Intent::IDLE
             }
+            Goal::Invite if elapsed >= JOIN_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Invite => {
+                // The invite a player sends with N. `fled` is the one-shot
+                // half done: once it has gone out the goal is done, and the
+                // yes is theirs (the team view says when it comes).
+                if active.fled {
+                    if self.outbox.is_none() {
+                        self.end_goal(tick, Outcome::Done);
+                    }
+                } else if let Some(target) = self.invitee {
+                    if self.queue(|b| {
+                        protocol::encode_action_team(protocol::TEAM_OP_INVITE, target, b)
+                    }) {
+                        if let Some(a) = self.goal.as_mut() {
+                            a.fled = true;
+                        }
+                    }
+                } else {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                }
+                self.stats.phase = Phase::Waiting;
+                Intent::IDLE
+            }
             Goal::Follow if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
@@ -2109,25 +2235,30 @@ impl Survivor {
     fn follow(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let team = *core.team();
-        let mut mate: Option<(bool, f32, [f32; 2])> = None;
+        let mut mate: Option<(bool, f32, [f32; 2], Option<f32>)> = None;
         for m in team.members() {
             if m.id == core.player_id || m.state != protocol::TEAM_AWAKE {
                 continue;
             }
-            let at = self
-                .tracks
-                .get(m.id)
+            let track = self.tracks.get(m.id);
+            let at = track
                 .filter(|t| t.visible)
                 .map_or([f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5], |t| {
                     [t.pos[0], t.pos[2]]
                 });
+            // How high they stand, as last seen: the team view has no
+            // height, and a floor above is where they are when it says
+            // they are near but the eyes found them up there.
+            let y = track
+                .filter(|t| tick.wrapping_sub(t.last_seen) < FOLLOW_SEEN_TICKS)
+                .map(|t| t.pos[1]);
             let d = (at[0] - x).hypot(at[1] - z);
             let lead = m.id == team.leader;
-            if mate.is_none_or(|(l, md, _)| (lead && !l) || (lead == l && d < md)) {
-                mate = Some((lead, d, at));
+            if mate.is_none_or(|(l, md, ..)| (lead && !l) || (lead == l && d < md)) {
+                mate = Some((lead, d, at, y));
             }
         }
-        let Some((_, d, at)) = mate else {
+        let Some((_, d, at, mate_y)) = mate else {
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
         };
@@ -2156,25 +2287,35 @@ impl Survivor {
                 return self.leave_step(step, tick);
             }
         }
+        // Another floor than theirs: the stairs (`agent::floors`), not the
+        // doors below them.
+        let my_y = body.qy as f32 * POS_Y_Q;
+        let apart = mate_y.is_some_and(|y| (y - my_y).abs() > FOLLOW_APART_M);
         // Near them, but a wall or a shut door between: through the door.
-        let walled = d <= FOLLOW_RUN_M && doors::walled_between(core, [x, z], at);
+        let walled = !apart && d <= FOLLOW_RUN_M && doors::walled_between(core, [x, z], at);
         if walled && self.leave.after(core, body, FOLLOW_DOOR_M, tick) {
             return Intent::IDLE;
         }
         // With them: eyes on them, as a player keeps them in view (and so
-        // sees what they are standing at).
-        if d <= FOLLOW_NEAR_M && !walled {
+        // sees what they are standing at). Never halfway up a flight.
+        if d <= FOLLOW_NEAR_M && !walled && !apart && !self.route.climbing() {
             let y = body.qy as f32 * POS_Y_Q + tracks::eye_m(false);
             return Intent {
                 look: Look::Point([at[0], y, at[1]]),
                 ..Intent::IDLE
             };
         }
-        let hurry = d > FOLLOW_RUN_M;
-        match self
-            .route
-            .to(core, body, at, FOLLOW_NEAR_M - 1.0, hurry, tick)
-        {
+        let hurry = d > FOLLOW_RUN_M && !apart;
+        let off_ground = apart || self.route.upstairs(core, body);
+        match self.route.to_at(
+            core,
+            body,
+            at,
+            mate_y.filter(|_| off_ground),
+            FOLLOW_NEAR_M - 1.0,
+            hurry,
+            tick,
+        ) {
             step @ Step::Walk { yaw, .. } => {
                 self.heading = Some(yaw);
                 step.walk().unwrap_or(Intent::walk(yaw))
@@ -2182,6 +2323,12 @@ impl Survivor {
             Step::Arrived => Intent::IDLE,
             // No way to them: a door between, as like as not.
             Step::Blocked if self.leave.after(core, body, FOLLOW_DOOR_M, tick) => Intent::IDLE,
+            // Up on a floor, or below theirs, a straight walk goes off an
+            // edge or into a wall: keep them in view and wait for a way.
+            Step::Blocked | Step::Wait if off_ground => Intent {
+                look: Look::Point([at[0], mate_y.unwrap_or(my_y) + tracks::eye_m(false), at[1]]),
+                ..Intent::IDLE
+            },
             Step::Blocked | Step::Wait => {
                 let yaw = yaw_toward(at[0] - x, at[1] - z);
                 self.walk_on(core, body, yaw)
@@ -4892,6 +5039,40 @@ impl Survivor {
         }
         self.guard = guard.map(|(_, id)| id);
         self.senses.mate_attacked = self.guard.is_some();
+        // Someone to invite: a person up and in sight within reach, not an
+        // agent and not on its team, while it has no team or leads one
+        // with room. The nearest, as a player's N would pick.
+        let room = team.count == 0
+            || (team.leader == core.player_id && usize::from(team.count) < protocol::TEAM_MAX);
+        let mut invitee: Option<(f32, u32)> = None;
+        if let (true, Some(own)) = (room, self.tracks.own()) {
+            for t in self.tracks.recent(tick, TICK_HZ) {
+                if t.species != Species::Player
+                    || !t.visible
+                    || t.wounded
+                    || team.has(t.id)
+                    || core.is_agent(t.id)
+                {
+                    continue;
+                }
+                let d = (t.pos[0] - own.pos[0]).hypot(t.pos[2] - own.pos[2]);
+                if d <= INVITE_REACH_M && invitee.is_none_or(|i| d < i.0) {
+                    invitee = Some((d, t.id));
+                }
+            }
+        }
+        self.invitee = invitee.map(|(_, id)| id);
+        self.senses.invitee = self.invitee.is_some();
+        if team.count == 1 && team.leader == core.player_id {
+            let since = *self.alone_since.get_or_insert(tick);
+            if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
+                && self.queue(|b| protocol::encode_action_team(protocol::TEAM_OP_LEAVE, 0, b))
+            {
+                self.alone_since = None;
+            }
+        } else {
+            self.alone_since = None;
+        }
         let seen = (team.invite, team.count);
         if seen != self.team_seen {
             self.team_seen = seen;
@@ -5691,6 +5872,8 @@ impl BotDriver for Survivor {
         self.memory.team_wake = false;
         self.team_seen = (0, 0);
         self.guard = None;
+        self.invitee = None;
+        self.alone_since = None;
         self.seen_tick = Some(welcome.tick);
         self.seen_at = Instant::now();
     }
@@ -6438,6 +6621,9 @@ pub fn observe(
     }
     if s.team.invited {
         s.offer(Goal::JoinTeam);
+    }
+    if senses.invitee {
+        s.offer(Goal::Invite);
     }
     if s.team.awake.count > 0 {
         s.offer(Goal::Follow);
