@@ -1642,7 +1642,7 @@ impl Survivor {
         self.stats.wedges += 1;
         self.end_goal(tick, Outcome::Failed(Why::Stuck));
         self.route.reset();
-        let side = if self.stats.wedges % 2 == 0 {
+        let side = if self.stats.wedges.is_multiple_of(2) {
             0x6000
         } else {
             0xA000

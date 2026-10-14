@@ -50,9 +50,9 @@ impl Wedge {
                 tick
             }
         };
-        for i in 0..2 {
-            self.lo[i] = self.lo[i].min(at[i]);
-            self.hi[i] = self.hi[i].max(at[i]);
+        for (i, a) in at.iter().enumerate() {
+            self.lo[i] = self.lo[i].min(*a);
+            self.hi[i] = self.hi[i].max(*a);
         }
         if self.hi[0] - self.lo[0] > WEDGE_BOX_M || self.hi[1] - self.lo[1] > WEDGE_BOX_M {
             // It got somewhere: the window starts from here.
