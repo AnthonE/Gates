@@ -1592,8 +1592,8 @@ mod tests {
         let c = catalog_with(&["Bat"]);
         // The commonest state in the game, and the one worth stating: a count
         // of zero is not "hold a rock", it is hold nothing. `viewmodel::swap`
-        // hides both the model and the stand-in on `None`, so a tool must
-        // never appear over an empty cell.
+        // hides the model on `None`, so a tool must never appear over an
+        // empty cell.
         assert_eq!(
             held_model(
                 &c,
@@ -1627,9 +1627,8 @@ mod tests {
         // armour is the honest example now: `reference/ARMOR.md`'s shape of
         // gap — content priced and validated with no picture behind it.
         let c = catalog_with(&["Burlap Hood"]);
-        // `None` here means "wear the generic stand-in", which is a different
-        // picture from an empty hand and from a modelled item. Returning
-        // `Some(0)` would put a rock in the player's hand instead of a tool.
+        // `None` here means an empty fist, never somebody else's model:
+        // returning `Some(0)` would put a rock in the player's hand.
         assert_eq!(
             held_model(
                 &c,
