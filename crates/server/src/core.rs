@@ -224,6 +224,9 @@ pub struct ShardCore {
     /// A row outlives its connection, so a sleeper keeps its name for late
     /// joiners until the slot's next tenant overwrites it. Never in the sim.
     tags: Box<[TagRow]>,
+    /// An agent's self-declared name per slot (`--agent-name`), its tag's
+    /// name until the platform names its wallet. Empty for a person.
+    agent_names: [protocol::Name; MAX_PLAYERS],
     /// What each world slot's body was last seen wearing — its tenant's id,
     /// the item in each wear slot (`NO_ITEM` for none) and each piece's skin
     /// (v102, zero for none). A change owes every connection a `SUB_WORN`
@@ -606,6 +609,7 @@ impl ShardCore {
             heard_len: 0,
             drawing: [false; MAX_PLAYERS],
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
+            agent_names: [protocol::Name::EMPTY; MAX_PLAYERS],
             worn_seen: [WORN_NONE; MAX_PLAYERS],
             worn_dressed: 0,
             admins: crate::admin::Admins::none(),
@@ -835,6 +839,12 @@ impl ShardCore {
         if slot >= MAX_PLAYERS || !self.clients[slot].connected || self.clients[slot].id != id {
             return;
         }
+        // An agent the platform has no name for keeps its own.
+        let name = if name.is_empty() {
+            self.agent_names[slot]
+        } else {
+            name
+        };
         let row = &mut self.tags[slot];
         if row.id != id || (row.name == name && row.pic == pic) {
             return;
@@ -864,6 +874,24 @@ impl ShardCore {
 
     /// Whether `slot`'s new tenant declared itself an agent (`HELLO_AGENT`).
     /// An agent's mark is owed to everyone, so chat and nametags can say so.
+    /// An agent's self-declared name (`--agent-name`): its tag's name until
+    /// the platform names its wallet, so players see `flint (agent)` rather
+    /// than an address. A platform name always wins ([`Self::set_face`]).
+    /// Called on every join, empty for a person, so a slot's next tenant
+    /// never inherits it.
+    pub fn name_agent(&mut self, slot: usize, name: protocol::Name) {
+        if slot >= MAX_PLAYERS {
+            return;
+        }
+        self.agent_names[slot] = name;
+        let row = &mut self.tags[slot];
+        if row.id != 0 && row.id == self.clients[slot].id && row.name.is_empty() && !name.is_empty()
+        {
+            row.name = name;
+            self.owe_tag(slot);
+        }
+    }
+
     pub fn note_agent(&mut self, slot: usize, agent: bool) {
         if let Some(a) = self.standings_agent.get_mut(slot) {
             *a = agent;
@@ -7574,6 +7602,57 @@ mod tests {
         }
         late.sort_unstable();
         assert_eq!(late, vec![256, 257, 258]);
+    }
+
+    /// An agent's own name is its tag's until the platform names its
+    /// wallet; an empty platform read keeps it; a person never gets one.
+    #[test]
+    fn an_agent_is_tagged_by_its_own_name_until_the_platform_names_it() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let key = |n: u8| PlayerKey::new(format!("0x{:040x}", n).as_bytes()).unwrap();
+        let flint = protocol::Name::new("flint").unwrap();
+        for (slot, id, n, name) in [
+            (0usize, 256u32, 0xa1u8, flint),
+            (1, 257, 0xb2, protocol::Name::EMPTY),
+        ] {
+            assert!(core.connect_as(slot, id, Some(key(n)), None).is_some());
+            core.tag_join(slot, id, Some(&key(n)));
+            core.name_agent(slot, name);
+        }
+        let names = |core: &mut ShardCore| {
+            let mut got = Vec::new();
+            for _ in 0..4 {
+                core.tick_bare(&stats, |lane, _, bytes| {
+                    if lane == Lane::Event {
+                        if let Ok(EventMsg::Tag { id, name, .. }) = decode_event(bytes) {
+                            got.push((id, name.as_str().to_string()));
+                        }
+                    }
+                    true
+                });
+            }
+            got
+        };
+        let seen = names(&mut core);
+        assert!(seen.contains(&(256, "flint".into())), "{seen:?}");
+        assert!(
+            seen.contains(&(257, String::new())),
+            "a person is not named: {seen:?}"
+        );
+        core.set_face(0, 256, protocol::Name::EMPTY, 0);
+        core.set_face(1, 257, protocol::Name::EMPTY, 0);
+        assert!(
+            core.tags[0].name == flint,
+            "an empty platform read keeps it"
+        );
+        assert!(core.tags[1].name.is_empty());
+        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 0);
+        assert_eq!(
+            core.tags[0].name.as_str(),
+            "Ash",
+            "the platform's name wins"
+        );
     }
 
     /// Agent marks (v107): a guest agent is marked to everyone, a human

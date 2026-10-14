@@ -218,6 +218,9 @@ pub struct Connect {
     /// It declared itself an agent (`HELLO_AGENT`): ranked like anyone, paid
     /// only where `prize_agents` says (`standings.rs`).
     pub agent: bool,
+    /// An agent's self-declared name (`--agent-name`), its tag's name until
+    /// the platform names its wallet. Empty for a person or a spectator.
+    pub name: protocol::Name,
     pub link: Link,
 }
 

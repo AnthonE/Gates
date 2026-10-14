@@ -1974,11 +1974,15 @@ impl Mind {
 
     /// Send one request if the floor, the backoff, the spend guard and the
     /// single outstanding slot all allow it. True when a request went out.
+    /// The scripted policy costs nothing to ask, so the spend guard never
+    /// holds it: a house bot asking every few seconds would otherwise reach
+    /// the day's ceiling hours before its run ends and stand still.
     pub fn ask(&mut self, now: Instant, summary: &Summary) -> bool {
         if self.pending.is_some() || now < self.next_allowed {
             return false;
         }
-        if !self.guard.allow(now) {
+        let free = self.kind == SourceKind::Scripted;
+        if !free && !self.guard.allow(now) {
             if !self.paused {
                 self.paused = true;
                 self.stats.pauses += 1;
@@ -2003,7 +2007,9 @@ impl Mind {
         }
         self.next_id = self.next_id.wrapping_add(1);
         self.pending = Some((id, now));
-        self.guard.record(now);
+        if !free {
+            self.guard.record(now);
+        }
         self.stats.requests += 1;
         self.next_allowed = now + self.cfg.interval;
         true
@@ -2675,6 +2681,37 @@ mod tests {
                 code: None,
             })
         }
+    }
+
+    /// The free scripted policy is never paused by the spend cap; a source
+    /// that costs money still is.
+    #[test]
+    fn the_scripted_policy_is_never_held_by_the_spend_cap() {
+        let cfg = MindConfig {
+            per_hour: 1,
+            per_day: 1,
+            ..MindConfig::default()
+        };
+        let mut mind = Mind::inline(Scripted::default(), cfg).unwrap();
+        let mut s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        let t0 = Instant::now();
+        for i in 0..10 {
+            let t = t0 + cfg.interval * i;
+            assert!(mind.ask(t, &s), "request {i}");
+            assert!(mind.poll(t).is_some());
+            assert_ne!(mind.mode(t), Mode::Paused);
+        }
+        let counts = mind.guard().counts();
+        assert_eq!((counts.0, counts.2), (0, 0), "nothing counted against it");
+        let mut paid = Mind::inline(Counting(0), cfg).unwrap();
+        let t1 = Instant::now();
+        assert!(paid.ask(t1, &s));
+        assert!(paid.poll(t1).is_some());
+        assert!(
+            !paid.ask(t1 + cfg.interval, &s),
+            "a paid source still stops"
+        );
     }
 
     #[test]

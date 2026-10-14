@@ -5111,3 +5111,267 @@ fn a_survivor_climbs_to_the_red_door_and_walks_into_the_sanctum() {
     assert!(h.verbs.contains("swipe"));
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
+
+/// A small open base the puppet builds by hand, the starter's layout without
+/// its doors: two foundations, the core walled on three sides below, the L
+/// flight up from the second cell (open to the island on its far side), and
+/// a floor over the core. Returns the plot's corner in metres and the ground
+/// floor's walk height; the puppet is left outside.
+fn stage_stair_base(h: &mut Harness, near: (f32, f32)) -> (f32, f32, f32) {
+    use server::population::base_rows;
+    use sim_core::bots::{BasePlan, STARTER_FOOTPRINT, STARTER_STAND_M};
+    use sim_core::build::{
+        anchor, build_cell_of, column_floor_y, foundation_terrain_ok, terrain_band, BUILD_CELL_M,
+        LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO,
+    };
+
+    let haven = h.shard.world.haven;
+    let buildable = |cx: u16, cz: u16| {
+        let (ax, az) = anchor(cx, cz, LOC_PLANE);
+        foundation_terrain_ok(SEED, &haven, ax, az)
+            && !sim_core::terrain::build_reserved(&haven, ax, az, BUILD_CELL_M * 1.5)
+    };
+    let (c0, r0) = (build_cell_of(near.0) as i32, build_cell_of(near.1) as i32);
+    let mut plot = None;
+    'search: for r in 0..64i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let (cx, cz) = ((c0 + dx) as u16, (r0 + dz) as u16);
+                let band = terrain_band(SEED, &haven, cx, cz);
+                let even = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1)]
+                    .iter()
+                    .all(|&(ox, oz)| {
+                        (terrain_band(SEED, &haven, cx + ox, cz + oz) - band).abs() <= 1
+                    });
+                let plan = BasePlan::new(0, cx, cz);
+                if even
+                    && STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
+                        let (x, z) = plan.cell(dx, dz);
+                        buildable(x, z)
+                    })
+                {
+                    plot = Some((cx, cz));
+                    break 'search;
+                }
+            }
+        }
+    }
+    let (bx, bz) = plot.expect("an even plot near the scene");
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    let rows = base_rows(&content).unwrap();
+    h.with_puppet();
+    h.until(2, |_| false);
+    let (x0, z0) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let stand = (x0 + STARTER_STAND_M.0, z0 + STARTER_STAND_M.1);
+    let pocket = [
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.stone", 1000),
+        stack("item.hearth", 1),
+    ];
+    for core in [&mut h.shard, &mut h.replay] {
+        let haven = core.world.haven;
+        let p = core
+            .world
+            .players
+            .iter_mut()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap();
+        p.body = sim_core::movement::Body::at(SEED, &haven, stand.0, stand.1);
+        for (i, s) in pocket.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    }
+    let place = |row: u16, cx: u16, cz: u16, level: u8, loc: u8| ActionMsg::Place {
+        row,
+        cx,
+        cz,
+        level,
+        loc,
+        freehand: false,
+        plate: 0,
+    };
+    let acts = [
+        place(rows.foundation, bx, bz, 0, LOC_PLANE),
+        ActionMsg::Deploy {
+            row: rows.hearth,
+            cx: bx,
+            cz: bz,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        },
+        place(rows.foundation, bx + 1, bz, 0, LOC_PLANE),
+        place(rows.wall, bx, bz, 0, LOC_EDGE_XLO),
+        place(rows.wall, bx, bz, 0, LOC_EDGE_ZLO),
+        place(rows.wall, bx, bz + 1, 0, LOC_EDGE_ZLO),
+        place(rows.wall, bx + 1, bz, 0, LOC_EDGE_ZLO),
+        place(rows.wall, bx + 2, bz, 0, LOC_EDGE_XLO),
+        place(rows.stairs, bx + 1, bz, 0, LOC_RISER_ZLO),
+        place(rows.floor, bx, bz, 1, LOC_PLANE),
+    ];
+    for a in acts {
+        h.puppet_act(a);
+    }
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &core.world;
+        assert!(
+            w.pieces.find(bx + 1, bz, 0, LOC_RISER_ZLO).is_some(),
+            "the flight"
+        );
+        assert!(
+            w.pieces.find(bx, bz, 1, LOC_PLANE).is_some(),
+            "the upper floor"
+        );
+    }
+    let plate = h.shard.world.pieces.cols().plate(bx, bz).unwrap_or(0);
+    let floor = column_floor_y(SEED, &haven, bx, bz, plate);
+    (x0, z0, floor)
+}
+
+/// Feet height of a body, metres.
+fn feet_y(p: &sim_core::world::Player) -> f32 {
+    p.body.qy as f32 * sim_core::movement::POS_Y_Q
+}
+
+/// **Up the stairs after a teammate, and back down after them**
+/// (`agent::floors`): the puppet stands on the floor over the core, and the
+/// agent, on the ground at the foot of the L flight, climbs it and walks out
+/// onto that floor to them. Then the puppet is outside on the island, and
+/// the agent comes down the same flight to it. Both shards hash-identical,
+/// the frame path allocation-free.
+#[test]
+fn a_teammate_follows_up_the_stairs_and_back_down() {
+    let at = common::clearing(3);
+    let mind = Mind::inline(FollowWhenOffered, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    let (x0, z0, floor) = stage_stair_base(&mut h, at);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32, y: Option<f32>| {
+        let mut b = sim_core::movement::Body::at(SEED, &haven, x, z);
+        if let Some(y) = y {
+            b.qy = sim_core::movement::quant_y(y);
+        }
+        b
+    };
+    // Teamed up beside each other, outside the stair cell's open side.
+    let outside = place(x0 + 4.5, z0 + 4.5, None);
+    h.stage(move |p| p.body = outside);
+    h.stage_puppet(move |p| p.body = outside);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+
+    // Up: the puppet over the core, the agent at the foot of the flight.
+    let upstairs = floor + sim_core::build::LEVEL_H_M;
+    let mate = place(x0 + 1.5, z0 + 1.5, Some(upstairs));
+    let foot = place(x0 + 4.5, z0 + 2.4, Some(floor));
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = foot);
+    let up = |h: &Harness| {
+        let me = h.me();
+        let (x, z) = (me.body.qx as f32 * 0.03, me.body.qz as f32 * 0.03);
+        (feet_y(me) - upstairs).abs() < 0.3
+            && (x - (x0 + 1.5)).hypot(z - (z0 + 1.5)) <= server::explorer::FOLLOW_NEAR_M
+    };
+    for _ in 0..60 * TICK_HZ {
+        if up(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        up(&h),
+        "never got upstairs to its teammate (y {:.2}, floor {:.2}): {:?} {}",
+        feet_y(h.me()),
+        upstairs,
+        h.bot.route().stats,
+        h.explain()
+    );
+
+    // Down: the puppet back outside on the ground.
+    h.stage_puppet(move |p| p.body = outside);
+    let down = |h: &Harness| {
+        let me = h.me();
+        let (x, z) = (me.body.qx as f32 * 0.03, me.body.qz as f32 * 0.03);
+        feet_y(me) < floor + 1.0
+            && (x - (x0 + 4.5)).hypot(z - (z0 + 4.5)) <= 5.0
+            && h.bot.route().stats.flights >= 2
+    };
+    for _ in 0..60 * TICK_HZ {
+        if down(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        down(&h),
+        "never came down to its teammate (y {:.2}): {:?} {}",
+        feet_y(h.me()),
+        h.bot.route().stats,
+        h.explain()
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// **Left upstairs, it comes down for a ground goal** rather than standing
+/// on the floor's edge: put on the floor over the core and sent exploring,
+/// it takes the flight down before anything else, and never fails stuck.
+#[test]
+fn an_agent_put_upstairs_comes_down_for_a_ground_goal() {
+    let at = common::clearing(3);
+    let mind = Mind::inline(Prefer(&[Goal::Explore], None), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    let (x0, z0, floor) = stage_stair_base(&mut h, at);
+    let haven = h.shard.world.haven;
+    let upstairs = floor + sim_core::build::LEVEL_H_M;
+    let mut b = sim_core::movement::Body::at(SEED, &haven, x0 + 1.5, z0 + 1.5);
+    b.qy = sim_core::movement::quant_y(upstairs);
+    h.stage(move |p| p.body = b);
+    let down = |h: &Harness| feet_y(h.me()) < floor + 1.0 && h.bot.route().stats.flights >= 1;
+    for _ in 0..40 * TICK_HZ {
+        if down(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        down(&h),
+        "never came down (y {:.2}): {:?} {}",
+        feet_y(h.me()),
+        h.bot.route().stats,
+        h.explain()
+    );
+    assert!(
+        h.bot.route().stats.flights >= 1,
+        "{:?}",
+        h.bot.route().stats
+    );
+    assert!(
+        !h.bot
+            .history
+            .iter()
+            .any(|r| r.outcome == server::mind::Outcome::Failed(Why::Stuck)),
+        "a goal failed stuck on the way down"
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}

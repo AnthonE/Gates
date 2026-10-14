@@ -223,6 +223,9 @@ pub struct Nav {
     pub expanded: u64,
     /// Searches run since construction (straight-line answers included).
     pub plans: u64,
+    /// The floor a [`Nav::plan_on`] search walks, for its length only.
+    /// `None` is the ground: every mob's plan, and every plan before.
+    deck: Option<f32>,
 }
 
 impl Default for Nav {
@@ -249,7 +252,32 @@ impl Nav {
             pull_left: 0,
             expanded: 0,
             plans: 0,
+            deck: None,
         }
+    }
+
+    /// [`Nav::plan`] on a built floor whose walk surface is `deck_y` (a
+    /// base's upper storey, or a foundation raised off the dirt): each cell
+    /// is probed at that floor rather than the terrain, and a cell more
+    /// than a step below it (a hole, a stairwell, the floor's edge) is
+    /// solid, so the path never steps off. Agents only; mobs never climb.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_on(
+        &mut self,
+        gr: &mut Ground,
+        x: f32,
+        y: f32,
+        z: f32,
+        gx: f32,
+        gz: f32,
+        stop_cm: u16,
+        deck_y: f32,
+        out: &mut NavPath,
+    ) -> Plan {
+        self.deck = Some(deck_y);
+        let plan = self.plan(gr, x, y, z, gx, gz, stop_cm, out);
+        self.deck = None;
+        plan
     }
 
     /// Refill the expansion budget. Called once per tick, before the roster
@@ -384,7 +412,7 @@ impl Nav {
     /// — the probe a state uses to vet a roam or flee point before it
     /// spends a search on one. Water is routable and never a destination.
     pub fn standable(&mut self, gr: &mut Ground, x: f32, z: f32) -> bool {
-        let (f, _) = probe(gr, cell_of(x), cell_of(z));
+        let (f, _) = probe(gr, cell_of(x), cell_of(z), self.deck);
         f & (F_BLOCKED | F_WATER) == 0
     }
 
@@ -458,7 +486,7 @@ impl Nav {
             self.flags[i] = 0;
         }
         if self.flags[i] & F_PROBED == 0 {
-            let (f, y) = probe(gr, cx, cz);
+            let (f, y) = probe(gr, cx, cz, self.deck);
             self.flags[i] |= f;
             self.y[i] = y;
         }
@@ -767,7 +795,9 @@ impl Nav {
 /// Probe one nav cell: can a capsule stand at its centre, and at what
 /// height. The standing height is the terrain or a hard top within a step
 /// of it (a foundation, a crate lid), which is `movement::step`'s ground.
-fn probe(gr: &mut Ground, cx: i32, cz: i32) -> (u8, f32) {
+/// With a `deck` ([`Nav::plan_on`]) it is the surface within a step of that
+/// floor instead, and a cell with none is solid.
+fn probe(gr: &mut Ground, cx: i32, cz: i32, deck: Option<f32>) -> (u8, f32) {
     let (x, z) = (centre(cx), centre(cz));
     if x < BORDER_MARGIN
         || z < BORDER_MARGIN
@@ -777,6 +807,27 @@ fn probe(gr: &mut Ground, cx: i32, cz: i32) -> (u8, f32) {
         return (F_PROBED | F_BLOCKED, 0.0);
     }
     let gy = terrain::ground(gr.seed, gr.haven, x, z);
+    if let Some(d) = deck {
+        let dirt = if gy <= d + STEP_UP {
+            gy
+        } else {
+            collide::NO_SURFACE
+        };
+        let hard = collide::body_ground(gr.seed, gr.haven, gr.cols, x, z, d)
+            .max(gr.occ.body_ground(gr.seed, x, z, d))
+            .max(dirt);
+        if hard < d - STEP_UP {
+            return (F_PROBED | F_BLOCKED, d);
+        }
+        let mut f = F_PROBED | F_HARD;
+        if gr.occ.blocks(gr.seed, x, z, hard)
+            || collide::deploy_blocked(gr.seed, gr.haven, gr.cols, x, z, hard)
+            || collide::plane_blocked(gr.seed, gr.haven, gr.cols, x, z, hard)
+        {
+            f |= F_BLOCKED;
+        }
+        return (f, hard);
+    }
     // The body's footprint, as `movement::step` reads it (`body_ground`):
     // the point would plan a cell beside a foundation at the dirt the
     // capsule never stands on there.

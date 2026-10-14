@@ -1972,6 +1972,11 @@ async fn install(
             key,
             watch: None,
             agent: hello.is_agent(),
+            name: if hello.is_agent() {
+                hello.name
+            } else {
+                protocol::Name::EMPTY
+            },
             link,
         })
         .is_err()
@@ -2192,6 +2197,7 @@ async fn install_spectator(
             key: None,
             watch: Some(target),
             agent: false,
+            name: protocol::Name::EMPTY,
             link,
         })
         .is_err()
@@ -3431,6 +3437,7 @@ fn sim_thread(
                 // Who this is, for everyone's chat and nametags: the proven
                 // address now, the platform name when its read lands.
                 core.tag_join(c.slot, c.id, key.as_ref());
+                core.name_agent(c.slot, c.name);
                 core.note_agent(c.slot, c.agent);
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body

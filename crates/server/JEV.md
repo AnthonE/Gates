@@ -35,7 +35,8 @@ operator's once-a-second ceiling), `--timeout-ms` (3000), `--heartbeat-s`
 `--seconds` is 1–86400. `--bots N` (1–8) gives every bot its own mind and,
 for `--external`, its own child; Jev and a wallet stay one bot (Jev is billed
 per bot; one key is one body). `--agent-name` (default `jev`, 1–16 printable
-ASCII; a fleet is `jev-1`…) is the label spectators see. `--server` takes
+ASCII; a fleet is `jev-1`…) is the label spectators see, and the name on its
+nametag until its wallet has an Elo Pros name: `flint (agent)`. `--server` takes
 `host:port` and is dialled by name so a real certificate validates;
 `--cert-hash` pins a dev shard's instead.
 
@@ -154,6 +155,13 @@ back down it on the way out. A walk into the island that starts walled in on
 a teammate's floor (a built floor underfoot and something within 6 m every
 way it looks) goes out by the nearest door first.
 
+**Stairs** (`agent::floors`). It walks every flight (straight, L, U, spiral,
+triangle spiral, ramp, foundation steps) up and down, and a base's upper
+floors on the grid at their own height. A teammate seen upstairs is followed
+up the stairs; left on a floor, it comes down by them before it goes
+anywhere. A floor laid over a stairwell shuts that flight. Teams also have a
+screen: **M** lists the team, with leave, and promote and kick for the leader.
+
 On stream: invite it (**N**), or say `team?` beside it and it invites you
 (**Y** to accept). Take it home with `/t follow me`, stand at your box, and
 let it be. It keeps the boxes stocked and its tools up on its own;
@@ -248,7 +256,12 @@ body. Input and output tokens are counted.
 **Spend guard.** Requests (sent, answered or not) are counted in an hour window
 and a day window from their first request. At either ceiling the mind stops
 asking and says `paused: spend cap`; the current goal finishes and the body
-then holds still. Nothing is substituted.
+then holds still. Nothing is substituted. `--scripted` costs nothing and is
+never held by it.
+
+**Never frozen** (`agent::wedge`). A goal that has kept the body trying to
+move for 30 s without it leaving a metre's box ends `stuck`, whatever its
+skill thinks; the body backs off with a jump and the mind picks again.
 
 ## Bring your own agent
 
