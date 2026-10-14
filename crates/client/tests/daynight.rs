@@ -550,7 +550,6 @@ fn the_sun_disk_stays_under_what_taa_can_hold() {
     use bevy::camera::Exposure;
     use bevy::light::SunDisk;
     use rig::{exposure_ev100, sun_disk_intensity, sun_lux, SUN_DISK_INTENSITY, SUN_DISK_PEAK};
-    assert!(SUN_DISK_PEAK < 4096.0 * 0.75);
     let half = SunDisk::EARTH.angular_size * 0.5;
     let solid_angle = std::f32::consts::PI * half * half;
     let mut capped = false;

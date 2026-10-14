@@ -682,6 +682,7 @@ pub const SUN_DISK_INTENSITY: f32 = 1.6;
 /// frame to frame as the view moves, and bloom spreads it over the sky as
 /// a flicker. 2000 is still white and still ~500x the sky around it.
 pub const SUN_DISK_PEAK: f32 = 2000.0;
+const _: () = assert!(SUN_DISK_PEAK < 4096.0 * 0.75);
 
 /// `SunDisk::intensity` for a light of `illuminance` lux seen at `ev100`:
 /// [`SUN_DISK_INTENSITY`], lowered where the disk would pass
