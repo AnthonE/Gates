@@ -46,12 +46,12 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
-/// What the sim collides and shoots with — `render::anim::ANIM_BODY_H_M` and
-/// `bodies.rs`'s retired `Capsule3d::new(0.4, 1.0)`. Restated rather than
+/// What the sim collides and shoots with — `render::anim::ANIM_BODY_H_M`,
+/// `sim_core::collide::CAPSULE_HEIGHT_M`. Restated rather than
 /// imported because this binary deliberately links no client code; the two
 /// numbers agreeing is the thing the bench is for, so a copy that drifts is
 /// visible on screen rather than hidden behind a shared constant.
-const BODY_H_M: f32 = 1.8;
+const BODY_H_M: f32 = 1.7;
 const BODY_R_M: f32 = 0.4;
 /// First-person eye — `render::mod::EYE_HEIGHT`. Drawn because a head that
 /// sits above it is a head the camera is inside of.

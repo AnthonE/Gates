@@ -6,7 +6,10 @@
 //! one within a hundred metres whatever stands between; the map shows them
 //! wherever they are. Pure so the rules are testable without a window.
 
-use protocol::{TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD};
+use protocol::{
+    TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD, TEAM_OP_ACCEPT, TEAM_OP_DECLINE, TEAM_OP_KICK,
+    TEAM_OP_LEAVE, TEAM_OP_PROMOTE,
+};
 
 /// How far a teammate's mark is drawn over their head, metres: Rust's
 /// hundred. Past it, the map has them.
@@ -19,7 +22,7 @@ pub fn invite_prompt(who: &str) -> String {
 
 /// The line an invite waiting on you shows.
 pub fn invited_line(who: &str) -> String {
-    format!("{who} invited you to their team  ·  [Y] join  ·  /team decline")
+    format!("{who} invited you to their team  ·  [Y] join  ·  [M] team")
 }
 
 /// What a member's state reads as beside their name.
@@ -31,12 +34,81 @@ pub fn state_word(state: u8) -> &'static str {
     }
 }
 
-/// One line of the panel.
+/// One line of the panel; `id` is the member's (0 for the header).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub text: String,
     pub state: u8,
     pub me: bool,
+    pub id: u32,
+}
+
+/// A press on the TEAM screen (`M`): the team verb it sends, as the shard
+/// takes it (`server::team`). The shard's team view is the answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Button {
+    pub label: &'static str,
+    pub op: u8,
+    pub target: u32,
+}
+
+/// The buttons beside a member: kick and promote, for the leader only, on
+/// anyone but themselves.
+pub fn member_buttons(team: &TeamView, me: u32, member: u32) -> Vec<Button> {
+    if team.count == 0 || team.leader != me || member == me || !team.has(member) {
+        return Vec::new();
+    }
+    vec![
+        Button {
+            label: "PROMOTE",
+            op: TEAM_OP_PROMOTE,
+            target: member,
+        },
+        Button {
+            label: "KICK",
+            op: TEAM_OP_KICK,
+            target: member,
+        },
+    ]
+}
+
+/// The screen's own buttons: leave, on a team; join or decline, with an
+/// invite waiting and no team.
+pub fn team_buttons(team: &TeamView) -> Vec<Button> {
+    if team.count > 0 {
+        return vec![Button {
+            label: "LEAVE TEAM",
+            op: TEAM_OP_LEAVE,
+            target: 0,
+        }];
+    }
+    if team.invite != 0 {
+        return vec![
+            Button {
+                label: "JOIN",
+                op: TEAM_OP_ACCEPT,
+                target: team.invite,
+            },
+            Button {
+                label: "DECLINE",
+                op: TEAM_OP_DECLINE,
+                target: 0,
+            },
+        ];
+    }
+    Vec::new()
+}
+
+/// What the status line says once a press has gone out.
+pub fn sent_line(op: u8) -> &'static str {
+    match op {
+        TEAM_OP_LEAVE => "leaving the team…",
+        TEAM_OP_KICK => "kicking them…",
+        TEAM_OP_PROMOTE => "handing them the lead…",
+        TEAM_OP_ACCEPT => "joining…",
+        TEAM_OP_DECLINE => "declined",
+        _ => "",
+    }
 }
 
 /// The panel: a header, then every member, leader first marked `*`, with
@@ -50,6 +122,7 @@ pub fn rows(team: &TeamView, me: u32, at: [f32; 2], name: impl Fn(u32) -> String
         text: format!("TEAM {}/{}", team.count, protocol::TEAM_MAX),
         state: TEAM_AWAKE,
         me: false,
+        id: 0,
     }];
     let mut members: Vec<_> = team.members().to_vec();
     // The leader first, then the shard's order.
@@ -72,6 +145,7 @@ pub fn rows(team: &TeamView, me: u32, at: [f32; 2], name: impl Fn(u32) -> String
             text,
             state: m.state,
             me: m.id == me,
+            id: m.id,
         });
     }
     out
@@ -142,6 +216,35 @@ mod tests {
         );
         assert!(r[2].me);
         assert!(rows(&TeamView::NONE, 1, [0.0, 0.0], |_| String::new()).is_empty());
+    }
+
+    /// The leader gets kick and promote on everyone else; a member gets
+    /// neither; anyone on a team can leave; an invite offers join and
+    /// decline, with join aimed at whoever invited.
+    #[test]
+    fn the_team_screen_offers_only_what_the_shard_takes() {
+        let t = team();
+        let ops = |b: Vec<Button>| b.iter().map(|b| (b.op, b.target)).collect::<Vec<_>>();
+        assert_eq!(
+            ops(member_buttons(&t, 2, 1)),
+            [(TEAM_OP_PROMOTE, 1), (TEAM_OP_KICK, 1)]
+        );
+        assert!(member_buttons(&t, 2, 2).is_empty(), "not on yourself");
+        assert!(
+            member_buttons(&t, 1, 3).is_empty(),
+            "a member is not the leader"
+        );
+        assert!(member_buttons(&t, 2, 9).is_empty(), "not on a stranger");
+        assert_eq!(ops(team_buttons(&t)), [(TEAM_OP_LEAVE, 0)]);
+        let mut invited = TeamView::NONE;
+        invited.invite = 7;
+        assert_eq!(
+            ops(team_buttons(&invited)),
+            [(TEAM_OP_ACCEPT, 7), (TEAM_OP_DECLINE, 0)]
+        );
+        assert!(team_buttons(&TeamView::NONE).is_empty());
+        let r = rows(&t, 1, [0.0, 0.0], |id| format!("#{id}"));
+        assert_eq!(r.iter().map(|r| r.id).collect::<Vec<_>>(), [0, 2, 1, 3]);
     }
 
     #[test]

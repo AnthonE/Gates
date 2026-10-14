@@ -20,7 +20,14 @@ cargo run -p server --release --bin jev-bot -- --local --scripted --bots 4
 cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --scripted
 # a wallet agent: the key is a 0600 file named by path, never argv
 cargo run -p server --release --bin jev-bot -- --server game.example:61234 --agent-key /path/to/agent.key --scripted
+# a new wallet for it: writes the 0600 file (never over an existing one), prints the address
+cargo run -p server --release --bin jev-bot -- --new-key /path/to/agent.key
 ```
+
+**No Rust needed.** Every release archive ships `jev-bot` beside the game,
+with `claude_agent.py` and this file; run it from there and `--local` finds
+`content/` beside it. A wallet key needs Linux or macOS (the 0600 check);
+on Windows it runs `--local` as a guest.
 
 Flags shared with `jev-watch`: `--think-ms` (1000–60000; the floor is the
 operator's once-a-second ceiling), `--timeout-ms` (3000), `--heartbeat-s`
@@ -28,7 +35,8 @@ operator's once-a-second ceiling), `--timeout-ms` (3000), `--heartbeat-s`
 `--seconds` is 1–86400. `--bots N` (1–8) gives every bot its own mind and,
 for `--external`, its own child; Jev and a wallet stay one bot (Jev is billed
 per bot; one key is one body). `--agent-name` (default `jev`, 1–16 printable
-ASCII; a fleet is `jev-1`…) is the label spectators see. `--server` takes
+ASCII; a fleet is `jev-1`…) is the label spectators see, and the name on its
+nametag until its wallet has an Elo Pros name: `flint (agent)`. `--server` takes
 `host:port` and is dialled by name so a real certificate validates;
 `--cert-hash` pins a dev shard's instead.
 
@@ -52,7 +60,7 @@ The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `gather_stone`, `gather_ore`, `forage`, `gather_hemp`, `craft:<item name>`,
 `eat`, `drink`, `flee`, `wait`, `fight`, `hunt`, `heal`, `bag`, `recover`,
 `build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`,
-`join_team`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
+`join_team`, `invite`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
 `supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
 `sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`.
 Only goals that can work now are offered — a gather goal needs a belt tool
@@ -80,6 +88,9 @@ and a reply naming anything else is refused.
   fight whoever swings or shoots near them. A wall or a shut door between
   them: through the nearest door after them, shutting it behind (not
   straight back through the one it just came by). 90 s, then it asks again.
+- **invite** — the invite a player sends with N, to the nearest person (not
+  an agent) within 3 m, while it has no team or leads one with room. Alone
+  on a team for 65 s (nobody said yes), it leaves, so the next N finds it free.
 - **deliver** — a trip into the team's base (below): what the pack carries
   past the belt goes in the box it belongs in, and what the pack lacks comes
   out. Tools, weapons, armour, the building kit and two stacks of food and
@@ -144,10 +155,26 @@ back down it on the way out. A walk into the island that starts walled in on
 a teammate's floor (a built floor underfoot and something within 6 m every
 way it looks) goes out by the nearest door first.
 
-On stream: invite it (**N**), take it home with `/t follow me`, stand at
-your box, and let it be. It keeps the boxes stocked and its tools up on its
-own; `/t go get wood` (or stone, ore, cloth) sends it on a run, `/t the code
-is 1234` if your doors are locked.
+**Stairs** (`agent::floors`). It walks every flight (straight, L, U, spiral,
+triangle spiral, ramp, foundation steps) up and down, and a base's upper
+floors on the grid at their own height. A teammate seen upstairs is followed
+up the stairs; left on a floor, it comes down by them before it goes
+anywhere. A floor laid over a stairwell shuts that flight. Teams also have a
+screen: **M** lists the team, with leave, and promote and kick for the leader.
+
+On stream: invite it (**N**), or say `team?` beside it and it invites you
+(**Y** to accept). Take it home with `/t follow me`, stand at your box, and
+let it be. It keeps the boxes stocked and its tools up on its own;
+`/t go get wood` (or stone, ore, cloth) sends it on a run, `/t the code is
+1234` if your doors are locked.
+
+**`--scripted` hears these too** (`agent::orders`), with no model: plain
+words on team chat from a person on its team. `follow`/`come` and
+`stay`/`stop` stand until the next order; `wood`, `stone`, `ore`, `cloth`
+and `home` happen once; a lone number of up to four digits is the code;
+`help` answers with the list. It answers each on team chat with a fixed
+line. Teams also come back after a shard restart: they are saved by wallet
+beside the world file (`<world_file>.teams`) and archived with it at a wipe.
 
 ## THE GATE and the works
 
@@ -206,7 +233,7 @@ body; `crates/server/tests/agent_walls.rs` holds that and the verb set.
 
 After a goal completes, fails or is interrupted, after a respawn, every
 30 s of one goal, when its team changes (an invite, a join, a leave), and
-(an external source only) when a player near it or a teammate speaks;
+(an external or scripted source) when a player near it or a teammate speaks;
 never more than once per second, one request outstanding. Re-choosing the
 running goal keeps it going.
 A failed or late answer is a failure (exponential backoff), never a scripted
@@ -229,7 +256,12 @@ body. Input and output tokens are counted.
 **Spend guard.** Requests (sent, answered or not) are counted in an hour window
 and a day window from their first request. At either ceiling the mind stops
 asking and says `paused: spend cap`; the current goal finishes and the body
-then holds still. Nothing is substituted.
+then holds still. Nothing is substituted. `--scripted` costs nothing and is
+never held by it.
+
+**Never frozen** (`agent::wedge`). A goal that has kept the body trying to
+move for 30 s without it leaving a metre's box ends `stuck`, whatever its
+skill thinks; the body backs off with a jump and the mind picks again.
 
 ## Bring your own agent
 
@@ -258,7 +290,8 @@ are. `say` is optional: one line, local (players within chat range hear it)
 or, with `"to": "team"`, to its whole team wherever they are; sent with the
 human chat box's encoder, at most one per decision and one per 2 s. A line the chat rule
 refuses (over 48 bytes, a control character, a leading `/`) is counted and
-dropped; the goal still stands. Jev and `--scripted` never speak.
+dropped; the goal still stands. Jev never speaks; `--scripted` only answers
+its team's orders with fixed lines.
 
 **The team's code.** `code` is optional: a lock code a teammate gave, one to
 four digits as a string or a number; anything else fails the reply. It is
@@ -288,6 +321,22 @@ cargo run -p server --release --bin jev-bot -- --local --seconds 600 \
 Every decision is one API call: `--max-requests-hour` is the spend bound.
 `CLAUDE_MODEL` picks the model. Join the printed island from the game to
 talk to it.
+
+**On the public island.** A wallet key once, then the same agent on
+`game.elopros.com` (Gates is free: any wallet gets in). It prints the link to
+watch it; in the game, look at it, press N, then `/t follow me`. With Claude
+Code open in this repo, `/play-gates` does all of it
+(`.claude/skills/play-gates`).
+
+```sh
+mkdir -p -m 700 ~/.gates
+cargo run -p server --release --bin jev-bot -- --new-key ~/.gates/agent.key
+cargo run -p server --release --bin jev-bot -- \
+    --server game.elopros.com:61234 --agent-key ~/.gates/agent.key \
+    --agent-name claude --seconds 3600 --think-ms 3000 --timeout-ms 20000 \
+    --max-requests-hour 300 \
+    --external python3 crates/server/examples/claude_agent.py
+```
 
 **On your Claude plan.** Three ways to pay for the decisions:
 
@@ -324,9 +373,11 @@ good crafts are known by name, not discovered. Speech is local or team,
 never global, and `give` and `authorize` are not agent verbs yet
 (`PLAYERS.md`): it fills a chest rather than handing things over. The team
 chest's doors are found by trying: the nearest door within 12 m of the chest
-when the route says there is no way to it, at most four doors deep; a base
-it cannot route into through its doors (stairs, a second floor) fails as
-stuck. Teams do not survive a shard restart. A guest is
+when the route says there is no way to it, at most four doors deep. It
+follows a teammate up and down stairs and comes down from an upper floor on
+its own, but a team chest whose only way in is through an upper floor fails
+as stuck. Teams survive a shard restart for keyed players; a guest's team
+does not. A guest is
 loopback-only; a wallet agent on a public shard needs what `NETCODE.md` §2.4
 lists for the operator to provision — a generated wallet, entitled, its key
 file owned by the service user — and none of it is a loop's act.

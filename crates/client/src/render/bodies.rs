@@ -160,11 +160,9 @@ struct Live {
 /// **`scale` is still divided out**, and it has to be here rather than at the
 /// call site: the bone hangs under a root carrying
 /// `Transform::with_scale(rig.scale)` as well as the glTF's own centimetres,
-/// and `viewmodel::grip` cancels only the second. The ratio is 1.0 today
-/// (`ANIM_BODY_H_M / ANIM_RIG_H_M`, 1.8 / 1.8) and writing the division
-/// anyway is what keeps a re-measured rig from silently resizing every held
-/// item — the same sentence this function has carried since it existed, now
-/// applied one level further down the chain.
+/// and `viewmodel::grip` cancels only the second. The ratio is
+/// `ANIM_BODY_H_M / ANIM_RIG_H_M` (1.7 / 1.8), so without the division
+/// every held item on a remote body would draw 6% small.
 pub fn hand_pose(row: usize, scale: f32) -> Transform {
     grip(Some(row), scale) * super::viewmodel::pose(&HELD_MODELS[row], VIEWMODEL_PALM)
 }

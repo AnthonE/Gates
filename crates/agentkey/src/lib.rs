@@ -67,6 +67,12 @@ pub enum KeyError {
     InvalidScalar,
     /// This platform cannot check a file's mode, so it will not load one.
     Unsupported,
+    /// [`AgentKey::create`] was pointed at a file that exists: a new key
+    /// never replaces one, which may be somebody's wallet.
+    Exists,
+    /// [`AgentKey::create`] could not draw randomness or write the file
+    /// (the OS's error, which names the path the caller gave).
+    Unwritable(String),
 }
 
 impl std::fmt::Display for KeyError {
@@ -97,6 +103,12 @@ impl std::fmt::Display for KeyError {
                 "agent key: this platform cannot check a file's permissions, so no key \
                  is loaded from a file here"
             ),
+            KeyError::Exists => write!(
+                f,
+                "agent key: that file already exists, and a new key never replaces one \
+                 — name a new path"
+            ),
+            KeyError::Unwritable(why) => write!(f, "agent key: cannot write it ({why})"),
         }
     }
 }
@@ -167,6 +179,58 @@ impl AgentKey {
             let key = Self::from_secret(&secret);
             secret.zeroize();
             key
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Err(KeyError::Unsupported)
+        }
+    }
+
+    /// Make a new key and write it to `path`, which must not exist yet, as
+    /// the file [`AgentKey::load`] reads: 64 hex digits and a newline,
+    /// readable by its owner only (`0600`). The secret comes from the
+    /// operating system's randomness and is never printed; the caller gets
+    /// the key, whose [`AgentKey::address`] is the one to share. On a
+    /// platform that cannot set a file's mode this refuses, as `load` does.
+    pub fn create(path: &Path) -> Result<Self, KeyError> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut secret = [0u8; 32];
+            let key = loop {
+                if let Err(e) = getrandom::getrandom(&mut secret) {
+                    secret.zeroize();
+                    return Err(KeyError::Unwritable(e.to_string()));
+                }
+                // Past the curve order is a one-in-2^128 draw: draw again.
+                if let Ok(key) = Self::from_secret(&secret) {
+                    break key;
+                }
+            };
+            let mut text = [b'\n'; 65];
+            for (i, b) in secret.iter().enumerate() {
+                text[2 * i] = HEX[usize::from(b >> 4)];
+                text[2 * i + 1] = HEX[usize::from(b & 0xf)];
+            }
+            secret.zeroize();
+            let written = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::AlreadyExists => KeyError::Exists,
+                    _ => KeyError::Unwritable(e.to_string()),
+                })
+                .and_then(|mut f| {
+                    f.write_all(&text)
+                        .and_then(|()| f.sync_all())
+                        .map_err(|e| KeyError::Unwritable(e.to_string()))
+                });
+            text.zeroize();
+            written.map(|()| key)
         }
         #[cfg(not(unix))]
         {
@@ -261,6 +325,9 @@ fn hex_val(c: u8) -> Option<u8> {
 
 /// 64 hex digits → 32 bytes. Whitespace around and an `0x` in front are
 /// allowed; nothing else is. Never echoes what it refused.
+#[cfg(unix)]
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
 fn parse_secret(text: &[u8]) -> Result<[u8; 32], KeyError> {
     let t = text.trim_ascii();
     let t = t
@@ -429,6 +496,33 @@ mod tests {
             }
         }
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// `create` writes a file `load` takes, owner-only, and never replaces
+    /// one that exists.
+    #[cfg(unix)]
+    #[test]
+    fn a_created_key_loads_back_and_never_overwrites() {
+        use std::os::unix::fs::PermissionsExt;
+        let p = scratch("new.key");
+        let _ = std::fs::remove_file(&p);
+        let made = AgentKey::create(&p).unwrap();
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(AgentKey::load(&p).unwrap().address(), made.address());
+        let text = std::fs::read(&p).unwrap();
+        assert_eq!(text.len(), 65, "64 hex digits and a newline");
+        assert_eq!(AgentKey::create(&p).unwrap_err(), KeyError::Exists);
+        assert_eq!(
+            AgentKey::load(&p).unwrap().address(),
+            made.address(),
+            "untouched"
+        );
+        let other = scratch("other.key");
+        let _ = std::fs::remove_file(&other);
+        assert_ne!(AgentKey::create(&other).unwrap().address(), made.address());
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&other);
     }
 
     /// Everything that is not a key is refused as a class — and a refusal

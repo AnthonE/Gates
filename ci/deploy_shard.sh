@@ -214,23 +214,34 @@ echo "== 6. the agents =="
 # strands them exactly as it strands a published client: gates-jev plays the
 # public shard, gates-watch runs its own private one but ships this tree's
 # content and renderer. Rebuild both from this commit whenever installed.
+# The house teammates (`ops/gates-teammate@.service`, one per bot) run the
+# same jev-bot, so each one installed restarts on it too.
 AGENT_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
+TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 2>/dev/null | awk '{print $1}')
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
-   || systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
+   || systemctl list-unit-files gates-watch.service >/dev/null 2>&1 \
+   || [ -n "$TEAMMATES" ]; then
   if [ "$GO" = 1 ]; then
     cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
   else
     echo "  would run: cargo build --release -p server --features watch --bin jev-bot --bin jev-watch"
   fi
 fi
-if systemctl list-unit-files gates-jev.service >/dev/null 2>&1; then
+if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 || [ -n "$TEAMMATES" ]; then
   run cp -f target/release/jev-bot "$AGENT_BIN/jev-bot.new"
   run mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
+fi
+if systemctl list-unit-files gates-jev.service >/dev/null 2>&1; then
   run sudo systemctl restart gates-jev.service
 else
   echo "  gates-jev.service not installed"
 fi
+for unit in $TEAMMATES; do
+  run sudo systemctl restart "$unit"
+done
+[ -n "$TEAMMATES" ] || echo "  no gates-teammate@ units installed"
+
 if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
   REL="$WATCH/releases/$(git rev-parse --short=12 HEAD)"
   run mkdir -p "$REL"

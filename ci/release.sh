@@ -192,9 +192,11 @@ if not world or not save:
     sys.exit("shard-public.toml names no world_file or save_file to wipe")
 now = int(time.time())
 arch = pathlib.Path(f"{world}.wipes/{now}")
-# wipe.rs `apply`: the world, its backups, a half-written temp, the trust log
-# and the standings. The store moves whole: HEAD cannot rewrite its records.
+# wipe.rs `apply`: the world, its backups, a half-written temp, the trust log,
+# the teams and the standings. The store moves whole: HEAD cannot rewrite its
+# records.
 names = [world + s for s in ("", ".1", ".2", ".3", ".tmp", ".trust",
+                             ".teams", ".teams.tmp",
                              ".standings", ".standings.json")] + [save]
 moving = [p for p in names if os.path.exists(p)]
 state = pathlib.Path(world + ".wipe")
@@ -282,7 +284,8 @@ echo "== 3. build all of it, before anything moves =="
 run cargo build --release -p server --bin shard || exit 1
 # deploy_shard.sh rebuilds the agents after the restart; built here, that is a no-op.
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
-   || systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
+   || systemctl list-unit-files gates-watch.service >/dev/null 2>&1 \
+   || [ -n "$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 2>/dev/null)" ]; then
   run cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
 fi
 run ./ci/build_web.sh target/webdist || exit 1

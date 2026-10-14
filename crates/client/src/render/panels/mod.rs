@@ -52,6 +52,7 @@ pub mod inv;
 pub mod kit;
 pub mod lore;
 pub mod ring;
+pub mod team;
 pub mod tech;
 pub mod vendor;
 pub mod wheel;
@@ -91,6 +92,9 @@ pub enum Panel {
     Talk,
     /// An inscription in the ancients' glyphs (`E` at one, `lore.rs`).
     Read,
+    /// Your team and its verbs (`M`, `team.rs`): leave, promote, kick,
+    /// join or decline an invite.
+    Team,
 }
 
 impl Panel {
@@ -115,7 +119,8 @@ impl Panel {
             | Panel::Work
             | Panel::Island
             | Panel::Talk
-            | Panel::Read => Page::Other,
+            | Panel::Read
+            | Panel::Team => Page::Other,
         }
     }
 
@@ -281,6 +286,8 @@ pub(crate) struct Seen {
     pub lore_gen: u32,
     /// `ClientCore::standings_gen` at the last redraw: a board arriving.
     pub standings_gen: u32,
+    /// `ClientCore::team_gen` at the last redraw: the team changing.
+    pub team_gen: u32,
     /// `ClientCore::bank_gen` at the last redraw: the way out moving.
     pub bank_gen: u32,
 }
@@ -725,7 +732,7 @@ pub fn register(app: &mut App) {
                 tech::clicks,
                 tech::scroll,
                 vendor::clicks,
-                arc::clicks,
+                (arc::clicks, team::clicks),
                 arc::tabs,
                 lore::clicks,
                 wheel::track,
@@ -946,6 +953,19 @@ pub fn keys(
         ui.dirty = true;
         want = None;
     }
+    // `M`: the team (`team.rs`), a toggle like `O`.
+    if !typing && keyboard.just_pressed(KeyCode::KeyM) {
+        ui.panel = if ui.panel == Panel::Team {
+            Panel::None
+        } else {
+            Panel::Team
+        };
+        ui.drag = None;
+        ui.search_focus = false;
+        ui.status.clear();
+        ui.dirty = true;
+        want = None;
+    }
     if let Some(to) = want.and_then(Panel::of_page) {
         if to != ui.panel {
             ui.panel = to;
@@ -1031,6 +1051,7 @@ pub fn keys(
             | Panel::Island
             | Panel::Talk
             | Panel::Read
+            | Panel::Team
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1262,6 +1283,7 @@ pub fn rebuild(
         Panel::Island => arc::build_island(&mut commands, &ui, core),
         Panel::Talk => lore::build_talk(&mut commands, &ui, core),
         Panel::Read => lore::build_read(&mut commands, &ui, core),
+        Panel::Team => team::build_team(&mut commands, &ui, core),
     }
 }
 
@@ -1297,6 +1319,7 @@ fn detect_changes(
             || core.lore.gen != ui.seen.lore_gen
             || (ui.panel == Panel::Island && core.standings_gen != ui.seen.standings_gen)
             || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
+            || (ui.panel == Panel::Team && core.team_gen != ui.seen.team_gen)
         {
             ui.seen.inv = inv;
             ui.seen.cont = cont;
@@ -1318,6 +1341,7 @@ fn detect_changes(
             ui.seen.lore_gen = core.lore.gen;
             ui.seen.standings_gen = core.standings_gen;
             ui.seen.bank_gen = core.bank_gen;
+            ui.seen.team_gen = core.team_gen;
             ui.dirty = true;
         }
     }

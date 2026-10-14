@@ -848,10 +848,12 @@ fn golden_action(fixture: &[u8], name: &str) {
         "action_pickup.bin" => {
             assert_eq!(
                 decode_action(fixture).unwrap(),
-                ActionMsg::Pickup,
+                ActionMsg::Pickup {
+                    target: protocol::goldens::action_pickup()
+                },
                 "{name}: decode mismatch"
             );
-            encode_action_pickup(&mut buf).unwrap()
+            encode_action_pickup(protocol::goldens::action_pickup(), &mut buf).unwrap()
         }
         "action_consume.bin" => {
             let slot = action_consume();

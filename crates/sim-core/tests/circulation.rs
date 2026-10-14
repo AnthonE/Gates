@@ -12,28 +12,63 @@ use sim_core::{
 const SEED: u64 = 20260731;
 const CX: u16 = 682;
 const CZ: u16 = 682;
-fn world_point(loc: u8, x: f32, z: f32) -> (f32, f32) {
-    match loc {
-        LOC_RISER_XHI => (z, 3.0 - x),
-        LOC_RISER_ZLO => (3.0 - x, 3.0 - z),
-        LOC_RISER_XLO => (3.0 - z, x),
-        _ => (x, z),
+/// Walk a flight's line up and back down with real movement, asserting each
+/// point is reached and stood on at the surface's height. `plate` raises
+/// the column, as a foundation on a slope is.
+fn walk_flight(shape: u8, loc: u8, level: u8, floor: bool, plate: i8) {
+    let haven = terrain::haven(SEED);
+    let base = column_floor_y(SEED, &haven, CX, CZ, plate);
+    let mut cols = ColIndex::new();
+    if floor {
+        cols.add(CX, CZ, level, LOC_PLANE, SHAPE_FLOOR, plate);
     }
-}
-fn route(shape: u8) -> Vec<(f32, f32)> {
-    match shape {
-        SHAPE_STAIRS_L => vec![(0.5, 0.1), (0.5, 2.5), (2.9, 2.5)],
-        SHAPE_STAIRS_U => vec![(0.5, 0.1), (0.5, 2.5), (2.5, 2.5), (2.5, 0.1)],
-        SHAPE_STAIRS_SPIRAL => vec![(0.5, 1.5), (0.5, 2.5), (2.5, 2.5), (2.5, 1.5)],
-        SHAPE_STAIRS_TRI_SPIRAL => vec![(0.5, 2.45), (0.5, 0.5), (2.45, 0.5)],
-        _ => vec![(1.5, 0.1), (1.5, 2.9)],
+    cols.add(CX, CZ, level, loc, shape, plate);
+    let route = circulation::walk_line(shape);
+    let (x, z) = circulation::to_world(loc, route[0].0, route[0].1);
+    let mut body = Body::at(SEED, &haven, CX as f32 * 3.0 + x, CZ as f32 * 3.0 + z);
+    body.qy =
+        movement::quant_y(base + level_y(level) + circulation::surface(shape, loc, x, z).unwrap());
+    let mut scratch = Scratch::barren();
+    for &(x, z) in route.iter().skip(1).chain(route.iter().rev().skip(1)) {
+        let (x, z) = circulation::to_world(loc, x, z);
+        let target = (CX as f32 * 3.0 + x, CZ as f32 * 3.0 + z);
+        let mut arrived = false;
+        for _ in 0..160 {
+            let dx = target.0 - body.qx as f32 * POS_XZ_Q;
+            let dz = target.1 - body.qz as f32 * POS_XZ_Q;
+            if fabs(dx) < 0.055 && fabs(dz) < 0.055 {
+                arrived = true;
+                break;
+            }
+            let scale = fabs(dx).max(fabs(dz));
+            movement::step(
+                SEED,
+                &haven,
+                &cols,
+                &mut scratch.occupants(),
+                &mut body,
+                &InputFrame {
+                    move_x: (dx / scale * 40.0) as i8,
+                    move_z: (dz / scale * 40.0) as i8,
+                    ..InputFrame::default()
+                },
+            );
+        }
+        assert!(
+            arrived,
+            "shape {shape}, loc {loc}, level {level}, target {target:?}, body {body:?}"
+        );
+        let expected = base + level_y(level) + circulation::surface(shape, loc, x, z).unwrap();
+        assert!(
+            fabs(body.qy as f32 * POS_Y_Q - expected) < 0.15,
+            "shape {shape}, expected {expected}, body {body:?}"
+        );
     }
 }
 #[test]
 fn all_flights_walk_in_both_directions_after_every_quarter_turn() {
-    let haven = terrain::haven(SEED);
-    let base = column_floor_y(SEED, &haven, CX, CZ, 0);
     for shape in [
+        SHAPE_STAIRS,
         SHAPE_RAMP,
         SHAPE_STAIRS_L,
         SHAPE_STAIRS_U,
@@ -42,54 +77,17 @@ fn all_flights_walk_in_both_directions_after_every_quarter_turn() {
     ] {
         for loc in STAIR_LOCS {
             for level in [0, 8, 2] {
-                let mut cols = ColIndex::new();
-                cols.add(CX, CZ, level, LOC_PLANE, SHAPE_FLOOR, 0);
-                cols.add(CX, CZ, level, loc, shape, 0);
-                let route = route(shape);
-                let (x, z) = world_point(loc, route[0].0, route[0].1);
-                let mut body = Body::at(SEED, &haven, CX as f32 * 3.0 + x, CZ as f32 * 3.0 + z);
-                body.qy = movement::quant_y(
-                    base + level_y(level) + circulation::surface(shape, loc, x, z).unwrap(),
-                );
-                let mut scratch = Scratch::barren();
-                for &(x, z) in route.iter().skip(1).chain(route.iter().rev().skip(1)) {
-                    let (x, z) = world_point(loc, x, z);
-                    let target = (CX as f32 * 3.0 + x, CZ as f32 * 3.0 + z);
-                    let mut arrived = false;
-                    for _ in 0..160 {
-                        let dx = target.0 - body.qx as f32 * POS_XZ_Q;
-                        let dz = target.1 - body.qz as f32 * POS_XZ_Q;
-                        if fabs(dx) < 0.055 && fabs(dz) < 0.055 {
-                            arrived = true;
-                            break;
-                        }
-                        let scale = fabs(dx).max(fabs(dz));
-                        movement::step(
-                            SEED,
-                            &haven,
-                            &cols,
-                            &mut scratch.occupants(),
-                            &mut body,
-                            &InputFrame {
-                                move_x: (dx / scale * 40.0) as i8,
-                                move_z: (dz / scale * 40.0) as i8,
-                                ..InputFrame::default()
-                            },
-                        );
-                    }
-                    assert!(
-                        arrived,
-                        "shape {shape}, loc {loc}, level {level}, target {target:?}, body {body:?}"
-                    );
-                    let expected =
-                        base + level_y(level) + circulation::surface(shape, loc, x, z).unwrap();
-                    assert!(
-                        fabs(body.qy as f32 * POS_Y_Q - expected) < 0.15,
-                        "shape {shape}, expected {expected}, body {body:?}"
-                    );
-                }
+                walk_flight(shape, loc, level, true, 0);
             }
         }
+    }
+}
+/// Foundation steps stand alone at level 0 of a raised column, leading
+/// down half a storey to the dirt: no plane in their own cell.
+#[test]
+fn foundation_steps_walk_both_ways_in_every_socket() {
+    for loc in STAIR_LOCS {
+        walk_flight(SHAPE_FOUNDATION_STEPS, loc, 0, false, 3);
     }
 }
 #[test]
@@ -299,8 +297,8 @@ fn stepped_foundations_bear_only_the_high_edge_and_keep_plate_limits() {
         );
         assert_eq!(w.pieces.len(), 1);
         let top = column_floor_y(SEED, &w.haven, CX, CZ, w.pieces.entries()[0].plate);
-        let (low_x, low_z) = world_point(loc, 1.5, 0.1);
-        let (high_x, high_z) = world_point(loc, 1.5, 2.9);
+        let (low_x, low_z) = circulation::to_world(loc, 1.5, 0.1);
+        let (high_x, high_z) = circulation::to_world(loc, 1.5, 2.9);
         for (x, z, expected) in [(low_x, low_z, top - 1.45), (high_x, high_z, top - 0.05)] {
             assert!(
                 fabs(

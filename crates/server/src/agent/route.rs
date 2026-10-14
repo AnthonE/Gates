@@ -11,7 +11,13 @@
 //!
 //! A body that stops making progress on a route does what a person does:
 //! jumps, then side-steps, then thinks again, and only then gives up.
+//!
+//! Between a base's floors the route takes the stairs (`agent::floors`):
+//! a goal on another floor than the body's is a trip of walks on one floor
+//! and climbs between them, and the grid walks each floor at its own
+//! height. Ground to ground is the grid alone, as it always was.
 
+use super::floors::{self, Fails, Flight, Flights, Layer, Leg, Target, Trip};
 use super::intent::{yaw_toward, Intent};
 use client_core::core::ClientCore;
 use protocol::EntityState;
@@ -49,6 +55,24 @@ const CLOSER_M: f32 = 1.0;
 /// A gap between two calls longer than this starts a fresh progress
 /// window: the body was doing something else, not stuck.
 const RESUME_GAP_TICKS: u32 = 3;
+/// A trip between floors that has not arrived in this long is given up.
+pub const TRIP_TICKS: u32 = 90 * TICK_HZ;
+/// Or that has been planned again this often.
+pub const TRIP_REPLANS: u8 = 6;
+/// On a flight: a waypoint is reached within this, the last within the
+/// second; no closer in this long is a stall; this far under the line is
+/// a fall.
+const CLIMB_REACH_M: f32 = 0.15;
+const CLIMB_END_M: f32 = 0.25;
+const CLIMB_STALL_TICKS: u32 = 2 * TICK_HZ;
+const CLIMB_FELL_M: f32 = 1.2;
+
+/// What the trip in hand is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TripFor {
+    Goal([f32; 2]),
+    Down,
+}
 
 /// What the legs should do this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +130,11 @@ pub struct RouteStats {
     pub stalls: u64,
     /// Cells expanded, all plans.
     pub expanded: u64,
+    /// Trips planned between floors, flights walked, and legs of a trip
+    /// that failed (each planned again round it).
+    pub floor_plans: u64,
+    pub flights: u64,
+    pub floor_fails: u64,
 }
 
 pub struct Route {
@@ -127,6 +156,27 @@ pub struct Route {
     unstick: Unstick,
     /// Alternates the side-step, so two stalls in a row try both sides.
     strafe_left: bool,
+    /// The leg in hand walks a floor, where a side-step could go over its
+    /// edge: the ladder skips it.
+    on_deck: bool,
+    /// Between floors (`agent::floors`): the flights near the trip, the
+    /// trip, which leg of it, and what it is for.
+    flights: Box<Flights>,
+    trip: Box<Trip>,
+    trip_at: usize,
+    trip_for: Option<TripFor>,
+    trip_target: Target,
+    trip_direct: bool,
+    trip_started: u32,
+    replans: u8,
+    /// On a flight: the next point of its line, and the best distance to it
+    /// and since when.
+    climb_seg: usize,
+    climb_best: Option<(f32, u32)>,
+    fails: Fails,
+    /// A goal no trip could be planned to, its floor, and when: not looked
+    /// for again inside [`REPLAN_TICKS`].
+    no_trip: Option<([f32; 2], Layer, u32)>,
     pub stats: RouteStats,
 }
 
@@ -152,6 +202,19 @@ impl Route {
             called_at: None,
             unstick: Unstick::Walking,
             strafe_left: false,
+            on_deck: false,
+            flights: Box::default(),
+            trip: Box::default(),
+            trip_at: 0,
+            trip_for: None,
+            trip_target: Target::AnyGround,
+            trip_direct: true,
+            trip_started: 0,
+            replans: 0,
+            climb_seg: 0,
+            climb_best: None,
+            fails: Fails::default(),
+            no_trip: None,
             stats: RouteStats::default(),
         }
     }
@@ -167,6 +230,8 @@ impl Route {
         self.best = None;
         self.called_at = None;
         self.unstick = Unstick::Walking;
+        self.end_trip();
+        self.fails.clear();
     }
 
     /// Once per frame, before any skill asks for a step.
@@ -190,6 +255,310 @@ impl Route {
         hurry: bool,
         tick: u32,
     ) -> Step {
+        self.to_at(core, body, goal, None, stop_m, hurry, tick)
+    }
+
+    /// [`Route::to`] with the goal's height, when it is known (a teammate
+    /// seen upstairs): a goal on another floor than the body's is a trip
+    /// over the stairs (`agent::floors`). With no height the goal is on
+    /// the ground, unless the body stands on a floor that runs out under
+    /// it. Ground to ground is [`Route::to`]'s grid alone, unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn to_at(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        goal: [f32; 2],
+        goal_y: Option<f32>,
+        stop_m: f32,
+        hurry: bool,
+        tick: u32,
+    ) -> Step {
+        let (x, y, z) = feet(body);
+        let here = floors::standing(core, x, y, z);
+        let want = match goal_y {
+            Some(gy) => {
+                core.with_ground(|g| floors::layer_at(g.seed, g.haven, goal[0], goal[1], gy))
+            }
+            None => match here {
+                Layer::Deck(d) if deck_under(core, goal, d) => here,
+                _ => Layer::Ground,
+            },
+        };
+        // The trip in hand carries on while it is for the same place on the
+        // same floor, however the caller says so (a teammate's height is
+        // known one frame and only the ground the next).
+        if let Some(TripFor::Goal(g)) = self.trip_for {
+            let same_goal = (g[0] - goal[0]).hypot(g[1] - goal[1]) <= GOAL_MOVED_M;
+            let same_floor = match self.trip_target {
+                Target::At(_, layer, _) => layer.same(want),
+                Target::AnyGround => false,
+            };
+            if same_goal && same_floor {
+                return self.run_trip(core, body, hurry, tick);
+            }
+        }
+        if self.trip_for.is_some() {
+            self.end_trip();
+        }
+        let mut direct = true;
+        match (here, want) {
+            (Layer::Ground, Layer::Ground) => {
+                return self.leg(core, body, goal, stop_m, hurry, tick, None);
+            }
+            (Layer::Deck(d), w) if w.same(here) => {
+                let step = self.leg(core, body, goal, stop_m, hurry, tick, Some(d));
+                if step != Step::Blocked {
+                    return step;
+                }
+                direct = false;
+            }
+            _ => {}
+        }
+        let tried = self.no_trip.is_some_and(|(g, l, at)| {
+            (g[0] - goal[0]).hypot(g[1] - goal[1]) <= GOAL_MOVED_M
+                && l.same(want)
+                && tick.wrapping_sub(at) < REPLAN_TICKS
+        });
+        let target = Target::At(goal, want, stop_m.max(0.5));
+        if !tried && self.start_trip(core, body, here, target, direct, tick) {
+            self.trip_for = Some(TripFor::Goal(goal));
+            return self.run_trip(core, body, hurry, tick);
+        }
+        if !tried {
+            self.no_trip = Some((goal, want, tick));
+        }
+        // No stairs for it: what the route always did.
+        self.leg(core, body, goal, stop_m, hurry, tick, None)
+    }
+
+    /// Get down to the ground by the stairs, from wherever on a base's
+    /// floors the body stands. `Arrived` on the ground; `Blocked` when no
+    /// flight leads down.
+    pub fn down(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Step {
+        if self.trip_for == Some(TripFor::Down) {
+            return self.run_trip(core, body, false, tick);
+        }
+        let (x, y, z) = feet(body);
+        let here = floors::standing(core, x, y, z);
+        if here == Layer::Ground {
+            return Step::Arrived;
+        }
+        if self.trip_for.is_some() {
+            self.end_trip();
+        }
+        if self.start_trip(core, body, here, Target::AnyGround, true, tick) {
+            self.trip_for = Some(TripFor::Down);
+            return self.run_trip(core, body, false, tick);
+        }
+        Step::Blocked
+    }
+
+    /// A trip down the stairs is under way: it finishes before anything
+    /// else walks, even once the last steps are low enough to count as
+    /// the ground.
+    pub fn descending(&self) -> bool {
+        self.trip_for == Some(TripFor::Down)
+    }
+
+    /// The body stands on a base's floor, not the ground.
+    pub fn upstairs(&self, core: &mut ClientCore, body: &EntityState) -> bool {
+        let (x, y, z) = feet(body);
+        floors::standing(core, x, y, z) != Layer::Ground
+    }
+
+    /// The trip between floors in hand, if any, is walking a flight.
+    pub fn climbing(&self) -> bool {
+        self.trip_for.is_some() && matches!(self.trip.legs.get(self.trip_at), Some(Leg::Climb(_)))
+    }
+
+    fn end_trip(&mut self) {
+        self.trip.n = 0;
+        self.trip_at = 0;
+        self.trip_for = None;
+        self.replans = 0;
+        self.climb_seg = 0;
+        self.climb_best = None;
+    }
+
+    /// Plan a trip from where the body stands; true when there is one.
+    fn start_trip(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        here: Layer,
+        target: Target,
+        direct: bool,
+        tick: u32,
+    ) -> bool {
+        let (x, y, z) = feet(body);
+        let far = match target {
+            Target::At(p, ..) => p,
+            Target::AnyGround => [x, z],
+        };
+        self.flights.scan(core, [[x, z], far]);
+        let (flights, fails, trip) = (&self.flights, &self.fails, &mut self.trip);
+        let found = core.with_ground(|g| {
+            floors::plan(
+                [x, y, z],
+                here,
+                target,
+                flights.as_slice(),
+                |p| floors::layer_at(g.seed, g.haven, p[0], p[2], p[1]),
+                fails,
+                tick,
+                direct,
+                trip,
+            )
+        });
+        self.stats.floor_plans += 1;
+        if !found {
+            return false;
+        }
+        if self.trip_for.is_none() {
+            self.trip_started = tick;
+            self.replans = 0;
+        }
+        self.trip_target = target;
+        self.trip_direct = direct;
+        self.trip_at = 0;
+        self.climb_seg = 0;
+        self.climb_best = None;
+        true
+    }
+
+    /// The trip's next step: its legs in order, each planned again round
+    /// a leg that fails, until it arrives or runs out of time or tries.
+    fn run_trip(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        hurry: bool,
+        tick: u32,
+    ) -> Step {
+        if tick.wrapping_sub(self.trip_started) >= TRIP_TICKS || self.replans > TRIP_REPLANS {
+            self.end_trip();
+            self.stats.blocked += 1;
+            return Step::Blocked;
+        }
+        loop {
+            if self.trip_at >= self.trip.n {
+                self.end_trip();
+                return Step::Arrived;
+            }
+            match self.trip.legs[self.trip_at] {
+                Leg::Walk { to, layer, stop } => {
+                    match self.leg(core, body, to, stop, hurry, tick, layer.deck()) {
+                        Step::Arrived => self.trip_at += 1,
+                        Step::Blocked => {
+                            self.fails.add(to, tick);
+                            return self.replan(core, body, hurry, tick);
+                        }
+                        // Never stand waiting on a floor: the callers would
+                        // walk straight, and a floor has edges. The leg's
+                        // end is near and on the same floor.
+                        Step::Wait => {
+                            let (x, _, z) = feet(body);
+                            return Step::Walk {
+                                yaw: yaw_toward(to[0] - x, to[1] - z),
+                                sprint: false,
+                                jump: false,
+                            };
+                        }
+                        step => return step,
+                    }
+                }
+                Leg::Climb(f) => match self.climb(&f, body, tick) {
+                    Ok(Some(step)) => return step,
+                    Ok(None) => {
+                        self.stats.flights += 1;
+                        self.trip_at += 1;
+                        self.climb_seg = 0;
+                        self.climb_best = None;
+                    }
+                    Err(()) => {
+                        let foot = f.foot();
+                        self.fails.add([foot[0], foot[2]], tick);
+                        return self.replan(core, body, hurry, tick);
+                    }
+                },
+            }
+        }
+    }
+
+    fn replan(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        hurry: bool,
+        tick: u32,
+    ) -> Step {
+        self.stats.floor_fails += 1;
+        self.replans += 1;
+        self.path.clear();
+        self.last = None;
+        let (x, y, z) = feet(body);
+        let here = floors::standing(core, x, y, z);
+        let (target, direct) = (self.trip_target, self.trip_direct);
+        if self.replans <= TRIP_REPLANS && self.start_trip(core, body, here, target, direct, tick) {
+            return self.run_trip(core, body, hurry, tick);
+        }
+        self.end_trip();
+        self.stats.blocked += 1;
+        Step::Blocked
+    }
+
+    /// One step along a flight's line, point to point at a walk: `None`
+    /// at its end, `Err` on a stall or a fall off it.
+    fn climb(&mut self, f: &Flight, body: &EntityState, tick: u32) -> Result<Option<Step>, ()> {
+        let (x, y, z) = feet(body);
+        let n = usize::from(f.n);
+        while self.climb_seg < n {
+            let p = f.pts[self.climb_seg];
+            let reach = if self.climb_seg + 1 == n {
+                CLIMB_END_M
+            } else {
+                CLIMB_REACH_M
+            };
+            let d = (p[0] - x).hypot(p[2] - z);
+            if d <= reach {
+                self.climb_seg += 1;
+                self.climb_best = None;
+                continue;
+            }
+            let under = f.pts[self.climb_seg.saturating_sub(1)][1].min(p[1]);
+            if y < under - CLIMB_FELL_M {
+                return Err(());
+            }
+            match self.climb_best {
+                Some((best, _)) if d < best - 0.05 => self.climb_best = Some((d, tick)),
+                Some((_, at)) if tick.wrapping_sub(at) >= CLIMB_STALL_TICKS => return Err(()),
+                Some(_) => {}
+                None => self.climb_best = Some((d, tick)),
+            }
+            return Ok(Some(Step::Walk {
+                yaw: yaw_toward(p[0] - x, p[2] - z),
+                sprint: false,
+                jump: false,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// One step toward `goal` on one layer: the grid at the terrain's
+    /// height, or at a floor's (`deck`).
+    #[allow(clippy::too_many_arguments)]
+    fn leg(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        goal: [f32; 2],
+        stop_m: f32,
+        hurry: bool,
+        tick: u32,
+        deck: Option<f32>,
+    ) -> Step {
+        self.on_deck = deck.is_some();
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let stop_m = stop_m.max(0.5);
         let moved = self.goal.is_none_or(|g| {
@@ -260,7 +629,10 @@ impl Route {
             let stop_cm = (stop_m * 100.0) as u16;
             let (nav, path) = (&mut self.nav, &mut self.path);
             let before = nav.expanded;
-            let plan = core.with_ground(|g| nav.plan(g, x, y, z, goal[0], goal[1], stop_cm, path));
+            let plan = core.with_ground(|g| match deck {
+                Some(d) => nav.plan_on(g, x, y, z, goal[0], goal[1], stop_cm, d, path),
+                None => nav.plan(g, x, y, z, goal[0], goal[1], stop_cm, path),
+            });
             self.stats.plans += 1;
             self.stats.expanded += nav.expanded - before;
             match plan {
@@ -322,6 +694,8 @@ impl Route {
         self.stats.stalls += 1;
         self.unstick = match self.unstick {
             Unstick::Walking => Unstick::Jump,
+            // No side-step on a floor: it could go over the edge.
+            Unstick::Jump if self.on_deck => Unstick::Replan,
             Unstick::Jump => {
                 self.strafe_left = !self.strafe_left;
                 Unstick::Strafe
@@ -334,6 +708,24 @@ impl Route {
         };
         false
     }
+}
+
+/// The body's feet, metres.
+fn feet(body: &EntityState) -> (f32, f32, f32) {
+    (
+        body.qx as f32 * POS_XZ_Q,
+        body.qy as f32 * POS_Y_Q,
+        body.qz as f32 * POS_XZ_Q,
+    )
+}
+
+/// A floor at about height `d` runs under `goal`: the same floor, as far
+/// as a walk on it can tell.
+fn deck_under(core: &mut ClientCore, goal: [f32; 2], d: f32) -> bool {
+    core.with_ground(|g| {
+        let s = sim_core::collide::body_ground(g.seed, g.haven, g.cols, goal[0], goal[1], d);
+        (s - d).abs() <= floors::LAYER_M
+    })
 }
 
 /// Whether a step along `yaw` wades into deeper water than the body stands

@@ -484,7 +484,7 @@ pub fn setup(
         // photographs with a real camera's flare and glare, and the disk is
         // what bloom has to work on.
         SunDisk {
-            intensity: SUN_DISK_INTENSITY,
+            intensity: sun_disk_intensity(lux::DIRECT_SUNLIGHT, DAY_EV100),
             ..SunDisk::EARTH
         },
         Transform::from_rotation(sun_rotation()),
@@ -674,6 +674,29 @@ pub const TWILIGHT_MIN_ELEV: f32 = 0.009;
 pub const SHADOW_MIN_ELEV: f32 = 0.035;
 /// `SunDisk::intensity` at full visibility.
 pub const SUN_DISK_INTENSITY: f32 = 1.6;
+/// The brightest the disk is drawn, linear after exposure and before the
+/// air dims it. Uncapped, a daytime disk is 1e4..1e5 per pixel (noon is
+/// over half-float's 65504). TAA resolves in `c / (1 + c)` and keeps that
+/// in a half-float history, which rounds to exactly 1.0 above ~4096, so
+/// the reverse `t / (1 - t)` blows up: the disk's resolved energy jumps
+/// frame to frame as the view moves, and bloom spreads it over the sky as
+/// a flicker. 2000 is still white and still ~500x the sky around it.
+pub const SUN_DISK_PEAK: f32 = 2000.0;
+const _: () = assert!(SUN_DISK_PEAK < 4096.0 * 0.75);
+
+/// `SunDisk::intensity` for a light of `illuminance` lux seen at `ev100`:
+/// [`SUN_DISK_INTENSITY`], lowered where the disk would pass
+/// [`SUN_DISK_PEAK`]. The atmosphere draws a disk of
+/// `illuminance / solid_angle * intensity * exposure * transmittance`.
+pub fn sun_disk_intensity(illuminance: f32, ev100: f32) -> f32 {
+    let half = SunDisk::EARTH.angular_size * 0.5;
+    let solid_angle = std::f32::consts::PI * half * half;
+    let per_intensity = illuminance / solid_angle * Exposure { ev100 }.exposure();
+    if per_intensity <= 0.0 {
+        return SUN_DISK_INTENSITY;
+    }
+    SUN_DISK_INTENSITY.min(SUN_DISK_PEAK / per_intensity)
+}
 /// Ambient added at the peak of a lightning flash, lux.
 pub const FLASH_LUX: f32 = 2_500.0;
 
@@ -897,7 +920,8 @@ pub fn day_night(
         // of the sun has to put the disk out itself.
         if let Some(mut disk) = disk {
             disk.intensity = if elev > 0.0 {
-                SUN_DISK_INTENSITY * (1.0 - w.sun_cover.max(w.fog))
+                sun_disk_intensity(d.illuminance, exposure_ev100(frac))
+                    * (1.0 - w.sun_cover.max(w.fog))
             } else {
                 0.0
             };

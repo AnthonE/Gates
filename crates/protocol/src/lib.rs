@@ -1157,7 +1157,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// promote), `SUB_TEAM` (97) carries the receiver's own team (leader,
 /// members with state and a 1 m position, a pending invite), and chat's
 /// one channel bit becomes two (`chat::Channel`: local, global, team).
-pub const PROTO_VER: u16 = 108;
+/// v109 — `ACT_PICKUP` carries a 32-bit stack id, the one the crosshair is
+/// on (0 for none): the sim takes it while it is in reach, else the nearest.
+pub const PROTO_VER: u16 = 109;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1918,12 +1920,11 @@ const ACT_RESEARCH: u32 = 17;
 /// (`research::unlock`), so the only thing the client may claim is
 /// *which node it is pointing at*.
 const ACT_UNLOCK: u32 = 18;
-/// Take the nearest loose stack in reach (`sim-core/grounditem.rs`) — a
-/// barrel's scatter, or an arrow that came to rest (`sim-core/spent.rs`).
-/// **Payload-free, `ACT_LOOT`'s shape and its whole argument** — a stack
-/// lies wherever it fell, so it has no grid address to name, and the sim
-/// re-derives the pick from the sender's own body. Nothing to forge and
-/// nothing to reach past a wall.
+/// Take a loose stack in reach (`sim-core/grounditem.rs`) — a barrel's
+/// scatter, or an arrow that came to rest (`sim-core/spent.rs`). Payload
+/// (v109): the aimed stack's id, 0 for none. The sim takes that stack only
+/// while it is in the sender's reach, else the nearest, so a forged id
+/// reaches nothing the arm could not.
 ///
 /// The nineteenth code, and the first spent since `ACT_UNLOCK`. It is what
 /// `reference/PROJECTILES.md` §9.7 calls piece 3, and the `PROTO_VER` bump
@@ -2351,12 +2352,11 @@ pub enum ActionMsg {
     /// there is no id here to forge, no address to aim past a wall, and
     /// no way to loot something the sender is not standing on.
     Loot,
-    /// Take the nearest loose stack in reach — a barrel's scatter or a
-    /// landed arrow (`sim-core/grounditem.rs`, `sim-core/spent.rs`).
-    /// **Payload-free for `Loot`'s reason exactly**, and it is the second
-    /// message on this lane to be so: the thing it acts on lies where it
-    /// fell rather than at an address.
-    Pickup,
+    /// Take a loose stack in reach — a barrel's scatter or a landed arrow
+    /// (`sim-core/grounditem.rs`, `sim-core/spent.rs`). `target` is the
+    /// stack id the crosshair is on, 0 for none (v109); the sim falls back
+    /// to the nearest when it is gone or out of reach.
+    Pickup { target: u32 },
     /// Eat what is in inventory slot `slot` (survival.rs). The slot is
     /// shape-checked here — past the sim's array it does not decode — and
     /// everything else is the sim's verdict: an empty hand, a stack of
@@ -2708,12 +2708,13 @@ pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
     Ok(w.finish())
 }
 
-/// `ActionMsg::Pickup` — take the nearest loose stack in reach.
-/// Payload-free, so this is the whole frame: a kind and a subtype.
-pub fn encode_action_pickup(buf: &mut [u8]) -> Result<usize, WireError> {
+/// `ActionMsg::Pickup` — take the aimed loose stack (`target`, a stack id),
+/// or the nearest in reach when `target` is 0 or gone.
+pub fn encode_action_pickup(target: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_PICKUP, ACTION_SUB_BITS)?;
+    w.write(target, 32)?;
     Ok(w.finish())
 }
 
@@ -3446,7 +3447,9 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Rotate { cx, cz, level, loc }
         }
         ACT_LOOT => ActionMsg::Loot,
-        ACT_PICKUP => ActionMsg::Pickup,
+        ACT_PICKUP => ActionMsg::Pickup {
+            target: r.read(32)?,
+        },
         ACT_CONSUME => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
             if slot as usize >= sim_core::limits::INV_SLOTS {

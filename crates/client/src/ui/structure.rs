@@ -141,24 +141,7 @@ pub fn nearest(
             continue;
         }
         best_d2 = d2;
-        let sided = (rec.row as u16) < piece_have
-            && shape_has_facing(piece_defs.pieces[rec.row as usize].shape);
-        best = Some(Target {
-            store: Store::Piece,
-            cx: rec.cx,
-            cz: rec.cz,
-            level: rec.level,
-            loc: rec.loc,
-            row: rec.row,
-            dmg: rec.dmg,
-            hp: rec.hp,
-            hp_max: if (rec.row as u16) < piece_have {
-                piece_defs.pieces[rec.row as usize].hp
-            } else {
-                0
-            },
-            side: sided.then(|| soft_side(rec, at.0, at.1)),
-        });
+        best = Some(piece_target(rec, piece_defs, piece_have, at));
     }
 
     for rec in deploys {
@@ -262,6 +245,74 @@ fn piece_crosses(
         s = (s + STEP_M).min(end);
     }
     false
+}
+
+/// How far along the look the hammer's ray walks, metres: the sim's planar
+/// [`BUILD_REACH_M`] to an anchor plus a cell, so a piece whose anchor is in
+/// reach is met wherever on it the crosshair sits. [`struck`] then holds the
+/// hit to the sim's own reach.
+pub const AIM_REACH_M: f32 = BUILD_REACH_M + sim_core::build::BUILD_CELL_M;
+
+/// The structure the crosshair is on, from the look ray's first built hit
+/// (`interact::resolve_built`, the sim's world cast): `None` when this
+/// client holds no record at that address or its anchor is out of the
+/// sim's reach of the feet. The caller does not fall back to [`nearest`]
+/// then: a crosshair on one wall must never upgrade another.
+#[allow(clippy::too_many_arguments)]
+pub fn struck(
+    hit: sim_core::ranged::Struck,
+    at: (f32, f32),
+    pieces: &[PieceRec],
+    piece_defs: &BuildContent,
+    piece_have: u16,
+    deploys: &[DeployRec],
+    deploy_defs: &DeployContent,
+    deploy_have: u16,
+) -> Option<Target> {
+    let a = hit.at;
+    let same =
+        |cx: u16, cz: u16, level: u8, loc: u8| (cx, cz, level, loc) == (a.cx, a.cz, a.level, a.loc);
+    let (target, (ax, az)) = if hit.deploy {
+        let rec = deploys.iter().find(|r| same(r.cx, r.cz, r.level, r.loc))?;
+        (
+            deploy_target(rec, deploy_defs, deploy_have),
+            sim_core::deploy::rec_anchor(rec),
+        )
+    } else {
+        let rec = pieces.iter().find(|r| same(r.cx, r.cz, r.level, r.loc))?;
+        (
+            piece_target(rec, piece_defs, piece_have, at),
+            anchor(rec.cx, rec.cz, rec.loc),
+        )
+    };
+    let (dx, dz) = (ax - at.0, az - at.1);
+    (dx * dx + dz * dz <= BUILD_REACH_M * BUILD_REACH_M).then_some(target)
+}
+
+fn piece_target(
+    rec: &PieceRec,
+    piece_defs: &BuildContent,
+    piece_have: u16,
+    at: (f32, f32),
+) -> Target {
+    let sided = (rec.row as u16) < piece_have
+        && shape_has_facing(piece_defs.pieces[rec.row as usize].shape);
+    Target {
+        store: Store::Piece,
+        cx: rec.cx,
+        cz: rec.cz,
+        level: rec.level,
+        loc: rec.loc,
+        row: rec.row,
+        dmg: rec.dmg,
+        hp: rec.hp,
+        hp_max: if (rec.row as u16) < piece_have {
+            piece_defs.pieces[rec.row as usize].hp
+        } else {
+            0
+        },
+        side: sided.then(|| soft_side(rec, at.0, at.1)),
+    }
 }
 
 fn deploy_target(rec: &DeployRec, deploy_defs: &DeployContent, deploy_have: u16) -> Target {

@@ -14,7 +14,10 @@
 //! bases its eyes found ([`raid`]), working a teammate's doors
 //! ([`doors`]), living in the team's base ([`supply`]), trading at THE
 //! GATE and feeding the works ([`gate`]), and the ancients' stones and
-//! locks and the ziggurat's card doors ([`lore`]).
+//! locks and the ziggurat's card doors ([`lore`]), and the plain words a
+//! teammate types that the scripted policy takes as orders ([`orders`]),
+//! the watchdog that ends a goal whose body will not move ([`wedge`]), and
+//! the stairs between a base's floors ([`floors`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -29,6 +32,7 @@ pub mod combat;
 pub mod cover;
 pub mod defend;
 pub mod doors;
+pub mod floors;
 pub mod gate;
 pub mod hands;
 pub mod home;
@@ -37,6 +41,7 @@ pub mod loadout;
 pub mod lock;
 pub mod loot;
 pub mod lore;
+pub mod orders;
 pub mod oven;
 pub mod plan;
 pub mod raid;
@@ -45,4 +50,5 @@ pub mod site;
 pub mod stash;
 pub mod supply;
 pub mod tracks;
+pub mod wedge;
 pub mod wiki;

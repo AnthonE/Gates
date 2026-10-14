@@ -20,3 +20,6 @@ tiny-keccak = { version = "2", features = ["keccak"] }
 # Already in the lock through `k256`: the file's bytes and the parsed secret
 # are wiped rather than left for the allocator to hand to somebody else.
 zeroize = "1"
+# The OS's randomness for `AgentKey::create` (`jev-bot --new-key`). Already
+# in the lock through `server`.
+getrandom = "0.2"

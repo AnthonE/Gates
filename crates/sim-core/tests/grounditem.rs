@@ -282,7 +282,10 @@ fn the_take_is_nearest_first() {
     assert_eq!(w.ground_items.len(), 2);
     let ids: Vec<u32> = w.ground_items.entries().iter().map(|g| g.id).collect();
 
-    w.tick(&[Command::Pickup { id: PLAYER }]);
+    w.tick(&[Command::Pickup {
+        id: PLAYER,
+        target: 0,
+    }]);
     assert_eq!(
         w.ground_items.len(),
         1,
@@ -291,6 +294,68 @@ fn the_take_is_nearest_first() {
     assert!(
         w.ground_items.index_of_id(ids[0]).is_none(),
         "the far stack was taken before the near one"
+    );
+}
+
+/// A take naming a stack (the crosshair's, wire v109) lifts that stack even
+/// with a nearer one at the feet; naming one out of reach takes the nearest.
+#[test]
+fn the_take_lifts_the_aimed_stack_in_reach() {
+    let mut w = world();
+    let bc = w.backpack;
+    let (pqx, pqz) = (w.players[0].body.qx, w.players[0].body.qz);
+    let spots = [
+        (pqx, pqz),
+        (pqx + quant_xz(1.5), pqz),
+        (pqx + quant_xz(LOOT_REACH_M + 3.0), pqz),
+    ];
+    for (i, (qx, qz)) in spots.into_iter().enumerate() {
+        let mut items = [ItemStack::default(); INV_SLOTS];
+        items[0] = stack(i as u16, 1);
+        w.ground_items
+            .scatter(&bc, SEED, hv(), i as u32 + 1, qx, qz, &items, w.tick);
+    }
+    let p = w.players[0];
+    let mut by_dist: Vec<(f32, u32, bool)> = w
+        .ground_items
+        .entries()
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let dx = (g.qx - pqx) as f32 * POS_XZ_Q;
+            let dz = (g.qz - pqz) as f32 * POS_XZ_Q;
+            (dx * dx + dz * dz, g.id, w.ground_items.in_reach(i, &p))
+        })
+        .collect();
+    by_dist.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let [(_, near, true), (_, aimed, true), (_, gone, false)] = by_dist[..] else {
+        panic!("the fixture did not land two stacks in reach and one out: {by_dist:?}");
+    };
+
+    w.tick(&[Command::Pickup {
+        id: PLAYER,
+        target: aimed,
+    }]);
+    assert!(
+        w.ground_items.index_of_id(aimed).is_none(),
+        "the aimed stack stayed on the ground"
+    );
+    assert!(
+        w.ground_items.index_of_id(near).is_some(),
+        "the nearer stack was taken instead of the aimed one"
+    );
+
+    w.tick(&[Command::Pickup {
+        id: PLAYER,
+        target: gone,
+    }]);
+    assert!(
+        w.ground_items.index_of_id(gone).is_some(),
+        "a stack out of reach was taken by naming it"
+    );
+    assert!(
+        w.ground_items.index_of_id(near).is_none(),
+        "an out-of-reach target did not fall back to the nearest"
     );
 }
 
@@ -306,7 +371,10 @@ fn a_take_out_of_reach_takes_nothing() {
         .scatter(&bc, SEED, hv(), 1, qx, qz, &roll(1), w.tick);
     let before = w.ground_items.entries()[0];
 
-    w.tick(&[Command::Pickup { id: PLAYER }]);
+    w.tick(&[Command::Pickup {
+        id: PLAYER,
+        target: 0,
+    }]);
 
     assert_eq!(w.ground_items.len(), 1, "an out-of-reach stack was taken");
     assert_eq!(w.ground_items.entries()[0], before, "and it did not change");
@@ -328,7 +396,10 @@ fn a_take_into_a_full_pack_spills_rather_than_destroying() {
     w.ground_items
         .scatter(&bc, SEED, hv(), 1, qx, qz, &items, w.tick);
 
-    w.tick(&[Command::Pickup { id: PLAYER }]);
+    w.tick(&[Command::Pickup {
+        id: PLAYER,
+        target: 0,
+    }]);
 
     assert!(w.ground_items.is_empty(), "the stack stayed on the ground");
     let in_bags: u32 = w
