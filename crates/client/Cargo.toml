@@ -876,4 +876,8 @@ web-sys = { version = "0.3", features = [
     # (`net/web.rs::fetch_bytes`, same-origin on elopros.com). `Window` above
     # holds `fetch`; this is what it answers with.
     "Response",
+    # `render/report.rs`: a bug report POSTed to the platform (`RequestInit`),
+    # the browser's user agent in it, and the crash beacon (`Navigator`).
+    "RequestInit",
+    "Navigator",
 ] }

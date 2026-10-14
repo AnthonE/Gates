@@ -73,15 +73,31 @@
 //! The total is bounded by construction rather than by a separate cap, since
 //! every field that is not a fixed-width number is one of the three above.
 //!
+//! ## Desktop or browser, and what it ran on
+//!
+//! The same document comes from the desktop client and from the browser
+//! build, and [`Build::runtime`] says which. A tab is a different program in
+//! every way that matters to a fix — one thread, no filesystem, WebGL2 or
+//! WebGPU picked at compile time (`build.rs`) — so a report that cannot say
+//! where it ran sends the fixer to the wrong build. [`Machine`] carries the
+//! GPU, its backend and driver, the window size, and in a browser the user
+//! agent: a bug that only one GPU or one browser shows is unfixable without
+//! them.
+//!
+//! ## Where it goes
+//!
+//! The player presses Enter and it is sent to the platform's intake
+//! ([`INTAKE_PATH`], `meter/bugs.py` in `AnthonE/scry-forge`) with the frame
+//! they were looking at. The desktop also keeps the `.md`/`.json` pair
+//! beside the screenshots; a tab has no disk, so there the send is the
+//! report.
+//!
 //! ## What is deliberately NOT in here
 //!
 //! No file paths (a screenshot is referenced by **name**, never by path —
 //! `/home/<their real name>/` is not ours to publish), no environment, no
-//! hardware, no process list, no log tail, and no network address the player
-//! did not already point this client at. A report is something a player hands
-//! over on purpose; anything in it that they would not have typed is a
-//! surprise, and a surprise in a file with their name near it is how a
-//! feature like this earns a reputation it cannot lose.
+//! process list, no log tail, and no network address the player did not
+//! already point this client at.
 
 use serde::Serialize;
 
@@ -122,6 +138,21 @@ pub const BODY_MAX: usize = 4_000;
 /// paragraph is readable and 4,000 newlines is a denial of the reader's
 /// attention. 80 is a screenful and a half of terminal.
 pub const BODY_LINES_MAX: usize = 80;
+
+/// Where a report is POSTed, on the platform origin
+/// (`ui::names::PLATFORM_ORIGIN`). `meter/bugs.py` in `AnthonE/scry-forge`.
+pub const INTAKE_PATH: &str = "/api/bugs";
+
+/// The game slug the intake files this under.
+pub const GAME: &str = "gates";
+
+/// The largest screenshot sent with a report. The intake takes 8 MiB; a
+/// bigger PNG is dropped and the report goes without it.
+pub const SHOT_SEND_MAX: usize = 7 << 20;
+
+/// The most characters any one [`Machine`] field may carry. A user agent is
+/// the longest honest one, at a couple of hundred.
+pub const MACHINE_MAX: usize = 300;
 
 /// What kind of wrong this is — which decides what evidence matters and which
 /// doc the fixer opens first.
@@ -290,24 +321,88 @@ pub struct Build {
     /// The packet layout — `PROTO_VER`. A shard refuses a mismatch outright,
     /// so this being wrong is itself a finding.
     pub wire: u16,
-    /// `linux` / `windows` / `macos`, from the compile target rather than
-    /// from the running box: a report should say what was *built*, since that
-    /// is what a fixer has to reproduce.
+    /// `linux` / `windows` / `macos` / `web`, from the compile target rather
+    /// than from the running box: a report should say what was *built*, since
+    /// that is what a fixer has to reproduce.
     pub platform: &'static str,
+    /// `desktop` or `browser`.
+    pub runtime: &'static str,
+    /// `webgl2` or `webgpu` for the browser's two modules, which are
+    /// different builds (`build.rs`); `native` on the desktop, where the
+    /// backend is picked at run time and [`Machine::backend`] says which.
+    pub gpu_api: &'static str,
 }
 
 impl Build {
     /// This binary, read off the constants.
     pub fn here() -> Self {
+        let web = cfg!(target_arch = "wasm32");
         Self {
             version: protocol::version::VERSION.to_string(),
             commit: protocol::version::GIT_SHA.to_string(),
             wire: protocol::PROTO_VER,
-            platform: match HOST_OS {
-                HostOs::Windows => "windows",
-                HostOs::Mac => "macos",
-                HostOs::Unix => "linux",
+            // `HOST_OS` is `Unix` on wasm32 (its target_os is "unknown"), so
+            // the browser is checked first or every tab reports "linux".
+            platform: if web {
+                "web"
+            } else {
+                match HOST_OS {
+                    HostOs::Windows => "windows",
+                    HostOs::Mac => "macos",
+                    HostOs::Unix => "linux",
+                }
             },
+            runtime: if web { "browser" } else { "desktop" },
+            gpu_api: if !web {
+                "native"
+            } else if cfg!(webgl2) {
+                "webgl2"
+            } else {
+                "webgpu"
+            },
+        }
+    }
+
+    /// Is this the browser build?
+    pub fn in_browser(&self) -> bool {
+        self.runtime == "browser"
+    }
+}
+
+/// What the report ran on, read at the moment it was filed.
+///
+/// Every field is text the platform hands over (the GPU adapter's own name,
+/// the browser's user agent), so each goes through [`one_line`] at
+/// [`MACHINE_MAX`] on the way in — [`Machine::new`] is the only door.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Machine {
+    /// The adapter's name: `NVIDIA GeForce RTX 3060`, `ANGLE (Intel …)`.
+    pub gpu: String,
+    /// `Vulkan`, `Metal`, `Dx12`, `Gl`, `BrowserWebGpu`.
+    pub backend: String,
+    /// Driver and driver version, where the platform says.
+    pub driver: String,
+    /// The window in physical pixels.
+    pub window: [u32; 2],
+    /// The browser's user agent. `None` on the desktop.
+    pub browser: Option<String>,
+}
+
+impl Machine {
+    pub fn new(
+        gpu: &str,
+        backend: &str,
+        driver: &str,
+        window: [u32; 2],
+        browser: Option<&str>,
+    ) -> Self {
+        let clean = |s: &str| one_line(s, MACHINE_MAX).0;
+        Self {
+            gpu: clean(gpu),
+            backend: clean(backend),
+            driver: clean(driver),
+            window,
+            browser: browser.map(clean).filter(|s| !s.is_empty()),
         }
     }
 }
@@ -449,6 +544,8 @@ pub struct Report {
     /// report — the audio thread exists on the menus too — and absent from
     /// the panic hook's, which has no world to read.
     pub audio: Option<Audio>,
+    /// What it ran on. Present whenever the Bevy half files a report.
+    pub machine: Option<Machine>,
     /// The screenshot's **file name**, never its path. See the module header.
     pub shot: Option<String>,
     pub crash: Option<Crash>,
@@ -482,11 +579,23 @@ impl Report {
             net: None,
             vitals: None,
             audio: None,
+            machine: None,
             shot: None,
             crash: None,
             wallet: None,
             truncated: t_cut || b_cut,
         }
+    }
+
+    /// The report the panic hooks file: written by the client rather than a
+    /// player, so its prose is the panic payload — bounded and sanitized like
+    /// any other, since a payload can quote a chat line or a shard's name.
+    pub fn crash(location: String, payload: &str, at: u64) -> Self {
+        let mut r = Report::new(Kind::Crash, "the client panicked", "", at, Build::here());
+        let (message, cut) = many_lines(payload, BODY_MAX, BODY_LINES_MAX);
+        r.truncated |= cut;
+        r.crash = Some(Crash { location, message });
+        r
     }
 
     /// A stable id for reports **of the same shape**, so a hundred players
@@ -522,6 +631,7 @@ impl Report {
         eat(&self.build.commit);
         eat(&self.build.wire.to_string());
         eat(self.build.platform);
+        eat(self.build.gpu_api);
         eat(match &self.crash {
             Some(c) => &c.location,
             None => "",
@@ -650,6 +760,31 @@ impl Report {
         row(&mut s, "platform", self.build.platform);
         s.push('\n');
 
+        s.push_str("## Where it ran\n\n| | |\n|---|---|\n");
+        row(&mut s, "runtime", &self.runtime_label());
+        if let Some(m) = &self.machine {
+            if let Some(ua) = &m.browser {
+                row(&mut s, "browser", &code(ua));
+            }
+            if !m.gpu.is_empty() {
+                row(&mut s, "gpu", &code(&m.gpu));
+            }
+            if !m.backend.is_empty() {
+                row(&mut s, "backend", &code(&m.backend));
+            }
+            if !m.driver.is_empty() {
+                row(&mut s, "driver", &code(&m.driver));
+            }
+            if m.window != [0, 0] {
+                row(
+                    &mut s,
+                    "window",
+                    &format!("{} × {}", m.window[0], m.window[1]),
+                );
+            }
+        }
+        s.push('\n');
+
         if let Some(p) = &self.place {
             s.push_str("## Where\n\n| | |\n|---|---|\n");
             row(&mut s, "seed", &code(&p.seed.to_string()));
@@ -756,6 +891,7 @@ impl Report {
         s.push_str("## Picking this up\n\n");
         s.push_str(self.kind.how_to_start());
         s.push_str("\n\n");
+        s.push_str(&self.repro_line());
         s.push_str(&format!(
             "- The doc that owns this: `{}`\n\
              - Reproduce the build: `git checkout {}` (release {})\n\
@@ -821,6 +957,40 @@ impl Report {
         s
     }
 
+    /// `desktop`, or which browser module — the WebGL2 and WebGPU modules are
+    /// different builds, so the label names the one that ran.
+    pub fn runtime_label(&self) -> String {
+        match (self.build.in_browser(), self.build.gpu_api) {
+            (false, _) => format!("desktop ({})", self.build.platform),
+            (true, "webgl2") => "browser · the WebGL2 module".into(),
+            (true, "webgpu") => "browser · the WebGPU module".into(),
+            (true, other) => format!("browser · {other}"),
+        }
+    }
+
+    /// The first bullet under **Picking this up**: how to run what the player
+    /// ran. A browser report reproduced on the desktop client is a different
+    /// program — one thread, no disk, `cfg(webgl2)` downgrades — so it says so.
+    fn repro_line(&self) -> String {
+        if !self.build.in_browser() {
+            return format!(
+                "- It ran on the **desktop** ({}): \
+                 `cargo run -p client --features render --bin gates`\n",
+                self.build.platform
+            );
+        }
+        let module = if self.build.gpu_api == "webgpu" {
+            "the WebGPU module (`--features webgpu`)"
+        } else {
+            "the WebGL2 module — code under `cfg(webgl2)` is what ran"
+        };
+        format!(
+            "- It ran in a **browser**, {module}. Build the page with \
+             `ci/build_web.sh`, serve it, and open it in the browser named under \
+             **Where it ran** before trying the desktop client.\n"
+        )
+    }
+
     /// The same report as JSON — what a site listing open reports reads, and
     /// what makes a directory of these files aggregatable without parsing
     /// prose.
@@ -830,6 +1000,10 @@ impl Report {
     /// implementation of a rule this module owns: `fingerprint` (the grouping
     /// key) and `issue_title`.
     pub fn json(&self) -> String {
+        serde_json::to_string_pretty(&self.json_value()).unwrap_or_else(|_| "{}".into())
+    }
+
+    fn json_value(&self) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let Some(o) = v.as_object_mut() {
             o.insert("fingerprint".into(), self.fingerprint_hex().into());
@@ -837,7 +1011,19 @@ impl Report {
             o.insert("read_first".into(), self.kind.read_first().into());
             o.insert("reported".into(), crate::shot::iso(self.at).into());
         }
-        serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into())
+        v
+    }
+
+    /// The body POSTed to [`INTAKE_PATH`]: the report as [`Report::json`]
+    /// writes it, plus the screenshot as base64 when there is one under
+    /// [`SHOT_SEND_MAX`]. A bigger picture is left off rather than sent to be
+    /// refused — the words still arrive.
+    pub fn submission(&self, shot_png: Option<&[u8]>) -> String {
+        let mut body = serde_json::json!({ "game": GAME, "report": self.json_value() });
+        if let Some(png) = shot_png.filter(|p| !p.is_empty() && p.len() <= SHOT_SEND_MAX) {
+            body["shot_png_b64"] = base64(png).into();
+        }
+        body.to_string()
     }
 
     /// The EIP-191 text the elo launcher signs to bind this report to a
@@ -869,6 +1055,70 @@ impl Report {
             self.fingerprint_hex(),
         )
     }
+}
+
+/// The intake's URL on a platform origin (`https://elopros.com`).
+pub fn intake_url(origin: &str) -> String {
+    format!("{}{INTAKE_PATH}", origin.trim_end_matches('/'))
+}
+
+/// What the intake said back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    /// The intake's id for this report — what a player quotes.
+    pub id: String,
+    /// Reports of this fingerprint the intake has, this one included.
+    pub seen: u64,
+    /// Whether the screenshot was kept.
+    pub shot: bool,
+}
+
+/// Read the intake's answer: a [`Receipt`] for a 2xx, else the refusal's own
+/// words (`{"error": …}`), else the status. The words go on the player's
+/// screen, so they are cut to one short line.
+pub fn read_receipt(status: u16, body: &[u8]) -> Result<Receipt, String> {
+    let v: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+    if (200..300).contains(&status) {
+        if let Some(id) = v.get("id").and_then(|i| i.as_str()) {
+            return Ok(Receipt {
+                id: one_line(id, 40).0,
+                seen: v.get("seen").and_then(|n| n.as_u64()).unwrap_or(1),
+                shot: v.get("shot").and_then(|b| b.as_bool()).unwrap_or(false),
+            });
+        }
+        return Err(format!("the intake answered {status} without an id"));
+    }
+    match v.get("error").and_then(|e| e.as_str()) {
+        Some(why) => Err(one_line(why, 100).0),
+        None => Err(format!("the intake answered {status}")),
+    }
+}
+
+/// Standard base64 with padding — the intake's `b64decode(validate=True)`.
+pub fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Write both halves of a report into `dir`: `<stem>.md` for a person and

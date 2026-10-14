@@ -153,12 +153,14 @@ pub fn spawn_status(addr: SocketAddr, stats: Arc<ShardStats>) -> std::io::Result
     spawn_status_with(addr, stats, None)
 }
 
-/// [`spawn_status`], also serving two files kept beside the world `base`
+/// [`spawn_status`], also serving the files kept beside the world `base`
 /// (the `world_file`, else the `save_file`), read from disk so this thread
 /// still never speaks to the sim thread:
 ///
 /// - `GET /standings.json` (`standings::json_path`) — a website's or a
 ///   bot's leaderboard;
+/// - `GET /online.json` (`online::json_path`) — who is connected, rewritten
+///   once a minute: the platform's "playing now" and hours on record;
 /// - `GET /payout/<wipe>.json` (`standings::payout_path`) — what a closed
 ///   wipe owes each wallet, which the platform's cashier reads and pays.
 ///   The shard still holds no keys: it says who earned what, and the
@@ -286,6 +288,23 @@ fn answer(mut stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std
         let head = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Access-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        return stream.write_all(body.as_bytes());
+    }
+    if path == "/online.json" {
+        // Who is on right now, for the platform (`online.rs`).
+        let body = base.and_then(|b| {
+            read_capped(&crate::online::json_path(b), crate::online::ONLINE_JSON_CAP)
+        });
+        let Some(body) = body else {
+            return stream.write_all(NOT_FOUND);
+        };
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Access-Control-Allow-Origin: *\r\nCache-Control: no-store\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream.write_all(head.as_bytes())?;

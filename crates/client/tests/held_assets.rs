@@ -57,7 +57,7 @@ fn every_held_model_ships() {
         assert!(
             asset_path(rel).exists(),
             "{key} declares {rel} and it is not in the tree — the item would \
-             draw the generic stand-in tool forever"
+             draw an empty hand forever"
         );
     }
 }

@@ -70,7 +70,6 @@ use bevy::prelude::*;
 
 use super::feed::Feed;
 use super::rig::EyeCam;
-use super::textures::PropMaps;
 use super::Eye;
 use super::Net;
 use crate::ui::hold::{held_model_in_hand, HeldModelDef, Stroke, HELD_MODELS};
@@ -1375,7 +1374,7 @@ impl Motion {
 /// **`OnEnter(Screen::Loading)` runs BEFORE `Startup`** on a connected start,
 /// because Bevy schedules the first state transition with
 /// `insert_startup_before(PreStartup, …)`. `textures::load` is a `Startup`
-/// system, so a viewmodel spawned on that transition asks for [`PropMaps`]
+/// system, so a viewmodel spawned on that transition asked for `PropMaps`
 /// one schedule too early and the run dies with "Resource does not exist".
 /// The HUD does not hit this only because it never wanted a texture.
 ///
@@ -1387,7 +1386,6 @@ pub fn spawn_item(
     mut done: Local<bool>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    maps: Res<PropMaps>,
     fx: Res<super::fx::Fx>,
     cam: Query<Entity, With<EyeCam>>,
 ) {
@@ -1396,38 +1394,6 @@ pub fn spawn_item(
     }
     let Ok(cam) = cam.single() else { return };
     *done = true;
-
-    let wood = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        base_color_texture: Some(maps.wood.albedo.clone()),
-        normal_map_texture: Some(maps.wood.normal.clone()),
-        perceptual_roughness: 0.82,
-        // See `render::fresnel`: 0.14 was F0 0.31%.
-        reflectance: super::fresnel::DIELECTRIC,
-        ..default()
-    });
-    // **The head carries no map, and that is a sourcing gap stated rather than
-    // papered over.** The only metal in `assets/` is `CorrugatedSteel009` —
-    // photoscanned RIBBED SHEET. Two tile rates were tried, 9.0 and 1.1, and
-    // both showed corrugation across a 10 cm blade, because the ribs are dense
-    // in the source and no scaling removes a feature the map is made of. That
-    // is the `Bricks089`-on-a-boulder failure a second time: **a map whose own
-    // features are wrong for the identity cannot be rescaled into the right
-    // one.** A plain worn-steel albedo is the entry `MANIFEST.md` is missing,
-    // and until one is sourced this is flat steel with per-face value
-    // break-up from the mesh — a knowing, recorded exception to `ART.md`
-    // rule 1 on one 10 cm object, not a silent one.
-    let steel = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.44, 0.45, 0.47),
-        // Not a mirror. An earlier cut ran roughness 0.38 / metallic 0.85, and
-        // a near-specular metal with no image-based lighting has nothing to
-        // reflect but the atmosphere — the head came back pale sky-blue. A
-        // polished one needs a reflection probe, which is a slice, not a knob.
-        perceptual_roughness: 0.52,
-        metallic: 0.55,
-        reflectance: super::fresnel::METAL_DIELECTRIC,
-        ..default()
-    });
 
     commands.entity(cam).with_children(|c| {
         // The assembly node. Everything the viewmodel does to itself — bob,
@@ -1442,21 +1408,6 @@ pub fn spawn_item(
                     Visibility::Inherited,
                 ))
                 .with_children(|item| {
-                    // The generic tool, kept as the fallback for every item with no
-                    // model of its own. It is NOT what an empty hand draws — see
-                    // `swap` — it is what a revolver draws until a revolver is made.
-                    item.spawn((
-                        Mesh3d(meshes.add(super::heldgen::handle_mesh())),
-                        MeshMaterial3d(wood.clone()),
-                        Transform::from_translation(VIEWMODEL_PALM),
-                        Fallback,
-                    ));
-                    item.spawn((
-                        Mesh3d(meshes.add(super::heldgen::head_mesh())),
-                        MeshMaterial3d(steel.clone()),
-                        Transform::from_translation(VIEWMODEL_PALM),
-                        Fallback,
-                    ));
                     // The model in hand. Spawned empty and filled by `swap`, which is
                     // what keeps this file free of the inventory: it reads a row index
                     // from `ui::hold` and never an item id.
@@ -1536,11 +1487,6 @@ pub fn spawn_item(
             });
     });
 }
-
-/// The two-primitive stand-in, so `swap` can hide it without knowing what it
-/// is made of.
-#[derive(Component)]
-pub struct Fallback;
 
 /// The first-person arms: the player's own character, from the inside.
 ///
@@ -1955,11 +1901,12 @@ pub fn arms_report(
 /// **The three states are deliberately different pictures**, because
 /// collapsing any two of them tells the player something false:
 ///
-///   · a modelled item → its own model, stand-in hidden
-///   · an item with no model yet → the stand-in tool, as before
-///   · an EMPTY hand → neither, because a tool that appears when you are
-///     holding nothing is a lie about your own inventory, and the hotbar
-///     right next to it says the cell is empty
+///   · a modelled item → its own model
+///   · anything else (an item with no model yet, a resource, an empty hand)
+///     → nothing in the fist. A generic hafted tool used to stand in for
+///     every unmodelled item, and a stack of wood drawn as a hatchet is a
+///     lie about your own hand (operator, 2026-10-14: *"what is this goofy
+///     thing he is holding?"*)
 ///
 /// Handles are loaded once into [`Models`] rather than per swap: `AssetServer`
 /// dedups, but a `load` per frame still walks a path and hashes it, and this
@@ -2022,9 +1969,8 @@ pub fn swap(
         &mut Visibility,
         &mut Transform,
     )>,
-    mut fallback: Query<&mut Visibility, (With<Fallback>, Without<HeldModel>)>,
 ) {
-    let (want, empty, skin, tint, tool) = match net.as_deref() {
+    let (want, skin, tint) = match net.as_deref() {
         Some(n) => {
             let core = &n.session.core;
             let stack = core
@@ -2040,29 +1986,20 @@ pub fn swap(
                 &core.inv,
                 n.sel,
             );
-            // Food and paper are not tools: a left click eats or reads them
-            // (`ui::hold::Click`), and the hafted stand-in in the fist said
-            // the opposite — a mushroom drawn as an axe.
-            let tool = !matches!(
-                click,
-                crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
-            );
             // **Holstered in THE GATE** (Rust: no weapon can be drawn in a
             // safe zone): the hands are empty until you step out. A
             // deployable is held as a blueprint (`sheet`), not in the fist.
             if core.holstered() || click == crate::ui::hold::Click::Deploy {
-                (None, true, 0, None, tool)
+                (None, 0, None)
             } else {
                 (
                     crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
-                    stack.is_none_or(|s| s.count == 0),
                     skin,
                     crate::ui::skins::tint_of(&core.skins, skin),
-                    tool,
                 )
             }
         }
-        None => (None, true, 0, None, true),
+        None => (None, 0, None),
     };
 
     // The bow in your own hand is drawn without its baked string once that
@@ -2108,16 +2045,6 @@ pub fn swap(
             held.shown = want;
         }
         *vis = if want.is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-    }
-    // The stand-in covers "a tool with no model of its own", never "nothing
-    // in hand" and never a meal.
-    let show_fallback = want.is_none() && !empty && tool;
-    for mut v in &mut fallback {
-        *v = if show_fallback {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -2783,8 +2710,8 @@ pub fn animate(
         if in_hand {
             *it = item_pose(Some(fit), snap * aim);
             m.set = Some(hand_set(fit));
-            // The fist closes on a row the hand fits round; a palmed or
-            // stand-in row keeps the rest curl.
+            // The fist closes on a row the hand fits round; a palmed row or
+            // an empty hand keeps the rest curl.
             if def
                 .filter(|_| !holstered)
                 .is_some_and(|d| d.grip_roll.is_some())

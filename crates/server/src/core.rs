@@ -320,6 +320,8 @@ pub struct ShardCore {
     pub standings: crate::standings::Standings,
     /// Skins this shard gave away and to whom (`gifts.rs`). Not sim state.
     pub gifts: crate::gifts::Gifts,
+    /// Who is connected, for the platform's `/online.json` (`online.rs`).
+    pub online: crate::online::Online,
     /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
     pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
@@ -631,6 +633,7 @@ impl ShardCore {
             wipe_fired: None,
             standings: crate::standings::Standings::off(),
             gifts: crate::gifts::Gifts::off(),
+            online: crate::online::Online::off(),
             teams: crate::team::Teams::default(),
             standings_tell: [0; MAX_PLAYERS],
             standings_say: Vec::new(),
@@ -933,6 +936,35 @@ impl ShardCore {
             let agent = self.standings_agent[slot];
             self.standings.minute(&key, &name, agent);
         }
+    }
+
+    /// Who is connected now, wallets only, handed to `online.rs` for the
+    /// platform's "playing now" and hours on record. From the minute.
+    pub fn publish_online(&mut self) {
+        let mut roster = Vec::new();
+        for slot in 0..MAX_PLAYERS {
+            if !self.clients[slot].connected {
+                continue;
+            }
+            let Some(key) = self
+                .key_str(slot)
+                .filter(|k| crate::standings::is_wallet(k))
+            else {
+                continue;
+            };
+            let tag = &self.tags[slot];
+            let name = if tag.id == self.clients[slot].id {
+                tag.name.as_str().to_string()
+            } else {
+                String::new()
+            };
+            roster.push(crate::online::Who {
+                wallet: key.to_ascii_lowercase(),
+                name,
+                agent: self.standings_agent[slot],
+            });
+        }
+        self.online.publish(roster);
     }
 
     /// The wallet on `slot`, as the standings file it. `None` for a guest.
