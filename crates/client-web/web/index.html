@@ -219,6 +219,17 @@
   .menu-pop a:hover, .menu-pop button:hover { background: var(--row-hi); }
   .menu-pop .ext { width: 12px; height: 12px; opacity: .6; }
 
+  /* ── which wallet, when the browser has several (`app.js` §the wallet) ───── */
+  #wallet-pick { padding: 14px; width: min(92vw, 340px); color: var(--text);
+                 background: rgba(24,22,19,.98); border: 1px solid var(--rule-hi); box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+  #wallet-pick::backdrop { background: rgba(0,0,0,.55); }
+  #wallet-pick h3 { margin: 0 0 8px; font: 700 12px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  #wallet-list button { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 12px;
+                        width: 100%; padding: 10px; font: 700 15px/1.2 var(--sans); color: var(--title); }
+  #wallet-list button:hover, #wallet-list button:focus-visible { background: var(--row-hi); }
+  #wallet-list img { width: 28px; height: 28px; flex: none; border-radius: 4px; }
+  #wallet-pick .linkish { display: block; margin: 10px auto 0; }
+
   /* ── the server list, inside the panel ───────────────────────────────────── */
   .list { display: flex; flex-direction: column; border: 1px solid var(--rule); background: rgba(0,0,0,.2); }
   .srv { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr);
@@ -586,6 +597,14 @@
     </div>
   </footer>
 </main>
+
+<!-- Which wallet, when this browser has more than one: filled from what each
+     wallet announced (EIP-6963, `app.js` §the wallet). -->
+<dialog id="wallet-pick" aria-labelledby="wallet-pick-h">
+  <h3 id="wallet-pick-h">Sign in with</h3>
+  <div id="wallet-list"></div>
+  <button class="linkish" id="wallet-cancel" type="button">Cancel</button>
+</dialog>
 
 <!-- Shown from the join until Bevy's first frame covers it: the canvas is
      transparent until wgpu draws, so this is what shows through, and it is

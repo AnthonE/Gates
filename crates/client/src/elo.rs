@@ -615,11 +615,21 @@ pub async fn sign_siwe_web(
         .as_string()
         .ok_or_else(|| "the wallet answered with something that is not a string".to_string())?;
     parse_signature(&hex).ok_or_else(|| {
-        format!(
-            "the wallet answered {} characters, and a signature is 0x followed by {} hex digits",
-            hex.len(),
-            protocol::SIGNATURE_BYTES * 2
-        )
+        // Longer than 65 bytes is a smart-contract account (Safe, Ambire, a
+        // passkey wallet) answering with an EIP-1271/6492 signature, which only
+        // a chain read can check. A shard verifies with `ecrecover` and no
+        // network call, so it cannot take one; say so in words.
+        if hex.len() > 2 + protocol::SIGNATURE_BYTES * 2 {
+            "this wallet is a smart-contract account, and Gates signs in regular accounts only \
+             for now - switch to a regular account in your wallet, or play as a guest"
+                .to_string()
+        } else {
+            format!(
+                "the wallet answered {} characters, and a signature is 0x followed by {} hex digits",
+                hex.len(),
+                protocol::SIGNATURE_BYTES * 2
+            )
+        }
     })
 }
 
