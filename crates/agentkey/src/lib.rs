@@ -27,12 +27,14 @@
 //! convention, because the failure it prevents is silent — a world-readable
 //! key works perfectly until somebody else uses it.
 //!
-//! **What it signs is the shard's SIWE message and nothing else.**
-//! [`AgentKey::sign_siwe`] composes the text itself, through
+//! **What it signs is two texts it composes itself, and nothing else.**
+//! [`AgentKey::sign_siwe`] builds the shard's login through
 //! `protocol::siwe_message` — the function the shard rebuilds the same bytes
 //! with — from the domain the agent dialled, the shard's nonce and its
-//! `Issued At`. No caller hands this key a sentence to sign, so no caller
-//! can smuggle one into a signature.
+//! `Issued At`. [`AgentKey::sign_face`] builds the platform's `profile` text
+//! (its display name and picture, `jev-bot --set-face`) from typed fields.
+//! No caller hands this key a sentence to sign, so no caller can smuggle one
+//! into a signature.
 
 use k256::ecdsa::SigningKey;
 use protocol::{siwe_message, Address, Signature, NONCE_BYTES, SIWE_MESSAGE_MAX};
@@ -291,9 +293,32 @@ impl AgentKey {
         Some(self.sign_siwe(domain, &nonce, issued_at))
     }
 
+    /// Sign a change to this wallet's Elo Pros face — its display name and
+    /// profile picture, what every Gates nametag shows (scry-forge
+    /// `meter/faces.py`). The text is composed HERE from typed fields, the
+    /// platform's `elo play` shape for the `profile` action, so this is the
+    /// second and last text this key signs and still no caller hands it a
+    /// sentence. `None` for a field the caller has no business sending: a
+    /// name that is not 1–16 printable ASCII, a digest that is not 64 hex
+    /// (or `""`, which clears the picture), a day that is not `YYYY-MM-DD`.
+    /// Returns the exact text signed beside the signature, so a caller can
+    /// compare it with what the platform asked for before sending it.
+    pub fn sign_face(
+        &self,
+        name: Option<&str>,
+        picture_sha256: Option<&str>,
+        at: u64,
+        day: &str,
+    ) -> Option<(String, Signature)> {
+        let text = face_text(&self.address, name, picture_sha256, at, day)?;
+        let sig = self.sign_personal(text.as_bytes());
+        Some((text, sig))
+    }
+
     /// `personal_sign`: keccak over the EIP-191 envelope, recoverable ECDSA,
-    /// `v` as 27/28. Private: the only text this key signs is the one
-    /// [`AgentKey::sign_siwe`] composed (module header).
+    /// `v` as 27/28. Private: the only texts this key signs are the ones
+    /// [`AgentKey::sign_siwe`] and [`AgentKey::sign_face`] composed (module
+    /// header).
     fn sign_personal(&self, message: &[u8]) -> Signature {
         let mut k = Keccak::v256();
         k.update(b"\x19Ethereum Signed Message:\n");
@@ -312,6 +337,66 @@ impl AgentKey {
         raw[64] = 27 + rec.to_byte();
         Signature(raw)
     }
+}
+
+/// The longest face name the platform takes: the game's wire `Name`.
+pub const FACE_NAME_MAX: usize = 16;
+
+/// The platform's signed text for a face change (`playauth.play_message`
+/// over `faces._detail`): `elo play`, the action, the LOWERCASE wallet, the
+/// UTC day and a compact JSON detail with sorted keys. Byte-for-byte what
+/// the platform rebuilds, or the signature recovers to nobody.
+fn face_text(
+    wallet: &Address,
+    name: Option<&str>,
+    picture_sha256: Option<&str>,
+    at: u64,
+    day: &str,
+) -> Option<String> {
+    let d = day.as_bytes();
+    let day_ok = d.len() == 10
+        && d.iter().enumerate().all(|(i, &c)| {
+            if i == 4 || i == 7 {
+                c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        });
+    if !day_ok || (name.is_none() && picture_sha256.is_none()) {
+        return None;
+    }
+    let mut detail = format!("{{\"at\":{at}");
+    if let Some(name) = name {
+        let n = name.as_bytes();
+        let printable = n.iter().all(|&c| (0x20..0x7f).contains(&c));
+        if n.is_empty() || n.len() > FACE_NAME_MAX || !printable || name.trim() != name {
+            return None;
+        }
+        detail.push_str(",\"name\":\"");
+        for c in name.chars() {
+            if c == '"' || c == '\\' {
+                detail.push('\\');
+            }
+            detail.push(c);
+        }
+        detail.push('"');
+    }
+    if let Some(sha) = picture_sha256 {
+        let ok = sha.is_empty()
+            || (sha.len() == 64 && sha.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
+        if !ok {
+            return None;
+        }
+        detail.push_str(",\"picture_sha256\":\"");
+        detail.push_str(sha);
+        detail.push('"');
+    }
+    detail.push('}');
+    let hex = wallet.to_hex();
+    let wallet = core::str::from_utf8(&hex).ok()?;
+    Some(format!(
+        "elo play\naction: profile\nwallet: {wallet}\nday: {day}\ndetail: {detail}"
+    ))
 }
 
 fn hex_val(c: u8) -> Option<u8> {
@@ -435,6 +520,53 @@ mod tests {
             Some(sig)
         );
         assert_eq!(k.sign_proof_hex("game.example", "zz", 1), None);
+    }
+
+    /// **A face change signs the platform's exact text** (scry-forge
+    /// `playauth.play_message` over `faces._detail`: sorted keys, compact,
+    /// lowercase wallet) and recovers to this key. Anything the platform
+    /// would refuse is refused here before a signature exists.
+    #[test]
+    fn a_face_signature_is_over_the_platforms_text() {
+        let k = AgentKey::from_secret(&one()).unwrap();
+        let sha = "ab".repeat(32);
+        let (text, sig) = k
+            .sign_face(Some("Doctor Wood"), Some(&sha), 1_770_000_000, "2026-10-14")
+            .unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "elo play\naction: profile\nwallet: 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf\n\
+                 day: 2026-10-14\ndetail: {{\"at\":1770000000,\"name\":\"Doctor Wood\",\
+                 \"picture_sha256\":\"{sha}\"}}"
+            )
+        );
+        assert_eq!(recover(text.as_bytes(), &sig), k.address());
+        let (only_name, _) = k.sign_face(Some("a\"b"), None, 5, "2026-01-02").unwrap();
+        assert!(
+            only_name.ends_with(r#"detail: {"at":5,"name":"a\"b"}"#),
+            "{only_name}"
+        );
+        let (clear, _) = k.sign_face(None, Some(""), 5, "2026-01-02").unwrap();
+        assert!(
+            clear.ends_with(r#"detail: {"at":5,"picture_sha256":""}"#),
+            "{clear}"
+        );
+        for (name, pic, day) in [
+            (None, None, "2026-01-02"),
+            (Some(""), None, "2026-01-02"),
+            (Some("seventeen chars!!"), None, "2026-01-02"),
+            (Some(" padded"), None, "2026-01-02"),
+            (Some("tab\there"), None, "2026-01-02"),
+            (Some("ok"), Some("AB"), "2026-01-02"),
+            (Some("ok"), None, "2026-1-02"),
+            (Some("ok"), None, "2026-01-02\nx"),
+        ] {
+            assert!(
+                k.sign_face(name, pic, 5, day).is_none(),
+                "{name:?} {pic:?} {day:?}"
+            );
+        }
     }
 
     /// A different domain is a different message — the signature a relay

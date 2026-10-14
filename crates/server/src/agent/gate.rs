@@ -128,6 +128,22 @@ pub fn gate(core: &ClientCore) -> Option<[f32; 2]> {
     kiosk(core, 0)
 }
 
+/// Walk to THE GATE, stopping within `stop` of its first stall: where an
+/// agent waits for its friend (`Goal::Meet`). `None` once there; a town
+/// that is down is somewhere it cannot go.
+pub fn approach(
+    core: &mut ClientCore,
+    body: &EntityState,
+    route: &mut Route,
+    stop: f32,
+    tick: u32,
+) -> Option<Result<Intent, Why>> {
+    let Some(to) = gate(core) else {
+        return Some(Err(Why::NotFound));
+    };
+    walk(core, body, route, to, stop, tick)
+}
+
 /// Walk to `to`, stopping within `stop`. `None` once there.
 fn walk(
     core: &mut ClientCore,

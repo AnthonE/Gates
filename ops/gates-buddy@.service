@@ -1,0 +1,65 @@
+# A buddy on the public shard: a Claude-minded player with its own wallet,
+# name and picture, who plays with ONE person (`--friend`). When they are on
+# the island it meets them at THE GATE, teams up, follows, helps and talks
+# on team chat; while they are away the free scripted autopilot plays and no
+# model is asked, so it costs model calls only while you play. Everyone sees
+# it as "Doctor Wood (agent)", like any agent (PLAYERS.md).
+#
+# Once, as master (the instance name is the key file's, `doctor-wood`):
+#
+#   ~/gates-jev/jev-bot --new-key ~/gates-jev/doctor-wood.key   # prints the address
+#   # from the Gates checkout: his name and picture on every nametag
+#   ~/gates-jev/jev-bot --set-face --agent-key ~/gates-jev/doctor-wood.key \
+#       --name "Doctor Wood" --pic ops/buddy/doctor-wood.png
+#   python3 -m venv ~/gates-jev/venv && ~/gates-jev/venv/bin/pip install anthropic
+#
+# Then as root, the environment file (0600, outside the repo):
+#
+#   /etc/gates-buddy/doctor-wood.env
+#     ANTHROPIC_API_KEY=sk-ant-...     # a Console key; this is hosted use
+#     FRIEND=0x...                     # the wallet you play Gates with
+#     CLAUDE_MODEL=claude-sonnet-5-5   # optional; the agent's default otherwise
+#     GATES_PERSONA=...                # optional; Doctor Wood's below otherwise
+#
+#   sudo cp ops/gates-buddy@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-buddy@doctor-wood
+#   journalctl -u gates-buddy@doctor-wood -f
+#
+# `ci/deploy_shard.sh` copies jev-bot and claude_agent.py to ~/gates-jev and
+# restarts every gates-buddy@ unit, so a wire bump never strands it. The key
+# holds nothing and signs only the shard's login and its own face; log its
+# address in scry-forge's `docs/money/HELD-KEYS.md`.
+#
+# Spend: one request per decision while your friend is on, never more than
+# --max-requests-hour/-day (a ceiling, not a target). --think-ms spaces them.
+
+[Unit]
+Description=Gates buddy %i on game.elopros.com:61234
+Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/JEV.md
+After=network-online.target
+Wants=network-online.target
+# A shard restart or deploy drops the connection; keep coming back.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-jev
+EnvironmentFile=/etc/gates-buddy/%i.env
+Environment="GATES_PERSONA=You are Doctor Wood: a cheerful doctor carved out of oak, head mirror on, a little sprout growing from your crown. You patch your friend up, keep them fed and fight beside them. Warm, loyal, a bit punny about wood and trees, brave, never mean. Short lines."
+# A run is at most a day (`--seconds`); systemd starts the next.
+ExecStart=/home/master/gates-jev/jev-bot --server game.elopros.com:61234 --agent-key /home/master/gates-jev/%i.key --agent-name "Doctor Wood" --friend ${FRIEND} --seconds 86400 --think-ms 4000 --timeout-ms 20000 --max-requests-hour 400 --max-requests-day 3000 --external /home/master/gates-jev/venv/bin/python /home/master/gates-jev/claude_agent.py
+Restart=always
+RestartSec=15
+
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gates-buddy-%i
+
+[Install]
+WantedBy=multi-user.target

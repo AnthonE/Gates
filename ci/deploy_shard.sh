@@ -214,11 +214,13 @@ echo "== 6. the agents =="
 # strands them exactly as it strands a published client: gates-jev plays the
 # public shard, gates-watch runs its own private one but ships this tree's
 # content and renderer. Rebuild both from this commit whenever installed.
-# The house teammates (`ops/gates-teammate@.service`, one per bot) run the
-# same jev-bot, so each one installed restarts on it too.
+# The house teammates (`ops/gates-teammate@.service`, one per bot) and the
+# buddies (`ops/gates-buddy@.service`, Claude-minded) run the same jev-bot,
+# so each one installed restarts on it too; a buddy's decision program rides
+# beside the binary.
 AGENT_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
-TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 2>/dev/null | awk '{print $1}')
+TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 2>/dev/null | awk '{print $1}')
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
    || systemctl list-unit-files gates-watch.service >/dev/null 2>&1 \
    || [ -n "$TEAMMATES" ]; then
@@ -231,6 +233,7 @@ fi
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 || [ -n "$TEAMMATES" ]; then
   run cp -f target/release/jev-bot "$AGENT_BIN/jev-bot.new"
   run mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
+  run cp -f crates/server/examples/claude_agent.py "$AGENT_BIN/claude_agent.py"
 fi
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1; then
   run sudo systemctl restart gates-jev.service
@@ -240,7 +243,7 @@ fi
 for unit in $TEAMMATES; do
   run sudo systemctl restart "$unit"
 done
-[ -n "$TEAMMATES" ] || echo "  no gates-teammate@ units installed"
+[ -n "$TEAMMATES" ] || echo "  no gates-teammate@ or gates-buddy@ units installed"
 
 if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
   REL="$WATCH/releases/$(git rev-parse --short=12 HEAD)"
