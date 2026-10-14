@@ -104,7 +104,14 @@ fn aim_at(w: &World, attacker: usize, victim: usize) -> u8 {
         (target.qz - a.qz) as f32 * POS_XZ_Q,
     );
     let run = (dx * dx + dz * dz).sqrt();
-    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + CHEST_M - EYE_M;
+    // A sleeper lies on the ground and is aimed at where it lies.
+    let v = &w.players[victim];
+    let height = if v.sleeping && !v.wounded {
+        sim_core::collide::LIE_R_M
+    } else {
+        CHEST_M
+    };
+    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + height - EYE_M;
     let len = (rise * rise + run * run).sqrt();
     let mut best = 128u8;
     let mut best_dot = f32::MIN;
