@@ -99,10 +99,13 @@ pub struct ComposerLine;
 pub struct ComposerHint;
 
 /// Something in a line that fades with it: arrival time and full alpha.
+/// `bg` fades its `BackgroundColor` too — only the avatar tile's: every
+/// `Node` carries a transparent one, and fading that up draws a black box.
 #[derive(Component)]
 pub struct ChatFade {
     at: f64,
     base: f32,
+    bg: bool,
 }
 
 /// An avatar still waiting on its picture.
@@ -396,7 +399,11 @@ pub fn draw(
     let lines: Vec<Line> = chat.log.lines[skip..].to_vec();
     commands.entity(root).with_children(|c| {
         for l in lines {
-            let fades = |base: f32| ChatFade { at: l.at, base };
+            let fades = |base: f32| ChatFade {
+                at: l.at,
+                base,
+                bg: false,
+            };
             c.spawn((
                 Node {
                     align_items: AlignItems::FlexStart,
@@ -419,7 +426,11 @@ pub fn draw(
                         ..default()
                     },
                     BackgroundColor(AVATAR_BLANK),
-                    fades(AVATAR_BLANK.alpha()),
+                    ChatFade {
+                        at: l.at,
+                        base: AVATAR_BLANK.alpha(),
+                        bg: true,
+                    },
                     Pickable::IGNORE,
                 ));
                 if let Some((address, pic)) = l.face.filter(|&(_, pic)| pic != 0) {
@@ -501,7 +512,7 @@ pub fn fade(
                 s.color.set_alpha(sa);
             }
         }
-        if let Some(mut c) = bg {
+        if let Some(mut c) = bg.filter(|_| f.bg) {
             if c.0.alpha() != want {
                 c.0.set_alpha(want);
             }
@@ -528,12 +539,14 @@ pub fn fill_pics(
             commands
                 .entity(e)
                 .despawn_related::<Children>()
-                .remove::<(ChatPic, BackgroundColor)>()
+                .remove::<ChatPic>()
                 .insert((
                     ImageNode::new(h),
+                    BackgroundColor(Color::NONE),
                     ChatFade {
                         at: f.at,
                         base: 1.0,
+                        bg: false,
                     },
                 ));
         }
