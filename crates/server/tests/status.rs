@@ -320,3 +320,31 @@ fn serves_a_closed_wipes_payout_file() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Who is online is served at `/online.json` beside the standings, for the
+/// platform's "playing now" and hours on record; no file is a 404.
+#[test]
+fn serves_the_online_roster() {
+    let dir = std::env::temp_dir().join(format!("gates-status-online-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let base = dir.join("world.bin");
+    let addr = server::status::spawn_status_with(
+        "127.0.0.1:0".parse().expect("static addr"),
+        Arc::new(ShardStats::default()),
+        Some(base.clone()),
+    )
+    .expect("bind loopback");
+
+    let text =
+        String::from_utf8(exchange(addr, b"GET /online.json HTTP/1.1\r\n\r\n")).expect("text");
+    assert!(text.starts_with("HTTP/1.1 404"), "no file yet: {text}");
+
+    let doc = "{\"at\":100,\"online\":[]}";
+    std::fs::write(server::online::json_path(&base), doc).expect("write roster");
+    let text =
+        String::from_utf8(exchange(addr, b"GET /online.json HTTP/1.1\r\n\r\n")).expect("text");
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    assert!(text.contains("Access-Control-Allow-Origin: *"), "{text}");
+    assert_eq!(text.split("\r\n\r\n").nth(1), Some(doc));
+    let _ = std::fs::remove_dir_all(&dir);
+}
