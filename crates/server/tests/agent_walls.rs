@@ -248,7 +248,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Reload => "reload",
         ActionMsg::Unload => "unload",
         ActionMsg::Loot => "loot",
-        ActionMsg::Pickup => "pickup",
+        ActionMsg::Pickup { .. } => "pickup",
         ActionMsg::Place { .. } => "place",
         ActionMsg::Deploy { .. } => "deploy",
         ActionMsg::Feed { .. } => "feed",

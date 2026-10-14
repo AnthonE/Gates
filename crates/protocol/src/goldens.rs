@@ -1435,6 +1435,12 @@ pub fn action_craft() -> (u16, u16, u16) {
     (33, 5, 0x0A61)
 }
 
+/// A pickup aimed at loose stack 0x0102_0304 (v109): four distinct bytes,
+/// so a byte-swapped id cannot decode as itself.
+pub fn action_pickup() -> u32 {
+    0x0102_0304
+}
+
 /// A tech-tree unlock request naming recipe 21 (tech tree v0) — a value
 /// sharing no byte with `action_craft`'s, so a transposed encoder cannot
 /// pass both.
