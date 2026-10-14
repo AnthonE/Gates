@@ -1422,6 +1422,11 @@ pub struct Speaker {
 #[serde(deny_unknown_fields)]
 pub struct Topic {
     pub title: String,
+    /// A skin season (`content/skins.toml`): asking this topic gives every
+    /// row of it to the asker's wallet, and its lines are the three `gift:`
+    /// outcomes (`server/src/gifts.rs`).
+    #[serde(default)]
+    pub gift: Option<String>,
     pub lines: Vec<Line>,
 }
 

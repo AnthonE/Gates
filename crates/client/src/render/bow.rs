@@ -59,14 +59,33 @@ pub const ARROW_SIDE_M: f32 = -0.027;
 pub const SHIVER_M: f32 = 0.03;
 pub const SHIVER_HZ: f32 = 17.0;
 
-/// The first-person bow without its string, and where the string was tied on.
+/// The first-person bows without their strings, and where each string was
+/// tied on.
 #[derive(Resource, Default)]
 pub struct FpBow {
-    /// `None` until the file has loaded, and for good if it had no string to
-    /// take out (the bow then keeps the baked one and no live one is drawn).
-    pub mesh: Option<Handle<Mesh>>,
-    /// The string's two ends in model space, bottom then top.
-    pub ends: [Vec3; 2],
+    /// One per look: the plain bow under skin 0, and every bow skin with a
+    /// model of its own (`hold::SKIN_MODELS`) under its catalog id. With the
+    /// string's two ends in model space, bottom then top. A look missing
+    /// here has not loaded yet, or had no string to take out, and keeps its
+    /// baked one with no live one drawn.
+    pub copies: Vec<(u16, Handle<Mesh>, [Vec3; 2])>,
+}
+
+impl FpBow {
+    /// The stringless copy of the bow in skin `skin` and its string's ends.
+    /// A tint-only skin is the plain bow's copy, tinted.
+    pub fn copy(&self, skin: u16) -> Option<(Handle<Mesh>, [Vec3; 2])> {
+        let row = bow_row()?;
+        let look = if crate::ui::hold::skin_model(row, skin).is_some() {
+            skin
+        } else {
+            0
+        };
+        self.copies
+            .iter()
+            .find(|(s, _, _)| *s == look)
+            .map(|(_, m, e)| (m.clone(), *e))
+    }
 }
 
 /// One half of the string: from the bottom tie to the nock, or from the nock
@@ -154,38 +173,50 @@ pub fn strip_string(pos: &[[f32; 3]], idx: &[u32]) -> Option<(Vec<u32>, Vec3, Ve
     ends.map(|(lo, hi)| (keep, lo, hi))
 }
 
-/// Build the stringless first-person bow once its file has loaded.
+/// Build each stringless first-person bow once its file has loaded: the
+/// plain one, and every bow skin's own model.
 pub fn prepare(
     mut fp: ResMut<FpBow>,
-    mut done: Local<bool>,
+    mut tried: Local<Vec<u16>>,
     models: Option<Res<super::viewmodel::Models>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    if *done {
-        return;
-    }
     let (Some(models), Some(row)) = (models, bow_row()) else {
         return;
     };
-    let Some(mesh) = meshes.get(&models.row(row).0) else {
-        return;
-    };
-    *done = true;
-    let (Some(VertexAttributeValues::Float32x3(pos)), Some(ind)) =
-        (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices())
-    else {
-        warn!("bow: the hunting bow has no readable positions; its string stays baked");
-        return;
-    };
-    let idx: Vec<u32> = ind.iter().map(|i| i as u32).collect();
-    let Some((keep, lo, hi)) = strip_string(pos, &idx) else {
-        warn!("bow: found no string in the hunting bow; its string stays baked and does not draw");
-        return;
-    };
-    let mut own = mesh.clone();
-    own.insert_indices(Indices::U32(keep));
-    fp.mesh = Some(meshes.add(own));
-    fp.ends = [lo, hi];
+    let looks = std::iter::once(0).chain(
+        crate::ui::hold::SKIN_MODELS
+            .iter()
+            .filter(|s| s.key == BOW_KEY)
+            .map(|s| s.catalog),
+    );
+    for skin in looks {
+        if tried.contains(&skin) {
+            continue;
+        }
+        let handle = match models.skinned(row, skin) {
+            Some((m, _)) => m,
+            None => models.row(row).0,
+        };
+        let Some(mesh) = meshes.get(&handle) else {
+            continue;
+        };
+        tried.push(skin);
+        let (Some(VertexAttributeValues::Float32x3(pos)), Some(ind)) =
+            (mesh.attribute(Mesh::ATTRIBUTE_POSITION), mesh.indices())
+        else {
+            warn!("bow: look {skin} has no readable positions; its string stays baked");
+            continue;
+        };
+        let idx: Vec<u32> = ind.iter().map(|i| i as u32).collect();
+        let Some((keep, lo, hi)) = strip_string(pos, &idx) else {
+            warn!("bow: found no string in look {skin}; its string stays baked and does not draw");
+            continue;
+        };
+        let mut own = mesh.clone();
+        own.insert_indices(Indices::U32(keep));
+        fp.copies.push((skin, meshes.add(own), [lo, hi]));
+    }
 }
 
 /// The string and the arrow, spawned hidden under the held model once.
@@ -319,7 +350,6 @@ pub fn two_bone(s: Vec3, t: Vec3, a: f32, b: f32, pole: Vec3) -> (Vec3, Vec3) {
 /// costs no second propagation.
 #[allow(clippy::type_complexity)]
 pub fn draw_arm(
-    fp: Res<FpBow>,
     motion: Res<Motion>,
     arm: Res<DrawArm>,
     rig: Query<Entity, With<HeldRig>>,
@@ -334,10 +364,10 @@ pub fn draw_arm(
     let model = held
         .iter()
         .find(|(_, h)| h.shown().is_some() && h.shown() == bow_row())
-        .map(|(e, _)| e);
+        .and_then(|(e, h)| Some((e, h.string_ends()?)));
     let solved = match (model, rig.single()) {
-        (Some(model), Ok(rig)) if fp.mesh.is_some() && pose.raise > 0.5 => solve(
-            &fp,
+        (Some((model, ends)), Ok(rig)) if pose.raise > 0.5 => solve(
+            ends,
             pose.hand,
             sh,
             [up, fore, hand],
@@ -381,7 +411,7 @@ pub fn draw_arm(
 /// viewmodel rig's frame.
 #[allow(clippy::too_many_arguments)]
 fn solve(
-    fp: &FpBow,
+    ends: [Vec3; 2],
     pull: f32,
     sh: Entity,
     [up, fore, hand]: [Entity; 3],
@@ -394,7 +424,7 @@ fn solve(
     let (t_sh, t_up, t_fore, t_hand) = (local(sh)?, local(up)?, local(fore)?, local(hand)?);
     // The nock the fingers hold and the arrow's line through it.
     let m_model = in_frame(model, rig, parents, xf)?;
-    let at = nock_at(fp.ends, nock_back(pull, 0.0));
+    let at = nock_at(ends, nock_back(pull, 0.0));
     let nock = m_model.transform_point3(at);
     let fwd = m_model
         .transform_vector3(Vec3::new(0.0, NOCK_Y_M, ARROW_SIDE_M) - at)
@@ -444,25 +474,26 @@ fn span(a: Vec3, b: Vec3) -> Transform {
 /// Draw the string and the arrow for this frame's draw.
 #[allow(clippy::type_complexity)]
 pub fn drive(
-    fp: Res<FpBow>,
     motion: Res<Motion>,
     held: Query<&HeldModel>,
     mut strings: Query<(&BowString, &mut Transform, &mut Visibility), Without<NockedArrow>>,
     mut arrow: Query<(&mut Transform, &mut Visibility), (With<NockedArrow>, Without<BowString>)>,
 ) {
-    let shown = held.iter().next().and_then(HeldModel::shown);
-    let on = fp.mesh.is_some() && shown.is_some() && shown == bow_row();
-    let want = if on {
+    let ends = held
+        .iter()
+        .next()
+        .filter(|h| h.shown().is_some() && h.shown() == bow_row())
+        .and_then(HeldModel::string_ends);
+    let want = if ends.is_some() {
         Visibility::Inherited
     } else {
         Visibility::Hidden
     };
     let pose = motion.bow();
-    let nock = on.then(|| nock_at(fp.ends, nock_back(pose.pull, pose.loose)));
+    let nock = ends.map(|e| nock_at(e, nock_back(pose.pull, pose.loose)));
     for (s, mut t, mut v) in &mut strings {
         v.set_if_neq(want);
-        if let Some(nock) = nock {
-            let [lo, hi] = fp.ends;
+        if let (Some(nock), Some([lo, hi])) = (nock, ends) {
             *t = if s.upper {
                 span(nock, hi)
             } else {

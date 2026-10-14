@@ -3013,7 +3013,30 @@ fn sync_loot(
             g.qz as f32 * POS_XZ_Q,
         );
         let mut drawn = 0;
+        // A skin with a model of its own lies as that model once it has
+        // loaded; until then the row's, tinted, and a retry.
+        let own = ready.and_then(|i| models.skinned(i, g.skin));
+        let own_ready = own.clone().filter(|(m, mt)| {
+            meshes.contains(m.id())
+                && materials.contains(mt.id())
+                && assets.is_loaded_with_dependencies(mt.id())
+        });
+        let own_waits = own.is_some() && own_ready.is_none();
+        pending |= own_waits;
         let (mesh, mat, transform) = match ready {
+            Some(i) if own_ready.is_some() => {
+                let (mesh, mat) = own_ready.expect("checked");
+                let transform = super::loot::resting_transform(
+                    meshes.get(&mesh).expect("ready model"),
+                    position,
+                    g.id,
+                    crate::ui::hold::HELD_MODELS[i].scale,
+                    true,
+                    &ground,
+                );
+                drawn = g.skin;
+                (mesh, mat, transform)
+            }
             Some(i) => {
                 let (mesh, mat) = models.row(i);
                 let transform = super::loot::resting_transform(
@@ -3054,6 +3077,10 @@ fn sync_loot(
                 (kit.gitem_mesh.clone(), kit.gitem_mat.clone(), transform)
             }
         };
+        if own_waits {
+            // Drawn tinted for now: not the skin's look, so it is redone.
+            drawn = 0;
+        }
         let entity = commands
             .spawn((
                 super::WorldEntity,

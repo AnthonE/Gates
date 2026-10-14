@@ -1136,15 +1136,22 @@ pub struct HeldModel {
     shown: Option<usize>,
     /// The skin the shown model is drawn in (skins v0), 0 for its own look.
     skin: u16,
-    /// The shown model is the first-person copy (`bow::FpBow`, the bow
-    /// without its baked string) rather than the row's own mesh.
-    fp: bool,
+    /// The shown model is a first-person copy (`bow::FpBow`, a bow without
+    /// its baked string) rather than the row's own mesh: where that string
+    /// was tied on, model space, for the live one `bow::drive` draws.
+    ends: Option<[Vec3; 2]>,
 }
 
 impl HeldModel {
     /// The [`crate::ui::hold::HELD_MODELS`] row on screen, if any.
     pub fn shown(&self) -> Option<usize> {
         self.shown
+    }
+
+    /// Where the shown bow's string is tied on, if its string was taken
+    /// out to be drawn live.
+    pub fn string_ends(&self) -> Option<[Vec3; 2]> {
+        self.ends
     }
 }
 
@@ -1416,7 +1423,7 @@ pub fn spawn_item(
                         HeldModel {
                             shown: None,
                             skin: 0,
-                            fp: false,
+                            ends: None,
                         },
                         Mesh3d(Handle::default()),
                         MeshMaterial3d::<StandardMaterial>(Handle::default()),
@@ -1998,28 +2005,36 @@ pub fn swap(
     // The bow in your own hand is drawn without its baked string once that
     // copy exists; `bow::drive` draws a live one on it.
     let fp = fp_bow
-        .mesh
-        .as_ref()
+        .copy(skin)
         .filter(|_| want.is_some() && want == super::bow::bow_row());
     for (mut held, mut mesh, mut mat, mut vis, mut tf) in &mut q {
-        if held.shown != want || held.skin != skin || held.fp != fp.is_some() {
-            held.fp = fp.is_some();
+        let ends = fp.as_ref().map(|(_, e)| *e);
+        if held.shown != want || held.skin != skin || held.ends != ends {
+            held.ends = ends;
             match want {
                 Some(i) => {
-                    let (m, mt) = models.row(i);
-                    mesh.0 = fp.cloned().unwrap_or(m);
                     *tf = pose(&crate::ui::hold::HELD_MODELS[i], VIEWMODEL_PALM);
-                    // The skin's tinted copy when it is ready; the plain look
-                    // (and a retry next frame, by not recording the skin)
-                    // while the row's own material is still loading.
-                    let skinned =
-                        tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mt, &mut materials));
-                    held.skin = if skinned.is_some() || tint.is_none() {
-                        skin
+                    let fp_mesh = fp.as_ref().map(|(c, _)| c.clone());
+                    if let Some((m, mt)) = models.skinned(i, skin) {
+                        // A skin with a model of its own draws that, untinted.
+                        mesh.0 = fp_mesh.unwrap_or(m);
+                        mat.0 = mt;
+                        held.skin = skin;
                     } else {
-                        u16::MAX
-                    };
-                    mat.0 = skinned.unwrap_or(mt);
+                        let (m, mt) = models.row(i);
+                        mesh.0 = fp_mesh.unwrap_or(m);
+                        // The skin's tinted copy when it is ready; the plain
+                        // look (and a retry next frame, by not recording the
+                        // skin) while the row's own material is still loading.
+                        let skinned =
+                            tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mt, &mut materials));
+                        held.skin = if skinned.is_some() || tint.is_none() {
+                            skin
+                        } else {
+                            u16::MAX
+                        };
+                        mat.0 = skinned.unwrap_or(mt);
+                    }
                 }
                 None => {
                     mesh.0 = Handle::default();
@@ -2253,6 +2268,10 @@ pub fn apply_hand_light(
 pub struct Models {
     mesh: Vec<Handle<Mesh>>,
     mat: Vec<Handle<StandardMaterial>>,
+    /// The skins with models of their own, index-aligned with
+    /// [`crate::ui::hold::SKIN_MODELS`].
+    skin_mesh: Vec<Handle<Mesh>>,
+    skin_mat: Vec<Handle<StandardMaterial>>,
 }
 
 impl Models {
@@ -2269,6 +2288,17 @@ impl Models {
     pub fn row(&self, i: usize) -> (Handle<Mesh>, Handle<StandardMaterial>) {
         (self.mesh[i].clone(), self.mat[i].clone())
     }
+
+    /// Skin `skin`'s own model for row `row` (`hold::SKIN_MODELS`), drawn
+    /// instead of the row's and untinted. `None` for a tint-only skin.
+    pub fn skinned(
+        &self,
+        row: usize,
+        skin: u16,
+    ) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        let k = crate::ui::hold::skin_model(row, skin)?;
+        Some((self.skin_mesh[k].clone(), self.skin_mat[k].clone()))
+    }
 }
 
 /// Load every held model once at startup. For the `.glb` rows, the same
@@ -2283,28 +2313,30 @@ pub fn load_models(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let glb_mesh = |path: &'static str| -> Handle<Mesh> {
+        assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(path),
+        )
+    };
+    let glb_mat = |path: &'static str| -> Handle<StandardMaterial> {
+        assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(path),
+        )
+    };
     let (mut mesh, mut mat) = (Vec::new(), Vec::new());
     for m in &crate::ui::hold::HELD_MODELS {
         match m.src {
             crate::ui::hold::HeldSrc::Glb(path) => {
-                mesh.push(
-                    assets.load(
-                        GltfAssetLabel::Primitive {
-                            mesh: 0,
-                            primitive: 0,
-                        }
-                        .from_asset(path),
-                    ),
-                );
-                mat.push(
-                    assets.load(
-                        GltfAssetLabel::Material {
-                            index: 0,
-                            is_scale_inverted: false,
-                        }
-                        .from_asset(path),
-                    ),
-                );
+                mesh.push(glb_mesh(path));
+                mat.push(glb_mat(path));
             }
             crate::ui::hold::HeldSrc::Gen(name) => {
                 mesh.push(meshes.add(super::heldgen::mesh(name)));
@@ -2312,7 +2344,13 @@ pub fn load_models(
             }
         }
     }
-    commands.insert_resource(Models { mesh, mat });
+    let skins = &crate::ui::hold::SKIN_MODELS;
+    commands.insert_resource(Models {
+        mesh,
+        mat,
+        skin_mesh: skins.iter().map(|s| glb_mesh(s.path)).collect(),
+        skin_mat: skins.iter().map(|s| glb_mat(s.path)).collect(),
+    });
     commands.insert_resource(SkinMats::default());
 }
 

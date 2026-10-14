@@ -3335,6 +3335,8 @@ fn sim_thread(
         wipe.number(),
     );
     core.standings.exits = exits;
+    // The skins this shard gave away, beside the hall: the wipe keeps both.
+    core.gifts = crate::gifts::Gifts::open(standings_base.as_deref());
     core.online = crate::online::Online::open(standings_base.as_deref());
     core.motd = motd.iter().filter_map(|l| crate::wipe::chat(l)).collect();
     core.wipe = wipe;
