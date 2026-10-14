@@ -423,8 +423,16 @@ $("refresh").addEventListener("click", () => {
    pick is remembered by the wallet's `rdns` (`elo.wallet`) until SIGN OUT.
    `window.ethereum` is the fallback for a wallet that announces nothing. A
    wallet that injects after this script announces late, and the panel
-   repaints when it does (`walletAppeared`). */
+   repaints when it does (`walletAppeared`).
+
+   Two more rows, both the platform's (`js/wallets.js` in AnthonE/scry-forge
+   draws the same picker): a **phone wallet** (WalletConnect), once the
+   platform's `js/wallet-config.js` carries a project ID, through the bundle
+   it names; and **Solana-only wallets** (Wallet Standard), greyed, saying why
+   — sign-in is an Ethereum signature, and Phantom, MetaMask and Backpack hold
+   an Ethereum account beside the Solana one. */
 const WALLET_PICK = "elo.wallet";
+const PHONE = "walletconnect";   /* the remembered pick for a phone wallet */
 let pageReady = false;  /* set at start: an announcement before it only queues */
 const announced = [];
 window.addEventListener("eip6963:announceProvider", (e) => {
@@ -436,30 +444,102 @@ window.addEventListener("eip6963:announceProvider", (e) => {
 });
 window.addEventListener("ethereum#initialized", () => { if (pageReady) walletAppeared(); });
 
+/* Wallet Standard: only the name, icon and chains are read. */
+const solana = [];
+const standard = Object.freeze({
+  register(...ws) {
+    for (const w of ws) {
+      const chains = w && Array.isArray(w.chains) ? w.chains : [];
+      const name = String((w && w.name) || "").trim();
+      if (!name || !chains.some((c) => String(c).startsWith("solana:")) || solana.some((x) => x.name === name)) continue;
+      solana.push({ name, icon: String(w.icon || "") });
+      if (pageReady) walletAppeared();
+    }
+    return () => {};
+  },
+});
+window.addEventListener("wallet-standard:register-wallet", (e) => {
+  try { if (typeof e.detail === "function") e.detail(standard); } catch (err) { /* a wallet's own bug */ }
+});
+
+/* The phone wallet's config and bundle, from the platform. */
+let walletCfg = null;
+function loadWalletConfig() {
+  return new Promise((done) => {
+    const s = document.createElement("script");
+    /* /js/ sits behind a four-hour edge cache; ten minutes is soon enough */
+    s.src = SITE + "/js/wallet-config.js?v=" + Math.floor(Date.now() / 600000);
+    s.addEventListener("load", () => { walletCfg = window.ELO_WALLET_CONFIG || null; done(); });
+    s.addEventListener("error", () => done());
+    document.head.append(s);
+  });
+}
+const phoneOn = () => !!walletCfg
+  && /^[0-9a-f]{32}$/i.test(String(walletCfg.walletconnectProjectId || ""))
+  && /^\/js\/vendor\/[\w.-]+\.js$/.test(String(walletCfg.walletconnectScript || ""));
+let phoneKit = null;
+function phone() {
+  if (!phoneKit) {
+    phoneKit = new Promise((ok, no) => {
+      if (window.EloWalletConnect) { ok(window.EloWalletConnect); return; }
+      const s = document.createElement("script");
+      s.src = SITE + walletCfg.walletconnectScript;
+      s.addEventListener("load", () => (window.EloWalletConnect
+        ? ok(window.EloWalletConnect) : no(new Error("the phone-wallet module did not load"))));
+      s.addEventListener("error", () => no(new Error("the phone-wallet module did not load")));
+      document.head.append(s);
+    }).catch((err) => { phoneKit = null; throw err; });
+  }
+  return phoneKit;
+}
+const phoneOpts = () => ({ projectId: walletCfg.walletconnectProjectId, url: location.origin });
+const PHONE_ICON = "data:image/svg+xml," + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#edebe6" '
+  + 'stroke-width="1.6"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg>');
+
 const remembered = () => { try { return localStorage.getItem(WALLET_PICK) || ""; } catch (err) { return ""; } };
 const remember = (rdns) => {
   try { if (rdns) localStorage.setItem(WALLET_PICK, rdns); else localStorage.removeItem(WALLET_PICK); }
   catch (err) { /* private mode: the picker asks again next visit */ }
 };
 
-/* Every wallet to offer, as { name, icon, rdns, provider }. */
+/* A wallet in `window.ethereum` that announces nothing, named by its flags.
+   Rabby and others also set isMetaMask, so MetaMask is asked last. */
+function legacyName(p) {
+  return p.isRabby ? "Rabby Wallet" : p.isPhantom ? "Phantom" : p.isCoinbaseWallet ? "Coinbase Wallet"
+    : p.isBraveWallet ? "Brave Wallet" : p.isTrust || p.isTrustWallet ? "Trust Wallet"
+    : p.isOkxWallet || p.isOKExWallet ? "OKX Wallet" : p.isMetaMask ? "MetaMask" : "Browser wallet";
+}
+/* "Trust" and "Trust Wallet" are one wallet in two registries. */
+const sameWallet = (n) => String(n).toLowerCase().replace(/wallet/g, "").replace(/[^a-z0-9]/g, "");
+
+/* Every row to offer: { name, icon, rdns, provider, phone?, solanaOnly? }. */
 function wallets() {
-  if (announced.length) {
-    return announced.map((a) => ({
+  const out = announced.length
+    ? announced.map((a) => ({
       name: String(a.info.name || "Wallet"),
       icon: String(a.info.icon || ""),
       rdns: String(a.info.rdns || ""),
       provider: a.provider,
-    }));
+    }))
+    : window.ethereum ? [{ name: legacyName(window.ethereum), icon: "", rdns: "", provider: window.ethereum }] : [];
+  const held = new Set(out.map((w) => sameWallet(w.name)));
+  for (const s of solana) {
+    if (!held.has(sameWallet(s.name))) out.push({ name: s.name, icon: s.icon, rdns: "", provider: null, solanaOnly: true });
   }
-  return window.ethereum ? [{ name: "Browser wallet", icon: "", rdns: "", provider: window.ethereum }] : [];
+  if (phoneOn()) out.push({ name: "Phone wallet", icon: PHONE_ICON, rdns: PHONE, provider: null, phone: true });
+  return out;
 }
+const usable = () => wallets().filter((w) => !w.solanaOnly);
+const solanaOnly = () => wallets().filter((w) => w.solanaOnly);
 
 let provider = null;    /* the EIP-1193 provider this page signs with */
+let providerIsPhone = false;
 const watched = new WeakSet();
 /* `rdns` undefined leaves the remembered pick alone (a silent resume). */
-function useWallet(p, rdns) {
+function useWallet(p, rdns, isPhone = false) {
   provider = p;
+  providerIsPhone = isPhone;
   if (rdns !== undefined) remember(rdns);
   if (typeof p.on !== "function" || watched.has(p)) return;
   watched.add(p);
@@ -469,16 +549,28 @@ function useWallet(p, rdns) {
   p.on("accountsChanged", (a) => {
     if (p === provider) setAddress(signedOut() ? null : (a && a[0]) || null);
   });
+  /* the phone ended the session */
+  if (isPhone) {
+    p.on("disconnect", () => {
+      if (p !== provider) return;
+      provider = null;
+      providerIsPhone = false;
+      remember("");
+      setAddress(null);
+    });
+  }
 }
 
 /* The remembered wallet if it is here, the only one if there is one,
    otherwise the picker. Null when the player closes it. */
 async function pickWallet() {
   const all = wallets();
+  const can = all.filter((w) => !w.solanaOnly);
   const kept = remembered();
-  const known = kept && all.find((w) => w.rdns === kept);
+  const known = kept && can.find((w) => w.rdns === kept);
   if (known) return known;
-  if (all.length <= 1) return all[0] || null;
+  if (can.length === 1 && can[0].provider) return can[0];
+  if (!all.length) return null;
   return askWhich(all);
 }
 
@@ -495,11 +587,28 @@ function askWhich(all) {
         img.alt = "";
         img.src = w.icon;
         b.append(img);
+      } else {
+        const ph = document.createElement("span");
+        ph.className = "ph";
+        b.append(ph);
       }
-      b.append(w.name);
-      b.addEventListener("click", () => { chosen = w; dlg.close(); });
+      const t = document.createElement("span");
+      const n = document.createElement("b");
+      n.textContent = w.name;
+      t.append(n);
+      const note = w.solanaOnly ? "Solana only — needs an Ethereum account"
+        : w.phone ? "Scan a code with your wallet app" : "";
+      if (note) {
+        const sm = document.createElement("small");
+        sm.textContent = note;
+        t.append(sm);
+      }
+      b.append(t);
+      if (w.solanaOnly) b.disabled = true;
+      else b.addEventListener("click", () => { chosen = w; dlg.close(); });
       return b;
     }));
+    $("wallet-note").hidden = !all.some((w) => w.solanaOnly);
     dlg.addEventListener("close", () => done(chosen), { once: true });
     dlg.showModal();
   });
@@ -508,7 +617,7 @@ $("wallet-cancel").addEventListener("click", () => $("wallet-pick").close());
 
 const lower = (list) => (list || []).map((a) => String(a).toLowerCase());
 const wallet = {
-  has: () => wallets().length > 0,
+  has: () => usable().length > 0,
   async accounts(p = provider) {
     if (!p) return [];
     try { return (await p.request({ method: "eth_accounts" })) || []; }
@@ -517,10 +626,11 @@ const wallet = {
   async connect() {
     const w = await pickWallet();
     if (!w && wallet.has()) throw Object.assign(new Error("no wallet picked."), { cancelled: true });
-    if (!w) throw new Error("no wallet in this browser");
-    const a = await w.provider.request({ method: "eth_requestAccounts" });
+    if (!w) throw new Error(noWalletLine());
+    const p = w.phone ? await (await phone()).connect(phoneOpts()) : w.provider;
+    const a = await p.request({ method: "eth_requestAccounts" });
     if (!a || !a[0]) throw new Error("no account");
-    useWallet(w.provider, w.rdns);
+    useWallet(p, w.rdns, !!w.phone);
     return a[0];
   },
   async sign(message, address) {
@@ -550,6 +660,14 @@ const wallet = {
 const walletSaid = (err) => err && err.code === 4001 ? "you said no in your wallet."
   : err && err.code === -32002 ? "your wallet already has a request open — check its window, then try again."
   : (err && err.message) || String(err);
+/* What a browser with no wallet that can sign in is told. */
+function noWalletLine() {
+  const sol = solanaOnly()[0];
+  return sol
+    ? `${sol.name} only holds Solana here, and Gates signs in with an Ethereum account, so you play as a guest. `
+      + "Phantom, MetaMask and Backpack hold both: turn Ethereum on in the wallet's settings, then reload."
+    : "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
+}
 
 /* ── signed in on Elo Pros is signed in here ───────────────────────────────
    There is no session anywhere: identity is a connected wallet. The platform
@@ -587,6 +705,14 @@ function resumeOrder() {
    re-checks `address` after every await and the first to find one wins. */
 async function resume() {
   if (signedOut()) return;
+  /* a phone session this browser already has; never a QR code */
+  if (remembered() === PHONE && phoneOn()) {
+    try {
+      const p = await (await phone()).restore(phoneOpts());
+      const a = p && p.accounts && p.accounts[0];
+      if (a && !address && !signedOut()) { useWallet(p, undefined, true); setAddress(a); return; }
+    } catch (err) { /* no session, or the relay is away: the extensions below */ }
+  }
   /* MetaMask answers [] for the first moments of a page and the real account
      after (`store.js` §silentAccount measured it), so a miss is asked again. */
   for (const wait of [0, 400, 1500]) {
@@ -624,10 +750,14 @@ async function signOut() {
     Object.keys(sessionStorage).filter((k) => k.startsWith("elo.bal.")).forEach((k) => sessionStorage.removeItem(k));
   } catch (err) { /* private mode */ }
   const p = provider;
+  const wasPhone = providerIsPhone;
   provider = null;
+  providerIsPhone = false;
   /* the next sign-in may pick another wallet */
   remember("");
   setAddress(null);
+  /* a phone session is ended rather than left paired */
+  if (wasPhone && window.EloWalletConnect) { await window.EloWalletConnect.disconnect(); return; }
   /* the real revocation where the wallet has one (EIP-2255); the flag above
      is what makes this work on the wallets that do not */
   try { if (p) await p.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }); }
@@ -728,7 +858,7 @@ function paintAccount() {
     if (wallet.has()) {
       line.textContent = "Sign in with your wallet. Your base, your name and your skins follow the wallet, on every server.";
     } else {
-      line.textContent = "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
+      line.textContent = noWalletLine();
     }
     inBtn.hidden = !wallet.has();
     $("who-get").hidden = wallet.has();
@@ -752,7 +882,7 @@ for (const b of [$("acct-in"), $("who-in")]) {
   b.addEventListener("click", async () => {
     if (!wallet.has()) {
       show("play");
-      say("No wallet in this browser — add one like MetaMask or Rabby, then reload.", "bad");
+      say(noWalletLine(), "bad");
       return;
     }
     b.disabled = true;
@@ -1553,7 +1683,11 @@ async function fillOwned() {
 /* Wallets already in the page answer this at once; later ones announce
    themselves when they load. */
 window.dispatchEvent(new Event("eip6963:requestProvider"));
+try { window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: standard })); }
+catch (err) { /* no Solana rows, nothing else lost */ }
 pageReady = true;
+/* the phone row appears once the platform's config says it may */
+loadWalletConfig().then(() => { if (phoneOn()) walletAppeared(); });
 rows = baseRows();
 picked = rows[0].id;
 renderServers();
