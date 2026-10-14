@@ -6907,11 +6907,11 @@ pub const ROW_BUSH: usize = 4;
 /// meadow's plant and the berry bush the forest edge's, which is where the
 /// treeline transfer puts most of the column.
 pub const PLANT_SHARES: [[u16; 2]; BIOMES] = [
-    [80, 110],  // Beach
-    [150, 250], // Meadow
-    [160, 80],  // Forest
-    [80, 40],   // Highland
-    [0, 40],    // Desert — no berries; the rest is cactus and dry scrub
+    [60, 95],   // Beach
+    [100, 160], // Meadow
+    [140, 70],  // Forest
+    [40, 20],   // Highland
+    [0, 30],    // Desert — no berries; the rest is cactus and dry scrub
 ];
 
 const _: () = {
@@ -6962,9 +6962,10 @@ pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
 /// How much of the bush column is a ground pickup, per biome, per mille of
 /// the column's draws (taken out of what was scenery). **(knob)**
 ///
-/// Lowered with the bush column's rise (2026-10-14) so the pickables grow by
-/// a fifth to a half and the rest of the rise is scenery scrub.
-pub const PICKUP_SHARES: [u16; BIOMES] = [90, 90, 90, 100, 150];
+/// Lowered with the bush column's rise (2026-10-14), with the plant shares
+/// above, so the pickables grow by about a quarter and the rest of the rise
+/// is scenery scrub.
+pub const PICKUP_SHARES: [u16; BIOMES] = [75, 60, 75, 50, 140];
 
 /// Which pickup, per biome, percent: `[stone, wood, metal, sulfur,
 /// mushrooms]`. Driftwood and stone on the beach, mushrooms under the trees,
@@ -7051,9 +7052,9 @@ impl ScatterTable {
                 // rocks we cant mine need to be WAY WAY bigger. so no
                 // confusion"), and the lone boulders in `boulder.rs` (4–8 m,
                 // box collision) took its place.
-                [0, 0, 0, 0, 55, 0, 70],
+                [0, 0, 0, 0, 70, 0, 70],
                 // Meadow: buildable, sparse trees, scrub between them.
-                [85, 18, 0, 0, 115, 0, 0],
+                [85, 18, 0, 0, 180, 0, 0],
                 // Forest: wood, cover — and since 2026-09-14 a forest rather
                 // than a parkland. **The row totals 784‰ against a field the
                 // cap below holds to `FOREST_CLUMP_CAP × FOREST_CLUMP_NORM`,
@@ -7074,13 +7075,13 @@ impl ScatterTable {
                 // still pays cloth; the meadow is where it is thick.
                 [720, 14, 0, 0, 50, 0, 0],
                 // Highland: the ore, the exposure.
-                [24, 75, 60, 45, 30, 0, 0],
+                [24, 75, 60, 45, 50, 0, 0],
                 // Desert: open sand. A palm now and then, cactus and dry
                 // scrub in the bush column, sandstone boulders, and ore —
                 // the reason to cross it, as in Rust's arid biome. The ore
                 // budget scales metal and sulfur island-wide, so this row
                 // moves where ore stands, not how much an island has.
-                [26, 33, 6, 6, 100, 0, 0],
+                [26, 33, 6, 6, 130, 0, 0],
             ],
             clump_cap: [
                 f32::INFINITY,

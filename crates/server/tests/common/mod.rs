@@ -69,11 +69,12 @@ pub fn shore() -> (f32, f32) {
     panic!("fixture seed has no shore");
 }
 
-/// A level, dry clearing: nothing solid (a tree, a node, a container)
-/// within `radius_cells` scatter cells of it — scrub and pickups are
+/// A level, dry clearing: nothing solid (a tree, a node, a container, a
+/// boulder) within `radius_cells` scatter cells of it — scrub and pickups are
 /// passable — and the ground within a few metres of level over it. Where two
 /// bodies meet in the arena with nothing between them.
 pub fn clearing(radius_cells: i32) -> (f32, f32) {
+    const CLEARING_ROCK_M: f32 = 64.0;
     use sim_core::terrain::{self, ScatterTable, CELL_SIZE};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
@@ -83,6 +84,11 @@ pub fn clearing(radius_cells: i32) -> (f32, f32) {
             let (x, z) = ((cx as f32 + 0.5) * CELL_SIZE, (cz as f32 + 0.5) * CELL_SIZE);
             let h0 = terrain::ground(SEED, &haven, x, z);
             if h0 < 2.0 {
+                continue;
+            }
+            // Nor a boulder (`boulder.rs`) within a long bow shot and a
+            // strafe of it: the arena's archers stand 30 m apart.
+            if sim_core::boulder::covers(SEED, &haven, x, z, CLEARING_ROCK_M) {
                 continue;
             }
             let clear = (-r..=r).all(|dz| {
