@@ -127,18 +127,21 @@ jobs:
             name: linux-x86_64
             client: gates
             shard: shard
+            jevbot: jev-bot
             archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             client: gates.exe
             shard: shard.exe
+            jevbot: jev-bot.exe
             archive: zip
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-aarch64
             client: gates
             shard: shard
+            jevbot: jev-bot
             archive: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
@@ -168,10 +171,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
-      - name: build the client and the shard
+      - name: build the client, the shard and the agent
         run: |
           cargo build --release -p client --features render --bin gates
-          cargo build --release -p server --bin shard
+          cargo build --release -p server --bin shard --bin jev-bot
       # **`assets/` and `content/` are load-bearing and their absence does not
       # look like an error.**
       #
@@ -195,6 +198,12 @@ jobs:
           mkdir -p "$dir"
           cp "target/release/${{ matrix.client }}" "$dir/"
           cp "target/release/${{ matrix.shard }}" "$dir/"
+          # An AI teammate with no Rust toolchain: `jev-bot`, and the script
+          # that puts Claude in it (`crates/server/JEV.md`). `--local` finds
+          # `content/` beside it.
+          cp "target/release/${{ matrix.jevbot }}" "$dir/"
+          cp crates/server/examples/claude_agent.py "$dir/"
+          cp crates/server/JEV.md "$dir/"
 
           test -d assets || { echo "::error::assets/ is missing — the client would ship untextured"; exit 1; }
           test -d content || { echo "::error::content/ is missing — the shard would not boot"; exit 1; }
@@ -291,6 +300,7 @@ jobs:
             echo "| macOS (Apple Silicon) | \`gates-${{ needs.check.outputs.version }}-macos-aarch64.tar.gz\` |"
             echo
             echo "Each archive holds the client (\`gates\`), the shard server (\`shard\`),"
+            echo "an agent player (\`jev-bot\`, with \`claude_agent.py\` and \`JEV.md\`),"
             echo "\`assets/\` — which the client loads from beside the executable — "
             echo "\`content/\` — which the shard needs to boot — and \`shard.toml.example\`."
             echo "Keep the layout: a client run without \`assets/\` beside it draws white."

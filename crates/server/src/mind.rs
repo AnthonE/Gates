@@ -12,6 +12,7 @@
 //! §open, "Jev goals v0".
 
 pub use crate::agent::build::Milestone;
+use crate::agent::orders::{self, Order};
 use protocol::MAX_ITEM_NAME_BYTES;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -188,6 +189,10 @@ pub enum Goal {
     Raid,
     /// Say yes to the team invite waiting on it (wire v108).
     JoinTeam,
+    /// Invite the person beside it to its team: the invite a player sends
+    /// with N (wire v108). Offered while it has no team or leads one with
+    /// room, and a person who is not an agent stands within reach.
+    Invite,
     /// Stay with its nearest teammate, and fight whoever goes for them.
     Follow,
     /// Take what the pack carries past the belt to the team's chest, and
@@ -241,7 +246,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 34] = [
+    pub const FIXED: [Goal; 35] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -266,6 +271,7 @@ impl Goal {
         Goal::Defend,
         Goal::Raid,
         Goal::JoinTeam,
+        Goal::Invite,
         Goal::Follow,
         Goal::Deliver,
         Goal::SupplyWood,
@@ -306,6 +312,7 @@ impl Goal {
             Goal::Defend => "defend",
             Goal::Raid => "raid",
             Goal::JoinTeam => "join_team",
+            Goal::Invite => "invite",
             Goal::Follow => "follow",
             Goal::Deliver => "deliver",
             Goal::SupplyWood => "supply_wood",
@@ -386,6 +393,7 @@ impl Goal {
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
+            Goal::Invite => "Invite the player beside you to your team.".into(),
             Goal::Follow => "Stay with a teammate; fight their attackers.".into(),
             Goal::Deliver => "Put the pack in the team's box.".into(),
             Goal::SupplyWood => "Chop wood, then put it in the team's box.".into(),
@@ -873,8 +881,9 @@ impl Default for Heard {
 }
 
 /// What a decision source has its body say out loud: one local chat line,
-/// sent with the human chat box's own encoder. Only an external source
-/// speaks; Jev is a classifier and the scripted policy is quiet.
+/// sent with the human chat box's own encoder. An external source says
+/// what it likes; the scripted policy only answers its team's orders with
+/// fixed lines (`agent::orders`); Jev is a classifier and stays quiet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Say {
     #[default]
@@ -1590,11 +1599,13 @@ pub struct Choice {
     pub reason: Reason,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    /// A line to say out loud; [`Say::Quiet`] from every source but
-    /// [`SourceKind::External`], and the body ignores it from any other.
+    /// A line to say out loud: an external source's own, or the scripted
+    /// policy's fixed answer to an order. Jev's is always [`Say::Quiet`],
+    /// and the body ignores a line from it.
     pub say: Say,
     /// The team's lock code, as a teammate gave it (an external agent's
-    /// `"code"`): kept for the locks on the way to the team's chest.
+    /// `"code"`, or a number on team chat for the scripted policy): kept
+    /// for the locks on the way to the team's chest.
     pub code: Option<crate::agent::lock::LockCode>,
 }
 
@@ -2025,10 +2036,21 @@ impl Drop for Mind {
 }
 
 /// Explicit offline goals, never a fallback for a failed model request.
-/// Deterministic from the summary and its own rotation; allocation-free.
+/// Deterministic from the summary and what its team told it;
+/// allocation-free.
 #[derive(Default)]
 pub struct Scripted {
     rotation: u8,
+    /// A teammate's standing order (`agent::orders`): follow them, or hold
+    /// here, until another order or until it has no team.
+    standing: Option<Order>,
+    /// A run or the walk home a teammate asked for, not yet started.
+    errand: Option<Order>,
+    /// A person near it asked to team up, in local chat.
+    asked: bool,
+    /// The answer to say with the next choice, and a code a teammate gave.
+    say: Say,
+    code: Option<crate::agent::lock::LockCode>,
 }
 
 fn pct(value: u16, max: u16) -> u32 {
@@ -2045,6 +2067,7 @@ impl DecisionSource for Scripted {
     }
 
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
+        self.hear(s);
         let (goal, why) = self.pick(s);
         Ok(Choice {
             goal,
@@ -2052,13 +2075,64 @@ impl DecisionSource for Scripted {
             reason: Reason::from_text(why),
             input_tokens: 0,
             output_tokens: 0,
-            say: Say::Quiet,
-            code: None,
+            say: std::mem::take(&mut self.say),
+            code: self.code.take(),
         })
     }
 }
 
 impl Scripted {
+    /// What its team typed since it was last asked, read as orders
+    /// (`agent::orders`), and whether someone near it asked to team up.
+    /// A line it said itself or an agent said is never an order.
+    fn hear(&mut self, s: &Summary) {
+        if s.team.mates == 0 {
+            self.standing = None;
+            self.errand = None;
+        }
+        for line in s.heard.lines() {
+            if line.me || line.agent {
+                continue;
+            }
+            let text = line.text.as_bytes();
+            match line.channel {
+                protocol::Channel::Team => {
+                    if let Some(code) = orders::code(text) {
+                        self.code = Some(code);
+                        self.reply("got the code");
+                    }
+                    match orders::order(text) {
+                        Some(Order::Help) => self.reply(orders::HELP),
+                        Some(Order::Follow) => {
+                            self.standing = Some(Order::Follow);
+                            self.errand = None;
+                            self.reply("following you");
+                        }
+                        Some(Order::Stay) => {
+                            self.standing = Some(Order::Stay);
+                            self.errand = None;
+                            self.reply("holding here");
+                        }
+                        Some(errand) => {
+                            self.standing = None;
+                            self.errand = Some(errand);
+                        }
+                        None => {}
+                    }
+                }
+                protocol::Channel::Local => self.asked |= orders::asks_to_team(text),
+                protocol::Channel::Global => {}
+            }
+        }
+    }
+
+    /// The next answer: on team chat, or out loud with no team.
+    fn reply(&mut self, text: &str) {
+        if let Some(line) = protocol::ChatText::sanitize(text.as_bytes()) {
+            self.say = Say::Team(line);
+        }
+    }
+
     fn pick(&mut self, s: &Summary) -> (Goal, &'static str) {
         // Survive now. The fight reflex answers blows on its own; the
         // policy only calls a retreat once staying would be the end.
@@ -2085,6 +2159,15 @@ impl Scripted {
         // A team (wire v108): say yes, and go to them when they are set on.
         if s.offers(Goal::JoinTeam) {
             return (Goal::JoinTeam, "scripted: a team invite is waiting");
+        }
+        if std::mem::take(&mut self.asked) {
+            if s.offers(Goal::Invite) {
+                self.reply("invite sent: press Y");
+                return (Goal::Invite, "scripted: a player asked to team up");
+            }
+            if s.team.mates == 0 {
+                self.reply("come closer, or press N on me");
+            }
         }
         if s.team.mate_attacked && s.offers(Goal::Follow) {
             return (Goal::Follow, "scripted: my teammate is under attack");
@@ -2117,6 +2200,40 @@ impl Scripted {
             if bush {
                 return (Goal::Forage, "scripted: food is low, a bush is in view");
             }
+        }
+        // A teammate's word: a run or the walk home once, then a follow
+        // or a hold until they say otherwise.
+        if let Some(errand) = self.errand.take() {
+            let (goal, said) = match errand {
+                Order::Supply(goal) => (
+                    goal,
+                    match goal {
+                        Goal::SupplyStone => "on it: stone",
+                        Goal::SupplyOre => "on it: ore",
+                        Goal::SupplyHemp => "on it: cloth",
+                        _ => "on it: wood",
+                    },
+                ),
+                _ => (Goal::GoHome, "heading home"),
+            };
+            if s.offers(goal) {
+                self.reply(said);
+                return (goal, "scripted: a teammate asked");
+            }
+            self.reply(if goal.supplies() && s.team.home.count == 0 {
+                "show me your box first"
+            } else {
+                "can't right now"
+            });
+        }
+        match self.standing {
+            Some(Order::Follow) if s.offers(Goal::Follow) => {
+                return (Goal::Follow, "scripted: my teammate said follow");
+            }
+            Some(Order::Stay) if s.offers(Goal::Wait) => {
+                return (Goal::Wait, "scripted: my teammate said stay");
+            }
+            _ => {}
         }
         // What it died holding is worth a walk while nobody is about: the
         // offer says it is near and no one dangerous is in view.
@@ -2646,6 +2763,145 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.water = 10;
         assert_eq!(scripted.pick(&s).0, Goal::Drink, "thirst outranks the work");
+    }
+
+    fn heard(channel: protocol::Channel, text: &str, agent: bool) -> HeardLine {
+        HeardLine {
+            from: 7,
+            agent,
+            channel,
+            text: protocol::ChatText::sanitize(text.as_bytes()).unwrap(),
+            ..HeardLine::EMPTY
+        }
+    }
+
+    fn said(choice: &Choice) -> Option<String> {
+        match choice.say {
+            Say::Team(line) => Some(String::from_utf8_lossy(line.as_bytes()).into_owned()),
+            _ => None,
+        }
+    }
+
+    /// A teammate's words on team chat are orders: follow and stay stand
+    /// until the next order, a run happens once, help is answered, and a
+    /// number is the team's code. An agent's line and a local line are not.
+    #[test]
+    fn the_scripted_policy_takes_its_teams_orders() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Wait, Goal::Follow, Goal::SupplyWood] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        let mut ask = |s: &mut Summary, line: Option<HeardLine>| {
+            s.heard.clear();
+            if let Some(line) = line {
+                s.heard.push(line);
+            }
+            scripted.decide(s).unwrap()
+        };
+        use protocol::Channel::{Local, Team};
+        assert_eq!(
+            ask(&mut s, None).goal,
+            Goal::Explore,
+            "near its teammate, it works"
+        );
+
+        let c = ask(&mut s, Some(heard(Team, "follow me", false)));
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Follow, Some("following you"))
+        );
+        assert_eq!(ask(&mut s, None).goal, Goal::Follow, "a follow stands");
+        assert_eq!(
+            ask(&mut s, Some(heard(Team, "follow me", true))).goal,
+            Goal::Follow
+        );
+        assert!(
+            said(&ask(&mut s, Some(heard(Local, "stay", false)))).is_none(),
+            "local is no order"
+        );
+
+        let c = ask(&mut s, Some(heard(Team, "stay here", false)));
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Wait, Some("holding here"))
+        );
+        assert_eq!(
+            ask(&mut s, Some(heard(Team, "stay", true))).goal,
+            Goal::Wait
+        );
+
+        let c = ask(&mut s, Some(heard(Team, "go get wood", false)));
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::SupplyWood, Some("on it: wood"))
+        );
+        assert_eq!(
+            ask(&mut s, None).goal,
+            Goal::Explore,
+            "a run is once, and ends the hold"
+        );
+
+        let c = ask(&mut s, Some(heard(Team, "get stone", false)));
+        assert_eq!(
+            said(&c).as_deref(),
+            Some("show me your box first"),
+            "not offered"
+        );
+
+        let c = ask(&mut s, Some(heard(Team, "help", false)));
+        assert_eq!(said(&c).as_deref(), Some(orders::HELP));
+
+        let c = ask(&mut s, Some(heard(Team, "code is 1234", false)));
+        assert_eq!(c.code.map(crate::agent::lock::LockCode::wire), Some(1234));
+        assert_eq!(said(&c).as_deref(), Some("got the code"));
+        assert!(
+            ask(&mut s, Some(heard(Team, "9999", true))).code.is_none(),
+            "an agent's number"
+        );
+
+        // Off the team, an order is forgotten.
+        ask(&mut s, Some(heard(Team, "follow", false)));
+        s.team.mates = 0;
+        assert_eq!(ask(&mut s, None).goal, Goal::Explore);
+    }
+
+    /// A person near it asking to team up in local chat is invited when
+    /// someone is in reach; else it says how.
+    #[test]
+    fn the_scripted_policy_invites_who_asks() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.heard
+            .push(heard(protocol::Channel::Local, "wanna team?", false));
+        let c = scripted.decide(&s).unwrap();
+        assert_eq!(c.goal, Goal::Explore);
+        assert_eq!(said(&c).as_deref(), Some("come closer, or press N on me"));
+        s.offer(Goal::Invite);
+        let c = scripted.decide(&s).unwrap();
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Invite, Some("invite sent: press Y"))
+        );
+        s.heard.clear();
+        assert_eq!(
+            scripted.decide(&s).unwrap().goal,
+            Goal::Explore,
+            "nobody asked"
+        );
+        s.heard.push(heard(protocol::Channel::Local, "team?", true));
+        assert_eq!(
+            scripted.decide(&s).unwrap().goal,
+            Goal::Explore,
+            "an agent asked"
+        );
     }
 
     /// Hurt: heal when nobody is about, run only when nearly done, and

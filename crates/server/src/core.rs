@@ -1608,6 +1608,15 @@ impl ShardCore {
     /// Without it the bodies stand there unclaimable and every player is
     /// handed a store record instead — which is the world persisting and the
     /// persistence buying nothing.
+    /// The teams kept across a restart (`team::Teams::load`), for the
+    /// players this world restored. Boot only, after
+    /// [`ShardCore::adopt_identities`].
+    pub fn load_teams(&mut self) -> std::io::Result<usize> {
+        let mut ids = vec![(PlayerKey::PLACEHOLDER, 0); MAX_PLAYERS];
+        let n = self.identities(&mut ids);
+        self.teams.load(&ids[..n])
+    }
+
     pub fn adopt_identities(&mut self, idents: &[(PlayerKey, u32)]) {
         for (key, id) in idents {
             if self.world.is_sleeper(*id) {

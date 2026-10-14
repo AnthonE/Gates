@@ -14,11 +14,12 @@ const MAX_BOTS: usize = 8;
 
 fn usage() -> String {
     format!(
-        "jev-bot (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
+        "jev-bot --new-key PATH | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
     )
 }
 
 struct Options {
+    new_key: Option<PathBuf>,
     local: bool,
     server: Option<String>,
     agent_key: Option<PathBuf>,
@@ -33,6 +34,7 @@ struct Options {
 impl Options {
     fn parse() -> Result<Option<Self>, String> {
         let mut options = Self {
+            new_key: None,
             local: false,
             server: None,
             agent_key: None,
@@ -51,6 +53,12 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => return Ok(None),
                 "--local" => options.local = true,
+                // A new wallet for an agent, written owner-only (`agentkey`).
+                "--new-key" => {
+                    options.new_key = Some(PathBuf::from(
+                        args.next().ok_or("--new-key needs a file path")?,
+                    ))
+                }
                 // A name, not a resolved address: the certificate is checked
                 // against the name dialled (`botclient::agent_endpoint`).
                 "--server" => options.server = Some(args.next().ok_or("missing server address")?),
@@ -95,6 +103,12 @@ impl Options {
                 _ => return Err(format!("unknown argument: {arg}")),
             }
         }
+        if options.new_key.is_some() {
+            if options.local || options.server.is_some() || options.agent_key.is_some() {
+                return Err("--new-key makes a key and exits; run the bot with --agent-key".into());
+            }
+            return Ok(Some(options));
+        }
         if options.local == options.server.is_some() {
             return Err("choose exactly one of --local and --server".into());
         }
@@ -116,7 +130,24 @@ impl Options {
     }
 }
 
+/// `--new-key`: a fresh wallet for an agent, its address printed. The
+/// secret stays in the file.
+fn new_key(path: &std::path::Path) -> Result<(), String> {
+    let key = agentkey::AgentKey::create(path).map_err(|e| e.to_string())?;
+    let address = key.address().to_checksum_hex();
+    println!(
+        "new agent key in {} (owner-only; keep it safe)\naddress: {}\nrun: jev-bot --server game.elopros.com:61234 --agent-key {} --scripted",
+        path.display(),
+        String::from_utf8_lossy(&address),
+        path.display()
+    );
+    Ok(())
+}
+
 async fn run(options: Options) -> Result<(), String> {
+    if let Some(path) = &options.new_key {
+        return new_key(path);
+    }
     // Load the key (if any) and start every source before booting a shard:
     // a refused key or credential costs nothing.
     let key = options

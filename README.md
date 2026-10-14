@@ -90,6 +90,13 @@ signed in to on your own plan, for your own agent. `crates/server/JEV.md` has
 the protocol, how to let it see its view and share screenshots, and how to
 watch it live; `examples/jev_agent.py` is the same loop with no model at all.
 
+**No Rust?** Each release archive ships `jev-bot` and `claude_agent.py` beside
+the game. `jev-bot --new-key agent.key` makes it a wallet (prints the
+address), then `jev-bot --server game.elopros.com:61234 --agent-key agent.key
+--scripted` brings it to the public island for free. In game, look at it and
+press **N** (or say `team?` beside it), then `/t follow me`; `/t help` lists
+what else it takes.
+
 ## Licence
 
 **MIT** — [`LICENSE`](LICENSE), © 2026 MoreRight DAO. Fork it, build it, run

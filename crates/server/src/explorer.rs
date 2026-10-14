@@ -122,6 +122,13 @@ pub const VISIT_GOAL_SECS: u32 = 360;
 pub const VISIT_RETRY_TICKS: u32 = 120 * TICK_HZ;
 /// A team invite's accept that has not gone out in this long is stuck.
 pub const JOIN_GOAL_SECS: u32 = 5;
+/// How near a person must stand for `invite`: the human client's reach
+/// for N (`ASSIST_REACH_M`), inside the shard's own 7 m.
+pub const INVITE_REACH_M: f32 = 3.0;
+/// An invite makes its sender the leader of a team of one (as in Rust).
+/// Alone on its team this long, past the invite's own minute, it leaves,
+/// so the next person's N finds it free.
+pub const ALONE_TEAM_SECS: u32 = 65;
 /// A supply run gathers this long, then takes what it has to the chest.
 pub const SUPPLY_GATHER_SECS: u32 = 180;
 /// A walk to the team's chest, through its doors, and out again that has
@@ -446,6 +453,8 @@ pub struct Senses {
     pub mate_attacked: bool,
     /// The team's base, where its eyes saw a teammate at a box.
     pub team_home: Sighting,
+    /// A person it could invite to its team stands within reach.
+    pub invitee: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -881,6 +890,11 @@ pub struct Survivor {
     has_mates: bool,
     /// The stranger going for a teammate, nearest them (`perceive`).
     guard: Option<u32>,
+    /// Who `invite` would invite: a person up and within
+    /// [`INVITE_REACH_M`], not an agent, not on its team.
+    invitee: Option<u32>,
+    /// Since when it has led a team of one, if it does.
+    alone_since: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1006,6 +1020,8 @@ impl Survivor {
             say_team: false,
             has_mates: false,
             guard: None,
+            invitee: None,
+            alone_since: None,
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -1541,13 +1557,17 @@ impl Survivor {
                         }
                     }
                 } else if self.memory.chat_wake
-                    && self.mind.kind() == SourceKind::External
+                    && matches!(
+                        self.mind.kind(),
+                        SourceKind::External | SourceKind::Scripted
+                    )
                     && !self.mind.pending()
                 {
                     // Somebody near spoke: an external source may answer
-                    // now rather than at the heartbeat. The mind's floor,
-                    // backoff and spend guard still decide whether it is
-                    // asked.
+                    // now rather than at the heartbeat, and the scripted
+                    // policy hears its team's orders (`agent::orders`). The
+                    // mind's floor, backoff and spend guard still decide
+                    // whether it is asked.
                     self.memory.trigger = Trigger::Heard;
                     if self.request(core, view, player, tick, now) {
                         if let Some(a) = self.goal.as_mut() {
@@ -1716,10 +1736,14 @@ impl Survivor {
         true
     }
 
-    /// An answer's line, kept for [`BotDriver::say`]. Only an external
-    /// source speaks; a newer line replaces one not yet sent.
+    /// An answer's line, kept for [`BotDriver::say`]. An external source
+    /// speaks, and the scripted policy answers its team's orders; Jev
+    /// never does. A newer line replaces one not yet sent.
     fn take_say(&mut self, say: Say) {
-        if self.mind.kind() != SourceKind::External {
+        if !matches!(
+            self.mind.kind(),
+            SourceKind::External | SourceKind::Scripted
+        ) {
             return;
         }
         match say {
@@ -2059,6 +2083,32 @@ impl Survivor {
                     if let Some(a) = self.goal.as_mut() {
                         a.fled = true;
                     }
+                }
+                self.stats.phase = Phase::Waiting;
+                Intent::IDLE
+            }
+            Goal::Invite if elapsed >= JOIN_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Invite => {
+                // The invite a player sends with N. `fled` is the one-shot
+                // half done: once it has gone out the goal is done, and the
+                // yes is theirs (the team view says when it comes).
+                if active.fled {
+                    if self.outbox.is_none() {
+                        self.end_goal(tick, Outcome::Done);
+                    }
+                } else if let Some(target) = self.invitee {
+                    if self.queue(|b| {
+                        protocol::encode_action_team(protocol::TEAM_OP_INVITE, target, b)
+                    }) {
+                        if let Some(a) = self.goal.as_mut() {
+                            a.fled = true;
+                        }
+                    }
+                } else {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
                 }
                 self.stats.phase = Phase::Waiting;
                 Intent::IDLE
@@ -4892,6 +4942,40 @@ impl Survivor {
         }
         self.guard = guard.map(|(_, id)| id);
         self.senses.mate_attacked = self.guard.is_some();
+        // Someone to invite: a person up and in sight within reach, not an
+        // agent and not on its team, while it has no team or leads one
+        // with room. The nearest, as a player's N would pick.
+        let room = team.count == 0
+            || (team.leader == core.player_id && usize::from(team.count) < protocol::TEAM_MAX);
+        let mut invitee: Option<(f32, u32)> = None;
+        if let (true, Some(own)) = (room, self.tracks.own()) {
+            for t in self.tracks.recent(tick, TICK_HZ) {
+                if t.species != Species::Player
+                    || !t.visible
+                    || t.wounded
+                    || team.has(t.id)
+                    || core.is_agent(t.id)
+                {
+                    continue;
+                }
+                let d = (t.pos[0] - own.pos[0]).hypot(t.pos[2] - own.pos[2]);
+                if d <= INVITE_REACH_M && invitee.is_none_or(|i| d < i.0) {
+                    invitee = Some((d, t.id));
+                }
+            }
+        }
+        self.invitee = invitee.map(|(_, id)| id);
+        self.senses.invitee = self.invitee.is_some();
+        if team.count == 1 && team.leader == core.player_id {
+            let since = *self.alone_since.get_or_insert(tick);
+            if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
+                && self.queue(|b| protocol::encode_action_team(protocol::TEAM_OP_LEAVE, 0, b))
+            {
+                self.alone_since = None;
+            }
+        } else {
+            self.alone_since = None;
+        }
         let seen = (team.invite, team.count);
         if seen != self.team_seen {
             self.team_seen = seen;
@@ -5691,6 +5775,8 @@ impl BotDriver for Survivor {
         self.memory.team_wake = false;
         self.team_seen = (0, 0);
         self.guard = None;
+        self.invitee = None;
+        self.alone_since = None;
         self.seen_tick = Some(welcome.tick);
         self.seen_at = Instant::now();
     }
@@ -6438,6 +6524,9 @@ pub fn observe(
     }
     if s.team.invited {
         s.offer(Goal::JoinTeam);
+    }
+    if senses.invitee {
+        s.offer(Goal::Invite);
     }
     if s.team.awake.count > 0 {
         s.offer(Goal::Follow);

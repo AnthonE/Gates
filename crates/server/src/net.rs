@@ -1543,6 +1543,11 @@ fn take_world_save(
     ids.resize(MAX_PLAYERS, (PlayerKey::PLACEHOLDER, 0));
     let n = core.identities(&mut ids);
     ids.truncate(n);
+    // The teams by the same keys, so a restart finds them again. Small
+    // text, off the tick, on the save's cadence.
+    if let Err(e) = core.teams.save(&ids) {
+        eprintln!("shard: teams not saved: {e}");
+    }
     let tick = core.world.tick;
     if let Err(rtrb::PushError::Full(msg)) = world_tx.push(WorldMsg {
         tick,
@@ -3310,7 +3315,11 @@ fn sim_thread(
     core.world.mech_def = mechs;
     core.arc_text = arc_text;
     core.install_admins(admins);
-    core.teams = crate::team::Teams::new(team_max);
+    // The teams, kept beside the world save across a restart.
+    core.teams = crate::team::Teams::open(
+        team_max,
+        standings_base.as_deref().map(crate::team::teams_path),
+    );
     core.trust = trust;
     // The standings, beside the files the wipe archives with them.
     core.standings = crate::standings::Standings::open(
@@ -3345,6 +3354,10 @@ fn sim_thread(
                     core.world.clamp_conditions();
                 }
                 core.adopt_identities(&world_idents);
+                // The teams its sleepers were on, by their keys.
+                if let Err(e) = core.load_teams() {
+                    eprintln!("shard: teams not restored: {e}");
+                }
                 ShardStats::set(&stats.current_tick, core.world.tick);
             }
             Err(_) => ShardStats::bump(&stats.world_load_errors),

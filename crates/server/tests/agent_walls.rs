@@ -537,8 +537,13 @@ impl Harness {
 
     /// The puppet types a line into its chat box, in both shards.
     fn puppet_says(&mut self, text: &str) {
+        self.puppet_says_on(protocol::Channel::Local, text);
+    }
+
+    /// The same on a channel: `/t` is [`protocol::Channel::Team`].
+    fn puppet_says_on(&mut self, channel: protocol::Channel, text: &str) {
         let msg = protocol::ChatMsg {
-            channel: protocol::Channel::Local,
+            channel,
             text: protocol::ChatText::sanitize(text.as_bytes()).unwrap(),
         };
         self.shard.push_chat(self.puppet_slot, msg);
@@ -2104,6 +2109,103 @@ fn a_survivor_joins_a_team_and_keeps_up_with_its_teammate() {
         .history
         .iter()
         .any(|r| r.goal == Goal::JoinTeam && r.outcome == server::mind::Outcome::Done));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The free bot as a teammate, end to end through the real scripted
+/// policy: a person beside it asks to team up in local chat and it
+/// invites them by the human client's own verb; they say yes; on team chat
+/// it answers `help` with its orders, and `follow me` makes it stay with
+/// them when they walk off, nearer than the scripted catch-up would on its
+/// own. Both shards hash-identical, the frame path allocation-free.
+#[test]
+fn a_scripted_teammate_invites_who_asks_and_takes_orders() {
+    let mut h = Harness::new(false);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_says("team?");
+    let invited = |h: &Harness| h.shard.teams.team_of(ID).len() == 1;
+    for _ in 0..30 * TICK_HZ {
+        if invited(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(invited(&h), "the agent never invited: {}", h.explain());
+    assert!(h.verbs.contains("team"), "it invited by its own verb");
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_ACCEPT,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..5 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the puppet never joined: {}", h.explain());
+    assert!(h
+        .bot
+        .history
+        .iter()
+        .any(|r| r.goal == Goal::Invite && r.outcome == server::mind::Outcome::Done));
+    assert!(h
+        .puppet_chat
+        .iter()
+        .any(|c| c.0 == ID && c.2.as_bytes() == b"invite sent: press Y"));
+
+    h.puppet_says_on(protocol::Channel::Team, "help");
+    let helped = |h: &Harness| {
+        h.puppet_chat
+            .iter()
+            .any(|c| c.0 == ID && c.2.as_bytes() == server::agent::orders::HELP.as_bytes())
+    };
+    for _ in 0..20 * TICK_HZ {
+        if helped(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(helped(&h), "help was never answered: {}", h.explain());
+
+    h.puppet_says_on(protocol::Channel::Team, "follow me");
+    for _ in 0..10 * TICK_HZ {
+        h.step();
+    }
+    // Fifteen metres east: inside the scripted catch-up's 25 m, so only
+    // the order brings it.
+    h.stage_puppet(|p| p.body.qx += 1_500 / 3);
+    let apart = |h: &Harness| {
+        let me = h.me().body;
+        let mate = h
+            .shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap()
+            .body;
+        ((me.qx - mate.qx) as f32 * 0.03).hypot((me.qz - mate.qz) as f32 * 0.03)
+    };
+    for _ in 0..90 * TICK_HZ {
+        if apart(&h) <= server::explorer::FOLLOW_NEAR_M + 2.0 {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        apart(&h) <= server::explorer::FOLLOW_NEAR_M + 2.0,
+        "the agent never followed ({:.1} m): {}",
+        apart(&h),
+        h.explain()
+    );
+    assert!(h
+        .puppet_chat
+        .iter()
+        .any(|c| c.0 == ID && c.2.as_bytes() == b"following you"));
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 

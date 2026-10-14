@@ -1,0 +1,44 @@
+# A house teammate on the public shard: one free AI player anyone can invite
+# with N. `--scripted` makes no model calls, so a bot costs nothing to run;
+# it takes plain orders on team chat (`/t follow me`, `/t go get wood`,
+# `/t help`; `crates/server/JEV.md`). One unit per bot, one key per bot:
+#
+#   ~/gates-jev/jev-bot --new-key ~/gates-jev/flint.key   # prints the address
+#   sudo cp gates-teammate@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-teammate@flint
+#   journalctl -u gates-teammate@flint -f
+#
+# The instance name is the bot's name and its key file's. The binary is the
+# one `ci/deploy_shard.sh` copies to ~/gates-jev and restarts every
+# teammate on, so a wire bump never strands them. The key holds nothing and
+# signs only the shard's login; log its address in scry-forge's
+# `docs/money/HELD-KEYS.md`.
+
+[Unit]
+Description=Gates house teammate %i on game.elopros.com:61234
+Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/JEV.md
+After=network-online.target
+Wants=network-online.target
+# A shard restart or deploy drops the connection; keep coming back.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-jev
+# A run is at most a day (`--seconds`); systemd starts the next.
+ExecStart=/home/master/gates-jev/jev-bot --server game.elopros.com:61234 --agent-key /home/master/gates-jev/%i.key --agent-name %i --scripted --seconds 86400
+Restart=always
+RestartSec=15
+
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gates-teammate-%i
+
+[Install]
+WantedBy=multi-user.target
