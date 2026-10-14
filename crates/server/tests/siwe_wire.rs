@@ -626,13 +626,23 @@ fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
 
 // ── smart-contract wallets (v109, `chainsig.rs`) ─────────────────────────────
 
-/// A JSON-RPC stand-in on loopback: answers every POST with `result` and
-/// keeps each body it was sent. The chain, without the network.
-fn fake_rpc(result: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+/// What the stand-in saw: how many calls, and how many were an `eth_call`
+/// naming the wallet the test claims. Atomics, because this crate takes no
+/// locks (`clippy.toml`), tests included.
+#[derive(Default)]
+struct Seen {
+    calls: std::sync::atomic::AtomicUsize,
+    named: std::sync::atomic::AtomicUsize,
+}
+
+/// A JSON-RPC stand-in on loopback: answers every POST with `result`. The
+/// chain, without the network.
+fn fake_rpc(result: &'static str) -> (String, std::sync::Arc<Seen>) {
     use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::atomic::Ordering;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::new(Seen::default());
     let log = seen.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -650,9 +660,11 @@ fn fake_rpc(result: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Ve
             }
             let mut body = vec![0u8; len];
             let _ = reader.read_exact(&mut body);
-            log.lock()
-                .expect("lock")
-                .push(String::from_utf8_lossy(&body).into_owned());
+            let body = String::from_utf8_lossy(&body);
+            log.calls.fetch_add(1, Ordering::AcqRel);
+            if body.contains("\"eth_call\"") && body.contains(&"5a".repeat(20)) {
+                log.named.fetch_add(1, Ordering::AcqRel);
+            }
             let reply = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{result}"}}"#);
             let _ = write!(
                 stream,
@@ -728,12 +740,16 @@ async fn a_smart_wallet_is_admitted_when_its_chain_says_yes() {
         .expect("the chain said yes");
     assert_ne!(welcome.player_id, 0);
     assert_eq!(ShardStats::get(&handle.stats.refused_auth), 0);
-    let bodies = seen.lock().expect("lock").clone();
-    assert_eq!(bodies.len(), 1, "one question, one name: one call");
-    assert!(bodies[0].contains("\"eth_call\""), "{}", bodies[0]);
-    assert!(
-        bodies[0].contains(&"5a".repeat(20)),
-        "the chain was asked about this wallet"
+    use std::sync::atomic::Ordering;
+    assert_eq!(
+        seen.calls.load(Ordering::Acquire),
+        1,
+        "one question, one name: one call"
+    );
+    assert_eq!(
+        seen.named.load(Ordering::Acquire),
+        1,
+        "an eth_call about this wallet"
     );
     handle
         .shutdown
@@ -779,8 +795,9 @@ async fn a_plain_key_never_asks_the_chain() {
     })
     .await
     .expect("a real key is admitted");
-    assert!(
-        seen.lock().expect("lock").is_empty(),
+    assert_eq!(
+        seen.calls.load(std::sync::atomic::Ordering::Acquire),
+        0,
         "the chain was asked about a plain key"
     );
     handle

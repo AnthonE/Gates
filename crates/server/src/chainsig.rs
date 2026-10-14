@@ -18,22 +18,22 @@
 //! none keeps the no-network handshake it always had. The public shard names
 //! Robinhood Chain, then Base and Ethereum: a smart wallet connected on
 //! another chain signs for that chain. Bounded three ways, because the bytes
-//! are a stranger's: at most [`IN_FLIGHT`] checks at once, a timeout per call,
-//! and a deadline on the whole.
+//! are a stranger's: at most [`IN_FLIGHT`] checks at once (an atomic count, the
+//! handshake's own admission shape; this crate takes no locks), a timeout per
+//! call, and a deadline on the whole.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use protocol::Address;
-use tokio::sync::Semaphore;
 
 /// Most RPCs `sig_rpc` may name: each is an `eth_call` a refused stranger
 /// costs us.
 pub const MAX_RPCS: usize = 4;
-/// Checks in flight at once, shard-wide. A fifth waits briefly, then is
-/// told to try again rather than queueing behind noise.
+/// Checks in flight at once, shard-wide. A fifth is told to try again
+/// rather than queueing behind noise.
 pub const IN_FLIGHT: usize = 4;
-const WAIT_FOR_SLOT: Duration = Duration::from_secs(2);
 const CALL_TIMEOUT: Duration = Duration::from_secs(4);
 const DEADLINE: Duration = Duration::from_secs(10);
 /// An `eth_call` answer is a few dozen bytes; a body past this is not one.
@@ -86,7 +86,26 @@ const VALIDATOR: &[&str] = &[
 #[derive(Clone)]
 pub struct Config {
     rpcs: Arc<[String]>,
-    gate: Arc<Semaphore>,
+    in_flight: Arc<AtomicUsize>,
+}
+
+/// One slot of [`IN_FLIGHT`], given back however the check ends.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(count: &Arc<AtomicUsize>) -> Option<Self> {
+        if count.fetch_add(1, Ordering::AcqRel) >= IN_FLIGHT {
+            count.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(count.clone()))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Config {
@@ -98,7 +117,7 @@ impl Config {
     pub fn new(rpcs: Vec<String>) -> Self {
         Self {
             rpcs: rpcs.into(),
-            gate: Arc::new(Semaphore::new(IN_FLIGHT)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -140,9 +159,7 @@ pub async fn check(
     if !cfg.armed() || digests.is_empty() || sig.is_empty() {
         return Verdict::Invalid;
     }
-    let Ok(Ok(permit)) =
-        tokio::time::timeout(WAIT_FOR_SLOT, cfg.gate.clone().acquire_owned()).await
-    else {
+    let Some(slot) = Slot::take(&cfg.in_flight) else {
         return Verdict::Unreachable;
     };
     let rpcs = cfg.rpcs.clone();
@@ -150,7 +167,7 @@ pub async fn check(
     // RPC must not stall the handshakes sharing this worker (`entitle.rs`'s
     // reason, same tool).
     let work = tokio::task::spawn_blocking(move || {
-        let _held = permit;
+        let _held = slot;
         ask_each(&rpcs, &address, &digests, &sig, post)
     });
     match tokio::time::timeout(DEADLINE, work).await {
@@ -420,6 +437,25 @@ mod tests {
             Verdict::Unreachable,
             "nobody answered: try again, never 'wrong signer'"
         );
+    }
+
+    /// The gate gives a slot back however a check ends, and refuses the
+    /// one past [`IN_FLIGHT`] rather than queueing it.
+    #[test]
+    fn the_gate_holds_at_in_flight() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let held: Vec<Slot> = (0..IN_FLIGHT)
+            .map(|_| Slot::take(&count).expect("a slot"))
+            .collect();
+        assert!(Slot::take(&count).is_none(), "one past the cap is refused");
+        assert_eq!(
+            count.load(Ordering::Acquire),
+            IN_FLIGHT,
+            "a refusal leaves the count alone"
+        );
+        drop(held);
+        assert_eq!(count.load(Ordering::Acquire), 0, "every slot came back");
+        assert!(Slot::take(&count).is_some());
     }
 
     #[tokio::test]
