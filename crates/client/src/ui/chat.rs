@@ -21,6 +21,7 @@
 //! keeps "what you can type" and "what will send" the same set.
 
 use protocol::chat::{Channel, ChatText, CHAT_MAX_BYTES};
+use protocol::Address;
 
 /// The `/g ` prefix that sends a line to everyone instead of to the 20 m
 /// radius. Consumed by the client — the server is told the channel in a
@@ -34,11 +35,20 @@ pub const TEAM_PREFIX: &str = "/t ";
 /// store (wall 4); the oldest is evicted.
 pub const LOG_CAP: usize = 24;
 
+/// How long a line stays up with the composer shut, then how long it takes
+/// to fade. Rust's chat: a line is there while it is news, and opening chat
+/// brings the recent ones back.
+pub const SHOW_S: f32 = 10.0;
+pub const FADE_S: f32 = 1.5;
+
 /// The line being typed.
 #[derive(Debug, Default, Clone)]
 pub struct Composer {
     pub text: String,
     pub open: bool,
+    /// Where an unprefixed line goes. Sticky across opens, and `Tab` cycles
+    /// it, the way Rust's chat remembers Team vs Global.
+    pub channel: Channel,
 }
 
 impl Composer {
@@ -68,6 +78,35 @@ impl Composer {
         self.text.clear();
     }
 
+    /// `Tab`: Local → Team → Global → Local.
+    pub fn cycle(&mut self) {
+        self.channel = match self.channel {
+            Channel::Local => Channel::Team,
+            Channel::Team => Channel::Global,
+            Channel::Global => Channel::Local,
+        };
+    }
+
+    /// The channel the line would go to as typed: a `/g ` or `/t ` prefix
+    /// wins over the sticky one.
+    pub fn target(&self) -> Channel {
+        if self.text.starts_with(GLOBAL_PREFIX) || self.text.trim_end() == "/g" {
+            Channel::Global
+        } else if self.text.starts_with(TEAM_PREFIX) || self.text.trim_end() == "/t" {
+            Channel::Team
+        } else {
+            self.channel
+        }
+    }
+
+    /// The typed line without its channel prefix, as drawn in the bar.
+    pub fn body(&self) -> &str {
+        self.text
+            .strip_prefix(GLOBAL_PREFIX)
+            .or_else(|| self.text.strip_prefix(TEAM_PREFIX))
+            .unwrap_or(&self.text)
+    }
+
     /// How many bytes are left. Drawn beside the composer, because a cap the
     /// player cannot see is a cap that feels like a broken keyboard.
     pub fn remaining(&self) -> usize {
@@ -90,14 +129,14 @@ impl Composer {
             // message — not a line reading "/g".
             return None;
         } else {
-            (Channel::Local, self.text.as_str())
+            (self.channel, self.text.as_str())
         };
         ChatText::sanitize(body.as_bytes()).map(|t| (channel, t))
     }
 }
 
 /// One line in the scrollback.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub speaker: u32,
     /// What the speaker is called (`ui::names::label`), settled when the
@@ -105,8 +144,11 @@ pub struct Line {
     pub name: String,
     pub channel: Channel,
     pub text: String,
-    /// True for the client's own lines, so they can be drawn differently.
-    pub own: bool,
+    /// The speaker's wallet and picture revision, for the avatar, settled
+    /// with the name. `None` for a guest or a tag that has not landed.
+    pub face: Option<(Address, u32)>,
+    /// When it arrived, seconds on the client's clock. The fade reads it.
+    pub at: f64,
 }
 
 /// The scrollback: bounded, oldest evicted.
@@ -123,23 +165,33 @@ impl Log {
         self.lines.push(line);
     }
 
-    /// How a line reads on screen.
-    ///
-    /// The speaker's name is the one the shard told everyone
-    /// (`EventMsg::Tag`), so two players reading the same conversation read
-    /// the same names.
-    pub fn render(line: &Line) -> String {
-        let who = if line.own {
-            "you".to_string()
-        } else {
-            line.name.clone()
-        };
-        let tag = match line.channel {
-            Channel::Global => "[G] ",
-            Channel::Team => "[T] ",
+    /// The channel tag drawn before a name: Rust's `[Team]`. Local is the
+    /// default and goes bare.
+    pub fn tag(channel: Channel) -> &'static str {
+        match channel {
+            Channel::Global => "[Global]",
+            Channel::Team => "[Team]",
             Channel::Local => "",
-        };
-        format!("{tag}{who}: {}", line.text)
+        }
+    }
+
+    /// The coloured half of a line: tag and name, then a colon. The name is
+    /// the one the shard told everyone (`EventMsg::Tag`), so two players
+    /// reading the same conversation read the same names.
+    pub fn head(line: &Line) -> String {
+        match Self::tag(line.channel) {
+            "" => format!("{}: ", line.name),
+            tag => format!("{tag} {}: ", line.name),
+        }
+    }
+
+    /// How visible a line `age_s` old is: whole while it is news or while
+    /// the composer is open, then a fade to nothing.
+    pub fn alpha(age_s: f32, open: bool) -> f32 {
+        if open {
+            return 1.0;
+        }
+        (1.0 - (age_s - SHOW_S) / FADE_S).clamp(0.0, 1.0)
     }
 }
 
@@ -151,6 +203,7 @@ mod tests {
         Composer {
             text: s.to_string(),
             open: true,
+            channel: Channel::Local,
         }
     }
 
@@ -252,7 +305,8 @@ mod tests {
                 name: format!("#{i}"),
                 channel: Channel::Local,
                 text: format!("line {i}"),
-                own: false,
+                face: None,
+                at: 0.0,
             });
         }
         assert_eq!(log.lines.len(), LOG_CAP);
@@ -264,23 +318,54 @@ mod tests {
         let l = Line {
             speaker: 4,
             name: "Ash".into(),
-            channel: Channel::Global,
-            text: "hi".into(),
-            own: false,
-        };
-        assert_eq!(Log::render(&l), "[G] Ash: hi");
-        let l = Line {
             channel: Channel::Team,
+            text: "hi".into(),
+            face: None,
+            at: 0.0,
+        };
+        assert_eq!(Log::head(&l), "[Team] Ash: ");
+        let l = Line {
+            channel: Channel::Global,
             ..l
         };
-        assert_eq!(Log::render(&l), "[T] Ash: hi");
+        assert_eq!(Log::head(&l), "[Global] Ash: ");
         let l = Line {
-            speaker: 4,
-            name: "Ash".into(),
             channel: Channel::Local,
-            text: "hi".into(),
-            own: true,
+            ..l
         };
-        assert_eq!(Log::render(&l), "you: hi");
+        assert_eq!(Log::head(&l), "Ash: ");
+    }
+
+    /// `Tab` picks where an unprefixed line goes; a typed prefix still wins.
+    #[test]
+    fn the_sticky_channel_sends_unprefixed_lines_and_a_prefix_overrides_it() {
+        let mut c = composed("hello");
+        c.cycle();
+        assert_eq!(c.channel, Channel::Team);
+        assert_eq!(c.outgoing().map(|(ch, _)| ch), Some(Channel::Team));
+        c.text = "/g hello".into();
+        assert_eq!(c.target(), Channel::Global);
+        assert_eq!(c.body(), "hello");
+        assert_eq!(c.outgoing().map(|(ch, _)| ch), Some(Channel::Global));
+        c.cycle();
+        c.cycle();
+        assert_eq!(c.channel, Channel::Local, "three steps go round");
+        c.clear();
+        c.cycle();
+        assert_eq!(
+            c.channel,
+            Channel::Team,
+            "clearing the line keeps the channel"
+        );
+    }
+
+    #[test]
+    fn a_line_is_whole_then_fades_unless_chat_is_open() {
+        assert_eq!(Log::alpha(0.0, false), 1.0);
+        assert_eq!(Log::alpha(SHOW_S, false), 1.0);
+        let mid = Log::alpha(SHOW_S + FADE_S * 0.5, false);
+        assert!(mid > 0.0 && mid < 1.0);
+        assert_eq!(Log::alpha(SHOW_S + FADE_S, false), 0.0);
+        assert_eq!(Log::alpha(1000.0, true), 1.0, "open chat shows the log");
     }
 }

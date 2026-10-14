@@ -151,7 +151,8 @@ fn spawn(commands: &mut Commands, crawl: &Crawl) {
                 height: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::FlexEnd,
-                padding: UiRect::bottom(Val::Px(96.0)),
+                // Over the announce stack, which says the moment you go down.
+                padding: UiRect::bottom(Val::Px(super::hud::ANNOUNCE_TOP_PX + 8.0)),
                 ..default()
             },
             BackgroundGradient(vec![Gradient::Radial(RadialGradient::new(
