@@ -391,6 +391,7 @@ pub fn stream(
             z: slot.z,
             y: slot.y,
             n,
+            shrub: false,
             snag: false,
         };
         tap.snag = props::snag_of(live.as_ref(), &tap);

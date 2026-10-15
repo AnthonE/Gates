@@ -122,7 +122,7 @@ fn place_for(
     let h = terrain::ground(world.seed, &world.haven, eye.pos.x, eye.pos.z);
     // The Verdigris as it has spread, not as it stood on wipe day.
     let fel = match blight {
-        Some(b) => b.at(world, eye.pos.x, eye.pos.z).fel,
+        Some(b) => b.at(world, eye.pos.x, eye.pos.z).any(),
         None => terrain::fel(world.seed, eye.pos.x, eye.pos.z),
     };
     let moist = terrain::moisture(world.seed, eye.pos.x, eye.pos.z);

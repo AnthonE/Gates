@@ -120,11 +120,12 @@ pub fn update(
 }
 
 /// The live depth at a cached point (a tree's slot, a map texel), with the
-/// heart's wander noise `n` already in hand: the spread now, or the static
-/// heart bit for bit when no moment has been read (headless suites).
+/// heart's wander noise `n` already in hand: the spread now, hot spots and
+/// all, as the ground and the meter read it; or the static heart bit for bit
+/// when no moment has been read (headless suites).
 pub fn live_fel(now: Option<&spread::Now>, x: f32, z: f32, h: f32, n: f32) -> f32 {
     match now {
-        Some(now) if spread::within_reach(now, x, z) => spread::depth_n(now, x, z, h, n).fel,
+        Some(now) if spread::within_reach(now, x, z) => spread::depth_n(now, x, z, h, n).any(),
         Some(_) => 0.0,
         None => terrain::fel_of(terrain::fel_d2(x, z), n).max(0.0),
     }
@@ -143,7 +144,7 @@ pub fn live_fel_memo(
     match now {
         Some(now) if spread::within_reach(now, x, z) => {
             let n = terrain::fel_wander_memo(lat, seed, x, z);
-            spread::depth_n(now, x, z, h, n).fel
+            spread::depth_n(now, x, z, h, n).any()
         }
         Some(_) => 0.0,
         None => terrain::fel_memo(lat, seed, x, z).max(0.0),

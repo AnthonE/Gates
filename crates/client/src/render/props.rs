@@ -541,27 +541,45 @@ struct Chunk {
     stale: bool,
 }
 
-/// A tree as its chunk drew it: where, the ground under it, the heart's
-/// edge noise there (`terrain::fel_wander`), and whether it stood dead.
-/// Enough to ask again, exactly as the spawn asked, whether it would now.
+/// A tree or a shrub as its chunk drew it: where, the ground under it, the
+/// heart's edge noise there (`terrain::fel_wander`), and whether it stood
+/// dead. Enough to ask again, exactly as the spawn asked, whether it would
+/// now.
 #[derive(Clone, Copy, Debug)]
 pub struct TreeTap {
     pub x: f32,
     pub z: f32,
     pub y: f32,
     pub n: f32,
+    /// A shrub, which dies by the Verdigris' biome line rather than the snag
+    /// line (`plants::scenery_with`).
+    pub shrub: bool,
+    /// Drawn dead: a snag, or a shrub gone to dead scrub.
     pub snag: bool,
 }
 
 impl TreeTap {
     fn of(slot: &terrain::Slot, n: f32, fel: f32) -> Self {
+        let shrub = slot.occupant == Occupant::Shrub;
         TreeTap {
             x: slot.x,
             z: slot.z,
             y: slot.y,
             n,
-            snag: fel >= FEL_SNAG_AT,
+            shrub,
+            snag: dead_at(shrub, slot.y, fel),
         }
+    }
+}
+
+/// Whether a tree (or a shrub) standing on ground `y` is drawn dead in
+/// Verdigris `fel` deep: a tree at [`FEL_SNAG_AT`], a shrub where its biome
+/// turns to the Verdigris' (`terrain::biome`).
+fn dead_at(shrub: bool, y: f32, fel: f32) -> bool {
+    if shrub {
+        y >= terrain::BEACH_MAX_H && fel >= terrain::FEL_BIOME_AT
+    } else {
+        fel >= FEL_SNAG_AT
     }
 }
 
@@ -2382,11 +2400,15 @@ pub fn assets(
 /// tree — the same trunk it blocks and the same wood it pays. **(knob)**
 pub const FEL_SNAG_AT: f32 = 0.45;
 
-/// Whether the tree at `t` stands dead in the spread `now`: the one
-/// question the spawn, the ring's wither and the far cards all ask, so the
-/// same moment always gives the same answer and nothing churns.
+/// Whether the tree (or shrub) at `t` stands dead in the spread `now`: the
+/// one question the spawn, the ring's wither and the far cards all ask, so
+/// the same moment always gives the same answer and nothing churns.
 pub fn snag_of(now: Option<&sim_core::blight::Now>, t: &TreeTap) -> bool {
-    super::blight::live_fel(now, t.x, t.z, t.y, t.n) >= FEL_SNAG_AT
+    dead_at(
+        t.shrub,
+        t.y,
+        super::blight::live_fel(now, t.x, t.z, t.y, t.n),
+    )
 }
 
 /// What a snag's bark is multiplied by, linear: burnt nearly black, a green
@@ -2533,15 +2555,13 @@ pub fn stream(
                         continue;
                     }
                     // How deep the spread stands at a tree or a shrub now:
-                    // what kills the one and dries the other. A tree keeps
-                    // its tap, so the next moment can ask again.
+                    // what kills the one and dries the other. Each keeps its
+                    // tap, so the next moment can ask again.
                     let mut fel = 0.0;
                     if matches!(slot.occupant, Occupant::Tree | Occupant::Shrub) {
                         let n = terrain::fel_wander_memo(&mut lat, world.seed, slot.x, slot.z);
                         fel = super::blight::live_fel(now.as_ref(), slot.x, slot.z, slot.y, n);
-                        if slot.occupant == Occupant::Tree {
-                            taps.push(TreeTap::of(&slot, n, fel));
-                        }
+                        taps.push(TreeTap::of(&slot, n, fel));
                     }
                     // `cell_key` is `sim_core::gather`'s own, not a second
                     // copy: the client's mirror is keyed by it and a renderer
