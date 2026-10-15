@@ -1297,6 +1297,8 @@ fn debit(v: &mut Player, raw: u16) -> Hurt {
         // Damage ends the help gesture even if a heal on this same tick
         // leaves hp above its starting value. The helper must press E again.
         v.assist_target = 0;
+        // And regen waits again (Rust's `SecondsSinceAttacked`).
+        v.calm = 0;
     }
     // **Not counted here any more** (wounded v0). This is where the count
     // lived while a lethal debit and a corpse were the same event; a lethal

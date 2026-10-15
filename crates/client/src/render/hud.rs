@@ -979,6 +979,9 @@ pub enum ExposureChip {
     /// Standing in your own base: how long its hearth keeps it, or that it
     /// is decaying (the crew HUD vital, `ui::hearth::vital`).
     Upkeep,
+    /// Rust's COMFORT chip: shown while a fire (and company at it) gives
+    /// any, because comfort is what makes the body mend past 60 %.
+    Comfort,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1030,6 +1033,12 @@ const UPKEEP_CHIP: Color = Color::srgba(0.46, 0.34, 0.16, 0.85);
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
+
+/// What the COMFORT chip says: Rust's `COMFORT 50%`.
+pub fn comfort_line(comfort_pct: u8) -> String {
+    format!("COMFORT {comfort_pct}%")
+}
 
 /// The world around the body, as the exposure chips read it: the client's
 /// own sky (`weather::WeatherNow`), never a second opinion of the sim's.
@@ -1128,6 +1137,11 @@ pub fn exposure(
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
+            ExposureChip::Comfort => (
+                core.comfort_pct > 0,
+                comfort_line(core.comfort_pct),
+                COMFORT_CHIP,
+            ),
             // The one chip that costs hp says what stops it.
             ExposureChip::Cold if core.cold_hurting => {
                 (true, cold_line(true, core.wet_pct, w), FREEZE_CHIP)
@@ -1704,6 +1718,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Safe,
                 ExposureChip::Wet,
                 ExposureChip::Cold,
+                ExposureChip::Comfort,
             ] {
                 stack.spawn((
                     chip,

@@ -1368,6 +1368,17 @@ pub struct Player {
     /// Carried through a death (Rust's rule); neither hashed nor saved — a
     /// restart forgives.
     pub hostile: u16,
+    /// Comfort, per mille (`exposure.rs`, Rust's): what a lit fire and
+    /// company at it give, followed at `comfort_per_s`. Raises how far and
+    /// how fast the body mends on its own.
+    pub comfort: u16,
+    /// Seconds since this body last lost hp (`combat::debit` zeroes it);
+    /// regen waits on `regen_calm_s` of it, Rust's `SecondsSinceAttacked`.
+    ///
+    /// Neither is hashed nor saved, for `hostile`'s reason: both are clocks
+    /// over the body that rebuild in seconds, and the hp they move is
+    /// hashed already.
+    pub calm: u16,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1456,6 +1467,8 @@ impl Default for Player {
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
+            comfort: 0,
+            calm: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
         }
@@ -4345,6 +4358,8 @@ impl World {
                     skins: crate::skin::SkinSet::EMPTY,
                     safe: false,
                     hostile: 0,
+                    comfort: 0,
+                    calm: 0,
                     gate_spawn: false,
                     gate_spawn_at: 0,
                 };
@@ -5798,46 +5813,78 @@ impl World {
         } else {
             0
         };
+        let ec = &self.survival.exposure;
+        let fire = self.near_fire(x, z, feet);
+        let comfort = match fire {
+            Some(at) if ec.fire_comfort > 0 => {
+                let (awake, asleep) = self.company_at(i, at);
+                crate::exposure::comfort_target(ec, true, awake, asleep)
+            }
+            _ => 0,
+        };
         crate::exposure::Inputs {
             rain: wx.rain,
             wind: wx.wind,
             night,
             roofed,
             depth_cm,
-            fire: self.near_fire(x, z, feet),
+            fire: fire.is_some(),
             torch: crate::light::is_lit(p, &self.gather),
-            fed: p.food as u32 * 2 >= self.survival.max_food as u32
-                && p.water as u32 * 2 >= self.survival.max_water as u32,
+            comfort,
+            max_food: self.survival.max_food,
+            max_water: self.survival.max_water,
         }
     }
 
-    /// Is a lit fire (a campfire, a furnace) near enough to warm a body
-    /// standing here? Planar reach from the content, and within a storey
-    /// (`exposure::fire_reaches`, which the client's HUD asks too).
-    fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
+    /// The first lit fire (a campfire, a furnace) near enough to warm a
+    /// body standing here, as its `(cx, cz, level, pose)`. Planar reach
+    /// from the content, and within a storey (`exposure::fire_reaches`,
+    /// which the client's HUD asks too).
+    fn near_fire(
+        &self,
+        x: f32,
+        z: f32,
+        feet: f32,
+    ) -> Option<(u16, u16, u8, crate::footprint::Pose)> {
         let r = self.survival.exposure.heat_radius_cm;
         if r == 0 {
-            return false;
+            return None;
         }
         let cols = self.pieces.cols();
         self.deploys
             .boxes()
             .iter()
             .zip(self.deploys.oven_states())
-            .any(|(b, st)| {
-                st.lit
-                    && st.burns()
-                    && crate::exposure::fire_reaches(
-                        self.seed,
-                        &self.haven,
-                        cols,
-                        r,
-                        (b.cx, b.cz, b.level, b.pose),
-                        x,
-                        z,
-                        feet,
-                    )
+            .filter(|(_, st)| st.lit && st.burns())
+            .map(|(b, _)| (b.cx, b.cz, b.level, b.pose))
+            .find(|&at| {
+                crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet)
             })
+    }
+
+    /// The other bodies in the same fire's warmth as slot `i`: `(awake,
+    /// asleep)`. Rust's campfire comfort rises with company — a quarter a
+    /// body, an eighth a sleeper. The dead are not company.
+    fn company_at(&self, i: usize, at: (u16, u16, u8, crate::footprint::Pose)) -> (u32, u32) {
+        let r = self.survival.exposure.heat_radius_cm;
+        let cols = self.pieces.cols();
+        let (mut awake, mut asleep) = (0u32, 0u32);
+        for (j, q) in self.players.iter().enumerate() {
+            if j == i || !q.active || q.dead {
+                continue;
+            }
+            let qx = q.body.qx as f32 * crate::movement::POS_XZ_Q;
+            let qz = q.body.qz as f32 * crate::movement::POS_XZ_Q;
+            let qf = q.body.qy as f32 * crate::movement::POS_Y_Q;
+            if crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, qx, qz, qf) {
+                if q.sleeping {
+                    asleep += 1;
+                } else {
+                    awake += 1;
+                }
+            }
+        }
+        (awake, asleep)
     }
 
     /// Stand the town's public stations (`town::STATIONS`) as owner-0
