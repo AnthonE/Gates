@@ -59,6 +59,11 @@ class GatesAudio extends AudioWorkletProcessor {
       if (!this.w) return;
       if (m.kind === "install") this.w.install(m.cue, m.pcm);
       else if (m.kind === "cmds") this.w.push(m.bytes);
+      /* Proximity voice: a talker's decoded samples, the lanes' ear gains,
+         a talker gone (`sound::talk`). */
+      else if (m.kind === "talk") this.w.talk(m.lane, m.pcm);
+      else if (m.kind === "talkgains") this.w.talk_gains(m.gains);
+      else if (m.kind === "talkstop") this.w.talk_stop(m.lane);
     } catch (e) {
       /* A throw in here would otherwise be swallowed by the worklet scope and
          read on the page as ordinary silence — the failure shape this whole
@@ -115,3 +120,37 @@ class GatesAudio extends AudioWorkletProcessor {
 }
 
 registerProcessor("gates-audio", GatesAudio);
+
+/* ── the microphone ──────────────────────────────────────────────────────────
+   Proximity voice's capture tap: the page connects the microphone's
+   `MediaStreamAudioSourceNode` here (`app.js`, `gatesMic`), and this posts
+   its samples to the page in ~21 ms batches at the context's rate. Nothing
+   is decided here either: the page hands them to the game, which resamples,
+   encodes and sends only while the talk key is held (`render/voice.rs`). */
+const MIC_BATCH = 1024;
+
+class GatesMic extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buf = new Float32Array(MIC_BATCH);
+    this.at = 0;
+  }
+
+  process(inputs) {
+    const input = inputs[0];
+    if (!input || input.length === 0) return true;
+    const ch0 = input[0];
+    const ch1 = input.length > 1 ? input[1] : null;
+    for (let i = 0; i < ch0.length; i++) {
+      this.buf[this.at++] = ch1 ? 0.5 * (ch0[i] + ch1[i]) : ch0[i];
+      if (this.at === MIC_BATCH) {
+        this.port.postMessage(this.buf, [this.buf.buffer]);
+        this.buf = new Float32Array(MIC_BATCH);
+        this.at = 0;
+      }
+    }
+    return true;
+  }
+}
+
+registerProcessor("gates-mic", GatesMic);

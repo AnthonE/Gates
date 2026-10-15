@@ -31,6 +31,7 @@ use protocol::{
     WireLodged, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
     LODGED_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
+use protocol::{encode_event_report, REPORT_BLAST, REPORT_GUN};
 use protocol::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX, DEED_RELOAD,
 };
@@ -43,10 +44,10 @@ use sim_core::inventory::{
     slots_in, CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD,
 };
 use sim_core::limits::{
-    ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM,
-    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS,
-    MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, MAX_SPECTATORS,
-    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
+    ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, BLAST_REPORT_CM,
+    CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, GUN_REPORT_CM, HEARTH_STOCK_ROWS,
+    HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
+    MAX_SPECTATORS, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -2676,6 +2677,50 @@ impl ShardCore {
         (p.active && p.id == c.id).then_some(w)
     }
 
+    /// Who hears `from_slot` talk (proximity voice, v113): every other
+    /// connected player whose body is within `VOICE_RADIUS_CM` of the
+    /// talker's, and every seat watching an agent among them (an agent's
+    /// feed is live, so its watchers hear what it hears; a human's feed is
+    /// delayed, and a live voice beside it would give away where they are).
+    /// `None` when the talker has no living body to speak from (dead,
+    /// asleep, not in yet); otherwise the talker's player id.
+    ///
+    /// Voice is relayed, never simulated: this reads positions and writes
+    /// nothing, and no frame reaches the world or the WAL.
+    pub fn voice_reach(&self, from_slot: usize, hears: &mut [bool; MAX_CONNS]) -> Option<u32> {
+        hears.fill(false);
+        let from_w = self.live_wslot(from_slot)?;
+        let talker = &self.world.players[from_w];
+        if talker.dead || talker.sleeping {
+            return None;
+        }
+        let own = talker.body;
+        let r2 = sim_core::limits::VOICE_RADIUS_CM * sim_core::limits::VOICE_RADIUS_CM;
+        for (to, hears) in hears.iter_mut().enumerate().take(MAX_PLAYERS) {
+            if to == from_slot || !self.clients[to].connected {
+                continue;
+            }
+            let Some(to_w) = self.live_wslot(to) else {
+                continue;
+            };
+            let p = self.world.players[to_w].body;
+            let dx = (p.qx - own.qx) as i64 * 3;
+            let dy = (p.qy - own.qy) as i64;
+            let dz = (p.qz - own.qz) as i64 * 3;
+            *hears = dx * dx + dy * dy + dz * dz <= r2;
+        }
+        for (i, seat) in self.watching.iter().enumerate() {
+            let Some(seat) = seat else {
+                continue;
+            };
+            let t = seat.target;
+            if self.standings_agent[t] && (t == from_slot || hears[t]) {
+                hears[MAX_PLAYERS + i] = true;
+            }
+        }
+        Some(self.clients[from_slot].id)
+    }
+
     /// Install the admin allowlist. Boot-only, beside the content tables,
     /// for the same reason: it is construction input, and a list that
     /// could change mid-run is a privilege that could change mid-run.
@@ -4245,6 +4290,16 @@ impl ShardCore {
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
                     let sh = Self::world_slot_of(&self.world, ev.a);
+                    // A gun is heard past the interest set (v113): out to
+                    // `GUN_REPORT_CM` a client that holds no body for the
+                    // shooter is told a gun went off, and where.
+                    let report = match sh {
+                        Some(w) if protocol::shot_is_instant(speed) => {
+                            let b = self.world.players[w].body;
+                            Self::report(REPORT_GUN, b.qx, b.qy, b.qz)
+                        }
+                        _ => None,
+                    };
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -4253,6 +4308,13 @@ impl ShardCore {
                                 }
                                 if !self.body_event_visible(slot, ev.a, sh) {
                                     ShardStats::bump(&stats.ev_interest_skipped);
+                                    if let Some((at, buf, n)) = report.as_ref() {
+                                        if self.within_cm(slot, *at, GUN_REPORT_CM)
+                                            && send(Lane::Event, slot, &buf[..*n])
+                                        {
+                                            ShardStats::bump(&stats.ev_sent);
+                                        }
+                                    }
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -4413,6 +4475,12 @@ impl ShardCore {
                     // the band takes a slot from a mark at the player's
                     // feet.
                     let at = interest::body_cm(qx, qz);
+                    // A blast is heard far past the interest set (v113),
+                    // the reference's map-wide explosion at this island's
+                    // scale: out to `BLAST_REPORT_CM`.
+                    let report = (kind == sim_core::ranged::IMPACT_BLAST)
+                        .then(|| Self::report(REPORT_BLAST, qx, qy, qz))
+                        .flatten();
                     match encode_event_impact(qx, qy, qz, surf, kind, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -4421,6 +4489,13 @@ impl ShardCore {
                                 }
                                 if !self.point_event_visible(slot, at) {
                                     ShardStats::bump(&stats.ev_interest_skipped);
+                                    if let Some((at, buf, n)) = report.as_ref() {
+                                        if self.within_cm(slot, *at, BLAST_REPORT_CM)
+                                            && send(Lane::Event, slot, &buf[..*n])
+                                        {
+                                            ShardStats::bump(&stats.ev_sent);
+                                        }
+                                    }
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -6862,6 +6937,30 @@ impl ShardCore {
     /// the player's feet for one that is sub-pixel**. That eviction is the
     /// thing this removes; the visible cost is a 0.22 m quad past 208 m,
     /// which is under a pixel at any sane field of view.
+    /// A far report (v113) of `kind` at body quanta `(qx, qy, qz)`: where
+    /// it was in planar centimetres, and the encoded event. `None` for a
+    /// place the report's whole-metre fields cannot carry.
+    fn report(kind: u8, qx: i32, qy: i32, qz: i32) -> Option<((i64, i64), [u8; 16], usize)> {
+        let at = interest::body_cm(qx, qz);
+        let m = |cm: i64| u16::try_from(cm / 100).ok();
+        let y = i16::try_from(qy as i64 / 100).ok()?;
+        let mut buf = [0u8; 16];
+        let n = encode_event_report(kind, m(at.0)?, y, m(at.1)?, &mut buf).ok()?;
+        Some((at, buf, n))
+    }
+
+    /// Is `slot`'s body within `reach_cm` of `at` (planar centimetres)?
+    /// A client with no body in the world hears nothing from afar.
+    fn within_cm(&self, slot: usize, at: (i64, i64), reach_cm: i64) -> bool {
+        let Some(w) = self.live_wslot(slot) else {
+            return false;
+        };
+        let b = self.world.players[w].body;
+        let (x, z) = interest::body_cm(b.qx, b.qz);
+        let (dx, dz) = (x - at.0, z - at.1);
+        dx * dx + dz * dz <= reach_cm * reach_cm
+    }
+
     fn point_event_visible(&self, slot: usize, at_cm: (i64, i64)) -> bool {
         let c = &self.clients[slot];
         !c.piece_anchor_valid || interest::point_in_interest(c.piece_anchor_cm, at_cm)
@@ -7462,6 +7561,75 @@ mod tests {
             true
         });
         out
+    }
+
+    /// Far reports (v113): a gunshot and a blast past the interest set
+    /// reach a listener as a report out to their reach, and no further; a
+    /// listener inside the set gets the shot and the impact instead.
+    #[test]
+    fn a_gunshot_and_a_blast_carry_past_the_interest_set_as_reports() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let ids = [PLAYER, (1 << 8) | 1, (1 << 8) | 2];
+        for (slot, &id) in ids.iter().enumerate() {
+            assert!(core.connect(slot, id), "connect {slot}");
+        }
+        core.tick_bare(&stats, |_, _, _| true);
+        let w: Vec<usize> = (0..3)
+            .map(|s| core.live_wslot(s).expect("joined"))
+            .collect();
+        let me = core.world.players[w[0]].body;
+        // 300 m and 600 m off: past the 208 m interest radius both; inside
+        // a gun's 400 m one of them; inside a blast's 1500 m both.
+        for (i, m) in [(1, 300), (2, 600)] {
+            core.world.players[w[i]].body.qx = me.qx;
+            core.world.players[w[i]].body.qz = me.qz + m * 100 / 3;
+        }
+        for _ in 0..3 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        core.world.tick(&[]);
+        let blast = sim_core::world::impact_a(0, sim_core::ranged::IMPACT_BLAST, me.qx);
+        core.world
+            .events
+            .push(EV_IMPACT, blast, me.qz as u32, me.qy as u32);
+        // A revolver: instantaneous (speed 0), its 50 m reach in decimetres.
+        core.world.events.push(EV_SHOT, PLAYER, 0, 500);
+        let mut sent: Vec<(usize, EventMsg)> = Vec::new();
+        core.pump_events(&stats, &mut |lane, slot, bytes: &[u8]| {
+            if lane == Lane::Event {
+                if let Ok(msg) = decode_event(bytes) {
+                    sent.push((slot, msg));
+                }
+            }
+            true
+        });
+        let reports = |slot: usize| -> Vec<u8> {
+            sent.iter()
+                .filter_map(|(s, m)| match m {
+                    EventMsg::Report { kind, x, z, .. } if *s == slot => {
+                        assert_eq!(*x as i64, me.qx as i64 * 3 / 100);
+                        assert_eq!(*z as i64, me.qz as i64 * 3 / 100);
+                        Some(*kind)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let near = |slot: usize| {
+            sent.iter()
+                .filter(|(s, m)| {
+                    *s == slot && matches!(m, EventMsg::Shot { .. } | EventMsg::Impact { .. })
+                })
+                .count()
+        };
+        assert_eq!(near(0), 2, "the shooter hears it at hand");
+        assert!(reports(0).is_empty());
+        let mut at300 = reports(1);
+        at300.sort();
+        assert_eq!(at300, [protocol::REPORT_GUN, protocol::REPORT_BLAST]);
+        assert_eq!(near(1), 0);
+        assert_eq!(reports(2), [protocol::REPORT_BLAST], "a gun stops at 400 m");
     }
 
     /// A core with one connected client, its join landed, and the event

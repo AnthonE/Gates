@@ -1047,6 +1047,27 @@ impl Session {
         self.closed
     }
 
+    /// Hand every relayed voice frame that arrived since the last call to
+    /// `each`, oldest first (v113). One reader: `render::voice`.
+    pub fn drain_voice(&self, each: impl FnMut(&protocol::VoiceFrame)) {
+        if let Ok(mut r) = self.datagrams.lock() {
+            r.drain_voice(each);
+        }
+    }
+
+    /// Send one of this player's own voice frames (v113). A datagram like
+    /// the input: dropped rather than queued when the path is full, and
+    /// never sent by a watcher, who has no voice.
+    pub fn send_voice(&mut self, frame: &protocol::VoiceFrame) {
+        if self.watching.is_some() || self.observer_failed {
+            return;
+        }
+        let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+        if let Ok(n) = protocol::encode_voice_up(frame, &mut buf) {
+            self.wire.send_datagram(&buf[..n]);
+        }
+    }
+
     /// Queue one already-encoded C→S message for the reliable lane — the
     /// actions (`ACT_*`) and chat the sim is owed rather than allowed to
     /// drop. Callers encode with `protocol`; this owns only the handoff, so

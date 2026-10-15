@@ -100,6 +100,8 @@ pub mod map;
 pub mod names;
 pub mod nav;
 pub mod notices;
+// Walls between you and a sound: the shot walk, counted.
+pub mod occlusion;
 pub mod oven;
 pub mod place;
 pub mod pointer;

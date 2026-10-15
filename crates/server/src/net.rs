@@ -7,8 +7,8 @@
 use crate::config::ShardConfig;
 use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WorldDone,
-    WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, VoiceMsg,
+    WorldDone, WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
@@ -22,7 +22,7 @@ use sim_core::input::BTN_MASK;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
     INPUT_RING_CAP, MAX_PLAYERS, MAX_SPECTATORS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ,
-    WORLD_RING_CAP,
+    VOICE_BURST, VOICE_FPS, VOICE_OUT_RING_CAP, VOICE_PER_TICK, VOICE_RING_CAP, WORLD_RING_CAP,
 };
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 use std::net::SocketAddr;
@@ -1967,6 +1967,8 @@ async fn install(
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
     let (action_tx, action_rx) = RingBuffer::<ActionMsg>::new(ACTION_RING_CAP);
     let (chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+    let (voice_tx, voice_rx) = RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP);
+    let (voice_out_tx, voice_out_rx) = RingBuffer::<VoiceMsg>::new(VOICE_OUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
@@ -1974,6 +1976,8 @@ async fn install(
         input: input_rx,
         actions: action_rx,
         chats: chat_rx,
+        voice_in: voice_rx,
+        voice_out: voice_out_tx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -2022,6 +2026,7 @@ async fn install(
     tokio::spawn(reader_task(
         connection.clone(),
         input_tx,
+        voice_tx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -2054,6 +2059,7 @@ async fn install(
     tokio::spawn(writer_task(
         connection,
         snap_rx,
+        voice_out_rx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -2192,6 +2198,10 @@ async fn install_spectator(
     // `Link` names them, and nothing ever pushes into either.
     let (_action_tx, action_rx) = RingBuffer::<ActionMsg>::new(1);
     let (_chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(1);
+    // Nor does it talk; it does hear, when it watches an agent
+    // (`ShardCore::voice_reach`).
+    let (_voice_tx, voice_rx) = RingBuffer::<protocol::VoiceFrame>::new(1);
+    let (voice_out_tx, voice_out_rx) = RingBuffer::<VoiceMsg>::new(VOICE_OUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
@@ -2199,6 +2209,8 @@ async fn install_spectator(
         input: input_rx,
         actions: action_rx,
         chats: chat_rx,
+        voice_in: voice_rx,
+        voice_out: voice_out_tx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -2272,6 +2284,7 @@ async fn install_spectator(
             tokio::spawn(writer_task(
                 connection,
                 snap_rx,
+                voice_out_rx,
                 slots.clone(),
                 stats.clone(),
                 slot,
@@ -2280,6 +2293,8 @@ async fn install_spectator(
             ));
         }
         Some(delay) => {
+            // A delayed feed hears nothing live (`ShardCore::voice_reach`).
+            drop(voice_out_rx);
             tokio::spawn(delayed_writer_task(
                 connection,
                 send,
@@ -2497,6 +2512,7 @@ async fn delayed_writer_task(
 fn accept_input(
     dg: &[u8],
     input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
+    voice: &mut VoiceIn,
     stats: &ShardStats,
 ) {
     // **First, before any verdict on it.** These bytes crossed the path
@@ -2504,7 +2520,12 @@ fn accept_input(
     // that only counted the datagrams we liked would read lowest exactly
     // when a shard is being fed garbage (NOW.md §0q item 4).
     ShardStats::add_msg(&stats.net_dg_in_count, &stats.net_dg_in_bytes, dg.len());
-    let ok = peek_kind(dg).map(|k| k == KIND_INPUT).unwrap_or(false);
+    let kind = peek_kind(dg).ok();
+    if kind == Some(protocol::KIND_VOICE) {
+        voice.accept(dg, stats);
+        return;
+    }
+    let ok = kind == Some(KIND_INPUT);
     if !ok {
         ShardStats::bump(&stats.input_dg_bad);
         return;
@@ -2526,9 +2547,66 @@ fn accept_input(
     }
 }
 
+/// A talker's voice frames on their way in (v113): decoded, rate-limited
+/// by a token bucket of [`VOICE_FPS`] a second and [`VOICE_BURST`] deep,
+/// and ringed for the sim thread's range check. Every refusal is counted
+/// and none is a disconnect: voice is the datagram lane's, and a lost
+/// frame is the codec's to conceal.
+struct VoiceIn {
+    tx: rtrb::Producer<protocol::VoiceFrame>,
+    tokens: u32,
+    last: Option<Instant>,
+}
+
+impl VoiceIn {
+    fn new(tx: rtrb::Producer<protocol::VoiceFrame>) -> Self {
+        Self {
+            tx,
+            tokens: VOICE_BURST,
+            last: None,
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        let last = *self.last.get_or_insert(now);
+        let per = Duration::from_secs(1) / VOICE_FPS;
+        let steps = (now.saturating_duration_since(last).as_nanos() / per.as_nanos()) as u64;
+        if steps >= VOICE_BURST as u64 {
+            self.tokens = VOICE_BURST;
+            self.last = Some(now);
+        } else if steps > 0 {
+            self.tokens = (self.tokens + steps as u32).min(VOICE_BURST);
+            self.last = Some(last + per * steps as u32);
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+
+    fn accept(&mut self, dg: &[u8], stats: &ShardStats) {
+        let Ok(frame) = protocol::decode_voice_up(dg) else {
+            ShardStats::bump(&stats.voice_bad);
+            return;
+        };
+        if !self.allow(Instant::now()) {
+            ShardStats::bump(&stats.voice_rate_limited);
+            return;
+        }
+        if self.tx.push(frame).is_err() {
+            ShardStats::bump(&stats.voice_ring_drops);
+            return;
+        }
+        ShardStats::bump(&stats.voice_ok);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn reader_task(
     connection: Connection,
     mut input_tx: rtrb::Producer<protocol::InputDatagram>,
+    voice_tx: rtrb::Producer<protocol::VoiceFrame>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
@@ -2549,10 +2627,11 @@ async fn reader_task(
         )>(NETSIM_QUEUE);
         {
             let stats = stats.clone();
+            let mut voice = VoiceIn::new(voice_tx);
             tokio::spawn(async move {
                 while let Some((due, dg)) = rx.recv().await {
                     tokio::time::sleep_until(due).await;
-                    accept_input(&dg, &mut input_tx, &stats);
+                    accept_input(&dg, &mut input_tx, &mut voice, &stats);
                 }
             });
         }
@@ -2572,8 +2651,9 @@ async fn reader_task(
         slots.mark_leaving(slot, generation);
         return;
     }
+    let mut voice = VoiceIn::new(voice_tx);
     while let Ok(dg) = connection.receive_datagram().await {
-        accept_input(&dg, &mut input_tx, &stats);
+        accept_input(&dg, &mut input_tx, &mut voice, &stats);
     }
     slots.mark_leaving(slot, generation);
 }
@@ -2734,9 +2814,11 @@ async fn action_reader_task(
     slots.mark_leaving(slot, generation);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn writer_task(
     connection: Connection,
     mut snap_rx: rtrb::Consumer<SnapMsg>,
+    mut voice_rx: rtrb::Consumer<VoiceMsg>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
@@ -2820,6 +2902,20 @@ async fn writer_task(
             stats
                 .net_mtu_last
                 .store(p.current_mtu as u64, Ordering::Relaxed);
+        }
+        // Voice goes out whole and in order: unlike a snapshot, a frame
+        // is not superseded by the next one (v113). `send_datagram` drops
+        // the oldest itself when the path is congested.
+        while let Ok(v) = voice_rx.pop() {
+            match connection.send_datagram(v.bytes()) {
+                Ok(()) => ShardStats::add_msg(
+                    &stats.net_dg_out_count,
+                    &stats.net_dg_out_bytes,
+                    v.bytes().len(),
+                ),
+                Err(SendDatagramError::NotConnected) => break,
+                Err(_) => ShardStats::bump(&stats.voice_out_drops),
+            }
         }
         // Drain to the newest — snapshots replace, never accumulate.
         let mut newest: Option<SnapMsg> = None;
@@ -3417,6 +3513,8 @@ fn sim_thread(
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_CONNS);
     links.resize_with(MAX_CONNS, || None);
     let mut links = links.into_boxed_slice();
+    // Who hears the talker being relayed (`ShardCore::voice_reach`), reused.
+    let mut voice_hears = [false; MAX_CONNS];
 
     // Startup-only notification: no channel wake or drop enters the tick.
     // A cancelled startup has no accept loop and must not leave a sim alive.
@@ -3560,6 +3658,51 @@ fn sim_thread(
                 // check for room.
                 if let Ok(chat) = link.chats.pop() {
                     core.push_chat(slot, chat);
+                }
+            }
+        }
+        // Proximity voice (v113): each talker's frames go to whoever is in
+        // range now, measured here because positions live on this thread.
+        // Relayed, never simulated — nothing below touches the world.
+        for slot in 0..MAX_PLAYERS {
+            let mut frames = [protocol::VoiceFrame::EMPTY; VOICE_PER_TICK];
+            let mut n = 0;
+            if let Some(link) = links[slot].as_mut() {
+                while n < VOICE_PER_TICK {
+                    let Ok(f) = link.voice_in.pop() else {
+                        break;
+                    };
+                    frames[n] = f;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            let Some(from) = core.voice_reach(slot, &mut voice_hears) else {
+                ShardStats::add(&stats.voice_unheard, n as u64);
+                continue;
+            };
+            for f in &mut frames[..n] {
+                f.from = from;
+                let mut msg = VoiceMsg {
+                    len: 0,
+                    buf: [0; protocol::VOICE_DATAGRAM_MAX],
+                };
+                let Ok(len) = protocol::encode_voice(f, &mut msg.buf) else {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                };
+                msg.len = len as u16;
+                for (to, &hears) in voice_hears.iter().enumerate() {
+                    let Some(link) = links[to].as_mut().filter(|_| hears) else {
+                        continue;
+                    };
+                    if link.voice_out.push(msg).is_ok() {
+                        ShardStats::bump(&stats.voice_relayed);
+                    } else {
+                        ShardStats::bump(&stats.voice_out_drops);
+                    }
                 }
             }
         }
@@ -4064,6 +4207,37 @@ mod tests {
     /// the two properties that says: a malformed datagram still costs its
     /// bytes, and the arrival count reconciles with the three verdict
     /// counters that partition it.
+    /// A voice ring nobody drains, for the input-lane tests.
+    fn voice_sink() -> VoiceIn {
+        VoiceIn::new(RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP).0)
+    }
+
+    /// Voice is its own datagram on the input lane (v113): decoded, ringed,
+    /// rate-limited past the burst, and none of it reaches the input ring.
+    #[test]
+    fn voice_datagrams_ring_apart_from_input_and_are_rate_limited() {
+        let stats = ShardStats::default();
+        let (mut tx, mut rx) = RingBuffer::<protocol::InputDatagram>::new(INPUT_RING_CAP);
+        let (vtx, mut vrx) = RingBuffer::<protocol::VoiceFrame>::new(64);
+        let mut voice = VoiceIn::new(vtx);
+        let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+        for seq in 0..(VOICE_BURST + 5) as u16 {
+            let f = protocol::VoiceFrame::new(seq, 0, &[0x0b, 1, 2]).unwrap();
+            let n = protocol::encode_voice_up(&f, &mut buf).unwrap();
+            accept_input(&buf[..n], &mut tx, &mut voice, &stats);
+        }
+        // A truncated frame: the kind says voice, the body is short.
+        let f = protocol::VoiceFrame::new(1, 0, &[0x0b, 1, 2]).unwrap();
+        let n = protocol::encode_voice_up(&f, &mut buf).unwrap();
+        accept_input(&buf[..n - 1], &mut tx, &mut voice, &stats);
+        assert!(rx.pop().is_err(), "voice never reaches the input ring");
+        assert_eq!(ShardStats::get(&stats.voice_ok), VOICE_BURST as u64);
+        assert_eq!(ShardStats::get(&stats.voice_rate_limited), 5);
+        assert_eq!(ShardStats::get(&stats.voice_bad), 1);
+        assert_eq!(ShardStats::get(&stats.input_dg_bad), 0);
+        assert_eq!(vrx.pop().unwrap().seq, 0);
+    }
+
     #[test]
     fn the_lane_counts_the_bytes_that_arrived_not_the_ones_it_liked() {
         use protocol::{encode_input, InputDatagram};
@@ -4076,7 +4250,7 @@ mod tests {
         dg.push(InputFrame::default()).expect("one frame fits");
         let mut buf = [0u8; 256];
         let good = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..good], &mut tx, &stats);
+        accept_input(&buf[..good], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.net_dg_in_count), 1);
         assert_eq!(
             ShardStats::get(&stats.net_dg_in_bytes),
@@ -4087,7 +4261,7 @@ mod tests {
 
         // Line noise: `peek_kind` refuses it. It crossed the path anyway.
         let junk = [0xEEu8; 37];
-        accept_input(&junk, &mut tx, &stats);
+        accept_input(&junk, &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_bad), 1);
         assert_eq!(
             ShardStats::get(&stats.net_dg_in_bytes),
@@ -4108,7 +4282,7 @@ mod tests {
         })
         .expect("one frame fits");
         let forged = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..forged], &mut tx, &stats);
+        accept_input(&buf[..forged], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
 
         // The reconciliation: every arrival lands in exactly one verdict
@@ -4186,7 +4360,7 @@ mod tests {
 
         // Just inside: every meaningful bit at once.
         let (buf, n) = encode(BTN_MASK);
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_ok), 1);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 0);
         let ringed = rx.pop().expect("the in-domain datagram is ringed");
@@ -4201,7 +4375,7 @@ mod tests {
         assert_ne!(unmeant, 0, "the octet is full — this probe needs a new bit");
         assert_eq!(unmeant & BTN_MASK, 0, "the probe bit must be unmeant");
         let (buf, n) = encode(BTN_MASK | unmeant);
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
         assert_eq!(
             ShardStats::get(&stats.input_dg_ok),
@@ -4236,7 +4410,7 @@ mod tests {
         .expect("second frame fits");
         let mut buf = [0u8; 256];
         let n = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 2);
         assert!(rx.pop().is_err(), "no frame of a forged datagram survives");
     }

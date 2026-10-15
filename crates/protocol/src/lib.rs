@@ -41,6 +41,7 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 pub mod version;
+pub mod voice;
 
 pub use auth::{
     siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
@@ -90,6 +91,7 @@ pub use event::{
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
+pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
 pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
     STANDING_TICKER_BYTES, STANDING_TOP,
@@ -104,6 +106,10 @@ pub use event::{
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
+pub use voice::{
+    decode_voice, decode_voice_up, encode_voice, encode_voice_up, VoiceFrame, VOICE_DATAGRAM_MAX,
+    VOICE_END, VOICE_MAX_BYTES,
+};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
@@ -1169,7 +1175,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// comfort, per cent, after the hurting bit.
 /// v112 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
 /// whole °C after the comfort, and the death cause admits 9 (`DEATH_BY_HEAT`).
-pub const PROTO_VER: u16 = 112;
+/// v113 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
+/// frame each (`voice.rs`); the server relays a talker's frame only to
+/// players inside `VOICE_RADIUS_CM`. And far reports: `SUB_REPORT` tells a
+/// client a gunshot or a blast went off past its interest set, and where,
+/// to the metre (`GUN_REPORT_CM`, `BLAST_REPORT_CM`).
+pub const PROTO_VER: u16 = 113;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1229,6 +1240,10 @@ pub const KIND_AUTH: u32 = 9;
 /// is watching ([`Watch`]). Its own kind rather than a welcome field so that a
 /// player's welcome — the message every other path reads — did not move.
 pub const KIND_WATCH: u32 = 10;
+/// Proximity voice, a datagram both ways (v113, `voice.rs`): C→S the
+/// talker's own Opus frame, S→C the server's relay of it with the talker's
+/// id in front.
+pub const KIND_VOICE: u32 = 11;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.

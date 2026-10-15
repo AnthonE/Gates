@@ -76,8 +76,10 @@ pub fn first_in_line(
         .min_by(f32::total_cmp)
 }
 
-/// A round passing closer than this to your head is heard going by, metres.
-pub const FLYBY_R_M: f32 = 4.0;
+/// A round passing closer than this to your head is heard going by, metres:
+/// the reference's own 7 m (its client plays the flyby within 7 m of the
+/// camera, `Projectile`).
+pub const FLYBY_R_M: f32 = 7.0;
 /// …unless you are standing next to the gun: its report covers it.
 pub const FLYBY_MIN_M: f32 = 6.0;
 

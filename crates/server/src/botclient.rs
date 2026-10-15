@@ -790,6 +790,14 @@ pub trait BotDriver: Send {
     fn say(&mut self, _out: &mut [u8]) -> Option<usize> {
         None
     }
+    /// A voice frame the shard relayed from a player near this body
+    /// (wire v113). Kept, never waited on (`agent_voice.rs`).
+    fn voice_in(&mut self, _frame: &protocol::VoiceFrame) {}
+    /// This body's own voice frames due this tick, written to `out`; how
+    /// many. Asked every tick, beside chat.
+    fn voice_out(&mut self, _out: &mut [protocol::VoiceFrame]) -> usize {
+        0
+    }
 }
 
 /// A cancelled or finished bot must not leave its stream reader running.
@@ -1433,6 +1441,16 @@ async fn run_bot_inner(
                         report.chats_sent += 1;
                         report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
                     }
+                    // Its voice: datagrams like a player's microphone, a
+                    // few frames a tick at the pace they were spoken.
+                    let mut frames = [protocol::VoiceFrame::EMPTY; 4];
+                    let n = d.voice_out(&mut frames);
+                    let mut vbuf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+                    for f in &frames[..n] {
+                        if let Ok(len) = protocol::encode_voice_up(f, &mut vbuf) {
+                            let _ = connection.send_datagram(&vbuf[..len]);
+                        }
+                    }
                 }
 
                 // ---- the raid lane -----------------------------------
@@ -1591,6 +1609,19 @@ async fn run_bot_inner(
                 let dg = dg.map_err(|e| format!("receive: {e}"))?;
                 report.dg_in_count += 1;
                 report.dg_in_bytes += dg.len() as u64;
+                if peek_kind(&dg) == Ok(protocol::KIND_VOICE) {
+                    // A player near it talking (v113): an agent with ears
+                    // hears it; anyone else lets it go by.
+                    match protocol::decode_voice(&dg) {
+                        Ok(f) => {
+                            if let Some(d) = driver.as_deref_mut() {
+                                d.voice_in(&f);
+                            }
+                        }
+                        Err(_) => report.decode_errors += 1,
+                    }
+                    continue;
+                }
                 if peek_kind(&dg) != Ok(KIND_SNAPSHOT) {
                     report.decode_errors += 1;
                     continue;
