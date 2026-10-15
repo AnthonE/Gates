@@ -18,7 +18,12 @@
 //! function. The rain still in the air is LOOKED BACK FOR along the
 //! weather's own clock ([`lingering`]) rather than integrated the way
 //! `WeatherNow::ground_wet` is, so a client that joined mid-shower reads the
-//! bow a client that watched the shower come reads: one bow per campfire.
+//! rain a client that watched the shower come reads. The sun's cover is NOT
+//! shared: `WeatherNow::sun_cover` is the deck over the sun at this client's
+//! own drift (`weather::update`), the occlusion `rig::day_night` takes the
+//! direct light away by. So the bow comes and goes with this client's
+//! sunshine, and two players at one campfire can disagree about a bow just
+//! as they already disagree about which cloud is over the sun.
 //!
 //! **A layer over the sky, under its fog.** One fullscreen triangle at the
 //! far plane in the transparent pass, ordered by [`RAINBOW_ORDER`]: after
