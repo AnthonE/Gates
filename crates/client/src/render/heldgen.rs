@@ -159,6 +159,21 @@ fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
 /// skipped (mikktspace refuses a zero-area triangle).
 fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> [f32; 4]) -> Mesh {
     let n = profile.len();
+    // V by arc length down the profile, tip at the top of the image (0) and
+    // the foot at the bottom (1), so a painted skin's knob and dome get the
+    // room their surface has. **A public contract** (`DECISIONS.md:432`):
+    // `tests/skin_templates.rs` pins it.
+    let mut arc = Vec::with_capacity(n);
+    let mut run = 0.0f32;
+    for k in 0..n {
+        if k > 0 {
+            let (y0, r0) = profile[k - 1];
+            let (y1, r1) = profile[k];
+            run += ((y1 - y0).powi(2) + (r1 - r0).powi(2)).sqrt();
+        }
+        arc.push(run);
+    }
+    let total = run.max(1e-9);
     let cols = sides + 1;
     let mut pos = Vec::with_capacity(n * cols);
     let mut nrm = Vec::with_capacity(n * cols);
@@ -177,7 +192,7 @@ fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> 
             let (sin, cos) = a.sin_cos();
             pos.push([cos * r, y, sin * r]);
             nrm.push([cos * nr, ny, sin * nr]);
-            uv.push([j as f32 / sides as f32, y * 3.0]);
+            uv.push([j as f32 / sides as f32, 1.0 - arc[k] / total]);
             col.push(color(y, r, a));
         }
     }
@@ -659,6 +674,20 @@ fn crossbow_mesh() -> Mesh {
 /// model is the silent failure `viewmodel::spawn_item`'s comment already
 /// paid a capture to find. `tests/held_assets.rs` builds every `Gen` row, so
 /// CI reaches this before a boot does.
+/// The mesh a painted skin draws on (`ui::skins::CANVASES`): the row's own
+/// shape with its vertex tints taken off, so the painted texture is the
+/// whole of its colour. `None` for a row nobody can paint yet.
+pub fn canvas_mesh(name: &str) -> Option<Mesh> {
+    match name {
+        "bat" => {
+            let mut m = bat_mesh();
+            m.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+            Some(m)
+        }
+        _ => None,
+    }
+}
+
 pub fn mesh(name: &str) -> Mesh {
     match name {
         "bat" => bat_mesh(),

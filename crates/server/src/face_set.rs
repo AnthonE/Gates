@@ -19,6 +19,8 @@ use std::time::Duration;
 pub const FACE_PIC_MAX_BYTES: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+/// What an agent's face declares it is.
+const KIND: &str = "agent";
 
 /// The `day:` line of a play text, or `None`.
 pub fn day_in(text: &str) -> Option<&str> {
@@ -60,6 +62,8 @@ pub fn set_face(
     if let Some(sha) = &sha {
         ask.insert("picture_sha256".into(), json!(sha));
     }
+    // An agent's face says it is one (self-declared, like the game's tag).
+    ask.insert("kind".into(), json!(KIND));
     let prepared = post(&format!("{origin}/api/face/prepare"), &Value::Object(ask))?;
     let sign_this = prepared["sign_this"]
         .as_str()
@@ -68,8 +72,13 @@ pub fn set_face(
         .as_u64()
         .ok_or("the platform's prepare answer has no at")?;
     let day = day_in(sign_this).ok_or("the platform's text has no day")?;
-    let (text, signature) = key
-        .sign_face(name, sha.as_deref(), at, day)
+    // A platform that predates `kind` leaves it out of its text; the key
+    // composes both and signs whichever one the platform asked for.
+    let (text, signature) = [Some(KIND), None]
+        .into_iter()
+        .filter_map(|kind| key.sign_face(name, sha.as_deref(), kind, at, day))
+        .find(|(text, _)| text == sign_this)
+        .or_else(|| key.sign_face(name, sha.as_deref(), Some(KIND), at, day))
         .ok_or("the platform would refuse that name (1-16 printable characters)")?;
     if text != sign_this {
         return Err(format!(
@@ -83,6 +92,9 @@ pub fn set_face(
     set.insert("signature".into(), json!(format!("0x{sig}")));
     if let Some(name) = name {
         set.insert("name".into(), json!(name));
+    }
+    if text.contains("\"kind\":") {
+        set.insert("kind".into(), json!(KIND));
     }
     if let Some(png) = png {
         set.insert(

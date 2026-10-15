@@ -748,7 +748,7 @@ fn dollar_ticker_refused() {
 }
 
 /// One legal skin row: every required field, priced.
-const SKIN_ROW: &str = "[[skin]]\nid = \"skin.wood_gilt\"\ncatalog = 9\nname = \"Gilt Hatchet\"\n\
+const SKIN_ROW: &str = "[[skin]]\nid = \"skin.wood_gilt\"\ncatalog = 90\nname = \"Gilt Hatchet\"\n\
      covers = \"item.hatchet_stone\"\ntint = [200, 170, 60]\ncoin = \"ELO\"\nprice = 10\n\
      season = \"alpha\"\n";
 
@@ -777,7 +777,7 @@ fn an_unpriced_skin_is_legal_and_half_a_price_is_not() {
 
 #[test]
 fn a_skin_catalog_id_is_nonzero_and_unique() {
-    let err = skins_with(&SKIN_ROW.replace("catalog = 9", "catalog = 0")).expect_err("zero id");
+    let err = skins_with(&SKIN_ROW.replace("catalog = 90", "catalog = 0")).expect_err("zero id");
     assert!(err.contains("catalog 0"), "got: {err}");
     let twice = format!(
         "{SKIN_ROW}{}",
@@ -785,6 +785,26 @@ fn a_skin_catalog_id_is_nonzero_and_unique() {
     );
     let err = skins_with(&twice).expect_err("two rows on one catalog id");
     assert!(err.contains("is taken"), "got: {err}");
+}
+
+#[test]
+fn a_painted_skin_is_a_whole_hash_on_a_canvas() {
+    let hash = "ab".repeat(32);
+    let tunic = SKIN_ROW
+        .replace("item.hatchet_stone", "item.armor_burlap_body")
+        .replace(
+            "season = \"alpha\"\n",
+            &format!("season = \"alpha\"\ntexture = \"{hash}\"\n"),
+        );
+    skins_with(&tunic).expect("a painted tunic");
+    let err = skins_with(&tunic.replace(&hash, &"AB".repeat(32))).expect_err("upper hex");
+    assert!(err.contains("64 lowercase hex"), "got: {err}");
+    let err = skins_with(&tunic.replace(&hash, "abcd")).expect_err("short");
+    assert!(err.contains("64 lowercase hex"), "got: {err}");
+    // The hatchet's Meshy unwrap is not a canvas: nobody promised its UVs.
+    let err = skins_with(&tunic.replace("item.armor_burlap_body", "item.hatchet_stone"))
+        .expect_err("not a canvas");
+    assert!(err.contains("cannot be painted"), "got: {err}");
 }
 
 #[test]

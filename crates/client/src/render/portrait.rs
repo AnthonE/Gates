@@ -311,13 +311,24 @@ pub fn dress(
     };
     if let (Some(hand), true) = (portrait.hand, portrait.held != want) {
         let mut e = commands.entity(hand);
+        // Drawn as wanted, or the plain look while a skin's material is not
+        // ready (then asked again next frame, as the hands do).
+        let mut drawn = true;
         match want {
             Some((row, skin)) => {
-                let (mesh, mat) = models.row(row);
-                let tint = core.and_then(|(c, _)| crate::ui::skins::tint_of(&c.skins, skin));
-                let mat = tint
-                    .and_then(|t| skin_mats.for_skin(row, skin, t, &mat, &mut materials))
-                    .unwrap_or(mat);
+                let (mesh, mat) = match models.skinned(row, skin) {
+                    // A skin with a model of its own, or painted (v110).
+                    Some(pair) => pair,
+                    None => {
+                        let (mesh, mat) = models.row(row);
+                        let tint =
+                            core.and_then(|(c, _)| crate::ui::skins::tint_of(&c.skins, skin));
+                        let skinned = tint
+                            .and_then(|t| skin_mats.for_skin(row, skin, t, &mat, &mut materials));
+                        drawn = skinned.is_some() || tint.is_none();
+                        (mesh, skinned.unwrap_or(mat))
+                    }
+                };
                 e.insert((
                     Mesh3d(mesh),
                     MeshMaterial3d(mat),
@@ -334,7 +345,9 @@ pub fn dress(
         commands
             .entity(body)
             .insert(super::fingers::Grip(if grip { 1.0 } else { 0.0 }));
-        portrait.held = want;
+        if drawn {
+            portrait.held = want;
+        }
     }
 
     // The clothes.

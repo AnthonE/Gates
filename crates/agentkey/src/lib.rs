@@ -300,17 +300,20 @@ impl AgentKey {
     /// second and last text this key signs and still no caller hands it a
     /// sentence. `None` for a field the caller has no business sending: a
     /// name that is not 1–16 printable ASCII, a digest that is not 64 hex
-    /// (or `""`, which clears the picture), a day that is not `YYYY-MM-DD`.
+    /// (or `""`, which clears the picture), a kind that is not `agent` or
+    /// `human` (self-declared; an agent says `agent`), a day that is not
+    /// `YYYY-MM-DD`.
     /// Returns the exact text signed beside the signature, so a caller can
     /// compare it with what the platform asked for before sending it.
     pub fn sign_face(
         &self,
         name: Option<&str>,
         picture_sha256: Option<&str>,
+        kind: Option<&str>,
         at: u64,
         day: &str,
     ) -> Option<(String, Signature)> {
-        let text = face_text(&self.address, name, picture_sha256, at, day)?;
+        let text = face_text(&self.address, name, picture_sha256, kind, at, day)?;
         let sig = self.sign_personal(text.as_bytes());
         Some((text, sig))
     }
@@ -350,6 +353,7 @@ fn face_text(
     wallet: &Address,
     name: Option<&str>,
     picture_sha256: Option<&str>,
+    kind: Option<&str>,
     at: u64,
     day: &str,
 ) -> Option<String> {
@@ -366,6 +370,15 @@ fn face_text(
         return None;
     }
     let mut detail = format!("{{\"at\":{at}");
+    // Sorted keys: at, kind, name, picture_sha256.
+    if let Some(kind) = kind {
+        if !matches!(kind, "agent" | "human") {
+            return None;
+        }
+        detail.push_str(",\"kind\":\"");
+        detail.push_str(kind);
+        detail.push('"');
+    }
     if let Some(name) = name {
         let n = name.as_bytes();
         let printable = n.iter().all(|&c| (0x20..0x7f).contains(&c));
@@ -531,7 +544,13 @@ mod tests {
         let k = AgentKey::from_secret(&one()).unwrap();
         let sha = "ab".repeat(32);
         let (text, sig) = k
-            .sign_face(Some("Doctor Wood"), Some(&sha), 1_770_000_000, "2026-10-14")
+            .sign_face(
+                Some("Doctor Wood"),
+                Some(&sha),
+                None,
+                1_770_000_000,
+                "2026-10-14",
+            )
             .unwrap();
         assert_eq!(
             text,
@@ -542,16 +561,30 @@ mod tests {
             )
         );
         assert_eq!(recover(text.as_bytes(), &sig), k.address());
-        let (only_name, _) = k.sign_face(Some("a\"b"), None, 5, "2026-01-02").unwrap();
+        let (only_name, _) = k
+            .sign_face(Some("a\"b"), None, None, 5, "2026-01-02")
+            .unwrap();
         assert!(
             only_name.ends_with(r#"detail: {"at":5,"name":"a\"b"}"#),
             "{only_name}"
         );
-        let (clear, _) = k.sign_face(None, Some(""), 5, "2026-01-02").unwrap();
+        let (clear, _) = k.sign_face(None, Some(""), None, 5, "2026-01-02").unwrap();
         assert!(
             clear.ends_with(r#"detail: {"at":5,"picture_sha256":""}"#),
             "{clear}"
         );
+        // An agent says so: `kind` sorts between `at` and `name`.
+        let (agent, sig) = k
+            .sign_face(Some("Rook"), None, Some("agent"), 5, "2026-01-02")
+            .unwrap();
+        assert!(
+            agent.ends_with(r#"detail: {"at":5,"kind":"agent","name":"Rook"}"#),
+            "{agent}"
+        );
+        assert_eq!(recover(agent.as_bytes(), &sig), k.address());
+        assert!(k
+            .sign_face(Some("Rook"), None, Some("robot"), 5, "2026-01-02")
+            .is_none());
         for (name, pic, day) in [
             (None, None, "2026-01-02"),
             (Some(""), None, "2026-01-02"),
@@ -563,7 +596,7 @@ mod tests {
             (Some("ok"), None, "2026-01-02\nx"),
         ] {
             assert!(
-                k.sign_face(name, pic, 5, day).is_none(),
+                k.sign_face(name, pic, None, 5, day).is_none(),
                 "{name:?} {pic:?} {day:?}"
             );
         }

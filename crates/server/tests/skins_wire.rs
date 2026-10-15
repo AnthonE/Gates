@@ -55,6 +55,7 @@ fn skins() -> (SkinContent, SkinCatalog) {
                 tint: [200, 100, 50],
                 coin,
                 price,
+                texture: [0; 8],
             },
         )
         .unwrap();
