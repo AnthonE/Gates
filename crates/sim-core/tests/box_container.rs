@@ -436,6 +436,63 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
     assert!(w.deploys.boxes()[0].is_empty(), "nothing was deposited");
 }
 
+/// **A wall stops a hand.** Planar reach passed walls, so a box in a walled
+/// room could be emptied from outside it (`reach.rs`). Standing just outside
+/// the foundation's edge, 2.5 m from the box, the deposit goes through on
+/// open ground — and is refused, nothing moved, once a wall stands on that
+/// edge between the eye and the box.
+#[test]
+fn a_box_behind_a_wall_is_out_of_reach() {
+    let (mut w, key, cx, cz) = box_world();
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+        skin: 0,
+    };
+    let (x, z) = cell_center(cx, cz);
+    let outside = z - BUILD_CELL_M * 0.5 - 1.0;
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, outside);
+    let (code, _, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 1);
+    assert_eq!(code, EV_MOVED, "open ground: the box is in reach");
+
+    // A wall on the foundation's low-z edge, between the player and the box.
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 3,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Place {
+        id: PLAYER,
+        row: 1,
+        cx,
+        cz,
+        level: 0,
+        loc: sim_core::build::LOC_EDGE_ZLO,
+        freehand: false,
+        plate: 0,
+    }]);
+    assert_eq!(w.pieces.len(), 2, "the wall stands");
+    let before = contents(&w);
+    let (code, why, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 1);
+    assert_eq!(code, EV_MOVE_REFUSED);
+    assert_eq!(why, REFUSE_M_REACH, "a box was reached through a wall");
+    assert_eq!(contents(&w), before, "nothing moved");
+    let (code, why, _) = do_move(&mut w, key, CONT_BOX, 0, CONT_SELF, 9, 1);
+    assert_eq!(
+        (code, why),
+        (EV_MOVE_REFUSED, REFUSE_M_REACH),
+        "nor out of it"
+    );
+    assert!(!w.box_reachable(0, 0), "the container view closes too");
+
+    // Back inside, beside the box: the same wall is behind the player.
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x + 1.0, z - 0.8);
+    let (code, _, _) = do_move(&mut w, key, CONT_BOX, 0, CONT_SELF, 9, 1);
+    assert_eq!(code, EV_MOVED, "inside the room the box is in reach");
+}
+
 /// One handle, one ground container. A bag→box move names a destination
 /// the message has no field for, so it refuses instead of guessing which
 /// container the handle meant — guessing is how an item leaves one

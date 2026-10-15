@@ -663,6 +663,20 @@ impl Backpacks {
         p: &mut Player,
         events: &mut EventQueue,
     ) -> Option<Looted> {
+        self.loot_nearest_where(gc, town, p, events, |_| true)
+    }
+
+    /// [`Self::loot_nearest`] over the bags `clear` passes as well — the
+    /// world's hand test (`reach.rs`: the same storey, nothing built in the
+    /// way), asked of each bag's quantized position after the planar reach.
+    pub fn loot_nearest_where(
+        &mut self,
+        gc: &GatherContent,
+        town: &crate::town::Town,
+        p: &mut Player,
+        events: &mut EventQueue,
+        clear: impl Fn((i32, i32, i32)) -> bool,
+    ) -> Option<Looted> {
         let px = p.body.qx as f32 * POS_XZ_Q;
         let pz = p.body.qz as f32 * POS_XZ_Q;
         // A corpse lies half a metre from the pack its body dropped, so the
@@ -674,6 +688,10 @@ impl Backpacks {
             let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
             let d2 = dx * dx + dz * dz;
             if d2 > LOOT_REACH_M * LOOT_REACH_M {
+                continue;
+            }
+            let e = &self.entries[i];
+            if !clear((e.qx, e.qy, e.qz)) {
                 continue;
             }
             let corpse = self.entries[i].owner == CORPSE_OWNER;

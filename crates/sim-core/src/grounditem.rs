@@ -331,9 +331,24 @@ impl GroundItems {
     /// sim picks, so nothing aimable at a stack the player is not standing
     /// on ever crosses the wire.
     pub fn nearest(&self, p: &Player) -> Option<usize> {
+        self.nearest_where(p, |_| true)
+    }
+
+    /// [`Self::nearest`] over the stacks `clear` passes as well — the world's
+    /// hand test (`reach.rs`), asked of each quantized position after the
+    /// planar reach.
+    pub fn nearest_where(
+        &self,
+        p: &Player,
+        clear: impl Fn((i32, i32, i32)) -> bool,
+    ) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for i in 0..self.len {
             if !self.in_reach(i, p) {
+                continue;
+            }
+            let e = &self.entries[i];
+            if !clear((e.qx, e.qy, e.qz)) {
                 continue;
             }
             let dx = self.entries[i].qx as f32 * POS_XZ_Q - p.body.qx as f32 * POS_XZ_Q;
@@ -376,7 +391,19 @@ impl GroundItems {
         spill: &mut [ItemStack; INV_SLOTS],
         events: &mut EventQueue,
     ) -> Option<u32> {
-        let i = self.nearest(p)?;
+        self.take_nearest_where(gc, p, spill, events, |_| true)
+    }
+
+    /// [`Self::take_nearest`] over [`Self::nearest_where`].
+    pub fn take_nearest_where(
+        &mut self,
+        gc: &GatherContent,
+        p: &mut Player,
+        spill: &mut [ItemStack; INV_SLOTS],
+        events: &mut EventQueue,
+        clear: impl Fn((i32, i32, i32)) -> bool,
+    ) -> Option<u32> {
+        let i = self.nearest_where(p, clear)?;
         self.take_at(i, gc, p, spill, events)
     }
 

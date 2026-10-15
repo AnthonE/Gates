@@ -171,12 +171,23 @@ pub fn resolve(
         z,
     ];
     let dir = [fx * ch, sv, fz * ch];
+    // The shard's hand test (`sim_core::reach`) from the predicted body, so
+    // a box behind a wall or on another storey is not offered.
+    let reach = |rec: &sim_core::deploy::DeployRec, arch: u8| match world.as_deref() {
+        Some(w) => {
+            let cols = core.pieces.cols();
+            let at = sim_core::reach::Target::standing(w.seed, &w.haven, cols, rec, arch);
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, (eye[0], eye[1], eye[2]), y, at)
+        }
+        None => true,
+    };
     let mut aim = Aim::new(x, z, fx, fz);
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
             dir,
             span: &span,
+            reach: Some(&reach),
         });
     }
     aimed.0 = interact::resolve(
@@ -464,6 +475,7 @@ pub fn resolve(
                 eye,
                 dir,
                 span: &span,
+                reach: None,
             },
             core.deploys.entries(),
             &core.deploy_defs,

@@ -822,6 +822,7 @@ pub fn deploy_track(
                     eye: [x, eye_y, z],
                     dir: [fx * ch, sv, fz * ch],
                     span: &span,
+                    reach: None,
                 },
                 core.deploys.entries(),
                 &core.deploy_defs,

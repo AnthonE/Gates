@@ -6427,12 +6427,12 @@ impl ShardCore {
                         .world
                         .backpacks
                         .index_of_id(handle)
-                        .filter(|&i| self.world.backpacks.in_reach(i, p)),
+                        .filter(|&i| self.world.bag_reachable(i, c.own_wslot)),
                     CONT_BOX => self
                         .world
                         .deploys
                         .box_index(handle)
-                        .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                        .filter(|&i| self.world.box_reachable(i, c.own_wslot))
                         .filter(|&i| {
                             // The box's own slot, the move path's address
                             // byte for byte: free placement puts several

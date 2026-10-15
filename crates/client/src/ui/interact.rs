@@ -892,7 +892,15 @@ pub struct Sight<'a> {
     /// floor (`sim_core::deploy::body_base_y`) and that plus its drawn
     /// height. The ui tier holds no render table, so the caller lends it.
     pub span: &'a dyn Fn(&DeployRec, u8) -> (f32, f32),
+    /// Whether the shard would let this hand reach a container in the box
+    /// store — the same storey, nothing built in the way
+    /// (`sim_core::reach`). `None` offers on the look alone. Lent like
+    /// `span`, because the ui tier holds no collision index.
+    pub reach: Option<ReachTest<'a>>,
 }
+
+/// [`Sight::reach`]'s lent test: may this hand reach that record?
+pub type ReachTest<'a> = &'a dyn Fn(&DeployRec, u8) -> bool;
 
 impl core::fmt::Debug for Sight<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1090,6 +1098,11 @@ pub fn resolve(
                 };
                 let (bottom, top) = (s.span)(rec, arch);
                 if sight_hit(s, &rect, bottom, top).is_none() {
+                    continue;
+                }
+                // A container the shard would refuse through a wall or a
+                // floor is not offered: `E` there would only be told no.
+                if handle != 0 && s.reach.is_some_and(|r| !r(rec, arch)) {
                     continue;
                 }
                 seen = true;
