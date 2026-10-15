@@ -583,6 +583,21 @@ pub fn setup(
                 for (i, m) in marks.a[..marks.count].iter().enumerate().rev() {
                     spawn_mark_named(frame, m, icons, named[i]);
                 }
+                // Your last death: the death screen's skull pin, kept on the
+                // map after the respawn until the next death moves it
+                // (Rust's "the last place you died", `ClientCore::
+                // death_marker`). Over the places, under your own marks and
+                // the arrow.
+                if let Some((x, z)) = core.death_marker {
+                    let (fx, fy) = map::world_to_map(x, z, 1);
+                    super::death::spawn_skull(
+                        frame,
+                        fx,
+                        fy,
+                        icons.and_then(|i| i.glyph("map_death")),
+                        false,
+                    );
+                }
 
                 // The player. `world_to_map` with size 1 gives a fraction, so
                 // it places by percentage and the frame can be any size.

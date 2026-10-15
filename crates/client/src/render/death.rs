@@ -360,9 +360,12 @@ pub fn setup(
         alive_s: core.own_death_alive_s,
     };
     let killer = crate::ui::names::of(core, d.killer);
-    // While dead the predicted body IS the death position: a corpse neither
-    // moves nor predicts (`ClientCore::own_bag`'s note).
-    let [dx, _, dz] = core.predict.position();
+    // Where the body fell, as the core took it when the death landed — the
+    // spot the compass and the held map keep showing after the respawn.
+    let (dx, dz) = core.death_marker.unwrap_or_else(|| {
+        let [x, _, z] = core.predict.position();
+        (x, z)
+    });
     let square = map::grid_label(dx, dz);
     let (fx, fy) = map::world_to_map(dx, dz, 1);
     let meters = Meters {
@@ -560,7 +563,7 @@ pub fn setup(
                     }
                     // Where you fell: the reference's pin, its tip on the
                     // spot and the skull standing above it.
-                    spawn_skull(frame, fx, fy, glyph("map_death"));
+                    spawn_skull(frame, fx, fy, glyph("map_death"), true);
                     // Your bags over it, a button each, in `own_bags` order
                     // (`resolve_wake_marks`' push order): a bag placed where
                     // you died covers the pin's tip, not the other way
@@ -739,8 +742,22 @@ fn spawn_fact(
 }
 
 /// The skull pin where you fell: a zero-size anchor on the spot, a dot on
-/// it, a stem up from it and the skull's disc on top.
-fn spawn_skull(frame: &mut ChildSpawnerCommands, fx: f32, fy: f32, skull: Option<Handle<Image>>) {
+/// it, a stem up from it and the skull's disc on top. The held map draws the
+/// same pin until the next death (`render::map`), `solid` false: there the
+/// player's arrow is the one solid red mark on the island, so the skull is a
+/// red ring and a red skull on the map's dark badge instead.
+pub(super) fn spawn_skull(
+    frame: &mut ChildSpawnerCommands,
+    fx: f32,
+    fy: f32,
+    skull: Option<Handle<Image>>,
+    solid: bool,
+) {
+    let (disc, ring, ink) = if solid {
+        (SKULL, Color::srgba(1.0, 1.0, 1.0, 0.9), Color::WHITE)
+    } else {
+        (BADGE_SOLID, SKULL, SKULL)
+    };
     let at = |left: f32, top: f32, w: f32, h: f32| Node {
         position_type: PositionType::Absolute,
         left: Val::Px(left),
@@ -781,14 +798,14 @@ fn spawn_skull(frame: &mut ChildSpawnerCommands, fx: f32, fy: f32, skull: Option
                     justify_content: JustifyContent::Center,
                     ..at(-PIN_PX * 0.5, -PIN_STEM - PIN_PX, PIN_PX, PIN_PX)
                 },
-                BackgroundColor(SKULL),
-                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.9)),
+                BackgroundColor(disc),
+                BorderColor::all(ring),
                 Pickable::IGNORE,
             ))
             .with_children(|disc| {
                 if let Some(h) = skull {
                     disc.spawn((
-                        ImageNode::new(h).with_color(Color::WHITE),
+                        ImageNode::new(h).with_color(ink),
                         Node {
                             width: Val::Px(PIN_PX * 0.62),
                             height: Val::Px(PIN_PX * 0.62),
@@ -1169,7 +1186,10 @@ pub fn click(
                 own_id: core.player_id,
                 alive_s: core.own_death_alive_s,
             };
-            let [x, _, z] = core.predict.position();
+            let (x, z) = core.death_marker.unwrap_or_else(|| {
+                let [x, _, z] = core.predict.position();
+                (x, z)
+            });
             let title = model::report_title(
                 &d,
                 &core.catalog,

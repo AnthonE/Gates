@@ -1943,6 +1943,13 @@ pub struct ClientCore {
     /// How long the body that fell had been standing, in seconds (v115) —
     /// the death screen's "alive for".
     pub own_death_alive_s: u32,
+    /// Where this body last fell, world XZ: Rust's death marker, which the
+    /// death screen pins and the compass and the map keep showing after the
+    /// respawn, until the next death moves it. Session memory, like the
+    /// map's own marks. Taken off the predicted body when the `Death` lands,
+    /// which is the death position — a corpse neither moves nor predicts
+    /// (`own_bag`'s note).
+    pub death_marker: Option<(f32, f32)>,
     pub woke_on_bag: bool,
     /// **Down, not dead** (wounded v0, wire v63): set by the `Wounded`
     /// naming this body, cleared by `Recovered`, by the `Death` that ends a
@@ -2340,6 +2347,7 @@ impl ClientCore {
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
             own_death_alive_s: 0,
+            death_marker: None,
             woke_on_bag: false,
             wounded: false,
             wound_ticks: 0,
@@ -3737,6 +3745,8 @@ impl ClientCore {
                     self.own_death_item = item;
                     self.own_death_range_cm = range_cm;
                     self.own_death_alive_s = alive_s;
+                    let [x, _, z] = self.predict.position();
+                    self.death_marker = Some((x, z));
                     flags |= APPLIED_RESPAWN;
                 }
             }

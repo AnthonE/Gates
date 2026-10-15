@@ -466,6 +466,52 @@ pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The marker on the compass (Rust's death marker)
+// ---------------------------------------------------------------------------
+
+/// How far either side of the bearing the compass's marker row reaches,
+/// degrees: a mark this far round sits at the row's end.
+pub const COMPASS_HALF_SPAN_DEG: f32 = 90.0;
+
+/// Where a world point sits on the compass's marker row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompassMark {
+    /// Across the row: -1 at the left end, 0 dead ahead, 1 at the right end.
+    pub across: f32,
+    /// Further round than the row reaches (behind you, mostly): the mark is
+    /// held at the end it is nearer, which is the way to turn.
+    pub off_row: bool,
+    /// How far away, metres, on the ground.
+    pub dist_m: f32,
+}
+
+/// Where `to` sits on the compass seen from `from` (world XZ) facing
+/// `facing_deg`, a bearing in `crate::look::bearing_deg`'s degrees — the
+/// same function the bearing number above it is printed from, so the mark
+/// and the number cannot disagree about which way is which. Clockwise of
+/// your heading is to the right, as on any compass strip.
+pub fn compass_mark(facing_deg: f32, from: (f32, f32), to: (f32, f32)) -> CompassMark {
+    let (dx, dz) = (to.0 - from.0, to.1 - from.1);
+    let bearing = crate::look::bearing_of(dx, dz);
+    let rel = (bearing - facing_deg + 540.0).rem_euclid(360.0) - 180.0;
+    let across = rel / COMPASS_HALF_SPAN_DEG;
+    CompassMark {
+        across: across.clamp(-1.0, 1.0),
+        off_row: across.abs() > 1.0,
+        dist_m: (dx * dx + dz * dz).sqrt(),
+    }
+}
+
+/// The compass's short distance: `143m`, `1.2km`.
+pub fn short_distance(m: f32) -> String {
+    if m >= 1000.0 {
+        format!("{:.1}km", m / 1000.0)
+    } else {
+        format!("{m:.0}m")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -776,6 +822,55 @@ mod tests {
         assert_eq!(woke(Wake::Beach, false, false), None);
         assert_eq!(woke(Wake::Gate, false, true), Some("you woke at THE GATE"));
         assert!(woke(Wake::Gate, false, false).unwrap().contains("beach"));
+    }
+
+    /// The death marker rides the compass the way the bearing number reads:
+    /// dead ahead is the middle, clockwise is right, and behind you is held
+    /// at the nearer end rather than dropped.
+    #[test]
+    fn the_compass_puts_the_death_where_you_would_turn_to() {
+        let here = (1000.0, 1000.0);
+        // Ten metres away in each of the four directions the bearing names.
+        let north = (here.0, here.1 + 10.0);
+        let east = (here.0 - 10.0, here.1); // east is -x
+        let west = (here.0 + 10.0, here.1);
+        let south = (here.0, here.1 - 10.0);
+        let at = |facing, to| compass_mark(facing, here, to);
+
+        let ahead = at(0.0, north);
+        assert!(ahead.across.abs() < 1e-3 && !ahead.off_row, "{ahead:?}");
+        assert!((ahead.dist_m - 10.0).abs() < 1e-3);
+        assert!(
+            (at(0.0, east).across - 1.0).abs() < 1e-3,
+            "east of north is right"
+        );
+        assert!(
+            (at(0.0, west).across + 1.0).abs() < 1e-3,
+            "west of north is left"
+        );
+        // Turn to face it and it comes to the middle.
+        assert!(at(90.0, east).across.abs() < 1e-3);
+        // Half-way round to the right.
+        let ne = at(45.0, east);
+        assert!((ne.across - 0.5).abs() < 1e-3, "{ne:?}");
+        // Behind, a little to the right: held at the right end, marked off.
+        let behind = at(0.0, (here.0 - 1.0, here.1 - 10.0));
+        assert!(
+            behind.off_row && (behind.across - 1.0).abs() < 1e-3,
+            "{behind:?}"
+        );
+        // Dead behind falls to one end and says so, never the middle.
+        let back = at(0.0, south);
+        assert!(back.off_row && back.across.abs() > 0.99, "{back:?}");
+        // Across the 0/360 seam: facing 350, a mark at 10 is just right.
+        let seam = at(350.0, (here.0 - 1.763, here.1 + 10.0));
+        assert!(seam.across > 0.0 && seam.across < 0.3, "{seam:?}");
+    }
+
+    #[test]
+    fn the_compass_distance_is_short() {
+        assert_eq!(short_distance(143.4), "143m");
+        assert_eq!(short_distance(1_234.0), "1.2km");
     }
 
     #[test]
