@@ -54,7 +54,9 @@
 use bevy::anti_alias::smaa::Smaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass};
-use bevy::light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap};
+use bevy::light::{
+    CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap, VolumetricFog,
+};
 use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -521,6 +523,10 @@ pub struct Tier {
     pub shadow_map_px: usize,
     /// Where a tree stops being its own geometry (`tree::TREE_LOD_SWAP_M`).
     pub tree_lod_swap_m: f32,
+    /// Light shafts through the weather's fog (`shafts.rs`): the CLOUDS
+    /// row's top rung, the same family of raymarched air, and only where the
+    /// sun casts. Never under WebGL2, whose clouds `effective` holds flat.
+    pub shafts: bool,
 }
 
 /// The Bevy components one effective [`Gfx`] resolves to.
@@ -541,6 +547,7 @@ pub fn components(g: Gfx) -> Tier {
         shadow_m: g.shadow_m,
         shadow_map_px: g.shadow_map_px,
         tree_lod_swap_m: g.tree_lod_swap_m,
+        shafts: g.clouds == Clouds::High && g.shadows,
     }
 }
 
@@ -722,6 +729,14 @@ pub fn apply(
             e.insert(Bloom::NATURAL);
         } else {
             e.remove::<Bloom>();
+        }
+        // The camera's half of the shafts; `rig::day_night` lights them only
+        // while the weather has a fog for them. No mesh pipeline keys on this
+        // component, so the tier moving it re-specializes nothing.
+        if t.shafts {
+            e.insert(super::shafts::camera_fog(t.taa && !capturing));
+        } else {
+            e.remove::<VolumetricFog>();
         }
         // A prepass is a sampled texture in every main-pass pipeline, and
         // removing SSAO or TAA leaves the ones they required behind. Where

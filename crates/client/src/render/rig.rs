@@ -455,6 +455,10 @@ pub fn setup(
     commands
         .entity(eye)
         .insert(super::sky::weather_fog(1.0, 0.0, 0.0));
+    // The fog's sunlit share, drawn per pixel where the tier asks for shafts
+    // (`shafts.rs`). Spawned once and idle; `day_night` owns it from here.
+    #[cfg(not(webgl2))]
+    commands.spawn((super::WorldEntity, super::shafts::idle_volume()));
 
     commands.spawn((
         super::WorldEntity,
@@ -880,7 +884,8 @@ type CamLight = (
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
 // Nine, which clippy counts: the flame gain is the ninth, and it is written
-// here for the reason the sun is — this is the one owner of the hour.
+// here for the reason the sun is — this is the one owner of the hour. The
+// tenth is the fog's sunlit share (`shafts.rs`), the one owner of the fog.
 #[allow(clippy::too_many_arguments)]
 pub fn day_night(
     feed: Res<super::feed::Feed>,
@@ -891,6 +896,7 @@ pub fn day_night(
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
     mut cam: Query<CamLight, With<EyeCam>>,
+    mut rays: super::shafts::ShaftRig,
 ) {
     let frac = sim_core::world::day_frac(pin.day_tick(feed.server_tick_est, &feed.env));
     let light = daylight(frac);
@@ -902,6 +908,16 @@ pub fn day_night(
     if gain.0 != g {
         gain.0 = g;
     }
+    // Where shafts are drawn, fog dims the sun and only cloud puts its
+    // shadows out (`WeatherNow::cloud_occlusion`): the shafts ARE its
+    // shadows, in the air. Everywhere else the fog preset stays shadowless.
+    let shadow_veil = if rays.tier() {
+        w.cloud_occlusion()
+    } else {
+        occ
+    };
+    let effective = super::quality::effective(settings.gfx);
+    let mut sun_now = (0.0, false);
     if let Ok((mut t, mut d, disk)) = sun.single_mut() {
         t.rotation = sun_rotation_render(frac);
         // The twilight tail lights the sky after sunset; cloud takes the
@@ -918,8 +934,8 @@ pub fn day_night(
         // clean merge that is not a correct one: whichever ran second would
         // win, and a player who turned shadows off would have them back at
         // the next sunrise.
-        d.shadows_enabled =
-            elev > SHADOW_MIN_ELEV && occ < 0.85 && super::quality::effective(settings.gfx).shadows;
+        d.shadows_enabled = elev > SHADOW_MIN_ELEV && shadow_veil < 0.85 && effective.shadows;
+        sun_now = (d.illuminance, d.shadows_enabled);
         // The atmosphere draws the disk OVER the skybox, so a cloud in front
         // of the sun has to put the disk out itself.
         if let Some(mut disk) = disk {
@@ -944,6 +960,19 @@ pub fn day_night(
             *t = Transform::default().looking_to(-toward, Vec3::Y);
         }
     }
+    // The fog's sunlit share, carried by the volume when it is drawn; what
+    // it takes off the flat fog is `lifted`, per metre (`shafts::split`).
+    let lifted = rays.drive(
+        &w,
+        super::shafts::SunNow {
+            lux: sun_now.0,
+            casts: sun_now.1,
+            ev100: exposure_ev100(frac),
+            lux_share,
+            fill: light * (1.0 - 0.35 * w.dark),
+            shadow_m: effective.shadow_m,
+        },
+    );
     if let Ok((mut amb, mut env, sky, fog, exposure)) = cam.single_mut() {
         if let Some(mut ex) = exposure {
             let want = exposure_ev100(frac);
@@ -981,7 +1010,7 @@ pub fn day_night(
             } else {
                 let sigma = w.fog_sigma();
                 fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
-                fog.falloff = super::sky::fog_falloff(sigma);
+                fog.falloff = super::sky::fog_falloff(sigma - lifted);
                 fog.directional_light_color = super::sky::fog_glow();
             }
         }
