@@ -886,7 +886,10 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         pool = smoothstep(splat.fel_shape.z, splat.fel_shape.z + 0.015, pf)
             * smoothstep(0.62, 0.9, fel) * flat * ground;
         let shore = pool * (1.0 - smoothstep(splat.fel_shape.z + 0.015, splat.fel_shape.z + 0.05, pf));
-        emit = splat.fel_glow.rgb * (k * heart * ground * flat_k * (1.0 - pool) + pool * 0.9 + shore * 0.9);
+        // The deep breathes on the slow field, so a pool is not one flat
+        // sheet of light, and the shore burns over it.
+        let deep = 0.2 + 0.3 * value3(q / 5.0 + vec3<f32>(0.0, 29.0, 0.0));
+        emit = splat.fel_glow.rgb * (k * heart * ground * flat_k * (1.0 - pool) + pool * deep + shore * 1.1);
         // The rock's own cracks, where the rock is.
         emit = emit + splat.fel_glow.rgb * rock_crack * terrain_bw.w * ground * heart * 0.8;
         // Scorched dark along the fissures, and the liquid black-green.

@@ -8,12 +8,12 @@ use bevy::prelude::*;
 use super::WorldEntity;
 
 /// The rim's alpha at a full meter. **(knob)**
-const RIM_MAX: f32 = 0.32;
+const RIM_MAX: f32 = 0.22;
 /// The meter, per cent, where the rim starts to show and where it is full.
 const RIM_FROM_PCT: f32 = 25.0;
 const RIM_FULL_PCT: f32 = 100.0;
 /// Where the green starts, as a share of the far-corner radius.
-const RIM_CLEAR_PCT: f32 = 48.0;
+const RIM_CLEAR_PCT: f32 = 60.0;
 
 /// The rim's node.
 #[derive(Component)]
