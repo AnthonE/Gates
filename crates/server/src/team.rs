@@ -15,7 +15,8 @@
 //! a returning player's woken body takes a new id, which
 //! [`Teams::rekey`] carries over. A restart keeps them: each world save
 //! writes the teams by player key beside the world file
-//! (`<world_file>.teams`, [`Teams::save`]), and the boot reads them back
+//! (`<world_file>.teams`, [`Teams::take_write`], written by the store
+//! thread), and the boot reads them back
 //! for the sleepers that world restored ([`Teams::load`]). A guest, who has
 //! no key, is not kept; a wipe archives the file with the world.
 //!
@@ -146,7 +147,7 @@ pub struct Teams {
     /// the wire's `TEAM_MAX`. Below 2 there are no teams.
     cap: u8,
     /// Where the teams are kept across a restart, if the world is, and
-    /// what was last written there.
+    /// what was last handed to the store thread for it.
     file: Option<PathBuf>,
     written: Option<String>,
 }

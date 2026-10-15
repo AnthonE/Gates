@@ -1986,7 +1986,8 @@ fn take_world_save(
 }
 
 /// The storage thread: the only thing in this process that touches the save
-/// file, and it makes no decisions — the index owner already chose the slot.
+/// file, the world file and the side files (`slot::FileMsg`), and it makes
+/// no decisions — the index owner already chose the slot.
 ///
 /// Exits when its producer is gone AND the ring is dry, which is exact rather
 /// than timed: the accept loop dropping `write_tx` is the shutdown signal, and
@@ -2037,8 +2038,9 @@ fn store_thread(
             let _ = world_done_tx.push(WorldDone { buf, idents, ok });
         }
         // The side files (`slot::FileMsg`): each a whole file, temp + fsync
-        // + rename. After the world, so a shutdown's teams land after the
-        // world they were keyed against. A failed write is logged; the
+        // + rename. The teams are handed over just before the world they
+        // were keyed against, so they may land a pass ahead of it — the order
+        // the old synchronous write had. A failed write is logged; the
         // in-memory copy stands and the next change writes it again.
         while let Ok(msg) = file_rx.pop() {
             idle = false;
