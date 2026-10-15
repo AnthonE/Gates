@@ -323,6 +323,14 @@ what a turn alone would lose: its own `notes` (the plan, what teammates
 asked for, 300 characters it rewrites each turn) and the last 20 chat lines,
 so "go get wood" still stands after the first run ends.
 
+**Memory across runs and wipes.** Set `GATES_MEMORY` to a file and it keeps
+its notes there, plus a notebook of `lessons` it writes for itself (1500
+characters, rewritten only when it learns something) and how its last eight
+lives ended. A run reads it back on start, so a restart, a death or a wipe
+keeps what it knew. Unset, every run starts blank. `GATES_JOURNAL` appends a
+JSON line per turn, `wish` included: anything it wanted that no goal offered.
+`ops/README.md` has how the house bots use both.
+
 ```sh
 pip install anthropic   # and ANTHROPIC_API_KEY, or `ant auth login`
 cargo run -p server --release --bin jev-bot -- --local --seconds 600 \

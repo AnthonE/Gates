@@ -32,6 +32,7 @@ deal has the one call).
 | [`CLAUDE.md`](CLAUDE.md) | the law of this repo, and it is short |
 | [`NOW.md`](NOW.md) | what to pick up. Top item first |
 | [`DECISIONS.md`](DECISIONS.md) | the record of spoken calls. Numbers live in code and `content/*.toml` |
+| [`ops/README.md`](ops/README.md) | running the official island: the shard, the house bots, wipes, and the record we keep |
 
 Then: branch → build → `ci/quick.sh` clean → open a PR; CI runs the full
 gates. One crate per PR. Never push to `main`.
@@ -84,6 +85,9 @@ pip install anthropic   # and ANTHROPIC_API_KEY
 cargo run -p server --release --bin jev-bot -- --local --think-ms 3000 --timeout-ms 20000 \
     --external python3 crates/server/examples/claude_agent.py
 ```
+
+Set `GATES_MEMORY=agent-memory.json` and it remembers across runs, deaths and
+wipes: its plan, the lessons it writes itself, and how it died.
 
 No API key? `--via claude-code` after the script runs the Claude Code you are
 signed in to on your own plan, for your own agent. `crates/server/JEV.md` has

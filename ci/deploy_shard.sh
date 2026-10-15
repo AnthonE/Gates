@@ -107,9 +107,9 @@ fi
 
 echo "== 1. build =="
 if [ "$GO" = 1 ]; then
-  cargo build --release -p server --bin shard || exit 1
+  cargo build --release -p server --bin shard --bin trust-log || exit 1
 else
-  echo "  would run: cargo build --release -p server --bin shard"
+  echo "  would run: cargo build --release -p server --bin shard --bin trust-log"
 fi
 BIN=target/release/shard
 [ "$GO" = 1 ] && { [ -x "$BIN" ] || { echo "  !! no $BIN after the build"; exit 1; }; }
@@ -122,6 +122,7 @@ run mv -f "$DEPLOY/shard.new" "$DEPLOY/shard"   # atomic; a running shard keeps 
 run rsync -a --delete content/ "$DEPLOY/content/"
 run cp -f "$CFG" "$DEPLOY/$CFG"
 run cp -f ops/cycles.py "$DEPLOY/cycles.py"   # gates-cycles.timer files each wipe
+run cp -f target/release/trust-log "$DEPLOY/trust-log"   # the trust log's reader (ops/README.md)
 
 echo
 echo "== 3. the unit =="
@@ -132,6 +133,21 @@ if ! sudo -n cmp -s "ops/$UNIT" "/etc/systemd/system/$UNIT" 2>/dev/null; then
 else
   echo "  unchanged"
 fi
+# The bots' and the study's units: refreshed when installed and changed, so
+# a new line in one (a buddy's GATES_MEMORY) takes effect with the restart
+# below. One not installed is named, never installed here: that is a choice
+# (`ops/README.md`).
+for extra in gates-teammate@.service gates-buddy@.service gates-cycles.service gates-cycles.timer; do
+  if [ -f "/etc/systemd/system/$extra" ]; then
+    if ! sudo -n cmp -s "ops/$extra" "/etc/systemd/system/$extra" 2>/dev/null; then
+      echo "  $extra differs from the installed copy"
+      run sudo cp -f "ops/$extra" "/etc/systemd/system/$extra"
+      run sudo systemctl daemon-reload
+    fi
+  elif [ "$extra" = gates-cycles.timer ]; then
+    echo "  note: gates-cycles.timer is not installed, so wipes are not filed for study (ops/README.md)"
+  fi
+done
 
 echo
 echo "== 3b. the certbot deploy hook =="

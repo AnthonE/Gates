@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! trust-log <dir> [--wallet ADDR] [--player ID] [--as actor|counterparty]
-//!                 [--verb door|auth|cont] [--presence awake|asleep|gone]
+//!                 [--verb door|auth|cont|give] [--presence awake|asleep|gone]
 //!                 [--from TICK] [--to TICK] [--boot HEX]
 //!                 [--summary | --jsonl]
 //! ```
@@ -20,7 +20,7 @@ use server::trustlog::{read_dir, summarize, Filter, LogParty, LogRow, Role};
 use std::path::PathBuf;
 
 const USAGE: &str = "usage: trust-log <dir> [--wallet ADDR] [--player ID] \
-[--as actor|counterparty] [--verb door|auth|cont] [--presence awake|asleep|gone] \
+[--as actor|counterparty] [--verb door|auth|cont|give] [--presence awake|asleep|gone] \
 [--from TICK] [--to TICK] [--boot HEX] [--summary | --jsonl]";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
