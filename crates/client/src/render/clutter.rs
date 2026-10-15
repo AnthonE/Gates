@@ -114,6 +114,12 @@ const DESERT_PEBBLE_C: u32 = 0xa07850;
 /// The share of the sand's pebbles a full desert leaves out: open sand is
 /// mostly sand, and a grey dot every metre read as polka dots. **(knob)**
 const DESERT_PEBBLE_THIN: f32 = 0.6;
+/// A stone in the Verdigris: obsidian, a green-black charcoal, mixed in by the
+/// ground's corruption (`terrain::fel`). **(knob)**
+const FEL_STONE_C: u32 = 0x2a2d28;
+/// The share of the turf's cards (grass, brush, sprigs) and its twigs the
+/// heart of the Verdigris leaves out: dead ground is bare. **(knob)**
+const FEL_CARD_THIN: f32 = 0.95;
 const TWIG_C: u32 = 0x5a4630;
 const SHARD_C: u32 = 0x7d7a73;
 /// A stone lying in the turf: pale, weathered — the reference game's
@@ -521,6 +527,42 @@ fn desert_pebble(s: &mut Soup, e: &ClutterElem, arid: f32) {
     );
 }
 
+/// The size and colour a stone-shaped kind is drawn at: `element`'s pebble and
+/// stone arms and the Verdigris' recolour ([`fel_stone`]) read the same
+/// numbers.
+fn stone_of(e: &ClutterElem) -> Option<(Vec3, u32)> {
+    match e.kind {
+        Clutter::Pebble => Some((Vec3::new(0.06, 0.028, 0.05) * e.scale, PEBBLE_C)),
+        // A stone in the grass: a pebble's shape at two to five times its
+        // size, most of them small.
+        Clutter::Stone => {
+            let seed = seed_of(e);
+            let k = 0.6 + 1.4 * hash01(seed, 71) * hash01(seed, 72);
+            Some((Vec3::new(0.16, 0.08, 0.12) * e.scale * k, STONE_C))
+        }
+        _ => None,
+    }
+}
+
+/// A stone in the Verdigris: [`stone_of`]'s, its colour gone toward obsidian
+/// by `fel`.
+fn fel_stone(s: &mut Soup, e: &ClutterElem, size: Vec3, hex: u32, fel: f32) {
+    let (g, d) = (linear(hex), linear(FEL_STONE_C));
+    let c = [
+        g[0] + (d[0] - g[0]) * fel,
+        g[1] + (d[1] - g[1]) * fel,
+        g[2] + (d[2] - g[2]) * fel,
+    ];
+    stone_lin(
+        s,
+        Vec3::new(e.x, e.y, e.z),
+        e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+        size,
+        c,
+        seed_of(e),
+    );
+}
+
 /// Share of the rock channel's clutter cells that draw a stone at all.
 ///
 /// Every clutter cell on bare rock is a shard (`terrain::kind_from_splat`), one
@@ -608,14 +650,11 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     match e.kind {
         Clutter::None => {}
         Clutter::Tuft => card(s, at, yaw, seed, TUFT_H * e.scale),
-        Clutter::Pebble => stone(
-            s,
-            at,
-            yaw,
-            Vec3::new(0.06, 0.028, 0.05) * e.scale,
-            PEBBLE_C,
-            seed,
-        ),
+        Clutter::Pebble | Clutter::Stone => {
+            if let Some((size, hex)) = stone_of(e) {
+                stone(s, at, yaw, size, hex, seed);
+            }
+        }
         Clutter::Twig => litter(s, at, yaw, e.scale, seed),
         // The same builder as the tuft at more than twice the height — see
         // `BRUSH_H` for why that is the whole of the change, and why this arm
@@ -629,19 +668,6 @@ fn element(s: &mut Soup, e: &ClutterElem) {
             SHARD_C,
             seed,
         ),
-        // A stone in the grass: a pebble's shape at two to five times its
-        // size, most of them small.
-        Clutter::Stone => {
-            let k = 0.6 + 1.4 * hash01(seed, 71) * hash01(seed, 72);
-            stone(
-                s,
-                at,
-                yaw,
-                Vec3::new(0.16, 0.08, 0.12) * e.scale * k,
-                STONE_C,
-                seed,
-            )
-        }
         Clutter::Sprig => card(s, at, yaw, seed, SPRIG_H * e.scale),
     }
 }
@@ -838,6 +864,23 @@ pub fn stream(
             // in front of a cut or sink into a buttress.
             let mut lat = terrain::Lattice::new();
             for e in buf.iter().take(n) {
+                // The Verdigris: dead ground is bare, and its stones are
+                // glass. Outside its reach this is one compare.
+                let fel = terrain::fel_memo(&mut lat, world.seed, e.x, e.z);
+                if fel > 0.0 {
+                    let roll = hash01(
+                        (e.x * 64.0) as i32 as u32,
+                        (e.z * 64.0) as i32 as u32 ^ 0x0fe1,
+                    );
+                    if (masked(e.kind) || e.kind == Clutter::Twig) && roll < fel * FEL_CARD_THIN {
+                        continue;
+                    }
+                    if let Some((size, hex)) = stone_of(e) {
+                        n_solid += 1;
+                        fel_stone(&mut solid, e, size, hex, fel);
+                        continue;
+                    }
+                }
                 // The desert's pebbles: fewer, and sandstone.
                 if e.kind == Clutter::Pebble {
                     let arid = terrain::aridity_memo(&mut lat, world.seed, e.x, e.z);
@@ -880,7 +923,8 @@ pub fn stream(
                     n_solid += 1;
                     element(&mut solid, e);
                 }
-                if fern_at(e) {
+                // No fern grows in the Verdigris' ash.
+                if fern_at(e) && fel < 0.3 {
                     n_ferns += 1;
                     fern(&mut ferns, e);
                 }

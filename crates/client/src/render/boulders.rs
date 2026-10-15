@@ -26,7 +26,7 @@ use bevy::prelude::*;
 use sim_core::boulder::{self, BOULDER_CELL_M, ON_GROUND};
 use sim_core::terrain;
 
-use super::ground_splat::{ATTRIBUTE_ARID, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD};
+use super::ground_splat::{ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD, ATTRIBUTE_ZONE};
 use super::terrain_mesh::{Ring, UV_PER_M};
 use super::{Eye, WorldEntity, WorldId};
 
@@ -224,8 +224,17 @@ impl RockSoup {
         self.idx.extend_from_slice(&[a, b, c]);
     }
 
-    pub fn mesh(self) -> Mesh {
+    /// The soup as a ground-material mesh. `seed` places it in the island's
+    /// zones: a rock in the Verdigris goes to obsidian with lit cracks the way
+    /// the ground under it does (`ATTRIBUTE_ZONE`; the desert does not tint
+    /// rock, so its share stays 0).
+    pub fn mesh(self, seed: u64) -> Mesh {
         let n = self.pos.len();
+        let zone: Vec<[f32; 2]> = self
+            .pos
+            .iter()
+            .map(|p| [0.0, terrain::fel(seed, p[0], p[2])])
+            .collect();
         let uv: Vec<[f32; 2]> = self
             .pos
             .iter()
@@ -258,7 +267,7 @@ impl RockSoup {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
         .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])
         .with_inserted_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; n])
-        .with_inserted_attribute(ATTRIBUTE_ARID, vec![0.0f32; n])
+        .with_inserted_attribute(ATTRIBUTE_ZONE, zone)
         .with_inserted_indices(Indices::U32(self.idx))
     }
 }
@@ -581,7 +590,9 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
         // Moss where the ground around is green: not on a beach, not above
         // the treeline.
         let h0 = terrain::height(seed, b.x, b.z);
-        let moss = h0 > terrain::BEACH_MAX_H + 1.5 && h0 < terrain::TREELINE_H;
+        let moss = h0 > terrain::BEACH_MAX_H + 1.5
+            && h0 < terrain::TREELINE_H
+            && terrain::fel(seed, b.x, b.z) < 0.3;
         let mut r = RockShape::of(seed, b, if moss { 1.0 } else { 0.0 });
         if b.on == ON_GROUND {
             rock_block(&mut soup, &r);
@@ -593,5 +604,5 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
             rock_block(&mut soup, &r);
         }
     }
-    soup.mesh()
+    soup.mesh(seed)
 }

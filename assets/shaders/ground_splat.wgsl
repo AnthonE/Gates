@@ -130,6 +130,20 @@ struct GroundSplat {
     desert: vec4<f32>,
     // xyz the straw the grass dries to. w reserved and zero.
     dry_grass: vec4<f32>,
+    // The Verdigris (`ground_splat::FEL_*`), by the vertex's corruption:
+    // xyz the ash sand and litter go to; w the share of a fissure cell's
+    // edges that glow at the heart.
+    fel_ash: vec4<f32>,
+    // xyz the dead turf grass goes to; w the fissure cell (m).
+    fel_dead: vec4<f32>,
+    // xyz the obsidian rock goes to; w what its roughness is multiplied by.
+    fel_rock: vec4<f32>,
+    // rgb the glow at this hour (`Ring::set_fel_glow`, from `rig::day_night`);
+    // w the pulse's rate (cycles a second).
+    fel_glow: vec4<f32>,
+    // x = a fissure's half-width (cells), y = its dark rim (cells), z = the
+    // pool field's threshold, w = the pool field's wavelength (m).
+    fel_shape: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -432,8 +446,58 @@ fn wall_tap(wall: Wall, layer: i32, tile: f32) -> WallTap {
     return t;
 }
 
+// --- The Verdigris: the fissure network ------------------------------------
+//
+// The ash crust cracked into plates the way a burnt crust dries: a 2D cellular
+// field over the ground's own xz, where the distance to the bisector between
+// the two nearest feature points is the distance to a crack. Each PAIR of
+// plates draws whether its crack glows — the rock face's rule — so a lit
+// fissure runs the length of the edge it chose and stops.
+struct FelCell {
+    // Distance to the nearest plate boundary, in cell units.
+    edge: f32,
+    // A key for the pair of plates either side of it.
+    pair: u32,
+}
+
+fn fel_cell(p: vec2<f32>) -> FelCell {
+    let base = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    var d1 = 1e9;
+    var d2 = 1e9;
+    var f1 = vec2<f32>(0.0);
+    var f2 = vec2<f32>(0.0);
+    var k1 = 0u;
+    var k2 = 0u;
+    for (var j: i32 = -1; j <= 1; j = j + 1) {
+        for (var i: i32 = -1; i <= 1; i = i + 1) {
+            let o = vec2<i32>(i, j);
+            let key = cell_key(vec3<i32>(base + o, 20973));
+            let pt = vec2<f32>(o) + vec2<f32>(0.15) + draw3(key).xy * 0.7;
+            let d = dot(pt - f, pt - f);
+            if d < d1 {
+                d2 = d1;
+                f2 = f1;
+                k2 = k1;
+                d1 = d;
+                f1 = pt;
+                k1 = key;
+            } else if d < d2 {
+                d2 = d;
+                f2 = pt;
+                k2 = key;
+            }
+        }
+    }
+    let n = normalize(f2 - f1);
+    var out: FelCell;
+    out.edge = max(-dot(f - 0.5 * (f1 + f2), n), 0.0);
+    out.pair = cell_key(vec3<i32>(bitcast<i32>(min(k1, k2)), bitcast<i32>(max(k1, k2)), 11));
+    return out;
+}
+
 @fragment
-fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) arid: f32, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) zone: vec2<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Keep the standard view vector, flags and material coverage. The splat
     // assigns its surface colour below.
     // COLOR.a is the rock weight, not opacity. Only the material's resident
@@ -648,6 +712,9 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let near_fine = 1.0 - smoothstep(0.05, 0.25, fine_px);
     var rock_shade = 1.0;
     var rock_tilt = vec3<f32>(0.0);
+    // How much of this texel is one of the rock's cracks, for the Verdigris
+    // to light (below): the same line the face darkens.
+    var rock_crack = 0.0;
     if w.w > 0.002 {
         var shade = 1.0;
         var t_big = vec3<f32>(0.0);
@@ -669,6 +736,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
                 let crack_px = splat.rock_c.y / max(big_px, 1e-5);
                 let on = smoothstep(0.5, 1.5, crack_px);
                 shade = shade * (1.0 - splat.rock_c.z * on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)));
+                rock_crack = on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)) * near_big;
             }
             t_big = (draw3(big.key ^ 0x68e31da4u) * 2.0 - 1.0) * (splat.rock_a.z * near_big);
         }
@@ -722,13 +790,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let road_weight = paving + dirt * splat.blend.w;
 
     // The authored colour, per pixel rather than per vertex — with the sand
-    // warmed and the grass dried toward the desert.
-    let dry = clamp(arid, 0.0, 1.0);
+    // warmed and the grass dried toward the desert, and every identity gone
+    // to ash, dead turf and obsidian in the Verdigris (the two never meet:
+    // `terrain::fel`'s const block keeps it clear of the desert).
+    let dry = clamp(zone.x, 0.0, 1.0);
+    let fel = clamp(zone.y, 0.0, 1.0);
     var ident = array<vec3<f32>, 4>(
-        mix(splat.identity[0].xyz, splat.desert.xyz, dry),
-        mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w),
-        splat.identity[2].xyz,
-        splat.identity[3].xyz,
+        mix(mix(splat.identity[0].xyz, splat.desert.xyz, dry), splat.fel_ash.xyz, fel),
+        mix(mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w), splat.fel_dead.xyz, fel),
+        mix(splat.identity[2].xyz, splat.fel_ash.xyz, fel),
+        mix(splat.identity[3].xyz, splat.fel_rock.xyz, fel),
     );
     var base = vec3(0.0);
     for (var i = 0u; i < 4u; i = i + 1u) {
@@ -764,6 +835,63 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let worn_paint = paving * paint_valid * clamp(road_grain, 0.0, 1.0);
     base = mix(base, splat.paint_yellow.xyz, center_paint * worn_paint * splat.paint_yellow.w);
     base = mix(base, splat.paint_white.xyz, edge_paint * worn_paint * splat.paint_white.w);
+
+    // --- The Verdigris: fissures, pools and the glow ------------------------
+    //
+    // Emission rides `pbr_input.material.emissive` at an exposure weight of
+    // 0, the convention every glow in this client keeps (`beasts::FEL_GLOW`,
+    // the town's lapis), so it reads without bloom — which Low and WebGL2 do
+    // not have. `splat.fel_glow` is the hour's colour (`rig::day_night`).
+    var emit = vec3<f32>(0.0);
+    var pool = 0.0;
+    if fel > 0.02 {
+        let heart = smoothstep(0.25, 0.85, fel);
+        let cell_m = splat.fel_dead.w;
+        // The plates lie on the ground: a fissure is cut into what faces the
+        // sky, and a steep face is the rock's, whose own cracks light below.
+        let flat_k = smoothstep(0.72, 0.9, wn.y);
+        // Warped, so a fissure wanders like a crack and never runs as a ruled
+        // line; its width breathes along it; and it is lit in runs, with dark
+        // gaps, rather than end to end.
+        let q = vec3<f32>(wp.x, 0.0, wp.z);
+        let warp = vec2<f32>(value3(q / (cell_m * 0.55)), value3(q / (cell_m * 0.55) + vec3<f32>(41.3, 0.0, 17.9))) - vec2<f32>(0.5);
+        let crack_w = splat.fel_shape.x * (0.35 + 0.9 * value3(q / 2.3 + vec3<f32>(0.0, 7.0, 0.0)));
+        let run = smoothstep(0.32, 0.55, value3(q / 3.7 + vec3<f32>(0.0, 13.0, 0.0)));
+        // A fissure narrower than a pixel is drawn as its mean, not as a line
+        // that crawls: the plates resolve near and become a glow far.
+        let width_px = 2.0 * splat.fel_shape.x / max(fp_m / cell_m, 1e-5);
+        let resolved = smoothstep(0.5, 1.5, width_px);
+        let share = splat.fel_ash.w * heart;
+        // About 3.7 × the half-width of a unit-area cellular field lies within
+        // that half-width of an edge; `share` of those edges glow, in runs.
+        var k = 3.7 * splat.fel_shape.x * share * 0.45;
+        var rim = 0.0;
+        if resolved > 0.0 {
+            let c = fel_cell(wp.xz / cell_m + warp * 0.45);
+            let lit = step(unit_of(c.pair), share) * run;
+            // A white-hot core inside a softer green halo.
+            let line = 1.0 - smoothstep(0.0, crack_w, c.edge);
+            let core = line * line * line;
+            rim = (1.0 - smoothstep(crack_w, crack_w + splat.fel_shape.y, c.edge)) * resolved;
+            let pulse = 0.72 + 0.28 * sin(globals.time * 6.2831853 * splat.fel_glow.w + unit_of(c.pair ^ 0x2545f491u) * 6.2831853);
+            k = mix(k, (core + 0.35 * line) * lit * pulse, resolved);
+        }
+        // Pools: on flat ground at the heart, where a slow field clears its
+        // line — black glass, lit at the shore and faintly in the deep.
+        let pf = value3(q / splat.fel_shape.w) * 0.7
+            + value3(q / (splat.fel_shape.w * 0.43) + vec3<f32>(0.0, 17.0, 0.0)) * 0.3;
+        let flat = smoothstep(0.93, 0.975, wn.y);
+        pool = smoothstep(splat.fel_shape.z, splat.fel_shape.z + 0.015, pf)
+            * smoothstep(0.62, 0.9, fel) * flat * ground;
+        let shore = pool * (1.0 - smoothstep(splat.fel_shape.z + 0.015, splat.fel_shape.z + 0.05, pf));
+        emit = splat.fel_glow.rgb * (k * heart * ground * flat_k * (1.0 - pool) + pool * 0.45 + shore * 0.9);
+        // The rock's own cracks, where the rock is.
+        emit = emit + splat.fel_glow.rgb * rock_crack * terrain_bw.w * ground * heart * 0.8;
+        // Scorched dark along the fissures, and the liquid black-green.
+        base = base * (1.0 - 0.65 * rim * heart * ground * flat_k);
+        base = mix(base, vec3<f32>(0.010, 0.040, 0.012), pool);
+    }
+
     // The macro break-up, then the waterline — in that order, so a wet vertex
     // keeps its own grain instead of having it multiplied back in at full dry
     // strength. `terrain_mesh::vertex_color` states why.
@@ -857,6 +985,11 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // clear of it instead, which is the half that IS ours.
     let wet_keep = 1.0 - wet * (1.0 - splat.blend.z);
     pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_ra.r) * wet_keep;
+    // Obsidian is glass, and a pool is liquid.
+    if fel > 0.0 {
+        let glassy = mix(1.0, splat.fel_rock.w, fel * bw.w);
+        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness * glassy, 0.25, pool);
+    }
 
     // The relief, blended as gradients. The planar taps' share is applied on
     // the mesh's own written tangent frame; each wall tap's is already a world
@@ -882,6 +1015,12 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let n0 = pbr_input.N;
     let lean = (rock_tilt - dot(rock_tilt, n0) * n0) * bw.w;
     pbr_input.N = normalize(n0 + lean);
+    // A pool is level.
+    pbr_input.N = normalize(mix(pbr_input.N, wn, pool));
+    // The Verdigris' glow, never under water.
+    if under <= 0.0 {
+        pbr_input.material.emissive = vec4<f32>(emit, 0.0);
+    }
 
     var out: FragmentOutput;
     // ── Ambient occlusion, blended by the same weights ──────────────────

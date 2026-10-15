@@ -244,7 +244,7 @@ pub fn spawn(
         commands.spawn((
             LandmarkRocks,
             WorldEntity,
-            Mesh3d(meshes.add(soup.mesh())),
+            Mesh3d(meshes.add(soup.mesh(world.seed))),
             MeshMaterial3d(material),
             Transform::IDENTITY,
         ));

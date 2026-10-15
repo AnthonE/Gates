@@ -190,4 +190,12 @@ pub fn drive(
     // The ground in steps of 1/64: a smooth soak without a re-upload a frame.
     let wet = (weather.ground_wet * 64.0).round() / 64.0;
     ring.set_rain_wet(&mut ground, wet);
+    // The Verdigris' fissures by the hour: dimmer under the sun, brighter in
+    // the dark, in steps of 1/32 of the day for the same reason.
+    let day = (weather.sun_lux.clamp(0.0, 1.0) * 32.0).round() / 32.0;
+    let (lo, hi) = (
+        Vec3::from_array(super::ground_splat::FEL_GLOW_NIGHT),
+        Vec3::from_array(super::ground_splat::FEL_GLOW_DAY),
+    );
+    ring.set_fel_glow(&mut ground, lo + (hi - lo) * day);
 }

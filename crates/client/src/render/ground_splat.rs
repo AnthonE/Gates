@@ -153,11 +153,14 @@ pub const ATTRIBUTE_MARKINGS: MeshVertexAttribute =
 pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadCoverage", 0x726f6164, VertexFormat::Float32x2);
 
-/// How arid the ground under a vertex is, 0..1 (`terrain::aridity`): the
-/// desert's warm sand and the dry grass at its border are a tint on the sand
-/// and grass identities, not identities of their own, so the splat stays four.
-pub const ATTRIBUTE_ARID: MeshVertexAttribute =
-    MeshVertexAttribute::new("Aridity", 0x61726964, VertexFormat::Float32);
+/// The two zones the ground under a vertex is in, 0..1 each: x how arid
+/// (`terrain::aridity`), y how corrupted (`terrain::fel`, the Verdigris). The
+/// desert's warm sand and the Verdigris' ash and obsidian are tints on the
+/// four identities, not identities of their own, so the splat stays four —
+/// and one `vec2` at one location keeps WebGL2's attribute count where the
+/// desert left it.
+pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
+    MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x2);
 
 /// The desert's sand, linear: a warm tan, where the beach's sand is a pale
 /// grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about (170, 137, 95),
@@ -171,6 +174,41 @@ pub const DRY_GRASS_ALBEDO: [f32; 3] = [0.188, 0.155, 0.042];
 /// How far the grass identity goes to [`DRY_GRASS_ALBEDO`] at full aridity.
 /// Short of 1 so the last turf before the sand keeps a little green. **(knob)**
 pub const DRY_GRASS_MIX: f32 = 0.85;
+
+/// The Verdigris' ash, linear: what sand and forest litter go to at full
+/// corruption. A green-black grey at the albedo floor's edge (`ART.md`: no
+/// pure black). **(knob)**
+pub const FEL_ASH_ALBEDO: [f32; 3] = [0.058, 0.062, 0.054];
+/// Its dead turf, linear: what the grass goes to — a scorched olive-brown.
+/// **(knob)**
+pub const FEL_DEAD_ALBEDO: [f32; 3] = [0.074, 0.070, 0.040];
+/// Its obsidian, linear: what the rock goes to — black glass with a cold cast.
+/// **(knob)**
+pub const FEL_ROCK_ALBEDO: [f32; 3] = [0.050, 0.055, 0.056];
+/// What obsidian's roughness is multiplied by: glass, not granite. **(knob)**
+pub const FEL_ROCK_ROUGH: f32 = 0.75;
+/// The fissure plates' size, metres. **(knob)**
+pub const FEL_CELL_M: f32 = 7.0;
+/// A fissure's half-width at its widest, in plate cells (0.018 × 7 m: a
+/// crack about a quarter-metre across, breathing narrower along its run).
+/// **(knob)**
+pub const FEL_CRACK_W: f32 = 0.018;
+/// The scorched rim either side of a fissure, cells. **(knob)**
+pub const FEL_RIM_W: f32 = 0.04;
+/// The share of plate edges that glow at the heart; fewer toward the edge.
+/// **(knob)**
+pub const FEL_CRACK_SHARE: f32 = 0.55;
+/// The pool field's line (its value noise sits in 0..1), and its wavelength,
+/// metres: pools are where the field clears the line. **(knob)**
+pub const FEL_POOL_AT: f32 = 0.66;
+pub const FEL_POOL_M: f32 = 26.0;
+/// The glow by day and by night, linear and exposure-weight 0 — between the
+/// town's lapis (1.6 by night) and its bulbs (6.0), the band `beasts::FEL_GLOW`
+/// sits in. `rig::day_night` blends the two by the hour. **(knob)**
+pub const FEL_GLOW_DAY: [f32; 3] = [0.10, 0.55, 0.07];
+pub const FEL_GLOW_NIGHT: [f32; 3] = [0.45, 2.60, 0.32];
+/// The fissures' slow breath, cycles a second. **(knob)**
+pub const FEL_PULSE_HZ: f32 = 0.35;
 
 /// Proposed material defaults, DECISIONS.md §open, road surface v1.
 /// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
@@ -432,6 +470,18 @@ pub struct GroundSplatParams {
     pub desert: Vec4,
     /// xyz = [`DRY_GRASS_ALBEDO`]. w reserved and zero.
     pub dry_grass: Vec4,
+    /// xyz = [`FEL_ASH_ALBEDO`], w = [`FEL_CRACK_SHARE`].
+    pub fel_ash: Vec4,
+    /// xyz = [`FEL_DEAD_ALBEDO`], w = [`FEL_CELL_M`].
+    pub fel_dead: Vec4,
+    /// xyz = [`FEL_ROCK_ALBEDO`], w = [`FEL_ROCK_ROUGH`].
+    pub fel_rock: Vec4,
+    /// rgb = the glow at this hour (`Ring::set_fel_glow`), w =
+    /// [`FEL_PULSE_HZ`].
+    pub fel_glow: Vec4,
+    /// x = [`FEL_CRACK_W`], y = [`FEL_RIM_W`], z = [`FEL_POOL_AT`], w =
+    /// [`FEL_POOL_M`].
+    pub fel_shape: Vec4,
 }
 
 impl GroundSplatParams {
@@ -528,6 +578,31 @@ impl GroundSplatParams {
                 DRY_GRASS_ALBEDO[2],
                 0.0,
             ),
+            fel_ash: Vec4::new(
+                FEL_ASH_ALBEDO[0],
+                FEL_ASH_ALBEDO[1],
+                FEL_ASH_ALBEDO[2],
+                FEL_CRACK_SHARE,
+            ),
+            fel_dead: Vec4::new(
+                FEL_DEAD_ALBEDO[0],
+                FEL_DEAD_ALBEDO[1],
+                FEL_DEAD_ALBEDO[2],
+                FEL_CELL_M,
+            ),
+            fel_rock: Vec4::new(
+                FEL_ROCK_ALBEDO[0],
+                FEL_ROCK_ALBEDO[1],
+                FEL_ROCK_ALBEDO[2],
+                FEL_ROCK_ROUGH,
+            ),
+            fel_glow: Vec4::new(
+                FEL_GLOW_DAY[0],
+                FEL_GLOW_DAY[1],
+                FEL_GLOW_DAY[2],
+                FEL_PULSE_HZ,
+            ),
+            fel_shape: Vec4::new(FEL_CRACK_W, FEL_RIM_W, FEL_POOL_AT, FEL_POOL_M),
         }
     }
 }
@@ -765,7 +840,7 @@ impl MaterialExtension for GroundSplat {
         let road = layout.0.get_layout(&[
             ATTRIBUTE_ROAD.at_shader_location(8),
             ATTRIBUTE_MARKINGS.at_shader_location(9),
-            ATTRIBUTE_ARID.at_shader_location(10),
+            ATTRIBUTE_ZONE.at_shader_location(10),
         ])?;
         descriptor.vertex.buffers[0]
             .attributes

@@ -34,7 +34,7 @@ use sim_core::terrain::{self, SEA_LEVEL};
 use std::sync::Arc;
 
 use super::ground_splat::{
-    road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_ARID, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD,
+    road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD, ATTRIBUTE_ZONE,
 };
 use super::road_markings::RoadChart;
 #[cfg(target_arch = "wasm32")]
@@ -752,6 +752,23 @@ impl Ring {
         self.ground.clone()
     }
 
+    /// Light the Verdigris' fissures with the hour's glow, linear rgb: the
+    /// near and far ground materials' `fel_glow`, which the rocks wear too.
+    /// Writes only when it moved, since a write re-uploads the material.
+    pub fn set_fel_glow(&self, materials: &mut Assets<GroundMaterial>, rgb: Vec3) {
+        for h in [&self.ground, &self.far_ground].into_iter().flatten() {
+            let changed = materials
+                .get(h)
+                .is_some_and(|m| m.extension.params.fel_glow.truncate() != rgb);
+            if changed {
+                if let Some(m) = materials.get_mut(h) {
+                    let w = m.extension.params.fel_glow.w;
+                    m.extension.params.fel_glow = rgb.extend(w);
+                }
+            }
+        }
+    }
+
     /// Soak the island's ground to `wet` (`0..1`, weather v0): the near and
     /// far ground materials' `identity[0].w`. Writes only when the value
     /// moved, since a write re-uploads the material.
@@ -1207,7 +1224,7 @@ pub fn heightfield(
     let mut uvs = Vec::with_capacity(count);
     let mut mods = Vec::with_capacity(count);
     let mut roads = Vec::with_capacity(count);
-    let mut arid: Vec<f32> = Vec::with_capacity(count);
+    let mut zone: Vec<[f32; 2]> = Vec::with_capacity(count);
     let mut tangents = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
@@ -1410,7 +1427,10 @@ pub fn heightfield(
             // `vertex_color` stays as the reference arithmetic the gate holds
             // the shader against.
             colors.push(vertex_splat(w));
-            arid.push(terrain::aridity_memo(&mut lat, seed, x, z));
+            zone.push([
+                terrain::aridity_memo(&mut lat, seed, x, z),
+                terrain::fel_memo(&mut lat, seed, x, z),
+            ]);
             mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * UV_PER_M, z * UV_PER_M]);
         }
@@ -1437,7 +1457,7 @@ pub fn heightfield(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_attribute(ATTRIBUTE_ROAD, roads);
     mesh.insert_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; count]);
-    mesh.insert_attribute(ATTRIBUTE_ARID, arid);
+    mesh.insert_attribute(ATTRIBUTE_ZONE, zone);
     // The two scalar modifiers. `UV_1` because it is the one remaining
     // interpolated slot Bevy's standard vertex stage already forwards to the
     // fragment (`forward_io::VertexOutput::uv_b`). Road coverage has its own

@@ -339,7 +339,11 @@ pub fn stream(
             cell_x,
             cell_z,
         );
-        if slot.occupant != Occupant::Tree {
+        // A tree in the Verdigris is a bare snag (`props::spawn_slot`), and a
+        // card is a crown: at this range it is not drawn at all.
+        if slot.occupant != Occupant::Tree
+            || terrain::fel_memo(&mut build.lat, world.seed, slot.x, slot.z) >= props::FEL_SNAG_AT
+        {
             continue;
         }
         let key = cell_key(cell_x as u16, cell_z as u16);

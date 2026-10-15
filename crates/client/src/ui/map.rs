@@ -53,6 +53,10 @@ pub const SAND: [f32; 3] = [203.0, 185.0, 148.0];
 /// The desert's sand, warmer: what [`SAND`] goes to as the ground dries
 /// (`terrain::aridity`), as the world's own sand does (`ground_splat`).
 pub const DESERT: [f32; 3] = [214.0, 170.0, 104.0];
+/// The Verdigris: ash and dead ground, a dark green-black — what every
+/// identity goes to by the ground's corruption (`terrain::fel`), as the
+/// world's own ground does (`ground_splat`).
+pub const FEL_GROUND: [f32; 3] = [46.0, 70.0, 42.0];
 /// Open meadow.
 pub const GRASS: [f32; 3] = [109.0, 140.0, 74.0];
 /// Forest litter: the same green, darker — how the reference separates wooded
@@ -758,13 +762,15 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                 // a true average whatever the rounding did.
                 let sum = (w[0] as f32 + w[1] as f32 + w[2] as f32 + w[3] as f32).max(1.0);
                 let arid = terrain::aridity(seed, x, z);
+                let fel = terrain::fel(seed, x, z) * 0.85;
                 let sand = |c: usize| SAND[c] + (DESERT[c] - SAND[c]) * arid;
                 let mix = |c: usize| {
-                    (sand(c) * w[0] as f32
+                    let g = (sand(c) * w[0] as f32
                         + GRASS[c] * w[1] as f32
                         + LITTER[c] * w[2] as f32
                         + ROCK[c] * w[3] as f32)
-                        / sum
+                        / sum;
+                    g + (FEL_GROUND[c] - g) * fel
                 };
                 // Hillshade. A heightfield's normal is `(-dh/dx, 1, -dh/dz)`
                 // before normalising; the lambert term against `LIGHT` becomes
@@ -2441,7 +2447,16 @@ mod tests {
     /// rule is per-channel and written down rather than re-derived.
     #[test]
     fn marker_fills_are_not_the_ground_palette() {
-        let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP, ROAD];
+        let grounds = [
+            SAND,
+            GRASS,
+            LITTER,
+            ROCK,
+            FEL_GROUND,
+            SEA_SHALLOW,
+            SEA_DEEP,
+            ROAD,
+        ];
         for kind in [
             MarkKind::Haven,
             MarkKind::Town,

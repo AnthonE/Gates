@@ -275,6 +275,8 @@ pub struct PropAssets {
     bark: [Handle<StandardMaterial>; TINT_POOL],
     /// The broadleaf trunk's bark: a birch photograph (`textures::PropMaps`).
     birch: [Handle<StandardMaterial>; TINT_POOL],
+    /// A tree in the Verdigris: the pine's bark, burnt (`spawn_slot`'s snag).
+    charred: [Handle<StandardMaterial>; TINT_POOL],
     rock: [Handle<StandardMaterial>; TINT_POOL],
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
@@ -2294,8 +2296,30 @@ pub fn assets(
         // Birch bark is papery and has a dull sheen where pine's is all
         // fissure, so it is a touch less rough.
         birch: photo_pool(&maps.birch, 0.80, fresnel::DIELECTRIC, materials),
+        // Burnt: the pine's photograph at a fraction of its value with a cold
+        // green-black cast, and the dull sheen of char.
+        charred: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v * FEL_CHAR[0], v * FEL_CHAR[1], v * FEL_CHAR[2]),
+                base_color_texture: Some(maps.bark.albedo.clone()),
+                normal_map_texture: Some(maps.bark.normal.clone()),
+                occlusion_texture: maps.bark.ao.clone(),
+                perceptual_roughness: 0.95,
+                reflectance: fresnel::DIELECTRIC,
+                ..default()
+            })
+        }),
     }
 }
+
+/// Corruption at which a tree is a snag: bark burnt black and no crown at all
+/// (`spawn_slot`, and the far cards leave it out). The sim's tree is the same
+/// tree — the same trunk it blocks and the same wood it pays. **(knob)**
+pub const FEL_SNAG_AT: f32 = 0.45;
+
+/// What a snag's bark is multiplied by, linear: burnt nearly black, a green
+/// cast where the Verdigris' glow has been on it. **(knob)**
+const FEL_CHAR: [f32; 3] = [0.30, 0.33, 0.30];
 
 /// Spawn the scatter for the near ring, one chunk per frame.
 #[allow(clippy::too_many_arguments)]
@@ -2607,6 +2631,10 @@ pub fn spawn_outer_tree(
     key: u32,
     world: &WorldId,
 ) {
+    // A snag out here is a few pixels of black twig; its card would be a crown.
+    if terrain::fel(world.seed, slot.x, slot.z) >= FEL_SNAG_AT {
+        return;
+    }
     let variant = species_variant(slot, a.impostors.len());
     let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
     // **`far_ground_y`, never `slot.y`.** Out here the ground a player sees is
@@ -2684,12 +2712,18 @@ pub fn spawn_slot(
     let lift = archetype_lift(slot.occupant);
     // What a shrub cell grows, off its biome (`plants::scenery`).
     let scenery = plants::scenery(seed, slot, key);
+    // A tree in the Verdigris is dead: charred bark and no crown.
+    let snag = slot.occupant == Occupant::Tree && terrain::fel(seed, slot.x, slot.z) >= FEL_SNAG_AT;
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = species_variant(slot, a.pines.len());
             (
                 a.pines[variant].clone(),
-                a.trunk_material(variant, key).clone(),
+                if snag {
+                    a.charred[tint].clone()
+                } else {
+                    a.trunk_material(variant, key).clone()
+                },
             )
         }
         // Each node takes its own model where one exists and the shared blob
@@ -2995,7 +3029,7 @@ pub fn spawn_slot(
     // What makes two independent entities agree is that neither stores the
     // bearing: both derive it from the cell key (`fell_bearing`), which is
     // also what makes two CLIENTS agree.
-    if is_tree {
+    if is_tree && !snag {
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
@@ -3024,8 +3058,19 @@ pub fn spawn_slot(
     // material at six meshes. The bush already banks on that shader path.
     if is_tree {
         // The card where the client has one (`far_trees`); the lathed hull in
-        // the headless tier.
-        if let Some((meshes, mats)) = &a.cards {
+        // the headless tier. A snag has no crown for either to stand in for:
+        // its far half is its own charred trunk.
+        if snag {
+            e.with_child((
+                fellable(FellPart::Far),
+                Topple { t: -1.0 },
+                Grow::tree(slot.scale),
+                Mesh3d(a.pines[variant].clone()),
+                MeshMaterial3d(a.charred[tint].clone()),
+                tree::lod_band(&lod.far),
+                transform,
+            ));
+        } else if let Some((meshes, mats)) = &a.cards {
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
