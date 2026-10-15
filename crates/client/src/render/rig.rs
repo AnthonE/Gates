@@ -671,6 +671,22 @@ pub fn sun_azimuth(frac: f32) -> f32 {
     }
 }
 
+/// Toward the sun on the day's own arc at `frac`, which may run on past
+/// dusk (over `DAY_PORTION`) or back before dawn (under 0): the day
+/// branches of [`sun_elevation`] and [`sun_azimuth`], carried on under the
+/// horizon at the day's pace. Equal to [`to_sun`] over the day. At night
+/// the real sun leaves this path and sweeps the rest of the turn under the
+/// world seven times as fast; this is the slow sun a night's moon is lit
+/// by (`moon::lighting_sun`).
+pub fn day_arc(frac: f32) -> Vec3 {
+    use std::f32::consts::PI;
+    let day = sim_core::limits::DAY_PORTION;
+    to_sun_at(
+        (PI * frac / day).sin() * RIG_SUN_ELEVATION,
+        RIG_SUN_AZIMUTH + RIG_SUN_ARC * (0.5 - frac / day),
+    )
+}
+
 /// How much of full daylight the frame gets, `0..=1`: the sun's height as
 /// a fraction of its noon height, zero from the moment it dips. One
 /// scalar feeds the sun's illuminance, the ambient lerp and the cloud

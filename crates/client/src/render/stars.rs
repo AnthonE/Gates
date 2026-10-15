@@ -60,6 +60,10 @@ pub struct StarParams {
     /// The field texture: x one over its period (noise units), y half a
     /// texel (uv); zw unused.
     pub field: Vec4,
+    /// The moon in front of them: xyz toward it, w the cosine of its
+    /// disk's radius. The moon adds to the sky (`moon.rs`), so the stars
+    /// leave out the ones it passes over themselves.
+    pub moon: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
@@ -197,6 +201,7 @@ pub fn params_for(w: &WeatherNow, shown: &sky::ComposeParams) -> StarParams {
             0.0,
             0.0,
         ),
+        moon: shown.moon.normalize_or(Vec3::Y).extend(sky::MOON_R.cos()),
     }
 }
 

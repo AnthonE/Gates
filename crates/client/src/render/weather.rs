@@ -90,6 +90,9 @@ pub struct WeatherNow {
     /// is up (`moon::shine`). A day moon has it too, so readers scale it by
     /// `night` as they scale the moon.
     pub moonlight: f32,
+    /// Toward the sun the moon is lit by, unit (`moon::lighting_sun`): the
+    /// side its terminator faces.
+    pub moon_sun: Vec3,
 }
 
 impl WeatherNow {
@@ -205,6 +208,7 @@ pub fn update(
     now.moon_phase = sim_core::world::moon_phase(day_tick);
     now.moon = super::moon::toward(frac, now.moon_phase);
     now.moonlight = super::moon::shine(frac, now.moon_phase);
+    now.moon_sun = super::moon::lighting_sun(frac, now.moon_phase);
 
     let dt = time.delta_secs();
     if pinned {

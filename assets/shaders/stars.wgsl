@@ -19,6 +19,8 @@ struct Stars {
     cloud: vec4<f32>,
     // x: one over the field's period, noise units. y: half a texel, uv.
     field: vec4<f32>,
+    // xyz: toward the moon. w: the cosine of its disk's radius.
+    moon: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> stars: Stars;
@@ -58,11 +60,14 @@ fn vertex(in: VertexIn) -> VertexOut {
     let low = smoothstep(0.02, 0.22, d.y);
     // Under a moon the faint ones go first, over a few percent of the rank.
     let seen = clamp((in.color.w - stars.look.z) / 0.04 + 1.0, 0.0, 1.0);
+    // Behind the moon's disk, none: the moon adds to the sky (`moon.wgsl`)
+    // rather than covering it, so it cannot hide them itself.
+    let unhidden = select(1.0, 0.0, dot(d, stars.moon.xyz) > stars.moon.w);
     let rgb = mix(vec3(0.78, 0.86, 1.0), vec3(1.0, 0.9, 0.74), in.color.z);
     out.clip = clip;
     out.uv = in.uv;
     out.dir = d;
-    out.light = rgb * in.color.x * tw * low * seen * stars.look.x;
+    out.light = rgb * in.color.x * tw * low * seen * unhidden * stars.look.x;
     return out;
 }
 

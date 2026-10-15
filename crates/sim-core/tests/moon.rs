@@ -51,18 +51,30 @@ fn full_on_the_first_midnight_and_new_half_a_month_on() {
     assert!(moon_phase(midnight(MOON_DAYS - 1)) < 0.5);
 }
 
-/// One tick moves the phase by one tick of the month, across dawn too: the
-/// moon never steps, so the night's light never does.
+/// One tick moves the phase by one tick of the month, across dawn and the
+/// month's turn at new moon too: the moon never steps, so the night's light
+/// never does.
 #[test]
 fn the_phase_runs_on_without_a_step() {
-    let step = 1.0 / MONTH as f32;
     let dawn = DAY_TICKS - DAY_PHASE_TICKS;
-    for t in [dawn - 1, dawn, midnight(2), MONTH * 3 - 7] {
+    let new_moon = midnight(MOON_DAYS / 2);
+    for t in [
+        dawn - 1,
+        dawn,
+        midnight(2),
+        new_moon - 1,
+        new_moon,
+        MONTH * 3 - 7,
+    ] {
         let mut d = moon_phase(t + 1) - moon_phase(t);
         if d < 0.0 {
             d += 1.0;
         }
-        let off = d - step;
-        assert!(off < 1e-6 && off > -1e-6, "the phase stepped {d} at {t}");
+        // In ticks of the month: one, not none and not a jump.
+        let ticks = d * MONTH as f32;
+        assert!(
+            ticks > 0.5 && ticks < 1.5,
+            "the phase moved {ticks} ticks at {t}"
+        );
     }
 }

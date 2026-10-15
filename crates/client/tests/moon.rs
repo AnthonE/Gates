@@ -7,9 +7,10 @@
 use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
 use client::render::feed::Feed;
-use client::render::moon::{lit_fraction, shine, sunlight_on_disk, toward};
+use client::render::moon::{above, lighting_sun, lit_fraction, shine, sunlight_on_disk, toward};
 use client::render::rig::{
-    self, day_night, tick_at_frac, to_sun, DayPin, EyeCam, NEW_MOON_SHARE, NIGHT_AMBIENT_LUX,
+    self, day_arc, day_night, tick_at_frac, to_sun, DayPin, EyeCam, NEW_MOON_SHARE,
+    NIGHT_AMBIENT_LUX,
 };
 use sim_core::limits::{DAY_PORTION, DAY_TICKS, MOON_DAYS};
 use sim_core::world::moon_phase;
@@ -51,33 +52,96 @@ fn a_full_moon_rides_all_night_and_a_new_one_never_rises() {
     }
 }
 
+/// The light on the disk turned back into the world: the side of the disk
+/// it comes from, in the frame `moon.wgsl` builds.
+fn lit_side(moon: Vec3, l: Vec3) -> Vec3 {
+    let right = moon.cross(Vec3::Y).normalize();
+    let up = right.cross(moon);
+    right * l.x + up * l.y
+}
+
 /// The full moon is lit from the eye, as it was drawn before it had phases,
-/// and a crescent's lit side faces the sun.
+/// and a crescent's lit side faces the sun: the sunset a waxing one follows,
+/// the sunrise a waning one leads.
 #[test]
 fn the_terminator_faces_the_sun() {
     let f = night(0.5);
-    let l = sunlight_on_disk(toward(f, 0.5), to_sun(f), 1.0);
+    let l = sunlight_on_disk(toward(f, 0.5), lighting_sun(f, 0.5), 1.0);
     assert!((l - Vec3::Z).length() < 1e-6, "the full moon is lit by {l}");
 
-    // A waxing crescent just after sunset, over the sun it follows.
-    let (f, p) = (night(0.05), 0.12);
-    let (moon, sun) = (toward(f, p), to_sun(f));
-    let k = lit_fraction(p);
-    let l = sunlight_on_disk(moon, sun, k);
-    assert!(
-        (l.z - (2.0 * k - 1.0)).abs() < 1e-6,
-        "the phase angle is {}",
-        l.z
-    );
-    assert!((l.length() - 1.0).abs() < 1e-5, "the light is {l}");
-    // The disk's frame, as `moon.wgsl` builds it.
-    let right = moon.cross(Vec3::Y).normalize();
-    let up = right.cross(moon);
-    let side = right * l.x + up * l.y;
-    assert!(
-        side.dot(sun) > 0.0,
-        "the crescent is lit from away from the sun"
-    );
+    for (f, p, when) in [
+        (night(0.05), 0.12, "after sunset"),
+        (night(0.95), 0.88, "before sunrise"),
+    ] {
+        let (moon, sun) = (toward(f, p), to_sun(f));
+        assert!(above(moon) > 0.99, "the crescent {when} is down");
+        let k = lit_fraction(p);
+        let l = sunlight_on_disk(moon, lighting_sun(f, p), k);
+        assert!(
+            (l.z - (2.0 * k - 1.0)).abs() < 1e-6,
+            "the phase angle is {}",
+            l.z
+        );
+        assert!((l.length() - 1.0).abs() < 1e-5, "the light is {l}");
+        assert!(
+            lit_side(moon, l).dot(sun) > 0.0,
+            "the crescent {when} is lit from away from the sun"
+        );
+    }
+}
+
+/// The sun the moon is lit by keeps to the day's arc, which is the sun's
+/// own path by day, and it is the sky's sun at the sunset a waxing moon
+/// follows and the sunrise a waning one leads.
+#[test]
+fn the_moon_is_lit_by_the_day_arc() {
+    for i in 0..=16 {
+        let f = DAY_PORTION * i as f32 / 16.0;
+        assert!(
+            (day_arc(f) - to_sun(f)).length() < 1e-5,
+            "the arc leaves the sun at {f}"
+        );
+    }
+    let (dusk, dawn) = (night(0.0), night(1.0));
+    for p in [0.1, 0.25, 0.4] {
+        let off = (lighting_sun(dusk, p) - to_sun(dusk)).length();
+        assert!(off < 1e-4, "the moon at {p} is lit {off} off the sunset");
+    }
+    for p in [0.6, 0.75, 0.9] {
+        let off = (lighting_sun(dawn, p) - to_sun(dawn)).length();
+        assert!(off < 1e-4, "the moon at {p} is lit {off} off the sunrise");
+    }
+}
+
+/// The angle the lit side faces on the disk, degrees: 0 right, 90 up.
+fn terminator_deg(f: f32, p: f32) -> f32 {
+    let l = sunlight_on_disk(toward(f, p), lighting_sun(f, p), lit_fraction(p));
+    l.y.atan2(l.x).to_degrees()
+}
+
+/// Through a whole night the lit side of a moon from first quarter to last
+/// barely turns. Facing the sun's own night position it swung through 130°
+/// in a couple of minutes, since that sun sweeps half the sky's bearing
+/// under the world in a night, passing nearly behind the moon.
+#[test]
+fn the_terminator_holds_still_through_a_night() {
+    // A night is this much of the month (`moon_phase` runs on with it).
+    let month_per_night = (1.0 - DAY_PORTION) / MOON_DAYS as f32;
+    for p0 in [0.25, 0.4, 0.6, 0.75] {
+        let start = terminator_deg(night(0.0), p0);
+        let mut worst = 0.0f32;
+        for i in 0..=40 {
+            let k = i as f32 / 40.0;
+            let (f, p) = (night(k), p0 + k * month_per_night);
+            assert!(above(toward(f, p)) > 0.99, "the moon at {p} is down at {f}");
+            let turn = (terminator_deg(f, p) - start + 540.0).rem_euclid(360.0) - 180.0;
+            worst = worst.max(turn.abs());
+        }
+        assert!(
+            worst < 30.0,
+            "the moon at {p0} turns its lit side {worst}° in a night"
+        );
+    }
 }
 
 fn app() -> App {

@@ -39,11 +39,6 @@ struct Cloud {
     halo: vec4<f32>,
     // xyz the moonlit scatter at the moon; w unused.
     scatter: vec4<f32>,
-    // xyz the moon's disk (`sky::MOON_RGB` by the night and its lit
-    // fraction); w unused.
-    disk_rgb: vec4<f32>,
-    // x the disk's inner cosine, y its outer; zw unused.
-    disk: vec4<f32>,
     // x altitude over noise scale; y the horizon cutoff; z the fade above
     // it; w the flat deck's fine detail amplitude.
     shape: vec4<f32>,
@@ -309,14 +304,14 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let fs0 = textureSampleGrad(field_tex, field_samp, qs * cl.drift.z + cl.drift.w, gx, gy).r;
 
     // Behind the cloud: nothing (the atmosphere paints the sky) but the
-    // moon's soft disk and halo, which it does not draw. `moon.wgsl` lays
-    // the sharp disk over this one.
+    // moon's halo, which it does not draw. The disk is `moon.wgsl`'s, added
+    // over this with its phase: a round one here would show through a
+    // crescent's dark side.
     var sky = vec3(0.0);
     let cm = dot(d, cl.moon.xyz);
     if d.y > 0.0 && cm > cl.moon.w {
         let k = (cm - cl.moon.w) / (1.0 - cl.moon.w);
-        let disk = clamp((cm - cl.disk.y) / (cl.disk.x - cl.disk.y), 0.0, 1.0);
-        sky += cl.disk_rgb.rgb * disk + cl.halo.rgb * k * k;
+        sky += cl.halo.rgb * k * k;
     }
     let s = max((cm - cl.halo.w) / (1.0 - cl.halo.w), 0.0);
 

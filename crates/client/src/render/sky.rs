@@ -690,6 +690,8 @@ pub struct ComposeParams {
     pub moon_lit: f32,
     /// What the moon gives the night, `0..=1` (`WeatherNow::moonlight`).
     pub moonlight: f32,
+    /// Toward the sun the moon is lit by, unit (`moon::lighting_sun`).
+    pub moon_sun: Vec3,
 }
 
 impl ComposeParams {
@@ -708,6 +710,7 @@ impl ComposeParams {
             backdrop,
             moon_lit: 1.0,
             moonlight: 1.0,
+            moon_sun: super::rig::to_sun(CAPTURE_DAY_FRAC),
         }
     }
 
@@ -725,6 +728,7 @@ impl ComposeParams {
             backdrop: BAKE_BACKDROP,
             moon_lit: super::moon::lit_fraction(w.moon_phase),
             moonlight: w.moonlight,
+            moon_sun: w.moon_sun,
         }
     }
 }
@@ -1014,9 +1018,9 @@ pub fn compose_range(
                 let disk = ((cm - MOON_COS_OUT) / (MOON_COS_IN - MOON_COS_OUT)).clamp(0.0, 1.0);
                 // The sea reflects a crescent as a dimmer blob, not as a
                 // crescent: a reflection through waves wants nothing sharper.
+                // Its light while it is up, so a set moon leaves none.
                 for c in 0..3 {
-                    sky[c] += (MOON_RGB[c] * disk * p.moon_lit + HALO_RGB[c] * h * h * p.moonlight)
-                        * p.night;
+                    sky[c] += (MOON_RGB[c] * disk + HALO_RGB[c] * h * h) * p.moonlight * p.night;
                 }
             }
         }
