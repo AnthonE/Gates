@@ -177,12 +177,19 @@ pub fn resolve(
         Some(w) => {
             let cols = core.pieces.cols();
             let at = sim_core::reach::Target::standing(w.seed, &w.haven, cols, rec, arch);
-            sim_core::reach::clear_from(w.seed, &w.haven, cols, (eye[0], eye[1], eye[2]), y, at)
+            let eye = (eye[0], eye[1], eye[2]);
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, core.card_doors, eye, y, at)
         }
         None => true,
     };
     // And for a thing lying where it fell: a bag, a sleeper, a loose stack.
-    let lying = lying_test(world.as_deref(), core.pieces.cols(), eye, y);
+    let lying = lying_test(
+        world.as_deref(),
+        core.pieces.cols(),
+        core.card_doors,
+        eye,
+        y,
+    );
     let mut aim = Aim::new(x, z, fx, fz);
     if world.is_some() {
         aim.sight = Some(interact::Sight {
@@ -282,6 +289,7 @@ pub fn resolve(
                         crouched,
                     },
                     &mut island,
+                    shadows.cols,
                 );
                 if open.occupant != 0 {
                     aimed.0 = interact::Pick {
@@ -346,7 +354,13 @@ pub fn resolve(
     aimed.0.butcher =
         aimed.0.verb == Verb::Bag && swung.0.carcass.is_some() && swung.0.bag == aimed.0.handle;
     // Again, now the island's mutable hold on the core is over.
-    let lying = lying_test(world.as_deref(), core.pieces.cols(), eye, y);
+    let lying = lying_test(
+        world.as_deref(),
+        core.pieces.cols(),
+        core.card_doors,
+        eye,
+        y,
+    );
     if !core.wounded && !core.dead {
         let help = interact::resolve_assist(
             SwingAim {
@@ -1691,6 +1705,7 @@ pub fn hearth_close(
 fn lying_test<'a>(
     world: Option<&'a crate::render::WorldId>,
     cols: &'a sim_core::collide::ColIndex,
+    doors: u32,
     eye: [f32; 3],
     feet: f32,
 ) -> impl Fn((i32, i32, i32), [i8; 3]) -> bool + 'a {
@@ -1701,7 +1716,8 @@ fn lying_test<'a>(
             } else {
                 sim_core::reach::Target::stuck(q, stuck)
             };
-            sim_core::reach::clear_from(w.seed, &w.haven, cols, (eye[0], eye[1], eye[2]), feet, at)
+            let eye = (eye[0], eye[1], eye[2]);
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, doors, eye, feet, at)
         }
         None => true,
     }

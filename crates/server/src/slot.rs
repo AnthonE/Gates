@@ -272,8 +272,10 @@ pub struct Connect {
     pub name: protocol::Name,
     /// What the platform last said about this wallet, when it said it inside
     /// the read cooldown (`net.rs` `PlatformReads`): stated WITH the join, so
-    /// it can never reach the sim before the body it is about. Empty ⇒ a read
-    /// was started (or none applies) and lands on the skins/faces rings.
+    /// it can never reach the sim before the body it is about. A guest's
+    /// skins are the config's, said here too. Empty ⇒ nothing remembered
+    /// applies: a read was started, is still out, or is owed for when the
+    /// cooldown has run, and lands on the skins/faces rings.
     pub said: Said,
     pub link: Link,
 }

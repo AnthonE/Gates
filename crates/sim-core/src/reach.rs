@@ -48,21 +48,29 @@ const HAND_SAMPLES: usize = 48;
 /// The eye a hand reaches from, metres: the body plus its stance's eye — the
 /// origin a swing and a shot use (`melee::ray`).
 pub fn eye(p: &Player) -> (f32, f32, f32) {
+    eye_of(&p.body, p.crouched())
+}
+
+/// [`eye`] for a bare body and its stance: what a client or an agent asks
+/// from its predicted body, so its prompt and the shard's verb agree.
+pub fn eye_of(b: &crate::movement::Body, crouched: bool) -> (f32, f32, f32) {
     (
-        p.body.qx as f32 * POS_XZ_Q,
-        p.body.qy as f32 * POS_Y_Q + crate::ranged::eye_mm(p.crouched()) as f32 / MM_PER_M,
-        p.body.qz as f32 * POS_XZ_Q,
+        b.qx as f32 * POS_XZ_Q,
+        b.qy as f32 * POS_Y_Q + crate::ranged::eye_mm(crouched) as f32 / MM_PER_M,
+        b.qz as f32 * POS_XZ_Q,
     )
 }
 
 /// Nothing built between `from` and `to` (metres): walls, shut doors, window
-/// and frame rims, floors and roofs, and the ziggurat's and landmarks' stone.
+/// and frame rims, floors and roofs, and the ziggurat's and landmarks' stone,
+/// its card doors shut unless `doors` has their bit (`monument::open_bits`).
 /// The thing reached for, other furniture, terrain and bodies never block a
 /// hand.
 pub fn sight(
     seed: u64,
     haven: &Haven,
     cols: &ColIndex,
+    doors: u32,
     from: (f32, f32, f32),
     to: (f32, f32, f32),
 ) -> bool {
@@ -85,9 +93,10 @@ pub fn sight(
         // landmark, so near them that walk is empty — a sanctum crate opened
         // from the ledge outside its wall. A point test (feet a step below
         // it, a step tall), so a floor slab blocks as surely as a wall. Card
-        // doors read shut: a hand does not reach through a card doorway.
+        // doors as they stand now (`doors`, `monument::open_bits`): a shut
+        // one stops a hand, an open one is a doorway a bag can lie in.
         let feet = y - STEP_UP;
-        if crate::monument::blocks(&haven.ziggurat, 0, x, z, feet, ARROW_R_M, STEP_UP)
+        if crate::monument::blocks(&haven.ziggurat, doors, x, z, feet, ARROW_R_M, STEP_UP)
             || (marks && crate::landmark::blocks(&haven.marks, x, z, feet, ARROW_R_M, STEP_UP))
         {
             return false;
@@ -210,16 +219,24 @@ impl Target {
             storey: true,
         }
     }
+
+    /// [`Self::world_cont`] for a scatter slot not yet opened: the record
+    /// `worldcont::open` would mint, so a prompt aims where the verb will.
+    pub fn scatter(s: &crate::terrain::Slot) -> Self {
+        Self::world_cont(crate::worldcont::stand_q(s.x, s.y, s.z), s.occupant)
+    }
 }
 
 /// Whether a hand with its eye at `eye` and its feet at `feet_y` reaches
 /// `t`: in plain sight of the eye, and within a storey of the feet when `t`
 /// stands on a floor. The planar distance is the caller's. The client asks this from its predicted body to
 /// offer `E` only where the shard would take it.
+#[allow(clippy::too_many_arguments)]
 pub fn clear_from(
     seed: u64,
     haven: &Haven,
     cols: &ColIndex,
+    doors: u32,
     eye: (f32, f32, f32),
     feet_y: f32,
     t: Target,
@@ -227,7 +244,7 @@ pub fn clear_from(
     if t.storey && crate::fmath::fabs(feet_y - t.base_y) > LOOT_REACH_DY_M {
         return false;
     }
-    sight(seed, haven, cols, eye, (t.x, t.base_y + t.mid, t.z))
+    sight(seed, haven, cols, doors, eye, (t.x, t.base_y + t.mid, t.z))
 }
 
 /// A player's feet, metres — what [`clear_from`] measures a storey from.
@@ -236,8 +253,8 @@ pub fn feet_y(p: &Player) -> f32 {
 }
 
 /// [`clear_from`] for a player as the sim has them.
-pub fn clear(seed: u64, haven: &Haven, cols: &ColIndex, p: &Player, t: Target) -> bool {
-    clear_from(seed, haven, cols, eye(p), feet_y(p), t)
+pub fn clear(seed: u64, haven: &Haven, cols: &ColIndex, doors: u32, p: &Player, t: Target) -> bool {
+    clear_from(seed, haven, cols, doors, eye(p), feet_y(p), t)
 }
 
 /// [`clear_from`] for entry `i` of the box store — a box, an oven, a research
@@ -248,6 +265,7 @@ pub fn clear_box(
     seed: u64,
     haven: &Haven,
     cols: &ColIndex,
+    doors: u32,
     content: &DeployContent,
     deploys: &Deploys,
     i: usize,
@@ -264,7 +282,7 @@ pub fn clear_box(
         return false;
     };
     let t = Target::standing(seed, haven, cols, rec, def.arch);
-    clear_from(seed, haven, cols, eye, feet_y, t)
+    clear_from(seed, haven, cols, doors, eye, feet_y, t)
 }
 
 /// The first of `cand` — `(key, index)` pairs, smallest key first and ties to

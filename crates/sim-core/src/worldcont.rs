@@ -324,6 +324,7 @@ impl WorldConts {
         scatter: &terrain::ScatterTable,
         haven: &terrain::Haven,
         cols: &crate::collide::ColIndex,
+        doors: u32,
         lc: &LootContent,
         gc: &GatherContent,
         tick: u64,
@@ -350,7 +351,7 @@ impl WorldConts {
         // every tick (`World::world_cont_reachable`), so the open can never
         // admit a hand the next tick's drip refuses.
         let at = crate::reach::Target::world_cont((qx, qy, qz), slot.occupant);
-        if !crate::reach::clear(seed, haven, cols, p, at) {
+        if !crate::reach::clear(seed, haven, cols, doors, p, at) {
             return None;
         }
 

@@ -1132,7 +1132,12 @@ impl<A: Copy> PlatformReads<A> {
             return true;
         }
         if self.recent.len() >= READ_MEMORY {
-            if let Some(i) = (0..self.recent.len()).min_by_key(|&i| self.recent[i].at) {
+            // The stalest idle one first: forgetting a wallet with a read
+            // out or owed would lose the read the join was promised.
+            let busy = |e: &LastRead<A>| e.out || e.owed;
+            if let Some(i) =
+                (0..self.recent.len()).min_by_key(|&i| (busy(&self.recent[i]), self.recent[i].at))
+            {
                 self.recent.swap_remove(i);
             }
         }
@@ -1368,8 +1373,18 @@ async fn accept_loop(
                 // `now` for `known` and `ask`, so "told" and "not read"
                 // always agree.
                 let now = Instant::now();
+                // A guest owns what the config says, which asks nobody
+                // (`skins::owned_of` with no wallet): said with the join too.
                 let said = crate::slot::Said {
-                    skins: done.key.and_then(|k| skin_reads.known(&k, now)),
+                    skins: match done.key {
+                        Some(k) => skin_reads.known(&k, now),
+                        None => {
+                            match crate::skins::owned_of(&facts.skins, None, &facts.skin_content) {
+                                crate::skins::Owned::Known(set) => Some(set),
+                                crate::skins::Owned::Unknown => None,
+                            }
+                        }
+                    },
                     face: done
                         .key
                         .filter(|_| faces_armed)
@@ -1388,7 +1403,7 @@ async fn accept_loop(
                 )
                 .await
                 {
-                    if said.skins.is_some() {
+                    if said.skins.is_some() && keys[slot].key.is_some() {
                         ShardStats::bump(&stats.skins_replayed);
                     }
                     if said.face.is_some() {
@@ -1396,16 +1411,13 @@ async fn accept_loop(
                     }
                     // The door's reads: what this player owns, before they
                     // reach a bench, and what they are called.
-                    match keys[slot].key {
-                        Some(k) => {
-                            if skin_reads.ask(&k, true, now) {
-                                read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
-                            }
-                            if faces_armed && face_reads.ask(&k, true, now) {
-                                read_face(slot, gen, k, &facts, &read_gate, &face_tx);
-                            }
+                    if let Some(k) = keys[slot].key {
+                        if skin_reads.ask(&k, true, now) {
+                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
                         }
-                        None => read_skins(slot, gen, None, &facts, &read_gate, &owned_tx),
+                        if faces_armed && face_reads.ask(&k, true, now) {
+                            read_face(slot, gen, k, &facts, &read_gate, &face_tx);
+                        }
                     }
                 }
             }

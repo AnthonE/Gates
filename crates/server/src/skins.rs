@@ -24,7 +24,8 @@
 //! Once when a player joins, and again when their client says it bought
 //! something (`ACT_SKINS_REFRESH`), at most once per [`REFRESH_COOLDOWN`]
 //! per wallet: a rejoin inside it is told the last answer and read again
-//! when it has run, so a reconnect loop costs no extra reads.
+//! when it has run, so a reconnect loop costs one read per wallet per
+//! cooldown, however often it rejoins.
 //! Not swept: every read of that route is a block-explorer call elo pays
 //! for (its `CLAUDE.md`: *the explorer door is METERED*), and a 100-player
 //! sweep would spend that budget around the clock for purchases that happen

@@ -1620,19 +1620,23 @@ impl SwingAim {
     /// (`ranged::eye_mm`) over the feet, along the look — `melee::ray`,
     /// from a body quantized the way the server holds one.
     fn ray(&self, reach_m: f32) -> Ray {
-        let body = Body {
-            qx: quant_xz(self.x),
-            qy: quant_y(self.y),
-            qz: quant_xz(self.z),
-            ..Body::default()
-        };
         melee::ray(
-            &body,
+            &self.body(),
             self.crouched,
             self.yaw,
             self.pitch,
             reach_m * MM_PER_M,
         )
+    }
+
+    /// The body this aim is cast from, quantized the way the server holds one.
+    fn body(&self) -> Body {
+        Body {
+            qx: quant_xz(self.x),
+            qy: quant_y(self.y),
+            qz: quant_xz(self.z),
+            ..Body::default()
+        }
     }
 }
 
@@ -2033,7 +2037,8 @@ fn openable(o: Occupant) -> bool {
 ///
 /// ⚠ **It is narrower than the verb it prompts for, and it always was.**
 /// `worldcont::open` asks for planar proximity inside `LOOT_REACH_M`, the
-/// same storey and a clear line (`reach.rs`) — no aim at any distance — so the prompt has been the
+/// same storey and a clear line (`reach.rs`) — no aim at any distance. This
+/// asks the same storey and line, and the ray on top, so the prompt has been the
 /// stricter of the two since it was a 30° cone, and a ray is stricter again:
 /// a crate is 0.68 m across and 0.8 m tall, so from a 1.6 m eye it wants the
 /// look dropped 44° at 1.5 m and 13° at 4 m. Whether stooping to open a
@@ -2041,13 +2046,28 @@ fn openable(o: Occupant) -> bool {
 /// unanswered (`NOW.md` §0ray item 6); padding the cast is the fix if it
 /// reads badly, and inventing the pad before anybody has looked would be
 /// inventing a knob.
-pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+pub fn resolve_open(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> SwingPick {
     let ray = at.ray(OPEN_REACH_M);
     let seed = island.seed;
-    match melee::occupant_cast(seed, &mut island.occupants(), &ray, openable) {
-        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
-        None => SwingPick::default(),
+    let Some(hit) = melee::occupant_cast(seed, &mut island.occupants(), &ray, openable) else {
+        return SwingPick::default();
+    };
+    // And the shard's hand (`worldcont::open`, `reach.rs`): the same storey
+    // and a clear line, so `E` is not offered on a crate through stone.
+    let body = at.body();
+    let reached = sim_core::reach::clear_from(
+        seed,
+        island.haven,
+        cols,
+        island.doors,
+        sim_core::reach::eye_of(&body, at.crouched),
+        body.qy as f32 * sim_core::movement::POS_Y_Q,
+        sim_core::reach::Target::scatter(&hit.slot),
+    );
+    if !reached {
+        return SwingPick::default();
     }
+    pick_of(at, hit.cx, hit.cz, hit.slot)
 }
 
 /// What `E` would PICK in the scatter — a standing berry bush or hemp — or

@@ -49,16 +49,16 @@ fn a_wall_between_the_eye_and_the_box_blocks_the_hand() {
     let mut walled = Box::new(ColIndex::new());
     walled.add(CX, CZ, 0, LOC_EDGE_ZLO, SHAPE_WALL, 0);
     assert!(
-        reach::sight(SEED, hv(SEED), &open, eye, boxed),
+        reach::sight(SEED, hv(SEED), &open, 0, eye, boxed),
         "open ground"
     );
     assert!(
-        !reach::sight(SEED, hv(SEED), &walled, eye, boxed),
+        !reach::sight(SEED, hv(SEED), &walled, 0, eye, boxed),
         "a hand reached through a wall"
     );
     // Inside the room, the wall behind the player is no obstacle.
     let inside = (x, base + 1.6, z_lo + 0.6);
-    assert!(reach::sight(SEED, hv(SEED), &walled, inside, boxed));
+    assert!(reach::sight(SEED, hv(SEED), &walled, 0, inside, boxed));
 }
 
 /// A floor between two storeys stops a hand reaching up through it.
@@ -71,9 +71,9 @@ fn a_floor_between_storeys_blocks_the_hand() {
     let bag = (x, upstairs + reach::LIFT_M, z);
     let mut floored = Box::new(ColIndex::new());
     floored.add(CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR, 0);
-    assert!(reach::sight(SEED, hv(SEED), &ColIndex::new(), eye, bag));
+    assert!(reach::sight(SEED, hv(SEED), &ColIndex::new(), 0, eye, bag));
     assert!(
-        !reach::sight(SEED, hv(SEED), &floored, eye, bag),
+        !reach::sight(SEED, hv(SEED), &floored, 0, eye, bag),
         "a hand reached through the floor above"
     );
 }
@@ -97,6 +97,7 @@ fn a_storey_up_is_out_of_reach_and_a_step_is_not() {
         SEED,
         hv(SEED),
         &open,
+        0,
         eye,
         feet,
         at(base + 1.0)
@@ -109,6 +110,7 @@ fn a_storey_up_is_out_of_reach_and_a_step_is_not() {
         SEED,
         hv(SEED),
         &open,
+        0,
         eye,
         feet,
         at(base + build::level_y(1))
@@ -117,6 +119,7 @@ fn a_storey_up_is_out_of_reach_and_a_step_is_not() {
         SEED,
         hv(SEED),
         &open,
+        0,
         eye,
         feet,
         at(base - build::level_y(1))
@@ -142,6 +145,7 @@ fn a_bag_left_hanging_where_a_floor_broke_is_reached_from_below() {
         SEED,
         hv(SEED),
         &ColIndex::new(),
+        0,
         eye,
         feet,
         hanging
@@ -152,6 +156,7 @@ fn a_bag_left_hanging_where_a_floor_broke_is_reached_from_below() {
         SEED,
         hv(SEED),
         &floored,
+        0,
         eye,
         feet,
         hanging
@@ -175,7 +180,7 @@ fn an_arrow_stuck_in_a_ceiling_is_reached_from_the_room_below() {
     );
     let t = Target::stuck(stuck, [0, 127, 0]);
     let eye = (x + 0.8, base + 1.6, z_lo + 1.5);
-    assert!(reach::clear_from(SEED, hv(SEED), &floored, eye, base, t));
+    assert!(reach::clear_from(SEED, hv(SEED), &floored, 0, eye, base, t));
 }
 
 /// A foundation laid over a bag lifts the hand's aim onto its top: the bag
@@ -202,6 +207,7 @@ fn a_foundation_laid_over_a_bag_lifts_the_aim_onto_it() {
         SEED,
         hv(SEED),
         &founded,
+        0,
         eye,
         t.base_y,
         t
@@ -250,13 +256,14 @@ fn the_ziggurat_stone_blocks_a_hand() {
     let crate_mid = at(-12.0, 15.4, -4.0);
     let open = ColIndex::new();
     assert!(
-        !reach::sight(seed, hv(seed), &open, at(-14.6, 16.6, -4.0), crate_mid),
+        !reach::sight(seed, hv(seed), &open, 0, at(-14.6, 16.6, -4.0), crate_mid),
         "a hand reached through the sanctum wall"
     );
     assert!(reach::sight(
         seed,
         hv(seed),
         &open,
+        0,
         at(-10.0, 16.6, -4.0),
         crate_mid
     ));
@@ -320,7 +327,7 @@ fn every_authored_crate_can_still_be_reached() {
                 let tall = sim_core::collide::CAPSULE_HEIGHT_M;
                 let walled = sim_core::monument::blocks(&h.ziggurat, 0, px, pz, s.y, r, tall)
                     || sim_core::landmark::blocks(&h.marks, px, pz, s.y, r, tall);
-                !walled && reach::clear_from(seed, h, &open, (px, s.y + 1.6, pz), s.y, t)
+                !walled && reach::clear_from(seed, h, &open, 0, (px, s.y + 1.6, pz), s.y, t)
             });
             assert!(
                 reached,
@@ -331,4 +338,36 @@ fn every_authored_crate_can_still_be_reached() {
         }
     }
     assert!(checked >= 8, "the ziggurat's crates at least ({checked})");
+}
+
+/// A card door counts as it stands now: a bag lying in the green room's
+/// doorway is reached while the door is open, and a player standing in the
+/// open doorway reaches past it; shut, the leaf is stone like the wall.
+#[test]
+fn a_card_doorway_is_stone_only_while_its_door_is_shut() {
+    let seed = 20_260_731;
+    let z = hv(seed).ziggurat;
+    assert!(z.live);
+    let at = |lx: f32, dy: f32, lz: f32| {
+        let (x, wz) = sim_core::kit::to_world(&z.placed(), lx, lz);
+        (x, z.floor_y + dy, wz)
+    };
+    let open = ColIndex::new();
+    let door_1 = 1 << 0;
+    let bag = at(0.0, reach::LIFT_M, 11.0);
+    let inside = at(0.0, 1.6, 8.5);
+    assert!(reach::sight(seed, hv(seed), &open, door_1, inside, bag));
+    assert!(
+        !reach::sight(seed, hv(seed), &open, 0, inside, bag),
+        "a shut leaf is in the way"
+    );
+    let in_the_doorway = at(0.0, 1.6, 11.0);
+    assert!(reach::sight(
+        seed,
+        hv(seed),
+        &open,
+        door_1,
+        in_the_doorway,
+        at(0.0, reach::LIFT_M, 9.0)
+    ));
 }
