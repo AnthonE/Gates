@@ -57,6 +57,13 @@ which the decoder would clip), lightly high-passed, otherwise whole.
 | `gather_0`–`2` | `Gather` | Kenney, *rpg-audio*: `Audio/dropLeather.ogg`; Kenney, *rpg-audio*: `Audio/cloth2.ogg`; Kenney, *rpg-audio*: `Audio/cloth3.ogg` |
 | `equip_0`–`2` | `Equip` | Kenney, *RPG Audio*: `Audio/handleSmallLeather.ogg`, `handleSmallLeather2.ogg`, `cloth4.ogg` |
 | `map_paper_0`–`1` | `MapPaper` | Kenney, *RPG Audio*: `Audio/bookFlip1.ogg` (its last flip, from 0.28 s), `bookFlip3.ogg` |
+| `ui_hover_0` | `UiHover` | Kenney, *UI Audio*: `Audio/rollover2.ogg` |
+| `inv_open_0`–`1` | `InvOpen` | Kenney, *RPG Audio*: `Audio/clothBelt.ogg`, `clothBelt2.ogg` |
+| `inv_close_0` | `InvClose` | Kenney, *RPG Audio*: `Audio/cloth1.ogg` |
+| `item_move_0`–`1` | `ItemMove` | Kenney, *RPG Audio*: `Audio/bookPlace1.ogg`, `bookPlace3.ogg` |
+| `item_drop_0` | `ItemDrop` | Kenney, *RPG Audio*: `Audio/beltHandle2.ogg` |
+| `craft_start_0`–`1` | `CraftStart` | Kenney, *RPG Audio*: `Audio/beltHandle1.ogg`, `metalClick.ogg` |
+| `map_pin_0` | `MapPin` | Kenney, *Interface Sounds*: `Audio/drop_002.ogg` |
 | `container_open_0`–`2` | `ContainerOpen` | Kenney, *RPG Audio*: `Audio/metalLatch.ogg` laid 60–70 ms ahead of `creak1.ogg`, `creak3.ogg` and `creak2.ogg` (−2 to −3 dB), one creak per take |
 
 ## `freesound/` — Freesound, cut here (2026-10-01)

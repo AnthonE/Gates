@@ -236,13 +236,34 @@ impl Hover {
 
 /// One hover handler for every screen. Runs wherever a menu is up; a button
 /// with no `Hover` is simply not repainted, which is what an inert row wants.
-pub fn hover(mut q: Query<(&Interaction, &Hover, &mut BackgroundColor), Changed<Interaction>>) {
-    for (interaction, h, mut bg) in q.iter_mut() {
-        *bg = BackgroundColor(match interaction {
-            Interaction::None => h.idle,
-            _ => h.over,
-        });
+///
+/// Three states, not two: a press is the lit colour pushed a shade down and
+/// the button sunk a hair ([`PRESS_SCALE`]), so the hand feels the click
+/// land before the screen answers it.
+pub fn hover(
+    mut q: Query<
+        (&Interaction, &Hover, &mut BackgroundColor, &mut UiTransform),
+        Changed<Interaction>,
+    >,
+) {
+    for (interaction, h, mut bg, mut xf) in q.iter_mut() {
+        let (want, scale) = match interaction {
+            Interaction::None => (h.idle, 1.0),
+            Interaction::Hovered => (h.over, 1.0),
+            Interaction::Pressed => (pressed(h.over), PRESS_SCALE),
+        };
+        *bg = BackgroundColor(want);
+        xf.scale = Vec2::splat(scale);
     }
+}
+
+/// How far a pressed button sinks.
+pub const PRESS_SCALE: f32 = 0.96;
+
+/// A lit colour, pressed: a fifth darker, same alpha.
+pub fn pressed(c: Color) -> Color {
+    let s = c.to_srgba();
+    Color::srgba(s.red * 0.8, s.green * 0.8, s.blue * 0.8, s.alpha)
 }
 
 /// A full-screen column: the root every menu screen hangs off.

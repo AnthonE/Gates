@@ -28,6 +28,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import zlib
 
 import numpy as np
 from PIL import Image
@@ -71,21 +72,21 @@ FLAME = ("#ffd35c", "#e0501c")
 BONE = ("#f6efdc", "#b8a782")
 PAINT = {
     "wood": dict(c=WOOD),
-    "cloth": dict(c=("#e2d3ae", "#a8936a")),
-    "animal_fat": dict(c=("#f6e7c1", "#c9a468")),
-    "charcoal": dict(c=("#767a84", "#27282d"), metal=True),
+    "cloth": dict(mat="cloth", c=("#e2d3ae", "#a8936a")),
+    "animal_fat": dict(mat="organic", c=("#f6e7c1", "#c9a468")),
+    "charcoal": dict(mat="stone", c=("#767a84", "#27282d")),
     "metal_fragments": dict(c=STEEL, metal=True),
-    "sulfur": dict(c=("#e4d9b0", "#a8946a"), holes="#f2dc3c"),
-    "gunpowder": dict(c=("#77777d", "#303036")),
+    "sulfur": dict(mat="cloth", c=("#e4d9b0", "#a8946a"), holes="#f2dc3c"),
+    "gunpowder": dict(mat="powder", c=("#77777d", "#303036")),
     "low_grade_fuel": dict(c=("#e8563c", "#98281a"), metal=True),
     "gears": dict(c=STEEL, metal=True),
-    "rope": dict(c=("#dcbc80", "#94703c")),
-    "tarp": dict(c=("#8ea865", "#4b6232")),
+    "rope": dict(mat="cloth", c=("#dcbc80", "#94703c")),
+    "tarp": dict(mat="cloth", c=("#8ea865", "#4b6232")),
     "junk": dict(c=("#c5cad1", "#6b727c"), metal=True),
     # Rust's components (2026-10-13): bare metal unless the part is painted.
     "metal_blade": dict(c=STEEL, metal=True),
     "empty_propane_tank": dict(c=("#d9dde2", "#6a737e"), metal=True),
-    "sewing_kit": dict(c=("#d9a86c", "#8a5a2a")),
+    "sewing_kit": dict(mat="leather", c=("#d9a86c", "#8a5a2a")),
     "metal_spring": dict(c=STEEL, metal=True),
     "sheet_metal": dict(c=DARK_STEEL, metal=True),
     "metal_pipe": dict(c=DARK_STEEL, metal=True),
@@ -93,9 +94,9 @@ PAINT = {
     "semi_automatic_body": dict(c=DARK_STEEL, metal=True),
     "smg_body": dict(c=DARK_STEEL, metal=True),
     "rifle_body": dict(c=DARK_STEEL, metal=True),
-    "tech_trash": dict(c=("#6cae64", "#2c5e2a"), metal=True),
+    "tech_trash": dict(mat="plain", c=("#6cae64", "#2c5e2a"), metal=True),
     "electric_fuse": dict(c=("#e2c060", "#86641e"), metal=True),
-    "blueprint": dict(c=("#7cb4f0", "#2d5c9c")),
+    "blueprint": dict(mat="plain", c=("#7cb4f0", "#2d5c9c")),
     # Triple T's bat: honey-orange varnish, not the pale tool wood.
     "bat": dict(c=("#e8a25a", "#8f4512")),
     "torch": dict(c=WOOD, zone=dict(c=FLAME, box=(0.5, 0.0, 1.0, 0.45))),
@@ -107,8 +108,8 @@ PAINT = {
     "wooden_arrow": dict(c=WOOD),
     "bandage": dict(c=("#f7f2e8", "#c8bca4")),
     "fire_pit": dict(c=FLAME),
-    "waterskin": dict(c=("#b88a5c", "#6e4a2a")),
-    "full_waterskin": dict(c=("#6fb4e0", "#2f6a96")),
+    "waterskin": dict(mat="leather", c=("#b88a5c", "#6e4a2a")),
+    "full_waterskin": dict(mat="leather", c=("#6fb4e0", "#2f6a96")),
     "wooden_barricade": dict(c=WOOD),
     "workbench_2": dict(c=DARK_STEEL, metal=True),
     "workbench_3": dict(c=("#f0d488", "#9a7428"), metal=True),
@@ -127,15 +128,15 @@ PAINT = {
     "hammer": dict(
         c=WOOD, zone=dict(c=DARK_STEEL, thick=26, box=(0.0, 0.0, 1.0, 0.5)), metal=True
     ),
-    "burlap_hood": dict(c=("#d2b985", "#8b7044")),
-    "burlap_tunic": dict(c=("#d2b985", "#8b7044")),
+    "burlap_hood": dict(mat="cloth", c=("#d2b985", "#8b7044")),
+    "burlap_tunic": dict(mat="cloth", c=("#d2b985", "#8b7044")),
     "metal_arrow": dict(c=STEEL, metal=True),
     "high_velocity_arrow": dict(c=("#d4e6f4", "#55799a"), metal=True),
     "bone_arrow": dict(c=WOOD, zone=dict(c=BONE, box=(0.44, 0.44, 1.0, 1.0))),
-    "bone_fragments": dict(c=BONE),
-    "leather": dict(c=("#b07a4a", "#5e3a1e")),
-    "hide_poncho": dict(c=("#a8784c", "#5a3a20")),
-    "bone_helmet": dict(c=BONE),
+    "bone_fragments": dict(mat="bone", c=BONE),
+    "leather": dict(mat="leather", c=("#b07a4a", "#5e3a1e")),
+    "hide_poncho": dict(mat="leather", c=("#a8784c", "#5a3a20")),
+    "bone_helmet": dict(mat="bone", c=BONE),
     "fire_arrow": dict(c=FLAME),
     "crossbow": dict(c=WOOD),
     "revolver": dict(c=DARK_STEEL, metal=True),
@@ -148,9 +149,9 @@ PAINT = {
     "berries": dict(c=("#caa476", "#7c5a36"), holes="#c2385e"),
     "mushrooms": dict(c=("#ecd6ae", "#a37a4c")),
     "corn": dict(c=("#f6d751", "#b1861a")),
-    "corn_seed": dict(c=("#f2d27a", "#a9802a")),
-    "hemp_seed": dict(c=("#b9a77a", "#6c5c34")),
-    "planter_box": dict(c=("#86c45a", "#3f7a2a")),
+    "corn_seed": dict(mat="organic", c=("#f2d27a", "#a9802a")),
+    "hemp_seed": dict(mat="organic", c=("#b9a77a", "#6c5c34")),
+    "planter_box": dict(mat="plain", c=("#86c45a", "#3f7a2a")),
     "auto_turret": dict(c=DARK_STEEL, metal=True),
     "raw_meat": dict(c=("#e5776d", "#9d2f33"), holes="#f3d8cc"),
     "cooked_meat": dict(c=("#c98449", "#6c3a1a")),
@@ -220,8 +221,96 @@ def from_render(path, fill):
     return np.clip(rgb * RENDER_GAIN, 0.0, None), np.clip(resize(a, WORK), 0.0, 1.0)
 
 
-def paint(path, spec):
-    """A silhouette as (premultiplied linear RGB, alpha) at WORK."""
+# What a painted surface is made of, when the colours do not say: the grain,
+# the sheen and the texture a material carries. `mat=` on a PAINT row wins;
+# otherwise metal rows are metal and the WOOD pair is wood (`material`).
+MATS = {
+    # amp: albedo variation; spec: (power, amount); kind: the texture.
+    "plain": dict(amp=0.05, spec=(16.0, 0.14), kind="fbm"),
+    "wood": dict(amp=0.16, spec=(14.0, 0.10), kind="grain"),
+    "metal": dict(amp=0.045, spec=(34.0, 0.62), kind="brushed"),
+    "cloth": dict(amp=0.10, spec=(8.0, 0.04), kind="weave"),
+    "leather": dict(amp=0.10, spec=(18.0, 0.16), kind="fbm"),
+    "stone": dict(amp=0.16, spec=(12.0, 0.10), kind="speckle"),
+    "bone": dict(amp=0.08, spec=(16.0, 0.14), kind="fbm"),
+    "organic": dict(amp=0.10, spec=(22.0, 0.22), kind="fbm"),
+    "powder": dict(amp=0.20, spec=(8.0, 0.05), kind="speckle"),
+}
+
+
+def material(spec, pair=None):
+    """The MATS row for a PAINT row (or for its zone, given the zone's pair)."""
+    if "mat" in spec:
+        return spec["mat"]
+    pair = pair or spec["c"]
+    if spec.get("metal") or pair in (STEEL, DARK_STEEL):
+        return "metal"
+    if pair == WOOD:
+        return "wood"
+    if pair == STONE:
+        return "stone"
+    if pair == BONE:
+        return "bone"
+    return "plain"
+
+
+def principal_angle(mask):
+    """The angle (radians, image space) of the shape's long axis."""
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 2:
+        return 0.0
+    xs = xs - xs.mean()
+    ys = ys - ys.mean()
+    cov = np.cov(np.stack([xs, ys]))
+    w, v = np.linalg.eigh(cov)
+    ax = v[:, np.argmax(w)]
+    return float(np.arctan2(ax[1], ax[0]))
+
+
+def noise(rng, sigma, aniso=None):
+    """Smooth unit noise at WORK: white noise blurred by `sigma` px, or along
+    and across angle `aniso[0]` by `aniso[1:]` for a grain."""
+    n = rng.standard_normal((WORK, WORK))
+    if aniso is None:
+        n = ndimage.gaussian_filter(n, sigma, mode="wrap")
+    else:
+        ang, along, across = aniso
+        deg = np.degrees(ang)
+        n = ndimage.rotate(n, deg, reshape=False, order=1, mode="wrap")
+        n = ndimage.gaussian_filter(n, (across, along), mode="wrap")
+        n = ndimage.rotate(n, -deg, reshape=False, order=1, mode="wrap")
+    n -= n.mean()
+    return n / max(n.std(), 1e-9)
+
+
+def texture(kind, rng, angle):
+    """A zero-mean, roughly unit field of the material's surface."""
+    if kind == "grain":
+        streak = noise(rng, 0, (angle, WORK * 0.10, 1.2))
+        figure = noise(rng, WORK * 0.03)
+        return np.tanh(streak * 0.9 + figure * 0.4)
+    if kind == "brushed":
+        return 0.6 * noise(rng, 0, (angle, WORK * 0.06, 1.2)) + 0.4 * noise(rng, WORK * 0.02)
+    if kind == "weave":
+        yy, xx = np.mgrid[0:WORK, 0:WORK].astype(np.float64)
+        p = WORK / 40.0
+        w = np.sin(xx * np.pi / p) * np.sin(yy * np.pi / p)
+        return 0.55 * w + 0.45 * noise(rng, WORK * 0.012)
+    if kind == "speckle":
+        return 0.55 * noise(rng, 1.1) + 0.45 * noise(rng, WORK * 0.02)
+    return 0.6 * noise(rng, WORK * 0.012) + 0.4 * noise(rng, WORK * 0.05)
+
+
+def paint(path, spec, stem=""):
+    """A silhouette as (premultiplied linear RGB, alpha) at WORK.
+
+    Lit as a solid rather than a flat badge: the shape is a rounded slab (a
+    quarter-round edge, a broad dome over its middle), lit by the renders'
+    key light, a sky from above and a ground bounce from below, darkened in
+    its creases, and its surface carries its material's grain or sheen.
+    That is what keeps a painted item in the same family as the renders
+    beside it in a cell.
+    """
     m = np.asarray(Image.open(path).convert("RGBA"), dtype=np.float64)[..., 3] / 255
     alpha = np.clip(resize(m, WORK), 0.0, 1.0)
     inside = alpha > 0.5
@@ -236,30 +325,53 @@ def paint(path, spec):
         holes[:] = False
     solid = inside | holes
 
-    # A height field that rises over the first few pixels inside every edge,
-    # holes included, so the painted edges bevel the way a lit object's do.
+    # The height: a quarter-round over the first `edge_r` px inside every
+    # edge, holes included, plus a broad dome so a wide shape is lit across
+    # its middle and not only at its rim.
     d = ndimage.distance_transform_edt(inside)
-    bevel = WORK * 0.028
-    h = np.clip(d / bevel, 0.0, 1.0)
-    h = h * h * (3 - 2 * h)
-    h = np.where(holes, 0.35, h)
-    h = ndimage.gaussian_filter(h, WORK / 340)
-    gy, gx = np.gradient(h)
-    k = bevel * 1.6
-    nrm = np.stack([-gx * k, -gy * k, np.ones_like(h)], axis=-1)
-    nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
-    diff = np.clip(nrm @ LIGHT, 0.0, 1.0)
-    spec_pow, spec_amt = (28.0, 0.55) if spec.get("metal") else (14.0, 0.18)
-    shine = np.clip(nrm @ HALF, 0.0, 1.0) ** spec_pow * spec_amt
+    edge_r = WORK * 0.035
+    e = np.clip(d / edge_r, 0.0, 1.0)
+    rounded = np.sqrt(np.clip(1.0 - (1.0 - e) ** 2, 0.0, 1.0))
+    dome = ndimage.gaussian_filter(inside.astype(np.float64), WORK * 0.06)
+    h = rounded * edge_r * 0.9 + dome * edge_r * 1.4
+    h = np.where(holes, edge_r * 0.25, h)
+    h = ndimage.gaussian_filter(h, WORK / 400)
 
-    # The colour: a top-to-bottom gradient over the shape's own extent, so a
-    # short item and a tall one get the whole ramp.
+    rng = np.random.default_rng(zlib.crc32(stem.encode()))
+    angle = principal_angle(inside)
+    mats = {}
+
+    def surface(mat):
+        if mat not in mats:
+            mats[mat] = texture(MATS[mat]["kind"], rng, angle)
+        return mats[mat]
+
+    # A little bump from the base material's texture, so grain catches light.
+    base_mat = material(spec)
+    h = h + surface(base_mat) * WORK * 0.0012
+    gy, gx = np.gradient(h)
+    nrm = np.stack([-gx, -gy, np.ones_like(h)], axis=-1)
+    nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
+
+    # The colour: the item's pair as a gentle top-to-bottom ramp over its own
+    # extent (the light now carries the form, so the ramp is half what it
+    # was), pulled a touch toward grey — Rust's palette is muted.
     rows = np.where(solid.any(axis=1))[0]
     y0, y1 = (rows[0], rows[-1]) if len(rows) else (0, WORK - 1)
     yy = np.clip((np.arange(WORK, dtype=np.float64) - y0) / max(1, y1 - y0), 0, 1)
-    t = np.repeat(yy[:, None], WORK, axis=1)[..., None]
-    top, bot = (hexc(x) for x in spec["c"])
-    col = top * (1 - t) + bot * t
+    t = np.repeat(yy[:, None], WORK, axis=1)[..., None] * 0.6 + 0.2
+
+    def albedo(pair, mat):
+        top, bot = (hexc(x) for x in pair)
+        c = top * (1 - t) + bot * t
+        lum = (c * np.array([0.2126, 0.7152, 0.0722])).sum(axis=-1, keepdims=True)
+        c = c * 0.86 + lum * 0.14
+        return c * (1.0 + MATS[mat]["amp"] * surface(mat))[..., None]
+
+    col = albedo(spec["c"], base_mat)
+    sp_pow, sp_amt = MATS[base_mat]["spec"]
+    sp_pow = np.full(h.shape, sp_pow)
+    sp_amt = np.full(h.shape, sp_amt)
     if "zone" in spec:
         z = spec["zone"]
         zm = solid.copy()
@@ -277,29 +389,42 @@ def paint(path, spec):
             xs = (np.arange(WORK) - x0) / max(1, x1 - x0)
             ys = (np.arange(WORK) - y0) / max(1, y1 - y0)
             zm &= ((ys >= by0) & (ys <= by1))[:, None] & ((xs >= bx0) & (xs <= bx1))[None, :]
-        zm = ndimage.gaussian_filter(zm.astype(np.float64), WORK / 256)[..., None]
-        ztop, zbot = (hexc(x) for x in z["c"])
-        col = col * (1 - zm) + (ztop * (1 - t) + zbot * t) * zm
+        zm = ndimage.gaussian_filter(zm.astype(np.float64), WORK / 256)
+        zmat = material(z, z["c"])
+        col = col * (1 - zm[..., None]) + albedo(z["c"], zmat) * zm[..., None]
+        zp, za = MATS[zmat]["spec"]
+        sp_pow = sp_pow * (1 - zm) + zp * zm
+        sp_amt = sp_amt * (1 - zm) + za * zm
     if spec.get("holes") is not None:
         hc = hexc(spec["holes"])
         hm = ndimage.gaussian_filter(holes.astype(np.float64), WORK / 400)[..., None]
         col = col * (1 - hm) + hc * hm
         alpha = np.maximum(alpha, np.clip(ndimage.gaussian_filter(holes * 1.0, 1.0), 0, 1))
 
-    # The form: ambient plus the key, then the highlight on top. A darker
-    # rim inside the edge reads as the object's own thickness at 34 px.
-    shade = 0.52 + 0.62 * diff[..., None]
-    rim = np.clip(d / (bevel * 0.35), 0.0, 1.0)
+    # The light: the key from the upper left, a sky from above and a warm
+    # bounce from below, then the highlight. The crease shadow is the slab's
+    # own coverage, blurred: narrow necks and inner corners get less sky.
+    key = np.clip(nrm @ LIGHT, 0.0, 1.0)
+    sky = 0.5 + 0.5 * (-nrm[..., 1])
+    cavity = ndimage.gaussian_filter(solid.astype(np.float64), WORK * 0.02)
+    cavity = np.clip(0.55 + 0.6 * cavity, 0.0, 1.0)
+    light = (
+        np.array([1.00, 0.97, 0.92]) * (0.95 * key)[..., None]
+        + np.array([0.62, 0.68, 0.78]) * (0.42 * sky)[..., None]
+        + np.array([0.40, 0.33, 0.27]) * (0.18 * (1 - sky))[..., None]
+    ) * cavity[..., None]
+    shine = np.clip(nrm @ HALF, 0.0, 1.0) ** sp_pow * sp_amt
+    # The thickness at the rim, a hair darker: an object's edge turns away.
+    rim = np.clip(d / (edge_r * 0.25), 0.0, 1.0)
     rim = np.where(holes, 1.0, rim)
-    shade *= (0.55 + 0.45 * rim)[..., None]
-    rgb = col * shade + shine[..., None]
+    rgb = col * light * (0.72 + 0.28 * rim)[..., None] + shine[..., None]
     return rgb * alpha[..., None], alpha
 
 
 # Rust's icons carry a solid near-black outline (~#161c22, 4-9 px at 512),
 # which is what keeps a dark item legible on a dark slot. Ours is 5 px at
 # WORK, about 1.25 at the shipped size.
-OUTLINE_PX = 5
+OUTLINE_PX = 4
 INK = "#161c22"
 
 
@@ -346,25 +471,37 @@ def shrink(path):
 
 
 def main():
-    only = set(sys.argv[1:])
-    stems = sorted(set(PAINT) | {p.stem for p in RENDERS.glob("*.png")} | set(RENDER_OF))
+    args = sys.argv[1:]
+    # `--out DIR` and `--renders DIR` point the run elsewhere, for a
+    # contact sheet before anything lands in `assets/`.
+    out_dir, renders = OUT, RENDERS
+    for flag in ("--out", "--renders"):
+        if flag in args:
+            i = args.index(flag)
+            if flag == "--out":
+                out_dir = pathlib.Path(args[i + 1])
+            else:
+                renders = pathlib.Path(args[i + 1])
+            del args[i : i + 2]
+    only = set(args)
+    stems = sorted(set(PAINT) | {p.stem for p in renders.glob("*.png")} | set(RENDER_OF))
     todo = [s for s in stems if not only or s in only]
     missing = sorted(only - set(stems))
     if missing:
         sys.exit(f"no source for: {missing}")
-    OUT.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     for stem in todo:
-        render = RENDERS / f"{RENDER_OF.get(stem, stem)}.png"
+        render = renders / f"{RENDER_OF.get(stem, stem)}.png"
         mask = MASKS / f"{stem}.png"
         if render.is_file():
             premul, alpha = from_render(render, FILL.get(stem, 0.90))
             how = "render"
         elif mask.is_file():
-            premul, alpha = paint(mask, PAINT[stem])
+            premul, alpha = paint(mask, PAINT[stem], stem)
             how = "painted"
         else:
             sys.exit(f"{stem}: neither {render} nor {mask} exists")
-        out = OUT / f"{stem}.png"
+        out = out_dir / f"{stem}.png"
         finish(premul, alpha).save(out, optimize=True)
         shrink(out)
         print(f"{stem:<20} {how}")

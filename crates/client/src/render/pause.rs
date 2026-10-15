@@ -162,7 +162,7 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
             PauseRoot,
             // Not opaque: the world is still there and the player has not
             // left it. A dim wash is what says "paused" rather than "loading".
-            ui::screen(Color::srgba(0.02, 0.02, 0.025, 0.86)),
+            ui::screen(Color::srgba(0.055, 0.047, 0.039, 0.86)),
         ))
         .with_children(|root| {
             // The same mark the splash, the menu and the loading screen
