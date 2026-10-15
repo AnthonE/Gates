@@ -205,6 +205,10 @@ pub fn keys(
     reports: Option<Res<super::report::Reports>>,
     (mouse, binds): (Res<ButtonInput<MouseButton>>, Res<super::binds::Binds>),
     pad: Option<Res<super::verbs::Pad>>,
+    mut voice: (
+        Option<ResMut<super::voice::Mutes>>,
+        Option<Res<super::voice::VoiceHud>>,
+    ),
 ) {
     // The report composer is a text field too, and it is the one that draws on
     // every screen — so it can be up here, where a panel cannot. Same rule as
@@ -247,7 +251,17 @@ pub fn keys(
     }
 
     if keyboard.just_pressed(KeyCode::Enter) {
-        send(&mut chat, &net, &mut toast);
+        // `/mute` and `/unmute` are this client's (`render/voice.rs`): never
+        // sent, so nobody learns who muted them.
+        let line = chat.composer.text.clone();
+        let reply = match (voice.0.as_deref_mut(), voice.1.as_deref()) {
+            (Some(mutes), Some(hud)) => super::voice::command(&line, mutes, &net, hud),
+            _ => None,
+        };
+        match reply {
+            Some(reply) => toast.say(reply),
+            None => send(&mut chat, &net, &mut toast),
+        }
         close(&mut chat, &mut cursor);
         keyboard.clear_just_pressed(KeyCode::Enter);
         chars.clear();

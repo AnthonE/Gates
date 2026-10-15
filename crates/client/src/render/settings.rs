@@ -127,6 +127,11 @@ pub struct Settings {
     /// The reference's `audio.musicvolume`, which is the one bus that does
     /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
     pub vol_music: f32,
+    /// Players' voices (proximity voice chat, `render/voice.rs`), 0..1.
+    pub vol_voice: f32,
+    /// Walls, floors and shut doors muffle what is behind them
+    /// (`ui::occlusion`). On, as in the reference.
+    pub occlusion: bool,
     /// How hard the camera shakes and kicks (`render/shake.rs`), 0..1.
     /// Zero turns it off for players it makes queasy.
     pub shake: f32,
@@ -222,6 +227,8 @@ impl Default for Settings {
             // master and game ship at 1. A score at parity with footsteps
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
+            vol_voice: 1.0,
+            occlusion: true,
             shake: 1.0,
             cat: 0,
             back: Screen::Menu,
@@ -261,6 +268,8 @@ pub enum Knob {
     VolGame,
     VolAmbience,
     VolMusic,
+    VolVoice,
+    Occlusion,
     Shake,
 }
 
@@ -336,6 +345,7 @@ impl Settings {
                     step_ladder(&quality::TREE_LOD_LADDER, self.gfx.tree_lod_swap_m, delta);
             }
             Knob::Vsync => self.vsync = !self.vsync,
+            Knob::Occlusion => self.occlusion = !self.occlusion,
             Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
             // **Turning presence off takes sharing with it**, and that is the
@@ -375,6 +385,7 @@ impl Settings {
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
             Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
+            Knob::VolVoice => self.vol_voice = step_vol(self.vol_voice, delta),
             Knob::Shake => self.shake = step_vol(self.shake, delta),
         }
         self.dirty = true;
@@ -433,6 +444,8 @@ impl Settings {
                 Knob::VolAmbience => self.vol_ambience = d.vol_ambience,
                 Knob::VolMusic => self.vol_music = d.vol_music,
                 Knob::Shake => self.shake = d.shake,
+                Knob::VolVoice => self.vol_voice = d.vol_voice,
+                Knob::Occlusion => self.occlusion = d.occlusion,
             }
         }
         self.dirty = true;
@@ -469,6 +482,7 @@ impl Settings {
             Knob::RenderScale => format!("{}%", self.gfx.render_scale),
             Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
             Knob::Vsync => on_off(self.vsync),
+            Knob::Occlusion => on_off(self.occlusion),
             Knob::MaxFps => {
                 if self.max_fps == 0 {
                     "UNCAPPED".to_string()
@@ -486,6 +500,7 @@ impl Settings {
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
             Knob::VolMusic => pct(self.vol_music),
+            Knob::VolVoice => pct(self.vol_voice),
             Knob::Shake => pct(self.shake),
         }
     }
@@ -506,6 +521,8 @@ impl Settings {
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
+            vol_voice: self.vol_voice,
+            occlusion: self.occlusion,
             shake: self.shake,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
@@ -568,6 +585,8 @@ impl Settings {
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            vol_voice: step(p.vol_voice, VOL_STEP).clamp(0.0, 1.0),
+            occlusion: p.occlusion,
             shake: step(p.shake, VOL_STEP).clamp(0.0, 1.0),
             discord_presence: p.discord_presence,
             // **Sanitized, not just loaded.** A hand-edited file could carry
@@ -993,14 +1012,12 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
             Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
             Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
-            // A fact rather than a dead slider, which is the rule this
-            // screen already obeys: a category with nothing behind it says
-            // so. There is no voice chat, so there is no voice slider.
-            // **There is also only ONE music slider** where the reference
+            Row::Number("VOICE VOLUME", Knob::VolVoice, "players talking nearby"),
+            // **There is only ONE music slider** where the reference
             // has two - it ships `audio.musicvolume` and
             // `audio.menumusicvolume` separately, and ours is one number for
             // both until somebody wants the menu louder than the world.
-            Row::Fact("SOUND OCCLUSION", "Off - walls do not muffle sound yet"),
+            Row::Toggle("SOUND OCCLUSION", Knob::Occlusion),
         ],
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),

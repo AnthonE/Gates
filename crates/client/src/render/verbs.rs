@@ -172,12 +172,26 @@ pub fn resolve(
         z,
     ];
     let dir = [fx * ch, sv, fz * ch];
+    // The shard's hand test (`sim_core::reach`) from the predicted body, so
+    // a box behind a wall or on another storey is not offered.
+    let reach = |rec: &sim_core::deploy::DeployRec, arch: u8| match world.as_deref() {
+        Some(w) => {
+            let cols = core.pieces.cols();
+            let at = sim_core::reach::Target::standing(w.seed, &w.haven, cols, rec, arch);
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, (eye[0], eye[1], eye[2]), y, at)
+        }
+        None => true,
+    };
+    // And for a thing lying where it fell: a bag, a sleeper, a loose stack.
+    let lying = lying_test(world.as_deref(), core.pieces.cols(), eye, y);
     let mut aim = Aim::new(x, z, fx, fz);
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
             dir,
             span: &span,
+            reach: Some(&reach),
+            lying: Some(&lying),
         });
     }
     aimed.0 = interact::resolve(
@@ -187,6 +201,8 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
+    // Its hold on the core ends here; the island below takes the core mutably.
+    drop(lying);
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
@@ -330,6 +346,8 @@ pub fn resolve(
     // line names the button instead of teaching the verb (`Pick::butcher`).
     aimed.0.butcher =
         aimed.0.verb == Verb::Bag && swung.0.carcass.is_some() && swung.0.bag == aimed.0.handle;
+    // Again, now the island's mutable hold on the core is over.
+    let lying = lying_test(world.as_deref(), core.pieces.cols(), eye, y);
     if !core.wounded && !core.dead {
         let help = interact::resolve_assist(
             SwingAim {
@@ -358,7 +376,14 @@ pub fn resolve(
             core.player_id,
             &core.view.entities,
         );
-        if !sleeper.is_none() && (aimed.0.is_none() || sleeper.d2 < aimed.0.d2) {
+        // A sleeper's pack is not offered where the shard would refuse it.
+        let reachable = core
+            .view
+            .entities
+            .iter()
+            .find(|&&(id, _)| id == sleeper.handle)
+            .is_none_or(|&(_, e)| lying((e.qx, e.qy, e.qz), [0; 3]));
+        if reachable && !sleeper.is_none() && (aimed.0.is_none() || sleeper.d2 < aimed.0.d2) {
             aimed.0 = sleeper;
         }
     }
@@ -411,7 +436,7 @@ pub fn resolve(
     // A stack the crosshair is on beats anything merely nearby; a stack
     // merely nearby is only a fallback, so a box you look at with a sack at
     // your feet is still the box.
-    let take = take_or_pull(core, x, z, Some((eye, dir)));
+    let take = take_or_pull(core, x, z, Some((eye, dir)), Some(&lying));
     if take.verb != interact::Verb::None && (aimed.0.is_none() || (take.aimed && !aimed.0.aimed)) {
         aimed.0 = take;
     }
@@ -465,6 +490,8 @@ pub fn resolve(
                 eye,
                 dir,
                 span: &span,
+                reach: None,
+                lying: None,
             },
             core.deploys.entries(),
             &core.deploy_defs,
@@ -881,7 +908,7 @@ pub fn keys(
         let pick = if aimed.0.verb == Verb::Take {
             aimed.0
         } else {
-            take_or_pull(core, x, z, None)
+            take_or_pull(core, x, z, None, None)
         };
         if pick.verb == Verb::None {
             toast.warn("nothing to pick up here");
@@ -1665,6 +1692,27 @@ pub fn hearth_close(
     }
 }
 
+/// The shard's hand test for a thing lying where it fell (`sim_core::reach`),
+/// from the predicted eye and feet; with no world yet, everything passes.
+fn lying_test<'a>(
+    world: Option<&'a crate::render::WorldId>,
+    cols: &'a sim_core::collide::ColIndex,
+    eye: [f32; 3],
+    feet: f32,
+) -> impl Fn((i32, i32, i32), [i8; 3]) -> bool + 'a {
+    move |q, stuck| match world {
+        Some(w) => {
+            let at = if stuck == [0; 3] {
+                sim_core::reach::Target::lying(w.seed, &w.haven, cols, q)
+            } else {
+                sim_core::reach::Target::stuck(q, stuck)
+            };
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, (eye[0], eye[1], eye[2]), feet, at)
+        }
+        None => true,
+    }
+}
+
 /// The pick `E` takes from where the player stands: a loose stack, or an
 /// arrow standing in a body in reach — their own, where they stand, or one
 /// they can see, where it is drawn.
@@ -1677,17 +1725,25 @@ fn take_or_pull(
     x: f32,
     z: f32,
     sight: Option<([f32; 3], [f32; 3])>,
+    lying: Option<interact::LyingTest>,
 ) -> interact::Pick {
     let at = core.render_tick();
     let mut rs = client_core::interp::RemoteState::default();
-    let mut pick =
-        interact::resolve_take_or_pull(x, z, sight, core.ground_items(), core.lodged(), |id| {
+    let mut pick = interact::resolve_take_or_pull(
+        x,
+        z,
+        sight,
+        core.ground_items(),
+        core.lodged(),
+        |id| {
             if id == core.player_id {
                 Some((x, z))
             } else {
                 core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
             }
-        });
+        },
+        |g| lying.is_none_or(|r| r((g.qx, g.qy, g.qz), g.dir)),
+    );
     pick.stamp_teaches(&core.research);
     pick
 }

@@ -154,6 +154,11 @@ pub const LOCK_RING: usize = 8;
 /// the newest is the one still worth hearing.
 pub const HEARD_RING: usize = 8;
 
+/// Far gunshots and blasts heard between two frames (`EventMsg::Report`,
+/// wire v113): (`protocol::REPORT_*`, x, y, z) in metres. Drop-oldest, the
+/// heard ring's reason.
+pub const REPORT_RING: usize = 8;
+
 /// The victim slot of a hitmarker that names no body.
 ///
 /// The hitmarker ring carries two facts that read identically to a player —
@@ -2095,6 +2100,10 @@ pub struct ClientCore {
     heard: [(u32, u8, u16); HEARD_RING],
     heard_head: usize,
     heard_len: usize,
+    /// Far reports (`EventMsg::Report`, v113): (kind, x, y, z) metres.
+    reports: [(u8, u16, i16, u16); REPORT_RING],
+    report_head: usize,
+    report_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -2381,6 +2390,9 @@ impl ClientCore {
             heard: [(0, 0, 0); HEARD_RING],
             heard_head: 0,
             heard_len: 0,
+            reports: [(0, 0, 0, 0); REPORT_RING],
+            report_head: 0,
+            report_len: 0,
             howl_head: 0,
             howl_len: 0,
             knock_head: 0,
@@ -3853,6 +3865,14 @@ impl ClientCore {
                 self.howls[(self.howl_head + self.howl_len) % HOWL_RING] = mob;
                 self.howl_len += 1;
             }
+            EventMsg::Report { kind, x, y, z } => {
+                if self.report_len == REPORT_RING {
+                    self.report_head = (self.report_head + 1) % REPORT_RING;
+                    self.report_len -= 1;
+                }
+                self.reports[(self.report_head + self.report_len) % REPORT_RING] = (kind, x, y, z);
+                self.report_len += 1;
+            }
             EventMsg::Heard { body, deed, item } => {
                 // Drop-oldest, the swing ring's shape. An id naming no
                 // drawn body is heard nowhere, which is right for it.
@@ -4200,6 +4220,18 @@ impl ClientCore {
         self.lock_head = (self.lock_head + 1) % LOCK_RING;
         self.lock_len -= 1;
         Some(l)
+    }
+
+    /// Oldest buffered far report: (`protocol::REPORT_*`, x, y, z) metres.
+    /// Drained once a frame by `render::feed`, like every ring here.
+    pub fn pop_report(&mut self) -> Option<(u8, u16, i16, u16)> {
+        if self.report_len == 0 {
+            return None;
+        }
+        let r = self.reports[self.report_head];
+        self.report_head = (self.report_head + 1) % REPORT_RING;
+        self.report_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered deed heard from another body: (body id,

@@ -299,6 +299,8 @@ pub struct GateFx {
     flash_at: Vec3,
     /// The seams' emissive last written.
     lapis_at: Option<LinearRgba>,
+    /// The beacons' brightness last written, `lapis_at`'s rule.
+    beacon_k: Option<f32>,
     /// Quads the last write filled, so the next clears only what it used.
     drawn: usize,
     /// Whether the eye is near enough for motes and arcs.
@@ -319,6 +321,17 @@ impl GateFx {
 
     fn signed(&mut self) -> f32 {
         self.roll() * 2.0 - 1.0
+    }
+
+    /// Whether `draw` has anything to put in the mesh, or last frame's quads
+    /// to clear — `fx::Pool::needs_write`'s rule. Taking the mesh mutably
+    /// marks it changed, and a changed mesh is re-extracted and re-uploaded
+    /// whole; past the arc and mote ranges (most of the island) the answer is
+    /// no, frame after frame.
+    fn needs_write(&self) -> bool {
+        self.drawn > 0
+            || self.bolts.iter().any(|b| b.left > 0.0 && b.n > 1)
+            || self.motes.iter().any(|m| m.left > 0.0)
     }
 
     fn range(&mut self, r: (f32, f32)) -> f32 {
@@ -973,6 +986,7 @@ pub fn spawn(
         flash_lumens: 0.0,
         flash_at: RING_C,
         lapis_at: None,
+        beacon_k: None,
         drawn: QUADS,
         near: false,
         arcs_seen: false,
@@ -1304,9 +1318,15 @@ pub fn animate(
     }
     if shown {
         let k = night * (0.85 + 0.15 * breath) * (1.0 + 0.8 * s);
-        if let Some(m) = materials.get_mut(&gate.beacon_mat) {
-            m.base_color =
-                Color::linear_rgb(BEACON_RGB[0] * k, BEACON_RGB[1] * k, BEACON_RGB[2] * k);
+        let moved = gate
+            .beacon_k
+            .is_none_or(|a| (a - k).abs() > 0.004 * k.max(0.1));
+        if moved {
+            gate.beacon_k = Some(k);
+            if let Some(m) = materials.get_mut(&gate.beacon_mat) {
+                m.base_color =
+                    Color::linear_rgb(BEACON_RGB[0] * k, BEACON_RGB[1] * k, BEACON_RGB[2] * k);
+            }
         }
     }
 }
@@ -1354,6 +1374,9 @@ pub fn draw(
     mut q: Query<(&mut Transform, &mut GlobalTransform), With<GateMesh>>,
 ) {
     let Some(mut gate) = gate else { return };
+    if !gate.needs_write() {
+        return;
+    }
     let Ok(cam_gt) = cams.single() else { return };
     let cam = Cam {
         pos: cam_gt.translation(),
@@ -1559,6 +1582,7 @@ mod tests {
             flash_lumens: 0.0,
             flash_at: Vec3::ZERO,
             lapis_at: None,
+            beacon_k: None,
             drawn: 0,
             near: true,
             arcs_seen: true,

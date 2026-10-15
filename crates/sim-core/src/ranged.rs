@@ -1667,13 +1667,15 @@ pub(crate) fn world_stop(
         // `ground`, not `height`: a shot stops on the surface a player
         // stands on, and on an authored site that is the carved floor. A
         // raw read here puts the impact — and the decal drawn from it —
-        // several metres under the pad.
+        // several metres under the pad. Through the occupants' lattice memo,
+        // which returns `ground`'s own bits (`tests/lattice.rs`): a 50 m ray
+        // re-reads the same fine-octave quads sample after sample.
         // `shot_stop` rather than `shot_blocked`: the address it names is
         // what the caller charges structure damage against. The ladder is
         // otherwise unchanged — ground, then occupants, then pieces, and
         // the first answer wins — so a shot stops exactly where it did.
         let mut hit = None;
-        let what = if py <= terrain::ground(seed, haven, px, pz) {
+        let what = if py <= terrain::ground_memo(occ.cache.lattice(), seed, haven, px, pz) {
             Some(SURF_GROUND)
         } else if occ.blocks_volume(seed, px, pz, py, probe, probe) {
             Some(SURF_WORLD)

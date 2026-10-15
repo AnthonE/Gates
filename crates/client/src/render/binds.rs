@@ -268,6 +268,7 @@ pub enum Action {
     Map,
     Island,
     Chat,
+    Talk,
     TeamInvite,
     TeamAccept,
     TeamScreen,
@@ -317,7 +318,7 @@ const SCREENS: &str = "SCREENS";
 const PEOPLE: &str = "TEAM AND CREW";
 const BELT: &str = "HOTBAR";
 
-pub const COUNT: usize = 36;
+pub const COUNT: usize = 37;
 
 /// The defaults are the keys this client shipped with before binds existed.
 pub static SPECS: [Spec; COUNT] = [
@@ -480,6 +481,15 @@ pub static SPECS: [Spec; COUNT] = [
         [k(KeyCode::KeyT), k(KeyCode::Enter)],
     ),
     spec(
+        Action::Talk,
+        "talk",
+        "TALK (HOLD)",
+        PEOPLE,
+        // `` ` `` under Esc, and a mouse side button for a hand that stays on
+        // WASD (`render/voice.rs`).
+        [k(KeyCode::Backquote), Some(Bind::Mouse(MouseButton::Back))],
+    ),
+    spec(
         Action::TeamInvite,
         "team_invite",
         "TEAM INVITE",
@@ -569,7 +579,7 @@ pub const HOTBAR: [Action; 6] = [
 ];
 
 /// The controls that are not rebindable, for the KEYBINDS tab.
-pub const FIXED: [(&str, &str); 12] = [
+pub const FIXED: [(&str, &str); 13] = [
     ("LOOK", "Mouse (click to capture the pointer)"),
     (
         "USE / ATTACK",
@@ -589,6 +599,10 @@ pub const FIXED: [(&str, &str); 12] = [
     (
         "DIAGNOSTICS",
         "F4: build stamp and network · F3: collision view",
+    ),
+    (
+        "MUTE A PLAYER",
+        "/mute NAME in chat (only you stop hearing them)",
     ),
     ("REPORT A BUG", "F7"),
     ("FULLSCREEN", "F11"),

@@ -63,6 +63,8 @@ REFUSAL = {
     "refused_ticket",
     "refused_full",
     "refused_banned",
+    "refused_in_use",
+    "refused_per_source",
     "entitle_unknown",
     "entitle_kicked",
     "skins_unknown",
