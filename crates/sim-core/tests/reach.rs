@@ -371,3 +371,41 @@ fn a_card_doorway_is_stone_only_while_its_door_is_shut() {
         at(0.0, reach::LIFT_M, 9.0)
     ));
 }
+
+/// An arrow landing on a ziggurat ledge sinks into its top step (the arrow
+/// ladder passes through it, as a body steps onto it), where the hand's
+/// point test reads it as inside the stone. It is aimed just above the top
+/// instead, and reached from the ledge beside it.
+#[test]
+fn an_arrow_sunk_into_a_ledge_top_is_reached_from_the_ledge() {
+    let seed = 20_260_731;
+    let h = hv(seed);
+    let z = h.ziggurat;
+    assert!(z.live);
+    let (x, wz) = sim_core::kit::to_world(&z.placed(), -3.0, 4.0);
+    let top = sim_core::monument::ground(&z, 0, x, wz, z.floor_y + 4.8, 0.0);
+    assert!(top > z.floor_y + 4.0, "the blue room's floor is stone here");
+    let q = |m: f32, step: f32| (m / step) as i32;
+    let sunk = (
+        q(x, sim_core::movement::POS_XZ_Q),
+        q(top - 0.05, sim_core::movement::POS_Y_Q),
+        q(wz, sim_core::movement::POS_XZ_Q),
+    );
+    let dir = [127, -20, 0];
+    let open = ColIndex::new();
+    let (ex, ewz) = sim_core::kit::to_world(&z.placed(), -1.5, 4.0);
+    let eye = (ex, top + 1.6, ewz);
+    assert!(
+        !reach::clear_from(seed, h, &open, 0, eye, top, Target::stuck(sunk, dir)),
+        "the raw stuck point is inside the stone"
+    );
+    assert!(reach::clear_from(
+        seed,
+        h,
+        &open,
+        0,
+        eye,
+        top,
+        Target::stuck_in(h, 0, sunk, dir)
+    ));
+}

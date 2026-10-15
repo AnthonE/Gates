@@ -255,6 +255,12 @@ impl Teams {
         made
     }
 
+    /// Hand the teams over again at the next save even if unchanged: the
+    /// last write failed, or the process is stopping.
+    pub fn forget_written(&mut self) {
+        self.written = None;
+    }
+
     /// The teams' file for the store thread, if they changed since the last
     /// one handed over (`net.rs` take_world_save, on the world save's
     /// cadence). The sim thread makes the text; the store thread writes it

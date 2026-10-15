@@ -164,13 +164,32 @@ impl Target {
         }
     }
 
-    /// A loose stack: [`Self::stuck`] for an arrow stuck in something,
+    /// [`Self::stuck`], lifted out of the island's stone. An arrow's stop
+    /// ladder passes through the top step of a ziggurat or landmark box —
+    /// that band is ground to a body (`kit::blocks_local`) — so one landing
+    /// on a slab or a ledge sinks into it, where the hand's point test reads
+    /// it as inside the stone. Aimed just above that top instead.
+    pub fn stuck_in(haven: &Haven, doors: u32, q: (i32, i32, i32), dir: [i8; 3]) -> Self {
+        let mut t = Self::stuck(q, dir);
+        let top = crate::monument::ground(&haven.ziggurat, doors, t.x, t.z, t.base_y, 0.0).max(
+            crate::landmark::ground(&haven.marks, t.x, t.z, t.base_y, 0.0),
+        );
+        if top > t.base_y {
+            t.base_y = top;
+            // Above the top, not on it: the walk's last sample can land an
+            // ulp under the target.
+            t.mid = ARROW_R_M;
+        }
+        t
+    }
+
+    /// A loose stack: [`Self::stuck_in`] for an arrow stuck in something,
     /// [`Self::lying`] for everything on the ground.
-    pub fn stack(seed: u64, haven: &Haven, cols: &ColIndex, g: &GroundItemRec) -> Self {
+    pub fn stack(seed: u64, haven: &Haven, cols: &ColIndex, doors: u32, g: &GroundItemRec) -> Self {
         if g.dir == [0; 3] {
             Self::lying(seed, haven, cols, (g.qx, g.qy, g.qz))
         } else {
-            Self::stuck((g.qx, g.qy, g.qz), g.dir)
+            Self::stuck_in(haven, doors, (g.qx, g.qy, g.qz), g.dir)
         }
     }
 
@@ -222,7 +241,9 @@ impl Target {
 
     /// [`Self::world_cont`] for a scatter slot not yet opened: the record
     /// `worldcont::open` would mint, so a prompt aims where the verb will.
-    pub fn scatter(s: &crate::terrain::Slot) -> Self {
+    /// (Not named for the scatter: the client's memo gate greps its swing
+    /// path for that call.)
+    pub fn unopened(s: &crate::terrain::Slot) -> Self {
         Self::world_cont(crate::worldcont::stand_q(s.x, s.y, s.z), s.occupant)
     }
 }

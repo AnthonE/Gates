@@ -104,7 +104,7 @@ impl ChatText {
             return None;
         }
         let text = core::str::from_utf8(s).ok()?;
-        if text.chars().any(|c| c.is_control() || hides_or_reorders(c)) {
+        if text.chars().any(refused_char) {
             return None;
         }
         let mut out = Self::EMPTY;
@@ -120,6 +120,13 @@ impl ChatText {
 /// does not say — a name reversed into another, a gap that is not there.
 /// The zero-width joiners stay: emoji and several scripts are spelled with
 /// them.
+/// A character no line may carry ([`ChatText::sanitize`]): a control, or
+/// one that hides or reorders text. The composer refuses the key with this,
+/// so what can be typed and what will send stay one set.
+pub fn refused_char(c: char) -> bool {
+    c.is_control() || hides_or_reorders(c)
+}
+
 fn hides_or_reorders(c: char) -> bool {
     matches!(
         c,

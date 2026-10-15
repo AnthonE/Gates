@@ -2822,7 +2822,13 @@ impl World {
         else {
             return false;
         };
-        let at = crate::reach::Target::stack(self.seed, &self.haven, self.pieces.cols(), g);
+        let at = crate::reach::Target::stack(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+            g,
+        );
         self.ground_items.in_reach(i, p)
             && crate::reach::clear(
                 self.seed,
@@ -3429,7 +3435,7 @@ impl World {
         let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
         let d2 = dx * dx + dz * dz;
         let clear = |g: &crate::grounditem::GroundItemRec| {
-            let at = crate::reach::Target::stack(seed, haven, cols, g);
+            let at = crate::reach::Target::stack(seed, haven, cols, doors, g);
             crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
         };
         if let Some(g) = self.ground_items.nearest_where(p, clear) {
@@ -5780,7 +5786,7 @@ impl World {
                             &mut spill,
                             &mut self.events,
                             |g| {
-                                let at = crate::reach::Target::stack(seed, haven, cols, g);
+                                let at = crate::reach::Target::stack(seed, haven, cols, doors, g);
                                 crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
                             },
                         );

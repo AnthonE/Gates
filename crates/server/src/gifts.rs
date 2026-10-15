@@ -107,6 +107,11 @@ impl Gifts {
         true
     }
 
+    /// Write the whole ledger again (a side-file write failed).
+    pub fn mark_dirty(&mut self) {
+        self.dirty = self.path.is_some();
+    }
+
     /// A gift is waiting to be written.
     pub fn is_dirty(&self) -> bool {
         self.dirty

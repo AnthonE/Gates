@@ -2062,7 +2062,7 @@ pub fn resolve_open(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> S
         island.doors,
         sim_core::reach::eye_of(&body, at.crouched),
         body.qy as f32 * sim_core::movement::POS_Y_Q,
-        sim_core::reach::Target::scatter(&hit.slot),
+        sim_core::reach::Target::unopened(&hit.slot),
     );
     if !reached {
         return SwingPick::default();

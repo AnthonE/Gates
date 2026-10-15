@@ -1929,6 +1929,19 @@ fn drain_saves(
     }
 }
 
+/// A side file the store thread failed to write (`side_file_errors`) is
+/// handed over again: the teams at the save that follows, the ledger on the
+/// next tick. On the world-save cadence, so a disk that keeps failing costs
+/// one retry per save, not one per tick.
+fn retry_side_files(core: &mut ShardCore, stats: &ShardStats, seen: &mut u64) {
+    let failed = ShardStats::get(&stats.side_file_errors);
+    if failed != *seen {
+        *seen = failed;
+        core.teams.forget_written();
+        core.gifts.mark_dirty();
+    }
+}
+
 /// Take one world save: fill a pooled buffer and hand it to the store
 /// thread, or skip and count.
 ///
@@ -2058,6 +2071,7 @@ fn store_thread(
             idle = false;
             if let Err(e) = crate::gifts::write_atomic(&msg.path, &msg.text) {
                 eprintln!("store: writing {}: {e}", msg.path.display());
+                ShardStats::bump(&stats.side_file_errors);
             }
         }
         while let Ok(msg) = write_rx.pop() {
@@ -3495,14 +3509,15 @@ async fn event_writer_task(
             // Sent away with a reason: post it as the session's last word,
             // inside the grace `close_with_reason` waits out. A browser
             // cannot read the QUIC close code, so this is how it learns why.
-            if generation_of(word) == generation {
-                if let Some(code) = slots.why(slot, generation) {
-                    let _ = tokio::time::timeout(REFUSE_POST_TIMEOUT, async {
-                        write_refuse(&mut send, code).await?;
-                        send.finish().await.map_err(|_| ())
-                    })
-                    .await;
-                }
+            // `why` matches the whole generation, so this holds even when
+            // the slot was freed and claimed again before this writer woke
+            // (a takeover's newcomer takes the slot it left).
+            if let Some(code) = slots.why(slot, generation) {
+                let _ = tokio::time::timeout(REFUSE_POST_TIMEOUT, async {
+                    write_refuse(&mut send, code).await?;
+                    send.finish().await.map_err(|_| ())
+                })
+                .await;
             }
             return; // slot moved on; sim (or reader) already knows
         }
@@ -4104,6 +4119,8 @@ fn sim_thread(
         .map(|_| Vec::with_capacity(MAX_PLAYERS))
         .collect();
     let mut next_world_save = core.world.tick + world_interval.min(u64::MAX / 2);
+    // Side-file failures already answered (`retry_side_files`).
+    let mut side_failures_seen = 0u64;
     // Every connection slot: players, then spectator seats (`MAX_CONNS`).
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_CONNS);
     links.resize_with(MAX_CONNS, || None);
@@ -4335,6 +4352,7 @@ fn sim_thread(
         // published, which is a state clients have actually been shown.
         if core.world.tick >= next_world_save {
             next_world_save = core.world.tick.saturating_add(world_interval);
+            retry_side_files(&mut core, &stats, &mut side_failures_seen);
             take_world_save(
                 &mut core,
                 &mut world_pool,
@@ -4525,6 +4543,10 @@ fn sim_thread(
         }
         std::thread::sleep(SHUTDOWN_DRAIN_POLL);
     }
+    // The last teams go over whatever the last write did: a failed one
+    // reaches the store thread's count only after the fact.
+    core.teams.forget_written();
+    retry_side_files(&mut core, &stats, &mut side_failures_seen);
     take_world_save(
         &mut core,
         &mut world_pool,

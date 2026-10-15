@@ -1714,7 +1714,7 @@ fn lying_test<'a>(
             let at = if stuck == [0; 3] {
                 sim_core::reach::Target::lying(w.seed, &w.haven, cols, q)
             } else {
-                sim_core::reach::Target::stuck(q, stuck)
+                sim_core::reach::Target::stuck_in(&w.haven, doors, q, stuck)
             };
             let eye = (eye[0], eye[1], eye[2]);
             sim_core::reach::clear_from(w.seed, &w.haven, cols, doors, eye, feet, at)

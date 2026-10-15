@@ -7100,7 +7100,7 @@ fn open_reaches(core: &mut ClientCore, body: &EntityState, yaw: u16, pitch: u8, 
         core.card_doors,
         sim_core::reach::eye_of(&b, core.crouched()),
         b.qy as f32 * POS_Y_Q,
-        sim_core::reach::Target::scatter(&hit.slot),
+        sim_core::reach::Target::unopened(&hit.slot),
     )
 }
 

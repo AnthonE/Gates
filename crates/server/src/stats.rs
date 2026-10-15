@@ -722,6 +722,10 @@ pub struct ShardStats {
     /// outcome than a shard that forgets — so this is the only place that
     /// failure is visible.
     pub save_write_errors: AtomicU64,
+    /// Side files (`slot::FileMsg`: the gift ledger, the teams) the store
+    /// thread failed to write. The sim reads it on the world-save cadence
+    /// and hands both files over again (`net.rs` `retry_side_files`).
+    pub side_file_errors: AtomicU64,
     // No counter for records refused at load, deliberately: corruption is a
     // boot-time fact about a file, not a running rate, so it is reported once
     // in the line that says the shard came up (`store::SaveLoad`, printed by
