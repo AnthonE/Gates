@@ -163,7 +163,8 @@ pub struct ClientNetState {
     starve_ticks: u32,
     /// Frames the throttle may still take as a second-per-tick
     /// (`limits::INPUT_CATCHUP_CREDIT_CAP` says why); and the drift
-    /// trickle's tick counter.
+    /// trickle's tick counter. Earned by a starved tick only when its ghost
+    /// left the body where it was (`consume_input`).
     catchup_credit: u16,
     drift_ticks: u16,
     /// The last REAL frame this connection executed — the decay mint's
@@ -1013,7 +1014,20 @@ impl ClientNetState {
             }
         } else {
             self.starve_ticks += 1;
-            self.earn_credit();
+            // Owed a catch-up frame only if the body stood still this tick.
+            // The ramp's walking ticks (`ghost_frame`: 2/3, then 1/3 of the
+            // last real stride) already moved it; crediting them as well let
+            // a lag switch keep the ghost AND run every withheld frame on
+            // time, about a stride a pulse. Per tick, not per episode: a
+            // diagonal ghost walks 0.94 + 0.47 of a stride (`movement::step`
+            // clamps the wish before the decay shrinks it). After `+= 1`,
+            // because `ghost_frame` reads the count.
+            let ghost_walked = self
+                .ghost_frame()
+                .is_some_and(|g| g.move_x != 0 || g.move_z != 0);
+            if !ghost_walked {
+                self.earn_credit();
+            }
         }
         // `HardResync` is the rung that still steers (netcode v2 S4):
         // the client's clock runs a proportional controller on the
@@ -1212,6 +1226,77 @@ mod tests {
         assert_eq!(c.consume_input().unwrap().frame.seq, 5);
         assert!(c.consume_input().is_none());
         assert_eq!(c.ghost_frame().unwrap().move_x, -60);
+    }
+
+    /// A starved tick earns its catch-up only when the body stood still on
+    /// it: the ramp's two walking ticks were already paid for by the ghost.
+    #[test]
+    fn a_starved_tick_that_walked_earns_no_credit() {
+        for (move_z, owed) in [(127i8, 3u16), (0, 5)] {
+            let mut c = ClientNetState::new();
+            c.reset(1);
+            c.push_frame(
+                InputFrame {
+                    seq: 0,
+                    move_z,
+                    ..InputFrame::default()
+                },
+                None,
+            );
+            assert!(c.consume_input().is_some());
+            c.catchup_credit = 0;
+            c.drift_ticks = 0;
+            for _ in 0..5 {
+                assert!(c.consume_input().is_none());
+            }
+            // Walking: ticks 1-2 walk (84, 42), 3's ghost is still, 4-5 re-run it.
+            assert_eq!(c.catchup_credit, owed, "move_z {move_z}");
+        }
+    }
+
+    /// The honest half with the bank empty: a loss burst of walking frames
+    /// still pays for its own catch-up — L starved ticks earn L - 2, and the
+    /// throttle needs L - 5 double-steps to get back under its threshold —
+    /// and every frame runs.
+    #[test]
+    fn a_loss_burst_pays_its_own_catch_up_from_an_empty_bank() {
+        let walk = |seq| InputFrame {
+            seq,
+            move_z: 127,
+            ..InputFrame::default()
+        };
+        let run =
+            |c: &mut ClientNetState| c.consume_input().map_or(0, |g| 1 + g.prev.is_some() as u32);
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        let (mut seq, mut ran) = (0u16, 0u32);
+        for _ in 0..10 {
+            c.push_frame(walk(seq), None);
+            seq += 1;
+            ran += run(&mut c);
+        }
+        c.catchup_credit = 0;
+        c.drift_ticks = 0;
+        for _ in 0..10 {
+            ran += run(&mut c); // ten ticks lost
+        }
+        for _ in 0..10 {
+            c.push_frame(walk(seq), None); // one datagram's redundancy
+            seq += 1;
+        }
+        for _ in 0..15 {
+            c.push_frame(walk(seq), None);
+            seq += 1;
+            ran += run(&mut c);
+        }
+        assert!(
+            usize::from(c.depth_report()) <= INPUT_THROTTLE_DEPTH,
+            "the throttle never re-centred"
+        );
+        for _ in 0..10 {
+            ran += run(&mut c);
+        }
+        assert_eq!(ran, u32::from(seq), "an honest frame was not run");
     }
 
     #[test]
