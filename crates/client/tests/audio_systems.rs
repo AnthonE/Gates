@@ -35,7 +35,7 @@ use bevy::time::TimePlugin;
 
 use client::render::audio::{
     build_bank, fell, fires, impacts, map_paper, music, music_mode, pump, setup, teardown,
-    ui_click, voices, Engine, LastHp, Sound, BEDS, CMD_FRAME_CAP, FIRE_REACH_M,
+    ui_click, ui_hover, voices, Engine, LastHp, Sound, BEDS, CMD_FRAME_CAP, FIRE_REACH_M,
 };
 use client::render::feed::Feed;
 use client::render::fx::Fx;
@@ -79,7 +79,8 @@ fn app() -> App {
             pos: EAR,
             yaw: YAW,
             ..default()
-        });
+        })
+        .add_message::<bevy::window::CursorMoved>();
     // The real bank: `pump` takes `Res<Bank>`, and the ledger counts a voice
     // only for a cue that has landed — which `teardown`'s test needs.
     build_bank(&mut app);
@@ -89,7 +90,7 @@ fn app() -> App {
         .for_each(drop);
     app.add_systems(
         Update,
-        (impacts, fell, voices, ui_click, fires, asked, pump).chain(),
+        (impacts, fell, voices, ui_click, ui_hover, fires, asked, pump).chain(),
     );
     app
 }
@@ -237,6 +238,47 @@ fn a_pressed_button_clicks_once() {
         starts(&stray).is_empty(),
         "a press off any button clicked: {stray:?}"
     );
+}
+
+/// The hover tick: a pointer that MOVED onto a button ticks once; a button
+/// turning hovered under a still pointer (a panel rebuilt under it) does
+/// not, and neither does letting go of a press.
+#[test]
+fn a_moved_pointer_ticks_on_a_button_once() {
+    let mut app = app();
+    let moved = |app: &mut App| {
+        app.world_mut().write_message(bevy::window::CursorMoved {
+            window: Entity::PLACEHOLDER,
+            position: Vec2::new(10.0, 10.0),
+            delta: Some(Vec2::ONE),
+        });
+    };
+    let button = app.world_mut().spawn((Button, Interaction::None)).id();
+    frames(&mut app, 1);
+
+    // Hovered with no motion: a rebuild, not a hover.
+    *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::Hovered;
+    let still = frames(&mut app, 1);
+    assert!(starts(&still).is_empty(), "a still pointer ticked: {still:?}");
+
+    // Off and back on, moving: one tick.
+    *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::None;
+    frames(&mut app, 1);
+    *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::Hovered;
+    moved(&mut app);
+    let s = starts(&frames(&mut app, 1));
+    assert_eq!(s.len(), 1, "one hover");
+    assert_own(s[0], Cue::UiHover);
+
+    // A press and its release: the click, and no tick on the way back up.
+    *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::Pressed;
+    let s = starts(&frames(&mut app, 1));
+    assert_eq!(s.len(), 1);
+    assert_own(s[0], Cue::UiClick);
+    *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::Hovered;
+    moved(&mut app);
+    let up = frames(&mut app, 1);
+    assert!(starts(&up).is_empty(), "the release ticked: {up:?}");
 }
 
 /// The map's rustle: one own cue per call, the frame after. And it takes the

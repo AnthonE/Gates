@@ -105,7 +105,7 @@ const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
 const HOTBAR_BOTTOM_PX: f32 = 18.0;
 const HOTBAR_CELL_PX: f32 = 46.0;
 /// A hotbar slot at rest, and its edge.
-const SLOT_BG: Color = Color::srgba(0.05, 0.05, 0.06, 0.55);
+const SLOT_BG: Color = Color::srgba(0.078, 0.071, 0.063, 0.58);
 const SLOT_EDGE: Color = Color::srgba(0.75, 0.72, 0.62, 0.35);
 /// The slot in your hand: Rust's selection blue, filled.
 const SLOT_SEL: Color = super::panels::CELL_SEL;
@@ -915,6 +915,105 @@ pub enum Vital {
     Hp,
     Water,
     Food,
+}
+
+/// The pale bar behind a vital's fill: what it read a moment ago.
+#[derive(Component)]
+pub struct VitalLag(pub Vital);
+
+/// The lag bar's ink: the fill's ghost, not a fourth colour.
+const VITAL_LAG: Color = Color::srgba(0.96, 0.92, 0.84, 0.42);
+/// How long a loss holds before the lag bar drains after it, seconds.
+const LAG_HOLD_S: f32 = 0.35;
+
+/// The vitals' bars, moving: the fill eases to the vital instead of
+/// snapping, and a loss leaves the pale lag bar where the fill was, which
+/// holds a beat and then drains — the chunk a hit took, seen.
+///
+/// Its own system rather than a loop in [`update`] for the clock: `update`
+/// writes what the core says, and this owns how fast the bar gets there.
+pub fn vital_motion(
+    net: NonSend<Net>,
+    time: Res<Time>,
+    mut state: Local<Option<[(f32, f32, f32); 3]>>,
+    mut fills: Query<(&VitalFill, &mut Node), Without<VitalLag>>,
+    mut lags: Query<(&VitalLag, &mut Node), Without<VitalFill>>,
+) {
+    let core = &net.session.core;
+    let dt = time.delta_secs();
+    // Clamped, because the server is authoritative and a vital over its
+    // stated maximum is a bar that would run off its trough rather than a
+    // reason to disbelieve the number beside it.
+    let frac = |v: Vital| {
+        let (value, max) = v.read(core);
+        if max > 0 {
+            (value as f32 / max as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let all = [Vital::Hp, Vital::Water, Vital::Food];
+    // The first frame starts where the vitals are, not at an empty bar
+    // filling up on join.
+    let st = state.get_or_insert_with(|| all.map(|v| (frac(v), frac(v), 0.0)));
+    for (i, v) in all.into_iter().enumerate() {
+        let target = frac(v);
+        let (shown, lag, hold) = &mut st[i];
+        if target < *shown - 1e-4 {
+            *hold = LAG_HOLD_S;
+        }
+        *shown = crate::ui::ease::approach(*shown, target, 18.0, dt);
+        if *lag <= *shown {
+            *lag = *shown;
+        } else if *hold > 0.0 {
+            *hold -= dt;
+        } else {
+            *lag = crate::ui::ease::approach(*lag, *shown, 5.0, dt);
+        }
+    }
+    let idx = |v: Vital| all.iter().position(|a| *a == v).unwrap_or(0);
+    for (fill, mut node) in &mut fills {
+        let want = Val::Percent(st[idx(fill.0)].0 * 100.0);
+        if node.width != want {
+            node.width = want;
+        }
+    }
+    for (lag, mut node) in &mut lags {
+        let want = Val::Percent(st[idx(lag.0)].1 * 100.0);
+        if node.width != want {
+            node.width = want;
+        }
+    }
+}
+
+/// The hotbar slot you just picked pops: a short bump in scale, so the
+/// hand's change reads at the edge of the eye.
+pub fn hotbar_pop(
+    net: NonSend<Net>,
+    time: Res<Time>,
+    mut last: Local<Option<(u8, f32)>>,
+    mut cells: Query<(&Cell, &mut UiTransform)>,
+) {
+    let now = time.elapsed_secs();
+    let sel = net.sel;
+    match *last {
+        Some((s, _)) if s == sel => {}
+        // The first frame is where the hand already was: no pop on join.
+        None => *last = Some((sel, f32::NEG_INFINITY)),
+        Some(_) => *last = Some((sel, now)),
+    }
+    let Some((sel, at)) = *last else { return };
+    let t = (now - at) / 0.18;
+    for (cell, mut xf) in &mut cells {
+        let scale = if cell.0 == sel as usize {
+            crate::ui::ease::pop(t, 0.10)
+        } else {
+            1.0
+        };
+        if xf.scale.x != scale {
+            xf.scale = Vec2::splat(scale);
+        }
+    }
 }
 
 impl Vital {
@@ -1788,6 +1887,20 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                             },
                             BackgroundColor(super::panels::VITAL_TROUGH),
                             children![
+                                // Behind the fill: where it was a moment
+                                // ago, draining after it ([`vital_motion`]).
+                                (
+                                    VitalLag(v),
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(0.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    BackgroundColor(VITAL_LAG),
+                                ),
                                 (
                                     VitalFill(v),
                                     Node {
@@ -2105,7 +2218,6 @@ pub fn update(
     art: Res<super::icons::Icons>,
     mut plan: Query<&mut Text, (With<Plan>, Without<VitalNum>)>,
     mut rows: Query<(&VitalRow, &mut Node), (Without<VitalFill>, Without<Cell>)>,
-    mut fills: Query<(&VitalFill, &mut Node), Without<Cell>>,
     mut nums: Query<(&VitalNum, &mut Text), Without<Plan>>,
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
@@ -2396,21 +2508,6 @@ pub fn update(
         };
         if node.display != want {
             node.display = want;
-        }
-    }
-    for (fill, mut node) in fills.iter_mut() {
-        let (value, max) = fill.0.read(core);
-        // Clamped, because the server is authoritative and a vital over its
-        // stated maximum is a bar that would run off its trough rather than a
-        // reason to disbelieve the number beside it.
-        let pct = if max > 0 {
-            (value as f32 / max as f32).clamp(0.0, 1.0) * 100.0
-        } else {
-            0.0
-        };
-        let want = Val::Percent(pct);
-        if node.width != want {
-            node.width = want;
         }
     }
     for (num, mut text) in nums.iter_mut() {
