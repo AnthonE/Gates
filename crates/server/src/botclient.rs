@@ -1294,6 +1294,9 @@ async fn run_bot_inner(
                 // DECISION, not a measurement: the shipped default
                 // (`INTERP_DELAY_TICKS`), the same value the server
                 // assumed for every client before wire v61 carried one.
+                // It is also the floor of the server's measured bound
+                // (`ClientNetState::playout_cap`), so an agent's report is
+                // never capped: agents keep every tick of favour they had.
                 let mut dg = InputDatagram::new(
                     ack,
                     ack_bits,

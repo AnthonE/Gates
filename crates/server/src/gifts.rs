@@ -28,6 +28,8 @@ pub fn gifts_path(base: &Path) -> PathBuf {
 pub struct Gifts {
     path: Option<PathBuf>,
     rows: BTreeMap<String, Vec<u16>>,
+    /// A gift was given since the ledger was last handed to the store thread.
+    dirty: bool,
 }
 
 impl Gifts {
@@ -46,7 +48,7 @@ impl Gifts {
         let path = gifts_path(base);
         let mut g = Self {
             path: Some(path.clone()),
-            rows: BTreeMap::new(),
+            ..Self::default()
         };
         if let Ok(text) = std::fs::read_to_string(&path) {
             for (n, line) in text.lines().enumerate() {
@@ -83,10 +85,12 @@ impl Gifts {
         set
     }
 
-    /// Give `wallet` every row of `set`. Whether anything was new; a new
-    /// gift is on disk before this returns (a few hundred bytes, once per
-    /// wallet, so the sim thread can afford the write). A failed write is
-    /// logged and the gift still stands for this run.
+    /// Give `wallet` every row of `set`. Whether anything was new. Touches
+    /// no file: a new gift marks the ledger dirty, and the sim loop hands the
+    /// whole ledger to the store thread after the tick ([`Self::take_write`],
+    /// `net.rs`) — the sim thread does not wait on a disk. The gift stands in
+    /// memory at once; a crash before the write lands costs a player asking
+    /// the Outfitter again.
     pub fn give(&mut self, wallet: &str, set: SkinSet, sc: &SkinContent) -> bool {
         if self.of(wallet, sc).has_all(&set) {
             return false;
@@ -99,12 +103,31 @@ impl Gifts {
         }
         row.sort_unstable();
         row.dedup();
-        if let Some(path) = &self.path {
-            if let Err(e) = write_atomic(path, &self.text()) {
-                eprintln!("gifts: writing {}: {e}", path.display());
-            }
-        }
+        self.dirty |= self.path.is_some();
         true
+    }
+
+    /// Write the whole ledger again (a side-file write failed).
+    pub fn mark_dirty(&mut self) {
+        self.dirty = self.path.is_some();
+    }
+
+    /// A gift is waiting to be written.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// The whole ledger for the store thread, if a gift was given since the
+    /// last take; `None` with no file or nothing new. The caller checks the
+    /// ring for room first, so a taken ledger is never thrown away.
+    pub fn take_write(&mut self) -> Option<crate::slot::FileMsg> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        Some(crate::slot::FileMsg {
+            path: self.path.clone()?,
+            text: self.text(),
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -131,7 +154,9 @@ impl Gifts {
     }
 }
 
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+/// Temp, fsync, rename: a crash keeps the old file whole. The store thread's
+/// writer for every side file (`net.rs` store_thread).
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = PathBuf::from(format!("{}.tmp", path.display()));
     {
         let mut f = std::fs::File::create(&tmp)?;
@@ -172,7 +197,18 @@ mod tests {
 
         let mut g = Gifts::open(Some(&base));
         assert!(g.give(CAROL, founder, &sc));
+        assert!(
+            !gifts_path(&base).exists(),
+            "give() touches no file: the store thread writes it"
+        );
         assert!(!g.give(CAROL, founder, &sc), "a second ask gives nothing");
+        let msg = g.take_write().expect("a gift was given");
+        assert!(g.take_write().is_none(), "taken once");
+        assert_eq!(msg.path, gifts_path(&base));
+        write_atomic(&msg.path, &msg.text).unwrap();
+        let mut off = Gifts::off();
+        assert!(off.give(CAROL, founder, &sc));
+        assert!(off.take_write().is_none(), "no file, nothing to write");
 
         let again = Gifts::open(Some(&base));
         assert_eq!(again.of(CAROL, &sc), founder);

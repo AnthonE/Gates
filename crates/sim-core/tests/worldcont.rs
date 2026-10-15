@@ -44,10 +44,11 @@ use sim_core::inventory::{
 };
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_WORLD_CONTS};
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CACHE, LOOT_CRATE};
-use sim_core::movement::{quant_xz, Body};
+use sim_core::movement::{quant_xz, quant_y, Body};
 use sim_core::terrain::{self, Occupant, ScatterTable, CELLS_PER_SIDE};
 use sim_core::world::{Command, World, EV_MOVED, EV_MOVE_REFUSED};
 use sim_core::worldsave::{WorldSaveError, WORLD_SAVE_MAX_BYTES};
+use sim_core::{kit, monument};
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
 /// to know where the carve is.
@@ -978,6 +979,18 @@ fn an_opened_crate_survives_a_restart() {
         before,
         "wall 5 at the origin: the loaded world is the saved world"
     );
+    let st = terrain::scatter(
+        SEED,
+        &ScatterTable::alpha_default(),
+        hv(SEED),
+        cx as i32,
+        cz as i32,
+    );
+    assert_eq!(
+        back.world_conts.entries()[0].qy,
+        quant_y(st.y),
+        "the rest height is re-derived at load, not saved"
+    );
 }
 
 /// The save is untrusted input, and the check worth having is the one that
@@ -1182,4 +1195,107 @@ fn a_second_take_does_not_move_the_clock() {
         armed,
         "emptying it re-armed the clock that the first take had set"
     );
+}
+
+// ------------------------------------------------------- storey and sight
+
+/// A crate is not taken from a storey away: the move verb and the view ask
+/// the storey rule every time, not only the open.
+#[test]
+fn a_crate_is_not_taken_from_a_storey_away() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+    let before = w.world_conts.entries()[0].items;
+    let floor = w.players[0].body.qy;
+
+    w.players[0].body.qy = floor + quant_y(3.5);
+    assert!(!w.world_cont_reachable(0, 0), "the view shuts the panel");
+    take(&mut w, cx, cz, 0, 0, 1);
+    assert_eq!(answers(&w), vec![(EV_MOVE_REFUSED, REFUSE_M_REACH)]);
+    assert_eq!(w.world_conts.entries()[0].items, before);
+
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    assert!(w.world_cont_reachable(0, 0));
+    take(&mut w, cx, cz, 0, 0, 1);
+    assert_eq!(answers(&w)[0].0, EV_MOVED);
+}
+
+/// The ziggurat seed `tests/ziggurat.rs` places its crates for.
+const ZSEED: u64 = 20_260_731;
+
+/// A world on [`ZSEED`] whose ziggurat tiers pay the fixture crate's table.
+fn zworld() -> (Box<World>, monument::Ziggurat) {
+    let mut w = Box::new(World::new(ZSEED));
+    w.gather = GatherContent::probe_fixture();
+    w.loot = loot_fixture();
+    for t in [
+        sim_core::loot::LOOT_GREEN,
+        sim_core::loot::LOOT_BLUE,
+        sim_core::loot::LOOT_ELITE,
+    ] {
+        w.loot.tables[t] = w.loot.tables[LOOT_CRATE];
+    }
+    w.backpack = BackpackContent::probe_fixture();
+    let z = hv(ZSEED).ziggurat;
+    assert!(z.live, "seed {ZSEED} places a ziggurat");
+    (w, z)
+}
+
+/// Ziggurat crate `k`'s cell.
+fn zcell(z: &monument::Ziggurat, k: usize) -> (u16, u16, Occupant) {
+    let (x, _, wz, _, occ) = monument::crate_world(z, k).unwrap();
+    (
+        (x / terrain::CELL_SIZE) as u16,
+        (wz / terrain::CELL_SIZE) as u16,
+        occ,
+    )
+}
+
+/// Put the joined body at ziggurat-local `(lx, lz)`, its feet `dy` above
+/// the ziggurat's floor.
+fn zstand(w: &mut World, z: &monument::Ziggurat, lx: f32, lz: f32, dy: f32) {
+    let (x, wz) = kit::to_world(&z.placed(), lx, lz);
+    stand_at(w, x, wz);
+    w.players[0].body.qy = quant_y(z.floor_y + dy);
+}
+
+/// The blue room stands over the green room. Once anyone has opened its
+/// crate, a hand in the green room below is under it (planar 2 m) and a
+/// storey away (5 m): it takes nothing.
+#[test]
+fn a_blue_room_crate_is_not_reached_from_the_green_room_below() {
+    let (mut w, z) = zworld();
+    let (cx, cz, occ) = zcell(&z, 4);
+    assert_eq!(occ, Occupant::BlueCrate);
+    w.tick(&[Command::Join { id: PLAYER }]);
+    zstand(&mut w, &z, -2.0, 4.0, 5.0);
+    open(&mut w, cx, cz);
+    assert_eq!(w.world_conts.len(), 1, "opened from inside the blue room");
+    let before = w.world_conts.entries()[0].items;
+
+    zstand(&mut w, &z, -2.0, 4.0, 0.0);
+    assert!(!w.world_cont_reachable(0, 0));
+    take(&mut w, cx, cz, 0, 0, 1);
+    assert_eq!(answers(&w), vec![(EV_MOVE_REFUSED, REFUSE_M_REACH)]);
+    assert_eq!(w.world_conts.entries()[0].items, before);
+}
+
+/// The sanctum's crates are not opened from the ledge outside its west
+/// wall: nothing can be built at the ziggurat, so the shot walk sees no
+/// piece there, and the stone itself has to stop the hand.
+#[test]
+fn a_sanctum_crate_is_not_opened_from_the_ledge_outside() {
+    let (mut w, z) = zworld();
+    let (cx, cz, occ) = zcell(&z, 6);
+    assert_eq!(occ, Occupant::EliteCrate);
+    w.tick(&[Command::Join { id: PLAYER }]);
+    zstand(&mut w, &z, -14.6, -4.0, 15.0);
+    open(&mut w, cx, cz);
+    assert_eq!(w.world_conts.len(), 0, "opened through the wall");
+
+    zstand(&mut w, &z, -10.0, -4.0, 15.0);
+    open(&mut w, cx, cz);
+    assert_eq!(w.world_conts.len(), 1, "opened from inside the sanctum");
 }

@@ -21,6 +21,34 @@ fn executed(c: &mut ClientNetState) -> u32 {
     }
 }
 
+/// Strides one frame walks the body: `movement::step` scales each axis by
+/// 1/127 and clamps the wish vector to unit length, so a full diagonal is
+/// one stride and its 2/3 decay (84, 84) is 0.94 of one.
+fn stride(f: &InputFrame) -> f32 {
+    let x = f32::from(f.move_x) / 127.0;
+    let z = f32::from(f.move_z) / 127.0;
+    (x * x + z * z).sqrt().min(1.0)
+}
+
+/// What one tick walked: each consumed frame's stride, or on a starved tick
+/// the decayed stand-in `core.rs` feeds the sim. Past the ramp the sim
+/// re-runs that last stand-in, which does not move.
+fn walked(c: &mut ClientNetState) -> f32 {
+    match c.consume_input() {
+        Some(got) => stride(&got.frame) + got.prev.as_ref().map_or(0.0, stride),
+        None => c.ghost_frame().as_ref().map_or(0.0, stride),
+    }
+}
+
+fn walk(seq: u16) -> InputFrame {
+    InputFrame {
+        seq,
+        move_x: 127,
+        move_z: 127,
+        ..InputFrame::default()
+    }
+}
+
 /// Two frames minted per tick for ten seconds: the server runs at most one
 /// a tick plus the join allowance and the drift trickle.
 #[test]
@@ -44,9 +72,46 @@ fn a_client_running_ahead_gains_only_the_allowance() {
     );
 }
 
+/// A lag switch: hold the uplink for `held` ticks of every `period`, then
+/// let the backlog through at once. An honest sender walks the same frames
+/// one per tick. The switch must end no further than the honest sender plus
+/// the allowance any client can already spend by running ahead. Diagonal on
+/// purpose: that is where the ghost walks 1.4 strides.
+#[test]
+fn a_lag_switch_gains_only_the_allowance() {
+    let ticks = 900u32;
+    let allowance =
+        (INPUT_CATCHUP_CREDIT_CAP as u32 + ticks / INPUT_DRIFT_CREDIT_TICKS as u32) as f32;
+    for (period, held) in [(9u32, 7u32), (20, 7)] {
+        let mut honest = ClientNetState::new();
+        honest.reset(1);
+        let mut cheat = ClientNetState::new();
+        cheat.reset(2);
+        let (mut h, mut x) = (0.0f32, 0.0f32);
+        let mut sent = 0u16;
+        for t in 0..ticks {
+            let seq = t as u16;
+            honest.push_frame(walk(seq), None);
+            h += walked(&mut honest);
+            if t % period >= held {
+                while sent <= seq {
+                    cheat.push_frame(walk(sent), None);
+                    sent += 1;
+                }
+            }
+            x += walked(&mut cheat);
+        }
+        assert!(
+            x <= h + allowance,
+            "a {held}-of-{period} lag switch walked {x:.1} strides against an honest {h:.1} \
+             in {ticks} ticks (allowance {allowance})"
+        );
+    }
+}
+
 /// The honest half: a loss burst starves the server, the burst's frames
-/// then arrive together, and every one of them still runs — the starved
-/// ticks earned the credit to catch up.
+/// then arrive together, and every one of them still runs — the bank, and
+/// the starved ticks that stood still, pay for the catch-up.
 #[test]
 fn a_loss_burst_still_catches_up_in_full() {
     let mut c = ClientNetState::new();

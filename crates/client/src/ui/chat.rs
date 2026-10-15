@@ -55,11 +55,12 @@ impl Composer {
     /// Add one character if the whole of it fits inside the byte cap.
     ///
     /// Returns whether it went in, so a caller can decide whether anything
-    /// needs redrawing. Control characters are refused here rather than at
-    /// encode: `sanitize` would refuse the whole line for one of them, and
-    /// silently losing a typed line is worse than never accepting the key.
+    /// needs redrawing. Control characters, and the ones that hide or
+    /// reorder text, are refused here rather than at encode: `sanitize`
+    /// would refuse the whole line for one of them, and silently losing a
+    /// typed line is worse than never accepting the key.
     pub fn push(&mut self, c: char) -> bool {
-        if c.is_control() {
+        if protocol::chat::refused_char(c) {
             return false;
         }
         if self.text.len() + c.len_utf8() > CHAT_MAX_BYTES {
@@ -294,6 +295,12 @@ mod tests {
         assert!(!c.push('\n'));
         assert!(!c.push('\t'));
         assert!(c.text.is_empty());
+        // And the ones `sanitize` refuses a whole line for: a right-to-left
+        // mark a Hebrew layout types is refused at the key, not lost at Enter.
+        for ch in ['\u{200F}', '\u{202E}', '\u{FEFF}', '\u{200B}'] {
+            assert!(!c.push(ch), "{ch:?}");
+        }
+        assert!(c.push('\u{200D}'), "the zero-width joiner spells emoji");
     }
 
     #[test]

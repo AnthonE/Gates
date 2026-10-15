@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 use basis_universal::{sys, DecodeFlags, TranscoderBlockFormat};
 use client::render::props::{prop_models, OCCUPANTS};
 use client::render::structures::{BAG_ASSET, DEPLOY_ASSET, DOOR_LOCKED_ASSET};
-use client::ui::hold::{HeldSrc, HELD_MODELS};
+use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 
 /// Every packed model with a normal map, as it stood on 2026-09-05: bent by
 /// the packer, X/Y means 0.212. Remove an entry when its file is re-packed
@@ -136,9 +136,9 @@ fn packed_models() -> Vec<&'static str> {
             set.insert(*p);
         }
     }
-    // The skins that bring a model of their own (`hold::SKIN_MODELS`).
-    for s in client::ui::hold::SKIN_MODELS.iter() {
-        set.insert(s.path);
+    // The skins with models of their own (#292), which replace a held row's.
+    for m in SKIN_MODELS.iter() {
+        set.insert(m.path);
     }
     set.into_iter().collect()
 }

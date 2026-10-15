@@ -216,12 +216,16 @@ pub const INPUT_THROTTLE_DEPTH: usize = 6;
 /// Catch-up credit (anti-speedhack): the throttle's second frame is spent
 /// from a per-connection credit, never granted by depth alone. Depth alone
 /// let a client that minted frames at 60 Hz keep the buffer past the
-/// threshold and move at 2× forever (found 2026-09-25). A starved tick —
-/// a tick the client genuinely owed a frame for — earns one credit, so a
-/// loss burst still catches up at full speed; a drift trickle of one per
+/// threshold and move at 2× forever (found 2026-09-25). A starved tick on
+/// which the body stood still earns one credit; the decay ramp's walking
+/// ticks (`input::decay_frame`) earn none, because the ghost already moved
+/// the body on them — crediting those too let a lag switch keep the ghost
+/// and still run every withheld frame on time (found 2026-10-15). A loss
+/// burst still pays for its own catch-up; a drift trickle of one per
 /// `INPUT_DRIFT_CREDIT_TICKS` covers clock skew; a fresh connection starts
-/// with a full buffer's worth. Net: a client running ahead gains at most
-/// ~3% over the tick rate, instead of 100%.
+/// with a full buffer's worth. Net: a tick moves the body at most one stride
+/// unless it spends a credit, so a client running ahead or toggling its
+/// uplink gains at most ~3% over the tick rate.
 pub const INPUT_CATCHUP_CREDIT_CAP: u16 = INPUT_BUFFER_CAP as u16;
 /// Ticks per drift credit: one second at 30 Hz.
 pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
