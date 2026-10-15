@@ -119,6 +119,20 @@ pub fn air_dc(
     air_dc_at(cc, arid_pm, alt, day_tick, wx)
 }
 
+/// Where the sky's water turns to snow (snow v0): all of it falls as snow
+/// at and under `SNOW_DC`, all of it as rain from `SLEET_DC`, and the degree
+/// between is sleet, a share of each. Water's own freezing point rather
+/// than a balance knob, so it is code; the client draws the same line off
+/// the air the server sends it (`EventMsg::Exposure`).
+pub const SNOW_DC: i16 = 0;
+pub const SLEET_DC: i16 = 10;
+
+/// How much of what falls is snow in this air, per mille.
+pub fn snow_pm(air_dc: i16) -> u16 {
+    let band = (SLEET_DC - SNOW_DC) as i32;
+    ((SLEET_DC as i32 - air_dc as i32).clamp(0, band) * 1000 / band) as u16
+}
+
 /// How fast a crop grows in this air, per mille (crops and climate v0):
 /// the reference's growth is its worst factor, temperature one of them.
 /// Content with no crop curve grows at full pace whatever the air.
@@ -241,6 +255,15 @@ mod tests {
             ..Wx::default()
         };
         assert_eq!(air_dc_at(&c, 0, 0, peak, &storm), 160 + 48 - 60);
+    }
+
+    #[test]
+    fn it_snows_at_freezing_and_sleets_through_the_degree_above() {
+        assert_eq!(snow_pm(-120), 1000);
+        assert_eq!(snow_pm(0), 1000);
+        assert_eq!(snow_pm(5), 500);
+        assert_eq!(snow_pm(10), 0);
+        assert_eq!(snow_pm(240), 0);
     }
 
     #[test]
