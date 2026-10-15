@@ -171,6 +171,9 @@ pub const SNOW_ALBEDO: f32 = 0.6;
 /// How far under the lowest place it was seen falling the snow fades in, m:
 /// a degree of air at the lapse `[climate]` ships.
 pub const SNOW_FADE_M: f32 = 10.0;
+/// How far past the band of aridity it was seen falling on the snow fades
+/// out (`WeatherNow::snow_arid`), in aridity.
+pub const SNOW_ARID_FADE: f32 = 0.1;
 
 /// The grass at the desert's border, linear: straw, sRGB about (120, 110, 58).
 /// **(knob)**
@@ -444,6 +447,9 @@ pub struct GroundSplatParams {
     /// height it lies from, both live (`terrain_mesh::Ring::set_snow`);
     /// z = [`SNOW_ALBEDO`], w = [`SNOW_FADE_M`].
     pub snow: Vec4,
+    /// x..y the band of aridity it lies on (`WeatherNow::snow_arid`), live;
+    /// z = [`SNOW_ARID_FADE`]; w reserved and zero.
+    pub snow_band: Vec4,
 }
 
 impl GroundSplatParams {
@@ -541,6 +547,9 @@ impl GroundSplatParams {
                 0.0,
             ),
             snow: Vec4::new(0.0, super::weather::NO_SNOW_FLOOR, SNOW_ALBEDO, SNOW_FADE_M),
+            snow_band: super::weather::NO_SNOW_ARID
+                .extend(SNOW_ARID_FADE)
+                .extend(0.0),
         }
     }
 }

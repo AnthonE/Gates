@@ -1,15 +1,15 @@
 // Rain (weather v0): one mesh of streak quads the vertex stage keeps in a
-// box around the eye. Every drop is a random home in the unit box plus the
-// fall velocity times the clock, wrapped into the box around the camera — so
-// the rain follows the player for free and never ends at a seam. Drops whose
-// rank is over the rain's intensity collapse to nothing, which is how one
-// mesh draws a drizzle and a downpour.
+// box around the eye. Every drop is a random home in the unit box plus how
+// far the rain has fallen at its own speed, wrapped into the box around the
+// camera — so the rain follows the player for free and never ends at a seam.
+// Drops whose rank is over the rain's intensity collapse to nothing, which is
+// how one mesh draws a drizzle and a downpour.
 //
 // Snow (snow v0): a drop whose own draw is under the snow share is a flake —
 // a soft round billboard that drifts at a walking pace on its own wobble —
 // so the sleet between rain and snow is a mix of the two.
 #import bevy_pbr::{
-    mesh_view_bindings::{view, globals},
+    mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
 }
 
@@ -21,9 +21,15 @@ struct Rain {
     // rgb: the streak's colour, already lit and exposed. w: the radius
     // around the eye kept clear (a roof overhead), m.
     look: vec4<f32>,
-    // xyz: a snowflake's drift velocity, m/s (wind included). w: the share
-    // of drops that fall as snow, 0..1.
+    // xyz: how far the flakes have drifted, m (wind included), wrapped at
+    // SPEED_STEPS box lengths (`rain::Travel`). w: the share of drops that
+    // fall as snow, 0..1.
     snow: vec4<f32>,
+    // xyz: how far the streaks have fallen, m, wrapped the same. w: the
+    // flakes' wobble clock, s, wrapped where both its swings come round.
+    drops: vec4<f32>,
+    // rgb: a flake's colour, already lit and exposed. w: reserved, zero.
+    flake: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> rain: Rain;
@@ -48,13 +54,14 @@ struct VertexOut {
 
 const WIDTH: f32 = 0.012;
 // A flake's radius, m, before its own size; how far it wanders off its
-// line, m; how much brighter than a streak it is drawn — a flake is white
-// and opaque where a drop is a glint of the sky behind it; and how many
-// more flakes than drops one intensity is, since snow lingers in the air.
+// line, m; and how many more flakes than drops one intensity is, since snow
+// lingers in the air. Its colour is `rain.flake`, lit in `rain.rs`.
 const FLAKE_R: f32 = 0.03;
 const WOBBLE_M: f32 = 0.35;
-const FLAKE_GAIN: f32 = 2.0;
 const FLAKE_DENSITY: f32 = 1.5;
+// `rain::SPEED_STEPS`: a drop's speed is a whole number of these parts of
+// the travel, so the travel's wrap moves it by whole boxes.
+const SPEED_STEPS: f32 = 20.0;
 
 @vertex
 fn vertex(in: VertexIn) -> VertexOut {
@@ -62,14 +69,15 @@ fn vertex(in: VertexIn) -> VertexOut {
     let cam = view.world_position;
     let half = rain.box_.xyz;
     let size = half * 2.0;
-    // Each drop runs on its own phase so a sheet of rain does not fall in
-    // step, and its speed varies a little around the fall.
-    let speed = 0.85 + 0.3 * in.color.y;
-    let t = globals.time + in.color.y * 17.0;
+    // Each drop's speed varies a little around the fall, so a sheet of rain
+    // does not fall in step: 17 to 23 twentieths of the travel.
+    let speed = floor(SPEED_STEPS * (0.85 + 0.3 * in.color.y) + 0.5) / SPEED_STEPS;
     let flake = in.color.z < rain.snow.w;
-    var p = in.position * size + select(rain.fall.xyz, rain.snow.xyz, flake) * speed * t;
+    var p = in.position * size + select(rain.drops.xyz, rain.snow.xyz, flake) * speed;
     if flake {
-        // A flake wanders off its line on two slow swings of its own.
+        // A flake wanders off its line on two slow swings of its own, on a
+        // clock that wraps where both come round (`rain::WOBBLE_PERIOD_S`).
+        let t = rain.drops.w;
         let ph = in.color.y * 40.0;
         p = p + vec3(sin(t * 1.3 + ph), 0.0, cos(t * 0.9 + ph * 1.7)) * WOBBLE_M;
     }
@@ -121,7 +129,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         // A soft round flake: solid at its heart, gone at the quad's edge.
         let d = length(vec2(in.uv.x, in.uv.y * 2.0 - 1.0));
         let a = in.fade * (1.0 - smoothstep(0.3, 1.0, d)) * 0.85;
-        return vec4(rain.look.rgb * FLAKE_GAIN, a);
+        return vec4(rain.flake.rgb, a);
     }
     let across = 1.0 - abs(in.uv.x);
     let a = in.fade * across * (1.0 - in.uv.y * 0.75) * 0.4;

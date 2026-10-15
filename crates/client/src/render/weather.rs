@@ -97,6 +97,14 @@ pub struct WeatherNow {
     /// bare, metres: the snow lies there and on everything higher, where
     /// the air is colder still (`climate::air_dc_at`'s lapse).
     pub snow_floor: f32,
+    /// The least and the most arid ground (`terrain::aridity`) the eye has
+    /// seen snow fall on since the ground was last bare: the snow lies only
+    /// on that band. The air is a function of the aridity and the height
+    /// alone at any one moment, and which of desert and green is colder
+    /// turns with the hour, so only ground as arid as where it fell, and as
+    /// high, is surely as cold. A dawn storm that snows on the desert
+    /// leaves the green south bare.
+    pub snow_arid: Vec2,
 }
 
 impl WeatherNow {
@@ -170,6 +178,10 @@ pub const SNOW_MELT_S: f32 = 400.0;
 pub const SNOW_FLOOR_SLACK_M: f32 = 3.0;
 /// Where no snow has been seen: above any ground there is.
 pub const NO_SNOW_FLOOR: f32 = 10_000.0;
+/// [`WeatherNow::snow_arid`] with no snow seen (an empty band), and over
+/// all the ground there is.
+pub const NO_SNOW_ARID: Vec2 = Vec2::new(2.0, -1.0);
+pub const ALL_ARID: Vec2 = Vec2::new(-1.0, 2.0);
 
 /// The wind's bearing (a yaw-LUT index, the sim's convention) as a unit
 /// vector in world XZ.
@@ -250,6 +262,7 @@ pub fn update(
         now.ground_wet = now.falling_rain();
         now.ground_snow = snow;
         now.snow_floor = -NO_SNOW_FLOOR;
+        now.snow_arid = ALL_ARID;
         now.flash = 0.0;
     } else {
         // The deck drifts downwind: a breeze at clear, a gale in a storm.
@@ -276,16 +289,20 @@ pub fn update(
         now.ground_wet += (wet - now.ground_wet) * (dt / tau).min(1.0);
         // The snow settles as hard as it falls, stays while it freezes and
         // melts as the air warms. It lies from the lowest feet that saw it
-        // fall and up; bare ground forgets the line.
+        // fall and up, on ground as arid as where it fell; bare ground
+        // forgets the line and the band.
         let settle = now.rain * now.snow / SNOW_SETTLE_S;
         let melt = (1.0 - now.snow) * now.ground_snow / SNOW_MELT_S;
         now.ground_snow = (now.ground_snow + (settle - melt) * dt).clamp(0.0, 1.0);
         if now.ground_snow < 0.01 {
             now.snow_floor = NO_SNOW_FLOOR;
+            now.snow_arid = NO_SNOW_ARID;
         }
         if now.rain * now.snow > 0.05 {
             let feet = eye.pos.y - eye.height - SNOW_FLOOR_SLACK_M;
             now.snow_floor = now.snow_floor.min(feet);
+            let arid = sim_core::terrain::aridity(world.seed, eye.pos.x, eye.pos.z);
+            now.snow_arid = Vec2::new(now.snow_arid.x.min(arid), now.snow_arid.y.max(arid));
         }
 
         // Lightning: this second's bolt and the last one's, since a bolt

@@ -4,9 +4,10 @@
 //! entity pools of a hundred-odd sparks; rain wants thousands of drops a
 //! frame and a WebGL2 target, so it is a fixed mesh of streak quads whose
 //! vertex stage (`assets/shaders/rain.wgsl`) wraps each drop into a box
-//! around the camera by the clock. How hard it rains is how many drops are
-//! alive — drops ranked over the intensity collapse — so a drizzle and a
-//! storm are the same mesh with one number moved.
+//! around the camera by how far the rain has fallen ([`Travel`]). How hard
+//! it rains is how many drops are alive — drops ranked over the intensity
+//! collapse — so a drizzle and a storm are the same mesh with one number
+//! moved.
 //!
 //! Under a roof the drops within a few metres of the eye are put out and the
 //! depth test hides the rest behind the walls; underwater there is no rain.
@@ -44,8 +45,25 @@ pub const FALL_MS: f32 = 9.0;
 pub const SHELTER_CLEAR_M: f32 = 5.0;
 /// How fast a snowflake falls, m/s — the reference band is 1 to 1.5.
 pub const SNOW_FALL_MS: f32 = 1.2;
+/// The rain's glint by night: the light a streak gives back with no sun.
+pub const GLINT: f32 = 0.12;
+/// How much brighter a flake is drawn than a streak in the sun's share of
+/// the light — a flake is white and opaque where a drop is a glint of the
+/// sky behind it — and its share of the night's glint: a flake peaks at
+/// twice a streak's alpha, so at half the colour it is no brighter than
+/// one in the dark, where the ground draws near black (`rig.rs`).
+pub const FLAKE_GAIN: f32 = 2.0;
+pub const FLAKE_GLINT: f32 = 0.5;
+/// Each drop falls at its own whole number of `1 / SPEED_STEPS` of the
+/// travel (17 to 23 twentieths), so the travel wrapped at `SPEED_STEPS` box
+/// lengths moves every drop by whole boxes, which the wrap around the eye
+/// cannot see. `rain.wgsl` draws the speeds the same way.
+pub const SPEED_STEPS: f32 = 20.0;
+/// A flake's wobble swings at 1.3 and 0.9 rad/s (`rain.wgsl`), and both
+/// come round together every 20π s: its clock wraps there.
+pub const WOBBLE_PERIOD_S: f32 = 20.0 * std::f32::consts::PI;
 
-/// The uniform, laid out to match `Rain` in the shader. 64 bytes: WebGL2
+/// The uniform, laid out to match `Rain` in the shader. 96 bytes: WebGL2
 /// wants uniforms of at least 16.
 #[derive(Clone, Copy, Default, ShaderType, Debug, PartialEq)]
 pub struct RainParams {
@@ -55,9 +73,38 @@ pub struct RainParams {
     pub box_: Vec4,
     /// rgb the streak's lit colour, w the sheltered clear radius (m).
     pub look: Vec4,
-    /// xyz a snowflake's drift velocity (m/s), w the share of drops that
-    /// fall as snow `0..1` (snow v0).
+    /// xyz how far the flakes have travelled ([`Travel::flakes`], m), w
+    /// the share of drops that fall as snow `0..1` (snow v0).
     pub snow: Vec4,
+    /// xyz how far the streaks have travelled ([`Travel::drops`], m), w the
+    /// flakes' wobble clock ([`Travel::wobble`], s).
+    pub drops: Vec4,
+    /// rgb a flake's lit colour; w reserved and zero.
+    pub flake: Vec4,
+}
+
+/// How far the streaks and the flakes have travelled, metres, and the
+/// flakes' wobble clock, seconds (snow v0): integrated off the frame clock
+/// and the live wind rather than `velocity × clock` in the shader, so a
+/// wind shift turns the fall instead of throwing every drop across the box,
+/// and wrapped where no drop can see it (`SPEED_STEPS`, `WOBBLE_PERIOD_S`),
+/// so the clock's hourly wrap is not a jump either.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Travel {
+    pub drops: Vec3,
+    pub flakes: Vec3,
+    pub wobble: f32,
+}
+
+impl Travel {
+    /// `dt` seconds of the streaks falling at `fall` and the flakes
+    /// drifting at `drift`, m/s.
+    pub fn advance(&mut self, fall: Vec3, drift: Vec3, dt: f32) {
+        let wrap = 2.0 * BOX_HALF * SPEED_STEPS;
+        self.drops = (self.drops + fall * dt).rem_euclid(wrap);
+        self.flakes = (self.flakes + drift * dt).rem_euclid(wrap);
+        self.wobble = (self.wobble + dt).rem_euclid(WOBBLE_PERIOD_S);
+    }
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
@@ -145,23 +192,43 @@ pub fn drop_mesh(drops: u32) -> Mesh {
     mesh
 }
 
-/// What the rain looks like in this weather: dry and still is all zeros.
-pub fn params_for(w: &WeatherNow) -> RainParams {
-    let intensity = if w.underwater { 0.0 } else { w.rain };
+/// The streaks' fall and the flakes' drift in this weather, m/s. A flake
+/// rides the same wind down at a walking pace, so a storm's snow drives
+/// near level.
+pub fn velocities(w: &WeatherNow) -> (Vec3, Vec3) {
     let wind = w.wind_dir * (1.0 + 7.0 * w.wind);
     let fall = Vec3::new(wind.x, -(FALL_MS + 2.0 * w.rain), wind.y);
-    // Lit by the sky it falls from: bright grey by day, a glint by night,
-    // a white sheet in a flash.
-    let lit = (0.12 + 0.6 * w.sun_lux * (1.0 - 0.45 * w.dark)).min(0.8) + 1.5 * w.flash;
-    let clear = if w.sheltered { SHELTER_CLEAR_M } else { 0.0 };
-    // A flake rides the same wind down at a walking pace, so a storm's snow
-    // drives near level.
     let drift = Vec3::new(wind.x, -SNOW_FALL_MS, wind.y);
+    (fall, drift)
+}
+
+/// How hard it rains as drawn: not at all under the sea.
+pub fn intensity(w: &WeatherNow) -> f32 {
+    if w.underwater {
+        0.0
+    } else {
+        w.rain
+    }
+}
+
+/// What the rain looks like in this weather, `at` the travel so far.
+pub fn params_for(w: &WeatherNow, at: &Travel) -> RainParams {
+    let (fall, _) = velocities(w);
+    // Lit by the sky it falls from: bright grey by day, a glint by night,
+    // a white sheet in a flash. A flake gives back more of the sun and
+    // less of the glint (`FLAKE_GAIN`, `FLAKE_GLINT`).
+    let sky = (GLINT + 0.6 * w.sun_lux * (1.0 - 0.45 * w.dark)).min(0.8);
+    let lit = sky + 1.5 * w.flash;
+    let flake = GLINT * FLAKE_GLINT + (sky - GLINT) * FLAKE_GAIN + 1.5 * w.flash;
+    let clear = if w.sheltered { SHELTER_CLEAR_M } else { 0.0 };
+    let tint = |l: f32| Vec3::new(0.55 * l, 0.58 * l, 0.62 * l);
     RainParams {
         fall: fall.extend(0.45 + 0.3 * w.rain),
-        box_: BOX_HALF.extend(intensity),
-        look: Vec4::new(0.55 * lit, 0.58 * lit, 0.62 * lit, clear),
-        snow: drift.extend(w.snow.clamp(0.0, 1.0)),
+        box_: BOX_HALF.extend(intensity(w)),
+        look: tint(lit).extend(clear),
+        snow: at.flakes.extend(w.snow.clamp(0.0, 1.0)),
+        drops: at.drops.extend(at.wobble),
+        flake: tint(flake).extend(0.0),
     }
 }
 
@@ -188,16 +255,23 @@ pub fn setup(
 }
 
 /// Move the rain and the ground's wetness and snow with the weather. Writes
-/// only when something moved, since a write re-uploads a material.
+/// only when something moved, since a write re-uploads a material: the
+/// travel moves only while there are drops to show it.
 pub fn drive(
     weather: Res<WeatherNow>,
+    time: Res<Time>,
     handle: Option<Res<RainHandle>>,
     mut rain: ResMut<Assets<RainMaterial>>,
     ring: Res<super::terrain_mesh::Ring>,
     mut ground: ResMut<Assets<super::ground_splat::GroundMaterial>>,
+    mut travel: Local<Travel>,
 ) {
+    if intensity(&weather) > 0.0 {
+        let (fall, drift) = velocities(&weather);
+        travel.advance(fall, drift, time.delta_secs());
+    }
     if let Some(handle) = handle {
-        let want = params_for(&weather);
+        let want = params_for(&weather, &travel);
         let stale = rain.get(&handle.0).is_some_and(|m| m.params != want);
         if stale {
             if let Some(m) = rain.get_mut(&handle.0) {
@@ -208,7 +282,10 @@ pub fn drive(
     // The ground in steps of 1/64: a smooth soak without a re-upload a frame.
     let wet = (weather.ground_wet * 64.0).round() / 64.0;
     ring.set_rain_wet(&mut ground, wet);
-    // The snow the same way, and its floor in whole metres.
+    // The snow the same way, its floor in whole metres and its band of
+    // aridity widened to steps of 1/32.
     let snow = (weather.ground_snow * 64.0).round() / 64.0;
-    ring.set_snow(&mut ground, snow, weather.snow_floor.round());
+    let arid = weather.snow_arid;
+    let band = Vec2::new((arid.x * 32.0).floor(), (arid.y * 32.0).ceil()) / 32.0;
+    ring.set_snow(&mut ground, snow, weather.snow_floor.round(), band);
 }

@@ -662,8 +662,9 @@ fn the_heat_burns_water() {
 
 /// Snow (snow v0): where the air freezes the rain falls as snow and wets a
 /// body at `snow_wet_pm` of the rain's rate, sleet at a share of each, and
-/// a roof keeps it off the same. Without the air armed the air reads 0 °C
-/// everywhere, and that is not a winter: the rain wets as rain.
+/// a roof keeps it off the same. The air alone says what falls — it is the
+/// reading the owner's sky is drawn from — so content whose cold does not
+/// read the air still has its snow wet as snow.
 #[test]
 fn snow_wets_less_than_rain() {
     let mut ec = air_fixture();
@@ -692,12 +693,34 @@ fn snow_wets_less_than_rain() {
         air_dc: 0,
         ..Inputs::default()
     };
-    assert_eq!(exposure::snow_pm(&ec, &freezing), 1000);
+    assert_eq!(exposure::snow_pm(&freezing), 1000);
     assert_eq!(wet_after(&ec, -80, true), 0, "a roof keeps the snow off");
-    // The air unarmed: 0 °C is no say at all.
-    let flat = ExposureContent {
-        snow_wet_pm: 500,
-        ..ExposureContent::probe_fixture()
+    // Heat only: the cold ignores the air, and the snow still does not.
+    let heat_only = ExposureContent {
+        cold_per_c: 0,
+        ..ec
     };
-    assert_eq!(wet_after(&flat, 0, false), 2 * flat.wet_rain_per_s);
+    assert_eq!(wet_after(&heat_only, -80, false), snow, "the sky says snow");
+}
+
+/// A body reads the air at the door (snow v0). The owner's first readout
+/// goes out before the body's first exposure step, which is up to a second
+/// away on its stagger, and a default 0 °C there is snow in its sky.
+#[test]
+fn a_body_reads_the_air_at_the_door() {
+    let mut w = cold_world();
+    // Mild everywhere at every hour, so the reading is one number.
+    w.survival.exposure.air = sim_core::climate::ClimateContent {
+        temperate_low_dc: 150,
+        temperate_high_dc: 150,
+        arid_low_dc: 150,
+        arid_high_dc: 150,
+        ..sim_core::climate::ClimateContent::EMPTY
+    };
+    // Off the step's tick, so only the door can have read it.
+    w.tick(&[]);
+    w.tick(&[]);
+    w.tick(&[Command::Join { id: 1 }]);
+    assert!(w.players[0].active);
+    assert_eq!(w.players[0].air_dc, 150, "the body came in at 0 °C");
 }

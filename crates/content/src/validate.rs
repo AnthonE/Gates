@@ -949,6 +949,22 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if cl.cloud_flatten_pm > 1000 || cl.lapse_from_m > u16::MAX as u32 || cl.lapse_m > 1000 {
             return Err("[climate]: cloud past 1000 per mille or a lapse out of range".into());
         }
+        // Snow (snow v0): an armed exposure reads the air for what falls,
+        // and with no `[climate]` the air is 0 °C everywhere: every rain
+        // would be snow, on the bodies and in every client's sky.
+        let no_air = [
+            cl.temperate_low_c,
+            cl.temperate_high_c,
+            cl.arid_low_c,
+            cl.arid_high_c,
+        ] == [0; 4];
+        if e.chill_rise_per_s > 0 && no_air {
+            return Err(
+                "[exposure] is armed with no [climate]: the air would read 0 °C \
+                 everywhere and every rain would fall as snow"
+                    .into(),
+            );
+        }
         let crop = [
             cl.crop_frost_c,
             cl.crop_warm_c,

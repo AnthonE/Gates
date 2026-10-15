@@ -120,8 +120,8 @@ pub struct ExposureContent {
     pub heat_hurt_at: u16,
     pub heat_hp_per_min: u16,
     /// Snow (snow v0): per mille of the rain's wetting that snow does — the
-    /// reference's `wetness_snow` 0.2 against `wetness_rain` 0.4. Read only
-    /// with the air armed (`cold_per_c`), since the air decides what falls.
+    /// reference's `wetness_snow` 0.2 against `wetness_rain` 0.4. The air
+    /// at the body decides what falls ([`snow_pm`]).
     pub snow_wet_pm: u16,
     /// Per item index: the chill a worn piece keeps out. Negative draws it
     /// in — a road sign jacket is a sheet of metal — as a per-mille share
@@ -272,13 +272,13 @@ pub fn feel_pm(ec: &ExposureContent, inp: &Inputs) -> i32 {
 }
 
 /// How much of what falls on this body is snow, per mille (snow v0): the
-/// air's say (`climate::snow_pm`), and none without the air armed — an
-/// unarmed air reads 0 °C everywhere, which is not a winter.
+/// air's say alone (`climate::snow_pm`). It is the air the owner's readout
+/// carries, and the client draws its sky off that reading by the same line,
+/// so the body and the sky cannot disagree about what falls — whatever the
+/// cold or the heat make of the air. Content keeps the air real: an armed
+/// `[exposure]` needs a `[climate]` (`content::validate`).
 #[inline]
-pub fn snow_pm(ec: &ExposureContent, inp: &Inputs) -> u16 {
-    if ec.cold_per_c == 0 {
-        return 0;
-    }
+pub fn snow_pm(inp: &Inputs) -> u16 {
     crate::climate::snow_pm(inp.air_dc)
 }
 
@@ -386,7 +386,7 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
     // fire. Standing in the sea holds it at least as wet as the water is
     // deep.
     if inp.rain > 0 && !inp.roofed {
-        let snow = snow_pm(ec, inp) as u64;
+        let snow = snow_pm(inp) as u64;
         let keep = 1000 - snow * (1000 - ec.snow_wet_pm.min(1000) as u64) / 1000;
         let add = inp.rain as u64 * ec.wet_rain_per_s as u64 * keep / 1_000_000;
         p.wet = p.wet.saturating_add(add.min(1000) as u16).min(1000);
