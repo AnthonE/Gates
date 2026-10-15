@@ -35,8 +35,23 @@ use crate::terrain::{self, Haven};
 
 /// Edge of one formation cell, metres.
 pub const BOULDER_CELL_M: f32 = 64.0;
-/// Blocks one formation may hold.
-pub const BLOCKS_PER_CELL: usize = 8;
+/// Blocks one formation may hold: its own [`FORMATION_BLOCKS`] and up to
+/// [`STRAYS_PER_CELL`] lone boulders.
+pub const BLOCKS_PER_CELL: usize = FORMATION_BLOCKS + STRAYS_PER_CELL;
+/// Blocks the formation itself may hold.
+pub const FORMATION_BLOCKS: usize = 8;
+/// Lone boulders a formation cell may also hold, wherever its formation is
+/// or is not (operator, 2026-10-14: "the random rocks we cant mine need to
+/// be WAY WAY bigger. so no confusion"). They took over from the scatter's
+/// `Rock`, a 2.2 m stone the size of an ore node; a stray is 4–8 m across
+/// and blocks as the box it is drawn on.
+pub const STRAYS_PER_CELL: usize = 4;
+/// A stray's longer half-extent, metres.
+pub const STRAY_HALF: (f32, f32) = (2.2, 4.2);
+/// The least a stray stands over the ground, metres.
+pub const STRAY_MIN_H: f32 = 2.4;
+/// How far a stray is kept inside its cell, metres.
+const STRAY_INSET_M: f32 = 6.0;
 /// Longest half-extent a block is planned with, metres.
 pub const BLOCK_HALF_MAX: f32 = 10.0;
 /// Shortest half-extent a block is kept with, metres. Smaller is the
@@ -52,6 +67,8 @@ const ANCHOR_INSET_M: f32 = 16.0;
 /// the cells this can reach.
 pub const FORMATION_REACH_M: f32 =
     (BOULDER_CELL_M * 0.5 - ANCHOR_INSET_M) * 1.4143 + FORMATION_BODY_M;
+/// How far a stray can reach from its cell's centre, metres.
+const STRAY_REACH_M: f32 = (BOULDER_CELL_M * 0.5 - STRAY_INSET_M + STRAY_HALF.1) * 1.4143;
 /// Corner cut of every block's footprint: a point is inside when
 /// `|lx|/hx + |lz|/hz ≤ 2 − CHAMFER`. The drawn block rounds its vertical
 /// edges to about the same line (`render/boulders.rs`).
@@ -74,12 +91,17 @@ const WALL: f32 = 1e3;
 pub const ON_GROUND: u8 = u8::MAX;
 
 const CH_BOULDER: u32 = 176;
+/// The strays' own draws, clear of the formation's.
+const CH_STRAY_DRAW: u32 = 0x00B1_0000;
 /// The plan's own draws start here, one channel per four draws.
 const CH_BLOCK_DRAW: u32 = 0x00B0_0000;
 
 const _: () = {
     // The query scans the formation cells a reach can touch, 3×3 at most.
     assert!(FORMATION_REACH_M < BOULDER_CELL_M);
+    // A stray stays inside what a query scans for its cell.
+    assert!(STRAY_REACH_M < FORMATION_REACH_M);
+    assert!(STRAY_HALF.0 * 0.65 > BLOCK_HALF_FLOOR);
     assert!(BLOCK_HALF_FLOOR < BLOCK_HALF_MAX);
     assert!(TILT_MAX < terrain::CLIFF_SLOPE_RATIO);
     assert!(BLOCKS_PER_CELL < ON_GROUND as usize);
@@ -193,11 +215,15 @@ struct Draw {
 
 impl Draw {
     fn new(seed: u64, bx: i32, bz: i32) -> Self {
+        Self::on(seed, bx, bz, CH_BLOCK_DRAW)
+    }
+
+    fn on(seed: u64, bx: i32, bz: i32, ch: u32) -> Self {
         Draw {
             seed,
             bx,
             bz,
-            ch: CH_BLOCK_DRAW,
+            ch,
             bits: 0,
             left: 0,
         }
@@ -253,7 +279,7 @@ fn planned(x: f32, z: f32, hx: f32, hz: f32, hgt: f32, yaw: u16, d: &mut Draw, o
 /// Keep `b` if it is big enough and inside the formation's body. Its index,
 /// if kept.
 fn push(f: &mut Formation, b: Block, ax: f32, az: f32) -> Option<u8> {
-    if b.hx < BLOCK_HALF_FLOOR || b.hz < BLOCK_HALF_FLOOR || f.n as usize >= BLOCKS_PER_CELL {
+    if b.hx < BLOCK_HALF_FLOOR || b.hz < BLOCK_HALF_FLOOR || f.n as usize >= FORMATION_BLOCKS {
         return None;
     }
     let (dx, dz) = (b.x - ax, b.z - az);
@@ -417,6 +443,51 @@ fn pile(f: &mut Formation, d: &mut Draw, ax: f32, az: f32, big: f32) {
     }
 }
 
+/// A cell's lone boulders from its hash alone, with the roll each one's
+/// density is compared against. Footprints are final; heights are not.
+fn stray_plan(seed: u64, bcx: i32, bcz: i32) -> ([f32; STRAYS_PER_CELL], [Block; STRAYS_PER_CELL]) {
+    let mut d = Draw::on(seed, bcx, bcz, CH_STRAY_DRAW);
+    let mut rolls = [1.0f32; STRAYS_PER_CELL];
+    let mut out = [Formation::EMPTY.blocks[0]; STRAYS_PER_CELL];
+    let span = BOULDER_CELL_M - 2.0 * STRAY_INSET_M;
+    for (roll, b) in rolls.iter_mut().zip(out.iter_mut()) {
+        *roll = d.unit();
+        let x = bcx as f32 * BOULDER_CELL_M + STRAY_INSET_M + d.unit() * span;
+        let z = bcz as f32 * BOULDER_CELL_M + STRAY_INSET_M + d.unit() * span;
+        // Skewed small: most are a car, a few are a cottage.
+        let t = d.unit();
+        let hx = STRAY_HALF.0 + (STRAY_HALF.1 - STRAY_HALF.0) * t * t;
+        let hz = hx * d.range(0.65, 1.0);
+        let hgt = (hz * d.range(1.0, 1.5)).max(STRAY_MIN_H);
+        let yaw = (d.unit() * 65_536.0) as u16;
+        *b = planned(x, z, hx, hz, hgt, yaw, &mut d, ON_GROUND);
+    }
+    (rolls, out)
+}
+
+/// Most any biome asks of a stray; a roll above it is skipped without a tap.
+const STRAY_DENSITY_MAX: f32 = 0.5;
+
+/// How likely each stray candidate is on ground of this height, moisture and
+/// slope — [`density`]'s shape: rockier up high and on the slopes.
+fn stray_density(h: f32, moist: f32, slope: f32) -> f32 {
+    if h < terrain::LAND_MIN_H + 0.4 || slope > terrain::CLIFF_SLOPE_RATIO * 1.2 {
+        return 0.0;
+    }
+    if h < terrain::BEACH_MAX_H + 1.5 {
+        return 0.12;
+    }
+    if h > terrain::TREELINE_H - 12.0 {
+        return STRAY_DENSITY_MAX;
+    }
+    let lift = ((h - 20.0) * (1.0 / 40.0)).clamp(0.0, 1.0) * 0.2 + slope.min(1.0) * 0.15;
+    if moist > 0.05 {
+        0.12 + lift
+    } else {
+        0.2 + lift
+    }
+}
+
 /// Most any biome asks for; a roll above it is an empty cell without a tap.
 const DENSITY_MAX: f32 = 0.62;
 
@@ -481,22 +552,65 @@ fn clear(haven: &Haven, x: f32, z: f32, r: f32) -> bool {
 }
 
 /// The formation standing in cell (`bcx`, `bcz`), resolved: heights tapped,
-/// vetoes applied. Costs a handful of `height` taps a block for a present
-/// cell and a hash for an empty one.
+/// vetoes applied, its lone boulders after it. Costs a handful of taps a
+/// block, and a few for each stray candidate whose roll is in reach.
 pub fn formation(seed: u64, haven: &Haven, bcx: i32, bcz: i32) -> Formation {
     let side = cells_per_side();
     if bcx < 0 || bcz < 0 || bcx >= side || bcz >= side {
         return Formation::EMPTY;
     }
+    let mut lat = terrain::Lattice::new();
+    let mut out = core(&mut lat, seed, haven, bcx, bcz);
+    strays(&mut out, &mut lat, seed, haven, bcx, bcz);
+    out
+}
+
+/// The cell's lone boulders, after its formation: each its own density roll,
+/// standing clear of every block already there, the roads and the sites.
+fn strays(
+    out: &mut Formation,
+    lat: &mut terrain::Lattice,
+    seed: u64,
+    haven: &Haven,
+    bcx: i32,
+    bcz: i32,
+) {
+    let (rolls, plan) = stray_plan(seed, bcx, bcz);
+    for (roll, pb) in rolls.iter().zip(plan.iter()) {
+        if *roll >= STRAY_DENSITY_MAX {
+            continue;
+        }
+        let mut b = *pb;
+        let h = terrain::height_memo(lat, seed, b.x, b.z);
+        let moist = terrain::moisture_memo(lat, seed, b.x, b.z);
+        let slope = terrain::slope_memo(lat, seed, b.x, b.z);
+        if *roll >= stray_density(h, moist, slope) {
+            continue;
+        }
+        let r = b.radius();
+        let apart = out.iter().all(|o| {
+            let (dx, dz) = (b.x - o.x, b.z - o.z);
+            let gap = r + o.radius();
+            dx * dx + dz * dz >= gap * gap
+        });
+        if !apart || !clear(haven, b.x, b.z, r) || !seat(&mut b, lat, seed) {
+            continue;
+        }
+        out.blocks[out.n as usize] = b;
+        out.n += 1;
+    }
+}
+
+/// The cell's formation proper, without its strays.
+fn core(lat: &mut terrain::Lattice, seed: u64, haven: &Haven, bcx: i32, bcz: i32) -> Formation {
     let (roll, plan) = plan(seed, bcx, bcz);
     if roll >= DENSITY_MAX || plan.n == 0 {
         return Formation::EMPTY;
     }
-    let mut lat = terrain::Lattice::new();
     let main = plan.blocks[0];
-    let h0 = terrain::height_memo(&mut lat, seed, main.x, main.z);
-    let moist = terrain::moisture_memo(&mut lat, seed, main.x, main.z);
-    let slope = terrain::slope_memo(&mut lat, seed, main.x, main.z);
+    let h0 = terrain::height_memo(lat, seed, main.x, main.z);
+    let moist = terrain::moisture_memo(lat, seed, main.x, main.z);
+    let slope = terrain::slope_memo(lat, seed, main.x, main.z);
     if roll >= density(h0, moist, slope) {
         return Formation::EMPTY;
     }
@@ -504,7 +618,7 @@ pub fn formation(seed: u64, haven: &Haven, bcx: i32, bcz: i32) -> Formation {
     let beach = h0 < terrain::BEACH_MAX_H + 1.5;
     let mut out = Formation::EMPTY;
     // Plan index → resolved index, for the blocks that rest on others.
-    let mut kept = [ON_GROUND; BLOCKS_PER_CELL];
+    let mut kept = [ON_GROUND; FORMATION_BLOCKS];
     for (i, pb) in plan.iter().enumerate() {
         let mut b = *pb;
         if beach {
@@ -524,7 +638,7 @@ pub fn formation(seed: u64, haven: &Haven, bcx: i32, bcz: i32) -> Formation {
             continue;
         }
         if b.on == ON_GROUND {
-            if !seat(&mut b, &mut lat, seed) {
+            if !seat(&mut b, lat, seed) {
                 continue;
             }
         } else {
@@ -642,15 +756,20 @@ pub fn covers(seed: u64, haven: &Haven, x: f32, z: f32, pad: f32) -> bool {
         }
         // Cheap reject before any tap: a cell whose layout cannot reach. The
         // plan's footprints bound the resolved ones (a beach only shrinks).
-        let (roll, plan) = plan(seed, bx, bz);
-        if roll >= DENSITY_MAX {
-            return;
-        }
-        let near = plan.iter().any(|b| {
+        let within = |b: &Block| {
             let r = b.radius() + pad;
             let (dx, dz) = (x - b.x, z - b.z);
             dx * dx + dz * dz < r * r
-        });
+        };
+        let (roll, plan) = plan(seed, bx, bz);
+        let near = roll < DENSITY_MAX && plan.iter().any(within);
+        let near = near || {
+            let (rolls, strays) = stray_plan(seed, bx, bz);
+            rolls
+                .iter()
+                .zip(strays.iter())
+                .any(|(r, b)| *r < STRAY_DENSITY_MAX && within(b))
+        };
         if !near {
             return;
         }
