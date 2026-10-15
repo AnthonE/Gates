@@ -666,18 +666,18 @@ pub const HELD_MODELS: [HeldModelDef; 94] = [
         0.50,
         0.08,
     ),
-    // **Every other item, from the prop kit** (`render::heldkit`): built out
-    // of primitives, baked to one mesh with its paint, its chamfers and its
-    // crevices' shadow in the vertices, and the same mesh its icon is
-    // photographed from. Heights are the baked mesh's own (the gate measures
-    // them); grips and scales were judged on `iconbake --hand`, against the
-    // medkit's.
+    // **Every other item**: generated on Meshy where version 2 has landed
+    // (`assets/models/MANIFEST.md` §held, `WANTED.md` §12), and from the prop
+    // kit (`render::heldkit`) where it has not yet — primitives baked to one
+    // mesh with its paint, its chamfers and its crevices' shadow in the
+    // vertices. Either way the icon is photographed from the same mesh.
+    // Heights are the model's own (the gate measures them); grips and scales
+    // were judged on `iconbake --hand`, against the medkit's.
     //
     // Things with a haft, a roll or a body to close on are palmed upright.
     HeldModelDef::kit("gears", 0.263, 0.45, 0.70),
-    HeldModelDef::kit("junk", 0.212, 0.45, 0.70),
     HeldModelDef::kit("rope", 0.142, 0.50, 0.70),
-    HeldModelDef::kit("leather", 0.128, 0.50, 0.70),
+    HeldModelDef::upright("leather", "models/held/leather.glb", 0.110, 0.50, 0.70),
     HeldModelDef::kit("road_signs", 0.260, 0.40, 0.60),
     HeldModelDef::kit("sewing_kit", 0.114, 0.50, 1.00),
     HeldModelDef::kit("blueprint", 0.100, 0.50, 0.80),
@@ -696,12 +696,25 @@ pub const HELD_MODELS: [HeldModelDef; 94] = [
     HeldModelDef::kit("full_waterskin", 0.321, 0.45, 0.90),
     // Handfuls, armfuls, folded things and clothes rest on the open palm;
     // a garment turned to show its front rather than its edge.
-    HeldModelDef::kit_borne("stone", 0.123, 0.15, 0.90),
-    HeldModelDef::kit_borne("metal_ore", 0.126, 0.15, 0.90),
-    HeldModelDef::kit_borne("sulfur_ore", 0.137, 0.15, 0.90),
+    HeldModelDef::borne("stone", "models/held/stone.glb", 0.217, 0.15, 0.90),
+    HeldModelDef::borne("metal_ore", "models/held/metal_ore.glb", 0.143, 0.15, 0.90),
+    HeldModelDef::borne(
+        "sulfur_ore",
+        "models/held/sulfur_ore.glb",
+        0.185,
+        0.15,
+        0.90,
+    ),
     HeldModelDef::kit_borne("animal_fat", 0.173, 0.15, 0.90),
-    HeldModelDef::kit_borne("charcoal", 0.145, 0.15, 0.80),
-    HeldModelDef::kit_borne("metal_fragments", 0.103, 0.15, 0.90),
+    HeldModelDef::borne("charcoal", "models/held/charcoal.glb", 0.145, 0.15, 0.80),
+    HeldModelDef::borne("junk", "models/held/junk.glb", 0.183, 0.15, 0.70),
+    HeldModelDef::borne(
+        "metal_fragments",
+        "models/held/metal_fragments.glb",
+        0.097,
+        0.15,
+        0.90,
+    ),
     HeldModelDef::kit_borne("sulfur", 0.167, 0.12, 0.50),
     HeldModelDef::kit_borne("gunpowder", 0.163, 0.12, 0.50),
     HeldModelDef::kit_borne("bone_fragments", 0.091, 0.15, 0.90),
@@ -709,10 +722,16 @@ pub const HELD_MODELS: [HeldModelDef; 94] = [
     HeldModelDef::kit_borne("tech_trash", 0.042, 0.30, 0.80),
     HeldModelDef::kit_borne("corn_seed", 0.030, 0.30, 1.00),
     HeldModelDef::kit_borne("hemp_seed", 0.022, 0.30, 1.00),
-    HeldModelDef::kit_borne("wood", 0.236, 0.15, 0.50),
-    HeldModelDef::kit_borne("cloth", 0.140, 0.15, 0.60),
+    HeldModelDef::borne("wood", "models/held/wood.glb", 0.267, 0.15, 0.50).yawed(-0.9),
+    HeldModelDef::borne("cloth", "models/held/cloth.glb", 0.144, 0.15, 0.60),
     HeldModelDef::kit_borne("tarp", 0.101, 0.15, 0.55),
-    HeldModelDef::kit_borne("low_grade_fuel", 0.327, 0.10, 0.60),
+    HeldModelDef::borne(
+        "low_grade_fuel",
+        "models/held/low_grade_fuel.glb",
+        0.330,
+        0.10,
+        0.60,
+    ),
     HeldModelDef::kit_borne("empty_propane_tank", 0.366, 0.10, 0.55),
     HeldModelDef::kit_borne("burlap_tunic", 0.452, 0.12, 0.45).yawed(GARMENT_YAW),
     HeldModelDef::kit_borne("burlap_hood", 0.250, 0.12, 0.55),
@@ -1159,9 +1178,21 @@ impl HeldModelDef {
     /// from the hand by its top instead (the deployables' carry), a can or a
     /// coat dropped out of the bottom of the frame (`iconbake --hand`).
     const fn kit_borne(key: &'static str, height_m: f32, grip_frac: f32, scale: f32) -> Self {
-        let mut d = Self::deploy(key, "", height_m, grip_frac, scale);
+        let mut d = Self::borne(key, "", height_m, grip_frac, scale);
         d.src = HeldSrc::Gen(key);
         d
+    }
+
+    /// [`kit_borne`](Self::kit_borne)'s carry for a model with a file of its
+    /// own: the deployables' row under the name of what it does here.
+    const fn borne(
+        key: &'static str,
+        path: &'static str,
+        height_m: f32,
+        grip_frac: f32,
+        scale: f32,
+    ) -> Self {
+        Self::deploy(key, path, height_m, grip_frac, scale)
     }
 
     /// The same row turned `yaw` about the fist, so a flat thing faces the eye.

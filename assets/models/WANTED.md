@@ -422,8 +422,9 @@ thing on screen; do it last.
 
 ## 12 · The prop kit, version 2 — 55 items
 
-Since 2026-10-15 every item has a held model. The 55 below have one only
-because `render/heldkit.rs` builds it out of code primitives: correct size,
+Since 2026-10-15 every item has a held model. The 55 below had one only
+because `render/heldkit.rs` builds it out of code primitives (ten have
+since landed as files, marked below): correct size,
 correct colours, edges chamfered and crevices shaded, and still **cartoon**,
 because it has flat colours where the world has photographs, perfect
 cylinders where the world has dents, and saturated paint where the world
@@ -449,11 +450,13 @@ all three.
 
 **Landing one** (each row's box is the code kit's bake, i.e. what
 `HELD_MODELS` already declares, so the grip and scale carry over):
-`meshy_gen.py` or `prop_kit.py gen` → `import_meshy.py <in> <out> W H D` →
-`stand_grip.py` if a hand closes on it → `ktx_pack.py --size 512` (these are
-hand-sized, and the browser downloads every one) → flip the row in
-`ui/hold.rs` from `kit(…)`/`kit_borne(…)` to `upright(…)`/`deploy(…)` with the
-path → `cargo test -p client --features render --test held_assets` (it
+`meshy_gen.py` or `prop_kit.py gen` → `measure_glb.py --size` → look at it
+(`iconbake --look <dir> <file.glb…>`) → `flatten_charts.py` if that helps it →
+`import_meshy.py <in> <out> S S S`, a cube the size of the item's longest side
+so it keeps its own proportions → `stand_grip.py` if a hand closes on it →
+`ktx_pack.py --size 512` (these are hand-sized, and the browser downloads every
+one) → flip the row in `ui/hold.rs` from `kit(…)`/`kit_borne(…)` to
+`upright(…)`/`borne(…)` with the path and the height the import printed → `cargo test -p client --features render --test held_assets` (it
 re-measures the height) → `iconbake --hand` to re-judge the grip →
 `iconbake ci/icons/renders <stem>` + `finish_icons.py <stem>` → a `MANIFEST.md`
 row. The kit entry can stay as the fallback, or go.
@@ -462,22 +465,22 @@ row. The kit entry can stay as the fallback, or go.
 
 | # | item | box W×H×D (m) | look | notes |
 |---|---|---|---|---|
-| 12.1 | Wood | 0.47×0.24×0.38 | an armful of split firewood, four or five pieces, bark on the outside, pale split faces, chopped ends | most-held item in the game; do first |
-| 12.2 | Stone | 0.24×0.12×0.22 | three fist-sized broken grey stones, fresh fracture faces, dust | `--multiview` (48) |
-| 12.3 | Metal Ore | 0.23×0.13×0.23 | fist-sized chunks of dark iron-bearing rock, rust-red veins, a few metallic glints | `--multiview` (48); must read apart from 12.2 at a glance |
-| 12.4 | Sulfur Ore | 0.23×0.14×0.23 | grey rock lumps crusted with pale yellow sulfur crystals | `--multiview` (48) |
-| 12.5 | Charcoal | 0.27×0.15×0.25 | a small heap of lump charcoal, matte black, cracked wood grain still visible | |
-| 12.6 | Metal Fragments | 0.21×0.10×0.25 | a handful of torn scrap steel shards, bent, rusty with bright fresh cuts | |
+| 12.1 | Wood | 0.47×0.24×0.38 | an armful of split firewood, four or five pieces, bark on the outside, pale split faces, chopped ends | **landed 2026-10-15**, `held/wood.glb` |
+| 12.2 | Stone | 0.24×0.12×0.22 | three fist-sized broken grey stones, fresh fracture faces, dust | **landed 2026-10-15**, `held/stone.glb` |
+| 12.3 | Metal Ore | 0.23×0.13×0.23 | fist-sized chunks of dark iron-bearing rock, rust-red veins, a few metallic glints | **landed 2026-10-15**, `held/metal_ore.glb` |
+| 12.4 | Sulfur Ore | 0.23×0.14×0.23 | grey rock lumps crusted with pale yellow sulfur crystals | **landed 2026-10-15**, `held/sulfur_ore.glb` |
+| 12.5 | Charcoal | 0.27×0.15×0.25 | a small heap of lump charcoal, matte black, cracked wood grain still visible | **landed 2026-10-15**, `held/charcoal.glb` |
+| 12.6 | Metal Fragments | 0.21×0.10×0.25 | a handful of torn scrap steel shards, bent, rusty with bright fresh cuts | **landed 2026-10-15**, `held/metal_fragments.glb` |
 | 12.7 | Sulfur | 0.34×0.17×0.34 | a low heap of yellow sulfur powder with a few crumbly lumps | |
 | 12.8 | Gunpowder | 0.34×0.16×0.34 | a low heap of grey-black gunpowder, fine grain | not glossy; it is a powder |
 | 12.9 | Animal Fat | 0.26×0.17×0.20 | a slab of raw white animal fat, waxy, faintly yellow, irregular | |
 | 12.10 | Bone Fragments | 0.23×0.09×0.27 | two broken animal leg bones and a few splinters, weathered off-white | |
-| 12.11 | Leather | 0.34×0.13×0.15 | a rolled tanned hide tied with two cords, rough brown leather | |
-| 12.12 | Cloth | 0.30×0.14×0.22 | a folded stack of rough undyed cloth, frayed edges | |
+| 12.11 | Leather | 0.34×0.13×0.15 | a rolled tanned hide tied with two cords, rough brown leather | **landed 2026-10-15**, `held/leather.glb` |
+| 12.12 | Cloth | 0.30×0.14×0.22 | a folded stack of rough undyed cloth, frayed edges | **landed 2026-10-15**, `held/cloth.glb` |
 | 12.13 | Tarp | 0.36×0.10×0.26 | a folded olive canvas tarpaulin with brass grommets, dirty | |
-| 12.14 | Junk | 0.34×0.21×0.27 | a small heap of rusty scrap: a big hex nut, a bolt, a broken cog | |
+| 12.14 | Junk | 0.34×0.21×0.27 | a small heap of rusty scrap: a big hex nut, a bolt, a broken cog | **landed 2026-10-15**, `held/junk.glb` |
 | 12.15 | Tech Trash | 0.24×0.04×0.16 | a broken circuit board, chips and capacitors, a scorched corner, bent pins | thin: may need `--multiview` |
-| 12.16 | Low Grade Fuel | 0.22×0.33×0.10 | a dented steel jerry can, red paint chipped to bare metal, rust at the seams | |
+| 12.16 | Low Grade Fuel | 0.22×0.33×0.10 | a dented steel jerry can, red paint chipped to bare metal, rust at the seams | **landed 2026-10-15**, `held/low_grade_fuel.glb` |
 | 12.17 | Empty Propane Tank | 0.20×0.37×0.20 | a small dented propane cylinder, faded white paint, brass valve, rust streaks | |
 | 12.18 | Waterskin | 0.18×0.31×0.09 | an empty leather waterskin, slack and creased, wooden stopper, cord tie | |
 | 12.19 | Full Waterskin | 0.20×0.32×0.15 | the same skin full and taut, darker where it is wet | same prompt plus "full", so they pair |
@@ -533,7 +536,11 @@ so it cannot drift from what blocks a player. Their v2 is a better
 **material** on the world's inserts (photographs, wear), and the token
 follows for free. (Wooden Barricade already uses the world's model.)
 
-**First batch** if credits are the limit, by how often each is in a hand:
-wood, stone, metal ore, sulfur ore, cloth, metal fragments, charcoal, low
-grade fuel, junk, leather: ten items, about 310 credits. The Blender rows cost
-nothing but a session.
+**Batch 1 landed 2026-10-15**: wood, stone, metal ore, sulfur ore, cloth,
+metal fragments, charcoal, low grade fuel, junk, leather. Ten items, 275
+credits, every one kept on its first roll; `MANIFEST.md` §held (batch 1) has
+the task ids, prompts and what the batch taught about the pipeline. **Next by
+how often each is in a hand**: sulfur, gunpowder, animal fat, bone fragments,
+tarp, the waterskins and the three gun bodies (Meshy, ~260 credits), then the
+garments together with their worn versions. The Blender rows cost nothing
+but a session.

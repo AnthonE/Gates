@@ -90,6 +90,10 @@ const NO_NORMAL_MAP: &[&str] = &[
     "models/site/mark_yard.glb",
     "models/site/mark_relay.glb",
     "models/site/mark_quarry.glb",
+    // Remeshed on Meshy after delivery (580 k triangles to 3 k), which
+    // re-bakes the base colour and metal/roughness only: its relief is in
+    // the geometry and the albedo (`assets/models/MANIFEST.md` §held).
+    "models/held/stone.glb",
 ];
 
 fn asset_path(rel: &str) -> PathBuf {

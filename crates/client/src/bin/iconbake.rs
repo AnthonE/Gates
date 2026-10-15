@@ -25,6 +25,9 @@
 //! `--hand <out_dir> [stem…]` shoots each held row instead, the way the
 //! first-person camera frames it at rest (`viewmodel::pose` under the hold,
 //! no arm): the check for a new row's grip and scale.
+//!
+//! `--look <out_dir> <file.glb…>` photographs any files under `assets/` the
+//! icon's way — a generator's rolls, before one becomes a row.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -141,13 +144,25 @@ const fn kit_long(stem: &'static str, roll: f32) -> Subject {
 /// they read as the reference's do — the same object, lit. Framing is the
 /// finisher's, from the pixels, so there is no size here.
 const SUBJECTS: &[Subject] = &[
-    s("stone", "models/prop/node_stone.glb", [30.0, 0.0, 0.0]),
-    s("metal_ore", "models/prop/node_metal.glb", [30.0, 0.0, 0.0]),
+    // The resources, as the hand carries them (`WANTED.md` §12).
+    s("stone", "models/held/stone.glb", [0.0, 0.0, 0.0]),
+    s("metal_ore", "models/held/metal_ore.glb", [0.0, 0.0, 0.0]),
+    s("sulfur_ore", "models/held/sulfur_ore.glb", [0.0, 0.0, 0.0]),
+    s("wood", "models/held/wood.glb", [0.0, 0.0, 0.0]),
+    s("cloth", "models/held/cloth.glb", [0.0, 0.0, 0.0]),
+    s("charcoal", "models/held/charcoal.glb", [0.0, 0.0, 0.0]),
     s(
-        "sulfur_ore",
-        "models/prop/node_sulfur.glb",
-        [30.0, 0.0, 0.0],
+        "metal_fragments",
+        "models/held/metal_fragments.glb",
+        [0.0, 0.0, 0.0],
     ),
+    s(
+        "low_grade_fuel",
+        "models/held/low_grade_fuel.glb",
+        [25.0, 0.0, 0.0],
+    ),
+    s("junk", "models/held/junk.glb", [0.0, 0.0, 0.0]),
+    s("leather", "models/held/leather.glb", [0.0, 0.0, 0.0]),
     // The small box shares this model; the finisher draws it smaller.
     s("large_box", "models/deploy/box.glb", [0.0, 0.0, 0.0]),
     s("sleeping_bag", "models/deploy/bag.glb", [-20.0, 0.0, 0.0]),
@@ -281,20 +296,13 @@ const SUBJECTS: &[Subject] = &[
     kit_long("rifle_body", 18.0),
     kit_long("blueprint", 20.0),
     // …and the rest as they would sit on a table.
-    kit("wood", [0.0, 0.0, 0.0]),
-    kit("cloth", [0.0, 0.0, 0.0]),
     kit("tarp", [0.0, 0.0, 0.0]),
     kit("animal_fat", [0.0, 0.0, 0.0]),
-    kit("charcoal", [0.0, 0.0, 0.0]),
-    kit("metal_fragments", [0.0, 0.0, 0.0]),
     kit("sulfur", [0.0, 0.0, 0.0]),
     kit("gunpowder", [0.0, 0.0, 0.0]),
-    kit("low_grade_fuel", [25.0, 0.0, 0.0]),
-    kit("leather", [0.0, 0.0, 0.0]),
     kit("bone_fragments", [0.0, 0.0, 0.0]),
     kit("gears", [30.0, 0.0, 0.0]),
     kit("rope", [0.0, 0.0, 0.0]),
-    kit("junk", [0.0, 0.0, 0.0]),
     kit("empty_propane_tank", [0.0, 0.0, 0.0]),
     kit("sewing_kit", [0.0, 0.0, 0.0]),
     kit("sheet_metal", [0.0, 0.0, 0.0]),
@@ -393,6 +401,33 @@ fn hand_queue(only: &[&String]) -> Vec<Subject> {
         .collect()
 }
 
+/// `--look`'s subjects: files, by their path under `assets/`, each shot
+/// under its own file stem. Leaked: a subject's names are `'static` because
+/// every other subject is a table row, and this is a one-shot process.
+fn look_queue(files: &[&String]) -> Vec<Subject> {
+    let root = std::env::current_dir().unwrap_or_default().join("assets");
+    files
+        .iter()
+        .map(|f| {
+            let p = std::path::Path::new(f.as_str());
+            let p = p
+                .canonicalize()
+                .ok()
+                .and_then(|abs| abs.strip_prefix(&root).ok().map(|r| r.to_path_buf()))
+                .unwrap_or_else(|| p.to_path_buf());
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("look");
+            Subject {
+                stem: Box::leak(stem.to_owned().into_boxed_str()),
+                src: Src::Glb(Box::leak(p.to_string_lossy().into_owned().into_boxed_str())),
+                turn: [0.0; 3],
+                roll: 0.0,
+                girth: 1.0,
+            }
+        })
+        .rev()
+        .collect()
+}
+
 /// Where a held row's model sits in view space at rest: the rig's carry,
 /// the hold, then the row's own pose about the palm.
 fn hand_place(key: &str) -> Transform {
@@ -409,7 +444,8 @@ fn hand_place(key: &str) -> Transform {
 fn main() -> AppExit {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let hand = args.first().is_some_and(|a| a == "--hand");
-    if hand {
+    let look = args.first().is_some_and(|a| a == "--look");
+    if hand || look {
         args.remove(0);
     }
     let Some(out) = args.first().cloned() else {
@@ -422,6 +458,8 @@ fn main() -> AppExit {
     let only: Vec<&String> = args.iter().skip(1).collect();
     let queue: Vec<Subject> = if hand {
         hand_queue(&only)
+    } else if look {
+        look_queue(&only)
     } else {
         SUBJECTS
             .iter()

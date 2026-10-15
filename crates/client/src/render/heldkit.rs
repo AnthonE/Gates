@@ -1,4 +1,4 @@
-//! The prop kit: every item with no model of its own, built out of
+//! The prop kit: every item with no model file of its own, built out of
 //! primitives — the hand that holds it, the ground it is dropped on, and its
 //! inventory icon all draw the same object (`ui::hold`'s `HeldSrc::Gen` rows
 //! fall through `heldgen::mesh` to [`baked`]; `iconbake` photographs the
@@ -94,11 +94,9 @@ const WOOD: Mat = m(0x9a6a3e, 0.72, 0.0, Tex::Grain);
 const WOOD_LIGHT: Mat = m(0xc49a64, 0.72, 0.0, Tex::Grain);
 const WOOD_DARK: Mat = m(0x6e4a2c, 0.75, 0.0, Tex::Grain);
 const BARK: Mat = m(0x6a5038, 0.92, 0.0, Tex::Bark);
-const LOG_END: Mat = m(0xd2ae7e, 0.8, 0.0, Tex::Grain);
 const STEEL: Mat = m(0xc4cad2, 0.32, 1.0, Tex::Brushed);
 const DARK_STEEL: Mat = m(0x5a6068, 0.42, 1.0, Tex::Brushed);
 const GUNMETAL: Mat = m(0x50565e, 0.38, 0.9, Tex::Brushed);
-const RUST: Mat = m(0x8a4e2e, 0.8, 0.4, Tex::Speckle);
 const BRASS: Mat = m(0xd4aa50, 0.3, 1.0, Tex::Brushed);
 const COPPER: Mat = m(0xc06c40, 0.35, 1.0, Tex::Plain);
 const CLOTH: Mat = m(0xd8c8a0, 0.95, 0.0, Tex::Weave);
@@ -140,8 +138,6 @@ const THREAD_BLUE: Mat = m(0x3a5ea8, 0.9, 0.0, Tex::Weave);
 const LED_RED: Mat = m(0xff3a2a, 0.3, 0.0, Tex::Plain);
 const LED_GREEN: Mat = m(0x58e070, 0.3, 0.0, Tex::Plain);
 const EMBER: Mat = m(0xff8a2a, 0.6, 0.0, Tex::Speckle);
-const ORE_ROCK: Mat = m(0x6a625a, 0.85, 0.0, Tex::Speckle);
-const ORE_METAL: Mat = m(0x9a6440, 0.45, 0.7, Tex::Speckle);
 
 // ---- parts and placement ---------------------------------------------------
 
@@ -759,23 +755,13 @@ pub const NAMES: &[&str] = &[
     "revolver",
     "crossbow",
     "hunting_bow",
-    "wood",
-    "stone",
-    "metal_ore",
-    "sulfur_ore",
-    "cloth",
     "tarp",
     "animal_fat",
-    "charcoal",
-    "metal_fragments",
     "sulfur",
     "gunpowder",
-    "low_grade_fuel",
-    "leather",
     "bone_fragments",
     "gears",
     "rope",
-    "junk",
     "metal_blade",
     "empty_propane_tank",
     "sewing_kit",
@@ -814,9 +800,6 @@ pub const NAMES: &[&str] = &[
 /// The parts of the prop called `name`, or `None` for a name with none.
 fn parts(name: &str) -> Option<Vec<Part>> {
     Some(match name {
-        "stone" => ore(STONE, None, 141),
-        "metal_ore" => ore(ORE_ROCK, Some(ORE_METAL), 151),
-        "sulfur_ore" => ore(STONE, Some(SULFUR), 161),
         "wooden_arrow" => arrow(WOOD_DARK, Head::Wood, FEATHER),
         "bone_arrow" => arrow(WOOD, Head::Bone, FEATHER),
         "metal_arrow" => arrow(WOOD, Head::Metal, FEATHER_RED),
@@ -827,20 +810,13 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "revolver" => revolver(),
         "crossbow" => crossbow(),
         "hunting_bow" => bow(),
-        "wood" => wood(),
-        "cloth" => folded(CLOTH, 3, 0.30, 0.22),
         "tarp" => folded(TARP, 2, 0.36, 0.26),
         "animal_fat" => fat(),
-        "charcoal" => heap(CHARCOAL, 7, 0.055, 11),
-        "metal_fragments" => fragments(),
         "sulfur" => powder_pile(SULFUR, 12),
         "gunpowder" => powder_pile(POWDER, 13),
-        "low_grade_fuel" => jerrycan(),
-        "leather" => hide(),
         "bone_fragments" => bones(),
         "gears" => gears(),
         "rope" => rope(),
-        "junk" => junk(),
         "metal_blade" => blade(),
         "empty_propane_tank" => propane(),
         "sewing_kit" => sewing(),
@@ -1138,29 +1114,6 @@ fn bow() -> Vec<Part> {
     ]
 }
 
-/// Four logs, ends to the camera.
-fn wood() -> Vec<Part> {
-    let mut out = Vec::new();
-    let logs = [
-        (0.0, 0.06, -0.068, 0.062),
-        (0.02, 0.06, 0.068, 0.058),
-        (-0.02, 0.17, 0.0, 0.064),
-        (0.03, 0.06, 0.2, 0.05),
-    ];
-    for (i, &(dx, y, z, r)) in logs.iter().enumerate() {
-        let len = 0.46 - 0.04 * i as f32;
-        out.push(p(cyl(r, len), BARK, xf([dx, y, z], [0.0, 0.0, 90.0])));
-        for end in [-1.0, 1.0] {
-            out.push(p(
-                cyl(r * 0.92, 0.006),
-                LOG_END,
-                xf([dx + end * (len * 0.5 + 0.002), y, z], [0.0, 0.0, 90.0]),
-            ));
-        }
-    }
-    out
-}
-
 /// A stack of folded cloth: `n` pillowy sheets, each turned a little.
 fn folded(mat: Mat, n: usize, w: f32, d: f32) -> Vec<Part> {
     let mut out = Vec::new();
@@ -1237,56 +1190,6 @@ fn heap(mat: Mat, n: u32, r: f32, seed: u32) -> Vec<Part> {
         .collect()
 }
 
-fn fragments() -> Vec<Part> {
-    (0..8)
-        .map(|i| {
-            let a = i as f32 * 0.8 + jit(i, 61) * 0.4;
-            let ring = if i == 0 {
-                0.0
-            } else {
-                0.06 + 0.03 * jit(i, 62).abs()
-            };
-            let mat = if i % 3 == 0 { DARK_STEEL } else { STEEL };
-            p(
-                lump(70 + i, 0.8),
-                mat,
-                xfs(
-                    [ring * a.cos(), 0.02 + 0.03 * (i % 2) as f32, ring * a.sin()],
-                    [jit(i, 63) * 60.0, jit(i, 64) * 180.0, jit(i, 65) * 60.0],
-                    [0.05, 0.012, 0.03],
-                ),
-            )
-        })
-        .collect()
-}
-
-/// Ore as it comes off a node: a few broken stones, and where the ore is in
-/// them (`vein`), small bright lumps bedded in their faces.
-fn ore(rock: Mat, vein: Option<Mat>, seed: u32) -> Vec<Part> {
-    let mut out = heap(rock, 5, 0.045, seed);
-    if let Some(vein) = vein {
-        for i in 0..7u32 {
-            let a = i as f32 * 2.4 + jit(i, seed + 7) * 0.5;
-            let ring = 0.035 + 0.03 * jit(i, seed + 8).abs();
-            let s = 0.014 + 0.006 * jit(i, seed + 9).abs();
-            out.push(p(
-                lump(seed * 13 + i, 0.6),
-                vein,
-                xfs(
-                    [
-                        ring * a.cos(),
-                        0.04 + 0.035 * jit(i, seed + 10).abs(),
-                        ring * a.sin(),
-                    ],
-                    [jit(i, seed + 11) * 90.0, a.to_degrees(), 0.0],
-                    [s, s * 0.8, s],
-                ),
-            ));
-        }
-    }
-    out
-}
-
 fn powder_pile(mat: Mat, seed: u32) -> Vec<Part> {
     let mut out = vec![p(
         lathe(
@@ -1307,88 +1210,6 @@ fn powder_pile(mat: Mat, seed: u32) -> Vec<Part> {
         part
     }));
     out
-}
-
-fn jerrycan() -> Vec<Part> {
-    vec![
-        p(
-            cuboid(0.22, 0.28, 0.1),
-            RED_PAINT,
-            xf([0.0, 0.14, 0.0], [0.0; 3]),
-        ),
-        // The pressed X on its side.
-        p(
-            cuboid(0.012, 0.3, 0.104),
-            m(0x9a2c22, 0.5, 0.25, Tex::Speckle),
-            xf([0.0, 0.14, 0.0], [0.0, 0.0, 38.0]),
-        ),
-        p(
-            cuboid(0.012, 0.3, 0.104),
-            m(0x9a2c22, 0.5, 0.25, Tex::Speckle),
-            xf([0.0, 0.14, 0.0], [0.0, 0.0, -38.0]),
-        ),
-        // Three handles along the top, and the spout.
-        p(
-            cuboid(0.16, 0.022, 0.03),
-            RED_PAINT,
-            xf([-0.02, 0.3, 0.0], [0.0; 3]),
-        ),
-        p(
-            cuboid(0.02, 0.03, 0.03),
-            RED_PAINT,
-            xf([-0.09, 0.29, 0.0], [0.0; 3]),
-        ),
-        p(
-            cuboid(0.02, 0.03, 0.03),
-            RED_PAINT,
-            xf([0.05, 0.29, 0.0], [0.0; 3]),
-        ),
-        p(
-            cyl(0.022, 0.04),
-            DARK_STEEL,
-            xf([0.085, 0.3, 0.0], [0.0, 0.0, -25.0]),
-        ),
-    ]
-}
-
-/// Leather, rolled and tied, its end flap lying out in front.
-fn hide() -> Vec<Part> {
-    let flap = [
-        Vec2::new(-0.15, 0.0),
-        Vec2::new(0.15, 0.0),
-        Vec2::new(0.17, 0.08),
-        Vec2::new(0.1, 0.13),
-        Vec2::new(0.02, 0.1),
-        Vec2::new(-0.06, 0.14),
-        Vec2::new(-0.16, 0.09),
-    ];
-    vec![
-        p(
-            cyl(0.055, 0.34),
-            HIDE,
-            xf([0.0, 0.055, 0.0], [0.0, 0.0, 90.0]),
-        ),
-        p(
-            pipe(0.02, 0.056, 0.004),
-            m(0x7a4e2c, 0.7, 0.0, Tex::Speckle),
-            xf([0.171, 0.055, 0.0], [0.0, 90.0, 0.0]),
-        ),
-        p(
-            slab(&flap, 0.012, 0.01),
-            HIDE,
-            xf([0.0, 0.006, 0.055], [-90.0, 0.0, 0.0]),
-        ),
-        p(
-            torus(0.007, 0.057),
-            ROPE,
-            xf([-0.08, 0.055, 0.0], [0.0, 0.0, 90.0]),
-        ),
-        p(
-            torus(0.007, 0.057),
-            ROPE,
-            xf([0.08, 0.055, 0.0], [0.0, 0.0, 90.0]),
-        ),
-    ]
 }
 
 /// One bone: a shaft and a knuckle of two knobs at each end.
@@ -1479,37 +1300,6 @@ fn rope() -> Vec<Part> {
         p(tube(&coil, |_| 0.017, 10), ROPE, Transform::IDENTITY),
         p(tube(&tail, |_| 0.017, 10), ROPE, Transform::IDENTITY),
     ]
-}
-
-/// Scrap: a big nut to the front, a bolt and a broken gear behind it.
-fn junk() -> Vec<Part> {
-    let mut out = vec![
-        p(
-            prism(6, 0.09, 0.05),
-            STEEL,
-            xf([0.0, 0.09, 0.03], [-10.0, 30.0, 0.0]),
-        ),
-        p(
-            cyl(0.042, 0.056),
-            HOLE,
-            xf([0.0, 0.09, 0.03], [80.0, 30.0, 0.0]),
-        ),
-        p(
-            cyl(0.016, 0.24),
-            DARK_STEEL,
-            xf([-0.02, 0.05, -0.08], [0.0, 30.0, 70.0]),
-        ),
-        p(
-            prism(6, 0.035, 0.03),
-            DARK_STEEL,
-            xf([-0.13, 0.005, -0.12], [0.0, 30.0, 70.0]),
-        ),
-    ];
-    out.extend(place(
-        gear(0.07, 9, RUST),
-        xf([0.1, 0.1, -0.12], [-10.0, 30.0, 15.0]),
-    ));
-    out
 }
 
 fn blade() -> Vec<Part> {
@@ -2585,16 +2375,16 @@ mod tests {
             let low = ps.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
             assert!(low.abs() < 1e-5, "{name} stands at {low}, not on 0");
         }
-        // A log pile's logs shade each other where they touch.
+        // A cold fire pit's logs shade each other and the ash where they cross.
         let paint = BARK.color().to_linear();
-        let wood = baked("wood").expect("wood");
-        let Some(V::Float32x4(cs)) = wood.attribute(Mesh::ATTRIBUTE_COLOR) else {
+        let pit = baked("fire_pit").expect("fire_pit");
+        let Some(V::Float32x4(cs)) = pit.attribute(Mesh::ATTRIBUTE_COLOR) else {
             panic!("no colours")
         };
         let darkest = cs.iter().map(|c| c[0] / paint.red).fold(f32::MAX, f32::min);
         assert!(
             darkest < 0.8,
-            "no crevice in the log pile is shaded ({darkest})"
+            "no crevice in the fire pit is shaded ({darkest})"
         );
     }
 

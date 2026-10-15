@@ -745,6 +745,89 @@ spear's map peaked at **0.53** before the import stripped it, i.e. a stick
 that glows in the dark. A torch would be the first exception and would grow
 that list rather than retire the rule.
 
+## `held/` — the prop kit's version 2, batch 1 (Meshy, 2026-10-15)
+
+Ten items that drew the code kit's primitives (`render/heldkit.rs`) and now
+draw these, in the hand, on the ground and as their icon (`iconbake`
+photographs the file). `WANTED.md` §12 is the worklist and its routing.
+Meshy paid plan, the `deploy/` rail's terms: no `NOTICE` entry, no proper
+noun in any prompt (below, in full).
+
+Pipeline, every step a script in `ci/`: `meshy_gen.py --tris 3000`
+(nano-banana-pro image → meshy-t2 smart topology; `--multiview` → meshy-7.1
+multi-image) → `measure_glb.py --size` → `flatten_charts.py` where it helps
+→ `import_meshy.py` to a CUBE the size of the item's longest side, so the
+object keeps its own proportions → `ktx_pack.py --size 512` (a hand-sized
+thing, and the browser downloads each one at boot: ~1 MB a file).
+
+| file | item | image task | mesh task | credits | size (m) | note |
+|---|---|---|---|---|---|---|
+| `held/wood.glb` | Wood | `01a13df9-132f` | `01a13df9-92fc` | 24 | 0.46 × 0.27 × 0.47 | charts flattened |
+| `held/stone.glb` | Stone | `01a13e01-8e0e` | `01a13e02-6222` | 39 | 0.24 × 0.22 × 0.13 | 3 views; remeshed after delivery, see below |
+| `held/metal_ore.glb` | Metal Ore | `01a13e06-1cc1` | `01a13e06-9b16` | 29 | 0.23 × 0.14 × 0.22 | charts flattened; credits overlap the stone's remesh |
+| `held/sulfur_ore.glb` | Sulfur Ore | `01a13e07-fd79` | `01a13e08-a1c2` | 39 | 0.23 × 0.19 × 0.17 | as delivered (flattening turned its rock olive); 3 views |
+| `held/cloth.glb` | Cloth | `01a13e0b-8292` | `01a13e0c-54b5` | 24 | 0.30 × 0.14 × 0.29 | as delivered (chart contrast 0.012 already) |
+| `held/metal_fragments.glb` | Metal Fragments | `01a13e0d-6c57` | `01a13e0d-c1cc` | 24 | 0.25 × 0.10 × 0.25 | charts flattened |
+| `held/charcoal.glb` | Charcoal | `01a13e0e-ab7d` | `01a13e0f-2a0c` | 24 | 0.27 × 0.14 × 0.27 | charts flattened |
+| `held/low_grade_fuel.glb` | Low Grade Fuel | `01a13e0f-e93e` | `01a13e10-6864` | 24 | 0.26 × 0.33 × 0.12 | charts flattened |
+| `held/junk.glb` | Junk | `01a13e11-508e` | `01a13e11-cfb8` | 24 | 0.34 × 0.18 × 0.30 | charts flattened |
+| `held/leather.glb` | Leather | `01a13e12-b919` | `01a13e13-600e` | 24 | 0.34 × 0.11 × 0.11 | as delivered (flattening washed it out) |
+
+**275 credits for the batch** (balance 3,124 → 2,849, measured). The
+per-row figures are balance deltas, and two ran concurrently with the
+stone's remesh, so the metal ore's 29 holds part of that.
+
+What was learned, measured:
+
+- **`--multiview` dropped `target_polycount`**: the stone came back at
+  **580,271 triangles, 26 MB**. `multi-image-to-3d` only honours the budget
+  when told to remesh, which `ci/meshy_beast.py` already did and
+  `meshy_gen.py` now does (`should_remesh`). The sulfur ore, made after the
+  fix, landed at 3,113 with its normal map. The stone was rescued with the
+  Remesh API (3,135 triangles), which re-bakes base colour and metal/rough
+  only, so it ships **without a normal map** (`tests/packed_maps.rs`
+  `NO_NORMAL_MAP` names it) and read the same in every render.
+- **`--multiview` can return one view.** The metal ore asked for several
+  and got one, so it went the single-view way; it reconstructed fine, 0.93
+  deep per unit wide, because the prompt names the depth.
+- **A pile asked for multiple views came back STACKED**: the stone is a
+  three-rock cairn, not the low pile the prompt describes. It reads as stone
+  and shipped; a re-roll would say "lying side by side, none on another".
+- **Chart flattening is per item, not a default.** It equalised the wood,
+  ore, fragments, charcoal, can and junk with no visible loss, turned the
+  sulfur ore's grey rock olive (it pulls each island toward the mean colour,
+  and the mean is part yellow) and washed the leather's browns out. Look,
+  then choose.
+- **`measure_glb.py`'s depth band is a rock's.** The can (0.45) and the
+  leather roll (0.33) "fail" it by being what they are.
+- **`import_meshy.py` now prunes** the textures no material reads. Meshy's
+  multi-image path ships an emissive map; the import strips the slot, and
+  until now `ktx_pack.py` then packed the orphan anyway. The held items
+  shipped before this each carry one, small on disk (0.8-44 KB packed,
+  mostly black) and harmless.
+
+Prompts, in full, for the IP rail:
+
+> **wood** — "A single small stack of split firewood on a plain white background, three-quarter view. Five split logs lying side by side in two loose layers, each piece about 45 centimetres long and 10 centimetres thick; the whole stack 47 centimetres long, 38 centimetres deep and 24 centimetres tall, as deep as it is long. Wedge-shaped and half-round pieces from splitting: rough grey-brown pine bark on the rounded sides, pale cream split faces with long grain and drying cracks, chopped ends showing growth rings. Real, weathered, slightly dirty, soft daylight. Exactly one stack. No ground, no terrain, no axe, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Split pine firewood: rough grey-brown bark, pale cream split wood with long grain and checking cracks, chopped ends with growth rings, dry and dusty, no moss, no green, no paint"
+>
+> **stone** — "A single small pile of three fist-sized broken stones on a plain white background, three-quarter view. Three rough angular rocks of pale grey granite lying together, the pile 24 centimetres wide, 22 centimetres deep and 12 centimetres tall, as deep as it is wide. Fresh fracture faces with sharp edges, a light speckled crystalline surface with faint quartz flecks, mottled with darker grey, dry and dusty. Real, photographed in soft daylight. No moss, no lichen, no green. Exactly one pile. No ground, no terrain, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Pale speckled granite, light grey with faint quartz flecks and darker grey mottling, fresh fracture faces, dry dusty stone, no moss, no green"
+>
+> **metal_ore** — "A single small pile of four fist-sized chunks of iron ore on a plain white background, three-quarter view. Heavy angular lumps of mid grey rock shot through with dark metallic iron seams and rust-brown and ochre staining, a few small dull metallic glints, the pile 23 centimetres wide, 23 centimetres deep and 13 centimetres tall, as deep as it is wide. Real, rough, dusty, photographed in soft daylight. The host rock is mid grey, not black. No moss, no green. Exactly one pile. No ground, no terrain, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Mid grey rock with dark metallic iron seams, rust-brown and ochre staining, small dull metal glints, rough dusty ore, not black, no green"
+>
+> **sulfur_ore** — "A single small pile of four fist-sized lumps of sulfur ore on a plain white background, three-quarter view. Rough grey rock chunks crusted with warm golden-yellow mustard sulfur crystals in the cracks and over one face of each lump, the pile 23 centimetres wide, 23 centimetres deep and 14 centimetres tall, as deep as it is wide. Real, dusty, photographed in soft daylight. The yellow is warm golden mustard, never green, never lime. Exactly one pile. No ground, no terrain, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Grey rock crusted with warm golden-yellow mustard sulfur crystals, dusty, matte, never green, never lime"
+>
+> **cloth** — "A single neat stack of three folded pieces of rough undyed cloth on a plain white background, three-quarter view. Coarse plain-woven fabric, off-white to pale oatmeal, folded into rectangles and stacked slightly askew, frayed edges and a few loose threads, faintly dirty and creased. The stack 30 centimetres wide, 22 centimetres deep and 14 centimetres tall. Real, photographed in soft daylight. Exactly one stack. No ground, no table, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Coarse undyed plain-woven cloth, off-white to pale oatmeal, visible weave, frayed edges, faint dirt and creases, matte, no pattern, no print"
+>
+> **metal_fragments** — "A single small heap of torn scrap metal fragments on a plain white background, three-quarter view. Jagged bent pieces of steel sheet, twisted strips and broken metal chunks lying together, mostly rust-brown and dull grey steel, with bright silver fresh cuts along the torn edges. The heap 25 centimetres long, 21 centimetres wide and 10 centimetres tall. Real, dirty, photographed in soft daylight. Exactly one heap. No tools, no nails, no screws, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Torn scrap steel: rust-brown oxide and dull grey steel, bright silver fresh cuts on the torn edges, dirty, oily, no paint"
+>
+> **charcoal** — "A single small heap of lump charcoal on a plain white background, three-quarter view. Irregular chunks of charred hardwood, deep charcoal grey with a silvery sheen on the cracked faces and pale grey ash dust in the cracks, the wood grain and growth rings still visible on the broken ends. The heap 27 centimetres wide, 25 centimetres deep and 15 centimetres tall, as deep as it is wide. Real, photographed in soft daylight. Exactly one heap. No fire, no flames, no glowing embers, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Lump charcoal: deep charcoal grey charred wood with a silvery sheen on cracked faces, pale grey ash in the cracks, visible wood grain, matte, no glow, no fire"
+>
+> **low_grade_fuel** — "A single steel jerry can standing upright on a plain white background, three-quarter view. A flat rectangular fuel can 33 centimetres tall, 22 centimetres wide and 10 centimetres deep, three bar handles across the top, a capped spout on one corner, pressed X-shaped ribs on its broad sides. Dented, its dull red paint chipped and worn through to bare grey steel on the edges and handles, rust at the seams, grimy. Real, photographed in soft daylight. Exactly one can. No ground, no people, no hands, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Dull red painted steel worn through to bare grey metal on the edges and handles, chipped paint, rust at the seams, grime, dents, no text, no logos"
+>
+> **junk** — "A single small heap of rusty scrap metal junk on a plain white background, three-quarter view. A large hex nut, a long threaded bolt, a broken cog wheel, a bent steel bracket and a short coil spring lying together, mostly rust-brown and dark grey steel with oily dirt. The heap 34 centimetres long, 27 centimetres wide and 21 centimetres tall. Real, photographed in soft daylight. Exactly one heap. No tools, no wood, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Rusty scrap steel: rust-brown oxide, dark grey bare steel, oily dirt, worn threads and teeth, no paint"
+>
+> **leather** — "A single rolled-up tanned animal hide on a plain white background, three-quarter view. A cylinder of rough brown leather 34 centimetres long and about 13 centimetres thick, tied around with two thin leather cords, the loose edge of the hide lying along the roll, the paler suede underside showing at both ends of the roll. Worn, creased, uneven natural edges. Real, photographed in soft daylight. Exactly one roll. No fur, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Rough tanned brown leather with creases and natural grain, paler suede underside at the ends, thin leather cords, worn, matte, no fur, no print"
+
 ## `held/skins/` — skins with a model of their own
 
 A skin row in `ui::hold::SKIN_MODELS` draws this file instead of its row's
