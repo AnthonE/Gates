@@ -44,8 +44,8 @@
 //!   here (`CLAUDE.md` §vendored). It is `cfg`'d off wasm at its `mod`
 //!   declaration in `elo.rs`, not in the file, so a scan of the file alone
 //!   cannot see its guard.
-//! - `src/main.rs` and `src/bin/` carry `required-features = ["native"]` and
-//!   are never compiled for wasm32 by anything. That is a manifest fact this
+//! - `src/bin/` carries `required-features = ["native"]` and is never
+//!   compiled for wasm32 by anything. That is a manifest fact this
 //!   test re-reads rather than remembers.
 //!
 //! **Four mutants run, four caught** (2026-09-10):
@@ -111,10 +111,6 @@ const EXEMPT: &[(&str, &str)] = &[
          in elo.rs, which a scan of this file cannot see.",
     ),
     (
-        "src/main.rs",
-        "the `client` binary, `required-features = [\"native\"]` — never built for wasm32.",
-    ),
-    (
         "src/render/music_out.rs",
         "the native score's decoder thread. Its guard is the \
          `#[cfg(not(target_arch = \"wasm32\"))]` on its `mod` in render/mod.rs, which a \
@@ -142,17 +138,17 @@ const EXEMPT: &[(&str, &str)] = &[
 const KNOWN: &[(&str, u32, &str)] = &[
     ("src/render/boot.rs", 114, "the launcher handshake's thread"),
     ("src/render/hub.rs", 41, "the title manifest fetch thread"),
-    ("src/render/menu.rs", 240, "the shard-list fetch thread"),
+    ("src/render/menu.rs", 243, "the shard-list fetch thread"),
     // `menu` is compiled out of the browser build (`render/mod.rs`); the
     // chip's own platform read, like the shard list beside it.
     (
         "src/render/menu.rs",
-        490,
+        493,
         "your name and picture for the identity chip",
     ),
     (
         "src/render/menu.rs",
-        361,
+        364,
         // ⚠ This read "the connect future's runtime thread" until 2026-09-11
         // and named the wrong function: the connect future does not spawn a
         // thread at all, it goes on the tokio runtime `Rt` holds. This is

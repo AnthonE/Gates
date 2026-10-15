@@ -329,8 +329,13 @@
   .dl.done .bar i { background: var(--good); }
   .dl .what { white-space: nowrap; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 
-  /* ── between the join and Bevy's first frame ─────────────────────────────── */
-  #handoff { position: fixed; inset: 0; z-index: 0; background: var(--bg); display: grid; place-items: center; }
+  /* ── between the join and Bevy's first frame ───────────────────────────────
+     Above the canvas until the game says it has drawn (`window.gatesShown`),
+     then faded out. Clicks and keys go through it to the canvas. */
+  #handoff { position: fixed; inset: 0; z-index: 3; background: var(--bg); display: grid; place-items: center;
+             pointer-events: none; transition: opacity .35s ease-out; }
+  #handoff.gone { opacity: 0; }
+  #handoff.failed .bar i { animation: none; width: 100%; background: var(--bad); }
   #handoff .col { display: flex; flex-direction: column; align-items: center; gap: 14px; }
   #handoff .bar { width: 320px; height: 6px; background: #2b2723; overflow: hidden; }
   #handoff .bar i { display: block; height: 100%; width: 35%; background: var(--accent);
@@ -612,9 +617,9 @@
   <button class="linkish" id="wallet-cancel" type="button">Cancel</button>
 </dialog>
 
-<!-- Shown from the join until Bevy's first frame covers it: the canvas is
-     transparent until wgpu draws, so this is what shows through, and it is
-     drawn to look like the loading screen Bevy then draws on top of it. -->
+<!-- Shown from the join until the game has drawn its own loading screen
+     (`client::render::web::reveal` calls `gatesShown`), and drawn to look
+     like it, so the hand-over is one continuous wait. -->
 <div id="handoff" hidden>
   <div class="col">
     <span class="wordmark"><span class="mark" aria-hidden="true"></span><span class="word">GATES</span></span>
