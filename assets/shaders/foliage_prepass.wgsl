@@ -138,6 +138,15 @@ fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
     let duv = vec4(dpdx(uv), dpdy(uv));
     let flags = pbr_bindings::material.flags;
 
+    // The crossfade's cut before the alpha read, which takes the gradients
+    // above and needs no live neighbour, so a pixel the crossfade removes
+    // skips the read. A normal map below is read Bevy's way, at implicit
+    // derivatives, so with one the cut waits until the end.
+#ifndef STANDARD_MATERIAL_NORMAL_MAP
+#ifdef VISIBILITY_RANGE_DITHER
+    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+#endif
     foliage_alpha_discard(in, keep, uv, duv);
 
     var out: prepass_io::FragmentOutput;
@@ -189,9 +198,10 @@ fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
     out.motion_vector = pbr_prepass_functions::calculate_motion_vector(in.world_position, in.previous_world_position);
 #endif
 
-    // The crossfade's cut last, for `foliage.wgsl`'s reason.
+#ifdef STANDARD_MATERIAL_NORMAL_MAP
 #ifdef VISIBILITY_RANGE_DITHER
     pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
 #endif
 
     return out;
@@ -201,11 +211,13 @@ fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
 fn fragment(in: VertexOutput) {
     let keep = grazing_keep(in.world_position.xyz);
     let uv = base_uv(in);
-    foliage_alpha_discard(in, keep, uv, vec4(dpdx(uv), dpdy(uv)));
-    // A depth-only prepass cuts what the main pass cuts. (No shadow pipeline
-    // is keyed with the dither, so a cascade never crossfades.)
+    let duv = vec4(dpdx(uv), dpdy(uv));
+    // A depth-only prepass cuts what the main pass cuts, the crossfade first:
+    // the alpha read needs no live neighbour. (No shadow pipeline is keyed
+    // with the dither, so a cascade never crossfades.)
 #ifdef VISIBILITY_RANGE_DITHER
     pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
 #endif
+    foliage_alpha_discard(in, keep, uv, duv);
 }
 #endif

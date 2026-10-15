@@ -130,6 +130,12 @@ fn vertex(in: Vertex) -> VertexOutput {
 // crossfade cuts after it rather than before: a card whose alpha test
 // disagrees with its prepass's leaves depth with no colour on it — the clear
 // colour, unfogged (`alpha_cut.wgsl` has the whole story).
+//
+// A hand copy of Bevy 0.18.1's, so a Bevy upgrade that changes `pbr.wgsl`
+// does not reach it. Left out, as the game uses none of them:
+// `apply_decals` (clustered decals) and the OIT_ENABLED, FORWARD_DECAL,
+// PREPASS_PIPELINE (deferred) and meshlet branches. Adopting one, or a Bevy
+// upgrade, re-checks this copy and `foliage.wgsl`'s, which left out the same.
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
 #ifdef VERTEX_UVS

@@ -125,16 +125,20 @@ fn vertex(in: Vertex) -> VertexOutput {
     return out;
 }
 
-// The masked card's cut: the base colour exactly as `tree_card.wgsl` builds
-// it, read through `alpha_cut` at gradients taken first thing.
-fn card_cut(in: VertexOutput) {
-#ifdef MAY_DISCARD
+// The atlas UV, through the material's transform.
+fn card_uv(in: VertexOutput) -> vec2<f32> {
 #ifdef VERTEX_UVS
-    let uv = cut_uv(in.uv);
+    return cut_uv(in.uv);
 #else
-    let uv = vec2<f32>(0.0);
+    return vec2<f32>(0.0);
 #endif
-    let duv = vec4(dpdx(uv), dpdy(uv));
+}
+
+// The masked card's cut: the base colour exactly as `tree_card.wgsl` builds
+// it, read through `alpha_cut` at the gradients the caller took first thing
+// (`duv` of `uv`).
+fn card_cut(in: VertexOutput, uv: vec2<f32>, duv: vec4<f32>) {
+#ifdef MAY_DISCARD
     var c = pbr_bindings::material.base_color;
 #ifdef VERTEX_COLORS
     c *= in.color;
@@ -152,11 +156,18 @@ fn card_cut(in: VertexOutput) {
 
 // `bevy_pbr`'s `pbr_prepass.wgsl` fragment (forward, non-bindless,
 // non-meshlet, and no normal map: the card has none) with `card_cut` for its
-// alpha test, and the crossfade's cut after it, for `tree_card.wgsl`'s reason.
+// alpha test. The crossfade cuts between the gradients and the read: the read
+// needs no live neighbour and nothing else here takes a derivative, so a
+// pixel the crossfade removes skips it.
 #ifdef PREPASS_FRAGMENT
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> prepass_io::FragmentOutput {
-    card_cut(in);
+    let uv = card_uv(in);
+    let duv = vec4(dpdx(uv), dpdy(uv));
+#ifdef VISIBILITY_RANGE_DITHER
+    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+    card_cut(in, uv, duv);
 
     var out: prepass_io::FragmentOutput;
 #ifdef UNCLIPPED_DEPTH_ORTHO_EMULATION
@@ -175,18 +186,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> prepass_
 #ifdef MOTION_VECTOR_PREPASS
     out.motion_vector = pbr_prepass_functions::calculate_motion_vector(in.world_position, in.previous_world_position);
 #endif
-
-#ifdef VISIBILITY_RANGE_DITHER
-    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
-#endif
     return out;
 }
 #else
 @fragment
 fn fragment(in: VertexOutput) {
-    card_cut(in);
+    let uv = card_uv(in);
+    let duv = vec4(dpdx(uv), dpdy(uv));
 #ifdef VISIBILITY_RANGE_DITHER
     pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
 #endif
+    card_cut(in, uv, duv);
 }
 #endif

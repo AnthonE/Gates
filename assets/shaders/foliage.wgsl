@@ -3,6 +3,9 @@
 // stage that is `bevy_pbr`'s own plus one cut — cards seen edge-on fade out —
 // and the base colour read through `alpha_cut`, as the prepass reads it.
 // The prepass twin is `foliage_prepass.wgsl`; both call `foliage_common`.
+// The fragment is a hand copy of Bevy 0.18.1's `pbr.wgsl` without
+// `apply_decals` and the OIT, forward-decal, deferred and meshlet branches,
+// as is `tree_card.wgsl`'s: adopting one, or a Bevy upgrade, re-checks both.
 #import bevy_pbr::{
     mesh_functions,
     forward_io::{Vertex, VertexOutput, FragmentOutput},
