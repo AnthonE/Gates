@@ -254,23 +254,19 @@ impl Teams {
         made
     }
 
-    /// Write the teams to their file, through a temp file and a rename so
-    /// a crash mid-write keeps the old one. Only when they changed since the
-    /// last write: a few lines, a few times an hour, so the sim thread that
-    /// calls this is not kept waiting. A no-op with no file.
-    pub fn save(&mut self, keys: &[(PlayerKey, u32)]) -> std::io::Result<()> {
-        let Some(path) = &self.file else {
-            return Ok(());
-        };
+    /// The teams' file for the store thread, if they changed since the last
+    /// one handed over (`net.rs` take_world_save, on the world save's
+    /// cadence). The sim thread makes the text; the store thread writes it
+    /// (temp, fsync, rename). `None` with no file or no change. The caller
+    /// checks the ring for room first, so a taken file is never dropped.
+    pub fn take_write(&mut self, keys: &[(PlayerKey, u32)]) -> Option<crate::slot::FileMsg> {
+        let path = self.file.clone()?;
         let text = self.to_text(keys);
         if self.written.as_ref() == Some(&text) {
-            return Ok(());
+            return None;
         }
-        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-        std::fs::write(&tmp, &text)?;
-        std::fs::rename(&tmp, path)?;
-        self.written = Some(text);
-        Ok(())
+        self.written = Some(text.clone());
+        Some(crate::slot::FileMsg { path, text })
     }
 
     /// Read the teams back from their file at boot, for `keys`. No file
@@ -612,7 +608,16 @@ mod tests {
         let mut kept = Teams::open(4, Some(path.clone()));
         assert_eq!(kept.load(&after).unwrap(), 0, "no file is no teams");
         teams.file = Some(path.clone());
-        teams.save(&before).unwrap();
+        let msg = teams.take_write(&before).expect("the teams changed");
+        assert!(
+            teams.take_write(&before).is_none(),
+            "unchanged: nothing to write"
+        );
+        assert_eq!(
+            (msg.path.as_path(), msg.text.as_str()),
+            (path.as_path(), text.as_str())
+        );
+        crate::gifts::write_atomic(&msg.path, &msg.text).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         assert_eq!(kept.load(&after).unwrap(), 1);
         assert_eq!(kept.team_of(20), &[10, 20]);

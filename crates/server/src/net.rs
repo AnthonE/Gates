@@ -7,8 +7,8 @@
 use crate::config::ShardConfig;
 use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, VoiceMsg,
-    WorldDone, WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, FileMsg, Link, SaveMsg, SlotTable, SnapMsg, VoiceMsg,
+    WorldDone, WorldMsg, WriteMsg, FILE_RING_CAP, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
@@ -749,6 +749,11 @@ pub async fn spawn_shard(
     // when the correct answer to a slow disk is to skip a save.
     let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(WORLD_RING_CAP);
     let (world_done_tx, world_done_rx) = RingBuffer::<WorldDone>::new(WORLD_RING_CAP);
+    // The side files, sim → storage thread: the gift ledger and the teams
+    // (`slot::FileMsg`), each message a whole small file. On the store
+    // thread because it is the one the binary waits on at shutdown: the last
+    // gift lands before exit, and the teams before a wipe archives them.
+    let (file_tx, file_rx) = RingBuffer::<FileMsg>::new(FILE_RING_CAP);
     // The admin path, sim → accept, one direction: a kick needs a socket
     // and the sim thread holds none (`admin.rs`'s split). Shallow because
     // an admin is a person typing — `CTRL_RING_CAP` is the same size for
@@ -848,6 +853,7 @@ pub async fn spawn_shard(
                     save_tx,
                     world_tx,
                     world_done_rx,
+                    file_tx,
                     admin_tx,
                     answer_rx,
                     log,
@@ -872,7 +878,17 @@ pub async fn spawn_shard(
         let file = saves.file;
         std::thread::Builder::new()
             .name("store".into())
-            .spawn(move || store_thread(file, write_rx, world_file, world_rx, world_done_tx, stats))
+            .spawn(move || {
+                store_thread(
+                    file,
+                    write_rx,
+                    world_file,
+                    world_rx,
+                    world_done_tx,
+                    file_rx,
+                    stats,
+                )
+            })
             .map_err(|e| format!("store thread spawn: {e}"))?;
     }
 
@@ -1753,6 +1769,7 @@ fn take_world_save(
     pool: &mut Vec<Box<[u8]>>,
     idents: &mut Vec<Vec<(PlayerKey, u32)>>,
     world_tx: &mut rtrb::Producer<WorldMsg>,
+    file_tx: &mut rtrb::Producer<FileMsg>,
     stats: &ShardStats,
 ) {
     let (Some(mut buf), Some(mut ids)) = (pool.pop(), idents.pop()) else {
@@ -1771,10 +1788,14 @@ fn take_world_save(
     ids.resize(MAX_PLAYERS, (PlayerKey::PLACEHOLDER, 0));
     let n = core.identities(&mut ids);
     ids.truncate(n);
-    // The teams by the same keys, so a restart finds them again. Small
-    // text, off the tick, on the save's cadence.
-    if let Err(e) = core.teams.save(&ids) {
-        eprintln!("shard: teams not saved: {e}");
+    // The teams by the same keys, so a restart finds them again. The text is
+    // made here, only when it changed; the store thread writes it. No room
+    // on the ring leaves it for the next save (`FILE_RING_CAP`); this thread
+    // is the ring's only producer, so room now is room at the push.
+    if !file_tx.is_full() {
+        if let Some(msg) = core.teams.take_write(&ids) {
+            let _ = file_tx.push(msg);
+        }
     }
     let tick = core.world.tick;
     if let Err(rtrb::PushError::Full(msg)) = world_tx.push(WorldMsg {
@@ -1804,9 +1825,16 @@ fn store_thread(
     mut world_file: crate::worldfile::WorldFile,
     mut world_rx: rtrb::Consumer<WorldMsg>,
     mut world_done_tx: rtrb::Producer<WorldDone>,
+    mut file_rx: rtrb::Consumer<FileMsg>,
     stats: Arc<ShardStats>,
 ) {
     loop {
+        // Read BEFORE the drains: a producer seen gone here has pushed all it
+        // ever will, and the drains below take every bit of it. Read after,
+        // a push landing between a ring's drain and the check would be left
+        // on the ring.
+        let gone = write_rx.is_abandoned() && world_rx.is_abandoned() && file_rx.is_abandoned();
+        std::sync::atomic::fence(Ordering::Acquire);
         let mut idle = true;
         // The world first: it is the bigger write and the rarer one, and
         // taking it before the player records means a shutdown flush lands
@@ -1835,6 +1863,16 @@ fn store_thread(
             idents.clear();
             let _ = world_done_tx.push(WorldDone { buf, idents, ok });
         }
+        // The side files (`slot::FileMsg`): each a whole file, temp + fsync
+        // + rename. After the world, so a shutdown's teams land after the
+        // world they were keyed against. A failed write is logged; the
+        // in-memory copy stands and the next change writes it again.
+        while let Ok(msg) = file_rx.pop() {
+            idle = false;
+            if let Err(e) = crate::gifts::write_atomic(&msg.path, &msg.text) {
+                eprintln!("store: writing {}: {e}", msg.path.display());
+            }
+        }
         while let Ok(msg) = write_rx.pop() {
             idle = false;
             match file.write(msg.index, &msg.key, msg.stamp, &msg.save) {
@@ -1851,12 +1889,10 @@ fn store_thread(
                 Err(_) => ShardStats::bump(&stats.save_write_errors),
             }
         }
-        // Both rings, not just the player one. The ordering makes a
-        // single check safe in practice — the accept loop only drops
-        // `write_tx` after the sim has already dropped `world_tx` — but
-        // "safe because of what another thread does first" is a thing to
-        // write down or check, and checking is one `&&`.
-        if write_rx.is_abandoned() && world_rx.is_abandoned() {
+        // Every ring, read by `gone` above: the drains in this pass ran after
+        // all three producers were seen dropped, so nothing pushed can still
+        // be waiting.
+        if gone {
             // Everything this process will ever write has been written.
             // `bin/shard.rs` waits on this before it exits, which is what
             // turns a SIGTERM into a save instead of a lost hour.
@@ -3627,6 +3663,7 @@ fn sim_thread(
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
     mut world_done_rx: rtrb::Consumer<WorldDone>,
+    mut file_tx: rtrb::Producer<FileMsg>,
     mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
     mut answer_rx: rtrb::Consumer<crate::admin::AdminReply>,
     mut log: crate::anomaly::Sink,
@@ -4009,6 +4046,7 @@ fn sim_thread(
                 &mut world_pool,
                 &mut ident_pool,
                 &mut world_tx,
+                &mut file_tx,
                 &stats,
             );
             core.standings.snapshot();
@@ -4086,6 +4124,14 @@ fn sim_thread(
             }
         });
         ShardStats::bump(&stats.ticks);
+        // A gift given this tick: the whole ledger to the store thread, which
+        // owns every write (`gifts.rs`). Room is checked before the text is
+        // built; a full ring leaves the ledger dirty for the next tick.
+        if core.gifts.is_dirty() && !file_tx.is_full() {
+            if let Some(msg) = core.gifts.take_write() {
+                let _ = file_tx.push(msg);
+            }
+        }
         // `/save` asked for the world now rather than at the cadence. Set
         // the deadline to this tick and let the cadence check above take
         // it on the next pass — the admin verb moves the deadline, it does
@@ -4172,13 +4218,29 @@ fn sim_thread(
     if let Err(e) = core.standings.save_now() {
         eprintln!("shard: standings at shutdown: {e}");
     }
+    // Room for the shutdown's side files — the teams the save below takes,
+    // and a gift ledger a full ring left dirty — on the ring the store thread
+    // is draining right now. Bounded like the accept loop's drain; past the
+    // bound the teams keep their last file and a gift is asked for again.
+    for _ in 0..SHUTDOWN_DRAIN_TRIES {
+        if file_tx.slots() >= 2 {
+            break;
+        }
+        std::thread::sleep(SHUTDOWN_DRAIN_POLL);
+    }
     take_world_save(
         &mut core,
         &mut world_pool,
         &mut ident_pool,
         &mut world_tx,
+        &mut file_tx,
         &stats,
     );
+    if !file_tx.is_full() {
+        if let Some(msg) = core.gifts.take_write() {
+            let _ = file_tx.push(msg);
+        }
+    }
     // Then every connected player's exact record, which is the same read a
     // leave takes and is what makes a clean restart cost nobody anything.
     for slot in 0..MAX_PLAYERS {
@@ -4186,10 +4248,11 @@ fn sim_thread(
             push_save(&mut save_tx, id, None, save, &stats);
         }
     }
-    // Both producers drop here, which is the signal the other two threads
-    // are already written to wait for: the accept loop drains `save_rx`
-    // until it is abandoned, and the store thread exits when its own ring is
-    // dry and abandoned. Nothing is timed and nothing is guessed.
+    // Every producer drops here — `save_tx`, `world_tx`, `file_tx` — which is
+    // the signal the other two threads are already written to wait for: the
+    // accept loop drains `save_rx` until it is abandoned, and the store
+    // thread exits when its rings are dry and abandoned. Nothing is timed and
+    // nothing is guessed.
 }
 
 /// A random `u64` for a world's arc salt, from the OS-seeded hasher keys
@@ -4848,5 +4911,41 @@ mod tests {
             .map(|w| w.key)
             .collect();
         assert_eq!(filed, who, "the drain stopped before the sim let go");
+    }
+
+    /// **A side file pushed as the sim lets go is on disk when the store
+    /// thread returns.** The ledger rides the same exit as the world: the
+    /// thread drains every ring after it sees all three producers dropped.
+    #[test]
+    fn the_store_thread_writes_a_side_file_before_it_stops() {
+        let dir = std::env::temp_dir().join(format!("gates-sidefile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("island.world.gifts");
+        let _ = std::fs::remove_file(&path);
+        let (write_tx, write_rx) = RingBuffer::<WriteMsg>::new(1);
+        let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(1);
+        let (world_done_tx, _world_done_rx) = RingBuffer::<WorldDone>::new(1);
+        let (mut file_tx, file_rx) = RingBuffer::<FileMsg>::new(FILE_RING_CAP);
+        let store = std::thread::spawn(move || {
+            store_thread(
+                SaveFile::closed(),
+                write_rx,
+                crate::worldfile::WorldFile::closed(),
+                world_rx,
+                world_done_tx,
+                file_rx,
+                Arc::new(ShardStats::default()),
+            )
+        });
+        file_tx
+            .push(FileMsg {
+                path: path.clone(),
+                text: "the ledger\n".into(),
+            })
+            .unwrap();
+        drop((write_tx, world_tx, file_tx));
+        store.join().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the ledger\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

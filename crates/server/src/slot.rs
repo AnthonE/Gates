@@ -319,6 +319,23 @@ pub struct WorldMsg {
     pub idents: Vec<(PlayerKey, u32)>,
 }
 
+/// Sim→storage thread: a small text file the shard keeps beside the world —
+/// the gift ledger (`gifts.rs`), the teams (`team.rs`) — whole, ready to
+/// write. Moved like [`WorldMsg`]: the `String` is a pointer on the ring and
+/// the store thread frees it after the write. Built only when the file
+/// changed, never per tick, and each is the whole file, so a later one to the
+/// same path supersedes an earlier one and FIFO order lands the newest last.
+pub struct FileMsg {
+    pub path: std::path::PathBuf,
+    pub text: String,
+}
+
+/// Side files in flight: a burst of gifts between the store thread's polls.
+/// Overflow policy: **leave it dirty** — the producer checks for room before
+/// it builds the text and tries again on its next pass (a gift the next
+/// tick, the teams the next world save).
+pub const FILE_RING_CAP: usize = 8;
+
 /// Storage→sim: an emptied world buffer, returning to the pool.
 pub struct WorldDone {
     pub buf: Box<[u8]>,

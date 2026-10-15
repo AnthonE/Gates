@@ -229,7 +229,7 @@ fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
     );
     assert_eq!(
         heard(&mut core, &mut tx, "/ban 258"),
-        "[server] 258 not banned: no wallet (/kick works)"
+        "[server] 258 no wallet to ban: /kick it"
     );
     assert!(rx.pop().is_err(), "no refusal crossed the ring");
 
