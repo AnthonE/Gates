@@ -444,8 +444,9 @@ near it to hear. The services are any OpenAI-compatible `audio/transcriptions`
 and `audio/speech` endpoints: `GATES_VOICE_KEY` or `OPENAI_API_KEY`,
 `GATES_VOICE_URL` (default OpenAI), `GATES_STT_MODEL`, `GATES_TTS_MODEL`,
 `GATES_TTS_VOICE`, `GATES_TTS_STYLE` (how it sounds); `ELEVENLABS_API_KEY`
-with `GATES_ELEVEN_VOICE` speaks with an ElevenLabs voice instead. Without
-a key it plays mute and says so once. `GATES_VOICE_HEARD_HOUR` and
+with `GATES_ELEVEN_VOICE` speaks with an ElevenLabs voice instead, and with
+no transcriber key it then talks without hearing. Without any key it plays
+mute and says so once. `GATES_VOICE_HEARD_HOUR` and
 `GATES_VOICE_SAID_HOUR` (240 each) cap the calls per hour.
 
 **`--set-face`** signs this key's Elo Pros name (1–16 printable characters)

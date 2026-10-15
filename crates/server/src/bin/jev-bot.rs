@@ -286,9 +286,12 @@ async fn run(options: Options) -> Result<(), String> {
         match server::agent_voice::VoiceConfig::from_env() {
             Ok(cfg) => {
                 out!(
-                    "voice: hears through {} ({}), speaks with {}",
-                    cfg.base,
-                    cfg.stt_model,
+                    "voice: {}, speaks with {}",
+                    if cfg.hears() {
+                        format!("hears through {} ({})", cfg.base, cfg.stt_model)
+                    } else {
+                        "no ears (no GATES_VOICE_KEY or OPENAI_API_KEY)".into()
+                    },
                     match &cfg.eleven {
                         Some((_, v, m)) => format!("ElevenLabs voice {v} ({m})"),
                         None => format!("{} voice {}", cfg.tts_model, cfg.tts_voice),

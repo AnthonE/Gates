@@ -64,16 +64,20 @@ pub struct VoiceConfig {
 }
 
 impl VoiceConfig {
+    /// Whether it has ears: a transcriber's key.
+    pub fn hears(&self) -> bool {
+        !self.key.is_empty()
+    }
+
     /// From the environment: `GATES_VOICE_KEY` (else `OPENAI_API_KEY`),
     /// `GATES_VOICE_URL`, `GATES_STT_MODEL`, `GATES_TTS_MODEL`,
     /// `GATES_TTS_VOICE`, `GATES_TTS_STYLE`; `ELEVENLABS_API_KEY` with
     /// `GATES_ELEVEN_VOICE` (and `GATES_ELEVEN_MODEL`) for an ElevenLabs
-    /// voice. `Err` when there is no key for the transcriber.
+    /// voice. With only an ElevenLabs voice it talks and does not hear
+    /// (`key` empty); `Err` with neither.
     pub fn from_env() -> Result<Self, String> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let key = var("GATES_VOICE_KEY")
-            .or_else(|| var("OPENAI_API_KEY"))
-            .ok_or("--voice needs GATES_VOICE_KEY or OPENAI_API_KEY (speech to text)")?;
+        let key = var("GATES_VOICE_KEY").or_else(|| var("OPENAI_API_KEY"));
         let eleven = match (var("ELEVENLABS_API_KEY"), var("GATES_ELEVEN_VOICE")) {
             (Some(k), Some(v)) => Some((
                 k,
@@ -82,6 +86,14 @@ impl VoiceConfig {
             )),
             _ => None,
         };
+        if key.is_none() && eleven.is_none() {
+            return Err(
+                "--voice needs GATES_VOICE_KEY or OPENAI_API_KEY (speech to text), \
+                 or ELEVENLABS_API_KEY with GATES_ELEVEN_VOICE (a voice alone)"
+                    .into(),
+            );
+        }
+        let key = key.unwrap_or_default();
         let number = |k: &str, d: u32| var(k).and_then(|v| v.parse().ok()).unwrap_or(d);
         Ok(Self {
             base: var("GATES_VOICE_URL")
@@ -94,8 +106,9 @@ impl VoiceConfig {
             tts_voice: var("GATES_TTS_VOICE").unwrap_or_else(|| "ash".into()),
             tts_style: var("GATES_TTS_STYLE").unwrap_or_default(),
             eleven,
-            vocabulary: var("GATES_STT_PROMPT")
-                .unwrap_or_else(|| "Gates, Doctor Wood, Triple T, THE GATE, junk, scrap.".into()),
+            vocabulary: var("GATES_STT_PROMPT").unwrap_or_else(|| {
+                "Gates, Doctor Wood, Triple T, tung tung tung, THE GATE, junk, scrap.".into()
+            }),
             max_heard_hour: number("GATES_VOICE_HEARD_HOUR", 240),
             max_said_hour: number("GATES_VOICE_SAID_HOUR", 240),
         })
@@ -138,6 +151,8 @@ pub struct AgentVoice {
     out: std::collections::VecDeque<VoiceFrame>,
     out_start: Instant,
     out_sent: u32,
+    /// It has a transcriber; without one, what it hears goes by.
+    hears: bool,
     heard_window: Window,
     said_window: Window,
     pub stats: VoiceStats,
@@ -215,7 +230,7 @@ impl AgentVoice {
                 })
                 .map_err(|e| format!("agent-ears: {e}"))?;
         }
-        let (max_heard, max_said) = (cfg.max_heard_hour, cfg.max_said_hour);
+        let (max_heard, max_said, hears) = (cfg.max_heard_hour, cfg.max_said_hour, cfg.hears());
         std::thread::Builder::new()
             .name("agent-mouth".into())
             .spawn(move || loop {
@@ -246,6 +261,7 @@ impl AgentVoice {
                 out: std::collections::VecDeque::new(),
                 out_start: now,
                 out_sent: 0,
+                hears,
                 heard_window: Window::new(max_heard),
                 said_window: Window::new(max_said),
                 stats: VoiceStats::default(),
@@ -258,6 +274,9 @@ impl AgentVoice {
     /// A frame relayed from a player near this body.
     pub fn hear(&mut self, f: &VoiceFrame, now: Instant) {
         self.stats.frames_heard += 1;
+        if !self.hears {
+            return;
+        }
         let i = match self.ears.iter().position(|e| e.from == f.from) {
             Some(i) => i,
             None => {

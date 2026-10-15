@@ -20,14 +20,16 @@
 #     FRIEND=0x...                     # the wallet you play Gates with
 #     CLAUDE_MODEL=claude-sonnet-5-5   # optional; the agent's default otherwise
 #     GATES_PERSONA=...                # optional; Doctor Wood's below otherwise
-#     # His voice and ears (`--voice`, JEV.md "Voice"): without a key he
-#     # plays mute, with one he hears what players near him say out loud
-#     # and speaks his lines.
-#     OPENAI_API_KEY=sk-...            # speech to text, and his voice
-#     GATES_TTS_VOICE=ash              # optional; any voice the TTS model has
-#     GATES_TTS_STYLE=...              # optional; how he sounds (below otherwise)
-#     ELEVENLABS_API_KEY=...           # optional, with GATES_ELEVEN_VOICE=<id>:
-#     GATES_ELEVEN_VOICE=...           #   an ElevenLabs voice instead
+#     # His voice and ears (`--voice`, JEV.md "Voice"). His voice is the
+#     # ElevenLabs one below; his ears are any OpenAI-compatible
+#     # transcriber. Without keys he plays mute; with only the ElevenLabs
+#     # key he talks but does not hear.
+#     ELEVENLABS_API_KEY=...           # his voice
+#     GATES_VOICE_KEY=...              # his ears: a together.ai key, with
+#     GATES_VOICE_URL=https://api.together.ai/v1
+#     GATES_STT_MODEL=openai/whisper-large-v3
+#     # (or OPENAI_API_KEY=sk-... alone, for both ears and an OpenAI voice)
+#     GATES_ELEVEN_VOICE=...           # optional; another ElevenLabs voice
 #
 #   sudo cp ops/gates-buddy@.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now gates-buddy@doctor-wood
@@ -55,9 +57,11 @@ User=master
 Group=master
 WorkingDirectory=/home/master/gates-jev
 EnvironmentFile=/etc/gates-buddy/%i.env
-Environment="GATES_TTS_STYLE=Doctor Wood: a booming, cheerful wooden doctor with a bat. Warm, hearty, a little absurd, like a dramatic cartoon narrator. Punchy delivery, big energy, never mean."
-Environment="GATES_PERSONA=You are Doctor Wood: a cheerful doctor carved out of oak, head mirror on, a little sprout growing from your crown. You patch your friend up, keep them fed and fight beside them. Warm, loyal, a bit punny about wood and trees, brave, never mean. Short lines."
-# A run is at most a day (`--seconds`); systemd starts the next.
+# His voice (ElevenLabs; needs ELEVENLABS_API_KEY in the env file), and how
+# an OpenAI voice would play him without one.
+Environment="GATES_ELEVEN_VOICE=s2wvuS7SwITYg8dqsJdn"
+Environment="GATES_TTS_STYLE=Triple T: a booming wooden log with a bat, Italian brainrot energy. Loud, dramatic, absurd, proud, a cartoon Italian accent. Punchy, never mean."
+Environment="GATES_PERSONA=You are Doctor Wood, and you are Triple T: a living wooden log with a baseball bat, the island's own Tung Tung Tung Sahur. Your bat goes tung tung tung, and you say it. Italian brainrot energy: loud, dramatic, absurd, proud of your wood. Now and then, about one line in four, you speak Italian instead, or throw in an Italian phrase (mamma mia, andiamo, che bello, bellissimo). You guard your friend, bonk whoever goes for them, keep them fed and patch them up. Loyal and funny, never mean. Short punchy lines."
 ExecStart=/home/master/gates-jev/jev-bot --server game.elopros.com:61234 --agent-key /home/master/gates-jev/%i.key --agent-name "Doctor Wood" --friend ${FRIEND} --seconds 86400 --think-ms 4000 --timeout-ms 20000 --max-requests-hour 400 --max-requests-day 3000 --voice --external /home/master/gates-jev/venv/bin/python /home/master/gates-jev/claude_agent.py
 Restart=always
 RestartSec=15
