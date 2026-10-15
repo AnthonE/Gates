@@ -112,3 +112,56 @@ async fn a_second_session_for_a_seated_wallet_takes_over_the_one_body() {
     assert_eq!(first.close_code(), Some(protocol::REFUSE_IN_USE as u64));
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }
+
+/// **A rejoin inside the read cooldown is told its skins without a second
+/// platform read**: what the wallet's last read said rides the join, so a
+/// reconnect loop costs the platform nothing and the player loses nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rejoin_inside_the_cooldown_is_told_its_skins_without_a_second_read() {
+    let mut cfg = ShardConfig::ephemeral(20_261_016);
+    cfg.skins.all = true;
+    let h = spawn_shard(
+        cfg,
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("boots");
+    let ep =
+        client::client_endpoint(&h.local_addr.to_string(), Some(&h.cert_hash)).expect("endpoint");
+    let k = key(8);
+    let mut first = join(&ep, &h, &k).await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while first.core.skins_owned.is_empty() {
+            frame(&mut [&mut first]).await;
+        }
+    })
+    .await
+    .expect("the door's read lands");
+    let owned = first.core.skins_owned;
+    assert_eq!(ShardStats::get(&h.stats.skins_read), 1);
+
+    let mut second = tokio::time::timeout(
+        Duration::from_secs(20),
+        Session::connect_agent(
+            &ep,
+            &h.local_addr.to_string(),
+            &k,
+            protocol::Name::new("twin").unwrap(),
+        ),
+    )
+    .await
+    .expect("an answer")
+    .expect("the second session is seated");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while second.core.skins_owned != owned {
+            frame(&mut [&mut second]).await;
+        }
+    })
+    .await
+    .expect("told what it owns");
+    assert_eq!(ShardStats::get(&h.stats.skins_read), 1, "no second read");
+    assert_eq!(ShardStats::get(&h.stats.skins_replayed), 1);
+    h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}

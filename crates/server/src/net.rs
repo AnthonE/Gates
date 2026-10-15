@@ -1058,97 +1058,200 @@ struct SeatSlot {
     target_gen: u32,
 }
 
-/// The accept loop's bookkeeping for skin-ownership reads: which tenant of
-/// each slot has one in flight, and when each was last asked. One read per
-/// tenant at a time, and a client-asked read no sooner than
-/// `skins::REFRESH_COOLDOWN` after the last.
-struct SkinReads {
-    busy: [Option<u32>; MAX_PLAYERS],
-    last: [Option<(u32, Instant)>; MAX_PLAYERS],
+/// Wallets the per-join platform reads remember (`PlatformReads`): a full
+/// shard and as many again who just left. Past it the stalest is forgotten,
+/// which costs that wallet one more read and nothing else.
+const READ_MEMORY: usize = 2 * MAX_PLAYERS;
+/// Skin and face reads out at once. The rest wait on a task, never on the
+/// accept loop and never on a blocking thread: the pool is shared with the
+/// ticket door's join read.
+const READ_PERMITS: usize = 32;
+
+type SkinsAnswer = (usize, u32, Option<PlayerKey>, crate::skins::Owned);
+type FaceAnswer = (usize, u32, PlayerKey, crate::faces::Face);
+
+/// One wallet's last platform read.
+#[derive(Clone, Copy)]
+struct LastRead<A> {
+    key: PlayerKey,
+    /// When it was last asked; the cooldown runs from here.
+    at: Instant,
+    /// That read has not answered yet.
+    out: bool,
+    /// The last answer that knew something, and when ITS read was asked.
+    /// Told again only while younger than the cooldown, so a skin sold since
+    /// is never lent back for longer than a client refresh could see it.
+    known: Option<(A, Instant)>,
+    /// A join came inside the cooldown and was told the remembered answer:
+    /// read again once the cooldown has run ([`PlatformReads::owed`]), so a
+    /// skin bought in that window still arrives without the player asking.
+    owed: bool,
 }
 
-impl SkinReads {
-    fn new() -> Self {
+/// Skin-ownership and face reads, remembered **by wallet**, so a reconnect
+/// loop costs the platform one read per cooldown rather than one per join.
+/// Bounded (`READ_MEMORY`) and clock-free: every instant is handed in.
+struct PlatformReads<A> {
+    recent: Vec<LastRead<A>>,
+    cooldown: Duration,
+}
+
+impl<A: Copy> PlatformReads<A> {
+    fn new(cooldown: Duration) -> Self {
         Self {
-            busy: [None; MAX_PLAYERS],
-            last: [None; MAX_PLAYERS],
+            recent: Vec::with_capacity(READ_MEMORY),
+            cooldown,
         }
     }
 
-    /// Start a read for tenant `gen` of `slot`. `forced` is the door's read,
-    /// which the cooldown does not apply to.
-    fn ask(
-        &mut self,
-        slot: usize,
-        gen: u32,
-        forced: bool,
-        keys: &[KeySlot; MAX_PLAYERS],
-        facts: &ShardFacts,
-        owned_tx: &tokio::sync::mpsc::Sender<(usize, u32, crate::skins::Owned)>,
-    ) {
-        if slot >= MAX_PLAYERS || self.busy[slot] == Some(gen) {
-            return;
+    /// The answer to state again with `key`'s join: a known one younger than
+    /// the cooldown.
+    fn known(&self, key: &PlayerKey, now: Instant) -> Option<A> {
+        let e = self.recent.iter().find(|e| e.key == *key)?;
+        e.known
+            .filter(|&(_, at)| now.duration_since(at) < self.cooldown)
+            .map(|(a, _)| a)
+    }
+
+    /// Should `key` be read now? Never while a read is out or inside the
+    /// cooldown. `door` is a join's ask: refused, it owes a read for when
+    /// the cooldown has run. A client's ask is simply ignored, as before.
+    fn ask(&mut self, key: &PlayerKey, door: bool, now: Instant) -> bool {
+        if let Some(e) = self.recent.iter_mut().find(|e| e.key == *key) {
+            if e.out || now.duration_since(e.at) < self.cooldown {
+                e.owed |= door;
+                return false;
+            }
+            e.at = now;
+            e.out = true;
+            e.owed = false;
+            return true;
         }
-        let now = Instant::now();
-        if !forced {
-            if let Some((g, at)) = self.last[slot] {
-                if g == gen && now.duration_since(at) < crate::skins::REFRESH_COOLDOWN {
-                    return;
-                }
+        if self.recent.len() >= READ_MEMORY {
+            if let Some(i) = (0..self.recent.len()).min_by_key(|&i| self.recent[i].at) {
+                self.recent.swap_remove(i);
             }
         }
-        self.busy[slot] = Some(gen);
-        self.last[slot] = Some((gen, now));
-        // The key IS the wallet (`auth::key_of`), as at the ticket door.
-        let wallet = keys[slot]
-            .key
-            .as_ref()
-            .and_then(|k| std::str::from_utf8(k.as_bytes()).ok())
-            .map(str::to_string);
-        let cfg = facts.skins.clone();
-        let sc = facts.skin_content.clone();
-        let tx = owned_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let owned = crate::skins::owned_of(&cfg, wallet.as_deref(), &sc);
-            let _ = tx.blocking_send((slot, gen, owned));
+        self.recent.push(LastRead {
+            key: *key,
+            at: now,
+            out: true,
+            known: None,
+            owed: false,
         });
+        true
     }
 
-    fn done(&mut self, slot: usize, gen: u32) {
-        if slot < MAX_PLAYERS && self.busy[slot] == Some(gen) {
-            self.busy[slot] = None;
+    /// A read about `key` came back; `None` is "could not look", which
+    /// changes nothing remembered (the sim keeps its set too).
+    fn done(&mut self, key: &PlayerKey, answer: Option<A>) {
+        if let Some(e) = self.recent.iter_mut().find(|e| e.key == *key) {
+            e.out = false;
+            if let Some(a) = answer {
+                e.known = Some((a, e.at));
+            }
         }
+    }
+
+    /// A wallet owed a read whose cooldown has run, handed out once.
+    fn owed(&mut self, now: Instant) -> Option<PlayerKey> {
+        let cooldown = self.cooldown;
+        let e = self
+            .recent
+            .iter_mut()
+            .find(|e| e.owed && !e.out && now.duration_since(e.at) >= cooldown)?;
+        e.owed = false;
+        Some(e.key)
     }
 }
 
-/// Start the name-and-picture read for tenant `gen` of `slot` (`faces.rs`).
-/// A guest has no wallet and an unarmed shard no origin: both stay their
-/// address (a guest, `#id`) and nothing is asked.
-fn ask_face(
+/// One blocking platform read behind `gate` (`READ_PERMITS`). A read that
+/// died answers `failed`, so an answer always comes back and a wallet's read
+/// is never left out for ever.
+fn spawn_read<M: Send + 'static>(
+    gate: &Arc<tokio::sync::Semaphore>,
+    tx: &tokio::sync::mpsc::Sender<M>,
+    failed: M,
+    read: impl FnOnce() -> M + Send + 'static,
+) {
+    let gate = gate.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let answer = match gate.acquire_owned().await {
+            // `_permit`, not `_`: held until the read is done.
+            Ok(_permit) => tokio::task::spawn_blocking(read).await.unwrap_or(failed),
+            Err(_) => failed,
+        };
+        let _ = tx.send(answer).await;
+    });
+}
+
+/// The skin-ownership read for tenant `gen` of `slot` (`skins.rs`). The
+/// answer carries the wallet, so it lands on whoever holds it by then
+/// ([`landing`]). A guest (`None`) owns what the config says; nothing is
+/// remembered for one.
+fn read_skins(
     slot: usize,
     gen: u32,
-    keys: &[KeySlot; MAX_PLAYERS],
+    key: Option<PlayerKey>,
     facts: &ShardFacts,
-    face_tx: &tokio::sync::mpsc::Sender<(usize, u32, crate::faces::Face)>,
+    gate: &Arc<tokio::sync::Semaphore>,
+    tx: &tokio::sync::mpsc::Sender<SkinsAnswer>,
 ) {
-    if slot >= MAX_PLAYERS || facts.faces.origin.is_none() {
-        return;
-    }
-    // The key IS the wallet (`auth::key_of`), lowercase.
-    let Some(wallet) = keys[slot]
-        .key
-        .as_ref()
-        .and_then(|k| std::str::from_utf8(k.as_bytes()).ok())
-        .map(str::to_string)
-    else {
-        return;
-    };
-    let cfg = facts.faces.clone();
-    let tx = face_tx.clone();
-    tokio::task::spawn_blocking(move || {
-        let face = crate::faces::face_of(&cfg, &wallet);
-        let _ = tx.blocking_send((slot, gen, face));
+    let cfg = facts.skins.clone();
+    let sc = facts.skin_content.clone();
+    let failed = (slot, gen, key, crate::skins::Owned::Unknown);
+    spawn_read(gate, tx, failed, move || {
+        // The key IS the wallet (`auth::key_of`), as at the ticket door.
+        let wallet = key
+            .as_ref()
+            .and_then(|k| std::str::from_utf8(k.as_bytes()).ok());
+        (slot, gen, key, crate::skins::owned_of(&cfg, wallet, &sc))
     });
+}
+
+/// The name-and-picture read for tenant `gen` of `slot` (`faces.rs`).
+fn read_face(
+    slot: usize,
+    gen: u32,
+    key: PlayerKey,
+    facts: &ShardFacts,
+    gate: &Arc<tokio::sync::Semaphore>,
+    tx: &tokio::sync::mpsc::Sender<FaceAnswer>,
+) {
+    let cfg = facts.faces.clone();
+    let failed = (slot, gen, key, crate::faces::Face::Unknown);
+    spawn_read(gate, tx, failed, move || {
+        // The key IS the wallet, lowercase; a non-utf8 key reads as none.
+        let wallet = std::str::from_utf8(key.as_bytes()).unwrap_or_default();
+        (slot, gen, key, crate::faces::face_of(&cfg, wallet))
+    });
+}
+
+/// Where a platform answer about tenant `gen` of `slot` lands: that tenant
+/// while it is live, otherwise (for a wallet) whoever holds that wallet live
+/// now, because a reconnect while the read was out is the same person. An
+/// answer about a guest who left lands nowhere, and a stranger who took the
+/// slot is never told.
+fn landing(
+    slot: usize,
+    gen: u32,
+    key: Option<&PlayerKey>,
+    keys: &[KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+) -> Option<usize> {
+    if slot < MAX_PLAYERS {
+        let w = slots.load(slot);
+        if generation_of(w) == gen && state_of(w) == SLOT_LIVE {
+            return Some(slot);
+        }
+    }
+    key.and_then(|k| live_seat(k, keys, slots))
+}
+
+/// The live player slot holding wallet `key`, if any ([`seated`], live only).
+fn live_seat(key: &PlayerKey, keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable) -> Option<usize> {
+    seated(key, keys, slots).filter(|&s| state_of(slots.load(s)) == SLOT_LIVE)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1209,15 +1312,22 @@ async fn accept_loop(
     // Asked at the door and when a client says it bought something, never
     // on a timer. Requests come from the action readers, answers from
     // blocking reads, both through channels so this loop never waits on
-    // the platform — the ticket sweep's shape.
+    // the platform — the ticket sweep's shape. Remembered per wallet
+    // (`PlatformReads`): a join inside the cooldown is told the last answer
+    // and read again when the cooldown has run, so a reconnect loop costs
+    // the platform nothing extra.
     let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel::<(usize, u32)>(MAX_PLAYERS);
-    let (owned_tx, mut owned_rx) =
-        tokio::sync::mpsc::channel::<(usize, u32, crate::skins::Owned)>(MAX_PLAYERS);
-    let mut skin_reads = SkinReads::new();
-    // Names and pictures (`faces.rs`): once per join, answered on a channel
-    // for the same reason — the platform being slow never slows the door.
-    let (face_tx, mut face_rx) =
-        tokio::sync::mpsc::channel::<(usize, u32, crate::faces::Face)>(MAX_PLAYERS);
+    let (owned_tx, mut owned_rx) = tokio::sync::mpsc::channel::<SkinsAnswer>(MAX_PLAYERS);
+    let mut skin_reads =
+        PlatformReads::<sim_core::skin::SkinSet>::new(crate::skins::REFRESH_COOLDOWN);
+    // Names and pictures (`faces.rs`): once per join and cooldown, answered
+    // on a channel for the same reason — a slow platform never slows the door.
+    let (face_tx, mut face_rx) = tokio::sync::mpsc::channel::<FaceAnswer>(MAX_PLAYERS);
+    let mut face_reads =
+        PlatformReads::<(protocol::Name, u32)>::new(crate::faces::REFRESH_COOLDOWN);
+    let faces_armed = facts.faces.origin.is_some();
+    // Every skin and face read waits its turn here (`READ_PERMITS`).
+    let read_gate = Arc::new(tokio::sync::Semaphore::new(READ_PERMITS));
     // The item store's prices: at boot, then every `PRICES_EVERY`. Only a
     // shard that reads ownership from the platform reads prices from it.
     let prices_armed = facts.skins.origin.is_some() && !facts.skins.all;
@@ -1248,22 +1358,52 @@ async fn accept_loop(
                     &stats,
                 )
                 .await;
-            } else if let Some((slot, gen)) = install(
-                done,
-                &facts,
-                &mut ctrl_tx,
-                &refresh_tx,
-                &mut keys,
-                &store,
-                &slots,
-                &stats,
-            )
-            .await
-            {
-                // The door's read: what this player owns, before they
-                // reach a bench.
-                skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
-                ask_face(slot, gen, &keys, &facts, &face_tx);
+            } else {
+                // A wallet read inside the cooldown is not read again: what
+                // it said rides the join itself (`Connect::said`). The same
+                // `now` for `known` and `ask`, so "told" and "not read"
+                // always agree.
+                let now = Instant::now();
+                let said = crate::slot::Said {
+                    skins: done.key.and_then(|k| skin_reads.known(&k, now)),
+                    face: done
+                        .key
+                        .filter(|_| faces_armed)
+                        .and_then(|k| face_reads.known(&k, now)),
+                };
+                if let Some((slot, gen)) = install(
+                    done,
+                    said,
+                    &facts,
+                    &mut ctrl_tx,
+                    &refresh_tx,
+                    &mut keys,
+                    &store,
+                    &slots,
+                    &stats,
+                )
+                .await
+                {
+                    if said.skins.is_some() {
+                        ShardStats::bump(&stats.skins_replayed);
+                    }
+                    if said.face.is_some() {
+                        ShardStats::bump(&stats.faces_replayed);
+                    }
+                    // The door's reads: what this player owns, before they
+                    // reach a bench, and what they are called.
+                    match keys[slot].key {
+                        Some(k) => {
+                            if skin_reads.ask(&k, true, now) {
+                                read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                            }
+                            if faces_armed && face_reads.ask(&k, true, now) {
+                                read_face(slot, gen, k, &facts, &read_gate, &face_tx);
+                            }
+                        }
+                        None => read_skins(slot, gen, None, &facts, &read_gate, &owned_tx),
+                    }
+                }
             }
         }};
     }
@@ -1393,7 +1533,13 @@ async fn accept_loop(
                     && crate::slot::generation_of(slots.load(slot)) == gen
                     && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
                 {
-                    skin_reads.ask(slot, gen, false, &keys, &facts, &owned_tx);
+                    // A guest's answer is the shard's config, the same every
+                    // time: there is nothing to ask again.
+                    if let Some(k) = keys[slot].key {
+                        if skin_reads.ask(&k, false, Instant::now()) {
+                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                        }
+                    }
                 }
             }
             _ = prices_sweep.tick(), if prices_armed && !prices_in_flight => {
@@ -1416,11 +1562,13 @@ async fn accept_loop(
                     crate::skins::Prices::Unknown => ShardStats::bump(&stats.skin_prices_unknown),
                 }
             }
-            Some((slot, gen, face)) = face_rx.recv() => {
-                if slot < MAX_PLAYERS
-                    && crate::slot::generation_of(slots.load(slot)) == gen
-                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
-                {
+            Some((slot, gen, key, face)) = face_rx.recv() => {
+                face_reads.done(&key, match face {
+                    crate::faces::Face::Known { name, pic } => Some((name, pic)),
+                    crate::faces::Face::Unknown => None,
+                });
+                // The generation guard, widened to the wallet (`landing`).
+                if let Some(slot) = landing(slot, gen, Some(&key), &keys, &slots) {
                     match face {
                         crate::faces::Face::Known { name, pic } => {
                             let msg = crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic };
@@ -1434,14 +1582,17 @@ async fn accept_loop(
                     }
                 }
             }
-            Some((slot, gen, owned)) = owned_rx.recv() => {
-                skin_reads.done(slot, gen);
-                // The generation guard: an answer about a tenant who has
-                // left is not an answer about whoever holds the slot now.
-                if slot < MAX_PLAYERS
-                    && crate::slot::generation_of(slots.load(slot)) == gen
-                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
-                {
+            Some((slot, gen, key, owned)) = owned_rx.recv() => {
+                if let Some(k) = key.as_ref() {
+                    skin_reads.done(k, match owned {
+                        crate::skins::Owned::Known(set) => Some(set),
+                        crate::skins::Owned::Unknown => None,
+                    });
+                }
+                // The generation guard, widened to the wallet: an answer
+                // about a tenant who has left lands on the same wallet's new
+                // seat, never on whoever else holds the slot now (`landing`).
+                if let Some(slot) = landing(slot, gen, key.as_ref(), &keys, &slots) {
                     match owned {
                         crate::skins::Owned::Known(set) => {
                             let msg = crate::slot::SkinsMsg { slot, id: keys[slot].id, owned: set };
@@ -1524,6 +1675,24 @@ async fn accept_loop(
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
                     drop(link); // net side deallocates, never the sim
+                }
+                // Reads owed to joins that were told a remembered answer
+                // (`PlatformReads::owed`), now that the cooldown has run: at
+                // most one per wallet per cooldown, however often it rejoined.
+                let now = Instant::now();
+                while let Some(k) = skin_reads.owed(now) {
+                    if let Some(s) = live_seat(&k, &keys, &slots) {
+                        if skin_reads.ask(&k, false, now) {
+                            read_skins(s, keys[s].generation, Some(k), &facts, &read_gate, &owned_tx);
+                        }
+                    }
+                }
+                while let Some(k) = face_reads.owed(now) {
+                    if let Some(s) = live_seat(&k, &keys, &slots) {
+                        if face_reads.ask(&k, false, now) {
+                            read_face(s, keys[s].generation, k, &facts, &read_gate, &face_tx);
+                        }
+                    }
                 }
                 // Spectator seats whose target left (`NETCODE.md` §2.3). The
                 // sim stopped feeding them the tick the target's slot turned
@@ -2175,6 +2344,7 @@ async fn handshake_task(
 #[allow(clippy::too_many_arguments)]
 async fn install(
     done: Handshaken,
+    said: crate::slot::Said,
     facts: &ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
     refresh_tx: &tokio::sync::mpsc::Sender<(usize, u32)>,
@@ -2255,6 +2425,7 @@ async fn install(
             save,
             key,
             watch: None,
+            said,
             agent: hello.is_agent(),
             name: if hello.is_agent() {
                 hello.name
@@ -2488,6 +2659,7 @@ async fn install_spectator(
             save: None,
             key: None,
             watch: Some(target),
+            said: crate::slot::Said::default(),
             agent: false,
             name: protocol::Name::EMPTY,
             link,
@@ -3341,11 +3513,16 @@ const REFUSE_POST_TIMEOUT: Duration = Duration::from_millis(300);
 fn close_with_reason(conn: Connection, code: u8) {
     tokio::spawn(async move {
         tokio::time::sleep(KICK_GRACE).await;
-        conn.close(
-            wtransport::VarInt::from_u32(code as u32),
-            protocol::refuse_text(code).unwrap_or("closed").as_bytes(),
-        );
+        close_now(&conn, code);
     });
+}
+
+/// Close with the refusal code and its text, which the desktop reads.
+fn close_now(conn: &Connection, code: u8) {
+    conn.close(
+        wtransport::VarInt::from_u32(code as u32),
+        protocol::refuse_text(code).unwrap_or("closed").as_bytes(),
+    );
 }
 
 async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
@@ -3441,14 +3618,57 @@ fn answer_admin(
     }
 }
 
+/// Refusals posting at once, process-wide (one socket, one set of
+/// connections). Past it a refusal is a bare close carrying the code, so a
+/// loop of doomed handshakes (a stale build, a banned wallet) cannot hold
+/// more connections open than the admission gate lets in.
+const REFUSALS_MAX: usize = ADMIT_REFUSE_AT;
+/// How long a refusal waits for the peer to ack its frame. A client that
+/// read it acks within a round trip.
+const REFUSAL_WAIT: Duration = Duration::from_secs(2);
+
+/// The count of refusals posting ([`REFUSALS_MAX`]).
+struct RefusalGate(std::sync::atomic::AtomicUsize);
+
+/// One refusal's place in a [`RefusalGate`], given back on drop.
+struct RefusalOut(&'static RefusalGate);
+
+impl RefusalGate {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    fn take(&'static self) -> Option<RefusalOut> {
+        if self.0.fetch_add(1, Ordering::Relaxed) >= REFUSALS_MAX {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(RefusalOut(self))
+    }
+}
+
+impl Drop for RefusalOut {
+    fn drop(&mut self) {
+        self.0 .0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+static REFUSALS: RefusalGate = RefusalGate::new();
+
 /// Refusals are posted, never hung (DESIGN.md §5.9) — and never block the
 /// accept loop. A buffered write dies with the dropped connection, so
 /// delivery needs `finish` (retransmit-until-acked) before the drop; that
-/// waits on the peer, so it runs detached, bounded by the handshake
-/// timeout so a non-acking client can't pin the task.
+/// waits on the peer, so it runs detached, bounded by [`REFUSAL_WAIT`] so a
+/// non-acking client can't pin the task, and at most [`REFUSALS_MAX`] at
+/// once: past that the code rides a bare close.
 fn spawn_refusal(connection: Connection, mut send: SendStream, code: u8) {
+    let Some(out) = REFUSALS.take() else {
+        close_now(&connection, code);
+        return;
+    };
     tokio::spawn(async move {
-        let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let _out = out; // moved in, so an unpolled task still gives it back
+        let _ = tokio::time::timeout(REFUSAL_WAIT, async {
             write_refuse(&mut send, code).await?;
             send.finish().await.map_err(|_| ())
         })
@@ -3864,6 +4084,16 @@ fn sim_thread(
                 core.tag_join(c.slot, c.id, key.as_ref());
                 core.name_agent(c.slot, c.name);
                 core.note_agent(c.slot, c.agent);
+                // A wallet read inside the cooldown, stated with the join
+                // (`Connect::said`): after `tag_join`, which owes the gifts
+                // (`skins_owned` unions them back in), and after
+                // `name_agent`, whose name an empty face keeps.
+                if let Some(owned) = c.said.skins {
+                    core.skins_owned(c.slot, c.id, owned);
+                }
+                if let Some((name, pic)) = c.said.face {
+                    core.set_face(c.slot, c.id, name, pic);
+                }
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
                 // as it stands NOW — raid included — not as its leave left
@@ -4911,6 +5141,101 @@ mod tests {
             .map(|w| w.key)
             .collect();
         assert_eq!(filed, who, "the drain stopped before the sim let go");
+    }
+
+    /// **A wallet is read once per cooldown, however often it rejoins.** A
+    /// join inside the cooldown is told the last answer and owes one read
+    /// for when it has run; an answer older than the cooldown is never told.
+    #[test]
+    fn a_wallet_is_read_once_per_cooldown_however_often_it_rejoins() {
+        let mut r = PlatformReads::<u8>::new(Duration::from_secs(15));
+        let k = PlayerKey::new(b"0x00000000000000000000000000000000000000a1").unwrap();
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        assert!(r.ask(&k, true, t0), "the first join reads");
+        assert!(!r.ask(&k, true, s(1)), "a read is out");
+        assert_eq!(r.known(&k, s(1)), None);
+        r.done(&k, Some(7));
+        assert_eq!(r.known(&k, s(2)), Some(7), "a rejoin is told it");
+        assert!(!r.ask(&k, true, s(2)), "inside the cooldown");
+        assert!(!r.ask(&k, false, s(3)), "a client ask inside it too");
+        assert_eq!(r.owed(s(14)), None, "owed only once the cooldown has run");
+        assert_eq!(r.owed(s(15)), Some(k));
+        assert_eq!(r.owed(s(15)), None, "handed out once");
+        assert!(r.ask(&k, false, s(15)));
+        assert_eq!(r.known(&k, s(16)), None, "older than the cooldown");
+        r.done(&k, None);
+        assert!(r.ask(&k, false, s(31)), "could-not-look leaves nothing out");
+    }
+
+    /// **The read memory is bounded and forgets the stalest wallet.**
+    #[test]
+    fn the_read_memory_is_bounded_and_forgets_the_stalest() {
+        let mut r = PlatformReads::<u8>::new(Duration::from_secs(15));
+        let key = |i: usize| PlayerKey::new(format!("0x{i:040x}").as_bytes()).unwrap();
+        let t0 = Instant::now();
+        for i in 0..=READ_MEMORY {
+            assert!(r.ask(&key(i), true, t0 + Duration::from_millis(i as u64)));
+        }
+        assert_eq!(r.recent.len(), READ_MEMORY);
+        let late = t0 + Duration::from_secs(1);
+        assert!(!r.ask(&key(READ_MEMORY), true, late), "the newest is kept");
+        assert!(r.ask(&key(0), true, late), "the stalest was forgotten");
+    }
+
+    /// **A platform answer lands on whoever holds the wallet now**: the
+    /// tenant it was asked for, or the same wallet's new seat after a
+    /// reconnect, and never a stranger who took the old slot.
+    #[test]
+    fn a_platform_answer_lands_on_whoever_holds_the_wallet_now() {
+        fn seat(
+            slots: &SlotTable,
+            keys: &mut [KeySlot; MAX_PLAYERS],
+            slot: usize,
+            key: Option<PlayerKey>,
+        ) -> u32 {
+            let generation = slots.claim(slot).unwrap();
+            keys[slot] = KeySlot {
+                key,
+                generation,
+                ..KeySlot::default()
+            };
+            generation
+        }
+        let slots = SlotTable::new(MAX_CONNS);
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let w = PlayerKey::new(b"0x00000000000000000000000000000000000000b2").unwrap();
+        let g1 = seat(&slots, &mut keys, 2, Some(w));
+        assert_eq!(landing(2, g1, Some(&w), &keys, &slots), Some(2));
+        slots.mark_leaving(2, g1);
+        slots.free(2, g1);
+        seat(&slots, &mut keys, 5, Some(w));
+        assert_eq!(
+            landing(2, g1, Some(&w), &keys, &slots),
+            Some(5),
+            "reconnected"
+        );
+        seat(&slots, &mut keys, 2, None);
+        assert_eq!(landing(2, g1, None, &keys, &slots), None, "a guest's, gone");
+        assert_eq!(
+            landing(2, g1, Some(&w), &keys, &slots),
+            Some(5),
+            "never the stranger now on slot 2"
+        );
+    }
+
+    /// **Refusals posting at once are capped**, and each gives its place
+    /// back when it ends.
+    #[test]
+    fn refusals_posting_at_once_are_capped_and_give_their_place_back() {
+        static GATE: RefusalGate = RefusalGate::new();
+        let mut out: Vec<_> = (0..REFUSALS_MAX).map(|_| GATE.take().unwrap()).collect();
+        assert!(GATE.take().is_none(), "one past the cap");
+        out.pop();
+        assert!(
+            GATE.take().is_some(),
+            "an ended refusal gives its place back"
+        );
     }
 
     /// **A side file pushed as the sim lets go is on disk when the store

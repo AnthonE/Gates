@@ -240,7 +240,19 @@ pub struct Connect {
     /// An agent's self-declared name (`--agent-name`), its tag's name until
     /// the platform names its wallet. Empty for a person or a spectator.
     pub name: protocol::Name,
+    /// What the platform last said about this wallet, when it said it inside
+    /// the read cooldown (`net.rs` `PlatformReads`): stated WITH the join, so
+    /// it can never reach the sim before the body it is about. Empty ⇒ a read
+    /// was started (or none applies) and lands on the skins/faces rings.
+    pub said: Said,
     pub link: Link,
+}
+
+/// A joiner's remembered platform answers (`Connect::said`).
+#[derive(Clone, Copy, Default)]
+pub struct Said {
+    pub skins: Option<sim_core::skin::SkinSet>,
+    pub face: Option<(protocol::Name, u32)>,
 }
 
 /// Accept→sim: what the platform said the player in `slot` owns
